@@ -2,9 +2,10 @@
   "schemaVersion": 1,
   "jobs": {
     "unit": {
-      "baselineSeconds": 120,
-      "budgetSeconds": 300,
-      "baseline": "Approximately 120 seconds on the Linux and macOS main-branch platform gates, measured 2026-07-21; the 300-second budget allows hosted-runner contention headroom."
+      "baselineSeconds": 550,
+      "budgetSeconds": 900,
+      "baseline": "The macOS behavioral suite measured 452-607 seconds across successful main runs on 2026-08-20 (#3323); the 900-second budget is informational headroom over that range, not a pass/fail gate -- see regressionTolerance for the advisory signal.",
+      "regressionTolerance": 0.5
     }
   }
 }

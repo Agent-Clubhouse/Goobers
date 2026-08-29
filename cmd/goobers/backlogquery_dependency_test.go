@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -9,7 +11,7 @@ import (
 )
 
 // fakeDependencyCheckProvider is the narrow backlogIssueProvider slice
-// filterDeclaredDependencyEligibility depends on, stubbed via the same
+// filterDeclaredDependencyEligibilityDebug depends on, stubbed via the same
 // embedded-nil-interface pattern fakeMergePolicyProvider
 // (mergepolicycache_test.go) uses. It implements HasOpenWorkItemBlocker
 // unconditionally so tests can prove declaration — not interface
@@ -54,7 +56,7 @@ func TestFilterDeclaredDependencyEligibilityFailsClosedWhenUndeclared(t *testing
 	repo := providers.RepositoryRef{Owner: "acme", Name: "widgets"}
 	eligible := []providers.WorkItem{{ID: "42", BlockedByCount: 1}}
 
-	filtered, warnings := filterDeclaredDependencyEligibility(context.Background(), fake, repo, eligible)
+	filtered, warnings := filterDeclaredDependencyEligibilityDebug(context.Background(), fake, repo, eligible, nil)
 
 	if len(filtered) != 0 {
 		t.Fatalf("filtered = %+v, want empty (item with an undeclared blocker check must fail closed, not pass through)", filtered)
@@ -73,6 +75,58 @@ func TestFilterDeclaredDependencyEligibilityFailsClosedWhenUndeclared(t *testing
 	}
 }
 
+func TestFilterDeclaredDependencyEligibilityExcludesADOItemWithPredecessor(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/wit/workitems/42", func(w http.ResponseWriter, _ *http.Request) {
+		writeADOJSON(t, w, map[string]interface{}{
+			"id": 42,
+			"fields": map[string]interface{}{
+				"System.WorkItemType": "Issue",
+				"System.Title":        "Blocked work",
+				"System.State":        "Active",
+			},
+			"relations": []map[string]interface{}{
+				{
+					"rel": "System.LinkTypes.Dependency-Reverse",
+					"url": "https://dev.azure.com/org/project/_apis/wit/workItems/41",
+					"attributes": map[string]interface{}{
+						"name": "Predecessor",
+					},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/org/project/_apis/wit/workitemtypes/", func(w http.ResponseWriter, _ *http.Request) {
+		writeADOJSON(t, w, map[string]interface{}{"value": []map[string]string{
+			{"name": "Active", "category": "InProgress"},
+		}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := providers.NewADOProvider("org", "project", "token", func(p *providers.ADOProvider) {
+		p.BaseURL = server.URL
+	})
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"}
+	item, err := provider.GetWorkItem(context.Background(), repo, "42")
+	if err != nil {
+		t.Fatalf("GetWorkItem: %v", err)
+	}
+	if item.BlockedByCount != 1 {
+		t.Fatalf("BlockedByCount = %d, want 1 for an ADO predecessor relation", item.BlockedByCount)
+	}
+
+	filtered, warnings := filterDeclaredDependencyEligibilityDebug(
+		context.Background(), provider, repo, []providers.WorkItem{item}, nil,
+	)
+	if len(filtered) != 0 {
+		t.Fatalf("filtered = %+v, want blocked ADO item excluded", filtered)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], string(providers.CapBacklogBlockers)) {
+		t.Fatalf("warnings = %+v, want one backlog.blockers warning", warnings)
+	}
+}
+
 // TestFilterDeclaredDependencyEligibilityDispatchesWhenDeclared is the
 // positive counterpart: a provider that does declare backlog.blockers and
 // implements the real check (GitHub's and Gitea's path today) still filters
@@ -85,7 +139,7 @@ func TestFilterDeclaredDependencyEligibilityDispatchesWhenDeclared(t *testing.T)
 		{ID: "unblocked-item", BlockedByCount: 0},
 	}
 
-	filtered, warnings := filterDeclaredDependencyEligibility(context.Background(), fake, repo, eligible)
+	filtered, warnings := filterDeclaredDependencyEligibilityDebug(context.Background(), fake, repo, eligible, nil)
 
 	if len(warnings) != 0 {
 		t.Fatalf("warnings = %+v, want none", warnings)

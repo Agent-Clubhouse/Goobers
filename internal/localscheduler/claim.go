@@ -41,14 +41,15 @@ func (k ClaimKey) storageKey() (string, error) {
 
 // ClaimEntry is one lease in the claim ledger.
 type ClaimEntry struct {
-	ItemID     string    `json:"itemId"`
-	Gaggle     string    `json:"gaggle,omitempty"`
-	Provider   string    `json:"provider,omitempty"`
-	ExternalID string    `json:"externalId,omitempty"`
-	RunID      string    `json:"runId"`
-	Workflow   string    `json:"workflow"`
-	ClaimedAt  time.Time `json:"claimedAt"`
-	ExpiresAt  time.Time `json:"expiresAt"`
+	ItemID     string     `json:"itemId"`
+	Gaggle     string     `json:"gaggle,omitempty"`
+	Provider   string     `json:"provider,omitempty"`
+	ExternalID string     `json:"externalId,omitempty"`
+	RunID      string     `json:"runId"`
+	Workflow   string     `json:"workflow"`
+	ClaimedAt  time.Time  `json:"claimedAt"`
+	ExpiresAt  time.Time  `json:"expiresAt"`
+	ReleasedAt *time.Time `json:"releasedAt,omitempty"`
 }
 
 // expired reports whether the lease is no longer live at now.
@@ -60,18 +61,33 @@ func (e ClaimEntry) expired(now time.Time) bool { return !e.ExpiresAt.After(now)
 // visibility once a local claim succeeds — the ledger never depends on the
 // provider layer, and the marker is never the source of truth (§7, SCH-Q5).
 //
-// Durable state lives in a single JSON file under the instance root, rewritten
-// atomically (journal.WriteFileAtomic) on every mutation — sized for V0's scale
-// (concurrently-claimed backlog items, not a database's worth of rows). It is
-// designed for one embedded scheduler per instance (SCH-040: no separate
-// scheduler service), so an in-process mutex is the correct atomicity
-// primitive — not cross-process file locking.
+// Durable active ownership and recent per-run claim history live in one JSON
+// file under the instance root, rewritten atomically (journal.WriteFileAtomic)
+// on every mutation. Keeping both in the same commit lets intervention recovery
+// prove the prior ownership set even when observability journaling fails.
+// History for runs without active entries expires after claimHistoryTTL so the
+// hot claim path never rewrites an unbounded ledger. It is designed for one
+// embedded scheduler per instance (SCH-040: no separate scheduler service), so
+// an in-process mutex is the correct atomicity primitive — not cross-process
+// file locking.
 type ClaimLedger struct {
 	mu      sync.Mutex
 	path    string
 	entries map[string]ClaimEntry
+	history map[string]map[string]ClaimEntry
 	now     func() time.Time
 	log     *journal.InstanceLog // optional; nil-safe
+}
+
+const (
+	claimLedgerSchema = "goobers.dev/scheduler/claims/v1"
+	claimHistoryTTL   = 30 * 24 * time.Hour
+)
+
+type claimLedgerState struct {
+	Schema  string                           `json:"schema"`
+	Entries map[string]ClaimEntry            `json:"entries"`
+	History map[string]map[string]ClaimEntry `json:"history,omitempty"`
 }
 
 // LedgerOption configures a ClaimLedger.
@@ -92,7 +108,10 @@ func WithInstanceLog(log *journal.InstanceLog) LedgerOption {
 // OpenClaimLedger loads the ledger at path (a JSON file under the instance's
 // scheduler dir), creating an empty one if absent.
 func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
-	l := &ClaimLedger{path: path, entries: map[string]ClaimEntry{}, now: time.Now}
+	l := &ClaimLedger{
+		path: path, entries: map[string]ClaimEntry{},
+		history: map[string]map[string]ClaimEntry{}, now: time.Now,
+	}
 	for _, opt := range opts {
 		opt(l)
 	}
@@ -108,8 +127,24 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 		return l, nil
 	}
 
-	if err := json.Unmarshal(data, &l.entries); err != nil {
+	var state claimLedgerState
+	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("localscheduler: parse claim ledger %q: %w", path, err)
+	}
+	if state.Schema == "" {
+		if err := json.Unmarshal(data, &l.entries); err != nil {
+			return nil, fmt.Errorf("localscheduler: parse legacy claim ledger %q: %w", path, err)
+		}
+	} else {
+		if state.Schema != claimLedgerSchema {
+			return nil, fmt.Errorf("localscheduler: unknown claim ledger schema %q", state.Schema)
+		}
+		if state.Entries != nil {
+			l.entries = state.Entries
+		}
+		if state.History != nil {
+			l.history = state.History
+		}
 	}
 	for storageKey, entry := range l.entries {
 		if entry.ItemID == "" {
@@ -120,6 +155,7 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 		}
 		l.entries[storageKey] = entry
 	}
+	l.history = l.retainedHistory(l.now())
 	return l, nil
 }
 
@@ -233,6 +269,110 @@ func (l *ClaimLedger) ClaimScoped(key ClaimKey, runID, workflow string, leaseDur
 	return l.claim(storageKey, key.ExternalID, key, runID, workflow, leaseDuration)
 }
 
+// ReclaimAll atomically reacquires a prior run's complete claim set. Either
+// every entry is durably assigned to runID in one ledger rewrite, or none are.
+// A live claim held by another run refuses the whole set and reports its owner.
+func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
+	if leaseDuration <= 0 {
+		return false, "", fmt.Errorf("localscheduler: lease duration must be positive, got %s", leaseDuration)
+	}
+	if len(entries) == 0 {
+		return true, runID, nil
+	}
+
+	type plannedClaim struct {
+		storageKey       string
+		legacyStorageKey string
+		key              ClaimKey
+	}
+	planned := make([]plannedClaim, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		itemID := entry.ExternalID
+		if itemID == "" {
+			itemID = entry.ItemID
+		}
+		if itemID == "" {
+			return false, "", errors.New("localscheduler: reclaim entry requires an item ID")
+		}
+		if (entry.Gaggle == "") != (entry.Provider == "") {
+			return false, "", fmt.Errorf("localscheduler: reclaim entry %q requires both gaggle and provider", itemID)
+		}
+
+		key := ClaimKey{Gaggle: entry.Gaggle, Provider: entry.Provider, ExternalID: itemID}
+		storageKey := itemID
+		legacyStorageKey := ""
+		if entry.Gaggle != "" {
+			var keyErr error
+			storageKey, keyErr = key.storageKey()
+			if keyErr != nil {
+				return false, "", keyErr
+			}
+			legacyStorageKey = itemID
+		}
+		if _, duplicate := seen[storageKey]; duplicate {
+			return false, "", fmt.Errorf("localscheduler: duplicate reclaim entry %q", itemID)
+		}
+		seen[storageKey] = struct{}{}
+		planned = append(planned, plannedClaim{
+			storageKey:       storageKey,
+			legacyStorageKey: legacyStorageKey,
+			key:              key,
+		})
+	}
+	sort.Slice(planned, func(i, j int) bool { return planned[i].storageKey < planned[j].storageKey })
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	for _, claim := range planned {
+		if claim.legacyStorageKey != "" {
+			if existing, held := l.entries[claim.legacyStorageKey]; held && !existing.expired(now) && existing.RunID != runID {
+				return false, existing.RunID, nil
+			}
+		}
+		if existing, held := l.entries[claim.storageKey]; held && !existing.expired(now) && existing.RunID != runID {
+			return false, existing.RunID, nil
+		}
+	}
+
+	previous := make(map[string]ClaimEntry, len(l.entries))
+	for storageKey, entry := range l.entries {
+		previous[storageKey] = entry
+	}
+	previousHistory := cloneClaimHistory(l.history[runID])
+	acquired := make([]ClaimEntry, 0, len(planned))
+	for _, claim := range planned {
+		entry := ClaimEntry{
+			ItemID:     claim.key.ExternalID,
+			Gaggle:     claim.key.Gaggle,
+			Provider:   claim.key.Provider,
+			ExternalID: claim.key.ExternalID,
+			RunID:      runID,
+			Workflow:   workflow,
+			ClaimedAt:  now,
+			ExpiresAt:  now.Add(leaseDuration),
+		}
+		l.entries[claim.storageKey] = entry
+		l.recordHistory(claim.storageKey, entry)
+		acquired = append(acquired, entry)
+	}
+	if err := l.persist(); err != nil {
+		l.entries = previous
+		if previousHistory == nil {
+			delete(l.history, runID)
+		} else {
+			l.history[runID] = previousHistory
+		}
+		return false, "", err
+	}
+	for _, entry := range acquired {
+		l.journal(journal.EventClaimAcquired, entry)
+	}
+	return true, runID, nil
+}
+
 func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
 	if leaseDuration <= 0 {
 		return false, "", fmt.Errorf("localscheduler: lease duration must be positive, got %s", leaseDuration)
@@ -265,6 +405,8 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 		ExpiresAt:  now.Add(leaseDuration),
 	}
 	l.entries[storageKey] = entry
+	previousHistory, hadHistory := l.historyEntry(runID, storageKey)
+	l.recordHistory(storageKey, entry)
 	if err := l.persist(); err != nil {
 		// Roll back the in-memory mutation so a failed persist leaves the item
 		// exactly as it was — claimable if it was unheld, or still held by its
@@ -276,6 +418,7 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 		} else {
 			delete(l.entries, storageKey)
 		}
+		l.restoreHistory(runID, storageKey, previousHistory, hadHistory)
 		return false, "", err
 	}
 	l.journal(journal.EventClaimAcquired, entry)
@@ -342,6 +485,8 @@ func (l *ClaimLedger) release(storageKey, runID string) error {
 	if !held || entry.RunID != runID {
 		return nil
 	}
+	previousHistory, hadHistory := l.historyEntry(runID, storageKey)
+	l.recordReleasedHistory(storageKey, entry, l.now())
 	delete(l.entries, storageKey)
 	if err := l.persist(); err != nil {
 		// Same rollback discipline as Claim: a failed persist must not leave
@@ -351,6 +496,7 @@ func (l *ClaimLedger) release(storageKey, runID string) error {
 		// still holds it, or the caller believes the release succeeded and
 		// finalizes the run while the ledger still lists it as claimed.
 		l.entries[storageKey] = entry
+		l.restoreHistory(runID, storageKey, previousHistory, hadHistory)
 		return err
 	}
 	l.journal(journal.EventClaimReleased, entry)
@@ -392,9 +538,12 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string) error {
 	if !held {
 		return nil
 	}
+	previousHistory, hadHistory := l.historyEntry(entry.RunID, storageKey)
+	l.recordReleasedHistory(storageKey, entry, l.now())
 	delete(l.entries, storageKey)
 	if err := l.persist(); err != nil {
 		l.entries[storageKey] = entry
+		l.restoreHistory(entry.RunID, storageKey, previousHistory, hadHistory)
 		return err
 	}
 	l.journalWithRunner(journal.EventClaimForceReleased, entry, map[string]any{"actor": actor})
@@ -412,14 +561,17 @@ func (l *ClaimLedger) forceRelease(storageKey, actor string) error {
 // simply ran long invites double-processing — the freed item can be claimed
 // by a second run while the first is still working it. RecoverExpired itself
 // still trusts the lease at face value; the liveness this comment used to
-// describe as undriven is now issue #2014's RenewEntry, called periodically
-// by cmd/goobers' claimTicker for every run its own daemonRunnerRegistry is
-// actively tracking (RenewEntry's doc). A run that keeps renewing never
-// reaches ExpiresAt here regardless of how long it takes; one that stops
-// (crashed, or its owning process died) does, which is what makes a short
-// DefaultClaimLease safe to reap on — RecoverExpired needs no code change of
-// its own for that, since a renewed lease's ExpiresAt is already in the
-// future by construction.
+// describe as undriven is now issue #2014's RenewEntry, driven by cmd/goobers'
+// claimTicker for every LEDGER claim whose holding run is live — tracked
+// in-process, or an open engine workflow when `engine:` is configured (DS6,
+// docs/design/distributed-state-and-coordination.md §10; see RunLivenessProbe
+// and RecoveryGate in renewal.go, which also withholds a restarted daemon's
+// first reap until that renewal set is rebuilt). A run that keeps renewing
+// never reaches ExpiresAt here regardless of how long it takes; one that
+// stops (crashed, its owning process died, or its engine workflow closed)
+// does, which is what makes a short DefaultClaimLease safe to reap on —
+// RecoverExpired needs no code change of its own for that, since a renewed
+// lease's ExpiresAt is already in the future by construction.
 //
 // Issue #235 (edge 2): a ci-poll-bearing implementation run once exceeded the
 // OLD 2h DefaultClaimLease (cmd/goobers/backlogquery.go) with no renewal to
@@ -432,14 +584,21 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 	defer l.mu.Unlock()
 
 	type releasedClaim struct {
-		storageKey string
-		entry      ClaimEntry
+		storageKey      string
+		entry           ClaimEntry
+		previous        ClaimEntry
+		hadHistoryEntry bool
 	}
 	var released []releasedClaim
 	for storageKey, entry := range l.entries {
 		if entry.expired(now) {
+			previous, hadHistoryEntry := l.historyEntry(entry.RunID, storageKey)
+			l.recordReleasedHistory(storageKey, entry, now)
 			delete(l.entries, storageKey)
-			released = append(released, releasedClaim{storageKey: storageKey, entry: entry})
+			released = append(released, releasedClaim{
+				storageKey: storageKey, entry: entry,
+				previous: previous, hadHistoryEntry: hadHistoryEntry,
+			})
 		}
 	}
 	if len(released) == 0 {
@@ -454,6 +613,7 @@ func (l *ClaimLedger) RecoverExpired(now time.Time) ([]ClaimEntry, error) {
 		// no-op the caller can safely retry on its next periodic call.
 		for _, claim := range released {
 			l.entries[claim.storageKey] = claim.entry
+			l.restoreHistory(claim.entry.RunID, claim.storageKey, claim.previous, claim.hadHistoryEntry)
 		}
 		return nil, err
 	}
@@ -553,14 +713,108 @@ func (l *ClaimLedger) ForRunAll(runID string) []ClaimEntry {
 
 // persist rewrites the ledger file atomically. Caller holds l.mu.
 func (l *ClaimLedger) persist() error {
-	data, err := json.MarshalIndent(l.entries, "", "  ")
+	history := l.retainedHistory(l.now())
+	data, err := json.MarshalIndent(claimLedgerState{
+		Schema: claimLedgerSchema, Entries: l.entries, History: history,
+	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("localscheduler: marshal claim ledger: %w", err)
 	}
 	if err := journal.WriteFileAtomic(l.path, data, 0o644); err != nil {
 		return fmt.Errorf("localscheduler: persist claim ledger: %w", err)
 	}
+	l.history = history
 	return nil
+}
+
+// HistoryForRun returns every retained claim durably assigned to runID.
+func (l *ClaimLedger) HistoryForRun(runID string) []ClaimEntry {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	entries := make([]ClaimEntry, 0, len(l.history[runID]))
+	for _, entry := range l.history[runID] {
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Gaggle != entries[j].Gaggle {
+			return entries[i].Gaggle < entries[j].Gaggle
+		}
+		if entries[i].Provider != entries[j].Provider {
+			return entries[i].Provider < entries[j].Provider
+		}
+		return entries[i].ExternalID < entries[j].ExternalID
+	})
+	return entries
+}
+
+func (l *ClaimLedger) retainedHistory(now time.Time) map[string]map[string]ClaimEntry {
+	activeRuns := make(map[string]struct{}, len(l.entries))
+	for _, entry := range l.entries {
+		activeRuns[entry.RunID] = struct{}{}
+	}
+
+	cutoff := now.Add(-claimHistoryTTL)
+	retained := make(map[string]map[string]ClaimEntry, len(l.history))
+	for runID, history := range l.history {
+		_, active := activeRuns[runID]
+		if !active {
+			var newest time.Time
+			for _, entry := range history {
+				activity := entry.ClaimedAt
+				if entry.ReleasedAt != nil {
+					activity = *entry.ReleasedAt
+				}
+				if activity.After(newest) {
+					newest = activity
+				}
+			}
+			if !newest.After(cutoff) {
+				continue
+			}
+		}
+		retained[runID] = history
+	}
+	return retained
+}
+
+func (l *ClaimLedger) recordHistory(storageKey string, entry ClaimEntry) {
+	if l.history[entry.RunID] == nil {
+		l.history[entry.RunID] = make(map[string]ClaimEntry)
+	}
+	l.history[entry.RunID][storageKey] = entry
+}
+
+func (l *ClaimLedger) recordReleasedHistory(storageKey string, entry ClaimEntry, releasedAt time.Time) {
+	entry.ReleasedAt = &releasedAt
+	l.recordHistory(storageKey, entry)
+}
+
+func (l *ClaimLedger) historyEntry(runID, storageKey string) (ClaimEntry, bool) {
+	entry, ok := l.history[runID][storageKey]
+	return entry, ok
+}
+
+func (l *ClaimLedger) restoreHistory(runID, storageKey string, entry ClaimEntry, existed bool) {
+	if existed {
+		l.history[runID][storageKey] = entry
+		return
+	}
+	delete(l.history[runID], storageKey)
+	if len(l.history[runID]) == 0 {
+		delete(l.history, runID)
+	}
+}
+
+func cloneClaimHistory(history map[string]ClaimEntry) map[string]ClaimEntry {
+	if history == nil {
+		return nil
+	}
+	clone := make(map[string]ClaimEntry, len(history))
+	for storageKey, entry := range history {
+		clone[storageKey] = entry
+	}
+	return clone
 }
 
 // journal appends a claim transition to the instance log, if one is wired.
@@ -568,7 +822,14 @@ func (l *ClaimLedger) persist() error {
 // — a journal write failure here is deliberately swallowed rather than failing
 // the claim/release operation the ledger already committed.
 func (l *ClaimLedger) journal(eventType journal.EventType, entry ClaimEntry) {
-	l.journalWithRunner(eventType, entry, nil)
+	var runner map[string]any
+	if entry.Provider != "" {
+		runner = map[string]any{
+			"claimProvider":   entry.Provider,
+			"claimExternalId": entry.ExternalID,
+		}
+	}
+	l.journalWithRunner(eventType, entry, runner)
 }
 
 func (l *ClaimLedger) journalWithRunner(eventType journal.EventType, entry ClaimEntry, runner map[string]any) {

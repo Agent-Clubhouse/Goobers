@@ -20,6 +20,7 @@ const DefaultStalledRunTimeout = 45 * time.Minute
 type Effective struct {
 	MaxRepasses       int
 	StalledRunTimeout time.Duration
+	MaxRunDuration    time.Duration
 }
 
 // Resolve applies instance defaults, then gaggle and workflow overrides.
@@ -42,14 +43,49 @@ func Resolve(instance apiv1.RunControls, gaggle, workflow *apiv1.RunControls) (E
 		if err := Validate(scope.name, *scope.controls); err != nil {
 			return Effective{}, err
 		}
-		if scope.controls.MaxRepasses > 0 {
-			effective.MaxRepasses = int(scope.controls.MaxRepasses)
-		}
-		if scope.controls.StalledRunTimeout != "" {
-			effective.StalledRunTimeout, _ = time.ParseDuration(scope.controls.StalledRunTimeout)
+		if err := effective.apply(scope.name, *scope.controls); err != nil {
+			return Effective{}, err
 		}
 	}
 	return effective, nil
+}
+
+// apply layers one scope's overrides onto the effective policy. Parse failures
+// propagate: this path used to discard them, so an invalid duration silently
+// resolved to zero — an unlimited run — instead of erroring (fail-open).
+// Validate screens every scope before apply runs, but the watchdog budget must
+// not depend on that call ordering to stay bounded.
+func (effective *Effective) apply(path string, controls apiv1.RunControls) error {
+	if controls.MaxRepasses > 0 {
+		effective.MaxRepasses = int(controls.MaxRepasses)
+	}
+	if controls.StalledRunTimeout != "" {
+		parsed, err := parseDurationField(path, "stalledRunTimeout", controls.StalledRunTimeout)
+		if err != nil {
+			return err
+		}
+		effective.StalledRunTimeout = parsed
+	}
+	if controls.MaxRunDuration != "" {
+		parsed, err := parseDurationField(path, "maxRunDuration", controls.MaxRunDuration)
+		if err != nil {
+			return err
+		}
+		effective.MaxRunDuration = parsed
+	}
+	return nil
+}
+
+// parseDurationField translates a time.ParseDuration failure into an
+// author-facing diagnostic naming the field path, the offending value, and the
+// expected form. The raw Go error ("time: invalid duration ...") is an
+// implementation detail that must not leak into the DSL contract.
+func parseDurationField(path, field, value string) (time.Duration, error) {
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s.%s %q is not a valid duration; use Go duration syntax, e.g. \"45m\" or \"2h\"", path, field, value)
+	}
+	return parsed, nil
 }
 
 // Validate checks one override block independently of its inheritance parent.
@@ -57,15 +93,23 @@ func Validate(path string, controls apiv1.RunControls) error {
 	if controls.MaxRepasses < 0 {
 		return fmt.Errorf("%s.maxRepasses must be positive, got %d", path, controls.MaxRepasses)
 	}
-	if controls.StalledRunTimeout == "" {
-		return nil
-	}
-	timeout, err := time.ParseDuration(controls.StalledRunTimeout)
-	if err != nil {
-		return fmt.Errorf("%s.stalledRunTimeout %q: %w", path, controls.StalledRunTimeout, err)
-	}
-	if timeout <= 0 {
-		return fmt.Errorf("%s.stalledRunTimeout must be positive, got %s", path, timeout)
+	for _, duration := range []struct {
+		name  string
+		value string
+	}{
+		{name: "stalledRunTimeout", value: controls.StalledRunTimeout},
+		{name: "maxRunDuration", value: controls.MaxRunDuration},
+	} {
+		if duration.value == "" {
+			continue
+		}
+		parsed, err := parseDurationField(path, duration.name, duration.value)
+		if err != nil {
+			return err
+		}
+		if parsed <= 0 {
+			return fmt.Errorf("%s.%s must be positive, got %s", path, duration.name, parsed)
+		}
 	}
 	return nil
 }
@@ -90,7 +134,15 @@ func (effective Effective) Overrides() apiv1.RunControls {
 	return apiv1.RunControls{
 		MaxRepasses:       int32(effective.MaxRepasses),
 		StalledRunTimeout: effective.StalledRunTimeout.String(),
+		MaxRunDuration:    durationString(effective.MaxRunDuration),
 	}
+}
+
+func durationString(duration time.Duration) string {
+	if duration <= 0 {
+		return ""
+	}
+	return duration.String()
 }
 
 // MaxRepassesForGate applies the optional per-gate leaf override.

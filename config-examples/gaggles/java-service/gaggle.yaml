@@ -1,0 +1,34 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: java-service
+spec:
+  displayName: Java Service (polyglot reference)
+  # The reference Java gaggle (TSN-2 / #2169) proves Maven builds and tests
+  # through the same workflow machinery as every other stack. Maven is the
+  # chosen reference; a Gradle gaggle can use the same mechanism with a
+  # Gradle-specific ciCommand and capability requirement.
+  project:
+    provider: github
+    owner: acme
+    name: java-service
+    branch: main
+    connectionRef: github-main
+  backlog:
+    provider: github
+    project: acme/java-service
+    labels:
+      - goobers
+    connectionRef: github-backlog
+  isolation:
+    namespace: gaggle-java-service
+    identityRef: java-service-identity
+  # The local-ci stage executes this command after config loading applies the
+  # gaggle override. Maven batch mode avoids interactive prompts, while quiet
+  # mode keeps captured gate evidence focused on failures.
+  ciCommand: ["mvn", "-B", "-q", "verify"]
+  # Toolchains are preinstalled, never installed by a stage. A runner must
+  # claim Java 21 or scheduling fails up front with a diagnostic naming
+  # `java@21`; the runtime preflight then verifies that claim on the host.
+  requiredCapabilities:
+    - java@21

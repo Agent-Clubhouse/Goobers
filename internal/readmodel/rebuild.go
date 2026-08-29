@@ -112,14 +112,24 @@ func (s *Store) copyPolicyState(ctx context.Context, next *Store) error {
 		}
 	}
 
-	rows, err := s.readDB().QueryContext(ctx,
+	db, release, err := s.readHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx,
 		`SELECT run_id, started_at, tombstoned_at, reason FROM tombstone`)
 	if err != nil {
 		return fmt.Errorf("readmodel: read tombstones: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	tx, err := next.writer.BeginTx(ctx, nil)
+	nextDB, releaseNext, err := next.writeHandle()
+	if err != nil {
+		return fmt.Errorf("readmodel: begin tombstone copy: %w", err)
+	}
+	defer releaseNext()
+	tx, err := nextDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin tombstone copy: %w", err)
 	}
@@ -157,7 +167,12 @@ func (s *Store) copyPolicyState(ctx context.Context, next *Store) error {
 // Nothing reports it. The change feed is the second source precisely because it
 // records what the old epoch applied, whether or not the marker survived.
 func (r *RebuildState) CatchUpRunIDs(ctx context.Context) ([]string, error) {
-	rows, err := r.store.readDB().QueryContext(ctx, `
+	db, release, err := r.store.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, `
 		SELECT DISTINCT run_id FROM change
 		WHERE seq > ? AND run_id IS NOT NULL
 		ORDER BY run_id`, r.RebuildFromSeq)
@@ -205,46 +220,101 @@ func (r *RebuildState) Validate(ctx context.Context) error {
 
 // assertNoRegression compares projected source positions run by run.
 func (r *RebuildState) assertNoRegression(ctx context.Context) error {
-	rows, err := r.store.readDB().QueryContext(ctx,
+	db, release, err := r.store.readHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx,
 		`SELECT run_id, last_seq FROM run ORDER BY run_id`)
 	if err != nil {
 		return fmt.Errorf("readmodel: read live positions: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
+	// Collect all live runs
+	type liveRun struct {
+		runID   string
+		liveSeq uint64
+	}
+	var liveRuns []liveRun
 	for rows.Next() {
-		var (
-			runID   string
-			liveSeq uint64
-		)
-		if err := rows.Scan(&runID, &liveSeq); err != nil {
+		var run liveRun
+		if err := rows.Scan(&run.runID, &run.liveSeq); err != nil {
 			return fmt.Errorf("readmodel: scan live position: %w", err)
 		}
+		liveRuns = append(liveRuns, run)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Bulk-fetch all rebuilt runs and tombstones in two queries
+	nextDB, releaseNext, err := r.next.readHandle()
+	if err != nil {
+		return err
+	}
+	defer releaseNext()
+
+	// Query 1: Get all runs in the rebuilt database
+	rebuiltRows, err := nextDB.QueryContext(ctx, `
+		SELECT run_id, last_seq FROM run ORDER BY run_id`)
+	if err != nil {
+		return fmt.Errorf("readmodel: read rebuilt positions: %w", err)
+	}
+	defer func() { _ = rebuiltRows.Close() }()
+
+	rebuiltMap := make(map[string]uint64)
+	for rebuiltRows.Next() {
+		var runID string
 		var rebuiltSeq uint64
-		err := r.next.readDB().QueryRowContext(ctx,
-			`SELECT last_seq FROM run WHERE run_id = ?`, runID).Scan(&rebuiltSeq)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			// Absent from the rebuild. Legitimate only if it was deliberately
+		if err := rebuiltRows.Scan(&runID, &rebuiltSeq); err != nil {
+			return fmt.Errorf("readmodel: scan rebuilt position: %w", err)
+		}
+		rebuiltMap[runID] = rebuiltSeq
+	}
+	if err := rebuiltRows.Err(); err != nil {
+		return err
+	}
+
+	// Query 2: Get all tombstoned runs
+	tombstoneRows, err := nextDB.QueryContext(ctx, `
+		SELECT run_id FROM tombstone`)
+	if err != nil {
+		return fmt.Errorf("readmodel: read tombstones: %w", err)
+	}
+	defer func() { _ = tombstoneRows.Close() }()
+
+	tombstonedSet := make(map[string]bool)
+	for tombstoneRows.Next() {
+		var runID string
+		if err := tombstoneRows.Scan(&runID); err != nil {
+			return fmt.Errorf("readmodel: scan tombstone: %w", err)
+		}
+		tombstonedSet[runID] = true
+	}
+	if err := tombstoneRows.Err(); err != nil {
+		return err
+	}
+
+	// Validate all live runs against the rebuilt state
+	for _, live := range liveRuns {
+		rebuiltSeq, exists := rebuiltMap[live.runID]
+		if !exists {
+			// Run is absent from the rebuild. Legitimate only if it was deliberately
 			// aged out; otherwise the rebuild would silently drop a run.
-			tombstoned, terr := r.next.Tombstoned(ctx, runID)
-			if terr != nil {
-				return terr
-			}
-			if !tombstoned {
+			if !tombstonedSet[live.runID] {
 				return fmt.Errorf("readmodel: rebuild is missing run %s, which the live "+
 					"epoch holds at source position %d and which is not tombstoned",
-					runID, liveSeq)
+					live.runID, live.liveSeq)
 			}
-		case err != nil:
-			return fmt.Errorf("readmodel: read rebuilt position for %s: %w", runID, err)
-		case rebuiltSeq < liveSeq:
+		} else if rebuiltSeq < live.liveSeq {
 			return fmt.Errorf("readmodel: rebuild would move run %s backwards, from source "+
 				"position %d to %d; publishing it would rewind that run for every client",
-				runID, liveSeq, rebuiltSeq)
+				live.runID, live.liveSeq, rebuiltSeq)
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 // Abort discards the in-progress build.
@@ -275,7 +345,12 @@ func removeDatabaseFiles(path string) error {
 
 // setEpoch stamps an epoch onto a freshly opened store.
 func (s *Store) setEpoch(ctx context.Context, epoch string) error {
-	if _, err := s.writeDB().ExecContext(ctx,
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if _, err := db.ExecContext(ctx,
 		`UPDATE projection_state SET epoch = ? WHERE id = 1`, epoch); err != nil {
 		return fmt.Errorf("readmodel: set epoch: %w", err)
 	}
@@ -352,6 +427,9 @@ func (r *RebuildState) Swap(ctx context.Context) error {
 	if err := r.Validate(ctx); err != nil {
 		return err
 	}
+	if err := r.next.MarkReady(ctx); err != nil {
+		return err
+	}
 
 	live := r.store.path
 	previous := live + ".previous"
@@ -363,20 +441,25 @@ func (r *RebuildState) Swap(ctx context.Context) error {
 		return fmt.Errorf("readmodel: close rebuild target: %w", err)
 	}
 	r.next = nil
+	r.store.handles.Lock()
+	defer r.store.handles.Unlock()
+	if r.store.closed {
+		return ErrClosed
+	}
 	if err := r.store.closeHandles(); err != nil {
 		return fmt.Errorf("readmodel: quiesce live store: %w", err)
 	}
 
 	if err := os.Rename(live, previous); err != nil && !os.IsNotExist(err) {
 		// Nothing has moved yet, so reopening the live store restores service.
-		_ = r.store.reopen()
+		_ = r.store.reopenLocked()
 		return fmt.Errorf("readmodel: retain previous epoch: %w", err)
 	}
 	if err := os.Rename(r.Path, live); err != nil {
 		// Put the previous epoch back and reopen it. A failed swap must leave the
 		// old store serving, not leave the instance with no read model at all.
 		_ = os.Rename(previous, live)
-		_ = r.store.reopen()
+		_ = r.store.reopenLocked()
 		return fmt.Errorf("readmodel: publish rebuilt epoch: %w", err)
 	}
 	// The old sidecars belong to the old inode and must not be inherited by the
@@ -388,12 +471,12 @@ func (r *RebuildState) Swap(ctx context.Context) error {
 		}
 	}
 
-	if err := r.store.reopen(); err != nil {
+	if err := r.store.reopenLocked(); err != nil {
 		// The new epoch is in place but unopenable. Roll back to the previous
 		// file rather than leaving the instance with a store it cannot read.
 		_ = os.Remove(live)
 		_ = os.Rename(previous, live)
-		_ = r.store.reopen()
+		_ = r.store.reopenLocked()
 		return fmt.Errorf("readmodel: reopen against rebuilt epoch: %w", err)
 	}
 
@@ -401,24 +484,8 @@ func (r *RebuildState) Swap(ctx context.Context) error {
 	return removeDatabaseFiles(previous)
 }
 
-// closeHandles closes the writer and reader pool without discarding the store.
-func (s *Store) closeHandles() error {
-	var readerErr error
-	if s.reader != nil {
-		readerErr = s.reader.Close()
-		s.reader = nil
-	}
-	var writerErr error
-	if s.writer != nil {
-		writerErr = s.writeDB().Close()
-		s.writer = nil
-	}
-	return errors.Join(readerErr, writerErr)
-}
-
-// reopen re-establishes handles against whatever file is now at the store's
-// path.
-func (s *Store) reopen() error {
+// reopenLocked re-establishes handles while the caller holds handles exclusively.
+func (s *Store) reopenLocked() error {
 	writer, err := sql.Open("sqlite", s.path+dsnParams)
 	if err != nil {
 		return fmt.Errorf("readmodel: reopen %s: %w", s.path, err)
@@ -431,6 +498,6 @@ func (s *Store) reopen() error {
 	if err := s.migrateWithBusyRetry(context.Background()); err != nil {
 		return err
 	}
-	s.reader = openReaderPool(s.path)
+	s.reader = resolveReadHandle(writer, openReaderPool(s.path))
 	return nil
 }

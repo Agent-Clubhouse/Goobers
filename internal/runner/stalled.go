@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,28 +21,49 @@ const RunStalledErrorCode = "run_stalled"
 // stall terminalizations (RunStalledErrorCode).
 const RunCanceledErrorCode = "run_canceled"
 
+// RunDurationExceededErrorCode identifies watchdog cancellations caused by a
+// run exceeding its configured total wall-clock duration.
+const RunDurationExceededErrorCode = "run_duration_exceeded"
+
+// StageInterruptedErrorCode identifies operator-requested interrupts of a
+// single running agentic stage (#1995) in run journals. Unlike a cancel
+// (RunCanceledErrorCode), which terminalizes the whole run aborted, a stage
+// interrupt terminalizes the run escalated — a recoverable phase from which
+// RerunStage continues the interrupted stage with an operator correction
+// folded into the envelope. It is distinct from the watchdog's stall
+// terminalization (RunStalledErrorCode): the trigger is a human, not the
+// no-progress watchdog.
+const StageInterruptedErrorCode = "stage_interrupted"
+
 var (
-	errStalledRun  = errors.New("runner: stalled run escalation requested")
-	errCanceledRun = errors.New("runner: run cancellation requested")
+	errStalledRun          = errors.New("runner: stalled run escalation requested")
+	errCanceledRun         = errors.New("runner: run cancellation requested")
+	errRunDurationExceeded = errors.New("runner: maximum run duration exceeded")
+	errHardShutdown        = errors.New("runner: hard shutdown requested")
+	errInterruptedStage    = errors.New("runner: stage interruption requested")
 )
 
 // interruptKind distinguishes why a live run's active attempt was interrupted,
 // which selects the terminal phase and journal note the owner records when it
-// unwinds. Both kinds share the one activeRun handshake (withActiveRun) so a
-// manual cancel and the stall watchdog can never race into two terminalizations
-// of the same run.
+// unwinds. All kinds share the one activeRun handshake (withActiveRun) so
+// watchdog and manual interrupts cannot race into two terminalizations.
 type interruptKind int
 
 const (
 	interruptStalled interruptKind = iota
 	interruptCancel
+	interruptDurationExceeded
+	interruptHardShutdown
+	// interruptStage is an operator interrupt of a single running stage
+	// (#1995). Like interruptStalled it terminalizes the run escalated
+	// (recoverable), but the trigger is a human and the note it records is
+	// operator-attributed, distinguishing it from a watchdog stall.
+	interruptStage
 )
 
 // stalledRequest is a pending interrupt of a live run's active attempt. now is
-// always set; timeout/lastActivity are the stall-watchdog diagnostics and are
-// zero for a cancel. phase is the terminal phase the owner records (escalated
-// for a stall, aborted for a cancel) and cause is the context cancellation
-// cause propagated to the running stage.
+// always set; timeout/lastActivity carry watchdog diagnostics and are zero for
+// an operator cancel. phase and cause drive terminalization and cancellation.
 type stalledRequest struct {
 	kind         interruptKind
 	now          time.Time
@@ -49,6 +71,11 @@ type stalledRequest struct {
 	lastActivity time.Time
 	phase        journal.RunPhase
 	cause        error
+	// stage and actor are set only for an operator stage interrupt
+	// (interruptStage): the targeted stage and the human principal who
+	// requested it, recorded on the interrupt note for attribution.
+	stage string
+	actor string
 }
 
 type activeRunResult struct {
@@ -85,13 +112,18 @@ type activeRun struct {
 }
 
 type activeRunSet struct {
-	mu   sync.Mutex
-	runs map[string]*activeRun
+	mu        sync.Mutex
+	runs      map[string]*activeRun
+	hardStops map[string]struct{}
 }
 
 type activeRunContextKey struct{}
 
 func (r *Runner) withActiveRun(ctx context.Context, runID string, jr *journal.Run, run func(context.Context) (Result, error)) (Result, error) {
+	return r.withActiveRunCleanup(ctx, runID, jr, run, nil)
+}
+
+func (r *Runner) withActiveRunCleanup(ctx context.Context, runID string, jr *journal.Run, run func(context.Context) (Result, error), ownerCleanup func() error) (Result, error) {
 	attemptCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	active := &activeRun{
 		attemptCtx:   attemptCtx,
@@ -109,16 +141,28 @@ func (r *Runner) withActiveRun(ctx context.Context, runID string, jr *journal.Ru
 	if _, exists := r.active.runs[runID]; exists {
 		r.active.mu.Unlock()
 		cancel(nil)
-		return Result{}, fmt.Errorf("runner: run %q already has an active owner", runID)
+		err := fmt.Errorf("runner: run %q already has an active owner", runID)
+		if ownerCleanup != nil {
+			err = errors.Join(err, ownerCleanup())
+		}
+		return Result{}, err
 	}
 	r.active.runs[runID] = active
+	_, hardStop := r.active.hardStops[runID]
+	delete(r.active.hardStops, runID)
 	r.active.mu.Unlock()
+	if hardStop {
+		active.requestHardShutdown()
+	}
 
 	// Keep the public Start/Resume owner outside the workflow goroutine so a
 	// watchdog takeover can return even if an invocation ignores cancellation.
 	ownedCtx := context.WithValue(ctx, activeRunContextKey{}, active)
 	go func() {
 		result, err := run(ownedCtx)
+		if ownerCleanup != nil {
+			err = errors.Join(err, ownerCleanup())
+		}
 		active.mu.Lock()
 		active.ownerFinished = true
 		active.ownerOutcome = activeRunResult{result: result, err: err}
@@ -198,27 +242,70 @@ func (r *activeRun) requestEscalation(now time.Time, timeout time.Duration) (req
 	return requested, false
 }
 
-// requestCancel interrupts a live run's active attempt at operator request
-// (#831), recording terminal phase aborted. Unlike requestEscalation it applies
-// unconditionally to a still-running run — a cancel is an explicit instruction,
-// not a silence heuristic — but is a no-op once the run has completed or another
-// interrupt (a concurrent stall escalation) already owns the request slot.
-func (r *activeRun) requestCancel(now time.Time) (requested bool) {
+// requestInterrupt unconditionally interrupts a live run unless it completed
+// or another watchdog/operator request already owns the terminalization slot.
+func (r *activeRun) requestInterrupt(request stalledRequest) (requested bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.completed {
 		return false
 	}
 	if r.request == nil {
-		r.request = &stalledRequest{
-			kind:  interruptCancel,
-			now:   now,
-			phase: journal.PhaseAborted,
-			cause: errCanceledRun,
-		}
-		r.cancel(errCanceledRun)
+		r.request = &request
+		r.cancel(request.cause)
 	}
-	return r.request.kind == interruptCancel
+	return r.request.kind == request.kind
+}
+
+func (r *activeRun) requestCancel(now time.Time) (requested bool) {
+	return r.requestInterrupt(stalledRequest{
+		kind:  interruptCancel,
+		now:   now,
+		phase: journal.PhaseAborted,
+		cause: errCanceledRun,
+	})
+}
+
+func (r *activeRun) requestHardShutdown() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.completed {
+		return false
+	}
+	request := stalledRequest{
+		kind:  interruptHardShutdown,
+		cause: errHardShutdown,
+	}
+	r.request = &request
+	r.cancel(request.cause)
+	return true
+}
+
+// HardStopRun interrupts an owned in-flight stage without terminalizing its
+// run. The owner checkpoints the current machine state so startup can resume it.
+func (r *Runner) HardStopRun(runID string) bool {
+	active := r.activeRun(runID)
+	if active == nil {
+		return false
+	}
+	return active.requestHardShutdown()
+}
+
+// HardStopRunWhenStarted interrupts runID now or as soon as its active run
+// context is registered.
+func (r *Runner) HardStopRunWhenStarted(runID string) {
+	r.active.mu.Lock()
+	active := r.active.runs[runID]
+	if active == nil {
+		if r.active.hardStops == nil {
+			r.active.hardStops = make(map[string]struct{})
+		}
+		r.active.hardStops[runID] = struct{}{}
+		r.active.mu.Unlock()
+		return
+	}
+	r.active.mu.Unlock()
+	active.requestHardShutdown()
 }
 
 func (r *activeRun) waitFor(timeout time.Duration) (activeRunResult, bool) {
@@ -325,6 +412,18 @@ func setStalledAttemptContext(ctx context.Context) {
 	}
 }
 
+// newestTimestamped returns the time of the most recent event carrying a
+// non-zero timestamp, or the zero time when none does. Callers treat that zero
+// as "cannot determine", never as "idle forever".
+func newestTimestamped(events []journal.Event) time.Time {
+	for i := len(events) - 1; i >= 0; i-- {
+		if !events[i].Time.IsZero() {
+			return events[i].Time
+		}
+	}
+	return time.Time{}
+}
+
 type stalledCandidate struct {
 	phase        journal.RunPhase
 	lastActivity time.Time
@@ -354,7 +453,27 @@ func inspectStalledCandidate(dir, runID string, now time.Time, timeout time.Dura
 	if events[len(events)-1].Type == journal.EventGatePaused {
 		return candidate, false, nil
 	}
-	candidate.lastActivity = events[len(events)-1].Time
+	// Take the newest event that actually carries a TIMESTAMP. An event written
+	// without one says nothing about when activity happened, and reading its
+	// zero Time as "last active at year 1" makes every subsequent comparison
+	// trivially true — the run is then escalated no matter how large the
+	// timeout is, which is the tell that no configuration can fix it.
+	//
+	// MEASURED (#3774): run 8238995d was escalated 11 minutes into a 60-minute
+	// agentic stage. Its newest event was agent.lifecycle, written with
+	// time 0001-01-01T00:00:00Z, so lastActivity was zero and the message read
+	// "no journal progress for 2562047h47m16s" — while four correctly stamped
+	// events sat directly above it. The stamp is missing at the writer, which is
+	// its own defect; this is the reader refusing to draw a conclusion the data
+	// does not support.
+	//
+	// The practical effect: an agentic stage emits agent.lifecycle and then
+	// works silently, so ANY run whose newest event is that one was killed on
+	// the next sweep. Long agentic work could not complete in mode 3 at all.
+	candidate.lastActivity = newestTimestamped(events)
+	if candidate.lastActivity.IsZero() {
+		return candidate, false, nil
+	}
 	if !candidate.lastActivity.Before(now.Add(-timeout)) {
 		return candidate, false, nil
 	}
@@ -424,7 +543,7 @@ func (r *Runner) EscalateStalled(runID string, now time.Time, timeout time.Durat
 	}
 
 	_, scrubber := journal.DefaultScrubber()
-	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, false, fmt.Errorf("runner: recover stalled run %q: %w", runID, err)
 	}
@@ -467,6 +586,7 @@ func (r *Runner) CancelRun(runID string, now time.Time) (Result, bool, error) {
 	if !apiv1.ValidRunID(runID) {
 		return Result{}, false, fmt.Errorf("runner: invalid run id %q", runID)
 	}
+
 	active := r.activeRun(runID)
 	if active == nil {
 		// No live attempt here: either this daemon does not own the run, or it
@@ -516,6 +636,164 @@ func (r *Runner) CancelRun(runID string, now time.Time) (Result, bool, error) {
 	})
 	active.completeTakeover(activeRunResult{result: result, err: finishErr})
 	return result, result.Phase == journal.PhaseAborted, finishErr
+}
+
+// InterruptStage stops the active attempt of a single running stage at operator
+// request (#1995) and finalizes the run escalated rather than aborted. Unlike
+// CancelRun — which tears the whole run down terminally — an interrupt leaves
+// the run in the recoverable escalated phase, records an operator-attributed
+// stage_interrupted note, and hands off to RerunStage, which continues the
+// interrupted stage with an operator correction folded into its envelope. It
+// routes through the same activeRun handshake as CancelRun and the stall
+// watchdog, so a manual interrupt and the watchdog arbitrate to a single
+// terminalization rather than racing.
+//
+// stage is the stage the operator targeted; it must be the run's current stage
+// (a stale target — e.g. the stage advanced before the request arrived — is
+// rejected rather than interrupting whatever is running now). actor is the
+// human principal, recorded for attribution.
+//
+// The returned bool reports whether this call escalated a live run, mirroring
+// CancelRun's semantics:
+//   - false, nil error, no live owner here (r.activeRun(runID) == nil);
+//   - false, nil error, run already terminal (Result.Phase carries the phase);
+//   - true — the run reached the escalated phase because of this interrupt.
+func (r *Runner) InterruptStage(runID, stage, actor string, now time.Time) (Result, bool, error) {
+	if !apiv1.ValidRunID(runID) {
+		return Result{}, false, fmt.Errorf("runner: invalid run id %q", runID)
+	}
+	stage = strings.TrimSpace(stage)
+	if stage == "" {
+		return Result{}, false, fmt.Errorf("runner: stage is required to interrupt")
+	}
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return Result{}, false, fmt.Errorf("runner: actor is required to interrupt stage %q", stage)
+	}
+
+	active := r.activeRun(runID)
+	if active == nil {
+		// No live attempt here: either this daemon does not own the run, or it
+		// finished between the request and this call. Not our run to interrupt.
+		return Result{}, false, nil
+	}
+
+	dir := filepath.Join(r.cfg.RunsDir, runID)
+	phase, finalState, err := runPhaseAndState(dir)
+	if err != nil {
+		return Result{}, false, fmt.Errorf("runner: inspect run %q for stage interrupt: %w", runID, err)
+	}
+	if phase != journal.PhaseRunning {
+		// Terminalized between resolving the owner and here — report the phase,
+		// nothing to interrupt.
+		return Result{Phase: phase}, false, nil
+	}
+	if finalState != stage {
+		// The operator targeted a stage the run has already left (stale portal
+		// view). Refuse rather than interrupt a stage they did not mean to.
+		return Result{Phase: phase}, false, fmt.Errorf("runner: run %q is at stage %q, not %q; interrupt target is stale", runID, finalState, stage)
+	}
+
+	request := stalledRequest{
+		kind:  interruptStage,
+		now:   now,
+		phase: journal.PhaseEscalated,
+		cause: errInterruptedStage,
+		stage: stage,
+		actor: actor,
+	}
+	active.requestInterrupt(request)
+
+	grace := r.stalledCancelGrace
+	if grace <= 0 {
+		grace = StalledCancellationGrace
+	}
+	if outcome, ok := active.waitFor(grace); ok {
+		return outcome.result, outcome.result.Phase == journal.PhaseEscalated, outcome.err
+	}
+	outcome, claim := active.claimTakeover()
+	switch claim {
+	case takeoverReady:
+		return outcome.result, outcome.result.Phase == journal.PhaseEscalated, outcome.err
+	case takeoverOwnerTerminalizing, takeoverAlreadyClaimed:
+		terminalGrace := r.stalledTerminalGrace
+		if terminalGrace <= 0 {
+			terminalGrace = StalledTerminalizationGrace
+		}
+		if outcome, ok := active.waitFor(terminalGrace); ok {
+			return outcome.result, outcome.result.Phase == journal.PhaseEscalated, outcome.err
+		}
+		return Result{}, false, fmt.Errorf("runner: interrupted run %q did not finish terminalization within %s", runID, grace+terminalGrace)
+	}
+	result, finishErr := r.finishStalledTakeover(runID, active.journal, finalState, 0, request)
+	active.completeTakeover(activeRunResult{result: result, err: finishErr})
+	return result, result.Phase == journal.PhaseEscalated, finishErr
+}
+
+// ExpireRun aborts a running journal whose total wall-clock age exceeds
+// timeout. It shares CancelRun's active-attempt interruption and terminal path,
+// and can recover an unowned journal during daemon startup before resume.
+func (r *Runner) ExpireRun(runID string, now, startedAt time.Time, timeout time.Duration) (Result, bool, error) {
+	if !apiv1.ValidRunID(runID) {
+		return Result{}, false, fmt.Errorf("runner: invalid run id %q", runID)
+	}
+	if timeout <= 0 {
+		return Result{}, false, fmt.Errorf("runner: maximum run duration must be positive, got %s", timeout)
+	}
+
+	dir := filepath.Join(r.cfg.RunsDir, runID)
+	phase, finalState, err := runPhaseAndState(dir)
+	if err != nil {
+		return Result{}, false, fmt.Errorf("runner: inspect run %q for duration limit: %w", runID, err)
+	}
+	if phase != journal.PhaseRunning || !startedAt.Before(now.Add(-timeout)) {
+		return Result{Phase: phase}, false, nil
+	}
+
+	request := stalledRequest{
+		kind:         interruptDurationExceeded,
+		now:          now,
+		timeout:      timeout,
+		lastActivity: startedAt,
+		phase:        journal.PhaseAborted,
+		cause:        errRunDurationExceeded,
+	}
+	if active := r.activeRun(runID); active != nil {
+		active.requestInterrupt(request)
+		grace := r.stalledCancelGrace
+		if grace <= 0 {
+			grace = StalledCancellationGrace
+		}
+		if outcome, ok := active.waitFor(grace); ok {
+			return outcome.result, outcome.result.Phase == journal.PhaseAborted, outcome.err
+		}
+		outcome, claim := active.claimTakeover()
+		switch claim {
+		case takeoverReady:
+			return outcome.result, outcome.result.Phase == journal.PhaseAborted, outcome.err
+		case takeoverOwnerTerminalizing, takeoverAlreadyClaimed:
+			terminalGrace := r.stalledTerminalGrace
+			if terminalGrace <= 0 {
+				terminalGrace = StalledTerminalizationGrace
+			}
+			if outcome, ok := active.waitFor(terminalGrace); ok {
+				return outcome.result, outcome.result.Phase == journal.PhaseAborted, outcome.err
+			}
+			return Result{}, false, fmt.Errorf("runner: expired run %q did not finish terminalization within %s", runID, grace+terminalGrace)
+		}
+		result, finishErr := r.finishStalledTakeover(runID, active.journal, finalState, 0, request)
+		active.completeTakeover(activeRunResult{result: result, err: finishErr})
+		return result, result.Phase == journal.PhaseAborted, finishErr
+	}
+
+	_, scrubber := journal.DefaultScrubber()
+	jr, _, err := journal.Recover(dir, journal.WithScrubber(scrubber), journal.WithAppendObserver(r.cfg.JournalAdvanced))
+	if err != nil {
+		return Result{}, false, fmt.Errorf("runner: recover expired run %q: %w", runID, err)
+	}
+	defer func() { _ = jr.Close() }()
+	result, err := r.finishStalled(runID, jr, finalState, 0, request)
+	return result, result.Phase == journal.PhaseAborted, err
 }
 
 // runPhaseAndState reads a run's reconstructed terminal phase and its last
@@ -568,12 +846,37 @@ func (r *Runner) finishStalledWith(
 // attempt. The two kinds carry distinct codes so run history can tell an
 // operator cancellation apart from a watchdog stall terminalization.
 func interruptEvent(runID string, request stalledRequest) journal.Event {
-	if request.kind == interruptCancel {
+	switch request.kind {
+	case interruptCancel:
 		return journal.Event{
 			Type:  journal.EventError,
 			Error: &journal.ErrorDetail{Code: RunCanceledErrorCode, Message: fmt.Sprintf("run %q canceled by operator request", runID)},
 			Runner: map[string]any{
 				"canceledAt": request.now.UTC().Format(time.RFC3339Nano),
+			},
+		}
+	case interruptDurationExceeded:
+		return journal.Event{
+			Type: journal.EventError,
+			Error: &journal.ErrorDetail{
+				Code:    RunDurationExceededErrorCode,
+				Message: fmt.Sprintf("run %q exceeded maximum duration %s (started %s)", runID, request.timeout, request.lastActivity.UTC().Format(time.RFC3339)),
+			},
+			Runner: map[string]any{
+				"expiredAt":      request.now.UTC().Format(time.RFC3339Nano),
+				"maxRunDuration": request.timeout.String(),
+			},
+		}
+	case interruptStage:
+		return journal.Event{
+			Type:  journal.EventError,
+			Stage: request.stage,
+			Actor: request.actor,
+			Error: &journal.ErrorDetail{Code: StageInterruptedErrorCode, Message: fmt.Sprintf("run %q stage %q interrupted by operator request", runID, request.stage)},
+			Runner: map[string]any{
+				"interruptedAt": request.now.UTC().Format(time.RFC3339Nano),
+				"stage":         request.stage,
+				"actor":         request.actor,
 			},
 		}
 	}
@@ -598,6 +901,13 @@ func (r *Runner) finishStalledRequest(ctx context.Context, runID string, jr *jou
 	request, ok := stalledRequestFromContext(ctx)
 	if !ok {
 		return Result{}, false, nil
+	}
+	if request.kind == interruptHardShutdown {
+		jr.SetMachineState(finalState)
+		if err := jr.Checkpoint(); err != nil {
+			return Result{}, true, fmt.Errorf("runner: checkpoint hard-stopped run %q at %q: %w", runID, finalState, err)
+		}
+		return Result{Phase: journal.PhaseRunning, FinalState: finalState, Steps: steps}, true, nil
 	}
 	active, activeOK := ctx.Value(activeRunContextKey{}).(*activeRun)
 	if activeOK {

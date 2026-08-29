@@ -236,6 +236,7 @@ export interface WorkflowTrigger {
 }
 
 export interface ReadinessConditions {
+  desiredConcurrentRuns?: number;
   maxConcurrentRuns?: number;
   maxRunsPerHour?: number;
   maxRunsPerDay?: number;
@@ -250,7 +251,10 @@ export interface WorkflowDefinition {
 
 export interface WorkflowConcurrency {
   activeRuns: number;
+  desiredRuns?: number;
   maxConcurrentRuns: number;
+  admissionBlocked?: boolean;
+  blockingCondition?: string;
 }
 
 export interface WorkflowSummary {
@@ -296,6 +300,11 @@ export interface WorkflowGraphEdge {
   branch?: string;
 }
 
+export interface RetryPolicy {
+  maxAttempts: number;
+  backoffSeconds?: number;
+}
+
 export interface StageDefinition {
   name: string;
   kind: GraphNodeKind;
@@ -303,6 +312,15 @@ export interface StageDefinition {
   owner: GooberReference | null;
   evaluator: EvaluatorKind | "";
   capabilities: string[];
+  timeoutSeconds?: number;
+  retry?: RetryPolicy | null;
+  policyActions?: string[];
+  onTimeout?: string;
+  requiredCapabilities?: string[];
+  branches?: Record<string, string>;
+  maxRepasses?: number;
+  /** The stage's Task/Gate config as actually loaded, marshaled back to YAML — ground truth for values like timeout (#2185). */
+  rawYaml: string;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {
@@ -328,6 +346,8 @@ export interface RunListOptions {
   limit?: number;
   cursor?: string;
   latestPerWorkflow?: boolean;
+  /** Includes routine no-work schedule ticks (#2188); omitted/false hides them. */
+  showNoWork?: boolean;
 }
 
 export interface RunList {
@@ -356,11 +376,39 @@ export interface RunSummary {
   finishedAt?: string;
   durationMillis: number;
   lastActivityAt: string;
+  /** Running run whose activity and daemon heartbeat both exceed runner.livenessTimeout. */
+  stale: boolean;
   lastSeq: number;
   repassCount: number;
   retryCount: number;
   policyRetryCount: number;
   infraRetryCount: number;
+  /** True for a completed run that touched exactly one stage and that stage's terminal status was no-work (#2188). */
+  noWork: boolean;
+  operator?: OperatorRunSummary;
+}
+
+export interface OperatorRunSummary {
+  issue?: { number: string; title?: string };
+  currentStage?: string;
+  lastHeartbeatAt?: string;
+  heartbeatAgeMillis?: number;
+  liveness: string;
+  trajectory: string;
+  pullRequest?: { provider: string; kind: string; id: string; url?: string };
+  prOpenerStage?: string;
+  claim: {
+    leaseStatus: string;
+    expiresAt?: string;
+    providerMarker: string;
+  };
+  latestError?: { code: string; message?: string };
+  review?: { verdict: string; rationale?: string };
+  nextTransition?: string;
+  /** Things impeding the RUN itself. Never a read-side capability gap (#3346). */
+  potentialBlockers: string[];
+  /** What the read invocation could not establish (missing credential, unreachable provider) — a limit on the reader, not on the run (#3346). */
+  diagnosticsLimitations?: string[];
 }
 
 export interface RunDetail extends RunSummary {
@@ -479,8 +527,16 @@ export interface RunEvent {
   gate?: string;
   verdict?: string;
   target?: string;
+  complete?: boolean;
   escalated?: boolean;
   status?: RunPhase | StageAttemptStatus;
+  actor?: string;
+  action?: string;
+  decision?: string;
+  rationale?: string;
+  instructionAddendum?: string;
+  workflowVersion?: number;
+  workflowDigest?: string;
   outputs?: Record<string, JsonValue>;
   artifacts?: ArtifactMetadata[];
   artifact?: ArtifactMetadata;
@@ -547,6 +603,31 @@ export interface AttemptList {
   attempts: StageAttempt[];
 }
 
+/**
+ * Placement provenance journaled under runner.* for one stage attempt:
+ * where it physically executed, as far as the executing substrate knew.
+ * Every field except runner is optional — a local attempt has no pod and
+ * never queued.
+ */
+export interface AttemptPlacement {
+  /** Runners-inventory entry name; "self" for the daemon's own host. */
+  runner: string;
+  /** Cluster node the attempt ran on — only ever a real node, never a hostname. */
+  node?: string;
+  /** The executing process's own hostname; inside a pod this is the pod name. */
+  host?: string;
+  /** GOOS of the executing substrate. */
+  os?: string;
+  /** Container image reference the attempt ran under. */
+  image?: string;
+  /** Pod identity for containerized attempts. */
+  pod?: string;
+  /** When the attempt entered the dispatch fabric. */
+  queuedAt?: string;
+  /** When the attempt's pod began executing. */
+  podStartedAt?: string;
+}
+
 export interface StageAttempt {
   id: string;
   visit: number;
@@ -563,6 +644,8 @@ export interface StageAttempt {
   error?: ErrorDetail;
   /** Requested/selected model (e.g. "auto"), when the telemetry rollup has indexed it. */
   model?: string;
+  /** runner.* placement provenance; absent for journals recorded before it existed. */
+  placement?: AttemptPlacement;
 }
 
 export interface ArtifactContent {
@@ -586,6 +669,17 @@ export interface TelemetryStatsOptions {
   gaggle?: string;
   since?: string;
   until?: string;
+  trendSince?: string;
+  trendUntil?: string;
+  trendBuckets?: number;
+  trendPreviousSince?: string;
+  trendPreviousUntil?: string;
+}
+
+export interface TelemetryTrendBucket {
+  since: string;
+  until: string;
+  usage: TelemetryUsageStats[];
 }
 
 export interface TelemetryStatsResult {
@@ -594,11 +688,84 @@ export interface TelemetryStatsResult {
   stages: TelemetryStageStats[];
   usage: TelemetryUsageStats[];
   models: TelemetryModelStats[];
+  creditAssignment: NodeCredit[];
+  causalCredit: CausalNodeCredit[] | null;
+  graphAnalytics?: GraphAnalytics;
+  promotionSignals?: PromotionSignal[];
+  promotionCandidates?: PromotionSignal[];
   curation: TelemetryCurationStats;
   readyPool: TelemetryReadyPool;
+  trend?: TelemetryTrendBucket[];
+  trendPrevious?: TelemetryTrendBucket;
+}
+
+export interface GraphAnalytics {
+  centrality: CentralityScore[];
+  criticalPath: CriticalPath;
+  cycles: string[][];
+  confidence: "bounded" | "partial" | "untrusted" | string;
+  caveat?: string;
+}
+
+export interface CentralityScore {
+  node: string;
+  score: number;
+}
+
+export interface CriticalPath {
+  nodes: string[];
+  weight: number;
+}
+
+export interface NodeCredit {
+  gaggle: string;
+  workflow: string;
+  kind: "stage" | "gate";
+  stage: string;
+  identity?: string;
+  routedRuns: number;
+  failureRuns: number;
+  failureShare: number;
+  escalationRuns: number;
+  retryWasteAttempts: number;
+  effect?: number;
+  lower?: number;
+  upper?: number;
+  identification: string;
+  caveat?: string;
+}
+
+export interface CausalNodeCredit {
+  node: string;
+  effect: number;
+  lower: number;
+  upper: number;
+  identification:
+    | "randomized"
+    | "observational-difference-in-differences"
+    | "unidentifiable";
+  caveat: string;
+  treatedBefore: number;
+  treatedAfter: number;
+  controlBefore: number;
+  controlAfter: number;
+  intervalAvailable: boolean;
+  promotionEligible: boolean;
+  promotionSource: string;
+}
+
+export interface PromotionSignal {
+  node: string;
+  value: number;
+  lower?: number;
+  upper?: number;
+  source: string;
+  caveat: string;
+  promotionEligible: boolean;
 }
 
 export interface TelemetryCurationStats {
+  everRecorded: boolean;
   runs: number;
   reportedRuns: number;
   ready: number;
@@ -613,6 +780,7 @@ export interface TelemetryCurationStats {
 }
 
 export interface TelemetryReadyPool {
+  sampleEverRecorded: boolean;
   observedAt?: string;
   depth?: number;
   averageAgeSeconds?: number;
@@ -620,7 +788,11 @@ export interface TelemetryReadyPool {
   starved?: boolean;
   claimAgeSamples: number;
   averageClaimAgeSeconds?: number;
+  bounceEverRecorded: boolean;
   bounceRate?: number;
+  inFlightClaimSamples: number;
+  averageInFlightClaimAgeSeconds: number;
+  oldestInFlightClaimAgeSeconds: number;
   forwardCurationThroughput: number;
   implementationDemand: number;
 }
@@ -630,6 +802,10 @@ export interface TelemetryGaggleStats {
   totalRuns: number;
   completedRuns: number;
   failedRuns: number;
+  // How many of failedRuns terminated on an infrastructure fault rather than a
+  // verdict about the work, and are therefore excluded from successRate's
+  // denominator (#3361/#3364).
+  infraFailedRuns: number;
   otherRuns: number;
   successRate?: number;
   avgDurationMs?: number;
@@ -648,6 +824,15 @@ export interface TelemetryRunStats {
   avgDurationMs?: number;
   minDurationMs?: number;
   maxDurationMs?: number;
+  // How many of failedRuns terminated on an infrastructure fault (credential
+  // materialization, git, network, lock contention) rather than a verdict
+  // about the work, and are therefore excluded from successRate's denominator
+  // (#3361/#3364).
+  infraFailedRuns: number;
+  // How many of totalRuns hung and were later aborted (the watchdog's
+  // max-duration expiry), excluded from avg/min/maxDurationMs — disclosed
+  // rather than silently dropped (#2534, #1439).
+  stuckAbortedRuns: number;
 }
 
 export interface TelemetryStageStats {
@@ -675,6 +860,11 @@ export interface TelemetryStageStats {
   retryWasteDurationMs?: number;
   retryWasteTokens?: number;
   retryWasteCostUSD?: number;
+  // How many of totalAttempts belong to a run that hung and was later
+  // aborted (the watchdog's max-duration expiry), excluded from
+  // avg/min/maxDurationMs and from p50/p95DurationMs — disclosed rather than
+  // silently dropped (#2534, #1439).
+  stuckAbortedAttempts: number;
 }
 
 export interface TelemetryUsageStats {
@@ -691,6 +881,7 @@ export interface TelemetryUsageStats {
   p50CopilotPremiumRequests?: number;
   p95CopilotPremiumRequests?: number;
   costSamples: number;
+  costUSD?: number;
   p50CostUSD?: number;
   p95CostUSD?: number;
   retryWasteAttempts: number;
@@ -787,6 +978,9 @@ export interface PortalConfig {
   brand: PortalBrand;
   theme: PortalTheme;
   support: PortalSupport;
+  capabilities: {
+    revealRun: boolean;
+  };
 }
 
 export interface DaemonClient {
@@ -804,6 +998,7 @@ export interface DaemonClient {
   getWorkflow(gaggle: string, workflow: string, options?: RequestOptions): Promise<WorkflowDetail>;
   listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList>;
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail>;
+  revealRun(runId: string, options?: RequestOptions): Promise<void>;
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList>;
   listStageAttempts(runId: string, stage: string, options?: RequestOptions): Promise<AttemptList>;
   getArtifact(runId: string, digest: string, options?: RequestOptions): Promise<ArtifactContent>;

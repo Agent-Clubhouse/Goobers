@@ -9,10 +9,12 @@ goobers issue-close-out \- comment + close out the claimed issue (a workflow sta
 Usage: goobers issue-close-out [path]
 
 Comment on the issue this run claimed, linking its PR, and mark it done;
-status=in-review leaves it open for merge-review, while status=needs-human
-parks it by replacing goobers:ready with goobers:needs-human. Release the
-claim ledger lease early rather than waiting for it to expire. Exit codes:
-0 = done, 1 = business error, 2 = usage/IO error.
+status=in-review leaves it open for merge-review. status=needs-human parks
+it by replacing goobers:ready with goobers:needs-human (a decision only a
+human can make); status=needs-remediation parks it with goobers:needs-
+remediation instead (a mechanical failure needing a fix, not a decision —
+#2028). Release the claim ledger lease early rather than waiting for it to
+expire. Exit codes: 0 = done, 1 = business error, 2 = usage/IO error.
 .fi
 .SH EXAMPLES
 .nf

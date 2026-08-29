@@ -80,7 +80,12 @@ type AggregateOptions struct {
 // count, in one query.
 func (s *Store) LatestPerWorkflow(ctx context.Context, options AggregateOptions) ([]WorkflowLatest, error) {
 	query, args := latestPerWorkflowQuery(options)
-	rows, err := s.readDB().QueryContext(ctx, query, args...)
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("readmodel: latest per workflow: %w", err)
 	}

@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -35,7 +36,7 @@ var newTerminalBranchDeleter = func(source providers.TokenSource) providers.Bran
 	return providers.NewGitHubProvider("", providers.WithTokenSource(source))
 }
 
-func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, registrar terminalSecretRegistry, stores credentials.StoreResolver) (runner.TerminalPreparer, error) {
+func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, project apiv1.RepoRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (runner.TerminalPreparer, error) {
 	// An instance with no configured repo (the credential-free demo, #587)
 	// never touches a branch by design — every one of its runs is
 	// legitimately branch-less, not an anomaly finalizeTerminalBranch's
@@ -45,13 +46,46 @@ func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, regist
 	if len(cfg.Repos) == 0 {
 		return func(string, journal.RunPhase, *journal.Run) error { return nil }, nil
 	}
-	deleteBranch, repo, err := buildTerminalBranchDelete(cfg, registrar, stores)
+	deleteBranch, repo, err := buildTerminalBranchDelete(cfg, project, registrar, stores)
 	if err != nil {
 		return nil, err
 	}
-	return func(runID string, _ journal.RunPhase, jr *journal.Run) error {
-		return finalizeTerminalBranch(l.RunsDir(), runID, jr, repo, deleteBranch)
+	labelAbortedPR, err := buildTerminalRunAbortLabeler(cfg, project, registrar, stores)
+	if err != nil {
+		return nil, err
+	}
+	return func(runID string, phase journal.RunPhase, jr *journal.Run) error {
+		branchErr := finalizeTerminalBranch(l.RunsDir(), runID, jr, repo, deleteBranch)
+		labelErr := labelAbortedRunPR(l.RunsDir(), runID, phase, jr, repo, labelAbortedPR)
+		return errors.Join(branchErr, labelErr)
 	}, nil
+}
+
+// terminalGaggleProject resolves the declared project repo of the gaggle that
+// owns l's runs tree, so terminal branch cleanup targets the repo the run's
+// branch was actually pushed to (#2692 sibling) — outside the daemon's
+// per-gaggle runner wiring (one-shot abort, stalled-run sweep) the gaggle's
+// project is not otherwise in hand. A layout outside any gaggle scope, or a
+// gaggle no longer configured, resolves to the zero RepoRef — the first-repo
+// fallback buildTerminalBranchDelete documents.
+func terminalGaggleProject(l instance.Layout) (apiv1.RepoRef, error) {
+	if l.Gaggle() == "" {
+		return apiv1.RepoRef{}, nil
+	}
+	set, report, err := loadConfigDirectory(l.ConfigDir())
+	if err != nil {
+		// This helper runs outside any CLI surface (one-shot abort, stalled-run
+		// sweep), so the report's errors travel inside the returned error
+		// rather than to a stderr this scope does not own.
+		if summary := validationIssueSummary(report); summary != "" {
+			return apiv1.RepoRef{}, fmt.Errorf("resolve gaggle %q project for terminal branch cleanup: %w (%s)", l.Gaggle(), err, summary)
+		}
+		return apiv1.RepoRef{}, fmt.Errorf("resolve gaggle %q project for terminal branch cleanup: %w", l.Gaggle(), err)
+	}
+	if gaggle := configuredGaggle(set, l.Gaggle()); gaggle != nil {
+		return gaggle.Spec.Project, nil
+	}
+	return apiv1.RepoRef{}, nil
 }
 
 func prepareAbortedRunBranch(l instance.Layout, runID string, jr *journal.Run, registrar terminalSecretRegistry) error {
@@ -65,18 +99,33 @@ func prepareAbortedRunBranch(l instance.Layout, runID string, jr *journal.Run, r
 	if err != nil {
 		return fmt.Errorf("build terminal branch cleanup secret store registry: %w", err)
 	}
-	prepare, err := buildTerminalBranchPreparer(l, cfg, registrar, stores)
+	var project apiv1.RepoRef
+	if len(cfg.Repos) > 0 {
+		if project, err = terminalGaggleProject(l); err != nil {
+			return err
+		}
+	}
+	prepare, err := buildTerminalBranchPreparer(l, cfg, project, registrar, stores)
 	if err != nil {
 		return err
 	}
 	return prepare(runID, journal.PhaseAborted, jr)
 }
 
-func buildTerminalBranchDelete(cfg *instance.Config, registrar terminalSecretRegistry, stores credentials.StoreResolver) (deleteBranchFunc, providers.RepositoryRef, error) {
+func buildTerminalBranchDelete(cfg *instance.Config, project apiv1.RepoRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (deleteBranchFunc, providers.RepositoryRef, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, providers.RepositoryRef{}, nil
 	}
-	resolver, grants, err := buildCredentials(cfg, stores, "", "", nil, registrar)
+	// Per-gaggle scoping (#2692 sibling): the branch a run pushed lives in its
+	// gaggle's own project repo, so the delete must target that repo with that
+	// repo's own token — RunnerGrants matches the owner/name binding exactly as
+	// the run's push credentials were scoped. A zero project (single-gaggle /
+	// legacy instance) keeps the first repo and its first-binding token.
+	gaggleOwner := project.Owner
+	if project.Provider == apiv1.ProviderADO && project.Project != "" {
+		gaggleOwner += "/" + project.Project
+	}
+	resolver, grants, err := buildCredentials(cfg, stores, gaggleOwner, project.Name, nil, registrar)
 	if err != nil {
 		return nil, providers.RepositoryRef{}, err
 	}
@@ -88,6 +137,9 @@ func buildTerminalBranchDelete(cfg *instance.Config, registrar terminalSecretReg
 		Provider: providers.ProviderGitHub,
 		Owner:    cfg.Repos[0].Owner,
 		Name:     cfg.Repos[0].Name,
+	}
+	if project.Owner != "" && project.Name != "" {
+		repo.Owner, repo.Name = project.Owner, project.Name
 	}
 	deleteBranch := func(ctx context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
 		set, err := injector.Materialize(ctx, []string{string(capability.GitHubBranchDelete)})
@@ -128,6 +180,7 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 
 	var branch *journal.ExternalRef
 	var pushed, openedPR, alreadyFinalized, noWork bool
+	var lastGateOutcome string
 	for i := range events {
 		ev := events[i]
 		if ev.ExternalRef != nil && ev.ExternalRef.Kind == "branch" {
@@ -153,6 +206,9 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 		if ev.Type == journal.EventStageFinished && ev.Status == string(apiv1.ResultNoWork) {
 			noWork = true
 		}
+		if ev.Type == journal.EventGateEvaluated {
+			lastGateOutcome = ev.Verdict
+		}
 		if ev.Type == journal.EventRefTouched && ev.ExternalRef != nil && ev.ExternalRef.Kind == "pr" {
 			openedPR = true
 		}
@@ -176,6 +232,9 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 	}
 	if openedPR {
 		return appendBranchCleanup(jr, branch, branchCleanupSkipped, "pull-request-opened", nil)
+	}
+	if lastGateOutcome == gate.OutcomeInfra {
+		return appendBranchCleanup(jr, branch, branchCleanupSkipped, "remediable-validation-failure", nil)
 	}
 	if deleteBranch == nil {
 		return appendBranchCleanup(jr, branch, branchCleanupFailed, "", errors.New("branch-delete provider is not configured"))

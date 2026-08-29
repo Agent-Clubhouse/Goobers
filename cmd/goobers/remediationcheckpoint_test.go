@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,7 +40,7 @@ func TestRenderRemediationStateCommentRoundTrips(t *testing.T) {
 	if !ok {
 		t.Fatalf("parseRemediationStateComment did not find a payload in: %q", comment)
 	}
-	if got != s {
+	if !reflect.DeepEqual(got, s) {
 		t.Fatalf("parsed state = %+v, want %+v", got, s)
 	}
 }
@@ -61,16 +63,22 @@ func TestParseRemediationStateCommentNoPayloadIsNotFound(t *testing.T) {
 type remediationCheckpointServerState struct {
 	mu sync.Mutex
 
-	number              int
-	headSHA, baseSHA    string
-	listedHeadSHA       string
-	liveBaseSHA         string
-	state               string
-	merged              bool
-	terminalOnComments  bool
-	mergeOnComments     bool
-	labels              []string
-	comments            []string
+	number             int
+	headSHA, baseSHA   string
+	listedHeadSHA      string
+	liveBaseSHA        string
+	state              string
+	body               string
+	merged             bool
+	terminalOnComments bool
+	mergeOnComments    bool
+	labels             []string
+	comments           []string
+	// commentCreatedAt is optional, index-aligned with comments: an empty (or
+	// short) entry serves the default timestamp so existing tests are
+	// unaffected; the sentinel "-" omits created_at entirely (a comment with
+	// no timestamp), which the human-comment watermark tests use.
+	commentCreatedAt    []string
 	files               []providers.ChangedFile
 	siblings            []remediationCheckpointSibling
 	labelRemovalAuth    string
@@ -159,6 +167,7 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		}
 		writeFakeJSON(w, map[string]interface{}{
 			"number": st.number, "draft": false, "state": state, "merged": st.merged,
+			"body":     st.body,
 			"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, st.number),
 			"head":     map[string]interface{}{"ref": "goobers/impl/remediation-364", "sha": st.headSHA},
 			"base":     map[string]interface{}{"ref": "main", "sha": st.baseSHA},
@@ -249,7 +258,15 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 		}
 		out := make([]map[string]interface{}, len(st.comments))
 		for i, c := range st.comments {
-			out[i] = map[string]interface{}{"id": i + 1, "user": map[string]string{"login": "goobers-bot"}, "body": c, "created_at": "2026-07-15T00:00:00Z"}
+			entry := map[string]interface{}{"id": i + 1, "user": map[string]string{"login": "goobers-bot"}, "body": c}
+			createdAt := "2026-07-15T00:00:00Z"
+			if i < len(st.commentCreatedAt) {
+				createdAt = st.commentCreatedAt[i]
+			}
+			if createdAt != "-" {
+				entry["created_at"] = createdAt
+			}
+			out[i] = entry
 		}
 		writeFakeJSON(w, out)
 	})
@@ -521,6 +538,15 @@ func TestRemediationCheckpointEscalatesExhaustedConflictCause(t *testing.T) {
 	if !ok || state.AttemptsByCause.Conflict != 2 || state.AttemptsByCause.FailingCI != 0 {
 		t.Fatalf("escalated state = %+v, ok = %v, want only two conflict attempts consumed", state, ok)
 	}
+	if state.EscalationOutcome != remediationOutcomeBudgetExhausted || !state.RemediationAttempted ||
+		!reflect.DeepEqual(state.AttemptedCauses, []remediationCause{remediationCauseConflict}) {
+		t.Fatalf("escalation evidence = outcome %q, attempted %t, causes %v", state.EscalationOutcome, state.RemediationAttempted, state.AttemptedCauses)
+	}
+	result := readCheckpointResult(t, "checkpoint-result.json")
+	if result["escalationOutcome"] != string(remediationOutcomeBudgetExhausted) ||
+		result["remediationAttempted"] != "true" || result["attemptedCauses"] != "conflict" {
+		t.Fatalf("checkpoint result escalation evidence = %v", result)
+	}
 }
 
 func TestRemediationCheckpointClearsSelfHealedEscalationForIndependentCause(t *testing.T) {
@@ -622,6 +648,16 @@ func TestRemediationCheckpointEscalatesImmediatelyOnPolicyExcluded(t *testing.T)
 	if len(st.comments) != 1 || !strings.Contains(st.comments[0], "excludes the only detected cause") {
 		t.Fatalf("comments = %v, want the escalation reason to name the policy exclusion", st.comments)
 	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.EscalationOutcome != remediationOutcomePolicyExcluded ||
+		state.RemediationAttempted || len(state.AttemptedCauses) != 0 {
+		t.Fatalf("policy-excluded escalation state = %+v, ok = %v", state, ok)
+	}
+	result := readCheckpointResult(t, "checkpoint-result.json")
+	if result["escalationOutcome"] != string(remediationOutcomePolicyExcluded) ||
+		result["remediationAttempted"] != "false" || result["attemptedCauses"] != "" {
+		t.Fatalf("policy-excluded checkpoint result = %v", result)
+	}
 }
 
 func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
@@ -630,6 +666,7 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 		number: 77, headSHA: headSHA, baseSHA: baseSHA,
 		labels: []string{needsRemediationLabel},
 	}
+
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
 	resultFile := filepath.Join(t.TempDir(), "checkpoint-result.json")
@@ -668,9 +705,77 @@ func TestRemediationCheckpointHaltsWithoutObservedCause(t *testing.T) {
 	}
 }
 
+func TestRemediationCheckpointWaitsForSiblingWithoutConsumingBudget(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-sibling-wait")
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles:            2,
+		AttemptsByCause:   remediationAttempts{SiblingOverlap: 2},
+		LastDiffDigest:    "sha256:prior",
+		HeadSHA:           headSHA,
+		BaseSHA:           baseSHA,
+		LastSeenCommentAt: "2026-08-09T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels:   []string{blockedOnSiblingLabel, needsRemediationLabel},
+		comments: []string{priorComment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	resultFile := filepath.Join(t.TempDir(), "checkpoint-result.json")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", string(remediationCauseSiblingOverlap))
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "waiting without consuming remediation budget") {
+		t.Fatalf("stdout = %q, want sequencing wait", stdout)
+	}
+	if got := readCheckpointResult(t, resultFile)["continueRemediation"]; got != "false" {
+		t.Fatalf("continueRemediation = %q, want false", got)
+	}
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, sequencing-only wait must not escalate", st.labels)
+	}
+	if hasAnyLabel(st.labels, []string{needsRemediationLabel}) {
+		t.Fatalf("labels = %v, sequencing-only wait retained stale needs-remediation label", st.labels)
+	}
+	if len(st.comments) != 1 || st.comments[0] != priorComment {
+		t.Fatalf("comments changed during sequencing-only wait: %v", st.comments)
+	}
+}
+
+func TestSequencingOnlyCheckpointWaitRequiresNoIndependentCause(t *testing.T) {
+	labels := []string{blockedOnSiblingLabel}
+	if !sequencingOnlyCheckpointWait(labels, nil) {
+		t.Fatal("blocked PR with no independent cause was not parked")
+	}
+	if !sequencingOnlyCheckpointWait(labels, []remediationCause{remediationCauseSiblingOverlap}) {
+		t.Fatal("sibling-overlap-only PR was not parked")
+	}
+	for _, cause := range []remediationCause{
+		remediationCauseConflict,
+		remediationCauseSubstantive,
+		remediationCauseFailingCI,
+		remediationCauseHumanComment,
+	} {
+		if sequencingOnlyCheckpointWait(labels, []remediationCause{remediationCauseSiblingOverlap, cause}) {
+			t.Fatalf("independent cause %q was treated as sequencing-only", cause)
+		}
+	}
+}
+
 func TestRemediationCauseBudgetsAreIndependent(t *testing.T) {
 	budgets := remediationBudgets{
-		Conflict: 2, Substantive: 2, FailingCI: 2, SiblingOverlap: 2,
+		Conflict: 2, Substantive: 2, FailingCI: 2, SiblingOverlap: 2, HumanComment: 2,
 	}
 
 	var attempts remediationAttempts
@@ -700,14 +805,42 @@ func TestDeclaredRemediationBudgetsReadWorkflowInputs(t *testing.T) {
 	t.Setenv("GOOBERS_INPUT_SUBSTANTIVEBUDGET", "2")
 	t.Setenv("GOOBERS_INPUT_FAILINGCIBUDGET", "3")
 	t.Setenv("GOOBERS_INPUT_SIBLINGOVERLAPBUDGET", "4")
+	t.Setenv("GOOBERS_INPUT_HUMANCOMMENTBUDGET", "5")
 
 	got, err := declaredRemediationBudgets(0)
 	if err != nil {
 		t.Fatalf("declaredRemediationBudgets: %v", err)
 	}
-	want := remediationBudgets{Conflict: 1, Substantive: 2, FailingCI: 3, SiblingOverlap: 4}
+	want := remediationBudgets{Conflict: 1, Substantive: 2, FailingCI: 3, SiblingOverlap: 4, HumanComment: 5}
 	if got != want {
 		t.Fatalf("budgets = %+v, want workflow inputs %+v", got, want)
+	}
+}
+
+// TestDeclaredRemediationBudgetsHumanCommentDefaultsWhenUndeclared covers the
+// backward-compat contract: an undeclared humanCommentBudget must fall back to
+// the default (not error, unlike the four legacy budgets), while a non-empty
+// invalid value is still a hard error.
+func TestDeclaredRemediationBudgetsHumanCommentDefaultsWhenUndeclared(t *testing.T) {
+	t.Setenv("GOOBERS_INPUT_CONFLICTBUDGET", "2")
+	t.Setenv("GOOBERS_INPUT_SUBSTANTIVEBUDGET", "2")
+	t.Setenv("GOOBERS_INPUT_FAILINGCIBUDGET", "2")
+	t.Setenv("GOOBERS_INPUT_SIBLINGOVERLAPBUDGET", "2")
+
+	t.Setenv("GOOBERS_INPUT_HUMANCOMMENTBUDGET", "")
+	got, err := declaredRemediationBudgets(0)
+	if err != nil {
+		t.Fatalf("declaredRemediationBudgets with undeclared humanCommentBudget: %v", err)
+	}
+	if got.HumanComment != defaultHumanCommentBudget {
+		t.Fatalf("HumanComment budget = %d, want default %d when undeclared", got.HumanComment, defaultHumanCommentBudget)
+	}
+
+	for _, raw := range []string{"not-a-number", "0", "-1"} {
+		t.Setenv("GOOBERS_INPUT_HUMANCOMMENTBUDGET", raw)
+		if _, err := declaredRemediationBudgets(0); err == nil {
+			t.Fatalf("declaredRemediationBudgets accepted invalid humanCommentBudget %q", raw)
+		}
 	}
 }
 
@@ -752,6 +885,168 @@ func TestRemediationCheckpointBudgetsSiblingOverlapSeparately(t *testing.T) {
 	}
 }
 
+// TestParseRemediationCausesAcceptsHumanComment proves the new cause is a
+// recognized value and sorts last in remediationCauseOrder.
+func TestParseRemediationCausesAcceptsHumanComment(t *testing.T) {
+	got, err := parseRemediationCauses("human-comment,conflict")
+	if err != nil {
+		t.Fatalf("parseRemediationCauses: %v", err)
+	}
+	want := []remediationCause{remediationCauseConflict, remediationCauseHumanComment}
+	if len(got) != len(want) {
+		t.Fatalf("causes = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("causes = %v, want %v (human-comment ordered last)", got, want)
+		}
+	}
+}
+
+// TestRemediationCheckpointBudgetsHumanCommentSeparately mirrors the
+// sibling-overlap budget test: two prior human-comment attempts with a budget
+// of 2 escalates naming the cause, budget-exhausted, and leaves the other
+// counters untouched.
+func TestRemediationCheckpointBudgetsHumanCommentSeparately(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	priorComment, err := remediationStateComment(remediationState{
+		Cycles: 2, AttemptsByCause: remediationAttempts{HumanComment: 2},
+		LastDiffDigest: "sha256:stale-digest-from-a-different-diff",
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels:   []string{needsRemediationLabel},
+		comments: []string{priorComment},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", "human-comment")
+	t.Setenv("GOOBERS_INPUT_HUMANCOMMENTBUDGET", "2")
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, `cause "human-comment" exhausted its budget`) {
+		t.Fatalf("stdout = %q, want human-comment-specific budget escalation", stdout)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if !hasAnyLabel(st.labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, want merge-escalated on human-comment budget exhaustion", st.labels)
+	}
+	state, ok := parseRemediationStateComment(st.comments[len(st.comments)-1])
+	if !ok {
+		t.Fatalf("no state comment recorded: %v", st.comments)
+	}
+	if state.AttemptsByCause != (remediationAttempts{HumanComment: 2}) {
+		t.Fatalf("attempts = %+v, want only HumanComment:2 (other counters untouched)", state.AttemptsByCause)
+	}
+}
+
+// TestRemediationCheckpointContinuesOnHumanCommentCause is the healthy side: a
+// human-comment cause under budget records an advanced cycle, increments only
+// the human-comment counter, and signals continueRemediation.
+func TestRemediationCheckpointContinuesOnHumanCommentCause(t *testing.T) {
+	baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+	st := &remediationCheckpointServerState{
+		number: 77, headSHA: headSHA, baseSHA: baseSHA,
+		labels: []string{needsRemediationLabel},
+	}
+	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	resultFile := filepath.Join(t.TempDir(), "checkpoint-result.json")
+	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
+	t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", "human-comment")
+
+	code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if got := readCheckpointResult(t, resultFile)["continueRemediation"]; got != "true" {
+		t.Fatalf("continueRemediation = %q, want true for a human-comment cause under budget", got)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	state, ok := parseRemediationStateComment(st.comments[len(st.comments)-1])
+	if !ok || state.AttemptsByCause.HumanComment != 1 {
+		t.Fatalf("recorded state = %+v ok=%v, want HumanComment attempt incremented to 1", state, ok)
+	}
+}
+
+// TestRemediationCheckpointRecordsCommentWatermark proves the recorded
+// LastSeenCommentAt is the newest comment timestamp seen this cycle, and that
+// an untimestamped thread carries the prior watermark forward rather than
+// dropping it.
+func TestRemediationCheckpointRecordsCommentWatermark(t *testing.T) {
+	t.Run("records the newest comment timestamp", func(t *testing.T) {
+		baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+		priorComment, err := remediationStateComment(remediationState{
+			Cycles: 1, LastSeenCommentAt: "2026-07-18T00:00:00Z",
+		})
+		if err != nil {
+			t.Fatalf("remediationStateComment: %v", err)
+		}
+		st := &remediationCheckpointServerState{
+			number: 77, headSHA: headSHA, baseSHA: baseSHA,
+			labels:           []string{needsRemediationLabel},
+			comments:         []string{priorComment, "please look", "and this too"},
+			commentCreatedAt: []string{"2026-07-19T00:00:00Z", "2026-07-20T00:00:00Z", "2026-07-21T00:00:00Z"},
+		}
+		server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+		instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+
+		code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+		if code != 0 {
+			t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		state, ok := parseRemediationStateComment(st.comments[0])
+		if !ok {
+			t.Fatalf("state comment not parseable: %q", st.comments[0])
+		}
+		if state.LastSeenCommentAt != "2026-07-21T00:00:00Z" {
+			t.Fatalf("LastSeenCommentAt = %q, want the newest served timestamp 2026-07-21T00:00:00Z", state.LastSeenCommentAt)
+		}
+	})
+
+	t.Run("untimestamped thread carries the prior watermark forward", func(t *testing.T) {
+		baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+		priorComment, err := remediationStateComment(remediationState{
+			Cycles: 1, LastSeenCommentAt: "2026-07-15T00:00:00Z",
+		})
+		if err != nil {
+			t.Fatalf("remediationStateComment: %v", err)
+		}
+		st := &remediationCheckpointServerState{
+			number: 77, headSHA: headSHA, baseSHA: baseSHA,
+			labels:           []string{needsRemediationLabel},
+			comments:         []string{priorComment},
+			commentCreatedAt: []string{"-"}, // no created_at served
+		}
+		server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+		instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+
+		code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+		if code != 0 {
+			t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+		}
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		state, ok := parseRemediationStateComment(st.comments[0])
+		if !ok {
+			t.Fatalf("state comment not parseable: %q", st.comments[0])
+		}
+		if state.LastSeenCommentAt != "2026-07-15T00:00:00Z" {
+			t.Fatalf("LastSeenCommentAt = %q, want the prior watermark carried forward", state.LastSeenCommentAt)
+		}
+	})
+}
+
 // TestRemediationCheckpointEscalatesOnSameDiff is D5's headline acceptance:
 // a second cycle whose diff is byte-identical to the first's escalates
 // immediately, independent of the (liberal, unexhausted) budget — mirroring
@@ -788,6 +1083,12 @@ func TestRemediationCheckpointEscalatesOnSameDiff(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("labels = %v, want goobers:merge-escalated added on the same-diff repeat", st.labels)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.EscalationOutcome != remediationOutcomeDidNotConverge ||
+		!state.RemediationAttempted ||
+		!reflect.DeepEqual(state.AttemptedCauses, []remediationCause{remediationCauseSubstantive}) {
+		t.Fatalf("same-diff escalation evidence = %+v, ok = %v", state, ok)
 	}
 }
 
@@ -851,6 +1152,16 @@ func TestRemediationCheckpointHydratesMissingSiblingPatchAndEscalatesFirstStruct
 	state, ok := parseRemediationStateComment(st.comments[0])
 	if !ok || !state.Escalated || state.Cycles != 1 {
 		t.Fatalf("first checkpoint state = %+v, ok = %v, want an escalation on cycle 1", state, ok)
+	}
+	if state.EscalationOutcome != remediationOutcomeDidNotConverge ||
+		!state.RemediationAttempted ||
+		!reflect.DeepEqual(state.AttemptedCauses, []remediationCause{remediationCauseConflict}) {
+		t.Fatalf("structural-collision escalation evidence = %+v", state)
+	}
+	result := readCheckpointResult(t, "checkpoint-result.json")
+	if result["escalationOutcome"] != string(remediationOutcomeDidNotConverge) ||
+		result["remediationAttempted"] != "true" || result["attemptedCauses"] != "conflict" {
+		t.Fatalf("structural-collision checkpoint result = %v", result)
 	}
 	for _, want := range []string{
 		"Same-function structural collision",
@@ -1395,6 +1706,14 @@ func TestRemediationCheckpointKeepsUnclassifiedReadErrorGeneric(t *testing.T) {
 	}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+	// The 500 is here to make the PR read fail unclassifiably, not to time
+	// the backoff ladder. Spend the transient-retry budget so the stage
+	// fails fast instead of burning 1+2+4+8 = 15s of real sleep;
+	// remediationCheckpointEnv's t.Cleanup still restores the factory.
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return baseFactory(token, append(opts, providers.WithMaxTransientRetries(0))...)
+	}
 
 	code, _, _ := runArgs(t, "remediation-checkpoint", instanceRoot)
 	if code != 1 {
@@ -1434,17 +1753,28 @@ func TestRemediationCheckpointRecreatesConcurrentlyDeletedStickyComment(t *testi
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	instanceRoot := remediationCheckpointEnv(t, server.URL, false)
 
-	code, stdout, stderr := runArgs(t, "remediation-checkpoint", "--escalate", "reviewer rejected", instanceRoot)
+	code, stdout, stderr := runArgs(
+		t,
+		"remediation-checkpoint",
+		"--escalate", "finding response repass budget exhausted",
+		"--escalation-outcome", "budget-exhausted",
+		instanceRoot,
+	)
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 	result := readCheckpointResult(t, "checkpoint-result.json")
 	want := map[string]string{
-		"continueRemediation": "false",
-		"selectedNumber":      "77",
-		"head":                "goobers/impl/remediation-364",
-		"headSha":             headSHA,
-		"integrity":           string(apiv1.IntegrityUnapproved),
+		"continueRemediation":  "false",
+		"selectedNumber":       "77",
+		"head":                 "goobers/impl/remediation-364",
+		"headSha":              headSHA,
+		"escalationOutcome":    string(remediationOutcomeBudgetExhausted),
+		"remediationAttempted": "true",
+		"attemptedCauses":      "",
+		"escalationReason":     "finding response repass budget exhausted",
+		"escalationGeneration": "1",
+		"integrity":            string(apiv1.IntegrityUnapproved),
 	}
 	if len(result) != len(want) {
 		t.Fatalf("checkpoint result = %v, want classified result %v", result, want)
@@ -1457,8 +1787,12 @@ func TestRemediationCheckpointRecreatesConcurrentlyDeletedStickyComment(t *testi
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if len(st.comments) != 1 || !strings.Contains(st.comments[0], "reviewer rejected") {
-		t.Fatalf("comments = %v, want deleted sticky comment recreated with escalation state", st.comments)
+	if len(st.comments) != 1 || !strings.Contains(st.comments[0], "finding response repass budget exhausted") {
+		t.Fatalf("comments = %v, want deleted sticky comment recreated with budget escalation state", st.comments)
+	}
+	state, ok := parseRemediationStateComment(st.comments[0])
+	if !ok || state.EscalationOutcome != remediationOutcomeBudgetExhausted || !state.RemediationAttempted {
+		t.Fatalf("recreated escalation state = %+v, ok = %v", state, ok)
 	}
 }
 
@@ -1466,11 +1800,16 @@ func assertTerminalCheckpointResult(t *testing.T, path string, selectedNumber in
 	t.Helper()
 	result := readCheckpointResult(t, path)
 	want := map[string]string{
-		"continueRemediation": "false",
-		"selectedNumber":      strconv.Itoa(selectedNumber),
-		"head":                "",
-		"headSha":             "",
-		"integrity":           string(apiv1.IntegrityUnapproved),
+		"continueRemediation":  "false",
+		"selectedNumber":       strconv.Itoa(selectedNumber),
+		"head":                 "",
+		"headSha":              "",
+		"escalationOutcome":    "",
+		"remediationAttempted": "false",
+		"attemptedCauses":      "",
+		"escalationReason":     "",
+		"escalationGeneration": "0",
+		"integrity":            string(apiv1.IntegrityUnapproved),
 	}
 	if len(result) != len(want) {
 		t.Fatalf("checkpoint result = %v, want complete terminal result %v", result, want)
@@ -1620,5 +1959,389 @@ func TestRemediationCheckpointKeepsBudgetWhileStillEscalated(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "escalated") {
 		t.Fatalf("stdout = %q, want the over-budget PR to stay escalated", stdout)
+	}
+}
+
+// TestEscalationParkUnparkMatrix is the sticky-parking acceptance: a park is
+// released by a base-branch advance ONLY when the recorded escalation cause is
+// one a rebase can plausibly cure, while a head change always releases it.
+// Before this, ANY base advance unparked ANY escalation, so in a repo merging
+// dozens of PRs a day a deterministically-doomed PR re-entered remediation
+// within minutes and burned an agent session each time.
+func TestEscalationParkUnparkMatrix(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	const (
+		parkedHead = "head-at-escalation"
+		parkedBase = "base-at-escalation"
+	)
+
+	causeClasses := []struct {
+		name                string
+		state               remediationState
+		baseAdvanceUnblocks bool
+		legacyRecord        bool
+	}{
+		{
+			name: "conflict cause: a rebase onto the new base can cure it",
+			state: remediationState{
+				EscalationOutcome: remediationOutcomeBudgetExhausted,
+				EscalationCauses:  []remediationCause{remediationCauseConflict},
+			},
+			baseAdvanceUnblocks: true,
+		},
+		{
+			name: "sibling-overlap cause: the sibling landing IS the base advance",
+			state: remediationState{
+				EscalationOutcome: remediationOutcomeBudgetExhausted,
+				EscalationCauses:  []remediationCause{remediationCauseSiblingOverlap},
+			},
+			baseAdvanceUnblocks: true,
+		},
+		{
+			name: "substantive cause: the PR's own content is what was rejected",
+			state: remediationState{
+				EscalationOutcome: remediationOutcomeBudgetExhausted,
+				EscalationCauses:  []remediationCause{remediationCauseSubstantive},
+			},
+		},
+		{
+			name: "failing-ci cause: green-ness is a property of the head, not the base tip",
+			state: remediationState{
+				EscalationOutcome: remediationOutcomeBudgetExhausted,
+				EscalationCauses:  []remediationCause{remediationCauseFailingCI},
+			},
+		},
+		{
+			name: "human-comment cause: only a human or a new commit resolves it",
+			state: remediationState{
+				EscalationOutcome: remediationOutcomeDidNotConverge,
+				EscalationCauses:  []remediationCause{remediationCauseHumanComment},
+			},
+		},
+		{
+			name: "mixed causes: one non-curable cause keeps the whole park",
+			state: remediationState{
+				EscalationOutcome: remediationOutcomeBudgetExhausted,
+				EscalationCauses:  []remediationCause{remediationCauseConflict, remediationCauseFailingCI},
+			},
+		},
+		{
+			name: "infrastructure failure: the PR was never judged on its merits",
+			state: remediationState{
+				EscalationOutcome: remediationOutcomeInfrastructure,
+			},
+		},
+		{
+			name: "policy exclusion: no declared policy admits this cause",
+			state: remediationState{
+				EscalationOutcome: remediationOutcomePolicyExcluded,
+			},
+		},
+		{
+			name: "forced escalation (reviewer fail): no remediation cause was observed",
+			state: remediationState{
+				EscalationOutcome: remediationOutcomeDidNotConverge,
+			},
+		},
+		{
+			name: "structural collision: retrying the patch cannot resolve it",
+			state: remediationState{
+				EscalationOutcome:          remediationOutcomeDidNotConverge,
+				EscalationCauses:           []remediationCause{remediationCauseConflict},
+				StructuralCollisionContext: "- `runStatus` in `status.go` was restructured by merged PR #900",
+			},
+		},
+		{
+			// Back-compat: a record written before the cause class was
+			// persisted (EscalationGeneration zero) keeps the original
+			// unconditional base-advance self-heal rather than being
+			// retro-parked on a cause nobody can read.
+			name: "escalation recorded before the cause class shipped",
+			state: remediationState{
+				EscalationOutcome: remediationOutcomeBudgetExhausted,
+			},
+			baseAdvanceUnblocks: true,
+			legacyRecord:        true,
+		},
+	}
+
+	movements := []struct {
+		name        string
+		prHeadSHA   string
+		liveBaseTip string
+		wantBlocked func(baseAdvanceUnblocks bool) bool
+	}{
+		{
+			name: "nothing moved", prHeadSHA: parkedHead, liveBaseTip: parkedBase,
+			wantBlocked: func(bool) bool { return true },
+		},
+		{
+			name: "base advanced", prHeadSHA: parkedHead, liveBaseTip: "base-after-sibling-merge",
+			wantBlocked: func(baseAdvanceUnblocks bool) bool { return !baseAdvanceUnblocks },
+		},
+		{
+			name: "head moved", prHeadSHA: "head-after-new-commit", liveBaseTip: parkedBase,
+			wantBlocked: func(bool) bool { return false },
+		},
+	}
+
+	for _, class := range causeClasses {
+		for _, move := range movements {
+			t.Run(class.name+"/"+move.name, func(t *testing.T) {
+				state := class.state
+				state.Escalated = true
+				state.EscalatedReason = "recorded escalation"
+				state.EscalatedHeadSHA = parkedHead
+				state.EscalatedBaseSHA = parkedBase
+				if !class.legacyRecord {
+					// Every escalation this binary records carries a
+					// generation; a zero one marks the legacy record above.
+					state.EscalationGeneration = 1
+				}
+				comment, err := remediationStateComment(state)
+				if err != nil {
+					t.Fatalf("remediationStateComment: %v", err)
+				}
+				server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+				server.addIssue(1, "parked pr")
+				server.addComment(1, comment)
+				server.setBranchTip("main", move.liveBaseTip)
+				pr := providers.PullRequestSummary{
+					Number: 1, Base: "main", HeadSHA: move.prHeadSHA, BaseSHA: parkedBase,
+					Labels: []string{remediationEscalatedLabel},
+				}
+
+				blocked, err := escalationStillBlocks(context.Background(), server.newGitHubProvider("token"), repo, pr)
+				if err != nil {
+					t.Fatalf("escalationStillBlocks: %v", err)
+				}
+				want := move.wantBlocked(class.baseAdvanceUnblocks)
+				if blocked != want {
+					t.Fatalf("blocked = %t, want %t", blocked, want)
+				}
+			})
+		}
+	}
+}
+
+// TestNextEscalationGeneration covers the churn counter's edges directly: a
+// fresh park, a re-park of the same head, a park of a moved head, and an
+// escalation record written before the counter shipped (which counts as that
+// head's first park rather than restarting at 1).
+func TestNextEscalationGeneration(t *testing.T) {
+	tests := []struct {
+		name    string
+		prior   remediationState
+		headSHA string
+		want    int
+	}{
+		{name: "no prior state", headSHA: "h1", want: 1},
+		{
+			name:    "prior cycle was not an escalation",
+			prior:   remediationState{HeadSHA: "h1", BaseSHA: "b1"},
+			headSHA: "h1",
+			want:    1,
+		},
+		{
+			name:    "re-escalating the same head",
+			prior:   remediationState{Escalated: true, EscalatedHeadSHA: "h1", EscalationGeneration: 7},
+			headSHA: "h1",
+			want:    8,
+		},
+		{
+			name:    "escalating a moved head restarts the count",
+			prior:   remediationState{Escalated: true, EscalatedHeadSHA: "h1", EscalationGeneration: 7},
+			headSHA: "h2",
+			want:    1,
+		},
+		{
+			name:    "escalation predating the counter counts as the first park",
+			prior:   remediationState{Escalated: true, EscalatedHeadSHA: "h1"},
+			headSHA: "h1",
+			want:    2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nextEscalationGeneration(tt.prior, tt.headSHA); got != tt.want {
+				t.Fatalf("nextEscalationGeneration = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRemediationCheckpointRecordsCauseClassAndGeneration is the writer-side
+// half of the sticky park: the escalation records the cause class the reader
+// keys off, counts this head's parks, and publishes the generation in the
+// stage result so a workflow or telemetry query can see the churn.
+func TestRemediationCheckpointRecordsCauseClassAndGeneration(t *testing.T) {
+	tests := []struct {
+		name              string
+		cause             string
+		priorGeneration   int
+		priorHeadIsLive   bool
+		wantGeneration    int
+		wantCauses        []remediationCause
+		wantBaseCanUnpark bool
+	}{
+		{
+			name:  "first park of a failing-ci PR is generation 1 and holds against base advances",
+			cause: "failing-ci", wantGeneration: 1,
+			wantCauses: []remediationCause{remediationCauseFailingCI},
+		},
+		{
+			name:  "re-escalating the same head counts up",
+			cause: "failing-ci", priorGeneration: 3, priorHeadIsLive: true, wantGeneration: 4,
+			wantCauses: []remediationCause{remediationCauseFailingCI},
+		},
+		{
+			name:  "a conflict park stays rebase-curable",
+			cause: "conflict", wantGeneration: 1,
+			wantCauses: []remediationCause{remediationCauseConflict}, wantBaseCanUnpark: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			baseSHA, headSHA := initRemediationCheckpointRepo(t, "goobers/impl/remediation-364")
+			priorHead := "head-before-the-last-push"
+			if tt.priorHeadIsLive {
+				priorHead = headSHA
+			}
+			priorComment, err := remediationStateComment(remediationState{
+				Cycles: 2, AttemptsByCause: remediationAttempts{Conflict: 2, FailingCI: 2},
+				LastDiffDigest:       "sha256:stale-digest-from-a-different-diff",
+				Escalated:            true,
+				EscalatedReason:      "a prior park",
+				EscalatedHeadSHA:     priorHead,
+				EscalatedBaseSHA:     baseSHA,
+				EscalationGeneration: tt.priorGeneration,
+			})
+			if err != nil {
+				t.Fatalf("remediationStateComment: %v", err)
+			}
+			st := &remediationCheckpointServerState{
+				number: 77, headSHA: headSHA, baseSHA: baseSHA,
+				// Still labelled: an operator clearing the label is its own
+				// reset path, which must not fire here.
+				labels:   []string{needsRemediationLabel, remediationEscalatedLabel},
+				comments: []string{priorComment},
+			}
+			server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
+
+			instanceRoot := remediationCheckpointEnv(t, server.URL, false)
+			t.Setenv("GOOBERS_INPUT_REMEDIATIONCAUSES", tt.cause)
+			code, stdout, stderr := runArgs(t, "remediation-checkpoint", instanceRoot)
+			if code != 0 {
+				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+			}
+
+			st.mu.Lock()
+			defer st.mu.Unlock()
+			state, ok := parseRemediationStateComment(st.comments[0])
+			if !ok || !state.Escalated {
+				t.Fatalf("sticky comment %q -> state=%+v ok=%v, want a recorded escalation", st.comments[0], state, ok)
+			}
+			if state.EscalationGeneration != tt.wantGeneration {
+				t.Fatalf("escalation generation = %d, want %d", state.EscalationGeneration, tt.wantGeneration)
+			}
+			if !reflect.DeepEqual(state.EscalationCauses, tt.wantCauses) {
+				t.Fatalf("escalation causes = %v, want %v", state.EscalationCauses, tt.wantCauses)
+			}
+			if got := escalationBaseAdvanceUnparks(state); got != tt.wantBaseCanUnpark {
+				t.Fatalf("base advance unparks = %t, want %t for cause %q", got, tt.wantBaseCanUnpark, tt.cause)
+			}
+			result := readCheckpointResult(t, "checkpoint-result.json")
+			if result["escalationGeneration"] != strconv.Itoa(tt.wantGeneration) {
+				t.Fatalf("checkpoint result escalationGeneration = %q, want %q (result: %v)",
+					result["escalationGeneration"], strconv.Itoa(tt.wantGeneration), result)
+			}
+			if !strings.Contains(st.comments[0], "Parked until") {
+				t.Fatalf("sticky comment = %q, want the parked-until prose", st.comments[0])
+			}
+			wantProse := "Parked until this PR's head changes"
+			if tt.wantBaseCanUnpark {
+				wantProse = "Parked until this PR's head or base changes"
+			}
+			if !strings.Contains(st.comments[0], wantProse) {
+				t.Fatalf("sticky comment = %q, want it to advertise %q", st.comments[0], wantProse)
+			}
+			if want := fmt.Sprintf("escalation %d for head", tt.wantGeneration); !strings.Contains(stdout, want) {
+				t.Fatalf("stdout = %q, want the churn count %q", stdout, want)
+			}
+		})
+	}
+}
+
+// TestRefreshEscalationSnapshotAfterRepeatFailHardensPark: merge-review
+// re-reviewing a parked PR and failing it again is evidence the last unpark was
+// wasted, so the refreshed snapshot counts the park and drops the rebase-curable
+// cause — a further base advance is not new information about content a reviewer
+// just re-rejected at this same head.
+func TestRefreshEscalationSnapshotAfterRepeatFailHardensPark(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	comment, err := remediationStateComment(remediationState{
+		Escalated:            true,
+		EscalatedReason:      "conflict budget exhausted",
+		EscalatedHeadSHA:     "h1",
+		EscalatedBaseSHA:     "base-at-escalation",
+		EscalationCauses:     []remediationCause{remediationCauseConflict},
+		EscalationGeneration: 1,
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+	server.addIssue(1, "re-failed pr")
+	server.addComment(1, comment)
+	server.setBranchTip("main", "base-after-sibling-merge")
+	provider := server.newGitHubProvider("token")
+	pr := providers.PullRequestSummary{
+		Number: 1, Base: "main", HeadSHA: "h1", BaseSHA: "base-at-escalation",
+		Labels: []string{remediationEscalatedLabel},
+	}
+
+	comments, err := provider.ListComments(context.Background(), repo, "1")
+	if err != nil {
+		t.Fatalf("ListComments: %v", err)
+	}
+	if err := refreshEscalationSnapshotAfterRepeatFail(context.Background(), provider, repo, pr, comments); err != nil {
+		t.Fatalf("refreshEscalationSnapshotAfterRepeatFail: %v", err)
+	}
+
+	refreshed, err := provider.ListComments(context.Background(), repo, "1")
+	if err != nil {
+		t.Fatalf("ListComments after refresh: %v", err)
+	}
+	state, _, found := latestRemediationState(refreshed)
+	if !found {
+		t.Fatalf("comments = %v, want the sticky state edited in place", refreshed)
+	}
+	if state.EscalationGeneration != 2 {
+		t.Fatalf("escalation generation = %d, want 2 (the same head parked again)", state.EscalationGeneration)
+	}
+	if len(state.EscalationCauses) != 0 {
+		t.Fatalf("escalation causes = %v, want none after a reviewer re-fail", state.EscalationCauses)
+	}
+	if escalationBaseAdvanceUnparks(state) {
+		t.Fatal("base advance still unparks a PR merge-review just re-failed at the same head")
+	}
+
+	// The next base advance must leave the PR parked; only a new head (or a
+	// human removing the label) may release it.
+	server.setBranchTip("main", "base-after-another-sibling-merge")
+	blocked, err := escalationStillBlocks(context.Background(), provider, repo, pr)
+	if err != nil {
+		t.Fatalf("escalationStillBlocks: %v", err)
+	}
+	if !blocked {
+		t.Fatal("blocked = false, want true — a further base advance must not unpark a re-failed PR")
+	}
+	pr.HeadSHA = "h2"
+	blocked, err = escalationStillBlocks(context.Background(), provider, repo, pr)
+	if err != nil {
+		t.Fatalf("escalationStillBlocks: %v", err)
+	}
+	if blocked {
+		t.Fatal("blocked = true, want false — pushing a commit must always remain an escape hatch")
 	}
 }

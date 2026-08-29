@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type {
   DaemonClient,
+  GraphAnalytics,
   ReadinessConditions,
   RunSummary,
   StageDefinition,
@@ -8,6 +9,7 @@ import type {
 } from "../api/types";
 import type { ConfigurationWarningsProps } from "../components/ConfigurationWarnings";
 import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
+import { ScopePivot } from "../components/ScopePivot";
 import { WorkflowTopologyGraph } from "../components/WorkflowTopologyGraph";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 import type { Navigate } from "../routing";
@@ -18,6 +20,7 @@ import { Icon } from "../ui/Icon";
 import { Inspector } from "../ui/Inspector";
 import { StatusBadge } from "../ui/StatusBadge";
 import { useWorkflowDetail } from "../workflowDetailData";
+import { useInsightStats } from "../insightData";
 import { formatTriggers } from "./WorkflowsPage";
 
 export function WorkflowPage({
@@ -36,6 +39,7 @@ export function WorkflowPage({
   workflowName: string;
 }) {
   const query = useWorkflowDetail(client, gaggle, workflowName);
+  const analyticsQuery = useInsightStats(client, "all", gaggle, workflowName, true);
 
   if (query.state.status === "loading") {
     return (
@@ -88,6 +92,11 @@ export function WorkflowPage({
         navigate={navigate}
         runs={query.state.data.runs}
         workflow={query.state.data.workflow}
+        analytics={
+          analyticsQuery.state.status === "ready" || analyticsQuery.state.status === "stale"
+            ? analyticsQuery.state.data.stats.graphAnalytics
+            : undefined
+        }
       />
     </>
   );
@@ -98,11 +107,13 @@ function WorkflowDetailWorkspace({
   navigate,
   runs,
   workflow,
+  analytics,
 }: {
   configurationWarnings: Omit<ConfigurationWarningsProps, "context">;
   navigate: Navigate;
   runs: RunSummary[];
   workflow: WorkflowDetail;
+  analytics?: GraphAnalytics;
 }) {
   const initialStageId =
     workflow.stages.find((stage) => stage.name === workflow.graph.start)?.name ??
@@ -125,13 +136,20 @@ function WorkflowDetailWorkspace({
         >
           {workflow.identity.gaggle}
         </button>
+        <ScopePivot label={workflow.identity.gaggle} scope={{ gaggle: workflow.identity.gaggle }} />
         <Icon name="chevron" size={14} />
         <span>{workflow.displayName}</span>
       </nav>
       <header className="detail-heading">
         <div>
           <span className="definition-label">Workflow definition</span>
-          <h1>{workflow.displayName}</h1>
+          <div className="detail-heading-line">
+            <h1>{workflow.displayName}</h1>
+            <ScopePivot
+              label={`${workflow.identity.gaggle} / ${workflow.displayName}`}
+              scope={{ gaggle: workflow.identity.gaggle, workflow: workflow.identity.name }}
+            />
+          </div>
           <p>{workflow.purpose}</p>
         </div>
         <dl className="detail-meta workflow-detail-meta">
@@ -142,8 +160,14 @@ function WorkflowDetailWorkspace({
           <div>
             <dt>Concurrency</dt>
             <dd>
-              {workflow.concurrency.activeRuns} active /{" "}
-              {workflow.concurrency.maxConcurrentRuns} max
+              {workflow.concurrency.activeRuns} active
+              {workflow.concurrency.desiredRuns !== undefined
+                ? ` / ${workflow.concurrency.desiredRuns} desired`
+                : ""}{" "}
+              / {workflow.concurrency.maxConcurrentRuns} max
+              {workflow.concurrency.admissionBlocked && (
+                <small>Blocked: {workflow.concurrency.blockingCondition}</small>
+              )}
             </dd>
           </div>
           <div>
@@ -190,6 +214,7 @@ function WorkflowDetailWorkspace({
             graph={workflow.graph}
             onSelectStage={setSelectedStageId}
             selectedStageId={selectedStageId}
+            analytics={analytics}
           />
         </GraphFrame>
         {selectedStage && <StageDefinitionSummary stage={selectedStage} />}
@@ -201,6 +226,7 @@ function WorkflowDetailWorkspace({
 }
 
 function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
+  const [view, setView] = useState<"fields" | "yaml">("fields");
   const actor =
     stage.kind === "gate"
       ? stage.evaluator
@@ -227,18 +253,96 @@ function StageDefinitionSummary({ stage }: { stage: StageDefinition }) {
         </div>
       </div>
       <p className="inspector-description">{stage.goal || "No stage goal declared."}</p>
-      <dl className="property-list">
-        <div>
-          <dt>{stage.kind === "gate" ? "Evaluator" : "Owner"}</dt>
-          <dd>{actor}</dd>
-        </div>
-        <div>
-          <dt>Capabilities</dt>
-          <dd>
-            {stage.capabilities.length > 0 ? stage.capabilities.join(", ") : "None declared"}
-          </dd>
-        </div>
-      </dl>
+      <div className="definition-view-toggle" role="tablist" aria-label="Stage config view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "fields"}
+          className={view === "fields" ? "active" : undefined}
+          onClick={() => setView("fields")}
+        >
+          Fields
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "yaml"}
+          className={view === "yaml" ? "active" : undefined}
+          onClick={() => setView("yaml")}
+        >
+          Raw YAML
+        </button>
+      </div>
+      {view === "fields" ? (
+        <dl className="property-list">
+          <div>
+            <dt>{stage.kind === "gate" ? "Evaluator" : "Owner"}</dt>
+            <dd>{actor}</dd>
+          </div>
+          <div>
+            <dt>Capabilities</dt>
+            <dd>
+              {stage.capabilities.length > 0 ? stage.capabilities.join(", ") : "None declared"}
+            </dd>
+          </div>
+          <div>
+            <dt>Timeout</dt>
+            <dd>{stage.timeoutSeconds ? `${stage.timeoutSeconds}s` : "Default"}</dd>
+          </div>
+          <div>
+            <dt>Retry</dt>
+            <dd>
+              {stage.retry
+                ? `${stage.retry.maxAttempts} attempt${stage.retry.maxAttempts === 1 ? "" : "s"}, ${stage.retry.backoffSeconds ?? 0}s backoff`
+                : "No retry declared"}
+            </dd>
+          </div>
+          {stage.kind !== "gate" && (
+            <>
+              <div>
+                <dt>Policy actions</dt>
+                <dd>
+                  {stage.policyActions && stage.policyActions.length > 0
+                    ? stage.policyActions.join(", ")
+                    : "None declared"}
+                </dd>
+              </div>
+              <div>
+                <dt>Required runner capabilities</dt>
+                <dd>
+                  {stage.requiredCapabilities && stage.requiredCapabilities.length > 0
+                    ? stage.requiredCapabilities.join(", ")
+                    : "None declared"}
+                </dd>
+              </div>
+              <div>
+                <dt>On timeout</dt>
+                <dd>{stage.onTimeout || "fail (default)"}</dd>
+              </div>
+            </>
+          )}
+          {stage.kind === "gate" && (
+            <>
+              <div>
+                <dt>Branches</dt>
+                <dd>
+                  {stage.branches && Object.keys(stage.branches).length > 0
+                    ? Object.entries(stage.branches)
+                        .map(([outcome, target]) => `${outcome} → ${target || "(terminal)"}`)
+                        .join(", ")
+                    : "None declared"}
+                </dd>
+              </div>
+              <div>
+                <dt>Max repasses</dt>
+                <dd>{stage.maxRepasses || "Inherited"}</dd>
+              </div>
+            </>
+          )}
+        </dl>
+      ) : (
+        <pre className="code-block">{stage.rawYaml || "No YAML available."}</pre>
+      )}
     </Inspector>
   );
 }
@@ -288,6 +392,7 @@ function RecentRuns({ runs, workflow }: { runs: RunSummary[]; workflow: Workflow
 
 function formatReadiness(readiness: ReadinessConditions): string {
   const limits = [
+    ["desired runs", readiness.desiredConcurrentRuns],
     ["runs", readiness.maxConcurrentRuns],
     ["runs/hour", readiness.maxRunsPerHour],
     ["runs/day", readiness.maxRunsPerDay],

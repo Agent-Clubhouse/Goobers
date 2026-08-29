@@ -18,6 +18,7 @@ import (
 
 const (
 	adoCommentPageSize = 200
+	adoWIQLPageSize    = 20000
 	adoClaimRetries    = 4
 	adoMaxTagLength    = 400
 	adoClaimTagPrefix  = "goobers:claim-run:"
@@ -194,6 +195,65 @@ func (p *ADOProvider) GetWorkItem(ctx context.Context, repo RepositoryRef, id st
 		return WorkItem{}, err
 	}
 	return p.mapADOWorkItem(ctx, repo, out)
+}
+
+// FindWorkItemsByMarker reads the project's authoritative work-item IDs and
+// checks each live description for an exact single-line marker.
+func (p *ADOProvider) FindWorkItemsByMarker(ctx context.Context, repo RepositoryRef, marker string) ([]WorkItem, error) {
+	project := p.project(repo)
+	if err := p.requireWorkItemScope(project); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(marker) == "" || strings.ContainsAny(marker, "\r\n") {
+		return nil, fmt.Errorf("single-line work item marker is required")
+	}
+	return p.findWorkItemsByMarker(ctx, repo, marker, adoWIQLPageSize)
+}
+
+func (p *ADOProvider) findWorkItemsByMarker(ctx context.Context, repo RepositoryRef, marker string, pageSize int) ([]WorkItem, error) {
+	if pageSize <= 0 {
+		return nil, fmt.Errorf("ADO WIQL page size must be positive")
+	}
+	project := p.project(repo)
+	endpoint, err := p.workURL(project, "wiql")
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"$top": []string{strconv.Itoa(pageSize)}})
+	if err != nil {
+		return nil, err
+	}
+	var matches []WorkItem
+	afterID := 0
+	for {
+		query := "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project"
+		if afterID > 0 {
+			query += fmt.Sprintf(" AND [System.Id] > %d", afterID)
+		}
+		query += " ORDER BY [System.Id] ASC"
+
+		var result adoWIQLResponse
+		if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"query": query}, &result); err != nil {
+			return nil, err
+		}
+		for _, ref := range result.WorkItems {
+			item, err := p.GetWorkItem(ctx, repo, strconv.Itoa(ref.ID))
+			if err != nil {
+				return nil, err
+			}
+			if containsExactLine(item.Body, marker) {
+				matches = append(matches, item)
+			}
+		}
+		if len(result.WorkItems) < pageSize {
+			return matches, nil
+		}
+		nextID := result.WorkItems[len(result.WorkItems)-1].ID
+		if nextID <= afterID {
+			return nil, fmt.Errorf("ADO WIQL marker scan did not advance beyond work item %d", afterID)
+		}
+		afterID = nextID
+	}
 }
 
 // CreateWorkItem creates an Azure Boards work item.
@@ -374,6 +434,26 @@ func (p *ADOProvider) ListComments(ctx context.Context, repo RepositoryRef, id s
 	}
 }
 
+// CreateWorkItemComment appends one work-item comment and returns its identity.
+func (p *ADOProvider) CreateWorkItemComment(ctx context.Context, repo RepositoryRef, id, body string) (Comment, error) {
+	project := p.project(repo)
+	if err := p.requireWorkItemScope(project); err != nil {
+		return Comment{}, err
+	}
+	if err := validateADOWorkItemID(id); err != nil {
+		return Comment{}, err
+	}
+	endpoint, err := p.workURLVersion(project, "7.1-preview.4", "workItems", id, "comments")
+	if err != nil {
+		return Comment{}, err
+	}
+	var comment adoComment
+	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"text": body}, &comment); err != nil {
+		return Comment{}, err
+	}
+	return mapADOComment(comment), nil
+}
+
 // UpdateWorkItem edits Azure Boards fields, assignee, tags, state, and comments.
 func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequest) (WorkItem, error) {
 	if err := p.requireWorkItemScope(p.project(req.Repository)); err != nil {
@@ -396,6 +476,11 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 	current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
 	if err != nil {
 		return WorkItem{}, err
+	}
+	if req.ExpectedRevision != "" {
+		if err := checkWorkItemRevision(current, req.ExpectedRevision); err != nil {
+			return WorkItem{}, err
+		}
 	}
 	raw, err := rawADOWorkItem(current)
 	if err != nil {
@@ -495,8 +580,7 @@ func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReques
 		return ClaimResult{}, err
 	}
 	if !claimed {
-		// Our own breadcrumb must be visible; treat an empty read as us winning.
-		winner = req.RunID
+		return ClaimResult{}, fmt.Errorf("claim breadcrumb for run %q is not visible after write", req.RunID)
 	}
 	if winner != req.RunID {
 		item, getErr := p.GetWorkItem(ctx, req.Repository, req.ID)
@@ -511,6 +595,9 @@ func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReques
 	item, err := p.setADOClaimLabel(ctx, req.Repository, req.ID, []string{label}, nil)
 	if err != nil {
 		return ClaimResult{}, err
+	}
+	if !item.HasLabel(label) {
+		return ClaimResult{}, fmt.Errorf("claim label %q is not visible after write", label)
 	}
 	return ClaimResult{Claimed: true, ClaimedBy: req.RunID, Item: item}, nil
 }
@@ -632,17 +719,23 @@ func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkIte
 	if err != nil {
 		return WorkItem{}, err
 	}
-	if !claimed {
-		return p.GetWorkItem(ctx, req.Repository, req.ID)
-	}
-	if winner != req.RunID && !req.LedgerAuthorized {
+	if claimed && winner != req.RunID && !req.LedgerAuthorized {
 		return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
 	}
 
-	// The breadcrumb lands first so a successful release never leaves a later
-	// claimer stuck behind the previous owner's durable marker.
-	if err := p.postWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+	if claimed {
+		// The breadcrumb lands first so a successful release never leaves a later
+		// claimer stuck behind the previous owner's durable marker.
+		if err := p.postWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+			return WorkItem{}, err
+		}
+	}
+	current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
+	if err != nil {
 		return WorkItem{}, err
+	}
+	if !current.HasLabel(label) {
+		return current, nil
 	}
 	remove := []string{label}
 	// Legacy owner-tag cleanup; removed with the rest of the fallback in #1990.
@@ -757,25 +850,27 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 	parent, links, hierarchy := adoHierarchy(item.Relations)
 	updated := timeField(item.Fields, "System.ChangedDate")
 	return WorkItem{
-		Provider:   ProviderADO,
-		ID:         strconv.Itoa(item.ID),
-		ExternalID: strconv.Itoa(item.Rev),
-		Type:       stringField(item.Fields, "System.WorkItemType"),
-		Title:      stringField(item.Fields, "System.Title"),
-		Body:       stringField(item.Fields, "System.Description"),
-		Labels:     labels,
-		State:      state,
-		Status:     statusFromLabels(labels, string(status)),
-		Assignee:   stringField(item.Fields, "System.AssignedTo"),
-		Links:      links,
-		Parent:     parent,
-		Hierarchy:  hierarchy,
-		URL:        item.URL,
-		CreatedAt:  timeField(item.Fields, "System.CreatedDate"),
-		UpdatedAt:  updated,
-		Fields:     adoWorkItemFields(item),
-		Raw:        item,
-		Integrity:  apiintegrity.Unapproved,
+		Provider:       ProviderADO,
+		ID:             strconv.Itoa(item.ID),
+		ExternalID:     strconv.Itoa(item.Rev),
+		Revision:       strconv.Itoa(item.Rev),
+		Type:           stringField(item.Fields, "System.WorkItemType"),
+		Title:          stringField(item.Fields, "System.Title"),
+		Body:           stringField(item.Fields, "System.Description"),
+		Labels:         labels,
+		State:          state,
+		Status:         statusFromLabels(labels, string(status)),
+		Assignee:       stringField(item.Fields, "System.AssignedTo"),
+		Links:          links,
+		Parent:         parent,
+		Hierarchy:      hierarchy,
+		URL:            item.URL,
+		CreatedAt:      timeField(item.Fields, "System.CreatedDate"),
+		UpdatedAt:      updated,
+		Fields:         adoWorkItemFields(item),
+		BlockedByCount: adoBlockedByCount(item.Relations),
+		Raw:            item,
+		Integrity:      apiintegrity.Unapproved,
 	}
 }
 
@@ -849,6 +944,16 @@ func adoHierarchy(relations []adoRelation) (*WorkItemRef, []Link, map[string]int
 		}
 	}
 	return parent, links, hierarchy
+}
+
+func adoBlockedByCount(relations []adoRelation) int {
+	count := 0
+	for _, relation := range relations {
+		if relation.Rel == "System.LinkTypes.Dependency-Reverse" {
+			count++
+		}
+	}
+	return count
 }
 
 func lastPathSegment(value string) string {
@@ -1026,11 +1131,8 @@ func adoTagPatch(tags []string) adoPatchOperation {
 }
 
 func (p *ADOProvider) postWorkItemComment(ctx context.Context, repo RepositoryRef, id, text string) error {
-	endpoint, err := p.workURLVersion(p.project(repo), "7.1-preview.4", "workItems", id, "comments")
-	if err != nil {
-		return err
-	}
-	return p.do(ctx, http.MethodPost, endpoint, map[string]string{"text": text}, nil)
+	_, err := p.CreateWorkItemComment(ctx, repo, id, text)
+	return err
 }
 
 // adoClaimTag renders the LEGACY owner tag. Retained only to recognize and

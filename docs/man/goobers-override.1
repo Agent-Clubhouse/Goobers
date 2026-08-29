@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS OVERRIDE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers override \- override a nondeterministic gate with a rationale
+.SH SYNOPSIS
+\fBgoobers override\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+
+Override a nondeterministic gate on an escalated or failed run and continue
+from the selected configured branch. The rationale and authenticated actor
+are recorded in the run journal. GOOBERS_API_TOKEN supplies a bearer token
+when API auth is enabled.
+
+Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
+.fi
+.SH EXAMPLES
+.nf
+goobers override --rationale="accepted risk" <run-id> <gate>
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

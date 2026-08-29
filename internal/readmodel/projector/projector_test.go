@@ -1,9 +1,14 @@
 package projector
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
+	"github.com/goobers/goobers/internal/readmodel/repair"
 )
 
 // fakeStore records commit order, which is the property most of these tests are
@@ -87,10 +93,173 @@ func (f *fakeStore) RemoveRun(_ context.Context, runID string) error {
 	return nil
 }
 
+func (f *fakeStore) SaveSweepCursor(_ context.Context, _ readmodel.SweepCursor) error {
+	current := atomic.AddInt32(&f.inFlight, 1)
+	for {
+		observed := atomic.LoadInt32(&f.maxInFlight)
+		if current <= observed || atomic.CompareAndSwapInt32(&f.maxInFlight, observed, current) {
+			break
+		}
+	}
+	defer atomic.AddInt32(&f.inFlight, -1)
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "sweep-cursor")
+	return nil
+}
+
+func (f *fakeStore) MarkUnpublished(
+	_ context.Context,
+	runID string,
+	_ time.Time,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "mark-unpublished:"+runID)
+	return nil
+}
+
+func (f *fakeStore) ClearUnpublished(_ context.Context, runID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "clear-unpublished:"+runID)
+	return nil
+}
+
+func (f *fakeStore) Tombstone(
+	_ context.Context,
+	runID string,
+	_ time.Time,
+	_ string,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "tombstone:"+runID)
+	return nil
+}
+
+func (f *fakeStore) SetProjectionFloor(_ context.Context, _ time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "projection-floor")
+	return nil
+}
+
+func (f *fakeStore) PruneChangeFeed(_ context.Context, _ int) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, "prune-change-feed")
+	return 0, nil
+}
+
+func (f *fakeStore) SweepCursor(context.Context) (readmodel.SweepCursor, error) {
+	return readmodel.SweepCursor{}, nil
+}
+
+func (f *fakeStore) ProjectionFloor(context.Context) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}
+
+func (f *fakeStore) IsUnpublished(context.Context, string, time.Time) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeStore) Tombstoned(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeStore) ProjectedRunIDsAfter(
+	context.Context,
+	time.Time,
+	string,
+	time.Time,
+	int,
+) ([]readmodel.RunRow, error) {
+	return nil, nil
+}
+
 func (f *fakeStore) commitOrder() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.commits...)
+}
+
+// TestRepairMutationsShareTheProjectionCommitLoop prevents repair from becoming
+// a second read-model writer.
+func TestRepairMutationsShareTheProjectionCommitLoop(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	store.hold = make(chan struct{})
+	store.holdFor = "run-a"
+
+	p := New(store, newFakeIntake(), Options{})
+	stop := p.Start(ctx)
+	defer stop()
+
+	upserted := make(chan error, 1)
+	go func() { upserted <- p.UpsertRun(ctx, projectionFor("run-a", 1)) }()
+	waitFor(t, func() bool { return atomic.LoadInt32(&store.inFlight) == 1 })
+
+	swept := make(chan error, 1)
+	sweeper := repair.New(store, p, nil, repair.Options{
+		RunsDirs:  []string{t.TempDir()},
+		BatchSize: 1,
+	})
+	go func() { swept <- sweeper.Step(ctx) }()
+
+	select {
+	case err := <-swept:
+		t.Fatalf("repair completed while projection commit was blocked: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(store.hold)
+
+	if err := <-upserted; err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := <-swept; err != nil {
+		t.Fatalf("repair sweep: %v", err)
+	}
+	if got := atomic.LoadInt32(&store.maxInFlight); got != 1 {
+		t.Errorf("observed %d simultaneous projector and repair writes; repair bypassed "+
+			"the sole-writer commit loop", got)
+	}
+	if got := store.commitOrder(); len(got) != 2 ||
+		got[0] != "run-a" || got[1] != "sweep-cursor" {
+		t.Errorf("commit order = %v, want [run-a sweep-cursor]", got)
+	}
+}
+
+func TestAcceptedCommitFinishesBeforeCancellationReturns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	projector := New(newFakeStore(), newFakeIntake(), Options{})
+	stop := projector.Start(context.Background())
+	defer stop()
+
+	accepted := make(chan struct{})
+	release := make(chan struct{})
+	committed := make(chan error, 1)
+	go func() {
+		committed <- projector.commit(ctx, commitRequest{write: func(context.Context, Store) error {
+			close(accepted)
+			<-release
+			return nil
+		}})
+	}()
+
+	<-accepted
+	cancel()
+	select {
+	case err := <-committed:
+		t.Fatalf("accepted commit returned before its write finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-committed; err != nil {
+		t.Fatalf("accepted commit: %v", err)
+	}
 }
 
 // TestCommitsAreSerializedUnderConcurrentPreparation is #1923's third acceptance
@@ -356,27 +525,126 @@ func TestRemovalTakesTheRemovalBranchAndConfirms(t *testing.T) {
 // Consuming the marker here would erase the only record that anything was
 // expected; the repair sweep can see the whole picture and decide.
 func TestWatermarkWithNoJournalLeavesTheMarker(t *testing.T) {
-	ctx := context.Background()
-	store := newFakeStore()
-	watermarks := newFakeIntake()
-	watermarks.observe("run-absent", 4)
+	for _, tc := range []struct {
+		name      string
+		createDir bool
+	}{
+		{name: "run directory disappeared"},
+		{name: "journal disappeared", createDir: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newFakeStore()
+			watermarks := newFakeIntake()
+			watermarks.observe("run-absent", 4)
+			runsDir := t.TempDir()
+			if tc.createDir {
+				if err := os.Mkdir(filepath.Join(runsDir, "run-absent"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	projector := New(store, watermarks, Options{Workers: 1})
-	stop := projector.Start(ctx)
-	defer stop()
-	projector.prepareForTest = func(_ context.Context, _ string) (Projection, bool, error) {
-		return Projection{}, false, nil
-	}
+			projector := New(store, watermarks, Options{
+				Workers: 1, RunsDirs: []string{runsDir},
+			})
+			stop := projector.Start(ctx)
+			defer stop()
 
-	if _, err := projector.Drain(ctx); err != nil {
-		t.Fatalf("drain: %v", err)
+			if _, err := projector.Drain(ctx); err != nil {
+				t.Fatalf("drain: %v", err)
+			}
+			if len(watermarks.pending()) != 1 {
+				t.Error("a marker with no journal was acknowledged away; the only record " +
+					"that the run was expected is now gone")
+			}
+			if watermarks.ackCount() != 0 {
+				t.Errorf("%d acknowledgements issued for a disappeared journal", watermarks.ackCount())
+			}
+			if projector.Stats().ProjectFailures != 0 {
+				t.Errorf("disappeared journal counted as a projection failure")
+			}
+		})
 	}
-	if len(watermarks.pending()) != 1 {
-		t.Error("a marker with no readable journal was acknowledged away; the only record " +
-			"that the run was expected is now gone")
-	}
-	if watermarks.ackCount() != 0 {
-		t.Errorf("%d acknowledgements issued for an unreadable run", watermarks.ackCount())
+}
+
+func TestJournalIdentityFailuresRemainVisibleAndRetryable(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T, string)
+	}{
+		{
+			name: "malformed",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte("schema: ["), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unsupported",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte("schema: goobers.dev/journal/run/v2\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "unreadable",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			const runID = "run-bad-identity"
+			runsDir := t.TempDir()
+			runDir := filepath.Join(runsDir, runID)
+			if err := os.Mkdir(runDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.setup(t, filepath.Join(runDir, "run.yaml"))
+
+			watermarks := newFakeIntake()
+			watermarks.observe(runID, 4)
+			var logs bytes.Buffer
+			drainedAt := time.Date(2026, 8, 5, 7, 0, 0, 0, time.UTC)
+			projector := New(newFakeStore(), watermarks, Options{
+				Workers: 1, RunsDirs: []string{runsDir},
+				Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+				Now:    func() time.Time { return drainedAt },
+			})
+			stop := projector.Start(ctx)
+			defer stop()
+
+			handled, err := projector.Drain(ctx)
+			if err != nil {
+				t.Fatalf("drain: %v", err)
+			}
+			if handled != 0 {
+				t.Errorf("handled = %d, want 0", handled)
+			}
+			if len(watermarks.pending()) != 1 || watermarks.ackCount() != 0 {
+				t.Fatal("failed journal marker was not retained for retry")
+			}
+			stats := projector.Stats()
+			if stats.ProjectFailures != 1 {
+				t.Errorf("project failures = %d, want 1", stats.ProjectFailures)
+			}
+			if !stats.LastDrainAt.Equal(drainedAt) {
+				t.Errorf("last drain at = %v, want %v", stats.LastDrainAt, drainedAt)
+			}
+			if log := logs.String(); !strings.Contains(log, "project run failed") ||
+				!strings.Contains(log, "run_id="+runID) ||
+				!strings.Contains(log, "read identity for "+runID) {
+				t.Errorf("failure log = %q, want operation and run ID", log)
+			}
+		})
 	}
 }
 
@@ -410,7 +678,7 @@ func waitFor(t *testing.T, condition func() bool) {
 		if condition() {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for the fake store's synchronized in-flight state.
 	}
 	t.Fatal("condition not met within 5s")
 }

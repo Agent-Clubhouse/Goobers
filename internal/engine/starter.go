@@ -5,12 +5,40 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"strings"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
+
+// RunGaggleMemoKey identifies engine runs in Temporal visibility without
+// requiring a namespace-specific search attribute registration.
+const RunGaggleMemoKey = "goobers.run.gaggle.v1"
+
+// RunWorkflowMemoKey, RunWorkflowVersionMemoKey, and RunBacklogItemMemoKey
+// extend RunGaggleMemoKey with the rest of a run's Goobers identity (#2911):
+// an operator starting from a Temporal workflow execution — the Web UI, tctl,
+// or a query — can identify the gaggle, workflow, version, and driving
+// backlog item without decoding RunInput from the execution's input payload.
+// Additive: existing readers of RunGaggleMemoKey (completed_runs.go's
+// reconciler) are unaffected, and every key here uses the same versioned,
+// namespace-registration-free Memo mechanism.
+const (
+	RunWorkflowMemoKey        = "goobers.run.workflow.v1"
+	RunWorkflowVersionMemoKey = "goobers.run.workflow_version.v1"
+	RunBacklogItemMemoKey     = "goobers.run.backlog_item.v1"
+)
+
+// BacklogItemMemo is RunBacklogItemMemoKey's value shape: enough to identify
+// and follow the item driving a run without decoding the full BacklogItem
+// (title/body/labels) into Temporal visibility.
+type BacklogItemMemo struct {
+	ID       string `json:"id"`
+	Provider string `json:"provider,omitempty"`
+	URL      string `json:"url,omitempty"`
+}
 
 // StartResult reports the outcome of starting a run.
 type StartResult struct {
@@ -78,6 +106,7 @@ func (s *TemporalStarter) Start(ctx context.Context, in RunInput) (StartResult, 
 		TaskQueue:                                s.taskQueue,
 		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
+		Memo:                                     runMemo(in),
 	}
 	run, err := s.client.ExecuteWorkflow(ctx, opts, Run, in)
 	if err != nil {
@@ -93,4 +122,23 @@ func (s *TemporalStarter) Start(ctx context.Context, in RunInput) (StartResult, 
 func isAlreadyStarted(err error) bool {
 	var already *serviceerror.WorkflowExecutionAlreadyStarted
 	return errors.As(err, &already)
+}
+
+// runMemo builds a run's Goobers-identity Memo (#2911): gaggle, workflow,
+// version, and — when the run has one — the driving backlog item. Each field
+// is independently omittable so a run with no backlog item (a manual or
+// scheduled trigger) carries no RunBacklogItemMemoKey at all rather than an
+// empty placeholder.
+func runMemo(in RunInput) map[string]interface{} {
+	memo := map[string]interface{}{
+		RunGaggleMemoKey:          in.Gaggle,
+		RunWorkflowMemoKey:        in.WorkflowName,
+		RunWorkflowVersionMemoKey: strconv.Itoa(in.Version),
+	}
+	if in.Item != nil {
+		memo[RunBacklogItemMemoKey] = BacklogItemMemo{
+			ID: in.Item.ID, Provider: string(in.Item.Provider), URL: in.Item.URL,
+		}
+	}
+	return memo
 }

@@ -1,0 +1,31 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: python-service
+spec:
+  displayName: Python Service (polyglot reference)
+  # The reference Python gaggle (TSN-3 / #2170) proves the existing Python
+  # toolchain admission and environment resolution through shipped workflow
+  # machinery. Toolchains are preinstalled; this definition installs nothing.
+  project:
+    provider: github
+    owner: acme
+    name: python-service
+    branch: main
+    connectionRef: github-main
+  backlog:
+    provider: github
+    project: acme/python-service
+    labels:
+      - goobers
+    connectionRef: github-backlog
+  isolation:
+    namespace: gaggle-python-service
+    identityRef: python-service-identity
+  # The deterministic local-ci stage runs this command in the stage worktree.
+  ciCommand: ["python3", "-m", "pytest", "-q"]
+  # The scheduler refuses to place this gaggle on a runner that does not claim
+  # Python 3.12, producing a diagnostic naming the missing capability before
+  # any stage can fail with an opaque command-not-found error.
+  requiredCapabilities:
+    - python@3.12

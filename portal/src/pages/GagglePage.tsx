@@ -1,17 +1,24 @@
 import type {
   DaemonClient,
+  Goober,
   RepositoryConnection,
   RunSummary,
   WorkflowSummary,
 } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { ScopePivot } from "../components/ScopePivot";
 import {
   latestWorkflowOutcome,
-  type GaggleInventory,
+  useGaggleActivity,
+  useGaggleList,
   useOperationalSnapshot,
+  type GaggleActivity,
+  type GaggleInventory,
+  type GaggleSummary,
 } from "../operationalData";
 import type { Navigate } from "../routing";
 import { routeHash } from "../routing";
+import { DataList, DataRow } from "../ui/DataList";
 import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
@@ -29,6 +36,8 @@ export function GagglePage({
   standalone: boolean;
 }) {
   const query = useOperationalSnapshot(client, { gaggle: gaggleName });
+  const gaggleListQuery = useGaggleList(client);
+  const activityQuery = useGaggleActivity(client, gaggleName);
 
   if (query.state.status === "loading") {
     return <DaemonLoadingState standalone={standalone} />;
@@ -61,8 +70,19 @@ export function GagglePage({
     );
   }
 
+  const gaggleList =
+    gaggleListQuery.state.status === "ready" || gaggleListQuery.state.status === "stale"
+      ? gaggleListQuery.state.data
+      : undefined;
+  const activity =
+    activityQuery.state.status === "ready" || activityQuery.state.status === "stale"
+      ? activityQuery.state.data
+      : undefined;
+
   return (
     <GaggleTopology
+      activity={activity}
+      gaggleList={gaggleList}
       inventory={inventory}
       navigate={navigate}
       runs={query.state.data.runs}
@@ -71,15 +91,20 @@ export function GagglePage({
 }
 
 function GaggleTopology({
+  activity,
+  gaggleList,
   inventory,
   navigate,
   runs,
 }: {
+  activity: GaggleActivity | undefined;
+  gaggleList: GaggleSummary[] | undefined;
   inventory: GaggleInventory;
   navigate: Navigate;
   runs: RunSummary[];
 }) {
   const { gaggle } = inventory;
+  const otherGaggles = (gaggleList ?? []).filter((candidate) => candidate.name !== gaggle.name);
 
   return (
     <>
@@ -93,11 +118,31 @@ function GaggleTopology({
       <header className="detail-heading">
         <div>
           <span className="definition-label">Gaggle</span>
-          <h1>{gaggle.displayName}</h1>
+          <div className="detail-heading-line">
+            <h1>{gaggle.displayName}</h1>
+            <ScopePivot label={gaggle.displayName} scope={{ gaggle: gaggle.name }} />
+          </div>
           <p>
             {gaggle.name} · {gaggle.project.owner}/{gaggle.project.name}
           </p>
         </div>
+        {otherGaggles.length > 0 && (
+          <label className="gaggle-switcher">
+            <span>Switch gaggle</span>
+            <select
+              aria-label="Switch gaggle"
+              onChange={(event) => navigate({ page: "gaggle", id: event.target.value })}
+              value={gaggle.name}
+            >
+              <option value={gaggle.name}>{gaggle.displayName}</option>
+              {otherGaggles.map((candidate) => (
+                <option key={candidate.name} value={candidate.name}>
+                  {candidate.displayName}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <dl className="detail-meta">
           <div>
             <dt>Status</dt>
@@ -117,6 +162,14 @@ function GaggleTopology({
           </div>
         </dl>
       </header>
+
+      <GaggleActivitySections
+        activity={activity}
+        gaggleDisplayName={gaggle.displayName}
+        workflows={inventory.workflows}
+      />
+
+      <GoobersPanel gaggleDisplayName={gaggle.displayName} goobers={inventory.goobers} />
 
       <GraphFrame
         action={
@@ -213,6 +266,153 @@ function ConnectionTopology({
   );
 }
 
+/**
+ * "What is this gaggle doing right now" (#2531): active runs plus a bounded
+ * recent-outcome list, scoped to this gaggle instead of the per-workflow
+ * last-outcome badges the topology already shows.
+ */
+function GaggleActivitySections({
+  activity,
+  gaggleDisplayName,
+  workflows,
+}: {
+  activity: GaggleActivity | undefined;
+  gaggleDisplayName: string;
+  workflows: WorkflowSummary[];
+}) {
+  const workflowNames = new Map(
+    workflows.map((workflow) => [workflow.identity.name, workflow.displayName]),
+  );
+  const label = (run: RunSummary) => workflowNames.get(run.workflow) ?? run.workflow;
+
+  return (
+    <>
+      <section className="content-section">
+        <div className="section-heading">
+          <div>
+            <p className="section-kicker">Live</p>
+            <h2>Active runs</h2>
+          </div>
+          {activity && <span className="section-count">{activity.active.length}</span>}
+        </div>
+        {!activity ? (
+          <p className="inline-empty">Loading active runs…</p>
+        ) : activity.active.length === 0 ? (
+          <p className="inline-empty">No runs are active for {gaggleDisplayName}.</p>
+        ) : (
+          <DataList
+            ariaLabel={`${gaggleDisplayName} active runs`}
+            columns={["Run", "Workflow", "Current stage", "Elapsed"]}
+            gridClassName="run-grid"
+          >
+            {activity.active.map((run) => (
+              <DataRow href={routeHash({ page: "run", id: run.id })} key={run.id} label={`Open run ${run.id}`}>
+                <span className="row-primary">
+                  <span className="row-title">
+                    {run.workflow} · {run.id}
+                  </span>
+                </span>
+                <span>{label(run)}</span>
+                <span className="stage-progress">
+                  <span aria-hidden="true" className="stage-progress-mark" />
+                  {run.currentStage ?? "Awaiting stage"}
+                </span>
+                <span className="mono">{formatDuration(run.durationMillis)}</span>
+              </DataRow>
+            ))}
+          </DataList>
+        )}
+      </section>
+
+      <section className="content-section">
+        <div className="section-heading">
+          <div>
+            <p className="section-kicker">History</p>
+            <h2>Recent outcomes</h2>
+          </div>
+          {activity && <span className="section-count">{activity.recent.length}</span>}
+        </div>
+        {!activity ? (
+          <p className="inline-empty">Loading recent outcomes…</p>
+        ) : activity.recent.length === 0 ? (
+          <p className="inline-empty">No recent outcomes for {gaggleDisplayName}.</p>
+        ) : (
+          <DataList
+            ariaLabel={`${gaggleDisplayName} recent outcomes`}
+            columns={["Run", "Outcome", "Workflow", "Duration"]}
+            gridClassName="outcome-grid"
+          >
+            {activity.recent.map((run) => (
+              <DataRow href={routeHash({ page: "run", id: run.id })} key={run.id} label={`Open run ${run.id}`}>
+                <span className="row-primary">
+                  <span className="row-title">
+                    {run.workflow} · {run.id}
+                  </span>
+                </span>
+                <StatusBadge status={run.phase} />
+                <span>{label(run)}</span>
+                <span className="mono">{formatDuration(run.durationMillis)}</span>
+              </DataRow>
+            ))}
+          </DataList>
+        )}
+      </section>
+    </>
+  );
+}
+
+/**
+ * Configured goobers for this gaggle (#2531 — "what's configured" alongside
+ * workflows). Non-goals: #1687's ready/needs-human backlog counts are not
+ * computed here; this only renders the goober definitions already carried on
+ * the inventory.
+ */
+function GoobersPanel({
+  gaggleDisplayName,
+  goobers,
+}: {
+  gaggleDisplayName: string;
+  goobers: Goober[];
+}) {
+  return (
+    <section className="content-section">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">Definitions</p>
+          <h2>Goobers</h2>
+        </div>
+        <span className="section-count">{goobers.length}</span>
+      </div>
+      {goobers.length === 0 ? (
+        <p className="inline-empty">No goobers are provisioned for this gaggle.</p>
+      ) : (
+        <ul aria-label={`${gaggleDisplayName} goobers`} className="gaggle-goober-list">
+          {goobers.map((goober) => (
+            <li className="gaggle-goober-node" key={goober.name}>
+              <strong>{goober.displayName}</strong>
+              <p>{goober.role}</p>
+              <span className="gaggle-goober-meta">
+                {goober.stages.length} {goober.stages.length === 1 ? "stage" : "stages"} owned
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function formatDuration(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.round(milliseconds / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
 function repositoryIdentity(connection: RepositoryConnection): string {
   const { owner, project, name } = connection.repository;
   return [owner, project, name].filter(Boolean).join("/");
@@ -233,19 +433,27 @@ function WorkflowNode({
 }) {
   return (
     <li className="gaggle-workflow-node">
-      <a
-        aria-label={`Open workflow ${workflow.displayName} for gaggle ${gaggleDisplayName}`}
-        href={routeHash({
-          page: "workflow",
-          gaggle: workflow.identity.gaggle,
-          id: workflow.identity.name,
-        })}
-      >
+      <div className="gaggle-workflow-card data-row-stretched">
+        <a
+          aria-label={`Open workflow ${workflow.displayName} for gaggle ${gaggleDisplayName}`}
+          className="data-row-stretch-link"
+          href={routeHash({
+            page: "workflow",
+            gaggle: workflow.identity.gaggle,
+            id: workflow.identity.name,
+          })}
+        />
         <span className="gaggle-workflow-kind">
           <Icon name="workflow" size={13} />
           Workflow
         </span>
-        <strong>{workflow.displayName}</strong>
+        <span className="gaggle-workflow-title">
+          <strong>{workflow.displayName}</strong>
+          <ScopePivot
+            label={`${gaggleDisplayName} / ${workflow.displayName}`}
+            scope={{ gaggle: workflow.identity.gaggle, workflow: workflow.identity.name }}
+          />
+        </span>
         <p>{workflow.purpose}</p>
         <dl>
           <div>
@@ -259,8 +467,14 @@ function WorkflowNode({
           <div>
             <dt>Concurrency</dt>
             <dd>
-              {workflow.concurrency.activeRuns} active /{" "}
-              {workflow.concurrency.maxConcurrentRuns} max
+              {workflow.concurrency.activeRuns} active
+              {workflow.concurrency.desiredRuns !== undefined
+                ? ` / ${workflow.concurrency.desiredRuns} desired`
+                : ""}{" "}
+              / {workflow.concurrency.maxConcurrentRuns} max
+              {workflow.concurrency.admissionBlocked && (
+                <small>Blocked: {workflow.concurrency.blockingCondition}</small>
+              )}
             </dd>
           </div>
           <div>
@@ -274,7 +488,7 @@ function WorkflowNode({
             </dd>
           </div>
         </dl>
-      </a>
+      </div>
     </li>
   );
 }

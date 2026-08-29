@@ -4,6 +4,7 @@ metadata:
   name: example
 spec:
   displayName: Quickstart
+  ciCommand: ["npm", "run", "ci"]
   project:
     provider: github
     owner: your-org

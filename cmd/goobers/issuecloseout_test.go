@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -223,7 +224,7 @@ func TestIssueCloseOutNeedsHumanParksAndNextTickClaimsDifferentIssue(t *testing.
 	server.addIssue(8, "Next ready issue", "goobers:approved", "goobers:ready")
 
 	const runID = "run-rejected"
-	const reason = "The implementation weakens the fail-closed contract."
+	const reason = "Should this issue permit weakening the fail-closed contract?"
 	schedulerDir := filepath.Join(root, "scheduler")
 	if err := (func() error {
 		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
@@ -245,8 +246,9 @@ func TestIssueCloseOutNeedsHumanParksAndNextTickClaimsDifferentIssue(t *testing.
 	}
 	defer func() { _ = run.Close() }()
 	verdictData, err := json.Marshal(apiv1.Verdict{
-		Decision: apiv1.VerdictFail,
-		Summary:  reason,
+		Decision:  apiv1.VerdictFail,
+		Rationale: reason,
+		Summary:   "The implementation needs a policy decision.",
 	})
 	if err != nil {
 		t.Fatalf("marshal verdict: %v", err)
@@ -338,7 +340,8 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
 	t.Setenv("GOOBERS_INPUT_STATUS", "needs-human")
-	t.Setenv("GOOBERS_INPUT_COMMENT", "Implementation parked for human review.")
+	t.Setenv("GOOBERS_INPUT_COMMENT", "Should this implementation proceed despite the rejected approach?")
+	t.Setenv("GOOBERS_INPUT_REASON", "The parent changed after decomposition.")
 	t.Chdir(t.TempDir())
 
 	code, stdout, stderr := runArgs(t, "issue-close-out", root)
@@ -355,6 +358,90 @@ func TestIssueCloseOutNeedsHumanAssignsConfiguredHuman(t *testing.T) {
 	if !hasAnyLabel(parked.labels, []string{providers.LabelNeedsHuman}) {
 		t.Fatalf("issue labels = %v, want %s", parked.labels, providers.LabelNeedsHuman)
 	}
+	if len(parked.comments) != 1 || parked.comments[0] != "The parent changed after decomposition.\n\nShould this implementation proceed despite the rejected approach?" {
+		t.Fatalf("issue comments = %v, want exact routed reason and question", parked.comments)
+	}
+}
+
+func TestValidateIssueCloseOutParkComment(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  providers.WorkItemStatus
+		comment string
+		wantErr bool
+	}{
+		{name: "human decision states question", status: issueCloseOutNeedsHuman, comment: "Which compatibility contract should this use?"},
+		{name: "human decision with context and question", status: issueCloseOutNeedsHuman, comment: "The requirements conflict. Which one takes precedence?  "},
+		{name: "human decision without question", status: issueCloseOutNeedsHuman, comment: "The approach was rejected.", wantErr: true},
+		{name: "remediation states failure", status: issueCloseOutNeedsRemediation, comment: "Repass budget exhausted."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateIssueCloseOutParkComment(tt.status, tt.comment)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateIssueCloseOutParkComment(%q, %q) error = %v, wantErr %v", tt.status, tt.comment, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestIssueCloseOutNeedsRemediationParksWithoutAssignee proves #2028's
+// mechanical-failure park is distinct from needs-human: it lands
+// goobers:needs-remediation instead of goobers:needs-human, and it never
+// gets the configured human assignee even when one is configured — a
+// needs-remediation park is not a decision routed to a human, so
+// withNeedsHumanAssignee (needshumanrouting.go) must not fire for it.
+func TestIssueCloseOutNeedsRemediationParksWithoutAssignee(t *testing.T) {
+	root := initDemo(t)
+	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.NeedsHumanAssignee = "mason"
+	if err := instance.WriteConfig(layoutFor(root).ConfigFile(), cfg); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Repass budget exhausted", "goobers:approved", "goobers:ready", "goobers:claimed")
+
+	const runID = "run-exhausted"
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if _, _, err := ledger.Claim("7", runID, "implementation", time.Hour); err != nil {
+		t.Fatalf("seed claim ledger: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-remediation")
+	t.Setenv("GOOBERS_INPUT_COMMENT", "Implementation parked for remediation: repass budget exhausted.")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "issue-close-out", root)
+	if code != 0 {
+		t.Fatalf("issue-close-out: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "parked 7 needs-remediation") {
+		t.Fatalf("stdout = %q, want parked needs-remediation message", stdout)
+	}
+
+	server.mu.Lock()
+	parked := server.issues[7]
+	server.mu.Unlock()
+	if parked.assignee != "" {
+		t.Fatalf("issue assignee = %q, want empty — needs-remediation never assigns the configured human", parked.assignee)
+	}
+	if !hasAnyLabel(parked.labels, []string{needsRemediationLabel}) {
+		t.Fatalf("issue labels = %v, want %s", parked.labels, needsRemediationLabel)
+	}
+	if hasAnyLabel(parked.labels, []string{providers.LabelNeedsHuman}) {
+		t.Fatalf("issue labels = %v, did not want %s", parked.labels, providers.LabelNeedsHuman)
+	}
+	if hasAnyLabel(parked.labels, []string{providers.LabelReady}) {
+		t.Fatalf("issue labels = %v, want ready removed", parked.labels)
+	}
 }
 
 func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
@@ -366,6 +453,7 @@ func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create journal: %v", err)
 	}
+
 	defer func() { _ = run.Close() }()
 	if err := run.Append(journal.Event{
 		Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: "fail", Target: "park-needs-human",
@@ -380,6 +468,125 @@ func TestIssueCloseOutGateReasonDescribesAutomatedEscalation(t *testing.T) {
 	}
 	if !strings.Contains(reason, "local-gate") || !strings.Contains(reason, "attempt 4") {
 		t.Fatalf("reason = %q, want local-gate and repass attempt", reason)
+	}
+}
+
+func TestIssueCloseOutDuplicateEscalationCarriesDigestAndCause(t *testing.T) {
+	runsDir := t.TempDir()
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-duplicate", Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	defer func() { _ = run.Close() }()
+	verdictData, err := json.Marshal(apiv1.Verdict{
+		Decision:  apiv1.VerdictNeedsChanges,
+		Rationale: "the prior repass was triggered by local-ci timing out; the implementer produced no change in response",
+	})
+	if err != nil {
+		t.Fatalf("marshal verdict: %v", err)
+	}
+	ref, err := run.RecordArtifact("verdict/review-2.json", verdictData)
+	if err != nil {
+		t.Fatalf("record verdict: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes",
+		Target: "park-escalated", Ref: &ref,
+		Runner: map[string]any{
+			"duplicateDiff": true, "diffDigest": "sha256:abc",
+			"repassCause": map[string]any{
+				"kind": "stage-failure", "gate": "local-gate", "outcome": "fail",
+				"stage": "local-ci", "errorCode": "deadline_exceeded", "errorMessage": "timed out",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("append gate event: %v", err)
+	}
+
+	state, ok, err := issueCloseOutDuplicateEscalation(runsDir, "run-duplicate")
+	if err != nil {
+		t.Fatalf("issueCloseOutDuplicateEscalation: %v", err)
+	}
+	if !ok || state.DiffDigest != "sha256:abc" || state.Cause["stage"] != "local-ci" ||
+		!strings.Contains(state.Reason, "local-ci") || !strings.Contains(state.Reason, "timed out") {
+		t.Fatalf("state = %#v, ok=%t", state, ok)
+	}
+}
+
+func TestIssueCloseOutDuplicateEscalationPostsOneCommentAndStoresPRMarker(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Stalled implementation", "goobers:approved", "goobers:ready", "goobers:claimed")
+	server.addIssue(77, "Implementation PR")
+
+	const runID = "run-duplicate"
+	head := providers.BranchNameIn(providerBranchNamespace(), "implementation", runID)
+	server.addOpenPR(77, head, "main", "head-sha", "base-sha", false, nil, nil)
+	server.setPRBody(77, "Fixes #7")
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if _, _, err := ledger.Claim("7", runID, "implementation", time.Hour); err != nil {
+		t.Fatalf("seed claim ledger: %v", err)
+	}
+
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Target: "park-escalated",
+		Runner: map[string]any{
+			"duplicateDiff": true, "diffDigest": "sha256:abc",
+			"repassCause": map[string]any{
+				"kind": "stage-failure", "gate": "local-gate", "outcome": "fail",
+				"stage": "local-ci", "errorCode": "deadline_exceeded", "errorMessage": "timed out",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("append gate event: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-remediation")
+	t.Chdir(t.TempDir())
+	code, stdout, stderr := runArgs(t, "issue-close-out", root)
+	if code != 0 {
+		t.Fatalf("issue-close-out: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if got := len(server.issues[7].comments); got != 1 {
+		t.Fatalf("driving issue comments = %d, want exactly one", got)
+	}
+	if got := len(server.issues[77].comments); got != 0 {
+		t.Fatalf("PR comments = %d, want none", got)
+	}
+	if !strings.Contains(server.issues[7].comments[0], "local-ci") {
+		t.Fatalf("parking comment = %q, want upstream cause", server.issues[7].comments[0])
+	}
+	if !hasAnyLabel(server.issues[7].labels, []string{needsRemediationLabel}) ||
+		hasAnyLabel(server.issues[7].labels, []string{providers.LabelNeedsHuman}) {
+		t.Fatalf("driving issue labels = %v, want remediation without needs-human", server.issues[7].labels)
+	}
+	if !strings.Contains(server.prs[77].body, "Fixes #7") {
+		t.Fatalf("PR body = %q, want original description preserved", server.prs[77].body)
+	}
+	state, ok := parseRemediationStateComment(server.prs[77].body)
+	if !ok || state.LastDiffDigest != "sha256:abc" {
+		t.Fatalf("PR body marker state = %#v, ok=%t", state, ok)
 	}
 }
 
@@ -513,5 +720,23 @@ func TestIssueCloseOutMissingRunIDFailsClosed(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "GOOBERS_RUN_ID") {
 		t.Fatalf("stderr = %q, want a clear missing-run-id message", stderr)
+	}
+}
+
+// TestCloseOutClaimMarkerIsPlainOnEveryProvider pins the cross-provider claim
+// contract: ClaimWorkItem defaults the marker to the plain LabelClaimed on
+// GitHub, Gitea, AND ADO, so close-out must remove that same constant — a
+// provider-conditional translation here is how the ADO stale-marker leak
+// happened (removal targeted a status-form tag the claim never writes).
+func TestCloseOutClaimMarkerIsPlainOnEveryProvider(t *testing.T) {
+	if providers.LabelClaimed != "goobers:claimed" {
+		t.Fatalf("LabelClaimed = %q, want goobers:claimed", providers.LabelClaimed)
+	}
+	src, err := os.ReadFile("issuecloseout.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "StatusLabelFor(providers.WorkItemStatusClaimed)") {
+		t.Fatal("issuecloseout.go reintroduced a status-form claim-marker translation; the claim path writes the plain LabelClaimed on every provider")
 	}
 }

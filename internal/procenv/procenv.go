@@ -14,9 +14,10 @@ import (
 	"strings"
 )
 
-// Vars are the exact ambient env var names carried through: PATH/HOME/TMPDIR
+// Vars are the exact ambient env var names carried through: PATH/HOME/USER/TMPDIR
 // (required for the child, and anything it shells out to, e.g. `make`
-// invoking `go`, to locate its own toolchain); Windows profile paths
+// invoking `go`, to locate its own toolchain and authenticated user config);
+// Windows profile paths
 // (USERPROFILE/APPDATA/LOCALAPPDATA/HOMEDRIVE/HOMEPATH), required by
 // authenticated CLIs such as Copilot to find their existing per-user config;
 // Windows runtime/shell paths (SystemRoot/WINDIR/TEMP/TMP/ComSpec/PATHEXT/
@@ -30,10 +31,12 @@ import (
 // behind a corporate proxy or private registry), GOTOOLCHAIN (toolchain
 // selection) — without which `local-ci`'s `make ci` re-downloads modules or
 // fails outright on any host with a customized Go env; and the common
-// non-Go toolchain families (#736, polyglot) — .NET/NuGet, Python, Node, and
-// Rust — so a stage running `dotnet build && dotnet test`, `pip`, `npm`, or
-// `cargo` against a relocated SDK root or cache finds it instead of silently
-// falling back to a HOME-derived default that does not exist on the host.
+// non-Go toolchain families (#736, polyglot) — .NET/NuGet, Python, Node, Rust,
+// Java/Maven/Gradle, and Playwright (#3369) — so a stage running
+// `dotnet build && dotnet test`, `pip`, `npm`, `cargo`, `mvn`, `gradle`, or a
+// Playwright-driven E2E suite against a relocated SDK root, cache, or
+// configured package registry finds it instead of silently falling back to a
+// HOME-derived default that does not exist on the host.
 // None of these carries secret material — the allowlist stays default-deny,
 // and toolchain vars that CAN carry secrets (e.g. npm's per-registry
 // `npm_config_//…/:_authToken`) are deliberately excluded, which is why the
@@ -42,7 +45,7 @@ import (
 // instance config (RunnerConfig.EnvPassthrough) — see BaseEnvWith — never by
 // switching to os.Environ() passthrough.
 var Vars = []string{
-	"PATH", "HOME", "TMPDIR",
+	"PATH", "HOME", "USER", "TMPDIR",
 	"USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH",
 	"SystemRoot", "WINDIR", "TEMP", "TMP", "ComSpec", "PATHEXT", "PSModulePath",
 	"XDG_CONFIG_HOME", "XDG_DATA_HOME",
@@ -59,10 +62,20 @@ var Vars = []string{
 	"DOTNET_CLI_TELEMETRY_OPTOUT", "DOTNET_NOLOGO",
 	// Python: active virtualenv, import path, per-user base, and pip cache.
 	"VIRTUAL_ENV", "PYTHONPATH", "PYTHONUSERBASE", "PIP_CACHE_DIR",
-	// Node: module resolution path and the (secret-free) npm cache location.
-	"NODE_PATH", "npm_config_cache",
+	// Node: module resolution path, the (secret-free) npm cache location, and
+	// npm registry host routing for lockfiles with public registry URLs.
+	"NODE_PATH", "npm_config_cache", "NPM_CONFIG_REGISTRY", "NPM_CONFIG_REPLACE_REGISTRY_HOST",
 	// Rust: cargo + rustup homes (registry cache, toolchains).
 	"CARGO_HOME", "RUSTUP_HOME",
+	// Java: JDK roots, JVM options, and Maven + Gradle homes/caches.
+	"JAVA_HOME", "JDK_HOME", "MAVEN_OPTS", "MAVEN_CONFIG", "M2_HOME",
+	"GRADLE_OPTS", "GRADLE_USER_HOME",
+	// Playwright: relocated browser binary cache (#3369) — same secret-free
+	// cache-location class as GOCACHE/npm_config_cache/PIP_CACHE_DIR/
+	// NUGET_PACKAGES/CARGO_HOME/GRADLE_USER_HOME; without it a Playwright-driven
+	// stage falls back to a HOME-derived default that doesn't exist in a fresh
+	// sandbox HOME and attempts a CDN download the egress policy denies.
+	"PLAYWRIGHT_BROWSERS_PATH",
 }
 
 // Prefixes are ambient env var name prefixes carried through as a family —

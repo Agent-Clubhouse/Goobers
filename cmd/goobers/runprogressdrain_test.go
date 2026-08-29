@@ -62,7 +62,7 @@ func TestWaitRendersFinalStageWhenRunCompletesDuringPoll(t *testing.T) {
 			// to the loop's reads.
 			appended := make(chan error, 1)
 			go func() {
-				time.Sleep(time.Duration(i%7) * 300 * time.Microsecond)
+				time.Sleep(time.Duration(i%7) * 300 * time.Microsecond) // Intentional jitter exercises concurrent drain ordering.
 				if err := run.Append(journal.Event{
 					Type: journal.EventStageFinished, Stage: "merge-preview", Attempt: 1,
 					Status: "success", Time: now.Add(time.Second),

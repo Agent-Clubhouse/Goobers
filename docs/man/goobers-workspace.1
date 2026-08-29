@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS WORKSPACE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers workspace \- explicitly recover pinned repository workspaces
+.SH SYNOPSIS
+\fBgoobers workspace\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers workspace reset <repo> [path]
+
+Explicitly recover a configured pinned workspace. Reset refuses a live
+lease, terminates lingering build processes, deletes the workspace, and
+performs a full checkout at the same stable path. It never runs
+automatically. Default instance path ".".
+.fi
+.SH EXAMPLES
+.nf
+goobers workspace reset my-repo
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

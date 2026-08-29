@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -47,6 +49,7 @@ func TestReconcilePostMergeProcessesLateMerge(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
+
 	if !strings.Contains(stdout, "reconciled 1") {
 		t.Fatalf("stdout = %q, want one reconciled pull request", stdout)
 	}
@@ -127,6 +130,66 @@ func TestReconcilePostMergeLeavesUnmergedPullRequestPending(t *testing.T) {
 	entry := loadPostMergeReconcileEntry(t, root, repo, "20")
 	if entry.State != postMergeReconcilePending || entry.LastCheckedAt == nil {
 		t.Fatalf("reconcile entry = %+v, want checked and pending", entry)
+	}
+}
+
+func TestReconcilePostMergeClearsSelfHealedEscalationWithoutMerge(t *testing.T) {
+	const (
+		pullNumber  = 631
+		beyondLimit = 632
+	)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(pullNumber, "self-healed pr", remediationEscalatedLabel)
+	server.addOpenPR(pullNumber, "goobers/implementation/healed", "main", "new-head", "base", false, []string{remediationEscalatedLabel}, nil)
+	server.addIssue(beyondLimit, "self-healed pr beyond limit", remediationEscalatedLabel)
+	server.addOpenPR(beyondLimit, "goobers/implementation/healed-later", "main", "newer-head", "base", false, []string{remediationEscalatedLabel}, nil)
+	comment, err := remediationStateComment(remediationState{
+		Escalated: true, EscalatedHeadSHA: "old-head", EscalatedBaseSHA: "base",
+	})
+	if err != nil {
+		t.Fatalf("remediationStateComment: %v", err)
+	}
+	server.addComment(pullNumber, comment)
+	server.addComment(beyondLimit, comment)
+	server.setBranchTip("main", "base")
+
+	root := postMergeReconcileEnv(t, server.server.URL)
+	code, stdout, stderr := runArgs(t, "reconcile-post-merge", "--max", "1", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	server.mu.Lock()
+	labels := append([]string(nil), server.issues[pullNumber].labels...)
+	beyondLimitLabels := append([]string(nil), server.issues[beyondLimit].labels...)
+	server.mu.Unlock()
+	if hasAnyLabel(labels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels = %v, want %s cleared on a cycle with no merge", labels, remediationEscalatedLabel)
+	}
+	if !hasAnyLabel(beyondLimitLabels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels beyond limit = %v, want %s preserved", beyondLimitLabels, remediationEscalatedLabel)
+	}
+	if !strings.Contains(stdout, "un-escalated 1 self-healed pr(s)") {
+		t.Fatalf("stdout = %q, want independent unpark report", stdout)
+	}
+	if requests := server.pullListRequestCount(); requests != 1 {
+		t.Fatalf("pull-list requests = %d, want one shared bounded scan", requests)
+	}
+
+	code, stdout, stderr = runArgs(t, "reconcile-post-merge", "--max", "1", root)
+	if code != 0 {
+		t.Fatalf("second cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	server.mu.Lock()
+	beyondLimitLabels = append([]string(nil), server.issues[beyondLimit].labels...)
+	server.mu.Unlock()
+	if hasAnyLabel(beyondLimitLabels, []string{remediationEscalatedLabel}) {
+		t.Fatalf("labels beyond limit after second cycle = %v, want %s cleared", beyondLimitLabels, remediationEscalatedLabel)
+	}
+	if !strings.Contains(stdout, "un-escalated 1 self-healed pr(s)") {
+		t.Fatalf("second cycle stdout = %q, want rotated reconciliation report", stdout)
+	}
+	if requests := server.pullListRequestCount(); requests != 2 {
+		t.Fatalf("pull-list requests after second cycle = %d, want one bounded page per cycle", requests)
 	}
 }
 
@@ -324,5 +387,60 @@ func TestReconcilePostMergeRejectsUnboundedBatch(t *testing.T) {
 	code, _, stderr := runArgs(t, "reconcile-post-merge", "--max", "101")
 	if code != 1 || !strings.Contains(stderr, "max must be between 1 and 100") {
 		t.Fatalf("code = %d, stderr = %q, want bounded-batch rejection", code, stderr)
+	}
+}
+
+func TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry(t *testing.T) {
+	var polls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		polls++
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"pullRequestId": 359, "status": "completed", "description": "No work item reference",
+			"repository": map[string]interface{}{
+				"id": "repo-guid", "name": "repo",
+				"project": map[string]string{"id": "project-guid", "name": "project"},
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	root := initDemo(t)
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "contoso", Project: "project", Name: "repo"}
+	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	t.Setenv(executor.CredentialEnvVar(string(capability.ADOPRWrite)), "ado-token")
+	previous := newADOProviderForStage
+	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
+			func(provider *providers.ADOProvider) { provider.BaseURL = server.URL }), nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = previous })
+	if err := recordPostMergeTimeout(root, repo, "359", time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("record queue timeout: %v", err)
+	}
+
+	code, stdout, stderr := runArgs(t, "reconcile-post-merge", root)
+	if code != 0 {
+		t.Fatalf("first cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	entry := loadPostMergeReconcileEntry(t, root, repo, "359")
+	if entry.State != postMergeReconcileCompleted || entry.CompletedAt == nil {
+		t.Fatalf("reconcile entry = %+v, want completed", entry)
+	}
+	if entry.Actions.BranchCleanup || entry.Actions.SiblingFanOut ||
+		entry.Actions.ResolvedUnpark || entry.Actions.EscalationUnpark ||
+		entry.Actions.DemotionUnpark {
+		t.Fatalf("reconcile actions = %+v, want GitHub-only actions left uncheckpointed", entry.Actions)
+	}
+	firstPolls := polls
+
+	code, stdout, stderr = runArgs(t, "reconcile-post-merge", root)
+	if code != 0 {
+		t.Fatalf("second cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if polls != firstPolls {
+		t.Fatalf("polls after retry = %d, want unchanged at %d", polls, firstPolls)
 	}
 }

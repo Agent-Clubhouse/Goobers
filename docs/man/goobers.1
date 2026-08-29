@@ -11,21 +11,78 @@ business errors, 2 = usage/IO error. After waiting for a run, run/signal use
 0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
 modes exit 0 before a terminal outcome is known.
 
-backlog-health/backlog-query/reconcile-branches/telemetry-query/ios-simulator-test/push-branch/open-pr/issue-close-out/set-milestone/merge-pr/merge-queue-poll/
-pr-select/gather-sibling-context/gather-implement-context/apply-verdict/post-merge/update-behind-pr/gather-pr-context/gather-ci-failures/gather-review-threads/gather-issue-context/
-rebase-pr/remediation-checkpoint/push-remediated/respond-to-findings are the built-in provider-chain
-and connector stage kinds (ARCHITECTURE.md §7, issues #12/#13/#27/#148/#237/
-#359/#360/#361/#362/#363/#364/#392/#939/#942/#945): invoked by the runner as a deterministic
-stage's shell command, not
-typically run by hand. They read their run context (instance root, run id,
-workflow, declared Task.Inputs, and injected credentials) from GOOBERS_*
-environment variables the runner sets — see internal/executor/env.go —
-falling back to an optional trailing [path] argument (default ".") for
-standalone/manual invocation.
-gather-implement-context uses the same deterministic stage contract to supply
-first-pass review and hot-file evidence.
+Use `goobers help all` for advanced operator commands or
+`goobers help stages` for runner-invoked workflow internals.
+Quickstart guide: docs/guides/quickstart.md
+DSL entry points: `goobers schema` and `goobers examples`
+Troubleshooting: `goobers status`, `goobers trace`, and `goobers escalations`
 .fi
 .SH COMMANDS
+.SS Core commands
+.TP
+\fBgoobers completion\fR
+generate a shell completion script
+.TP
+\fBgoobers connect\fR
+connect an instance to your own GitHub repository
+.TP
+\fBgoobers dashboard\fR
+serve and open the local operations portal
+.TP
+\fBgoobers down\fR
+request a live daemon's graceful drain-shutdown from a separate terminal
+.TP
+\fBgoobers escalations\fR
+list escalated runs newest first
+.TP
+\fBgoobers examples\fR
+browse canonical workflow examples embedded in the binary
+.TP
+\fBgoobers getting-started\fR
+serve and open the guided portal Getting Started walkthrough
+.TP
+\fBgoobers help\fR
+show command or concept help
+.TP
+\fBgoobers init\fR
+scaffold an instance root
+.TP
+\fBgoobers run\fR
+trigger a run manually (still honors run conditions)
+.TP
+\fBgoobers scaffold\fR
+scaffold a goober, workflow, or gaggle
+.TP
+\fBgoobers service\fR
+install and manage the platform-supervised daemon
+.TP
+\fBgoobers signal\fR
+fire an external signal to subscribed workflows
+.TP
+\fBgoobers stats\fR
+show the instance lifetime summary card
+.TP
+\fBgoobers status\fR
+validate config, show warnings, list runs, report daemon health, or list live agentic stages
+.TP
+\fBgoobers trace\fR
+show a run's journal events or review verdicts, follow a live run, or show transcripts
+.TP
+\fBgoobers up\fR
+run the daemon (scheduler + runner + loopback HTTP API)
+.TP
+\fBgoobers validate\fR
+validate an instance or checked-in config source tree
+.TP
+\fBgoobers version\fR
+print build version, commit, and date (--json for structured output)
+.TP
+\fBgoobers workflow\fR
+inspect workflows
+.TP
+\fBgoobers workflow show\fR
+show a workflow as a text DAG
+.SS Advanced operator commands
 .TP
 \fBgoobers agent-kit\fR
 install, inspect, or update the release-matched agent toolkit
@@ -42,17 +99,8 @@ review or explicitly apply an agent toolkit update
 \fBgoobers apply\fR
 reconcile a live daemon's workflow definitions now
 .TP
-\fBgoobers apply-verdict\fR
-publish a managed or advisory merge-review verdict (a workflow stage)
-.TP
-\fBgoobers backlog-dedupe\fR
-surface ranked duplicate candidates for curator judgment (a workflow stage)
-.TP
-\fBgoobers backlog-health\fR
-snapshot ready-pool depth and age (a workflow stage)
-.TP
-\fBgoobers backlog-query\fR
-query/claim one eligible backlog item (a workflow stage)
+\fBgoobers approve\fR
+approve a paused or escalated gate
 .TP
 \fBgoobers blocked\fR
 inspect and clear the learned blocked-item ledger
@@ -63,9 +111,6 @@ safely remove one blocked-item record, under claims.lock
 \fBgoobers blocked list\fR
 print the learned blocked-item ledger (scheduler/blocked.json)
 .TP
-\fBgoobers check-fail-first\fR
-enforce fail-first evidence for a new workflow gate (a workflow stage)
-.TP
 \fBgoobers claims\fR
 inspect and force-release claim leases
 .TP
@@ -74,9 +119,6 @@ print current claim leases, optionally only expired leases
 .TP
 \fBgoobers claims release\fR
 force-release a claim through the live daemon or claims.lock
-.TP
-\fBgoobers completion\fR
-generate a shell completion script
 .TP
 \fBgoobers completion bash\fR
 generate a bash completion script
@@ -102,29 +144,26 @@ apply the recorded checked-in source to the runtime instance
 \fBgoobers config show\fR
 render the effective instance config (secrets redacted)
 .TP
-\fBgoobers dashboard\fR
-serve and open the local operations portal
-.TP
-\fBgoobers docs-churn\fR
-emit the docs-drift churn digest since the watermark (a connector stage)
-.TP
 \fBgoobers doctor\fR
 preflight a Kubernetes cluster against the documented infra shape
 .TP
-\fBgoobers down\fR
-request a live daemon's graceful drain-shutdown from a separate terminal
+\fBgoobers e2e\fR
+check the Goobernetes distributed e2e proof harness's assertions against a recorded run
 .TP
-\fBgoobers elect-lander\fR
-elect the landing PR among a merge-review cohort (a workflow stage)
+\fBgoobers e2e kill-inject\fR
+perform one live S6 kill-matrix cell (pod-kill) against a real cluster
 .TP
-\fBgoobers escalations\fR
-list escalated runs newest first
+\fBgoobers e2e verify\fR
+verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
+.TP
+\fBgoobers engine-project\fR
+write a completed engine run's journal into the instance (experimental)
+.TP
+\fBgoobers engine-start\fR
+dispatch one run onto the tier-3 engine via Temporal (experimental)
 .TP
 \fBgoobers escalations show\fR
-show escalation cause + per-stage artifact timeline
-.TP
-\fBgoobers examples\fR
-browse canonical workflow examples embedded in the binary
+show escalation cause, verdict, and per-stage artifact timeline
 .TP
 \fBgoobers examples list\fR
 list canonical embedded workflow examples
@@ -140,6 +179,154 @@ list the workflow-DSL features this build supports
 .TP
 \fBgoobers fix\fR
 mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
+.TP
+\fBgoobers journal\fR
+the one sanctioned edit to the append-only journal
+.TP
+\fBgoobers journal redact\fR
+remove a leaked secret from a stored blob (SEC-041)
+.TP
+\fBgoobers lint\fR
+lint config via the single authoritative validation engine (alias for validate)
+.TP
+\fBgoobers netpol-render\fR
+render per-runner-class NetworkPolicy reference manifests from the runners: inventory
+.TP
+\fBgoobers onboarding\fR
+run non-interactive onboarding actions
+.TP
+\fBgoobers onboarding stub-agent-instructions\fR
+install agent-instruction assets into a config source
+.TP
+\fBgoobers onboarding stub-sample\fR
+materialize and optionally seed the disposable Getting Started target
+.TP
+\fBgoobers override\fR
+override a nondeterministic gate with a rationale
+.TP
+\fBgoobers preflight\fR
+check WSL full-isolation readiness and optionally hand off a command
+.TP
+\fBgoobers rerun-stage\fR
+rerun a stage with a recorded instruction addendum
+.TP
+\fBgoobers reset-rate-limit\fR
+clear the hourly run-rate budget without deleting runs/
+.TP
+\fBgoobers run abort\fR
+mark a stuck non-terminal run aborted
+.TP
+\fBgoobers run cancel\fR
+cancel a live in-flight run via the daemon
+.TP
+\fBgoobers runs\fR
+list runs and report per-run disk usage
+.TP
+\fBgoobers runs du\fR
+report per-run journal and artifact bytes
+.TP
+\fBgoobers runs list\fR
+alias for the status run table (same flags, no --watch)
+.TP
+\fBgoobers scaffold gaggle\fR
+scaffold a gaggle, or rename one with --from
+.TP
+\fBgoobers scaffold goober\fR
+scaffold a goober in a gaggle
+.TP
+\fBgoobers scaffold workflow\fR
+scaffold a workflow in a gaggle
+.TP
+\fBgoobers schema\fR
+emit a JSON Schema embedded in this build
+.TP
+\fBgoobers self-update\fR
+stage and request a supervised binary update
+.TP
+\fBgoobers service install\fR
+install, enable, and start the supervised daemon
+.TP
+\fBgoobers service start\fR
+resume an installed-but-stopped daemon
+.TP
+\fBgoobers service status\fR
+report whether the supervised daemon is installed and running
+.TP
+\fBgoobers service stop\fR
+halt the running daemon without disabling or removing it
+.TP
+\fBgoobers service uninstall\fR
+gracefully stop and remove the supervised daemon
+.TP
+\fBgoobers speech\fR
+preflight and test local speech notifications
+.TP
+\fBgoobers speech preflight\fR
+check the configured local speech engine without emitting sound
+.TP
+\fBgoobers speech test\fR
+speak the fixed local readiness phrase
+.TP
+\fBgoobers telemetry\fR
+query, export, prune, or compact run telemetry
+.TP
+\fBgoobers telemetry compact\fR
+drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
+.TP
+\fBgoobers telemetry errors\fR
+recent errors across runs, by class, with run/stage refs
+.TP
+\fBgoobers telemetry export\fR
+re-emit a span-start-time window from journaled OTLP/JSON
+.TP
+\fBgoobers telemetry prune\fR
+remove terminal runs outside configured retention bounds
+.TP
+\fBgoobers telemetry prune-orphans\fR
+report or delete old orphan and unfinished run directories
+.TP
+\fBgoobers telemetry stats\fR
+success rate and duration aggregates per workflow and stage
+.TP
+\fBgoobers versions\fR
+print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
+.TP
+\fBgoobers worker\fR
+host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
+.TP
+\fBgoobers workspace\fR
+explicitly recover pinned repository workspaces
+.TP
+\fBgoobers workspace reset\fR
+tear down and re-materialize a pinned repository workspace
+.SS Workflow-stage and connector commands
+.TP
+\fBgoobers apply-verdict\fR
+publish a managed or advisory merge-review verdict (a workflow stage)
+.TP
+\fBgoobers backlog-assignment\fR
+assign eligible backlog items from a configured roster (a workflow stage)
+.TP
+\fBgoobers backlog-dedupe\fR
+surface ranked duplicate candidates for curator judgment (a workflow stage)
+.TP
+\fBgoobers backlog-health\fR
+snapshot ready-pool depth and age (a workflow stage)
+.TP
+\fBgoobers backlog-query\fR
+query/claim one eligible backlog item (a workflow stage)
+.TP
+\fBgoobers check-fail-first\fR
+enforce fail-first evidence for a new workflow gate (a workflow stage)
+.TP
+\fBgoobers check-issue-staleness\fR
+route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
+.TP
+\fBgoobers docs-churn\fR
+emit the docs-drift churn digest since the watermark (a connector stage)
+.TP
+\fBgoobers elect-lander\fR
+elect the landing PR among a merge-review cohort (a workflow stage)
 .TP
 \fBgoobers gate-removal-guard\fR
 block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
@@ -162,23 +349,14 @@ add native reviews and anchored inline threads to a remediation brief (a workflo
 \fBgoobers gather-sibling-context\fR
 load other open PRs as review evidence (a workflow stage)
 .TP
-\fBgoobers init\fR
-scaffold an instance root
-.TP
 \fBgoobers ios-simulator-test\fR
 run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)
 .TP
 \fBgoobers issue-close-out\fR
 comment + close out the claimed issue (a workflow stage)
 .TP
-\fBgoobers journal\fR
-the one sanctioned edit to the append-only journal
-.TP
-\fBgoobers journal redact\fR
-remove a leaked secret from a stored blob (SEC-041)
-.TP
-\fBgoobers lint\fR
-lint config via the single authoritative validation engine (alias for validate)
+\fBgoobers mcp-io\fR
+run the generic publish/read/list MCP server the harness spawns for a goober (a workflow stage)
 .TP
 \fBgoobers merge-pr\fR
 conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
@@ -186,26 +364,20 @@ conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
 \fBgoobers merge-queue-poll\fR
 watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)
 .TP
-\fBgoobers onboarding\fR
-run non-interactive onboarding actions
-.TP
-\fBgoobers onboarding stub-agent-instructions\fR
-install agent-instruction assets into a config source
-.TP
-\fBgoobers onboarding stub-sample\fR
-materialize and optionally seed the disposable Getting Started target
-.TP
 \fBgoobers open-pr\fR
 open or update the run's PR (a workflow stage)
 .TP
 \fBgoobers post-merge\fR
 post-merge fan-out + close the referenced issue (a workflow stage)
 .TP
+\fBgoobers pr-claim\fR
+check PR liveness or release its remediation claim (a workflow stage)
+.TP
 \fBgoobers pr-select\fR
 select one managed or advisory open PR for merge-review (a workflow stage)
 .TP
-\fBgoobers preflight\fR
-check WSL full-isolation readiness and optionally hand off a command
+\fBgoobers publish-batch\fR
+publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
 .TP
 \fBgoobers push-branch\fR
 push the worktree's checked-out branch to origin (a workflow stage)
@@ -231,137 +403,26 @@ durable per-cause attempt budgets + same-diff escalation (a workflow stage)
 \fBgoobers report-pr-status\fR
 publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
 .TP
-\fBgoobers reset-rate-limit\fR
-clear the hourly run-rate budget without deleting runs/
+\fBgoobers resolve-review-threads\fR
+reply to and resolve remediated native review threads (a workflow stage)
 .TP
 \fBgoobers respond-to-findings\fR
 post a validated per-finding remediation response to the claimed PR (a workflow stage)
 .TP
-\fBgoobers run\fR
-trigger a run manually (still honors run conditions)
-.TP
-\fBgoobers run abort\fR
-mark a stuck non-terminal run aborted
-.TP
-\fBgoobers run approve\fR
-approve an escalated gate (not yet implemented, HITL-7/#469)
-.TP
-\fBgoobers run cancel\fR
-cancel a live in-flight run via the daemon
-.TP
-\fBgoobers run override\fR
-force-pass a nondeterministic gate (not yet implemented, HITL-7/#469)
-.TP
-\fBgoobers run rerun\fR
-rerun a stage with a recorded instruction addendum (not yet implemented, HITL-7/#469)
-.TP
-\fBgoobers runs\fR
-list runs and report per-run disk usage
-.TP
-\fBgoobers runs du\fR
-report per-run journal and artifact bytes
-.TP
-\fBgoobers runs list\fR
-alias for the status run table (same flags, no --watch)
-.TP
-\fBgoobers scaffold\fR
-scaffold a goober or workflow in a gaggle
-.TP
-\fBgoobers scaffold goober\fR
-scaffold a goober in a gaggle
-.TP
-\fBgoobers scaffold workflow\fR
-scaffold a workflow in a gaggle
-.TP
-\fBgoobers schema\fR
-emit a JSON Schema embedded in this build
-.TP
-\fBgoobers self-update\fR
-stage and request a supervised binary update
-.TP
-\fBgoobers service\fR
-install and manage the platform-supervised daemon
-.TP
-\fBgoobers service install\fR
-install, enable, and start the supervised daemon
-.TP
-\fBgoobers service status\fR
-report whether the supervised daemon is installed and running
-.TP
-\fBgoobers service uninstall\fR
-gracefully stop and remove the supervised daemon
+\fBgoobers select-source\fR
+select and claim an unconsumed L6 decomposition disposition (a workflow stage)
 .TP
 \fBgoobers set-milestone\fR
 assign an existing milestone to an issue (a workflow stage)
 .TP
-\fBgoobers signal\fR
-fire an external signal to subscribed workflows
-.TP
-\fBgoobers speech\fR
-preflight and test local speech notifications
-.TP
-\fBgoobers speech preflight\fR
-check the configured local speech engine without emitting sound
-.TP
-\fBgoobers speech test\fR
-speak the fixed local readiness phrase
-.TP
-\fBgoobers stats\fR
-show the instance lifetime summary card
-.TP
-\fBgoobers status\fR
-validate config, show warnings, list runs, or report daemon health
-.TP
-\fBgoobers telemetry\fR
-query, export, prune, or compact run telemetry
-.TP
-\fBgoobers telemetry compact\fR
-drop aged scheduler journal/rollup rows and reclaim disk (VACUUM)
-.TP
-\fBgoobers telemetry errors\fR
-recent errors across runs, by class, with run/stage refs
-.TP
-\fBgoobers telemetry export\fR
-re-emit a span-start-time window from journaled OTLP/JSON
-.TP
-\fBgoobers telemetry prune\fR
-remove terminal runs outside configured retention bounds
-.TP
-\fBgoobers telemetry prune-orphans\fR
-report or delete old orphan and unfinished run directories
-.TP
-\fBgoobers telemetry stats\fR
-success rate and duration aggregates per workflow and stage
-.TP
 \fBgoobers telemetry-query\fR
 emit versioned candidate findings (a connector stage)
-.TP
-\fBgoobers trace\fR
-show a run's journal events, follow a live run, or show transcripts
-.TP
-\fBgoobers up\fR
-run the daemon (scheduler + runner + loopback HTTP API)
 .TP
 \fBgoobers update-behind-pr\fR
 API-update a clean behind-base PR, else route to remediation (a workflow stage)
 .TP
-\fBgoobers validate\fR
-validate an instance or checked-in config source tree
-.TP
-\fBgoobers version\fR
-print build version, commit, and date (--json for structured output)
-.TP
-\fBgoobers versions\fR
-print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
-.TP
-\fBgoobers worker\fR
-host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
-.TP
-\fBgoobers workflow\fR
-inspect workflows
-.TP
-\fBgoobers workflow show\fR
-show a workflow as a text DAG
+\fBgoobers validate-plan\fR
+validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
 .SH SEE ALSO
 \fBgoobers-agent-kit\fR(1),
 \fBgoobers-agent-kit-check\fR(1),
@@ -369,6 +430,8 @@ show a workflow as a text DAG
 \fBgoobers-agent-kit-update\fR(1),
 \fBgoobers-apply\fR(1),
 \fBgoobers-apply-verdict\fR(1),
+\fBgoobers-approve\fR(1),
+\fBgoobers-backlog-assignment\fR(1),
 \fBgoobers-backlog-dedupe\fR(1),
 \fBgoobers-backlog-health\fR(1),
 \fBgoobers-backlog-query\fR(1),
@@ -376,6 +439,7 @@ show a workflow as a text DAG
 \fBgoobers-blocked-clear\fR(1),
 \fBgoobers-blocked-list\fR(1),
 \fBgoobers-check-fail-first\fR(1),
+\fBgoobers-check-issue-staleness\fR(1),
 \fBgoobers-claims\fR(1),
 \fBgoobers-claims-list\fR(1),
 \fBgoobers-claims-release\fR(1),
@@ -388,11 +452,17 @@ show a workflow as a text DAG
 \fBgoobers-config-diff\fR(1),
 \fBgoobers-config-materialize\fR(1),
 \fBgoobers-config-show\fR(1),
+\fBgoobers-connect\fR(1),
 \fBgoobers-dashboard\fR(1),
 \fBgoobers-docs-churn\fR(1),
 \fBgoobers-doctor\fR(1),
 \fBgoobers-down\fR(1),
+\fBgoobers-e2e\fR(1),
+\fBgoobers-e2e-kill-inject\fR(1),
+\fBgoobers-e2e-verify\fR(1),
 \fBgoobers-elect-lander\fR(1),
+\fBgoobers-engine-project\fR(1),
+\fBgoobers-engine-start\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),
 \fBgoobers-examples\fR(1),
@@ -408,21 +478,28 @@ show a workflow as a text DAG
 \fBgoobers-gather-pr-context\fR(1),
 \fBgoobers-gather-review-threads\fR(1),
 \fBgoobers-gather-sibling-context\fR(1),
+\fBgoobers-getting-started\fR(1),
+\fBgoobers-help\fR(1),
 \fBgoobers-init\fR(1),
 \fBgoobers-ios-simulator-test\fR(1),
 \fBgoobers-issue-close-out\fR(1),
 \fBgoobers-journal\fR(1),
 \fBgoobers-journal-redact\fR(1),
 \fBgoobers-lint\fR(1),
+\fBgoobers-mcp-io\fR(1),
 \fBgoobers-merge-pr\fR(1),
 \fBgoobers-merge-queue-poll\fR(1),
+\fBgoobers-netpol-render\fR(1),
 \fBgoobers-onboarding\fR(1),
 \fBgoobers-onboarding-stub-agent-instructions\fR(1),
 \fBgoobers-onboarding-stub-sample\fR(1),
 \fBgoobers-open-pr\fR(1),
+\fBgoobers-override\fR(1),
 \fBgoobers-post-merge\fR(1),
+\fBgoobers-pr-claim\fR(1),
 \fBgoobers-pr-select\fR(1),
 \fBgoobers-preflight\fR(1),
+\fBgoobers-publish-batch\fR(1),
 \fBgoobers-push-branch\fR(1),
 \fBgoobers-push-remediated\fR(1),
 \fBgoobers-rebase-pr\fR(1),
@@ -431,25 +508,28 @@ show a workflow as a text DAG
 \fBgoobers-record-merge-refusal\fR(1),
 \fBgoobers-remediation-checkpoint\fR(1),
 \fBgoobers-report-pr-status\fR(1),
+\fBgoobers-rerun-stage\fR(1),
 \fBgoobers-reset-rate-limit\fR(1),
+\fBgoobers-resolve-review-threads\fR(1),
 \fBgoobers-respond-to-findings\fR(1),
 \fBgoobers-run\fR(1),
 \fBgoobers-run-abort\fR(1),
-\fBgoobers-run-approve\fR(1),
 \fBgoobers-run-cancel\fR(1),
-\fBgoobers-run-override\fR(1),
-\fBgoobers-run-rerun\fR(1),
 \fBgoobers-runs\fR(1),
 \fBgoobers-runs-du\fR(1),
 \fBgoobers-runs-list\fR(1),
 \fBgoobers-scaffold\fR(1),
+\fBgoobers-scaffold-gaggle\fR(1),
 \fBgoobers-scaffold-goober\fR(1),
 \fBgoobers-scaffold-workflow\fR(1),
 \fBgoobers-schema\fR(1),
+\fBgoobers-select-source\fR(1),
 \fBgoobers-self-update\fR(1),
 \fBgoobers-service\fR(1),
 \fBgoobers-service-install\fR(1),
+\fBgoobers-service-start\fR(1),
 \fBgoobers-service-status\fR(1),
+\fBgoobers-service-stop\fR(1),
 \fBgoobers-service-uninstall\fR(1),
 \fBgoobers-set-milestone\fR(1),
 \fBgoobers-signal\fR(1),
@@ -470,8 +550,11 @@ show a workflow as a text DAG
 \fBgoobers-up\fR(1),
 \fBgoobers-update-behind-pr\fR(1),
 \fBgoobers-validate\fR(1),
+\fBgoobers-validate-plan\fR(1),
 \fBgoobers-version\fR(1),
 \fBgoobers-versions\fR(1),
 \fBgoobers-worker\fR(1),
 \fBgoobers-workflow\fR(1),
-\fBgoobers-workflow-show\fR(1)
+\fBgoobers-workflow-show\fR(1),
+\fBgoobers-workspace\fR(1),
+\fBgoobers-workspace-reset\fR(1)

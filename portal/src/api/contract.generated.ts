@@ -11,6 +11,7 @@ export const apiRoutes = {
   "workflowDetail": { method: "GET", path: "/api/v1/gaggles/{gaggle}/workflows/{workflow}", actionClass: "read-only-navigation" },
   "runs": { method: "GET", path: "/api/v1/runs", actionClass: "read-only-navigation" },
   "runDetail": { method: "GET", path: "/api/v1/runs/{run}", actionClass: "read-only-navigation" },
+  "runReveal": { method: "POST", path: "/api/v1/runs/{run}/reveal", actionClass: "maintenance" },
   "runEvents": { method: "GET", path: "/api/v1/runs/{run}/events", actionClass: "read-only-navigation" },
   "stageAttempts": { method: "GET", path: "/api/v1/runs/{run}/stages/{stage}/attempts", actionClass: "read-only-navigation" },
   "runArtifact": { method: "GET", path: "/api/v1/runs/{run}/artifacts/{digest}", actionClass: "read-only-navigation" },
@@ -22,6 +23,17 @@ export const apiRoutes = {
   "approveStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/approve", actionClass: "runtime-mutation", capability: "approve" },
   "overrideStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/override", actionClass: "runtime-mutation", capability: "override" },
   "rerunStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/rerun", actionClass: "runtime-mutation", capability: "rerun" },
+  "claimAcquire": { method: "POST", path: "/api/v1/claims/acquire", actionClass: "workflow-execution" },
+  "claimRenew": { method: "POST", path: "/api/v1/claims/renew", actionClass: "workflow-execution" },
+  "claimRelease": { method: "POST", path: "/api/v1/claims/release", actionClass: "workflow-execution" },
+  "claimSettle": { method: "POST", path: "/api/v1/claims/settle", actionClass: "workflow-execution" },
+  "triggerIngest": { method: "POST", path: "/api/v1/triggers", actionClass: "workflow-execution" },
+  "resolveEscalation": { method: "POST", path: "/api/v1/runs/{run}/escalation/resolve", actionClass: "maintenance" },
+  "journalEmit": { method: "POST", path: "/api/v1/runs/{run}/journal/emit", actionClass: "workflow-execution" },
+  "credentialResolve": { method: "POST", path: "/api/v1/credentials/resolve", actionClass: "workflow-execution" },
+  "stageSurrender": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender", actionClass: "workflow-execution" },
+  "blobGet": { method: "GET", path: "/api/v1/blobs/{digest}", actionClass: "read-only-navigation" },
+  "blobPut": { method: "PUT", path: "/api/v1/blobs/{digest}", actionClass: "workflow-execution" },
 } as const;
 
 export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];

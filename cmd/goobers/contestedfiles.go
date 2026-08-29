@@ -46,6 +46,11 @@ type openPRTouch struct {
 	files  []string
 }
 
+type openPRTouchesProvider interface {
+	ListPullRequests(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
+	PullRequestFiles(context.Context, providers.RepositoryRef, string) ([]providers.ChangedFile, error)
+}
+
 // sourceFileRefPattern matches file-path-like tokens ending in a source-file
 // extension. It is intentionally generous on the path portion (bare basename,
 // partial path, or full repo path all match) because the real filter is the
@@ -140,7 +145,7 @@ func partitionByContention(eligible []providers.WorkItem, touches []openPRTouch,
 // merge-review's sibling context uses). SkipCheckState avoids the two extra
 // check-state requests per PR that this caller has no use for. Any error is
 // returned to the caller, which treats it as best-effort (falls back to FIFO).
-func openPRTouches(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, base string) ([]openPRTouch, error) {
+func openPRTouches(ctx context.Context, provider openPRTouchesProvider, repo providers.RepositoryRef, base string) ([]openPRTouch, error) {
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: repo, Base: base, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
 	})

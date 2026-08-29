@@ -7,7 +7,7 @@ import { FixtureDaemonClient } from "../api/fixtureClient";
 import type { QueryState } from "../api/queryState";
 import type { ValidationWarning } from "../api/types";
 import { configurationWarningKey } from "../configurationWarnings";
-import { instanceWarnings, workflowWarnings } from "../prototypeData";
+import { instanceWarnings, workflowWarnings } from "../prototypeFixtures";
 import styles from "../styles.css?inline";
 import tokens from "../tokens.css?inline";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";

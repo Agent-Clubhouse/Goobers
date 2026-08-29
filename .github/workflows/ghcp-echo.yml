@@ -1,0 +1,101 @@
+name: GHCP Echo Drift Gate
+
+on:
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to test
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ghcp-echo-${{ inputs.pr || github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  ghcp-echo:
+    name: real Copilot echo (quarantined)
+    if: vars.GHCP_ECHO_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The external-service probe is advisory and runs once per dispatch. A human
+    # may redispatch only after classifying the failure and linking a tracking issue.
+    continue-on-error: true
+    steps:
+      - name: Resolve trusted dispatch target
+        id: target
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr }}
+        run: |
+          case "$PR_NUMBER" in
+            ''|*[!0-9]*)
+              echo "::error title=Invalid pull request::PR_NUMBER must be numeric."
+              exit 1
+              ;;
+          esac
+          head_repository="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.repo.full_name')"
+          if [ "$head_repository" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error title=Unsafe pull request::GHCP echo does not run code from forks."
+            exit 1
+          fi
+          echo "ref=refs/pull/${PR_NUMBER}/merge" >> "$GITHUB_OUTPUT"
+
+      - name: Check secret provisioning
+        id: provision
+        env:
+          MODEL_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$MODEL_TOKEN" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=GHCP echo disabled::COPILOT_GITHUB_TOKEN is not provisioned."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.provision.outputs.enabled == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.target.outputs.ref || github.ref }}
+
+      - name: Set up Go
+        if: steps.provision.outputs.enabled == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Copilot CLI
+        if: steps.provision.outputs.enabled == 'true'
+        run: |
+          curl -fsSL https://gh.io/copilot-install | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run real-adapter echo
+        if: steps.provision.outputs.enabled == 'true'
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          GOOBERS_COPILOT_EVIDENCE_DIR: ${{ github.workspace }}/ghcp-echo-evidence
+          GOOBERS_COPILOT_LIVE_SMOKE: "1"
+        run: >-
+          go test -tags=integration ./cmd/goobers
+          -run '^TestIntegrationCopilotEchoWorkflow$'
+          -count=1
+          -timeout=10m
+
+      - name: Upload failed run journal
+        if: ${{ failure() && steps.provision.outputs.enabled == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ghcp-echo-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ghcp-echo-evidence/runs/
+          if-no-files-found: warn
+          retention-days: 14

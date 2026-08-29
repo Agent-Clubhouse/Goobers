@@ -28,7 +28,7 @@ func TestSyncGitWorkflowSourceInstallsTrackedCommit(t *testing.T) {
 	revision, _, err := SyncGitWorkflowSource(context.Background(), root, WorkflowSource{
 		Kind: WorkflowSourceKindGit,
 		Path: repo,
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("SyncGitWorkflowSource: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestSyncGitWorkflowSourceAdvancesOnNewCommit(t *testing.T) {
 	}
 
 	source := WorkflowSource{Kind: WorkflowSourceKindGit, Path: repo}
-	first, _, err := SyncGitWorkflowSource(context.Background(), root, source, nil, nil)
+	first, _, err := SyncGitWorkflowSource(context.Background(), root, source, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("first SyncGitWorkflowSource: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestSyncGitWorkflowSourceAdvancesOnNewCommit(t *testing.T) {
 	runWorkflowSourceSyncTestGit(t, repo, "add", "manifest.yaml")
 	runWorkflowSourceSyncTestGit(t, repo, "commit", "-m", "manifest v2")
 
-	second, _, err := SyncGitWorkflowSource(context.Background(), root, source, nil, nil)
+	second, _, err := SyncGitWorkflowSource(context.Background(), root, source, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("second SyncGitWorkflowSource: %v", err)
 	}
@@ -75,6 +75,38 @@ func TestSyncGitWorkflowSourceAdvancesOnNewCommit(t *testing.T) {
 		t.Fatalf("revision did not advance after new commit: %s", second)
 	}
 	assertWorkflowSourceSyncTestFile(t, layout.ConfigDir(), "manifest.yaml", "manifest-v2\n")
+}
+
+func TestSyncGitWorkflowSourceIfChangedLeavesCurrentConfigUntouched(t *testing.T) {
+	repo := newWorkflowSourceSyncTestRepo(t, "manifest-v1\n")
+	root := t.TempDir()
+	layout := NewLayout(root)
+	if err := os.MkdirAll(layout.ConfigDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := WorkflowSource{Kind: WorkflowSourceKindGit, Path: repo}
+	revision, changed, _, err := SyncGitWorkflowSourceIfChanged(context.Background(), root, source, "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("initial SyncGitWorkflowSourceIfChanged: %v", err)
+	}
+	if !changed {
+		t.Fatal("initial sync reported unchanged")
+	}
+	sentinel := filepath.Join(layout.ConfigDir(), "runtime-sentinel")
+	if err := os.WriteFile(sentinel, []byte("preserve"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	current, changed, _, err := SyncGitWorkflowSourceIfChanged(context.Background(), root, source, revision, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("current SyncGitWorkflowSourceIfChanged: %v", err)
+	}
+	if current != revision || changed {
+		t.Fatalf("current sync = (%q, %t), want (%q, false)", current, changed, revision)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("unchanged sync replaced runtime config: %v", err)
+	}
 }
 
 // TestSyncGitWorkflowSourceRejectsUnsupportedKind pins the guard at this
@@ -85,7 +117,7 @@ func TestSyncGitWorkflowSourceRejectsUnsupportedKind(t *testing.T) {
 	_, _, err := SyncGitWorkflowSource(context.Background(), root, WorkflowSource{
 		Kind: WorkflowSourceKindLocalDir,
 		Path: t.TempDir(),
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "is not") || !strings.Contains(err.Error(), WorkflowSourceKindGit) {
 		t.Fatalf("err = %v, want kind-mismatch rejection", err)
 	}

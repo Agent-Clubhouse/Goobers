@@ -32,8 +32,13 @@ func hasWebhookTriggers(set *instance.ConfigSet) bool {
 	return false
 }
 
-func webhookListenerTopologyChanged(current, next *instance.ConfigSet) bool {
-	return hasWebhookTriggers(current) != hasWebhookTriggers(next)
+func webhookListenerEnabled(set *instance.ConfigSet, cfg *instance.Config) bool {
+	hasGitSource := cfg.WorkflowSource != nil && cfg.WorkflowSource.Kind == instance.WorkflowSourceKindGit
+	return (hasWebhookTriggers(set) || hasGitSource) && cfg.WebhookSecretConfigured()
+}
+
+func webhookListenerTopologyChanged(current, next *instance.ConfigSet, cfg *instance.Config) bool {
+	return webhookListenerEnabled(current, cfg) != webhookListenerEnabled(next, cfg)
 }
 
 func webhookConfigurationWarning(set *instance.ConfigSet, cfg *instance.Config) string {
@@ -43,8 +48,9 @@ func webhookConfigurationWarning(set *instance.ConfigSet, cfg *instance.Config) 
 	return ""
 }
 
-func buildWebhookServer(ctx context.Context, setup *schedulerSetup, sched *localscheduler.Scheduler, gate *webhookhttp.DispatchGate, errorLog *log.Logger) (*httpapi.Server, error) {
-	if !hasWebhookTriggers(setup.Definitions) || !setup.Config.WebhookSecretConfigured() {
+func buildWebhookServer(ctx context.Context, setup *schedulerSetup, sched *localscheduler.Scheduler, gate *webhookhttp.DispatchGate, errorLog *log.Logger, reconcileHook func(context.Context)) (*httpapi.Server, error) {
+	hasGitSource := setup.Config.WorkflowSource != nil && setup.Config.WorkflowSource.Kind == instance.WorkflowSourceKindGit
+	if !webhookListenerEnabled(setup.Definitions, setup.Config) {
 		return nil, nil
 	}
 	resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{
@@ -58,7 +64,11 @@ func buildWebhookServer(ctx context.Context, setup *schedulerSetup, sched *local
 		return nil, fmt.Errorf("resolve webhook secret: %w", err)
 	}
 	setup.SharedRegistry.Register([]byte(secret))
-	handler, err := webhookhttp.NewHandler([]byte(secret), sched, setup.InstanceLog, gate)
+	var handlerOpts []webhookhttp.HandlerOption
+	if hasGitSource {
+		handlerOpts = append(handlerOpts, webhookhttp.WithPushHook(reconcileHook))
+	}
+	handler, err := webhookhttp.NewHandler([]byte(secret), sched, setup.InstanceLog, gate, handlerOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("initialize webhook handler: %w", err)
 	}

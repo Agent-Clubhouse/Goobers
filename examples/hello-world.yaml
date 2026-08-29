@@ -1,0 +1,28 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: hello-world
+spec:
+  gaggle: example
+  displayName: Hello world
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+  start: read-backlog
+  tasks:
+    - name: read-backlog
+      type: deterministic
+      goal: Confirm read-only access to the configured backlog.
+      run:
+        command: ["goobers", "backlog-query", "--read-only"]
+      capabilities:
+        - github:issues:read
+      next: build
+    - name: build
+      type: deterministic
+      goal: Confirm the project builds successfully.
+      run:
+        command: ["make", "build"]
+      capabilities: []

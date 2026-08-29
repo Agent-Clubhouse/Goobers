@@ -15,6 +15,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configsource"
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
 )
 
@@ -42,6 +43,7 @@ type ConfigSet struct {
 	Goobers   []apiv1.Goober
 	Workflows []apiv1.Workflow
 
+	gaggleSources   map[string]string
 	gooberSources   map[string]string
 	workflowSources map[workflowIdentity]string
 }
@@ -66,6 +68,15 @@ func (s *ConfigSet) GooberSource(name string) (string, bool) {
 		return "", false
 	}
 	source, ok := s.gooberSources[name]
+	return source, ok
+}
+
+// GaggleSource returns the config-relative source file for a loaded gaggle.
+func (s *ConfigSet) GaggleSource(name string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	source, ok := s.gaggleSources[name]
 	return source, ok
 }
 
@@ -165,6 +176,9 @@ func readDocs(root string) ([]rawDoc, error) {
 			if path != root && strings.HasPrefix(d.Name(), ".") {
 				return filepath.SkipDir
 			}
+			if configtree.IsGaggleSkillsDir(root, path) {
+				return filepath.SkipDir
+			}
 			if gooberassets.IsSourceDir(path) {
 				return filepath.SkipDir
 			}
@@ -211,9 +225,13 @@ func assemble(docs []rawDoc) (*ConfigSet, error) {
 		definition apiv1.Goober
 		source     string
 	}
+	type sourcedGaggle struct {
+		definition apiv1.Gaggle
+		source     string
+	}
 	var (
 		manifest *apiv1.Manifest
-		gaggles  []apiv1.Gaggle
+		gaggles  []sourcedGaggle
 		goobers  []sourcedGoober
 		flows    []sourcedWorkflow
 	)
@@ -233,7 +251,7 @@ func assemble(docs []rawDoc) (*ConfigSet, error) {
 			if err := yaml.Unmarshal(d.yaml, &g); err != nil {
 				return nil, fmt.Errorf("parse Gaggle %s: %w", d.name, err)
 			}
-			gaggles = append(gaggles, g)
+			gaggles = append(gaggles, sourcedGaggle{definition: g, source: d.file})
 		case "Goober":
 			var g apiv1.Goober
 			if err := yaml.Unmarshal(d.yaml, &g); err != nil {
@@ -259,12 +277,15 @@ func assemble(docs []rawDoc) (*ConfigSet, error) {
 
 	set := &ConfigSet{
 		Manifest:        manifest,
+		gaggleSources:   map[string]string{},
 		gooberSources:   map[string]string{},
 		workflowSources: map[workflowIdentity]string{},
 	}
 	for i := range gaggles {
-		if included[gaggles[i].Name] {
-			set.Gaggles = append(set.Gaggles, gaggles[i])
+		gaggle := gaggles[i].definition
+		if included[gaggle.Name] {
+			set.Gaggles = append(set.Gaggles, gaggle)
+			set.gaggleSources[gaggle.Name] = gaggles[i].source
 		}
 	}
 	for i := range goobers {

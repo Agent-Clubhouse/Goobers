@@ -1,6 +1,6 @@
 # Design: Auth seam — optional OIDC for team instances — V1 epic #38
 
-> Status: **Draft for review** · Area prefix: `SEC` · Milestone: **V1**
+> Status: **draft — for review** · Area prefix: `SEC` · Milestone: **V1**
 > Requirements: [`docs/requirements/security.md`](../../requirements/security.md)
 > (SEC-043, auth ladder) · Architecture: [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) §9
 >

@@ -3,9 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,8 +16,11 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -34,15 +37,42 @@ func newDaemonFixtureRepo(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+
 	runFixtureGit(t, work, "add", "README.md")
 	runFixtureGit(t, work, "commit", "-m", "initial")
 	runFixtureGit(t, "", "clone", "--bare", work, bare)
 	return bare
 }
 
+func TestInterruptedRunMachineSelectsPinnedHistoricalDigest(t *testing.T) {
+	current, err := workflow.Compile(workflow.Definition{
+		Name: "implementation", Version: 2,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "goobers", Start: "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "current",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, source := interruptedRunMachine(journal.RunIdentity{
+		WorkflowDigest: current.Digest(),
+	}, current); got != current || source != "current-config" {
+		t.Fatalf("matching digest selected machine=%p source=%q, want current-config", got, source)
+	}
+	if got, source := interruptedRunMachine(journal.RunIdentity{
+		WorkflowDigest: "sha256:historical",
+	}, current); got != nil || source != "pinned-snapshot" {
+		t.Fatalf("historical digest selected machine=%p source=%q, want nil pinned-snapshot", got, source)
+	}
+}
+
 func runFixtureGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testgit.Command(args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -60,7 +90,7 @@ func runFixtureGit(t *testing.T, dir string, args ...string) {
 // runnerwiring.go) and the `true` binary.
 const deterministicWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -135,6 +165,352 @@ func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {
 	}
 }
 
+func unsetTestEnv(t *testing.T, name string) {
+	t.Helper()
+	previous, wasSet := os.LookupEnv(name)
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv(name, previous)
+		} else {
+			_ = os.Unsetenv(name)
+		}
+	})
+}
+
+func TestBuildSchedulerSetupRejectsMissingCredentialForScheduledTerminalTask(t *testing.T) {
+	const tokenEnv = "GOOBERS_TEST_SCHEDULED_TERMINAL_TOKEN"
+	unsetTestEnv(t, tokenEnv)
+
+	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	instanceYAML, err := os.ReadFile(instancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceYAML = append(instanceYAML, []byte(`
+credentials:
+  - capability: repo:push
+    token:
+      env: `+tokenEnv+`
+`)...)
+	if err := os.WriteFile(instancePath, instanceYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	workflowYAML := strings.Replace(deterministicWorkflowYAML,
+		"  start: local-ci\n  tasks:\n    - name: local-ci",
+		"  start: prepare\n  tasks:\n    - name: prepare\n      type: deterministic\n      goal: prepare without credentials\n      run:\n        command: [\"true\"]\n      next: local-ci\n    - name: local-ci\n      capabilities: [\"repo:push\"]",
+		1,
+	)
+	if workflowYAML == deterministicWorkflowYAML {
+		t.Fatal("deterministic workflow fixture did not contain expected terminal task")
+	}
+	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if setup != nil {
+		setup.Shutdown(context.Background())
+		t.Fatal("buildSchedulerSetup returned a setup with a missing scheduled credential")
+	}
+	if err == nil ||
+		!strings.Contains(err.Error(), `credential capability "repo:push"`) ||
+		!strings.Contains(err.Error(), `environment variable "`+tokenEnv+`"`) {
+		t.Fatalf("buildSchedulerSetup error = %v, want capability and missing environment variable", err)
+	}
+
+	entries, readErr := os.ReadDir(instance.NewLayout(root).ForGaggle("example").RunsDir())
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("scheduled runs started with missing credential: %v", entries)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runUpContext(context.Background(), []string{"--quiet", root}, &stdout, &stderr); code != 1 {
+		t.Fatalf("up code = %d, want 1; stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `startup: initializing gaggle "example" runtime`) {
+		t.Fatalf("up stdout does not identify the active startup step: %q", stdout.String())
+	}
+	for _, want := range []string{
+		`error: initialize daemon scheduler:`,
+		`workflow "default-implement" cannot be scheduled`,
+		`environment variable "` + tokenEnv + `"`,
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("up stderr missing %q: %q", want, stderr.String())
+		}
+	}
+}
+
+func TestBuildSchedulerSetupRejectsMissingDefaultRepoCredentialForScheduledTask(t *testing.T) {
+	const tokenEnv = "GOOBERS_TEST_SCHEDULED_DEFAULT_REPO_TOKEN"
+	unsetTestEnv(t, tokenEnv)
+
+	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	instanceYAML, err := os.ReadFile(instancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceYAML = []byte(strings.Replace(string(instanceYAML), "env: GOOBERS_GITHUB_TOKEN", "env: "+tokenEnv, 1))
+	if !strings.Contains(string(instanceYAML), "env: "+tokenEnv) {
+		t.Fatal("instance fixture did not contain the default repo token")
+	}
+	if err := os.WriteFile(instancePath, instanceYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	workflowYAML := strings.Replace(deterministicWorkflowYAML, "      type: deterministic\n", "      type: deterministic\n      capabilities: [\"repo:push\"]\n", 1)
+	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if setup != nil {
+		setup.Shutdown(context.Background())
+		t.Fatal("buildSchedulerSetup returned a setup with a missing default repo credential")
+	}
+	if err == nil ||
+		!strings.Contains(err.Error(), `credential capability "repo:push"`) ||
+		!strings.Contains(err.Error(), `environment variable "`+tokenEnv+`"`) {
+		t.Fatalf("buildSchedulerSetup error = %v, want default repo capability and missing environment variable", err)
+	}
+}
+
+func TestBuildSchedulerSetupRejectsMissingCredentialInScheduledParallelBranch(t *testing.T) {
+	const tokenEnv = "GOOBERS_TEST_SCHEDULED_PARALLEL_TOKEN"
+	unsetTestEnv(t, tokenEnv)
+
+	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	instanceYAML, err := os.ReadFile(instancePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceYAML = append(instanceYAML, []byte(`
+credentials:
+  - capability: repo:push
+    token:
+      env: `+tokenEnv+`
+`)...)
+	if err := os.WriteFile(instancePath, instanceYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const parallelWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: default-implement
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "@every 24h"
+  start: prepare
+  tasks:
+    - name: prepare
+      type: deterministic
+      goal: prepare
+      run:
+        command: ["true"]
+      next: checks
+    - name: credentialed
+      type: deterministic
+      goal: credentialed branch
+      capabilities: ["repo:push"]
+      run:
+        command: ["true"]
+        workspace: scratch
+      next: "@join"
+    - name: uncredentialed
+      type: deterministic
+      goal: uncredentialed branch
+      run:
+        command: ["true"]
+        workspace: scratch
+      next: "@join"
+    - name: finish
+      type: deterministic
+      goal: finish
+      run:
+        command: ["true"]
+  parallels:
+    - name: checks
+      failurePolicy: continue_on_error
+      branches:
+        - name: credentialed
+          start: credentialed
+        - name: uncredentialed
+          start: uncredentialed
+      join: finish
+`
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	if err := os.WriteFile(workflowPath, []byte(parallelWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if setup != nil {
+		setup.Shutdown(context.Background())
+		t.Fatal("buildSchedulerSetup returned a setup with a missing parallel branch credential")
+	}
+	if err == nil ||
+		!strings.Contains(err.Error(), `credential capability "repo:push"`) ||
+		!strings.Contains(err.Error(), `environment variable "`+tokenEnv+`"`) {
+		t.Fatalf("buildSchedulerSetup error = %v, want parallel branch capability and missing environment variable", err)
+	}
+}
+
+func TestScheduledWorkflowCredentialEnvironmentsUsesRuntimeSourcePrecedence(t *testing.T) {
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "widget",
+			Token:    instance.TokenRef{Env: "REPO_TOKEN"},
+		}},
+		DaemonIdentity: &instance.DaemonIdentityConfig{
+			Kind:  instance.GitHubAuthPAT,
+			Token: &instance.TokenRef{Env: "DAEMON_TOKEN"},
+		},
+		Credentials: []instance.CredentialGrant{{
+			Capability: "repo:push",
+			Token:      instance.TokenRef{Env: "EXPLICIT_PUSH_TOKEN"},
+		}},
+	}
+
+	got, err := scheduledWorkflowCredentialEnvironments(cfg, apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "widget",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"repo:push":           "EXPLICIT_PUSH_TOKEN",
+		"github:issues:write": "DAEMON_TOKEN",
+		"github:issues:read":  "REPO_TOKEN",
+	}
+	for capability, env := range want {
+		if got[capability] != env {
+			t.Errorf("environment for %q = %q, want %q", capability, got[capability], env)
+		}
+	}
+}
+
+func TestScheduledWorkflowCredentialEnvironmentsUsesGitHubAppPrivateKeys(t *testing.T) {
+	cfg := &instance.Config{
+		Repos: []instance.RepoRef{{
+			Provider: "github",
+			Owner:    "acme",
+			Name:     "widget",
+			Auth: &instance.RepoAuthConfig{
+				Kind:       instance.GitHubAuthApp,
+				PrivateKey: &instance.TokenRef{Env: "REPO_APP_KEY"},
+			},
+		}},
+		DaemonIdentity: &instance.DaemonIdentityConfig{
+			Kind:       instance.GitHubAuthApp,
+			PrivateKey: &instance.TokenRef{Env: "DAEMON_APP_KEY"},
+		},
+	}
+
+	got, err := scheduledWorkflowCredentialEnvironments(cfg, apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "widget",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"github:issues:read": "REPO_APP_KEY",
+		"github:pr:write":    "DAEMON_APP_KEY",
+	}
+	for capability, env := range want {
+		if got[capability] != env {
+			t.Errorf("environment for %q = %q, want %q", capability, got[capability], env)
+		}
+	}
+}
+
+func TestStaticallyRequiredWorkflowStatesLeavesConditionalTaskLazy(t *testing.T) {
+	graph := workflow.Graph{
+		Start: "prepare",
+		Nodes: []workflow.GraphNode{
+			{ID: "prepare"},
+			{ID: "decision"},
+			{ID: "conditional"},
+			{ID: "finish"},
+		},
+		Edges: []workflow.GraphEdge{
+			{Source: "prepare", Target: "decision"},
+			{Source: "decision", Target: "conditional"},
+			{Source: "decision", Target: "finish"},
+			{Source: "conditional", Target: "finish"},
+			{Source: "finish", Terminal: workflow.GraphTerminalComplete},
+		},
+	}
+
+	required := staticallyRequiredWorkflowStates(graph)
+	for _, state := range []string{"prepare", "decision", "finish"} {
+		if !required[state] {
+			t.Errorf("state %q is not required", state)
+		}
+	}
+	if required["conditional"] {
+		t.Error("conditional state is required; its credential would be materialized eagerly")
+	}
+}
+
+func TestStaticallyRequiredWorkflowStatesLeavesPostJoinTaskConditionalOnParallelFailure(t *testing.T) {
+	graph := workflow.Graph{
+		Start: "prepare",
+		Nodes: []workflow.GraphNode{
+			{ID: "prepare"},
+			{ID: "checks", Kind: workflow.GraphNodeParallel},
+			{ID: "first"},
+			{ID: "second"},
+			{ID: "credentialed-join"},
+			{ID: "recover"},
+		},
+		Edges: []workflow.GraphEdge{
+			{Source: "prepare", Target: "checks"},
+			{Source: "checks", Target: "first", Branch: "first"},
+			{Source: "checks", Target: "second", Branch: "second"},
+			{Source: "checks", Target: "recover", Outcome: "branch-failed"},
+			{Source: "first", Target: "credentialed-join"},
+			{Source: "second", Target: "credentialed-join"},
+			{Source: "credentialed-join", Terminal: workflow.GraphTerminalComplete},
+			{Source: "recover", Terminal: workflow.GraphTerminalComplete},
+		},
+	}
+
+	required := staticallyRequiredWorkflowStates(graph)
+	if required["credentialed-join"] {
+		t.Error("post-join task is required despite the parallel onFailure route")
+	}
+	for _, state := range []string{"prepare", "checks"} {
+		if !required[state] {
+			t.Errorf("state %q is not required", state)
+		}
+	}
+}
+
 // TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled is #2036's
 // decoupling fix: read.db answers the portal's run listing, a feature
 // independent of telemetry, so telemetry.enabled: false must not silently
@@ -183,6 +559,119 @@ func TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled(t *testing.T) {
 	}
 	if _, err := setup.ReadModel.State(context.Background()); err != nil {
 		t.Errorf("ReadModel.State() = %v, want the store to be open and readable", err)
+	}
+}
+
+func TestBuildSchedulerSetupPrunesChangeFeedWithDefaultConfig(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	ctx := context.Background()
+
+	store, err := readmodel.Open(l.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := buildReadModelIfNeeded(ctx, store, state, l); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("sqlite", l.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO change(at, kind) VALUES ('2026-08-16T00:00:00.000000000Z', 'definitions.changed')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50_001; i++ {
+		if _, err := stmt.ExecContext(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stmt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(ctx, l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(ctx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, err := setup.ReadModel.State(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.MinChangeSeq == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("change feed retention floor = %d, want 2", state.MinChangeSeq)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	changes, err := setup.ReadModel.Changes(ctx, 0, 50_001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 50_000 {
+		t.Fatalf("default daemon retained %d change rows, want 50000", len(changes))
+	}
+}
+
+func TestBuildReadModelIfNeededCompletesReconstructionBeforeReady(t *testing.T) {
+	ctx := context.Background()
+	l := instance.NewLayout(t.TempDir())
+	createTerminalRun(t, l.ForGaggle("example"), "upgrade-run")
+	store, err := readmodel.Open(l.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	before, err := store.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Ready {
+		t.Fatal("fresh projection is ready before its journal build")
+	}
+	if err := buildReadModelIfNeeded(ctx, store, before, l); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.Ready {
+		t.Fatal("projection remains unready after its journal build")
+	}
+	if _, ok, err := store.GetRun(ctx, "upgrade-run"); err != nil {
+		t.Fatal(err)
+	} else if !ok {
+		t.Fatal("projection was marked ready before the journal run was reconstructed")
 	}
 }
 
@@ -545,6 +1034,51 @@ func TestSummarizeHeartbeatCountsOnlyNewSchedulerActivity(t *testing.T) {
 	}
 	if lastSeq != 7 {
 		t.Fatalf("last seq = %d, want 7", lastSeq)
+	}
+}
+
+func TestEmitHeartbeatsReadsConstantBytesPerTick(t *testing.T) {
+	dir := t.TempDir()
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	for range 200 {
+		if err := log.Append(journal.Event{Type: journal.EventTickSkipped, Reason: strings.Repeat("history", 20)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tail, err := journal.OpenInstanceLogTail(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{Type: journal.EventTriggerFired, Workflow: "new"}); err != nil {
+		t.Fatal(err)
+	}
+
+	readprobe.Enable()
+	t.Cleanup(readprobe.Disable)
+	ctx, cancel := context.WithCancel(context.Background())
+	stdout := newDaemonOutput()
+	done := make(chan struct{})
+	go emitHeartbeats(ctx, stdout, dir, 1, tail, nil, 100*time.Millisecond, done)
+
+	select {
+	case <-stdout.heartbeat:
+		cancel()
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("heartbeat was not emitted")
+	}
+	<-done
+
+	work := readprobe.Take()
+	if work.InstanceTailReads != 1 || work.InstanceTailBytes == 0 || work.InstanceTailBytes > 1024 {
+		t.Fatalf("heartbeat work = %+v, want one read of at most 1024 bytes", work)
+	}
+	if output := stdout.String(); !strings.Contains(output, "1 trigger(s) fired") {
+		t.Fatalf("heartbeat output = %q, want startup activity", output)
 	}
 }
 

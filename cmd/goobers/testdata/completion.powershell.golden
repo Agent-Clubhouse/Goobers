@@ -2,78 +2,26 @@
 Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
 
-    $completions = @(
+    $topLevel = @(
         'version'
-        'versions'
         'init'
-        'preflight'
-        'onboarding'
+        'connect'
         'examples'
         'scaffold'
-        'agent-kit'
         'validate'
-        'lint'
-        'fix'
-        'doctor'
-        'config'
-        'speech'
         'up'
         'down'
-        'apply'
-        'self-update'
         'service'
-        'worker'
         'dashboard'
+        'getting-started'
         'run'
         'signal'
         'workflow'
-        'runs'
         'status'
         'stats'
-        'features'
-        'schema'
-        'explain'
-        'reset-rate-limit'
-        'blocked'
-        'claims'
         'trace'
         'escalations'
         'completion'
-        'telemetry'
-        'journal'
-        'backlog-dedupe'
-        'backlog-health'
-        'backlog-query'
-        'reconcile-branches'
-        'push-branch'
-        'check-fail-first'
-        'open-pr'
-        'report-pr-status'
-        'gate-removal-guard'
-        'issue-close-out'
-        'set-milestone'
-        'merge-pr'
-        'record-merge-refusal'
-        'merge-queue-poll'
-        'reconcile-post-merge'
-        'post-merge'
-        'telemetry-query'
-        'docs-churn'
-        'ios-simulator-test'
-        'pr-select'
-        'gather-sibling-context'
-        'gather-implement-context'
-        'apply-verdict'
-        'elect-lander'
-        'update-behind-pr'
-        'gather-pr-context'
-        'gather-review-threads'
-        'gather-issue-context'
-        'gather-ci-failures'
-        'rebase-pr'
-        'remediation-checkpoint'
-        'push-remediated'
-        'respond-to-findings'
         'help'
         '--version'
         '-h'
@@ -83,8 +31,15 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
     $elements = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object {
         if ($_.Extent) { $_.Extent.Text } else { "$_" }
     })
-    if ($elements.Count -gt 1) {
-        return
+    $completions = $topLevel
+    if ($elements.Count -gt 0 -and !($elements.Count -eq 1 -and $wordToComplete -eq $elements[0])) {
+        switch ($elements[0]) {
+            'help' {
+                $completions = @('all', 'stages', 'instance', 'gaggle', 'goober', 'workflow', 'stage', 'gate', 'harness', 'capability')
+            }
+            default { return }
+        }
+        if ($elements.Count -gt 2) { return }
     }
 
     $pattern = if ([string]::IsNullOrEmpty($wordToComplete)) {

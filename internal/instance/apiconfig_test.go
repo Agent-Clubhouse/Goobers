@@ -17,6 +17,26 @@ func hardenedAPIConfig(listen string) APIConfig {
 	}
 }
 
+func TestIsLoopbackListenAddress(t *testing.T) {
+	for _, test := range []struct {
+		address string
+		want    bool
+	}{
+		{address: "127.0.0.1:8080", want: true},
+		{address: "[::1]:8080", want: true},
+		{address: "localhost:8080", want: true},
+		{address: "0.0.0.0:8080", want: false},
+		{address: "example.com:8080", want: false},
+		{address: "invalid", want: false},
+	} {
+		t.Run(test.address, func(t *testing.T) {
+			if got := IsLoopbackListenAddress(test.address); got != test.want {
+				t.Fatalf("IsLoopbackListenAddress(%q) = %t, want %t", test.address, got, test.want)
+			}
+		})
+	}
+}
+
 func TestValidateAPIListenFailClosedOffLoopback(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -37,11 +57,23 @@ func TestValidateAPIListenFailClosedOffLoopback(t *testing.T) {
 			wantErr: "api.listen",
 		},
 		{
-			name: "non-loopback with tls but no auth is refused",
+			// CHANGED by #3702/#3703: TLS alone is now sufficient off-loopback.
+			// The authenticator requirement is unchanged in INTENT — nothing
+			// unauthenticated is ever admitted — but OIDC is no longer the only
+			// way to satisfy it: a daemon with no human API surface chains pod
+			// tokens in front of DenyAllAuthenticator. Requiring OIDC here made
+			// the most restrictive posture the only one inexpressible.
+			name: "non-loopback with tls and no oidc is accepted (pod-only daemon)",
 			api: APIConfig{
 				Listen: "0.0.0.0:8443",
 				TLS:    &APITLSConfig{CertFile: "cert.pem", KeyFile: "key.pem"},
 			},
+			wantErr: "",
+		},
+		{
+			// The half that must NOT move: encryption is unconditional.
+			name:    "non-loopback without tls is still refused",
+			api:     APIConfig{Listen: "0.0.0.0:8443"},
 			wantErr: "not loopback",
 		},
 		{

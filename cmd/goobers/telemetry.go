@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -57,7 +58,7 @@ func runTelemetryPrune(args []string, stdout, stderr io.Writer) int {
 }
 
 func runTelemetryPruneAt(args []string, stdout, stderr io.Writer, now time.Time) int {
-	fs := flag.NewFlagSet("telemetry prune", flag.ContinueOnError)
+	fs := newCLIFlagSet("telemetry prune", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dryRun := fs.Bool("dry-run", false, "report eligible terminal runs without deleting them")
 	fs.Usage = helpUsage(stderr, "telemetry prune")
@@ -118,7 +119,7 @@ func runTelemetryExportWithExporter(
 	stdout, stderr io.Writer,
 	export func([]string, time.Time, time.Time, io.Writer) error,
 ) int {
-	fs := flag.NewFlagSet("telemetry export", flag.ContinueOnError)
+	fs := newCLIFlagSet("telemetry export", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	sinceValue := fs.String("since", "", "inclusive RFC3339 span-start lower bound (required)")
 	untilValue := fs.String("until", "", "exclusive RFC3339 span-start upper bound")
@@ -230,6 +231,15 @@ func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
 // IS a new generation, and any client cursor against the old one must
 // resnapshot (§4.2).
 func rebuildReadModel(ctx context.Context, l instance.Layout, runDirs []string) error {
+	// A live daemon owns the projector and the instance lock together. Taking
+	// that same lock makes this offline whole-file replacement mutually
+	// exclusive with every commit-loop write, including repair and retention.
+	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		return fmt.Errorf("rebuild read model while projector is active: %w", err)
+	}
+	defer release()
+
 	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
 		if err := os.Remove(l.ReadDB() + suffix); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove existing read model %s%s: %w", l.ReadDB(), suffix, err)
@@ -264,6 +274,9 @@ func rebuildReadModel(ctx context.Context, l instance.Layout, runDirs []string) 
 
 	result, err := store.BuildFromJournals(ctx, runDirs)
 	if err != nil {
+		return err
+	}
+	if err := store.MarkReady(ctx); err != nil {
 		return err
 	}
 	// Report what was built. On the live instance 27% of run directories are
@@ -330,7 +343,7 @@ func (g *telemetryGroupBy) Set(value string) error {
 }
 
 func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("telemetry stats", flag.ContinueOnError)
+	fs := newCLIFlagSet("telemetry stats", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit telemetry statistics as JSON")
 	workflow := fs.String("workflow", "", "filter to one workflow name")
@@ -420,23 +433,23 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 	pln(stdout, "WORKFLOW STATS")
 	pf(stdout, "%-16s  %-24s  ", "GAGGLE", "WORKFLOW")
 	writeTelemetryCohortColumns(stdout, groupBy, "MODEL", "HARNESS VERSION")
-	pf(stdout, "%6s  %9s  %6s  %6s  %8s  %8s  %8s  %8s\n",
-		"TOTAL", "COMPLETED", "FAILED", "OTHER", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
+	pf(stdout, "%6s  %9s  %6s  %6s  %8s  %8s  %8s  %8s  %13s\n",
+		"TOTAL", "COMPLETED", "FAILED", "OTHER", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)", "STUCK-ABORTED")
 	for _, r := range result.Runs {
 		pf(stdout, "%-16s  %-24s  ", r.Gaggle, r.Workflow)
 		writeTelemetryCohortColumns(stdout, groupBy, r.Model, r.HarnessVersion)
-		pf(stdout, "%6d  %9d  %6d  %6d  %8s  %8s  %8s  %8s\n",
+		pf(stdout, "%6d  %9d  %6d  %6d  %8s  %8s  %8s  %8s  %13d\n",
 			r.TotalRuns, r.CompletedRuns, r.FailedRuns, r.OtherRuns,
 			formatTelemetryRate(r.SuccessRate), formatTelemetryFloat(r.AvgDurationMs),
-			formatTelemetryInt(r.MinDurationMs), formatTelemetryInt(r.MaxDurationMs))
+			formatTelemetryInt(r.MinDurationMs), formatTelemetryInt(r.MaxDurationMs), r.StuckAbortedRuns)
 	}
 
 	pln(stdout, "\nSTAGE STATS")
 	pf(stdout, "%-16s  %-24s  %-16s  ", "GAGGLE", "WORKFLOW", "STAGE")
 	writeTelemetryBranchColumn(stdout, groupBy, "BRANCH")
 	writeTelemetryCohortColumns(stdout, groupBy, "MODEL", "HARNESS VERSION")
-	pf(stdout, "%9s  %9s  %6s  %8s  %8s  %8s  %8s\n",
-		"ATTEMPTS", "SUCCEEDED", "FAILED", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)")
+	pf(stdout, "%9s  %9s  %6s  %8s  %8s  %8s  %8s  %13s\n",
+		"ATTEMPTS", "SUCCEEDED", "FAILED", "SUCCESS%", "AVG(ms)", "MIN(ms)", "MAX(ms)", "STUCK-ABORTED")
 	for _, s := range result.Stages {
 		pf(stdout, "%-16s  %-24s  %-16s  ", s.Gaggle, s.Workflow, s.Stage)
 		branchValue := ""
@@ -445,10 +458,10 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 		}
 		writeTelemetryBranchColumn(stdout, groupBy, branchValue)
 		writeTelemetryCohortColumns(stdout, groupBy, s.Model, s.HarnessVersion)
-		pf(stdout, "%9d  %9d  %6d  %8s  %8s  %8s  %8s\n",
+		pf(stdout, "%9d  %9d  %6d  %8s  %8s  %8s  %8s  %13d\n",
 			s.TotalAttempts, s.SucceededAttempts, s.FailedAttempts,
 			formatTelemetryRate(s.SuccessRate), formatTelemetryFloat(s.AvgDurationMs),
-			formatTelemetryInt(s.MinDurationMs), formatTelemetryInt(s.MaxDurationMs))
+			formatTelemetryInt(s.MinDurationMs), formatTelemetryInt(s.MaxDurationMs), s.StuckAbortedAttempts)
 	}
 	if result.Curation.Runs > 0 {
 		pln(stdout, "\nCURATION ACTIONS")
@@ -471,6 +484,12 @@ func runTelemetryStats(args []string, stdout, stderr io.Writer) int {
 		}
 		if result.ReadyPool.AverageClaimAgeSeconds != nil {
 			pf(stdout, ", claimed after %s average", formatStatsDuration(*result.ReadyPool.AverageClaimAgeSeconds*1000))
+		}
+		if result.ReadyPool.InFlightClaimSamples > 0 {
+			pf(stdout, ", %d in flight now (avg %s, oldest %s)",
+				result.ReadyPool.InFlightClaimSamples,
+				formatStatsDuration(result.ReadyPool.AverageInFlightClaimAgeSeconds*1000),
+				formatStatsDuration(result.ReadyPool.OldestInFlightClaimAgeSeconds*1000))
 		}
 		pln(stdout, "")
 	}
@@ -508,7 +527,7 @@ const telemetryErrorsHelp = "Usage: goobers telemetry errors [--json] [--workflo
 	"(default path \".\"). Exit codes: 0 = OK, 2 = usage/IO error.\n"
 
 func runTelemetryErrors(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("telemetry errors", flag.ContinueOnError)
+	fs := newCLIFlagSet("telemetry errors", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit recent errors as JSON")
 	workflow := fs.String("workflow", "", "filter to one workflow name")

@@ -34,7 +34,7 @@ const updateBehindPRHelp = "Usage: goobers update-behind-pr [path]\n\n" +
 // workflow after updating a mechanically stale PR, or routes every non-trivial
 // candidate into the existing worktree-backed gather/rebase/agentic path.
 func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("update-behind-pr", flag.ContinueOnError)
+	fs := newCLIFlagSet("update-behind-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "update-behind-pr")
 	if err := fs.Parse(args); err != nil {
@@ -65,15 +65,24 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, prToken)
-	issuesProvider := newGitHubProvider(issuesToken)
+	provider, err := remediationStageProvider(root, repo, prToken, true)
+	if err != nil {
+		pf(stderr, "error: construct remediation provider: %v\n", err)
+		return 1
+	}
+	issuesProvider, err := remediationStageProvider(root, repo, issuesToken, false)
+	if err != nil {
+		pf(stderr, "error: construct remediation issues provider: %v\n", err)
+		return 1
+	}
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo,
-		Base:       providerInput("base", providerBaseBranch()),
-		HeadPrefix: providerInput("headPrefix", providerBranchNamespace()),
+		Repository:     repo,
+		Base:           providerInput("base", providerBaseBranch()),
+		HeadPrefix:     providerInput("headPrefix", providerBranchNamespace()),
+		SkipCheckState: true,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "update-behind-result.json")
@@ -97,6 +106,9 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 			behindByPR[pr.Number] = behind
 		}
 		return behind, err
+	}
+	if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
+		return failProviderStage(stderr, "resolve remediation check states", err, "update-behind-result.json")
 	}
 	candidates, _, err := selectRemediationCandidates(prs, blockedDependents, behindBase)
 	if err != nil {
@@ -151,7 +163,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	return writeUpdateBehindResult(stdout, stderr, candidate.Number, false, action == updateBehindViaAPI)
 }
 
-func updateBehindActionForPR(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity) (updateBehindAction, error) {
+func updateBehindActionForPR(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string, behindByPR map[int]bool, minSeverity apiv1.Severity) (updateBehindAction, error) {
 	if pr.CheckState == providers.CheckStateFailing {
 		return updateBehindRouteFull, nil
 	}
@@ -190,7 +202,7 @@ func updateBehindActionForPR(ctx context.Context, provider *providers.GitHubProv
 	return updateBehindClearLabel, nil
 }
 
-func pullRequestBehindLiveBase(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string) (bool, error) {
+func pullRequestBehindLiveBase(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, baseTips map[string]string) (bool, error) {
 	baseTip := baseTips[pr.Base]
 	if baseTip == "" {
 		var err error

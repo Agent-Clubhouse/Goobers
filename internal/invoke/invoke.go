@@ -7,6 +7,7 @@ package invoke
 import (
 	"context"
 	"errors"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -76,7 +77,8 @@ type Automated interface {
 // infrastructure. The runner applies its bounded infrastructure retry path and
 // journals the retry as infrastructure rather than policy-driven.
 type InfrastructureError struct {
-	err error
+	err     error
+	retryAt time.Time
 }
 
 func (e *InfrastructureError) Error() string { return e.err.Error() }
@@ -91,11 +93,30 @@ func InfrastructureFailure(err error) error {
 	return &InfrastructureError{err: err}
 }
 
+// InfrastructureFailureUntil marks an infrastructure failure that should not
+// be retried before retryAt.
+func InfrastructureFailureUntil(err error, retryAt time.Time) error {
+	if err == nil {
+		return nil
+	}
+	return &InfrastructureError{err: err, retryAt: retryAt}
+}
+
 // IsInfrastructureFailure reports whether err carries the infrastructure
 // marker, including through wrapping.
 func IsInfrastructureFailure(err error) bool {
 	var infrastructureErr *InfrastructureError
 	return errors.As(err, &infrastructureErr)
+}
+
+// InfrastructureRetryAt returns the earliest retry time carried by an
+// infrastructure failure.
+func InfrastructureRetryAt(err error) (time.Time, bool) {
+	var infrastructureErr *InfrastructureError
+	if !errors.As(err, &infrastructureErr) || infrastructureErr.retryAt.IsZero() {
+		return time.Time{}, false
+	}
+	return infrastructureErr.retryAt, true
 }
 
 // TimeoutError marks a dispatch failure caused by an agentic session hitting

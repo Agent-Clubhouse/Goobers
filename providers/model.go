@@ -2,6 +2,7 @@ package providers
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
@@ -29,7 +30,9 @@ const (
 	LabelApproved   = "goobers:approved"
 	LabelClaimed    = "goobers:claimed"
 	LabelReady      = "goobers:ready"
+	LabelCritical   = "goobers:critical"
 	LabelNeedsHuman = "goobers:needs-human"
+	LabelNominated  = "goobers:nominated"
 	LabelAutoClose  = "goobers:auto-close"
 	LabelStale      = "stale"
 	LabelTracking   = "tracking"
@@ -73,6 +76,7 @@ type WorkItem struct {
 	Provider       ProviderKind           `json:"provider"`
 	ID             string                 `json:"id"`
 	ExternalID     string                 `json:"externalId,omitempty"`
+	Revision       string                 `json:"revision,omitempty"`
 	Type           string                 `json:"type,omitempty"`
 	Title          string                 `json:"title"`
 	Body           string                 `json:"body,omitempty"`
@@ -344,6 +348,7 @@ type PullRequestNativeReview struct {
 // and file/diff anchor preserved.
 type PullRequestInlineComment struct {
 	ID                int64              `json:"id"`
+	ThreadID          string             `json:"threadId"`
 	Author            string             `json:"author,omitempty"`
 	Body              string             `json:"body"`
 	Path              string             `json:"path"`
@@ -360,6 +365,14 @@ type PullRequestInlineComment struct {
 	CreatedAt         *time.Time         `json:"createdAt,omitempty"`
 	URL               string             `json:"url,omitempty"`
 	Integrity         apiintegrity.Grade `json:"integrity,omitempty"`
+}
+
+// PullRequestReviewThreadReply requests a reply to one native review thread.
+type PullRequestReviewThreadReply struct {
+	Repository RepositoryRef
+	PullID     string
+	CommentID  int64
+	Body       string
 }
 
 // PullRequestReviewThreads is the review evidence attached to a pull request.
@@ -448,14 +461,17 @@ type PullRequestPollRequest struct {
 // re-checks before acting on a previously computed verdict — never trust a
 // caller-supplied "still valid" claim, always re-poll (design doc D6).
 type PullRequestPollResult struct {
-	Number    int        `json:"number"`
-	Title     string     `json:"title,omitempty"`
-	State     string     `json:"state"`
-	Merged    bool       `json:"merged"`
-	MergedAt  *time.Time `json:"mergedAt,omitempty"`
-	Mergeable *bool      `json:"mergeable,omitempty"`
-	Draft     bool       `json:"draft"`
-	Labels    []string   `json:"labels,omitempty"`
+	Number             int        `json:"number"`
+	Title              string     `json:"title,omitempty"`
+	Author             string     `json:"author,omitempty"`
+	Assignees          []string   `json:"assignees,omitempty"`
+	RequestedReviewers []string   `json:"requestedReviewers,omitempty"`
+	State              string     `json:"state"`
+	Merged             bool       `json:"merged"`
+	MergedAt           *time.Time `json:"mergedAt,omitempty"`
+	Mergeable          *bool      `json:"mergeable,omitempty"`
+	Draft              bool       `json:"draft"`
+	Labels             []string   `json:"labels,omitempty"`
 	// HeadBranch and HeadRepository identify the PR's head branch and where
 	// it actually lives — can differ from the pull request repository for
 	// fork pull requests (#605's post-merge cleanup needs this to delete
@@ -795,6 +811,17 @@ type ListPullRequestsRequest struct {
 	// applied client-side: GitHub's pulls-list API has no server-side
 	// prefix match on head, only an exact head=owner:branch filter.
 	HeadPrefix string `json:"headPrefix,omitempty"`
+	// Author, Assignee, and RequestedReviewer are exact provider identities.
+	// They are applied client-side to the metadata returned by each provider.
+	Author            string `json:"author,omitempty"`
+	Assignee          string `json:"assignee,omitempty"`
+	RequestedReviewer string `json:"requestedReviewer,omitempty"`
+	// Limit caps the raw provider records inspected before client-side filters.
+	// Zero preserves the exhaustive-list behavior.
+	Limit int `json:"limit,omitempty"`
+	// Page starts a bounded raw-provider scan at this one-based page. It is
+	// ignored when Limit is zero.
+	Page int `json:"page,omitempty"`
 	// SkipCheckState leaves each summary's CheckState empty instead of
 	// resolving it per candidate — resolving costs two extra API requests
 	// per PR (combined status + check-runs), which dominates the list's
@@ -809,20 +836,31 @@ type ListPullRequestsRequest struct {
 	SkipCheckState bool `json:"skipCheckState,omitempty"`
 }
 
+// MatchesIdentityFields applies the request's opt-in identity filters to one
+// pull request decoded from a provider list response.
+func (r ListPullRequestsRequest) MatchesIdentityFields(author string, assignees, requestedReviewers []string) bool {
+	return (r.Author == "" || author == r.Author) &&
+		(r.Assignee == "" || slices.Contains(assignees, r.Assignee)) &&
+		(r.RequestedReviewer == "" || slices.Contains(requestedReviewers, r.RequestedReviewer))
+}
+
 // PullRequestSummary is one PR as merge-review's selection stage sees it —
 // enough to filter eligibility (draft, labels, CI) without a second round-trip
 // per candidate. ListPullRequests returns open PRs; bounded terminal-PR queries
 // also populate State and Merged for consumers that need current sibling state.
 type PullRequestSummary struct {
-	ID      string `json:"id"`
-	Number  int    `json:"number"`
-	URL     string `json:"url"`
-	State   string `json:"state"`
-	Merged  bool   `json:"merged"`
-	Head    string `json:"head"`
-	Base    string `json:"base"`
-	HeadSHA string `json:"headSha"`
-	BaseSHA string `json:"baseSha"`
+	ID                 string   `json:"id"`
+	Number             int      `json:"number"`
+	URL                string   `json:"url"`
+	Author             string   `json:"author,omitempty"`
+	Assignees          []string `json:"assignees,omitempty"`
+	RequestedReviewers []string `json:"requestedReviewers,omitempty"`
+	State              string   `json:"state"`
+	Merged             bool     `json:"merged"`
+	Head               string   `json:"head"`
+	Base               string   `json:"base"`
+	HeadSHA            string   `json:"headSha"`
+	BaseSHA            string   `json:"baseSha"`
 	// MergeSHA is the landed commit GitHub reports for a merged PR. It is
 	// empty for open/unmerged PRs and providers that do not expose one.
 	MergeSHA   string     `json:"mergeSha,omitempty"`
@@ -956,13 +994,16 @@ func (r ListWorkItemsRequest) NeedsOversizedCandidateScan() bool {
 // comment. Nil pointer fields are unchanged; a non-nil empty Assignee clears the
 // current assignment.
 type UpdateWorkItemRequest struct {
-	Repository   RepositoryRef `json:"repository"`
-	ID           string        `json:"id"`
-	Title        *string       `json:"title,omitempty"`
-	Body         *string       `json:"body,omitempty"`
-	Assignee     *string       `json:"assignee,omitempty"`
-	AddLabels    []string      `json:"addLabels,omitempty"`
-	RemoveLabels []string      `json:"removeLabels,omitempty"`
+	Repository RepositoryRef `json:"repository"`
+	ID         string        `json:"id"`
+	// ExpectedRevision, when set, rejects the edit if the item changed after
+	// the caller's immediately preceding read.
+	ExpectedRevision string   `json:"expectedRevision,omitempty"`
+	Title            *string  `json:"title,omitempty"`
+	Body             *string  `json:"body,omitempty"`
+	Assignee         *string  `json:"assignee,omitempty"`
+	AddLabels        []string `json:"addLabels,omitempty"`
+	RemoveLabels     []string `json:"removeLabels,omitempty"`
 	// Milestone, when set, assigns an existing provider milestone by number.
 	Milestone *int `json:"milestone,omitempty"`
 	// State, when set, opens or closes the item ("open" or "closed").
@@ -1015,6 +1056,38 @@ type CreateWorkItemRequest struct {
 	// committed create returns the original rather than filing a duplicate
 	// (#140). Optional — empty keeps the plain, non-idempotent create.
 	RunID string `json:"runId,omitempty"`
+}
+
+// AttachWorkItemChildRequest describes a provider-native parent/child link.
+// ExpectedParentRevision and ExpectedChildRevision are optimistic-concurrency
+// guards obtained immediately before the mutation.
+type AttachWorkItemChildRequest struct {
+	Repository             RepositoryRef `json:"repository"`
+	ParentID               string        `json:"parentId"`
+	ChildID                string        `json:"childId"`
+	ExpectedParentRevision string        `json:"expectedParentRevision"`
+	ExpectedChildRevision  string        `json:"expectedChildRevision"`
+}
+
+// AttachWorkItemBlockerRequest describes a provider-native blocked-by link.
+type AttachWorkItemBlockerRequest struct {
+	Repository              RepositoryRef `json:"repository"`
+	ItemID                  string        `json:"itemId"`
+	BlockerID               string        `json:"blockerId"`
+	ExpectedItemRevision    string        `json:"expectedItemRevision"`
+	ExpectedBlockerRevision string        `json:"expectedBlockerRevision"`
+}
+
+// RevisionConflictError reports that a mutation's immediately observed item
+// revision no longer matches the caller's guard.
+type RevisionConflictError struct {
+	ItemID   string
+	Expected string
+	Actual   string
+}
+
+func (e *RevisionConflictError) Error() string {
+	return fmt.Sprintf("work item %s revision changed: expected %q, got %q", e.ItemID, e.Expected, e.Actual)
 }
 
 // UpdateWorkItemStatusRequest describes a processing-status mirror update.

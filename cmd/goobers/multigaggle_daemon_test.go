@@ -17,6 +17,7 @@ import (
 
 const multiGaggleWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: deploy
 spec:
@@ -122,6 +123,30 @@ func installSecondDaemonGaggle(t *testing.T, root string) {
 	}
 }
 
+func TestRunSelectsGaggleForDuplicateWorkflow(t *testing.T) {
+	root := initDeterministicDemo(t)
+	installSecondDaemonGaggle(t, root)
+
+	code, stdout, stderr := runArgs(t, "run", "--gaggle", "beta", "deploy", root)
+	if code != 0 {
+		t.Fatalf("run: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "workflow=deploy gaggle=beta") {
+		t.Fatalf("stdout = %q, want beta gaggle", stdout)
+	}
+	betaRuns, err := os.ReadDir(instance.NewLayout(root).ForGaggle("beta").RunsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	exampleRuns, err := os.ReadDir(instance.NewLayout(root).ForGaggle("example").RunsDir())
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(betaRuns) != 1 || len(exampleRuns) != 0 {
+		t.Fatalf("run counts: beta=%d example=%d, want beta=1 example=0", len(betaRuns), len(exampleRuns))
+	}
+}
+
 func TestDaemonDispatchesAndDrainsAllManifestGaggles(t *testing.T) {
 	root := initDeterministicDemo(t)
 	installSecondDaemonGaggle(t, root)
@@ -166,7 +191,17 @@ func TestDaemonDispatchesAndDrainsAllManifestGaggles(t *testing.T) {
 
 	drained := make(chan bool, 1)
 	go func() {
-		drained <- waitSchedulerDrained(scheduler, 10*time.Second)
+		done := make(chan struct{})
+		go func() {
+			scheduler.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			drained <- true
+		case <-time.After(10 * time.Second):
+			drained <- false
+		}
 	}()
 	select {
 	case <-drained:
@@ -200,7 +235,7 @@ func waitForStarterCount(t *testing.T, starter *daemonGateStarter, want int) {
 		if starter.count() >= want {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for the test starter's synchronized call count.
 	}
 	t.Fatalf("starter calls = %d, want at least %d", starter.count(), want)
 }

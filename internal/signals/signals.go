@@ -13,6 +13,7 @@ package signals
 
 import (
 	"context"
+	"sync"
 
 	"github.com/goobers/goobers/internal/platform/shutdown"
 )
@@ -28,4 +29,16 @@ import (
 func SetupSignalContext() (ctx context.Context, stop func()) {
 	n := shutdown.Notify()
 	return n.Context(), n.Stop
+}
+
+// SetupSignalContextWithForce additionally reports a repeated signal instead
+// of exiting immediately, allowing a daemon to tear down owned process trees
+// before it exits.
+func SetupSignalContextWithForce() (ctx context.Context, force <-chan struct{}, stop func()) {
+	hard := make(chan struct{})
+	var once sync.Once
+	n := shutdown.NotifyWithHardHandler(func() {
+		once.Do(func() { close(hard) })
+	})
+	return n.Context(), hard, n.Stop
 }

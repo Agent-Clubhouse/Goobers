@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadPackages(t *testing.T) {
@@ -427,20 +429,146 @@ func TestRepositoryStressWiring(t *testing.T) {
 	)
 	assertFileContains(t, filepath.Join(root, "test", "stress", "packages.txt"),
 		"./internal/localscheduler",
+		"./cmd/goobers",
+		"./internal/harness",
+		"./internal/httpapi",
 	)
 	assertFileContains(t, filepath.Join(root, ".github", "workflows", "stress.yml"),
 		"schedule:",
 		"workflow_dispatch:",
-		"types: [labeled]",
-		"github.event.label.name == '/stress'",
+		"format('refs/pull/{0}/merge', inputs.pr)",
 		"make stress",
 		"actions/upload-artifact@v7",
 		"flake-ledger:",
-		"github.event_name != 'pull_request'",
+		"github.event_name == 'schedule'",
 		"issues: write",
 		"actions/download-artifact@v8",
 		"go run ./test/flakeledger",
 	)
+}
+
+func TestStressWorkflowTriggers(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", ".github", "workflows", "stress.yml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		On map[string]yaml.Node `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	for _, trigger := range []string{"pull_request", "pull_request_target"} {
+		if _, ok := workflow.On[trigger]; ok {
+			t.Fatalf("%s events must not trigger the Stress workflow", trigger)
+		}
+	}
+	if _, ok := workflow.On["schedule"]; !ok {
+		t.Fatal("Stress workflow has no scheduled trigger")
+	}
+	dispatch, ok := workflow.On["workflow_dispatch"]
+	if !ok {
+		t.Fatal("Stress workflow has no explicit dispatch trigger")
+	}
+	var config struct {
+		Inputs map[string]struct {
+			Required bool   `yaml:"required"`
+			Type     string `yaml:"type"`
+		} `yaml:"inputs"`
+	}
+	if err := dispatch.Decode(&config); err != nil {
+		t.Fatalf("decode workflow_dispatch: %v", err)
+	}
+	pr, ok := config.Inputs["pr"]
+	if !ok || !pr.Required || pr.Type != "string" {
+		t.Fatalf("workflow_dispatch PR input = %+v, present = %v; want required string input", pr, ok)
+	}
+}
+
+func TestGHCPEchoWorkflowTriggers(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", ".github", "workflows", "ghcp-echo.yml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		On          map[string]yaml.Node `yaml:"on"`
+		Permissions map[string]string    `yaml:"permissions"`
+		Jobs        map[string]yaml.Node `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	for _, trigger := range []string{"pull_request", "pull_request_target"} {
+		if _, ok := workflow.On[trigger]; ok {
+			t.Fatalf("%s events must not trigger the GHCP Echo workflow", trigger)
+		}
+	}
+	if _, ok := workflow.On["schedule"]; !ok {
+		t.Fatal("GHCP Echo workflow has no scheduled trigger")
+	}
+	dispatch, ok := workflow.On["workflow_dispatch"]
+	if !ok {
+		t.Fatal("GHCP Echo workflow has no explicit dispatch trigger")
+	}
+	var config struct {
+		Inputs map[string]struct {
+			Required bool   `yaml:"required"`
+			Type     string `yaml:"type"`
+		} `yaml:"inputs"`
+	}
+	if err := dispatch.Decode(&config); err != nil {
+		t.Fatalf("decode workflow_dispatch: %v", err)
+	}
+	pr, ok := config.Inputs["pr"]
+	if !ok || !pr.Required || pr.Type != "string" {
+		t.Fatalf("workflow_dispatch PR input = %+v, present = %v; want required string input", pr, ok)
+	}
+	if workflow.Permissions["pull-requests"] != "read" {
+		t.Fatal("GHCP Echo workflow must grant pull-request read access")
+	}
+
+	jobNode, ok := workflow.Jobs["ghcp-echo"]
+	if !ok {
+		t.Fatal("GHCP Echo workflow has no ghcp-echo job")
+	}
+	var job struct {
+		ContinueOnError bool   `yaml:"continue-on-error"`
+		If              string `yaml:"if"`
+		Steps           []struct {
+			Name string            `yaml:"name"`
+			Run  string            `yaml:"run"`
+			Env  map[string]string `yaml:"env"`
+			With map[string]string `yaml:"with"`
+		} `yaml:"steps"`
+	}
+	if err := jobNode.Decode(&job); err != nil {
+		t.Fatalf("decode ghcp-echo job: %v", err)
+	}
+	if !job.ContinueOnError {
+		t.Fatal("GHCP Echo job must remain quarantined with continue-on-error")
+	}
+	if job.If != "vars.GHCP_ECHO_ENABLED == 'true'" {
+		t.Fatal("GHCP Echo enablement guard changed")
+	}
+	if len(job.Steps) < 3 || job.Steps[0].Name != "Resolve trusted dispatch target" {
+		t.Fatal("trusted PR resolution must precede secret access and checkout")
+	}
+	target := job.Steps[0].Run
+	for _, value := range []string{".head.repo.full_name", `"$head_repository" != "$GITHUB_REPOSITORY"`, "refs/pull/${PR_NUMBER}/merge"} {
+		if !strings.Contains(target, value) {
+			t.Errorf("trusted PR resolution does not contain %q", value)
+		}
+	}
+	if job.Steps[1].Env["MODEL_TOKEN"] != "${{ secrets.COPILOT_GITHUB_TOKEN }}" {
+		t.Fatal("secret provisioning guard changed")
+	}
+	if job.Steps[2].With["ref"] != "${{ steps.target.outputs.ref || github.ref }}" {
+		t.Fatal("checkout does not use the trusted PR target")
+	}
 }
 
 func assertFileContains(t *testing.T, path string, values ...string) {

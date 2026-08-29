@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goobers/goobers/providers"
@@ -130,7 +131,7 @@ func demotionStillHolds(ctx context.Context, provider remediationProvider, repo 
 // to do with an error: the election read-sites treat a resolution failure as an
 // empty demoted set (today's behavior) rather than failing the pipeline, so a
 // provider hiccup can never turn the demotion signal into a merge outage.
-func demotedSet(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) (map[int]bool, error) {
+func demotedSet(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) (map[int]bool, error) {
 	out := map[int]bool{}
 	for _, pr := range prs {
 		if !hasAnyLabel(pr.Labels, []string{mergeDemotedLabel}) {
@@ -147,13 +148,74 @@ func demotedSet(ctx context.Context, provider *providers.GitHubProvider, repo pr
 	return out, nil
 }
 
-// withoutDemoted removes any demoted PR from a blocker list. Both election
-// read-sites (elect-lander's electionDecision and apply-verdict's
-// predecessorBlockers/electedLanderPass) apply it identically so the two stages
-// never disagree about which sibling a PR must wait behind (#950): a demoted
-// predecessor no longer outranks its successors, so the next-lowest
-// non-demoted member wins the election and the cluster drains around the stuck
-// one.
+// electionIneligibleSet returns open PRs that are currently parked outside the
+// autonomous landing loop. Active escalations are snapshot-validated so a
+// self-healed PR immediately becomes eligible again. The no-lander escalation
+// is deliberately retained as a blocker because it asks a human to choose the
+// cluster's landing order rather than asking the runner to drain around one PR.
+func electionIneligibleSet(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) (map[int]bool, error) {
+	out := map[int]bool{}
+	var verdictAuthor string
+	for _, pr := range prs {
+		if hasAnyLabel(pr.Labels, []string{providers.LabelNeedsHuman}) {
+			out[pr.Number] = true
+			continue
+		}
+		if !hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}) {
+			continue
+		}
+		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
+		if err != nil {
+			return nil, err
+		}
+		if !blocked {
+			continue
+		}
+		comments, err := provider.ListComments(ctx, repo, strconv.Itoa(pr.Number))
+		if err != nil {
+			return nil, err
+		}
+		if verdictAuthor == "" {
+			verdictAuthor, err = provider.AuthenticatedLogin(ctx)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if hasNoLanderEscalation(comments, verdictAuthor) {
+			continue
+		}
+		out[pr.Number] = true
+	}
+	return out, nil
+}
+
+func hasNoLanderEscalation(comments []providers.Comment, verdictAuthor string) bool {
+	for i := len(comments) - 1; i >= 0; i-- {
+		if !isTrustedMergeReviewStatusComment(comments[i].Author, comments[i].Body, verdictAuthor) {
+			continue
+		}
+		verdict, ok := parseVerdictComment(comments[i].Body)
+		if ok {
+			return verdict.Decision == "fail" && strings.HasPrefix(verdict.Rationale, noLanderEscalationPrefix)
+		}
+	}
+	return false
+}
+
+func unionPRSets(sets ...map[int]bool) map[int]bool {
+	out := map[int]bool{}
+	for _, set := range sets {
+		for number := range set {
+			out[number] = true
+		}
+	}
+	return out
+}
+
+// withoutDemoted removes any PR excluded by demotion or current ineligibility
+// from a blocker list. Both election read-sites (elect-lander's electionDecision
+// and apply-verdict's predecessorBlockers/electedLanderPass) apply it identically
+// so the two stages never disagree about which sibling a PR must wait behind.
 func withoutDemoted(blockers []int, demoted map[int]bool) []int {
 	if len(demoted) == 0 {
 		return blockers

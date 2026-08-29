@@ -8,10 +8,11 @@ import (
 	"go.opentelemetry.io/otel/codes"
 
 	"github.com/goobers/goobers/internal/worktree"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
 
 func TestRecordWorkcopyUsageAttributesCurrentRunSpan(t *testing.T) {
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{ServiceName: "workcopy-usage-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +56,7 @@ func TestRecordWorkcopyUsageAttributesCurrentRunSpan(t *testing.T) {
 }
 
 func TestRecordWorkcopyUsageSurfacesStandaloneHousekeepingFailure(t *testing.T) {
-	exporter := NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := New(context.Background(), Config{ServiceName: "workcopy-failure-test", SpanExporter: exporter})
 	if err != nil {
 		t.Fatal(err)

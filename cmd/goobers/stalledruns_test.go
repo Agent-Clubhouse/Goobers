@@ -33,8 +33,8 @@ func TestDaemonRunnerRegistryRunIDsReflectsTracking(t *testing.T) {
 	}
 
 	owner := &runner.Runner{}
-	untrackA := r.Track("run-a", owner)
-	untrackB := r.Track("run-b", owner)
+	untrackA := r.Track("run-a", "workflow-a", owner)
+	untrackB := r.Track("run-b", "workflow-b", owner)
 
 	ids := r.RunIDs()
 	if len(ids) != 2 {
@@ -70,6 +70,94 @@ func TestDaemonRunnerRegistryRunIDsNilSafe(t *testing.T) {
 	}
 }
 
+func TestDaemonRunnerRegistryHardStopsRunTrackedAfterForce(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	manager, err := worktree.NewManager(layout.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deterministic := &liveStalledDeterministic{started: make(chan struct{})}
+	runRunner, err := runner.New(runner.Config{
+		NewDeterministic: func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {
+			return deterministic, nil
+		},
+		Worktrees:  manager,
+		ScratchDir: filepath.Join(layout.WorkcopiesDir(), "scratch"),
+		RunsDir:    layout.RunsDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "implementation", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "example",
+			Start:  "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "must be stopped",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Next: workflow.TerminalComplete,
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	registry := newDaemonRunnerRegistry()
+	registry.HardStopAll(nil)
+	untrack := registry.Track("late-run", "implementation", runRunner)
+	defer untrack()
+	result, err := runRunner.Start(context.Background(), runner.StartInput{
+		RunID:   "late-run",
+		Machine: machine,
+		Gaggle:  "example",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	if err != nil || result.Phase != journal.PhaseRunning {
+		t.Fatalf("late tracked Start() = %+v, %v, want running checkpoint", result, err)
+	}
+}
+
+func TestDaemonRunnerRegistryReportsHardStopCountAtForceActivation(t *testing.T) {
+	registry := newDaemonRunnerRegistry()
+	owner := &runner.Runner{}
+	untrack := registry.Track("active-run", "implementation", owner)
+	defer untrack()
+
+	reporting := make(chan struct{})
+	releaseReport := make(chan struct{})
+	stopped := make(chan int, 1)
+	go func() {
+		stopped <- registry.HardStopAll(func(count int) {
+			if count != 1 {
+				t.Errorf("hard-stop count = %d, want 1", count)
+			}
+			close(reporting)
+			<-releaseReport
+		})
+	}()
+	<-reporting
+
+	tracked := make(chan func(), 1)
+	go func() {
+		tracked <- registry.Track("late-run", "implementation", owner)
+	}()
+	select {
+	case untrackLate := <-tracked:
+		untrackLate()
+		t.Fatal("Track completed before force activation and counting finished")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(releaseReport)
+	if count := <-stopped; count != 1 {
+		t.Fatalf("HardStopAll() = %d, want 1", count)
+	}
+	untrackLate := <-tracked
+	untrackLate()
+}
+
 type stalledRunStarter struct {
 	mu    sync.Mutex
 	count int
@@ -94,6 +182,54 @@ func (d *liveStalledDeterministic) Run(ctx context.Context, _ apiv1.InvocationEn
 		return apiv1.ResultEnvelope{}, ctx.Err()
 	}
 	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func TestDaemonRunnerRegistryRetainsOverlappingLeases(t *testing.T) {
+	first := &runner.Runner{}
+	second := &runner.Runner{}
+	registry := newDaemonRunnerRegistry()
+
+	original := registry.Track("run-overlap", "", first)
+	overlapping := registry.Track("run-overlap", "", first)
+	original()
+	original()
+	if owner, live := registry.Resolve("run-overlap", "", nil); !live || owner != first {
+		t.Fatalf("owner after first release = (%p, %t), want first owner live", owner, live)
+	}
+	overlapping()
+	if owner, live := registry.Resolve("run-overlap", "", nil); live || owner != nil {
+		t.Fatalf("owner after final release = (%p, %t), want no live owner", owner, live)
+	}
+
+	oldGeneration := registry.Track("run-replaced", "", first)
+	newGeneration := registry.Track("run-replaced", "", second)
+	oldGeneration()
+	if owner, live := registry.Resolve("run-replaced", "", nil); !live || owner != second {
+		t.Fatalf("owner after stale release = (%p, %t), want replacement owner live", owner, live)
+	}
+	newGeneration()
+}
+
+func TestDaemonRunnerRegistryRefusesIncompatibleInterventionOwner(t *testing.T) {
+	first := &runner.Runner{}
+	reloaded := &runner.Runner{}
+	registry := newDaemonRunnerRegistry()
+	release := registry.Track("run-live", "", first)
+	defer release()
+	registry.Replace(map[string]*runner.Runner{"example": reloaded})
+
+	if owner, live := registry.Resolve("run-live", "example", reloaded); !live || owner != first {
+		t.Fatalf("resolved owner = (%p, %t), want retained live owner", owner, live)
+	}
+	if untrack, ok := registry.TrackCompatible("run-live", reloaded); ok {
+		untrack()
+		t.Fatal("incompatible intervention replaced the live owner")
+	}
+	compatible, ok := registry.TrackCompatible("run-live", first)
+	if !ok {
+		t.Fatal("compatible intervention owner was refused")
+	}
+	compatible()
 }
 
 func TestSweepStalledRunsEscalatesLiveAdmittedRunAcrossReload(t *testing.T) {
@@ -200,6 +336,7 @@ func TestSweepStalledRunsEscalatesLiveAdmittedRunAcrossReload(t *testing.T) {
 		sched.ReleaseRun,
 		now,
 		45*time.Minute,
+		0,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -317,6 +454,7 @@ func TestSweepStalledRunsEscalatesSilentRunAndPreservesHeartbeat(t *testing.T) {
 		sched.ReleaseReconciled,
 		now,
 		timeout,
+		0,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -378,11 +516,55 @@ func TestSweepStalledRunsUsesPinnedPerRunTimeout(t *testing.T) {
 		StalledRunTimeout: "2h",
 	})
 
-	if err := sweepStalledRuns(layout, nil, runRunner, nil, nil, nil, nil, now, 45*time.Minute); err != nil {
+	if err := sweepStalledRuns(layout, nil, runRunner, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 	assertWatchdogPhase(t, layout.RunsDir(), "short-timeout-run", journal.PhaseEscalated)
 	assertWatchdogPhase(t, layout.RunsDir(), "long-timeout-run", journal.PhaseRunning)
+}
+
+func TestSweepStalledRunsAbortsOverAgeRunWithFreshHeartbeat(t *testing.T) {
+	now := time.Date(2026, 8, 2, 20, 0, 0, 0, time.UTC)
+	layout := instance.NewLayout(t.TempDir())
+	manager, err := worktree.NewManager(layout.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runRunner, err := runner.New(runner.Config{Worktrees: manager, RunsDir: layout.RunsDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started := now.Add(-3 * time.Hour)
+	createWatchdogRunWithControls(t, layout.RunsDir(), "expired-run", "implementation", "", &started, now.Add(-time.Minute), &apiv1.RunControls{
+		MaxRepasses:       3,
+		StalledRunTimeout: "45m",
+		MaxRunDuration:    "2h",
+	})
+	started = now.Add(-3 * time.Hour)
+	createWatchdogRunWithControls(t, layout.RunsDir(), "duration-disabled", "implementation", "", &started, now.Add(-time.Minute), &apiv1.RunControls{
+		MaxRepasses:       3,
+		StalledRunTimeout: "45m",
+	})
+
+	if err := sweepStalledRuns(layout, nil, runRunner, nil, nil, nil, nil, now, 45*time.Minute, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	assertWatchdogPhase(t, layout.RunsDir(), "expired-run", journal.PhaseAborted)
+	assertWatchdogPhase(t, layout.RunsDir(), "duration-disabled", journal.PhaseRunning)
+
+	reader, err := journal.OpenRead(filepath.Join(layout.RunsDir(), "expired-run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 || events[len(events)-2].Error == nil ||
+		events[len(events)-2].Error.Code != runner.RunDurationExceededErrorCode {
+		t.Fatalf("terminal events = %+v, want duration-exceeded error", events)
+	}
 }
 
 func TestSweepStalledRunsPreservesPausedHumanGate(t *testing.T) {
@@ -415,6 +597,7 @@ func TestSweepStalledRunsPreservesPausedHumanGate(t *testing.T) {
 		func(string, string) { released = true },
 		now,
 		45*time.Minute,
+		0,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +633,7 @@ func TestStalledRunSweepErrorsReachInstanceJournal(t *testing.T) {
 	}
 
 	reporter := newSweepErrorReporter(log, "stalled_run_sweep_failed")
-	reporter.report(sweepStalledRuns(layout, nil, nil, log, nil, nil, nil, now, 45*time.Minute))
+	reporter.report(sweepStalledRuns(layout, nil, nil, log, nil, nil, nil, now, 45*time.Minute, 0))
 
 	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
 	if err != nil {
@@ -470,7 +653,7 @@ func TestSweepStalledRunsSkipsSpansOnlyRunDirectory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(layout.RunsDir(), "legacy-run", "spans"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := sweepStalledRuns(layout, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute); err != nil {
+	if err := sweepStalledRuns(layout, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute, 0); err != nil {
 		t.Fatalf("sweep spans-only run directory: %v", err)
 	}
 }
@@ -485,7 +668,7 @@ func TestSweepStalledRunsReportsRunOpenFailure(t *testing.T) {
 		t.Skipf("create run.yaml symlink loop: %v", err)
 	}
 
-	err := sweepStalledRuns(layout, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute)
+	err := sweepStalledRuns(layout, nil, nil, nil, nil, nil, nil, time.Now(), 45*time.Minute, 0)
 	if err == nil || !strings.Contains(err.Error(), "inspect run directory") {
 		t.Fatalf("sweep error = %v, want run inspection failure", err)
 	}
@@ -533,7 +716,7 @@ func TestSweepStalledRunsTerminalizesRemovedGaggleRoot(t *testing.T) {
 		return nil
 	}
 	runners := newDaemonRunnerRegistry()
-	if err := sweepStalledRuns(layout, runners, nil, log, prepare, notify, nil, now, 45*time.Minute); err != nil {
+	if err := sweepStalledRuns(layout, runners, nil, log, prepare, notify, nil, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 

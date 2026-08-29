@@ -28,11 +28,12 @@ type harnessPreflightInfo map[apiv1.Harness]harness.PreflightInfo
 // `goobers run`) so a missing/broken harness is caught before any worktree,
 // claim, or run-journal side effect — not several stages in, as a burned
 // agentic attempt with the root cause buried in a harness transcript (#238).
-// The adapter (via adapterFor) carries the auth probe, so a signed-out harness
-// is caught here at startup too, not just under `validate --check-harness`
-// (#238); each preflight is bounded by harnessPreflightTimeout so a hung CLI or
-// network — now that the probe makes a real API round-trip — can't hang startup.
-func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow) (harnessPreflightInfo, error) {
+// The adapter (via adapterFor) carries the auth probe and the instance's
+// configured environment passthrough, so startup checks the same ambient auth
+// environment as a dispatched run and the operator's harnessCommand override
+// (#2483); each preflight is bounded by harnessPreflightTimeout so a hung CLI
+// or network can't hang startup.
+func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, envPassthrough []string, harnessCommand map[string][]string) (harnessPreflightInfo, error) {
 	seen := map[apiv1.Harness]bool{}
 	info := make(harnessPreflightInfo)
 	preflight := func(wfName, stageName, gooberName string) error {
@@ -48,7 +49,7 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 			return nil
 		}
 		seen[h] = true
-		adapter, err := harnessAdapterFor(h)
+		adapter, err := harnessAdapterFor(h, envPassthrough, harnessCommand)
 		if err != nil {
 			return fmt.Errorf("workflow %q stage %q: %w", wfName, stageName, err)
 		}

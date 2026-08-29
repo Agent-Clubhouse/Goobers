@@ -1,0 +1,463 @@
+# INTENTIONAL LIVE DIVERGENCE:
+# The checked-in reference keeps two runs/day, maxConcurrentRuns=1,
+# maxRunsPerHour=1, and maxOpenPRs=1. Operator-tuned live cadence and budget
+# changes are deliberately not mirrored here.
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: implementation
+spec:
+  gaggle: goobers
+  displayName: Implementation (issue -> PR, reviewer gate, CI-poll repass)
+  # The flagship V0 workflow (ARCHITECTURE.md §12, issue #27): claim a
+  # goobers:ready issue, implement it in a worktree, pass it through a
+  # reviewer gate and the documented `make ci` merge tier, open a PR, then poll
+  # CI with a bounded repass loop back to implementation on failure. See
+  # CONTRIBUTING.md's "Validation tier contract". When this closes, the core
+  # loop exists: feed issues in, PRs come out.
+  #
+  # DOGFOOD GUARDRAIL: fires twice daily (08:17/20:17 local) with
+  # maxRunsPerHour 1 — cadence x hourly-cap together give a hard ceiling of
+  # exactly 2 runs/day. (A native maxRunsPerDay field exists now, #340 — kept
+  # to this cadence x hourly-cap combination here since it already expresses
+  # the intended ceiling and this dogfood instance's own explicit low values
+  # are deliberate, not something to migrate just because a more direct knob
+  # exists.) This workflow never merges directly; the separate merge-review
+  # workflow owns the explicitly opted-in, branch-protected merge path.
+  triggers:
+    - type: schedule
+      schedule: "17 8,20 * * *"
+  readiness:
+    # Claiming (SEC-047 + claim ledger, WF-031) already guarantees two runs
+    # never double-process the same issue; maxConcurrentRuns=1 here is the
+    # deliberate low starting throughput this dogfood instance runs at, not a
+    # safety floor — raise only with a maintainer's explicit sign-off.
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 1
+    # Open-PR cap (#353): don't dispatch a new run while this workflow already
+    # has an un-merged goobers/implementation/* PR open. Looped runs branch
+    # every PR off origin/main, so once several unmerged siblings touch
+    # overlapping files they become mutually un-mergeable as a set (the V0.3
+    # ladder hit this). Capping at 1 keeps the loop merge-paced and the open set
+    # integrable; raise it once V0.5's auto-merge drains PRs without a human.
+    # The runner does NOT rebase/resolve cross-PR conflicts here — that's V0.5's
+    # merge-review/pr-remediation layer (epic #357).
+    maxOpenPRs: 1
+  start: query-backlog
+  tasks:
+    # Built-in backlog-query stage kind (WF-055/SCH-041): claims exactly one
+    # item carrying both the trust label (SEC-047) and the curator's
+    # goobers:ready output marker (#25). Narrowed to a single item (unlike
+    # curation's batch) because each run of this workflow produces one PR.
+    - name: query-backlog
+      type: deterministic
+      goal: Claim one ready, trust-approved issue to implement.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers:approved"
+        requireLabels: "goobers:ready"
+        # Issue #361/#355: close-out now sets status=in-review at PR-open
+        # time instead of closing the issue outright, so an issue with a PR
+        # still cycling through merge-review stays open (not closed) and
+        # would otherwise remain eligible here. The durable GitHub label
+        # (not the claim ledger, whose lease is sized for one run, not a
+        # multi-day review cycle) is what excludes it from re-claim.
+        excludeLabels: "goobers/status:in-review"
+        maxItems: "1"
+        # Lifts the claimed item into a journal artifact (executor.go's
+        # InputResultFile convention) — the "implement" goober reads it as
+        # context via its ContextPointers, not via Task.Inputs/InputsFrom.
+        resultFile: "claimed-item.json"
+      capabilities:
+        - github:issues:write
+        # Read-only in practice here (issue #414's open-PR eligibility
+        # backstop: list open goober-authored PRs to exclude any candidate
+        # issue that already has one, a defense-in-depth check on top of
+        # excludeLabels above) — no dedicated read-only PR capability exists
+        # yet, so this reuses github:pr:write the same way #361's post-merge
+        # stage does for its own PR reads.
+        - github:pr:write
+      policyActions:
+        - claim-backlog-items
+      expectedOutputs:
+        - claimed-item
+      next: gather-implement-context
+
+    # Workflow enrichment (#1299): produce one bounded journal artifact with
+    # the shipped merge-review verdict taxonomy and a hot-file map from current
+    # sibling PRs plus exact conflict files in recent run journals. The reviewer
+    # can consume this unapproved provider evidence; the maintainer-only
+    # implementation task explicitly excludes it below.
+    - name: gather-implement-context
+      type: deterministic
+      goal: Gather the reviewer verdict taxonomy and current/recent-conflict hot-file map for implementation.
+      run:
+        command: ["goobers", "gather-implement-context"]
+      inputs:
+        resultFile: "implementation-context.json"
+        maxHotFiles: "100"
+      capabilities:
+        - github:pr:write
+        - journal:read
+      next: implement
+
+    # Agentic implementation in a fresh, isolated worktree (§16/#19). Scoped
+    # to repo:push only — this stage never talks to the issues or PR API.
+    # Review and local-CI repasses re-enter here. Provider-authored CI check
+    # evidence uses the compatible remediate-ci task below.
+    - name: implement
+      type: agentic
+      goober: implementer
+      minimumIntegrity: maintainer
+      # Provider-derived enrichment remains unapproved and is intentionally not
+      # routed into this maintainer-only consumer. Reviewer and local-CI evidence
+      # are derived workflow outputs and remain available on their repass paths.
+      contextFrom:
+        - query-backlog
+        - implement
+        - remediate-ci
+        - review
+        - local-ci
+      goal: >-
+        Implement the claimed issue end to end: read the issue and its
+        acceptance criteria, plan, implement, verify with fast, targeted
+        tests for what you changed, and commit to the run's branch (push is a
+        separate deterministic stage — see push-branch below). Do NOT run the
+        full `make ci` / `go test -race ./...` suite in-session — the
+        deterministic local-ci stage below owns that authoritatively; running
+        it here only burns the session's wall-clock budget on test execution
+        that is about to run again anyway (#724). On a repass, first read the
+        reviewer rationale or local-CI failure evidence attached as context and
+        address it before making further changes. Treat a provider-side
+        acceptance step such as an issue comment or report as satisfied only
+        when attached context proves it was already completed. Otherwise fail
+        explicitly with PROVIDER_ACTION_REQUIRED rather than attempting the
+        mutation or reporting MISSING_CAPABILITY.
+      capabilities:
+        - repo:push
+        - agent:model
+      policyActions:
+        - modify-repository
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 15
+      # #724: bound the implement session's timeout to agent think-time, not
+      # test wall-clock. The full `-race` suite grows with the repo (700+
+      # merged PRs) and could consume the whole 30-min session, discarding
+      # real in-progress work on the timeout. onTimeout=salvage is the
+      # complement to the goal change above: if the session still times out
+      # with a viable committed diff on the branch, the runner completes this
+      # stage with that diff and advances to review + local-ci instead of
+      # discarding the run.
+      onTimeout: salvage
+      # No model-reported artifacts (#301): the implementer's deliverable is its
+      # committed diff on the run branch, which the runner captures and digests
+      # as the reviewer's evidence. A model cannot correctly self-report digested
+      # ArtifactPointers, so the result is status + scalar summary only.
+      # A recognized non-retryable failure bypasses review evaluation but uses
+      # review's escalate control branch below to park the issue first.
+      next: review
+
+    # CI check details are provider-authored and therefore remain unapproved.
+    # Route them to a distinct remediation consumer that explicitly accepts
+    # that grade rather than weakening the maintainer-only implementation task.
+    - name: remediate-ci
+      type: agentic
+      goober: implementer
+      minimumIntegrity: unapproved
+      contextFrom:
+        - query-backlog
+        - implement
+        - remediate-ci
+        - review
+        - local-ci
+        - ci-poll
+      goal: >-
+        Remediate the failed CI checks using the attached provider evidence,
+        run fast targeted tests for the change, and commit the fix to the run's
+        branch. Do not run the full `make ci` / `go test -race ./...` suite;
+        local-ci runs it authoritatively after review.
+      capabilities:
+        - repo:push
+        - agent:model
+      policyActions:
+        - modify-repository
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 15
+      onTimeout: salvage
+      next: review
+
+    # The merge tier and required declared-dependency integration gate from
+    # CONTRIBUTING.md's "Validation tier contract", run on the implementation
+    # branch after review has published a durable checkpoint and after syncing
+    # base.
+    - name: local-ci
+      type: deterministic
+      goal: Run the project's local CI-equivalent and strict declared-dependency integration validation in the worktree.
+      run:
+        # One make invocation preserves the existing merge tier and runs the
+        # required strict integration target only after it succeeds, without a
+        # second sync or a duplicate workflow stage.
+        command: ["make", "ci", "test-integration-strict"]
+        # Pull in build/test behavior fixes that landed after this run branched.
+        syncBase: true
+      inputs:
+        # `make ci` shells out to the hermetic tier's `go test -race -timeout
+        # 30m` (test/ci/main.go), the same 30-minute ceiling `GO_TEST_TIMEOUT
+        # ?= 30m` documents in the Makefile — self-documented here so
+        # validate's subprocess-timeout coherence check (#3377) catches a
+        # future regression back below it even though the bare `make ci`
+        # invocation above carries no timeout validate can parse on its own.
+        expectedSubprocessTimeoutSeconds: "1800"
+      # Declared, not inherited (#1969), corrected by #3377. The executor's
+      # built-in fallback is 10 minutes, sized for short commands; `make ci`
+      # on this repo runs 8.1m at p50 and 9.5m at p90 in the *typical* case,
+      # but that is the wrong basis for this budget: `make ci` shells out to
+      # `go test -race -timeout 30m`, and under load the inner subprocess can
+      # legitimately still be running past any budget sized off typical-case
+      # duration alone — the stage must clear the subprocess's own 30-minute
+      # ceiling, not just its p99. A deadline SIGQUIT at the old 1500s (25m)
+      # presents as an ordinary CI failure, routed back to implement, and the
+      # implementer — correctly finding no defect to fix — changes nothing, so
+      # the run escalates on an identical diff. 2400s (40m) clears the inner
+      # 30-minute ceiling with 10 minutes of headroom for contention, the cold
+      # golangci-lint cache each fresh worktree pays for (#1971), and the
+      # shorter integration tier.
+      #
+      # Deliberately still maxAttempts 1: result failures route through
+      # local-gate, whose infrastructure branch has its own bounded,
+      # crash-resumable retry budget separate from policy repasses.
+      timeoutSeconds: 2400
+      retry:
+        maxAttempts: 1
+      next: local-gate
+
+    # Deterministic branch checkpoint (#237/#3272): the implementer commits but
+    # never pushes (no configured auth/identity for an agentic session to do so
+    # reliably) — this stage publishes the reviewed run branch to origin
+    # through the credential seam (#14), authenticated per-invocation, never
+    # persisted to disk. It deliberately runs before long local CI but still
+    # before open-pr, preserving the exact reviewed commit when validation
+    # infrastructure fails without publishing a pull request prematurely.
+    - name: push-branch
+      type: deterministic
+      goal: Push the run's branch to origin.
+      run:
+        command: ["goobers", "push-branch"]
+      capabilities:
+        - repo:push
+      policyActions:
+        - push-repository-branch
+      next: local-ci
+
+    - name: open-pr
+      type: deterministic
+      goal: Open (or update, on repass) the PR for the run's branch.
+      run:
+        command: ["goobers", "open-pr"]
+      inputs:
+        # BranchName() = goobers/<workflow>/<run-id> (providers.BranchName,
+        # #13) is stable across repasses, so a second call here updates the
+        # existing PR rather than opening a duplicate.
+        runIdFooter: "true"
+        # Lifts prNumber/pull-request-url into ResultEnvelope.Outputs (not
+        # just an artifact) so ci-poll's inputsFrom below can reference them
+        # (executor.go's InputResultFile doc: a flat JSON result file also
+        # merges into Outputs).
+        resultFile: "pr-result.json"
+      capabilities:
+        - provider:pr:write
+      policyActions:
+        - open-or-update-pr
+      expectedOutputs:
+        - pull-request-url
+        # Well-known handoff key for ci-poll's inputsFrom below.
+        - prNumber
+        # #947: opened=false when the claimed issue closed mid-flight, so
+        # open-pr-gate can abort the run instead of proceeding to ci-poll on a
+        # PR it deliberately did not open.
+        - opened
+      next: open-pr-gate
+
+    - name: ci-poll
+      type: deterministic
+      goal: Poll the PR's CI checks and review state until they conclude.
+      run:
+        # internal/executor.TaskExecutor (#18, #132) dispatches this built-in
+        # stage kind via inputs.kind — it never shells out `command` for
+        # kind=ci-poll (CIPollExecutor calls the PR provider directly).
+        # `command` stays a placeholder because DeterministicRun.Command is a
+        # required field in schema v0.
+        command: ["goobers", "ci-poll"]
+      inputs:
+        kind: "ci-poll"
+        # prOwner/prRepo default from RepoRef when unset (they match here).
+      inputsFrom:
+        # prNumber arrives via open-pr's declared Outputs, threaded by the
+        # runner per this explicit mapping (Task.InputsFrom, #132) — not a
+        # static value, and not blanket-propagated the way a gate's Inputs
+        # flatten every upstream Output automatically.
+        prNumber: prNumber
+      capabilities:
+        - provider:pr:write
+      expectedOutputs:
+        - ciStatus
+        # Passed through by the built-in so timeout can re-enter this task.
+        - prNumber
+      next: ci-gate
+
+    - name: close-out
+      type: deterministic
+      goal: >-
+        Comment on the originating issue linking the open PR and mark it
+        in-review — issue #361/#355: the work isn't done until the PR
+        merges, so this no longer closes the issue outright. The actual
+        close happens at the merge event (`goobers post-merge`, run by the
+        separate opt-in merge-review workflow after its verdict + CI +
+        SHA-pin conjuncts all hold, issue #360).
+      run:
+        command: ["goobers", "issue-close-out"]
+      inputs:
+        status: "in-review"
+        resultFile: "issue-close-out-result.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - update-issue
+      # Terminal: no `next`. The core loop's product — issue in, PR out — is
+      # complete once the issue carries the closing breadcrumb. There is no
+      # merge stage anywhere in this workflow: merge-review owns that
+      # separate, explicitly capability-gated path.
+
+    - name: park-escalated
+      type: deterministic
+      goal: Park an escalated issue with the terminal escalation reason.
+      run:
+        command: ["goobers", "issue-close-out"]
+      inputs:
+        # #2028/#2333: every route into this stage (an empty implementation
+        # diff, repass-budget exhaustion, identical-diff loop, an
+        # infra/executor failure, a CI-poll timeout) is a mechanical failure
+        # someone needs to act on, not a policy question — so it parks
+        # goobers:needs-remediation, not goobers:needs-human. A genuine policy
+        # decision (the reviewer's explicit "fail" verdict) parks through
+        # park-needs-human instead.
+        status: "needs-remediation"
+        resultFile: "issue-close-out-result.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - update-issue
+      # Terminal @escalate, NOT @abort. The issue still has to leave
+      # goobers:ready (that is this PR's whole point), but the run's phase is
+      # what every escalation surface selects on: `goobers run` exit 3, the
+      # read API's escalationCause, and `goobers trace`'s escalation summary
+      # all key on PhaseEscalated. Collapsing this into park-needs-human's
+      # @abort would make a repass-exhausted or non-retryable-disposition run
+      # indistinguishable from an ordinary failure — and would regress #415,
+      # which exists precisely so these terminate escalated.
+      next: "@escalate"
+
+    - name: park-needs-human
+      type: deterministic
+      goal: >-
+        Park an issue only when implementation surfaced a policy or product
+        decision a human must make, stating the exact question in the terminal
+        review reason.
+      run:
+        command: ["goobers", "issue-close-out"]
+      inputs:
+        status: "needs-human"
+        resultFile: "issue-close-out-result.json"
+      capabilities:
+        - github:issues:write
+      policyActions:
+        - update-issue
+      next: "@abort"
+
+  gates:
+    # Agentic gate: the reviewer invocation IS the evaluator (gate.md's
+    # "Agentic" evaluator kind) — there is no separate preceding review task.
+    # Before invoking the reviewer, the runner computes a deterministic diff of
+    # the run branch (git diff base...HEAD), digests it, and attaches it as an
+    # evidence context pointer (#301) — the reviewer judges the actual committed
+    # change, runner-produced, never a model-self-reported artifact
+    # (internal/gate.ReviewerInvocation, #20). Verdict decisions map directly
+    # to branches (GT-002: never a silent pass): "needs-changes" repasses to
+    # implement with the rationale as evidence; "fail" parks the issue before
+    # aborting rather than spending repass budget on a fundamentally rejected
+    # approach. The gate's escalate control branch routes empty diffs and
+    # bounded-repass exhaustion through mechanical-remediation parking.
+    # DOGFOOD GUARDRAIL: this gate is ON by design — every implementation run
+    # gets an independent reviewer verdict before a PR can reach CI-poll.
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: reviewer
+      branches:
+        pass: push-branch
+        needs-changes: implement
+        fail: park-needs-human
+        escalate: park-escalated
+
+    # failure-class distinguishes retryable executor/infrastructure failures
+    # from a genuine local-CI failure. Only the latter is actionable by the
+    # implementer. Infrastructure failures retry local-ci against the exact
+    # reviewed commit under a separate bounded budget; exhaustion takes this
+    # gate's escalation branch, and terminal cleanup retains the pushed branch.
+    - name: local-gate
+      evaluator: automated
+      automated:
+        check: failure-class
+      branches:
+        pass: open-pr
+        fail: implement
+        infra: local-ci
+        escalate: park-escalated
+
+    # #947: open-pr re-checks the claimed issue's state immediately before
+    # opening (the claim was validated once, at query-backlog, but implement +
+    # review + local-ci can take 30+ minutes). When the issue closed or was
+    # superseded in that window, open-pr emits opened=false and opens no PR;
+    # this gate routes that straight to @abort so the run terminates with a
+    # clear, distinguishable reason instead of producing a PR for moot work
+    # that would consume a merge-review cycle and an open-PR slot. opened=true
+    # proceeds to ci-poll exactly as before.
+    - name: open-pr-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: opened
+          equals: "true"
+      branches:
+        pass: ci-poll
+        fail: "@abort"
+
+    # ci-poll sets Outputs[ciStatus] to the normalized providers.CheckState
+    # value ("passing"/"failing"/"pending" — providers/model.go); the
+    # ci-status check reads that well-known key.
+    - name: ci-gate
+      evaluator: automated
+      automated:
+        check: ci-status
+        params:
+          equals: "passing"
+        # Pinned explicitly at the 1.4 -> 2.0 migration: DSL 2.0's ci-poll
+        # input builder injects this default where DSL 1.4 left it unset, so
+        # the pin keeps compiled behavior identical across the version bump.
+        pollIntervalSeconds: 10
+      branches:
+        pass: close-out
+        # Provider-authored failure evidence remains unapproved and is routed
+        # to the explicitly compatible remediation consumer.
+        fail: remediate-ci
+        escalate: park-escalated
+        # A poll timeout (#239) is not evidence CI failed — just that it
+        # didn't finish in this polling window. Re-enter ci-poll at the
+        # journaled stage boundary so the same PR remains claimed and keeps
+        # waiting without consuming implementation or repass budget (#3325).
+        timeout: ci-poll

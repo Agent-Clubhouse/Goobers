@@ -136,6 +136,28 @@ func isIdempotentHTTPMethod(method string) bool {
 // recognizes either shape.
 var ErrMergeConflict = errors.New("provider reported a merge conflict")
 
+// IsForbiddenPATError reports whether err is a typed provider response GitHub
+// returned specifically because a fine-grained personal access token lacks a
+// permission that has no equivalent grant to request (issue #2685: a
+// fine-grained PAT's grantable permission list has no "Checks" entry at all,
+// so a private repo's commits/{ref}/check-runs read is permanently
+// unreachable on that token type — this is not a transient or
+// differently-scoped 403). Deliberately narrow, mirroring
+// IsMergeConflictError's discipline: GitHub returns 403 for many unrelated
+// reasons (rate limiting, org SSO enforcement, plain missing scope), so the
+// status code alone is never sufficient — the response body must also name
+// this exact condition.
+func IsForbiddenPATError(err error) bool {
+	var responseErr *providerResponseError
+	if !errors.As(err, &responseErr) {
+		return false
+	}
+	if responseErr.statusCode != http.StatusForbidden {
+		return false
+	}
+	return strings.Contains(responseErr.body, "Resource not accessible by personal access token")
+}
+
 // IsMergeConflictError reports whether err is a typed provider response that
 // the forge returned specifically because the pull request has merge
 // conflicts (issue #1751). A conflicted PR is a normal business refusal —
@@ -165,6 +187,28 @@ func IsMergeConflictError(err error) bool {
 		return false
 	}
 	return mentionsMergeConflict(responseErr.body)
+}
+
+// IsRequiredStatusCheckPendingError reports whether GitHub refused a merge
+// because a required status check has not reported yet. GitHub uses 405 for
+// unrelated policy refusals too, so both the status and API message must match.
+func IsRequiredStatusCheckPendingError(err error) bool {
+	var responseErr *providerResponseError
+	if !errors.As(err, &responseErr) {
+		return false
+	}
+	if responseErr.statusCode != http.StatusMethodNotAllowed {
+		return false
+	}
+	var response struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(responseErr.body), &response); err != nil {
+		return false
+	}
+	message := strings.ToLower(strings.Join(strings.Fields(response.Message), " "))
+	return strings.Contains(message, "required status check ") &&
+		strings.Contains(message, " is expected")
 }
 
 // mentionsMergeConflict reports whether a provider response body names a

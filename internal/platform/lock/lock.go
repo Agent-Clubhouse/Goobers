@@ -17,18 +17,19 @@ type Handle struct {
 	file *os.File
 }
 
-// Acquire opens path and waits until it holds an exclusive lock.
-func Acquire(path string) (*Handle, error) {
-	return acquire(path, false)
-}
-
 // TryAcquire opens path and attempts to take an exclusive lock without waiting.
 func TryAcquire(path string) (*Handle, error) {
-	return acquire(path, true)
+	return acquire(path, true, os.O_CREATE|os.O_RDWR)
 }
 
-func acquire(path string, nonBlocking bool) (*Handle, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+// TryAcquireExisting opens an existing path and attempts to take an exclusive
+// lock without waiting. It never creates the lock file.
+func TryAcquireExisting(path string) (*Handle, error) {
+	return acquire(path, true, os.O_RDWR)
+}
+
+func acquire(path string, nonBlocking bool, flags int) (*Handle, error) {
+	file, err := os.OpenFile(path, flags, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("lock: open %q: %w", path, err)
 	}

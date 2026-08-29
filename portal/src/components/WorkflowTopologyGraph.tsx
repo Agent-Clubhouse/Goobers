@@ -8,7 +8,12 @@ import {
   useState,
 } from "react";
 import type { RefObject } from "react";
-import type { WorkflowGraph, WorkflowGraphEdge, WorkflowGraphNode } from "../api/types";
+import type {
+  GraphAnalytics,
+  WorkflowGraph,
+  WorkflowGraphEdge,
+  WorkflowGraphNode,
+} from "../api/types";
 import {
   branchStateLabel,
   edgeTraversed,
@@ -73,6 +78,7 @@ export function WorkflowTopologyGraph({
   causalNodeId,
   fullscreenTargetRef,
   onFullscreenModeChange,
+  analytics,
 }: {
   graph: WorkflowGraph;
   onSelectStage: (stageId: string, revealInspector?: boolean) => void;
@@ -95,6 +101,7 @@ export function WorkflowTopologyGraph({
   causalNodeId?: string;
   fullscreenTargetRef?: RefObject<HTMLElement | null>;
   onFullscreenModeChange?: (mode: WorkflowGraphFullscreenMode) => void;
+  analytics?: GraphAnalytics;
 }) {
   const layout = useMemo(() => layoutWorkflowGraph(graph), [graph]);
   const markerId = `workflow-arrow-${useId().replaceAll(":", "")}`;
@@ -686,9 +693,19 @@ export function WorkflowTopologyGraph({
               // ("review, gate, Running at sequence 6"); on the definition page
               // it stays the richer configured-topology label.
               const causalSuffix = causalNodeId === node.id ? ", escalation cause" : "";
+              const centrality = analytics?.centrality.find((item) => item.node === node.id);
+              const critical = analytics?.criticalPath.nodes.includes(node.id);
+              const cycle = analytics?.cycles.some((component) => component.includes(node.id));
+              const analyticsSuffix = [
+                centrality && `centrality ${centrality.score.toFixed(2)}`,
+                critical && "critical path",
+                cycle && "cycle detected",
+              ]
+                .filter(Boolean)
+                .join(", ");
               const ariaLabel = runState
-                ? `${node.id}, ${node.kind}, ${runStateLabel(runState)}${seqSuffix}${causalSuffix}`
-                : `${node.id}, ${nodeKindLabel(node)}, ${actor}, configured${causalSuffix}`;
+                ? `${node.id}, ${node.kind}, ${runStateLabel(runState)}${seqSuffix}${causalSuffix}${analyticsSuffix ? `, ${analyticsSuffix}` : ""}`
+                : `${node.id}, ${nodeKindLabel(node)}, ${actor}, configured${causalSuffix}${analyticsSuffix ? `, ${analyticsSuffix}` : ""}`;
               return (
                 <button
                   aria-label={ariaLabel}
@@ -698,6 +715,9 @@ export function WorkflowTopologyGraph({
                     `workflow-node-${node.kind}`,
                     runState ? `run-node-state-${runState}` : "",
                     causalNodeId === node.id ? "run-node-causal" : "",
+                    centrality ? "workflow-node-centrality" : "",
+                    critical ? "workflow-node-critical" : "",
+                    cycle ? "workflow-node-cycle" : "",
                   ]
                     .filter(Boolean)
                     .join(" ")}
@@ -733,10 +753,18 @@ export function WorkflowTopologyGraph({
                   style={{ left: layoutNode.x, top: layoutNode.y }}
                   type="button"
                 >
+                  {node.kind === "gate" && <GateShape />}
                   <span className="graph-node-kind">{nodeKindLabel(node)}</span>
                   <strong>{node.id}</strong>
                   <span className="workflow-node-actor">{actor}</span>
                   <span className="graph-node-state">{stateText}</span>
+                  {centrality && (
+                    <span className="workflow-node-analytics">
+                      Blame {centrality.score.toFixed(2)}
+                    </span>
+                  )}
+                  {critical && <span className="workflow-node-analytics">Critical path</span>}
+                  {cycle && <span className="workflow-node-analytics">Cycle detected</span>}
                 </button>
               );
             })}
@@ -752,6 +780,27 @@ export function WorkflowTopologyGraph({
         <WorkflowGraphLegend />
       </div>
     </div>
+  );
+}
+
+// GateShape draws the decision-point silhouette a gate node wears instead of
+// the shared rounded rectangle (#2693). It is a layer inside the button rather
+// than a clip-path on the button so the focus ring, the selection ring, and
+// the escalation-cause outline — all painted outside the border box — survive.
+// The left and right points sit at the node's vertical midline, exactly where
+// layoutWorkflowGraph anchors forward edges, and the flat top and bottom keep
+// the four stacked labels legible at the node's 172x86 footprint, which a
+// full-width rhombus would pinch away.
+function GateShape() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="workflow-node-shape"
+      preserveAspectRatio="none"
+      viewBox="0 0 100 100"
+    >
+      <polygon points="0,50 14,0 86,0 100,50 86,100 14,100" />
+    </svg>
   );
 }
 

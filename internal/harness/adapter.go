@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/sandbox"
 	"github.com/goobers/goobers/internal/telemetry"
 
@@ -68,6 +71,12 @@ type RunRequest struct {
 	// Envelope is the invocation envelope (goal, context pointers, declared
 	// capabilities, workspace path) the runner built for this stage.
 	Envelope apiv1.InvocationEnvelope
+	// ExecutionPolicy is the parent-intersected policy enforced for a nested run.
+	ExecutionPolicy *apiv1.ChildExecutionPolicy
+	// SelectedEnvelopeSections is the optional context view requested by an
+	// explicit-context nested policy. ExecutionPolicy remains mandatory and is
+	// never filtered by this presentation-only selection.
+	SelectedEnvelopeSections map[string]any
 	// Instructions is the goober's resolved instructions.md body (persona,
 	// scope, done-criteria) — goober-level, not per-invocation.
 	Instructions string
@@ -82,6 +91,13 @@ type RunRequest struct {
 	MCPServers []apiv1.MCPServer
 	// Tools is the goober's default-deny tool allowlist.
 	Tools []string
+	// GoobersIORegistered reports that this adapter has actually wired the
+	// goobers-io MCP server for this run (set by the adapter's own
+	// withAutoGoobersIO*-equivalent before the prompt is rendered). The
+	// prompt's "## goobers-io tools" section is gated on this, not on
+	// eligibility alone (#2774) — an adapter that never registers the server
+	// must never instruct the model to call tools that don't exist there.
+	GoobersIORegistered bool
 	// Workspace is the working directory the harness runs in — normally
 	// Envelope.Workspace, threaded explicitly so tests can point it
 	// elsewhere.
@@ -104,6 +120,12 @@ type RunRequest struct {
 	ContextPaths map[string]string
 	// Timeout bounds the harness session; zero means no timeout.
 	Timeout time.Duration
+	// Attempt identifies the stage attempt for retry-safe provenance.
+	Attempt int
+	// AgentEventSink durably projects structured events as they are observed.
+	// Adapters call it before returning so active agents are queryable while
+	// the harness process is still running.
+	AgentEventSink func(journal.Event) error
 	// MaxTranscriptBytes caps the transcript a subprocess-based Adapter
 	// retains in memory; non-positive means DefaultMaxTranscriptBytes (#245).
 	MaxTranscriptBytes int64
@@ -113,6 +135,10 @@ type RunRequest struct {
 	// Nil (the default, and always the value under a "disabled" posture)
 	// leaves the launch path byte-identical to the pre-sandbox behavior.
 	Sandbox sandbox.Sandbox
+	// HarnessVersion is the CLI version captured by startup preflight, passed
+	// through so an adapter can record it alongside the effective invocation
+	// in run diagnostics (#2962). Empty when preflight did not report one.
+	HarnessVersion string
 }
 
 // Outcome is what an Adapter hands back after a harness session ends.
@@ -144,6 +170,50 @@ type Outcome struct {
 	// TranscriptDroppedBytes is how many transcript bytes were discarded past
 	// the cap (0 if TranscriptTruncated is false).
 	TranscriptDroppedBytes int64
+	// Stderr is the separately captured harness subprocess stderr. It is
+	// bounded at MaxTranscriptBytes and recorded as a run artifact on failure.
+	Stderr []byte
+	// InputInspectionReceipts are tool-owned goobers-io records collected
+	// independently of adapter transcript telemetry.
+	InputInspectionReceipts []mcpio.InputInspectionReceipt
+	// InputInspectionReceiptsCollected reports that goobers-io receipt
+	// collection was configured, including when no inspection call occurred.
+	InputInspectionReceiptsCollected bool
+	// MCPServerFailures lists MCP servers this adapter registered for the
+	// session that the harness CLI then reported as not connected at
+	// invocation time — either an explicit non-"connected" status or the
+	// server missing from the CLI's own connection report entirely. A
+	// populated list means every tool those servers provide was silently
+	// absent from the agent's session even though the resolved config
+	// declared them (#3356): the Executor journals it loudly so a downstream
+	// MISSING_REQUIRED_TOOLS-shaped block stops wearing an unrelated
+	// costume. Populated by adapters that can observe per-server connection
+	// state: claude-code from its stream-json system/init event, copilot-cli
+	// from its own run log (#3456 — no transcript equivalent exists there).
+	// Nil elsewhere, and nil never asserts that servers WERE available.
+	MCPServerFailures []MCPServerFailure
+	// AgentEvents are normalized structured events emitted by an adapter. The
+	// executor journals them after validation; raw transcripts are not parsed
+	// to fabricate nested-agent provenance.
+	AgentEvents []journal.Event
+	// AgentTelemetryFidelity explicitly reports whether structured nested-agent
+	// events are complete, partial, or unavailable.
+	AgentTelemetryFidelity string
+	// AgentTelemetryDetail explains a partial/none fidelity result without
+	// requiring operators to infer adapter limitations from missing events.
+	AgentTelemetryDetail string
+}
+
+// MCPServerFailure identifies one MCP server that was registered for a
+// harness session but reported unusable by the harness CLI at invocation
+// time (#3356).
+type MCPServerFailure struct {
+	// Server is the registered MCP server name (e.g. "goobers-io").
+	Server string
+	// Status is the harness-reported connection status (e.g. "failed"), or
+	// "absent" when the harness's connection report did not mention the
+	// registered server at all.
+	Status string
 }
 
 // PreflightInfo describes the installed harness verified before agentic work
@@ -213,6 +283,123 @@ type ConfigValidator interface {
 // differ from the declaration after an explicit fallback policy is applied.
 type ConfigResolver interface {
 	ResolveConfig(model string, options map[string]apiextensionsv1.JSON) (ConfigResolution, error)
+}
+
+// NestedPolicyCapability declares that an adapter has a distinct child launch
+// path which understands and enforces the portable nested-agent policy
+// envelope. Validation alone is not sufficient: RunNested must be the method
+// that launches the child so the ordinary adapter path cannot silently ignore
+// the effective policy.
+type NestedPolicyCapability interface {
+	ValidateNestedAgentPolicy(apiv1.NestedAgentPolicy) error
+	RunNested(context.Context, RunRequest) (Outcome, error)
+}
+
+func validateStandardExecution(req RunRequest) error {
+	if req.Envelope.NestedAgentPolicy != nil || req.ExecutionPolicy != nil {
+		return fmt.Errorf("harness: nested execution requires the adapter child-launch path")
+	}
+	return nil
+}
+
+func validateNestedExecution(req RunRequest) error {
+	if req.Envelope.NestedAgentPolicy == nil {
+		return fmt.Errorf("harness: nested execution has no policy declaration")
+	}
+	if req.ExecutionPolicy == nil {
+		return fmt.Errorf("harness: nested execution has no admitted child policy")
+	}
+	if req.ExecutionPolicy.Profile == "" ||
+		!slices.Contains(req.Envelope.NestedAgentPolicy.PermittedProfiles, req.ExecutionPolicy.Profile) {
+		return fmt.Errorf("harness: nested execution profile was not admitted")
+	}
+	if !sameStrings(req.ExecutionPolicy.Capabilities, req.Envelope.Capabilities) ||
+		!sameStrings(req.ExecutionPolicy.PolicyActions, req.Envelope.PolicyActions) {
+		return fmt.Errorf("harness: nested envelope was not narrowed to effective authority")
+	}
+	if req.Envelope.ParentPlatformPolicy != nil {
+		return fmt.Errorf("harness: nested envelope exposes parent platform authority")
+	}
+	declaration := req.Envelope.NestedAgentPolicy
+	if declaration.Delegation != req.ExecutionPolicy.Delegation ||
+		declaration.MaxDepth != req.ExecutionPolicy.MaxDepth ||
+		declaration.PeerMessaging != req.ExecutionPolicy.PeerMessaging ||
+		!sameStrings(declaration.PermittedProfiles, []string{req.ExecutionPolicy.Profile}) ||
+		declaration.Context.Mode != req.ExecutionPolicy.Context.Mode ||
+		!sameStrings(declaration.Context.ArtifactNames, req.ExecutionPolicy.Context.ArtifactNames) ||
+		!sameStrings(declaration.Context.EnvelopeSections, req.ExecutionPolicy.Context.EnvelopeSections) ||
+		!sameStrings(declaration.Model.Allowlist, req.ExecutionPolicy.Model.Allowlist) ||
+		declaration.Model.MaxReasoningEffort != req.ExecutionPolicy.Model.MaxReasoningEffort ||
+		!samePlatformPolicy(declaration.PlatformPolicy, req.ExecutionPolicy.PlatformPolicy) {
+		return fmt.Errorf("harness: nested declaration was not reduced to effective authority")
+	}
+	if !sameStrings(req.ExecutionPolicy.PlatformPolicy.Capabilities, req.ExecutionPolicy.Capabilities) ||
+		!sameStrings(req.ExecutionPolicy.PlatformPolicy.PolicyActions, req.ExecutionPolicy.PolicyActions) ||
+		req.Envelope.Limits != req.ExecutionPolicy.PlatformPolicy.Budget {
+		return fmt.Errorf("harness: nested runtime resources differ from effective authority")
+	}
+	if len(req.ExecutionPolicy.Model.Allowlist) > 0 &&
+		!slices.Contains(req.ExecutionPolicy.Model.Allowlist, req.Model) {
+		return fmt.Errorf("harness: nested model was not admitted")
+	}
+	effort, err := configuredReasoningEffort(req.HarnessOptions)
+	if err != nil {
+		return err
+	}
+	if effort != "" &&
+		req.ExecutionPolicy.Model.MaxReasoningEffort != "" &&
+		nestedReasoningRank(effort) > nestedReasoningRank(req.ExecutionPolicy.Model.MaxReasoningEffort) {
+		return fmt.Errorf("harness: nested reasoning effort exceeds effective authority")
+	}
+	return nil
+}
+
+func sameStrings(left, right []string) bool {
+	return slices.Equal(left, right)
+}
+
+func samePlatformPolicy(left, right apiv1.PlatformPolicy) bool {
+	return sameStrings(left.Capabilities, right.Capabilities) &&
+		sameStrings(left.PolicyActions, right.PolicyActions) &&
+		sameStrings(left.Credentials, right.Credentials) &&
+		left.Sandbox == right.Sandbox &&
+		sameStrings(left.FilesystemRoots, right.FilesystemRoots) &&
+		sameStrings(left.NetworkEgress, right.NetworkEgress) &&
+		sameStrings(left.ContentExclusions, right.ContentExclusions) &&
+		left.Budget == right.Budget &&
+		left.Cancellation == right.Cancellation &&
+		left.CompletionContract == right.CompletionContract
+}
+
+func nestedReasoningRank(value apiv1.ReasoningEffort) int {
+	switch value {
+	case apiv1.ReasoningMinimal:
+		return 1
+	case apiv1.ReasoningLow:
+		return 2
+	case apiv1.ReasoningMedium:
+		return 3
+	case apiv1.ReasoningHigh:
+		return 4
+	default:
+		return 0
+	}
+}
+
+// ValidateNestedAgentPolicy performs the adapter-side admission check and
+// returns the adapter's mandatory child-launch path.
+func ValidateNestedAgentPolicy(adapter Adapter, policy apiv1.NestedAgentPolicy) (NestedPolicyCapability, error) {
+	if err := policy.Validate(); err != nil {
+		return nil, err
+	}
+	capability, ok := adapter.(NestedPolicyCapability)
+	if !ok {
+		return nil, fmt.Errorf("harness: %s does not support nested-agent policy enforcement", adapter.Name())
+	}
+	if err := capability.ValidateNestedAgentPolicy(policy); err != nil {
+		return nil, err
+	}
+	return capability, nil
 }
 
 // ValidateConfig delegates model and option validation to adapter. An adapter

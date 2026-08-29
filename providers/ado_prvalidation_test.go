@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 )
@@ -22,6 +24,7 @@ func prDetailHandler(t *testing.T, reviewers []map[string]interface{}) http.Hand
 			"status":                "active",
 			"title":                 "Implement PBI 100",
 			"description":           "Implements PBI 100",
+			"createdBy":             map[string]string{"displayName": "Mona", "uniqueName": "mona@example.com"},
 			"isDraft":               false,
 			"sourceRefName":         "refs/heads/goobers/implement/run-9",
 			"targetRefName":         "refs/heads/master",
@@ -83,8 +86,11 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 		wantCheckNames []string
 	}{
 		{
-			name:      "all gating policies approved is passing",
-			reviewers: []map[string]interface{}{{"vote": 10}},
+			name: "all gating policies approved is passing",
+			reviewers: []map[string]interface{}{
+				{"vote": 10, "uniqueName": "done@example.com"},
+				{"vote": 0, "uniqueName": "pending@example.com"},
+			},
 			evaluations: []map[string]interface{}{
 				blockingPolicy("Build", "approved"),
 				blockingPolicy("Status", "approved"),
@@ -178,6 +184,13 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 			if result.Number != 42 || result.State != "open" || result.Merged {
 				t.Fatalf("unexpected identity/state: %#v", result)
 			}
+			if result.Author != "mona@example.com" {
+				t.Fatalf("Author = %q, want mona@example.com", result.Author)
+			}
+			if tc.name == "all gating policies approved is passing" &&
+				(len(result.RequestedReviewers) != 1 || result.RequestedReviewers[0] != "pending@example.com") {
+				t.Fatalf("RequestedReviewers = %v, want only the unvoted reviewer", result.RequestedReviewers)
+			}
 			if result.HeadSHA != "head-sha" || result.BaseSHA != "base-sha" || result.BaseBranch != "master" {
 				t.Fatalf("unexpected refs: %#v", result)
 			}
@@ -203,6 +216,30 @@ func TestADOProviderPollPullRequestPolicyEvaluations(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestADOProviderPollPullRequestProviderError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", prDetailHandler(t, nil))
+	mux.HandleFunc("/org/project/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "policy service unavailable", http.StatusInternalServerError)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	// The assertion is "the 500 surfaces as an error", not "the retries were
+	// timed": stub the backoff sleep (the in-package idiom, cf.
+	// ado_landing_test.go) so the retry ladder still runs but costs no real
+	// wall-clock time instead of 1+2+4+8 = 15s.
+	provider.sleep = func(context.Context, time.Duration) error { return nil }
+	_, err := provider.PollPullRequest(context.Background(), PullRequestPollRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		PullID:     "42",
+	})
+	if err == nil {
+		t.Fatal("PollPullRequest returned nil error")
 	}
 }
 
@@ -280,5 +317,24 @@ func TestADOProviderClosePullRequestAbandons(t *testing.T) {
 	}
 	if result.Number != 42 || result.Merged || result.State != "closed" {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestADOProviderClosePullRequestFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPatch)
+		http.Error(w, "close failed", http.StatusInternalServerError)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewADOProvider("org", "project", "token", func(p *ADOProvider) { p.BaseURL = server.URL })
+	_, err := provider.ClosePullRequest(context.Background(), ClosePullRequestRequest{
+		Repository: RepositoryRef{Name: "repo", Project: "project"},
+		PullID:     "42",
+	})
+	if err == nil || !strings.Contains(err.Error(), "status 500") {
+		t.Fatalf("ClosePullRequest error = %v, want status 500", err)
 	}
 }

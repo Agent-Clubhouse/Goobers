@@ -59,7 +59,7 @@ func ValidateDocsRoot(root string) error {
 
 // Confine returns nil only when every path in changed is contained within
 // configRoot. configRoot is the instance-configured, repo-relative config root
-// (e.g. "selfhost" on the dogfood instance) — not a hardcoded "config/".
+// (e.g. "reference-workflows" on the dogfood instance) — not a hardcoded "config/".
 //
 // An empty configRoot means the instance backs config with a dedicated repo
 // whose whole tree is config: any in-repo path is allowed, but a path escaping

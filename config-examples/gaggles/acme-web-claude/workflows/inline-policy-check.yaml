@@ -1,0 +1,67 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: claude-inline-policy-check
+spec:
+  gaggle: acme-web-claude
+  displayName: Inline label policy check
+  triggers:
+    - type: schedule
+      schedule: "@weekly"
+  readiness:
+    maxConcurrentRuns: 1
+  start: check-label
+  tasks:
+    - name: check-label
+      type: deterministic
+      goal: Check whether the configured labels include the required review label.
+      run:
+        script: |
+          set -eu
+          labels=",${GOOBERS_INPUT_LABELS},"
+          required=",${GOOBERS_INPUT_REQUIREDLABEL},"
+          case "$labels" in
+            *"$required"*) allowed=true ;;
+            *) allowed=false ;;
+          esac
+          printf '{"allowed":%s}\n' "$allowed" >"$GOOBERS_INPUT_RESULTFILE"
+        workspace: scratch
+      inputs:
+        labels: "ready,security-reviewed"
+        requiredLabel: "security-reviewed"
+        resultFile: "policy-result.json"
+      capabilities: []
+      requiredCapabilities: ["os=linux"]
+      expectedOutputs:
+        - allowed
+      next: label-policy
+    - name: report-allowed
+      type: deterministic
+      goal: Report that the label policy passed.
+      run:
+        script: |
+          printf '%s\n' 'Required review label is present.'
+        workspace: scratch
+      capabilities: []
+      requiredCapabilities: ["os=linux"]
+    - name: report-blocked
+      type: deterministic
+      goal: Report that the label policy failed.
+      run:
+        script: |
+          printf '%s\n' 'Required review label is missing.'
+        workspace: scratch
+      capabilities: []
+      requiredCapabilities: ["os=linux"]
+  gates:
+    - name: label-policy
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: allowed
+          equals: "true"
+      branches:
+        pass: report-allowed
+        fail: report-blocked

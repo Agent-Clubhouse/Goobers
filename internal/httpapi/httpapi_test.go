@@ -649,7 +649,9 @@ func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 
 	statsResponse := httptest.NewRecorder()
 	statsURL := TelemetryStatsPath + "?workflow=implement&gaggle=core&branch=2&model=gpt-5.6-sol&harnessVersion=1.2.3&groupBy=branch,model,harness-version&since=" +
-		since.Format(time.RFC3339) + "&until=" + until.Format(time.RFC3339)
+		since.Format(time.RFC3339) + "&until=" + until.Format(time.RFC3339) +
+		"&trendSince=2026-06-01T00:00:00Z&trendUntil=2026-07-01T00:00:00Z&trendBuckets=3" +
+		"&trendPreviousSince=2026-05-01T00:00:00Z&trendPreviousUntil=2026-06-01T00:00:00Z"
 	handler.ServeHTTP(statsResponse, httptest.NewRequest(http.MethodGet, statsURL, nil))
 	if statsResponse.Code != http.StatusOK {
 		t.Fatalf("stats status = %d, body = %s", statsResponse.Code, statsResponse.Body)
@@ -665,6 +667,11 @@ func TestTelemetryHandlersUseSharedReadService(t *testing.T) {
 		GroupByHarnessVersion: true,
 		Since:                 since,
 		Until:                 until,
+		TrendSince:            time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		TrendUntil:            time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+		TrendBuckets:          3,
+		TrendPreviousSince:    time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
+		TrendPreviousUntil:    time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
 	}
 	if !reflect.DeepEqual(reader.statsReq, wantStatsReq) {
 		t.Fatalf("stats request = %+v, want %+v", reader.statsReq, wantStatsReq)
@@ -757,6 +764,8 @@ func TestTelemetryQueryErrorsAreStructured(t *testing.T) {
 	}{
 		{name: "invalid time", path: TelemetryStatsPath + "?since=yesterday"},
 		{name: "reversed window", path: TelemetryStatsPath + "?since=2026-07-02T00:00:00Z&until=2026-07-01T00:00:00Z"},
+		{name: "incomplete trend window", path: TelemetryStatsPath + "?trendSince=2026-07-01T00:00:00Z"},
+		{name: "incomplete previous trend window", path: TelemetryStatsPath + "?trendPreviousSince=2026-07-01T00:00:00Z"},
 		{name: "invalid branch", path: TelemetryStatsPath + "?branch=-1"},
 		{name: "invalid group", path: TelemetryStatsPath + "?groupBy=branch-name"},
 		{name: "unknown parameter", path: TelemetryStatsPath + "?sort=recent"},

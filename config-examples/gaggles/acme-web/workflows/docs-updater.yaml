@@ -1,6 +1,6 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: docs-updater
 spec:
@@ -52,6 +52,10 @@ spec:
       goal: Validate the docs-only change with the project's CI-equivalent before publication.
       run:
         command: ["npm", "run", "ci"]
+      # Matches reference-workflows' docs-updater `validate` stage (#3377):
+      # the prior unset value fell back to the executor's 10-minute default,
+      # too tight a ceiling for a full CI-equivalent run.
+      timeoutSeconds: 2400
       next: docs-valid
 
     - name: push-branch
@@ -77,7 +81,7 @@ spec:
         confineToDocsRoots: "true"
         docsRoots: "docs,README.md"
       capabilities:
-        - github:pr:write
+        - provider:pr:write
       policyActions:
         - open-or-update-pr
       expectedOutputs:

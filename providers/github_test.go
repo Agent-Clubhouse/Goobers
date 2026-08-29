@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // spyGitRegistrar records secrets registered for scrubbing (MGV-11 #1286 auth).
@@ -1183,6 +1183,11 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 			"mergeable_state": "unstable",
 			"html_url":        "https://github.com/acme/app/pull/9",
 			"head":            map[string]interface{}{"sha": "deadbeef"},
+			"user":            map[string]string{"login": "octocat"},
+			"assignees":       []map[string]string{{"login": "maintainer"}},
+			"requested_reviewers": []map[string]string{
+				{"login": "reviewer"},
+			},
 		})
 	})
 	mux.HandleFunc("/repos/acme/app/pulls/9/reviews", func(w http.ResponseWriter, r *http.Request) {
@@ -1254,6 +1259,10 @@ func TestGitHubProviderPollPullRequestAggregatesState(t *testing.T) {
 	}
 	if result.MergeableState != MergeableStateUnstable {
 		t.Fatalf("MergeableState = %q, want %q (mergeable_state passed through for #961's advisory-check gating)", result.MergeableState, MergeableStateUnstable)
+	}
+	if result.Author != "octocat" || len(result.Assignees) != 1 || result.Assignees[0] != "maintainer" ||
+		len(result.RequestedReviewers) != 1 || result.RequestedReviewers[0] != "reviewer" {
+		t.Fatalf("pull request identities = author %q, assignees %v, requested reviewers %v", result.Author, result.Assignees, result.RequestedReviewers)
 	}
 	if len(result.CommentsSince) != 1 || result.CommentsSince[0].Author != "carol" {
 		t.Fatalf("CommentsSince = %#v", result.CommentsSince)
@@ -1341,6 +1350,93 @@ func TestGitHubProviderCIFailuresIncludesAnnotationsWithoutFetchingLogs(t *testi
 func TestNormalizeCheckRunStateStartupFailure(t *testing.T) {
 	if got := normalizeCheckRunState("completed", "startup_failure"); got != CheckStateFailing {
 		t.Fatalf("normalizeCheckRunState() = %q, want %q", got, CheckStateFailing)
+	}
+}
+
+// TestGitHubProviderCheckDetailsFallsBackToActionsRunsOnForbiddenPAT covers
+// #2685: a fine-grained PAT on a private repo can read the Actions API but
+// gets a 403 from check-runs (no grantable "Checks" permission exists for
+// that token type). checkDetails must recognize that specific 403 and retry
+// via actions/runs rather than losing CI visibility entirely, while still
+// merging worst-case-wins with the combined-status statuses (#139).
+func TestGitHubProviderCheckDetailsFallsBackToActionsRunsOnForbiddenPAT(t *testing.T) {
+	var requested []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/status", func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		writeJSON(t, w, map[string]interface{}{"statuses": []map[string]interface{}{}})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		w.WriteHeader(http.StatusForbidden)
+		writeJSON(t, w, map[string]interface{}{"message": "Resource not accessible by personal access token"})
+	})
+	mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		if got := r.URL.Query().Get("head_sha"); got != "deadbeef" {
+			t.Fatalf("head_sha query = %q, want deadbeef", got)
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"workflow_runs": []map[string]interface{}{
+				{"id": 201, "name": "CI", "status": "completed", "conclusion": "failure", "html_url": "https://ci/actions/201"},
+				{"id": 202, "name": "Deploy", "status": "completed", "conclusion": "success", "html_url": "https://ci/actions/202"},
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	state, details, err := provider.combinedCheckState(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "deadbeef")
+	if err != nil {
+		t.Fatalf("combinedCheckState: %v", err)
+	}
+	if state != CheckStateFailing {
+		t.Fatalf("state = %q, want %q (worst-case-wins over the fallback's failing run)", state, CheckStateFailing)
+	}
+	if len(details) != 2 || details[0].Name != "CI" || details[0].State != CheckStateFailing ||
+		details[1].Name != "Deploy" || details[1].State != CheckStatePassing {
+		t.Fatalf("details = %+v, want CI(failing)+Deploy(passing) from the actions/runs fallback", details)
+	}
+	wantRequests := []string{
+		"/repos/acme/app/commits/deadbeef/status",
+		"/repos/acme/app/commits/deadbeef/check-runs",
+		"/repos/acme/app/actions/runs",
+	}
+	if !reflect.DeepEqual(requested, wantRequests) {
+		t.Fatalf("requested paths = %v, want %v", requested, wantRequests)
+	}
+}
+
+// TestGitHubProviderCheckDetailsDoesNotFallBackOnUnrelated403 guards
+// IsForbiddenPATError's narrowness: an ordinary 403 (rate limit, org SSO
+// block, wrong scope) must surface as a normal error, not be silently
+// reinterpreted as the specific fine-grained-PAT-checks gap and trigger an
+// actions/runs request that was never warranted.
+func TestGitHubProviderCheckDetailsDoesNotFallBackOnUnrelated403(t *testing.T) {
+	var actionsRunsRequested bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"statuses": []map[string]interface{}{}})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		writeJSON(t, w, map[string]interface{}{"message": "API rate limit exceeded"})
+	})
+	mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		actionsRunsRequested = true
+		writeJSON(t, w, map[string]interface{}{"workflow_runs": []map[string]interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	_, _, err := provider.combinedCheckState(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "deadbeef")
+	if err == nil {
+		t.Fatal("combinedCheckState err = nil, want the unrelated 403 surfaced")
+	}
+	if actionsRunsRequested {
+		t.Fatal("actions/runs was requested for an unrelated 403 — IsForbiddenPATError matched too broadly")
 	}
 }
 
@@ -1464,6 +1560,22 @@ func TestGitHubProviderListPullRequestsFiltersByHeadPrefixAndReportsCheckState(t
 				"head":       map[string]interface{}{"ref": "goobers/implementation/run-1", "sha": "aaa111"},
 				"base":       map[string]interface{}{"ref": "main", "sha": "base111"},
 				"labels":     []map[string]string{{"name": "goobers:needs-remediation"}},
+				"user":       map[string]string{"login": "octocat"},
+				"assignees":  []map[string]string{{"login": "maintainer"}},
+				"requested_reviewers": []map[string]string{
+					{"login": "reviewer"},
+				},
+			},
+			{
+				"number": 12, "html_url": "https://github.com/acme/app/pull/12", "draft": false,
+				"updated_at": "2026-07-15T00:00:00Z",
+				"head":       map[string]interface{}{"ref": "goobers/implementation/run-2", "sha": "ccc333"},
+				"base":       map[string]interface{}{"ref": "main", "sha": "base111"},
+				"user":       map[string]string{"login": "someone-else"},
+				"assignees":  []map[string]string{{"login": "maintainer"}},
+				"requested_reviewers": []map[string]string{
+					{"login": "reviewer"},
+				},
 			},
 			{
 				// A human-authored PR (no goobers/ prefix) must be excluded.
@@ -1488,6 +1600,7 @@ func TestGitHubProviderListPullRequestsFiltersByHeadPrefixAndReportsCheckState(t
 	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
 	out, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
 		Repository: RepositoryRef{Owner: "acme", Name: "app"}, Base: "main", HeadPrefix: "goobers/",
+		Author: "octocat", Assignee: "maintainer", RequestedReviewer: "reviewer",
 	})
 	if err != nil {
 		t.Fatalf("ListPullRequests: %v", err)
@@ -1505,6 +1618,10 @@ func TestGitHubProviderListPullRequestsFiltersByHeadPrefixAndReportsCheckState(t
 	}
 	if pr.CheckState != CheckStatePassing {
 		t.Fatalf("CheckState = %q, want passing", pr.CheckState)
+	}
+	if pr.Author != "octocat" || len(pr.Assignees) != 1 || pr.Assignees[0] != "maintainer" ||
+		len(pr.RequestedReviewers) != 1 || pr.RequestedReviewers[0] != "reviewer" {
+		t.Fatalf("unexpected pull request identities: %+v", pr)
 	}
 }
 
@@ -1542,6 +1659,41 @@ func TestGitHubProviderListPullRequestsSkipCheckState(t *testing.T) {
 
 	if len(out) != 1 || out[0].CheckState != "" {
 		t.Fatalf("out = %+v, want one summary with empty CheckState", out)
+	}
+}
+
+func TestGitHubProviderListPullRequestsLimitsRawCandidateWindow(t *testing.T) {
+	var calls int
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if got := r.URL.Query().Get("per_page"); got != "1" {
+			t.Fatalf("per_page = %q, want 1", got)
+		}
+		if calls > 1 {
+			t.Fatal("bounded pull request list followed the next-page link")
+		}
+		w.Header().Set("Link", "<"+server.URL+r.URL.Path+"?page=2&per_page=1>; rel=\"next\"")
+		writeJSON(t, w, []map[string]interface{}{{
+			"number": 10,
+			"head":   map[string]interface{}{"ref": "human/manual-fix"},
+			"base":   map[string]interface{}{"ref": "main"},
+		}})
+	}))
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	out, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
+		Repository:     RepositoryRef{Owner: "acme", Name: "app"},
+		HeadPrefix:     "goobers/",
+		Limit:          1,
+		SkipCheckState: true,
+	})
+	if err != nil {
+		t.Fatalf("ListPullRequests: %v", err)
+	}
+	if len(out) != 0 || calls != 1 {
+		t.Fatalf("out = %+v, calls = %d; want one raw candidate inspected", out, calls)
 	}
 }
 
@@ -1620,6 +1772,38 @@ func TestGitHubProviderRefCheckState(t *testing.T) {
 	}
 	if state != CheckStateFailing {
 		t.Fatalf("state = %q, want failing", state)
+	}
+}
+
+func TestGitHubProviderRefCheckStatesUsesOneGraphQLRequest(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/graphql" {
+			t.Fatalf("request path = %q, want /graphql", r.URL.Path)
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"data": map[string]interface{}{
+				"repository": map[string]interface{}{
+					"r0": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "SUCCESS"}},
+					"r1": map[string]interface{}{"statusCheckRollup": map[string]string{"state": "FAILURE"}},
+					"r2": map[string]interface{}{"statusCheckRollup": nil},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	states, err := provider.RefCheckStates(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, []string{"aaa111", "bbb222", "ccc333"})
+	if err != nil {
+		t.Fatalf("RefCheckStates: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("GraphQL calls = %d, want 1", calls)
+	}
+	if states["aaa111"] != CheckStatePassing || states["bbb222"] != CheckStateFailing || states["ccc333"] != CheckStatePending {
+		t.Fatalf("states = %v, want passing, failing, pending", states)
 	}
 }
 
@@ -2629,8 +2813,8 @@ func containsString(items []string, want string) bool {
 
 func runGitTest(t *testing.T, args ...string) string {
 	t.Helper()
-	command := exec.Command("git", args...)
-	command.Env = append(os.Environ(),
+	command := testgit.Command(args...)
+	command.Env = append(command.Env,
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=core.autocrlf",
 		"GIT_CONFIG_VALUE_0=false",

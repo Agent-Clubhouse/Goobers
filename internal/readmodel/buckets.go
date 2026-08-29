@@ -73,7 +73,12 @@ func (s *Store) DirtyDays(ctx context.Context, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = defaultDirtyDayBatch
 	}
-	rows, err := s.readDB().QueryContext(ctx,
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx,
 		`SELECT day FROM dirty_day ORDER BY day ASC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("readmodel: read dirty days: %w", err)
@@ -101,7 +106,12 @@ const defaultDirtyDayBatch = 64
 // separate transaction would let a crash between the two leave a day recomputed
 // but still queued — harmless, but it would recompute forever on a wedged day.
 func (s *Store) RecomputeDay(ctx context.Context, day string) error {
-	tx, err := s.writeDB().BeginTx(ctx, nil)
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin bucket recompute: %w", err)
 	}
@@ -128,6 +138,37 @@ func (s *Store) RecomputeDay(ctx context.Context, day string) error {
 		GROUP BY gaggle, workflow, phase, COALESCE(outcome_verdict, '')`,
 		day, day, dayUpperBound(day)); err != nil {
 		return fmt.Errorf("readmodel: recompute buckets for %s: %w", day, err)
+	}
+	var nodeRows int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM run WHERE started_at >= ? AND started_at < ?`,
+		day, dayUpperBound(day)).Scan(&nodeRows); err != nil {
+		return fmt.Errorf("readmodel: count runs for node buckets %s: %w", day, err)
+	}
+	// Node buckets outlive individually retained run rows, just like the
+	// established outcome buckets. Once a day has no source rows left, its
+	// durable node projection must not be rebuilt as an empty day.
+	if nodeRows > 0 {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM bucket_node_day WHERE day = ?`, day); err != nil {
+			return fmt.Errorf("readmodel: clear node buckets for %s: %w", day, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO bucket_node_day
+				(day, gaggle, workflow, phase, outcome, kind, name, identity,
+				 runs, failures, retry_waste)
+			SELECT ?, r.gaggle, r.workflow, r.phase, COALESCE(r.outcome_verdict, ''),
+				rn.kind, rn.name, rn.identity, COUNT(*),
+				SUM(CASE WHEN r.outcome_target = '@abort'
+					OR lower(r.outcome_verdict) IN ('fail', 'failure', 'reject', 'rejected')
+					THEN 1 ELSE 0 END),
+				SUM(rn.retry_waste_attempts)
+			FROM run r JOIN run_node rn ON rn.run_id = r.run_id
+			WHERE r.started_at >= ? AND r.started_at < ?
+			GROUP BY r.gaggle, r.workflow, r.phase, COALESCE(r.outcome_verdict, ''),
+				rn.kind, rn.name, rn.identity`,
+			day, day, dayUpperBound(day)); err != nil {
+			return fmt.Errorf("readmodel: recompute node buckets for %s: %w", day, err)
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM dirty_day WHERE day = ?`, day); err != nil {
@@ -157,7 +198,12 @@ func dayUpperBound(day string) string {
 // From the dailies rather than from run rows, so the two tiers cannot disagree:
 // a month is by construction the sum of its days.
 func (s *Store) RecomputeMonth(ctx context.Context, month string) error {
-	tx, err := s.writeDB().BeginTx(ctx, nil)
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin month recompute: %w", err)
 	}
@@ -174,6 +220,21 @@ func (s *Store) RecomputeMonth(ctx context.Context, month string) error {
 		GROUP BY gaggle, workflow, phase, outcome`,
 		month, month+"-01", monthUpperBound(month)); err != nil {
 		return fmt.Errorf("readmodel: recompute month %s: %w", month, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM bucket_node_month WHERE month = ?`, month); err != nil {
+		return fmt.Errorf("readmodel: clear node month %s: %w", month, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO bucket_node_month
+			(month, gaggle, workflow, phase, outcome, kind, name, identity,
+			 runs, failures, retry_waste)
+		SELECT ?, gaggle, workflow, phase, outcome, kind, name, identity,
+			SUM(runs), SUM(failures), SUM(retry_waste)
+		FROM bucket_node_day
+		WHERE day >= ? AND day < ?
+		GROUP BY gaggle, workflow, phase, outcome, kind, name, identity`,
+		month, month+"-01", monthUpperBound(month)); err != nil {
+		return fmt.Errorf("readmodel: recompute node month %s: %w", month, err)
 	}
 	return tx.Commit()
 }
@@ -201,7 +262,12 @@ func (s *Store) DayBuckets(ctx context.Context, gaggle string, from, to time.Tim
 	}
 	query += ` ORDER BY day DESC, gaggle ASC, workflow ASC`
 
-	rows, err := s.readDB().QueryContext(ctx, query, args...)
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("readmodel: read day buckets: %w", err)
 	}

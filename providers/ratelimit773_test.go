@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,6 +75,75 @@ func TestADORateLimitHonorsRetryAfter(t *testing.T) {
 	}
 	if strings.Contains(event.Scope, "?") || !strings.HasSuffix(event.Scope, "/org/project/_apis/wit/workitems/42") {
 		t.Fatalf("event scope = %q, want credential-safe endpoint scope", event.Scope)
+	}
+}
+
+func TestADOProviderObservesQuotaHeaders(t *testing.T) {
+	now := time.Date(2026, time.August, 2, 12, 0, 0, 0, time.UTC)
+	// X-RateLimit-Reset is Unix epoch time per Azure DevOps's rate-limits
+	// docs, not a duration in seconds from now.
+	resetAt := now.Add(300 * time.Second)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "17")
+		w.Header().Set("X-RateLimit-Reset", fmt.Sprint(resetAt.Unix()))
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	observer := &recordingQuotaObserver{}
+	provider := NewADOProvider("org", "project", "token",
+		func(p *ADOProvider) {
+			p.BaseURL = server.URL
+			p.now = func() time.Time { return now }
+		},
+		WithADOQuotaObserver(observer),
+	)
+	resp, err := provider.send(context.Background(), http.MethodGet, server.URL, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	observation, ok := observer.last()
+	if !ok {
+		t.Fatal("quota observer received no observation")
+	}
+	if observation.Provider != ProviderADO || !observation.Known ||
+		observation.Remaining != 17 || !observation.Reset.Equal(resetAt) {
+		t.Fatalf("quota observation = %+v, want ADO remaining=17 reset=%s", observation, resetAt)
+	}
+}
+
+func TestADOProviderInfersExhaustedQuotaWindowFromRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	now := time.Now().Truncate(time.Second)
+	observer := &recordingQuotaObserver{}
+	provider := NewADOProvider("org", "project", "token",
+		func(p *ADOProvider) {
+			p.BaseURL = server.URL
+			p.now = func() time.Time { return now }
+		},
+		WithADOMaxRateLimitRetries(0),
+		WithADOQuotaObserver(observer),
+	)
+	resp, err := provider.send(context.Background(), http.MethodGet, server.URL, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	observation, ok := observer.last()
+	if !ok {
+		t.Fatal("quota observer received no observation")
+	}
+	if observation.Provider != ProviderADO || !observation.Known || observation.Remaining != 0 ||
+		!observation.Reset.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("quota observation = %+v, want exhausted ADO window until %s", observation, now.Add(30*time.Second))
 	}
 }
 

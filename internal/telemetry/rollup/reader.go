@@ -65,6 +65,9 @@ func readEvents(runDir string) ([]journalEvent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rollup: decode %s: %w", fileEvents, err)
 	}
+	if err := validateJournalEventSchemas(events); err != nil {
+		return nil, fmt.Errorf("rollup: decode %s: %w", fileEvents, err)
+	}
 	return events, nil
 }
 
@@ -77,16 +80,70 @@ func readEvents(runDir string) ([]journalEvent, error) {
 //
 // It decodes only the records at or after byteOffset so a steady-state
 // IngestSchedulerLog reads just the newly appended tail instead of the whole
-// (potentially multi-GB) journal every tick (#1411).
-//
-// It returns the decoded events, the offset just past the last COMPLETE record
-// (where the next ingest resumes — a torn final line is re-read next time, the
-// same tolerance decodeJSONLTolerant applies), and reset=true when the journal
-// is now shorter than byteOffset (rotation/compaction/truncation), in which
-// case it re-reads from the head. A missing scheduler directory (no `goobers
-// up` yet) is not an error, just zero events at offset 0.
+// (potentially multi-GB) journal every tick (#1411). See readJSONLTail for the
+// offset/reset contract.
 func readInstanceEventsFrom(schedulerDir string, byteOffset int64) (events []journalEvent, newOffset int64, reset bool, err error) {
-	path := filepath.Join(schedulerDir, fileEvents)
+	events, newOffset, reset, err = readJSONLTail[journalEvent](filepath.Join(schedulerDir, fileEvents), byteOffset)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	if err := validateJournalEventSchemas(events); err != nil {
+		return nil, 0, false, fmt.Errorf("rollup: decode %s: %w", fileEvents, err)
+	}
+	return events, newOffset, reset, nil
+}
+
+// readSpans decodes spans/spans.jsonl, tolerating a missing file (a run may
+// not have emitted spans yet) and a torn final line (JournalSpanExporter
+// appends per ExportSpans batch, fsyncing after each — an interrupted process
+// mid-write leaves the same incomplete-tail signature events.jsonl can, and
+// must be tolerated the same way, not fail the whole ingest). Read in full: a
+// single run's own span file is bounded by that run's lifetime, unlike the
+// scheduler's (see readSchedulerSpansFrom).
+func readSpans(runDir string) ([]telemetry.SpanRecord, error) {
+	data, err := os.ReadFile(filepath.Join(runDir, dirSpans, fileSpans))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("rollup: read %s: %w", fileSpans, err)
+	}
+	spans, err := decodeJSONLTolerant[telemetry.SpanRecord](data)
+	if err != nil {
+		return nil, fmt.Errorf("rollup: decode %s: %w", fileSpans, err)
+	}
+	return spans, nil
+}
+
+// readSchedulerSpansFrom decodes <instance-root>/scheduler/spans/spans.jsonl,
+// the rolling record of scheduler-kind spans (dispatch/tick decisions, not
+// bound to any one run). Unlike a run's own spans file, this one accumulates
+// for the instance's entire lifetime — 75K spans / 55.6MB observed in the wild
+// — and JournalSpanExporter.appendSpans only ever appends (O_APPEND), so it
+// gets the same byte-offset cursor treatment readInstanceEventsFrom gives
+// events.jsonl: a steady-state ingest reads only the newly appended tail
+// instead of delete+reinserting every span ever recorded. See readJSONLTail
+// for the offset/reset contract.
+func readSchedulerSpansFrom(schedulerDir string, byteOffset int64) (spans []telemetry.SpanRecord, newOffset int64, reset bool, err error) {
+	return readJSONLTail[telemetry.SpanRecord](filepath.Join(schedulerDir, dirSpans, fileSpans), byteOffset)
+}
+
+// readJSONLTail decodes the newline-delimited records in path at or after
+// byteOffset — shared by readInstanceEventsFrom and readSchedulerSpansFrom,
+// the two append-only, unboundedly-growing logs the rollup ingests
+// incrementally.
+//
+// It returns the decoded records, the offset just past the last COMPLETE
+// record (where the next ingest resumes — a torn final line is re-read next
+// time, the same tolerance decodeJSONLTolerant applies), and reset=true when
+// the file is now shorter than byteOffset (rotation/compaction/truncation), in
+// which case it re-reads from the head — safe because both callers'
+// downstream writes are idempotent (ON CONFLICT DO NOTHING for events keyed by
+// seq; delete-then-insert for spans keyed by span id) so replaying an
+// already-ingested prefix is harmless, just redundant work. A missing file
+// (no `goobers up` yet, or no scheduler spans emitted yet) is not an error,
+// just zero records at offset 0.
+func readJSONLTail[T any](path string, byteOffset int64) (records []T, newOffset int64, reset bool, err error) {
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		return nil, 0, false, nil
@@ -96,9 +153,9 @@ func readInstanceEventsFrom(schedulerDir string, byteOffset int64) (events []jou
 	}
 	start := byteOffset
 	if start < 0 || info.Size() < start {
-		// The journal shrank below where we last resumed — it was rotated,
-		// compacted, or truncated. Re-read from the head; the caller's seq
-		// watermark and ON CONFLICT keep already-ingested rows untouched.
+		// The file shrank below where we last resumed — it was rotated,
+		// compacted, or truncated. Re-read from the head; the caller's own
+		// idempotent write keeps already-ingested rows untouched.
 		start = 0
 		reset = true
 	}
@@ -116,7 +173,7 @@ func readInstanceEventsFrom(schedulerDir string, byteOffset int64) (events []jou
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("rollup: read %s: %w", path, err)
 	}
-	events, err = decodeJSONLTolerant[journalEvent](data)
+	records, err = decodeJSONLTolerant[T](data)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("rollup: decode %s: %w", path, err)
 	}
@@ -126,35 +183,7 @@ func readInstanceEventsFrom(schedulerDir string, byteOffset int64) (events []jou
 	if nl := bytes.LastIndexByte(data, '\n'); nl >= 0 {
 		start += int64(nl) + 1
 	}
-	return events, start, reset, nil
-}
-
-// readSpans decodes spans/spans.jsonl, tolerating a missing file (a run may
-// not have emitted spans yet) and a torn final line (JournalSpanExporter
-// appends per ExportSpans batch, fsyncing after each — an interrupted process
-// mid-write leaves the same incomplete-tail signature events.jsonl can, and
-// must be tolerated the same way, not fail the whole ingest).
-func readSpans(runDir string) ([]telemetry.SpanRecord, error) {
-	return readSpanFile(filepath.Join(runDir, dirSpans, fileSpans))
-}
-
-func readSchedulerSpans(schedulerDir string) ([]telemetry.SpanRecord, error) {
-	return readSpanFile(filepath.Join(schedulerDir, dirSpans, fileSpans))
-}
-
-func readSpanFile(path string) ([]telemetry.SpanRecord, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("rollup: read %s: %w", path, err)
-	}
-	spans, err := decodeJSONLTolerant[telemetry.SpanRecord](data)
-	if err != nil {
-		return nil, fmt.Errorf("rollup: decode %s: %w", path, err)
-	}
-	return spans, nil
+	return records, start, reset, nil
 }
 
 // decodeJSONLTolerant splits data on its last newline: everything before it
@@ -189,4 +218,16 @@ func decodeJSONLTolerant[T any](data []byte) ([]T, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func validateJournalEventSchemas(events []journalEvent) error {
+	for _, event := range events {
+		if event.Schema != eventSchema {
+			return fmt.Errorf(
+				"event schema %q is unsupported (supported %q); upgrade Goobers to a binary that supports %s",
+				event.Schema, eventSchema, event.Schema,
+			)
+		}
+	}
+	return nil
 }

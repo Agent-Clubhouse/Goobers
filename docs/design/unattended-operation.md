@@ -1,6 +1,6 @@
 # Design: Unattended operation — an instance that survives a week without an operator
 
-> Status: **Draft for review — prescriptive** · Area prefix: `UNOP` · Milestone: _proposed_
+> Status: **draft — for review; prescriptive** · Area prefix: `UNOP` · Milestone: _proposed_
 > **Unattended Operation**
 > Origin: every load-bearing availability failure across the 2026-07 run-watch corpus
 > (`~/source/Goobers-Review/`): a silent daemon death with no watchdog
@@ -127,13 +127,19 @@ Close the loop, conservatively:
 
 ### UNOP-7 — Daemon identity
 
-- A distinct bot identity (GitHub App preferred; machine-account PAT fallback) for all
-  daemon mutations. Removes: attribution-by-head-branch heuristics (`mergedBy` is
-  useless today), the self-review 422 class (#870's workaround), and ambiguity in
+- A distinct bot identity for all daemon mutations, via one of two co-equal,
+  permanently-supported paths: a GitHub App (#1779, preferred when an adopter
+  is willing to install one) or a machine-account PAT (#1780, for adopters who
+  won't grant a third-party-shaped App broad permissions even one they
+  control the code of) — ruling 2026-07-27: PAT is not a fallback being phased
+  out. `instance.yaml`'s credential-ref schema stays open to a future third
+  method (e.g. OIDC federation) without a breaking change to the first two.
+  Removes: attribution-by-head-branch heuristics (`mergedBy` is useless
+  today), the self-review 422 class (#870's workaround), and ambiguity in
   incident forensics (#797-class questions become answerable).
 - Prerequisite for mixed-mode actor classification (#805) — you cannot classify actors
   while the daemon shares the operator's identity.
-- Migration: identity is configuration (`instance.yaml` credential refs); selfhost
+- Migration: identity is configuration (`instance.yaml` credential refs); reference-workflows
   migrates first; single-token remains supported for tier-1 friction-free start.
 
 ## 4. Phasing & dependencies
@@ -150,7 +156,7 @@ watched round with the run-watch methodology.
 ## 5. Open questions
 
 - **UNOP-Q1:** Self-update source of truth — git main of the instance's own product repo,
-  or tagged releases only? (Selfhost wants main; adopters want releases. Policy knob,
+  or tagged releases only? (Dogfood wants main; adopters want releases. Policy knob,
   but which is default?)
 - **UNOP-Q2:** GitHub App vs PAT for the daemon identity at tier 1 — is App setup
   friction acceptable for solo builders, or does the tier-1 default stay single-token

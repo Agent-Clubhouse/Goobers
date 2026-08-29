@@ -4,25 +4,29 @@ on:
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
-  pull_request:
-    types: [labeled]
+    inputs:
+      pr:
+        description: Pull request number to stress
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: stress-${{ github.event.pull_request.number || github.ref || github.run_id }}
+  group: stress-${{ inputs.pr || github.ref || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   stress:
     name: race count=20
-    if: ${{ github.event_name != 'pull_request' || github.event.label.name == '/stress' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || github.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -49,14 +53,14 @@ jobs:
   flake-ledger:
     name: publish flake ledger
     needs: stress
-    if: ${{ always() && github.event_name != 'pull_request' }}
+    if: ${{ always() && github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
     # A fixed, ref-independent group (unlike the workflow-level group above,
-    # which is scoped per-PR/ref/run) — publish targets the same repo-wide
+    # which is scoped per-ref/run) — publish targets the same repo-wide
     # GitHub issue tracker regardless of which ref triggered the stress run,
-    # so two publishers (e.g. the nightly cron and a /stress-labeled PR)
-    # racing on the same list-then-create sequence would otherwise both miss
-    # a brand-new fingerprint and file duplicate issues for it.
+    # so overlapping scheduled publishers racing on the same list-then-create
+    # sequence would otherwise both miss a brand-new fingerprint and file
+    # duplicate issues for it.
     concurrency:
       group: flake-ledger-publish
       cancel-in-progress: false

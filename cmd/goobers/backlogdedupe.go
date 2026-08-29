@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -88,7 +87,7 @@ type dedupeCandidateArtifact struct {
 }
 
 func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("backlog-dedupe", flag.ContinueOnError)
+	fs := newCLIFlagSet("backlog-dedupe", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "backlog-dedupe")
 	if err := fs.Parse(args); err != nil {
@@ -137,17 +136,17 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubIssuesWrite)
+	issueProvider, err := backlogDedupeProvider(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issueProvider := newGitHubProvider(token, apiReadCacheOption(root))
+	backlogRepo := backlogRepoRefForStage(root, repo)
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
 	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository:  repo,
+		Repository:  backlogRepo,
 		State:       "open",
 		OldestFirst: true,
 	})
@@ -195,6 +194,10 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "surfaced %d likely-duplicate candidate pair(s) from %d open item(s)\n", len(candidates), len(openItems))
 	return 0
+}
+
+func backlogDedupeProvider(root string, repo providers.RepositoryRef) (providers.BacklogProvider, error) {
+	return newProviderForStage(root, repo, true, withStageProviderCache())
 }
 
 func surfaceDuplicateCandidates(items []providers.WorkItem, claimed map[string]bool) []dedupeCandidate {

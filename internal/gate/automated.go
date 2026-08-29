@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
 )
 
-// InputKeyStatus is the env.Inputs key an automated gate reads the subject
-// stage's status from (runner contract, below).
+// InputKeyStatus and the error keys are the env.Inputs keys an automated gate
+// reads the subject stage's result classification from (runner contract,
+// below).
 //
 // Convention (runner contract): an automated gate evaluates the subject
 // stage's normalized result without ever seeing the stage's ResultEnvelope
@@ -20,21 +22,30 @@ import (
 // subject stage's small, scalar-only signal into env.Inputs:
 //
 //   - env.Inputs[InputKeyStatus] = string(subject.Status)  ("success"/"failure"/"blocked")
-//   - every k/v in subject.Outputs copied into env.Inputs as-is (Outputs are
-//     already documented as "small, named scalar values downstream
+//   - env.Inputs[InputKeyErrorCode] = subject.Error.Code (empty when absent)
+//   - env.Inputs[InputKeyErrorMessage] = subject.Error.Message (empty when absent)
+//   - env.Inputs[InputKeyErrorRetryable] = subject.Error.Retryable (false when absent)
+//   - every non-reserved k/v in subject.Outputs copied into env.Inputs as-is
+//     (Outputs are already documented as "small, named scalar values downstream
 //     stages/gates can consume directly" — api/v1alpha1.ResultEnvelope)
 //
 // This keeps the checker registry pure (no journal/filesystem access) and
 // keeps the expression surface intentionally minimal: named checks over a flat
 // key/value map, not a general expression language.
-const InputKeyStatus = "status"
+const (
+	InputKeyStatus         = "status"
+	InputKeyErrorCode      = "errorCode"
+	InputKeyErrorMessage   = "errorMessage"
+	InputKeyErrorRetryable = "errorRetryable"
+)
 
 // Outcome values an automated check returns. The gate's Branches map treats
 // "pass" as the success branch (api/v1alpha1.Gate.Branches doc comment); any
 // other outcome is a caller-defined branch name (conventionally "fail").
 const (
-	OutcomePass = "pass"
-	OutcomeFail = "fail"
+	OutcomePass  = "pass"
+	OutcomeFail  = "fail"
+	OutcomeInfra = "infra"
 )
 
 // OutcomeTimeout is the "ci-status" check's third outcome (#239) — distinct
@@ -48,7 +59,7 @@ const (
 // "timeout" as one of ci-status's producible outcomes, so a ci-status gate
 // missing a "timeout" branch fails Compile outright (GT-002) rather than
 // compiling clean and only failing closed the first time a real poll times
-// out. Every in-tree ci-status gate (acme-web/selfhost/testdata) declares
+// out. Every in-tree ci-status gate (acme-web/reference-workflows/testdata) declares
 // one.
 const OutcomeTimeout = "timeout"
 
@@ -81,6 +92,35 @@ const OutcomeEvicted = "evicted"
 // string the gate's Branches map declares).
 type CheckFunc func(inputs map[string]interface{}, params map[string]string) (outcome string, err error)
 
+// AutomatedInputs flattens the subject result into the scalar input contract
+// shared by every runner.
+func AutomatedInputs(subject apiv1.ResultEnvelope) (map[string]interface{}, error) {
+	inputs := make(map[string]interface{}, 4+len(subject.Outputs))
+	for k, v := range subject.Outputs {
+		inputs[k] = v
+	}
+	var collisions []string
+	for _, key := range []string{InputKeyStatus, InputKeyErrorCode, InputKeyErrorMessage, InputKeyErrorRetryable} {
+		if _, ok := subject.Outputs[key]; ok {
+			collisions = append(collisions, key)
+		}
+	}
+
+	inputs[InputKeyStatus] = string(subject.Status)
+	inputs[InputKeyErrorCode] = ""
+	inputs[InputKeyErrorMessage] = ""
+	inputs[InputKeyErrorRetryable] = false
+	if subject.Error != nil {
+		inputs[InputKeyErrorCode] = subject.Error.Code
+		inputs[InputKeyErrorMessage] = subject.Error.Message
+		inputs[InputKeyErrorRetryable] = subject.Error.Retryable
+	}
+	if len(collisions) > 0 {
+		return inputs, fmt.Errorf("gate: subject outputs use reserved automated input keys: %s", strings.Join(collisions, ", "))
+	}
+	return inputs, nil
+}
+
 // DefaultChecks is the minimal, documented set of automated checks available
 // to a gate via AutomatedGate.Check. Each check's Params contract is
 // documented on its entry below.
@@ -94,6 +134,21 @@ func DefaultChecks() map[string]CheckFunc {
 				want = string(apiv1.ResultSuccess)
 			}
 			return boolOutcome(stringField(inputs, InputKeyStatus) == want), nil
+		},
+		// "failure-class": pass for success, infra for a retryable failure or
+		// a generic command failure carrying a known host-contention,
+		// filesystem-errno or dependency-transport signature,
+		// and fail for every other status. No params.
+		"failure-class": func(inputs map[string]interface{}, params map[string]string) (string, error) {
+			status := stringField(inputs, InputKeyStatus)
+			if status == string(apiv1.ResultSuccess) {
+				return OutcomePass, nil
+			}
+			retryable, _ := inputs[InputKeyErrorRetryable].(bool)
+			if status == string(apiv1.ResultFailure) && (retryable || isRecognizedInfrastructureFailure(inputs)) {
+				return OutcomeInfra, nil
+			}
+			return OutcomeFail, nil
 		},
 		// "output-equals": pass iff Inputs[Params["key"]] stringifies to
 		// Params["equals"]. Both params required.
@@ -273,6 +328,115 @@ func DefaultChecks() map[string]CheckFunc {
 			}
 		},
 	}
+}
+
+// infrastructureSignatures recognize a generic non-zero exit as an
+// environment fault rather than evidence about the work. Each entry is an
+// all-of group: the (lowercased) failure message matches when it contains
+// every token in the group, which is how a broad word like "permission
+// denied" is kept pinned to the narrow shape actually observed.
+//
+// These are deliberately narrow. Misclassifying work failure as infra parks
+// the run for an operator; misclassifying infra as work failure spends the
+// whole repass budget asking an agent to fix the weather (#3373).
+var infrastructureSignatures = [][]string{
+	// Host contention and resource exhaustion on a shared runner.
+	{"parallel golangci-lint is running"},
+	{"resource temporarily unavailable"},
+	{"failed to create new os thread"},
+	{"cannot allocate memory"},
+	{"npm error openssl/", "tls alert handshake failure"},
+
+	// Filesystem errno on a tool write (#3373): EROFS from a read-only
+	// mount (observed: playwright's installer taking its directory lock
+	// under a read-only PLAYWRIGHT_BROWSERS_PATH, #3372), EACCES from a
+	// non-writable install target. "permission denied" on its own is far
+	// too broad — an API authorization denial reads the same — so it only
+	// counts alongside the errno label or a filesystem write syscall.
+	{"read-only file system"},
+	{"eacces:", "permission denied"},
+	{"permission denied", "mkdir"},
+}
+
+// dependencyFetchMarkers say the failing command was a dependency or
+// artifact fetch: a module-proxy/package-registry host, or a toolchain's own
+// download diagnostic.
+var dependencyFetchMarkers = []string{
+	"go: downloading",
+	"go: module ",
+	"go mod download",
+	"verifying module",
+	"reading https://",
+	"goproxy",
+	"proxy.golang.org",
+	"sum.golang.org",
+	"storage.googleapis.com",
+	"registry.npmjs.org",
+	"npm error network",
+	"npm err! network",
+	"files.pythonhosted.org",
+	"pypi.org",
+	"index.crates.io",
+}
+
+// transportDenialTokens say the network refused or could not reach that
+// fetch — an egress policy denial or an unreachable proxy, neither of which
+// any diff can fix.
+var transportDenialTokens = []string{
+	"403 forbidden",
+	": forbidden",
+	"connection refused",
+	"econnrefused",
+	"i/o timeout",
+	"etimedout",
+	"tls handshake timeout",
+	"proxyconnect",
+	"network is unreachable",
+}
+
+func isRecognizedInfrastructureFailure(inputs map[string]interface{}) bool {
+	if stringField(inputs, InputKeyErrorCode) != "nonzero_exit" {
+		return false
+	}
+	message := strings.ToLower(stringField(inputs, InputKeyErrorMessage))
+	for _, group := range infrastructureSignatures {
+		if containsAll(message, group) {
+			return true
+		}
+	}
+	return isDependencyTransportDenial(message)
+}
+
+// isDependencyTransportDenial reports whether message is a dependency or
+// artifact fetch that the network refused (#3373: an egress proxy answering
+// Forbidden to a module zip fetch classified as a code failure and cost six
+// implement repasses). Both axes are required: a 403 or a refused connection
+// on its own is ordinary application output, and a package host on its own is
+// ordinary build chatter.
+func isDependencyTransportDenial(message string) bool {
+	return containsAny(message, dependencyFetchMarkers) &&
+		containsAny(message, transportDenialTokens)
+}
+
+func containsAll(message string, tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	for _, token := range tokens {
+		if !strings.Contains(message, token) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsAny(message string, tokens []string) bool {
+	for _, token := range tokens {
+		if strings.Contains(message, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func boolOutcome(pass bool) string {

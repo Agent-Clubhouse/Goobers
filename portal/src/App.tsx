@@ -16,14 +16,17 @@ import {
 } from "./portalDiagnostics";
 import { ErrorsPage } from "./pages/ErrorsPage";
 import { GagglePage } from "./pages/GagglePage";
+import { GettingStartedPage } from "./pages/GettingStartedPage";
+import { GoobersPage } from "./pages/GoobersPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { InsightPage } from "./pages/InsightPage";
 import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { WorkflowPage } from "./pages/WorkflowPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
-import { instanceWarnings } from "./prototypeData";
+import { instanceWarnings } from "./prototypeFixtures";
 import { activeArea, parseRoute, routeHash, type Route } from "./routing";
+import { scopeIdentity } from "./scope";
 import { PortalShell } from "./shell/PortalShell";
 import { useTheme } from "./theme";
 
@@ -47,29 +50,65 @@ export function App({
   warningClient?: ConfigurationWarningClient;
   diagnostics?: PortalDiagnostics;
 } = {}) {
-  const standalone =
-    document
-      .querySelector('meta[name="goobers-dashboard-mode"]')
-      ?.getAttribute("content") === "standalone";
+  const mode = dashboardMode();
 
   return (
     <LiveDataProvider client={client} diagnostics={diagnostics}>
-      <Portal client={client} standalone={standalone} warningClient={warningClient} />
+      <Portal client={client} mode={mode} warningClient={warningClient} />
     </LiveDataProvider>
   );
 }
 
+// The index's goobers-dashboard-mode marker: "daemon" (default), "standalone"
+// (`goobers dashboard` with no daemon), or "getting-started" (`goobers
+// getting-started`). Getting-started serves the same standalone read-only
+// /api/ once the tutorial instance exists, so its chrome reads as standalone.
+type DashboardMode = "daemon" | "standalone" | "getting-started";
+
+function dashboardMode(): DashboardMode {
+  const content = document
+    .querySelector('meta[name="goobers-dashboard-mode"]')
+    ?.getAttribute("content");
+  if (content === "standalone" || content === "getting-started") {
+    return content;
+  }
+  return "daemon";
+}
+
+function activeRouteGaggle(route: Route): string | undefined {
+  if (route.page === "gaggle") {
+    return route.id;
+  }
+  if (route.page === "workflow") {
+    return route.gaggle;
+  }
+  return undefined;
+}
+
 function Portal({
   client,
-  standalone,
+  mode,
   warningClient,
 }: {
   client: DaemonClient;
-  standalone: boolean;
+  mode: DashboardMode;
   warningClient: ConfigurationWarningClient;
 }) {
+  const standalone = mode !== "daemon";
   const { theme, toggleTheme } = useTheme();
-  const [route, setRoute] = useState<Route>(() => parseRoute());
+  // Under `goobers getting-started` an empty hash lands on the guide, not the
+  // overview — the command exists to serve exactly that walkthrough. The hash
+  // is stamped too, so the address bar, later hashchange parses, and the
+  // browser history all agree with the rendered route.
+  const [route, setRoute] = useState<Route>(() => {
+    const hash = window.location.hash;
+    if (mode === "getting-started" && (hash === "" || hash === "#" || hash === "#/")) {
+      const guide: Route = { page: "getting-started" };
+      window.location.hash = routeHash(guide);
+      return guide;
+    }
+    return parseRoute(hash);
+  });
   const [config, setConfig] = useState<PortalConfig>(defaultPortalConfig);
   const [loading, setLoading] = useState(true);
   const initialRoute = useRef(true);
@@ -135,7 +174,7 @@ function Portal({
   // the daemon's stub routes, but each handler is itself a stub — no
   // intervention UI exists yet, and the underlying gate-resolution/rerun
   // wiring is #466/#468's scope, not this seam's.
-  const { navigate } = bindUIActions({
+  const { navigate, revealRun } = bindUIActions({
     navigate: (nextRoute: Route) => {
       const nextHash = routeHash(nextRoute);
       if (window.location.hash === nextHash) {
@@ -153,7 +192,17 @@ function Portal({
     rerun: () => {
       console.warn("goobers: rerun is not implemented yet (HITL-7/#469)");
     },
+    revealRun: (runId: string) => client.revealRun(runId),
   });
+
+  // The gaggle/workflow/stage identity behind the current route, independent
+  // of any page-specific refinement (outcome, population, window). Carried
+  // forward by the primary-nav Runs/Insight buttons so switching views does
+  // not reset an active scope back to "all" (#2528 acceptance criterion 4).
+  const currentScope =
+    (route.page === "runs" || route.page === "insight" || route.page === "errors") && route.filters
+      ? scopeIdentity(route.filters)
+      : {};
 
   let warningSource: ConfigurationWarningSource = { kind: "none" };
   let warningFixtures = noWarnings;
@@ -177,7 +226,11 @@ function Portal({
     <CobrandContext.Provider value={{ config, loading }}>
       <PortalShell
         activeArea={activeArea(route)}
+        activeGaggle={activeRouteGaggle(route)}
+        client={client}
+        currentScope={currentScope}
         navigate={navigate}
+        showGettingStarted={mode === "getting-started"}
         standalone={standalone}
         theme={theme}
         toggleTheme={toggleTheme}
@@ -189,7 +242,9 @@ function Portal({
             standalone={standalone}
           />
         )}
+        {route.page === "getting-started" && <GettingStartedPage />}
         {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
+        {route.page === "goobers" && <GoobersPage client={client} standalone={standalone} />}
         {route.page === "gaggle" && (
           <GagglePage
             client={client}
@@ -201,7 +256,14 @@ function Portal({
         {route.page === "runs" && (
           <RunsPage client={client} filters={route.filters} standalone={standalone} />
         )}
-        {route.page === "insight" && <InsightPage client={client} standalone={standalone} />}
+        {route.page === "insight" && (
+          <InsightPage
+            client={client}
+            filters={route.filters}
+            navigate={navigate}
+            standalone={standalone}
+          />
+        )}
         {route.page === "errors" && (
           <ErrorsPage
             client={client}
@@ -226,6 +288,7 @@ function Portal({
             client={client}
             key={route.id}
             navigate={navigate}
+            revealRun={revealRun}
             runId={route.id}
             standalone={standalone}
           />

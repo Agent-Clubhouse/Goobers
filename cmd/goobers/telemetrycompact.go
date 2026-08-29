@@ -29,7 +29,7 @@ func runTelemetryCompact(args []string, stdout, stderr io.Writer) int {
 }
 
 func runTelemetryCompactAt(args []string, stdout, stderr io.Writer, now time.Time) int {
-	fs := flag.NewFlagSet("telemetry compact", flag.ContinueOnError)
+	fs := newCLIFlagSet("telemetry compact", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dryRun := fs.Bool("dry-run", false, "report what would be reclaimed without changing anything")
 	fs.Usage = helpUsage(stderr, "telemetry compact")
@@ -76,15 +76,16 @@ func runTelemetryCompactAt(args []string, stdout, stderr io.Writer, now time.Tim
 	}
 
 	cutoff := now.Add(-window)
+	budgetCutoff := now.Add(-24 * time.Hour)
 	verb := "compacted"
 	if *dryRun {
 		verb = "would compact"
 	}
 
 	// 1. Scheduler journal (scheduler/events.jsonl) — the source of the #1410
-	//    bloat. Records older than the retention window are dropped; kept records
-	//    keep their original seq so an incremental consumer just re-reads.
-	journalResult, err := journal.CompactInstanceEvents(layout.SchedulerDir(), cutoff, *dryRun)
+	//    bloat. Records older than the retention window are dropped except
+	//    scheduler restart checkpoints; kept records retain their original seq.
+	journalResult, err := journal.CompactInstanceEvents(layout.SchedulerDir(), cutoff, budgetCutoff, *dryRun)
 	if err != nil {
 		pf(stderr, "error: compact scheduler journal: %v\n", err)
 		return 1

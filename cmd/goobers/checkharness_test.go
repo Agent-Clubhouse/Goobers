@@ -8,12 +8,14 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/instance"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 // withHarnessAdapter substitutes harnessAdapterFor for the duration of a
 // test, so --check-harness tests never depend on a real, installed,
 // signed-in Copilot CLI being present on the machine running `make ci`.
-func withHarnessAdapter(t *testing.T, lookup func(apiv1.Harness) (harness.Adapter, error)) {
+func withHarnessAdapter(t *testing.T, lookup func(apiv1.Harness, []string, map[string][]string) (harness.Adapter, error)) {
 	t.Helper()
 	orig := harnessAdapterFor
 	harnessAdapterFor = lookup
@@ -21,7 +23,7 @@ func withHarnessAdapter(t *testing.T, lookup func(apiv1.Harness) (harness.Adapte
 }
 
 func TestAdapterForKnownAndUnknownHarness(t *testing.T) {
-	adapter, err := adapterFor(apiv1.HarnessCopilot)
+	adapter, err := adapterFor(apiv1.HarnessCopilot, nil, nil)
 	if err != nil {
 		t.Fatalf("adapterFor(copilot): %v", err)
 	}
@@ -29,28 +31,32 @@ func TestAdapterForKnownAndUnknownHarness(t *testing.T) {
 		t.Fatalf("adapterFor(copilot) = %T, want *harness.CopilotAdapter", adapter)
 	}
 
-	adapter, err = adapterFor(apiv1.HarnessClaudeCode)
+	adapter, err = adapterFor(apiv1.HarnessClaudeCode, []string{"USER"}, nil)
 	if err != nil {
 		t.Fatalf("adapterFor(claude-code): %v", err)
 	}
-	if _, ok := adapter.(*harness.ClaudeAdapter); !ok {
+	claude, ok := adapter.(*harness.ClaudeAdapter)
+	if !ok {
 		t.Fatalf("adapterFor(claude-code) = %T, want *harness.ClaudeAdapter", adapter)
 	}
+	if strings.Join(claude.ExtraEnvAllowlist, ",") != "USER" {
+		t.Fatalf("claude-code ExtraEnvAllowlist = %v, want [USER]", claude.ExtraEnvAllowlist)
+	}
 
-	if _, err := adapterFor("nonesuch"); err == nil {
+	if _, err := adapterFor("nonesuch", nil, nil); err == nil {
 		t.Fatal("expected an error for an unsupported harness")
 	}
 }
 
 func TestCheckHarnessesSucceeds(t *testing.T) {
-	withHarnessAdapter(t, func(h apiv1.Harness) (harness.Adapter, error) {
-		return &harness.FakeAdapter{AdapterName: string(h)}, nil
+	withHarnessAdapter(t, func(h apiv1.Harness, _ []string, _ map[string][]string) (harness.Adapter, error) {
+		return &harnesstest.FakeAdapter{AdapterName: string(h)}, nil
 	})
 	goobers := []apiv1.Goober{
 		{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}},
 	}
 	var out, errOut strings.Builder
-	if !checkHarnessesAtSources(goobers, &out, &errOut, nil) {
+	if !checkHarnessesAtSources(goobers, &out, &errOut, nil, nil, nil) {
 		t.Fatalf("checkHarnesses returned false; stdout=%q", out.String())
 	}
 	if !strings.Contains(out.String(), "HARNESS copilot: OK") {
@@ -59,14 +65,14 @@ func TestCheckHarnessesSucceeds(t *testing.T) {
 }
 
 func TestCheckHarnessesFailsClosedOnPreflightError(t *testing.T) {
-	withHarnessAdapter(t, func(h apiv1.Harness) (harness.Adapter, error) {
-		return &harness.FakeAdapter{PreflightErr: errNotSignedIn}, nil
+	withHarnessAdapter(t, func(h apiv1.Harness, _ []string, _ map[string][]string) (harness.Adapter, error) {
+		return &harnesstest.FakeAdapter{PreflightErr: errNotSignedIn}, nil
 	})
 	goobers := []apiv1.Goober{
 		{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}},
 	}
 	var out, errOut strings.Builder
-	if checkHarnessesAtSources(goobers, &out, &errOut, nil) {
+	if checkHarnessesAtSources(goobers, &out, &errOut, nil, nil, nil) {
 		t.Fatal("checkHarnesses returned true, want false on a Preflight failure")
 	}
 	if !strings.Contains(out.String(), errNotSignedIn.Error()) {
@@ -76,9 +82,9 @@ func TestCheckHarnessesFailsClosedOnPreflightError(t *testing.T) {
 
 func TestCheckHarnessesDedupsRepeatedHarness(t *testing.T) {
 	calls := 0
-	withHarnessAdapter(t, func(h apiv1.Harness) (harness.Adapter, error) {
+	withHarnessAdapter(t, func(h apiv1.Harness, _ []string, _ map[string][]string) (harness.Adapter, error) {
 		calls++
-		return &harness.FakeAdapter{AdapterName: string(h)}, nil
+		return &harnesstest.FakeAdapter{AdapterName: string(h)}, nil
 	})
 	goobers := []apiv1.Goober{
 		{Spec: apiv1.GooberSpec{Harness: apiv1.HarnessCopilot}},
@@ -86,7 +92,7 @@ func TestCheckHarnessesDedupsRepeatedHarness(t *testing.T) {
 		{Spec: apiv1.GooberSpec{Harness: ""}}, // no harness declared — skipped
 	}
 	var out, errOut strings.Builder
-	if !checkHarnessesAtSources(goobers, &out, &errOut, nil) {
+	if !checkHarnessesAtSources(goobers, &out, &errOut, nil, nil, nil) {
 		t.Fatal("checkHarnesses returned false")
 	}
 	if calls != 1 {
@@ -108,9 +114,20 @@ func TestValidateCheckHarnessFlagWiring(t *testing.T) {
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code=%d stderr=%q", code, stderr)
 	}
+	configPath := instance.NewLayout(root).ConfigFile()
+	cfg, err := instance.LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Runner.EnvPassthrough = []string{"CLAUDE_CONFIG_DIR"}
+	if err := instance.WriteConfig(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
 
-	withHarnessAdapter(t, func(h apiv1.Harness) (harness.Adapter, error) {
-		return &harness.FakeAdapter{AdapterName: string(h)}, nil
+	var gotEnvPassthrough []string
+	withHarnessAdapter(t, func(h apiv1.Harness, envPassthrough []string, _ map[string][]string) (harness.Adapter, error) {
+		gotEnvPassthrough = append([]string(nil), envPassthrough...)
+		return &harnesstest.FakeAdapter{AdapterName: string(h)}, nil
 	})
 	code, stdout, stderr := runArgs(t, "validate", "--check-harness", root)
 	if code != 0 {
@@ -119,9 +136,12 @@ func TestValidateCheckHarnessFlagWiring(t *testing.T) {
 	if !strings.Contains(stdout, "HARNESS copilot: OK") {
 		t.Fatalf("stdout = %q", stdout)
 	}
+	if strings.Join(gotEnvPassthrough, ",") != "CLAUDE_CONFIG_DIR" {
+		t.Fatalf("adapter env passthrough = %v, want [CLAUDE_CONFIG_DIR]", gotEnvPassthrough)
+	}
 
-	withHarnessAdapter(t, func(h apiv1.Harness) (harness.Adapter, error) {
-		return &harness.FakeAdapter{PreflightErr: errNotSignedIn}, nil
+	withHarnessAdapter(t, func(h apiv1.Harness, _ []string, _ map[string][]string) (harness.Adapter, error) {
+		return &harnesstest.FakeAdapter{PreflightErr: errNotSignedIn}, nil
 	})
 	code, stdout, _ = runArgs(t, "validate", "--check-harness", root)
 	if code != 1 {
@@ -164,7 +184,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 	// it mirrors what adapterFor produces. (That adapterFor sets it is proven
 	// directly by TestAdapterForConfiguresAuthProbe.)
 	authInvoked := false
-	withHarnessAdapter(t, func(apiv1.Harness) (harness.Adapter, error) {
+	withHarnessAdapter(t, func(apiv1.Harness, []string, map[string][]string) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
 			Command:       []string{"echo"},
 			AuthCheckArgs: copilotAuthCheckArgs,
@@ -172,7 +192,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 		}, nil
 	})
 	var out, errOut strings.Builder
-	if checkHarnessesAtSources(goobers, &out, &errOut, nil) {
+	if checkHarnessesAtSources(goobers, &out, &errOut, nil, nil, nil) {
 		t.Fatal("checkHarnesses returned true; a signed-out CLI (version OK, auth probe fails) must fail closed")
 	}
 	if !authInvoked {
@@ -180,7 +200,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 	}
 
 	// Fully authenticated: both succeed → check passes.
-	withHarnessAdapter(t, func(apiv1.Harness) (harness.Adapter, error) {
+	withHarnessAdapter(t, func(apiv1.Harness, []string, map[string][]string) (harness.Adapter, error) {
 		return &harness.CopilotAdapter{
 			Command:       []string{"echo"},
 			AuthCheckArgs: copilotAuthCheckArgs,
@@ -189,7 +209,7 @@ func TestCheckHarnessesRunsAuthProbe(t *testing.T) {
 	})
 	out.Reset()
 	errOut.Reset()
-	if !checkHarnessesAtSources(goobers, &out, &errOut, nil) {
+	if !checkHarnessesAtSources(goobers, &out, &errOut, nil, nil, nil) {
 		t.Fatalf("checkHarnesses returned false for a healthy signed-in CLI; stdout=%q", out.String())
 	}
 }

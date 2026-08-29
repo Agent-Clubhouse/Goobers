@@ -51,6 +51,11 @@ type recordedFindingDisposition struct {
 	Detail      string        `json:"detail"`
 }
 
+// remediationResponseResult records the account exactly as validated.
+// FindingCount is the original merge-review verdict's finding count, which
+// also partitions Findings: entries numbered 1..FindingCount answer verdict
+// findings and carry their Original, entries past it answer findings raised
+// during this remediation cycle and carry none.
 type remediationResponseResult struct {
 	SelectedNumber string                       `json:"selectedNumber"`
 	SourceRunID    string                       `json:"sourceRunId"`
@@ -61,7 +66,7 @@ type remediationResponseResult struct {
 }
 
 func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("respond-to-findings", flag.ContinueOnError)
+	fs := newCLIFlagSet("respond-to-findings", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "respond-to-findings")
 	checkOnly := fs.Bool("check", false, "validate the finding account without requiring publication or posting")
@@ -114,7 +119,8 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: write finding-response validation result: %v\n", err)
 			return 2
 		}
-		pf(stdout, "validated complete finding response account for %d finding(s)\n", len(responses))
+		pf(stdout, "validated complete finding response account for %d verdict finding(s) and %d additional response(s)\n",
+			len(verdict.Findings), len(responses)-len(verdict.Findings))
 		return 0
 	}
 
@@ -125,12 +131,17 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 		Findings:       make([]recordedFindingDisposition, len(responses)),
 	}
 	for i, response := range responses {
-		result.Findings[i] = recordedFindingDisposition{
+		recorded := recordedFindingDisposition{
 			Finding:     response.Finding,
-			Original:    verdict.Findings[response.Finding-1],
 			Disposition: response.Disposition,
 			Detail:      response.Detail,
 		}
+		// Responses past FindingCount answer in-run review findings, so they
+		// have no original verdict finding to quote.
+		if response.Finding <= len(verdict.Findings) {
+			recorded.Original = verdict.Findings[response.Finding-1]
+		}
+		result.Findings[i] = recorded
 	}
 	if !published {
 		result.Reason = "push-remediated skipped publication because the PR was already closed"
@@ -152,7 +163,11 @@ func runRespondToFindings(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newGitHubProvider(token)
+	provider, err := remediationStageProvider(root, repo, token, false)
+	if err != nil {
+		pf(stderr, "error: construct remediation provider: %v\n", err)
+		return 1
+	}
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	if err := reconcileRemediationResponseComment(ctx, provider, repo, selectedNumber, runID, comment); err != nil {
@@ -271,6 +286,14 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 	return *brief.GatherPRContext.Verdict, rawResponses, published == "true", nil
 }
 
+// validateFindingResponses enforces the remediation account contract against
+// the original merge-review verdict: every verdict finding needs exactly one
+// addressed/declined disposition with a detail. Responses numbered past the
+// verdict's finding count account for findings raised by an in-run reviewer
+// repass; they are validated structurally and bind to no original finding.
+// Runs whose remediation cause carries no verdict at all (failing-ci,
+// sibling-overlap) have nothing to account for, so responses are optional
+// there rather than required to be absent.
 func validateFindingResponses(findings []apiv1.Finding, raw string) ([]findingDisposition, error) {
 	if strings.TrimSpace(raw) == "" {
 		if len(findings) == 0 {
@@ -283,17 +306,14 @@ func validateFindingResponses(findings []apiv1.Finding, raw string) ([]findingDi
 	if err := json.Unmarshal([]byte(raw), &responses); err != nil {
 		return nil, fmt.Errorf("decode JSON array: %w", err)
 	}
-	if len(responses) != len(findings) {
-		return nil, fmt.Errorf("contains %d response(s), want exactly %d", len(responses), len(findings))
-	}
 
 	seen := make(map[int]bool, len(responses))
 	for i := range responses {
 		response := &responses[i]
 		response.Disposition = strings.ToLower(strings.TrimSpace(response.Disposition))
 		response.Detail = strings.TrimSpace(response.Detail)
-		if response.Finding < 1 || response.Finding > len(findings) {
-			return nil, fmt.Errorf("response %d names finding %d outside the valid range 1..%d", i+1, response.Finding, len(findings))
+		if response.Finding < 1 {
+			return nil, fmt.Errorf("response %d names finding %d, want a 1-based finding number", i+1, response.Finding)
 		}
 		if seen[response.Finding] {
 			return nil, fmt.Errorf("finding %d is accounted for more than once", response.Finding)
@@ -306,10 +326,28 @@ func validateFindingResponses(findings []apiv1.Finding, raw string) ([]findingDi
 			return nil, fmt.Errorf("finding %d has no detail describing what changed or why it was declined", response.Finding)
 		}
 	}
+	for i := range findings {
+		if !seen[i+1] {
+			return nil, fmt.Errorf(
+				"%s has no response; every one of the verdict's %d finding(s) needs exactly one",
+				describeVerdictFinding(i+1, findings[i]), len(findings),
+			)
+		}
+	}
 	sort.Slice(responses, func(i, j int) bool {
 		return responses[i].Finding < responses[j].Finding
 	})
 	return responses, nil
+}
+
+func describeVerdictFinding(number int, finding apiv1.Finding) string {
+	if finding.Message == "" {
+		return fmt.Sprintf("verdict finding %d", number)
+	}
+	if finding.Location == "" {
+		return fmt.Sprintf("verdict finding %d (%s)", number, finding.Message)
+	}
+	return fmt.Sprintf("verdict finding %d (%s at %s)", number, finding.Message, finding.Location)
 }
 
 func remediationResponseMarker(runID string) string {
@@ -320,17 +358,17 @@ func renderRemediationResponse(runID string, result remediationResponseResult) s
 	var b strings.Builder
 	b.WriteString(remediationResponseMarker(runID))
 	b.WriteString("\n## Remediation response\n")
-	if len(result.Findings) == 0 {
+	if result.FindingCount == 0 {
 		b.WriteString("\nThis remediation cycle had no merge-review findings to account for.\n")
-		return b.String()
 	}
+	var additional []recordedFindingDisposition
 	for _, response := range result.Findings {
-		finding := response.Original
-		disposition := "Addressed"
-		if response.Disposition == "declined" {
-			disposition = "Declined"
+		if response.Finding > result.FindingCount {
+			additional = append(additional, response)
+			continue
 		}
-		fmt.Fprintf(&b, "\n%d. **%s** - %s\n", response.Finding, disposition, response.Detail)
+		finding := response.Original
+		fmt.Fprintf(&b, "\n%d. **%s** - %s\n", response.Finding, dispositionLabel(response.Disposition), response.Detail)
 		fmt.Fprintf(&b, "   > [%s", finding.Severity)
 		if finding.Class != "" {
 			fmt.Fprintf(&b, "/%s", finding.Class)
@@ -341,12 +379,25 @@ func renderRemediationResponse(runID string, result remediationResponseResult) s
 		}
 		b.WriteByte('\n')
 	}
+	if len(additional) > 0 {
+		b.WriteString("\n### Raised during this remediation cycle\n")
+		for _, response := range additional {
+			fmt.Fprintf(&b, "\n- **%s** - %s\n", dispositionLabel(response.Disposition), response.Detail)
+		}
+	}
 	return b.String()
+}
+
+func dispositionLabel(disposition string) string {
+	if disposition == "declined" {
+		return "Declined"
+	}
+	return "Addressed"
 }
 
 func reconcileRemediationResponseComment(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	prNumber int,
 	runID, body string,

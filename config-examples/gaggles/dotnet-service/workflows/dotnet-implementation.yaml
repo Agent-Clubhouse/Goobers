@@ -1,6 +1,6 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: dotnet-implementation
 spec:
@@ -36,6 +36,7 @@ spec:
         local-ci stage below owns that authoritatively.
       capabilities:
         - repo:push
+        - agent:model
       policyActions:
         - modify-repository
       retry:

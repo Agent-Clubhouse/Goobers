@@ -66,13 +66,24 @@ func acquireRunPublicationLock(runDir string) (*journalLock, error) {
 }
 
 func acquireJournalLockPath(path, location, target string) (*journalLock, error) {
+	return acquireJournalLockPathWith(path, location, target, platformlock.TryAcquire)
+}
+
+func acquireExistingJournalLockPath(path, location, target string) (*journalLock, error) {
+	return acquireJournalLockPathWith(path, location, target, platformlock.TryAcquireExisting)
+}
+
+func acquireJournalLockPathWith(
+	path, location, target string,
+	tryAcquire func(string) (*journalLock, error),
+) (*journalLock, error) {
 	// A non-blocking acquire retried on a short poll up to journalLockTimeout,
 	// rather than a bare blocking acquire, so a lock a live daemon holds for a
 	// run's lifetime can never wedge a second opener forever. Mirrors the
 	// bounded, retry-based lock cmd/goobers's instance lock already uses.
 	deadline := time.Now().Add(journalLockTimeout)
 	for {
-		held, lockErr := platformlock.TryAcquire(path)
+		held, lockErr := tryAcquire(path)
 		if lockErr == nil {
 			return held, nil
 		}
@@ -84,6 +95,17 @@ func acquireJournalLockPath(path, location, target string) (*journalLock, error)
 		}
 		time.Sleep(journalLockPollInterval)
 	}
+}
+
+// SetLockTimeoutForTest overrides journalLockTimeout/journalLockPollInterval
+// for the duration of a test, returning a restore func. Exported so callers
+// outside this package (e.g. cmd/goobers, exercising `run abort` against a
+// run a real daemon holds the lock for) can shrink the 30s bound instead of
+// waiting it out for real; production code never calls this.
+func SetLockTimeoutForTest(timeout, poll time.Duration) (restore func()) {
+	prevTimeout, prevPoll := journalLockTimeout, journalLockPollInterval
+	journalLockTimeout, journalLockPollInterval = timeout, poll
+	return func() { journalLockTimeout, journalLockPollInterval = prevTimeout, prevPoll }
 }
 
 func releaseJournalLock(held *journalLock) {

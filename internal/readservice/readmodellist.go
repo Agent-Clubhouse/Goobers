@@ -46,6 +46,9 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 	if s.sources.ReadModel == nil {
 		return RunList{}, ErrReadModelUnavailable
 	}
+	if _, err := readmodel.Require(readModelDims(options)); err != nil {
+		return RunList{}, err
+	}
 
 	request := readmodel.ListOptions{
 		Gaggle:   options.Gaggle,
@@ -55,10 +58,12 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 		Until:    options.Until,
 		Limit:    limit,
 		Stage:    options.Stage,
+		Outcome:  readmodel.Outcome(options.Outcome),
 		// Population is validated by canonicalStagePopulation upstream, and the
 		// read model refuses any value its own switch does not recognise, so a
 		// bad value cannot reach the query as a column name.
-		Population: readmodel.Population(options.StagePopulation),
+		Population:    readmodel.Population(options.StagePopulation),
+		IncludeNoWork: options.ShowNoWork,
 	}
 	if options.OrderByActivity {
 		request.OrderBy = readmodel.OrderLastActivity
@@ -76,6 +81,9 @@ func (s *Local) listRunsFromReadModel(ctx context.Context, options RunListOption
 	out := RunList{Runs: make([]RunSummary, 0, len(page.Runs))}
 	for _, row := range page.Runs {
 		out.Runs = append(out.Runs, summaryFromReadModel(row, observedAt))
+	}
+	if err := s.decorateOperatorClaims(ctx, out.Runs, observedAt); err != nil {
+		return RunList{}, err
 	}
 	if page.HasMore && len(out.Runs) > 0 {
 		// The cursor is encoded from the last RETURNED summary, using the same
@@ -120,32 +128,62 @@ func summaryFromReadModel(row readmodel.RunRow, observedAt time.Time) RunSummary
 		RetryCount:       row.RetryCount,
 		PolicyRetryCount: row.PolicyRetryCount,
 		InfraRetryCount:  row.InfraRetryCount,
+		NoWork:           row.Disposition == readmodel.DispositionNoWork,
+		Operator:         operatorFromReadModel(row, observedAt),
 		Stages:           row.Stages,
 	}
 }
 
-// readModelEligible reports whether this request can be served from read.db.
-//
-// Two conditions, and both are about honesty rather than capability.
-//
-// The store must be attached and the flag on. And the request must not use
-// LatestPerWorkflow, which is a different query shape with its own aggregate
-// (#1891) — serving it from the read model's plain list would silently return
-// the wrong thing rather than refuse.
-func (s *Local) readModelEligible(options RunListOptions) bool {
-	if !s.readModelReads || s.sources.ReadModel == nil {
-		return false
+func operatorFromReadModel(row readmodel.RunRow, observedAt time.Time) OperatorRunSummary {
+	facts := row.Operator
+	operator := OperatorRunSummary{
+		CurrentStage:      row.CurrentStage,
+		Trajectory:        operatorTrajectory(row.CurrentStage, row.Phase),
+		Liveness:          "no-heartbeat",
+		PullRequest:       facts.PullRequest,
+		PROpenerStage:     facts.PROpenerStage,
+		Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
+		LatestError:       facts.LatestError,
+		PotentialBlockers: []string{},
 	}
-	if options.LatestPerWorkflow {
-		return false
+	if facts.IssueNumber != "" || facts.IssueTitle != "" {
+		operator.Issue = &OperatorIssue{Number: facts.IssueNumber, Title: facts.IssueTitle}
 	}
-	// Filters outside the closed set are refused by the read model itself, but
-	// checking here keeps the refusal a property of the request rather than a
-	// surprise from a lower layer — and lets the caller decide.
-	if _, err := readmodel.Require(readModelDims(options)); err != nil {
-		return false
+	if facts.LastHeartbeatAt != nil {
+		heartbeat := *facts.LastHeartbeatAt
+		operator.LastHeartbeatAt = &heartbeat
+		age := max(observedAt.Sub(heartbeat).Milliseconds(), 0)
+		operator.HeartbeatAgeMillis = &age
 	}
-	return true
+	if row.Phase != journal.PhaseRunning {
+		operator.Liveness = "terminal"
+	} else if row.CurrentStage == "" {
+		operator.NextTransition = "start the next workflow stage"
+	} else {
+		operator.NextTransition = "finish " + row.CurrentStage
+	}
+	if facts.ProviderClaimRecorded {
+		operator.Claim.ProviderMarker = "recorded"
+	}
+	if facts.ReviewVerdict != "" {
+		operator.Review = &OperatorReview{
+			Verdict:   facts.ReviewVerdict,
+			Rationale: facts.ReviewRationale,
+		}
+	}
+	if facts.ReviewProblem != "" {
+		operator.PotentialBlockers = append(operator.PotentialBlockers, facts.ReviewProblem)
+	}
+	if operator.LatestError != nil {
+		operator.PotentialBlockers = append(operator.PotentialBlockers,
+			operator.LatestError.Code+": "+operator.LatestError.Message)
+	}
+	if operator.Review != nil && operator.Review.Verdict != "" &&
+		operator.Review.Verdict != "pass" && operator.Review.Verdict != "approve" {
+		operator.PotentialBlockers = append(operator.PotentialBlockers,
+			"review "+operator.Review.Verdict+": "+operator.Review.Rationale)
+	}
+	return operator
 }
 
 // readModelDims maps a list request to the filter dimensions the closed set is
@@ -158,11 +196,8 @@ func (s *Local) readModelEligible(options RunListOptions) bool {
 // serving them there cost ~143 MB read, ~1M unmarshals and ~19,852 journal opens
 // in a single request.
 //
-// Outcome -- in EITHER sense -- and trigger are still outside the set and still
-// resolve to a refusal here. Stage-scoped outcome looks servable from
-// run_stage.last_status and is not: the reference matches on ANY attempt's
-// status and last_status is only the final one, so an equality test silently
-// under-matches. queryset.go carries the full argument.
+// Run-scoped outcome and trigger are still outside the set and resolve to a
+// refusal. Stage-scoped outcome is supported by cumulative per-attempt flags.
 func readModelDims(options RunListOptions) []readmodel.Dim {
 	var dims []readmodel.Dim
 	if options.Gaggle != "" {
@@ -208,7 +243,7 @@ func readModelDims(options RunListOptions) []readmodel.Dim {
 // to be unambiguous about which path they are exercising.
 func (s *Local) EnableReadModelReads() { s.readModelReads = true }
 
-// DisableReadModelReads forces the journal-derived paths.
+// DisableReadModelReads forces authoritative journal scans.
 //
 // This is the rollback §6.6 requires, and it is deliberately a runtime switch
 // rather than a rebuild: rolling back must be a flag flip or deleting a file,
@@ -216,4 +251,7 @@ func (s *Local) EnableReadModelReads() { s.readModelReads = true }
 // exactly as correct as it was. Reachable via `goobers up
 // --disable-read-model-reads` (cmd/goobers/up.go, #2036) — before that the
 // only caller was this file's own doc comment.
-func (s *Local) DisableReadModelReads() { s.readModelReads = false }
+func (s *Local) DisableReadModelReads() {
+	s.readModelReads = false
+	s.SetReadMode(ReadModeAuthoritative)
+}

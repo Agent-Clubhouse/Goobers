@@ -7,32 +7,29 @@ import (
 	"time"
 )
 
-// TestUnboundedLoopReturnsImmediately pins that an instance which has not opted
-// in pays nothing.
-//
-// Unbounded is the default, so the alternative — a loop that ticks forever and
-// does nothing — would burn a goroutine and a timer on every instance in
-// existence.
-func TestUnboundedLoopReturnsImmediately(t *testing.T) {
+func TestUnboundedProjectionPassStillPrunesChangeFeed(t *testing.T) {
 	store := openTestStore(t)
-	loop := NewRetentionLoop(store, UnboundedRetention(), RetentionOptions{
-		Interval: time.Millisecond,
+	ctx := context.Background()
+	for i := 0; i < 11; i++ {
+		if err := store.PublishDefinitionsChanged(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loop := NewRetentionLoop(store, store, UnboundedRetention(), RetentionOptions{
+		ChangeFeedKeep: 10,
 	})
 
-	done := make(chan struct{})
-	go func() {
-		loop.Run(context.Background())
-		close(done)
-	}()
+	loop.pass(ctx)
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("an unbounded retention loop did not return; it will tick forever doing " +
-			"nothing on every instance that has not opted in")
+	changes, err := store.Changes(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if loop.Stats().Passes != 0 {
-		t.Errorf("unbounded loop ran %d passes", loop.Stats().Passes)
+	if len(changes) != 10 {
+		t.Fatalf("change rows after pass = %d, want 10", len(changes))
+	}
+	if loop.Stats().ChangesPruned != 1 {
+		t.Errorf("changes pruned = %d, want 1", loop.Stats().ChangesPruned)
 	}
 }
 
@@ -53,7 +50,7 @@ func TestBoundedLoopRunsAPassOnStart(t *testing.T) {
 	// first tick", which pass() demonstrates directly; the goroutine version
 	// was timing-dependent and failed under parallel load in the full suite
 	// while passing in isolation.
-	loop := NewRetentionLoop(store, RetentionDays(90), RetentionOptions{Interval: time.Hour})
+	loop := NewRetentionLoop(store, store, RetentionDays(90), RetentionOptions{Interval: time.Hour})
 	loop.pass(context.Background())
 
 	if loop.Stats().Passes == 0 {
@@ -77,7 +74,7 @@ func TestPassFailureIsCountedNotFatal(t *testing.T) {
 	store.SetClock(func() time.Time { return now })
 	seedAged(t, store, 1, now.AddDate(0, 0, -200))
 
-	loop := NewRetentionLoop(store, RetentionDays(90), RetentionOptions{})
+	loop := NewRetentionLoop(store, store, RetentionDays(90), RetentionOptions{})
 	// Closing the store makes every query fail — the shutdown-overlap case.
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -106,7 +103,7 @@ func TestCancelledPassIsNotCountedAsAFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	loop := NewRetentionLoop(store, RetentionDays(90), RetentionOptions{})
+	loop := NewRetentionLoop(store, store, RetentionDays(90), RetentionOptions{})
 	loop.pass(ctx)
 
 	if loop.Stats().Failures != 0 {

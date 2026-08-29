@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -105,7 +107,7 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow) (harnessPreflightInfo, error) {
+	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow, []string, map[string][]string) (harnessPreflightInfo, error) {
 		return harnessPreflightInfo{}, nil
 	}
 
@@ -123,6 +125,44 @@ func TestMain(m *testing.M) {
 	runTerminalWaitTimeout = suiteRunWaitTimeout
 
 	os.Exit(m.Run())
+}
+
+// installMakeExecutableFixture writes a copy of this test binary into dir as
+// name (a "make"/"make.exe" fixture that TestMain re-dispatches to a fake
+// `make` implementation, see installDocsDryRunMake/installPortalBuildMake).
+// It COPIES the executable rather than hard-linking it: a hard link shares
+// the same underlying file object as the source, and on Windows the OS holds
+// a delete-lock on that file object for as long as ANY name for it is the
+// running image of a process — including the "go test" process this helper's
+// own caller is running inside of, not just the short-lived make subprocess.
+// A hard-linked fixture therefore stayed locked for the whole remaining
+// lifetime of the test binary, so t.TempDir()'s eventual RemoveAll always hit
+// "Access is denied", long after the make subprocess itself had exited and
+// been fully cmd.Wait()'d. A copy is an independent file whose own lock is
+// released once ITS OWN process exits, decoupled from the parent test
+// binary's lifetime.
+func installMakeExecutableFixture(t *testing.T, dir, name string) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable for %s fixture: %v", name, err)
+	}
+	src, err := os.Open(executable)
+	if err != nil {
+		t.Fatalf("open test executable for %s fixture: %v", name, err)
+	}
+	defer func() { _ = src.Close() }()
+	dst, err := os.OpenFile(filepath.Join(dir, name), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		t.Fatalf("create %s fixture: %v", name, err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		t.Fatalf("copy %s fixture: %v", name, err)
+	}
+	if err := dst.Close(); err != nil {
+		t.Fatalf("close %s fixture: %v", name, err)
+	}
 }
 
 // TestJournalFsyncDisabledForSuite is the #827 recurrence guard, the journal-side

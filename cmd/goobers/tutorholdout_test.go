@@ -128,10 +128,12 @@ func TestPrepareTutorHoldoutPinsSkillBodyTransition(t *testing.T) {
 		runID  = "tutor-skill-authoring"
 	)
 	liveConfig := instance.NewLayout(root).ConfigDir()
-	liveSkillPath := filepath.Join(root, "skills", "implement", "SKILL.md")
-	if err := os.MkdirAll(filepath.Dir(liveSkillPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// The starter scaffold now ships a gaggle-scoped implement/run-tests
+	// package (SKILL002 fix), and scoped always wins over the instance-level
+	// shared fallback (skillPackagePaths) — so the before/after transition
+	// this test pins must be authored at the scoped path, or it is masked by
+	// the (identical, copied) scoped package on both sides.
+	liveSkillPath := filepath.Join(liveConfig, "gaggles", gaggle, "skills", "implement", "SKILL.md")
 	before := []byte("# Implement\n\nUse the original approach.\n")
 	if err := os.WriteFile(liveSkillPath, before, 0o644); err != nil {
 		t.Fatal(err)
@@ -142,10 +144,7 @@ func TestPrepareTutorHoldoutPinsSkillBodyTransition(t *testing.T) {
 	if err := os.CopyFS(proposedConfig, os.DirFS(liveConfig)); err != nil {
 		t.Fatalf("copy config: %v", err)
 	}
-	proposedSkillPath := filepath.Join(proposedRoot, "skills", "implement", "SKILL.md")
-	if err := os.MkdirAll(filepath.Dir(proposedSkillPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	proposedSkillPath := filepath.Join(proposedConfig, "gaggles", gaggle, "skills", "implement", "SKILL.md")
 	after := []byte("# Implement\n\nUse the improved approach.\n")
 	if err := os.WriteFile(proposedSkillPath, after, 0o644); err != nil {
 		t.Fatal(err)
@@ -456,7 +455,16 @@ func TestOpenPRDiscardsPreparedTutorHoldoutWhenProviderFails(t *testing.T) {
 	)
 	writeTutorFindingFixture(t, root, gaggle, runID)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", runID)
+	// The server is closed below so every call fails at the transport; the
+	// assertion is on the discarded holdout, not on retry timing. Spend the
+	// transient-retry budget so open-pr fails fast instead of burning
+	// 1+2+4+8 = 15s of real backoff sleep. providerCmdEnv's own t.Cleanup
+	// still restores the original factory.
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return baseFactory(token, append(opts, providers.WithMaxTransientRetries(0))...)
+	}
 	t.Setenv("GOOBERS_WORKFLOW", "tutor")
 	t.Setenv("GOOBERS_GAGGLE", gaggle)
 	t.Setenv(executor.InputEnvVar("recordLiveVerification"), "true")
@@ -484,6 +492,7 @@ func TestVerifyTutorHoldoutUsesPinnedTransitionNotLatest(t *testing.T) {
 		instance.NewLayout(root).ConfigDir(),
 		"example",
 		[]string{workflowName},
+		nil,
 		nil,
 	)
 	if err != nil {
@@ -593,7 +602,7 @@ func TestVerifyTutorHoldoutUsesFinalAmendedTransitionAfterInterveningPromotion(t
 	if err := os.WriteFile(workflowPath, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	finalVersions, err := tutorConfigVersions(liveConfig, "example", []string{workflowName}, nil)
+	finalVersions, err := tutorConfigVersions(liveConfig, "example", []string{workflowName}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1104,6 +1113,7 @@ func testLiveTutorAxes(t *testing.T, root, workflow string) tutorVersionAxes {
 		instance.NewLayout(root).ConfigDir(),
 		"example",
 		[]string{workflow},
+		nil,
 		nil,
 	)
 	if err != nil {

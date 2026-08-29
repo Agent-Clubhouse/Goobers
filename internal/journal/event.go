@@ -1,10 +1,25 @@
 package journal
 
 import (
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
+
+// RunnerEventNamespace is the dotted prefix of the runner.* namespace — the
+// ONLY sanctioned runner-specific divergence (§3.3, goobernetes-architecture.md
+// §7). Membership is decided by the PREFIX, never by an enumeration of the
+// types that happen to exist today: every authority states the rule as a
+// namespace, so a runner.* type added tomorrow is excluded from conformance the
+// moment it is declared, with no second edit anywhere to remember.
+const RunnerEventNamespace = "runner."
+
+// IsRunnerNamespace reports whether t lives in the runner.* namespace and is
+// therefore never conformance surface, whatever it is called.
+func IsRunnerNamespace(t EventType) bool {
+	return strings.HasPrefix(string(t), RunnerEventNamespace)
+}
 
 // EventType is the kind of an orchestration event. The taxonomy is the
 // conformance surface (§3.3): the runner, telemetry, portal, and conformance
@@ -39,6 +54,9 @@ const (
 	EventGatePaused EventType = "gate.paused"
 	// EventGateEvaluated records a gate verdict and the branch it selected.
 	EventGateEvaluated EventType = "gate.evaluated"
+	// EventGateOverridden records an operator replacing a nondeterministic
+	// gate's verdict with a configured branch, including the required rationale.
+	EventGateOverridden EventType = "gate.overridden"
 	// EventArtifactRecorded records an artifact committed by content digest.
 	EventArtifactRecorded EventType = "artifact.recorded"
 	// EventSpanRecorded records a within-stage trace span (harness transcript,
@@ -65,6 +83,33 @@ const (
 	// of the runner substrate, so the same workflow definition must produce
 	// identical conformance views sandboxed or not.
 	EventRunnerIsolationPosture EventType = "runner.isolation.posture"
+	// EventRunnerPlacement records where a stage attempt physically executed
+	// (goobernetes-architecture.md §7): the resolved runner plus whatever
+	// node/OS/image/pod identity and dispatch timestamps the executing
+	// substrate knows. Like runner.annotation its payload lives entirely
+	// under Runner and it is excluded from conformance (decision record D14:
+	// placement is a substrate fact, never conformance surface — a local
+	// run's journal remains conformant with none of it). The typed payload
+	// is Placement (placement.go).
+	EventRunnerPlacement EventType = "runner.placement"
+	// EventNotificationRequested records exact pre-rendered content before any
+	// sink is attempted.
+	EventNotificationRequested EventType = "notification.requested"
+	// EventNotificationReceipt records one sink attempt or suppression result.
+	EventNotificationReceipt EventType = "notification.delivery.receipt"
+	// EventAgentLifecycle records structured nested-agent state transitions.
+	EventAgentLifecycle EventType = "agent.lifecycle"
+	// EventAgentMessage records orchestration-relevant peer communication
+	// without retaining the message body.
+	EventAgentMessage EventType = "agent.message"
+	// EventBanditAssignment records the deterministic arm selected for a stage.
+	EventBanditAssignment EventType = "bandit.assignment"
+	// EventBanditObservation records the outcome used by an experiment.
+	EventBanditObservation EventType = "bandit.observation"
+	// EventBanditRetired records an arm removed by the failure-rate kill switch.
+	EventBanditRetired EventType = "bandit.retired"
+	// EventBanditPromotionProposed records a promotion awaiting normal approval.
+	EventBanditPromotionProposed EventType = "bandit.promotion.proposed"
 
 	// Parallel/branch lifecycle (docs/design/static-fan-out-fan-in.md §6.2).
 	// All four are conformance-normative: they and the completeness record are
@@ -99,6 +144,13 @@ const (
 	// EventWorkflowStarved records a workflow crossing the scheduler's
 	// consecutive shared-pool skip threshold.
 	EventWorkflowStarved EventType = "workflow.starved"
+	// EventWorkflowRefused records a workflow the startup constraint solve
+	// marked unplaceable on the instance's declared runners: inventory
+	// (dsl-3.0.md §5 checkpoint 3, #2860): the daemon starts, every other
+	// workflow serves, and this workflow's runs are refused with the Reason
+	// diagnostic. Instance-journal only; written when the scheduler learns
+	// the configuration (start and each accepted reload).
+	EventWorkflowRefused EventType = "workflow.refused"
 	// EventProviderQuotaReset records a provider budget window expiring and
 	// polling admission reopening.
 	EventProviderQuotaReset EventType = "provider.quota.reset"
@@ -112,6 +164,12 @@ const (
 	EventClaimReleased EventType = "claim.released"
 	// EventClaimForceReleased records an operator overriding a claim lease.
 	EventClaimForceReleased EventType = "claim.force_released"
+	// EventClaimRefused records the claims plane refusing a lease because a
+	// live lease is held by a different run — the losing side of a
+	// two-claimant race, journaled so both outcomes are observable (§13 item
+	// 2 of distributed-state-and-coordination.md). The ledger itself journals
+	// only transitions; the refusal is the write API's own record.
+	EventClaimRefused EventType = "claim.refused"
 	// EventClaimLockSlow records claims-lock contention above the local runner's
 	// diagnostic threshold. Timing, operation, and process details live under
 	// Runner because they are runner-specific and excluded from conformance.
@@ -147,6 +205,10 @@ const (
 	EventDaemonUpdateEscalated EventType = "daemon.update.escalated"
 )
 
+// TargetComplete is the explicit journal representation of the workflow
+// engine's empty-string successful terminal target.
+const TargetComplete = "@complete"
+
 // AttemptClass tags why a non-initial stage attempt exists. Policy and human
 // attempts are conformance-normative; infra attempts (an infrastructure
 // failure retried by the runner) are excluded from the conformance set
@@ -160,6 +222,24 @@ const (
 	AttemptInfra AttemptClass = "infra"
 	// AttemptHuman is an explicit operator-requested rerun. Normative.
 	AttemptHuman AttemptClass = "human"
+)
+
+const (
+	// RunnerAnnotationRunRecovery identifies a recovered run.
+	RunnerAnnotationRunRecovery = "run.recovery"
+	// RunnerAnnotationTriggerRecovery identifies a recovered pending trigger.
+	RunnerAnnotationTriggerRecovery = "trigger.recovery"
+	// RunnerAnnotationWorkflowDigestDrift identifies in-flight runs whose
+	// pinned workflow digest no longer matches the served definition (#3376):
+	// they either resume from their pinned snapshot or, when that snapshot is
+	// unavailable, are refused at the next daemon restart.
+	RunnerAnnotationWorkflowDigestDrift = "workflow.digest.drift"
+	// RecoveryActionResumed records continuation of an interrupted stage.
+	RecoveryActionResumed = "resumed"
+	// RecoveryActionRetried records a new attempt after interruption.
+	RecoveryActionRetried = "retried"
+	// RecoveryActionNewClaim records an item claimed after daemon restart.
+	RecoveryActionNewClaim = "new_claim"
 )
 
 // Event is the versioned journal envelope: one JSON object per line in
@@ -203,20 +283,32 @@ type Event struct {
 	// AttemptClass tags why a non-initial attempt exists. Normative iff the
 	// event is not a heartbeat and the class is not "infra".
 	AttemptClass AttemptClass `json:"attemptClass,omitempty"`
-	// Actor identifies the human principal that requested an intervention —
-	// a stage.rerun.requested or a run.resumed action. Normative.
+	// Actor identifies the human principal that requested an intervention.
+	// Normative.
 	Actor string `json:"actor,omitempty"`
+	// Action identifies the human intervention recorded by run.resumed.
+	// Normative.
+	Action string `json:"action,omitempty"`
+	// Decision is the configured gate branch selected by a run.resumed
+	// intervention. Normative.
+	Decision string `json:"decision,omitempty"`
 	// InstructionAddendum is the one-off instruction text supplied for a
 	// stage.rerun.requested event. Normative.
 	InstructionAddendum string `json:"instructionAddendum,omitempty"`
-	// Gate is the gate name for gate.* events. Normative on gate.evaluated;
-	// gate.started and gate.paused are excluded as operational state.
+	// Rationale explains why an operator overrode a nondeterministic gate.
+	// Normative.
+	Rationale string `json:"rationale,omitempty"`
+	// Gate is the gate name for gate.* events. Normative on gate.evaluated and
+	// gate.overridden; gate.started and gate.paused are excluded.
 	Gate string `json:"gate,omitempty"`
-	// Verdict is the gate decision for gate.evaluated. Normative.
+	// Verdict is the gate decision for gate.evaluated or gate.overridden.
 	Verdict string `json:"verdict,omitempty"`
 	// Target is the branch/state a gate selected or a run.resumed action chose.
 	// Normative.
 	Target string `json:"target,omitempty"`
+	// Complete marks a run.resumed intervention that selected the workflow's
+	// terminal completion branch. Normative.
+	Complete bool `json:"complete,omitempty"`
 	// Escalated reports that gate evaluation selected its escalation control
 	// branch. Normative.
 	Escalated bool `json:"escalated,omitempty"`
@@ -268,6 +360,16 @@ type Event struct {
 	// Runner holds runner-specific annotations. The ONLY sanctioned
 	// runner-specific divergence and ALWAYS EXCLUDED from conformance.
 	Runner map[string]any `json:"runner,omitempty"`
+	// NotificationRequest is the typed payload on notification.requested.
+	// Notification delivery is operational output and excluded from workflow
+	// conformance.
+	NotificationRequest *apiv1.NotificationRequest `json:"notificationRequest,omitempty"`
+	// NotificationReceipt is the typed payload on notification.delivery.receipt.
+	NotificationReceipt *apiv1.NotificationReceipt `json:"notificationReceipt,omitempty"`
+	// Agent carries normalized nested-agent provenance on agent events.
+	Agent *AgentProvenance `json:"agent,omitempty"`
+	// PeerMessage carries scrubbed coordination metadata, never raw content.
+	PeerMessage *PeerMessageMetadata `json:"peerMessage,omitempty"`
 
 	// --- parallel/branch payload (§6.2) ---
 
@@ -298,6 +400,10 @@ type Event struct {
 	Gaggle string `json:"gaggle,omitempty"`
 	// RunID is the run a scheduler decision or claim transition pertains to.
 	RunID string `json:"runId,omitempty"`
+	// SourceRunID and SourceTerminalSeq identify a continuation's source
+	// generation. They are present on the new run's run.started event.
+	SourceRunID       string `json:"sourceRunId,omitempty"`
+	SourceTerminalSeq uint64 `json:"sourceTerminalSeq,omitempty"`
 	// Reason is a short, stable explanation for an instance-level scheduler or
 	// daemon lifecycle event.
 	Reason string `json:"reason,omitempty"`
@@ -347,10 +453,11 @@ type BranchOutcome struct {
 // in a provider. The normative identity is (Provider, Kind, ID); URL is a
 // convenience for humans and is not compared across runners.
 type ExternalRef struct {
-	Provider string `json:"provider"`      // e.g. "github"
-	Kind     string `json:"kind"`          // e.g. "issue", "pr"
-	ID       string `json:"id"`            // e.g. "123"
-	URL      string `json:"url,omitempty"` // not normative
+	Provider  string `json:"provider"`      // e.g. "github"
+	Kind      string `json:"kind"`          // e.g. "issue", "pr"
+	ID        string `json:"id"`            // e.g. "123"
+	URL       string `json:"url,omitempty"` // not normative
+	CommitSHA string `json:"commitSha,omitempty"`
 }
 
 // ErrorDetail is the failure detail on an error event. Code is a stable,
@@ -377,6 +484,15 @@ func (e Event) IsConformanceNormative() bool {
 	if e.AttemptClass == AttemptInfra {
 		return false
 	}
+	// The runner.* NAMESPACE rule (§3.3): local-runner lifecycle and substrate
+	// bookkeeping — annotations, isolation posture, placement provenance, and
+	// whatever the namespace grows next — is authoritative but never
+	// conformance surface. Enumerating the members here would fail OPEN for a
+	// new runner.* type (the default arm below returns true), so the prefix,
+	// not a list, is what decides.
+	if IsRunnerNamespace(e.Type) {
+		return false
+	}
 	switch e.Type {
 	case EventStageHeartbeat, EventGateStarted, EventGatePaused, EventRepaired,
 		EventInitCompleted, EventDaemonStarted, EventDaemonCleanShutdown, EventDaemonDirtyRestart:
@@ -384,13 +500,13 @@ func (e Event) IsConformanceNormative() bool {
 		// mechanics; heartbeats are operational liveness, not orchestration
 		// outcomes.
 		return false
-	case EventRunnerAnnotation, EventRunnerIsolationPosture:
-		// Local-runner lifecycle/substrate bookkeeping lives under runner.*
-		// only; isolation posture must never split the conformance surface.
-		return false
 	case EventSpanRecorded:
 		// Spans carry live-harness transcripts (LLM output); structural only
 		// per §3.3, never content-compared across runners.
+		return false
+	case EventNotificationRequested, EventNotificationReceipt:
+		// Output transports are deployment-side effects, not deterministic
+		// workflow-machine transitions.
 		return false
 	default:
 		return true

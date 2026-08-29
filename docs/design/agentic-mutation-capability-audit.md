@@ -1,8 +1,8 @@
 # Agentic mutation-capability audit
 
-> Status: **Completed survey** (2026-07-29)
+> Status: **historical — completed survey** (2026-07-29)
 >
-> Scope: shipped workflow definitions under `config-examples/` and `selfhost/`
+> Scope: shipped workflow definitions under `config-examples/` and `reference-workflows/`
 > at commit `45b935a89`.
 
 ## Method and classification
@@ -44,14 +44,14 @@ The zeroes make the negative coverage explicit.
 | `config-examples/gaggles/acme-web` | `todo-check` | 0 |
 | `config-examples/gaggles/acme-web` | `work-nomination` | 1 |
 | `config-examples/gaggles/dotnet-service` | `dotnet-implementation` | 2 |
-| `selfhost/gaggles/goobers` | `backlog-curation` | 1 |
-| `selfhost/gaggles/goobers` | `docs-updater` | 1 |
-| `selfhost/gaggles/goobers` | `implementation` | 2 |
-| `selfhost/gaggles/goobers` | `merge-review` | 1 |
-| `selfhost/gaggles/goobers` | `pr-remediation` | 2 |
-| `selfhost/gaggles/goobers` | `self-update` | 0 |
-| `selfhost/gaggles/goobers` | `tutor` | 2 |
-| `selfhost/gaggles/goobers` | `work-nomination` | 1 |
+| `reference-workflows/gaggles/goobers` | `backlog-curation` | 1 |
+| `reference-workflows/gaggles/goobers` | `docs-updater` | 1 |
+| `reference-workflows/gaggles/goobers` | `implementation` | 2 |
+| `reference-workflows/gaggles/goobers` | `merge-review` | 1 |
+| `reference-workflows/gaggles/goobers` | `pr-remediation` | 2 |
+| `reference-workflows/gaggles/goobers` | `self-update` | 0 |
+| `reference-workflows/gaggles/goobers` | `tutor` | 2 |
+| `reference-workflows/gaggles/goobers` | `work-nomination` | 1 |
 
 ## Complete agentic-stage inventory
 
@@ -69,7 +69,7 @@ The zeroes make the negative coverage explicit.
 | `dotnet-service/dotnet-implementation` | task `implement` | `dotnet-implementer` | **M** `repo:push` | **Model reasoning is required.** Implementing and testing an arbitrary .NET change is not mechanical. Any remote publication of the selected commit is. |
 | `dotnet-service/dotnet-implementation` | gate `review` | `dotnet-reviewer` | `[]` | No mutation grant to convert. Reviewing the implementation evidence requires model judgment. |
 
-### `selfhost/`
+### `reference-workflows/`
 
 | Workflow | Entry | Goober | Granted capabilities | Judgment |
 |---|---|---|---|---|
@@ -112,7 +112,7 @@ TBH-1's migration order starts with merge/PR-write, then push, then issue
 writes:
 
 1. **Merge and PR-write:** this audit finds zero agentic holders of
-   `github:pr:merge` or `github:pr:write`. The selfhost and example reviewers
+   `github:pr:merge` or `github:pr:write`. The reference and example reviewers
    are mutation-free; `apply-verdict`, `merge-pr`, and queue handling are
    deterministic tasks. Therefore #1303 remains executor-routing hardening,
    not an agentic-stage conversion identified here. Its proposal boundary and

@@ -19,11 +19,8 @@ import (
 	"github.com/goobers/goobers/internal/worktree"
 )
 
-// newStuckRun hand-constructs a run left non-terminal (task-checkpointed, no
-// run.finished event) for the given workflow — the same "prior crash or
-// unclean shutdown" fixture shape TestUpResumesInterruptedRun uses, factored
-// out for the #135 tests that build their own Scheduler/runner directly
-// rather than going through a full runUpContext.
+// newStuckRun hand-constructs a run interrupted during deterministic dispatch:
+// the task is checkpointed and started, but has no matching stage.finished.
 func newStuckRun(t *testing.T, l instance.Layout, runID, workflowName string) {
 	t.Helper()
 	set, report, err := instance.LoadConfigDir(l.ConfigDir())
@@ -58,6 +55,11 @@ func newStuckRun(t *testing.T, l instance.Layout, runID, workflowName string) {
 	}
 	jr.SetMachineState("local-ci")
 	if err := jr.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Append(journal.Event{
+		Type: journal.EventStageStarted, Stage: "local-ci", Attempt: 1,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := jr.Close(); err != nil {
@@ -146,7 +148,7 @@ func waitForRunPhase(t *testing.T, runsDir, runID string, want journal.RunPhase)
 		if time.Now().After(deadline) {
 			t.Fatalf("run %s did not reach phase %s in time", runID, want)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval; run journals have no completion notification hook.
 	}
 }
 
@@ -193,6 +195,36 @@ func TestResumeJournalsActualPhaseNotHardcodedStatus(t *testing.T) {
 	}
 	if finished.Gaggle != "example" || finished.Workflow != "default-implement" {
 		t.Fatalf("instance-log workflow identity = %q/%q, want example/default-implement", finished.Gaggle, finished.Workflow)
+	}
+	var instanceRecovery bool
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.RunID == "stuck-2" &&
+			event.Runner["kind"] == journal.RunnerAnnotationRunRecovery &&
+			event.Runner["action"] == journal.RecoveryActionResumed {
+			instanceRecovery = true
+		}
+	}
+	if !instanceRecovery {
+		t.Fatalf("instance events = %+v, want run.recovery annotation", events)
+	}
+	runReader, err := journal.OpenRead(filepath.Join(l.RunsDir(), "stuck-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEvents, err := runReader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runRecovery bool
+	for _, event := range runEvents {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["kind"] == journal.RunnerAnnotationRunRecovery {
+			runRecovery = true
+		}
+	}
+	if !runRecovery {
+		t.Fatalf("run events = %+v, want run.recovery annotation", runEvents)
 	}
 }
 
@@ -381,6 +413,89 @@ func TestUpSkipsRunFromRemovedGaggleWithWarningNotFatal(t *testing.T) {
 	}
 	if recovery.Error == nil || recovery.Error.Code != "resume_unresolvable_gaggle" {
 		t.Fatalf("instance-log recovery error = %+v, want resume_unresolvable_gaggle", recovery.Error)
+	}
+}
+
+func TestRunAbortRecoversRunFromRemovedGaggle(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	removed := l.ForGaggle("removed")
+	const runID = "abort-removed-gaggle"
+
+	jr, err := journal.Create(removed.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "default-implement", WorkflowVersion: 1, Gaggle: "removed",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jr.SetMachineState("local-ci")
+	if err := jr.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runArgs(t, "run", "abort", runID, root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	reader, err := journal.OpenRead(filepath.Join(removed.RunsDir(), runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	phase, err := reader.Phase()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase != journal.PhaseAborted {
+		t.Fatalf("phase = %q, want %q", phase, journal.PhaseAborted)
+	}
+}
+
+func TestRunAbortRecoversRunWithInvalidConfiguration(t *testing.T) {
+	tests := []struct {
+		name       string
+		invalidate func(t *testing.T, l instance.Layout)
+		warning    string
+	}{
+		{
+			name: "instance config",
+			invalidate: func(t *testing.T, l instance.Layout) {
+				t.Helper()
+				writeFixture(t, l.ConfigFile(), "not: [valid")
+			},
+			warning: "warning: load instance config for workcopies placement:",
+		},
+		{
+			name: "config directory resource",
+			invalidate: func(t *testing.T, l instance.Layout) {
+				t.Helper()
+				writeFixture(t, filepath.Join(l.ConfigDir(), "gaggles", "example", "gaggle.yaml"), "not: [valid")
+			},
+			warning: "warning: load config directory for workcopies placement:",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := initDeterministicDemo(t)
+			l := instance.NewLayout(root)
+			runLayout := l.ForGaggle("example")
+			runID := "abort-invalid-" + strings.ReplaceAll(tt.name, " ", "-")
+			newStuckRun(t, runLayout, runID, "default-implement")
+			tt.invalidate(t, l)
+
+			code, _, stderr := runArgs(t, "run", "abort", runID, root)
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			if !strings.Contains(stderr, tt.warning) {
+				t.Fatalf("stderr = %q, want %q warning", stderr, tt.warning)
+			}
+			assertRunFinishedLast(t, runLayout.RunsDir(), runID, journal.PhaseAborted)
+		})
 	}
 }
 

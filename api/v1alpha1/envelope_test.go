@@ -43,6 +43,28 @@ func TestInvocationEnvelopeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestContinuationRequestRoundTrip(t *testing.T) {
+	in := ContinuationRequest{
+		From: "0af7651916cd43dd8448eb211c80319c", ExpectedTerminalSeq: 7,
+		Target: "implement", Operator: "operator@example.test",
+		Inputs: []ContinuationInput{{
+			Name: "issue", Content: "issue body", Source: "github:issue/42",
+			Integrity: IntegrityMaintainer,
+		}},
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out ContinuationRequest
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(in, out) {
+		t.Fatalf("continuation request round-trip mismatch:\n in: %#v\nout: %#v", in, out)
+	}
+}
+
 func TestResultEnvelopeRoundTrip(t *testing.T) {
 	in := ResultEnvelope{
 		Status:     ResultFailure,
@@ -193,7 +215,15 @@ func TestSeverityRank(t *testing.T) {
 }
 
 func TestFindingClassValidity(t *testing.T) {
-	for _, c := range []FindingClass{FindingRebaseNeeded, FindingConflict, FindingSubstantive, FindingCrossPRBlocked} {
+	for _, c := range []FindingClass{
+		FindingRebaseNeeded,
+		FindingConflict,
+		FindingSubstantive,
+		FindingMissingTests,
+		FindingScopeCreep,
+		FindingContractChange,
+		FindingCrossPRBlocked,
+	} {
 		if !c.IsValid() {
 			t.Errorf("expected %q to be a valid finding class", c)
 		}
@@ -203,6 +233,25 @@ func TestFindingClassValidity(t *testing.T) {
 	}
 	if FindingClass("bogus-class").IsValid() {
 		t.Error("expected an unknown class to be invalid")
+	}
+}
+
+func TestFindingClassRequiresCodeChange(t *testing.T) {
+	for _, c := range []FindingClass{
+		FindingConflict,
+		FindingSubstantive,
+		FindingMissingTests,
+		FindingScopeCreep,
+		FindingContractChange,
+	} {
+		if !c.RequiresCodeChange() {
+			t.Errorf("expected %q to require a code change", c)
+		}
+	}
+	for _, c := range []FindingClass{FindingRebaseNeeded, FindingCrossPRBlocked, "", "bogus-class"} {
+		if c.RequiresCodeChange() {
+			t.Errorf("expected %q not to require a code change", c)
+		}
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/providers"
 )
 
 var gatherSiblingFailConsumerFields = []string{
@@ -32,7 +33,7 @@ var gatherSiblingFailConsumerFields = []string{
 
 func TestGatherSiblingContextShippedFailBranchConsumers(t *testing.T) {
 	configRoots := []string{
-		filepath.Join("..", "..", "selfhost"),
+		filepath.Join("..", "..", "reference-workflows"),
 		filepath.Join("..", "..", "config-examples"),
 		filepath.Join("..", "..", "examples", "ios-simulator"),
 		filepath.Join("..", "..", "internal", "instance", "starter"),
@@ -78,11 +79,12 @@ func TestGatherSiblingContextShippedFailBranchConsumers(t *testing.T) {
 
 	sort.Strings(consumers)
 	want := []string{
+		"acme-web-claude/claude-merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
 		"acme-web/merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
 		"goobers/merge-review: gather-sibling-context -> review[fail] -> apply-verdict inputsFrom={advisoryMode=advisoryMode,overlappingSiblings=overlappingSiblingsCsv,reviewDigest=reviewDigest,scopeGateParked=scopeGateParked,selectedBaseSha=selectedBaseSha,selectedHeadSha=selectedHeadSha,selectedNumber=selectedNumber}",
 	}
-	if producers != 3 {
-		t.Fatalf("found %d shipped gather-sibling-context stages, want audited inventory of 3", producers)
+	if producers != 4 {
+		t.Fatalf("found %d shipped gather-sibling-context stages, want audited inventory of 4", producers)
 	}
 	if !reflect.DeepEqual(consumers, want) {
 		t.Fatalf("gather-sibling-context fail-branch consumers =\n%s\nwant\n%s",
@@ -203,6 +205,11 @@ func TestGatherSiblingContextFatalProviderPathInventory(t *testing.T) {
 		"list files for selected PR #%d":      1,
 		"list pull requests":                  1,
 		"resolve merge-review verdict author": 1,
+		// The Azure DevOps branch (runGatherSiblingContextADO) resolves the
+		// selected PR's deterministic pin with a single PollPullRequest; its
+		// failure envelope is covered by
+		// TestGatherSiblingContextADOPollFailureKeepsGenericEnvelope.
+		"poll pull request #%s": 1,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fatal provider path inventory = %v, want %v; add fault-injection coverage for any new path", got, want)
@@ -352,6 +359,251 @@ func TestGatherSiblingContextFatalProviderPathsKeepGenericEnvelope(t *testing.T)
 				}
 			}
 		})
+	}
+}
+
+func TestGatherSiblingContextClassifiesSiblingLifecycleAfterCheckFailure(t *testing.T) {
+	tests := []struct {
+		name        string
+		outcome     string
+		mutate      func(*fakePR)
+		wantSibling bool
+		wantHeadSHA string
+	}{
+		{
+			name:        "closed",
+			outcome:     "closed",
+			wantHeadSHA: "sha11",
+			mutate: func(pr *fakePR) {
+				pr.state = "closed"
+			},
+		},
+		{
+			name:        "merged",
+			outcome:     "merged",
+			wantHeadSHA: "sha11",
+			mutate: func(pr *fakePR) {
+				pr.state = "closed"
+				pr.merged = true
+			},
+		},
+		{
+			name:    "head moved",
+			outcome: "head-moved",
+			mutate: func(pr *fakePR) {
+				pr.headSHA = "sha11-next"
+			},
+			wantSibling: true,
+			wantHeadSHA: "sha11-next",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			server.addIssue(10, "Selected PR")
+			server.addOpenPR(10, "goobers/implementation/run-10", "main", "sha10", "base",
+				false, nil, []fakePRFile{{path: "selected.go", status: "modified"}})
+			server.addIssue(11, "Sibling PR")
+			server.addOpenPR(11, "goobers/implementation/run-11", "main", "sha11", "base",
+				false, nil, []fakePRFile{{path: "sibling.go", status: "modified"}})
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1866-lifecycle")
+			t.Setenv(executor.InputEnvVar("selectedNumber"), "10")
+
+			baseHandler := server.server.Config.Handler
+			var injected atomic.Bool
+			server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet &&
+					r.URL.Path == "/repos/your-org/your-repo/commits/sha11/status" &&
+					injected.CompareAndSwap(false, true) {
+					server.mu.Lock()
+					test.mutate(server.prs[11])
+					server.mu.Unlock()
+					http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+					return
+				}
+				baseHandler.ServeHTTP(w, r)
+			})
+
+			workDir := t.TempDir()
+			t.Chdir(workDir)
+			if code, _, stderr := runArgs(t, "gather-sibling-context", "--no-verdict-cache", root); code != 0 {
+				t.Fatalf("gather-sibling-context: code = %d, stderr = %q", code, stderr)
+			}
+			if !injected.Load() {
+				t.Fatal("did not inject the sibling check-state failure")
+			}
+
+			result := readProviderStageResult(t, filepath.Join(workDir, "sibling-context.json"))
+			outcomes, ok := result["siblingLifecycleOutcomes"].([]interface{})
+			if !ok || len(outcomes) != 1 {
+				t.Fatalf("siblingLifecycleOutcomes = %T(%v), want one outcome", result["siblingLifecycleOutcomes"], result["siblingLifecycleOutcomes"])
+			}
+			outcome, ok := outcomes[0].(map[string]interface{})
+			if !ok {
+				t.Fatalf("siblingLifecycleOutcomes[0] = %T(%v), want object", outcomes[0], outcomes[0])
+			}
+			if outcome["number"] != float64(11) || outcome["outcome"] != test.outcome ||
+				outcome["previousHeadSha"] != "sha11" || outcome["currentHeadSha"] != test.wantHeadSHA {
+				t.Fatalf("siblingLifecycleOutcomes[0] = %v, want PR #11 %s from sha11 to %q",
+					outcome, test.outcome, test.wantHeadSHA)
+			}
+
+			siblings, ok := result["siblings"].([]interface{})
+			if !ok {
+				t.Fatalf("siblings = %T(%v), want array", result["siblings"], result["siblings"])
+			}
+			if test.wantSibling {
+				if len(siblings) != 1 || siblings[0].(map[string]interface{})["headSha"] != test.wantHeadSHA {
+					t.Fatalf("siblings = %v, want refreshed sibling at %s", siblings, test.wantHeadSHA)
+				}
+			} else if len(siblings) != 0 {
+				t.Fatalf("siblings = %v, want terminal sibling omitted", siblings)
+			}
+		})
+	}
+}
+
+func TestGatherSiblingContextRefreshesBeforeClassifyingHeadMoveRetryFailure(t *testing.T) {
+	tests := []struct {
+		name           string
+		mutateOnRetry  func(*fakePR)
+		wantOutcome    string
+		wantCurrentSHA string
+	}{
+		{
+			name: "closed during retry",
+			mutateOnRetry: func(pr *fakePR) {
+				pr.state = "closed"
+			},
+			wantOutcome:    "closed",
+			wantCurrentSHA: "sha11-next",
+		},
+		{
+			name: "head moved again during retry",
+			mutateOnRetry: func(pr *fakePR) {
+				pr.headSHA = "sha11-final"
+			},
+			wantOutcome:    "head-moved",
+			wantCurrentSHA: "sha11-final",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := initDemo(t)
+			server := newFakeGitHubServer(t, "your-org", "your-repo")
+			server.addIssue(10, "Selected PR")
+			server.addOpenPR(10, "goobers/implementation/run-10", "main", "sha10", "base",
+				false, nil, []fakePRFile{{path: "selected.go", status: "modified"}})
+			server.addIssue(11, "Sibling PR")
+			server.addOpenPR(11, "goobers/implementation/run-11", "main", "sha11", "base",
+				false, nil, []fakePRFile{{path: "sibling.go", status: "modified"}})
+			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1866-retry-lifecycle")
+			t.Setenv(executor.InputEnvVar("selectedNumber"), "10")
+
+			baseHandler := server.server.Config.Handler
+			var checkFailures atomic.Int32
+			server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Path == "/repos/your-org/your-repo/commits/sha11/status" {
+					server.mu.Lock()
+					server.prs[11].headSHA = "sha11-next"
+					server.mu.Unlock()
+					checkFailures.Add(1)
+					http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+					return
+				}
+				if r.Method == http.MethodGet && r.URL.Path == "/repos/your-org/your-repo/commits/sha11-next/status" {
+					server.mu.Lock()
+					test.mutateOnRetry(server.prs[11])
+					server.mu.Unlock()
+					checkFailures.Add(1)
+					http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+					return
+				}
+				baseHandler.ServeHTTP(w, r)
+			})
+
+			workDir := t.TempDir()
+			t.Chdir(workDir)
+			if code, _, stderr := runArgs(t, "gather-sibling-context", "--no-verdict-cache", root); code != 0 {
+				t.Fatalf("gather-sibling-context: code = %d, stderr = %q", code, stderr)
+			}
+			if got := checkFailures.Load(); got != 2 {
+				t.Fatalf("check-state failures = %d, want 2 bounded attempts", got)
+			}
+
+			result := readProviderStageResult(t, filepath.Join(workDir, "sibling-context.json"))
+			outcomes, ok := result["siblingLifecycleOutcomes"].([]interface{})
+			if !ok || len(outcomes) != 2 {
+				t.Fatalf("siblingLifecycleOutcomes = %T(%v), want two outcomes", result["siblingLifecycleOutcomes"], result["siblingLifecycleOutcomes"])
+			}
+			retryOutcome, ok := outcomes[1].(map[string]interface{})
+			if !ok {
+				t.Fatalf("siblingLifecycleOutcomes[1] = %T(%v), want object", outcomes[1], outcomes[1])
+			}
+			if retryOutcome["number"] != float64(11) || retryOutcome["outcome"] != test.wantOutcome ||
+				retryOutcome["previousHeadSha"] != "sha11-next" || retryOutcome["currentHeadSha"] != test.wantCurrentSHA {
+				t.Fatalf("siblingLifecycleOutcomes[1] = %v, want PR #11 %s from sha11-next to %q",
+					retryOutcome, test.wantOutcome, test.wantCurrentSHA)
+			}
+			siblings, ok := result["siblings"].([]interface{})
+			if !ok || len(siblings) != 0 {
+				t.Fatalf("siblings = %T(%v), want retry-raced sibling omitted", result["siblings"], result["siblings"])
+			}
+		})
+	}
+}
+
+func TestGatherSiblingContextFailedLifecycleRefreshKeepsGenericEnvelope(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(10, "Selected PR")
+	server.addOpenPR(10, "goobers/implementation/run-10", "main", "sha10", "base",
+		false, nil, []fakePRFile{{path: "selected.go", status: "modified"}})
+	server.addIssue(11, "Sibling PR")
+	server.addOpenPR(11, "goobers/implementation/run-11", "main", "sha11", "base",
+		false, nil, []fakePRFile{{path: "sibling.go", status: "modified"}})
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1866-refresh-failure")
+	// The 503 below drives the failure path; nothing here asserts retry
+	// timing. Spend the transient-retry budget (providerCmdEnv's own
+	// t.Cleanup still restores the original factory) so the stage fails fast
+	// instead of burning 1+2+4+8 = 15s of real backoff sleep.
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return baseFactory(token, append(opts, providers.WithMaxTransientRetries(0))...)
+	}
+	t.Setenv(executor.InputEnvVar("selectedNumber"), "10")
+
+	baseHandler := server.server.Config.Handler
+	var checkFailed atomic.Bool
+	server.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet &&
+			r.URL.Path == "/repos/your-org/your-repo/commits/sha11/status" &&
+			checkFailed.CompareAndSwap(false, true):
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		case checkFailed.Load() && r.Method == http.MethodGet &&
+			r.URL.Path == "/repos/your-org/your-repo/pulls/11":
+			http.Error(w, `{"message":"Service Unavailable"}`, http.StatusServiceUnavailable)
+		default:
+			baseHandler.ServeHTTP(w, r)
+		}
+	})
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, _, stderr := runArgs(t, "gather-sibling-context", "--no-verdict-cache", root)
+	if code != 1 {
+		t.Fatalf("gather-sibling-context: code = %d, stderr = %q, want 1", code, stderr)
+	}
+	result := readProviderStageResult(t, filepath.Join(workDir, "sibling-context.json"))
+	if result[executor.OutputErrorCode] != errorCodeProvider || len(result) != 4 {
+		t.Fatalf("sibling-context.json = %v, want generic provider failure envelope", result)
+	}
+	if _, ok := result["siblingLifecycleOutcomes"]; ok {
+		t.Fatalf("sibling-context.json = %v, failed refresh must not classify a lifecycle outcome", result)
 	}
 }
 

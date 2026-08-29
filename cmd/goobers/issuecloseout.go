@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/capability"
+
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -19,16 +22,53 @@ import (
 
 // issueCloseOutProvider is the provider surface issue-close-out needs: resolve
 // the run's PR to link it (FindPullRequestByBranch), mirror the terminal
-// processing status (UpdateWorkItemStatus), and the label/comment edits for the
-// needs-human park and claim-marker release (UpdateWorkItem). Both the GitHub
-// and ADO providers satisfy it, so close-out runs against either backend.
+// processing status (UpdateWorkItemStatus), and the label/comment edits for a
+// park (needs-human or needs-remediation) and claim-marker release
+// (UpdateWorkItem). Both the GitHub and ADO providers satisfy it, so
+// close-out runs against either backend.
 type issueCloseOutProvider interface {
 	FindPullRequestByBranch(context.Context, providers.RepositoryRef, string, string) (providers.PullRequestResult, bool, error)
 	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
 	UpdateWorkItemStatus(context.Context, providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error)
 }
 
+type pullRequestReader interface {
+	GetPullRequest(context.Context, providers.RepositoryRef, string) (providers.PullRequestSummary, error)
+}
+
 const issueCloseOutNeedsHuman providers.WorkItemStatus = "needs-human"
+
+// issueCloseOutNeedsRemediation parks an issue the same way issueCloseOutNeedsHuman
+// does (swap goobers:ready for a park label, release the claim) but for a
+// mechanical failure — a repass-budget exhaustion, an identical-diff loop, an
+// infrastructure/executor failure, or a CI-poll timeout — that needs someone
+// to act, not a policy decision (#2028). Unlike needs-human it never gets the
+// configured human assignee (needshumanrouting.go's withNeedsHumanAssignee
+// only fires for LabelNeedsHuman) and it reuses cmd/goobers/postmerge.go's
+// needsRemediationLabel, the same label PR-lifecycle remediation already uses.
+const issueCloseOutNeedsRemediation providers.WorkItemStatus = "needs-remediation"
+
+// issueCloseOutParkStatuses lists every status that parks the driving issue
+// (swaps goobers:ready for a park label) rather than mirroring a processing
+// status via UpdateWorkItemStatus. Shared by issueCloseOutStatus's validation
+// and runIssueCloseOut's branch so the two can't drift.
+var issueCloseOutParkStatuses = []providers.WorkItemStatus{issueCloseOutNeedsHuman, issueCloseOutNeedsRemediation}
+
+func issueCloseOutIsParkStatus(status providers.WorkItemStatus) bool {
+	for _, s := range issueCloseOutParkStatuses {
+		if status == s {
+			return true
+		}
+	}
+	return false
+}
+
+func validateIssueCloseOutParkComment(status providers.WorkItemStatus, comment string) error {
+	if status == issueCloseOutNeedsHuman && !strings.HasSuffix(strings.TrimSpace(comment), "?") {
+		return errors.New("needs-human parking comment must end with the exact question requiring a human decision")
+	}
+	return nil
+}
 
 // issueCloseOutStatus resolves the "status" Task.Input to the WorkItemStatus
 // this stage sets, defaulting to WorkItemStatusDone for backward
@@ -41,10 +81,14 @@ func issueCloseOutStatus(raw string) (providers.WorkItemStatus, error) {
 	switch providers.WorkItemStatus(raw) {
 	case "":
 		return providers.WorkItemStatusDone, nil
-	case providers.WorkItemStatusDone, providers.WorkItemStatusInReview, issueCloseOutNeedsHuman:
+	case providers.WorkItemStatusDone, providers.WorkItemStatusInReview:
 		return providers.WorkItemStatus(raw), nil
 	default:
-		return "", fmt.Errorf("unsupported status %q (want %q, %q, or %q)", raw, providers.WorkItemStatusDone, providers.WorkItemStatusInReview, issueCloseOutNeedsHuman)
+		if issueCloseOutIsParkStatus(providers.WorkItemStatus(raw)) {
+			return providers.WorkItemStatus(raw), nil
+		}
+		return "", fmt.Errorf("unsupported status %q (want %q, %q, %q, or %q)",
+			raw, providers.WorkItemStatusDone, providers.WorkItemStatusInReview, issueCloseOutNeedsHuman, issueCloseOutNeedsRemediation)
 	}
 }
 
@@ -74,8 +118,14 @@ func issueCloseOutReason(runsDir, runID, gateName string) (string, error) {
 					return "", fmt.Errorf("parse verdict for gate %q: %w", event.Gate, err)
 				}
 				reason := strings.TrimSpace(verdict.Summary)
+				if verdict.Decision == apiv1.VerdictFail {
+					reason = strings.TrimSpace(verdict.Rationale)
+				}
 				if reason == "" {
 					reason = strings.TrimSpace(verdict.Rationale)
+				}
+				if reason == "" {
+					reason = strings.TrimSpace(verdict.Summary)
 				}
 				if reason != "" {
 					return reason, nil
@@ -109,12 +159,54 @@ func issueCloseOutReason(runsDir, runID, gateName string) (string, error) {
 	return "", fmt.Errorf("no verdict found for gate %q", gateName)
 }
 
+func issueCloseOutDuplicateEscalation(runsDir, runID string) (implementationEscalationState, bool, error) {
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		return implementationEscalationState{}, false, err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return implementationEscalationState{}, false, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventGateEvaluated {
+			continue
+		}
+		duplicate, _ := event.Runner["duplicateDiff"].(bool)
+		digest, _ := event.Runner["diffDigest"].(string)
+		if !duplicate || digest == "" {
+			continue
+		}
+		reason, err := issueCloseOutReason(runsDir, runID, event.Gate)
+		if err != nil {
+			return implementationEscalationState{}, false, err
+		}
+		cause, _ := event.Runner["repassCause"].(map[string]any)
+		if len(cause) != 0 {
+			data, err := json.Marshal(cause)
+			if err != nil {
+				return implementationEscalationState{}, false, fmt.Errorf("marshal repass cause: %w", err)
+			}
+			var repassCause gate.RepassCause
+			if err := json.Unmarshal(data, &repassCause); err != nil {
+				return implementationEscalationState{}, false, fmt.Errorf("parse repass cause: %w", err)
+			}
+			reason = repassCause.String() + "; the implementer produced no change in response"
+		}
+		return implementationEscalationState{DiffDigest: digest, Reason: reason, Cause: cause}, true, nil
+	}
+	return implementationEscalationState{}, false, nil
+}
+
 const issueCloseOutHelp = "Usage: goobers issue-close-out [path]\n\n" +
 	"Comment on the issue this run claimed, linking its PR, and mark it done;\n" +
-	"status=in-review leaves it open for merge-review, while status=needs-human\n" +
-	"parks it by replacing goobers:ready with goobers:needs-human. Release the\n" +
-	"claim ledger lease early rather than waiting for it to expire. Exit codes:\n" +
-	"0 = done, 1 = business error, 2 = usage/IO error.\n"
+	"status=in-review leaves it open for merge-review. status=needs-human parks\n" +
+	"it by replacing goobers:ready with goobers:needs-human (a decision only a\n" +
+	"human can make); status=needs-remediation parks it with goobers:needs-\n" +
+	"remediation instead (a mechanical failure needing a fix, not a decision —\n" +
+	"#2028). Release the claim ledger lease early rather than waiting for it to\n" +
+	"expire. Exit codes: 0 = done, 1 = business error, 2 = usage/IO error.\n"
 
 const (
 	implementationInReviewCommentPrefix = "Implementation complete: "
@@ -126,7 +218,7 @@ func implementationInReviewComment(prURL string) string {
 }
 
 func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("issue-close-out", flag.ContinueOnError)
+	fs := newCLIFlagSet("issue-close-out", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "issue-close-out")
 	if err := fs.Parse(args); err != nil {
@@ -147,38 +239,13 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Explicit per-kind dispatch (github | ado | gitea | default-error): the old
-	// ADO-or-GitHub-default silently sent a gitea-routed repo's PR lookup and
-	// work-item close-out to api.github.com.
-	var provider issueCloseOutProvider
-	switch repo.Provider {
-	case providers.ProviderADO:
-		adoProvider, aerr := newADOProviderForStage(root, repo)
-		if aerr != nil {
-			pf(stderr, "error: %v\n", aerr)
-			return 1
-		}
-		provider = adoProvider
-	case providers.ProviderGitea:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
-		if terr != nil {
-			pf(stderr, "error: %v\n", terr)
-			return 1
-		}
-		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-		if gerr != nil {
-			pf(stderr, "error: %v\n", gerr)
-			return 1
-		}
-		provider = giteaProvider
-	case providers.ProviderGitHub:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
-		if terr != nil {
-			pf(stderr, "error: %v\n", terr)
-			return 1
-		}
-		provider = newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-	default:
+	stageProvider, err := newProviderForStage(root, repo, false, withStageProviderMutations("issue"))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	provider, ok := stageProvider.(issueCloseOutProvider)
+	if !ok {
 		pf(stderr, "error: issue-close-out does not support repository provider %q\n", repo.Provider)
 		return 1
 	}
@@ -234,33 +301,103 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	comment := providerInput("comment", "")
-	if status == issueCloseOutNeedsHuman {
+	reason := strings.TrimSpace(providerInput("reason", ""))
+	if reason != "" {
+		comment = reason + "\n\n" + comment
+	}
+	if issueCloseOutIsParkStatus(status) {
+		// #2028: the comment prefix names the disposition — a genuine
+		// needs-human park is framed as awaiting a human's review; a
+		// needs-remediation park is framed as a mechanical failure awaiting a
+		// fix, since no policy decision is actually pending on it.
+		parkPrefix := "Implementation parked for human review: "
+		if status == issueCloseOutNeedsRemediation {
+			parkPrefix = "Implementation parked for remediation: "
+		}
+		var runsDir string
 		if comment == "" {
-			gateName := providerInput("reasonFromGate", "")
-			runsDir, err := runsDirForRun(l, runID)
+			runsDir, err = runsDirForRun(l, runID)
 			if err != nil {
 				pf(stderr, "error: locate run journal: %v\n", err)
 				return 1
 			}
+			gateName := providerInput("reasonFromGate", "")
 			reason, err := issueCloseOutReason(runsDir, runID, gateName)
 			if err != nil {
 				pf(stderr, "error: resolve parking reason: %v\n", err)
 				return 1
 			}
-			comment = "Implementation parked for human review: " + reason
+			comment = parkPrefix + reason
+		} else {
+			runsDir, _ = runsDirForRun(l, runID)
 		}
-		cfg, err := instance.LoadConfig(l.ConfigFile())
-		if err != nil {
-			pf(stderr, "error: load needs-human routing config: %v\n", err)
+		if err := validateIssueCloseOutParkComment(status, comment); err != nil {
+			pf(stderr, "error: %v\n", err)
 			return 1
+		}
+		if runsDir != "" {
+			escalation, duplicate, err := issueCloseOutDuplicateEscalation(runsDir, runID)
+			if err != nil {
+				pf(stderr, "error: resolve duplicate-diff escalation: %v\n", err)
+				return 1
+			}
+			if duplicate {
+				comment = parkPrefix + escalation.Reason
+			}
+			if duplicate && (repo.Provider == providers.ProviderGitHub || repo.Provider == providers.ProviderGitea) {
+				head := providerInput("head", providers.BranchNameIn(providerBranchNamespace(), workflow, runID))
+				base := providerInput("base", providerBaseBranch())
+				pr, found, err := provider.FindPullRequestByBranch(ctx, repo, head, base)
+				if err != nil {
+					return failProviderStage(stderr, "find pull request for escalation digest", err, "")
+				}
+				if found {
+					reader, ok := provider.(pullRequestReader)
+					if !ok {
+						pf(stderr, "error: provider cannot read pull request for escalation digest\n")
+						return 1
+					}
+					summary, err := reader.GetPullRequest(ctx, repo, strconv.Itoa(pr.Number))
+					if err != nil {
+						return failProviderStage(stderr, "read pull request for escalation digest", err, "")
+					}
+					body, err := withImplementationEscalationMarker(summary.Body, escalation)
+					if err != nil {
+						pf(stderr, "error: render duplicate-diff escalation: %v\n", err)
+						return 1
+					}
+					if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+						Repository: repo,
+						ID:         strconv.Itoa(pr.Number),
+						Body:       &body,
+					}); err != nil {
+						return failProviderStage(stderr, "record escalated diff on pull request", err, "")
+					}
+				}
+			}
+		}
+		// #2028: needs-remediation never gets the configured human assignee —
+		// withNeedsHumanAssignee only fires for LabelNeedsHuman — so config
+		// load is scoped to the status that actually needs it.
+		parkLabel := providers.LabelNeedsHuman
+		var assignee string
+		if status == issueCloseOutNeedsHuman {
+			cfg, err := instance.LoadConfig(l.ConfigFile())
+			if err != nil {
+				pf(stderr, "error: load needs-human routing config: %v\n", err)
+				return 1
+			}
+			assignee = cfg.NeedsHumanAssignee
+		} else {
+			parkLabel = needsRemediationLabel
 		}
 		req := withNeedsHumanAssignee(providers.UpdateWorkItemRequest{
 			Repository:   backlogRepo,
 			ID:           claim.ItemID,
 			Comment:      comment,
-			AddLabels:    []string{providers.LabelNeedsHuman},
+			AddLabels:    []string{parkLabel},
 			RemoveLabels: []string{providers.LabelReady},
-		}, cfg.NeedsHumanAssignee)
+		}, assignee)
 		if _, err := provider.UpdateWorkItem(ctx, req); err != nil {
 			pf(stderr, "error: park work item: %v\n", err)
 			return 1
@@ -304,15 +441,12 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// not this label, is what's actually authoritative for eligibility, so a
 	// failed removal here leaves only a stale human-visible marker, not a
 	// stuck item.
-	// The claim marker's label form diverges by provider: GitHub uses the plain
-	// LabelClaimed ("goobers:claimed"), while ADO writes the status-form
-	// "goobers/status:claimed" (ClaimWorkItem via statusLabel). Removing the
-	// GitHub constant on ADO never matches, leaving the marker stuck — so
-	// translate to the ADO status form when parking an ADO work item.
+	// The claim marker is the plain LabelClaimed on every provider —
+	// ClaimWorkItem defaults req.ClaimLabel to it on ADO too, so removal
+	// uses the same constant everywhere. (A prior status-form translation
+	// here targeted a tag the claim path never writes, wire-confirmed as
+	// the stale-marker leak on ADO work items.)
 	claimMarker := providers.LabelClaimed
-	if repo.Provider == providers.ProviderADO {
-		claimMarker = providers.StatusLabelFor(providers.WorkItemStatusClaimed)
-	}
 	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository:   backlogRepo,
 		ID:           claim.ItemID,
@@ -338,6 +472,8 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	switch status {
 	case issueCloseOutNeedsHuman:
 		pf(stdout, "parked %s needs-human\n", claim.ItemID)
+	case issueCloseOutNeedsRemediation:
+		pf(stdout, "parked %s needs-remediation\n", claim.ItemID)
 	case providers.WorkItemStatusInReview:
 		pf(stdout, "marked %s in-review (open PR, awaiting merge-review)\n", claim.ItemID)
 	default:

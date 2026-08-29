@@ -51,6 +51,11 @@ func TestStageCommandProblemResolution(t *testing.T) {
 // `goobers validate` must fail a config whose deterministic stage invokes a
 // goobers verb that does not exist, with a clear per-stage diagnostic — rather
 // than compiling clean and only failing once the runner shells out mid-run.
+// Since the C+D2/#2861 wave the rejection fires during the api/validate pass
+// (the DSL compilers' admission check against internal/builtincmd, WF010,
+// with a nearest-match suggestion) — earlier than the late #650 CLI-surface
+// pass, which still covers the shapes admission does not (a bare `goobers`
+// with no verb, command-group subcommand resolution).
 func TestValidateRejectsUnknownStageCommand(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "demo")
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
@@ -79,10 +84,10 @@ func TestValidateRejectsUnknownStageCommand(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("validate: code = %d, want 1; stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, `unknown goobers verb "backlog-quiery"`) {
+	if !strings.Contains(stdout, `unknown built-in subcommand "backlog-quiery"`) {
 		t.Fatalf("validate stdout = %q, want it to name the unknown verb", stdout)
 	}
-	if !strings.Contains(stdout, "config references CLI stage commands that do not exist") {
-		t.Fatalf("validate stdout = %q, want the summary line", stdout)
+	if !strings.Contains(stdout, `did you mean "backlog-query"?`) {
+		t.Fatalf("validate stdout = %q, want the nearest-match suggestion", stdout)
 	}
 }

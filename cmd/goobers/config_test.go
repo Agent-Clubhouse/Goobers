@@ -54,6 +54,39 @@ func TestConfigShowJSON(t *testing.T) {
 	}
 }
 
+func TestConfigShowRendersResolvedLargeRepoPreset(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, instance.ConfigFileName), []byte(`
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: monolith
+    token:
+      env: GITHUB_TOKEN
+    largeRepo: true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runArgs(t, "config", "show", root)
+	if code != 0 {
+		t.Fatalf("config show code = %d, stderr = %q", code, stderr)
+	}
+	for _, want := range []string{
+		"largeRepo: true",
+		"pinned: true",
+		"defaultStageTimeout: 4h",
+		"stalledRunTimeout: 6h",
+		"maxRunDuration: 24h",
+		"pathLength: {}",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("config show output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 // TestConfigShowRedactsSecrets is the load-bearing safety check: even when the
 // token's env var is set to a real secret, `config show` must print only the
 // locator (the env var name), never resolve or leak the secret value.

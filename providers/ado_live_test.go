@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // TestIntegrationADOLiveSmoke is an opt-in, read-only smoke test against a

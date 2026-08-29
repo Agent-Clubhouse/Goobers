@@ -225,7 +225,7 @@ func waitFor(t *testing.T, cond func() bool) {
 		if cond() {
 			return
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) // Polling interval for synchronized worker-host state.
 	}
 	t.Fatal("condition not reached before deadline")
 }

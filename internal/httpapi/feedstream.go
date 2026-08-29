@@ -65,11 +65,18 @@ type feedStream struct {
 	mu     sync.Mutex
 	closed bool
 	done   chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
+	pumps  sync.WaitGroup
 }
 
 // newFeedStream constructs a change-feed-backed event source.
 func newFeedStream(store *readmodel.Store) *feedStream {
-	return &feedStream{feed: readmodel.NewFeed(store), store: store, done: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &feedStream{
+		feed: readmodel.NewFeed(store), store: store, done: make(chan struct{}),
+		ctx: ctx, cancel: cancel,
+	}
 }
 
 // Done reports shutdown.
@@ -106,11 +113,13 @@ func (s *feedStream) PublishDefinitionsChanged() error {
 // Close stops the stream.
 func (s *feedStream) Close() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.closed {
 		s.closed = true
 		close(s.done)
+		s.cancel()
 	}
+	s.mu.Unlock()
+	s.pumps.Wait()
 }
 
 // Subscribe resumes from a cursor, or starts a fresh snapshot.
@@ -130,7 +139,7 @@ func (s *feedStream) Subscribe(lastEventID string) ([]StreamEvent, <-chan Stream
 	}
 	s.mu.Unlock()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(s.ctx)
 
 	cursor, initial, err := s.start(ctx, lastEventID)
 	if err != nil {
@@ -140,7 +149,16 @@ func (s *feedStream) Subscribe(lastEventID string) ([]StreamEvent, <-chan Stream
 
 	events := make(chan StreamEvent, subscriberBufferForFeed)
 	stopped := make(chan struct{})
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		cancel()
+		return nil, nil, nil, ErrEventStreamClosed
+	}
+	s.pumps.Add(1)
+	s.mu.Unlock()
 	go func() {
+		defer s.pumps.Done()
 		defer close(stopped)
 		s.pump(ctx, cursor, events)
 	}()

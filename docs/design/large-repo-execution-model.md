@@ -1,6 +1,6 @@
 # Large-repo execution model (#2063)
 
-Status: draft for review, rev 2. Filed from the state-of-repo review 2026-07-30 + PO input
+Status: draft — for review, rev 2. Filed from the state-of-repo review 2026-07-30 + PO input
 2026-07-31, hero scenario #3. Rev 2 incorporates a second round of PO rulings (2026-07-31,
 recorded in §11): the headline recommendation is now **large-repo mode** — a pinned
 persistent workspace with fully-serial execution — with the clone-strategy tiers retained
@@ -445,8 +445,9 @@ tier 0:
    `-ref-<name>` reference-repo variant) to a fixed short token for the *directory name*
    only — the full RunID stays in the marker file and journal for traceability, only the
    filesystem path shortens. This is the single largest Goobers-controlled contributor to
-   the ~131-char fixed prefix (§3.4) and reclaims meaningful budget with no behavior change
-   visible to a stage.
+   the ~131-char fixed prefix (§3.4). The implemented `wt-` plus 96-bit SHA-256 token is
+   always 27 characters, replacing the roughly 50-character trace-ID-plus-stage segment
+   and reclaiming about 23 characters with no behavior change visible to a stage.
 2. **A loud preflight, not a silent failure deep in a build.** Before provisioning a
    workspace or worktree, compute the worst-case path length the repo's checkout could
    reach (needs a configured or measured ceiling per repo — see §10's benchmark-harness
@@ -522,7 +523,9 @@ What this design does is keep that path cheap:
 
 Any execution model for this repo class lives or dies on three Windows facts that no git
 strategy fixes. Large-repo mode reduces exposure to all three (fewer materializations, fewer
-deletions, serial execution) but each needs explicit handling or documentation.
+deletions, serial execution) but each needs explicit handling or documentation. Operational
+setup and recovery steps are in the
+[Windows large-repo runbook](../guides/windows-large-repo-runbook.md).
 
 ### 9.1 Antivirus dominates small-file I/O
 

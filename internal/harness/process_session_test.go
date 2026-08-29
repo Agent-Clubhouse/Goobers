@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,11 @@ func TestHelperReportsSession(t *testing.T) {
 		t.Fatalf("getsid: %v", err)
 	}
 	fmt.Printf("SESSIONCHECK sid=%d pid=%d\n", sid, os.Getpid())
+	fmt.Fprintln(os.Stderr, "SESSIONCHECK stderr")
+	if os.Getenv("GOOBERS_TEST_FAIL") == "1" {
+		fmt.Fprintln(os.Stderr, strings.Repeat("x", 100))
+		os.Exit(7)
+	}
 }
 
 // TestExecProcessRunnerSpawnsChildInNewSession is the H1 regression guard for
@@ -68,6 +74,9 @@ func TestExecProcessRunnerSpawnsChildInNewSession(t *testing.T) {
 	if sid != pid {
 		t.Fatalf("spawned harness child sid=%d != pid=%d — it is not a session leader, so it was spawned with Setpgid, not Setsid; terminal job control can freeze it (#845 regression)", sid, pid)
 	}
+	if !bytes.Contains(res.Stderr, []byte("SESSIONCHECK stderr")) {
+		t.Fatalf("stderr = %q, want separately captured child stderr", res.Stderr)
+	}
 }
 
 func TestExecProcessRunnerCapturesStdoutBeyondTranscriptLimit(t *testing.T) {
@@ -82,10 +91,33 @@ func TestExecProcessRunnerCapturesStdoutBeyondTranscriptLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+
 	if !res.TranscriptTruncated {
 		t.Fatal("transcript was not truncated")
 	}
 	if !harnessSessionMarkerRE.Match(captured.Bytes()) {
 		t.Fatalf("stdout capture %q did not retain the complete marker", captured.Bytes())
+	}
+}
+
+func TestExecProcessRunnerBoundsStderrOnFailure(t *testing.T) {
+	runner := ExecProcessRunner{}
+	res, err := runner.Run(context.Background(), ProcessRequest{
+		Command:            []string{os.Args[0], "-test.run=^TestHelperReportsSession$", "-test.v"},
+		Env:                []string{"GOOBERS_TEST_FAIL=1"},
+		Timeout:            30 * time.Second,
+		MaxTranscriptBytes: 32,
+	})
+	if err == nil {
+		t.Fatal("Run error = nil, want non-zero exit")
+	}
+	if res.ExitCode != 7 {
+		t.Fatalf("ExitCode = %d, want 7", res.ExitCode)
+	}
+	if !res.StderrTruncated || res.StderrDroppedBytes == 0 {
+		t.Fatalf("stderr truncation = %v/%d, want truncated output", res.StderrTruncated, res.StderrDroppedBytes)
+	}
+	if !bytes.Contains(res.Stderr, []byte("[transcript truncated:")) {
+		t.Fatalf("Stderr = %q, want truncation marker", res.Stderr)
 	}
 }

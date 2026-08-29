@@ -261,7 +261,7 @@ func TestHostRejectsConnectorSuccessAfterTimeout(t *testing.T) {
 	finished := make(chan struct{})
 	connector := connectorFunc(func(context.Context, QueryRequest) (SourceResult, error) {
 		defer close(finished)
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // Intentional slow connector verifies in-flight concurrency accounting.
 		return SourceResult{
 			Columns: []Column{{Name: "value", Type: TypeInteger}},
 			Rows:    [][]any{{1}},

@@ -6,6 +6,8 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
@@ -47,18 +49,35 @@ func adoRepoRefForStage(root string, routed providers.RepositoryRef) (instance.R
 }
 
 // newADOProviderForStage builds the ADO provider a provider-chain stage talks
-// to. Unlike GitHub stages — which read a runner-injected capability token from
-// the environment (providerToken) — an ADO stage builds its provider straight
-// from instance config: the azure-cli auth kind shells out to `az` inside the
-// subprocess (an active `az login` on the host), so no token is injected into
-// the stage env. PAT/workload/managed-identity auth kinds resolve their
-// credential through the same adoauth.Source seam.
-func newADOProviderForStage(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+// to using its configured authentication source.
+var newADOProviderForStage = buildADOProviderForStage
+
+func buildADOProviderForStage(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
 	repo, err := adoRepoRefForStage(root, routed)
 	if err != nil {
 		return nil, err
 	}
-	return adoauth.Provider(repo, nil, nil, nil, nil)
+	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
+}
+
+// open-pr receives PAT credentials through its provider:pr:write capability;
+// the configured PAT environment variable is intentionally absent from the
+// stage's default-deny environment.
+var newADOProviderForOpenPR = buildADOProviderForOpenPR
+
+func buildADOProviderForOpenPR(root string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+	repo, err := adoRepoRefForStage(root, routed)
+	if err != nil {
+		return nil, err
+	}
+	kind := instance.ADOAuthPAT
+	if repo.Auth != nil {
+		kind = repo.Auth.Kind
+	}
+	if kind == instance.ADOAuthPAT {
+		repo.Token = instance.TokenRef{Env: executor.CredentialEnvVar(string(capability.ProviderPRWrite))}
+	}
+	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
 }
 
 // backlogRepoRefForStage resolves the RepositoryRef the work-item (backlog)

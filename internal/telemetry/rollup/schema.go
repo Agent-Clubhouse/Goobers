@@ -593,4 +593,122 @@ CREATE INDEX IF NOT EXISTS idx_runs_gaggle_recency ON runs(gaggle, started_at DE
 CREATE INDEX IF NOT EXISTS idx_runs_gaggle_workflow_recency ON runs(gaggle, workflow, started_at DESC, run_id ASC);
 CREATE INDEX IF NOT EXISTS idx_runs_recency ON runs(started_at DESC, run_id ASC);
 `,
+
+	// v18 (telemetry storage hygiene audit, 2026-08-08): scheduler-span ingest
+	// had no cursor — every IngestSchedulerLog call (after each scheduler tick,
+	// each finished run, and shutdown) re-read the ENTIRE
+	// scheduler/spans/spans.jsonl and delete+reinserted every span in it,
+	// growing O(all-spans-ever) per cycle (75,012 spans / 55.6MB observed
+	// live). JournalSpanExporter only ever appends to that file (O_APPEND), so
+	// a byte-offset cursor is safe the same way scheduler_ingest_cursor already
+	// is for events.jsonl: steady-state ingest now reads only the newly
+	// appended tail. Single-row table (id pinned to 1); a full Rebuild drops
+	// the db file and starts the cursor empty, replaying the whole spans file
+	// exactly once.
+	`
+CREATE TABLE IF NOT EXISTS spans_ingest_cursor (
+	id          INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+	byte_offset INTEGER NOT NULL
+);
+`,
+
+	// v19 (#1489): terminal ci-poll failures are successful stage observations,
+	// so they never enter run_errors. Index each failed check from the durable
+	// ci-checks.json artifact for recurring test-failure analysis.
+	`
+CREATE TABLE IF NOT EXISTS ci_check_failures (
+	run_id          TEXT NOT NULL,
+	seq             INTEGER NOT NULL,
+	stage           TEXT NOT NULL,
+	check_name      TEXT NOT NULL,
+	artifact_digest TEXT NOT NULL,
+	occurred_at     TEXT NOT NULL,
+	PRIMARY KEY (run_id, seq, check_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ci_check_failures_run ON ci_check_failures(run_id);
+CREATE INDEX IF NOT EXISTS idx_ci_check_failures_name_time ON ci_check_failures(check_name, occurred_at);
+`,
+	// v20 (#3273): retain finding-level review/validation correction episodes,
+	// including deterministic false-finding outcomes. The source journal remains
+	// authoritative; this table is a rebuildable query projection.
+	`
+CREATE TABLE IF NOT EXISTS learning_episodes (
+run_id              TEXT NOT NULL,
+source_seq          INTEGER NOT NULL,
+finding_id          TEXT NOT NULL,
+workflow            TEXT NOT NULL,
+stage               TEXT,
+gate                TEXT NOT NULL,
+source_attempt      INTEGER NOT NULL,
+next_attempt        INTEGER,
+workflow_digest     TEXT,
+goober_digest       TEXT,
+effective_version   TEXT,
+signature           TEXT NOT NULL,
+classification      TEXT NOT NULL,
+recommended_action  TEXT NOT NULL,
+finding_json        TEXT NOT NULL,
+evidence_json       TEXT NOT NULL,
+correction_feedback TEXT,
+outcome             TEXT NOT NULL,
+occurred_at         TEXT NOT NULL,
+PRIMARY KEY (run_id, source_seq, finding_id)
+);
+CREATE INDEX IF NOT EXISTS idx_learning_episodes_signature
+ON learning_episodes(signature, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_learning_episodes_workflow
+ON learning_episodes(workflow, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_learning_episodes_action
+ON learning_episodes(recommended_action, occurred_at);
+`,
+	// v21 (#3443): retain a durable, journal-backed classification for every
+	// gate evaluation. This also backfills legacy gate rows whose runner JSON
+	// predates escalation reason annotations.
+	`
+CREATE TABLE IF NOT EXISTS gate_classifications (
+	run_id        TEXT NOT NULL,
+	seq           INTEGER NOT NULL,
+	gate          TEXT NOT NULL,
+	classification TEXT NOT NULL,
+	reason        TEXT NOT NULL,
+	evidence_json TEXT NOT NULL,
+	occurred_at   TEXT,
+	PRIMARY KEY (run_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_gate_classifications_gate_time
+ON gate_classifications(gate, occurred_at);
+
+INSERT OR IGNORE INTO gate_classifications
+	(run_id, seq, gate, classification, reason, evidence_json, occurred_at)
+SELECT run_id, seq, gate,
+	CASE
+		WHEN json_extract(runner_json, '$.escalated') IS NOT 1 THEN
+			CASE WHEN verdict = 'pass' THEN 'pass' ELSE 'fail' END
+		WHEN json_extract(runner_json, '$.reason') = 'INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED'
+			OR verdict = 'infra' THEN 'infrastructure'
+		WHEN json_extract(runner_json, '$.reason') = 'UNCHANGED_REPASS' THEN 'unchanged-repass'
+		ELSE 'repass-escalation'
+	END,
+	COALESCE(
+		json_extract(runner_json, '$.reason'),
+		CASE
+			WHEN json_extract(runner_json, '$.escalated') IS NOT 1 THEN
+				CASE WHEN verdict = 'pass' THEN 'PASS' ELSE 'GATE_FAILURE' END
+			WHEN verdict = 'infra' THEN 'INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED'
+			ELSE 'REPASS_BUDGET_EXHAUSTED'
+		END
+	),
+	json_object(
+		'source', 'gate_verdicts',
+		'runId', run_id,
+		'seq', seq,
+		'gate', gate,
+		'verdict', verdict,
+		'target', target,
+		'runner', runner_json
+	),
+	occurred_at
+FROM gate_verdicts;
+`,
 }

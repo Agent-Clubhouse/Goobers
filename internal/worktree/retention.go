@@ -283,7 +283,12 @@ func inventoryRetainedWorktrees(managers []*Manager, opts RetentionOptions) ([]r
 					})
 					continue
 				}
-				path := filepath.Join(manager.runsDirForKey(key), worktreeID)
+				directory, err := mk.directoryName()
+				if err != nil {
+					warnings = append(warnings, RetentionWarning{Path: markerPath, Err: err})
+					continue
+				}
+				path := filepath.Join(manager.runsDirForKey(key), directory)
 				bytes, err := directorySize(path)
 				if err != nil {
 					warnings = append(warnings, RetentionWarning{Path: path, Err: err})

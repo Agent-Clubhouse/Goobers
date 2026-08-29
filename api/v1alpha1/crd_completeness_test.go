@@ -41,6 +41,7 @@ func TestCRDManifestsExposeEveryTypeField(t *testing.T) {
 		{"Workflow", "../../config/crd/bases/goobers.dev_workflows.yaml", WorkflowSpec{}},
 		{"Goober", "../../config/crd/bases/goobers.dev_goobers.yaml", GooberSpec{}},
 		{"Gaggle", "../../config/crd/bases/goobers.dev_gaggles.yaml", GaggleSpec{}},
+		{"Manifest", "../../config/crd/bases/goobers.dev_manifests.yaml", ManifestSpec{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			schema := loadCRDSpecSchema(t, tc.path)

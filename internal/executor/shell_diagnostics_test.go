@@ -27,9 +27,11 @@ func TestShellExecutor_DiagnosticsWatchdogRecordsSamples(t *testing.T) {
 	})
 
 	var calls int32
+	var gotStageCmd string
 	prevCap := diagnosticsCapture
-	diagnosticsCapture = func(pid int) []byte {
+	diagnosticsCapture = func(pid int, stageCmd string) []byte {
 		atomic.AddInt32(&calls, 1)
+		gotStageCmd = stageCmd
 		return []byte(fmt.Sprintf("STUBSAMPLE pid=%d\n", pid))
 	}
 	t.Cleanup(func() { diagnosticsCapture = prevCap })
@@ -56,6 +58,9 @@ func TestShellExecutor_DiagnosticsWatchdogRecordsSamples(t *testing.T) {
 	if !strings.Contains(got, "diagnostics sample #1") {
 		t.Fatalf("diagnostics artifact = %q, want it labeled per sample", got)
 	}
+	if gotStageCmd != "sh" {
+		t.Fatalf("stage command threaded to diagnosticsCapture = %q, want %q", gotStageCmd, "sh")
+	}
 }
 
 // TestShellExecutor_NoDiagnosticsArtifactWhenOff confirms the watchdog is fully
@@ -70,7 +75,7 @@ func TestShellExecutor_NoDiagnosticsArtifactWhenOff(t *testing.T) {
 
 	var calls int32
 	prevCap := diagnosticsCapture
-	diagnosticsCapture = func(int) []byte { atomic.AddInt32(&calls, 1); return []byte("x") }
+	diagnosticsCapture = func(int, string) []byte { atomic.AddInt32(&calls, 1); return []byte("x") }
 	t.Cleanup(func() { diagnosticsCapture = prevCap })
 
 	if _, err := exec.Run(context.Background(), baseEnvelope(t), apiv1.DeterministicRun{

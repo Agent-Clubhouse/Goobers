@@ -59,6 +59,12 @@ func reconcileBacklogMetadata(
 	stalenessPolicy backlogStalenessPolicy,
 	now func() time.Time,
 ) (int, error) {
+	// Reap terminal and expired ledger leases before inspecting provider labels.
+	// This makes the ledger's liveness decision available to the provider-marker
+	// reconciliation below, so a dead claimant cannot keep its marker forever.
+	if _, err := recoverClaims(l, nil, now(), nil, nil); err != nil {
+		return 0, fmt.Errorf("recover stale claims before metadata reconciliation: %w", err)
+	}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository:  repo,
 		Labels:      []string{trustLabel},
@@ -168,6 +174,53 @@ func reconcileBacklogMetadata(
 	return reconciled, nil
 }
 
+// backlogReconcileRunIDComponent is the fixed literal between the owning
+// run's id and the pid/sequence suffix in a synthesized backlog-reconcile
+// claim RunID (formatBacklogReconcileRunID). instance.Layout.FindRunDir
+// rejects any run id containing "/" (runtime.go:139), so a claim reaper
+// cannot look this synthesized id up directly — it must recover the OWNING
+// run's id via parseBacklogReconcileRunID first and inspect that instead.
+const backlogReconcileRunIDComponent = "backlog-reconcile"
+
+// formatBacklogReconcileRunID synthesizes the claim RunID reserved for one
+// backlog item's stale-metadata inspection: "<owner-run>/backlog-reconcile/
+// <pid>/<seq>". This value is persisted directly into the claim ledger, so
+// its shape must stay in sync with parseBacklogReconcileRunID below —
+// existing ledger entries already use this exact format and must keep
+// parsing after any change here.
+func formatBacklogReconcileRunID(ownerRunID string, pid int, seq uint64) string {
+	return fmt.Sprintf("%s/%s/%d/%d", ownerRunID, backlogReconcileRunIDComponent, pid, seq)
+}
+
+// parseBacklogReconcileRunID recovers the owning run id from a claim RunID
+// produced by formatBacklogReconcileRunID. ok is false for any other shape,
+// including a plain (non-reconcile) run id or a reconcile-shaped id whose
+// pid/sequence suffix isn't purely numeric — callers must treat that as
+// unparseable, not guess at a prefix.
+func parseBacklogReconcileRunID(runID string) (ownerRunID string, ok bool) {
+	before, after, found := strings.Cut(runID, "/"+backlogReconcileRunIDComponent+"/")
+	if !found || before == "" {
+		return "", false
+	}
+	pidPart, seqPart, ok := strings.Cut(after, "/")
+	if !ok || !isDigitString(pidPart) || !isDigitString(seqPart) {
+		return "", false
+	}
+	return before, true
+}
+
+func isDigitString(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func reserveBacklogClaimReconciliation(
 	l instance.Layout,
 	repo providers.RepositoryRef,
@@ -179,12 +232,7 @@ func reserveBacklogClaimReconciliation(
 	if ownerRunID == "" {
 		ownerRunID = "standalone"
 	}
-	runID := fmt.Sprintf(
-		"%s/backlog-reconcile/%d/%d",
-		ownerRunID,
-		os.Getpid(),
-		backlogReconcileReservationSequence.Add(1),
-	)
+	runID := formatBacklogReconcileRunID(ownerRunID, os.Getpid(), backlogReconcileReservationSequence.Add(1))
 	reservation := &backlogReconcileReservation{
 		itemID:   itemID,
 		gaggle:   gaggle,
@@ -235,7 +283,23 @@ func hasReconciledMetadataLabel(item providers.WorkItem) bool {
 	return item.HasLabel(providers.LabelClaimed) ||
 		item.HasLabel(providers.LabelStale) ||
 		item.HasLabel(providers.LabelTracking) ||
-		(item.HasLabel(providers.LabelReady) && item.HasLabel(providers.LabelNeedsHuman))
+		// #3355: an issue carrying ONLY the block marker still needs
+		// inspecting, because that marker is exactly the one nothing else can
+		// clear. Without this clause the item is never selected and the
+		// blocked-on-sibling check below is unreachable — a check that runs on
+		// no input is indistinguishable from one that was never written.
+		item.HasLabel(blockedOnSiblingLabel) ||
+		(item.HasLabel(providers.LabelReady) && itemHasParkLabel(item))
+}
+
+// itemHasParkLabel reports whether item carries one of the park dispositions
+// (#2028) that cannot coexist with goobers:ready — goobers:needs-human (a
+// human decision is pending), goobers:blocked-on-sibling, or
+// goobers:needs-remediation.
+func itemHasParkLabel(item providers.WorkItem) bool {
+	return item.HasLabel(providers.LabelNeedsHuman) ||
+		item.HasLabel(blockedOnSiblingLabel) ||
+		item.HasLabel(needsRemediationLabel)
 }
 
 func inspectBacklogMetadata(
@@ -269,10 +333,25 @@ func inspectBacklogMetadata(
 			correction.reasons = append(correction.reasons, trackingCompleteReason)
 		}
 	}
-	if !validTracking && item.HasLabel(providers.LabelReady) && item.HasLabel(providers.LabelNeedsHuman) {
+	if !validTracking && item.HasLabel(providers.LabelReady) && itemHasParkLabel(item) {
 		correction.removeLabels = append(correction.removeLabels, providers.LabelReady)
 		correction.reasons = append(correction.reasons,
-			"removed `goobers:ready` because it cannot coexist with the fail-closed `goobers:needs-human` state")
+			"removed `goobers:ready` because it cannot coexist with a park disposition "+
+				"(`goobers:needs-human`, `goobers:blocked-on-sibling`, or `goobers:needs-remediation`)")
+	}
+	// #3355: an issue parked on siblings that have all since closed can never
+	// shed the label on its own -- the only unpark path iterates pull requests
+	// and fires only on a bot PR merging. Clearing it here is fail-closed by
+	// design: see staleBlockedOnSiblingMarker.
+	if item.HasLabel(blockedOnSiblingLabel) {
+		resolved, err := staleBlockedOnSiblingMarker(ctx, provider, repo, item)
+		if err != nil {
+			return correction, botLogin, fmt.Errorf("inspect blocked-on-sibling blockers: %w", err)
+		}
+		if resolved {
+			correction.removeLabels = append(correction.removeLabels, blockedOnSiblingLabel)
+			correction.reasons = append(correction.reasons, blockedOnSiblingResolvedReason)
+		}
 	}
 	if item.HasLabel(providers.LabelStale) {
 		reason := ""

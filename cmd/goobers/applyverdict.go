@@ -179,15 +179,14 @@ func parseOverlappingSiblings(csv string) []int {
 // verdict's findings so sequencing routing uses ground truth, not only the LLM
 // reviewer's classification. Conservative and additive:
 //
-//   - If a real defect is present (see findingIsRealDefect — a non-ordering
-//     finding above `info` severity), the findings are returned UNCHANGED — a
-//     real bug takes priority over sequencing and must route to remediation,
-//     never be merged as a lander. Severity matters here for the same reason it
-//     matters when crowning (#1726): an `info` nit about identical generated
-//     churn used to suppress the backstop, so no ordering finding was ever
-//     synthesised and the cluster could not elect anyone.
-//   - Otherwise, if overlappingSiblings is non-empty, a cross-pr-blocked
-//     finding carrying that full set is appended, so allCrossPRBlocked /
+//   - A substantive finding whose location names only siblings in the
+//     deterministic overlap set is normalized to cross-pr-blocked. This is the
+//     #2478 shape: pure overlap was misclassified as a selected-PR defect.
+//   - If any real defect remains (see findingIsRealDefect), the normalized
+//     findings are returned without adding the overlap backstop. A real bug,
+//     conflict, or rebase need takes priority and must route to remediation.
+//   - Otherwise, a cross-pr-blocked finding carrying any still-unnamed
+//     overlapping siblings is appended, so allCrossPRBlocked /
 //     unionBlockingPRs / electionDecision treat the PR as sequencing-blocked on
 //     the whole deterministic cluster even if the reviewer under-named the
 //     blocking PRs or filed no structured finding at all.
@@ -198,17 +197,69 @@ func withOverlapBackstop(findings []apiv1.Finding, overlappingSiblings []int) []
 	if len(overlappingSiblings) == 0 {
 		return findings
 	}
-	for _, f := range findings {
-		if findingIsRealDefect(f) {
-			return findings
+	normalized := append([]apiv1.Finding(nil), findings...)
+	for i, f := range normalized {
+		if blockers, ok := overlapOnlyBlockingPRs(f, overlappingSiblings); ok {
+			normalized[i].Class = apiv1.FindingCrossPRBlocked
+			normalized[i].BlockingPRs = blockers
 		}
 	}
-	return append(findings[:len(findings):len(findings)], apiv1.Finding{
+	for _, f := range normalized {
+		if findingIsRealDefect(f) {
+			return normalized
+		}
+	}
+	named := make(map[int]bool)
+	for _, blocker := range unionBlockingPRs(normalized) {
+		named[blocker] = true
+	}
+	missing := make([]int, 0, len(overlappingSiblings))
+	for _, sibling := range overlappingSiblings {
+		if !named[sibling] {
+			missing = append(missing, sibling)
+			named[sibling] = true
+		}
+	}
+	if len(missing) == 0 {
+		return normalized
+	}
+	return append(normalized, apiv1.Finding{
 		Severity:    apiv1.SeverityWarning,
 		Class:       apiv1.FindingCrossPRBlocked,
-		Message:     fmt.Sprintf("deterministic file overlap with sibling PR(s) %v — sequencing required", overlappingSiblings),
-		BlockingPRs: overlappingSiblings,
+		Message:     fmt.Sprintf("deterministic file overlap with sibling PR(s) %v — sequencing required", missing),
+		BlockingPRs: missing,
 	})
+}
+
+func overlapOnlyBlockingPRs(finding apiv1.Finding, overlappingSiblings []int) ([]int, bool) {
+	if finding.Class != apiv1.FindingSubstantive {
+		return nil, false
+	}
+	overlapping := make(map[int]bool, len(overlappingSiblings))
+	for _, number := range overlappingSiblings {
+		overlapping[number] = true
+	}
+	refs := prReferencePattern.FindAllStringSubmatch(finding.Location, -1)
+	if len(refs) == 0 {
+		return nil, false
+	}
+	seen := make(map[int]bool, len(refs))
+	blockers := make([]int, 0, len(refs))
+	for _, ref := range refs {
+		if len(ref) < 2 {
+			return nil, false
+		}
+		number, err := strconv.Atoi(ref[1])
+		if err != nil || !overlapping[number] {
+			return nil, false
+		}
+		if !seen[number] {
+			seen[number] = true
+			blockers = append(blockers, number)
+		}
+	}
+	sort.Ints(blockers)
+	return blockers, true
 }
 
 // predecessorBlockers narrows a parked PR's recorded blockers to only the
@@ -353,7 +404,7 @@ const applyVerdictHelp = "Usage: goobers apply-verdict [--gate name] [path]\n\n"
 // NEXT gather-sibling-context's cache lookup — the digest travels with the
 // verdict, not as separate state.
 func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("apply-verdict", flag.ContinueOnError)
+	fs := newCLIFlagSet("apply-verdict", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	gateName := fs.String("gate", "review", "the gate name whose verdict to apply")
 	fs.Usage = helpUsage(stderr, "apply-verdict")
@@ -396,6 +447,11 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
 		return 1
 	}
+	publishAdvisory, err := strconv.ParseBool(providerInput("publishAdvisory", "true"))
+	if err != nil {
+		pf(stderr, "error: invalid publishAdvisory input: %v\n", err)
+		return 1
+	}
 
 	runID, workflowName, err := providerRunContext()
 	if err != nil {
@@ -427,19 +483,23 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	provider, err := newApplyVerdictProviderForRepo(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, token)
+	githubProvider, githubSelected := provider.(*providers.GitHubProvider)
 
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	if advisoryMode {
+		if !githubSelected {
+			pf(stderr, "error: apply-verdict advisory mode is not supported for repository provider %q\n", repo.Provider)
+			return 1
+		}
 		return applyAdvisoryVerdict(
-			ctx, provider, repo, selectedNumber, selectedNumberStr, selectedHeadSHA, selectedBaseSHA,
-			*verdict, runID, resultFile, stdout, stderr,
+			ctx, githubProvider, repo, selectedNumber, selectedNumberStr, selectedHeadSHA, selectedBaseSHA,
+			*verdict, runID, resultFile, publishAdvisory, stdout, stderr,
 		)
 	}
 
@@ -459,13 +519,22 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// the demotion signal must never itself become a merge outage, and an empty
 	// set is exactly the pre-#950 behavior. Reuses the prs list already fetched
 	// above; only currently-labeled PRs cost an extra ListComments.
-	demoted, derr := demotedSet(ctx, provider, repo, prs)
-	if derr != nil {
-		pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
-		demoted = nil
+	var demoted map[int]bool
+	if githubSelected {
+		var derr error
+		demoted, derr = demotedSet(ctx, githubProvider, repo, prs)
+		if derr != nil {
+			pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
+			demoted = nil
+		}
+		ineligible, ierr := electionIneligibleSet(ctx, githubProvider, repo, prs)
+		if ierr != nil {
+			return failProviderStage(stderr, "resolve lander eligibility", ierr, "")
+		}
+		demoted = unionPRSets(demoted, ineligible)
 	}
 
-	current, err := provider.GetPullRequest(ctx, repo, selectedNumberStr)
+	current, err := currentPullRequest(ctx, provider, repo, selectedNumberStr)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
 	}
@@ -499,8 +568,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// still stand". Best-effort — a comment write must never turn a moot
 		// verdict into a stage failure, since the re-review next cycle is what
 		// actually resolves this.
-		if cerr := markMergeReviewVerdictStale(ctx, provider, repo, selectedNumber, reason); cerr != nil {
-			pf(stderr, "warning: could not mark PR #%d's verdict stale: %v\n", selectedNumber, cerr)
+		if githubSelected {
+			if cerr := markMergeReviewVerdictStale(ctx, githubProvider, repo, selectedNumber, reason); cerr != nil {
+				pf(stderr, "warning: could not mark PR #%d's verdict stale: %v\n", selectedNumber, cerr)
+			}
 		}
 		return writeApplyVerdictResultWithReason(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "moot", "", reason, stderr)
 	}
@@ -525,7 +596,23 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		if reason, moot := mootFailReason(ctx, provider, repo, &current); moot {
 			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
-		if reason, dup := duplicateOfEarlierPR(ctx, provider, repo, &current); dup {
+		if !githubSelected {
+			// Azure DevOps non-pass bridge (remediation-wiring plan Part 1): a
+			// needs-changes/fail verdict that is NOT objectively moot is handed off
+			// to the pr-remediation loop — a failed goobers/validation PR status, a
+			// goobers:needs-remediation PR label (via the native PR-labels endpoint,
+			// never UpdateWorkItem(ID: PR#), the wrong-object hazard), and the
+			// findings + verdict-json on a PR thread — instead of the old hard-fail.
+			// The GitHub-only duplicate/superseded-sibling closes below read PR
+			// *issue* comments and submit a native review, neither of which exists
+			// on ADO, so the ADO path returns here.
+			if adoProvider, ok := provider.(*providers.ADOProvider); ok {
+				return publishADONonPassVerdict(ctx, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
+			}
+			pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
+			return 1
+		}
+		if reason, dup := duplicateOfEarlierPR(ctx, githubProvider, repo, &current); dup {
 			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
 		// Superseded by a byte-identical earlier open sibling (#1211): two PRs
@@ -533,9 +620,27 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// tree, which duplicateOfEarlierPR (shared-issue only) misses — the
 		// deadlock #1179/#1180 filed. Same disposition: the earlier one wins,
 		// this redundant later one is closed as no-longer-needed.
-		if reason, superseded := supersededByIdenticalSibling(ctx, provider, repo, &current); superseded {
+		if reason, superseded := supersededByIdenticalSibling(ctx, githubProvider, repo, &current); superseded {
 			return closeMootPullRequest(ctx, provider, repo, selectedNumber, &current, *verdict, reason, resultFile, stdout, stderr)
 		}
+	}
+	if !githubSelected {
+		// Azure DevOps: a PASS verdict is published as a provider-native PR
+		// status (genre goobers, name validation — the same surface
+		// report-pr-status publishes) so the published-verdict gate and any ADO
+		// status-check branch policy observe it. The GitHub verdict-publication
+		// path below (native self-review + sticky comment + PR-as-work-item
+		// label write) does not apply on ADO: there is no self-review to submit,
+		// and UpdateWorkItem(ID: PR#) would mutate the unrelated work item that
+		// shares the PR's numeric id (the wrong-object hazard, ~789 below).
+		// Non-pass ADO verdicts are handled by the earlier publishADONonPassVerdict
+		// bridge (they return before reaching here); this gate is reached on ADO
+		// only for a PASS.
+		if adoProvider, ok := provider.(*providers.ADOProvider); ok && verdict.Decision == apiv1.VerdictPass {
+			return publishADOPassVerdict(ctx, adoProvider, repo, selectedNumber, current, resultFile, stdout, stderr)
+		}
+		pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
+		return 1
 	}
 
 	posted := *verdict
@@ -548,16 +653,15 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		posted.SourceRunID = runID
 	}
 
-	// Fold the deterministic file-overlap set (#990) into the findings used for
-	// sequencing ROUTING only — not into the published verdict, whose findings
-	// stay the reviewer's own (renderVerdictComment below reads posted, not
-	// effective). This lets a green PR whose only issue is a file collision
-	// reach election even if the reviewer under-named (or missed) the blocking
-	// siblings; a verdict with a real defect is returned unchanged.
+	// Fold the deterministic file-overlap set (#990/#2486) into the findings used
+	// for sequencing and publication. Publishing the normalized representation
+	// keeps downstream consumers from rediscovering the reviewer's classification
+	// miss; a verdict with any real defect still routes to remediation.
 	overlappingSiblings := parseOverlappingSiblings(providerInput("overlappingSiblings", ""))
 	posted.OverlapCluster = len(overlappingSiblings) > 0
 	effective := posted
 	effective.Findings = withOverlapBackstop(posted.Findings, overlappingSiblings)
+	posted.Findings = effective.Findings
 
 	// Resolve the election policy once, gathering cluster data for the
 	// cluster-data policies (#1028/#1029) from the same open-PR list and cluster
@@ -568,7 +672,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	policyInput := providerInput("electionPolicy", defaultElectionPolicy)
 	clusterBlockers := electionClusterBlockers(effective.Findings, overlappingSiblings)
 	clusterPolicy, resolvedPolicyName, perr := resolveElectionPolicyForCluster(
-		ctx, provider, repo, policyInput, selectedNumber, clusterBlockers, prs)
+		ctx, githubProvider, repo, policyInput, selectedNumber, clusterBlockers, prs)
 	if perr != nil {
 		return failProviderStage(stderr, "resolve election policy "+policyInput, perr, "")
 	}
@@ -599,7 +703,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+	verdictAuthor, err := githubProvider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
 	}
@@ -634,7 +738,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if err := validateVerdictForPublish(posted); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("validate verdict for PR #%d", selectedNumber), err, resultFile)
 	}
-	comment := renderVerdictComment(posted)
+	comment := renderScopeGateStateComment(
+		renderVerdictComment(posted),
+		providerInput("scopeGateParked", "") == "true",
+	)
 	historyPayload, err := findingSetHistoryComment(history)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("render finding-set history for PR #%d", selectedNumber), err, resultFile)
@@ -644,7 +751,8 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	escalationSuppressedRemediation := false
 	addLabels := []string{label}
 	var removeLabels []string
-	if label == needsRemediationLabel {
+	switch label {
+	case needsRemediationLabel:
 		escalationSuppressedRemediation, err = verdictEscalationStillBlocks(ctx, provider, repo, current)
 		if err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("check active escalation for PR #%d", selectedNumber), err, resultFile)
@@ -653,6 +761,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 			addLabels = nil
 			removeLabels = []string{needsRemediationLabel}
 		}
+	case remediationEscalatedLabel:
+		removeLabels = []string{needsRemediationLabel}
+	case blockedOnSiblingLabel:
+		removeLabels = []string{needsRemediationLabel}
 	}
 	if label == blockedOnSiblingLabel {
 		// Record only the predecessors this parked PR must wait behind, not the
@@ -701,14 +813,22 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// If a distinct review identity is ever provisioned
 		// (GOOBERS_CRED_GITHUB_PR_REVIEW backed by a second token), this call
 		// simply succeeds and no degradation happens.
-		if !providers.IsSelfReviewError(err) {
+		selfReview := providers.IsSelfReviewError(err)
+		if !selfReview && providers.IsFineGrainedPATReviewNotFoundError(err) {
+			reviewAuthor, authorErr := reviewProvider.AuthenticatedLogin(ctx)
+			if authorErr != nil {
+				return failProviderStage(stderr, "resolve native review author", authorErr, resultFile)
+			}
+			selfReview = current.Author != "" && strings.EqualFold(reviewAuthor, current.Author)
+		}
+		if !selfReview {
 			return failProviderStage(stderr, fmt.Sprintf("submit native review for PR #%d", selectedNumber), err, resultFile)
 		}
 		pf(stdout, "native review skipped for PR #%d: reviewing identity authored the PR (GitHub refuses self-review) — publishing verdict via comment/label handoff instead\n", selectedNumber)
 	}
 
 	if posted.Decision == apiv1.VerdictPass {
-		if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+		if err := reconcileMergeReviewStatusCommentAs(ctx, githubProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 			return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
 		}
 		pf(stdout, "approved PR #%d at %s\n", selectedNumber, current.HeadSHA)
@@ -724,14 +844,16 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		AddLabels:    addLabels,
 		RemoveLabels: removeLabels,
 	}
-	if oscillated {
-		update.RemoveLabels = []string{needsRemediationLabel}
-	}
 	if _, err := provider.UpdateWorkItem(ctx, update); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("apply verdict to PR #%d", selectedNumber), err, resultFile)
 	}
-	if err := reconcileMergeReviewStatusCommentAs(ctx, provider, repo, selectedNumber, verdictAuthor, comment); err != nil {
+	if err := reconcileMergeReviewStatusCommentAs(ctx, githubProvider, repo, selectedNumber, verdictAuthor, comment); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("post verdict comment to PR #%d", selectedNumber), err, resultFile)
+	}
+	if posted.Decision == apiv1.VerdictFail && hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
+		if err := refreshEscalationSnapshotAfterRepeatFail(ctx, githubProvider, repo, current, statusComments); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("refresh merge-escalation snapshot for PR #%d", selectedNumber), err, resultFile)
+		}
 	}
 
 	priorityDispatchRequested := false
@@ -773,7 +895,7 @@ func applyAdvisoryVerdict(
 	selectedNumber int,
 	selectedNumberStr, selectedHeadSHA, selectedBaseSHA string,
 	verdict apiv1.Verdict,
-	runID, resultFile string,
+	runID, resultFile string, publishAdvisory bool,
 	stdout, stderr io.Writer,
 ) int {
 	current, err := provider.GetPullRequest(ctx, repo, selectedNumberStr)
@@ -799,6 +921,10 @@ func applyAdvisoryVerdict(
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	if !publishAdvisory {
+		pf(stdout, "advisory %s verdict for PR #%d retained locally; public publication disabled by policy\n", verdict.Decision, selectedNumber)
+		return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(verdict.Decision), "", stderr)
+	}
 
 	verdict.HeadSHA = selectedHeadSHA
 	verdict.BaseSHA = selectedBaseSHA
@@ -808,7 +934,10 @@ func applyAdvisoryVerdict(
 	if verdict.SourceRunID == "" {
 		verdict.SourceRunID = runID
 	}
-	comment := renderVerdictComment(verdict)
+	comment := renderScopeGateStateComment(
+		renderVerdictComment(verdict),
+		providerInput("scopeGateParked", "") == "true",
+	)
 	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
 	if err != nil {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, resultFile)
@@ -1099,7 +1228,7 @@ func resolvedIssueNumbers(body string) []string {
 // Fails closed in every ambiguous case: a provider error, an unresolvable
 // issue, or a pull request that references no issue at all all return false and
 // take the ordinary escalate-to-a-human path.
-func mootFailReason(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) (string, bool) {
+func mootFailReason(ctx context.Context, provider providers.Provider, repo providers.RepositoryRef, pr *providers.PullRequestSummary) (string, bool) {
 	// Condition 1: the pull request no longer changes anything. Whatever it
 	// proposed is already contained in its base, so there is nothing to merge
 	// and nothing to decide. This is the general "already fixed elsewhere"
@@ -1264,7 +1393,7 @@ func changedDiffDigest(ctx context.Context, provider *providers.GitHubProvider, 
 // No native review is submitted first: a changes-requested review on a pull
 // request being closed in the same breath is noise, and #870 means it would
 // frequently be refused as a self-review anyway.
-func closeMootPullRequest(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, selectedNumber int, current *providers.PullRequestSummary, verdict apiv1.Verdict, reason, resultFile string, stdout, stderr io.Writer) int {
+func closeMootPullRequest(ctx context.Context, provider providers.Provider, repo providers.RepositoryRef, selectedNumber int, current *providers.PullRequestSummary, verdict apiv1.Verdict, reason, resultFile string, stdout, stderr io.Writer) int {
 	comment := fmt.Sprintf(
 		"Closing this pull request automatically: %s.\n\nThis change is **no longer needed** rather than wrong — there is no decision for a human to make. Reopen it if that reading is incorrect.\n\n> %s",
 		reason, strings.ReplaceAll(strings.TrimSpace(verdict.Rationale), "\n", "\n> "))
@@ -1277,6 +1406,176 @@ func closeMootPullRequest(ctx context.Context, provider *providers.GitHubProvide
 	}
 	pf(stdout, "closed moot PR #%d: %s\n", selectedNumber, reason)
 	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, "closed-moot", "", stderr)
+}
+
+func currentPullRequest(ctx context.Context, provider providers.Provider, repo providers.RepositoryRef, pullID string) (providers.PullRequestSummary, error) {
+	if githubProvider, ok := provider.(*providers.GitHubProvider); ok {
+		return githubProvider.GetPullRequest(ctx, repo, pullID)
+	}
+	current, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{
+		Repository: repo,
+		PullID:     pullID,
+	})
+	if err != nil {
+		return providers.PullRequestSummary{}, err
+	}
+	return providers.PullRequestSummary{
+		ID:        pullID,
+		Number:    current.Number,
+		State:     current.State,
+		Merged:    current.Merged,
+		HeadSHA:   current.HeadSHA,
+		BaseSHA:   current.BaseSHA,
+		Body:      current.Body,
+		Labels:    current.Labels,
+		Integrity: current.Integrity,
+	}, nil
+}
+
+func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (providers.Provider, error) {
+	if repo.Provider == providers.ProviderGitea {
+		return nil, fmt.Errorf("apply-verdict does not support repository provider %q", repo.Provider)
+	}
+	return newProviderForStage(root, repo, false,
+		withStageProviderCapability(capability.ProviderPRWrite),
+		withStageProviderCache(),
+	)
+}
+
+// publishADOPassVerdict publishes a PASS merge-review verdict on Azure DevOps.
+// ADO has neither a native self-review to submit nor the GitHub
+// sticky-comment/label verdict transport (the GitHub path's
+// UpdateWorkItem(ID: PR#) would address the unrelated work item that shares the
+// PR's numeric id — the wrong-object hazard), so the verdict rides on a
+// provider-native PR status (genre "goobers", name "validation" — the same
+// surface report-pr-status publishes) that an ADO status-check branch policy can
+// gate on. It emits decision=pass into the result file so merge-review's
+// published-verdict gate advances to merge-pr. See the ADO merge epic (#2061).
+func publishADOPassVerdict(
+	ctx context.Context,
+	provider providers.PullRequestStatusPublisher,
+	repo providers.RepositoryRef,
+	selectedNumber int,
+	current providers.PullRequestSummary,
+	resultFile string,
+	stdout, stderr io.Writer,
+) int {
+	if _, err := provider.PublishPullRequestStatus(ctx, providers.PullRequestStatusRequest{
+		Repository:  repo,
+		PullID:      strconv.Itoa(selectedNumber),
+		Genre:       "goobers",
+		Name:        "validation",
+		State:       providers.CheckStatePassing,
+		Description: "goobers merge-review verdict: pass",
+	}); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("publish pass verdict status for PR #%d", selectedNumber), err, resultFile)
+	}
+	pf(stdout, "approved PR #%d at %s via goobers/validation PR status\n", selectedNumber, current.HeadSHA)
+	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(apiv1.VerdictPass), "", stderr)
+}
+
+// publishADONonPassVerdict publishes a non-pass (needs-changes or fail)
+// merge-review verdict on Azure DevOps and hands it off to the pr-remediation
+// loop — the symmetric counterpart to publishADOPassVerdict. ADO has neither a
+// native changes-requested review to submit nor the GitHub sticky-comment/label
+// verdict transport (the GitHub path's UpdateWorkItem(ID: PR#) would address the
+// unrelated work item that shares the PR's numeric id — the wrong-object
+// hazard), so the verdict rides on three provider-native surfaces, each the ADO
+// analog of a GitHub handoff channel:
+//
+//  1. A failed goobers/validation PR status (the same surface publishADOPassVerdict
+//     and report-pr-status publish) an ADO status-check branch policy gates the
+//     merge on. needs-changes and fail BOTH publish CheckStateFailing ("failed"):
+//     the PR must not land until reworked, and a status genre cannot carry the
+//     needs-changes/fail split — the remediation label below is the routing
+//     signal, exactly as GitHub carries it in verdictLabel.
+//  2. The goobers:needs-remediation PR label, written via the native ADO
+//     PR-labels endpoint (AddPullRequestLabels), NEVER UpdateWorkItem(ID: PR#).
+//     ListPullRequests already surfaces ADO PR labels, so pr-remediation's
+//     existing selector (remediationPriorityFor) fires on it unmodified.
+//  3. The findings + verdict-json machine payload posted as a PR thread comment
+//     (PostPullRequestThreadComment) — the ADO analog of the GitHub sticky
+//     status comment. gather-pr-context reads this thread back to recover the
+//     findings the remediating agent works from, so the verdict is SHA-pinned to
+//     the reviewed head/base (verified equal to the deterministic pin by
+//     verdictPinVoidReason above) before rendering.
+//
+// It emits the decision into the result file so merge-review's published-verdict
+// gate routes away from merge (any non-pass decision terminates), and returns 0
+// so the run completes cleanly instead of the old hard-fail. See the ADO merge
+// epic (#2061).
+func publishADONonPassVerdict(
+	ctx context.Context,
+	provider *providers.ADOProvider,
+	repo providers.RepositoryRef,
+	selectedNumber int,
+	current providers.PullRequestSummary,
+	verdict apiv1.Verdict,
+	resultFile string,
+	stdout, stderr io.Writer,
+) int {
+	pullID := strconv.Itoa(selectedNumber)
+	if _, err := provider.PublishPullRequestStatus(ctx, providers.PullRequestStatusRequest{
+		Repository:  repo,
+		PullID:      pullID,
+		Genre:       "goobers",
+		Name:        "validation",
+		State:       providers.CheckStateFailing,
+		Description: "goobers merge-review verdict: " + string(verdict.Decision),
+	}); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("publish %s verdict status for PR #%d", verdict.Decision, selectedNumber), err, resultFile)
+	}
+	// Route the label by decision, mirroring the GitHub verdictLabel contract
+	// (§4 D2): a fail escalates for a human (goobers:merge-escalated) and is
+	// NEVER burned on the remediation budget, while needs-changes routes to
+	// remediation (goobers:needs-remediation). Clearing needs-remediation on a
+	// fail — and declining to re-arm it while an escalation still blocks — is
+	// what parks a stuck PR for a human instead of looping it forever.
+	label := verdictLabel(verdict.Decision, verdict.Findings)
+	var addLabels, removeLabels []string
+	switch label {
+	case remediationEscalatedLabel:
+		addLabels = []string{remediationEscalatedLabel}
+		removeLabels = []string{needsRemediationLabel}
+	case needsRemediationLabel:
+		// Verdict-side escalation suppression (behavior 3d): if the PR already
+		// carries an active escalation, keep it parked — clear any stale
+		// needs-remediation rather than pulling it back into the budget.
+		names, err := provider.PullRequestLabelNames(ctx, repo, pullID)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("read labels for PR #%d", selectedNumber), err, resultFile)
+		}
+		if hasAnyLabel(names, []string{remediationEscalatedLabel}) {
+			removeLabels = []string{needsRemediationLabel}
+		} else {
+			addLabels = []string{needsRemediationLabel}
+		}
+	default:
+		// blocked-on-sibling has no ADO analogue (no sibling election); route it
+		// to remediation as the prior behavior did.
+		addLabels = []string{needsRemediationLabel}
+	}
+	if len(addLabels) > 0 {
+		if err := provider.AddPullRequestLabels(ctx, repo, pullID, addLabels); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("apply %v label to PR #%d", addLabels, selectedNumber), err, resultFile)
+		}
+	}
+	for _, name := range removeLabels {
+		if err := provider.RemovePullRequestLabel(ctx, repo, pullID, name); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("clear %s label on PR #%d", name, selectedNumber), err, resultFile)
+		}
+	}
+	// SHA-pin the published verdict to the reviewed state (== the deterministic
+	// pin, checked above) so gather-pr-context can trust the head/base it reads
+	// back from the thread, mirroring the GitHub path's posted.HeadSHA/BaseSHA.
+	verdict.HeadSHA = current.HeadSHA
+	verdict.BaseSHA = current.BaseSHA
+	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderVerdictComment(verdict)); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("post verdict thread comment to PR #%d", selectedNumber), err, resultFile)
+	}
+	pf(stdout, "published %s verdict for PR #%d at %s via goobers/validation PR status, labels %v (cleared %v), and PR thread\n",
+		verdict.Decision, selectedNumber, current.HeadSHA, addLabels, removeLabels)
+	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(verdict.Decision), "", stderr)
 }
 
 func nativeReviewDecision(decision apiv1.VerdictDecision) (providers.ReviewDecision, error) {
@@ -1408,6 +1707,15 @@ func verdictJSONComment(v apiv1.Verdict) (string, error) {
 		return "", fmt.Errorf("marshal verdict payload: %w", err)
 	}
 	return fmt.Sprintf("<!-- verdict-json: %s -->", data), nil
+}
+
+const scopeGateParkedCommentMarker = "<!-- scope-gate-parked: true -->"
+
+func renderScopeGateStateComment(comment string, parked bool) string {
+	if !parked {
+		return comment
+	}
+	return comment + "\n\n" + scopeGateParkedCommentMarker
 }
 
 func validateVerdictForPublish(v apiv1.Verdict) error {

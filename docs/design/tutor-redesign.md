@@ -1,6 +1,6 @@
 # Design: Tutor v2 — version-aware, instance-scoped process self-improvement
 
-> Status: **Accepted (PO-ratified 2026-07-21) — not yet implemented** · Area prefix: `TUT` · Milestone: _proposed_ **Tutor v2**
+> Status: **implemented — shipped except TUT-A8** (TUT-P1..P3 #1192–#1194 and TUT-A1..A7 #1213–#1219 closed; #1220 configrepo:write remains open; header refreshed 2026-08-07) · Area prefix: `TUT` · Milestone: _proposed_ **Tutor v2**
 > Scope: the tutor edits a gaggle's **instance config** (`goobers-instances/<name>/`), never product code (§1.1). Its loop closes through **Workflow CD** (§4.6, M15).
 > Related issues: #36 (tutor epic), #102 (cross-run detection queries), #104 (config-only write-boundary), #453 (Workflow CD / GitOps — the promotion half), #460 (WCD-6 `configrepo:read` — the tutor needs a write-sibling, §4.8), #507 (who owns test-suite quality), #150 (`Goober.spec.model`), #417 (first-class agent signal), #776 (usage in envelopes/spans), #769 (journal/telemetry schema migration).
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
@@ -29,7 +29,7 @@ definitions the running daemon reconciles from. **This path is operator-defined,
 launched with an instance path, and *that* path is injected as the tutor's target (whatever the operator chose;
 `~/source/goobers-instances/goobers/*` is only *our* local self-hosting example — a hand-maintained fork of the
 sample config, see memory: instance-config-is-drifted-fork). It is **never** the Goobers product repo
-(`selfhost/`, `internal/`, `cmd/`, `api/schemas`). For a customer it is *their* instance — the
+(`reference-workflows/`, `internal/`, `cmd/`, `api/schemas`). For a customer it is *their* instance — the
 workflows/goobers/skills unique to their code and area. The tutor must therefore resolve its config root from
 the daemon's injected instance path, not any hard-coded directory. Two hard consequences:
 
@@ -81,7 +81,7 @@ enforced write scope is *anything expressible as a file under its config root*: 
 tree outside the config root, so it can edit a goober's skills-*list* but not a *new skill's* content. Product
 code (`internal/`, `cmd/`, `api/schemas`, Go tests, CI) is out of scope **by design**, not by accident (§1.1).
 
-_Sample-vs-deployed caveat._ The shipped sample `tutor.yaml` sets `configRoot: selfhost`, i.e. it edits the
+_Sample-vs-deployed caveat._ The shipped sample `tutor.yaml` sets `configRoot: reference-workflows`, i.e. it edits the
 Goobers product repo's *own* sample config. That is a self-hosting artifact. A **deployed** tutor's config root
 is the instance directory (`goobers-instances/<name>/`), a repo distinct from the product code — which is why
 the general model has no "product golden" coupling: instance-config edits are validated by the instance's own
@@ -241,12 +241,12 @@ In the general model the tutor edits an instance config repo distinct from the p
 gated by the instance's own **`goobers validate`** — the required post-edit step is simply "the changed config
 still validates," with no product-code coupling.
 
-The one exception is the **self-hosting sample**, where `configRoot: selfhost` means the tutor is editing the
+The one exception is the **self-hosting sample**, where `configRoot: reference-workflows` means the tutor is editing the
 product repo's *own* sample config. There, a topology edit to `merge-review.yaml` breaks the product golden
 `internal/workflow/merge_review_test.go` (and the `acme-web` copy; see memory: shipped-workflow-yaml-dual-assert,
 crd-manifests-drifted-not-gated), which the tutor cannot touch — so a topology-writing sample tutor ships CI-red.
 Fix for the sample case only: either grant a **scoped, audited golden-regeneration** step, or (cleaner) point
-the sample tutor at a throwaway instance dir instead of `selfhost/`, matching the deployed model. Deployed
+the sample tutor at a throwaway instance dir instead of `reference-workflows/`, matching the deployed model. Deployed
 instances do not hit this.
 
 ### 4.6 Delivery — the tutor loop is closed by GitOps CD
@@ -424,4 +424,4 @@ freshness-aware PER (2604.16918) · Safety in Self-Evolving LLM Agent Systems (2
 Provenance: W3C-PROV workflow provenance (arXiv:2509.13978).
 Internal: `internal/journal/identity.go`, `internal/telemetry/rollup/{schema,efficacy,findings}.go`,
 `internal/workflow/compile.go`, `cmd/goobers/{openpr,configboundary,telemetryquery}.go`,
-`selfhost/gaggles/goobers/workflows/tutor.yaml`, `internal/workflow/merge_review_test.go`.
+`reference-workflows/gaggles/goobers/workflows/tutor.yaml`, `internal/workflow/merge_review_test.go`.

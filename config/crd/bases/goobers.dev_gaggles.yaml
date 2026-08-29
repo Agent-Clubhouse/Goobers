@@ -75,14 +75,16 @@ spec:
                     checkout:
                       description: |-
                         Checkout narrows how much of the repository run workspaces materialize
-                        (B2, #649). Accepted but not honored by the local runner yet: declaring
-                        it is inert and surfaces a VER003 compatibility warning at validate time.
+                        (B2, #649): the local runner provisions a cone-mode sparse checkout
+                        (git sparse-checkout set --cone) instead of the full tree. Nil (the
+                        default) is a full checkout.
                       properties:
                         sparse:
                           description: |-
                             Sparse lists repo-relative path cones a sparse checkout materializes;
-                            paths outside every cone are absent from run workspaces. Empty means a
-                            full checkout.
+                            paths outside every cone are absent from run workspaces, except
+                            root-level files (cone-mode semantics). Required non-empty when
+                            Checkout is declared at all.
                           items:
                             type: string
                           type: array
@@ -148,7 +150,7 @@ spec:
                     type: string
                   labels:
                     description: |-
-                      Query/labels narrow which items this gaggle considers work. Routing of an
+                      Labels narrow which items this gaggle considers work. Routing of an
                       item to a specific workflow is handled by workflow selectors (SCH-010).
                     items:
                       type: string
@@ -165,8 +167,6 @@ spec:
                     - github
                     - ado
                     - gitea
-                    type: string
-                  query:
                     type: string
                 required:
                 - project
@@ -220,6 +220,14 @@ spec:
                 required:
                 - namespace
                 type: object
+              outboxMirrorPath:
+                description: |-
+                  OutboxMirrorPath is the default local filesystem root where workflows in
+                  this gaggle mirror their durable journal outbox. A workflow or task may
+                  override it. The local runner appends the run id and journal outbox layout
+                  beneath this root; the journal remains the source of truth.
+                minLength: 1
+                type: string
               project:
                 description: Project is the codebase this gaggle works on.
                 properties:
@@ -237,14 +245,16 @@ spec:
                   checkout:
                     description: |-
                       Checkout narrows how much of the repository run workspaces materialize
-                      (B2, #649). Accepted but not honored by the local runner yet: declaring
-                      it is inert and surfaces a VER003 compatibility warning at validate time.
+                      (B2, #649): the local runner provisions a cone-mode sparse checkout
+                      (git sparse-checkout set --cone) instead of the full tree. Nil (the
+                      default) is a full checkout.
                     properties:
                       sparse:
                         description: |-
                           Sparse lists repo-relative path cones a sparse checkout materializes;
-                          paths outside every cone are absent from run workspaces. Empty means a
-                          full checkout.
+                          paths outside every cone are absent from run workspaces, except
+                          root-level files (cone-mode semantics). Required non-empty when
+                          Checkout is declared at all.
                         items:
                           type: string
                         type: array
@@ -316,17 +326,62 @@ spec:
                   this gaggle. A workflow may override either value again.
                 properties:
                   maxRepasses:
-                    description: MaxRepasses bounds consecutive non-pass evaluations
-                      before escalation.
+                    description: |-
+                      MaxRepasses bounds how many times gates may route a run back to the same
+                      already-completed stage before escalation, regardless of gate or outcome.
                     format: int32
                     minimum: 1
                     type: integer
+                  maxRunDuration:
+                    description: |-
+                      MaxRunDuration is the maximum total wall-clock age of a run. Empty
+                      disables the total-duration limit. It uses Go duration syntax.
+                    minLength: 1
+                    type: string
                   stalledRunTimeout:
                     description: |-
                       StalledRunTimeout is the maximum period a running journal may remain
                       silent before the watchdog escalates it. It uses Go duration syntax.
                     minLength: 1
                     type: string
+                type: object
+              runsOn:
+                description: |-
+                  RunsOn is the gaggle-level placement floor (DSL 3.0, dsl-3.0.md §2): OS,
+                  toolchain capability tags, and required runner restrictions that merge
+                  into every stage of every workflow in this gaggle — capabilities and
+                  restrictions union with the stage's own; an OS conflict between gaggle
+                  and stage is a compile error, never a silent override. No quantities at
+                  gaggle level. It is the 3.0 successor of RequiredCapabilities above and
+                  activates only for gaggles whose workflows are pinned to DSL 3.0; the
+                  3.0 interpreter refuses a gaggle that still declares
+                  RequiredCapabilities, and earlier interpreters refuse this field.
+                properties:
+                  capabilities:
+                    description: |-
+                      Capabilities union into every stage's runsOn.capabilities. Same open
+                      tag grammar (internal/runnercap); os=* tokens are rejected (CAP004).
+                    items:
+                      type: string
+                    maxItems: 32
+                    type: array
+                  os:
+                    description: |-
+                      OS every stage of this gaggle requires. Enum, same vocabulary as a
+                      stage's runsOn.os.
+                    enum:
+                    - linux
+                    - windows
+                    - macOS
+                    type: string
+                  restrictions:
+                    description: |-
+                      Restrictions union into every stage's runsOn.restrictions. Closed v1
+                      effect list; unknown tokens are rejected with a suggestion (CAP005).
+                    items:
+                      type: string
+                    maxItems: 8
+                    type: array
                 type: object
               sandbox:
                 description: |-
@@ -399,14 +454,16 @@ spec:
                         checkout:
                           description: |-
                             Checkout narrows how much of the repository run workspaces materialize
-                            (B2, #649). Accepted but not honored by the local runner yet: declaring
-                            it is inert and surfaces a VER003 compatibility warning at validate time.
+                            (B2, #649): the local runner provisions a cone-mode sparse checkout
+                            (git sparse-checkout set --cone) instead of the full tree. Nil (the
+                            default) is a full checkout.
                           properties:
                             sparse:
                               description: |-
                                 Sparse lists repo-relative path cones a sparse checkout materializes;
-                                paths outside every cone are absent from run workspaces. Empty means a
-                                full checkout.
+                                paths outside every cone are absent from run workspaces, except
+                                root-level files (cone-mode semantics). Required non-empty when
+                                Checkout is declared at all.
                               items:
                                 type: string
                               type: array
@@ -453,6 +510,19 @@ spec:
                   - project
                   type: object
                 type: array
+              workcopies:
+                description: |-
+                  Workcopies overrides the instance-level managed working-copy placement for
+                  this gaggle. Root is an absolute base path; the gaggle name is appended.
+                properties:
+                  root:
+                    description: Root is an absolute base path for this gaggle's managed
+                      working copies.
+                    minLength: 1
+                    type: string
+                required:
+                - root
+                type: object
             required:
             - backlog
             - isolation

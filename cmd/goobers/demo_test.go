@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/test/testsupport/netns"
 )
 
 type demoDaemonWriter struct {
@@ -172,6 +173,12 @@ Learn the desired-state model: https://github.com/Agent-Clubhouse/Goobers/blob/m
 Demo full loop (run these from %s):
   goobers run demo    # watch curate -> implement -> review -> merge preview
   goobers trace <id>  # inspect the journal and merge-preview artifact
+
+Post-init validation:
+DSLVERSION Workflow/demo: 2.0 (supported)
+OK: instance.yaml valid; config/ valid (1 gaggle(s), 0 goober(s), 1 workflow(s))
+
+Next: no placeholder edits are required.
 `, abs, abs)
 	if stdout.String() != want {
 		t.Fatalf("init --demo banner:\n--- got ---\n%s--- want ---\n%s", stdout.String(), want)
@@ -265,6 +272,12 @@ func TestDemoTourRunsOfflineThroughDaemon(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("demo requires enforced network isolation")
 	}
+	// Hardened runtimes (seccompProfile: RuntimeDefault + capabilities: drop
+	// [ALL]) can deny the unprivileged user namespace the Linux isolation path
+	// needs, which would otherwise hard-fail this test with an EPERM that
+	// reads like a product regression rather than an environment capability
+	// gap (#3397).
+	netns.RequireIsolation(context.Background(), t)
 	start := time.Now()
 	root := filepath.Join(t.TempDir(), "demo")
 	if code, _, stderr := runArgs(t, "init", "--demo", root); code != 0 {

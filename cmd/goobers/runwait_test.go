@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -122,9 +125,46 @@ func TestWaitForRunTerminalReportsTransitionsPauseAndHeartbeat(t *testing.T) {
 		t.Errorf("wall-clock heartbeat must not claim stage health:\n%s", output)
 	}
 
-	time.Sleep(3 * runWaitHeartbeatInterval)
+	time.Sleep(3 * runWaitHeartbeatInterval) // Intentional quiet period proves progress stops after terminal state.
 	if after := progress.String(); after != output {
 		t.Errorf("progress continued after terminal state:\nbefore=%q\nafter=%q", output, after)
+	}
+}
+
+func TestWaitForRunTerminalRejectsFutureJournalSchema(t *testing.T) {
+	runsDir := instance.NewLayout(t.TempDir()).RunsDir()
+	const runID = "future-wait"
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: "fixture", WorkflowVersion: 1, Gaggle: "example",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(journal.SchemaInfo{
+		Version:       journal.CurrentSchemaVersion + 1,
+		MinimumBinary: "v2.0.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runsDir, runID, "schema.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	phase, err := waitForRunTerminal(context.Background(), runsDir, runID)
+	if err == nil {
+		t.Fatal("terminal wait accepted a future journal schema")
+	}
+	if phase != journal.PhaseRunning {
+		t.Fatalf("terminal wait phase = %s, want running on admission failure", phase)
+	}
+	for _, want := range []string{"version 2", "supported version 1", "minimum binary is v2.0.0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("terminal wait error %q does not contain %q", err, want)
+		}
 	}
 }
 
@@ -195,7 +235,7 @@ func waitForProgress(t *testing.T, progress *synchronizedBuffer, want string) {
 		if strings.Contains(progress.String(), want) {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for the synchronized progress buffer.
 	}
 	t.Fatalf("progress did not contain %q within one second: %q", want, progress.String())
 }

@@ -1,5 +1,6 @@
 import {
   DaemonApiError,
+  DaemonAuthError,
   DaemonClientError,
   DaemonUnavailableError,
   MalformedResponseError,
@@ -61,6 +62,7 @@ const clientRoutes = {
   workflowDetail: apiRoutes.workflowDetail,
   runs: apiRoutes.runs,
   runDetail: apiRoutes.runDetail,
+  runReveal: apiRoutes.runReveal,
   runEvents: apiRoutes.runEvents,
   stageAttempts: apiRoutes.stageAttempts,
   runArtifact: apiRoutes.runArtifact,
@@ -76,6 +78,30 @@ const clientRoutes = {
   approveStage: apiRoutes.approveStage,
   overrideStage: apiRoutes.overrideStage,
   rerunStage: apiRoutes.rerunStage,
+  // Daemon write planes (#3509): machine seams (claims, trigger ingestion)
+  // plus HITL escalation resolution. The portal calls none of them yet — an
+  // escalation-resolution UI would be the first consumer — but the
+  // exhaustiveness check requires the full contract here as it grows.
+  claimAcquire: apiRoutes.claimAcquire,
+  claimRenew: apiRoutes.claimRenew,
+  claimRelease: apiRoutes.claimRelease,
+  claimSettle: apiRoutes.claimSettle,
+  triggerIngest: apiRoutes.triggerIngest,
+  resolveEscalation: apiRoutes.resolveEscalation,
+  journalEmit: apiRoutes.journalEmit,
+  credentialResolve: apiRoutes.credentialResolve,
+  // The blob plane (decision 010/012, §2a): a mode-3 stage pod's BlobClient
+  // fetches and puts content-addressed artifacts by digest. Pod-only, like
+  // the credential plane — the portal never calls these and never will (the
+  // daemon refuses a human principal outright) — but the exhaustiveness
+  // check requires the full contract here as it grows.
+  blobGet: apiRoutes.blobGet,
+  blobPut: apiRoutes.blobPut,
+  // The surrender plane (#3699): a mode-3 stage pod's dispatch-exec
+  // entrypoint PUTs its terminal result here. Pod-only, like the credential
+  // and blob planes — the portal never calls this and never will — but the
+  // exhaustiveness check requires the full contract here as it grows.
+  stageSurrender: apiRoutes.stageSurrender,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {
@@ -266,6 +292,7 @@ export class HttpDaemonClient implements DaemonClient {
         limit: request.limit,
         cursor: request.cursor,
         latestPerWorkflow: request.latestPerWorkflow ? "true" : undefined,
+        showNoWork: request.showNoWork ? "true" : undefined,
       },
       options,
     );
@@ -273,6 +300,17 @@ export class HttpDaemonClient implements DaemonClient {
 
   getRun(runId: string, options?: RequestOptions): Promise<RunDetail> {
     return this.getJSON(clientRoutes.runDetail, undefined, options, { run: runId });
+  }
+
+  revealRun(runId: string, options?: RequestOptions): Promise<void> {
+    return this.withResponse(
+      clientRoutes.runReveal,
+      undefined,
+      options,
+      "application/json",
+      async () => undefined,
+      { run: runId },
+    );
   }
 
   listRunEvents(runId: string, options?: RequestOptions): Promise<EventList> {
@@ -378,6 +416,11 @@ export class HttpDaemonClient implements DaemonClient {
         gaggle: request.gaggle,
         since: request.since,
         until: request.until,
+        trendSince: request.trendSince,
+        trendUntil: request.trendUntil,
+        trendBuckets: request.trendBuckets,
+        trendPreviousSince: request.trendPreviousSince,
+        trendPreviousUntil: request.trendPreviousUntil,
       },
       options,
     );
@@ -545,7 +588,18 @@ function diagnosticStatus(
   return abortKind ?? "error";
 }
 
-async function apiError(response: Response): Promise<DaemonApiError | MalformedResponseError> {
+async function apiError(
+  response: Response,
+): Promise<DaemonApiError | DaemonAuthError | MalformedResponseError> {
+  // A 401/403 is classified from the status alone, before the body is ever
+  // read. An intermediary in front of the daemon (a reverse proxy, an SSO
+  // gateway) can reject a request with an HTML login page or plain text
+  // instead of the daemon's JSON error envelope; that must still be
+  // reported as an auth failure rather than a malformed response or, once
+  // it unwinds through the caller, a misleading "daemon unavailable" (#2916).
+  if (response.status === 401 || response.status === 403) {
+    return new DaemonAuthError(response.status);
+  }
   let value: unknown;
   try {
     value = JSON.parse(await response.text());

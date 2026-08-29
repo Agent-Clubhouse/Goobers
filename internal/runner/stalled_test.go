@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,20 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
 )
+
+// stalledWaitTimeout is the budget these tests give an async run/escalation
+// to reach the state they're polling for. Windows CI runners are measurably
+// slower at the process/goroutine-scheduling and file I/O this package
+// exercises than POSIX ones (ci.yml's windows-smoke job documents the same
+// finding for the package-level `go test` timeout), so 5s that's comfortable
+// on Linux/macOS CI intermittently starved these tests of time on Windows.
+// Widen instead of shrinking the margin further with the flake.
+func stalledWaitTimeout() time.Duration {
+	if runtime.GOOS == "windows" {
+		return 20 * time.Second
+	}
+	return 5 * time.Second
+}
 
 type wedgedDeterministic struct {
 	started chan struct{}
@@ -46,6 +61,33 @@ func (r *progressingGateReviewer) Review(ctx context.Context, _ apiv1.Invocation
 			return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
 		case <-ctx.Done():
 			return apiv1.Verdict{}, context.Cause(ctx)
+		}
+	}
+}
+
+func waitForRunEvent(t *testing.T, runDir, description string, matches func(journal.Event) bool) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(stalledWaitTimeout())
+	defer timeout.Stop()
+	for {
+		reader, err := journal.OpenRead(runDir)
+		if err == nil {
+			events, readErr := reader.Events()
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			for _, event := range events {
+				if matches(event) {
+					return
+				}
+			}
+		}
+		select {
+		case <-ticker.C:
+		case <-timeout.C:
+			t.Fatalf("timed out waiting for %s", description)
 		}
 	}
 }
@@ -227,30 +269,9 @@ func TestEscalateStalledInterruptsRetryBackoff(t *testing.T) {
 	}()
 
 	runDir := filepath.Join(runsDir, "stalled-backoff")
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		reader, err := journal.OpenRead(runDir)
-		if err == nil {
-			events, readErr := reader.Events()
-			if readErr != nil {
-				t.Fatal(readErr)
-			}
-			found := false
-			for _, event := range events {
-				if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("run did not enter retry backoff")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForRunEvent(t, runDir, "run to enter retry backoff", func(event journal.Event) bool {
+		return event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error"
+	})
 
 	start := time.Now()
 	result, escalated, err := r.EscalateStalled("stalled-backoff", time.Now().Add(2*time.Hour), 45*time.Minute)
@@ -299,6 +320,7 @@ func TestCancelRunAbortsLiveRun(t *testing.T) {
 		result Result
 		err    error
 	}
+
 	done := make(chan startOutcome, 1)
 	go func() {
 		result, err := r.Start(context.Background(), StartInput{
@@ -312,30 +334,9 @@ func TestCancelRunAbortsLiveRun(t *testing.T) {
 	}()
 
 	runDir := filepath.Join(runsDir, "cancel-live")
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		reader, err := journal.OpenRead(runDir)
-		if err == nil {
-			events, readErr := reader.Events()
-			if readErr != nil {
-				t.Fatal(readErr)
-			}
-			found := false
-			for _, event := range events {
-				if event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error" {
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("run did not enter retry backoff")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForRunEvent(t, runDir, "run to enter retry backoff", func(event journal.Event) bool {
+		return event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error"
+	})
 
 	start := time.Now()
 	result, cancelled, err := r.CancelRun("cancel-live", time.Now())
@@ -371,6 +372,228 @@ func TestCancelRunAbortsLiveRun(t *testing.T) {
 		events[len(events)-1].Type != journal.EventRunFinished ||
 		events[len(events)-1].Status != string(journal.PhaseAborted) {
 		t.Fatalf("terminal events = %+v, want run_canceled + run.finished(aborted)", events)
+	}
+}
+
+// TestInterruptStageEscalatesLiveRun is #1995's core: an operator interrupt of
+// a single running stage stops its active attempt and finalizes the run
+// escalated (recoverable) rather than aborted, recording an operator-attributed
+// stage_interrupted note and driving FinalizeTerminal with phase escalated —
+// all through the same activeRun handshake CancelRun and the stall watchdog
+// use. A stale target (a stage the run has already left) is refused rather than
+// interrupting whatever is running now.
+func TestInterruptStageEscalatesLiveRun(t *testing.T) {
+	flaky := &flakyDeterministic{failUntil: 100}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return flaky, nil
+	}, gate.NewAutomatedEvaluator())
+	machine := retryFixtureMachineWithBackoff(t, 3, 10*time.Second)
+
+	var finalizedPhase journal.RunPhase
+	var finalizeCalls int32
+	r.cfg.FinalizeTerminal = func(runID string, phase journal.RunPhase) error {
+		if runID == "interrupt-live" {
+			finalizedPhase = phase
+			atomic.AddInt32(&finalizeCalls, 1)
+		}
+		return nil
+	}
+
+	type startOutcome struct {
+		result Result
+		err    error
+	}
+
+	done := make(chan startOutcome, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID:   "interrupt-live",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		done <- startOutcome{result: result, err: err}
+	}()
+
+	runDir := filepath.Join(runsDir, "interrupt-live")
+	waitForRunEvent(t, runDir, "run to enter retry backoff", func(event journal.Event) bool {
+		return event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error"
+	})
+
+	// A stale target — a stage the run is not currently at — is refused, and
+	// leaves the run running rather than interrupting the real stage.
+	if _, escalated, err := r.InterruptStage("interrupt-live", "review", "operator@example", time.Now()); err == nil || escalated {
+		t.Fatalf("stale-target interrupt = escalated %v, err %v, want refusal", escalated, err)
+	}
+
+	const actor = "operator@example"
+	start := time.Now()
+	result, escalated, err := r.InterruptStage("interrupt-live", "implement", actor, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !escalated || result.Phase != journal.PhaseEscalated {
+		t.Fatalf("escalated=%v result=%+v, want escalated", escalated, result)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("interrupt took %s to stop the run", elapsed)
+	}
+
+	outcome := <-done
+	if outcome.err != nil || outcome.result.Phase != journal.PhaseEscalated {
+		t.Fatalf("Start() = %+v, %v, want escalated", outcome.result, outcome.err)
+	}
+	if atomic.LoadInt32(&finalizeCalls) == 0 || finalizedPhase != journal.PhaseEscalated {
+		t.Fatalf("FinalizeTerminal calls=%d phase=%s, want escalated teardown", finalizeCalls, finalizedPhase)
+	}
+
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	note := events[len(events)-2]
+	if len(events) < 2 ||
+		note.Error == nil ||
+		note.Error.Code != StageInterruptedErrorCode ||
+		note.Stage != "implement" ||
+		note.Actor != actor ||
+		events[len(events)-1].Type != journal.EventRunFinished ||
+		events[len(events)-1].Status != string(journal.PhaseEscalated) {
+		t.Fatalf("terminal events = %+v, want stage_interrupted(implement, %s) + run.finished(escalated)", events, actor)
+	}
+}
+
+func TestHardStopRunLeavesCheckpointResumable(t *testing.T) {
+	flaky := &flakyDeterministic{failUntil: 1}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return flaky, nil
+	}, gate.NewAutomatedEvaluator())
+	machine := retryFixtureMachineWithBackoff(t, 3, 10*time.Second)
+
+	type startOutcome struct {
+		result Result
+		err    error
+	}
+
+	done := make(chan startOutcome, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID:   "hard-stop-live",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		done <- startOutcome{result: result, err: err}
+	}()
+
+	runDir := filepath.Join(runsDir, "hard-stop-live")
+	waitForRunEvent(t, runDir, "run to enter retry backoff", func(event journal.Event) bool {
+		return event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error"
+	})
+	if !r.HardStopRun("hard-stop-live") {
+		t.Fatal("HardStopRun did not find live run")
+	}
+	outcome := <-done
+	if outcome.err != nil || outcome.result.Phase != journal.PhaseRunning {
+		t.Fatalf("hard-stopped Start() = %+v, %v, want running checkpoint", outcome.result, outcome.err)
+	}
+
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase, err := reader.Phase(); err != nil || phase != journal.PhaseRunning {
+		t.Fatalf("phase after hard stop = %s, %v", phase, err)
+	}
+
+	resumed, err := r.Resume(context.Background(), ResumeInput{
+		RunID:   "hard-stop-live",
+		Machine: machine,
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil || resumed.Phase != journal.PhaseCompleted {
+		t.Fatalf("Resume() = %+v, %v, want completed", resumed, err)
+	}
+}
+
+func TestHardStopRunWhenStartedStopsLateActiveRegistration(t *testing.T) {
+	r, _ := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return &flakyDeterministic{}, nil
+	}, gate.NewAutomatedEvaluator())
+	machine := retryFixtureMachineWithBackoff(t, 1, time.Second)
+	r.HardStopRunWhenStarted("late-hard-stop")
+
+	result, err := r.Start(context.Background(), StartInput{
+		RunID:   "late-hard-stop",
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil || result.Phase != journal.PhaseRunning {
+		t.Fatalf("queued hard-stop Start() = %+v, %v, want running checkpoint", result, err)
+	}
+}
+
+func TestExpireRunAbortsLiveRunDespiteActivity(t *testing.T) {
+	flaky := &flakyDeterministic{failUntil: 100}
+	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {
+		return flaky, nil
+	}, gate.NewAutomatedEvaluator())
+	machine := retryFixtureMachineWithBackoff(t, 3, 10*time.Second)
+
+	type startOutcome struct {
+		result Result
+		err    error
+	}
+	done := make(chan startOutcome, 1)
+	go func() {
+		result, err := r.Start(context.Background(), StartInput{
+			RunID:   "duration-live",
+			Machine: machine,
+			Gaggle:  "acme-web",
+			Trigger: journal.Trigger{Kind: journal.TriggerManual},
+			RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+		})
+		done <- startOutcome{result: result, err: err}
+	}()
+
+	runDir := filepath.Join(runsDir, "duration-live")
+	waitForRunEvent(t, runDir, "run to enter retry backoff", func(event journal.Event) bool {
+		return event.Type == journal.EventError && event.Error != nil && event.Error.Code == "executor_error"
+	})
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, expired, err := r.ExpireRun("duration-live", identity.StartedAt.Add(2*time.Hour), identity.StartedAt, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !expired || result.Phase != journal.PhaseAborted {
+		t.Fatalf("expired=%v result=%+v, want aborted", expired, result)
+	}
+	outcome := <-done
+	if outcome.err != nil || outcome.result.Phase != journal.PhaseAborted {
+		t.Fatalf("Start() = %+v, %v, want aborted", outcome.result, outcome.err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 || events[len(events)-2].Error == nil ||
+		events[len(events)-2].Error.Code != RunDurationExceededErrorCode {
+		t.Fatalf("terminal events = %+v, want duration-exceeded + run.finished(aborted)", events)
 	}
 }
 
@@ -440,6 +663,8 @@ func TestEscalateStalledInterruptsPostStageHandler(t *testing.T) {
 	r.stalledCancelGrace = 20 * time.Millisecond
 	r.stalledTerminalGrace = time.Second
 	handlerStarted := make(chan struct{})
+	prepareStarted := make(chan struct{})
+	releasePrepare := make(chan struct{})
 	r.cfg.Blocked = func(ctx context.Context, _ BlockedOutcome) error {
 		close(handlerStarted)
 		<-ctx.Done()
@@ -448,7 +673,8 @@ func TestEscalateStalledInterruptsPostStageHandler(t *testing.T) {
 	var prepareCalls int
 	r.cfg.PrepareTerminal = func(string, journal.RunPhase, *journal.Run) error {
 		prepareCalls++
-		time.Sleep(100 * time.Millisecond)
+		close(prepareStarted)
+		<-releasePrepare
 		return nil
 	}
 
@@ -481,10 +707,27 @@ func TestEscalateStalledInterruptsPostStageHandler(t *testing.T) {
 		t.Fatal("run did not enter blocked handler")
 	}
 
-	result, escalated, err := r.EscalateStalled(runID, time.Now().Add(2*time.Hour), 45*time.Minute)
-	if err != nil {
-		t.Fatal(err)
+	type escalationOutcome struct {
+		result    Result
+		escalated bool
+		err       error
 	}
+	escalationDone := make(chan escalationOutcome, 1)
+	go func() {
+		result, escalated, err := r.EscalateStalled(runID, time.Now().Add(2*time.Hour), 45*time.Minute)
+		escalationDone <- escalationOutcome{result: result, escalated: escalated, err: err}
+	}()
+	select {
+	case <-prepareStarted:
+	case <-time.After(runnerTestWaitTimeout):
+		t.Fatal("stalled takeover did not enter terminal preparation")
+	}
+	close(releasePrepare)
+	escalation := <-escalationDone
+	if escalation.err != nil {
+		t.Fatal(escalation.err)
+	}
+	result, escalated := escalation.result, escalation.escalated
 	if !escalated || result.Phase != journal.PhaseEscalated {
 		t.Fatalf("escalated=%v result=%+v", escalated, result)
 	}
@@ -543,7 +786,7 @@ func TestEscalateStalledDoesNotTakeOverNormalTerminalPreparation(t *testing.T) {
 
 	select {
 	case <-prepareStarted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(stalledWaitTimeout()):
 		t.Fatal("run did not enter normal terminal preparation")
 	}
 
@@ -558,7 +801,11 @@ func TestEscalateStalledDoesNotTakeOverNormalTerminalPreparation(t *testing.T) {
 		escalationDone <- escalationOutcome{result: result, escalated: escalated, err: err}
 	}()
 
-	time.Sleep(4 * r.stalledCancelGrace)
+	select {
+	case escalation := <-escalationDone:
+		t.Fatalf("EscalateStalled returned before normal terminal preparation completed: %+v", escalation)
+	case <-time.After(4 * r.stalledCancelGrace):
+	}
 	if got := prepareCalls.Load(); got != 1 {
 		t.Fatalf("terminal preparation calls before release = %d, want 1", got)
 	}
@@ -634,7 +881,7 @@ func TestEscalateStalledTakesOverWedgedOwnerAfterIdleHeartbeatTicks(t *testing.T
 
 	select {
 	case <-wedged.started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(stalledWaitTimeout()):
 		t.Fatal("wedged executor did not start")
 	}
 	for i := 0; i < 2; i++ {
@@ -692,7 +939,7 @@ func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *t
 	}()
 	runID := "progressing-gate"
 	machine := agenticGateMachine(t)
-	r := newAgenticGateRunner(t, map[string]stubTaskResult{
+	r, _ := newAgenticGateRunner(t, map[string]stubTaskResult{
 		runID + ":implement": {status: apiv1.ResultSuccess},
 	}, reviewer, nil)
 	taskTicker := &fakeHeartbeatTicker{ticks: make(chan time.Time), stopped: make(chan struct{})}
@@ -733,7 +980,11 @@ func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *t
 		t.Fatal("agentic reviewer did not start")
 	}
 	timeout := 20 * time.Millisecond
-	time.Sleep(2 * timeout)
+	select {
+	case <-time.After(2 * timeout):
+	case <-done:
+		t.Fatal("run finished before reviewer progress")
+	}
 	reviewer.progress <- struct{}{}
 	select {
 	case <-reviewer.reported:
@@ -754,31 +1005,9 @@ func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *t
 	case <-time.After(time.Second):
 		t.Fatal("gate heartbeat goroutine did not receive tick")
 	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		reader, err := journal.OpenRead(filepath.Join(r.cfg.RunsDir, runID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		events, err := reader.Events()
-		if err != nil {
-			t.Fatal(err)
-		}
-		found := false
-		for _, event := range events {
-			if event.Type == journal.EventStageHeartbeat && event.Stage == "review" && event.Attempt == 1 {
-				found = true
-				break
-			}
-		}
-		if found {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("agentic gate progress did not emit a heartbeat")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitForRunEvent(t, filepath.Join(r.cfg.RunsDir, runID), "agentic gate progress heartbeat", func(event journal.Event) bool {
+		return event.Type == journal.EventStageHeartbeat && event.Stage == "review" && event.Attempt == 1
+	})
 
 	close(reviewer.release)
 	released = true
@@ -787,7 +1016,7 @@ func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *t
 		if outcome.err != nil || outcome.result.Phase != journal.PhaseCompleted {
 			t.Fatalf("Start() = %+v, %v", outcome.result, outcome.err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(stalledWaitTimeout()):
 		t.Fatal("run did not finish after reviewer release")
 	}
 }

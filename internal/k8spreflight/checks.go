@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -24,6 +25,8 @@ const minSupportedMinor = 29
 // controlPlaneNamespace is where the goobers-system install lands (§3) and
 // therefore where the namespaced install permissions are probed.
 const controlPlaneNamespace = "goobers-system"
+
+const temporalNamespace = "goobers-temporal"
 
 func checkClusterVersion(_ context.Context, client kubernetes.Interface, _ Options) Result {
 	result := Result{
@@ -59,7 +62,7 @@ func checkClusterVersion(_ context.Context, client kubernetes.Interface, _ Optio
 func checkNetworkPolicySupport(_ context.Context, client kubernetes.Interface, _ Options) Result {
 	result := Result{
 		ID:       "networkpolicy-api",
-		Title:    "NetworkPolicy API served (deny-first defaults enforceable)",
+		Title:    "NetworkPolicy API served (enforcement unverified — needs a negative control)",
 		Citation: "§5",
 		Severity: SeverityRequired,
 	}
@@ -72,9 +75,15 @@ func checkNetworkPolicySupport(_ context.Context, client kubernetes.Interface, _
 	}
 	for _, resource := range resources.APIResources {
 		if resource.Name == "networkpolicies" {
-			result.Status = StatusPass
-			result.Detail = "networking.k8s.io/v1 networkpolicies served — enforcement still depends on the CNI"
-			result.Hint = "a CNI without NetworkPolicy support ignores policies silently; verify deny-first takes effect with a probe pod"
+			// API-discovery only: a served API is a correlate of enforcement,
+			// not proof of it — a CNI can serve networking.k8s.io/v1 and still
+			// drop policies on the floor silently. This check is read-only
+			// (doctor --k8s never mutates the cluster), so it cannot fire the
+			// denied-attempt probe that would actually prove enforcement; that
+			// stays a warn, not a pass, until such a probe runs.
+			result.Status = StatusWarn
+			result.Detail = "networking.k8s.io/v1 networkpolicies served, but enforcement is unverified by this read-only check"
+			result.Hint = "a served API is only a correlate — a CNI can serve NetworkPolicy and still ignore it silently; enforcement can only be proven by a denied attempt (an in-cluster negative control, e.g. the Goobernetes S9 probe), not by this check"
 			return result
 		}
 	}
@@ -180,7 +189,7 @@ func rwxCapable(provisioner string) bool {
 func checkStorage(ctx context.Context, client kubernetes.Interface, _ Options) Result {
 	result := Result{
 		ID:       "storage-rwx",
-		Title:    "ReadWriteMany-capable StorageClass for journal & artifacts",
+		Title:    "StorageClass safe for the instance root's file coordination",
 		Citation: "§4",
 		Severity: SeverityRequired,
 	}
@@ -191,23 +200,125 @@ func checkStorage(ctx context.Context, client kubernetes.Interface, _ Options) R
 		result.Hint = "grant list on storageclasses to the preflighting identity (fail-closed, never a silent pass)"
 		return result
 	}
-	var names []string
+	if len(classes.Items) == 0 {
+		result.Status = StatusFail
+		result.Detail = "the cluster has no StorageClasses"
+		result.Hint = "provision a StorageClass for the instance root; RWO mounted by a single node is the recommended safe default (§4)"
+		return result
+	}
 	for _, class := range classes.Items {
 		if rwxCapable(class.Provisioner) {
-			result.Status = StatusPass
-			result.Detail = fmt.Sprintf("class %q (provisioner %s) supports ReadWriteMany — capability inferred from the provisioner, a PVC bind probe is a follow-up", class.Name, class.Provisioner)
+			result.Status = StatusWarn
+			result.Detail = fmt.Sprintf("class %q (provisioner %s) may support ReadWriteMany, but provisioner-name inference cannot verify cross-client POSIX flock or SQLite WAL safety", class.Name, class.Provisioner)
+			result.Hint = "do not place an instance root containing lock files or SQLite databases on RWX/network storage; use RWO storage with a single node until storage roles are split or a cross-client safety probe is available"
 			return result
 		}
-		names = append(names, class.Name)
 	}
-	result.Status = StatusFail
-	if len(names) == 0 {
-		result.Detail = "the cluster has no StorageClasses"
-	} else {
-		result.Detail = fmt.Sprintf("no RWX-capable class among: %s", strings.Join(names, ", "))
-	}
-	result.Hint = "provision an RWX-capable class (Azure Files/Blob CSI, NFS, CephFS, …) for the shared journal volume (§4)"
+	result.Status = StatusPass
+	result.Detail = "no RWX-capable class found; the cluster's StorageClasses default to ReadWriteOnce, the recommended safe topology for the instance root (§4)"
+	result.Hint = "mount the instance root by a single node — do not scale the daemon deployment beyond one replica until lock-bearing state is split from projected journal/artifact storage"
 	return result
+}
+
+func checkMixedOSPlacement(ctx context.Context, client kubernetes.Interface, _ Options) Result {
+	result := Result{
+		ID:       "mixed-os-placement",
+		Title:    "Linux workloads cannot schedule onto Windows nodes",
+		Citation: "§7",
+		Severity: SeverityRequired,
+	}
+	nodes, err := client.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		result.Status = StatusFail
+		result.Detail = fmt.Sprintf("unable to list nodes: %v", err)
+		result.Hint = "grant list on nodes to the preflighting identity (fail-closed, never a silent pass)"
+		return result
+	}
+
+	var windowsNodes []string
+	var untaintedWindowsNodes []string
+	for _, node := range nodes.Items {
+		if node.Labels[corev1.LabelOSStable] != "windows" {
+			continue
+		}
+		windowsNodes = append(windowsNodes, node.Name)
+		if !hasWindowsNoScheduleTaint(node.Spec.Taints) {
+			untaintedWindowsNodes = append(untaintedWindowsNodes, node.Name)
+		}
+	}
+	if len(windowsNodes) == 0 {
+		result.Status = StatusPass
+		result.Detail = "no Windows nodes found; mixed-OS scheduling cannot occur"
+		return result
+	}
+
+	var unpinnedWorkloads []string
+	for _, namespace := range []string{controlPlaneNamespace, temporalNamespace} {
+		deployments, listErr := client.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+		if listErr != nil {
+			result.Status = StatusFail
+			result.Detail = fmt.Sprintf("unable to list Deployments in %s: %v", namespace, listErr)
+			result.Hint = "grant list on deployments in shipped workload namespaces so Linux workload placement can be verified"
+			return result
+		}
+		for _, deployment := range deployments.Items {
+			if deployment.Spec.Template.Spec.NodeSelector[corev1.LabelOSStable] != "linux" {
+				unpinnedWorkloads = append(unpinnedWorkloads, namespace+"/Deployment/"+deployment.Name)
+			}
+		}
+
+		statefulSets, listErr := client.AppsV1().StatefulSets(namespace).List(ctx, metav1.ListOptions{})
+		if listErr != nil {
+			result.Status = StatusFail
+			result.Detail = fmt.Sprintf("unable to list StatefulSets in %s: %v", namespace, listErr)
+			result.Hint = "grant list on statefulsets in shipped workload namespaces so Linux workload placement can be verified"
+			return result
+		}
+		for _, statefulSet := range statefulSets.Items {
+			if statefulSet.Spec.Template.Spec.NodeSelector[corev1.LabelOSStable] != "linux" {
+				unpinnedWorkloads = append(unpinnedWorkloads, namespace+"/StatefulSet/"+statefulSet.Name)
+			}
+		}
+
+		jobs, listErr := client.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{})
+		if listErr != nil {
+			result.Status = StatusFail
+			result.Detail = fmt.Sprintf("unable to list Jobs in %s: %v", namespace, listErr)
+			result.Hint = "grant list on jobs in shipped workload namespaces so Linux workload placement can be verified"
+			return result
+		}
+		for _, job := range jobs.Items {
+			if job.Spec.Template.Spec.NodeSelector[corev1.LabelOSStable] != "linux" {
+				unpinnedWorkloads = append(unpinnedWorkloads, namespace+"/Job/"+job.Name)
+			}
+		}
+	}
+	if len(untaintedWindowsNodes) > 0 || len(unpinnedWorkloads) > 0 {
+		var problems []string
+		if len(untaintedWindowsNodes) > 0 {
+			problems = append(problems, "Windows nodes missing kubernetes.io/os=windows:NoSchedule taint: "+strings.Join(untaintedWindowsNodes, ", "))
+		}
+		if len(unpinnedWorkloads) > 0 {
+			problems = append(problems, "shipped workloads missing kubernetes.io/os=linux nodeSelector: "+strings.Join(unpinnedWorkloads, ", "))
+		}
+		result.Status = StatusFail
+		result.Detail = strings.Join(problems, "; ")
+		result.Hint = "taint every Windows node and pin every Linux workload; an unpinned pod can attach and destroy a Linux filesystem volume on Windows"
+		return result
+	}
+
+	result.Status = StatusPass
+	result.Detail = fmt.Sprintf("%d Windows node(s) tainted NoSchedule; all shipped workloads pinned to Linux", len(windowsNodes))
+	return result
+}
+
+func hasWindowsNoScheduleTaint(taints []corev1.Taint) bool {
+	for _, taint := range taints {
+		if taint.Key == corev1.LabelOSStable && taint.Value == "windows" && taint.Effect == corev1.TaintEffectNoSchedule {
+			return true
+		}
+	}
+	return false
 }
 
 func checkOIDCIssuer(ctx context.Context, _ kubernetes.Interface, opts Options) Result {

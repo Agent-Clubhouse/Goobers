@@ -57,9 +57,12 @@ func loadGooberInstructions(configDir string, goobers map[string]apiv1.GooberSpe
 	return instructions, nil
 }
 
-func loadGooberSkillPackages(configDir string, goobers map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
+func loadGooberSkillPackages(configDir, gaggle string, goobers map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
 	names := map[string]struct{}{}
 	for _, goober := range goobers {
+		if goober.Gaggle != gaggle {
+			continue
+		}
 		for _, skill := range goober.Skills {
 			names[skill] = struct{}{}
 		}
@@ -72,14 +75,13 @@ func loadGooberSkillPackages(configDir string, goobers map[string]apiv1.GooberSp
 
 	packages := make(map[string][]workflow.SkillFile, len(sorted))
 	for _, name := range sorted {
-		paths, ok, err := skillPackagePaths(configDir, name)
+		root, paths, ok, err := skillPackagePaths(configDir, gaggle, name)
 		if err != nil {
 			return nil, fmt.Errorf("list skill %q package: %w", name, err)
 		}
 		if !ok {
 			continue
 		}
-		root, _ := skillPackageDir(configDir, name)
 		files := make([]workflow.SkillFile, 0, len(paths))
 		for _, filePath := range paths {
 			content, err := os.ReadFile(filePath)
@@ -100,17 +102,25 @@ func loadGooberSkillPackages(configDir string, goobers map[string]apiv1.GooberSp
 	return packages, nil
 }
 
-func skillPackageDir(configDir, skill string) (string, bool) {
+func skillPackageDirs(configDir, gaggle, skill string) (scoped, shared string, ok bool) {
 	if skill == "" || skill == "." || skill == ".." || strings.ContainsAny(skill, `/\`) || filepath.VolumeName(skill) != "" {
-		return "", false
+		return "", "", false
 	}
-	return filepath.Join(filepath.Dir(filepath.Clean(configDir)), "skills", skill), true
+	configDir = filepath.Clean(configDir)
+	return filepath.Join(configDir, "gaggles", gaggle, "skills", skill),
+		filepath.Join(filepath.Dir(configDir), "skills", skill), true
 }
 
-func skillPackagePaths(configDir, skill string) ([]string, bool, error) {
-	root, ok := skillPackageDir(configDir, skill)
+func skillPackagePaths(configDir, gaggle, skill string) (string, []string, bool, error) {
+	scoped, shared, ok := skillPackageDirs(configDir, gaggle, skill)
 	if !ok {
-		return nil, false, nil
+		return "", nil, false, nil
+	}
+	root := shared
+	if _, err := os.Stat(scoped); err == nil {
+		root = scoped
+	} else if !os.IsNotExist(err) {
+		return "", nil, true, err
 	}
 	var paths []string
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
@@ -123,13 +133,13 @@ func skillPackagePaths(configDir, skill string) ([]string, bool, error) {
 		return nil
 	})
 	if os.IsNotExist(err) {
-		return nil, true, nil
+		return root, nil, true, nil
 	}
 	if err != nil {
-		return nil, true, err
+		return root, nil, true, err
 	}
 	sort.Strings(paths)
-	return paths, true, nil
+	return root, paths, true, nil
 }
 
 func compiledMachinesWithGooberDigestsAndWarnings(
@@ -138,17 +148,19 @@ func compiledMachinesWithGooberDigestsAndWarnings(
 	goobers map[string]apiv1.GooberSpec,
 	instructions map[string]string,
 	envPassthrough []string,
+	harnessCommand map[string][]string,
+	deferModelDiscovery bool,
 ) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
-	machines, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(set, goobers, envPassthrough)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-	skillPackages, err := loadGooberSkillPackages(configDir, goobers)
+	machines, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(set, goobers, envPassthrough, harnessCommand, deferModelDiscovery)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 	gooberDigests := make(map[localscheduler.WorkflowIdentity]string, len(machines))
 	for identity, machine := range machines {
+		skillPackages, err := loadGooberSkillPackages(configDir, identity.Gaggle, resolvedGoobers)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
 		digest, err := workflow.ComputeGooberDigest(machine.Def, resolvedGoobers, instructions, skillPackages)
 		if err != nil {
 			return nil, nil, nil, nil, &workflowDigestError{

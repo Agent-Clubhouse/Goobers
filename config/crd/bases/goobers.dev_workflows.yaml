@@ -220,8 +220,9 @@ spec:
                       type: object
                     maxRepasses:
                       description: |-
-                        MaxRepasses overrides the inherited workflow repass budget for this gate.
-                        It is valid only for automated and agentic gates.
+                        MaxRepasses overrides the inherited target-stage re-entry budget when this
+                        gate routes to an already-completed stage. It is valid only for automated
+                        and agentic gates.
                       format: int32
                       minimum: 1
                       type: integer
@@ -238,6 +239,13 @@ spec:
                   - message: maxRepasses is only valid for automated or agentic gates
                     rule: '!has(self.maxRepasses) || self.evaluator != ''human'''
                 type: array
+              outboxMirrorPath:
+                description: |-
+                  OutboxMirrorPath is the default local filesystem root where this
+                  workflow mirrors durable journal outbox files. A task may override it.
+                  The configured path must be absolute, or start with "~/".
+                minLength: 1
+                type: string
               parallels:
                 description: |-
                   Parallels are the fan-out/fan-in states of the machine: a parallel forks
@@ -331,6 +339,16 @@ spec:
               readiness:
                 description: Readiness bounds when a run may start (WF-011).
                 properties:
+                  desiredConcurrentRuns:
+                    description: |-
+                      DesiredConcurrentRuns targets a minimum concurrent occupancy for queue-processing
+                      workflows. When set and less than or equal to MaxConcurrentRuns, the scheduler maintains
+                      refill intent to keep active runs at this level when eligible work is available.
+                      Budget/deadline rejections retain refill intent and retry with backoff. A workflow
+                      remains trigger-driven unless this is explicitly set (#3491).
+                    format: int32
+                    minimum: 1
+                    type: integer
                   maxChainDepth:
                     description: MaxChainDepth bounds how deep signal-triggered chains
                       may go (WF-015).
@@ -379,6 +397,12 @@ spec:
                       Unset falls back to a spec default of 10 (internal/localscheduler's
                       Conditions.Admit), not "unenforced" — every workflow gets some
                       guardrail against a runaway chain out of the box (#339).
+
+                      Zero means the same thing as unset here (falls back to 10) — NOT
+                      "unlimited". That is the opposite convention from instance.yaml's
+                      runConditions.maxParallelRuns, where zero means unlimited. There is
+                      currently no way to express "no hourly budget" for a single workflow;
+                      set an explicit large value instead if you want a high ceiling (#3360).
                     format: int32
                     minimum: 1
                     type: integer
@@ -415,11 +439,18 @@ spec:
                   MaxRepasses.
                 properties:
                   maxRepasses:
-                    description: MaxRepasses bounds consecutive non-pass evaluations
-                      before escalation.
+                    description: |-
+                      MaxRepasses bounds how many times gates may route a run back to the same
+                      already-completed stage before escalation, regardless of gate or outcome.
                     format: int32
                     minimum: 1
                     type: integer
+                  maxRunDuration:
+                    description: |-
+                      MaxRunDuration is the maximum total wall-clock age of a run. Empty
+                      disables the total-duration limit. It uses Go duration syntax.
+                    minLength: 1
+                    type: string
                   stalledRunTimeout:
                     description: |-
                       StalledRunTimeout is the maximum period a running journal may remain
@@ -447,15 +478,26 @@ spec:
                       items:
                         type: string
                       type: array
+                    commitsRepo:
+                      description: |-
+                        CommitsRepo declares that this deterministic stage's script/command
+                        commits to the run branch — the explicit producer opt-in of DSL 3.0's
+                        repo-handoff model (dsl-3.0.md §4, delivery decision 002). Agentic
+                        non-readonly stages and the ref-advancing builtins are producers by
+                        classification and never need it; a make/sh stage is a non-producer
+                        unless it sets this. In 3.0 the runtime records the branch head around
+                        every non-producer repo stage and fails closed on an undeclared advance.
+                      type: boolean
                     contextFrom:
                       description: |-
                         ContextFrom limits this task's context pointers to artifacts and verdicts
                         produced by the named tasks or gates. Empty preserves the historical
                         behavior of receiving every accumulated pointer.
+                        Duplicate entries are rejected by api/validate (CTX001) rather than by a
+                        CRD uniqueness marker, which Kubernetes refuses to install.
                       items:
                         type: string
                       type: array
-                      uniqueItems: true
                     continueOnError:
                       description: |-
                         ContinueOnError makes a ResultFailure best-effort: the failed status is
@@ -470,6 +512,64 @@ spec:
                       items:
                         type: string
                       type: array
+                    experiment:
+                      description: |-
+                        Experiment routes this task across two or three declared safety arms.
+                        Variants overlay task inputs; selection and outcomes are journaled by the
+                        runner and promotion remains an external approval decision.
+                      properties:
+                        arms:
+                          items:
+                            description: BanditArm declares one variant and the gate
+                              strength required to evaluate it.
+                            properties:
+                              gateLevel:
+                                description: |-
+                                  GateLevel is the required safety strength for the gate evaluating this arm:
+                                  automated=1, agentic=2, human=3.
+                                type: integer
+                              name:
+                                type: string
+                              variant:
+                                additionalProperties:
+                                  type: string
+                                type: object
+                            required:
+                            - gateLevel
+                            - name
+                            type: object
+                          type: array
+                        confidence:
+                          type: number
+                        defaultGateLevel:
+                          type: integer
+                        evalWindow:
+                          type: integer
+                        explorationBudget:
+                          type: integer
+                        maxFailureRate:
+                          type: number
+                        minLift:
+                          type: number
+                        minSamples:
+                          type: integer
+                        seed:
+                          format: int64
+                          type: integer
+                        trainWindow:
+                          type: integer
+                      required:
+                      - arms
+                      - confidence
+                      - defaultGateLevel
+                      - evalWindow
+                      - explorationBudget
+                      - maxFailureRate
+                      - minLift
+                      - minSamples
+                      - seed
+                      - trainWindow
+                      type: object
                     goal:
                       description: Goal is the intended outcome of the task (TSK-001).
                       type: string
@@ -542,6 +642,148 @@ spec:
                       description: Name uniquely identifies this state within the
                         workflow.
                       type: string
+                    nestedAgentPolicy:
+                      description: |-
+                        NestedAgentPolicy controls child-agent delegation and context. It is
+                        admitted before execution; omitted preserves legacy non-nested behavior.
+                      properties:
+                        context:
+                          description: NestedContextPolicy selects the optional parent
+                            context visible to a child.
+                          properties:
+                            artifactNames:
+                              items:
+                                type: string
+                              type: array
+                            envelopeSections:
+                              items:
+                                type: string
+                              type: array
+                            mode:
+                              description: ContextMode controls which parent task
+                                context a child receives.
+                              enum:
+                              - fresh
+                              - inherited
+                              - explicit
+                              type: string
+                          required:
+                          - mode
+                          type: object
+                        delegation:
+                          description: DelegationAuthority controls whether and how
+                            a child may delegate further.
+                          enum:
+                          - disabled
+                          - coordinator-only
+                          - bounded
+                          type: string
+                        maxDepth:
+                          format: int32
+                          minimum: 0
+                          type: integer
+                        model:
+                          description: NestedModelPolicy constrains the model and
+                            reasoning effort used by a child.
+                          properties:
+                            allowlist:
+                              items:
+                                type: string
+                              type: array
+                            maxReasoningEffort:
+                              description: ReasoningEffort is the portable reasoning-effort
+                                ceiling for a child.
+                              enum:
+                              - minimal
+                              - low
+                              - medium
+                              - high
+                              type: string
+                          type: object
+                        peerMessaging:
+                          type: boolean
+                        permittedProfiles:
+                          items:
+                            type: string
+                          minItems: 1
+                          type: array
+                        platformPolicy:
+                          description: |-
+                            PlatformPolicy is immutable execution policy inherited by every child,
+                            including children using fresh context.
+                          properties:
+                            budget:
+                              description: Limits bound a stage's execution. Zero
+                                values mean "no explicit limit".
+                              properties:
+                                maxCostUSD:
+                                  description: MaxCostUSD caps the run's spend.
+                                  minimum: 0
+                                  type: number
+                                maxDurationSeconds:
+                                  description: MaxDurationSeconds caps wall-clock
+                                    time for the stage.
+                                  format: int32
+                                  minimum: 0
+                                  type: integer
+                                maxTokens:
+                                  description: MaxTokens caps model tokens the run
+                                    may consume.
+                                  format: int64
+                                  minimum: 0
+                                  type: integer
+                              type: object
+                            cancellation:
+                              minLength: 1
+                              type: string
+                            capabilities:
+                              items:
+                                type: string
+                              type: array
+                            completionContract:
+                              minLength: 1
+                              type: string
+                            contentExclusions:
+                              items:
+                                type: string
+                              type: array
+                            credentials:
+                              items:
+                                type: string
+                              type: array
+                            filesystemRoots:
+                              items:
+                                type: string
+                              type: array
+                            networkEgress:
+                              items:
+                                type: string
+                              type: array
+                            policyActions:
+                              items:
+                                type: string
+                              type: array
+                            sandbox:
+                              minLength: 1
+                              type: string
+                          required:
+                          - budget
+                          - cancellation
+                          - completionContract
+                          - sandbox
+                          type: object
+                        version:
+                          enum:
+                          - v1alpha1
+                          type: string
+                      required:
+                      - context
+                      - delegation
+                      - model
+                      - permittedProfiles
+                      - platformPolicy
+                      - version
+                      type: object
                     next:
                       description: Next is the name of the next state (task or gate).
                         Empty means terminal.
@@ -579,6 +821,13 @@ spec:
                         type: string
                       maxItems: 32
                       type: array
+                    outboxMirrorPath:
+                      description: |-
+                        OutboxMirrorPath overrides the workflow and gaggle local outbox mirror
+                        root for this task. It is used only when Outbox exports at least one file.
+                        The configured path must be absolute, or start with "~/".
+                      minLength: 1
+                      type: string
                     policyActions:
                       description: |-
                         PolicyActions declares the closed vocabulary of externally mutating
@@ -589,6 +838,18 @@ spec:
                         referenced goober's persona.
                         Known policy-bearing built-in commands must declare their complete action
                         set so policy changes cannot silently outrun capability admission.
+                      items:
+                        type: string
+                      type: array
+                    repoFrom:
+                      description: |-
+                        RepoFrom names the producer stage(s) whose run-branch state this repo
+                        stage consumes — the declared repo-handoff edge (DSL 3.0, dsl-3.0.md §4).
+                        Scalar or list in YAML; a list means "the run branch head as of the most
+                        recent listed producer that executed". The 3.0 compiler computes the
+                        required coverage as reaching definitions over the stage graph and
+                        rejects an undeclared chain, an uncovered producer, or a dead entry
+                        (WF022).
                       items:
                         type: string
                       type: array
@@ -683,6 +944,62 @@ spec:
                       - message: syncBase requires a repo workspace
                         rule: '!has(self.syncBase) || !self.syncBase || !has(self.workspace)
                           || self.workspace != ''scratch'''
+                    runsOn:
+                      description: |-
+                        RunsOn declares where this stage may execute (DSL 3.0, dsl-3.0.md §2):
+                        OS, resource minimums, toolchain capability tags, and required runner
+                        restrictions. Every field is optional — unspecified means no requirement
+                        (explicit-complete semantics, D3). Interpreters before 3.0 refuse the
+                        field; the compiler enforces that, not the shared schema.
+                      properties:
+                        capabilities:
+                          description: |-
+                            Capabilities is the open toolchain tag set — DSL 2.0's
+                            requiredCapabilities moved, not re-invented (internal/runnercap grammar,
+                            exact set membership, no ranges). os=* tokens are rejected here (CAP004):
+                            the OS field above is the only platform vocabulary in a 3.0 document.
+                            MaxItems bounds CRD CEL validation cost (#3168, dsl-3.0.md open point 7).
+                          items:
+                            type: string
+                          maxItems: 32
+                          type: array
+                        cpu:
+                          description: |-
+                            CPU is the minimum CPU as a Kubernetes quantity string (e.g. "2000m").
+                            Minimums become pod resource requests in mode 3; limits come from the
+                            matched runner's ceiling, never from the stage. Advisory on local modes.
+                          type: string
+                        disk:
+                          description: Disk is the minimum disk as a Kubernetes quantity
+                            string (e.g. "20Gi").
+                          type: string
+                        memory:
+                          description: Memory is the minimum memory as a Kubernetes
+                            quantity string (e.g. "4Gi").
+                          type: string
+                        os:
+                          description: |-
+                            OS is the required operating system — a validated enum, never a free
+                            token (the #659 supersession). Empty means no OS requirement: placement
+                            policy prefers, and will wait bounded for, a Linux-class runner when the
+                            inventory has one.
+                          enum:
+                          - linux
+                          - windows
+                          - macOS
+                          type: string
+                        restrictions:
+                          description: |-
+                            Restrictions are isolation effects the matched runner must ENFORCE,
+                            drawn from the closed v1 effect list (decision record D7): network:none,
+                            network:allowlist, fs:readonly-except-workspace, tmp:ephemeral,
+                            env:default-deny. Unknown tokens are rejected with a suggestion (CAP005).
+                            MaxItems bounds CRD CEL validation cost (#3168, dsl-3.0.md open point 7).
+                          items:
+                            type: string
+                          maxItems: 8
+                          type: array
+                      type: object
                     timeoutSeconds:
                       description: |-
                         TimeoutSeconds bounds one attempt's wall-clock execution. Unset preserves
@@ -717,6 +1034,7 @@ spec:
                   - name
                   - type
                   type: object
+                maxItems: 128
                 type: array
               triggers:
                 description: |-
@@ -742,6 +1060,21 @@ spec:
                         unavailable.
                       minLength: 1
                       type: string
+                    idleBackoff:
+                      description: |-
+                        IdleBackoff reduces no-work polling while preserving the configured
+                        schedule whenever work is available. Omitted uses the default policy.
+                      properties:
+                        ceiling:
+                          description: Ceiling defaults to fifteen minutes.
+                          type: string
+                        enabled:
+                          description: Enabled defaults to true.
+                          type: boolean
+                        floor:
+                          description: Floor defaults to one minute.
+                          type: string
+                      type: object
                     labelPredicate:
                       description: |-
                         LabelPredicate is a CEL expression over the item's label set. The only
@@ -796,6 +1129,8 @@ spec:
                   x-kubernetes-validations:
                   - message: trustLabel is supported only for type=backlog-item
                     rule: '!has(self.trustLabel) || self.type == ''backlog-item'''
+                  - message: idleBackoff is supported only for type=schedule
+                    rule: '!has(self.idleBackoff) || self.type == ''schedule'''
                 minItems: 1
                 type: array
                 x-kubernetes-validations:

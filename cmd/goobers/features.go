@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/goobers/goobers/api/schemas"
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	buildversion "github.com/goobers/goobers/internal/version"
@@ -30,7 +31,7 @@ const featuresHelp = "Usage: goobers features [--json] [--dsl-version <version>]
 	"config, 2 = usage/IO error.\n"
 
 func runFeatures(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("features", flag.ContinueOnError)
+	fs := newCLIFlagSet("features", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "emit a versioned machine-readable feature-discovery envelope")
 	usedOnly := fs.Bool("used", false, "list only the features the instance at path references")
@@ -169,6 +170,19 @@ func featureMatrixRows(features []workflow.Feature, onlyVersion string) ([]featu
 // 0 on success, 2 for a missing/unreadable root, and 1 for a config that fails
 // to load, mirroring `goobers validate`.
 func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, int) {
+	return instanceUsedFeaturesWithResolver(root, stderr, workflow.FeaturesForGaggle, workflow.FeaturesForGoober)
+}
+
+type gaggleFeatureResolver func(workflow.Definition, apiv1.GaggleSpec) ([]workflow.Feature, error)
+
+type gooberFeatureResolver func(workflow.Definition, apiv1.GooberSpec) ([]workflow.Feature, error)
+
+func instanceUsedFeaturesWithResolver(
+	root string,
+	stderr io.Writer,
+	resolveGaggle gaggleFeatureResolver,
+	resolveGoober gooberFeatureResolver,
+) ([]workflow.Feature, int) {
 	l := instance.NewLayout(root)
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
@@ -200,15 +214,33 @@ func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, in
 			addUsedFeature(used, feature)
 		}
 	}
+	// Gaggle-scoped features (sandbox posture, sparse checkout) live on the
+	// GaggleSpec, not on any workflow, so without this fan-out they are
+	// invisible to --used (#3297).
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		for _, def := range featureDefinitionsForGaggle(set.Workflows, g.Name) {
+			features, err := resolveGaggle(def, g.Spec)
+			if err != nil {
+				pf(stderr, "error: gaggle %q: %v\n", g.Name, err)
+				return nil, 1
+			}
+			for _, feature := range features {
+				addUsedFeature(used, feature)
+			}
+		}
+	}
 	for i := range set.Goobers {
 		g := &set.Goobers[i]
-		features, err := workflow.FeaturesForGoober(g.Spec)
-		if err != nil {
-			pf(stderr, "error: goober %q: %v\n", g.Name, err)
-			return nil, 1
-		}
-		for _, feature := range features {
-			addUsedFeature(used, feature)
+		for _, def := range featureDefinitionsForGoober(set.Workflows, g.Spec) {
+			features, err := resolveGoober(def, g.Spec)
+			if err != nil {
+				pf(stderr, "error: goober %q: %v\n", g.Name, err)
+				return nil, 1
+			}
+			for _, feature := range features {
+				addUsedFeature(used, feature)
+			}
 		}
 	}
 
@@ -218,6 +250,39 @@ func instanceUsedFeatures(root string, stderr io.Writer) ([]workflow.Feature, in
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, 0
+}
+
+// featureDefinitionsForGaggle adapts the loaded workflow list to the shared
+// per-DSL-pin fan-out (workflow.FeatureDefinitionsByDSLVersion, #3297) so this
+// CLI and api/validate cannot drift on version-resolution policy — including
+// the workflow-less fallback to the newest supported version.
+func featureDefinitionsForGaggle(workflows []apiv1.Workflow, gaggle string) []workflow.Definition {
+	var definitions []workflow.Definition
+	for i := range workflows {
+		wf := &workflows[i]
+		if wf.Spec.Gaggle != gaggle {
+			continue
+		}
+		definitions = append(definitions, workflow.Definition{
+			Name: wf.Name, DSLVersion: wf.DSLVersion, Spec: wf.Spec,
+		})
+	}
+	return workflow.FeatureDefinitionsByDSLVersion(definitions)
+}
+
+func featureDefinitionsForGoober(workflows []apiv1.Workflow, spec apiv1.GooberSpec) []workflow.Definition {
+	referenced := make(map[string]bool, len(spec.Workflows))
+	for _, name := range spec.Workflows {
+		referenced[name] = true
+	}
+	matching := make([]apiv1.Workflow, 0, len(spec.Workflows))
+	for i := range workflows {
+		wf := workflows[i]
+		if wf.Spec.Gaggle == spec.Gaggle && referenced[wf.Name] {
+			matching = append(matching, wf)
+		}
+	}
+	return featureDefinitionsForGaggle(matching, spec.Gaggle)
 }
 
 func addUsedFeature(used map[workflow.FeatureID]workflow.Feature, feature workflow.Feature) {

@@ -4,12 +4,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	wf "github.com/goobers/goobers/internal/workflow"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -81,19 +85,23 @@ func TestExampleConfigPasses(t *testing.T) {
 	if report.HasErrors() {
 		t.Fatalf("expected /config-examples to be valid, got issues:\n%s", joinIssues(report))
 	}
-	// The compatibility warnings are the manual-only advisories on the three
-	// example workflows that carry no schedule trigger. Preview warnings are
-	// asserted separately by TestPreviewFeaturesRequireInstanceOptIn.
+	// The compatibility warnings are the manual-only advisories on the
+	// example workflows that carry no schedule trigger: default-implement and
+	// docs-updater in both acme-web and its #2777 acme-web-claude parallel
+	// (#2777's fleet posture duplicates the same workflow shape under a
+	// different harness), plus one implementation workflow per polyglot
+	// service. Preview warnings are asserted separately by
+	// TestPreviewFeaturesRequireInstanceOptIn.
 	var warnings []CodedWarning
 	for _, warning := range report.Warnings() {
 		if warning.Code == WarningCompatibility {
 			warnings = append(warnings, warning)
 		}
 	}
-	if len(warnings) != 3 {
-		t.Fatalf("expected three actionable manual-only compatibility warnings, got %+v", warnings)
+	if len(warnings) != 7 {
+		t.Fatalf("expected seven actionable manual-only compatibility warnings, got %+v", warnings)
 	}
-	var sawDefaultImplement, sawDocsUpdater, sawDotnetImplementation bool
+	var sawDefaultImplement, sawDocsUpdater, sawDotnetImplementation, sawJavaImplementation, sawPythonImplementation bool
 	for _, w := range warnings {
 		if w.Code != WarningCompatibility || w.Severity != Warning {
 			t.Fatalf("unexpected warning (want only manual-only compatibility advisories): %+v", w)
@@ -107,9 +115,15 @@ func TestExampleConfigPasses(t *testing.T) {
 		if strings.Contains(w.Explanation, "goobers run dotnet-implementation") {
 			sawDotnetImplementation = true
 		}
+		if strings.Contains(w.Explanation, "goobers run java-implementation") {
+			sawJavaImplementation = true
+		}
+		if strings.Contains(w.Explanation, "goobers run python-implementation") {
+			sawPythonImplementation = true
+		}
 	}
-	if !sawDefaultImplement || !sawDocsUpdater || !sawDotnetImplementation {
-		t.Fatalf("expected manual-only warnings for default-implement, docs-updater, and the dotnet-service implementation, got %+v", warnings)
+	if !sawDefaultImplement || !sawDocsUpdater || !sawDotnetImplementation || !sawJavaImplementation || !sawPythonImplementation {
+		t.Fatalf("expected manual-only warnings for default-implement, docs-updater, and the dotnet-service, java-service, and python-service implementations, got %+v", warnings)
 	}
 	if report.Objects < 4 {
 		t.Errorf("expected at least 4 objects, got %d", report.Objects)
@@ -204,6 +218,7 @@ spec:
 ---
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: select
 spec:
@@ -323,6 +338,7 @@ spec:
 ---
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: select
 spec:
@@ -371,39 +387,98 @@ spec:
 // must validate with NO VER002 preview findings even without the preview
 // opt-in, because every standard field is GA. An earlier placeholder marked
 // every field preview, so guided-init tripped a blocking VER002 on every field
-// ("config directory failed validation"). Stripping the opt-in here proves the
-// surface is genuinely GA, not merely opt-in-tolerated.
+// ("config directory failed validation"). The shipped config omits the opt-in,
+// proving the surface is genuinely GA rather than merely opt-in-tolerated.
 func TestCanonicalConfigIsGAWithoutPreviewOptIn(t *testing.T) {
-	root := t.TempDir()
-	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {
-		t.Fatal(err)
-	}
-	manifestPath := filepath.Join(root, "manifest.yaml")
-	manifest, err := os.ReadFile(manifestPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	needle := "  annotations:\n    " + wf.PreviewFeaturesAnnotation + `: "true"`
-	stripped := strings.Replace(string(manifest), needle, "", 1)
-	if stripped == string(manifest) {
-		t.Fatal("test setup: preview opt-in annotation not found in config-examples manifest")
-	}
-	if err := os.WriteFile(manifestPath, []byte(stripped), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	for _, dir := range []string{"../../config-examples", "../../examples/ios-simulator"} {
+		t.Run(filepath.Base(dir), func(t *testing.T) {
+			manifest, err := os.ReadFile(filepath.Join(dir, "manifest.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(manifest), wf.PreviewFeaturesAnnotation) {
+				t.Fatalf("GA-only shipped config must not opt in to preview features:\n%s", manifest)
+			}
 
-	report, err := newV(t).ValidateDir(root)
-	if err != nil {
-		t.Fatalf("ValidateDir: %v", err)
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			for _, issue := range report.Issues {
+				if issue.Code == WarningPreviewFeature {
+					t.Errorf("standard field wrongly flagged preview without opt-in (#1196): %s/%s: %s",
+						issue.Kind, issue.Name, issue.Message)
+				}
+			}
+			if report.HasErrors() {
+				t.Fatalf("canonical config without preview opt-in must validate clean (all standard fields GA), got:\n%s", joinIssues(report))
+			}
+		})
 	}
-	for _, issue := range report.Issues {
-		if issue.Code == WarningPreviewFeature {
-			t.Errorf("standard field wrongly flagged preview without opt-in (#1196): %s/%s: %s",
-				issue.Kind, issue.Name, issue.Message)
-		}
-	}
-	if report.HasErrors() {
-		t.Fatalf("canonical config without preview opt-in must validate clean (all standard fields GA), got:\n%s", joinIssues(report))
+}
+
+func TestGagglePreviewFeatureRequiresExplicitOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		annotation   string
+		wantBlocking bool
+	}{
+		{name: "default off", wantBlocking: true},
+		{name: "explicit opt-in", annotation: "\n  annotations:\n    goobers.dev/allow-preview-features: \"true\""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			config := fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: preview-test%s
+spec:
+  instance:
+    name: preview-test
+    environment: dev
+  gaggles:
+    - preview-test
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: preview-test
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: app
+  backlog:
+    provider: github
+    project: acme/app
+  isolation:
+    namespace: gaggle-preview-test
+  sandbox:
+    agentic: enforced
+`, tc.annotation)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			var preview *Issue
+			for i := range report.Issues {
+				issue := &report.Issues[i]
+				if issue.Code == WarningPreviewFeature && issue.Kind == "Gaggle" {
+					preview = issue
+					break
+				}
+			}
+			if preview == nil {
+				t.Fatalf("missing Gaggle preview diagnostic:\n%s", joinIssues(report))
+			}
+			if gotBlocking := preview.Severity == Error; gotBlocking != tc.wantBlocking {
+				t.Fatalf("preview diagnostic severity = %s, want blocking %v: %s", preview.Severity, tc.wantBlocking, preview.Message)
+			}
+		})
 	}
 }
 
@@ -560,6 +635,30 @@ func TestWorkflowSchemaAcceptsPollingPriority(t *testing.T) {
 	}`
 	if err := v.ValidateJSON("workflow.schema.json", []byte(workflow)); err != nil {
 		t.Fatalf("polling priority failed schema validation: %v", err)
+	}
+}
+
+func TestWorkflowSchemaAcceptsScheduleIdleBackoff(t *testing.T) {
+	v := newV(t)
+	workflow := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Workflow",
+		"metadata": {"name": "adaptive-poll"},
+		"spec": {
+			"gaggle": "example",
+			"triggers": [{"type": "schedule", "schedule": "* * * * *",
+				"idleBackoff": {"enabled": true, "floor": "1m", "ceiling": "15m"}}],
+			"start": "act",
+			"tasks": [{
+				"name": "act",
+				"type": "deterministic",
+				"goal": "Poll for work.",
+				"run": {"command": ["true"]}
+			}]
+		}
+	}`
+	if err := v.ValidateJSON("workflow.schema.json", []byte(workflow)); err != nil {
+		t.Fatalf("schedule idle backoff failed schema validation: %v", err)
 	}
 }
 
@@ -816,6 +915,7 @@ spec:
 `
 	workflowTmpl := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: docs-updater
 spec:
@@ -890,6 +990,164 @@ func TestConfigBadReportsCrossRefErrors(t *testing.T) {
 	}
 }
 
+func TestGooberSkillPackageWarnings(t *testing.T) {
+	base := t.TempDir()
+	configDir := filepath.Join(base, "config")
+	if err := os.Mkdir(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: skill-packages
+spec:
+  instance:
+    name: skill-packages
+    environment: dev
+  gaggles:
+    - example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: example
+    name: app
+  backlog:
+    provider: github
+    project: example/app
+  isolation:
+    namespace: gaggle-example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: example
+  role: coder
+  instructions: instructions.md
+  skills:
+    - present-shared
+    - present-scoped
+    - missing
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "instructions.md"), []byte("# Coder\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "skills", "present-shared"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(configDir, "gaggles", "example", "skills", "present-scoped"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := newV(t).ValidateDir(configDir)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	var warnings []CodedWarning
+	for _, warning := range report.Warnings() {
+		if warning.Code == WarningMissingSkillPackage {
+			warnings = append(warnings, warning)
+		}
+	}
+	want := CodedWarning{
+		Code:        WarningMissingSkillPackage,
+		Severity:    Warning,
+		Scope:       "config.yaml Goober/coder",
+		Explanation: `spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
+	}
+	if len(warnings) != 1 || warnings[0] != want {
+		t.Fatalf("missing skill warnings = %+v, want %+v", warnings, want)
+	}
+	if report.HasErrors() {
+		t.Fatalf("missing skill package must remain non-fatal: %+v", report.Issues)
+	}
+}
+
+func TestGooberSkillPackageWarningsIncludeInvalidConfigsAndNames(t *testing.T) {
+	base := t.TempDir()
+	configDir := filepath.Join(base, "config")
+	if err := os.Mkdir(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: skill-packages
+spec:
+  instance:
+    name: skill-packages
+    environment: dev
+  gaggles:
+    - example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: example
+    name: app
+  backlog:
+    provider: github
+    project: example/app
+  isolation:
+    namespace: gaggle-example
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: coder
+spec:
+  gaggle: example
+  role: coder
+  instructions: missing.md
+  skills:
+    - missing
+    - nested/name
+    - ..
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := newV(t).ValidateDir(configDir)
+	if err != nil {
+		t.Fatalf("ValidateDir: %v", err)
+	}
+	if !report.HasErrors() {
+		t.Fatal("expected unrelated missing-instructions error")
+	}
+	var explanations []string
+	for _, warning := range report.Warnings() {
+		if warning.Code == WarningMissingSkillPackage {
+			explanations = append(explanations, warning.Explanation)
+		}
+	}
+	for _, want := range []string{
+		`spec.skills declares "missing", but no skill package directory was found at "gaggles/example/skills/missing" or "skills/missing"; the dangling declaration contributes nothing at runtime — remove it or add the package`,
+		`spec.skills declares "nested/name", but the skill name cannot resolve to a package directory under "skills"`,
+		`spec.skills declares "..", but the skill name cannot resolve to a package directory under "skills"`,
+	} {
+		if !slices.Contains(explanations, want) {
+			t.Errorf("missing skill warnings = %q, want explanation %q", explanations, want)
+		}
+	}
+	if len(explanations) != 3 {
+		t.Errorf("missing skill warning count = %d, want 3: %q", len(explanations), explanations)
+	}
+}
+
 // TestCompilerChecksSurfaceInValidate proves `goobers validate` inherits the
 // workflow compiler's deeper analysis (issue #9): a bad schedule expression, an
 // unreachable state, and a stage using a capability its goober does not grant
@@ -925,6 +1183,244 @@ func TestReadOnlyReferenceReposValidateCleanly(t *testing.T) {
 	}
 	if report.HasErrors() {
 		t.Fatalf("expected config-additional-repos to validate cleanly, got:\n%s", joinIssues(report))
+	}
+}
+
+func TestAdditionalReposCapabilityRuntimeSupport(t *testing.T) {
+	tests := []struct {
+		name            string
+		additionalRepos []apiv1.RepoRef
+		task            apiv1.Task
+		wantError       bool
+	}{
+		{
+			name:            "deterministic scratch rejected",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "read-reference", Type: apiv1.TaskDeterministic, Goal: "Read reference.",
+				Run:          &apiv1.DeterministicRun{Command: []string{"read-reference"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities: []string{string(capability.ContentsRead)},
+			},
+			wantError: true,
+		},
+		{
+			name:            "agentic scratch rejected",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "read-reference", Type: apiv1.TaskAgentic, Goal: "Read reference.", Goober: "reader",
+				Workspace: apiv1.WorkspaceScratch, Capabilities: []string{string(capability.ContentsRead)},
+			},
+			wantError: true,
+		},
+		{
+			name:            "deterministic repo supported",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "read-reference", Type: apiv1.TaskDeterministic, Goal: "Read reference.",
+				Run:          &apiv1.DeterministicRun{Command: []string{"read-reference"}},
+				Capabilities: []string{string(capability.ContentsRead)},
+			},
+		},
+		{
+			name: "scratch without additional repos supported",
+			task: apiv1.Task{
+				Name: "read-provider", Type: apiv1.TaskDeterministic, Goal: "Read provider.",
+				Run:          &apiv1.DeterministicRun{Command: []string{"read-provider"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities: []string{string(capability.ContentsRead)},
+			},
+		},
+		{
+			name:            "scratch without contents read supported",
+			additionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			task: apiv1.Task{
+				Name: "compute", Type: apiv1.TaskDeterministic, Goal: "Compute.",
+				Run: &apiv1.DeterministicRun{Command: []string{"compute"}, Workspace: apiv1.WorkspaceScratch},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{AdditionalRepos: tc.additionalRepos}}
+			ix.goobers["reader"] = apiv1.Goober{Spec: apiv1.GooberSpec{
+				Gaggle: "example", Capabilities: []string{string(capability.ContentsRead)},
+			}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "reference-reader"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example", Start: tc.task.Name, Tasks: []apiv1.Task{tc.task},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == errorCapabilityRuntimeSupport {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantError {
+				if len(got) != 1 {
+					t.Fatalf("runtime-support errors = %v, want one; report: %s", got, joinIssues(report))
+				}
+				want := `task "read-reference" declares capability "contents:read" in a scratch workspace`
+				if !strings.Contains(got[0].Message, want) {
+					t.Errorf("runtime-support error = %q, want %q", got[0].Message, want)
+				}
+			} else if len(got) != 0 {
+				t.Errorf("runtime-support errors = %v, want none", got)
+			}
+		})
+	}
+}
+
+func TestCapabilityRuntimeSupportCodeStable(t *testing.T) {
+	if got, want := errorCapabilityRuntimeSupport, WarningCode("WF019"); got != want {
+		t.Fatalf("errorCapabilityRuntimeSupport = %q, want stable code %q", got, want)
+	}
+	if errorCapabilityRuntimeSupport == WarningGateCompletionHidesFailure {
+		t.Fatalf("errorCapabilityRuntimeSupport duplicates %q", WarningGateCompletionHidesFailure)
+	}
+}
+
+func TestSubprocessTimeoutCodeStable(t *testing.T) {
+	if got, want := WarningSubprocessTimeout, WarningCode("WF021"); got != want {
+		t.Fatalf("WarningSubprocessTimeout = %q, want stable code %q", got, want)
+	}
+	for _, other := range []WarningCode{errorCapabilityRuntimeSupport, WarningGateCompletionHidesFailure} {
+		if WarningSubprocessTimeout == other {
+			t.Fatalf("WarningSubprocessTimeout duplicates %q", other)
+		}
+	}
+}
+
+func TestSubprocessTimeoutWarningWiredIntoValidate(t *testing.T) {
+	tests := []struct {
+		name        string
+		task        apiv1.Task
+		wantWarning bool
+	}{
+		{
+			name: "make target with GO_TEST_TIMEOUT override at or above stage timeout warns (#3377)",
+			task: apiv1.Task{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "Run CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "ci"}, Env: map[string]string{"GO_TEST_TIMEOUT": "30m"}},
+				TimeoutSeconds: 1500,
+			},
+			wantWarning: true,
+		},
+		{
+			name: "stage budget clearing the declared subprocess ceiling is clean",
+			task: apiv1.Task{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "Run CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "ci"}, Env: map[string]string{"GO_TEST_TIMEOUT": "30m"}},
+				TimeoutSeconds: 2400,
+			},
+		},
+		{
+			name: "bare make target with no declared override is clean (deliberately narrow detection)",
+			task: apiv1.Task{
+				Name: "local-ci", Type: apiv1.TaskDeterministic, Goal: "Run CI.",
+				Run:            &apiv1.DeterministicRun{Command: []string{"make", "ci"}},
+				TimeoutSeconds: 1500,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "example-workflow"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example", Start: tc.task.Name, Tasks: []apiv1.Task{tc.task},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == WarningSubprocessTimeout {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantWarning {
+				if len(got) != 1 {
+					t.Fatalf("subprocess-timeout warnings = %v, want one; report: %s", got, joinIssues(report))
+				}
+				if got[0].Severity != Warning {
+					t.Fatalf("severity = %q, want warning", got[0].Severity)
+				}
+			} else if len(got) != 0 {
+				t.Fatalf("subprocess-timeout warnings = %v, want none", got)
+			}
+		})
+	}
+}
+
+func TestAdditionalReposCapabilityRuntimeSupportForAgenticGate(t *testing.T) {
+	tests := []struct {
+		name      string
+		workspace apiv1.WorkspaceMode
+		wantError bool
+	}{
+		{name: "scratch rejected", workspace: apiv1.WorkspaceScratch, wantError: true},
+		{name: "repo supported", workspace: apiv1.WorkspaceRepo},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ix := newIndex()
+			ix.gaggles["example"] = apiv1.Gaggle{Spec: apiv1.GaggleSpec{
+				AdditionalRepos: []apiv1.RepoRef{{Provider: apiv1.ProviderGitHub, Owner: "example", Name: "reference"}},
+			}}
+			ix.goobers["reviewer"] = apiv1.Goober{Spec: apiv1.GooberSpec{
+				Gaggle: "example", Capabilities: []string{string(capability.ContentsRead)},
+			}}
+			workflow := apiv1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "reference-review"},
+				DSLVersion: supportmatrix.NextDSLVersion,
+				Spec: apiv1.WorkflowSpec{
+					Gaggle: "example",
+					Start:  "prepare",
+					Tasks: []apiv1.Task{{
+						Name: "prepare", Type: apiv1.TaskDeterministic, Goal: "Prepare.",
+						Run: &apiv1.DeterministicRun{Command: []string{"prepare"}}, Next: "review",
+					}},
+					Gates: []apiv1.Gate{{
+						Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+						Agentic:  &apiv1.AgenticGate{Goober: "reviewer", Workspace: tc.workspace},
+						Branches: map[string]string{"pass": "", "fail": wf.TargetAbort},
+					}},
+				},
+			}
+			report := &Report{}
+			ix.checkWorkflow(report, workflow, "workflow.yaml", false)
+
+			var got []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == errorCapabilityRuntimeSupport {
+					got = append(got, issue)
+				}
+			}
+			if tc.wantError {
+				if len(got) != 1 {
+					t.Fatalf("runtime-support errors = %v, want one; report: %s", got, joinIssues(report))
+				}
+				want := `gate "review" reviewer goober "reviewer" declares capability "contents:read" in a scratch workspace`
+				if !strings.Contains(got[0].Message, want) {
+					t.Errorf("runtime-support error = %q, want %q", got[0].Message, want)
+				}
+			} else if len(got) != 0 {
+				t.Errorf("runtime-support errors = %v, want none", got)
+			}
+		})
 	}
 }
 
@@ -991,6 +1487,66 @@ func TestStageTimeoutCoherenceSurfacesInValidate(t *testing.T) {
 	}
 }
 
+func TestGooberFeatureDefinitionsUseReferencedWorkflowVersions(t *testing.T) {
+	ix := newIndex()
+	for _, definition := range []apiv1.Workflow{
+		{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "goobers.dev/v1alpha1", Kind: "Workflow"},
+			ObjectMeta: metav1.ObjectMeta{Name: "legacy"},
+			DSLVersion: supportmatrix.CurrentDSLVersion,
+			Spec:       apiv1.WorkflowSpec{Gaggle: "example"},
+		},
+		{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "goobers.dev/v1alpha1", Kind: "Workflow"},
+			ObjectMeta: metav1.ObjectMeta{Name: "next"},
+			DSLVersion: supportmatrix.NextDSLVersion,
+			Spec:       apiv1.WorkflowSpec{Gaggle: "example"},
+		},
+	} {
+		identity := workflowIdentity{gaggle: definition.Spec.Gaggle, name: definition.Name}
+		ix.workflows[identity] = indexedWorkflow{definition: definition}
+	}
+
+	definitions := ix.featureDefinitionsForGoober(apiv1.GooberSpec{
+		Gaggle:    "example",
+		Workflows: []string{"next"},
+	})
+	if len(definitions) != 1 || definitions[0].DSLVersion != supportmatrix.NextDSLVersion {
+		t.Fatalf("feature definitions = %+v, want only DSL %q", definitions, supportmatrix.NextDSLVersion)
+	}
+}
+
+// TestWorkflowLessObjectsResolveAtNewestSupportedDSLVersion pins the #3297
+// fallback: a gaggle (or goober) with zero workflows must have its features
+// checked at the newest supported DSL version. The pre-#3297 fallback was an
+// unpinned wf.Definition{}, which the version router rewrote to
+// supportmatrix.CurrentDSLVersion ("1.4", deprecated) — so every workflow-less
+// gaggle would fail validation the moment 1.4 turns unsupported (declared for
+// v0.5.0), with an error its author cannot act on because GaggleSpec has no
+// dslVersion field.
+func TestWorkflowLessObjectsResolveAtNewestSupportedDSLVersion(t *testing.T) {
+	ix := newIndex()
+
+	assertNewestSupported := func(kind string, definitions []wf.Definition) {
+		t.Helper()
+		if len(definitions) != 1 {
+			t.Fatalf("%s definitions = %+v, want exactly one fallback probe", kind, definitions)
+		}
+		got := definitions[0].DSLVersion
+		if got == "" || got == supportmatrix.CurrentDSLVersion {
+			t.Fatalf("%s fallback DSL version = %q; must not be unpinned or the deprecated %q",
+				kind, got, supportmatrix.CurrentDSLVersion)
+		}
+		if got != supportmatrix.NextDSLVersion {
+			t.Fatalf("%s fallback DSL version = %q, want newest supported %q",
+				kind, got, supportmatrix.NextDSLVersion)
+		}
+	}
+
+	assertNewestSupported("gaggle", ix.featureDefinitionsForGaggle("workflow-less"))
+	assertNewestSupported("goober", ix.featureDefinitionsForGoober(apiv1.GooberSpec{Gaggle: "workflow-less"}))
+}
+
 func TestAcceptedButInertWorkflowFieldEmitsCodedWarning(t *testing.T) {
 	v := newV(t)
 	report, err := v.ValidateDir("testdata/config-warnings")
@@ -1013,6 +1569,110 @@ func TestAcceptedButInertWorkflowFieldEmitsCodedWarning(t *testing.T) {
 	want := "expectedOutputs is declared but the stage has no inputs.resultFile to emit it through"
 	if !strings.Contains(warnings[0].Explanation, want) {
 		t.Errorf("warnings = %+v, want explanation containing %q", warnings, want)
+	}
+}
+
+// TestExplicitZeroMaxRunsPerHourWarns reproduces #3360: a workflow that
+// writes readiness.maxRunsPerHour: 0 expecting "unlimited" (by analogy to
+// instance.yaml's runConditions.maxParallelRuns, where 0 does mean
+// unlimited) instead gets silently throttled to the scheduler's default of
+// 10/hour. `goobers validate` must surface this as a non-fatal warning
+// naming both the actual behavior and the asymmetric field, and must NOT
+// warn when the field is simply omitted or set to a positive value — the
+// overwhelming majority of real workflows never set it at all.
+func TestExplicitZeroMaxRunsPerHourWarns(t *testing.T) {
+	const configTemplate = `apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: example
+spec:
+  instance:
+    name: example
+    environment: dev
+  gaggles:
+    - acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: acme
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: app
+  backlog:
+    provider: github
+    project: acme/app
+  isolation:
+    namespace: gaggle-acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: build
+spec:
+  gaggle: acme
+  triggers:
+    - type: manual
+  start: build
+%s  tasks:
+    - name: build
+      type: deterministic
+      goal: Build the project.
+      run:
+        command: ["true"]
+        workspace: scratch
+`
+
+	tests := []struct {
+		name      string
+		readiness string
+		wantWarn  bool
+	}{
+		{name: "explicit zero warns", readiness: "  readiness:\n    maxRunsPerHour: 0\n", wantWarn: true},
+		{name: "omitted does not warn", readiness: "", wantWarn: false},
+		{name: "explicit positive does not warn", readiness: "  readiness:\n    maxRunsPerHour: 5\n", wantWarn: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			config := fmt.Sprintf(configTemplate, tc.readiness)
+			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			if report.HasErrors() {
+				t.Fatalf("warning must not fail validation:\n%s", joinIssues(report))
+			}
+
+			var got []CodedWarning
+			for _, warning := range report.Warnings() {
+				if warning.Code == WarningZeroMaxRunsPerHour {
+					got = append(got, warning)
+				}
+			}
+			if !tc.wantWarn {
+				if len(got) != 0 {
+					t.Fatalf("WF020 warnings = %+v, want none", got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("WF020 warnings = %+v, want exactly one", got)
+			}
+			for _, want := range []string{"maxRunsPerHour", "unlimited", "10", "maxParallelRuns"} {
+				if !strings.Contains(got[0].Explanation, want) {
+					t.Errorf("warning explanation = %q, want it to contain %q", got[0].Explanation, want)
+				}
+			}
+		})
 	}
 }
 
@@ -1229,6 +1889,7 @@ spec:
 ---
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: build
 spec:
@@ -1286,8 +1947,9 @@ func TestWarningCodesAreStable(t *testing.T) {
 		WarningCompatibility,
 		ErrorRemovedFeature,
 		WarningModelFallback,
+		WarningSkillPackageCollision,
 	}
-	want := []WarningCode{"VER001", "VER002", "VER003", "VER004", "MODEL002"}
+	want := []WarningCode{"VER001", "VER002", "VER003", "VER004", "MODEL002", "SKILL001"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("warning code %d = %q, want %q", i, got[i], want[i])
@@ -1352,7 +2014,7 @@ func TestFeatureSupportLevelsUseIssueChannel(t *testing.T) {
 				"example",
 				"Workflow",
 				"feature-level",
-				wf.CheckFeatureSupport([]wf.Feature{tc.feature}, tc.allowPreview),
+				wf.CheckFeatureSupport(wf.Definition{}, []wf.Feature{tc.feature}, tc.allowPreview),
 			)
 			if !tc.wantIssue {
 				if len(report.Issues) != 0 {
@@ -1519,6 +2181,24 @@ func TestGaggleSchemaAcceptsSelfIdentity(t *testing.T) {
 	}
 }
 
+func TestGaggleSchemaAcceptsWorkcopiesRoot(t *testing.T) {
+	v := newV(t)
+	gaggle := `{
+		"apiVersion": "goobers.dev/v1alpha1",
+		"kind": "Gaggle",
+		"metadata": {"name": "web"},
+		"spec": {
+			"project": {"provider": "github", "owner": "acme", "name": "web"},
+			"backlog": {"provider": "github", "project": "acme/web"},
+			"isolation": {"namespace": "gaggle-web"},
+			"workcopies": {"root": "/g"}
+		}
+	}`
+	if err := v.ValidateJSON("gaggle.schema.json", []byte(gaggle)); err != nil {
+		t.Fatalf("gaggle workcopies root rejected: %v", err)
+	}
+}
+
 func TestWorkflowSchemaValidatesTaskRequiredCapabilities(t *testing.T) {
 	v := newV(t)
 	workflow := `{
@@ -1569,7 +2249,7 @@ func TestRunControlSchemas(t *testing.T) {
 			"project": {"provider": "github", "owner": "acme", "name": "web"},
 			"backlog": {"provider": "github", "project": "acme/web"},
 			"isolation": {"namespace": "gaggle-web"},
-			"runControls": {"maxRepasses": 4, "stalledRunTimeout": "2h"}
+			"runControls": {"maxRepasses": 4, "stalledRunTimeout": "2h", "maxRunDuration": "8h"}
 		}
 	}`
 	if err := v.ValidateJSON("gaggle.schema.json", []byte(gaggle)); err != nil {
@@ -1583,7 +2263,7 @@ func TestRunControlSchemas(t *testing.T) {
 		"spec": {
 			"gaggle": "web",
 			"triggers": [{"type": "manual"}],
-			"runControls": {"maxRepasses": 3, "stalledRunTimeout": "90m"},
+			"runControls": {"maxRepasses": 3, "stalledRunTimeout": "90m", "maxRunDuration": "6h"},
 			"start": "review",
 			"gates": [{
 				"name": "review",
@@ -1672,11 +2352,11 @@ func TestGaggleSchemaSandboxAndCheckout(t *testing.T) {
 	}
 }
 
-// TestGaggleCheckoutSparseIsInertWarning pins the accepted-but-inert contract
-// for checkout.sparse (#649): declaring it must validate without errors and
-// surface a VER003 compatibility notice on both the project repo and any
-// additionalRepos entry.
-func TestGaggleCheckoutSparseIsInertWarning(t *testing.T) {
+// TestGaggleCheckoutSparseValidatesCleanly pins that the local runner now
+// honors project.checkout.sparse (#649): a well-formed declaration on both
+// the project repo and an additionalRepos entry validates without any
+// error or warning naming "checkout".
+func TestGaggleCheckoutSparseValidatesCleanly(t *testing.T) {
 	gaggleYAML := `apiVersion: goobers.dev/v1alpha1
 kind: Gaggle
 metadata:
@@ -1687,7 +2367,7 @@ spec:
     owner: acme
     name: web
     checkout:
-      sparse: [services/web]
+      sparse: [services/web, docs]
   additionalRepos:
     - provider: github
       owner: acme
@@ -1708,24 +2388,69 @@ spec:
 	if err != nil {
 		t.Fatalf("ValidateDir: %v", err)
 	}
-	var got []string
-	for _, warning := range report.Warnings() {
-		if warning.Code == WarningCompatibility && strings.Contains(warning.Explanation, "not honored by the local runner") {
-			got = append(got, warning.Scope+": "+warning.Explanation)
-		}
-	}
-	if len(got) != 2 {
-		t.Fatalf("checkout VER003 warnings = %v, want project + additionalRepos entries", got)
-	}
-	joined := strings.Join(got, "\n")
-	for _, want := range []string{"spec.project.checkout.sparse", "spec.additionalRepos[0].checkout.sparse"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("warnings missing %q:\n%s", want, joined)
-		}
-	}
 	for _, issue := range report.Issues {
-		if issue.Severity == Error && strings.Contains(issue.Message, "checkout") {
-			t.Errorf("checkout declaration must not be an error: %v", issue)
+		if strings.Contains(issue.Message, "checkout") || strings.Contains(issue.Message, "sparse") {
+			t.Errorf("well-formed checkout.sparse must validate cleanly, got: %v", issue)
 		}
+	}
+}
+
+// TestGaggleCheckoutSparseRejectsInvalidCones covers every malformed-cone
+// case (#649): an absolute path, an empty list, a glob pattern, a ".."
+// traversal segment, and a duplicate entry are all validation errors with
+// actionable messages, on both spec.project.checkout and an additionalRepos
+// entry.
+func TestGaggleCheckoutSparseRejectsInvalidCones(t *testing.T) {
+	cases := []struct {
+		name       string
+		sparseYAML string
+		wantSubstr string
+	}{
+		{"empty list", "checkout:\n      sparse: []", "must declare at least one cone"},
+		{"absolute path", "checkout:\n      sparse: [/services/web]", "repo-relative, not absolute"},
+		{"glob pattern", "checkout:\n      sparse: [\"services/*\"]", "does not support glob patterns"},
+		{"parent traversal", "checkout:\n      sparse: [../escape]", `must not contain ".." segments`},
+		{"empty cone string", "checkout:\n      sparse: [\"\"]", "must not be empty"},
+		{"duplicate cone", "checkout:\n      sparse: [services/web, services/web]", "duplicates cone"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gaggleYAML := `apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: example
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: web
+    ` + tc.sparseYAML + `
+  backlog:
+    provider: github
+    project: acme/web
+  isolation:
+    namespace: gaggle-example
+`
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "gaggle.yaml"), []byte(gaggleYAML), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			var found bool
+			for _, issue := range report.Issues {
+				if issue.Severity != Error {
+					continue
+				}
+				if issue.Code == errorGaggleCheckoutSparse && strings.Contains(issue.Message, tc.wantSubstr) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("expected an error containing %q, got: %v", tc.wantSubstr, report.Issues)
+			}
+		})
 	}
 }

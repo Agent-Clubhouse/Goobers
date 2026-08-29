@@ -60,17 +60,23 @@ type RepoRef struct {
 	// +optional
 	ConnectionRef string `json:"connectionRef,omitempty" yaml:"connectionRef,omitempty"`
 	// Checkout narrows how much of the repository run workspaces materialize
-	// (B2, #649). Accepted but not honored by the local runner yet: declaring
-	// it is inert and surfaces a VER003 compatibility warning at validate time.
+	// (B2, #649): the local runner provisions a cone-mode sparse checkout
+	// (git sparse-checkout set --cone) instead of the full tree. Nil (the
+	// default) is a full checkout.
 	// +optional
 	Checkout *CheckoutSpec `json:"checkout,omitempty" yaml:"checkout,omitempty"`
 }
 
 // CheckoutSpec declares partial-checkout behavior for a repository reference.
+// A nil *CheckoutSpec (the field is optional on RepoRef) is a full checkout;
+// an explicitly-declared CheckoutSpec must name at least one cone — an empty
+// Sparse list is a validation error (api/validate), not another way to spell
+// "full checkout".
 type CheckoutSpec struct {
 	// Sparse lists repo-relative path cones a sparse checkout materializes;
-	// paths outside every cone are absent from run workspaces. Empty means a
-	// full checkout.
+	// paths outside every cone are absent from run workspaces, except
+	// root-level files (cone-mode semantics). Required non-empty when
+	// Checkout is declared at all.
 	// +optional
 	Sparse []string `json:"sparse,omitempty" yaml:"sparse,omitempty"`
 }
@@ -99,7 +105,7 @@ type BacklogRef struct {
 	// Project scopes the backlog (GitHub repo "owner/name" or ADO project).
 	// +kubebuilder:validation:Required
 	Project string `json:"project" yaml:"project"`
-	// Query/labels narrow which items this gaggle considers work. Routing of an
+	// Labels narrow which items this gaggle considers work. Routing of an
 	// item to a specific workflow is handled by workflow selectors (SCH-010).
 	// +optional
 	Labels []string `json:"labels,omitempty" yaml:"labels,omitempty"`
@@ -115,8 +121,6 @@ type BacklogRef struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	FieldPredicate string `json:"fieldPredicate,omitempty" yaml:"fieldPredicate,omitempty"`
-	// +optional
-	Query string `json:"query,omitempty" yaml:"query,omitempty"`
 	// ConnectionRef names the connection (credentials) used to reach the backlog.
 	// +optional
 	ConnectionRef string `json:"connectionRef,omitempty" yaml:"connectionRef,omitempty"`

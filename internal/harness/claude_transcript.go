@@ -25,6 +25,20 @@ type claudeStreamMessage struct {
 	Usage        claudeUsage                 `json:"usage"`
 	ModelUsage   map[string]claudeModelUsage `json:"modelUsage"`
 	TotalCostUSD *float64                    `json:"total_cost_usd"`
+	// MCPServers is the per-server connection report carried by the
+	// system/init event: every server registered via --mcp-config appears
+	// here with its live status ("connected"/"failed"). A registered server
+	// that failed to start is reported here and nowhere else — the CLI
+	// otherwise proceeds silently without that server's tools (#3356). A
+	// pointer so an init event that omits the field entirely (an older CLI
+	// shape) stays distinguishable from an empty report: only a present
+	// field may ever ground a claim that a registered server was absent.
+	MCPServers *[]claudeMCPServerStatus `json:"mcp_servers"`
+}
+
+type claudeMCPServerStatus struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
 }
 
 type claudeMessage struct {
@@ -222,6 +236,8 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 	var floor []transcriptEvent
 	aggregate := claudeUsageAccumulator{}
 	models := make(map[string]*claudeUsageAccumulator)
+	var mcpServersReported bool
+	var mcpServerStatus map[string]string
 
 	writeEvents := func(events ...transcriptEvent) bool {
 		for _, event := range events {
@@ -260,6 +276,28 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 			var native claudeStreamMessage
 			if json.Unmarshal(line, &native) != nil {
 				continue
+			}
+			if normalized, ok := normalizedAgentRecord(line); ok {
+				_, _ = buf.Write(append(normalized, '\n'))
+				converted = true
+			}
+			if native.Type == "system" && native.Subtype == "init" && native.MCPServers != nil {
+				// Record the CLI's own MCP connection report (#3356). Every
+				// init event carrying the field counts, including a --resume
+				// recovery invocation's: statuses merge by server name with
+				// the latest observation winning. An init WITHOUT the field
+				// records nothing — only an explicit report may later ground
+				// a claim that a registered server was absent.
+				mcpServersReported = true
+				for _, server := range *native.MCPServers {
+					if server.Name == "" {
+						continue
+					}
+					if mcpServerStatus == nil {
+						mcpServerStatus = make(map[string]string)
+					}
+					mcpServerStatus[server.Name] = server.Status
+				}
 			}
 			events, recognized := convertClaudeMessage(native)
 			if !recognized {
@@ -343,11 +381,13 @@ func convertClaudeStreams(streams []io.Reader, prompts []string, limit, alreadyD
 		return transcriptCapture{}, false
 	}
 	return transcriptCapture{
-		data:         data,
-		metrics:      claudeMetrics(aggregate),
-		modelUsage:   claudeModelUsages(models),
-		truncated:    dropped > 0,
-		droppedBytes: dropped,
+		data:               data,
+		metrics:            claudeMetrics(aggregate),
+		modelUsage:         claudeModelUsages(models),
+		truncated:          dropped > 0,
+		droppedBytes:       dropped,
+		mcpServersReported: mcpServersReported,
+		mcpServerStatus:    mcpServerStatus,
 	}, true
 }
 

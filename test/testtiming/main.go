@@ -60,6 +60,17 @@ type jobBudget struct {
 	BaselineSeconds float64 `json:"baselineSeconds"`
 	BudgetSeconds   float64 `json:"budgetSeconds"`
 	Baseline        string  `json:"baseline"`
+	// RegressionTolerance is the fraction of growth over the previous
+	// successful run's ElapsedSeconds that counts as a genuine regression
+	// signal. Shared CI runners (macOS in particular) swing run-to-run purely
+	// from contention -- see #3323, where a green run landed 566.7s against a
+	// 300s budget that every prior green run had already blown, with day-to-day
+	// swings over 20% observed with no code change at all. A fixed-second
+	// budget can never track that noise floor without constant recalibration,
+	// so it stays informational (below) and the advisory signal comes from
+	// this ratio instead: only growth that clears it, relative to the last
+	// successful measurement, is worth a human's attention.
+	RegressionTolerance float64 `json:"regressionTolerance"`
 }
 
 func main() {
@@ -259,8 +270,8 @@ func runReport(args []string, stdout, stderr io.Writer) int {
 	previous := readPrevious(*previousPath, current.Job, stderr)
 	report := formatReport(current, budget, previous)
 	_, _ = fmt.Fprintln(stdout, report.line)
-	if report.overBudget {
-		_, _ = fmt.Fprintf(stdout, "::warning title=Test timing budget exceeded::%s\n", report.line)
+	if report.advisory {
+		_, _ = fmt.Fprintf(stdout, "::warning title=Test timing regression::%s\n", report.line)
 	}
 	if *summaryPath != "" {
 		if err := appendSummary(*summaryPath, report.summary); err != nil {
@@ -291,6 +302,9 @@ func readBudgets(path string) (budgetFile, error) {
 		}
 		if strings.TrimSpace(budget.Baseline) == "" {
 			return budgets, fmt.Errorf("job %q has no baseline description", name)
+		}
+		if !validPositive(budget.RegressionTolerance) {
+			return budgets, fmt.Errorf("job %q has invalid regressionTolerance", name)
 		}
 	}
 	return budgets, nil
@@ -348,11 +362,26 @@ func readPrevious(path, job string, stderr io.Writer) *artifact {
 }
 
 type formattedReport struct {
-	line       string
-	summary    string
-	overBudget bool
+	line     string
+	summary  string
+	advisory bool
 }
 
+// formatReport renders the timing ledger row and decides whether growth is
+// worth a human's attention.
+//
+// The "budget" comparison (actual vs. BudgetSeconds) is informational only:
+// shared runners contend unpredictably, so a fixed-second ceiling is either
+// stale noise (see #3323 -- every green run already exceeded it) or a number
+// someone has to keep chasing upward. It stays in the ledger because the
+// trend is genuinely useful, but it never drives the advisory signal.
+//
+// The advisory signal instead compares the current run against the previous
+// successful measurement: growth beyond RegressionTolerance is a real
+// regression worth flagging; anything inside it is contention noise. With no
+// previous measurement to compare against (first run, cross-fork PR missing
+// the artifact), there is nothing to distinguish noise from regression, so no
+// advisory fires -- silence, not a guess.
 func formatReport(current artifact, budget jobBudget, previous *artifact) formattedReport {
 	actual := current.ElapsedSeconds
 	headroom := budget.BudgetSeconds - actual
@@ -362,12 +391,14 @@ func formatReport(current artifact, budget jobBudget, previous *artifact) format
 	}
 	previousText := "not available"
 	changeText := "not available"
+	advisory := false
 	if previous != nil {
 		previousText = durationText(previous.ElapsedSeconds)
 		delta := actual - previous.ElapsedSeconds
 		changeText = signedDurationText(delta)
 		if previous.ElapsedSeconds > 0 {
 			changeText += fmt.Sprintf(" (%+.1f%%)", delta/previous.ElapsedSeconds*100)
+			advisory = delta > previous.ElapsedSeconds*budget.RegressionTolerance
 		}
 	}
 
@@ -393,7 +424,7 @@ func formatReport(current artifact, budget jobBudget, previous *artifact) format
 		changeText,
 		status,
 	)
-	return formattedReport{line: line, summary: summary, overBudget: headroom < 0}
+	return formattedReport{line: line, summary: summary, advisory: advisory}
 }
 
 func appendSummary(path, summary string) error {

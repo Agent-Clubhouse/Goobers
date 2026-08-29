@@ -193,7 +193,7 @@ const postMergeHelp = "Usage: goobers post-merge [path]\n\n" +
 	"errors), 1 = business error, 2 = usage/IO error.\n"
 
 func runPostMerge(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("post-merge", flag.ContinueOnError)
+	fs := newCLIFlagSet("post-merge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "post-merge")
 	if err := fs.Parse(args); err != nil {
@@ -214,6 +214,16 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// Azure DevOps post-merge reduces to a single action — close the work item
+	// the merged PR resolved — and must NOT resolve a github:* token or run any
+	// of the GitHub sibling/demotion/remediation machinery below (each issues a
+	// PR-number-as-work-item write that on ADO mutates the unrelated work item
+	// sharing the PR's numeric id). New branch reached only for ProviderADO;
+	// every GitHub path below is byte-identical. Mirrors the per-provider
+	// dispatch template at cmd/goobers/issuecloseout.go.
+	if repo.Provider == providers.ProviderADO {
+		return runPostMergeADO(root, repo, stdout, stderr)
+	}
 	prToken, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -224,8 +234,24 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider := newCachedGitHubProvider(root, prToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
-	issuesProvider := newCachedGitHubProvider(root, issuesToken, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
+	provider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, false,
+		withStageProviderToken(prToken),
+		withStageProviderCache(),
+		withStageProviderMutations("pr"),
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	issuesProvider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, false,
+		withStageProviderToken(issuesToken),
+		withStageProviderCache(),
+		withStageProviderMutations("issue"),
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {
@@ -273,6 +299,164 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stdout, "post-merge: pr #%s was already reconciled\n", pullNumber)
 	}
 	return 0
+}
+
+// adoWorkItemCloser is the subset of the base Provider the ADO post-merge close
+// needs. Both *providers.Dispatcher (wrapping the ADO provider) and the test
+// double satisfy it, keeping the close path off any concrete *GitHubProvider —
+// the mandatory work-item methods (BacklogProvider) route through this interface
+// var, never a *providers.GitHubProvider (merge-wiring-plan.md §8).
+type adoWorkItemCloser interface {
+	GetWorkItem(context.Context, providers.RepositoryRef, string) (providers.WorkItem, error)
+	ListComments(context.Context, providers.RepositoryRef, string) ([]providers.Comment, error)
+	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
+	UpdateWorkItemStatus(context.Context, providers.UpdateWorkItemStatusRequest) (providers.WorkItem, error)
+}
+
+// runPostMergeADO is the Azure DevOps post-merge path (merge-wiring-plan.md §6).
+// On ADO the merge chain's ONLY mandatory post-merge action is closing the work
+// item the merged PR resolved. Every sibling/demotion/remediation action the
+// GitHub performPostMerge runs — fanOutNeedsRemediation, unparkResolvedSiblings,
+// unparkSelfHealedEscalations, unparkSelfHealedDemotions — is a documented no-op
+// here: each takes a concrete *GitHubProvider and issues a PR-number-as-work-item
+// write (UpdateWorkItem(ID: pr.Number, …)) that on ADO would mutate the unrelated
+// work item sharing the PR's numeric id (wrong-object hazard, §8). The provider
+// is built via the shared stage provider factory (never providerToken(github:*)); work-item
+// calls target backlogRepoRefForStage so they hit the backlog project, not the
+// routed code-repo project (§6). The reconcile-lock idempotency is unchanged.
+func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
+	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	// Mandatory Provider methods (PollPullRequest here, BacklogProvider in the
+	// close) route through the dispatcher, which embeds Provider — never a
+	// concrete *providers.GitHubProvider (merge-wiring-plan.md §8).
+	dispatcher := providers.NewDispatcher(adoProvider)
+	// Work items (the closed PBI) live in the backlog project on ADO, not the
+	// routed code repo whose PR this stage merged; address them there (§6).
+	backlogRepo := backlogRepoRefForStage(root, repo)
+
+	pullNumber := providerInput("pullNumber", "")
+	if pullNumber == "" {
+		pf(stderr, "error: pullNumber input is required\n")
+		return 1
+	}
+
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+
+	var pollErr error
+	var postMergeErrs []error
+	alreadyCompleted := false
+	err = withPostMergeReconcileLock(root, func(ledgerPath string) error {
+		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+		if err != nil {
+			return err
+		}
+		if postMergeReconciliationCompleted(ledger, repo, pullNumber) {
+			alreadyCompleted = true
+			return nil
+		}
+		var poll providers.PullRequestPollResult
+		poll, pollErr = dispatcher.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
+		if pollErr != nil {
+			return nil
+		}
+		postMergeErrs = performPostMergeADO(ctx, dispatcher, backlogRepo, poll, pullNumber, stdout, stderr)
+		if len(postMergeErrs) > 0 {
+			return nil
+		}
+		if completePostMergeReconciliation(&ledger, repo, pullNumber) {
+			return writePostMergeReconcileLedger(ledgerPath, ledger)
+		}
+		return nil
+	})
+	if err != nil {
+		pf(stderr, "error: record post-merge completion: %v\n", err)
+		return 1
+	}
+	if pollErr != nil {
+		return failProviderStage(stderr, "poll merged pull request", pollErr, "")
+	}
+	if alreadyCompleted {
+		pf(stdout, "post-merge: pr #%s was already reconciled\n", pullNumber)
+	}
+	return 0
+}
+
+// performPostMergeADO is the ADO reduction of performPostMerge to its single
+// mandatory action: mark done every work item the merged PR's body closes. It
+// deliberately omits all GitHub sibling/demotion/remediation machinery (see
+// runPostMergeADO's doc comment). This is what stops the PBI parking at
+// New/in-review forever after its PR lands (merge-wiring-plan.md §6).
+func performPostMergeADO(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, poll providers.PullRequestPollResult, pullNumber string, stdout, stderr io.Writer) []error {
+	closed, closeErrs := closeReferencedWorkItemsADO(ctx, closer, backlogRepo, poll.Body, pullNumber)
+	for _, cerr := range closeErrs {
+		pf(stderr, "warning: %v\n", cerr)
+	}
+	pf(stdout, "post-merge (ado): closed %d work item(s)\n", len(closed))
+	return closeErrs
+}
+
+// closeReferencedWorkItemsADO marks done every work item the merged PR's body
+// references via the same closing-keyword grammar closeReferencedIssues uses
+// (Fixes/Closes/Resolves #N) — on ADO `N` is the work-item id (open-pr writes
+// "Fixes #<itemID>"; the durable WI↔PR link is the body ref, not the claim
+// ledger, which was released at issue-close-out). It mirrors
+// closeReferencedIssues but routes through the base-Provider interface (so it
+// accepts the ADO provider) and targets backlogRepo, never the routed code repo.
+// A PR referencing no work item is a normal outcome, not an error.
+func closeReferencedWorkItemsADO(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, body, pullNumber string) (closed []string, errs []error) {
+	for _, id := range closingIssueNumbers(body) {
+		if err := closeReferencedWorkItemADO(ctx, closer, backlogRepo, id, pullNumber); err != nil {
+			errs = append(errs, fmt.Errorf("close work item #%s: %w", id, err))
+			continue
+		}
+		closed = append(closed, id)
+	}
+	return closed, errs
+}
+
+// closeReferencedWorkItemADO marks one work item done against backlogRepo and
+// leaves the dedupe "Merged in pull request #N" comment on it (§6 step 3). It
+// mirrors closeReferencedIssue's idempotency: the status write is skipped when
+// the item is already in the closed state and already carries goobers/status:done
+// (ADO maps the Completed state category to State=="closed" and surfaces the
+// status tag as a visible label), and the comment is not re-posted if present.
+func closeReferencedWorkItemADO(ctx context.Context, closer adoWorkItemCloser, backlogRepo providers.RepositoryRef, id, pullNumber string) error {
+	item, err := closer.GetWorkItem(ctx, backlogRepo, id)
+	if err != nil {
+		return err
+	}
+	statusLabel := "goobers/status:" + string(providers.WorkItemStatusDone)
+	if !strings.EqualFold(item.State, "closed") || !hasAnyLabel(item.Labels, []string{statusLabel}) {
+		if _, err := closer.UpdateWorkItemStatus(ctx, providers.UpdateWorkItemStatusRequest{
+			Repository: backlogRepo,
+			ID:         id,
+			Status:     providers.WorkItemStatusDone,
+		}); err != nil {
+			return err
+		}
+	}
+
+	comment := fmt.Sprintf("Merged in pull request #%s.", pullNumber)
+	comments, err := closer.ListComments(ctx, backlogRepo, id)
+	if err != nil {
+		return err
+	}
+	for _, existing := range comments {
+		if existing.Body == comment {
+			return nil
+		}
+	}
+	_, err = closer.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+		Repository: backlogRepo,
+		ID:         id,
+		Comment:    comment,
+	})
+	return err
 }
 
 func performPostMerge(ctx context.Context, provider, issuesProvider *providers.GitHubProvider, repo providers.RepositoryRef, root, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
@@ -333,6 +517,10 @@ func unparkSelfHealedEscalations(ctx context.Context, provider *providers.GitHub
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for merge-escalated unpark: %w", base, err))
 		return nil, errs
 	}
+	return unparkSelfHealedEscalationsFrom(ctx, provider, repo, mergedNumber, others, stderr)
+}
+
+func unparkSelfHealedEscalationsFrom(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (unparked []int, errs []error) {
 	for _, pr := range others {
 		if pr.Number == mergedNumber {
 			continue
@@ -378,6 +566,10 @@ func unparkSelfHealedDemotions(ctx context.Context, provider *providers.GitHubPr
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for merge-demoted unpark: %w", base, err))
 		return nil, errs
 	}
+	return unparkSelfHealedDemotionsFrom(ctx, provider, repo, mergedNumber, others, stderr)
+}
+
+func unparkSelfHealedDemotionsFrom(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (healed []int, errs []error) {
 	for _, pr := range others {
 		if pr.Number == mergedNumber {
 			continue
@@ -425,6 +617,10 @@ func unparkResolvedSiblings(ctx context.Context, provider *providers.GitHubProvi
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for blocked-on-sibling unpark: %w", base, err))
 		return nil, errs
 	}
+	return unparkResolvedSiblingsFrom(ctx, provider, repo, mergedNumber, others, stderr)
+}
+
+func unparkResolvedSiblingsFrom(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (unparked []int, errs []error) {
 	for _, pr := range others {
 		if pr.Number == mergedNumber {
 			continue
@@ -540,7 +736,7 @@ func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvi
 			errs = append(errs, fmt.Errorf("persist remediation handoff on pr #%d (triage: %s): %w", pr.Number, triage.Reason, err))
 			continue
 		}
-		if hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) {
+		if hasAnyLabel(pr.Labels, []string{needsRemediationLabel, remediationEscalatedLabel}) {
 			continue
 		}
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{

@@ -756,6 +756,24 @@ func (p *GiteaProvider) getPull(ctx context.Context, repo RepositoryRef, pullID 
 	return pr, nil
 }
 
+// PullRequestMergeable resolves pullID's current Gitea-computed mergeability.
+func (p *GiteaProvider) PullRequestMergeable(ctx context.Context, repo RepositoryRef, pullID string) (*bool, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if pullID == "" {
+		return nil, fmt.Errorf("pull id is required")
+	}
+	pr, err := p.getPull(ctx, repo, pullID)
+	if err != nil {
+		return nil, err
+	}
+	return pr.Mergeable, nil
+}
+
 // reviewDecision aggregates a Gitea PR's reviews into a single decision: the
 // latest review per reviewer wins, and any outstanding REQUEST_CHANGES beats
 // any APPROVED.
@@ -1085,6 +1103,25 @@ func (p *GiteaProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, 
 		return PullRequestSummary{}, err
 	}
 	return summarizeGiteaPull(pr, ""), nil
+}
+
+// RefCheckState resolves a ref's combined commit-status state on demand.
+func (p *GiteaProvider) RefCheckState(ctx context.Context, repo RepositoryRef, ref string) (CheckState, error) {
+	state, _, err := p.combinedCheckState(ctx, repo, ref)
+	return state, err
+}
+
+// RefCheckStates resolves combined check state for each requested ref.
+func (p *GiteaProvider) RefCheckStates(ctx context.Context, repo RepositoryRef, refs []string) (map[string]CheckState, error) {
+	states := make(map[string]CheckState, len(refs))
+	for _, ref := range refs {
+		state, err := p.RefCheckState(ctx, repo, ref)
+		if err != nil {
+			return nil, err
+		}
+		states[ref] = state
+	}
+	return states, nil
 }
 
 // ListRecentlyClosedPullRequests lists pull requests closed or merged since

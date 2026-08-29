@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -34,6 +33,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/internal/testgit"
 	wf "github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -265,7 +265,7 @@ func conformanceFixtures() []conformanceFixture {
 			// invoke.Timeout, a POLICY-classed failure on both runners — the
 			// worker self-enforces the limit, and the engine's
 			// StartToCloseTimeout runs stageTimeoutGrace behind it so
-			// Temporal's infra-classed timeout never fires first. Same
+			// Temporal's worker-loss timeout never fires first. Same
 			// definition, same retry budget, same terminal journal.
 			name: "worker-enforced stage timeout retries as policy",
 			spec: fixtureSpec("implement",
@@ -356,7 +356,7 @@ func newConformanceFixtureRepo(t *testing.T) string {
 
 func runFixtureGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testgit.Command(args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

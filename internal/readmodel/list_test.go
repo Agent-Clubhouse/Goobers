@@ -190,6 +190,48 @@ func TestListServesEveryContractField(t *testing.T) {
 	}
 }
 
+// TestListExcludesNoWorkByDefault is the regression test for #2188: the
+// default run list must hide routine no-work schedule ticks, but only when
+// IncludeNoWork is left false — nothing here should ever be silently dropped
+// from the underlying store, only from what a plain list page returns.
+func TestListExcludesNoWorkByDefault(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	noWorkID := testIdentity()
+	noWorkID.RunID = "run-no-work"
+	if err := store.UpsertRun(ctx, ProjectRun(noWorkID, Projection{}, singleStageEvents("no-work"))); err != nil {
+		t.Fatalf("upsert no-work run: %v", err)
+	}
+	producedID := testIdentity()
+	producedID.RunID = "run-produced"
+	if err := store.UpsertRun(ctx, ProjectRun(producedID, Projection{}, completedRunEvents())); err != nil {
+		t.Fatalf("upsert produced run: %v", err)
+	}
+
+	hidden, err := store.ListRuns(ctx, ListOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(hidden.Runs) != 1 || hidden.Runs[0].RunID != producedID.RunID {
+		t.Fatalf("default list = %+v, want only %q", hidden.Runs, producedID.RunID)
+	}
+
+	shown, err := store.ListRuns(ctx, ListOptions{Limit: 10, IncludeNoWork: true})
+	if err != nil {
+		t.Fatalf("list with IncludeNoWork: %v", err)
+	}
+	if len(shown.Runs) != 2 {
+		t.Fatalf("IncludeNoWork list = %+v, want both runs", shown.Runs)
+	}
+
+	// GetRun (used by run detail) must still answer for the no-work run — the
+	// filter hides it from LIST pages only, never the store itself.
+	if _, ok, err := store.GetRun(ctx, noWorkID.RunID); err != nil || !ok {
+		t.Fatalf("GetRun(%q) = ok=%v err=%v, want the no-work run still readable directly", noWorkID.RunID, ok, err)
+	}
+}
+
 // TestRunningRunKeepsAgeing pins the other half of that decision.
 func TestRunningRunKeepsAgeing(t *testing.T) {
 	ctx := context.Background()
@@ -256,7 +298,7 @@ func TestListPlansUseCoveringIndexes(t *testing.T) {
 
 func explainWithArgs(t *testing.T, store *Store, query string, args []any) string {
 	t.Helper()
-	rows, err := store.readDB().Query("EXPLAIN QUERY PLAN "+query, args...)
+	rows, err := store.reader.Query("EXPLAIN QUERY PLAN "+query, args...)
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
@@ -352,6 +394,19 @@ func TestStageScopedPlansUseTheirIndexes(t *testing.T) {
 		{"stage", ListOptions{Stage: "build", Limit: 50}, "idx_run_stage_recency"},
 		{"gaggle+stage", ListOptions{Gaggle: "gaggle-000", Stage: "build", Limit: 50},
 			"idx_run_stage_gaggle_recency"},
+		{"stage+success", ListOptions{Stage: "build", Outcome: OutcomeSuccess, Limit: 50},
+			"idx_run_stage_outcome_success"},
+		{"stage+failure", ListOptions{Stage: "build", Outcome: OutcomeFailure, Limit: 50},
+			"idx_run_stage_outcome_failure"},
+		{"stage+other", ListOptions{Stage: "build", Outcome: OutcomeOther, Limit: 50},
+			"idx_run_stage_outcome_other"},
+		{"stage+terminal", ListOptions{Stage: "build", Outcome: OutcomeTerminal, Limit: 50},
+			"idx_run_stage_outcome_terminal"},
+		{"stage+finished", ListOptions{Stage: "build", Outcome: OutcomeFinished, Limit: 50},
+			"idx_run_stage_outcome_finished"},
+		{"gaggle+stage+success", ListOptions{
+			Gaggle: "gaggle-000", Stage: "build", Outcome: OutcomeSuccess, Limit: 50,
+		}, "idx_run_stage_gaggle_outcome_success"},
 		// Each population resolves to its OWN partial index. A composite over the
 		// four booleans would have to be probed with three wildcards, which is a
 		// scan of the stage's whole range.
@@ -418,13 +473,14 @@ func seedProjectedStages(t *testing.T, store *Store, n int) {
 			LastSeq:      uint64(i + 1),
 			Stages:       []string{"build"},
 		}}
-		status := "succeeded"
+		status := "success"
 		if i%3 == 0 {
-			status = "failed"
+			status = "failure"
 		}
 		p.Stages = []StageRow{{
 			RunID: p.Run.RunID, Stage: "build", Attempts: 1,
 			LastStatus: status, StartedAt: &startedAt,
+			HadSuccess: status == "success", HadFailure: status == "failure",
 		}}
 		// A minority measured, which is what makes the partial indexes small and
 		// is the shape they are chosen for.
@@ -438,7 +494,7 @@ func seedProjectedStages(t *testing.T, store *Store, n int) {
 			t.Fatalf("seed %d: %v", i, err)
 		}
 	}
-	if _, err := store.writeDB().Exec("ANALYZE"); err != nil {
+	if _, err := store.writer.Exec("ANALYZE"); err != nil {
 		t.Fatalf("analyze: %v", err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -15,11 +16,13 @@ import (
 // enormous burst of removals into the change feed — waking every connected
 // client to refetch at the same moment.
 
-// RetentionLoop applies the projection retention window on a schedule.
+// RetentionLoop applies projection and change-feed retention on a schedule.
 type RetentionLoop struct {
 	store   *Store
+	writer  RetentionWriter
 	window  RetentionWindow
 	options RetentionOptions
+	mu      sync.RWMutex
 	stats   RetentionStats
 }
 
@@ -53,7 +56,12 @@ const (
 )
 
 // NewRetentionLoop constructs the loop.
-func NewRetentionLoop(store *Store, window RetentionWindow, options RetentionOptions) *RetentionLoop {
+func NewRetentionLoop(
+	store *Store,
+	writer RetentionWriter,
+	window RetentionWindow,
+	options RetentionOptions,
+) *RetentionLoop {
 	if options.Interval <= 0 {
 		options.Interval = defaultRetentionInterval
 	}
@@ -63,21 +71,11 @@ func NewRetentionLoop(store *Store, window RetentionWindow, options RetentionOpt
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
-	return &RetentionLoop{store: store, window: window, options: options}
+	return &RetentionLoop{store: store, writer: writer, window: window, options: options}
 }
 
 // Run applies retention until the context ends.
-//
-// # Why an unbounded window still runs the loop
-//
-// It does not: Run returns immediately. That matters because the alternative —
-// looping and doing nothing — would burn a goroutine and a timer forever on
-// every instance that has not opted in, which is all of them by default.
 func (l *RetentionLoop) Run(ctx context.Context) {
-	if !l.window.Bounded() {
-		l.options.Logger.Debug("projection retention is unbounded; no pass will run")
-		return
-	}
 	ticker := time.NewTicker(l.options.Interval)
 	defer ticker.Stop()
 
@@ -101,37 +99,53 @@ func (l *RetentionLoop) Run(ctx context.Context) {
 // which is a cost, not a correctness problem — whereas taking the daemon down
 // over it would turn a cost into an outage.
 func (l *RetentionLoop) pass(ctx context.Context) {
+	l.mu.Lock()
 	l.stats.Passes++
 	l.stats.LastPassAt = time.Now().UTC()
+	l.mu.Unlock()
 
-	result, err := l.store.ApplyRetention(ctx, l.window, l.options.Batch)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			l.stats.Failures++
-			l.options.Logger.Warn("projection retention pass failed", "error", err)
+	if l.window.Bounded() {
+		result, err := l.store.ApplyRetention(ctx, l.writer, l.window, l.options.Batch)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				l.mu.Lock()
+				l.stats.Failures++
+				l.mu.Unlock()
+				l.options.Logger.Warn("projection retention pass failed", "error", err)
+			}
+			return
 		}
-		return
-	}
-	l.stats.AgedOut += result.AgedOut
-	if result.AgedOut > 0 {
-		l.options.Logger.Info("projection retention aged out runs",
-			"aged_out", result.AgedOut, "floor", result.Floor.Format(time.RFC3339))
+		l.mu.Lock()
+		l.stats.AgedOut += result.AgedOut
+		l.mu.Unlock()
+		if result.AgedOut > 0 {
+			l.options.Logger.Info("projection retention aged out runs",
+				"aged_out", result.AgedOut, "floor", result.Floor.Format(time.RFC3339))
+		}
 	}
 
 	// Prune the change feed in the same pass, but AFTER the removals — each
 	// removal writes a change row, and pruning first would leave exactly those
 	// rows behind while dropping older ones a client might still be resuming
 	// from.
-	pruned, err := l.store.PruneChangeFeed(ctx, l.options.ChangeFeedKeep)
+	pruned, err := l.writer.PruneChangeFeed(ctx, l.options.ChangeFeedKeep)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
+			l.mu.Lock()
 			l.stats.Failures++
+			l.mu.Unlock()
 			l.options.Logger.Warn("change feed prune failed", "error", err)
 		}
 		return
 	}
+	l.mu.Lock()
 	l.stats.ChangesPruned += pruned
+	l.mu.Unlock()
 }
 
 // Stats returns a snapshot of the counters.
-func (l *RetentionLoop) Stats() RetentionStats { return l.stats }
+func (l *RetentionLoop) Stats() RetentionStats {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.stats
+}

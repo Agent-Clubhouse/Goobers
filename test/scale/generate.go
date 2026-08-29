@@ -148,7 +148,7 @@ func eventsForRun(rng *rand.Rand, spec Spec) int {
 // inventory spec so runs and definitions agree.
 //
 // They must be the same names. A generator with its own list — this one used
-// {"goobers", "acme-web", "widget-service", "selfhost"} while the inventory
+// {"goobers", "acme-web", "widget-service", "reference-workflows"} while the inventory
 // declared none at all — produces runs whose gaggle no definition mentions, and
 // then every inventory surface reports zero active runs *while looking perfectly
 // healthy*. That is the worst kind of harness bug: it makes the measurement

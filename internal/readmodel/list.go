@@ -45,15 +45,19 @@ type ListOptions struct {
 	Limit    int
 	Cursor   ListCursor
 
-	// Stage, StageOutcome, and Population are the three filters that used to be
+	// Stage, Outcome, and Population are the three filters that used to be
 	// residual predicates evaluated after a journal open (#1782). They are
 	// answered from run_stage now.
-	//
-	// There is deliberately no stage-outcome field. run_stage carries
-	// last_status, but the reference matches on ANY attempt's status, so an
-	// equality test on the last one silently under-matches -- see queryset.go.
 	Stage      string
+	Outcome    Outcome
 	Population Population
+
+	// IncludeNoWork includes runs whose disposition is DispositionNoWork
+	// (#2188). False (the default) excludes them via a plain WHERE term
+	// alongside whatever covering index the other dims choose — not yet a
+	// dedicated covering index of its own, since that indexed contract is
+	// #1429/#1439's to design; see disposition's doc comment in schema.go.
+	IncludeNoWork bool
 
 	// OrderBy selects the recency axis (#1777).
 	//
@@ -89,6 +93,53 @@ func (o Order) column() string {
 
 // Population is one of the four measurement filters.
 type Population string
+
+// Outcome is a stage-attempt outcome population.
+type Outcome string
+
+// OutcomeFinished, OutcomeTerminal, OutcomeSuccess, OutcomeFailure, and
+// OutcomeOther are the supported stage-attempt outcome populations.
+const (
+	OutcomeFinished Outcome = "finished"
+	OutcomeTerminal Outcome = "terminal"
+	OutcomeSuccess  Outcome = "success"
+	OutcomeFailure  Outcome = "failure"
+	OutcomeOther    Outcome = "other"
+)
+
+// stagePredicate returns the literal predicate matched by an outcome's partial
+// index. Values are closed constants, never user-provided SQL.
+func (o Outcome) stagePredicate(prefix string) (string, bool) {
+	switch o {
+	case OutcomeFinished:
+		return prefix + "run_terminal = 1 AND (" + prefix + "had_success = 1 OR " +
+			prefix + "had_failure = 1 OR " + prefix + "had_other = 1)", true
+	case OutcomeTerminal:
+		return prefix + "run_terminal = 1 AND (" + prefix + "had_success = 1 OR " +
+			prefix + "had_failure = 1)", true
+	case OutcomeSuccess:
+		return prefix + "run_terminal = 1 AND " + prefix + "had_success = 1", true
+	case OutcomeFailure:
+		return prefix + "run_terminal = 1 AND " + prefix + "had_failure = 1", true
+	case OutcomeOther:
+		return prefix + "run_terminal = 1 AND " + prefix + "had_other = 1", true
+	default:
+		return "", false
+	}
+}
+
+func (o Outcome) stageIndex(gaggle bool) (string, bool) {
+	suffix := string(o)
+	switch o {
+	case OutcomeFinished, OutcomeTerminal, OutcomeSuccess, OutcomeFailure, OutcomeOther:
+	default:
+		return "", false
+	}
+	if gaggle {
+		return "idx_run_stage_gaggle_outcome_" + suffix, true
+	}
+	return "idx_run_stage_outcome_" + suffix, true
+}
 
 // The populations, matching the URL values the portal's router parses.
 const (
@@ -169,6 +220,9 @@ func (o ListOptions) Dims() []Dim {
 	if o.Stage != "" {
 		dims = append(dims, DimStage)
 	}
+	if o.Outcome != "" {
+		dims = append(dims, DimOutcome)
+	}
 	if o.Population != "" {
 		dims = append(dims, DimPopulation)
 	}
@@ -194,6 +248,11 @@ const (
 // that an unsupported combination is never executed, and validating after the
 // query would mean the expensive thing already happened.
 func (s *Store) ListRuns(ctx context.Context, options ListOptions) (ListPage, error) {
+	if options.Outcome != "" {
+		if _, ok := options.Outcome.stagePredicate(""); !ok {
+			return ListPage{}, fmt.Errorf("readmodel: unknown stage outcome %q", options.Outcome)
+		}
+	}
 	combination, err := Require(options.Dims())
 	if err != nil {
 		return ListPage{}, err
@@ -209,7 +268,12 @@ func (s *Store) ListRuns(ctx context.Context, options ListOptions) (ListPage, er
 	}
 
 	query, args := listQuery(options, limit)
-	rows, err := s.readDB().QueryContext(ctx, query, args...)
+	db, release, err := s.readHandle()
+	if err != nil {
+		return ListPage{}, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return ListPage{}, fmt.Errorf("readmodel: list runs: %w", err)
 	}
@@ -300,6 +364,10 @@ func runScopedListQuery(options ListOptions, limit int) (string, []any) {
 		// from runColumn's closed switch over four constants.
 		where = append(where, column+" = 1")
 	}
+	if !options.IncludeNoWork {
+		where = append(where, "disposition != ?")
+		args = append(args, DispositionNoWork)
+	}
 	// The filter, the cursor, and the ORDER BY all use the SAME column (#1777).
 	//
 	// That is not a tidiness preference. Keyset pagination works by asking for
@@ -360,9 +428,16 @@ func stageScopedListQuery(options ListOptions, limit int) (string, []any) {
 	}
 	where = append(where, "s.stage = ?")
 	args = append(args, options.Stage)
+	if predicate, ok := options.Outcome.stagePredicate("s."); ok {
+		where = append(where, predicate)
+	}
 	if column, ok := options.Population.stageColumn(); ok {
 		// Literal for the same partial-index reason as the run-scoped path.
 		where = append(where, "s."+column+" = 1")
+	}
+	if !options.IncludeNoWork {
+		where = append(where, "r.disposition != ?")
+		args = append(args, DispositionNoWork)
 	}
 	if !options.Since.IsZero() {
 		where = append(where, "s.run_started_at >= ?")
@@ -379,8 +454,12 @@ func stageScopedListQuery(options ListOptions, limit int) (string, []any) {
 		args = append(args, cursorAt, cursorAt, options.Cursor.RunID)
 	}
 
+	from := "run_stage s"
+	if index, ok := options.Outcome.stageIndex(options.Gaggle != ""); ok {
+		from += " INDEXED BY " + index
+	}
 	query := `SELECT ` + runColumns + `
-	FROM run_stage s JOIN run r ON r.run_id = s.run_id
+	FROM ` + from + ` JOIN run r ON r.run_id = s.run_id
 	WHERE ` + strings.Join(where, " AND ") +
 		" ORDER BY s.run_started_at DESC, s.run_id ASC LIMIT ?"
 	args = append(args, limit+1)

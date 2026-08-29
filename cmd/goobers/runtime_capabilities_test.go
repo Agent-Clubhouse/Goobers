@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -60,13 +59,40 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	if len(apiActions) != len(apicontract.V1Routes()) {
 		t.Fatalf("API actions = %d, want one for each of %d registered routes", len(apiActions), len(apicontract.V1Routes()))
 	}
-	// Every route is read-only except the tier-2 mutation stubs (HITL-7/#469):
-	// approve/override/rerun are the only intentional runtime-mutation routes.
+	// Every route is read-only except the tier-2 intervention mutations
+	// (approve/override/rerun, HITL-7/#469), the maintenance actions (the
+	// local-only run reveal, and HITL escalation resolution — operator
+	// recovery of a terminal run, kept outside the parity contract like
+	// `run abort`), and the write planes' workflow-execution routes
+	// (claims + trigger ingestion, #3509 §7; credential resolve, #3511 §11;
+	// blob PUT, decision 010/012 §2a; surrender put, #3699 — each a stage pod
+	// advancing its own execution, the same machine-seam class as the claims
+	// plane). Blob GET needs no entry: it is a genuine read (RouteBlobGet's
+	// ActionClass is read-only-navigation) and falls through to the default
+	// case below.
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
+	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true}
+	workflowExecutionRoutes := map[apicontract.ActionID]bool{
+		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true,
+		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "blobPut": true,
+		"stageSurrender": true,
+	}
 	for _, action := range apiActions {
 		if runtimeMutationRoutes[action.ID] {
 			if action.Class != apicontract.ActionRuntimeMutation {
 				t.Fatalf("API action %q class = %q, want runtime-mutation", action.ID, action.Class)
+			}
+			continue
+		}
+		if maintenanceRoutes[action.ID] {
+			if action.Class != apicontract.ActionMaintenance {
+				t.Fatalf("API action %q class = %q, want maintenance", action.ID, action.Class)
+			}
+			continue
+		}
+		if workflowExecutionRoutes[action.ID] {
+			if action.Class != apicontract.ActionWorkflowExecution {
+				t.Fatalf("API action %q class = %q, want workflow-execution", action.ID, action.Class)
 			}
 			continue
 		}
@@ -80,6 +106,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertActionClass(t, uiActions, "navigate", apicontract.ActionReadOnlyNavigation)
+	assertActionClass(t, uiActions, "revealRun", apicontract.ActionMaintenance)
 }
 
 func TestRuntimeCommandRegistersTypedCapability(t *testing.T) {
@@ -90,54 +117,6 @@ func TestRuntimeCommandRegistersTypedCapability(t *testing.T) {
 		Capability: "approve",
 	}) {
 		t.Fatalf("runtime command action = %+v", registration.action)
-	}
-}
-
-func TestNestedRuntimeCommandRegistersTypedCapabilityAndDispatches(t *testing.T) {
-	called := false
-	registration := commandWithSubcommands(
-		"run",
-		apicontract.ActionWorkflowExecution,
-		nil,
-		runtimeSubcommand(
-			"run approve",
-			"approve",
-			"approve",
-			func(_ []string, _, _ io.Writer) int {
-				called = true
-				return 7
-			},
-		),
-	)
-
-	if code := registration.dispatch([]string{"approve"}, io.Discard, io.Discard); code != 7 {
-		t.Fatalf("dispatch exit code = %d, want 7", code)
-	}
-	if !called {
-		t.Fatal("nested runtime command was not dispatched")
-	}
-	actions := cliSurfaceActionsFrom([]cliCommand{registration})
-	if len(actions) != 2 {
-		t.Fatalf("surface actions = %d, want parent and nested command", len(actions))
-	}
-	if actions[1] != (apicontract.SurfaceAction{
-		ID:         "run approve",
-		Class:      apicontract.ActionRuntimeMutation,
-		Capability: "approve",
-	}) {
-		t.Fatalf("nested runtime command action = %+v", actions[1])
-	}
-
-	err := apicontract.ValidateRuntimeParity(
-		[]apicontract.Capability{{ID: "approve", Class: apicontract.ActionRuntimeMutation}},
-		[]apicontract.SurfaceRegistry{
-			{Surface: apicontract.SurfaceCLI, Actions: actions},
-			{Surface: apicontract.SurfaceAPI},
-			{Surface: apicontract.SurfaceUI},
-		},
-	)
-	if err == nil || err.Error() != `capability "approve" is missing api registration` {
-		t.Fatalf("parity error = %v, want missing API registration", err)
 	}
 }
 

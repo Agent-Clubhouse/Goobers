@@ -50,11 +50,14 @@ func completeCall(kind string) string {
 	return fmt.Sprintf("$(command goobers __complete %s 2>/dev/null)", kind)
 }
 
-// commandNames lists the top-level command word forms in registry order.
+// commandNames lists core top-level commands. Advanced and stage commands keep
+// their completion arms when typed explicitly, but do not crowd discovery.
 func commandNames(m completionModel) []string {
 	out := make([]string, 0, len(m.commands))
 	for _, c := range m.commands {
-		out = append(out, c.name)
+		if c.tier == cliTierCore {
+			out = append(out, c.name)
+		}
 	}
 	return out
 }
@@ -133,6 +136,7 @@ func bashFlagArm(c completionCommand) string {
 
 func bashCandidateArm(c completionCommand) string {
 	statics := subNames(c)
+	statics = append(statics, c.argValues...)
 	var subDyn []completionCommand
 	for _, s := range c.subs {
 		if s.argKind != "" {
@@ -177,6 +181,9 @@ func renderZshCompletion(m completionModel) string {
 	b.WriteString("    if (( CURRENT == 2 )); then\n")
 	b.WriteString("        commands=(\n")
 	for _, c := range m.commands {
+		if c.tier != cliTierCore {
+			continue
+		}
 		fmt.Fprintf(&b, "            %s\n", zshDescribeItem(c.name, c.desc))
 	}
 	for _, gf := range m.globalFlags {
@@ -263,6 +270,7 @@ func zshFlagArm(c completionCommand) string {
 
 func zshCandidateArm(c completionCommand) string {
 	statics := subNames(c)
+	statics = append(statics, c.argValues...)
 	var subDyn []completionCommand
 	for _, s := range c.subs {
 		if s.argKind != "" {
@@ -365,6 +373,7 @@ func dynamicCompletionKinds(m completionModel) []string {
 
 func fishCandidateRules(c completionCommand) string {
 	statics := subNames(c)
+	statics = append(statics, c.argValues...)
 	var b strings.Builder
 	// Depth-1 candidates for command c (count of tokens before cursor == 2).
 	var parts []string
@@ -452,7 +461,7 @@ func renderPowerShellCompletion(m completionModel) string {
 	b.WriteString("# PowerShell completion for goobers\n")
 	b.WriteString("Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {\n")
 	b.WriteString("    param($wordToComplete, $commandAst, $cursorPosition)\n\n")
-	b.WriteString("    $completions = @(\n")
+	b.WriteString("    $topLevel = @(\n")
 	for _, completion := range append(append([]string{}, commandNames(m)...), m.globalFlags...) {
 		fmt.Fprintf(&b, "        '%s'\n", completion)
 	}
@@ -460,8 +469,20 @@ func renderPowerShellCompletion(m completionModel) string {
 	b.WriteString("    $elements = @($commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object {\n")
 	b.WriteString("        if ($_.Extent) { $_.Extent.Text } else { \"$_\" }\n")
 	b.WriteString("    })\n")
-	b.WriteString("    if ($elements.Count -gt 1) {\n")
-	b.WriteString("        return\n")
+	b.WriteString("    $completions = $topLevel\n")
+	b.WriteString("    if ($elements.Count -gt 0 -and !($elements.Count -eq 1 -and $wordToComplete -eq $elements[0])) {\n")
+	b.WriteString("        switch ($elements[0]) {\n")
+	for _, c := range m.commands {
+		if len(c.argValues) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "            '%s' {\n", c.name)
+		fmt.Fprintf(&b, "                $completions = @(%s)\n", powershellValues(c.argValues))
+		b.WriteString("            }\n")
+	}
+	b.WriteString("            default { return }\n")
+	b.WriteString("        }\n")
+	b.WriteString("        if ($elements.Count -gt 2) { return }\n")
 	b.WriteString("    }\n\n")
 	b.WriteString("    $pattern = if ([string]::IsNullOrEmpty($wordToComplete)) {\n")
 	b.WriteString("        '*'\n")
@@ -473,4 +494,12 @@ func renderPowerShellCompletion(m completionModel) string {
 	b.WriteString("    }\n")
 	b.WriteString("}\n")
 	return b.String()
+}
+
+func powershellValues(values []string) string {
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		quoted[i] = "'" + strings.ReplaceAll(value, "'", "''") + "'"
+	}
+	return strings.Join(quoted, ", ")
 }

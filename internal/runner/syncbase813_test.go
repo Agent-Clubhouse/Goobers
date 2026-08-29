@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -164,7 +164,7 @@ func (d *conflictRemediatingDeterministic) Run(_ context.Context, env apiv1.Invo
 			return apiv1.ResultEnvelope{}, fmt.Errorf("local-ci conflict context = %+v, want README.md conflict against main", conflict)
 		}
 
-		cmd := exec.Command("git", "merge", "--no-edit", "main")
+		cmd := testgit.Command("merge", "--no-edit", "main")
 		cmd.Dir = env.Workspace
 		if out, err := cmd.CombinedOutput(); err == nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("remediation merge unexpectedly succeeded: %s", out)
@@ -265,7 +265,7 @@ func (r *batchLoadRepo) openPulls() int {
 
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := testgit.Command(args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

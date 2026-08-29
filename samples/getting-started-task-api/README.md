@@ -4,6 +4,11 @@ This deliberately imperfect TypeScript service is the disposable target for
 Goobers onboarding. It is small enough for a first autonomous change: Node's
 built-in HTTP server, in-memory data, and two development dependencies.
 
+Use it only through the disposable GitHub-backed stage of the
+[canonical quickstart](../../docs/guides/quickstart.md#2-graduate-to-the-token-bearing-quickstart-template).
+That guide owns the ordered setup and run commands; this page documents the
+fixture itself.
+
 ## Version contract
 
 [`sample.json`](sample.json) is the machine-readable contract. Its `version`
@@ -45,20 +50,27 @@ throwaway repository. An offline flow can read and display the same catalog
 without contacting GitHub. The issue order is stable; the first entry is the
 shortest happy-path implementation.
 
-## Quickstart compatibility
+## Workflow coverage
 
 ```text
 go test ./cmd/goobers -run '^TestGettingStartedSampleQuickstartThroughRealRunner$'
+go test ./cmd/goobers -run '^TestGettingStartedSampleImplementationLocalCIThroughRealRunner$'
 ```
 
-Run this acceptance check from the Goobers source repository. It initializes
-the actual embedded `quickstart@v1` template, materializes the pinned fixture in
-a temporary Git repository, and drives the real Goobers local runner through
-backlog claim, implementation, review, branch push, and the production
-`open-pr` command. Only the external coding-model adapter and GitHub HTTP
-endpoint are replaced with deterministic test doubles. The check asserts that
-the pushed branch resolves the first seeded issue and that the provider
-receives the resulting pull request.
+Run these acceptance checks from the Goobers source repository. The quickstart
+check initializes the actual embedded `quickstart@v1` template, materializes the
+pinned fixture in a temporary Git repository, and drives the real Goobers local
+runner through backlog claim, implementation, review, branch push, and the
+production `open-pr` command.
+
+The implementation check uses the same seed issue and repository with the
+flagship implementation workflow's `implement` -> reviewer gate -> `local-ci`
+shape. It proves that the gaggle CI override is compiled through
+`ApplyGaggleCICommand` and executed by the real shell executor as
+`npm run ci`, asserting that a valid implementation passes the `local-ci` stage
+and a deliberately broken TypeScript implementation fails it.
+Only the external coding-model adapter and GitHub HTTP endpoint are replaced
+with deterministic test doubles.
 
 ## Disposal
 

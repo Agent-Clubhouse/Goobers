@@ -1,9 +1,14 @@
 # Onboard an arbitrary repository (tiers 1-2)
 
 This guide takes a GitHub repository that has never used Goobers through one
-curation run and one implementation pull request. It also shows how to add a
-second gaggle to the same local instance. It is the repository-neutral version
-of the [self-hosting runbook](../../selfhost/README.md).
+curation run and one implementation pull request. It also shows how to scale
+the same local instance with more gaggles and repositories. It is the
+repository-neutral version of the
+[self-hosting runbook](../../reference-workflows/README.md).
+
+Complete the [canonical first-run quickstart](quickstart.md) before using this
+production-oriented guide. The steps here are the repository-onboarding deltas
+for replacing its disposable target with an adopter-owned repository.
 
 The guide uses the complete
 [`config-examples/`](../../config-examples/) definitions as a starting point,
@@ -22,6 +27,10 @@ Install or build:
 - `goobers`, `git`, and the GitHub Copilot CLI on the daemon's `PATH`.
 - `gh` for the label and test-issue commands below.
 - The target repository's build, test, and lint tools on the daemon's `PATH`.
+
+See [Stack support](stack-support.md) for which languages have a shipped reference gaggle
+today, and how a gaggle declares its own toolchain requirement (`ciCommand`,
+`requiredCapabilities`) for any other stack.
 
 The target repository needs:
 
@@ -71,24 +80,16 @@ values in YAML:
 ```sh
 export GOOBERS_GITHUB_TOKEN=github_pat_...
 export GOOBERS_COPILOT_TOKEN=github_pat_...
+export COPILOT_GITHUB_TOKEN="$GOOBERS_COPILOT_TOKEN"
 ```
 
 `GOOBERS_COPILOT_TOKEN` is the source named by `instance.yaml`. Goobers injects
 it as `COPILOT_GITHUB_TOKEN` only into agentic subprocesses that declare
-`agent:model`.
-
-The harness preflight intentionally runs with a default-deny base environment,
-so it does not inherit an ambient `COPILOT_GITHUB_TOKEN`. Before validation,
-sign in once with the same OS account that will run the daemon:
-
-```sh
-copilot login
-```
-
-Complete the device flow and keep that account's credential store (or
-`~/.copilot/` fallback) persistent. `validate --check-harness` and daemon
-startup use this stored sign-in; live agentic stages use the capability-scoped
-token from `instance.yaml`.
+`agent:model`. The separate `COPILOT_GITHUB_TOKEN` export lets the harness
+preflight authenticate before that capability credential is resolved. The
+preflight copies the ambient value only into its tool-disabled sign-in probe;
+it does not expose the token to unrelated stages. Alternatively, run `copilot
+login` as the daemon's OS account and persist that account's credential store.
 
 The reviewer in this guide is an agentic gate that returns a journaled verdict;
 it does not submit a native GitHub review. A separate
@@ -201,7 +202,9 @@ create_label "goobers:approved" "0E8A16" "Maintainer-approved; eligible for agen
 create_label "goobers:ready" "1D76DB" "Curated and scoped; eligible for implementation"
 create_label "goobers:claimed" "FBCA04" "Currently claimed by an in-flight run"
 create_label "goobers:nominated" "5319E7" "Filed by a nominator; awaiting approval"
-create_label "goobers:needs-human" "D93F0B" "Needs a human decision"
+create_label "goobers:needs-human" "D93F0B" "Decision only a human can make; not a status/parked state"
+create_label "goobers:blocked-on-sibling" "C5DEF5" "Parked pending a named sibling issue/PR resolving; self-heals"
+create_label "goobers:needs-remediation" "E99695" "Parked after a mechanical failure (repass exhausted, CI/infra failure); needs a fix, not a decision"
 create_label "goobers:auto-close" "0E8A16" "Close a tracking issue after all children close"
 create_label "goobers/status:in-review" "BFDADC" "Implementation PR is awaiting merge"
 create_label "type:bug" "D73A4A" "Defect in existing behavior"
@@ -217,10 +220,15 @@ label taxonomy during a run.
 
 Only a maintainer should apply `goobers:approved`. The curator may add
 `goobers:ready` or `goobers:needs-human`, but its instructions must continue to
-forbid self-approval. Apply `goobers:auto-close` to a `tracking` issue only when
-it should close automatically after reconciliation verifies that all native and
-checklist children are closed. Without that opt-in, reconciliation only removes
-the completed parent's `tracking` label.
+forbid self-approval. The implementation workflow separately applies
+`goobers:blocked-on-sibling` and `goobers:needs-remediation` when a run parks
+for a status reason rather than a decision — see
+[Needs-human label taxonomy](../design/needs-human-taxonomy.md) for the full
+decision-vs-status model and which stage applies which label. Apply
+`goobers:auto-close` to a `tracking` issue only when it should close
+automatically after reconciliation verifies that all native and checklist
+children are closed. Without that opt-in, reconciliation only removes the
+completed parent's `tracking` label.
 
 ## 6. Validate before any live cycle
 
@@ -347,8 +355,11 @@ not a substitute for applying the checked-in source.
 
 Press `Ctrl-C` in the foreground daemon, or send its exact process ID
 `SIGTERM`. `goobers up` stops admitting work, asks in-flight runs to drain, and
-checkpoints before exiting. If a stage exceeds the bounded drain window, the
-next `goobers up` resumes the non-terminal run from its journal.
+prints the remaining workflow/run IDs every 10 seconds while stages reach their
+next checkpoints. Graceful drain waits indefinitely by default. Send a second
+`SIGINT`/`SIGTERM`, or start with `--drain-timeout <duration>`, to terminate
+in-flight stage process groups without a prompt; the next `goobers up` resumes
+those non-terminal runs from their last durable checkpoints.
 
 Do not use `kill -9`, delete `gaggles/*/runs/`, or delete `scheduler/` as a normal stop
 procedure. Confirm shutdown with:
@@ -357,12 +368,54 @@ procedure. Confirm shutdown with:
 goobers status --daemon "$GOOBERS_INSTANCE"
 ```
 
-## 10. Add a second gaggle for the same repository
+## 10. Scale out with more gaggles and repositories
 
-The current local runtime resolves several built-in provider and cleanup stages
-through the first `repos` entry. Until repository selection is gaggle-aware,
-keep exactly one operational repository in each instance root. To operate
-against another repository, repeat this guide with a separate instance root.
+Repository selection is gaggle-aware. Each gaggle's `project` and `backlog`
+connections resolve the instance `repos` entry whose provider, owner, and name
+match, and provider stages inside a run receive that gaggle's repository
+through the run environment. One instance root therefore supports both
+scaling shapes:
+
+- **More gaggles on the same repository.** Add a gaggle with its own workflow
+  names, budget, isolation identity, and non-overlapping backlog labels. The
+  worked example below adds a documentation gaggle.
+- **One gaggle per additional repository.** Add a second `repos` entry and a
+  gaggle whose `project` and `backlog` connections point at it, then confirm
+  with `goobers validate --check-repos`. This is the recommended shape for
+  repositories you operate together: one daemon, one journal, shared run
+  conditions, and per-workflow budgets.
+
+Separate instance roots remain the right choice when a repository needs an
+isolation boundary — different credentials or trust postures, different
+machines, or independent journals and budgets — not because of a repository
+count. See [Choose where an instance and its config
+live](instance-placement.md) for that decision.
+
+Two constraints apply to either shape. Goober and workflow names are
+instance-global, not gaggle-scoped, so a copied gaggle that keeps a name such
+as `coder` fails validation with a duplicate-name error; prefix names per
+gaggle as in step 2 below. And a new gaggle only claims work its backlog
+labels actually match: the `goobers init` scaffold defaults the backlog labels
+and `trustLabel` to `goobers`, which a real repository often does not carry,
+and a workflow whose labels match nothing claims nothing without an error —
+check `gh label list --repo <owner>/<name>` and set the trust label from
+section 5 before the first cycle.
+
+### Current single-repo residue
+
+Three built-in behaviors still resolve through the first `repos` entry
+regardless of gaggle. Account for them when a second repository shares the
+instance:
+
+- The open-PR poll behind `readiness.maxOpenPRs` counts the first repository's
+  open PRs only, so the cap throttles every gaggle by that one count.
+- Terminal branch-delete cleanup targets the first repository only; branches
+  left by terminal runs against another repository are not deleted.
+- The backlog counter that sizes scheduled work queries the gaggle's own
+  repository but resolves its credential from the first `repos` entry; a
+  second repository readable only by a different token can fail to count.
+
+### Worked example: a documentation gaggle for the same repository
 
 Multiple gaggles can safely share the configured repository. For example, add a
 documentation gaggle with its own workflow names, budget, isolation identity,
@@ -458,3 +511,17 @@ goobers status --workflow widget-docs-implementation "$GOOBERS_INSTANCE"
 This completes the tier-1/2 onboarding path: the repository has an explicit
 trust gate, independently routed workforce definitions and budgets, observable
 curation/implementation cycles, and a safe daemon lifecycle.
+
+## Next: authoring workflows and custom stages
+
+After the acceptance cycle works, tailor the workforce definitions in
+`$GOOBERS_CONFIG_SOURCE`:
+
+- **[Use the Goobers agent toolkit](dsl-authoring-skill.md)** — turn a
+  plain-English process description into Gaggle, Goober, and Workflow
+  definitions using the bundled `goobers-dsl-author` skill.
+- **[Custom deterministic stage cookbook](custom-stage-cookbook.md)** — add
+  inline scripts or in-repo project scripts as deterministic stages, with
+  concrete examples from the `config-examples/` reference.
+- **[Needs-human label taxonomy](../design/needs-human-taxonomy.md)** — the
+  full decision-vs-status model and which stage applies which park label.

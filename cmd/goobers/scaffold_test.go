@@ -11,6 +11,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/journal"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 func TestScaffoldTemplatesGolden(t *testing.T) {
@@ -22,6 +23,7 @@ func TestScaffoldTemplatesGolden(t *testing.T) {
 	}{
 		{"goober", "templates/scaffold/goober.yaml.tmpl", "testdata/scaffold/goober.yaml.golden", scaffoldTemplateData{Name: "reviewer2", Gaggle: "example"}},
 		{"instructions", "templates/scaffold/instructions.md.tmpl", "testdata/scaffold/instructions.md.golden", scaffoldTemplateData{Name: "reviewer2", Gaggle: "example"}},
+		{"skill", "templates/scaffold/SKILL.md.tmpl", "testdata/scaffold/SKILL.md.golden", scaffoldTemplateData{Name: "reviewer2", Gaggle: "example"}},
 		{"workflow", "templates/scaffold/workflow.yaml.tmpl", "testdata/scaffold/workflow.yaml.golden", scaffoldTemplateData{Name: "my-flow", Gaggle: "example", Goober: "reviewer2"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,6 +52,7 @@ func TestScaffoldGooberAndWorkflowValidate(t *testing.T) {
 	}
 	wantGooberOutput := "created " + filepath.Join(gaggleDir, "goobers", "reviewer2", "goober.yaml") + "\n" +
 		"created " + filepath.Join(gaggleDir, "goobers", "reviewer2", "instructions.md") + "\n" +
+		"created " + filepath.Join(gaggleDir, "skills", "reviewer2", "SKILL.md") + "\n" +
 		"next: goobers validate " + root + "\n"
 	if stdout != wantGooberOutput {
 		t.Fatalf("scaffold goober stdout = %q, want %q", stdout, wantGooberOutput)
@@ -69,7 +72,7 @@ func TestScaffoldGooberAndWorkflowValidate(t *testing.T) {
 	for path, golden := range map[string]string{
 		filepath.Join(gaggleDir, "goobers", "reviewer2", "goober.yaml"):     "testdata/scaffold/goober.yaml.golden",
 		filepath.Join(gaggleDir, "goobers", "reviewer2", "instructions.md"): "testdata/scaffold/instructions.md.golden",
-		workflowPath: "testdata/scaffold/workflow.yaml.golden",
+		filepath.Join(gaggleDir, "skills", "reviewer2", "SKILL.md"):         "testdata/scaffold/SKILL.md.golden",
 	} {
 		got, err := os.ReadFile(path)
 		if err != nil {
@@ -82,6 +85,20 @@ func TestScaffoldGooberAndWorkflowValidate(t *testing.T) {
 		if string(got) != string(want) {
 			t.Errorf("%s differs from %s", path, golden)
 		}
+	}
+	gotWorkflow, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("read scaffold %s: %v", workflowPath, err)
+	}
+	wantWorkflow, err := renderScaffoldTemplate(
+		"templates/scaffold/workflow.yaml.tmpl",
+		scaffoldTemplateData{Name: "my-flow", Gaggle: "example", Goober: "coder"},
+	)
+	if err != nil {
+		t.Fatalf("render workflow template: %v", err)
+	}
+	if string(gotWorkflow) != string(wantWorkflow) {
+		t.Errorf("%s differs from rendered workflow template", workflowPath)
 	}
 
 	code, stdout, stderr = runArgs(t, "validate", root)
@@ -128,6 +145,9 @@ func assertScaffoldValidationWarnings(t *testing.T, output string, wantCompatibi
 			sawPreview = true
 			continue
 		}
+		if strings.HasPrefix(warning, "WARNING "+placeholderFindingCode+" ") {
+			continue
+		}
 		compatibility = append(compatibility, warning)
 	}
 	if sawPreview {
@@ -163,6 +183,10 @@ func TestScaffoldRefusesOverwriteUnlessForced(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "instructions.md")); !os.IsNotExist(err) {
 		t.Fatalf("instructions.md was created despite all-file overwrite preflight: %v", err)
 	}
+	skillPath := filepath.Join(root, "config", "gaggles", "example", "skills", "reviewer2", "SKILL.md")
+	if _, err := os.Stat(skillPath); !os.IsNotExist(err) {
+		t.Fatalf("SKILL.md was created despite all-file overwrite preflight: %v", err)
+	}
 
 	code, _, stderr = runArgs(t, "scaffold", "goober", "reviewer2", "--force", root)
 	if code != 0 {
@@ -170,6 +194,9 @@ func TestScaffoldRefusesOverwriteUnlessForced(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "instructions.md")); err != nil {
 		t.Fatalf("forced scaffold did not create instructions.md: %v", err)
+	}
+	if _, err := os.Stat(skillPath); err != nil {
+		t.Fatalf("forced scaffold did not create SKILL.md: %v", err)
 	}
 }
 
@@ -220,8 +247,8 @@ func TestScaffoldedWorkflowRunsEndToEnd(t *testing.T) {
 	repoCloneURL = func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil }
 	prevAdapter := newAgenticAdapter
 	newAgenticAdapter = func(string, map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
-			return harness.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+		return &harnesstest.FakeAdapter{Act: func(_ context.Context, req harness.RunRequest) error {
+			return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
 				Status:  apiv1.ResultSuccess,
 				Summary: "scaffolded agentic stage completed",
 			})

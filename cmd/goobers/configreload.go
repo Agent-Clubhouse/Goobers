@@ -20,6 +20,7 @@ import (
 
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -36,13 +37,13 @@ type openPRLoop struct {
 	done   chan struct{}
 }
 
-func newOpenPRLoop(ctx context.Context, refresher *localscheduler.OpenPRRefresher) *openPRLoop {
+func newOpenPRLoop(ctx context.Context, refresher *localscheduler.OpenPRRefresherSet) *openPRLoop {
 	loop := &openPRLoop{ctx: ctx}
 	loop.Replace(refresher)
 	return loop
 }
 
-func (l *openPRLoop) Replace(refresher *localscheduler.OpenPRRefresher) {
+func (l *openPRLoop) Replace(refresher *localscheduler.OpenPRRefresherSet) {
 	l.stopCurrent()
 	if refresher == nil || l.ctx.Err() != nil {
 		return
@@ -168,7 +169,7 @@ func (r *configReloader) poll(now time.Time) error {
 			err:    fmt.Errorf("config directory invalid: %w", err),
 		})
 	}
-	if webhookListenerTopologyChanged(r.setup.Definitions, set) {
+	if webhookListenerTopologyChanged(r.setup.Definitions, set, r.setup.Config) {
 		return r.reject(digest, errors.New("adding the first or removing the last webhook trigger requires a daemon restart"))
 	}
 	runtimeMigration, err := r.layout.MigrateLegacyRuntimeWithReport(configuredGaggleNames(set))
@@ -194,6 +195,7 @@ func (r *configReloader) poll(now time.Time) error {
 		r.setup.ProviderQuota,
 		r.setup.TerminalNotifier,
 		r.setup.SecretStores,
+		nil,
 	)
 	if err != nil {
 		return r.reject(digest, &configReportError{report: report, err: err})
@@ -209,15 +211,31 @@ func (r *configReloader) poll(now time.Time) error {
 		return nil
 	}
 	if err := r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest); err != nil {
+		r.observedDigest = r.appliedDigest
 		return err
 	}
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
+	r.setup.Interventions.Replace(interventionDefinitions(definitions, r.setup.LegacyRunner))
+	if r.setup.CredentialPlane != nil {
+		// Keep the credential plane's grants in step with the applied config:
+		// a reloaded gaggle's project/reference repos and goober declarations
+		// must govern the next resolve, not the boot-time snapshot.
+		r.setup.CredentialPlane.Replace(credentialPlaneDefinitionsFromSet(definitions.Set))
+	}
 	r.setup.Runner = definitions.Runner
 	r.setup.Runners = definitions.Runners
+	r.setup.Definitions = definitions.Set
+	r.setup.Validation = definitions.Validation
+	r.setup.Entries = definitions.Entries
+	r.setup.Machines = definitions.Machines
+	r.setup.GooberDigests = definitions.GooberDigests
+	r.setup.RepoRefs = definitions.RepoRefs
+	r.setup.OpenPRRefresher = definitions.OpenPRRefresher
 	r.setup.Worktrees = definitions.Worktrees
 	r.setup.WorktreesByGaggle = definitions.WorktreesByGaggle
 	r.openPRs.Replace(definitions.OpenPRRefresher)
 	if err := r.reads.ReloadDefinitions(definitions.Set, definitions.Validation, now); err != nil {
+		r.observedDigest = r.appliedDigest
 		return fmt.Errorf("reload read service definitions: %w", err)
 	}
 	if r.readModel != nil {
@@ -228,6 +246,16 @@ func (r *configReloader) poll(now time.Time) error {
 		if err := r.readModel.PublishDefinitionsChanged(context.Background()); err != nil {
 			log.Printf("config reload: publish definitions change: %v", err)
 		}
+	}
+	// #3376: the applied edit just superseded the workflow digest every
+	// in-flight run is pinned to. Report which of those runs a restart can
+	// still resume from their pinned snapshot and which one would refuse —
+	// logged, never fatal, since an applied reload must not be reported as
+	// failed because its advisory report could not be written.
+	if drift, driftErr := inspectWorkflowDigestDrift(r.layout, r.setup.Machines); driftErr != nil {
+		log.Printf("config reload: inspect workflow digest drift: %v", driftErr)
+	} else if driftErr := journalWorkflowDigestDrift(r.setup.InstanceLog, drift); driftErr != nil {
+		log.Printf("config reload: journal workflow digest drift: %v", driftErr)
 	}
 	r.appliedDigest = digest
 	return nil
@@ -297,6 +325,9 @@ func configDirectoryDigest(root string) (string, error) {
 			return walkErr
 		}
 		name := entry.Name()
+		if entry.IsDir() && configtree.IsGaggleSkillsDir(root, path) {
+			return filepath.SkipDir
+		}
 		if gooberassets.IsSourceDir(path) {
 			bundle, err := gooberassets.Load(path)
 			if err != nil {
@@ -389,6 +420,7 @@ type configDigestDocument struct {
 	Kind string `json:"kind"`
 	Spec struct {
 		Instructions string   `json:"instructions"`
+		Gaggle       string   `json:"gaggle"`
 		Skills       []string `json:"skills"`
 	} `json:"spec"`
 }
@@ -414,7 +446,7 @@ func gooberContentReferences(configDir, definitionPath string, content []byte) (
 			paths = append(paths, filepath.Join(filepath.Dir(definitionPath), document.Spec.Instructions))
 		}
 		for _, skill := range document.Spec.Skills {
-			skillPaths, ok, err := skillPackagePaths(configDir, skill)
+			_, skillPaths, ok, err := skillPackagePaths(configDir, document.Spec.Gaggle, skill)
 			if err != nil {
 				return nil, fmt.Errorf("list referenced skill %q package: %w", skill, err)
 			}

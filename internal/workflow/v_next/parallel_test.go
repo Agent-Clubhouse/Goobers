@@ -1,6 +1,7 @@
 package vnext
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -181,11 +182,8 @@ func TestParallelAndBranchNamesMayNotContainDots(t *testing.T) {
 	mustReject(t, def, "branch name")
 }
 
-// Preview gating: every parallel field is preview until FO-8, so a workflow
-// declaring one must not compile without the explicit opt-in.
-// Static fan-out/fan-in graduated to GA once FO-8's conformance corpus went
-// green (#1566, internal/runner/parallel_conformance_test.go): a parallel no
-// longer needs the preview-features opt-in to compile.
+// Parallel fields were preview-gated until static fan-out/fan-in graduated to
+// GA in #1939. A parallel now compiles without the preview-features opt-in.
 func TestParallelCompilesWithoutPreviewOptIn(t *testing.T) {
 	if _, err := Compile(parallelDef()); err != nil {
 		t.Fatalf("a GA parallel should compile without the preview-features opt-in: %v", err)
@@ -439,16 +437,13 @@ func TestParallelGraphProjection(t *testing.T) {
 	}
 
 	var branchTargets []string
-	var joined string
+	var joinSources []string
 	for _, edge := range graph.Edges {
-		if edge.Source != "fan" {
-			continue
+		if edge.Target == "collate" {
+			joinSources = append(joinSources, edge.Source)
 		}
-		if edge.Branch != "" {
+		if edge.Source == "fan" && edge.Branch != "" {
 			branchTargets = append(branchTargets, edge.Branch+"->"+edge.Target)
-		}
-		if edge.Outcome == "join" {
-			joined = edge.Target
 		}
 	}
 	want := []string{"security->review-security", "perf->review-perf"}
@@ -460,8 +455,9 @@ func TestParallelGraphProjection(t *testing.T) {
 			t.Errorf("fan-out edge %d = %q, want %q (declaration order fixes branch ids)", i, branchTargets[i], want[i])
 		}
 	}
-	if joined != "collate" {
-		t.Errorf("join edge target = %q, want collate", joined)
+	wantJoinSources := []string{"review-security", "review-perf"}
+	if !reflect.DeepEqual(joinSources, wantJoinSources) {
+		t.Errorf("join edge sources = %v, want %v", joinSources, wantJoinSources)
 	}
 }
 

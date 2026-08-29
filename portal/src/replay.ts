@@ -1,4 +1,5 @@
-import type { RunEvent } from "./api/types";
+import type { RunEvent, WorkflowGraph } from "./api/types";
+import { eventNodeId, nodeOwner } from "./runDetailData";
 
 export const replaySpeeds = [1, 5, 10] as const;
 export type ReplaySpeed = (typeof replaySpeeds)[number];
@@ -42,11 +43,27 @@ export interface ReplayIdleGap {
   endPercent: number;
 }
 
+// ReplayStageSegment is a contiguous run of timeline points attributed to the
+// same workflow stage/gate node — the run's own hierarchy (stage, and the
+// goober that owns it) rendered as a band beneath the chapter markers instead
+// of the flat, same-weight marker list #2538 reports.
+export interface ReplayStageSegment {
+  key: string;
+  stageId: string;
+  label: string;
+  owner?: string;
+  /** Stable per stage id (first-appearance order), so a repassed stage's segments always share a color. */
+  colorIndex: number;
+  startPercent: number;
+  endPercent: number;
+}
+
 export interface ReplayTimeline {
   events: RunEvent[];
   points: ReplayTimelinePoint[];
   chapters: ReplayChapter[];
   idleGaps: ReplayIdleGap[];
+  stageSegments: ReplayStageSegment[];
   compressedDurationMs: number;
   realDurationMs: number;
 }
@@ -98,7 +115,11 @@ export function replayTransition(
   };
 }
 
-export function replayTimeline(events: RunEvent[]): ReplayTimeline {
+export function replayTimeline(
+  events: RunEvent[],
+  graph?: WorkflowGraph,
+  runId?: string,
+): ReplayTimeline {
   const ordered = orderedReplayEvents(events);
   const offsets: Array<{ compressed: number; real: number }> = [];
   const idleOffsets: Array<{
@@ -158,9 +179,59 @@ export function replayTimeline(events: RunEvent[]): ReplayTimeline {
       startPercent: percentAt(gap.start),
       endPercent: percentAt(gap.end),
     })),
+    stageSegments: replayStageSegments(points, graph, runId),
     compressedDurationMs: compressedOffsetMs,
     realDurationMs: realOffsetMs,
   };
+}
+
+// replayStageSegments groups consecutive timeline points by the run's own
+// stage/gate node id, carrying the last-known node forward across events that
+// don't name one directly (evidence, liveness) — the same attribution
+// eventNodeAtSequence uses for the graph and journal. Points before the run's
+// first stage-bearing event (run.started and the like) carry no stage id and
+// are intentionally left uncovered by any segment: there is no stage yet to
+// attribute them to.
+function replayStageSegments(
+  points: ReplayTimelinePoint[],
+  graph: WorkflowGraph | undefined,
+  runId: string | undefined,
+): ReplayStageSegment[] {
+  const runs: Array<{ stageId: string; startIndex: number; endIndex: number }> = [];
+  let activeStageId: string | undefined;
+
+  points.forEach((point, index) => {
+    activeStageId = eventNodeId(point.event, runId) ?? activeStageId;
+    if (!activeStageId) {
+      return;
+    }
+    const current = runs.at(-1);
+    if (current && current.stageId === activeStageId) {
+      current.endIndex = index;
+    } else {
+      runs.push({ stageId: activeStageId, startIndex: index, endIndex: index });
+    }
+  });
+
+  // Colors key off the stage id's first appearance, not the segment's
+  // position, so a repassed stage's second visit matches its first instead of
+  // drifting to whatever color that position in the list lands on.
+  const colorIndexByStage = new Map<string, number>();
+  for (const run of runs) {
+    if (!colorIndexByStage.has(run.stageId)) {
+      colorIndexByStage.set(run.stageId, colorIndexByStage.size);
+    }
+  }
+
+  return runs.map((run) => ({
+    key: `${run.stageId}-${run.startIndex}`,
+    stageId: run.stageId,
+    label: run.stageId,
+    owner: nodeOwner(graph, run.stageId),
+    colorIndex: colorIndexByStage.get(run.stageId) ?? 0,
+    startPercent: points[run.startIndex].percent,
+    endPercent: points[run.endIndex].percent,
+  }));
 }
 
 export function replayChapterKind(event: RunEvent): ReplayChapterKind {

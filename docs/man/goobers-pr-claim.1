@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS PR CLAIM" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers pr-claim \- check PR liveness or release its remediation claim (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers pr-claim\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers pr-claim [--release] [path]
+
+At a pr-remediation stage boundary, verify that this run's claimed pull
+request is still open. If it has merged or closed, release the claim and
+return a structured no-work result so the runner stops the workflow.
+With --release, explicitly release the run's PR claim without querying the
+provider. Releasing an already-released claim is an idempotent success.
+
+Exit codes: 0 = PR open, terminal no-work, or released; 1 = business error;
+2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers pr-claim
+goobers pr-claim --release
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

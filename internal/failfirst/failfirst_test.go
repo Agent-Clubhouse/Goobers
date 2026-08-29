@@ -7,6 +7,7 @@ import (
 
 const workflowNoGates = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: example
 spec:
@@ -23,6 +24,7 @@ spec:
 
 const workflowOneGate = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: example
 spec:
@@ -48,6 +50,7 @@ spec:
 
 const workflowTwoGates = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: example
 spec:
@@ -80,12 +83,12 @@ spec:
 
 func TestIsWorkflowFile(t *testing.T) {
 	cases := map[string]bool{
-		"selfhost/gaggles/goobers/workflows/tutor.yaml": true,
-		"workflows/tutor.yaml":                          true,
-		"workflows/tutor.yml":                           true,
-		"selfhost/gaggles/goobers/goobers/analyst.yaml": false,
-		"selfhost/gaggles/goobers/workflows/README.md":  false,
-		"docs/design/tutor-redesign.md":                 false,
+		"reference-workflows/gaggles/goobers/workflows/tutor.yaml": true,
+		"workflows/tutor.yaml": true,
+		"workflows/tutor.yml":  true,
+		"reference-workflows/gaggles/goobers/goobers/analyst.yaml": false,
+		"reference-workflows/gaggles/goobers/workflows/README.md":  false,
+		"docs/design/tutor-redesign.md":                            false,
 	}
 	for p, want := range cases {
 		if got := IsWorkflowFile(p); got != want {

@@ -52,7 +52,7 @@ func runIOSSimulatorTest(args []string, stdout, stderr io.Writer) int {
 }
 
 func runIOSSimulatorTestWith(args []string, stdout, stderr io.Writer, deps iosSimulatorCommandDeps) int {
-	flags := flag.NewFlagSet("ios-simulator-test", flag.ContinueOnError)
+	flags := newCLIFlagSet("ios-simulator-test", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = helpUsage(stderr, "ios-simulator-test")
 	var options iossimulator.Options

@@ -27,9 +27,10 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
-	"github.com/goobers/goobers/internal/testdep"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // dotnetServiceMachine loads the SHIPPED dotnet-service gaggle + implementation
@@ -97,11 +98,9 @@ func newDotnetFixtureRepo(t *testing.T) string {
 	return bare
 }
 
-// newDotnetGaggleRunner mirrors newContinuityRunner but scripts the
-// dotnet-service goobers: dotnet-implementer commits a small marker (so the run
-// branch has a non-empty diff for the review gate), dotnet-reviewer passes, and
-// local-ci runs the real `dotnet test`.
-func newDotnetGaggleRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, runsDir string) *runner.Runner {
+// newPolyglotGaggleRunner scripts a reference gaggle's implementer to commit a
+// marker, its reviewer to pass, and leaves local-ci to execute the real build.
+func newPolyglotGaggleRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, runsDir, implementerName string) *runner.Runner {
 	t.Helper()
 	resolver, err := credentials.NewResolver(nil)
 	if err != nil {
@@ -120,10 +119,10 @@ func newDotnetGaggleRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, run
 			if ierr != nil {
 				return nil, ierr
 			}
-			adapter := &harness.FakeAdapter{
+			adapter := &harnesstest.FakeAdapter{
 				Transcript: []byte("fake harness session for " + gooberName + "\n"),
 				Act: func(_ context.Context, req harness.RunRequest) error {
-					if gooberName == "dotnet-implementer" {
+					if gooberName == implementerName {
 						// A non-empty diff so the review gate doesn't empty-diff
 						// fast-fail; the buildable service already lives on main.
 						if werr := os.WriteFile(filepath.Join(req.Workspace, "CHANGELOG.md"), []byte("- reference change\n"), 0o644); werr != nil {
@@ -131,9 +130,9 @@ func newDotnetGaggleRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, run
 						}
 						runSkeletonGit(t, req.Workspace, "add", "CHANGELOG.md")
 						runSkeletonGit(t, req.Workspace, "-c", "user.email=impl@test", "-c", "user.name=impl", "commit", "-m", "implement: touch changelog")
-						return harness.WriteCompletion(req.Workspace, req.CompletionPath, resultPayload(apiv1.ResultSuccess, "implemented"))
+						return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, resultPayload(apiv1.ResultSuccess, "implemented"))
 					}
-					return harness.WriteCompletion(req.Workspace, req.CompletionPath, verdictPayload(apiv1.VerdictPass, "looks good"))
+					return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, verdictPayload(apiv1.VerdictPass, "looks good"))
 				},
 			}
 			recorder, ok := rec.(harness.SpanRecorder)
@@ -188,7 +187,7 @@ func TestIntegrationDotnetServiceGaggleRunsLocalCIGreen(t *testing.T) {
 	runsDir := filepath.Join(instanceRoot, "runs")
 	fixtureRepo := newDotnetFixtureRepo(t)
 	machine := dotnetServiceMachine(t)
-	r := newDotnetGaggleRunner(t, mgr, fixtureRepo, runsDir)
+	r := newPolyglotGaggleRunner(t, mgr, fixtureRepo, runsDir, "dotnet-implementer")
 
 	const runID = "run-dotnet-gaggle-1"
 	res, err := r.Start(context.Background(), skeletonStartInput(runID, machine))

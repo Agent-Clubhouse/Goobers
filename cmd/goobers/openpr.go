@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -32,7 +34,7 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.\n"
 
 func runOpenPR(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("open-pr", flag.ContinueOnError)
+	fs := newCLIFlagSet("open-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "open-pr")
 	if err := fs.Parse(args); err != nil {
@@ -53,41 +55,16 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Explicit per-kind dispatch (github | ado | gitea | default-error): the old
-	// ADO-or-GitHub-default silently opened a gitea-routed repo's PR against
-	// api.github.com with a GitHub capability token.
-	var provider openPRProvider
-	switch repo.Provider {
-	case providers.ProviderADO:
-		adoProvider, err := newADOProviderForStage(root, repo)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		provider = adoProvider
-	case providers.ProviderGitea:
-		token, err := providerToken(capability.GitHubPRWrite)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		giteaProvider, err := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		provider = giteaProvider
-	case providers.ProviderGitHub:
-		token, err := providerToken(capability.GitHubPRWrite)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		provider = newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
-	default:
-		pf(stderr, "error: open-pr does not support repository provider %q\n", repo.Provider)
+	stageProvider, err := newProviderForStage(root, repo, false,
+		withStageProviderCapability(capability.ProviderPRWrite),
+		withStageProviderMutations("pr"),
+		withStageProviderOpenPR(),
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	provider := openPRProvider(stageProvider)
 
 	runID, workflow, err := providerRunContext()
 	if err != nil {
@@ -128,6 +105,25 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	if haveIssue && issueID != "" && !structuredBody {
 		body += "\n\nFixes #" + issueID
 	}
+	runsDir, err := runsDirForRun(layoutFor(root), runID)
+	if err != nil && !errors.Is(err, iofs.ErrNotExist) {
+		pf(stderr, "error: locate run journal for escalation state: %v\n", err)
+		return 1
+	}
+	if err == nil {
+		escalation, duplicate, err := issueCloseOutDuplicateEscalation(runsDir, runID)
+		if err != nil {
+			pf(stderr, "error: resolve duplicate-diff escalation: %v\n", err)
+			return 1
+		}
+		if duplicate {
+			body, err = withImplementationEscalationMarker(body, escalation)
+			if err != nil {
+				pf(stderr, "error: render duplicate-diff escalation: %v\n", err)
+				return 1
+			}
+		}
+	}
 
 	// Config write-boundary (#104/T4, wired here per #223). Opt-in and no-op by
 	// default, so implementation/work-nomination are unaffected. When the Tutor
@@ -162,7 +158,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// per-action-class boundary: opt-in (confineToActionRoots=true) and no-op
 	// by default. When set, every file this run's branch changes must resolve
 	// into the SAME single declared action root (the comma/newline
-	// `actionRoots` input, e.g. "selfhost,skills") — a skill-authoring action
+	// `actionRoots` input, e.g. "reference-workflows,skills") — a skill-authoring action
 	// cannot also rewrite a workflow, or vice versa — else the cycle aborts
 	// CLOSED before the PR opens (configboundary.ConfineExclusive).
 	if providerInput("confineToActionRoots", "") == "true" {

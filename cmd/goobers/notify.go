@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/desktopnotify"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/speechnotify"
 )
@@ -79,6 +80,11 @@ type schedulerSetupOptions struct {
 	desktopNotifications bool
 	notifyOverride       notifyFlag
 	notificationWarnings io.Writer
+	startupProgress      func(string)
+	// claimRecoveryGate defers the setup-time expired-claim reap until the
+	// caller has rebuilt its renewal set (DS6; see withClaimRecoveryGate).
+	// Nil — the pure mode-1 one-shot paths — permits the reap unchanged.
+	claimRecoveryGate *localscheduler.RecoveryGate
 }
 
 type schedulerSetupOption func(*schedulerSetupOptions)
@@ -88,6 +94,12 @@ func withDesktopNotifications(override notifyFlag, warnings io.Writer) scheduler
 		options.desktopNotifications = true
 		options.notifyOverride = override
 		options.notificationWarnings = warnings
+	}
+}
+
+func withStartupProgress(report func(string)) schedulerSetupOption {
+	return func(options *schedulerSetupOptions) {
+		options.startupProgress = report
 	}
 }
 

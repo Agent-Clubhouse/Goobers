@@ -1,6 +1,6 @@
 # Design: Workflow CD — GitOps config source for the local daemon
 
-> Status: **Draft for review — not implemented** · Area prefix: `WCD` (new) · Milestone: **Workflow CD** (#15)
+> Status: **implemented — shipped** (WCD-1..7 #454–#461 closed — workflowSource, GitSource last-known-good reconcile, `goobers apply`, configrepo:read grant, isolation pen-test all live; epic #453 awaits close-out audit; header refreshed 2026-08-07) · Area prefix: `WCD` (new) · Milestone: **Workflow CD** (#15)
 > Requirements: [`docs/requirements/config-as-code.md`](../requirements/config-as-code.md), [`docs/requirements/deployment.md`](../requirements/deployment.md), [`docs/requirements/security.md`](../requirements/security.md)
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 > Related issues: #337 (continuous-reconciliation CD daemon), #336 (`goobers apply`), #154 (config hot-reload), #250 (capability enforcement for built-in kinds)

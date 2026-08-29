@@ -1,0 +1,44 @@
+name: EvalSuite Tests
+
+# #2663: schema validation tests for the EvalSuite DSL (evals/). Scoped to
+# the evals/ directory and this workflow file so unrelated PRs don't pay for
+# a Python setup step.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "evals/**"
+      - ".github/workflows/evals-tests.yml"
+  pull_request:
+    paths:
+      - "evals/**"
+      - ".github/workflows/evals-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: pytest (evals/)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r evals/requirements.txt
+
+      - name: Run tests
+        run: pytest
+        working-directory: evals

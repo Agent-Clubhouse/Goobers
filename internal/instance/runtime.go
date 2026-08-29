@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -43,14 +44,30 @@ func (l Layout) EnsureGaggleRuntime(gaggle string) error {
 // Scoped layouts return only their own root. An instance layout also includes
 // the legacy flat root when present so pre-GAG-011 journals remain readable.
 func (l Layout) RunDirs() ([]string, error) {
+	return l.RunDirsContext(context.Background())
+}
+
+// RunDirsContext returns every existing run-journal root, checking ctx between
+// filesystem operations. Individual filesystem calls may still block.
+func (l Layout) RunDirsContext(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if l.gaggle != "" {
 		return []string{l.RunsDir()}, nil
 	}
 
 	var dirs []string
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if info, err := os.Lstat(l.RunsDir()); err == nil {
+		alias, err := isLegacyRuntimeAlias(l.RunsDir(), info)
+		if err != nil {
+			return nil, fmt.Errorf("inspect legacy runs alias: %w", err)
+		}
 		switch {
-		case info.Mode()&os.ModeSymlink != 0:
+		case alias:
 			// A single-gaggle compatibility alias points at the scoped root,
 			// which is discovered below. Do not scan it twice.
 		case info.IsDir():
@@ -60,6 +77,69 @@ func (l Layout) RunDirs() ([]string, error) {
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("inspect legacy runs directory: %w", err)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(l.GagglesDir())
+	if errors.Is(err, fs.ErrNotExist) {
+		return dirs, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read gaggles directory: %w", err)
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		runsDir := l.ForGaggle(entry.Name()).RunsDir()
+		if info, err := os.Stat(runsDir); err == nil && info.IsDir() {
+			dirs = append(dirs, runsDir)
+		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("inspect runs directory for gaggle %q: %w", entry.Name(), err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	sort.Strings(dirs)
+	return dirs, nil
+}
+
+// WorkcopiesDirs returns every existing managed-working-copy root in
+// deterministic order, the same shape as RunDirs (see its doc): a scoped
+// layout returns only its own root, while an instance layout also includes
+// the legacy flat root when present (skipping it when it is a single-gaggle
+// compatibility alias, so it is not scanned twice). Used to enumerate
+// every gaggle's mirrors on the node — e.g. the object-cache GC helper's
+// fail-closed dependents scan (#654, design §3 B3), which must check every
+// gaggle's workcopies root, not just one.
+func (l Layout) WorkcopiesDirs() ([]string, error) {
+	if l.gaggle != "" {
+		return []string{l.WorkcopiesDir()}, nil
+	}
+
+	var dirs []string
+	if info, err := os.Lstat(l.WorkcopiesDir()); err == nil {
+		alias, err := isLegacyRuntimeAlias(l.WorkcopiesDir(), info)
+		if err != nil {
+			return nil, fmt.Errorf("inspect legacy workcopies alias: %w", err)
+		}
+		switch {
+		case alias:
+			// A single-gaggle compatibility alias points at the scoped root,
+			// which is discovered below. Do not scan it twice.
+		case info.IsDir():
+			dirs = append(dirs, l.WorkcopiesDir())
+		default:
+			return nil, fmt.Errorf("read workcopies directory: %s is not a directory", l.WorkcopiesDir())
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("inspect legacy workcopies directory: %w", err)
 	}
 
 	entries, err := os.ReadDir(l.GagglesDir())
@@ -73,11 +153,11 @@ func (l Layout) RunDirs() ([]string, error) {
 		if !entry.IsDir() {
 			continue
 		}
-		runsDir := l.ForGaggle(entry.Name()).RunsDir()
-		if info, err := os.Stat(runsDir); err == nil && info.IsDir() {
-			dirs = append(dirs, runsDir)
+		workcopiesDir := l.ForGaggle(entry.Name()).WorkcopiesDir()
+		if info, err := os.Stat(workcopiesDir); err == nil && info.IsDir() {
+			dirs = append(dirs, workcopiesDir)
 		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("inspect runs directory for gaggle %q: %w", entry.Name(), err)
+			return nil, fmt.Errorf("inspect workcopies directory for gaggle %q: %w", entry.Name(), err)
 		}
 	}
 	sort.Strings(dirs)
@@ -155,8 +235,14 @@ func (l Layout) migrateLegacyRuntimeWithReport(gaggles []string, syncDir func(st
 
 	var movedDirs []string
 	for _, legacy := range []string{l.RunsDir(), l.WorkcopiesDir()} {
-		if info, statErr := os.Lstat(legacy); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-			continue
+		if info, statErr := os.Lstat(legacy); statErr == nil {
+			alias, aliasErr := isLegacyRuntimeAlias(legacy, info)
+			if aliasErr != nil {
+				return RuntimeMigration{}, fmt.Errorf("inspect legacy runtime alias %s: %w", legacy, aliasErr)
+			}
+			if alias {
+				continue
+			}
 		}
 		hasFiles, inspectErr := dirHasFiles(legacy)
 		if inspectErr != nil {
@@ -196,7 +282,11 @@ func (l Layout) migrateLegacyRuntimeWithReport(gaggles []string, syncDir func(st
 			if err != nil {
 				return RuntimeMigration{}, fmt.Errorf("inspect legacy runtime directory %s: %w", legacy, err)
 			}
-			if info.Mode()&os.ModeSymlink != 0 {
+			alias, err := isLegacyRuntimeAlias(legacy, info)
+			if err != nil {
+				return RuntimeMigration{}, fmt.Errorf("inspect legacy runtime alias %s: %w", legacy, err)
+			}
+			if alias {
 				continue
 			}
 			if err := os.Remove(legacy); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -419,22 +509,28 @@ func (l Layout) scopedRuntimeExists() (bool, error) {
 }
 
 func migrateLegacyDir(legacy, scoped string) (bool, error) {
-	if info, err := os.Lstat(legacy); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		target, err := filepath.EvalSymlinks(legacy)
+	if info, err := os.Lstat(legacy); err == nil {
+		alias, err := isLegacyRuntimeAlias(legacy, info)
 		if err != nil {
-			return false, fmt.Errorf("resolve legacy runtime alias %s: %w", legacy, err)
+			return false, fmt.Errorf("inspect legacy runtime alias %s: %w", legacy, err)
 		}
-		if isGeneratedRuntimeAlias(legacy, target) {
+		if alias {
+			target, err := ResolveRuntimeAlias(legacy)
+			if err != nil {
+				return false, fmt.Errorf("resolve legacy runtime alias %s: %w", legacy, err)
+			}
+			if isGeneratedRuntimeAlias(legacy, target) {
+				return false, nil
+			}
+			scopedAbs, err := filepath.EvalSymlinks(scoped)
+			if err != nil {
+				return false, err
+			}
+			if target != scopedAbs {
+				return false, fmt.Errorf("legacy runtime alias %s points to %s, want %s", legacy, target, scopedAbs)
+			}
 			return false, nil
 		}
-		scopedAbs, err := filepath.EvalSymlinks(scoped)
-		if err != nil {
-			return false, err
-		}
-		if target != scopedAbs {
-			return false, fmt.Errorf("legacy runtime alias %s points to %s, want %s", legacy, target, scopedAbs)
-		}
-		return false, nil
 	}
 	hasFiles, err := dirHasFiles(legacy)
 	if err != nil {
@@ -492,11 +588,7 @@ func ensureLegacyRuntimeAlias(legacy, scoped string) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("inspect legacy runtime alias %s: %w", legacy, err)
 	}
-	target, err := filepath.Rel(filepath.Dir(legacy), scoped)
-	if err != nil {
-		return fmt.Errorf("resolve legacy runtime alias target: %w", err)
-	}
-	if err := os.Symlink(target, legacy); err != nil {
+	if err := CreateLegacyRuntimeAlias(legacy, scoped); err != nil {
 		return fmt.Errorf("create legacy runtime alias %s: %w", legacy, err)
 	}
 	return nil

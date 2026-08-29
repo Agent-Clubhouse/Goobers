@@ -8,10 +8,23 @@ goobers scaffold workflow \- scaffold a workflow in a gaggle
 .nf
 Usage: goobers scaffold goober [--force] <name> [path]
        goobers scaffold workflow [--force] <name> [path]
+       goobers scaffold gaggle [--force] <name> [path]
+       goobers scaffold gaggle --from <existing-gaggle> <name> [path]
 
-Generate a valid goober or workflow in the current gaggle. path may be
-an instance root or a gaggle directory and defaults to ".". Existing
-files are never replaced unless --force is set.
+Generate a valid goober, workflow, or gaggle. For goober/workflow, path
+may be an instance root or a gaggle directory and defaults to ".". For
+gaggle, path is always an instance root. Existing files are never
+replaced unless --force is set.
+
+`scaffold gaggle` with no --from creates an empty gaggle: gaggle.yaml
+plus its manifest.yaml registration, ready for scaffold goober/workflow.
+`scaffold gaggle --from <existing-gaggle>` instead renames that gaggle to
+<name>: it moves gaggles/<existing-gaggle> to gaggles/<name> and rewrites
+every identity reference — gaggle.yaml's metadata.name and
+isolation.namespace, the manifest.yaml gaggles list entry, and every
+contained goober/workflow's spec.gaggle — while project, backlog,
+ciCommand, instructions, and workflow bodies move untouched. --force is
+not accepted with --from.
 .fi
 .SH SEE ALSO
 \fBgoobers\fR(1)

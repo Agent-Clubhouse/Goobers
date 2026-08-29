@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"sigs.k8s.io/yaml"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
@@ -198,10 +200,13 @@ type WorkflowDefinition struct {
 	Digest  string `json:"digest"`
 }
 
-// WorkflowConcurrency reports active and maximum concurrent runs.
+// WorkflowConcurrency reports active, desired, maximum, and blocked occupancy.
 type WorkflowConcurrency struct {
-	ActiveRuns        int32 `json:"activeRuns"`
-	MaxConcurrentRuns int32 `json:"maxConcurrentRuns"`
+	ActiveRuns        int32  `json:"activeRuns"`
+	DesiredRuns       int32  `json:"desiredRuns,omitempty"`
+	MaxConcurrentRuns int32  `json:"maxConcurrentRuns"`
+	AdmissionBlocked  bool   `json:"admissionBlocked,omitempty"`
+	BlockingCondition string `json:"blockingCondition,omitempty"`
 }
 
 // WorkflowSummary is the inventory projection shared by workflow list and
@@ -226,14 +231,26 @@ type WorkflowPage struct {
 	Page  PageInfo          `json:"page"`
 }
 
-// StageDefinition is the display-safe current definition of one graph node.
+// StageDefinition is the display-safe current definition of one graph node. It
+// carries both a curated set of commonly-inspected fields for tabular display
+// and RawYAML, the actual loaded Task/Gate config marshaled back to YAML, so
+// the portal can show ground truth (e.g. an exact timeout value) without a
+// second round trip to the source file (#2185).
 type StageDefinition struct {
-	Name         string                 `json:"name"`
-	Kind         workflow.GraphNodeKind `json:"kind"`
-	Goal         string                 `json:"goal"`
-	Owner        *GooberReference       `json:"owner"`
-	Evaluator    apiv1.EvaluatorKind    `json:"evaluator"`
-	Capabilities []string               `json:"capabilities"`
+	Name                 string                 `json:"name"`
+	Kind                 workflow.GraphNodeKind `json:"kind"`
+	Goal                 string                 `json:"goal"`
+	Owner                *GooberReference       `json:"owner"`
+	Evaluator            apiv1.EvaluatorKind    `json:"evaluator"`
+	Capabilities         []string               `json:"capabilities"`
+	TimeoutSeconds       int32                  `json:"timeoutSeconds,omitempty"`
+	Retry                *apiv1.RetryPolicy     `json:"retry,omitempty"`
+	PolicyActions        []string               `json:"policyActions,omitempty"`
+	OnTimeout            string                 `json:"onTimeout,omitempty"`
+	RequiredCapabilities []string               `json:"requiredCapabilities,omitempty"`
+	Branches             map[string]string      `json:"branches,omitempty"`
+	MaxRepasses          int32                  `json:"maxRepasses,omitempty"`
+	RawYAML              string                 `json:"rawYaml"`
 }
 
 // WorkflowDetail adds the canonical graph and stage definitions to the summary.
@@ -520,11 +537,16 @@ func (s *Local) workflowsUnannotated(ctx context.Context, gaggle string, request
 	if err != nil {
 		return WorkflowPage{}, err
 	}
+	schedulerStatus, err := s.SchedulerStatus(ctx)
+	if err != nil {
+		return WorkflowPage{}, err
+	}
+	refill := refillOccupancyByWorkflow(schedulerStatus.RefillOccupancy)
 	items := make([]WorkflowSummary, 0)
 	for i := range inventory.definitions.Workflows {
 		def := &inventory.definitions.Workflows[i]
 		if def.Spec.Gaggle == gaggle {
-			items = append(items, s.workflowSummary(inventory, def, active))
+			items = append(items, s.workflowSummary(inventory, def, active, refill))
 		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Identity.Name < items[j].Identity.Name })
@@ -598,10 +620,19 @@ func (s *Local) workflowUnannotated(ctx context.Context, gaggle, name string) (W
 	if err != nil {
 		return WorkflowDetail{}, err
 	}
+	schedulerStatus, err := s.SchedulerStatus(ctx)
+	if err != nil {
+		return WorkflowDetail{}, err
+	}
 	return WorkflowDetail{
-		WorkflowSummary: s.workflowSummary(inventory, def, active),
-		Graph:           inventory.graphs[workflowKey{gaggle: gaggle, name: name}],
-		Stages:          workflowStages(def),
+		WorkflowSummary: s.workflowSummary(
+			inventory,
+			def,
+			active,
+			refillOccupancyByWorkflow(schedulerStatus.RefillOccupancy),
+		),
+		Graph:  inventory.graphs[workflowKey{gaggle: gaggle, name: name}],
+		Stages: workflowStages(def),
 	}, nil
 }
 
@@ -626,10 +657,14 @@ func (s *Local) activeRunCounts() (map[localscheduler.WorkflowIdentity]int, erro
 // activeRunCountsWithAge additionally reports how stale the sample is, so a
 // caller can render "as of N ago" rather than implying the number is current.
 func (s *Local) activeRunCountsWithAge() (map[localscheduler.WorkflowIdentity]int, time.Duration, error) {
-	if s.activeSampler == nil {
-		// No sampler configured (a one-shot construction). Walk once rather than
-		// refuse: this is not a request path, and refusing here would break the
-		// CLI surfaces that legitimately have no daemon to have warmed a cache.
+	sampler := s.activeSampler.Load()
+	if sampler == nil {
+		if s.readModelReads && s.sources.ReadModel != nil {
+			counts, err := s.projectedActiveRunCounts(context.Background())
+			return counts, 0, err
+		}
+		// A one-shot construction without a projection pays for the authoritative
+		// answer once; long-lived projected services never enter this path.
 		runDirs, err := s.sources.Layout.RunDirs()
 		if err != nil {
 			return nil, 0, fmt.Errorf("enumerate run roots: %w", err)
@@ -640,7 +675,7 @@ func (s *Local) activeRunCountsWithAge() (map[localscheduler.WorkflowIdentity]in
 		}
 		return counts, 0, nil
 	}
-	return s.activeSampler.Counts()
+	return sampler.Counts()
 }
 
 func hasGaggle(inventory *inventoryProjection, name string) bool {
@@ -652,7 +687,20 @@ func hasGaggle(inventory *inventoryProjection, name string) bool {
 	return false
 }
 
-func (s *Local) workflowSummary(inventory *inventoryProjection, def *apiv1.Workflow, active map[localscheduler.WorkflowIdentity]int) WorkflowSummary {
+func refillOccupancyByWorkflow(items []RefillOccupancyStatus) map[localscheduler.WorkflowIdentity]RefillOccupancyStatus {
+	byWorkflow := make(map[localscheduler.WorkflowIdentity]RefillOccupancyStatus, len(items))
+	for _, item := range items {
+		byWorkflow[localscheduler.WorkflowIdentity{Gaggle: item.Gaggle, Workflow: item.Workflow}] = item
+	}
+	return byWorkflow
+}
+
+func (s *Local) workflowSummary(
+	inventory *inventoryProjection,
+	def *apiv1.Workflow,
+	active map[localscheduler.WorkflowIdentity]int,
+	refill map[localscheduler.WorkflowIdentity]RefillOccupancyStatus,
+) WorkflowSummary {
 	key := workflowKey{gaggle: def.Spec.Gaggle, name: def.Name}
 	graph := inventory.graphs[key]
 	readiness := def.Spec.Readiness
@@ -663,10 +711,17 @@ func (s *Local) workflowSummary(inventory *inventoryProjection, def *apiv1.Workf
 		readiness.MaxRunsPerHour = 10
 	}
 	if s.sources.Config != nil {
-		if override := s.sources.Config.RunConditions.WorkflowBudgets[def.Name]; override > 0 {
+		// #3439: comma-ok, not `> 0`. A zero override is a real, meaningful
+		// value here — the schema defines it as "stops it from starting" — so
+		// indexing without the ok is indistinguishable from an absent entry and
+		// would report the scheduler default for a workflow the scheduler has
+		// actually stopped. The effective readiness this surface reports has to
+		// match what the scheduler enforces, or the portal explains a paused
+		// workflow as running ten times an hour.
+		if override, ok := s.sources.Config.RunConditions.WorkflowBudgets[def.Name]; ok {
 			readiness.MaxRunsPerHour = int32(override)
 		}
-		if override := s.sources.Config.RunConditions.WorkflowDailyBudgets[def.Name]; override > 0 {
+		if override, ok := s.sources.Config.RunConditions.WorkflowDailyBudgets[def.Name]; ok {
 			readiness.MaxRunsPerDay = int32(override)
 		}
 	}
@@ -684,25 +739,32 @@ func (s *Local) workflowSummary(inventory *inventoryProjection, def *apiv1.Workf
 	if def.Annotations != nil {
 		purpose = def.Annotations["goobers.dev/purpose"]
 	}
+	identity := localscheduler.WorkflowIdentity{Gaggle: def.Spec.Gaggle, Workflow: def.Name}
+	concurrency := WorkflowConcurrency{
+		ActiveRuns:        int32(active[identity]),
+		DesiredRuns:       readiness.DesiredConcurrentRuns,
+		MaxConcurrentRuns: readiness.MaxConcurrentRuns,
+	}
+	if occupancy, ok := refill[identity]; ok {
+		concurrency.AdmissionBlocked = occupancy.AdmissionBlocked
+		concurrency.BlockingCondition = occupancy.BlockingCondition
+	}
 	return WorkflowSummary{
 		Identity:    WorkflowReference{Gaggle: def.Spec.Gaggle, Name: def.Name},
 		DisplayName: displayName(def.Spec.DisplayName, def.Name),
 		Purpose:     purpose,
 		Triggers:    triggers,
 		Readiness:   readiness,
-		Concurrency: WorkflowConcurrency{
-			ActiveRuns:        int32(active[localscheduler.WorkflowIdentity{Gaggle: def.Spec.Gaggle, Workflow: def.Name}]),
-			MaxConcurrentRuns: readiness.MaxConcurrentRuns,
-		},
-		Owners:     owners,
-		StageCount: len(graph.Nodes),
-		Definition: WorkflowDefinition{Version: graph.Version, Digest: graph.Digest},
-		Warnings:   workflowWarnings(inventory, def),
+		Concurrency: concurrency,
+		Owners:      owners,
+		StageCount:  len(graph.Nodes),
+		Definition:  WorkflowDefinition{Version: graph.Version, Digest: graph.Digest},
+		Warnings:    workflowWarnings(inventory, def),
 	}
 }
 
 func workflowStages(def *apiv1.Workflow) []StageDefinition {
-	stages := make([]StageDefinition, 0, len(def.Spec.Tasks)+len(def.Spec.Gates))
+	stages := make([]StageDefinition, 0, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels))
 	for _, task := range def.Spec.Tasks {
 		var owner *GooberReference
 		if task.Goober != "" {
@@ -710,11 +772,17 @@ func workflowStages(def *apiv1.Workflow) []StageDefinition {
 			owner = &ref
 		}
 		stages = append(stages, StageDefinition{
-			Name:         task.Name,
-			Kind:         workflow.GraphNodeKind(task.Type),
-			Goal:         task.Goal,
-			Owner:        owner,
-			Capabilities: sortedStrings(task.Capabilities),
+			Name:                 task.Name,
+			Kind:                 workflow.GraphNodeKind(task.Type),
+			Goal:                 task.Goal,
+			Owner:                owner,
+			Capabilities:         sortedStrings(task.Capabilities),
+			TimeoutSeconds:       task.TimeoutSeconds,
+			Retry:                task.Retry,
+			PolicyActions:        sortedStrings(task.PolicyActions),
+			OnTimeout:            task.OnTimeout,
+			RequiredCapabilities: sortedStrings(task.RequiredCapabilities),
+			RawYAML:              stageRawYAML(task),
 		})
 	}
 	for _, gate := range def.Spec.Gates {
@@ -723,15 +791,53 @@ func workflowStages(def *apiv1.Workflow) []StageDefinition {
 			ref := GooberReference{Gaggle: def.Spec.Gaggle, Name: gate.Agentic.Goober}
 			owner = &ref
 		}
+		var timeoutSeconds int32
+		var retry *apiv1.RetryPolicy
+		var onTimeout string
+		switch {
+		case gate.Automated != nil:
+			timeoutSeconds = gate.Automated.TimeoutSeconds
+			retry = gate.Automated.Retry
+		case gate.Agentic != nil:
+			timeoutSeconds = gate.Agentic.TimeoutSeconds
+			retry = gate.Agentic.Retry
+		case gate.Human != nil:
+			timeoutSeconds = gate.Human.TimeoutSeconds
+			onTimeout = gate.Human.OnTimeout
+		}
 		stages = append(stages, StageDefinition{
-			Name:         gate.Name,
-			Kind:         workflow.GraphNodeGate,
-			Owner:        owner,
-			Evaluator:    gate.Evaluator,
+			Name:           gate.Name,
+			Kind:           workflow.GraphNodeGate,
+			Owner:          owner,
+			Evaluator:      gate.Evaluator,
+			Capabilities:   []string{},
+			TimeoutSeconds: timeoutSeconds,
+			Retry:          retry,
+			OnTimeout:      onTimeout,
+			Branches:       gate.Branches,
+			MaxRepasses:    gate.MaxRepasses,
+			RawYAML:        stageRawYAML(gate),
+		})
+	}
+	for _, parallel := range def.Spec.Parallels {
+		stages = append(stages, StageDefinition{
+			Name:         parallel.Name,
+			Kind:         workflow.GraphNodeParallel,
 			Capabilities: []string{},
 		})
 	}
 	return stages
+}
+
+// stageRawYAML marshals a task or gate back to the YAML shape it was loaded
+// from. A marshal failure (not expected for these plain data structs) yields
+// an empty string rather than failing the whole inventory read.
+func stageRawYAML(stage any) string {
+	raw, err := yaml.Marshal(stage)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 func workflowWarnings(inventory *inventoryProjection, def *apiv1.Workflow) []validate.CodedWarning {

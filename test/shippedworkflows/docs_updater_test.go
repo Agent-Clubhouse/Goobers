@@ -19,25 +19,25 @@ type docsUpdaterConfig struct {
 
 func TestDocsUpdaterShippedCopiesStayInSync(t *testing.T) {
 	root := repositoryRoot(t)
-	selfhost := loadDocsUpdaterConfig(t, filepath.Join(root, "selfhost"), "goobers")
+	referenceWorkflows := loadDocsUpdaterConfig(t, filepath.Join(root, "reference-workflows"), "goobers")
 	example := loadDocsUpdaterConfig(t, filepath.Join(root, "config-examples"), "acme-web")
 
-	selfhost.workflow.Spec.Gaggle = ""
+	referenceWorkflows.workflow.Spec.Gaggle = ""
 	example.workflow.Spec.Gaggle = ""
-	normalizeDocsValidationCommand(&selfhost.workflow)
+	normalizeDocsValidationCommand(&referenceWorkflows.workflow)
 	normalizeDocsValidationCommand(&example.workflow)
-	if !reflect.DeepEqual(selfhost.workflow.Spec, example.workflow.Spec) {
-		t.Fatalf("selfhost and config-example docs-updater specs drifted")
+	if !reflect.DeepEqual(referenceWorkflows.workflow.Spec, example.workflow.Spec) {
+		t.Fatalf("reference workflows and config-example docs-updater specs drifted")
 	}
 
-	selfhost.goober.Spec.Gaggle = ""
+	referenceWorkflows.goober.Spec.Gaggle = ""
 	example.goober.Spec.Gaggle = ""
-	if !reflect.DeepEqual(selfhost.goober.Spec, example.goober.Spec) {
-		t.Fatalf("selfhost and config-example docs goober specs drifted")
+	if !reflect.DeepEqual(referenceWorkflows.goober.Spec, example.goober.Spec) {
+		t.Fatalf("reference workflows and config-example docs goober specs drifted")
 	}
 
-	selfhostInstructions, err := os.ReadFile(filepath.Join(
-		root, "selfhost", "gaggles", "goobers", "goobers", "docs", "instructions.md",
+	referenceInstructions, err := os.ReadFile(filepath.Join(
+		root, "reference-workflows", "gaggles", "goobers", "goobers", "docs", "instructions.md",
 	))
 	if err != nil {
 		t.Fatal(err)
@@ -48,8 +48,8 @@ func TestDocsUpdaterShippedCopiesStayInSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(selfhostInstructions, exampleInstructions) {
-		t.Fatalf("selfhost and config-example docs instructions drifted")
+	if !reflect.DeepEqual(referenceInstructions, exampleInstructions) {
+		t.Fatalf("reference workflows and config-example docs instructions drifted")
 	}
 }
 
@@ -60,7 +60,7 @@ func TestDocsUpdaterWorkflowContract(t *testing.T) {
 		path   string
 		gaggle string
 	}{
-		{name: "selfhost", path: filepath.Join(root, "selfhost"), gaggle: "goobers"},
+		{name: "reference-workflows", path: filepath.Join(root, "reference-workflows"), gaggle: "goobers"},
 		{name: "config-example", path: filepath.Join(root, "config-examples"), gaggle: "acme-web"},
 	}
 	for _, config := range configs {
@@ -106,7 +106,7 @@ func TestDocsUpdaterWorkflowContract(t *testing.T) {
 				t.Fatalf("push-branch capabilities = %v", push.Capabilities)
 			}
 			if open.Inputs["confineToDocsRoots"] != "true" || open.Inputs["docsRoots"] != rootsInput ||
-				!reflect.DeepEqual(open.Capabilities, []string{"github:pr:write"}) ||
+				!reflect.DeepEqual(open.Capabilities, []string{"provider:pr:write"}) ||
 				!contains(open.ExpectedOutputs, "pull-request-url") {
 				t.Fatalf("open-pr docs confinement/publication contract = %+v", open)
 			}
@@ -124,7 +124,7 @@ func TestMergeReviewSelectsConfiguredAutomatedReviewPrefixes(t *testing.T) {
 		path   string
 		gaggle string
 	}{
-		{path: filepath.Join(root, "selfhost"), gaggle: "goobers"},
+		{path: filepath.Join(root, "reference-workflows"), gaggle: "goobers"},
 		{path: filepath.Join(root, "config-examples"), gaggle: "acme-web"},
 	}
 	for _, config := range configs {
@@ -201,8 +201,22 @@ func requireGate(t *testing.T, spec apiv1.WorkflowSpec, name string) apiv1.Gate 
 func normalizeDocsValidationCommand(definition *apiv1.Workflow) {
 	for index := range definition.Spec.Tasks {
 		task := &definition.Spec.Tasks[index]
-		if task.Name == "validate" && task.Run != nil {
-			task.Run.Command = []string{"project-ci"}
+		if task.Name != "validate" || task.Run == nil {
+			continue
+		}
+		task.Run.Command = []string{"project-ci"}
+		// expectedSubprocessTimeoutSeconds (#3377) documents the wall-clock
+		// ceiling of *this repo's own* `make ci` -> `go test -timeout 30m`;
+		// it does not generalize to the example's actual runtime command
+		// (acme-web's gaggle.yaml overrides to `npm run ci`, MGV-1/#1009), so
+		// it is legitimately reference-only and excluded from this
+		// comparison the same way the command itself is normalized above.
+		// Deleting down to an empty-but-non-nil map would itself drift
+		// against the example's untouched nil map, so drop the key to nil
+		// when it was the only entry.
+		delete(task.Inputs, "expectedSubprocessTimeoutSeconds")
+		if len(task.Inputs) == 0 {
+			task.Inputs = nil
 		}
 	}
 }

@@ -28,6 +28,7 @@ import (
 	"github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configsource"
+	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
 )
 
@@ -136,7 +137,9 @@ func (l *Loader) LoadSource(ctx context.Context, source ConfigSource, ignoreDirs
 // nothing is excluded it returns root directly (no copy). Otherwise it mirrors
 // root into a temp dir, skipping the ignored subtrees, so the full validator
 // (which resolves instruction files and cross-references) runs over exactly the
-// source definitions. The returned cleanup removes any temp dir.
+// source definitions. Sibling skill packages are mirrored under the same
+// temporary package root so validation resolves them normally. The returned
+// cleanup removes any temp dir.
 func stageSource(root string, ignoreDirs []string) (string, func(), error) {
 	noop := func() {}
 	skip := map[string]bool{}
@@ -167,29 +170,50 @@ func stageSource(root string, ignoreDirs []string) (string, func(), error) {
 		return "", noop, fmt.Errorf("stage source: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(tmp) }
-	err = filepath.WalkDir(rootAbs, func(path string, d fs.DirEntry, walkErr error) error {
+	stagedRoot := filepath.Join(tmp, "config")
+	err = copyTree(rootAbs, stagedRoot, skip)
+	if err == nil {
+		skillsRoot := filepath.Join(filepath.Dir(rootAbs), "skills")
+		_, statErr := os.Stat(skillsRoot)
+		switch {
+		case statErr == nil:
+			err = copyTree(skillsRoot, filepath.Join(tmp, "skills"), nil)
+		case !errors.Is(statErr, fs.ErrNotExist):
+			err = statErr
+		}
+	}
+	if err != nil {
+		cleanup()
+		return "", noop, fmt.Errorf("stage source: %w", err)
+	}
+	return stagedRoot, cleanup, nil
+}
+
+func copyTree(src, dst string, skip map[string]bool) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if d.IsDir() && skip[path] {
-			return filepath.SkipDir
+		if skip[path] {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
-		rel, _ := filepath.Rel(rootAbs, path)
-		dst := filepath.Join(tmp, rel)
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
 		if d.IsDir() {
-			return os.MkdirAll(dst, 0o755)
+			return os.MkdirAll(target, 0o755)
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(dst, data, 0o644)
+		return os.WriteFile(target, data, 0o644)
 	})
-	if err != nil {
-		cleanup()
-		return "", noop, fmt.Errorf("stage source: %w", err)
-	}
-	return tmp, cleanup, nil
 }
 
 // rawDoc is one parsed YAML document with its kind/name.
@@ -217,6 +241,9 @@ func readDocs(root string) ([]rawDoc, error) {
 		}
 		if d.IsDir() {
 			if path != root && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			if configtree.IsGaggleSkillsDir(root, path) {
 				return filepath.SkipDir
 			}
 			if gooberassets.IsSourceDir(path) {

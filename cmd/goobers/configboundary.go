@@ -45,7 +45,7 @@ func confineDiffToDocsRoots(base string, docsRoots []string) error {
 // boundary (TUT-A5/#1217, docs/design/tutor-redesign.md §4.2): every file this
 // run's branch changes relative to base must resolve into the SAME single
 // declared action root — e.g. a run authoring a workflow-config change stays
-// within "selfhost", a run authoring a new skill's body stays within
+// within "reference-workflows", a run authoring a new skill's body stays within
 // "skills", but a single run may never do both at once. Unlike
 // confineDiffToDocsRoots's ConfineToAny (a docs-updater diff may legitimately
 // span several declared roots together), this refuses a diff that spans more

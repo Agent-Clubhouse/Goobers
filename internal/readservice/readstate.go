@@ -2,6 +2,7 @@ package readservice
 
 import (
 	"context"
+	"time"
 
 	"github.com/goobers/goobers/internal/readmodel"
 )
@@ -45,6 +46,9 @@ type intakeDepth interface {
 	Count(ctx context.Context) (int, error)
 }
 
+// Optional freshness metadata must not consume the primary read's route budget.
+const readStateTimeout = 100 * time.Millisecond
+
 // AttachIntakeDepth supplies the pending-intake counter used by the envelope.
 //
 // Optional. Without it the envelope still reports epoch, applied sequence,
@@ -67,6 +71,9 @@ func (s *Local) readStateEnvelope(ctx context.Context) ReadStateEnvelope {
 	if !ok {
 		return ReadStateEnvelope{}
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, readStateTimeout)
+	defer cancel()
 
 	input := readmodel.ReadStateInput{}
 	if s.intakeDepth != nil {

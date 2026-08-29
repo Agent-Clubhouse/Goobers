@@ -4,7 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"sort"
+	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
@@ -27,6 +31,23 @@ func validationReportFromError(err error) *validate.Report {
 		return reportErr.report
 	}
 	return nil
+}
+
+// validationIssueSummary renders a report's error-severity issues as a single
+// line for scopes that must carry them inside a returned error rather than
+// print to a stream they own. Empty when there is nothing at error severity.
+func validationIssueSummary(report *validate.Report) string {
+	if report == nil {
+		return ""
+	}
+	var lines []string
+	for _, issue := range report.Issues {
+		if issue.Severity != validate.Error {
+			continue
+		}
+		lines = append(lines, issue.CLIString())
+	}
+	return strings.Join(lines, "; ")
 }
 
 func printValidationIssues(w io.Writer, report *validate.Report) {
@@ -92,6 +113,64 @@ func appendGooberHarnessWarnings(report *validate.Report, warnings []gooberHarne
 		})
 	}
 	return coded, nil
+}
+
+func appendSkillPackageCollisionWarnings(configDir string, report *validate.Report, goobers map[string]apiv1.GooberSpec) ([]validate.CodedWarning, error) {
+	if report == nil {
+		return nil, errors.New("validation report is nil")
+	}
+	type collision struct {
+		gaggle string
+		skill  string
+	}
+	seen := map[collision]struct{}{}
+	for _, goober := range goobers {
+		for _, skill := range goober.Skills {
+			scoped, shared, ok := skillPackageDirs(configDir, goober.Gaggle, skill)
+			if !ok {
+				continue
+			}
+			scopedInfo, scopedErr := os.Stat(scoped)
+			if scopedErr != nil && !os.IsNotExist(scopedErr) {
+				return nil, fmt.Errorf("stat gaggle skill %q package: %w", skill, scopedErr)
+			}
+			sharedInfo, sharedErr := os.Stat(shared)
+			if sharedErr != nil && !os.IsNotExist(sharedErr) {
+				return nil, fmt.Errorf("stat instance skill %q package: %w", skill, sharedErr)
+			}
+			if scopedErr == nil && scopedInfo.IsDir() && sharedErr == nil && sharedInfo.IsDir() {
+				seen[collision{gaggle: goober.Gaggle, skill: skill}] = struct{}{}
+			}
+		}
+	}
+	collisions := make([]collision, 0, len(seen))
+	for item := range seen {
+		collisions = append(collisions, item)
+	}
+	sort.Slice(collisions, func(i, j int) bool {
+		if collisions[i].gaggle != collisions[j].gaggle {
+			return collisions[i].gaggle < collisions[j].gaggle
+		}
+		return collisions[i].skill < collisions[j].skill
+	})
+	warnings := make([]validate.CodedWarning, 0, len(collisions))
+	for _, item := range collisions {
+		explanation := fmt.Sprintf("gaggle-level and instance-level packages both define skill %q; the gaggle-level definition takes effect", item.skill)
+		report.Issues = append(report.Issues, validate.Issue{
+			Code:     validate.WarningSkillPackageCollision,
+			Severity: validate.Warning,
+			Kind:     "Gaggle",
+			Name:     item.gaggle,
+			Message:  explanation,
+		})
+		warnings = append(warnings, validate.CodedWarning{
+			Code:        validate.WarningSkillPackageCollision,
+			Severity:    validate.Warning,
+			Scope:       "Gaggle/" + item.gaggle,
+			Explanation: explanation,
+		})
+	}
+	return warnings, nil
 }
 
 func journalValidationWarnings(log *journal.InstanceLog, warnings []validate.CodedWarning) error {

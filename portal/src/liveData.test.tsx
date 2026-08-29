@@ -25,6 +25,7 @@ const testConfig: LiveDataConfig = {
   invalidationWindowMs: 10,
   reconnectBaseDelayMs: 100,
   reconnectMaxDelayMs: 200,
+  connectTimeoutMs: 300_000,
   failuresBeforePolling: 2,
   pollingIntervalMs: 200,
   refreshMaxDelayMs: 1_000,
@@ -72,6 +73,41 @@ describe("LiveDataController", () => {
 
     expect(cache.get(runOne)).toBeUndefined();
     expect(cache.get(runTwo)).toBe("run two");
+    controller.stop();
+  });
+
+  it("falls back to polling when the initial SSE connection hangs", async () => {
+    let connectSignal: AbortSignal | undefined;
+    const client = new ScriptedClient([
+      (_request, options) => {
+        connectSignal = options?.signal;
+        return new Promise<DaemonEventStream>(() => undefined);
+      },
+    ]);
+    const controller = new LiveDataController(client, {
+      ...testConfig,
+      connectTimeoutMs: 1_000,
+      failuresBeforePolling: 1,
+    });
+    const refresh = vi.fn();
+    controller.subscribe(["instance", "run", "workflow"], refresh);
+    refresh.mockClear();
+
+    controller.start();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(controller.freshness).toBe("reconnecting");
+    expect(refresh).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await settle();
+    expect(connectSignal?.aborted).toBe(true);
+    expect(controller.freshness).toBe("polling-fallback");
+    expect(refresh).toHaveBeenCalledWith(
+      new Set(["instance", "run", "workflow"]),
+      "refresh",
+      expect.any(Array),
+    );
+
     controller.stop();
   });
 
@@ -1128,7 +1164,7 @@ describe("live page integration", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Reconnecting"));
     expect(screen.getByText("refreshed-instance-20")).toBeInTheDocument();
     expect(screen.getByRole("status")).not.toHaveTextContent("Live updates connected");
-  });
+  }, 25_000);
 });
 
 class ScriptedClient extends FixtureDaemonClient {

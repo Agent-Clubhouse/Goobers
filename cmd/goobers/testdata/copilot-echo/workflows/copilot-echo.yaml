@@ -1,0 +1,22 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: copilot-echo
+spec:
+  gaggle: example
+  triggers:
+    - type: manual
+  start: echo
+  tasks:
+    - name: echo
+      type: agentic
+      goober: echo
+      goal: >-
+        Return a successful result whose outputs contain
+        sentinel=GOOBERS_GHCP_AUTH_SPIKE_V1. Make no repository changes.
+      capabilities:
+        - agent:model
+      expectedOutputs:
+        - sentinel
+      timeoutSeconds: 120

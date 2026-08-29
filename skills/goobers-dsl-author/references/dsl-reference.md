@@ -106,10 +106,21 @@ connection for the backlog.
 Provide:
 
 - `gaggle`, `role`, and `instructions`;
-- `harness: copilot`, an optional supported `model`, and `harnessOptions`;
+- a supported `harness`, an optional supported `model`, and `harnessOptions`;
 - `capabilities`, `skills`, and `tools`;
 - `scaleFactor`;
 - `workflows` when the associations are known.
+
+| Harness | Command | `agent:model` credential mapping |
+|---|---|---|
+| `copilot` | `copilot` | `COPILOT_GITHUB_TOKEN` |
+| `claude-code` | `claude` | `ANTHROPIC_API_KEY` |
+
+The harness credential is optional when its CLI already has an interactive
+sign-in. When a headless instance supplies `agent:model`, the runner maps that
+capability to the selected harness's environment variable above. Claude Code
+accepts `effort` under `harnessOptions`; Copilot and Claude Code model names are
+validated by their respective adapters.
 
 The `instructions` path is relative to the goober definition directory. Keep
 the role, scope, completion contract, and safety limits in that markdown file;
@@ -177,11 +188,26 @@ the scalar outputs or artifact names a later state relies on. A normal
 successful terminal task omits `next`; `@abort` and `@escalate` are explicit
 non-success terminals.
 
+An agentic task that produces a rich, freeform artifact (a report, generated
+doc — anything beyond a scalar output) should declare `inputs: {artifactFile:
+<name>}` rather than have the model write the file with a generic tool and
+self-report the path. This makes the stage automatically eligible for the
+`goobers-io` MCP's `publish_output` tool, and the resulting artifact
+propagates to the *next* stage automatically (no `context:` YAML key exists
+— there is nothing else to declare), making that stage eligible for
+`goobers-io`'s `list_inputs`/`read_input`/`grep_input` read tools over it.
+Never declare `goobers-io` as an `mcpServers`/`tools:` entry by hand — it is
+auto-wired from `artifactFile`/propagated context alone. See
+[the goobers-io MCP guide](../../../docs/guides/goobers-io-mcp.md) for the
+full mechanics and what to put (and not put) in `instructions.md`.
+
 A gate has `name`, exactly one evaluator configuration, and `branches`.
-Automated checks currently include `status-equals`, `output-equals`,
-`output-not-equals`, `output-numeric-gte`, `output-numeric-lte`,
-`output-numeric-lt`, `output-matches`, `ci-status`, `land-outcome`, and
-`queue-outcome`. Use only outcomes and parameters accepted by the target
+Automated checks currently include `status-equals`, `failure-class`,
+`output-equals`, `output-not-equals`, `output-numeric-gte`,
+`output-numeric-lte`, `output-numeric-lt`, `output-matches`, `ci-status`,
+`land-outcome`, and `queue-outcome`. `failure-class` takes no parameters: it
+returns `pass` for success, `infra` for a retryable failure, and `fail` for
+every other status. Use only outcomes and parameters accepted by the target
 release. Agentic gates must cover `pass`, `fail`, and `needs-changes`. Human
 gates may be present in a schema before a runner supports them, so always
 confirm them with `goobers validate`.
@@ -194,9 +220,11 @@ Use only the target release's registry. The current set is:
 |---|---|
 | `repo:read` | Read-only target-repository checkout. |
 | `repo:push` | Push the run branch to the target repository. |
+| `github:issues:read` | Query GitHub issues without mutation authority. |
 | `github:issues:write` | Query, create, label, close, or comment on GitHub issues. |
 | `github:milestones:write` | Assign existing GitHub milestones to selected issues. |
 | `github:issues:approve` | Apply the trusted `goobers:approved` issue label. |
+| `provider:pr:write` | Perform pull-request operations through the configured repository provider. |
 | `github:pr:write` | Open, inspect, update, or close GitHub pull requests. |
 | `github:pr:review` | Submit provider-native pull-request reviews. |
 | `github:branch:delete` | Delete a remote GitHub branch. |
@@ -206,6 +234,7 @@ Use only the target release's registry. The current set is:
 | `ado:pr:comment` | Post Azure Repos pull-request threads without voting or completing. |
 | `ado:pr:write` | Open and update Azure Repos pull requests (no completion or merge authority). |
 | `ado:pr:status` | Publish Azure Repos pull-request statuses that branch policies gate on. |
+| `ado:pr:complete` | Complete (merge) an Azure Repos pull request; the ADO counterpart to `github:pr:merge`. |
 | `ado:work-items:write` | Update explicitly selected Azure Boards work items. |
 | `telemetry:read` | Read the Goobers telemetry rollup. |
 | `journal:read` | Resolve evidence from another run's journal. |

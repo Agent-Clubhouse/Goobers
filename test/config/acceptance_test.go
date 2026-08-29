@@ -55,6 +55,8 @@ spec:
   gaggle: web
   role: coder
   instructions: instructions.md
+  capabilities:
+    - agent:model
   workflows:
     - flow
 `
@@ -68,6 +70,7 @@ spec:
 	// All states defined; gate has exactly one evaluator. This must validate clean.
 	validWorkflow = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: flow
 spec:
@@ -80,6 +83,8 @@ spec:
       type: agentic
       goober: coder
       goal: Implement the item.
+      capabilities:
+        - agent:model
       next: review
     - name: finalize
       type: deterministic

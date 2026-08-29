@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,6 +17,8 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/telemetry"
+	"github.com/goobers/goobers/internal/testgit"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 type sampleSeedCatalog struct {
@@ -33,6 +34,66 @@ type sampleSeedIssue struct {
 	Body   string   `json:"body"`
 	Labels []string `json:"labels"`
 }
+
+const gettingStartedImplementationWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: implementation
+spec:
+  gaggle: example
+  displayName: Getting Started Implementation Local CI
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+  start: query-backlog
+  tasks:
+    - name: query-backlog
+      type: deterministic
+      goal: Claim the first approved tutorial issue.
+      run:
+        command: ["goobers", "backlog-query", "--claim"]
+      inputs:
+        trustLabel: "goobers:approved"
+        requireLabels: "goobers:ready"
+        maxItems: "1"
+        resultFile: "claimed-item.json"
+      capabilities:
+        - github:issues:write
+        - github:pr:write
+      policyActions:
+        - claim-backlog-items
+      expectedOutputs:
+        - claimed-item
+      next: implement
+    - name: implement
+      type: agentic
+      goober: implementer
+      goal: Implement the claimed tutorial issue and commit the change.
+      capabilities:
+        - repo:push
+        - agent:model
+      policyActions:
+        - modify-repository
+      next: review
+    - name: local-ci
+      type: deterministic
+      goal: Run the project's local CI-equivalent in the worktree.
+      run:
+        command: ["make", "ci"]
+      retry:
+        maxAttempts: 1
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: reviewer
+      branches:
+        pass: local-ci
+        needs-changes: implement
+        fail: "@abort"
+`
 
 func TestGettingStartedSampleQuickstartThroughRealRunner(t *testing.T) {
 	root, remote, disposableRoot, seed, server := initGettingStartedQuickstart(t)
@@ -69,9 +130,10 @@ func TestGettingStartedSampleQuickstartThroughRealRunner(t *testing.T) {
 			firstPROpenAt = event.Time
 		}
 	}
-	if got, want := strings.Join(stages, ","), "query-backlog,implement,review,push-branch,open-pr"; got != want {
+	if got, want := strings.Join(stages, ","), "query-backlog,implement,review,local-ci,push-branch,open-pr"; got != want {
 		t.Fatalf("successful stages = %q, want %q", got, want)
 	}
+	assertGettingStartedLocalCI(t, reader, events, apiv1.ResultSuccess)
 	instanceEvents, err := journal.ReadInstanceLog(instance.NewLayout(root).SchedulerDir())
 	if err != nil {
 		t.Fatal(err)
@@ -172,16 +234,112 @@ func TestGettingStartedSampleQuickstartThroughRealRunner(t *testing.T) {
 	if _, err := os.Stat(disposableRoot); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("disposable target remains after teardown: %v", err)
 	}
+
+	t.Run("broken seed fails local CI", func(t *testing.T) {
+		brokenRoot, _, _, _, _ := initGettingStartedSample(t, false, true)
+		code, stdout, stderr := runArgs(t, "run", "quickstart", brokenRoot)
+		if code != 1 {
+			t.Fatalf("goobers run quickstart: code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if !strings.Contains(stdout, "phase=failed") {
+			t.Fatalf("broken quickstart run did not fail: %q", stdout)
+		}
+		runID := runIDFromRunStdout(t, stdout)
+		reader, err := journal.OpenRead(filepath.Join(brokenRoot, "runs", runID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		events, err := reader.Events()
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertGettingStartedLocalCI(t, reader, events, apiv1.ResultFailure)
+	})
+}
+
+func TestGettingStartedSampleImplementationLocalCIThroughRealRunner(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		breakLocal bool
+		wantCode   int
+		wantPhase  journal.RunPhase
+		wantStatus apiv1.ResultStatus
+	}{
+		{name: "pass", wantPhase: journal.PhaseCompleted, wantStatus: apiv1.ResultSuccess},
+		{name: "fail", breakLocal: true, wantCode: 1, wantPhase: journal.PhaseFailed, wantStatus: apiv1.ResultFailure},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := initGettingStartedImplementation(t, tt.breakLocal)
+
+			code, stdout, stderr := runArgs(t, "run", "implementation", root)
+			if code != tt.wantCode {
+				t.Fatalf("goobers run implementation: code=%d, want %d; stdout=%q stderr=%q", code, tt.wantCode, stdout, stderr)
+			}
+			if !strings.Contains(stdout, "phase="+string(tt.wantPhase)) {
+				t.Fatalf("implementation run did not reach %s: %q", tt.wantPhase, stdout)
+			}
+
+			runID := runIDFromRunStdout(t, stdout)
+			reader, err := journal.OpenRead(filepath.Join(root, "runs", runID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := reader.Events()
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertGettingStartedLocalCI(t, reader, events, tt.wantStatus)
+		})
+	}
+}
+
+func assertGettingStartedLocalCI(t *testing.T, reader *journal.Reader, events []journal.Event, wantStatus apiv1.ResultStatus) {
+	t.Helper()
+	var statuses []string
+	sawNPMCI := false
+	for _, event := range events {
+		if event.Type != journal.EventStageFinished || event.Stage != "local-ci" {
+			continue
+		}
+		statuses = append(statuses, event.Status)
+		for _, ref := range event.Artifacts {
+			data, err := reader.ArtifactBytes(ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "@goobers/getting-started-task-api@1.0.0 ci") {
+				sawNPMCI = true
+			}
+		}
+	}
+	if got, want := strings.Join(statuses, ","), string(wantStatus); got != want {
+		t.Fatalf("local-ci stage statuses = %q, want %q", got, want)
+	}
+	if !sawNPMCI {
+		t.Fatal("local-ci artifacts do not show the sample's npm run ci script")
+	}
 }
 
 func initGettingStartedQuickstart(t *testing.T) (root, remote, disposableRoot string, seed sampleSeedIssue, server *fakeGitHubServer) {
+	return initGettingStartedSample(t, false, false)
+}
+
+func initGettingStartedImplementation(t *testing.T, breakLocalCI bool) string {
+	root, _, _, _, _ := initGettingStartedSample(t, true, breakLocalCI)
+	return root
+}
+
+func initGettingStartedSample(t *testing.T, implementation, breakLocalCI bool) (root, remote, disposableRoot string, seed sampleSeedIssue, server *fakeGitHubServer) {
 	t.Helper()
 	root = filepath.Join(t.TempDir(), "quickstart-instance")
 	if code, stdout, stderr := runArgs(t, "init", "--template=quickstart", root); code != 0 {
 		t.Fatalf("init quickstart template: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
+	if implementation {
+		configureGettingStartedImplementation(t, root)
+	}
 	if code, stdout, stderr := runArgs(t, "validate", root); code != 0 {
-		t.Fatalf("validate quickstart template: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		t.Fatalf("validate getting-started fixture: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 
 	catalogData, err := os.ReadFile(filepath.Join("..", "..", "samples", "getting-started-task-api", "seed-issues.json"))
@@ -223,7 +381,7 @@ func initGettingStartedQuickstart(t *testing.T) (root, remote, disposableRoot st
 
 	previousAdapter := newAgenticAdapter
 	newAgenticAdapter = func(gooberName string, _ map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{
+		return &harnesstest.FakeAdapter{
 			Transcript: []byte("deterministic " + gooberName + " model boundary\n"),
 			Act: func(_ context.Context, request harness.RunRequest) error {
 				switch gooberName {
@@ -234,12 +392,23 @@ func initGettingStartedQuickstart(t *testing.T) (root, remote, disposableRoot st
 					if err := implementRequiredTaskTitle(request.Workspace); err != nil {
 						return err
 					}
-					return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.ResultEnvelope{
+					if breakLocalCI {
+						if err := breakGettingStartedSampleBuild(request.Workspace); err != nil {
+							return err
+						}
+					}
+					return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.ResultEnvelope{
 						Status:  apiv1.ResultSuccess,
 						Summary: "implemented the first seeded tutorial issue",
 					})
 				case "reviewer":
-					return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.ResultEnvelope{
+					if implementation {
+						return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
+							Decision:  apiv1.VerdictPass,
+							Rationale: "seeded issue implementation is focused and complete",
+						})
+					}
+					return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.ResultEnvelope{
 						Status:  apiv1.ResultSuccess,
 						Summary: "seeded issue implementation is focused and complete",
 					})
@@ -256,6 +425,31 @@ func initGettingStartedQuickstart(t *testing.T) (root, remote, disposableRoot st
 		newAgenticAdapter = previousAdapter
 	})
 	return root, remote, disposableRoot, seed, server
+}
+
+func configureGettingStartedImplementation(t *testing.T, root string) {
+	t.Helper()
+	gaggleDir := filepath.Join(root, "config", "gaggles", "example")
+	if err := os.Remove(filepath.Join(gaggleDir, "workflows", "quickstart.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gaggleDir, "workflows", "implementation.yaml"), []byte(gettingStartedImplementationWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, goober := range []string{"implementer", "reviewer"} {
+		path := filepath.Join(gaggleDir, "goobers", goober, "goober.yaml")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated := strings.Replace(string(data), "    - quickstart\n", "    - implementation\n", 1)
+		if updated == string(data) {
+			t.Fatalf("%s goober does not declare the quickstart workflow", goober)
+		}
+		if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func materializeGettingStartedSample(t *testing.T, root string) string {
@@ -392,7 +586,30 @@ func implementRequiredTaskTitle(worktree string) error {
 		{"add", "src/server.ts", "test/server.test.ts"},
 		{"-c", "user.email=quickstart@example.invalid", "-c", "user.name=Quickstart Agent", "commit", "-m", "fix: reject empty task titles"},
 	} {
-		command := exec.Command("git", args...)
+		command := testgit.Command(args...)
+		command.Dir = worktree
+		if output, err := command.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %v: %w: %s", args, err, output)
+		}
+	}
+	return nil
+}
+
+func breakGettingStartedSampleBuild(worktree string) error {
+	path := filepath.Join(worktree, "src", "index.ts")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	data = append(data, []byte("\nconst localCIFailure: string = 42;\n")...)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return err
+	}
+	for _, args := range [][]string{
+		{"add", "src/index.ts"},
+		{"-c", "user.email=quickstart@example.invalid", "-c", "user.name=Quickstart Agent", "commit", "-m", "test: break the local CI fixture"},
+	} {
+		command := testgit.Command(args...)
 		command.Dir = worktree
 		if output, err := command.CombinedOutput(); err != nil {
 			return fmt.Errorf("git %v: %w: %s", args, err, output)
@@ -403,7 +620,7 @@ func implementRequiredTaskTitle(worktree string) error {
 
 func sampleGitOutput(t *testing.T, directory string, args ...string) string {
 	t.Helper()
-	command := exec.Command("git", args...)
+	command := testgit.Command(args...)
 	command.Dir = directory
 	output, err := command.CombinedOutput()
 	if err != nil {

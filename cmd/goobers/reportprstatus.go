@@ -35,7 +35,7 @@ type reportPRStatusPublisher interface {
 }
 
 func runReportPRStatus(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("report-pr-status", flag.ContinueOnError)
+	fs := newCLIFlagSet("report-pr-status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "report-pr-status")
 	if err := fs.Parse(args); err != nil {
@@ -63,32 +63,17 @@ func runReportPRStatus(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	var publisher reportPRStatusPublisher
-	switch repo.Provider {
-	case providers.ProviderADO:
-		adoProvider, err := newADOProviderForStage(root, repo)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		publisher = adoProvider
-	case providers.ProviderGitea:
-		// Gitea publishes goobers' evidence as a native commit status a
-		// status-check branch policy can gate on, so this stage is no longer
-		// ADO-only (#772). The token flows through the same capability grant the
-		// GitHub PR stages use.
-		token, err := providerToken(capability.GitHubPRWrite)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		giteaProvider, err := newGiteaProviderForStage(root, repo, token)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		publisher = giteaProvider
-	default:
+	if repo.Provider == providers.ProviderGitHub {
+		pf(stderr, "error: provider %q does not support publishing a policy-gate-able PR status (Azure DevOps and Gitea only, #772)\n", repo.Provider)
+		return 1
+	}
+	provider, err := newProviderForStage(root, repo, false, withStageProviderCapability(capability.GitHubPRWrite))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	publisher, ok := provider.(reportPRStatusPublisher)
+	if !ok {
 		pf(stderr, "error: provider %q does not support publishing a policy-gate-able PR status (Azure DevOps and Gitea only, #772)\n", repo.Provider)
 		return 1
 	}

@@ -50,7 +50,7 @@ func TestUnboundedRetentionAgesOutNothing(t *testing.T) {
 	ancient := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	runID := seedAged(t, store, 1, ancient)
 
-	result, err := store.ApplyRetention(ctx, UnboundedRetention(), 100)
+	result, err := store.ApplyRetention(ctx, store, UnboundedRetention(), 100)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestBoundedRetentionAgesOutOnlyBelowTheFloor(t *testing.T) {
 	edge := seedAged(t, store, 2, now.AddDate(0, 0, -89))
 	fresh := seedAged(t, store, 3, now.AddDate(0, 0, -1))
 
-	result, err := store.ApplyRetention(ctx, RetentionDays(90), 100)
+	result, err := store.ApplyRetention(ctx, store, RetentionDays(90), 100)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestRetentionTombstonesBeforeRemoving(t *testing.T) {
 	store.SetClock(func() time.Time { return now })
 
 	runID := seedAged(t, store, 1, now.AddDate(0, 0, -200))
-	if _, err := store.ApplyRetention(ctx, RetentionDays(90), 100); err != nil {
+	if _, err := store.ApplyRetention(ctx, store, RetentionDays(90), 100); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestRetentionAdvancesTheFloorLast(t *testing.T) {
 	if _, ok, _ := store.ProjectionFloor(ctx); ok {
 		t.Fatal("a fresh store already has a floor")
 	}
-	if _, err := store.ApplyRetention(ctx, RetentionDays(90), 100); err != nil {
+	if _, err := store.ApplyRetention(ctx, store, RetentionDays(90), 100); err != nil {
 		t.Fatal(err)
 	}
 	floor, ok, err := store.ProjectionFloor(ctx)
@@ -166,7 +166,7 @@ func TestRetentionIsBatched(t *testing.T) {
 		seedAged(t, store, i, now.AddDate(0, 0, -200-i))
 	}
 
-	result, err := store.ApplyRetention(ctx, RetentionDays(90), 10)
+	result, err := store.ApplyRetention(ctx, store, RetentionDays(90), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,6 +208,9 @@ func TestPruneChangeFeedBoundsGrowth(t *testing.T) {
 	}
 	if len(after) >= len(before) {
 		t.Errorf("feed did not shrink: %d -> %d", len(before), len(after))
+	}
+	if len(after) != 10 {
+		t.Errorf("feed retained %d rows, want exact 10-row bound", len(after))
 	}
 }
 

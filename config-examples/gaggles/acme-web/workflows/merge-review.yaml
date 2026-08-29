@@ -1,6 +1,6 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: merge-review
 spec:
@@ -50,6 +50,11 @@ spec:
       inputs:
         headPrefixes: "goobers/implementation/,goobers/docs-updater/"
         authorScope: "any"
+        # Optional stricter instance scoping. Empty/false preserves legacy
+        # branch-prefix and starvation behavior.
+        requireOptInLabel: ""
+        respectAssignee: "false"
+        selfIdentity: ""
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write
@@ -60,7 +65,37 @@ spec:
         - head
         - base
         - advisoryMode
-      next: gather-sibling-context
+      next: check-issue-staleness
+
+    # #2340: re-fetch the PR's pinned linked issue and compare its live
+    # updatedAt against the implementation-time snapshot before the expensive
+    # agentic review gate runs. A PR whose issue changed materially since
+    # implementation began is routed to remediation here instead of being
+    # reviewed against stale copied criteria.
+    - name: check-issue-staleness
+      type: deterministic
+      goal: Refuse to review a PR against a stale issue snapshot.
+      run:
+        command: ["goobers", "check-issue-staleness"]
+      inputsFrom:
+        pullNumber: number
+        head: head
+        base: base
+        advisoryMode: advisoryMode
+      inputs:
+        resultFile: "issue-staleness-result.json"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+      policyActions:
+        - route-verdict
+      expectedOutputs:
+        - number
+        - head
+        - base
+        - advisoryMode
+        - issueStale
+      next: issue-staleness-gate
 
     - name: gather-sibling-context
       type: deterministic
@@ -113,17 +148,19 @@ spec:
         scopeGateParked: scopeGateParked
       inputs:
         resultFile: "verdict-result.json"
+        # Advisory reviews can be made read-only without changing selection.
+        publishAdvisory: "true"
         # MUST match elect-lander's electionPolicy. apply-verdict re-derives
         # the election rather than receiving it: `elected` is emitted only by
         # elect-lander, and this stage is also reached straight from the review
         # gate, where a single-hop inputsFrom edge would fail closed.
         electionPolicy: "fifo"
       capabilities:
-        - github:pr:write
+        - provider:pr:write
         - github:pr:review
       policyActions:
         - publish-review
-        - route-verdict
+        - route-provider-verdict
         - close-pr
       expectedOutputs:
         - selectedNumber
@@ -185,7 +222,7 @@ spec:
         pullNumber: selectedNumber
         headSha: selectedHeadSha
         baseSha: selectedBaseSha
-        # apply-verdict resolves this with its github:pr:write credential, the
+        # apply-verdict resolves this with its provider:pr:write credential, the
         # identity that actually owns the sticky verdict. Keep merge-pr scoped
         # to github:pr:merge instead of injecting the broader posting token.
         verdictAuthor: verdictAuthor
@@ -295,6 +332,21 @@ spec:
         - demote-pr
 
   gates:
+    # #2340: check-issue-staleness emits issueStale before the expensive
+    # agentic review gate runs. A materially-changed issue routes here to a
+    # terminal stop (the stage itself already labeled/commented the PR)
+    # instead of into review.
+    - name: issue-staleness-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: issueStale
+          equals: "false"
+      branches:
+        pass: gather-sibling-context
+        fail: "@abort"
+
     # #1313/#1814: gather-sibling-context reconciles the scope label before
     # review. This gate evaluates the carried decision only after a pass
     # verdict has been published, blocking merge without suppressing review.

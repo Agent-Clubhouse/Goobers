@@ -1,0 +1,75 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: java-implementation
+spec:
+  gaggle: java-service
+  displayName: Implementation (Java reference — implement → review → local-ci)
+  # This reference isolates the stack-specific path: the gaggle's declared
+  # ciCommand is applied to local-ci, while `java@21` gates scheduling.
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 8
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: java-implementer
+      goal: >-
+        Implement the claimed issue in the Java service: read the acceptance
+        criteria, plan, implement, add or update tests for what you changed,
+        and commit to the run branch. Do not run the full Maven verify suite
+        in-session; the deterministic local-ci stage owns that authoritatively.
+      capabilities:
+        - repo:push
+        - agent:model
+      policyActions:
+        - modify-repository
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 15
+      onTimeout: salvage
+      expectedOutputs:
+        - changed-files
+      next: review
+
+    # Config loading replaces this with the gaggle's
+    # `["mvn","-B","-q","verify"]` ciCommand before compilation. Stage
+    # subprocesses inherit JAVA_HOME, MAVEN_OPTS, MAVEN_CONFIG, and M2_HOME
+    # through the Java/Maven procenv allowlist; MAVEN_OPTS can set
+    # `-Dmaven.repo.local=...` when an operator provides a local repository cache.
+    #
+    # Go-only timeout diagnostics remain blind here: GOTRACEBACK and the
+    # internal/executor/shell_diagnostics_unix.go process-tree filter do not
+    # diagnose a hung mvn/java process until TSN-5 / #2172 lands.
+    - name: local-ci
+      type: deterministic
+      goal: Run the project's Maven build and test suite in the worktree.
+      run:
+        command: ["mvn", "-B", "-q", "verify"]
+        syncBase: true
+      retry:
+        maxAttempts: 1
+      next: local-gate
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: java-reviewer
+      branches:
+        pass: local-ci
+        needs-changes: implement
+        fail: "@abort"
+        escalate: "@abort"
+
+    - name: local-gate
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: ""
+        fail: implement
+        escalate: "@abort"

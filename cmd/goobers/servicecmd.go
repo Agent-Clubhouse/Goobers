@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -20,8 +21,11 @@ const serviceHelp = "Usage: goobers service <subcommand> [path]\n\n" +
 	"Subcommands:\n" +
 	"  install     install, enable, and start the service\n" +
 	"  uninstall   gracefully stop, disable, and remove the service\n" +
+	"  start       resume an installed-but-stopped service\n" +
+	"  stop        halt the running service without disabling or removing it\n" +
 	"  status      report whether the service is installed and running\n\n" +
-	"Run `goobers service install -h`, `goobers service uninstall -h`, or\n" +
+	"Run `goobers service install -h`, `goobers service uninstall -h`,\n" +
+	"`goobers service start -h`, `goobers service stop -h`, or\n" +
 	"`goobers service status -h` for details. Default path is \".\".\n"
 
 const serviceInstallHelp = "Usage: goobers service install [path]\n\n" +
@@ -46,10 +50,28 @@ const serviceStatusHelp = "Usage: goobers service status [--json] [path]\n\n" +
 	"Exit codes: 0 = running, 1 = stopped/not installed/query error,\n" +
 	"2 = usage error or not an instance root.\n"
 
+const serviceStopHelp = "Usage: goobers service stop [path]\n\n" +
+	"Halt the running goobers daemon without disabling or removing its\n" +
+	"supervisor registration (#2073) — distinct from uninstall, which folds\n" +
+	"stop, disable, and removal into one step. `goobers service status` then\n" +
+	"reports \"installed, not running\"; `goobers service start` resumes it.\n" +
+	"Stopping an already-stopped service is a successful no-op.\n\n" +
+	"Exit codes: 0 = stopped (or already stopped), 1 = not installed/stop\n" +
+	"error, 2 = usage error or not an instance root.\n"
+
+const serviceStartHelp = "Usage: goobers service start [path]\n\n" +
+	"Resume an installed-but-stopped goobers daemon (#2073) without\n" +
+	"re-registering it. Starting an already-running service is a successful\n" +
+	"no-op.\n\n" +
+	"Exit codes: 0 = running, 1 = not installed/start error,\n" +
+	"2 = usage error or not an instance root.\n"
+
 type daemonServiceManager interface {
 	Install(context.Context) (daemonservice.Status, error)
 	Uninstall(context.Context) error
 	Status(context.Context) (daemonservice.Status, error)
+	Stop(context.Context) error
+	Start(context.Context) (daemonservice.Status, error)
 }
 
 var newDaemonServiceManager = func(root string) (daemonServiceManager, error) {
@@ -114,8 +136,53 @@ func runServiceUninstall(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func runServiceStop(args []string, stdout, stderr io.Writer) int {
+	root, ok := parseServiceRoot("service stop", "service stop", args, stderr)
+	if !ok {
+		return 2
+	}
+	manager, err := newDaemonServiceManager(root)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if err := manager.Stop(context.Background()); err != nil {
+		if errors.Is(err, daemonservice.ErrNotInstalled) {
+			pln(stdout, "service is not installed")
+			return 1
+		}
+		pf(stderr, "error: stop service: %v\n", err)
+		return 1
+	}
+	pln(stdout, "service stopped")
+	return 0
+}
+
+func runServiceStart(args []string, stdout, stderr io.Writer) int {
+	root, ok := parseServiceRoot("service start", "service start", args, stderr)
+	if !ok {
+		return 2
+	}
+	manager, err := newDaemonServiceManager(root)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	status, err := manager.Start(context.Background())
+	if err != nil {
+		if errors.Is(err, daemonservice.ErrNotInstalled) {
+			pln(stdout, "service is not installed")
+			return 1
+		}
+		pf(stderr, "error: start service: %v\n", err)
+		return 1
+	}
+	pf(stdout, "service running under %s\n", status.Supervisor)
+	return 0
+}
+
 func runServiceStatus(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("service status", flag.ContinueOnError)
+	fs := newCLIFlagSet("service status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "render status as JSON")
 	fs.Usage = helpUsage(stderr, "service status")
@@ -160,7 +227,7 @@ func runServiceStatus(args []string, stdout, stderr io.Writer) int {
 }
 
 func parseServiceRoot(flagName, helpID string, args []string, stderr io.Writer) (string, bool) {
-	fs := flag.NewFlagSet(flagName, flag.ContinueOnError)
+	fs := newCLIFlagSet(flagName, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, helpID)
 	if err := fs.Parse(args); err != nil {

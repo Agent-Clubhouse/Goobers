@@ -1,10 +1,9 @@
 # Linux quickstart (tier 1, local)
 
-Stand up the `goobers` daemon on a Linux host from scratch: install prerequisites,
-build, configure credentials, and drive a first run. This is the Linux-specific
-companion to the platform-neutral [`quickstart.md`](quickstart.md) — the CLI
-surface is identical; this page calls out the few things that are Linux-specific
-and records the exact environment Goobers is validated on.
+Use this page for Linux host prerequisites, isolation, credentials, and
+supervision differences only. Follow the platform-neutral
+[`quickstart.md`](quickstart.md) for the single ordered first-run path and CLI
+walkthrough.
 
 Linux is a first-class node platform: the control plane has **no macOS coupling**
 (no launchd/keychain/fsevents/hardcoded paths in Go source), and the daemon plus
@@ -24,7 +23,7 @@ lifecycle under a real `SIGTERM` — on the GitHub-hosted `ubuntu-latest` runner
 |---|---|
 | Distribution | Ubuntu 24.04 LTS (`ubuntu-latest`) |
 | Architecture | linux/amd64 |
-| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.5**) |
+| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.6**) |
 | Git | `git worktree add`/`remove` are the only requirements → **git ≥ 2.17** |
 
 A representative captured run (from the CI evidence artifact): Ubuntu 24.04.4
@@ -53,9 +52,9 @@ cat ./linux-validation-evidence/summary.md
 ## 1. Install prerequisites
 
 ```sh
-# Go — install the toolchain matching go.mod (1.26.5). Distro packages often lag;
+# Go — install the toolchain matching go.mod (1.26.6). Distro packages often lag;
 # prefer the official tarball:
-curl -sSfL https://go.dev/dl/go1.26.5.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
+curl -sSfL https://go.dev/dl/go1.26.6.linux-amd64.tar.gz | sudo tar -C /usr/local -xz
 export PATH="/usr/local/go/bin:$(go env GOPATH)/bin:$PATH"
 
 # Git (>= 2.17 — any supported Ubuntu/Debian is newer):
@@ -77,21 +76,17 @@ go build -o bin/goobers ./cmd/goobers    # or: make build
 sudo install -m 0755 bin/goobers /usr/local/bin/goobers   # optional: put it on PATH
 ```
 
-## 3. Scaffold and configure an instance
+## 3. Linux instance and credential deltas
 
 Keep the instance root outside the target repository. For reviewed, versioned
 definitions, use an in-repo subtree or separate config repository; reserve
 instance-local config for private, single-operator use. Compare the options in
 the [instance and config placement guide](instance-placement.md).
 
-```sh
-goobers init ./my-instance
-```
-
-Edit `my-instance/instance.yaml` to point at your repo and reference a provider
-token. **Never inline the secret** — reference an env var or a file (CFG-009 /
-SEC-010). If you use a token file, lock its permissions down; Goobers fail-closes
-on a world- or group-readable token file:
+Use the initialization and configuration steps in the
+[canonical quickstart](quickstart.md#3-init---guided--configure-a-regular-instance).
+On Linux, if you use a token file, lock its permissions down; Goobers
+fail-closes on a world- or group-readable token file:
 
 ```sh
 mkdir -p ~/.config/goobers
@@ -99,34 +94,11 @@ printf '%s' "$GITHUB_TOKEN" > ~/.config/goobers/github.token
 chmod 600 ~/.config/goobers/github.token      # 0600 required — Goobers rejects looser modes
 ```
 
-Then in `instance.yaml`, set the repo's token ref to `env: GOOBERS_GITHUB_TOKEN`
-(and export it before `up`) or `file: ~/.config/goobers/github.token`. Validate:
+Then set the token reference described by the canonical quickstart to either
+`env: GOOBERS_GITHUB_TOKEN` or
+`file: ~/.config/goobers/github.token`.
 
-```sh
-goobers validate ./my-instance
-```
-
-## 4. First run
-
-Trigger one workflow manually (no daemon required):
-
-```sh
-goobers run <workflow-name> ./my-instance
-goobers status ./my-instance                    # list runs + phase
-goobers trace <run-id> ./my-instance            # inspect the run journal
-```
-
-To watch the whole loop with **no repo, provider credentials, model tokens, or
-network writes**, use the hermetic mock-provider demo — the same fixture the
-Linux validation drives:
-
-```sh
-goobers init --demo ./demo-instance
-goobers run demo ./demo-instance                # curate -> implement -> review -> merge preview
-goobers trace <run-id> ./demo-instance
-```
-
-## 5. Operator-run Linux live-smoke (real Copilot CLI)
+## 4. Operator-run Linux live-smoke (real Copilot CLI)
 
 This optional, manual check exercises the boundary that the hermetic Linux CI
 job cannot: a real Copilot CLI process authenticating and running the agentic
@@ -141,7 +113,7 @@ those changes are expected.
 |---|---|
 | Linux | Prefer the validated Ubuntu 24.04 LTS, linux/amd64 baseline. On another distribution, record the distribution and kernel and ensure unprivileged user namespaces are available for `network: none` stages. |
 | Git | Git 2.17 or newer, with `git worktree add` and `git worktree remove`. |
-| Go | Go 1.26.5 (the repository's currently pinned version), on the PATH inherited by Goobers. The target repository's complete build/test toolchain must be on that PATH too. |
+| Go | Go 1.26.6 (the repository's currently pinned version), on the PATH inherited by Goobers. The target repository's complete build/test toolchain must be on that PATH too. |
 | Copilot CLI | A current stable GitHub Copilot CLI on the same user's PATH, an active Copilot entitlement, and an organization policy that permits Copilot CLI. Record `copilot --version`. |
 | Goobers instance | A validated instance containing the `implementation` workflow, repository capability credentials, working local and hosted CI, and exactly one dedicated issue eligible under that workflow's trust/readiness labels. The shipped workflow expects `goobers:approved` and `goobers:ready`; open-PR caps and run budgets must also admit the run. |
 
@@ -156,8 +128,8 @@ copilot --version
 
 See GitHub's
 [Copilot CLI installation](https://docs.github.com/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)
-instructions for other supported methods. Authenticate as the same OS user that
-runs Goobers, including when that user runs a headless service:
+instructions for other supported methods. For an interactive profile,
+authenticate as the same OS user that runs Goobers:
 
 ```sh
 copilot login
@@ -165,25 +137,19 @@ copilot login
 
 On Linux, the stored OAuth session uses libsecret when a keyring is available
 and otherwise may use `~/.copilot/config.json`; a systemd service must run with
-the same home/profile or it will not see that session. A stored Copilot CLI
-sign-in is currently required for this procedure: both
-`goobers validate --check-harness` and the automatic harness preflight in
-`goobers run` check that profile before capability credentials are resolved.
-For a headless service, bootstrap the stored sign-in as the service user. You
-may also configure a separate personal fine-grained PAT with **Copilot
-Requests: Read-only** as the instance's `agent:model` credential for live
-agentic stages, but that credential does not replace the stored sign-in or
-satisfy either preflight. Keep it separate from repository credentials as
-described in
+the same home/profile or it will not see that session. A headless service can
+instead use a separate personal fine-grained PAT with **Copilot Requests:
+Read-only** as the instance's `agent:model` credential. Because the preflight
+runs before that credential is resolved, also expose the value to the Goobers
+process as `COPILOT_GITHUB_TOKEN`; no stored sign-in is then required. Keep the
+PAT separate from repository credentials as described in
 [GitHub token scopes](github-token-scopes.md#agentic-copilot-harness-stages-stored-login-or-agentmodel-token).
 Never put either token in this evidence bundle.
 
-The token-only hosted-runner spike in
+The correction to the token-only hosted-runner spike in
 [Copilot hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md)
-found that the current production preflight runs before `agent:model`
-credentials are resolved. A clean ephemeral profile therefore still requires
-the stored sign-in described above; the linked report records the exact
-failure, fixed sentinel, and unblock condition.
+records how #1996 enabled this clean-profile PAT path and documents the
+remaining ambient-environment requirement.
 
 ### Run and capture evidence
 
@@ -276,10 +242,10 @@ before sharing it.
   systemd user, not only the interactive shell.
 - Authentication that works interactively but fails under systemd usually
   means the service has a different `HOME`, cannot access the user's keyring,
-  or lacks a stored Copilot CLI sign-in for the service user. An `agent:model`
-  credential is injected only into live agentic stages and cannot satisfy the
-  preflight. If configured, a personal fine-grained PAT needs **Copilot
-  Requests: Read-only**; classic PATs are not supported.
+  lacks a stored Copilot CLI sign-in, or does not receive
+  `COPILOT_GITHUB_TOKEN` in its process environment. An `agent:model` file ref
+  alone cannot satisfy the preflight. If configured, a personal fine-grained
+  PAT needs **Copilot Requests: Read-only**; classic PATs are not supported.
 - `operation not permitted` while starting a deterministic `network: none`
   stage usually means the distribution disabled unprivileged user namespaces.
   Apply the host policy described in [Validated environment](#validated-environment)
@@ -305,7 +271,7 @@ keyring/profile access, token scope, model reachability, or live
 authentication. This operator run supplements that CI boundary; it does not
 replace it.
 
-## 6. Run the daemon
+## 5. Run the daemon
 
 ```sh
 goobers up ./my-instance        # foreground; Ctrl-C (SIGINT) or SIGTERM to stop
@@ -323,7 +289,7 @@ blocks until interrupted, draining in-flight runs gracefully on SIGINT/SIGTERM
 > daemon sees. Under a systemd unit this is the unit's `Environment=PATH=…`
 > (see supervision, below); when launched from a shell it is that shell's PATH.
 
-## 7. Supervise it (systemd)
+## 6. Supervise it (systemd)
 
 For an unattended node, run the daemon under **systemd** instead of a foreground
 shell. A ready-to-edit user-service template and full install/start/stop/status/
@@ -334,7 +300,8 @@ logs/upgrade instructions are in
 ## Deltas from the macOS flow, at a glance
 
 The CLI is byte-for-byte identical to macOS; only the surrounding host tooling
-differs:
+differs. See the [macOS host setup guide](quickstart-macos.md) for that
+platform's complete prerequisite, credential, isolation, and launchd flow.
 
 | Aspect | macOS | Linux |
 |---|---|---|

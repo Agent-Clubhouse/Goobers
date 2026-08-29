@@ -4,16 +4,17 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
-func TestIntegrationInstallScriptVerifiesAndRunsGuidedInit(t *testing.T) {
+func TestIntegrationInstallScriptVerifiesInstallsAndOptsIntoGuidedInit(t *testing.T) {
 	testdep.Require(t, "sh")
 
 	root := t.TempDir()
@@ -31,6 +32,9 @@ func TestIntegrationInstallScriptVerifiesAndRunsGuidedInit(t *testing.T) {
 		"printf '%s %s\\n' \"${0##*/}\" \"$*\" >> \"$GOOBERS_CALLS\"\n" +
 		"if [ \"${1:-}\" = \"--version\" ]; then\n" +
 		"  printf 'goobers v1.2.3 (test)\\n'\n" +
+		"fi\n" +
+		"if [ \"${1:-}\" = \"init\" ] && [ -n \"${FAKE_INIT_FAIL:-}\" ]; then\n" +
+		"  exit 3\n" +
 		"fi\n")
 	if err := os.WriteFile(fakeBinary, fakeBinaryData, 0o755); err != nil {
 		t.Fatal(err)
@@ -38,9 +42,10 @@ func TestIntegrationInstallScriptVerifiesAndRunsGuidedInit(t *testing.T) {
 	releaseRoot := filepath.Join(root, "release")
 	releaseDocs := map[string][]byte{
 		"README.md": []byte("# Goobers v1.2.3\n\n" +
-			"The release installer already ran guided setup at the requested instance path " +
-			"(default `./goobers-instance`). Do not initialize it again; replace `./my-instance` " +
-			"below with that same path, quoting it if needed.\n\n" +
+			"The release installer installs the binary and documentation only; it configures " +
+			"nothing unless you opted in with `--guided [instance-path]` (default " +
+			"`./goobers-instance`). If you opted in, do not initialize that instance again; " +
+			"replace `./my-instance` below with that same path, quoting it if needed.\n\n" +
 			"If you opened this README directly from an extracted archive instead:\n\n" +
 			"```sh\ngoobers init --guided ./my-instance\n```\n"),
 		"docs/RELEASE.md":           []byte("# Goobers v1.2.3 documentation\n"),
@@ -123,7 +128,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		}
 	}
 
-	cmd := exec.Command("sh", scriptPath, "v1.2.3", instancePath)
+	cmd := exec.Command("sh", scriptPath, "v1.2.3", "--guided", instancePath)
 	cmd.Env = append(os.Environ(),
 		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"FIXTURE_DIR="+fixtures,
@@ -132,8 +137,12 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		"GOOBERS_INSTALL_DIR="+installDir,
 		"XDG_DATA_HOME="+dataDir,
 	)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("installer: %v\n%s", err, output)
+	guidedOutput, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("installer: %v\n%s", err, guidedOutput)
+	}
+	if !strings.Contains(string(guidedOutput), "Guided setup completed for "+instancePath) {
+		t.Errorf("opt-in guided output lacks completion report:\n%s", guidedOutput)
 	}
 
 	installed, err := os.ReadFile(filepath.Join(installDir, "goobers"))
@@ -169,7 +178,8 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		t,
 		"installed README onboarding",
 		string(installedReadme),
-		"The release installer already ran guided setup at the requested instance path",
+		"The release installer installs the binary and documentation only",
+		"opted in with `--guided [instance-path]`",
 		"default `./goobers-instance`",
 		"replace `./my-instance` below with that same path",
 		"quoting it if needed",
@@ -202,7 +212,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 	defaultDataDir := filepath.Join(root, "default-data")
 	defaultCurlCalls := filepath.Join(root, "default-curl-calls")
 	defaultGoobersCalls := filepath.Join(root, "default-goobers-calls")
-	cmd = exec.Command("sh", scriptPath, "v1.2.3")
+	cmd = exec.Command("sh", scriptPath, "v1.2.3", "--guided")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(),
 		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -221,6 +231,92 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 	}
 	if !strings.Contains(string(defaultCalls), "goobers-v1.2.3 init --guided ./goobers-instance") {
 		t.Errorf("default-path binary calls:\n%s", defaultCalls)
+	}
+
+	// Install-only is the default: no init invocation, next steps printed.
+	plainInstallDir := filepath.Join(root, "plain-bin")
+	plainDataDir := filepath.Join(root, "plain-data")
+	plainCurlCalls := filepath.Join(root, "plain-curl-calls")
+	plainGoobersCalls := filepath.Join(root, "plain-goobers-calls")
+	cmd = exec.Command("sh", scriptPath, "v1.2.3")
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(),
+		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FIXTURE_DIR="+fixtures,
+		"CURL_CALLS="+plainCurlCalls,
+		"GOOBERS_CALLS="+plainGoobersCalls,
+		"GOOBERS_INSTALL_DIR="+plainInstallDir,
+		"XDG_DATA_HOME="+plainDataDir,
+	)
+	plainOutput, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install-only default: %v\n%s", err, plainOutput)
+	}
+	plainCalls, err := os.ReadFile(plainGoobersCalls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(plainCalls), "init") {
+		t.Errorf("default install ran init:\n%s", plainCalls)
+	}
+	assertSubstringsInOrder(
+		t,
+		"install-only next steps",
+		string(plainOutput),
+		"Next steps",
+		"init --demo ./demo-instance",
+		"run demo ./demo-instance",
+		"init --guided ./my-instance",
+	)
+
+	// A bare positional path without --guided is rejected before any download.
+	cmd = exec.Command("sh", scriptPath, "v1.2.3", instancePath)
+	cmd.Env = append(os.Environ(),
+		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FIXTURE_DIR="+fixtures,
+		"CURL_CALLS="+filepath.Join(root, "rejected-curl-calls"),
+		"GOOBERS_CALLS="+filepath.Join(root, "rejected-goobers-calls"),
+		"GOOBERS_INSTALL_DIR="+filepath.Join(root, "rejected-bin"),
+		"XDG_DATA_HOME="+filepath.Join(root, "rejected-data"),
+	)
+	if output, err := cmd.CombinedOutput(); err == nil ||
+		!strings.Contains(string(output), "guided setup is opt-in") {
+		t.Fatalf("bare instance path result = %v, output = %s", err, output)
+	}
+
+	// Opt-in guided failure reports install success separately and preserves
+	// the installed binary, exiting with the setup status.
+	failSetupInstallDir := filepath.Join(root, "fail-setup-bin")
+	failSetupDataDir := filepath.Join(root, "fail-setup-data")
+	failSetupCalls := filepath.Join(root, "fail-setup-goobers-calls")
+	cmd = exec.Command("sh", scriptPath, "v1.2.3", "--guided", instancePath)
+	cmd.Env = append(os.Environ(),
+		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"FIXTURE_DIR="+fixtures,
+		"CURL_CALLS="+filepath.Join(root, "fail-setup-curl-calls"),
+		"GOOBERS_CALLS="+failSetupCalls,
+		"GOOBERS_INSTALL_DIR="+failSetupInstallDir,
+		"XDG_DATA_HOME="+failSetupDataDir,
+		"FAKE_INIT_FAIL=1",
+	)
+	failOutput, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("guided-failure install exited 0:\n%s", failOutput)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 3 {
+		t.Fatalf("guided-failure exit = %v, want the setup status 3\n%s", err, failOutput)
+	}
+	assertSubstringsInOrder(
+		t,
+		"guided-failure separation",
+		string(failOutput),
+		"Installed v1.2.3 to ",
+		"the binary and documentation installed successfully; guided setup exited with status 3",
+		"Re-run guided setup any time with",
+	)
+	if _, err := os.Stat(filepath.Join(failSetupInstallDir, "goobers-v1.2.3")); err != nil {
+		t.Fatalf("guided failure lost the installed binary: %v", err)
 	}
 
 	fakeBinaryV124 := filepath.Join(root, "goobers-v1.2.4-source")
@@ -245,7 +341,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 	if err := os.WriteFile(filepath.Join(fixtures, "SHA256SUMS"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd = exec.Command("sh", scriptPath, "v1.2.4", filepath.Join(root, "second-instance"))
+	cmd = exec.Command("sh", scriptPath, "v1.2.4")
 	cmd.Env = append(os.Environ(),
 		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"FIXTURE_DIR="+fixtures,
@@ -277,7 +373,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 	}
 	failedInstallDir := filepath.Join(root, "failed-bin")
 	failedDataDir := filepath.Join(root, "failed-data")
-	cmd = exec.Command("sh", scriptPath, "v1.2.3", instancePath)
+	cmd = exec.Command("sh", scriptPath, "v1.2.3")
 	cmd.Env = append(os.Environ(),
 		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"FIXTURE_DIR="+fixtures,

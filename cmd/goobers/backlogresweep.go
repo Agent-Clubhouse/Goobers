@@ -26,10 +26,11 @@ type backlogResweepPolicy struct {
 }
 
 type backlogResweepState struct {
-	Generation  uint64               `json:"generation"`
-	LastSweepAt time.Time            `json:"lastSweepAt,omitempty"`
-	LastSweptAt map[string]time.Time `json:"lastSweptAt,omitempty"`
-	Cursor      string               `json:"cursor,omitempty"`
+	Generation    uint64               `json:"generation"`
+	LastSweepAt   time.Time            `json:"lastSweepAt,omitempty"`
+	LastSweptAt   map[string]time.Time `json:"lastSweptAt,omitempty"`
+	Cursor        string               `json:"cursor,omitempty"`
+	BlockedCursor string               `json:"blockedCursor,omitempty"`
 }
 
 func compactLabels(values ...string) []string {

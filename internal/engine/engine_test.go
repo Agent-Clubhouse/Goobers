@@ -339,7 +339,7 @@ func TestCIPollTaskReceivesDownstreamGateCadence(t *testing.T) {
 			Name: "ci-poll", Type: apiv1.TaskDeterministic, Goal: "poll CI",
 			Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}},
 			Inputs:       map[string]string{"kind": "ci-poll", "prNumber": "42"},
-			Capabilities: []string{"github:pr:write"},
+			Capabilities: []string{"provider:pr:write"},
 			Next:         "ci-gate",
 		}},
 		Gates: []apiv1.Gate{{
@@ -407,7 +407,7 @@ func TestBuildInvocationKeepsCheckoutOffTheWire(t *testing.T) {
 	in := runInput("checkout", linearSpec())
 	in.RepoRef.Checkout = &apiv1.CheckoutSpec{Sparse: []string{"services/web"}}
 
-	env := buildInvocation(in, "implement", "implement the fix", nil, nil, apiv1.Limits{}, nil)
+	env := buildInvocation(in, "implement", "implement the fix", nil, nil, apiv1.Limits{}, nil, "coder")
 
 	if env.RepoRef.Checkout != nil {
 		t.Fatalf("envelope RepoRef.Checkout = %+v, want stripped", env.RepoRef.Checkout)

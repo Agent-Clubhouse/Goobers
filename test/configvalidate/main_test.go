@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 func TestValidateCheckedInTreesRunsEveryTreeWithoutPollutingRepository(t *testing.T) {
@@ -65,6 +67,11 @@ func TestValidateCheckedInTreesFailsOnMissingDocsRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	initGitRepository(t, root)
+	// #3285: the docs-root existence ERROR only fires when the validated tree
+	// is a checkout of the fixture gaggle's target repository (spec.project =
+	// example/example); without this remote the finding is an advisory
+	// warning and the gate would not exercise the fail-closed path.
+	addGitRemote(t, root, "https://github.com/example/example.git")
 
 	var stdout, stderr bytes.Buffer
 	code := validateTrees(
@@ -217,8 +224,10 @@ func TestValidatorHelperProcess(t *testing.T) {
 	}
 	if warning := os.Getenv("GO_CONFIGVALIDATE_WARNING"); warning != "" {
 		_, _ = fmt.Fprintln(os.Stdout, warning)
-	} else if filepath.Base(target) == "selfhost" {
-		_, _ = fmt.Fprintln(os.Stdout, docsUpdaterInertWarning)
+	} else if filepath.Base(target) == "reference-workflows" {
+		for _, warning := range checkedInTrees[0].allowedWarnings {
+			_, _ = fmt.Fprintln(os.Stdout, warning)
+		}
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "VALIDATED %s\n", target)
 	os.Exit(0)
@@ -273,9 +282,20 @@ func moduleRoot(t *testing.T) string {
 
 func initGitRepository(t *testing.T, root string) {
 	t.Helper()
-	cmd := exec.Command("git", "init", "-q", root)
+	cmd := testgit.Command("init", "-q", root)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("initialize fixture repository: %v\n%s", err, output)
+	}
+}
+
+// addGitRemote points the fixture repository's origin at url so the validator
+// treats the fixture tree as a checkout of the gaggle's target repository
+// (#3285's docsRoots existence-check precondition).
+func addGitRemote(t *testing.T, root, url string) {
+	t.Helper()
+	cmd := testgit.Command("-C", root, "remote", "add", "origin", url)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("add fixture remote: %v\n%s", err, output)
 	}
 }
 

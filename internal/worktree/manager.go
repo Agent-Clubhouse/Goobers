@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/platform/proc"
 )
 
 // Manager owns managed working copies under Root — one mirror clone per
@@ -54,16 +55,32 @@ type Manager struct {
 	// Windows. Defaults to os.Lstat.
 	lstat func(string) (os.FileInfo, error)
 
-	gaggle        string
-	usageObserver UsageObserver
-	diskUsage     func(string) (int64, error)
-	gitEnv        func(context.Context, string) ([]string, error)
+	gaggle         string
+	writerIdentity string
+	usageObserver  UsageObserver
+	diskUsage      func(string) (int64, error)
+	gitEnv         func(context.Context, string) ([]string, error)
+	remoteGitGate  func(context.Context, string) error
 
 	// partialClone provisions NEW mirrors as blobless partial clones and
 	// narrows their refresh refspec — see WithPartialClone. Never set for an
 	// unconfigured Manager, so the default path issues byte-identical git
 	// invocations to previous releases.
 	partialClone bool
+	// objectCache opts newly created mirrors into referencing a shared,
+	// node-level object cache — see WithObjectCache. Never set for an
+	// unconfigured Manager, so the default path creates no `_objects`
+	// directory and issues byte-identical git invocations to previous
+	// releases.
+	objectCache bool
+	// pinnedRoot is the node-wide root for persistent pinned workspaces. It may
+	// differ from Root, which remains gaggle-scoped for disposable worktrees.
+	pinnedRoot          string
+	pinnedProcessKiller func(string) error
+
+	pathLengthMu           sync.RWMutex
+	pathLengthLimits       map[string]PathLengthLimit
+	defaultPathLengthLimit *PathLengthLimit
 }
 
 // defaultRunBranchNamespace mirrors providers.DefaultBranchNamespace. It is
@@ -74,6 +91,16 @@ type Manager struct {
 // gaggle that retunes its namespace is honored without this fallback ever
 // diverging in the configured path.
 const defaultRunBranchNamespace = "goobers/"
+
+// DefaultMaxPathLength is the Windows MAX_PATH ceiling used when no
+// repository-specific maximum is configured.
+const DefaultMaxPathLength = 260
+
+// PathLengthLimit configures preflight for one repository URL.
+type PathLengthLimit struct {
+	MaxPathLength        int
+	BuildOutputAllowance int
+}
 
 // ManagerOption configures a Manager at construction.
 type ManagerOption func(*Manager)
@@ -125,6 +152,14 @@ func WithGitEnvironment(resolve func(context.Context, string) ([]string, error))
 	}
 }
 
+// WithRemoteGitGate admits remote git operations before credentials are
+// resolved or a git subprocess is started.
+func WithRemoteGitGate(acquire func(context.Context, string) error) ManagerOption {
+	return func(m *Manager) {
+		m.remoteGitGate = acquire
+	}
+}
+
 // WithPartialClone opts newly created mirrors into blobless partial clones
 // (#646, design §3 B1): WorkingCopy clones with --filter=blob:none, storing
 // every commit and tree but fetching blobs on demand from the promisor remote
@@ -146,6 +181,112 @@ func WithPartialClone() ManagerOption {
 	return func(m *Manager) {
 		m.partialClone = true
 	}
+}
+
+// WithObjectCache opts newly created mirrors into borrowing objects from a
+// shared, node-level object cache (design §3 B3, issue #654):
+// `workcopies/_objects/<repo-key>` under PinnedRoot (already the node-wide
+// root shared across every gaggle's Manager targeting the same repository —
+// see WithPinnedRoot) holds one bare mirror clone per repository URL. A new
+// mirror is created with `git clone --mirror --reference <cache>`, so its
+// `objects/info/alternates` borrows the cache's objects instead of each
+// gaggle paying for a full clone of its own.
+//
+// Consequences callers own:
+//   - Only NEW mirrors are affected; an existing mirror predating the option
+//     keeps its own full object store and is never migrated onto the cache.
+//   - A dependent mirror's alternates reference must never outlive the cache
+//     it points at — see GCObjectCache's fail-closed dependents check. There
+//     is no automatic/background GC; a cache entry accumulates until an
+//     operator runs it explicitly.
+//   - The cache itself is always a full mirror clone regardless of
+//     WithPartialClone: a blobless cache could not satisfy an alternates
+//     lookup for a blob it never fetched.
+func WithObjectCache() ManagerOption {
+	return func(m *Manager) {
+		m.objectCache = true
+	}
+}
+
+// WithPinnedRoot sets the node-wide root shared by pinned workspaces across
+// gaggles targeting the same repository.
+func WithPinnedRoot(root string) ManagerOption {
+	return func(m *Manager) {
+		if root != "" {
+			m.pinnedRoot = root
+		}
+	}
+}
+
+// WithPinnedProcessKiller overrides pinned-workspace lock-holder termination.
+func WithPinnedProcessKiller(kill func(string) error) ManagerOption {
+	return func(m *Manager) {
+		if kill != nil {
+			m.pinnedProcessKiller = kill
+		}
+	}
+}
+
+// WithWriterIdentity records a host-meaningful writer on each worktree marker.
+func WithWriterIdentity(identity string) ManagerOption {
+	return func(m *Manager) {
+		m.writerIdentity = identity
+	}
+}
+
+// WithPathLengthLimit enables checkout path-length preflight for repoURL. A
+// zero maximum uses DefaultMaxPathLength.
+func WithPathLengthLimit(repoURL string, limit PathLengthLimit) ManagerOption {
+	return func(m *Manager) {
+		if m.pathLengthLimits == nil {
+			m.pathLengthLimits = make(map[string]PathLengthLimit)
+		}
+		if limit.MaxPathLength == 0 {
+			limit.MaxPathLength = DefaultMaxPathLength
+		}
+		m.pathLengthLimits[repoURL] = limit
+	}
+}
+
+// WithDefaultPathLengthLimit enables checkout path-length preflight for
+// repositories without an explicit limit. A zero maximum uses
+// DefaultMaxPathLength.
+func WithDefaultPathLengthLimit(limit PathLengthLimit) ManagerOption {
+	return func(m *Manager) {
+		if limit.MaxPathLength == 0 {
+			limit.MaxPathLength = DefaultMaxPathLength
+		}
+		m.defaultPathLengthLimit = &limit
+	}
+}
+
+// SetPathLengthLimits atomically replaces the repository path-length policy.
+// Replacing rather than merging ensures repositories disabled or removed by a
+// configuration reload no longer retain their prior limits.
+func (m *Manager) SetPathLengthLimits(limits map[string]PathLengthLimit) {
+	replacement := make(map[string]PathLengthLimit, len(limits))
+	for repoURL, limit := range limits {
+		if limit.MaxPathLength == 0 {
+			limit.MaxPathLength = DefaultMaxPathLength
+		}
+		replacement[repoURL] = limit
+	}
+	m.pathLengthMu.Lock()
+	m.pathLengthLimits = replacement
+	m.pathLengthMu.Unlock()
+}
+
+func (m *Manager) pathLengthLimit(repoURL string) (PathLengthLimit, bool) {
+	m.pathLengthMu.RLock()
+	defer m.pathLengthMu.RUnlock()
+	limit, ok := m.pathLengthLimits[repoURL]
+	if ok {
+		return limit, true
+	}
+	if m.defaultPathLengthLimit == nil {
+		return PathLengthLimit{}, false
+	}
+	return *m.defaultPathLengthLimit, true
 }
 
 // NewManager returns a Manager rooted at root, creating the directory if it
@@ -183,11 +324,30 @@ func NewManager(root string, opts ...ManagerOption) (*Manager, error) {
 		symlinkFallback:     runtime.GOOS == "windows",
 		lstat:               os.Lstat,
 		diskUsage:           apparentDiskUsage,
+		pinnedProcessKiller: proc.KillWorkspaceProcesses,
 	}
 	for _, opt := range opts {
 		opt(m)
 	}
+	if m.pinnedRoot == "" {
+		m.pinnedRoot = abs
+	} else {
+		pinnedAbs, err := filepath.Abs(m.pinnedRoot)
+		if err != nil {
+			return nil, fmt.Errorf("worktree: resolve absolute pinned root for %s: %w", m.pinnedRoot, err)
+		}
+		if err := os.MkdirAll(pinnedAbs, 0o755); err != nil {
+			return nil, fmt.Errorf("worktree: create pinned root %s: %w", pinnedAbs, err)
+		}
+		m.pinnedRoot = pinnedAbs
+	}
 	return m, nil
+}
+
+// PinnedRoot returns the node-wide root pinned workspaces are materialized
+// under (WithPinnedRoot, defaulting to Root when unset).
+func (m *Manager) PinnedRoot() string {
+	return m.pinnedRoot
 }
 
 // repoKey derives a stable, filesystem-safe directory name for a repo URL so
@@ -196,6 +356,16 @@ func NewManager(root string, opts ...ManagerOption) (*Manager, error) {
 func repoKey(repoURL string) string {
 	sum := sha256.Sum256([]byte(repoURL))
 	return hex.EncodeToString(sum[:])[:16]
+}
+
+const worktreeDirectoryHashBytes = 12
+
+// worktreeDirectoryName bounds the run-specific checkout path segment at 27
+// characters ("wt-" plus 96 hash bits), down from roughly 50 characters for a
+// typical trace ID plus stage name.
+func worktreeDirectoryName(runID string) string {
+	sum := sha256.Sum256([]byte(runID))
+	return "wt-" + hex.EncodeToString(sum[:worktreeDirectoryHashBytes])
 }
 
 func (m *Manager) repoDirForKey(key string) string {
@@ -210,8 +380,22 @@ func (m *Manager) markersDirForKey(key string) string {
 	return filepath.Join(m.Root, key, "markers")
 }
 
+func (m *Manager) ownershipPath(key, directory string) string {
+	return filepath.Join(m.Root, key, "owners", directory+".json")
+}
+
 func (m *Manager) markerPath(key, runID string) string {
 	return filepath.Join(m.markersDirForKey(key), runID+".json")
+}
+
+func (m *Manager) branchAcquisitionRunDir(key, ownerRunID string) string {
+	sum := sha256.Sum256([]byte(ownerRunID))
+	return filepath.Join(m.Root, key, "acquisitions", hex.EncodeToString(sum[:]))
+}
+
+func (m *Manager) branchAcquisitionPath(key, ownerRunID, branch string) string {
+	sum := sha256.Sum256([]byte(branch))
+	return filepath.Join(m.branchAcquisitionRunDir(key, ownerRunID), hex.EncodeToString(sum[:])+".json")
 }
 
 // lockFor returns the per-repo mutex used to serialize clone/fetch and
@@ -259,10 +443,29 @@ func (m *Manager) lockFor(key string) *sync.Mutex {
 // Concurrent calls for the same repo URL serialize on the clone/fetch step;
 // calls for different repos proceed independently.
 func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, error) {
+	return m.workingCopy(ctx, repoURL, false)
+}
+
+func (m *Manager) workingCopy(ctx context.Context, repoURL string, narrow bool) (string, error) {
 	key := repoKey(repoURL)
 	lock := m.lockFor(key)
 	lock.Lock()
 	defer lock.Unlock()
+
+	// Ensure/refresh the node-level object cache on the same cadence as the
+	// mirror itself, before touching the mirror either way: a brand-new
+	// mirror needs the cache directory to exist before it can reference it,
+	// and an existing mirror's cache should stay fresh too (design §3 B3).
+	// The narrow/legacy provisioning path (init --bare + remote add) is left
+	// untouched, matching WithPartialClone's own scope.
+	var objectCacheDir string
+	if m.objectCache && !narrow {
+		cacheDir, err := m.ensureObjectCache(ctx, repoURL, key)
+		if err != nil {
+			return "", fmt.Errorf("worktree: object cache for %s: %w", repoURL, err)
+		}
+		objectCacheDir = cacheDir
+	}
 
 	dir := m.repoDirForKey(key)
 	switch _, err := os.Stat(dir); {
@@ -270,14 +473,31 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 			return "", fmt.Errorf("worktree: create workcopy parent for %s: %w", repoURL, err)
 		}
-		cloneArgs := []string{"clone", "--mirror"}
-		if m.partialClone {
-			cloneArgs = append(cloneArgs, "--filter=blob:none")
+		var provisionErr error
+		if narrow {
+			if err := runGit(ctx, "", "init", "--bare", dir); err == nil {
+				if err = runGit(ctx, dir, "remote", "add", "origin", repoURL); err == nil {
+					provisionErr = m.fetchMirror(ctx, repoURL, dir, true)
+				} else {
+					provisionErr = err
+				}
+			} else {
+				provisionErr = err
+			}
+		} else {
+			cloneArgs := []string{"clone", "--mirror"}
+			if m.partialClone {
+				cloneArgs = append(cloneArgs, "--filter=blob:none")
+			}
+			if objectCacheDir != "" {
+				cloneArgs = append(cloneArgs, "--reference", objectCacheDir)
+			}
+			cloneArgs = append(cloneArgs, repoURL, dir)
+			provisionErr = m.runRemoteGit(ctx, repoURL, "", cloneArgs...)
 		}
-		cloneArgs = append(cloneArgs, repoURL, dir)
-		if err := m.runRemoteGit(ctx, repoURL, "", cloneArgs...); err != nil {
+		if provisionErr != nil {
 			_ = os.RemoveAll(dir) // don't leave a partial clone masquerading as a valid one
-			return "", fmt.Errorf("worktree: clone %s: %w", repoURL, err)
+			return "", fmt.Errorf("worktree: clone %s: %w", repoURL, provisionErr)
 		}
 		if err := ensureManagedGitConfig(ctx, dir); err != nil {
 			return "", err
@@ -305,15 +525,7 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 	// friends) stops being re-fetched. The probe is mirror-scoped, not
 	// flag-scoped, so a full mirror that predates the option keeps its
 	// full-mirror fetch untouched.
-	refspecs := []string{"+refs/*:refs/*"}
-	if m.partialClone && mirrorIsPartial(ctx, dir) {
-		refspecs = []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
-	}
-	fetchArgs := append([]string{"fetch", "--prune", "origin"}, refspecs...)
-	for _, ns := range m.runBranchNamespaces {
-		fetchArgs = append(fetchArgs, "^refs/heads/"+ns+"*")
-	}
-	if err := m.runRemoteGit(ctx, repoURL, dir, fetchArgs...); err != nil {
+	if err := m.fetchMirror(ctx, repoURL, dir, narrow || m.partialClone && mirrorIsPartial(ctx, dir)); err != nil {
 		return "", fmt.Errorf("worktree: fetch %s: %w", repoURL, err)
 	}
 	// A pre-existing mirror (cloned before #240) also needs the scratch exclude;
@@ -327,7 +539,24 @@ func (m *Manager) WorkingCopy(ctx context.Context, repoURL string) (string, erro
 	return dir, nil
 }
 
+func (m *Manager) fetchMirror(ctx context.Context, repoURL, dir string, narrow bool) error {
+	refspecs := []string{"+refs/*:refs/*"}
+	if narrow {
+		refspecs = []string{"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"}
+	}
+	fetchArgs := append([]string{"fetch", "--prune", "origin"}, refspecs...)
+	for _, ns := range m.runBranchNamespaces {
+		fetchArgs = append(fetchArgs, "^refs/heads/"+ns+"*")
+	}
+	return m.runRemoteGit(ctx, repoURL, dir, fetchArgs...)
+}
+
 func (m *Manager) runRemoteGit(ctx context.Context, repoURL, dir string, args ...string) error {
+	if m.remoteGitGate != nil {
+		if err := m.remoteGitGate(ctx, repoURL); err != nil {
+			return fmt.Errorf("admit remote git operation: %w", err)
+		}
+	}
 	if m.gitEnv == nil {
 		return runGit(ctx, dir, args...)
 	}
@@ -345,6 +574,11 @@ func (m *Manager) runRemoteGit(ctx context.Context, repoURL, dir string, args ..
 // promisor fetch spawned mid-command classifies through
 // IsTransientProvisionError.
 func (m *Manager) remoteGitOutput(ctx context.Context, repoURL, dir string, args ...string) ([]byte, error) {
+	if m.remoteGitGate != nil {
+		if err := m.remoteGitGate(ctx, repoURL); err != nil {
+			return nil, fmt.Errorf("admit remote git operation: %w", err)
+		}
+	}
 	if m.gitEnv == nil {
 		return rawGitOutput(ctx, dir, nil, args...)
 	}
@@ -651,26 +885,16 @@ func IsTransientProvisionError(err error) bool {
 	if !errors.As(err, &gitErr) || gitErr.exitCode != 128 {
 		return false
 	}
-	message := strings.ToLower(string(gitErr.output))
+	output := string(gitErr.output)
+	if isNetworkGitOutput(output) {
+		return true
+	}
+	message := strings.ToLower(output)
 	for _, fragment := range []string{
-		"could not resolve host",
-		"couldn't resolve host",
-		"failed to connect to",
-		"could not connect to",
-		"connection refused",
-		"connection reset",
-		"connection timed out",
-		"ssl connection timeout",
-		"empty reply from server",
-		"network is unreachable",
-		"operation timed out",
-		"timeout was reached",
-		"timed out after",
-		"the remote end hung up unexpectedly",
-		"unexpected disconnect",
-		"early eof",
 		// Promisor blob-backfill failures at worktree checkout (#646) — see
-		// the function doc for why these wrappers classify as transient.
+		// the function doc for why these wrappers classify as transient
+		// without being provably network-owned (ClassifyProvisionError
+		// therefore leaves them on the git tier).
 		"from promisor remote",
 		"failed to fetch some objects",
 	} {
@@ -678,7 +902,7 @@ func IsTransientProvisionError(err error) bool {
 			return true
 		}
 	}
-	return remote5xxPattern.MatchString(message)
+	return false
 }
 
 // runGit runs git with args, using dir as the working directory (the process

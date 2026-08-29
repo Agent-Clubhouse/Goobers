@@ -54,9 +54,9 @@ func TestAcquireDaemonLockWritesIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := time.Now().UTC()
-	release, err := acquireDaemonLockWithTimeout(lockPath, root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(lockPath, root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
-		t.Fatalf("acquireDaemonLockWithTimeout: %v", err)
+		t.Fatalf("acquireDaemonLock: %v", err)
 	}
 	defer release()
 
@@ -93,6 +93,34 @@ func TestAcquireDaemonLockWritesIdentity(t *testing.T) {
 	}
 }
 
+func TestAcquireDaemonLockWritesBehavior(t *testing.T) {
+	root := t.TempDir()
+	lockPath := filepath.Join(root, "scheduler", "up.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	behavior := &daemonBehavior{
+		WatchConfig:           true,
+		Diagnostics:           true,
+		DrainTimeoutNanos:     int64(45 * time.Second),
+		SkipPreflight:         true,
+		DisableReadModelReads: true,
+	}
+	release, err := acquireDaemonLock(lockPath, root, instance.DefaultDaemonLivenessTimeout, behavior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	_, identity, err := inspectDaemonLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity == nil || identity.Behavior == nil || *identity.Behavior != *behavior {
+		t.Fatalf("behavior = %+v, want %+v", identity, behavior)
+	}
+}
+
 func TestInspectDaemonLockReadsHeldIdentity(t *testing.T) {
 	root := t.TempDir()
 	lockPath := filepath.Join(root, "scheduler", "up.lock")
@@ -100,9 +128,9 @@ func TestInspectDaemonLockReadsHeldIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	release, err := acquireDaemonLockWithTimeout(lockPath, root, instance.DefaultDaemonLivenessTimeout)
+	release, err := acquireDaemonLock(lockPath, root, instance.DefaultDaemonLivenessTimeout, nil)
 	if err != nil {
-		t.Fatalf("acquireDaemonLockWithTimeout: %v", err)
+		t.Fatalf("acquireDaemonLock: %v", err)
 	}
 	defer release()
 
@@ -131,7 +159,7 @@ func TestInspectDaemonLivenessUsesPinnedTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	timeout := 5 * time.Minute
-	release, err := acquireDaemonLockWithTimeout(lockPath, root, timeout)
+	release, err := acquireDaemonLock(lockPath, root, timeout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,5 +1,5 @@
-// Command providerfixtures refreshes and checks the recorded GitHub provider
-// contract fixture used by the reporting-only drift workflow.
+// Command providerfixtures refreshes and checks recorded provider contract
+// fixtures used by reporting-only drift workflows.
 package main
 
 import (
@@ -15,19 +15,29 @@ import (
 	"github.com/goobers/goobers/internal/providerfixture"
 )
 
-const tokenEnvironment = "GOOBERS_PROVIDER_FIXTURE_TOKEN"
+const (
+	tokenEnvironment    = "GOOBERS_PROVIDER_FIXTURE_TOKEN"
+	adoTokenEnvironment = "ADO_PAT"
+)
 
 type refreshFunc func(context.Context, providerfixture.RefreshConfig) (providerfixture.Fixture, error)
+type adoRefreshFunc func(context.Context, providerfixture.ADORefreshConfig) (providerfixture.Fixture, error)
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
 }
 
 func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
-	return runWithRefresh(args, getenv, stdout, stderr, providerfixture.Refresh)
+	return runWithRefreshers(args, getenv, stdout, stderr, providerfixture.Refresh, providerfixture.RefreshADO)
 }
 
-func runWithRefresh(args []string, getenv func(string) string, stdout, stderr io.Writer, refresh refreshFunc) int {
+func runWithRefreshers(
+	args []string,
+	getenv func(string) string,
+	stdout, stderr io.Writer,
+	refresh refreshFunc,
+	refreshADO adoRefreshFunc,
+) int {
 	if len(args) == 0 {
 		if _, err := fmt.Fprintln(stderr, "usage: providerfixtures <refresh|contract|drift> [flags]"); err != nil {
 			return 1
@@ -37,7 +47,7 @@ func runWithRefresh(args []string, getenv func(string) string, stdout, stderr io
 	var err error
 	switch args[0] {
 	case "refresh":
-		err = runRefresh(args[1:], getenv, stdout, stderr, refresh)
+		err = runRefresh(args[1:], getenv, stdout, stderr, refresh, refreshADO)
 	case "contract":
 		err = runContract(args[1:], stdout, stderr)
 	case "drift":
@@ -65,44 +75,115 @@ func exitCode(err error) int {
 	}
 }
 
-func runRefresh(args []string, getenv func(string) string, stdout, stderr io.Writer, refresh refreshFunc) error {
+func runRefresh(
+	args []string,
+	getenv func(string) string,
+	stdout, stderr io.Writer,
+	refresh refreshFunc,
+	refreshADO adoRefreshFunc,
+) error {
 	flags := flag.NewFlagSet("refresh", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	provider := flags.String("provider", "github", "provider to refresh (github or ado)")
 	repository := flags.String("repository", "", "designated fixture repository in owner/name form")
 	issue := flags.String("issue", "", "stable fixture issue number")
+	pullRequest := flags.String("pull-request", "", "stable fixture pull request number")
+	organizationURL := flags.String("organization-url", "", "Azure DevOps organization URL")
+	project := flags.String("project", "", "Azure DevOps project")
+	workItem := flags.String("work-item", "", "stable Azure DevOps work-item number")
 	output := flags.String("output", "", "candidate fixture output path")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	owner, name, ok := strings.Cut(*repository, "/")
-	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
-		return fmt.Errorf("-repository must use owner/name form")
-	}
-	if *issue == "" {
-		return fmt.Errorf("-issue is required")
-	}
+
 	if *output == "" {
 		return fmt.Errorf("-output is required")
 	}
-	token := strings.TrimSpace(getenv(tokenEnvironment))
-	if token == "" {
-		return fmt.Errorf("%s is required; provision the dedicated fixture credential before making live calls", tokenEnvironment)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	fixture, err := refresh(ctx, providerfixture.RefreshConfig{
-		Repository: providerfixture.Repository{Owner: owner, Name: name},
-		Issue:      *issue,
-		Token:      token,
-	})
-	if err != nil {
-		return fmt.Errorf("refresh provider fixture: %w", err)
+
+	var fixture providerfixture.Fixture
+	switch strings.ToLower(strings.TrimSpace(*provider)) {
+	case "github":
+		var err error
+		fixture, err = refreshGitHub(ctx, getenv, *repository, *issue, *pullRequest, refresh)
+		if err != nil {
+			return err
+		}
+	case "ado":
+		var err error
+		fixture, err = refreshAzureDevOps(ctx, getenv, *organizationURL, *project, *workItem, refreshADO)
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("-provider must be github or ado")
 	}
 	if err := providerfixture.Write(*output, fixture); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(stdout, "wrote normalized provider fixture candidate to %s\n", *output)
+	_, err := fmt.Fprintf(stdout, "wrote normalized provider fixture candidate to %s\n", *output)
 	return err
+}
+
+func refreshGitHub(
+	ctx context.Context,
+	getenv func(string) string,
+	repository, issue, pullRequest string,
+	refresh refreshFunc,
+) (providerfixture.Fixture, error) {
+	owner, name, ok := strings.Cut(repository, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return providerfixture.Fixture{}, fmt.Errorf("-repository must use owner/name form")
+	}
+	if (issue == "") == (pullRequest == "") {
+		return providerfixture.Fixture{}, fmt.Errorf("exactly one of -issue or -pull-request is required")
+	}
+	token := strings.TrimSpace(getenv(tokenEnvironment))
+	if token == "" {
+		return providerfixture.Fixture{}, fmt.Errorf("%s is required; provision the dedicated fixture credential before making live calls", tokenEnvironment)
+	}
+	fixture, err := refresh(ctx, providerfixture.RefreshConfig{
+		Repository:  providerfixture.Repository{Owner: owner, Name: name},
+		Issue:       issue,
+		PullRequest: pullRequest,
+		Token:       token,
+	})
+	if err != nil {
+		return providerfixture.Fixture{}, fmt.Errorf("refresh provider fixture: %w", err)
+	}
+	return fixture, nil
+}
+
+func refreshAzureDevOps(
+	ctx context.Context,
+	getenv func(string) string,
+	organizationURL, project, workItem string,
+	refresh adoRefreshFunc,
+) (providerfixture.Fixture, error) {
+	if organizationURL == "" {
+		return providerfixture.Fixture{}, fmt.Errorf("-organization-url is required for ADO")
+	}
+	if project == "" {
+		return providerfixture.Fixture{}, fmt.Errorf("-project is required for ADO")
+	}
+	if workItem == "" {
+		return providerfixture.Fixture{}, fmt.Errorf("-work-item is required for ADO")
+	}
+	token := strings.TrimSpace(getenv(adoTokenEnvironment))
+	if token == "" {
+		return providerfixture.Fixture{}, fmt.Errorf("%s is required for ADO refresh", adoTokenEnvironment)
+	}
+	fixture, err := refresh(ctx, providerfixture.ADORefreshConfig{
+		OrganizationURL: organizationURL,
+		Project:         project,
+		WorkItem:        workItem,
+		Token:           token,
+	})
+	if err != nil {
+		return providerfixture.Fixture{}, fmt.Errorf("refresh ADO provider fixture: %w", err)
+	}
+	return fixture, nil
 }
 
 func runContract(args []string, stdout, stderr io.Writer) error {

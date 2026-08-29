@@ -170,6 +170,7 @@ func TestRunnerRerunStageAppliesAddendumToOneAgenticTaskAttempt(t *testing.T) {
 	result, err := r.RerunStage(context.Background(), RerunStageInput{
 		RunID: runID, Machine: machine, RepoRef: repo, Stage: "implement",
 		Actor: actor, InstructionAddendum: addendum,
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err != nil {
 		t.Fatalf("RerunStage: %v", err)
@@ -218,7 +219,7 @@ func TestRunnerRerunStageRestoresAgenticJoinFanIn(t *testing.T) {
 			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"summary": "performance"},
 		},
 	}
-	r, _ := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+	r, runsDir := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
 		return collator, nil
 	}, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
 		return &stubDeterministic{rec: rec, byTask: results}, nil
@@ -240,6 +241,7 @@ func TestRunnerRerunStageRestoresAgenticJoinFanIn(t *testing.T) {
 	result, err := r.RerunStage(context.Background(), RerunStageInput{
 		RunID: runID, Machine: machine, RepoRef: repo, Stage: "collate",
 		Actor: "release-manager", InstructionAddendum: "Collate the completed branch reports.",
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err != nil {
 		t.Fatalf("RerunStage: %v", err)
@@ -280,7 +282,7 @@ func TestRunnerRepeatedRerunStageRestoresAgenticJoinFanIn(t *testing.T) {
 			status: apiv1.ResultSuccess, outputs: map[string]interface{}{"summary": "performance"},
 		},
 	}
-	r, _ := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+	r, runsDir := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
 		return collator, nil
 	}, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
 		return &stubDeterministic{rec: rec, byTask: results}, nil
@@ -303,6 +305,7 @@ func TestRunnerRepeatedRerunStageRestoresAgenticJoinFanIn(t *testing.T) {
 		result, err = r.RerunStage(context.Background(), RerunStageInput{
 			RunID: runID, Machine: machine, RepoRef: repo, Stage: "collate",
 			Actor: "release-manager", InstructionAddendum: addendum,
+			ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 		})
 		if err != nil {
 			t.Fatalf("RerunStage attempt %d: %v", attempt+1, err)
@@ -337,7 +340,7 @@ func TestRunnerRerunStageRestoresActiveBranch(t *testing.T) {
 		runID + ":review-performance": {status: apiv1.ResultSuccess},
 		runID + ":collate":            {status: apiv1.ResultSuccess},
 	}
-	r, _ := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
+	r, runsDir := newRerunTestRunner(t, func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) {
 		return reviewer, nil
 	}, func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
 		return &stubDeterministic{rec: rec, byTask: results}, nil
@@ -359,6 +362,7 @@ func TestRunnerRerunStageRestoresActiveBranch(t *testing.T) {
 	result, err := r.RerunStage(context.Background(), RerunStageInput{
 		RunID: runID, Machine: machine, RepoRef: repo, Stage: "accept-security",
 		Actor: "release-manager", InstructionAddendum: "Accept the reviewed security result.",
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err != nil {
 		t.Fatalf("RerunStage: %v", err)
@@ -427,6 +431,71 @@ func TestRerunOwnerBranchOverridesStaleCurrentBranch(t *testing.T) {
 	}
 }
 
+func TestRunnerRerunStageReacquiresPinnedWorkspace(t *testing.T) {
+	const runID = "run-rerun-pinned-workspace"
+	machine := rerunTaskMachine(t)
+	implementer := &rerunTaskGoober{}
+	finisher := &capturingSuccessGoober{}
+	newAgentic := func(name string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+		if name == "implementer" {
+			return implementer, nil
+		}
+		return finisher, nil
+	}
+	// Pinning is an operator-controlled instance.yaml setting (Config.PinnedWorkspace),
+	// not a per-run RepoRef declaration — build the runner directly instead of
+	// newRerunTestRunner's shared (unpinned) Config.
+	root := t.TempDir()
+	manager, err := worktree.NewManager(filepath.Join(root, "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	r, err := New(Config{
+		PinnedWorkspace: true,
+		NewAgentic:      newAgentic,
+		Worktrees:       manager,
+		RunsDir:         filepath.Join(root, "runs"),
+		RepoCloneURL:    func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := apiv1.RepoRef{
+		Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main",
+	}
+
+	started, err := r.Start(context.Background(), StartInput{
+		RunID: runID, Machine: machine, Gaggle: "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual}, RepoRef: repo,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if started.Phase != journal.PhaseEscalated {
+		t.Fatalf("initial phase = %s, want escalated", started.Phase)
+	}
+
+	result, err := r.RerunStage(context.Background(), RerunStageInput{
+		RunID: runID, Machine: machine, RepoRef: repo, Stage: "implement",
+		Actor: "maintainer", InstructionAddendum: "Use the pinned workspace.",
+		ExpectedTerminalSeq: terminalRunSequence(t, filepath.Join(root, "runs"), runID),
+	})
+	if err != nil {
+		t.Fatalf("RerunStage: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("rerun phase = %s, want completed", result.Phase)
+	}
+	if len(implementer.invocations) != 2 {
+		t.Fatalf("implementer invocations = %d, want 2", len(implementer.invocations))
+	}
+	firstWorkspace := implementer.invocations[0].Workspace
+	if implementer.invocations[1].Workspace != firstWorkspace || filepath.Base(firstWorkspace) != "pin" {
+		t.Fatalf("rerun workspaces = %q, %q; want the same pinned path", firstWorkspace, implementer.invocations[1].Workspace)
+	}
+}
+
 func TestRunnerRerunStageAppliesAddendumToAgenticReviewerGate(t *testing.T) {
 	const addendum = "Do not block on the generated fixture."
 	machine := rerunGateMachine(t)
@@ -454,6 +523,7 @@ func TestRunnerRerunStageAppliesAddendumToAgenticReviewerGate(t *testing.T) {
 	result, err := r.RerunStage(context.Background(), RerunStageInput{
 		RunID: runID, Machine: machine, RepoRef: repo, Stage: "review",
 		Actor: "release-manager", InstructionAddendum: addendum,
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err != nil {
 		t.Fatalf("RerunStage: %v", err)
@@ -498,6 +568,7 @@ func TestRunnerRerunStageUsesPinnedRunControlBudget(t *testing.T) {
 	result, err := r.RerunStage(context.Background(), RerunStageInput{
 		RunID: runID, Machine: machine, RepoRef: repo, Stage: "review",
 		Actor: "release-manager", InstructionAddendum: "Address the remaining issue.",
+		ExpectedTerminalSeq: terminalRunSequence(t, runsDir, runID),
 	})
 	if err != nil {
 		t.Fatalf("RerunStage: %v", err)

@@ -49,6 +49,47 @@ headroom. Enable Windows and Git long-path support as described in the
 [Windows quickstart](quickstart-windows.md), but do not use that support as a
 reason to bury the instance under a deep source checkout.
 
+When journals and other runtime state should remain at the instance root,
+redirect only managed working copies with an absolute base path:
+
+```yaml
+workcopies:
+  root: C:\g
+```
+
+Goobers appends the gaggle name and repository key beneath this base. A gaggle
+may override the instance default in its own `spec.workcopies.root`; this keeps
+separate gaggles isolated even when they select the same short base path.
+
+Changing either root does not move existing mirrors or worktrees; Goobers
+clones clean copies at the new location. Stop Goobers, confirm that no run is
+active, and move the old workcopies directory aside as a temporary backup (or
+remove it immediately). After updating the configuration and restarting, verify
+the new checkouts, then remove the backup. Do not copy managed checkouts into
+the new root because Git worktree metadata may contain the old absolute path.
+Leaving the old directory in place is safe but continues to consume disk space.
+For a complete host cutover, including journals, scheduler state, telemetry,
+credentials, and split-brain prevention, follow
+[Move a local instance to another machine](move-local-instance.md).
+
+Before creating a checkout, Goobers measures the deepest tracked path and
+refuses it when the worktree prefix plus that path exceeds the repository's
+budget. Windows defaults to the 260-character `MAX_PATH` ceiling. Configure a
+different ceiling and reserve room for generated build output per repository:
+
+```yaml
+repos:
+  - provider: github
+    owner: acme
+    name: widget
+    pathLength:
+      maxPathLength: 320
+      buildOutputAllowance: 48
+```
+
+Declaring `pathLength` also enables the check on non-Windows hosts. Set
+`pathLength.disabled: true` to opt a repository out explicitly.
+
 Prefer a parent directory that is not tracked by Git. If an operational parent
 directory is itself version-controlled, but is not a target repository, ignore
 the exact local-state directory at that repository's root:
@@ -71,7 +112,7 @@ the instance's active config; author the source, not the materialized copy.
 | Placement | Choose it when | Review and permission boundary |
 |---|---|---|
 | **`config/` inside the instance root** | One operator runs a private instance and does not need repository review of workforce changes. | The host account is the boundary. Changes are local and are not protected by CODEOWNERS or branch rules. |
-| **Non-empty subtree in the target repo** | You own the target, may add config files and CODEOWNERS, and want workforce changes versioned with project changes. | Set the config root to the subtree, such as `selfhost`; own that path with CODEOWNERS and require its review through branch protection. Path confinement limits proposed diffs, but a repository credential is not path-scoped. |
+| **Non-empty subtree in the target repo** | You own the target, may add config files and CODEOWNERS, and want workforce changes versioned with project changes. | Set the config root to the subtree, such as `reference-workflows`; own that path with CODEOWNERS and require its review through branch protection. Path confinement limits proposed diffs, but a repository credential is not path-scoped. |
 | **Separate config repository** | The target is third-party, you cannot change its governance, several people operate the instance, or you want the strongest boundary. | Scope the config credential only to the config repository and protect that repository. It cannot write project code. Keep the target credential separate and grant only the workflow operations the target needs. |
 
 ### Instance-local `config/`
@@ -103,7 +144,7 @@ This layout versions config beside project or platform code:
 ~/src/project/
   .github/CODEOWNERS
   src/
-  selfhost/                       # canonical Goobers config source
+  reference-workflows/                       # canonical Goobers config source
     instance.yaml.example
     manifest.yaml
     gaggles/
@@ -113,13 +154,13 @@ This layout versions config beside project or platform code:
 
 The configured config root **must be a non-empty repository-relative subtree**,
 never the whole target repository. Add a CODEOWNERS rule for that root, such as
-`/selfhost/`, and require CODEOWNER review with branch protection. These controls
+`/reference-workflows/`, and require CODEOWNER review with branch protection. These controls
 make "agents propose; repository governance decides" load-bearing: an agent or
 Tutor may open a config pull request, but it cannot make that proposal active by
 editing the instance or merging around review.
 
 The subtree boundary also has a consequence: GitHub credentials are scoped to a
-repository, not to `/selfhost/`. Goobers fails closed when a confined config
+repository, not to `/reference-workflows/`. Goobers fails closed when a confined config
 proposal touches another path, but the credential itself can reach project code
 if it has repository contents access. Use the [Tutor config-only
 write-boundary](tutor-write-boundary.md) and its CODEOWNERS and branch-protection
@@ -166,12 +207,14 @@ remain governed by the separate config source.
 | You do not own the target or cannot add files and enforce CODEOWNER review. | Separate config repository | Goobers adds nothing to the target and config governance remains under your control. |
 | You own the target but require a credential-level boundary between autonomous config changes and project code. | Separate config repository | A credential scoped only to the config repository cannot reach project code. |
 | Several operators maintain the workforce. | Separate config repository | Normal repository access, review, and audit rules protect desired state. |
-| You operate against multiple target repositories. | One outside instance root and config source per target | The current local runtime supports one operational repository per instance root; separate roots also isolate credentials, journals, budgets, and workcopies. |
+| You operate several target repositories together under one operator and credential posture. | One outside instance root with one gaggle per repository | Repository selection is gaggle-aware: each gaggle's `project` and `backlog` connections select their own `repos` entry. A few built-in behaviors still bind to the first `repos` entry — see the [single-repo residue](arbitrary-repo-onboarding.md#current-single-repo-residue) note. |
+| You need an isolation boundary between target repositories — different credentials, trust postures, or machines. | One outside instance root and config source per target | Separate roots isolate credentials, journals, budgets, and workcopies. |
 
-Several gaggles may share the one target configured by an instance. They need
-unique workflow identities and disjoint backlog routing, but that does not
-require another placement model. To target a different repository, create
-another outside instance root and choose its config source independently.
+Several gaggles may share one configured target, and separate gaggles may
+target different `repos` entries within the same instance. Both need unique
+workflow identities and disjoint backlog routing, but neither requires another
+placement model. Create another outside instance root when a repository needs
+its own isolation boundary, not because of the repository count.
 
 ## Credential and trust checklist
 
@@ -231,25 +274,25 @@ Continue with [Onboard an arbitrary repository](arbitrary-repo-onboarding.md)
 for least-privilege tokens, generated definitions, trust labels, and the first
 curation-to-PR cycle.
 
-## Worked example: Goobers dogfood under `selfhost/`
+## Worked example: Goobers dogfood under `reference-workflows/`
 
 The Goobers project owns its target repository and can enforce governance on a
 dedicated subtree, so its dogfood config uses the same-repo model:
 
 ```text
 ~/src/Goobers/
-  .github/CODEOWNERS              # owns /selfhost/
+  .github/CODEOWNERS              # owns /reference-workflows/
   cmd/
   internal/
-  selfhost/                       # canonical config source
+  reference-workflows/                       # canonical config source
 
 ~/goobers/instances/goobers/      # runtime state, outside the checkout
 ```
 
-Here the config root is `selfhost`, not an empty root and not the repository
-root. Tutor proposals are confined to their declared action root, `/selfhost/`
+Here the config root is `reference-workflows`, not an empty root and not the repository
+root. Tutor proposals are confined to their declared action root, `/reference-workflows/`
 has a CODEOWNER, and branch protection governs whether a proposal merges. The
 instance still creates its managed `Agent-Clubhouse/Goobers` copy and run
 worktrees beneath the outside instance root. See the
-[self-hosting runbook](../../selfhost/README.md) for the repository-specific
+[self-hosting runbook](../../reference-workflows/README.md) for the repository-specific
 setup and guardrails.

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -69,6 +70,25 @@ func writeStatusInitCompleted(t *testing.T, root string, at time.Time) {
 	}
 	if err := instanceLog.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDaemonRestartStatusLine(t *testing.T) {
+	now := time.Date(2026, 8, 17, 20, 2, 0, 0, time.UTC)
+	got := daemonRestartStatusLine(readservice.SchedulerStatus{
+		DaemonRestart: &readservice.DaemonRestartStatus{
+			At:     now.Add(-2 * time.Minute),
+			Reason: "process exited unexpectedly",
+			RunIDs: []string{"run-a", "run-b"},
+			Replacements: []readservice.RunReplacement{{
+				ItemID: "3090", FailedRunID: "run-old", ReplacementRunID: "run-new",
+			}},
+		},
+	}, now)
+	want := "Daemon restarted 2m0s ago (process exited unexpectedly); runs resumed/reclaimed: run-a, run-b\n" +
+		"Warning: run run-old failed during the daemon restart and was replaced by run-new for item 3090\n"
+	if got != want {
+		t.Fatalf("daemon restart line = %q, want %q", got, want)
 	}
 }
 
@@ -350,6 +370,52 @@ func TestStatusJSON(t *testing.T) {
 		if run.LastActivityAt.IsZero() {
 			t.Fatalf("run %q has no last activity timestamp", run.RunID)
 		}
+		if run.Operator.Trajectory == "" || run.Operator.Claim.LeaseStatus == "" {
+			t.Fatalf("run %q has no operator summary: %+v", run.RunID, run.Operator)
+		}
+	}
+}
+
+func TestStatusDefaultsToNewestFiftyRuns(t *testing.T) {
+	root := initScheduledDemo(t)
+	startedAt := time.Date(2026, time.July, 14, 12, 30, 0, 0, time.UTC)
+	for i := range 51 {
+		writeStatusRun(t, root, fmt.Sprintf("run-%02d", i), "implementation", "goobers", startedAt.Add(time.Duration(i)*time.Minute))
+	}
+
+	code, stdout, stderr := runArgs(t, "status", root)
+	if code != 0 {
+		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
+	}
+	if strings.Contains(stdout, "run-00") || !strings.Contains(stdout, "run-50") {
+		t.Fatalf("stdout = %q, want newest 50 runs", stdout)
+	}
+	if !strings.Contains(stdout, "1 older runs; use --limit 0 for all") {
+		t.Fatalf("stdout = %q, want older-runs hint", stdout)
+	}
+
+	code, stdout, stderr = runArgs(t, "status", "--json", root)
+	if code != 0 {
+		t.Fatalf("status --json: code = %d, stderr = %q", code, stderr)
+	}
+	var got statusJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if len(got.Runs) != 50 || strings.Contains(stderr, "older runs") {
+		t.Fatalf("runs = %d, stderr = %q; want 50 runs and no hint", len(got.Runs), stderr)
+	}
+
+	code, stdout, stderr = runArgs(t, "status", "--json", "--limit=0", root)
+	if code != 0 {
+		t.Fatalf("status --json --limit=0: code = %d, stderr = %q", code, stderr)
+	}
+	got = statusJSONOutput{}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("status JSON = %q: %v", stdout, err)
+	}
+	if len(got.Runs) != 51 {
+		t.Fatalf("runs = %d, want all 51", len(got.Runs))
 	}
 }
 
@@ -536,7 +602,17 @@ func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing
 	lastEvals := map[localscheduler.WorkflowIdentity]time.Time{
 		{Gaggle: "fleet", Workflow: "scheduled"}: now,
 	}
-	got, err := buildStatusFleetSummary(workflows, runs, lastEvals, now, time.UTC)
+	refill := map[localscheduler.WorkflowIdentity]readservice.RefillOccupancyStatus{
+		{Gaggle: "fleet", Workflow: "scheduled"}: {
+			Gaggle:            "fleet",
+			Workflow:          "scheduled",
+			DesiredRuns:       2,
+			ActiveRuns:        1,
+			AdmissionBlocked:  true,
+			BlockingCondition: localscheduler.ReasonBudget,
+		},
+	}
+	got, err := buildStatusFleetSummary(workflows, runs, lastEvals, refill, now, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -554,6 +630,9 @@ func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing
 		scheduled.SuccessRate == nil || *scheduled.SuccessRate != 0.5 {
 		t.Fatalf("scheduled summary = %+v", scheduled)
 	}
+	if scheduled.DesiredRuns != 2 || scheduled.AdmissionBlocked != localscheduler.ReasonBudget {
+		t.Fatalf("scheduled refill summary = %+v", scheduled)
+	}
 	wantNext := time.Date(2026, time.July, 20, 7, 0, 0, 0, time.UTC)
 	if scheduled.NextFire.Kind != statusNextFireScheduled || scheduled.NextFire.At == nil ||
 		!scheduled.NextFire.At.Equal(wantNext) {
@@ -562,6 +641,10 @@ func TestBuildStatusFleetSummaryUsesConfiguredWorkflowsAndFixedWindow(t *testing
 
 	var text bytes.Buffer
 	renderStatusFleetSummary(&text, got, now)
+	if !strings.Contains(text.String(), "1/2/2") ||
+		!strings.Contains(text.String(), "blocked: "+localscheduler.ReasonBudget) {
+		t.Fatalf("summary text = %q, want desired/active/max and blocking condition", text.String())
+	}
 	for _, line := range strings.Split(text.String(), "\n") {
 		if len(line) > 80 {
 			t.Fatalf("summary line is %d columns, want at most 80: %q", len(line), line)
@@ -618,7 +701,7 @@ func TestStatusIntervalNextFireMatchesSchedulerAfterManualFire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, now, time.UTC)
+	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, nil, now, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +757,7 @@ func TestStatusIntervalNextFireMatchesSchedulerAfterReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, reloadedAt, time.UTC)
+	got, err := buildStatusFleetSummary(workflows, nil, lastEvals, nil, reloadedAt, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,6 +789,7 @@ func TestStatusDefaultTableIncludesLastActivity(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status: code = %d, stderr = %q", code, stderr)
 	}
+
 	for _, want := range []string{
 		"LAST ACTIVITY",
 		"fixture-run",
@@ -716,6 +800,103 @@ func TestStatusDefaultTableIncludesLastActivity(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, want it to contain %q", stdout, want)
 		}
+	}
+}
+
+func TestRenderStatusAnswersLivenessAndPRTrajectory(t *testing.T) {
+	now := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	heartbeat := now.Add(-30 * time.Second)
+	age := int64(30_000)
+	runs := []runSummary{{
+		RunID: "run-operator", Workflow: "implementation", Gaggle: "goobers",
+		Phase: journal.PhaseRunning, StartedAt: now.Add(-time.Hour), LastActivityAt: heartbeat,
+		Operator: readservice.OperatorRunSummary{
+			Issue:              &readservice.OperatorIssue{Number: "3088", Title: "Operator status"},
+			CurrentStage:       "local-ci",
+			LastHeartbeatAt:    &heartbeat,
+			HeartbeatAgeMillis: &age,
+			Liveness:           "recent",
+			Trajectory:         "local CI",
+			PROpenerStage:      "open-pr",
+			Claim:              readservice.OperatorClaim{LeaseStatus: "active", ProviderMarker: "verified"},
+			Review:             &readservice.OperatorReview{Verdict: "needs-changes", Rationale: "Add drift visibility."},
+			NextTransition:     "finish local-ci",
+			PotentialBlockers:  []string{"review needs-changes: Add drift visibility."},
+		},
+	}}
+	var stdout strings.Builder
+	renderStatus(&stdout, runs, now)
+	for _, want := range []string{
+		"#3088 Operator status",
+		"local-ci / local CI",
+		"recent 30s ago",
+		"via open-pr",
+		"active / verified",
+		"review needs-changes: Add drift visibility.",
+		"blockers: review needs-changes: Add drift visibility.",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("status = %q, want %q", stdout.String(), want)
+		}
+	}
+}
+
+// TestRenderStatusSeparatesReaderLimitationsFromRunBlockers pins the operator-facing
+// half of #3346: a healthy run whose marker this invocation could not verify must not
+// print a `blockers:` line at all, and the limitation must be labelled as the reader's.
+func TestRenderStatusSeparatesReaderLimitationsFromRunBlockers(t *testing.T) {
+	now := time.Date(2026, time.August, 20, 3, 15, 0, 0, time.UTC)
+	heartbeat := now.Add(-10 * time.Second)
+	age := int64(10_000)
+	limitation := "provider claim marker verification unavailable: no credential in " +
+		"GOOBERS_CRED_GITHUB_ISSUES_READ env var"
+	runs := []runSummary{{
+		RunID: "run-healthy", Workflow: "implementation", Gaggle: "goobers",
+		Phase: journal.PhaseRunning, StartedAt: now.Add(-time.Hour), LastActivityAt: heartbeat,
+		Operator: readservice.OperatorRunSummary{
+			Issue:                  &readservice.OperatorIssue{Number: "3346"},
+			CurrentStage:           "implementation",
+			LastHeartbeatAt:        &heartbeat,
+			HeartbeatAgeMillis:     &age,
+			Liveness:               "recent",
+			Trajectory:             "implementing",
+			Claim:                  readservice.OperatorClaim{LeaseStatus: "active", ProviderMarker: "unavailable"},
+			NextTransition:         "finish implementation",
+			PotentialBlockers:      []string{},
+			DiagnosticsLimitations: []string{limitation},
+		},
+	}}
+	var stdout strings.Builder
+	renderStatus(&stdout, runs, now)
+	got := stdout.String()
+	if strings.Contains(got, "blockers: ") {
+		t.Fatalf("status = %q, want no run blockers line for a reader-side limitation", got)
+	}
+	if !strings.Contains(got, "diagnostics limited (not a run blocker): "+limitation) {
+		t.Fatalf("status = %q, want the labelled diagnostics line", got)
+	}
+}
+
+func TestTruncateStatusCellPreservesUTF8(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		width int
+		want  string
+	}{
+		{name: "no truncation", value: "修正ログイン", width: 6, want: "修正ログイン"},
+		{name: "ellipsis", value: "修正ログイン", width: 5, want: "修正..."},
+		{name: "narrow", value: "修正ログイン", width: 2, want: "修正"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateStatusCell(tc.value, tc.width)
+			if got != tc.want {
+				t.Fatalf("truncateStatusCell(%q, %d) = %q, want %q", tc.value, tc.width, got, tc.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("truncateStatusCell(%q, %d) returned invalid UTF-8", tc.value, tc.width)
+			}
+		})
 	}
 }
 
@@ -1041,6 +1222,13 @@ func TestStatusDaemonReportsLiveIdentityAndRunCount(t *testing.T) {
 		StartedAt:    startedAt,
 		InstanceRoot: root,
 		Version:      "v0.3.0-test",
+		Behavior: &daemonBehavior{
+			WatchConfig:           true,
+			Diagnostics:           true,
+			DrainTimeoutNanos:     int64(30 * time.Second),
+			SkipPreflight:         true,
+			DisableReadModelReads: true,
+		},
 	}
 	release, err := acquireInstanceLockWithIdentity(filepath.Join(l.SchedulerDir(), "up.lock"), &identity)
 	if err != nil {
@@ -1058,6 +1246,7 @@ func TestStatusDaemonReportsLiveIdentityAndRunCount(t *testing.T) {
 		"version v0.3.0-test",
 		"last tick 0s ago",
 		"live runs 1",
+		"daemon behavior: watch-config=true, diagnostics=true, drain-timeout=30s, skip-preflight=true, disable-read-model-reads=true",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
@@ -1163,7 +1352,7 @@ func TestStatusDaemonReportsStaleIdentity(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("status --daemon: code = %d, want 1; stderr = %q", code, stderr)
 	}
-	want := "daemon not running (last daemon: pid 4242, started 2026-07-16T09:00:00Z); " +
+	want := "recorded daemon is not running: pid 4242, started 2026-07-16T09:00:00Z; " +
 		"version v0.3.0-test, live runs 0\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
@@ -1225,7 +1414,7 @@ func TestStatusDaemonDoesNotMistakeStaleIdentityForManualHolder(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("status --daemon: code = %d, want 1; stderr = %q", code, stderr)
 	}
-	if !strings.HasPrefix(stdout, fmt.Sprintf("daemon not running (last daemon: pid %d, started ", os.Getpid())) {
+	if !strings.HasPrefix(stdout, fmt.Sprintf("recorded daemon is not running: pid %d, started ", os.Getpid())) {
 		t.Fatalf("stdout = %q", stdout)
 	}
 }

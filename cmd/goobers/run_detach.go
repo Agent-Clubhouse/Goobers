@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,7 +75,10 @@ func runDetachedTrigger(ctx context.Context, l instance.Layout, name, root strin
 			pf(stderr, "error: read detached run output: %v\n", readErr)
 			return 2
 		}
-		if line, runID, ok := detachedRunCreated(data); ok {
+		if line, runID, warnings, ok := detachedRunCreated(data); ok {
+			for _, warning := range warnings {
+				pln(stdout, warning)
+			}
 			pln(stdout, line)
 			pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
 			return 0
@@ -87,7 +91,10 @@ func runDetachedTrigger(ctx context.Context, l instance.Layout, name, root strin
 				pf(stderr, "error: read detached run output: %v\n", readErr)
 				return 2
 			}
-			if line, runID, ok := detachedRunCreated(data); ok {
+			if line, runID, warnings, ok := detachedRunCreated(data); ok {
+				for _, warning := range warnings {
+					pln(stdout, warning)
+				}
 				pln(stdout, line)
 				pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
 				return 0
@@ -129,6 +136,22 @@ func runDetachedWorkerContext(ctx context.Context, args []string, stdout, stderr
 		return 2
 	}
 	name, root := args[0], args[1]
+	pr := 0
+	if marker := strings.LastIndex(name, "#pr-"); marker >= 0 {
+		var parseErr error
+		pr, parseErr = strconv.Atoi(name[marker+4:])
+		if parseErr != nil || pr <= 0 {
+			pf(stderr, "error: invalid targeted pull request in detached run worker\n")
+			return 2
+		}
+		name = name[:marker]
+	}
+	target, err := parseRunTarget(name, "")
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	target.PR = pr
 	l := instance.NewLayout(root)
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
@@ -141,14 +164,18 @@ func runDetachedWorkerContext(ctx context.Context, args []string, stdout, stderr
 
 	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
 	if err != nil {
-		return runDelegatedTrigger(ctx, l, name, root, true, stdout, stderr)
+		return runDelegatedTrigger(ctx, l, target, root, true, stdout, stderr)
 	}
-	return runStandaloneTrigger(ctx, l, name, root, true, true, release, stdout, stderr)
+	return runStandaloneTrigger(ctx, l, target, root, true, true, release, stdout, stderr)
 }
 
-func detachedRunCreated(data []byte) (line, runID string, ok bool) {
+func detachedRunCreated(data []byte) (line, runID string, warnings []string, ok bool) {
 	lines := strings.Split(string(data), "\n")
 	for _, candidate := range lines[:len(lines)-1] {
+		if strings.HasPrefix(candidate, "warning: ") {
+			warnings = append(warnings, candidate)
+			continue
+		}
 		if !strings.HasPrefix(candidate, "created run ") {
 			continue
 		}
@@ -156,7 +183,7 @@ func detachedRunCreated(data []byte) (line, runID string, ok bool) {
 		if len(fields) < 3 {
 			continue
 		}
-		return candidate, fields[2], true
+		return candidate, fields[2], warnings, true
 	}
-	return "", "", false
+	return "", "", nil, false
 }

@@ -35,6 +35,12 @@ func Start(cmd *exec.Cmd) (*Tree, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	// Record the child before anything can wait for it. A daemon running as
+	// container init reaps orphaned descendants (StartOrphanReaper), and this
+	// registration is how that reaper tells a stage — which Configure detaches
+	// into its own session, making it look like an escaped orphan — from a real
+	// one, so it never consumes the exit status this caller's Wait needs.
+	trackChild(cmd.Process.Pid)
 	tree, err := newTree(cmd)
 	if err != nil {
 		_ = cmd.Process.Kill()
@@ -45,9 +51,8 @@ func Start(cmd *exec.Cmd) (*Tree, error) {
 }
 
 // Kill hard-terminates every process in the tree — on unix SIGKILL to the
-// process group, on windows TerminateJobObject. It is best-effort: a descendant
-// that escaped the tree (e.g. via its own setsid) may survive, exactly as
-// before this abstraction existed.
+// process group and any descendants that escaped it, on windows
+// TerminateJobObject.
 func (t *Tree) Kill() error {
 	return t.kill()
 }
@@ -66,8 +71,16 @@ func (t *Tree) RequestDump() (supported bool, err error) {
 }
 
 // Alive reports whether pid names a live process. On unix it is a signal-0
-// probe. It fails toward alive on an ambiguous probe (see doc.go): the caller
+// probe, refined on linux by a /proc state read so an unreaped zombie — which
+// answers a signal-0 as if it were running, forever — counts as dead. It
+// otherwise fails toward alive on an ambiguous probe (see doc.go): the caller
 // is the worktree reaper, for which a false "dead" is destructive.
 func Alive(pid int) bool {
 	return alive(pid)
+}
+
+// KillWorkspaceProcesses terminates lingering build servers that can retain
+// file locks beneath workspace after their invoking build has exited.
+func KillWorkspaceProcesses(workspace string) error {
+	return killWorkspaceProcesses(workspace)
 }

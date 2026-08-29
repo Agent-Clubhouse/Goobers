@@ -10,6 +10,20 @@ import (
 // canonical graph a run started with.
 const PinnedWorkflowGraphInputName = "workflow-graph"
 
+// PinnedWorkflowDefinitionInputName is the immutable workflow Definition
+// snapshot used to reconstruct the exact compiled machine after process loss.
+const PinnedWorkflowDefinitionInputName = "workflow-definition"
+
+// PinnedGateGooberCapabilitiesInputName is the immutable snapshot of the
+// reviewer-goober capability map pinned into the run at start (#294): an
+// agentic gate's reviewer capabilities are instance policy, not part of the
+// pinned workflow definition, so post-start consumers (the daemon credential
+// plane, PR #3528) must read them from this snapshot rather than the
+// currently-served config — otherwise a config edit after run start would
+// change a live run's reviewer grants, contradicting WF-016's pinning
+// guarantee. The payload is a JSON map[gooberName][]capability.
+const PinnedGateGooberCapabilitiesInputName = "gate-goober-capabilities"
+
 // TriggerKind is how a run was started.
 type TriggerKind string
 
@@ -36,6 +50,7 @@ type Trigger struct {
 type InputRef struct {
 	Name      string          `json:"name"`
 	Ref       Ref             `json:"ref"`
+	Source    string          `json:"source,omitempty"`
 	Integrity apiv1.Integrity `json:"integrity"`
 }
 
@@ -71,7 +86,25 @@ type RunIdentity struct {
 	Trigger Trigger `json:"trigger"`
 	// Inputs are the content-digested input snapshots pinned at run start.
 	Inputs []InputRef `json:"inputs,omitempty"`
-	// StartedAt is when the run was created. Informational (not conformance).
+	// ContinuedFromRunID links this run to the terminal run it continues.
+	ContinuedFromRunID string `json:"continuedFromRunId,omitempty"`
+	// SourceTerminalSeq is the terminal event generation selected by the
+	// operator when this continuation was created.
+	SourceTerminalSeq uint64 `json:"sourceTerminalSeq,omitempty"`
+	// Operator and RequestedTarget are immutable continuation provenance.
+	Operator        string `json:"operator,omitempty"`
+	RequestedTarget string `json:"requestedTarget,omitempty"`
+	// WorkspaceBranch is the repository branch whose state this run executes.
+	// Continuations retain the source branch instead of creating a new run branch.
+	WorkspaceBranch string `json:"workspaceBranch,omitempty"`
+	// WorkspaceBranchSHA is the commit observed for WorkspaceBranch at creation.
+	WorkspaceBranchSHA string `json:"workspaceBranchSha,omitempty"`
+	// WorkspaceRepository identifies the repository containing WorkspaceBranch.
+	WorkspaceRepository *apiv1.RepoRef `json:"workspaceRepository,omitempty"`
+	// ContextPointers are the explicitly admitted cross-run and injected inputs
+	// available to a continuation. Ambient source-run context is never copied.
+	ContextPointers []apiv1.ContextPointer `json:"contextPointers,omitempty"`
+	// StartedAt is when the run was created and anchors maxRunDuration.
 	StartedAt time.Time `json:"startedAt"`
 }
 

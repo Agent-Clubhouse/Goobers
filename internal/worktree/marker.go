@@ -28,9 +28,11 @@ const (
 type marker struct {
 	RunID          string `json:"run_id"`
 	OwnerRunID     string `json:"owner_run_id,omitempty"`
+	Directory      string `json:"directory,omitempty"`
 	Branch         string `json:"branch,omitempty"`
 	StartRef       string `json:"start_ref,omitempty"`
 	AssetPathGuard bool   `json:"asset_path_guard,omitempty"`
+	Writer         string `json:"writer,omitempty"`
 	PID            int    `json:"pid"`
 	// PIDStartedAt is PID's own OS-reported start time at marker-creation
 	// time (#2052), best-effort — empty when proc.StartTime couldn't
@@ -48,6 +50,25 @@ type marker struct {
 	SizeBytes    *int64    `json:"size_bytes,omitempty"`
 }
 
+type branchAcquisition struct {
+	OwnerRunID string `json:"owner_run_id"`
+	Branch     string `json:"branch"`
+}
+
+func (m marker) directoryName() (string, error) {
+	// Markers written before directory hashing used the full worktree ID.
+	if m.Directory == "" {
+		return m.RunID, nil
+	}
+	if !validRunID(m.Directory) {
+		return "", fmt.Errorf("worktree: marker directory %q must be a single path segment", m.Directory)
+	}
+	if expected := worktreeDirectoryName(m.RunID); m.Directory != expected {
+		return "", fmt.Errorf("worktree: marker directory %q does not match run ID hash %q", m.Directory, expected)
+	}
+	return m.Directory, nil
+}
+
 func (m marker) retainedAt() time.Time {
 	if !m.RetainedAt.IsZero() {
 		return m.RetainedAt
@@ -56,13 +77,25 @@ func (m marker) retainedAt() time.Time {
 }
 
 func writeMarker(path string, m marker) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("worktree: create marker dir: %w", err)
-	}
 	data, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("worktree: encode marker: %w", err)
+	}
+	return writeMarkerData(path, data)
+}
+
+func writeBranchAcquisition(path string, acquisition branchAcquisition) error {
+	data, err := json.Marshal(acquisition)
+	if err != nil {
+		return fmt.Errorf("worktree: encode branch acquisition: %w", err)
+	}
+	return writeMarkerData(path, data)
+}
+
+func writeMarkerData(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("worktree: create marker dir: %w", err)
 	}
 	// Write to a temp file, fsync it, rename, then fsync the parent
 	// directory — a rename alone can still leave a torn or entirely absent

@@ -70,6 +70,11 @@ type Reader interface {
 	// one request, with no per-workflow follow-up read.
 	LatestPerWorkflow(ctx context.Context, options AggregateOptions) ([]WorkflowLatest, error)
 
+	// CreditAssignment ranks graph nodes by their contribution to adverse run
+	// outcomes and repeated attempts.
+	CreditAssignment(ctx context.Context, options CreditOptions) ([]NodeCredit, error)
+	CausalCredit(ctx context.Context, options CausalOptions) ([]CausalNodeCredit, error)
+
 	// GetRun returns one projected run. The bool distinguishes absent from
 	// failed — a run that is not in the read model is an ordinary answer, and
 	// collapsing it into an error would make retention indistinguishable from
@@ -79,11 +84,21 @@ type Reader interface {
 	// CountByPhase is the Overview's histogram, as one aggregate.
 	CountByPhase(ctx context.Context) (map[journal.RunPhase]int, error)
 
+	// ActiveRunCounts returns the number of running runs for each workflow.
+	ActiveRunCounts(ctx context.Context) ([]WorkflowCount, error)
+
 	// Changes returns committed transitions after a position, in commit order.
 	Changes(ctx context.Context, afterSeq uint64, limit int) ([]Change, error)
 
 	// LatestChangeSeq is the newest committed position.
 	LatestChangeSeq(ctx context.Context) (uint64, error)
+}
+
+// WorkflowCount is an active-run count keyed by workflow identity.
+type WorkflowCount struct {
+	Gaggle   string
+	Workflow string
+	Count    int
 }
 
 // Writer is the projection surface.

@@ -9,7 +9,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["stub-sample", "seed-config-source", "stub-agent-instructions"],
+      "enum": ["stub-sample", "seed-config-source", "stub-agent-instructions", "connect"],
       "description": "Which onboarding action produced this envelope."
     },
     "version": {
@@ -26,6 +26,11 @@
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
       "description": "Paths or logical assets left untouched because they were already current or pending."
+    },
+    "updated": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Existing files or entries rewritten in place by the action."
     },
     "path": {
       "type": "string",

@@ -3,6 +3,7 @@ import { useLiveData } from "../liveData";
 import type {
   ArtifactContent,
   ArtifactMetadata,
+  AttemptPlacement,
   DaemonClient,
   RunEvent,
   StageAttempt,
@@ -71,6 +72,18 @@ function attemptLabel(attempt: StageAttempt): string {
   return `Attempt ${attempt.number}${retry}`;
 }
 
+// queueWaitMillis derives the dispatch latency from placement's two
+// timestamps, when both are present and parseable — the carrier the scale
+// rung reads (goobernetes-smoke.md §6.3). Local attempts never queue and
+// carry neither timestamp.
+function queueWaitMillis(placement: AttemptPlacement): number | undefined {
+  if (!placement.queuedAt || !placement.podStartedAt) {
+    return undefined;
+  }
+  const wait = Date.parse(placement.podStartedAt) - Date.parse(placement.queuedAt);
+  return Number.isFinite(wait) && wait >= 0 ? wait : undefined;
+}
+
 function repassDecision(
   events: RunEvent[],
   stageId: string,
@@ -108,18 +121,23 @@ export function RunStageInspector({
   client,
   runId,
   node,
+  workflow,
   selectedSeq,
   events = [],
   inspectorRef,
+  onSelectAttempt,
   selectedEvidence,
   selectedEvidenceVisit,
 }: {
   client: DaemonClient;
   runId: string;
   node: WorkflowGraphNode | undefined;
+  /** The run's own workflow, shown alongside the stage id for context (#2538). This is a run-level constant, not a phase tier — #2538's phase/stage nesting criterion needs a backend concept that doesn't exist yet (tracked in #2599). */
+  workflow?: string;
   selectedSeq: number;
   events?: RunEvent[];
   inspectorRef?: React.Ref<HTMLElement>;
+  onSelectAttempt?: (isLatest: boolean) => void;
   selectedEvidence?: RunEvent;
   selectedEvidenceVisit?: number;
 }) {
@@ -131,6 +149,16 @@ export function RunStageInspector({
   const attemptButtons = useRef<Array<HTMLButtonElement | null>>([]);
 
   const stageId = node?.id;
+  const selectedEvidenceKey = selectedEvidence
+    ? `${selectedEvidence.branch}-${selectedEvidence.seq}`
+    : undefined;
+  useEffect(() => {
+    setAttempts([]);
+    setSelectedId(undefined);
+    setLoadState("idle");
+    setError(undefined);
+  }, [runId, selectedEvidenceKey, stageId]);
+
   // Bumped by a live event for this run, which re-runs the fetch below.
   //
   // #1714: the attempt list was fetched in a plain effect keyed on
@@ -182,7 +210,6 @@ export function RunStageInspector({
       .then((list) => {
         setAttempts(list.attempts);
         setLoadState("idle");
-        setSelectedId(undefined);
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) {
@@ -218,12 +245,17 @@ export function RunStageInspector({
     ? repassDecision(events, node.id, selectedVisit, visits[selectedVisitIndex - 1])
     : undefined;
 
+  const selectAttempt = (attempt: StageAttempt) => {
+    setSelectedId(attempt.id);
+    onSelectAttempt?.(attempt.id === visible[visible.length - 1]?.id);
+  };
+
   const selectVisit = (visit: StageVisit) => {
     const attempt = visit.attempts[visit.attempts.length - 1];
     if (!attempt) {
       return;
     }
-    setSelectedId(attempt.id);
+    selectAttempt(attempt);
   };
 
   const moveVisitSelection = (index: number) => {
@@ -249,7 +281,7 @@ export function RunStageInspector({
     if (!attempt) {
       return;
     }
-    setSelectedId(attempt.id);
+    selectAttempt(attempt);
     attemptButtons.current[index]?.focus();
   };
   const onAttemptKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -266,7 +298,9 @@ export function RunStageInspector({
   return (
     <Inspector
       className="run-inspector"
-      label={`${node.id} attempt inspector`}
+      label={
+        workflow ? `${workflow} · ${node.id} attempt inspector` : `${node.id} attempt inspector`
+      }
       rootRef={inspectorRef}
     >
       <div className="inspector-heading">
@@ -274,8 +308,11 @@ export function RunStageInspector({
           <Icon name={nodeIcon(node.kind)} size={17} />
         </span>
         <div>
-          <span>{node.kind}</span>
+          <span className="inspector-scope">
+            {workflow ? `${workflow} · ${node.kind}` : node.kind}
+          </span>
           <h3>{node.id}</h3>
+          {node.owner && <span className="inspector-owner">Owned by {node.owner}</span>}
         </div>
       </div>
 
@@ -302,7 +339,7 @@ export function RunStageInspector({
             </div>
           )}
 
-          {loadState === "idle" &&
+          {(loadState === "idle" || visible.length > 0) &&
             (visible.length === 0 ? (
               <div className="not-reached">
                 <span>Not reached at this point</span>
@@ -350,7 +387,7 @@ export function RunStageInspector({
                                 : "attempt-button"
                             }
                             key={attempt.id}
-                            onClick={() => setSelectedId(attempt.id)}
+                            onClick={() => selectAttempt(attempt)}
                             onKeyDown={(event) => onAttemptKeyDown(event, index)}
                             ref={(element) => {
                               attemptButtons.current[index] = element;
@@ -405,27 +442,50 @@ function EvidenceDetail({
         </span>
         <strong>{eventHeading(event)}</strong>
       </div>
-      {isTranscriptEvent(event) ? (
-        <TranscriptRow client={client} event={event} runId={runId} />
-      ) : event.artifact ? (
-        <div className="artifact-list">
-          <ArtifactRow
-            artifact={{
-              ...event.artifact,
-              recordedSeq: event.artifact.recordedSeq ?? event.seq,
-            }}
-            attemptNumber={event.artifact.attempt ?? event.attempt}
-            attemptVisit={visit}
-            client={client}
-            runId={runId}
-          />
-        </div>
-      ) : (
-        <p className="artifact-load-error" role="alert">
-          Evidence content is unavailable.
-        </p>
-      )}
+      <EvidencePayload client={client} event={event} runId={runId} visit={visit} />
     </div>
+  );
+}
+
+// EvidencePayload renders whatever an inspectable evidence event (transcript
+// or artifact) carries, without assuming a graph node context — the shared
+// core EvidenceDetail wraps for the stage inspector and KeyMomentsDigest
+// reuses directly for its inline "state change and payload" preview (#2537),
+// so the two views never grow separate rendering logic for the same evidence.
+export function EvidencePayload({
+  client,
+  event,
+  runId,
+  visit,
+}: {
+  client: DaemonClient;
+  event: RunEvent;
+  runId: string;
+  visit?: number;
+}) {
+  if (isTranscriptEvent(event)) {
+    return <TranscriptRow client={client} event={event} runId={runId} />;
+  }
+  if (event.artifact) {
+    return (
+      <div className="artifact-list">
+        <ArtifactRow
+          artifact={{
+            ...event.artifact,
+            recordedSeq: event.artifact.recordedSeq ?? event.seq,
+          }}
+          attemptNumber={event.artifact.attempt ?? event.attempt}
+          attemptVisit={visit}
+          client={client}
+          runId={runId}
+        />
+      </div>
+    );
+  }
+  return (
+    <p className="artifact-load-error" role="alert">
+      Evidence content is unavailable.
+    </p>
   );
 }
 
@@ -662,6 +722,30 @@ function AttemptDetail({
         <span>{attemptLabel(attempt)}</span>
         {attempt.model && <span className="mono">model: {attempt.model}</span>}
       </div>
+      {attempt.placement && (
+        <div aria-label="Attempt placement" className="attempt-summary-row">
+          <span className="mono">runner: {attempt.placement.runner}</span>
+          {/* node is a real cluster node; host is the executing process's own
+              hostname, which inside a pod is the pod name. Show the node when
+              some authority declared one, and otherwise the honest host —
+              never one labelled as the other. */}
+          {attempt.placement.node ? (
+            <span className="mono">node: {attempt.placement.node}</span>
+          ) : (
+            attempt.placement.host && <span className="mono">host: {attempt.placement.host}</span>
+          )}
+          {attempt.placement.os && <span className="mono">os: {attempt.placement.os}</span>}
+          {attempt.placement.image && (
+            <span className="mono">image: {attempt.placement.image}</span>
+          )}
+          {attempt.placement.pod && <span className="mono">pod: {attempt.placement.pod}</span>}
+          {queueWaitMillis(attempt.placement) !== undefined && (
+            <span className="mono">
+              queue wait: {formatDuration(queueWaitMillis(attempt.placement) ?? 0)}
+            </span>
+          )}
+        </div>
+      )}
       {attempt.error && (
         <p className="artifact-load-error">
           {attempt.error.code}

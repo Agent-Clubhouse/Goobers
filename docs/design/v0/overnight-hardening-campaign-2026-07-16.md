@@ -1,5 +1,7 @@
 # Overnight hardening campaign — 2026-07-16
 
+> Status: **historical — completed campaign record**
+
 Design record for the first long-running autonomous self-improvement test. This
 doc is the map for the ~35 items approved for the queue on 2026-07-16: the
 invariant families they enforce, the dependency edges between them, and the
@@ -97,7 +99,7 @@ file-cluster overlaps — treat as co-review clusters, expect serial rebases:
 - `internal/worktree/`: #529, #536, #548.
 - `internal/runner/run.go` (taskOutcome/gate switch): #541, #544, #561, #562.
 - `internal/workflow/` + `api/validate`: #560, #563, #564, #565.
-- `selfhost/.../merge-review.yaml`: #540, #562, #568.
+- `reference-workflows/.../merge-review.yaml`: #540, #562, #568.
 - Claim ledger (`internal/localscheduler/claim.go`): #481, #531, #494.
 - `cmd/goobers/status.go`/`runs.go`: #556, #557.
 

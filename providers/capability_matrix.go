@@ -1,6 +1,9 @@
 package providers
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // This file implements CONF-2 (#2075, design doc §5/§7 item 2): the
 // generated capability x provider matrix and the blessed-tier CI gate.
@@ -16,7 +19,8 @@ func AllCapabilities() []Capability {
 	return []Capability{
 		CapRepoClone, CapRepoBranch, CapRepoCommit, CapRepoPush,
 		CapPROpen, CapPRList, CapPRPoll, CapPRClose, CapPRFiles, CapPRCompare,
-		CapPRReviewRequest, CapPRReviewSubmit, CapPRReviewThreads,
+		CapPRQueryAuthor, CapPRQueryAssignee, CapPRQueryRequestedReviewer,
+		CapPRReviewRequest, CapPRReviewSubmit, CapPRReviewThreads, CapPRReviewResolve,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll, CapPRUpdateBranch, CapBranchDelete,
 		CapRepoPolicyRead, CapPRStatusPublish,
 		CapBacklogList, CapBacklogGet, CapBacklogComments, CapBacklogCreate, CapBacklogUpdate, CapBacklogStatus, CapBacklogClaim, CapBacklogBlockers,
@@ -24,10 +28,48 @@ func AllCapabilities() []Capability {
 	}
 }
 
+// ProviderSupportLevel describes the maturity of a registered provider.
+type ProviderSupportLevel string
+
+const (
+	// ProviderSupported identifies providers backed by the repository's support evidence.
+	ProviderSupported ProviderSupportLevel = "supported"
+	// ProviderExperimental identifies providers that have not met their promotion criteria.
+	ProviderExperimental ProviderSupportLevel = "experimental"
+)
+
+// ProviderSupport describes one provider's product support designation.
+type ProviderSupport struct {
+	Provider          ProviderKind
+	Level             ProviderSupportLevel
+	PromotionCriteria string
+}
+
+var providerSupport = []ProviderSupport{
+	{Provider: ProviderGitHub, Level: ProviderSupported},
+	{Provider: ProviderADO, Level: ProviderSupported},
+	{
+		Provider:          ProviderGitea,
+		Level:             ProviderExperimental,
+		PromotionCriteria: "an in-repo `provider: gitea` config exercised in merge-tier CI and live conformance per #2441",
+	},
+}
+
+// AllProviderSupport returns every provider's support designation, blessed
+// tier first.
+func AllProviderSupport() []ProviderSupport {
+	return slices.Clone(providerSupport)
+}
+
 // AllProviderKinds returns every provider kind the matrix covers, blessed
 // tier first.
 func AllProviderKinds() []ProviderKind {
-	return []ProviderKind{ProviderGitHub, ProviderADO, ProviderGitea}
+	support := AllProviderSupport()
+	kinds := make([]ProviderKind, 0, len(support))
+	for _, provider := range support {
+		kinds = append(kinds, provider.Provider)
+	}
+	return kinds
 }
 
 // BlessedTierProviderKinds are the providers the design doc's §2 goal holds
@@ -53,6 +95,7 @@ func WorkflowRequiredCapabilities() CapabilitySet {
 	return mandatoryCapabilities().With(
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapBranchDelete, CapPRCompare,
+		CapPRQueryAuthor, CapPRQueryAssignee, CapPRQueryRequestedReviewer,
 		CapBacklogBlockers,
 	)
 }
@@ -64,11 +107,11 @@ func WorkflowRequiredCapabilities() CapabilitySet {
 // TestBlessedTierGapsAreTracked fails CI with an actionable message.
 // Remove an entry only once its provider's declaration and behavior have
 // actually caught up (CONF-3/#2076 removed the landing-group entries once
-// it implemented them and flipped ADO's declaration; the #2059 fix removes
-// the backlog.blockers entry once the fail-open stub is gone).
+// it implemented them and flipped ADO's declaration).
 var knownGaps = map[ProviderKind]map[Capability]string{
 	ProviderADO: {
-		CapBacklogBlockers: "#2059",
+		CapBacklogBlockers: "#3030",
+		CapPRQueryAssignee: "#2178", // ADO has no PR-assignee concept; reviewers are the closest analog.
 	},
 }
 

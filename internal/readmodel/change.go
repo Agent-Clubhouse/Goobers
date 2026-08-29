@@ -184,7 +184,12 @@ func (s *Store) Changes(ctx context.Context, afterSeq uint64, limit int) ([]Chan
 	if limit <= 0 {
 		limit = defaultChangePageSize
 	}
-	rows, err := s.readDB().QueryContext(ctx, `
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, `
 		SELECT seq, at, kind, run_id, gaggle, workflow
 		FROM change WHERE seq > ? ORDER BY seq ASC LIMIT ?`, afterSeq, limit)
 	if err != nil {
@@ -223,7 +228,12 @@ const defaultChangePageSize = 500
 // LatestChangeSeq returns the highest change sequence, or 0 for an empty feed.
 func (s *Store) LatestChangeSeq(ctx context.Context) (uint64, error) {
 	var seq sql.NullInt64
-	err := s.readDB().QueryRowContext(ctx, `SELECT MAX(seq) FROM change`).Scan(&seq)
+	db, release, err := s.readHandle()
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	err = db.QueryRowContext(ctx, `SELECT MAX(seq) FROM change`).Scan(&seq)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, fmt.Errorf("readmodel: read latest change seq: %w", err)
 	}
@@ -244,7 +254,12 @@ func (s *Store) LatestChangeSeq(ctx context.Context) (uint64, error) {
 //
 // keepFrom is the oldest sequence to retain. Rows below it are removed.
 func (s *Store) PruneChanges(ctx context.Context, keepFrom uint64) (int64, error) {
-	tx, err := s.writeDB().BeginTx(ctx, nil)
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("readmodel: begin change prune: %w", err)
 	}
@@ -281,7 +296,12 @@ func (s *Store) PruneChanges(ctx context.Context, keepFrom uint64) (int64, error
 // any of them, so a scoped invalidation would under-report. Clients treat it as
 // an instance-and-workflow-wide refresh.
 func (s *Store) PublishDefinitionsChanged(ctx context.Context) error {
-	tx, err := s.writeDB().BeginTx(ctx, nil)
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin definitions change: %w", err)
 	}

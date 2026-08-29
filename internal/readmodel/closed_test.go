@@ -2,8 +2,10 @@ package readmodel
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestReadAfterCloseErrorsRatherThanPanicking pins the distinction that broke
@@ -32,25 +34,81 @@ func TestReadAfterCloseErrorsRatherThanPanicking(t *testing.T) {
 	// shutdown: the repair sweep, the projector's commit loop, and an SSE
 	// subscription's pump.
 	t.Run("ProjectionFloor", func(t *testing.T) {
-		if _, _, err := store.ProjectionFloor(ctx); err == nil {
-			t.Error("a read after Close returned no error")
+		if _, _, err := store.ProjectionFloor(ctx); !errors.Is(err, ErrClosed) {
+			t.Errorf("error = %v, want ErrClosed", err)
 		}
 	})
 	t.Run("State", func(t *testing.T) {
-		if _, err := store.State(ctx); err == nil {
-			t.Error("a read after Close returned no error")
+		if _, err := store.State(ctx); !errors.Is(err, ErrClosed) {
+			t.Errorf("error = %v, want ErrClosed", err)
 		}
 	})
 	t.Run("ListRuns", func(t *testing.T) {
-		if _, err := store.ListRuns(ctx, ListOptions{Limit: 1}); err == nil {
-			t.Error("a read after Close returned no error")
+		if _, err := store.ListRuns(ctx, ListOptions{Limit: 1}); !errors.Is(err, ErrClosed) {
+			t.Errorf("error = %v, want ErrClosed", err)
 		}
 	})
 	t.Run("UpsertRun", func(t *testing.T) {
-		if err := store.UpsertRun(ctx, Projection{Run: RunRow{RunID: "x"}}); err == nil {
-			t.Error("a write after Close returned no error")
+		if err := store.UpsertRun(ctx, Projection{Run: RunRow{RunID: "x"}}); !errors.Is(err, ErrClosed) {
+			t.Errorf("error = %v, want ErrClosed", err)
 		}
 	})
+}
+
+func TestCloseWaitsForInFlightOperation(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "read.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	db, release, err := store.readHandle()
+	if err != nil {
+		t.Fatalf("lease read handle: %v", err)
+	}
+	rows, err := db.Query(`SELECT schema_version FROM projection_state`)
+	if err != nil {
+		release()
+		t.Fatalf("query: %v", err)
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- store.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned while the query lease was active: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	_ = rows.Close()
+	release()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return after the query completed")
+	}
+}
+
+func TestResolveReadHandleFallsBackToWriter(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "read.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	readerPool := openReaderPool("")
+	if readerPool != nil {
+		t.Fatal("empty path unexpectedly opened a reader pool")
+	}
+	reader := resolveReadHandle(store.writer, readerPool)
+	if reader != store.writer {
+		t.Fatal("nil reader pool did not resolve to the writer")
+	}
+	if err := reader.Ping(); err != nil {
+		t.Fatalf("fallback reader: %v", err)
+	}
 }
 
 // TestCloseIsIdempotent pins that a double Close is safe.

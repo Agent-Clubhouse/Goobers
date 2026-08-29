@@ -3,6 +3,7 @@ package readmodel
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -29,7 +30,12 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	// lands on the read model's single writer (measurement.go).
 	s.applyMeasurement(ctx, &p)
 
-	tx, err := s.writeDB().BeginTx(ctx, nil)
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("readmodel: begin upsert: %w", err)
 	}
@@ -74,7 +80,31 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 		return fmt.Errorf("readmodel: clear stages for %s: %w", p.Run.RunID, err)
 	}
 	for _, stage := range p.Stages {
-		if err := insertStageRow(ctx, tx, stage, p.Run.Gaggle, p.Run.StartedAt); err != nil {
+		if err := insertStageRow(ctx, tx, stage, p.Run.Gaggle, p.Run.StartedAt, p.Run.Terminal); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM run_node WHERE run_id = ?`, p.Run.RunID); err != nil {
+		return fmt.Errorf("readmodel: clear nodes for %s: %w", p.Run.RunID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM run_node_parent WHERE run_id = ?`, p.Run.RunID); err != nil {
+		return fmt.Errorf("readmodel: clear node parents for %s: %w", p.Run.RunID, err)
+	}
+	for _, node := range p.Nodes {
+		if err := insertNodeRow(ctx, tx, node); err != nil {
+			return err
+		}
+	}
+	for _, parent := range p.NodeParents {
+		if err := insertNodeParentRow(ctx, tx, parent); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM remediation_example WHERE run_id = ?`, p.Run.RunID); err != nil {
+		return fmt.Errorf("readmodel: clear remediation examples for %s: %w", p.Run.RunID, err)
+	}
+	for _, example := range p.Remediation {
+		if err := insertRemediationExampleRow(ctx, tx, example); err != nil {
 			return err
 		}
 	}
@@ -125,15 +155,24 @@ func readRunRowTx(ctx context.Context, tx *sql.Tx, runID string) (RunRow, bool, 
 }
 
 func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
-	_, err := tx.ExecContext(ctx, `
+	disposition := row.Disposition
+	if disposition == "" {
+		disposition = DispositionUnknown
+	}
+	operatorJSON, err := json.Marshal(row.Operator)
+	if err != nil {
+		return fmt.Errorf("readmodel: encode operator facts for run %s: %w", row.RunID, err)
+	}
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO run (
 			run_id, gaggle, workflow, workflow_version, workflow_digest, goober_digest,
 			trigger_kind, trigger_ref, phase, terminal, current_stage,
 			started_at, finished_at, last_activity_at, last_seq,
 			repass_count, retry_count, policy_retry_count, infra_retry_count,
-			outcome_verdict, outcome_target,
-			any_token_measured, any_premium_measured, any_cost_measured, any_retry_waste
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			outcome_verdict, outcome_target, disposition,
+			any_token_measured, any_premium_measured, any_cost_measured, any_retry_waste,
+			operator_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id) DO UPDATE SET
 			gaggle = excluded.gaggle,
 			workflow = excluded.workflow,
@@ -155,10 +194,12 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 			infra_retry_count = excluded.infra_retry_count,
 			outcome_verdict = excluded.outcome_verdict,
 			outcome_target = excluded.outcome_target,
+			disposition = excluded.disposition,
 			any_token_measured = excluded.any_token_measured,
 			any_premium_measured = excluded.any_premium_measured,
 			any_cost_measured = excluded.any_cost_measured,
-			any_retry_waste = excluded.any_retry_waste
+			any_retry_waste = excluded.any_retry_waste,
+			operator_json = excluded.operator_json
 		-- Idempotence, and the guard that makes out-of-order delivery safe: an
 		-- older projection never overwrites a newer one. Without it, a repair
 		-- sweep racing live projection could rewind a run's phase.
@@ -170,9 +211,10 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 		formatTime(row.StartedAt), nullTime(row.FinishedAt), nullTimeValue(row.LastActivity),
 		row.LastSeq,
 		row.RepassCount, row.RetryCount, row.PolicyRetryCount, row.InfraRetryCount,
-		nullString(row.OutcomeVerdict), nullString(row.OutcomeTarget),
+		nullString(row.OutcomeVerdict), nullString(row.OutcomeTarget), disposition,
 		boolInt(row.AnyTokenMeasured), boolInt(row.AnyPremiumMeasured),
 		boolInt(row.AnyCostMeasured), boolInt(row.AnyRetryWaste),
+		string(operatorJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: upsert run %s: %w", row.RunID, err)
@@ -191,21 +233,74 @@ func upsertRunRow(ctx context.Context, tx *sql.Tx, row RunRow) error {
 // run_stage.started_at is the STAGE's own start, a different clock, so it cannot
 // stand in for run recency. The copies cannot drift because these rows are
 // deleted and rewritten wholesale on every projection of their run.
-func insertStageRow(ctx context.Context, tx *sql.Tx, stage StageRow, gaggle string, runStartedAt time.Time) error {
+func insertStageRow(
+	ctx context.Context,
+	tx *sql.Tx,
+	stage StageRow,
+	gaggle string,
+	runStartedAt time.Time,
+	runTerminal bool,
+) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO run_stage (
 			run_id, stage, attempts, last_status, last_attempt_class, started_at, finished_at,
-			gaggle, run_started_at, token_measured, premium_measured, cost_measured, retry_waste
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			gaggle, run_started_at, token_measured, premium_measured, cost_measured, retry_waste,
+			had_success, had_failure, had_other, run_terminal
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		stage.RunID, stage.Stage, stage.Attempts,
 		nullString(stage.LastStatus), nullString(stage.LastAttemptClass),
 		nullTime(stage.StartedAt), nullTime(stage.FinishedAt),
 		gaggle, formatTime(runStartedAt),
 		boolInt(stage.TokenMeasured), boolInt(stage.PremiumMeasured),
 		boolInt(stage.CostMeasured), boolInt(stage.RetryWaste),
+		boolInt(stage.HadSuccess), boolInt(stage.HadFailure), boolInt(stage.HadOther),
+		boolInt(runTerminal),
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: insert stage %s/%s: %w", stage.RunID, stage.Stage, err)
+	}
+	return nil
+}
+
+func insertNodeRow(ctx context.Context, tx *sql.Tx, node NodeRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO run_node (
+			run_id, kind, name, identity, randomized, arm, attempts, retry_waste_attempts
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		node.RunID, node.Kind, node.Name, node.Identity,
+		boolInt(node.Randomized), node.Arm, node.Attempts, node.RetryWasteAttempts,
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: insert node %s/%s: %w", node.RunID, node.Name, err)
+	}
+	return nil
+}
+
+func insertRemediationExampleRow(ctx context.Context, tx *sql.Tx, example RemediationExampleRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO remediation_example (
+			run_id, stage, attempt, error_class, failure_excerpt, fix_excerpt, did_it_help, observed_at, config_digest
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		example.RunID, example.Stage, example.Attempt, example.ErrorClass,
+		example.FailureExcerpt, example.FixExcerpt, boolInt(example.DidItHelp),
+		nullTimeValue(example.ObservedAt), example.ConfigDigest,
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: insert remediation example %s/%s/%d: %w",
+			example.RunID, example.Stage, example.Attempt, err)
+	}
+	return nil
+}
+
+func insertNodeParentRow(ctx context.Context, tx *sql.Tx, parent NodeParentRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO run_node_parent (
+			run_id, kind, name, identity, parent_kind, parent_name
+		) VALUES (?, ?, ?, ?, ?, ?)`,
+		parent.RunID, parent.Kind, parent.Name, parent.Identity, parent.ParentKind, parent.ParentName,
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: insert node parent %s/%s: %w", parent.RunID, parent.Name, err)
 	}
 	return nil
 }
@@ -220,19 +315,26 @@ func insertStageRow(ctx context.Context, tx *sql.Tx, stage StageRow, gaggle stri
 // is where they would have been dropped.
 func (s *Store) GetRun(ctx context.Context, runID string) (RunRow, bool, error) {
 	var out RunRow
-	row := s.readDB().QueryRowContext(ctx,
+	db, release, err := s.readHandle()
+	if err != nil {
+		return RunRow{}, false, err
+	}
+	row := db.QueryRowContext(ctx,
 		`SELECT `+runColumns+` FROM run r WHERE r.run_id = ?`, runID)
 	switch err := row.Scan(runScanTargets(&out)...); {
 	case errors.Is(err, sql.ErrNoRows):
+		release()
 		return RunRow{}, false, nil
 	case err != nil:
+		release()
 		return RunRow{}, false, fmt.Errorf("readmodel: read run %s: %w", runID, err)
 	}
 	if err := out.finishScan(); err != nil {
+		release()
 		return RunRow{}, false, err
 	}
+	release()
 
-	var err error
 	if out.Stages, err = s.runStages(ctx, runID); err != nil {
 		return RunRow{}, false, err
 	}
@@ -241,7 +343,12 @@ func (s *Store) GetRun(ctx context.Context, runID string) (RunRow, bool, error) 
 
 // runStages returns the stage names recorded for a run, in stable order.
 func (s *Store) runStages(ctx context.Context, runID string) ([]string, error) {
-	rows, err := s.readDB().QueryContext(ctx,
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx,
 		`SELECT stage FROM run_stage WHERE run_id = ? ORDER BY stage`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("readmodel: read stages for %s: %w", runID, err)
@@ -267,7 +374,12 @@ func (s *Store) runStages(ctx context.Context, runID string) ([]string, error) {
 // becomes one indexed aggregate over phase = 'running'". It is served by
 // idx_run_phase_recency without touching a journal.
 func (s *Store) CountByPhase(ctx context.Context) (map[journal.RunPhase]int, error) {
-	rows, err := s.readDB().QueryContext(ctx, `SELECT phase, COUNT(*) FROM run GROUP BY phase`)
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, `SELECT phase, COUNT(*) FROM run GROUP BY phase`)
 	if err != nil {
 		return nil, fmt.Errorf("readmodel: count by phase: %w", err)
 	}
@@ -283,6 +395,37 @@ func (s *Store) CountByPhase(ctx context.Context) (map[journal.RunPhase]int, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("readmodel: phase count rows: %w", err)
+	}
+	return out, nil
+}
+
+// ActiveRunCounts returns active counts grouped by workflow from the stored
+// phase projection.
+func (s *Store) ActiveRunCounts(ctx context.Context) ([]WorkflowCount, error) {
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, `
+		SELECT gaggle, workflow, COUNT(*)
+		FROM run
+		WHERE phase = ?
+		GROUP BY gaggle, workflow`, journal.PhaseRunning)
+	if err != nil {
+		return nil, fmt.Errorf("readmodel: count active runs by workflow: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []WorkflowCount
+	for rows.Next() {
+		var count WorkflowCount
+		if err := rows.Scan(&count.Gaggle, &count.Workflow, &count.Count); err != nil {
+			return nil, fmt.Errorf("readmodel: scan active workflow count: %w", err)
+		}
+		out = append(out, count)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("readmodel: active workflow count rows: %w", err)
 	}
 	return out, nil
 }

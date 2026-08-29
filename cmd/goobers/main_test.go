@@ -106,6 +106,18 @@ func TestInitThenValidate(t *testing.T) {
 	if !strings.Contains(stdout, "docs/concepts/README.md") {
 		t.Fatalf("init stdout lacks concepts guide: %q", stdout)
 	}
+	for _, want := range []string{
+		"Post-init validation:",
+		"WARNING PLACEHOLDER001",
+		"Next: edit these files before running a live workflow:",
+		"instance.yaml",
+		"config/gaggles/example/gaggle.yaml",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("init stdout lacks %q: %q", want, stdout)
+		}
+	}
+
 	events, err := journal.ReadInstanceLog(instance.NewLayout(root).SchedulerDir())
 	if err != nil {
 		t.Fatalf("read init journal: %v", err)
@@ -140,6 +152,23 @@ func TestInitThenValidate(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("no-op init appended another completion: %+v", events)
+	}
+}
+
+func TestInitQuickstartReportsPlaceholderEdits(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "quickstart")
+	code, stdout, stderr := runArgs(t, "init", "--template=quickstart", root)
+	if code != 0 {
+		t.Fatalf("init quickstart: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"Post-init validation:",
+		"WARNING PLACEHOLDER001",
+		"Next: edit these files before running a live workflow:",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("quickstart init stdout lacks %q:\n%s", want, stdout)
+		}
 	}
 }
 
@@ -190,6 +219,7 @@ func TestValidateRejectsUnknownAutomatedCheckName(t *testing.T) {
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	broken := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -206,6 +236,8 @@ spec:
       type: agentic
       goober: coder
       goal: Implement the backlog item and open a PR.
+      capabilities:
+        - agent:model
       next: done-check
   gates:
     - name: done-check
@@ -238,6 +270,7 @@ func TestValidateRejectsInvalidOutputMatchesPattern(t *testing.T) {
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	broken := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -287,6 +320,7 @@ func TestValidateWarnsForClaimStageWithoutResultFile(t *testing.T) {
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	workflow := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -320,11 +354,11 @@ spec:
 	}
 }
 
-// TestInitThenSelfhostValidates is issue #28's own acceptance criterion,
+// TestInitThenReferenceWorkflowsValidates is issue #28's own acceptance criterion,
 // literally: `goobers init` + the self-hosting dogfood config ->
 // `goobers validate` passes, with every gaggle/goober/workflow resolving.
-func TestInitThenSelfhostValidates(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "selfhost-instance")
+func TestInitThenReferenceWorkflowsValidates(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "reference-workflows-instance")
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
 	}
@@ -337,7 +371,7 @@ func TestInitThenSelfhostValidates(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.CopyFS(configDir, os.DirFS("../../selfhost")); err != nil {
+	if err := os.CopyFS(configDir, os.DirFS("../../reference-workflows")); err != nil {
 		t.Fatal(err)
 	}
 	// The blanket copy also pulls in files that aren't config-as-code
@@ -356,12 +390,11 @@ func TestInitThenSelfhostValidates(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "instance.yaml"), instanceYAML, 0o644); err != nil {
 		t.Fatal(err)
 	}
-
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 {
 		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "1 gaggle(s), 9 goober(s), 9 workflow(s)") {
+	if !strings.Contains(stdout, "1 gaggle(s), 11 goober(s), 11 workflow(s)") {
 		t.Fatalf("validate stdout = %q, want all self-hosting objects to resolve", stdout)
 	}
 	warnings, previewCount := withoutGeneratedPreviewWarnings(stdout)

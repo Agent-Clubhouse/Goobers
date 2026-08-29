@@ -18,6 +18,7 @@ import (
 const (
 	pushRemediatedResultName      = "push-remediated-result.json"
 	pushRemediatedPublishedOutput = "published"
+	pushRemediatedLocalHeadOutput = "localHead"
 )
 
 // runPushRemediated implements `goobers push-remediated` (issue #392):
@@ -61,7 +62,7 @@ const pushRemediatedHelp = "Usage: goobers push-remediated [path]\n\n" +
 	"2 = usage/IO error.\n"
 
 func runPushRemediated(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("push-remediated", flag.ContinueOnError)
+	fs := newCLIFlagSet("push-remediated", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "push-remediated")
 	if err := fs.Parse(args); err != nil {
@@ -81,6 +82,9 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if repo.Provider == providers.ProviderADO {
+		return runPushRemediatedADO(root, repo, stdout, stderr)
 	}
 	pushToken, err := providerToken(capability.RepoPush)
 	if err != nil {
@@ -197,22 +201,140 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 	}
 
 	pf(stdout, "PR #%d: pushed remediated branch %s and cleared %s\n", selectedNumber, current.Head, needsRemediationLabel)
-	return writePushRemediatedResult(selectedNumber, true, current.Head, stderr)
+	return writePushRemediatedResult(selectedNumber, true, current.Head, localHead, stderr)
+}
+
+// runPushRemediatedADO runs the push-remediated stage on Azure DevOps. The
+// publish itself — recovering the run's own PR claim, the "branch unchanged ⇒
+// nothing to publish" guard, and the mandatory force-with-lease — is
+// provider-neutral and shared verbatim with the GitHub path
+// (claimedPullRequestNumber, resolveHead, forcePushWithLease,
+// writePushRemediatedResult, skipTerminalRemediatedPullRequest). Two reads and
+// one write differ on ADO, all because *ADOProvider cannot satisfy
+// remediationProvider (remediation-wiring-plan §0.1/§3.6):
+//
+//   - The PR summary (state/head branch) comes from the native ADO GetPullRequest
+//     (a PollPullRequest adapter, §2.4).
+//   - The pre-remediation head-SHA lease expectation is read from the sticky
+//     remediation-state comment on the PR *thread* (ListPullRequestThreadComments,
+//     §2.3) — ADO has no PR-issue-comment transport, so the sticky state rides a
+//     thread; latestRemediationState parses that comment body unchanged.
+//   - The needs-remediation label clear routes to the native PR-label DELETE
+//     (RemovePullRequestLabel, §2.6) instead of UpdateWorkItem(ID: PR#), which on
+//     ADO would mutate the unrelated work item sharing the PR's numeric id (the
+//     wrong-object hazard, §0.5). Clearing the label is the re-entry trigger that
+//     lets merge-review re-select the reworked PR.
+//
+// The provider is built from config-sourced ADO auth via the shared stage factory
+// (no github:* token is resolved); only the provider-neutral repo:push credential
+// feeds the force-push.
+func runPushRemediatedADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	pushToken, err := providerToken(capability.RepoPush)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	selectedNumber, ok, err := claimedPullRequestNumber(root)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if !ok {
+		// Same disposition as the GitHub path: no claim means the lease expired
+		// mid-cycle and the rework is committed-but-unpushed with the label still
+		// set; fail rather than falsely report success. The next cycle re-selects
+		// the PR and redoes the work.
+		pf(stderr, "error: run holds no PR claim — its lease expired mid-cycle, so the remediated branch cannot be published; "+
+			"the PR keeps %s and will be re-selected next cycle\n", needsRemediationLabel)
+		return 1
+	}
+
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	pullID := strconv.Itoa(selectedNumber)
+	current, err := provider.GetPullRequest(ctx, repo, pullID)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+	}
+	if current.State != "open" || current.Merged {
+		return skipTerminalRemediatedPullRequest(selectedNumber, stdout, stderr)
+	}
+
+	// The sticky remediation-state comment (with the pre-remediation head SHA)
+	// rides a PR thread on ADO, not an issue comment. latestRemediationState
+	// parses the same marker out of the thread comment bodies.
+	rawComments, err := provider.ListPullRequestThreadComments(ctx, repo, pullID)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selectedNumber), err, "")
+	}
+	state, _, found := latestRemediationState(rawComments)
+	if !found || state.HeadSHA == "" {
+		pf(stderr, "error: PR #%d has no recorded pre-remediation head SHA to lease against "+
+			"(remediation-checkpoint records it every cycle) — refusing to force-push without one\n", selectedNumber)
+		return 1
+	}
+
+	// Nothing to publish is NOT success: an unchanged branch means the agentic
+	// chain produced no commit, and clearing the label would hand merge-review a
+	// PR it already rejected, unchanged. Leave the label on and let the next cycle
+	// try again.
+	localHead, err := resolveHead(".")
+	if err != nil {
+		pf(stderr, "error: resolve local head for PR #%d: %v\n", selectedNumber, err)
+		return 1
+	}
+	if localHead == state.HeadSHA {
+		pf(stderr, "error: PR #%d's branch is unchanged from its pre-remediation head %s — "+
+			"the remediation produced no commit, so there is nothing to publish and %s stays set\n",
+			selectedNumber, state.HeadSHA, needsRemediationLabel)
+		return 1
+	}
+
+	current, err = provider.GetPullRequest(ctx, repo, pullID)
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+	}
+	if current.State != "open" || current.Merged {
+		return skipTerminalRemediatedPullRequest(selectedNumber, stdout, stderr)
+	}
+
+	if err := forcePushWithLease(".", current.Head, state.HeadSHA, pushToken); err != nil {
+		return failProviderStage(
+			stderr,
+			fmt.Sprintf("force-push remediated PR #%d branch %q", selectedNumber, current.Head),
+			err,
+			pushRemediatedResultName,
+		)
+	}
+
+	if err := provider.RemovePullRequestLabel(ctx, repo, pullID, needsRemediationLabel); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("clear %s from PR #%d", needsRemediationLabel, selectedNumber), err, "")
+	}
+
+	pf(stdout, "PR #%d: pushed remediated branch %s and cleared %s\n", selectedNumber, current.Head, needsRemediationLabel)
+	return writePushRemediatedResult(selectedNumber, true, current.Head, localHead, stderr)
 }
 
 func skipTerminalRemediatedPullRequest(selectedNumber int, stdout, stderr io.Writer) int {
 	// The rework remains committed in the run journal, but publishing it to a
 	// merged or closed PR branch would be actively wrong.
 	pf(stdout, "PR #%d is no longer open (merged/closed during remediation) — nothing to push\n", selectedNumber)
-	return writePushRemediatedResult(selectedNumber, false, "", stderr)
+	return writePushRemediatedResult(selectedNumber, false, "", "", stderr)
 }
 
-func writePushRemediatedResult(selectedNumber int, published bool, head string, stderr io.Writer) int {
+func writePushRemediatedResult(selectedNumber int, published bool, head, localHead string, stderr io.Writer) int {
 	resultFile := providerInput("resultFile", pushRemediatedResultName)
 	data, err := json.Marshal(map[string]string{
 		"selectedNumber":              strconv.Itoa(selectedNumber),
 		pushRemediatedPublishedOutput: strconv.FormatBool(published),
 		"head":                        head,
+		pushRemediatedLocalHeadOutput: localHead,
 	})
 	if err != nil {
 		pf(stderr, "error: marshal push-remediated result: %v\n", err)

@@ -51,6 +51,7 @@ func initTerminalPhaseDemo(t *testing.T, phase journal.RunPhase, signal bool) st
 	}
 	workflow := fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -116,7 +117,7 @@ func TestRunDelegatedExitCodesForTerminalPhases(t *testing.T) {
 			}()
 
 			var stdout, stderr bytes.Buffer
-			code := runDelegatedTrigger(ctx, l, "default-implement", root, false, &stdout, &stderr)
+			code := runDelegatedTrigger(ctx, l, runTarget{Workflow: "default-implement"}, root, false, &stdout, &stderr)
 			if err := <-responseDone; err != nil {
 				t.Fatal(err)
 			}
@@ -151,7 +152,7 @@ func TestRunDelegatedWaitsForJournalCreation(t *testing.T) {
 			responseDone <- err
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond) // Intentionally lets the concurrent runner win the create race.
 		run, err := journal.Create(l.ForGaggle("example").RunsDir(), journal.RunIdentity{
 			RunID:     runID,
 			Workflow:  "default-implement",
@@ -168,7 +169,7 @@ func TestRunDelegatedWaitsForJournalCreation(t *testing.T) {
 	}()
 
 	var stdout, stderr bytes.Buffer
-	code := runDelegatedTrigger(ctx, l, "default-implement", root, false, &stdout, &stderr)
+	code := runDelegatedTrigger(ctx, l, runTarget{Workflow: "default-implement"}, root, false, &stdout, &stderr)
 	if err := <-responseDone; err != nil {
 		t.Fatal(err)
 	}

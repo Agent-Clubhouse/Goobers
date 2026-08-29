@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -52,10 +54,19 @@ var copilotAuthCheckArgs = []string{"-p", "Reply with exactly: ok", "--allow-all
 // hang `goobers validate` or `goobers up`/`run` startup.
 const harnessPreflightTimeout = 90 * time.Second
 
+const placeholderFindingCode = "PLACEHOLDER001"
+
+var templateMarkers = []string{"your-org", "your-repo"}
+
 const validateHelp = "Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n\n" +
 	"Validate an instance's instance.yaml and config/ directory (default\n" +
-	"path \".\"). --source-tree validates a checked-in config source tree\n" +
-	"using instance.yaml.example and the path itself as config/. " +
+	"path \".\"). Placement findings (RNR001/RNR003) are errors when\n" +
+	"instance.yaml declares a runners: inventory that cannot satisfy some\n" +
+	"stage, and warnings otherwise. --source-tree validates a checked-in\n" +
+	"config source tree using instance.yaml.example and the path itself as\n" +
+	"config/; because the tree carries no real instance.yaml, its placement\n" +
+	"solve runs against the example inventory and is advisory-only\n" +
+	"(warnings, never errors). " +
 	"--strict treats config warnings as validation errors. " +
 	"--json emits a versioned findings envelope instead of human-readable output. " +
 	"--github-annotations additionally writes each finding to stderr as a\n" +
@@ -75,7 +86,15 @@ func runValidate(args []string, stdout, stderr io.Writer) int {
 
 func runStartupConfigPreflight(root string, skip bool, stderr io.Writer) int {
 	var output bytes.Buffer
-	code := runValidate([]string{root}, &output, &output)
+	// Startup runs the same single validation engine, in its non-spawning
+	// discovery mode — see validateOptions.deferModelDiscovery (#3336) — and
+	// in startup-preflight mode, where placement findings (RNR001/RNR003)
+	// stay warnings: at boot their consequence is a per-workflow refusal
+	// (checkpoint 3, #2860 — the daemon starts and every other workflow
+	// serves), so failing the whole boot on them would be the boot-kill that
+	// ruling removed. Operator-invoked `goobers validate` keeps them as
+	// errors (checkpoint 1, the #3497 fix).
+	code := runValidateAsDeferring("validate", []string{root}, &output, &output, true)
 	if skip {
 		if code == 0 {
 			pf(stderr, "WARNING: --skip-preflight enabled; startup validation enforcement is disabled\n")
@@ -98,7 +117,27 @@ func runStartupConfigPreflight(root string, skip bool, stderr io.Writer) int {
 // checks and exit codes — there is exactly one validation path, never a weaker
 // second one that could disagree (the #252 footgun this closes for good).
 func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	return runValidateAsDeferring(name, args, stdout, stderr, false)
+}
+
+// runValidateAsDeferring is runValidateAs with the validation engine's one
+// internal, non-CLI knob: startupPreflight — the daemon's startup preflight
+// mode. It bundles exactly two documented divergences from interactive
+// `goobers validate` (#252's single-engine rule still holds — same engine,
+// each divergence named):
+//
+//   - deferModelDiscovery (#3336): model discovery spawns the Copilot CLI,
+//     and in a memory-capped pod the spawned children can OOM the daemon
+//     before the discovery timeout fires — so the startup pass accepts
+//     models unverified (the same degradation as an unreachable CLI)
+//     instead of spawning.
+//   - placement findings stay warnings (#2860 checkpoint 3): RNR001/RNR003
+//     are validate-time errors on a declared inventory (checkpoint 1, the
+//     #3497 fix), but at boot their consequence is a per-workflow refusal —
+//     the daemon starts and every other workflow serves — so the preflight
+//     must not turn them back into a boot-kill.
+func runValidateAsDeferring(name string, args []string, stdout, stderr io.Writer, startupPreflight bool) int {
+	fs := newCLIFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "emit a versioned machine-readable findings envelope")
 	githubAnnotations := fs.Bool("github-annotations", false, "also write each finding to stderr as a GitHub Actions file annotation (#687)")
@@ -129,11 +168,13 @@ func runValidateAs(name string, args []string, stdout, stderr io.Writer) int {
 		diagnostics = &diagnosticCollector{}
 	}
 	code := runValidateConfig(validateOptions{
-		root:         root,
-		sourceTree:   *sourceTree,
-		checkHarness: *checkHarness,
-		checkRepos:   *checkRepos,
-		strict:       *strict,
+		root:                root,
+		sourceTree:          *sourceTree,
+		checkHarness:        *checkHarness,
+		checkRepos:          *checkRepos,
+		strict:              *strict,
+		deferModelDiscovery: startupPreflight,
+		startupPreflight:    startupPreflight,
 	}, humanOut, humanErr, diagnostics)
 	if *githubAnnotations {
 		emitGitHubAnnotations(stderr, diagnostics)
@@ -154,6 +195,13 @@ type validateOptions struct {
 	checkHarness bool
 	checkRepos   bool
 	strict       bool
+	// deferModelDiscovery is set only by the daemon's startup preflight —
+	// see runValidateAsDeferring (#3336). Never set from a CLI flag.
+	deferModelDiscovery bool
+	// startupPreflight marks the daemon's boot-time validation pass: same
+	// engine, placement findings advisory (see runValidateAsDeferring).
+	// Never set from a CLI flag.
+	startupPreflight bool
 }
 
 func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagnostics *diagnosticCollector) int {
@@ -180,8 +228,23 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 
 	cfg, err := instance.LoadConfig(configFile)
 	if err != nil {
+		// RNR002 (dsl-3.0.md §5): a runner entry with a non-self host and no
+		// engine: block fails first at load like every malformed-inventory
+		// error; attribute its stable code so an exit-code- or code-gated
+		// pipeline can name the condition (acceptance §9 item 8).
+		code := "INSTANCE001"
+		var engineMissing *instance.RunnerEngineMissingError
+		if errors.As(err, &engineMissing) {
+			code = string(validate.RunnerEngineMissing)
+			pf(stdout, "%s\n", validate.CodedWarning{
+				Code:        validate.RunnerEngineMissing,
+				Severity:    validate.Error,
+				Scope:       "Instance/instance.yaml",
+				Explanation: engineMissing.Error(),
+			}.String())
+		}
 		pf(stdout, "INVALID instance.yaml:\n  %v\n", err)
-		diagnostics.add(diagnosticFile(root, configFile), "/", "INSTANCE001", string(validate.Error), err.Error())
+		diagnostics.add(diagnosticFile(root, configFile), "/", code, string(validate.Error), err.Error())
 		return 1
 	}
 
@@ -194,8 +257,31 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	diagnostics.addReport(report, diagnosticFile(root, configDir))
 	printValidationIssues(stdout, report)
 	if errors.Is(err, instance.ErrInvalidConfig) {
+		// The legacy single-repo fallback can only be observed after decoding
+		// the schema-invalid empty project. Preserve the schema errors while
+		// still telling operators which repository runtime would bind.
+		comparisonSet, comparisonReport, comparisonErr := instance.LoadConfigDirForComparison(configDir)
+		if comparisonSet != nil && comparisonReport != nil && comparisonReport.HasErrors() &&
+			errors.Is(comparisonErr, instance.ErrInvalidConfig) {
+			_ = checkGaggleRepositoryBindings(root, configDir, cfg, comparisonSet, stdout, diagnostics)
+		}
 		pf(stdout, "\nconfig directory failed validation\n")
 		return 1
+	}
+	placeholderFindings, err := findTemplatePlaceholders(root, configFile, configDir)
+	if err != nil {
+		pf(stderr, "error: inspect configuration placeholders: %v\n", err)
+		diagnostics.add(diagnosticFile(root, configDir), "/", "IO001", string(validate.Error), err.Error())
+		return 2
+	}
+	placeholderSeverity := validate.Warning
+	if options.strict {
+		placeholderSeverity = validate.Error
+	}
+	for _, finding := range placeholderFindings {
+		pf(stdout, "%s %s %s: %s\n",
+			strings.ToUpper(string(placeholderSeverity)), placeholderFindingCode, finding.file, finding.message)
+		diagnostics.add(finding.file, "/", placeholderFindingCode, string(placeholderSeverity), finding.message)
 	}
 
 	// api/validate's cross-reference checks (above) mirror most of
@@ -218,7 +304,8 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		return 1
 	}
 	_, _, _, harnessWarnings, err := compiledMachinesWithGooberDigestsAndWarnings(
-		configDir, set, goobers, instructions, cfg.Runner.EnvPassthrough,
+		configDir, set, goobers, instructions, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand,
+		options.deferModelDiscovery,
 	)
 	if err != nil {
 		pf(stdout, "\nINVALID workflow: %v\n", err)
@@ -241,15 +328,61 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		)
 	}
 	printValidationWarnings(stdout, codedWarnings)
+	skillWarnings, err := appendSkillPackageCollisionWarnings(configDir, report, goobers)
+	if err != nil {
+		pf(stderr, "error: inspect skill package collisions: %v\n", err)
+		return 2
+	}
+	for _, warning := range skillWarnings {
+		diagnostics.add(
+			diagnosticFile(root, filepath.Join(configDir, "gaggles", strings.TrimPrefix(warning.Scope, "Gaggle/"), "skills")),
+			"/",
+			string(warning.Code),
+			string(warning.Severity),
+			warning.Explanation,
+		)
+	}
+	printValidationWarnings(stdout, skillWarnings)
+
+	// Static reality cross-checks (2026-08-08 cold-start audit; dsl-3.0.md §5
+	// checkpoint 1): the per-stage placement solve against the resolved
+	// runner inventory (RNR001/RNR003 — ERROR when a runners: inventory is
+	// declared, the #3497 fix; RNR004 always advisory), a
+	// requiredCapabilities token no runner claims (CAP003, 2.0 documents on
+	// inventory-less instances), an unenforceable maxOpenPRs cap (PRCAP001),
+	// and an automated gate completion branch a failed stage can never
+	// complete through (WF018). Warnings append to the report like the
+	// harness/skill warnings above (--strict and the JSON report treat them
+	// as ordinary config warnings); error-severity placement findings fail
+	// validation below. --source-tree solves against instance.yaml.example
+	// (the tree carries no real inventory), so its findings are advisory-only
+	// warnings by definition — see appendStaticRealityWarnings.
+	staticRealityWarnings := appendStaticRealityWarnings(root, configDir, cfg, set, goobers, report,
+		options.sourceTree || options.startupPreflight)
+	placementErrors := 0
+	for _, finding := range staticRealityWarnings {
+		diagnostics.add(finding.file, finding.path, string(finding.warning.Code),
+			string(finding.warning.Severity), finding.warning.Explanation)
+		pln(stdout, finding.warning.String())
+		if finding.warning.Severity == validate.Error {
+			placementErrors++
+		}
+	}
+	if placementErrors > 0 {
+		pf(stdout, "\nthe declared runners: inventory cannot satisfy the configuration (%d placement error(s))\n", placementErrors)
+		return 1
+	}
 
 	// Docs-location existence (#1016). The config-load pass (api/validate) has
 	// already rejected empty/absolute/escaping docs roots lexically; this adds
 	// the filesystem half — a declared root that does not exist in the
 	// repository — which api-level validation cannot do because it has no repo
-	// tree. Resolved against the git working tree containing the config; skipped
-	// (not failed) when the config is not inside a git repository, since there is
-	// then no tree to check against.
-	if !checkDocsRootsExist(root, configDir, set, stdout, diagnostics) {
+	// tree. docsRoots name paths in each gaggle's TARGET repository
+	// (spec.project), so the existence check is authoritative only when the git
+	// tree containing the config IS that repository; any other tree — a
+	// standalone workflowSource repo, a non-git directory — gets an advisory
+	// warning instead of an error or a silent skip (#3285).
+	if !checkDocsRootsExist(root, configDir, cfg, set, stdout, diagnostics) {
 		return 1
 	}
 
@@ -281,10 +414,15 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		return 1
 	}
 
+	if !checkGaggleRepositoryBindings(root, configDir, cfg, set, stdout, diagnostics) {
+		pf(stdout, "\ngaggle repositories do not match instance repos[]\n")
+		return 1
+	}
+
 	if options.checkHarness {
 		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
 			return gooberDiagnosticFile(root, configDir, set, goober.Name)
-		}, diagnostics) {
+		}, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, diagnostics) {
 			return 1
 		}
 	}
@@ -298,15 +436,141 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		if !checkTargetRepositoriesAtFile(cfg.Repos, stores, stdout, diagnosticFile(root, configFile), diagnostics) {
 			return 1
 		}
+		// Selector/CI reality (2026-08-08 cold-start audit, README item 1):
+		// --check-repos just contacted every repository, so additionally
+		// compare each repo's actual label set, live eligible-item count, and
+		// CI-workflow presence against what the config demands of it.
+		// Advisory only — repo state is not config, so these warnings never
+		// change the exit code (same contract as the #1547 size warning).
+		checkRepositoryReality(root, configDir, cfg, set, stores, stdout, diagnostics)
 	}
 	printDSLVersionSummary(stdout, set.Workflows)
-	if options.strict && len(report.Warnings()) > 0 {
-		pf(stdout, "\nconfig directory has %d warning(s); --strict treats warnings as errors\n", len(report.Warnings()))
+	// Deprecation notices (DVL020) are strict-neutral by ruling: a deprecated
+	// dslVersion stays fully supported, so nudging users to migrate must never
+	// turn an existing green pipeline red. They print and land in diagnostics
+	// but are excluded from --strict's promotion.
+	deprecationCount := 0
+	for _, w := range report.Warnings() {
+		if w.Code == validate.WarningDeprecatedDSLVersion {
+			deprecationCount++
+		}
+	}
+	warningCount := len(report.Warnings()) - deprecationCount + len(placeholderFindings)
+	if options.strict && warningCount > 0 {
+		pf(stdout, "\nconfiguration has %d warning(s); --strict treats warnings as errors\n", warningCount)
 		return 1
 	}
+	printResolvedLargeRepoPresets(stdout, cfg.Repos)
 	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
 		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
 	return 0
+}
+
+type placeholderFinding struct {
+	file    string
+	message string
+}
+
+func findTemplatePlaceholders(root, configFile, configDir string) ([]placeholderFinding, error) {
+	paths := []string{configFile}
+	seenPaths := map[string]bool{filepath.Clean(configFile): true}
+	err := filepath.WalkDir(configDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".yaml", ".yml":
+			clean := filepath.Clean(path)
+			if !seenPaths[clean] {
+				seenPaths[clean] = true
+				paths = append(paths, path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+
+	var findings []placeholderFinding
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		var found []string
+		for _, marker := range templateMarkers {
+			if containsTemplateMarker(data, marker) {
+				found = append(found, marker)
+			}
+		}
+		if len(found) == 0 {
+			continue
+		}
+		findings = append(findings, placeholderFinding{
+			file: diagnosticFile(root, path),
+			message: fmt.Sprintf(
+				"contains unedited template marker(s) %s; replace them with the target repository coordinates",
+				strings.Join(found, ", "),
+			),
+		})
+	}
+	return findings, nil
+}
+
+func containsTemplateMarker(data []byte, marker string) bool {
+	target := []byte(marker)
+	for offset := 0; offset < len(data); {
+		index := bytes.Index(data[offset:], target)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		beforeBoundary := index == 0 || !isRepositoryCoordinateByte(data[index-1])
+		after := index + len(target)
+		afterBoundary := after == len(data) || !isRepositoryCoordinateByte(data[after])
+		if beforeBoundary && afterBoundary {
+			return true
+		}
+		offset = index + len(target)
+	}
+	return false
+}
+
+func isRepositoryCoordinateByte(value byte) bool {
+	return value >= 'a' && value <= 'z' ||
+		value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' ||
+		value == '-' || value == '_' || value == '.'
+}
+
+func printResolvedLargeRepoPresets(out io.Writer, repos []instance.RepoRef) {
+	for _, repo := range repos {
+		if !repo.LargeRepo {
+			continue
+		}
+		workspace := "worktrees"
+		mirrorRefspec := "all"
+		if repo.Pinned() {
+			workspace = "pinned"
+			mirrorRefspec = "heads+tags"
+		}
+		pathLength := "disabled"
+		if repo.PathLength != nil && !repo.PathLength.Disabled {
+			maximum := repo.PathLength.MaxPathLength
+			if maximum == 0 {
+				maximum = worktree.DefaultMaxPathLength
+			}
+			pathLength = fmt.Sprintf("enabled (max %d)", maximum)
+		}
+		pf(out, "Resolved large-repo preset for %s/%s: workspace=%s, cleanPolicy=%s, serial=%t, defaultStageTimeout=%s, stalledRunTimeout=%s, maxRunDuration=%s, pathLength=%s, mirrorRefspec=%s\n",
+			repo.Owner, repo.Name, workspace, repo.WorkspaceCleanPolicy(), repo.Pinned(),
+			repo.DefaultStageTimeout, repo.RunControls.StalledRunTimeout, repo.RunControls.MaxRunDuration, pathLength, mirrorRefspec)
+	}
 }
 
 func configSourceDiagnosticFile(root, configDir, source string) string {
@@ -319,6 +583,137 @@ func configSourceDiagnosticFile(root, configDir, source string) string {
 func gooberDiagnosticFile(root, configDir string, set *instance.ConfigSet, name string) string {
 	source, _ := set.GooberSource(name)
 	return configSourceDiagnosticFile(root, configDir, source)
+}
+
+func gaggleDiagnosticFile(root, configDir string, set *instance.ConfigSet, name string) string {
+	source, _ := set.GaggleSource(name)
+	return configSourceDiagnosticFile(root, configDir, source)
+}
+
+func checkGaggleRepositoryBindings(
+	root, configDir string,
+	cfg *instance.Config,
+	set *instance.ConfigSet,
+	stdout io.Writer,
+	diagnostics *diagnosticCollector,
+) bool {
+	ok := true
+	for _, gaggle := range set.Gaggles {
+		project := gaggle.Spec.Project
+		if gaggleUsesOnlyScratchWorkspaces(set, gaggle.Name) {
+			// Scratch-only workflows never perform the runtime repository join,
+			// regardless of how many repos[] entries the instance configures
+			// (possibly for other gaggles): the cross-check below would
+			// otherwise misfire on a gaggle that never touches repos[] at all.
+		} else if len(cfg.Repos) == 1 && project.Owner == "" && project.Name == "" {
+			repo := cfg.Repos[0]
+			message := fmt.Sprintf("empty spec.project binds to instance repos[0] %s", instanceRepoName(repo))
+			pf(stdout, "INFO Gaggle/%s: %s\n", gaggle.Name, message)
+			diagnostics.add(gaggleDiagnosticFile(root, configDir, set, gaggle.Name),
+				"/spec/project", "REPO003", diagnosticSeverityInfo, message)
+		} else if _, found := configuredRepoForProject(cfg, project); !found {
+			message := unmatchedGaggleRepoMessage("spec.project", project, cfg.Repos)
+			pf(stdout, "ERROR Gaggle/%s: %s\n", gaggle.Name, message)
+			diagnostics.add(gaggleDiagnosticFile(root, configDir, set, gaggle.Name),
+				"/spec/project", "REPO002", string(validate.Error), message)
+			ok = false
+		}
+		for i, repo := range gaggle.Spec.AdditionalRepos {
+			if _, found := configuredRepoForProject(cfg, repo); found {
+				continue
+			}
+			field := fmt.Sprintf("spec.additionalRepos[%d]", i)
+			message := unmatchedGaggleRepoMessage(field, repo, cfg.Repos)
+			pf(stdout, "ERROR Gaggle/%s: %s\n", gaggle.Name, message)
+			diagnostics.add(gaggleDiagnosticFile(root, configDir, set, gaggle.Name),
+				fmt.Sprintf("/spec/additionalRepos/%d", i), "REPO002", string(validate.Error), message)
+			ok = false
+		}
+	}
+	return ok
+}
+
+func gaggleUsesOnlyScratchWorkspaces(set *instance.ConfigSet, gaggle string) bool {
+	found := false
+	for _, workflow := range set.Workflows {
+		if workflow.Spec.Gaggle != gaggle {
+			continue
+		}
+		found = true
+		for _, task := range workflow.Spec.Tasks {
+			if task.Type == apiv1.TaskAgentic || task.Run == nil || task.Run.Workspace != apiv1.WorkspaceScratch {
+				return false
+			}
+		}
+		for _, gate := range workflow.Spec.Gates {
+			if gate.Evaluator == apiv1.EvaluatorAgentic {
+				return false
+			}
+		}
+	}
+	return found
+}
+
+func unmatchedGaggleRepoMessage(field string, repo apiv1.RepoRef, configured []instance.RepoRef) string {
+	message := fmt.Sprintf("%s repository %s matches no instance repos[] entry", field, apiRepoName(repo))
+	if suggestion, found := suggestConfiguredRepo(repo, configured); found {
+		message += fmt.Sprintf("; did you mean %q?", instanceRepoName(suggestion))
+	}
+	return message
+}
+
+func suggestConfiguredRepo(repo apiv1.RepoRef, configured []instance.RepoRef) (instance.RepoRef, bool) {
+	wanted := strings.ToLower(repo.Owner + "/" + repo.Name)
+	bestDistance := -1
+	var best instance.RepoRef
+	for _, candidate := range configured {
+		if repo.Provider != "" && candidate.Provider != string(repo.Provider) {
+			continue
+		}
+		distance := repositoryEditDistance(wanted, strings.ToLower(candidate.Owner+"/"+candidate.Name))
+		if bestDistance == -1 || distance < bestDistance {
+			bestDistance = distance
+			best = candidate
+		}
+	}
+	if bestDistance < 0 || bestDistance > 3 {
+		return instance.RepoRef{}, false
+	}
+	return best, true
+}
+
+func repositoryEditDistance(a, b string) int {
+	previous := make([]int, len(b)+1)
+	for i := range previous {
+		previous[i] = i
+	}
+	for i := 1; i <= len(a); i++ {
+		current := make([]int, len(b)+1)
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 0
+			if a[i-1] != b[j-1] {
+				cost = 1
+			}
+			current[j] = min(current[j-1]+1, previous[j]+1, previous[j-1]+cost)
+		}
+		previous = current
+	}
+	return previous[len(b)]
+}
+
+func apiRepoName(repo apiv1.RepoRef) string {
+	if repo.Project != "" {
+		return fmt.Sprintf("%s/%s/%s", repo.Owner, repo.Project, repo.Name)
+	}
+	return repo.Owner + "/" + repo.Name
+}
+
+func instanceRepoName(repo instance.RepoRef) string {
+	if repo.Project != "" {
+		return fmt.Sprintf("%s/%s/%s", repo.Owner, repo.Project, repo.Name)
+	}
+	return repo.Owner + "/" + repo.Name
 }
 
 func compiledConfigDiagnostic(root, configDir string, set *instance.ConfigSet, err error) (file, path, code string) {
@@ -340,15 +735,25 @@ func compiledConfigDiagnostic(root, configDir string, set *instance.ConfigSet, e
 }
 
 // checkDocsRootsExist verifies every workflow-declared docs root exists in the
-// repository (#1016). base is the user-supplied validate path (a config source
-// tree or an instance root); the repository is its containing git working tree.
-// It returns false (failing validation) when a declared root is missing, and
-// true — skipping the check with a note — when base is not inside a git
-// repository, since the lexical config-load checks already ran and there is no
-// tree here to resolve roots against.
-func checkDocsRootsExist(base, configDir string, set *instance.ConfigSet, stdout io.Writer, collectors ...*diagnosticCollector) bool {
+// gaggle's target repository (#1016). base is the user-supplied validate path
+// (a config source tree or an instance root). docsRoots name paths in the
+// repository the gaggle works on (spec.project), NOT in the config tree, so
+// the existence check is authoritative only when the git working tree
+// containing base is a checkout of that repository — decided by matching the
+// target's owner/name against the tree's git remotes (#3285). There it
+// returns false (failing validation) when a declared root is missing, exactly
+// as before. Any other tree — a standalone workflowSource repo with a
+// different remote, a tree with no remotes, or no git repository at all
+// (which pre-#3285 skipped SILENTLY) — proves nothing about the target repo,
+// so each declared root is reported as an advisory DOCS003 warning naming the
+// repository the roots will be checked against at runtime. Advisory means
+// exit-neutral and excluded from --strict's promotion, the same contract as
+// checkRepositoryReality's findings: where validate happens to run is machine
+// state, not config, and must never turn a green tree red.
+func checkDocsRootsExist(base, configDir string, cfg *instance.Config, set *instance.ConfigSet, stdout io.Writer, collectors ...*diagnosticCollector) bool {
 	type declaredRoot struct {
 		workflow string
+		gaggle   string
 		source   string
 		root     string
 		index    int
@@ -357,19 +762,46 @@ func checkDocsRootsExist(base, configDir string, set *instance.ConfigSet, stdout
 	for _, w := range set.Workflows {
 		source, _ := set.WorkflowSource(w.Spec.Gaggle, w.Name)
 		for i, dr := range w.Spec.DocsRoots {
-			declared = append(declared, declaredRoot{workflow: w.Name, source: source, root: dr, index: i})
+			declared = append(declared, declaredRoot{workflow: w.Name, gaggle: w.Spec.Gaggle, source: source, root: dr, index: i})
 		}
 	}
 	if len(declared) == 0 {
 		return true
 	}
-	repoRoot, err := gitToplevel(base)
-	if err != nil {
-		pf(stdout, "DOCSROOTS: skipped existence check (%s is not inside a git repository)\n", base)
-		return true
+	repoRoot, toplevelErr := gitToplevel(base)
+	var treeRemotes []string
+	if toplevelErr == nil {
+		treeRemotes = gitRemoteURLs(repoRoot)
 	}
 	ok := true
 	for _, d := range declared {
+		owner, name := docsRootTargetRepository(cfg, set, d.gaggle)
+		if toplevelErr != nil {
+			// Not inside a git repository at all — the permanent, expected
+			// state of every INSTANCE ROOT (an instance root is never a
+			// checkout of anything). A WARNING here would fire on every
+			// `goobers init` and every instance-root validate forever, with
+			// nothing the operator can do about it — unactionable noise that
+			// trains people to ignore warnings. Print an informational line
+			// (never a silent skip, #3285) and move on; DOCS003 stays
+			// reserved for the actionable case below.
+			pf(stdout, "DOCSROOTS Workflow/%s: declared docs root %q not verified here (checked at runtime against %s/%s)\n",
+				d.workflow, d.root, owner, name)
+			continue
+		}
+		if !remotesNameRepository(treeRemotes, owner, name) {
+			// A git checkout whose remotes do not name the target repository:
+			// a standalone workflowSource repo, or a checkout of the WRONG
+			// repo. Actionable (the operator can verify against the real
+			// target), so it earns the advisory diagnostic gnyaml-style
+			// allowlists track (#3285).
+			message := fmt.Sprintf("declared docs root %q not verified: config tree is not the target repository %s/%s",
+				d.root, owner, name)
+			pf(stdout, "WARNING DOCS003 Workflow/%s: %s\n", d.workflow, message)
+			addDiagnostic(collectors, configSourceDiagnosticFile(base, configDir, d.source),
+				fmt.Sprintf("/spec/docsRoots/%d", d.index), "DOCS003", string(validate.Warning), message)
+			continue
+		}
 		clean := filepath.Clean(strings.TrimSpace(d.root))
 		full := filepath.Join(repoRoot, clean)
 		if _, statErr := os.Stat(full); statErr != nil {
@@ -384,6 +816,72 @@ func checkDocsRootsExist(base, configDir string, set *instance.ConfigSet, stdout
 	return ok
 }
 
+// docsRootTargetRepository resolves the repository a gaggle's docsRoots refer
+// to: its spec.project, or — mirroring the runtime single-repo binding that
+// checkGaggleRepositoryBindings reports as REPO003 — instance repos[0] when
+// the project is empty and exactly one repository is configured.
+func docsRootTargetRepository(cfg *instance.Config, set *instance.ConfigSet, gaggleName string) (owner, name string) {
+	for _, gaggle := range set.Gaggles {
+		if gaggle.Name == gaggleName {
+			owner, name = gaggle.Spec.Project.Owner, gaggle.Spec.Project.Name
+			break
+		}
+	}
+	if owner == "" && name == "" && cfg != nil && len(cfg.Repos) == 1 {
+		owner, name = cfg.Repos[0].Owner, cfg.Repos[0].Name
+	}
+	return owner, name
+}
+
+// remotesNameRepository reports whether any configured git remote plausibly
+// names the owner/name repository — the #3285 test for "the validated tree IS
+// the gaggle's target repo", deliberately network-free.
+func remotesNameRepository(remotes []string, owner, name string) bool {
+	if owner == "" || name == "" {
+		return false
+	}
+	for _, remote := range remotes {
+		if remoteURLNamesRepository(remote, owner, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteURLNamesRepository matches one remote URL against owner/name: the
+// last path segment (sans .git) must be the repository name and the owner
+// must appear as an earlier path segment. Segment matching tolerates the URL
+// shapes in the wild — https://host/owner/name, ssh://git@host/owner/name,
+// scp-like git@host:owner/name, and ADO's org/project/_git/repo — without a
+// per-provider parser; a local mirror path that carries neither coordinate
+// simply fails to match and downgrades to the advisory warning.
+func remoteURLNamesRepository(remote, owner, name string) bool {
+	path := remote
+	if scheme := strings.Index(path, "://"); scheme >= 0 {
+		path = path[scheme+len("://"):]
+		slash := strings.Index(path, "/")
+		if slash < 0 {
+			return false
+		}
+		path = path[slash+1:]
+	} else if colon := strings.Index(path, ":"); colon >= 0 && !strings.Contains(path[:colon], "/") {
+		path = path[colon+1:]
+	}
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segments) < 2 {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSuffix(segments[len(segments)-1], ".git"), name) {
+		return false
+	}
+	for _, segment := range segments[:len(segments)-1] {
+		if strings.EqualFold(segment, owner) {
+			return true
+		}
+	}
+	return false
+}
+
 func gitToplevel(dir string) (string, error) {
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
 	out, err := cmd.Output()
@@ -391,6 +889,25 @@ func gitToplevel(dir string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// gitRemoteURLs returns every remote URL configured for the repository at
+// repoRoot, in config order; nil when there are none. Reading raw config
+// values (not `git remote get-url`, which applies insteadOf rewrites) keeps
+// the #3285 target-repo match on what the operator actually declared.
+func gitRemoteURLs(repoRoot string) []string {
+	cmd := exec.Command("git", "-C", repoRoot, "config", "--get-regexp", `^remote\..*\.url$`)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var urls []string
+	for _, line := range strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n") {
+		if _, url, found := strings.Cut(strings.TrimSpace(line), " "); found && url != "" {
+			urls = append(urls, url)
+		}
+	}
+	return urls
 }
 
 type stageCommandFinding struct {
@@ -482,7 +999,7 @@ const (
 // field, in KB) above which `--check-repos` warns at validate time (#1547).
 // 1 GiB is large enough that a full clone/checkout of the repo measurably
 // slows down provisioning; sparse/partial checkout (AdditionalRepos, or
-// project.checkout.sparse once #649 ships) is the recommended remediation.
+// project.checkout.sparse, #649) is the recommended remediation.
 const oversizedRepoThresholdKB = 1 << 20
 
 var targetRepositoryReachable = gitRepositoryReachable
@@ -587,7 +1104,8 @@ func resolveRepoToken(repo instance.RepoRef, refName string, stores credentials.
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), repositoryPreflightTimeout)
 		defer cancel()
-		return mint(ctx)
+		token, _, err := mint(ctx)
+		return token, err
 	}
 	if repoUsesToken(repo) {
 		resolver, err := credentials.NewResolverWithStores([]credentials.TokenRef{
@@ -633,7 +1151,7 @@ func repoUsesToken(repo instance.RepoRef) bool {
 
 func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token string, stores credentials.StoreResolver) error {
 	if repo.Provider == "ado" {
-		provider, err := adoauth.Provider(repo, nil, nil, nil, stores)
+		provider, err := adoauth.Provider(repo, nil, nil, nil, nil, stores)
 		if err != nil {
 			return err
 		}
@@ -712,6 +1230,8 @@ func checkHarnessesAtSources(
 	goobers []apiv1.Goober,
 	stdout, stderr io.Writer,
 	sourceFile func(apiv1.Goober) string,
+	envPassthrough []string,
+	harnessCommand map[string][]string,
 	collectors ...*diagnosticCollector,
 ) bool {
 	seen := map[apiv1.Harness]bool{}
@@ -727,7 +1247,7 @@ func checkHarnessesAtSources(
 			file = sourceFile(g)
 		}
 
-		adapter, err := harnessAdapterFor(h)
+		adapter, err := harnessAdapterFor(h, envPassthrough, harnessCommand)
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
 			addDiagnostic(collectors, file, "/spec/harness", "HARNESS001", string(validate.Error), err.Error())
@@ -759,7 +1279,8 @@ func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity
 	}
 }
 
-// adapterFor returns the registered adapter for a goober-declared harness kind.
+// adapterFor returns the registered adapter for a goober-declared harness kind,
+// including the instance's configured ambient environment passthrough.
 //
 // The CopilotAdapter carries copilotAuthCheckArgs so every preflight — the
 // operator-invoked `validate --check-harness` AND the automatic daemon-startup
@@ -767,8 +1288,8 @@ func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity
 // presence (#238). Both look the harness up through here, so wiring the probe
 // once here is what closes #238's "catch a signed-out harness at startup, not
 // mid-run" criterion.
-func adapterFor(h apiv1.Harness) (harness.Adapter, error) {
-	registry, err := buildHarnessRegistry(nil, nil, "", "")
+func adapterFor(h apiv1.Harness, envPassthrough []string, harnessCommand map[string][]string) (harness.Adapter, error) {
+	registry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", false)
 	if err != nil {
 		return nil, err
 	}

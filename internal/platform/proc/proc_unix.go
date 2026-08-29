@@ -7,12 +7,19 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
-// Tree on unix is fully identified by its session-leader pid, which — because
-// configure made the child a session leader — is also its process-group id.
+// Tree on unix tracks its session-leader pid and descendants captured before a
+// diagnostic signal can reparent them.
 type Tree struct {
-	pid int
+	pid         int
+	descendants []processIdentity
+}
+
+type processIdentity struct {
+	pid       int
+	startTime time.Time
 }
 
 // configure puts the child in a NEW SESSION (Setsid), not merely a new process
@@ -41,15 +48,55 @@ func newTree(cmd *exec.Cmd) (*Tree, error) {
 	return &Tree{pid: cmd.Process.Pid}, nil
 }
 
-// kill SIGKILLs the whole process group (negative pid), not just the direct
-// child, so a runaway subprocess tree cannot outlive the stage.
+func identifyProcesses(pids []int) []processIdentity {
+	identities := make([]processIdentity, 0, len(pids))
+	for _, pid := range pids {
+		started, ok := StartTime(pid)
+		if startTimeSupported && !ok {
+			continue
+		}
+		identities = append(identities, processIdentity{pid: pid, startTime: started})
+	}
+	return identities
+}
+
+func (p processIdentity) signal(sig syscall.Signal) {
+	if startTimeSupported {
+		if p.startTime.IsZero() {
+			return
+		}
+		started, ok := StartTime(p.pid)
+		if !ok || !started.Equal(p.startTime) {
+			return
+		}
+	}
+	_ = syscall.Kill(p.pid, sig)
+}
+
+// kill snapshots descendants before terminating the process group so children
+// that escaped into another session cannot be orphaned by their parent's exit.
 func (t *Tree) kill() error {
-	return syscall.Kill(-t.pid, syscall.SIGKILL)
+	descendants := make(map[int]processIdentity, len(t.descendants))
+	for _, process := range t.descendants {
+		descendants[process.pid] = process
+	}
+	t.descendants = nil
+	for _, process := range identifyProcesses(descendantPIDs(t.pid)) {
+		descendants[process.pid] = process
+	}
+	groupErr := syscall.Kill(-t.pid, syscall.SIGKILL)
+	for _, process := range descendants {
+		process.signal(syscall.SIGKILL)
+	}
+	return groupErr
 }
 
 // requestDump SIGQUITs the whole process group so every Go process in it dumps
 // its full goroutine trace and exits. Always supported on unix.
 func (t *Tree) requestDump() (bool, error) {
+	// Keep ownership of descendants that may exit the stage's session and be
+	// reparented when their direct parent handles SIGQUIT.
+	t.descendants = append(t.descendants, identifyProcesses(descendantPIDs(t.pid))...)
 	return true, syscall.Kill(-t.pid, syscall.SIGQUIT)
 }
 
@@ -62,6 +109,12 @@ func (t *Tree) requestDump() (bool, error) {
 // subprocesses, but the safe answer regardless) — reported alive, because the
 // caller is the worktree reaper and a false "dead" reaps a live run's worktree.
 // Only an unambiguous "no such process" (ESRCH) counts as dead.
+//
+// The one exception is a zombie, which the probe cannot distinguish from a live
+// process: its pid stays allocated until someone wait()s for it, so a signal-0
+// succeeds indefinitely. That false-alive is PERMANENT rather than transient
+// (#3399) — see zombie's doc — so where the platform can positively identify
+// one, a zombie counts as dead.
 func alive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -70,12 +123,12 @@ func alive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	switch err := process.Signal(syscall.Signal(0)); {
-	case err == nil:
-		return true
-	case errors.Is(err, syscall.EPERM):
-		return true
-	default:
+	if err := process.Signal(syscall.Signal(0)); err != nil && !errors.Is(err, syscall.EPERM) {
 		return false
 	}
+	return !zombie(pid)
+}
+
+func killWorkspaceProcesses(string) error {
+	return nil
 }

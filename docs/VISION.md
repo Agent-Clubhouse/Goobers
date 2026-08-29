@@ -1,10 +1,12 @@
-# Goobers — Product Vision (Draft v0.3)
+# Goobers — Historical Product Vision (Draft v0.3)
 
-> Status: **Working draft for red-lining.**
+> Status: **Historical snapshot — not current product documentation.**
 > Supersedes v0.2. v0.3 re-anchors the architecture on **one system that scales
 > across three deployment tiers** — local-first, cloud as a drop-in — per
 > [`ARCHITECTURE.md`](ARCHITECTURE.md), which is the architecture of record.
-> Last updated: 2026-07-12
+> Snapshot date: 2026-07-12. For shipped behavior, see the
+> [feature matrix](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/feature-matrix.md); harness references in this snapshot have
+> been corrected to match that matrix.
 
 ## 1. One-liner
 
@@ -40,7 +42,7 @@ nothing more than the machine in front of them.
   (AKS, ADX, Entra, Key Vault, ArgoCD, Temporal) is a **drop-in** behind a named seam
   — see `ARCHITECTURE.md §10` for exactly where each one goes.
 - **Open platform, not a managed service.** Users bring their own machine or cloud,
-  agent harness (GitHub Copilot first; others as adapters), repo (GitHub or ADO), and
+  agent harness (GitHub Copilot CLI or Claude Code), repo (GitHub or ADO), and
   backlog. They deploy and own their instance.
 - **Built from simple, understandable primitives** chained into something bigger than
   the parts. The repo should read as approachable, not magic.
@@ -110,9 +112,10 @@ nothing more than the machine in front of them.
   Temporal, stages dispatched to distributed workers, with history projected down into
   the same journal format. Same definitions + inputs ⇒ equivalent journals on either
   runner (the conformance property).
-- **A goober = a standard agent harness** (GitHub Copilot CLI first; Claude Code and
-  others as adapters) running standard tools: MCPs, skills, instruction markdown.
-  Harness choice is a stage-level detail behind one invocation/result contract.
+- **A goober = a standard agent harness** (the shipped adapters support GitHub
+  Copilot CLI and Claude Code) running standard tools: MCPs, skills, instruction
+  markdown. Harness choice is a stage-level detail behind one invocation/result
+  contract.
 - **Ephemeral runs.** A run executes in a disposable, isolated environment prepped
   with auth and a fresh working copy of the target repo — a **git worktree + local
   process** at tiers 1–2, an **ephemeral pod** at tier 3. An **invocation envelope**
@@ -225,7 +228,7 @@ routes through the system scheduler**; a goober never calls a workflow itself.
 | Architecture of record | **One system, three deployment tiers; two runners behind one seam** | See `ARCHITECTURE.md`. Local runner ships first (V0); Temporal runner is the tier-3 drop-in (V2). |
 | Workflow engine | **Deterministic step-machine over an append-only run journal** | Tiers 1–2: **local runner** — single binary, files as durable state. Tier 3: **Temporal self-hosted in-cluster** (OSS/MIT, Postgres persistence), history projected into the same journal format. Buy the tier-3 engine, own the contract. |
 | Provenance | **Run journal is the product's history** | Append-only events, immutable input snapshots, content digests, secrets redacted at the boundary. Portal/Tutor/telemetry read the journal, never runner internals. |
-| First harness | **GitHub Copilot CLI only** | Claude Code and others deferred — but harness choice is a **stage-level adapter detail** behind one invocation/result contract, not an architectural commitment. |
+| Shipped harnesses | **GitHub Copilot CLI and Claude Code** | Both adapters are supported behind one invocation/result contract; harness choice remains a **stage-level adapter detail**, not an architectural commitment. |
 | v1 providers | **GitHub first, ADO next, via a provider abstraction** | Abstract repo + backlog from the start. GitHub issues/PRs are the V0 workload; ADO lands in V1. |
 | Tutor self-modification gate | **Governed by `config` PR controls** | Tutor authors freely within `config`; humans hold the quality bar via branch protection / required review / CODEOWNERS. No bespoke in-product restriction. See `requirements/tutor.md`. |
 | Goober-run telemetry store | **Journal spans + local rollup (tiers 1–2); ADX drop-in (tier 3)** | Provisioned/owned by the instance; **never** the project's store. OTel instrumentation throughout; only the exporter changes per tier. |

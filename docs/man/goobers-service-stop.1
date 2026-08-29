@@ -1,0 +1,26 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS SERVICE STOP" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers service stop \- halt the running daemon without disabling or removing it
+.SH SYNOPSIS
+\fBgoobers service stop\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers service stop [path]
+
+Halt the running goobers daemon without disabling or removing its
+supervisor registration (#2073) — distinct from uninstall, which folds
+stop, disable, and removal into one step. `goobers service status` then
+reports "installed, not running"; `goobers service start` resumes it.
+Stopping an already-stopped service is a successful no-op.
+
+Exit codes: 0 = stopped (or already stopped), 1 = not installed/stop
+error, 2 = usage error or not an instance root.
+.fi
+.SH EXAMPLES
+.nf
+goobers service stop
+goobers service stop ./instance
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

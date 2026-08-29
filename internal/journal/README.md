@@ -12,6 +12,7 @@ Authoritative spec: `docs/ARCHITECTURE.md` §4 (the journal) and §3.3
 
 ```
 runs/<run-id>/
+  schema.json    # directory schema version and earliest compatible binary
   run.yaml       # pinned identity: workflow name+version+digest, gaggle, trigger, input refs
   state.json     # current machine state; atomically replaced checkpoint (derived)
   events.jsonl   # append-only event journal; every event carries a monotonic seq
@@ -119,14 +120,16 @@ The one sanctioned edit to the append-only journal is remediation of a miss:
 scrubbed copy, removes the leaked bytes, and appends a `redaction` event
 recording the old→new digests.
 
-## Forward compatibility (seeds #33)
+## Schema compatibility
 
-A reader tolerates events written by a newer schema version: unknown fields and
-unknown event types parse into the shared envelope without error.
-`Event.KnownSchema()` reports whether the current build owns the event's schema
-version, so a reader can decide whether to trust type-specific fields. Minimal
-policy for V0: **read leniently, write strictly** (writers always emit the
-current version; the schema validates that exact shape).
+`schema.json` is the inspectable run-directory schema authority. `OpenRead`
+migrates the legacy pre-manifest layout after creating a quiescent `.bak` copy
+under the runs root's sibling `.journal-backups/` directory.
+The `schema` fields in `run.yaml`, `state.json`, and each event remain their
+payload-envelope versions. A directory or payload version newer than this build
+fails closed with the found and supported versions plus the required binary.
+See [`docs/guides/schema-migrations.md`](../../docs/guides/schema-migrations.md)
+for the compatibility, backup, and rollback policy.
 
 ## The instance journal (`scheduler/events.jsonl`)
 
@@ -144,6 +147,47 @@ types add two informational fields not used in a run's own
 log: `workflow` (which workflow the decision concerns) and `runId` (which run a
 claim/dispatch pertains to) — a run's own events don't need either since both
 are implicit from the run directory.
+
+### In-daemon compaction and the generation pointer
+
+Unlike a run's `events.jsonl` (write-once for the run's lifetime, then
+retired), the instance journal accumulates for as long as the daemon runs and
+needs periodic compaction (`(*InstanceLog).Compact`, or `goobers telemetry
+compact`'s offline `CompactInstanceEvents` for a stopped daemon) to drop aged
+scheduler/claim history without unbounded growth.
+
+Compaction never rewrites `events.jsonl` in place. On Windows, no
+rename/replace/delete API — not `MoveFileEx`, not even the dedicated
+`ReplaceFile` API built for exactly this kind of swap — can act on a path that
+some handle has open without `FILE_SHARE_DELETE`, and an ordinary reader (the
+portal, `goobers status`, another independently-opened `InstanceLog`, or
+anything else that might `open()` the file) has no reason to request it.
+POSIX has no such restriction, which is why this class of bug only ever
+surfaced on Windows CI.
+
+Instead, each compaction writes its output to a new **generation**:
+`events.jsonl.gen-NNNNNN`, alongside a small pointer file, `events.jsonl.current`
+(just the generation number, written via the ordinary durable-write+rename
+primitive — safe on Windows because nothing holds a lasting handle on the
+pointer itself, unlike the events file). `resolveInstanceEventsPath`
+(`instancegen.go`) is the single place that turns "an instance directory" into
+"the current events file": `OpenInstanceLog`, `Append` (via
+`ensureActiveFile`, which already knew how to detect and reopen a rotated
+file — the same mechanism now also catches a generation bump), `ReadInstanceLog`,
+and `Compact` itself all go through it. Generation 0 keeps the legacy bare
+`events.jsonl` name and has no pointer file, so a directory that predates this
+scheme, or has never compacted, needs no migration.
+
+A reader that resolved a path before a compaction advances the pointer keeps
+reading that exact file, undisturbed, forever — Windows has nothing to object
+to, since nobody ever touches that path again. Stale generations are cleaned
+up opportunistically: each compaction removes the generation two behind the
+one it just created (`cleanupStaleInstanceEventsGeneration`), keeping at most
+the current and immediately-previous generation on disk — enough for a reader
+that resolved the pointer moments before it advanced to still find what it
+expected. A caller outside this package that needs the current file's own
+path (e.g. a freshness/dead-man-switch health check reading its mtime) uses
+the exported `InstanceEventsPath`, never a hardcoded `events.jsonl` join.
 
 ## Go API
 

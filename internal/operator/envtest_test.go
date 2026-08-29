@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // TestIntegrationEnvtestReconcile runs the reconciler against a real (envtest)
@@ -110,7 +110,7 @@ func waitGet(ctx context.Context, c client.Client, key types.NamespacedName, obj
 		if err = c.Get(ctx, key, obj); err == nil {
 			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // Polling interval for the external envtest API server.
 	}
 	return err
 }

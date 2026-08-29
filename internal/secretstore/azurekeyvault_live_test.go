@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // TestIntegrationAzureKeyVaultLiveSmoke resolves one real secret from a real

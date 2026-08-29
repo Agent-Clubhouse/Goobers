@@ -2,9 +2,13 @@ package executor
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/providers"
 )
 
 // TestShellExecutor_TypedErrorCodeLiftedFromResultFile is #614's executor-side
@@ -39,6 +43,24 @@ func TestShellExecutor_TypedErrorCodeLiftedFromResultFile(t *testing.T) {
 	if result.Outputs["rateLimitReset"] != "2026-07-16T16:59:10Z" {
 		t.Fatalf("outputs[rateLimitReset] = %v, want the reset timestamp", result.Outputs["rateLimitReset"])
 	}
+	assertNoErrorOutputs(t, result.Outputs)
+}
+
+func TestProviderStageInfrastructureFailureCarriesRateLimitReset(t *testing.T) {
+	resetAt := time.Date(2026, 8, 4, 4, 0, 0, 0, time.UTC)
+	err := providerStageInfrastructureFailure("open-pr", providers.ErrorCodeRateLimited, "quota exhausted", map[string]interface{}{
+		"rateLimitReset": resetAt.Format(time.RFC3339),
+	})
+	got, ok := invoke.InfrastructureRetryAt(err)
+	want := resetAt.Add(providerRateLimitResetSlack)
+	if !ok || !got.Equal(want) {
+		t.Fatalf("InfrastructureRetryAt = %v, %v; want %v, true", got, ok, want)
+	}
+
+	err = providerStageInfrastructureFailure("open-pr", providers.ErrorCodeRateLimited, "quota exhausted", nil)
+	if _, ok := invoke.InfrastructureRetryAt(err); ok {
+		t.Fatal("rate-limit failure without a reset unexpectedly carried a retry time")
+	}
 }
 
 // TestShellExecutor_ErrorCodeIgnoredOnZeroExit is the negative control:
@@ -62,6 +84,16 @@ func TestShellExecutor_ErrorCodeIgnoredOnZeroExit(t *testing.T) {
 	if result.Error != nil {
 		t.Fatalf("error = %+v, want nil", result.Error)
 	}
+	assertNoErrorOutputs(t, result.Outputs)
+}
+
+func assertNoErrorOutputs(t *testing.T, outputs map[string]interface{}) {
+	t.Helper()
+	for _, key := range []string{OutputErrorCode, OutputErrorMessage, OutputErrorRetryable} {
+		if _, ok := outputs[key]; ok {
+			t.Errorf("reserved output %q was not consumed", key)
+		}
+	}
 }
 
 // TestShellExecutor_NonzeroExitWithoutErrorCodeStaysGeneric pins the default:
@@ -83,5 +115,26 @@ func TestShellExecutor_NonzeroExitWithoutErrorCodeStaysGeneric(t *testing.T) {
 	}
 	if result.Error == nil || result.Error.Code != "nonzero_exit" {
 		t.Fatalf("error = %+v, want nonzero_exit", result.Error)
+	}
+}
+
+func TestShellExecutor_NonzeroExitIncludesBoundedStderrEnds(t *testing.T) {
+	exec, _ := newTestExecutor(t, nil)
+	result, err := exec.Run(context.Background(), baseEnvelope(t), apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `printf 'runtime: failed to create new OS thread\n%0600d\nparallel golangci-lint is running\n' 0 >&2; exit 3`},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Error == nil || result.Error.Code != "nonzero_exit" {
+		t.Fatalf("error = %+v, want nonzero_exit", result.Error)
+	}
+	for _, want := range []string{"failed to create new OS thread", "parallel golangci-lint is running"} {
+		if !strings.Contains(result.Error.Message, want) {
+			t.Fatalf("error message = %q, want %q", result.Error.Message, want)
+		}
+	}
+	if len(result.Error.Message) > missingResultFileStderrExcerptBytes+64 {
+		t.Fatalf("error message length = %d, want bounded diagnostic", len(result.Error.Message))
 	}
 }

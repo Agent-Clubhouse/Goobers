@@ -32,11 +32,21 @@ const (
 	CapPRCompare Capability = "pr.compare"
 )
 
+// pr.query: provider-neutral pull-request identity fields available to list
+// filters and poll/list results. They remain separate because not every forge
+// has every identity concept.
+const (
+	CapPRQueryAuthor            Capability = "pr.query.author"
+	CapPRQueryAssignee          Capability = "pr.query.assignee"
+	CapPRQueryRequestedReviewer Capability = "pr.query.requestedReviewer"
+)
+
 // pr.review: native review protocol surfaces.
 const (
 	CapPRReviewRequest Capability = "pr.review.request"
 	CapPRReviewSubmit  Capability = "pr.review.submit"
 	CapPRReviewThreads Capability = "pr.review.threads"
+	CapPRReviewResolve Capability = "pr.review.resolve"
 )
 
 // pr.landing: the landing contract (§4) — merge, queue, branch-delete,
@@ -300,6 +310,30 @@ func (d *Dispatcher) ListPullRequestReviewThreads(ctx context.Context, repo Repo
 		return PullRequestReviewThreads{}, ErrUnsupported{Provider: d.Kind(), Capability: CapPRReviewThreads}
 	}
 	return reader.ListPullRequestReviewThreads(ctx, repo, pullID)
+}
+
+// ReplyPullRequestReviewThread dispatches through pr.review.resolve.
+func (d *Dispatcher) ReplyPullRequestReviewThread(ctx context.Context, req PullRequestReviewThreadReply) (PullRequestInlineComment, error) {
+	if !d.Capabilities().Has(CapPRReviewResolve) {
+		return PullRequestInlineComment{}, ErrUnsupported{Provider: d.Kind(), Capability: CapPRReviewResolve}
+	}
+	mutator, ok := d.Provider.(PullRequestReviewThreadMutator)
+	if !ok {
+		return PullRequestInlineComment{}, ErrUnsupported{Provider: d.Kind(), Capability: CapPRReviewResolve}
+	}
+	return mutator.ReplyPullRequestReviewThread(ctx, req)
+}
+
+// ResolvePullRequestReviewThread dispatches through pr.review.resolve.
+func (d *Dispatcher) ResolvePullRequestReviewThread(ctx context.Context, repo RepositoryRef, threadID string) error {
+	if !d.Capabilities().Has(CapPRReviewResolve) {
+		return ErrUnsupported{Provider: d.Kind(), Capability: CapPRReviewResolve}
+	}
+	mutator, ok := d.Provider.(PullRequestReviewThreadMutator)
+	if !ok {
+		return ErrUnsupported{Provider: d.Kind(), Capability: CapPRReviewResolve}
+	}
+	return mutator.ResolvePullRequestReviewThread(ctx, repo, threadID)
 }
 
 // PublishPullRequestStatus dispatches to the underlying provider's

@@ -194,9 +194,11 @@ func TestCopilotAdapterInjectsModelAndGitHubTokensTogether(t *testing.T) {
 		CompletionPath: DefaultResultPath,
 		Credentials:    creds,
 	}
-	if _, err := adapter.Run(context.Background(), req); err != nil {
+	out, err := adapter.Run(context.Background(), req)
+	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	assertAdapterLifecycle(t, out, "copilot")
 	gotModel, gotGitHub := false, false
 	for _, kv := range runner.lastReq.Env {
 		switch kv {
@@ -213,6 +215,35 @@ func TestCopilotAdapterInjectsModelAndGitHubTokensTogether(t *testing.T) {
 		if strings.Contains(arg, "copilot-pat") || strings.Contains(arg, "org-repo-token") {
 			t.Fatalf("token leaked into argv: %v", runner.lastReq.Command)
 		}
+	}
+}
+
+func TestCopilotAdapterPreservesLifecycleEvents(t *testing.T) {
+	workspace := t.TempDir()
+	var live []journal.Event
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			if len(live) != 1 || live[0].Agent == nil || live[0].Agent.Lifecycle != journal.AgentStarted {
+				return fmt.Errorf("started lifecycle was not emitted before process launch: %#v", live)
+			}
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{Command: []string{"copilot-lifecycle-test"}, Runner: runner}
+	out, err := adapter.Run(context.Background(), RunRequest{
+		Envelope: testEnvelope(workspace), Workspace: workspace, CompletionPath: DefaultResultPath,
+		AgentEventSink: func(event journal.Event) error {
+			live = append(live, event)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	assertAdapterLifecycle(t, out, "copilot")
+	if len(live) != 2 || live[1].Agent == nil || live[1].Agent.Lifecycle != journal.AgentCompleted {
+		t.Fatalf("live lifecycle = %#v", live)
 	}
 }
 
@@ -344,6 +375,7 @@ func TestCopilotAdapterUsesStoredAuthWhenAgentModelGrantIsAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
 	if err != nil {
 		t.Fatal(err)
@@ -386,6 +418,196 @@ func TestCopilotAdapterUsesStoredAuthWhenAgentModelGrantIsAbsent(t *testing.T) {
 		if strings.HasPrefix(entry, "COPILOT_GITHUB_TOKEN=") {
 			t.Fatalf("unexpected model token injected during stored auth: %v", runner.lastReq.Env)
 		}
+	}
+}
+
+func TestCopilotAdapterStoredAuthStripsAmbientModelFallbackTokens(t *testing.T) {
+	reserved := []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"}
+	for _, name := range reserved {
+		t.Setenv(name, "ambient-token")
+	}
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command:                        []string{"copilot"},
+		Runner:                         runner,
+		EnvCapabilities:                map[string]string{"agent:model": "COPILOT_GITHUB_TOKEN"},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
+		ExtraEnvAllowlist:              reserved,
+	}
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	}); err != nil {
+		t.Fatalf("Run with stored auth: %v", err)
+	}
+	for _, entry := range runner.lastReq.Env {
+		name, _, _ := strings.Cut(entry, "=")
+		for _, reservedName := range reserved {
+			if strings.EqualFold(name, reservedName) {
+				t.Fatalf("ambient %s shadowed stored Copilot auth: %v", reservedName, runner.lastReq.Env)
+			}
+		}
+	}
+}
+
+func TestCopilotAdapterStoredAuthWithRepoPushKeepsTokenOutOfSubprocess(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0},
+		act: func(req ProcessRequest) error {
+			return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+		},
+	}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		Runner:  runner,
+		EnvCapabilities: map[string]string{
+			"agent:model": "COPILOT_GITHUB_TOKEN",
+			"repo:push":   "GH_TOKEN",
+		},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
+	}
+	t.Setenv("PUSH_TOKEN_ENV", "repository-token")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "push-ref", Env: "PUSH_TOKEN_ENV"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{
+		{Capability: "repo:push", Ref: "push-ref"},
+	}, noopRegistrar{})
+	if err != nil {
+		t.Fatalf("NewGooberInjector: %v", err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model", "repo:push"})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+
+	if _, err := adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model", "repo:push"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	}); err != nil {
+		t.Fatalf("Run with stored auth and repo:push: %v", err)
+	}
+	if len(runner.lastReq.Command) == 0 {
+		t.Fatal("Copilot was not launched")
+	}
+	for _, entry := range runner.lastReq.Env {
+		if strings.HasPrefix(entry, "GH_TOKEN=") {
+			t.Fatalf("repository token shadowed stored Copilot auth: %v", runner.lastReq.Env)
+		}
+	}
+	if token, err := creds.Token(context.Background(), "repo:push"); err != nil || token != "repository-token" {
+		t.Fatalf("scoped repo:push credential = %q, %v; want repository-token retained for its consumer", token, err)
+	}
+}
+
+func TestCopilotAdapterAllowsStoredAuthWithUnmaterializedADOCapability(t *testing.T) {
+	resolver, err := credentials.NewResolver(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injector, err := credentials.NewGooberInjector(resolver, "goober-a", nil, noopRegistrar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model", "provider:pr:write"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		EnvCapabilities: map[string]string{
+			"agent:model":       "COPILOT_GITHUB_TOKEN",
+			"provider:pr:write": "GH_TOKEN",
+		},
+		OptionalCredentialCapabilities: map[string]bool{
+			"agent:model": true,
+		},
+	}
+	env := testEnvelope(t.TempDir(), "agent:model", "provider:pr:write")
+	env.RepoRef = apiv1.RepoRef{
+		Provider: apiv1.ProviderADO,
+		Owner:    "example-org",
+		Project:  "Example Service",
+		Name:     "Example.Repo",
+	}
+	got, err := adapter.credentialEnv(context.Background(), RunRequest{
+		Envelope:    env,
+		Workspace:   t.TempDir(),
+		Credentials: creds,
+	})
+	if err != nil {
+		t.Fatalf("credentialEnv with unmaterialized ADO capability = %v, want nil", err)
+	}
+	for _, entry := range got {
+		if strings.HasPrefix(entry, "GH_TOKEN=") {
+			t.Fatalf("unmaterialized ADO capability injected GH_TOKEN: %v", got)
+		}
+	}
+}
+
+func TestCopilotAdapterRejectsStoredAuthWithGitHubToolToken(t *testing.T) {
+	workspace := t.TempDir()
+	runner := &fakeProcessRunner{}
+	adapter := &CopilotAdapter{
+		Command: []string{"copilot"},
+		Runner:  runner,
+		EnvCapabilities: map[string]string{
+			"agent:model":         "COPILOT_GITHUB_TOKEN",
+			"github:issues:write": "GH_TOKEN",
+		},
+		OptionalCredentialCapabilities: map[string]bool{"agent:model": true},
+	}
+	t.Setenv("ISSUES_TOKEN_ENV", "repository-token")
+	resolver, err := credentials.NewResolver([]credentials.TokenRef{{Name: "issues-ref", Env: "ISSUES_TOKEN_ENV"}})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	injector, err := credentials.NewInjector(resolver, []credentials.Grant{
+		{Capability: "github:issues:write", Ref: "issues-ref"},
+	}, noopRegistrar{})
+	if err != nil {
+		t.Fatalf("NewInjector: %v", err)
+	}
+	creds, err := injector.Materialize(context.Background(), []string{"agent:model", "github:issues:write"})
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+
+	_, err = adapter.Run(context.Background(), RunRequest{
+		Envelope:       testEnvelope(workspace, "agent:model", "github:issues:write"),
+		Workspace:      workspace,
+		CompletionPath: DefaultResultPath,
+		Credentials:    creds,
+	})
+	if err == nil || !strings.Contains(err.Error(), "configure a distinct agent:model credential") {
+		t.Fatalf("Run error = %v, want actionable stored-auth conflict", err)
+	}
+	if len(runner.lastReq.Command) != 0 {
+		t.Fatalf("Copilot launched despite stored-auth conflict: %+v", runner.lastReq)
 	}
 }
 
@@ -890,7 +1112,7 @@ func TestCopilotAdapterConstrainedTranscriptUsesSentPrompt(t *testing.T) {
 func TestCopilotToolAllowlistPreservesShippedCuratorContract(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "curator", "goober.yaml"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "curator", "goober.yaml"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "curator", "goober.yaml"),
 	} {
 		t.Run(path, func(t *testing.T) {
 			raw, err := os.ReadFile(path)
@@ -925,7 +1147,7 @@ func TestCopilotToolAllowlistPreservesShippedCuratorContract(t *testing.T) {
 func TestCopilotToolAllowlistPreservesShippedNominatorApprovalContract(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("..", "..", "config-examples", "gaggles", "acme-web", "goobers", "nominator", "goober.yaml"),
-		filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "goobers", "nominator", "goober.yaml"),
+		filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "nominator", "goober.yaml"),
 	} {
 		t.Run(path, func(t *testing.T) {
 			raw, err := os.ReadFile(path)
@@ -1126,6 +1348,22 @@ func TestCopilotAdapterRecoversMissingCompletionInSameSession(t *testing.T) {
 				result: ProcessResult{Transcript: []byte("finished"), ExitCode: 0},
 				act: func(req ProcessRequest) error {
 					calls = append(calls, req)
+					if len(calls) == 1 {
+						// The adapter derives the recovery turn's timeout from
+						// time.Since(started) measured around this call (see
+						// CopilotAdapter.Run's "remaining := totalTimeout -
+						// time.Since(started)"). A fake runner that returns
+						// instantly can complete within a single tick of a
+						// coarse OS clock, making the elapsed duration read
+						// back as exactly zero — which would hand the
+						// recovery turn the *entire* original timeout rather
+						// than a genuine remainder, and is exactly what was
+						// observed on Windows CI. Sleep briefly so the first
+						// turn measurably consumes wall-clock time on every
+						// platform, the same way a real subprocess turn
+						// always would.
+						time.Sleep(5 * time.Millisecond)
+					}
 					if len(calls) == 2 {
 						return WriteCompletion(req.Dir, tc.completionPath, tc.completion)
 					}
@@ -1940,6 +2178,42 @@ func TestCopilotAdapterPreflightSignedOutFailsAuthProbe(t *testing.T) {
 	}
 }
 
+func TestCopilotAdapterPreflightReportsScrubbedBoundedProbeOutput(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("x", 36)
+	runner := &fakeProcessRunner{
+		result: ProcessResult{ExitCode: 0, Transcript: []byte("copilot version 1.2.3\n")},
+	}
+	runner.act = func(req ProcessRequest) error {
+		if slices.Contains(req.Command, "auth") {
+			runner.result = ProcessResult{
+				ExitCode:   1,
+				Transcript: []byte("Access denied by policy settings bearer " + secret + "\n" + strings.Repeat("detail ", 1000)),
+			}
+			return errors.New("exit status 1")
+		}
+		return nil
+	}
+
+	adapter := &CopilotAdapter{Command: []string{"echo"}, AuthCheckArgs: []string{"auth", "status"}, Runner: runner}
+	_, err := adapter.Preflight(context.Background())
+	if err == nil {
+		t.Fatal("expected auth probe failure")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "exited 1: Access denied by policy settings") {
+		t.Fatalf("error omitted probe output: %v", err)
+	}
+	if strings.Contains(message, secret) || !strings.Contains(message, journal.Redacted) {
+		t.Fatalf("error did not scrub probe output: %v", err)
+	}
+	if !strings.Contains(message, "truncated") || len(message) > maxPreflightDiagnosticBytes+512 {
+		t.Fatalf("error was not bounded: len=%d error=%v", len(message), err)
+	}
+	if !strings.Contains(message, "if this is an authentication failure") {
+		t.Fatalf("error asserted an authentication failure: %v", err)
+	}
+}
+
 // TestCopilotAdapterPreflightSignedInPasses confirms preflight passes when both
 // --version and the configured auth probe succeed.
 func TestCopilotAdapterPreflightSignedInPasses(t *testing.T) {
@@ -2071,6 +2345,82 @@ func TestCopilotResolveConfigAcceptsModelWhenDiscoveryUnavailable(t *testing.T) 
 	// ValidateConfig is the config-admission entry point and must agree.
 	if err := adapter.ValidateConfig("gpt-5.4", nil); err != nil {
 		t.Fatalf("ValidateConfig with unreachable harness = %v, want nil", err)
+	}
+}
+
+// TestCopilotResolveConfigDeferredDiscoveryNeverSpawns (#3336): with
+// DeferDiscovery set — the daemon's startup admission mode — a cold-cache
+// resolve must not invoke the lister at all (in production that invocation
+// spawns the Copilot CLI, and in a memory-capped pod the spawned children can
+// OOM the daemon before any timeout fires). Models are accepted unverified; a
+// cache warmed before deferral was enabled is still served.
+func TestCopilotResolveConfigDeferredDiscoveryNeverSpawns(t *testing.T) {
+	lister := &fakeCopilotModelLister{models: testCopilotModelList()}
+	adapter := &CopilotAdapter{
+		Command:        []string{"copilot"},
+		ModelLister:    lister,
+		DeferDiscovery: true,
+	}
+
+	for _, model := range []string{"claude-fable-5", "gpt-5.4"} {
+		resolution, err := adapter.ResolveConfig(model, nil)
+		if err != nil {
+			t.Fatalf("ResolveConfig(%q) deferred = %v, want nil", model, err)
+		}
+		if resolution.Model != model {
+			t.Fatalf("Model = %q, want %q preserved", resolution.Model, model)
+		}
+		if len(resolution.Warnings) != 1 || resolution.Warnings[0].Kind != ConfigWarningModelUnverified {
+			t.Fatalf("Warnings = %+v, want one %s warning", resolution.Warnings, ConfigWarningModelUnverified)
+		}
+	}
+	if lister.calls != 0 {
+		t.Fatalf("lister.calls = %d, want 0 — deferred admission must never spawn the CLI", lister.calls)
+	}
+
+	// A warm cache is still authoritative under deferral: warm it with
+	// deferral off, flip deferral on, and an unknown model must still be
+	// REJECTED from the cache rather than accepted unverified.
+	warm := &CopilotAdapter{Command: []string{"copilot"}, ModelLister: lister}
+	if _, err := warm.ResolveConfig("claude-fable-5", nil); err != nil {
+		t.Fatalf("warm-up ResolveConfig = %v, want nil", err)
+	}
+	if lister.calls != 1 {
+		t.Fatalf("lister.calls after warm-up = %d, want 1", lister.calls)
+	}
+	warm.DeferDiscovery = true
+	if _, err := warm.ResolveConfig("no-such-model", nil); err == nil {
+		t.Fatal("ResolveConfig(no-such-model) with a warm cache = nil, want unknown-model error")
+	}
+	if lister.calls != 1 {
+		t.Fatalf("lister.calls = %d, want 1 — the warm cache must serve without a new spawn", lister.calls)
+	}
+}
+
+// TestCopilotResolveConfigFailedDiscoveryIsNotRetriedPerGoober (#3336): one
+// adapter resolves every goober in an admission pass, and a failing discovery
+// used to be re-attempted for each — measured in-cluster as a fresh ~295MB CLI
+// process per goober, OOMing the pod. A failed discovery is negative-cached
+// for the adapter's lifetime: exactly one lister call no matter how many
+// goobers resolve through it.
+func TestCopilotResolveConfigFailedDiscoveryIsNotRetriedPerGoober(t *testing.T) {
+	lister := &fakeCopilotModelLister{err: errors.New("protocol handshake never completed")}
+	adapter := &CopilotAdapter{
+		Command:     []string{"copilot"},
+		ModelLister: lister,
+	}
+
+	for i := 0; i < 14; i++ {
+		resolution, err := adapter.ResolveConfig("claude-fable-5", nil)
+		if err != nil {
+			t.Fatalf("ResolveConfig #%d = %v, want nil (unverified acceptance)", i, err)
+		}
+		if len(resolution.Warnings) != 1 || resolution.Warnings[0].Kind != ConfigWarningModelUnverified {
+			t.Fatalf("Warnings #%d = %+v, want one %s warning", i, resolution.Warnings, ConfigWarningModelUnverified)
+		}
+	}
+	if lister.calls != 1 {
+		t.Fatalf("lister.calls = %d, want exactly 1 — a failed discovery must not be retried per goober", lister.calls)
 	}
 }
 

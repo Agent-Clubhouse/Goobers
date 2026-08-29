@@ -11,6 +11,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -128,7 +129,10 @@ func validateFeatureSnapshot(snapshot featureSnapshot) error {
 	if len(snapshot.Features) == 0 {
 		return fmt.Errorf("feature snapshot must contain at least one feature")
 	}
-	if _, err := workflow.NewFeatureRegistry(snapshot.Features); err != nil {
+	if _, err := workflow.NewFeatureRegistry(
+		workflow.Definition{DSLVersion: supportmatrix.NextDSLVersion},
+		snapshot.Features,
+	); err != nil {
 		return fmt.Errorf("invalid feature registry: %w", err)
 	}
 	return nil

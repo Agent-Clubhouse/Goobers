@@ -1,9 +1,9 @@
 # Windows quickstart (tier 1, local)
 
-Stand up a `goobers` node on Windows from scratch: install prerequisites,
-install or build the binary, configure credentials, drive a first run, and run
-the daemon in the foreground. This is the Windows-specific companion to the
-platform-neutral [`quickstart.md`](quickstart.md).
+Use this page for Windows installation, path, credential, isolation, and
+service differences only. Follow the platform-neutral
+[`quickstart.md`](quickstart.md) for the single ordered first-run path and CLI
+walkthrough.
 
 Windows is **officially supported for deterministic workloads**. The required
 Windows CI gate runs the real foreground daemon and the complete shipped
@@ -84,7 +84,8 @@ CRLF policy, and the full path-length calculation.
 
 Download `goobers_<version>_windows_amd64.zip` and `SHA256SUMS` from the same
 tagged release. Only `windows/amd64` is published; Windows ARM64 is deferred.
-Release artifacts are initially unsigned, so checksum verification is required:
+`goobers.exe` is Authenticode-signed, but verify the checksum too — it's
+recomputed after signing, so it always covers the exact published bytes:
 
 ```powershell
 $archive = Get-ChildItem .\goobers_*_windows_amd64.zip
@@ -116,10 +117,8 @@ goobers --version
 ```
 
 For a machine-wide install, extract to `C:\Program Files\goobers` from an
-elevated prompt and update the machine `PATH`. Because the binary is unsigned,
-SmartScreen may warn on first launch. After verifying the checksum, choose
-**More info → Run anyway**. See [Releases & packaging](releases.md) for the
-artifact and signing posture.
+elevated prompt and update the machine `PATH`. See
+[Releases & packaging](releases.md) for the artifact and signing posture.
 
 ## 4. Build from source instead
 
@@ -134,19 +133,17 @@ The committed portal assets are embedded, so Node/npm is not needed for the CLI
 build. Use `go run .\test\ci`, not `make ci`, for the repository's portable
 development gate on a shell-less Windows host.
 
-## 5. Scaffold and configure an instance
+## 5. Windows instance and credential deltas
 
 Keep the instance root outside the target repository and use a short path for
 worktree path-length headroom. Choose whether the config source is
 instance-local, an in-repo subtree, or a separate config repository using the
 [instance and config placement guide](instance-placement.md).
 
-```powershell
-goobers init C:\goobers\my-instance
-```
-
-Edit `instance.yaml` to point at your repository. Never inline a provider
-secret. For an interactive first run, reference an environment variable in the
+Follow the initialization and configuration steps in the
+[canonical quickstart](quickstart.md#3-init---guided--configure-a-regular-instance),
+using a short root such as `C:\goobers\my-instance`. Never inline a provider
+secret. For an interactive run, reference an environment variable in the
 config and set it before starting Goobers:
 
 ```powershell
@@ -175,13 +172,26 @@ goobers validate C:\goobers\my-instance
 GNU Make is not installed by default on Windows, and Goobers does not require
 or auto-install it (bring-your-own runner). A gaggle's `ciCommand`
 (`GaggleSpec.CICommand`) overrides the `local-ci` stage's default `["make",
-"ci"]`, so point it at a make-free command your project actually has —
+"ci"]`, so point it at a make-free command your project actually has.
+
+`ciCommand` is a field on the Gaggle resource, not a standalone file — edit
+the `spec:` block of the gaggle you generated during guided init, at
+`config\gaggles\<your-gaggle>\gaggle.yaml` under your instance root (e.g.
+`C:\goobers\my-instance\config\gaggles\my-app\gaggle.yaml`). Add `ciCommand`
+as a sibling of the gaggle's other `spec` fields (`project`, `backlog`,
+`isolation`, ...), indented two spaces under `spec:` like the rest of them —
 e.g. for a Go project:
 
 ```yaml
-gaggles:
-  - name: my-app
-    ciCommand: ["go", "test", "./..."]
+spec:
+  # ...project, backlog, isolation, and any other fields already here stay as generated...
+  ciCommand: ["go", "test", "./..."]
+```
+
+Then re-validate:
+
+```powershell
+goobers validate C:\goobers\my-instance
 ```
 
 Before any run executes, Goobers resolves `ciCommand`'s first token through
@@ -189,19 +199,11 @@ Before any run executes, Goobers resolves `ciCommand`'s first token through
 be found, naming the missing executable — rather than retrying a command that
 was never going to work.
 
-## 6. Drive a first run
-
-Run one configured workflow manually:
-
-```powershell
-goobers run <workflow-name> C:\goobers\my-instance
-goobers status C:\goobers\my-instance
-goobers trace <run-id> C:\goobers\my-instance
-```
-
-The credential-free fake-harness path is the source-level validation command in
-[Validated environment and evidence](#validated-environment-and-evidence);
-`goobers init --demo` remains limited to hosts with native network isolation.
+The credential-free demo in the canonical quickstart requires native network
+isolation and is therefore unavailable to native Windows. Use the
+credential-free fake-harness command in
+[Validated environment and evidence](#validated-environment-and-evidence), or
+follow the canonical demo through WSL 2.
 
 ## Full isolation through WSL 2
 
@@ -266,7 +268,7 @@ route; Windows absolute paths stored inside configuration are not Linux paths.
 Credentials and tool installations must also be available to the distro user
 rather than relying on the native Windows process environment.
 
-## 7. Run the daemon in the foreground
+## 6. Run the daemon in the foreground
 
 ```powershell
 goobers up C:\goobers\my-instance

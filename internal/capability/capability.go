@@ -38,6 +38,8 @@ const (
 	// its repository. It is runner-only: workflow stages and goobers cannot
 	// declare it, and its credential never comes from a target repository.
 	ConfigRepoRead Capability = "configrepo:read"
+	// GitHubIssuesRead grants read-only GitHub issue queries.
+	GitHubIssuesRead Capability = "github:issues:read"
 	// GitHubIssuesWrite grants GitHub issue query/create/ordinary-label/close/
 	// comment operations (the backlog-curation and work-nomination workflows'
 	// surface). It does not grant the trust decision represented by
@@ -51,8 +53,10 @@ const (
 	// goobers:approved to a nominated issue. It is separate from general issue
 	// writes so a workflow must explicitly opt into approving its own output.
 	GitHubIssuesApprove Capability = "github:issues:approve"
-	// GitHubPRWrite grants GitHub PR open/poll/close (the implementation
-	// workflow's open-pr and ci-poll stages).
+	// ProviderPRWrite grants pull-request operations dispatched through the
+	// configured repository provider.
+	ProviderPRWrite Capability = "provider:pr:write"
+	// GitHubPRWrite grants GitHub-specific PR operations.
 	GitHubPRWrite Capability = "github:pr:write"
 	// GitHubPRReview grants submission of provider-native approve/request-
 	// changes reviews. It is separate from GitHubPRWrite so review authority
@@ -95,6 +99,14 @@ const (
 	// branch policy gates on (#772). Separate from ADOPRWrite so status-
 	// publish authority can be granted to a distinct identity from the author.
 	ADOPRStatus Capability = "ado:pr:status"
+	// ADOPRComplete grants completing (merging) an Azure Repos pull request —
+	// the ADO counterpart to GitHubPRMerge, and deliberately separate from
+	// ADOPRWrite for the same reason (docs/design/v0/pr-lifecycle-loop.md §7):
+	// implementation/pr-remediation may open and update PRs on ADO, but only
+	// merge-review may complete one. Without this, ADO completion authority
+	// would ride on ordinary ado:pr:write, defeating the decider/executor
+	// capability isolation GitHubPRMerge was designed to preserve.
+	ADOPRComplete Capability = "ado:pr:complete"
 	// ADOWorkItemsWrite grants updates to explicitly selected Azure Boards work
 	// items. It does not grant repository or pull-request writes.
 	ADOWorkItemsWrite Capability = "ado:work-items:write"
@@ -127,8 +139,8 @@ const (
 func All() []Capability {
 	return []Capability{
 		RepoRead, RepoPush, ConfigRepoRead,
-		GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
-		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOWorkItemsWrite,
+		GitHubIssuesRead, GitHubIssuesWrite, GitHubMilestonesWrite, GitHubIssuesApprove, ProviderPRWrite, GitHubPRWrite, GitHubPRReview, GitHubBranchDelete, GitHubPRMerge, ContentsRead,
+		ADOCodeRead, ADOPRComment, ADOPRWrite, ADOPRStatus, ADOPRComplete, ADOWorkItemsWrite,
 		TelemetryRead, JournalRead, AgentModel,
 	}
 }

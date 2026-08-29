@@ -12,6 +12,12 @@ func (f fakeSchedule) Next(after time.Time) time.Time {
 	return after.Add(f.d)
 }
 
+type neverSchedule struct{}
+
+func (neverSchedule) Next(time.Time) time.Time {
+	return time.Time{}
+}
+
 func TestTickFiresWhenDue(t *testing.T) {
 	sched := fakeSchedule{d: time.Hour}
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -107,6 +113,26 @@ func TestTickEmptySchedulesNeverFires(t *testing.T) {
 	ts := TriggerState{Workflow: "wf", Schedules: nil, LastEval: time.Now()}
 	if res := Tick(ts, time.Now().Add(365*24*time.Hour)); res.Fire {
 		t.Fatalf("a trigger state with no schedules must never fire: %+v", res)
+	}
+}
+
+func TestTickIgnoresSchedulesThatNeverFire(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if res := Tick(TriggerState{
+		Workflow:  "wf",
+		Schedules: []Schedule{neverSchedule{}},
+		LastEval:  base,
+	}, base.Add(time.Hour)); res.Fire {
+		t.Fatalf("a schedule that never fires must not be due: %+v", res)
+	}
+
+	res := Tick(TriggerState{
+		Workflow:  "wf",
+		Schedules: []Schedule{neverSchedule{}, fakeSchedule{d: time.Hour}},
+		LastEval:  base,
+	}, base.Add(time.Hour))
+	if !res.Fire || res.CatchUp || res.MissedTicks != 1 {
+		t.Fatalf("a never-firing schedule must not affect a valid due schedule: %+v", res)
 	}
 }
 

@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -10,6 +9,7 @@ import (
 
 	goobersassets "github.com/goobers/goobers"
 	"github.com/goobers/goobers/internal/agentkit"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/version"
 )
 
@@ -215,7 +215,7 @@ func runAgentKitTestGit(t *testing.T, root string, args ...string) {
 		"-c", "user.name=Agent Kit Test",
 		"-c", "user.email=agent-kit@example.invalid",
 	}
-	command := exec.Command("git", append(gitArgs, args...)...)
+	command := testgit.Command(append(gitArgs, args...)...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}

@@ -3,16 +3,17 @@ package main
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 const gateRemovalGuardWorkflowBase = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: example
 spec:
@@ -48,7 +49,7 @@ func gitRepoWithGateChange(t *testing.T, path, workflowYAML, newWorkflowYAML str
 	dir := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -119,7 +120,7 @@ func TestGateRemovalGuardBlocksRemovalWithoutProof(t *testing.T) {
 	t.Setenv("GOOBERS_WORKFLOW", "tutor")
 	seedTutorFindingJournal(t, root, runID, gateNoiseFinding("local-ci-gate", ""))
 
-	wt := gitRepoWithGateChange(t, "selfhost/gaggles/goobers/workflows/example.yaml",
+	wt := gitRepoWithGateChange(t, "reference-workflows/gaggles/goobers/workflows/example.yaml",
 		gateRemovalGuardWorkflowBase, strings.Replace(gateRemovalGuardWorkflowBase,
 			`  gates:
     - name: local-ci-gate
@@ -149,7 +150,7 @@ func TestGateRemovalGuardAllowsRemovalWithIndependentProof(t *testing.T) {
 	seedTutorFindingJournal(t, root, runID, gateNoiseFinding("local-ci-gate",
 		"Manual audit (run-482) confirms the underlying binary was removed in #900; the check has been a permanent no-op since."))
 
-	wt := gitRepoWithGateChange(t, "selfhost/gaggles/goobers/workflows/example.yaml",
+	wt := gitRepoWithGateChange(t, "reference-workflows/gaggles/goobers/workflows/example.yaml",
 		gateRemovalGuardWorkflowBase, strings.Replace(gateRemovalGuardWorkflowBase,
 			`  gates:
     - name: local-ci-gate
@@ -190,7 +191,7 @@ func TestGateRemovalGuardBlocksFailBranchRedirectWithoutProof(t *testing.T) {
 	seedTutorFindingJournal(t, root, runID, gateNoiseFinding("local-ci-gate", ""))
 
 	newYAML := strings.Replace(gateRemovalGuardWorkflowBase, `fail: "@abort"`, "fail: done", 1)
-	wt := gitRepoWithGateChange(t, "selfhost/gaggles/goobers/workflows/example.yaml", gateRemovalGuardWorkflowBase, newYAML)
+	wt := gitRepoWithGateChange(t, "reference-workflows/gaggles/goobers/workflows/example.yaml", gateRemovalGuardWorkflowBase, newYAML)
 	t.Chdir(wt)
 
 	code, _, stderr := runArgs(t, "gate-removal-guard", root)
@@ -210,7 +211,7 @@ func TestGateRemovalGuardAllowsTuningWithoutProof(t *testing.T) {
 	seedTutorFindingJournal(t, root, runID, gateNoiseFinding("local-ci-gate", ""))
 
 	newYAML := strings.Replace(gateRemovalGuardWorkflowBase, "check: status-equals", "check: output-numeric-lte", 1)
-	wt := gitRepoWithGateChange(t, "selfhost/gaggles/goobers/workflows/example.yaml", gateRemovalGuardWorkflowBase, newYAML)
+	wt := gitRepoWithGateChange(t, "reference-workflows/gaggles/goobers/workflows/example.yaml", gateRemovalGuardWorkflowBase, newYAML)
 	t.Chdir(wt)
 
 	code, stdout, stderr := runArgs(t, "gate-removal-guard", root)
@@ -239,7 +240,7 @@ func TestGateRemovalGuardNoOpWhenFindingIsNotGateNoise(t *testing.T) {
         pass: done
         fail: "@abort"
 `, "  gates: []\n", 1)
-	wt := gitRepoWithGateChange(t, "selfhost/gaggles/goobers/workflows/example.yaml", gateRemovalGuardWorkflowBase, newYAML)
+	wt := gitRepoWithGateChange(t, "reference-workflows/gaggles/goobers/workflows/example.yaml", gateRemovalGuardWorkflowBase, newYAML)
 	t.Chdir(wt)
 
 	code, stdout, stderr := runArgs(t, "gate-removal-guard", root)
@@ -257,7 +258,7 @@ func TestGateRemovalGuardNoOpWhenNoFindingArtifact(t *testing.T) {
 	t.Setenv("GOOBERS_WORKFLOW", "tutor")
 
 	newYAML := strings.Replace(gateRemovalGuardWorkflowBase, "check: status-equals", "check: output-numeric-lte", 1)
-	wt := gitRepoWithGateChange(t, "selfhost/gaggles/goobers/workflows/example.yaml", gateRemovalGuardWorkflowBase, newYAML)
+	wt := gitRepoWithGateChange(t, "reference-workflows/gaggles/goobers/workflows/example.yaml", gateRemovalGuardWorkflowBase, newYAML)
 	t.Chdir(wt)
 
 	code, _, stderr := runArgs(t, "gate-removal-guard", root)

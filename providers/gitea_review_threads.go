@@ -92,6 +92,7 @@ func (p *GiteaProvider) ListPullRequestReviewThreads(ctx context.Context, repo R
 		for _, comment := range rawComments {
 			comments = append(comments, PullRequestInlineComment{
 				ID:           comment.ID,
+				ThreadID:     fmt.Sprintf("gitea-review-%d", review.ID),
 				Author:       comment.User.Login,
 				Body:         comment.Body,
 				Path:         comment.Path,

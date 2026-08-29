@@ -64,11 +64,23 @@ func collectDocCommands(commands []cliCommand, prefix []string) []clidocs.Comman
 				Short:    c.short,
 				Long:     c.long,
 				Examples: c.examples,
+				Group:    docCommandGroup(c.tier),
 			})
 		}
 		out = append(out, collectDocCommands(c.subcommands, path)...)
 	}
 	return out
+}
+
+func docCommandGroup(tier cliCommandTier) clidocs.Group {
+	switch tier {
+	case cliTierCore:
+		return clidocs.GroupCore
+	case cliTierStage:
+		return clidocs.GroupStage
+	default:
+		return clidocs.GroupAdvanced
+	}
 }
 
 // docDisplayName is the command's canonical, user-facing name: the first
@@ -157,20 +169,13 @@ func runGenerateDocs(args []string, _ io.Writer, stderr io.Writer) int {
 		pf(stderr, "generate docs: %v\n", err)
 		return 1
 	}
-	return 0
-}
-
-// docSlugsUnique reports the first duplicate man-page slug across cmds, if any.
-// Two distinct commands whose hyphen-joined paths collide (e.g. a "backlog-query"
-// command and a hypothetical "backlog query" group) would clobber each other's
-// page; the generator guards against silently dropping one.
-func docSlugsUnique(cmds []clidocs.Command) (string, bool) {
-	seen := map[string]bool{}
-	for _, c := range cmds {
-		if seen[c.Slug()] {
-			return c.Slug(), false
-		}
-		seen[c.Slug()] = true
+	if err := writeFeatureMatrix(args[0]); err != nil {
+		pf(stderr, "generate docs: %v\n", err)
+		return 1
 	}
-	return "", true
+	if err := writeCapabilityMatrix(args[0]); err != nil {
+		pf(stderr, "generate docs: %v\n", err)
+		return 1
+	}
+	return 0
 }

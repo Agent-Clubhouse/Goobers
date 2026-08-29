@@ -361,7 +361,26 @@ func stageMain(ctx context.Context, opts PrepareOptions, commit string) (_ strin
 }
 
 func newStageDir(root, target string) (string, func() error, error) {
-	dir := filepath.Join(stagingDir(root), digestName(target))
+	// Guard the staging root itself before touching the digest subdirectory:
+	// if something occupies stagingDir(root) with a non-directory (a stray
+	// file left by a prior crash, corruption, etc.), os.RemoveAll below can't
+	// be trusted to surface that reliably across platforms. On Windows,
+	// looking up a path whose parent component is a plain file returns
+	// ERROR_PATH_NOT_FOUND, which os.IsNotExist treats as "already gone" —
+	// so RemoveAll(dir) silently no-ops instead of reporting the collision,
+	// and the failure only resurfaces later from MkdirAll with an unrelated,
+	// confusing error. Detect the collision explicitly up front and fail
+	// closed instead of guessing whether it's safe to delete.
+	staging := stagingDir(root)
+	if info, err := os.Lstat(staging); err != nil {
+		if !os.IsNotExist(err) {
+			return "", nil, fmt.Errorf("clear staging directory: %w", err)
+		}
+	} else if !info.IsDir() {
+		return "", nil, fmt.Errorf("clear staging directory: %s is not a directory", staging)
+	}
+
+	dir := filepath.Join(staging, digestName(target))
 	if err := os.RemoveAll(dir); err != nil {
 		return "", nil, fmt.Errorf("clear staging directory: %w", err)
 	}
@@ -380,7 +399,7 @@ func smokeCheck(ctx context.Context, opts PrepareOptions, binary string) (versio
 		return info, fmt.Errorf("staged validate smoke check: %w", err)
 	}
 	canonical := opts.Root
-	candidate := filepath.Join(opts.WorkDir, "selfhost")
+	candidate := filepath.Join(opts.WorkDir, "reference-workflows")
 	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 		canonical = candidate
 	}

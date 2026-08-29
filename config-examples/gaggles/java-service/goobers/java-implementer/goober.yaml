@@ -1,0 +1,25 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: java-implementer
+spec:
+  gaggle: java-service
+  role: implementer
+  displayName: Implementer
+  instructions: instructions.md
+  harness: copilot
+  model: auto
+  harnessOptions: {}
+  capabilities:
+    - repo:push
+    - agent:model
+  policyActions:
+    - modify-repository
+  skills:
+    - implement
+    - run-tests
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - java-implementation

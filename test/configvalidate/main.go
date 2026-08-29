@@ -15,6 +15,41 @@ const instanceYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Instance
 repos:
   - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+  - provider: github
+    owner: acme
+    name: dotnet-service
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+  - provider: github
+    owner: acme
+    name: java-service
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+  - provider: github
+    owner: acme
+    name: python-service
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+  - provider: github
+    owner: acme
+    name: ios-app
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+  - provider: github
+    owner: your-org
+    name: your-repo
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+  - provider: github
+    owner: demo
+    name: offline
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+  - provider: github
     owner: example
     name: example
     token:
@@ -32,10 +67,12 @@ type checkedInTree struct {
 
 var checkedInTrees = []checkedInTree{
 	{
-		path:            "selfhost",
-		sourceTree:      true,
-		strict:          true,
-		allowedWarnings: []string{docsUpdaterInertWarning},
+		path:       "reference-workflows",
+		sourceTree: true,
+		strict:     true,
+		allowedWarnings: []string{
+			docsUpdaterInertWarning,
+		},
 	},
 	{path: "config-examples"},
 	{path: "examples/ios-simulator"},

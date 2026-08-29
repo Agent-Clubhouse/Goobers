@@ -6,6 +6,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/learning"
 )
 
 // Journal is what Evaluator needs to record a gate verdict. It is satisfied
@@ -17,9 +18,8 @@ type Journal interface {
 }
 
 // recordStart durably marks a gate evaluation before its evaluator is
-// dispatched. repassAttempt is the prospective consecutive non-pass count:
-// recordVerdict replaces it with the actual post-evaluation count, while a
-// dangling marker lets Resume charge an interrupted evaluation to the budget.
+// dispatched. repassAttempt is the prospective per-gate count, allowing Resume
+// to recover a dangling evaluation before its branch target is known.
 func recordStart(j Journal, gateName string, repassAttempt int) error {
 	if j == nil {
 		return nil
@@ -54,6 +54,21 @@ func recordEvaluatorRetry(j Journal, gateName string, attempt int, err error) er
 	})
 }
 
+func recordVerdictValidationRetry(j Journal, gateName string, attempt int, err error) error {
+	if j == nil {
+		return nil
+	}
+	return j.Append(journal.Event{
+		Type:  journal.EventError,
+		Gate:  gateName,
+		Error: &journal.ErrorDetail{Code: "verdict_invalid", Message: err.Error()},
+		Runner: map[string]any{
+			"evaluatorAttempt":  attempt,
+			"retryFailureClass": "policy",
+		},
+	})
+}
+
 // recordVerdict journals one gate evaluation as a gate.evaluated event: Gate,
 // Verdict (the outcome string), Target, and Escalated are the flat,
 // conformance-normative fields §4 relies on. The repass attempt count and a
@@ -64,10 +79,12 @@ func recordEvaluatorRetry(j Journal, gateName string, attempt int, err error) er
 // without bloating the flat event stream, and the event's Ref points at it.
 //
 // duplicateDiff (issue #316) is likewise a Runner-namespace annotation. The
-// digest itself is only journaled when non-empty, mirroring repassAttempt's
-// seeding contract: internal/runner/resume.go's gateDiffSeed reconstructs
-// Evaluator.LastDiffDigest from each gate's last such event on resume, the
-// same way gateRepassSeed reconstructs Attempts.
+// digest itself is only journaled when non-empty. internal/runner/resume.go
+// reconstructs the gate, target-stage, and digest state from these annotations.
+// reason (issue #3250) mirrors it: the machine-readable ReasonUnchangedRepass
+// code, journaled only when non-empty, so a reader can match on a stable
+// string instead of re-deriving "was this an unchanged repass" from
+// duplicateDiff/repassCause alone.
 //
 // verdictCacheHit (issue #523) is a third Runner-namespace annotation,
 // alongside duplicateDiff: true when this attempt reused
@@ -90,15 +107,50 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 	}
 	runner := map[string]any{
 		"repassAttempt":   r.Attempt,
+		"gateAttempt":     r.GateAttempt,
 		"escalated":       r.Escalated,
 		"duplicateDiff":   r.DuplicateDiff,
 		"verdictCacheHit": r.CacheHit,
+	}
+	if r.RepassTarget != "" {
+		runner["repassTarget"] = r.RepassTarget
 	}
 	if r.Interrupted {
 		runner["interrupted"] = true
 	}
 	if diffDigest != "" {
 		runner["diffDigest"] = diffDigest
+	}
+	if r.RepassCause != nil {
+		runner["repassCause"] = r.RepassCause
+	}
+	if r.Reason != "" {
+		runner["reason"] = r.Reason
+	}
+	if r.Verdict != nil && len(r.Verdict.Findings) > 0 {
+		identities := make([]string, 0, len(r.Verdict.Findings))
+		for i := range r.Verdict.Findings {
+			learning.NormalizeFinding(&r.Verdict.Findings[i], r.Gate, diffDigest)
+			identities = append(identities, r.Verdict.Findings[i].ID)
+		}
+		runner["findingIdentities"] = identities
+		runner["learningFindings"] = learningFindingRecords(r.Verdict.Findings)
+		runner["correctionFeedback"] = r.Verdict.Rationale
+	}
+	if len(r.ResolvedFindingIDs) > 0 {
+		runner["resolvedFindingIdentities"] = r.ResolvedFindingIDs
+	}
+	if len(r.SuppressedFindingIDs) > 0 {
+		runner["suppressedFindingIdentities"] = r.SuppressedFindingIDs
+	}
+	if len(r.ReopenedFindingIDs) > 0 {
+		runner["reopenedFindingIdentities"] = r.ReopenedFindingIDs
+	}
+	if len(r.DisprovenFindingIDs) > 0 {
+		runner["disprovenFindingIdentities"] = r.DisprovenFindingIDs
+	}
+	if len(r.DisprovenFindings) > 0 {
+		runner["disprovenLearningFindings"] = learningFindingRecords(r.DisprovenFindings)
 	}
 	ev := journal.Event{
 		Type:      journal.EventGateEvaluated,

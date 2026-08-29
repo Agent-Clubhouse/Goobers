@@ -41,6 +41,9 @@ const (
 // CandidateFindings is the versioned telemetry connector artifact schema.
 const CandidateFindings = "candidate-findings-v1.schema.json"
 
+// MissionControlVerdict is the provider-neutral launch verdict artifact schema.
+const MissionControlVerdict = "mission-control-verdict-v1alpha1.schema.json"
+
 // RemediationBrief is the current versioned PR-remediation evidence artifact schema.
 const RemediationBrief = "remediation-brief-v3.schema.json"
 
@@ -92,11 +95,18 @@ var Envelope = map[string]string{
 }
 
 // Journal maps a run-journal contract name to its schema file name — the
-// versioned provenance contract (ARCHITECTURE.md §4): the events.jsonl event
-// envelope and run.yaml pinned identity.
+// versioned provenance contract (ARCHITECTURE.md §4): the directory metadata,
+// events.jsonl event envelope, and run.yaml pinned identity.
 var Journal = map[string]string{
-	"event": "journal-event.schema.json",
-	"run":   "journal-run.schema.json",
+	"schema": "journal-schema.schema.json",
+	"event":  "journal-event.schema.json",
+	"run":    "journal-run.schema.json",
+}
+
+// Notification maps the generic notification request and receipt contracts.
+var Notification = map[string]string{
+	"request": "notification-request.schema.json",
+	"receipt": "notification-receipt.schema.json",
 }
 
 // Entry identifies one embedded schema by its CLI-facing kind and file name.

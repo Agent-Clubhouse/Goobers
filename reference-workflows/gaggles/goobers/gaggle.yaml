@@ -1,0 +1,33 @@
+# INTENTIONAL LIVE DIVERGENCE:
+# The live self-hosting instance maintains its gaggle config outside this repo
+# and operator-tunes its backlog selector there; the selector below is
+# deliberately not mirrored from it. The checked-in `labels: [goobers]` scope
+# documents the adopter convention: a single backlog-scoping label, created by
+# the README's label bootstrap, that the operator applies to each issue the
+# gaggle should treat as backlog. `backlog.labels` is a hard AND-filter
+# (internal/labelpredicate) — an issue without the label is invisible to every
+# backlog-consuming workflow.
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: goobers
+spec:
+  displayName: Goobers (self-hosting)
+  # The instance targets the Goobers repo itself — "begins to build itself"
+  # (ARCHITECTURE.md §12, V0 definition of done).
+  project:
+    provider: github
+    owner: Agent-Clubhouse
+    name: Goobers
+    branch: main
+    connectionRef: goobers-repo-token
+  # The singleton backlog this gaggle draws work from (GAG-004): this repo's
+  # own GitHub issues.
+  backlog:
+    provider: github
+    project: Agent-Clubhouse/Goobers
+    labels:
+      - goobers
+    connectionRef: goobers-repo-token
+  isolation:
+    namespace: gaggle-goobers-reference-workflows

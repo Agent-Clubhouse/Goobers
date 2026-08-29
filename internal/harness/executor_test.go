@@ -3,6 +3,7 @@ package harness
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -19,7 +20,9 @@ import (
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpio"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -46,6 +49,7 @@ func writeRaw(workspace, relPath, content string) error {
 type fakeRecorder struct {
 	spans     []recordedSpan
 	artifacts []recordedArtifact
+	events    []journal.Event
 	dir       string
 	runsDir   string
 	err       error
@@ -65,6 +69,143 @@ type recordedArtifact struct {
 type metricsFakeAdapter struct {
 	FakeAdapter
 	metrics map[string]float64
+}
+
+type receiptFakeAdapter struct {
+	FakeAdapter
+	receipts []mcpio.InputInspectionReceipt
+}
+
+func (f *receiptFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	out, err := f.FakeAdapter.Run(ctx, req)
+	out.InputInspectionReceipts = append([]mcpio.InputInspectionReceipt(nil), f.receipts...)
+	out.InputInspectionReceiptsCollected = true
+	return out, err
+}
+
+type mcpFailureFakeAdapter struct {
+	FakeAdapter
+	failures []MCPServerFailure
+}
+
+type liveAgentAdapter struct {
+	FakeAdapter
+	started chan struct{}
+	release chan struct{}
+}
+
+func (a *liveAgentAdapter) Run(_ context.Context, req RunRequest) (Outcome, error) {
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	tokens := int64(12)
+	started := journal.Event{Type: journal.EventAgentLifecycle, Agent: &journal.AgentProvenance{
+		Schema: "goobers.dev/journal/agent/v1", ID: "worker", RunID: req.Envelope.RunID,
+		Stage: req.Envelope.TaskID, Attempt: req.Attempt, Worker: true,
+		Lifecycle: journal.AgentStarted, StartedAt: now, UpdatedAt: now,
+		Fidelity: journal.AgentFidelityFull,
+	}}
+	if err := req.AgentEventSink(started); err != nil {
+		return Outcome{}, err
+	}
+	close(a.started)
+	<-a.release
+	message := journal.Event{Type: journal.EventAgentMessage, PeerMessage: &journal.PeerMessageMetadata{
+		ID: "message-1", SenderID: "worker", RecipientID: "coordinator",
+		OccurredAt: now.Add(time.Second), Purpose: "completion",
+	}}
+	completed := started
+	completed.Agent = &journal.AgentProvenance{
+		Schema: "goobers.dev/journal/agent/v1", ID: "worker", RunID: req.Envelope.RunID,
+		Stage: req.Envelope.TaskID, Attempt: req.Attempt, Worker: true,
+		Lifecycle: journal.AgentCompleted, StartedAt: now, UpdatedAt: now.Add(2 * time.Second),
+		Usage: journal.AgentUsage{InputTokens: &tokens}, Fidelity: journal.AgentFidelityFull,
+	}
+	for _, event := range []journal.Event{message, completed} {
+		if err := req.AgentEventSink(event); err != nil {
+			return Outcome{}, err
+		}
+	}
+	payload, _ := json.Marshal(apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	return Outcome{
+		Payload: payload, AgentEvents: []journal.Event{started, message, completed},
+		AgentTelemetryFidelity: journal.AgentFidelityFull,
+	}, nil
+}
+
+type agentPayloadAdapter struct {
+	FakeAdapter
+	payload []byte
+}
+
+func (a *agentPayloadAdapter) Run(_ context.Context, req RunRequest) (Outcome, error) {
+	result, _ := json.Marshal(apiv1.ResultEnvelope{Status: apiv1.ResultSuccess})
+	return Outcome{
+		Payload: result, AgentEvents: projectAgentEvents(a.payload, req),
+		AgentTelemetryFidelity: journal.AgentFidelityFull,
+	}, nil
+}
+
+func (f *mcpFailureFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	out, err := f.FakeAdapter.Run(ctx, req)
+	out.MCPServerFailures = append([]MCPServerFailure(nil), f.failures...)
+	return out, err
+}
+
+// TestExecutorJournalsMCPServerUnavailable pins #3356's detection contract:
+// when an adapter reports that a registered MCP server was not connected at
+// invocation, the executor must journal a loud runner.annotation naming the
+// lost servers — next to whatever the stage goes on to report — while leaving
+// the run's own outcome untouched (strictly additive: nothing that worked
+// before changes).
+func TestExecutorJournalsMCPServerUnavailable(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &mcpFailureFakeAdapter{
+		FakeAdapter: FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+				Status: apiv1.ResultSuccess,
+			})
+		}},
+		failures: []MCPServerFailure{{Server: "goobers-io", Status: "failed"}},
+	}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("annotation must not change the run outcome, got status %q", result.Status)
+	}
+	var annotation *journal.Event
+	for i := range rec.events {
+		if rec.events[i].Type == journal.EventRunnerAnnotation && rec.events[i].Runner["kind"] == "mcp-server-unavailable" {
+			annotation = &rec.events[i]
+			break
+		}
+	}
+	if annotation == nil {
+		t.Fatalf("events = %+v, want an mcp-server-unavailable annotation", rec.events)
+	}
+	if annotation.Stage != "implement" {
+		t.Fatalf("annotation stage = %q, want %q", annotation.Stage, "implement")
+	}
+	servers, ok := annotation.Runner["servers"].([]map[string]string)
+	if !ok || len(servers) != 1 || servers[0]["server"] != "goobers-io" || servers[0]["status"] != "failed" {
+		t.Fatalf("annotation servers = %#v", annotation.Runner["servers"])
+	}
+	detail, _ := annotation.Runner["detail"].(string)
+	if !strings.Contains(detail, "unavailable") {
+		t.Fatalf("annotation detail = %q, want it to name the tool loss", detail)
+	}
 }
 
 func (f *metricsFakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
@@ -87,6 +228,14 @@ func (f *fakeRecorder) RecordArtifact(name string, data []byte) (journal.Ref, er
 	}
 	f.artifacts = append(f.artifacts, recordedArtifact{name: name, data: append([]byte(nil), data...)})
 	return journal.Ref{Path: "artifacts/fake/" + name, Digest: journal.Digest(data), Size: int64(len(data))}, nil
+}
+
+func (f *fakeRecorder) Append(event journal.Event) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.events = append(f.events, event)
+	return nil
 }
 
 func (f *fakeRecorder) Dir() string { return f.dir }
@@ -190,8 +339,46 @@ func TestExecutorInvokeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExecutorJournalsGoobersIOInputInspectionReceipts(t *testing.T) {
+	rec := &fakeRecorder{}
+	adapter := &receiptFakeAdapter{
+		FakeAdapter: FakeAdapter{Act: func(_ context.Context, req RunRequest) error {
+			return WriteCompletion(req.Workspace, req.CompletionPath, apiv1.ResultEnvelope{
+				Status: apiv1.ResultSuccess,
+			})
+		}},
+		receipts: []mcpio.InputInspectionReceipt{
+			{Tool: "list_inputs", Success: true},
+			{Tool: "grep_input", Input: "local-ci.artifact[0]", Pattern: "FAIL", MatchLines: []int{42}, Success: true},
+		},
+	}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir())); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.events) != 1 {
+		t.Fatalf("events = %+v, want one receipt annotation", rec.events)
+	}
+	event := rec.events[0]
+	if event.Type != journal.EventRunnerAnnotation || event.Stage != "implement" ||
+		event.Runner["kind"] != "goobers-io-input-inspection-receipts" {
+		t.Fatalf("receipt annotation = %+v", event)
+	}
+}
+
 func TestExecutorAnnotatesAgentProvenance(t *testing.T) {
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "harness-provenance-test",
 		SpanExporter: exporter,
@@ -295,7 +482,7 @@ func TestExecutorMaterializesAssetsBeforeInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	ctx, span := provider.Tracer("asset-integration-test").Start(context.Background(), "attempt")
@@ -404,6 +591,121 @@ func TestExecutorUsesOnlyAdapterCanonicalUsage(t *testing.T) {
 	}
 }
 
+func TestExecutorProjectsLiveTreeAndNestedUsageToStageSpan(t *testing.T) {
+	adapter := &liveAgentAdapter{
+		FakeAdapter: FakeAdapter{},
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	rec := &fakeRecorder{}
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		journal.NewPatternScrubber(),
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exporter := telemetrytest.NewMemoryExporter()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	ctx, span := provider.Tracer("nested-agent-live-test").Start(context.Background(), "attempt")
+	type invocationResult struct {
+		result apiv1.ResultEnvelope
+		err    error
+	}
+	done := make(chan invocationResult, 1)
+	env := testEnvelope(t.TempDir())
+	env.Attempt = 3
+	go func() {
+		result, err := exec.Invoke(ctx, env)
+		done <- invocationResult{result: result, err: err}
+	}()
+
+	<-adapter.started
+	tree, err := journal.ActiveAgentTreeForStage(rec.events, env.RunID, env.TaskID, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree) != 1 || tree["worker"].Lifecycle != journal.AgentStarted {
+		t.Fatalf("in-flight tree = %#v", tree)
+	}
+	close(adapter.release)
+	invocation := <-done
+	span.End()
+	if invocation.err != nil {
+		t.Fatalf("Invoke: %v", invocation.err)
+	}
+	if got := invocation.result.Metrics[telemetry.AttrGenAIUsageInputTokens]; got != 12 {
+		t.Fatalf("result nested usage = %v, want 12", got)
+	}
+	spans := exporter.Spans()
+	if len(spans) != 1 {
+		t.Fatalf("telemetry spans = %d, want 1", len(spans))
+	}
+	var spanTokens int64
+	for _, attr := range spans[0].Attributes() {
+		if string(attr.Key) == telemetry.AttrGenAIUsageInputTokens {
+			spanTokens = attr.Value.AsInt64()
+		}
+	}
+	if spanTokens != 12 {
+		t.Fatalf("stage span nested usage = %d, want 12", spanTokens)
+	}
+	var lifecycleEvents, messageEvents int
+	for _, event := range spans[0].Events() {
+		switch event.Name {
+		case telemetry.NestedAgentLifecycleEventName:
+			lifecycleEvents++
+		case telemetry.NestedAgentMessageEventName:
+			messageEvents++
+		}
+	}
+	if lifecycleEvents != 2 || messageEvents != 1 {
+		t.Fatalf("nested telemetry events = lifecycle %d message %d", lifecycleEvents, messageEvents)
+	}
+}
+
+func TestExecutorRedactsNormalizedAdapterPayloadBeforeProjection(t *testing.T) {
+	const secret = "adapter-secret-value"
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	payload := []byte(`{"type":"agent.lifecycle","agent":{"id":"worker-` + secret + `","runId":"spoofed","stage":"spoofed","attempt":99,"plugin":"plugin-` + secret + `","objective":"assignment-` + secret + `","requestedModel":"requested-` + secret + `","resolvedModel":"resolved-` + secret + `","requestedReasoningEffort":"high-` + secret + `","resolvedReasoningEffort":"medium-` + secret + `","lifecycle":"completed","startedAt":"` + now + `","updatedAt":"` + now + `","results":[{"path":"artifacts/` + secret + `","digest":"sha256:` + secret + `","size":1}],"dependsOn":["dependency-` + secret + `"],"fidelity":"full"}}
+{"type":"agent.message","peerMessage":{"id":"message-` + secret + `","senderId":"sender-` + secret + `","recipientId":"recipient-` + secret + `","occurredAt":"` + now + `","purpose":"dependency-` + secret + `","artifact":{"path":"artifacts/` + secret + `","digest":"sha256:` + secret + `","size":1},"contentHash":"sha256:` + secret + `","content":"raw-` + secret + `"},"content":"raw-` + secret + `"}`)
+	adapter := &agentPayloadAdapter{payload: payload}
+	rec := &fakeRecorder{}
+	registry, scrubber := journal.DefaultScrubber()
+	registry.Register([]byte(secret))
+	exec, err := NewExecutor(
+		adapter,
+		testInjector(t, "", "", noopRegistrar{}),
+		rec,
+		rec,
+		rec,
+		scrubber,
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir())); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	raw, err := json.Marshal(rec.events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), secret) || strings.Contains(string(raw), "raw-"+secret) {
+		t.Fatalf("adapter payload reached projection unsanitized: %s", raw)
+	}
+	if !strings.Contains(string(raw), journal.Redacted) {
+		t.Fatalf("adapter payload did not retain redaction marker: %s", raw)
+	}
+}
+
 func TestExecutorMaterializationFailureEmitsNoAgentTelemetry(t *testing.T) {
 	source := t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "reference.md"), []byte("reference"), 0o644); err != nil {
@@ -442,7 +744,7 @@ func TestExecutorMaterializationFailureEmitsNoAgentTelemetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	ctx, span := provider.Tracer("asset-error-test").Start(context.Background(), "attempt")
@@ -574,6 +876,73 @@ func TestExecutorLinksEveryTaskOutcomeToCapturedTranscript(t *testing.T) {
 				t.Fatalf("Transcript.Digest = %q, want digest of recorded artifact %q", result.Transcript.Digest, journal.Digest(got))
 			}
 		})
+	}
+}
+
+func TestExecutorRecordsScrubbedStderrArtifactOnHarnessFailure(t *testing.T) {
+	reg, scrubber := journal.DefaultScrubber()
+	secret := "opaque-harness-secret"
+	reg.Register([]byte(secret))
+
+	runsDir := t.TempDir()
+	jr, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID:           "run-1",
+		Workflow:        "default-implement",
+		WorkflowVersion: 1,
+		Gaggle:          "example",
+		Trigger:         journal.Trigger{Kind: journal.TriggerManual},
+	}, nil, journal.WithScrubber(scrubber))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = jr.Close() })
+
+	exec, err := NewExecutor(
+		&FakeAdapter{
+			Transcript: []byte("failed"),
+			Stderr:     []byte("request rejected token=" + secret),
+			Act: func(context.Context, RunRequest) error {
+				return errors.New("exit status 1")
+			},
+		},
+		testInjector(t, "", "", noopRegistrar{}),
+		jr, jr, NewContextResolver(jr, runsDir), scrubber, "",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := exec.Invoke(context.Background(), testEnvelope(t.TempDir()))
+	if err == nil {
+		t.Fatal("Invoke error = nil, want harness failure")
+	}
+	if len(result.Artifacts) != 1 {
+		t.Fatalf("Artifacts = %#v, want stderr artifact", result.Artifacts)
+	}
+	reader, err := journal.OpenRead(jr.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded bool
+	for _, event := range events {
+		if event.Type == journal.EventArtifactRecorded && event.Name == "implement/stderr.log" {
+			recorded = true
+			break
+		}
+	}
+	if !recorded {
+		t.Fatal("implement/stderr.log artifact event was not recorded")
+	}
+	data, err := result.Artifacts[0].Resolve(jr.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(secret)) || !bytes.Contains(data, []byte("[REDACTED]")) {
+		t.Fatalf("stderr artifact was not scrubbed: %q", data)
 	}
 }
 

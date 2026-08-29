@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/instance-repository-execution.schema.json",
+  "title": "Instance Repository Execution",
+  "description": "Execution settings accepted on one instance.yaml repos[] entry.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "largeRepo": {
+      "type": "boolean",
+      "description": "Enables monolith-safe defaults for pinned serial execution, timeouts, path-length preflight, retention exemption, and narrowed mirror refreshes."
+    },
+    "workspace": {
+      "type": "object",
+      "description": "Overrides how this repository is materialized. Explicit fields override the large-repo preset.",
+      "additionalProperties": false,
+      "properties": {
+        "pinned": {
+          "type": "boolean",
+          "description": "Uses one persistent node-local workspace protected by a whole-run lease."
+        },
+        "worktrees": {
+          "type": "boolean",
+          "description": "Uses disposable per-stage worktrees. Set true to relax the large-repo preset's pinned serial default."
+        },
+        "cleanPolicy": {
+          "type": "string",
+          "enum": ["none", "ignored-safe", "full"],
+          "description": "Cleanup applied between pinned runs. The large-repo default is none."
+        }
+      }
+    },
+    "pathLength": {
+      "type": "object",
+      "description": "Configures checkout path-length preflight. The large-repo preset enables it with a 260-character default ceiling.",
+      "additionalProperties": false,
+      "properties": {
+        "disabled": {
+          "type": "boolean",
+          "description": "Explicitly disables path-length preflight."
+        },
+        "maxPathLength": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Absolute path ceiling. Zero or omitted resolves to 260."
+        },
+        "buildOutputAllowance": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Characters reserved beyond the deepest tracked path for generated build output."
+        }
+      }
+    },
+    "defaultStageTimeout": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Default deterministic-stage deadline as a Go duration. The large-repo default is 4h."
+    },
+    "runControls": {
+      "type": "object",
+      "description": "Repository-level run watchdog defaults. Gaggle and workflow runControls remain more specific.",
+      "additionalProperties": false,
+      "properties": {
+        "maxRepasses": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome."
+        },
+        "stalledRunTimeout": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Maximum journal-silent period before watchdog escalation. The large-repo default is 6h."
+        },
+        "maxRunDuration": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Maximum total run age. The large-repo default is 24h."
+        }
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # Validation & CI Enrichment — closing the false-green gaps
 
-**Status:** Approved for backlog planning (PO directive, 2026-07-16). Backlog-only future
+**Status:** approved — for backlog planning (PO directive, 2026-07-16). Backlog-only future
 investment: items are not `goobers:approved` and not eligible for automated implementation
 until promoted.
 
@@ -103,7 +103,7 @@ unit-tier hermeticity.
 
 ### Wired-composition coverage (closes G2, G5)
 
-- **W1. Shipped-workflow contract tests.** Every definition under `selfhost/` (and shipped
+- **W1. Shipped-workflow contract tests.** Every definition under `reference-workflows/` (and shipped
   templates) executes end-to-end through the real local runner + fake harness in CI, with
   journal-only assertions: stages run, outputs thread (`InputsFrom` including non-string
   values), gates evaluate, escalation paths fire. The L1/L3 class of breakage becomes

@@ -1,7 +1,7 @@
 # Design: Static fan-out/fan-in — bounded parallel branches and a real join
 
-> Status: **Draft for review** · Area prefix: `FO` (new) · Milestone: **Versioning &
-> Releases — DSL compatibility + tagged builds** (#12)
+> Status: **implemented — GA in #1939** · Area prefix: `FO` · Milestone:
+> **Versioning & Releases — DSL compatibility + tagged builds** (#12)
 > Resolves the **static half** of #1310 — the explicit parallel failure policy and the
 > bounded `parallel` construct, spec'd against the conformance surface. #1310's
 > `for_each` (data-driven width) is an explicit non-goal here (§11) and stays open.
@@ -10,7 +10,7 @@
 > [`gaggle.md`](../requirements/gaggle.md) (`GAG-010`),
 > [`workflow.md`](../requirements/workflow.md) (`WF-002`, `WF-015`, `WF-020`, `WF-051`)
 > Architecture: [`ARCHITECTURE.md`](../ARCHITECTURE.md) §3.2, §3.3, §4
-> Companion: [`dsl-version-lifecycle.md`](./dsl-version-lifecycle.md) (`DVL` — the
+> Companion: [`dsl-version-lifecycle.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/dsl-version-lifecycle.md) (`DVL` — the
 > version treatment in §8; note that doc still reads "not implemented", but the
 > machinery has since shipped — see §3 row 8)
 > References: `internal/workflow/internal/model/machine.go`,
@@ -565,7 +565,7 @@ parallel, unknown branch, unknown output key where statically knowable) fail com
 ## 8. DSL version treatment
 
 Two independent axes govern this, and they compose exactly as
-[`dsl-version-lifecycle.md`](./dsl-version-lifecycle.md) §2 describes.
+[`dsl-version-lifecycle.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/dsl-version-lifecycle.md) §2 describes.
 
 **Axis 1 — interpreter version.** New constructs land in the **copy-forward
 interpreter** (`internal/workflow/v_next/`, DSL `2.0`), never by editing `v_current`
@@ -576,17 +576,11 @@ sanctioned home for the first genuinely new language feature. A workflow using
 through the existing "not supported by this build" path
 (`internal/workflow/compile.go:184-208`) — no silent degradation.
 
-**Axis 2 — per-feature lifecycle, and this is the one that actually gates rollout.**
-Every DSL surface element carries a `FeatureID` with a `preview → ga → deprecated →
-removed` lifecycle, and **preview features are admitted only when the instance sets
-the `goobers.dev/allow-preview-features` annotation** (`v_current/features.go:622-625`;
-`compile.go:56`). `parallels`, `@join`, and the branch-qualified `inputsFrom` form
-each enter the registry as **preview**. That is what makes this safe to land
-incrementally on a `supported` DSL version: the version is supported, the *feature*
-is preview and opt-in, and it graduates to `ga` only once the conformance corpus
-(§9) is green. Released features' history is immutable
-(`v_current/features.go:148-173`), so the preview→ga transition is recorded, not
-rewritten.
+**Axis 2 — per-feature lifecycle.** Every DSL surface element carries a `FeatureID`
+with a `preview → ga → deprecated → removed` lifecycle. Static fan-out/fan-in
+graduated to **GA in #1939** after the conformance corpus (§9) shipped, and the
+registry now declares its DSL fields GA. Using a parallel no longer requires the
+`goobers.dev/allow-preview-features` annotation.
 
 Mechanical consequences for every slice that touches the schema: a new field must be
 added in **four** hand-maintained places — the Go type with kubebuilder markers,
@@ -715,12 +709,8 @@ This design has succeeded when all of the following are true:
 
 ## 14. Open questions
 
-- **OQ-1 — Preview-gate ergonomics.** Preview features need the
-  `goobers.dev/allow-preview-features` instance annotation (§8), which today gates two
-  narrow gaggle fields. Is it acceptable that adopting `parallels` also un-gates every
-  other preview feature instance-wide? *(Recommend: accept for FO-2..FO-7 and revisit
-  at FO-8's GA transition. If it becomes a real problem, per-feature opt-in is a
-  registry change independent of this design.)*
+- **OQ-1 — Resolved.** Static fan-out/fan-in graduated to GA in #1939 and no longer
+  requires the preview-feature annotation (§8).
 - **OQ-2 — Default `maxConcurrentBranches`.** *(Recommend: 1 — a parallel is about
   graph shape and join semantics first; concurrency is an opt-in performance
   decision, and defaulting to sequential makes the first implementation's journal

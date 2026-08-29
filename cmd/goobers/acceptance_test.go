@@ -30,7 +30,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -39,15 +38,18 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/testgit"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 // acceptanceWorkflowYAML is the agentic build loop the dogfood implementation
-// workflow (selfhost/gaggles/goobers/workflows/implementation.yaml) is built
+// workflow (reference-workflows/gaggles/goobers/workflows/implementation.yaml) is built
 // around, trimmed to the stages runnable without the not-yet-wired provider
 // built-ins (backlog-query/open-pr/ci-poll/issue-close-out): a manual `goobers
 // run` starts it directly at `implement`. It mirrors #29's skeletonMachine.
 const acceptanceWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: acceptance
 spec:
@@ -67,6 +69,7 @@ spec:
       goal: Implement the claimed issue in the run's worktree.
       capabilities:
         - repo:push
+        - agent:model
       retry:
         maxAttempts: 2
       next: review
@@ -144,8 +147,8 @@ func initAcceptanceDemo(t *testing.T) string {
 		name, role string
 		caps       []string
 	}{
-		{"implementer", "implementer", []string{"repo:push"}},
-		{"reviewer", "reviewer", nil},
+		{"implementer", "implementer", []string{"repo:push", "agent:model"}},
+		{"reviewer", "reviewer", []string{"agent:model"}},
 	} {
 		dir := filepath.Join(gaggleDir, "goobers", g.name)
 		writeFixture(t, filepath.Join(dir, "goober.yaml"), acceptanceGooberYAML(g.name, g.role, g.caps))
@@ -165,7 +168,7 @@ func initAcceptanceDemo(t *testing.T) string {
 	calls := map[string]int{}
 	prevAdapter := newAgenticAdapter
 	newAgenticAdapter = func(gooberName string, _ map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{
+		return &harnesstest.FakeAdapter{
 			Transcript: []byte("fake harness session for " + gooberName + "\n"),
 			Act: func(_ context.Context, req harness.RunRequest) error {
 				asset, err := os.ReadFile(filepath.Join(req.Workspace, ".goober-assets", "identity.txt"))
@@ -193,7 +196,7 @@ func initAcceptanceDemo(t *testing.T) string {
 						}
 					}
 				}
-				return harness.WriteCompletion(req.Workspace, req.CompletionPath, payload)
+				return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, payload)
 			},
 		}
 	}
@@ -236,7 +239,7 @@ func commitFixtureChange(workspace string, call int) error {
 		{"add", "-A"},
 		{"-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", fmt.Sprintf("coder impl %d", call)},
 	} {
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = workspace
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("git %v: %w\n%s", args, err, out)

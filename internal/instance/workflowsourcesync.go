@@ -22,34 +22,48 @@ import (
 // here.
 //
 // Returns the resolved revision (the tracked ref's commit sha) on success.
-func SyncGitWorkflowSource(ctx context.Context, root string, source WorkflowSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (revision string, warnings []string, err error) {
+// appTokens is the installation-token minting source for auth kind github-app
+// (#3274), nil for every other source shape — see NewWorkflowGitSource.
+func SyncGitWorkflowSource(ctx context.Context, root string, source WorkflowSource, appTokens GitTokenSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (revision string, warnings []string, err error) {
+	revision, _, warnings, err = SyncGitWorkflowSourceIfChanged(ctx, root, source, "", appTokens, registrar, stores)
+	return revision, warnings, err
+}
+
+// SyncGitWorkflowSourceIfChanged resolves the tracked Git ref and installs its
+// definitions only when it differs from currentRevision.
+func SyncGitWorkflowSourceIfChanged(ctx context.Context, root string, source WorkflowSource, currentRevision string, appTokens GitTokenSource, registrar credentials.SecretRegistrar, stores credentials.StoreResolver) (revision string, changed bool, warnings []string, err error) {
 	if source.Kind != WorkflowSourceKindGit {
-		return "", nil, fmt.Errorf("sync workflow source: kind %q is not %q", source.Kind, WorkflowSourceKindGit)
+		return "", false, nil, fmt.Errorf("sync workflow source: kind %q is not %q", source.Kind, WorkflowSourceKindGit)
 	}
-	gitSource, err := NewWorkflowGitSource(root, source, registrar, stores)
+	gitSource, err := NewWorkflowGitSource(root, source, appTokens, registrar, stores)
 	if err != nil {
-		return "", nil, err
+		return "", false, nil, err
 	}
 	snapshot, err := gitSource.Resolve(ctx)
 	if err != nil {
-		return "", nil, err
+		return "", false, nil, err
+	}
+	revision = filepath.Base(snapshot)
+	warnings = gitSource.Warnings()
+	if revision == currentRevision {
+		return revision, false, warnings, nil
 	}
 
 	layout := NewLayout(root)
 	stagingRoot, err := os.MkdirTemp(root, ".config-apply-")
 	if err != nil {
-		return "", nil, fmt.Errorf("create config apply staging directory: %w", err)
+		return "", false, nil, fmt.Errorf("create config apply staging directory: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(stagingRoot) }()
 
 	stagedConfigDir := filepath.Join(stagingRoot, ConfigDirName)
 	if err := copyGuidedSourceDefinitions(stagedConfigDir, snapshot); err != nil {
-		return "", nil, fmt.Errorf("stage git workflow source: %w", err)
+		return "", false, nil, fmt.Errorf("stage git workflow source: %w", err)
 	}
 	if err := installSyncedConfigDir(layout, stagedConfigDir); err != nil {
-		return "", nil, err
+		return "", false, nil, err
 	}
-	return filepath.Base(snapshot), gitSource.Warnings(), nil
+	return revision, true, warnings, nil
 }
 
 // installSyncedConfigDir atomically replaces layout.ConfigDir() with

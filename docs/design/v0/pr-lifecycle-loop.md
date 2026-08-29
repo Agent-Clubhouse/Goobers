@@ -1,6 +1,6 @@
 # Design: PR lifecycle loop — closing "issue → PR" into "issue → merged change" (V0.5)
 
-> Status: **Superseded in part (2026-07-23)** — the shipped loop's normative contract now
+> Status: **superseded — in part (2026-07-23)** — the shipped loop's normative contract now
 > lives in [`docs/requirements/pr-lifecycle.md`](../../requirements/pr-lifecycle.md) (PRL-*);
 > this doc remains the design rationale. Known-stale details vs shipped code: §6 D7's
 > one-merge-per-tick became a poll→decide→land lock window only (#719,
@@ -130,7 +130,15 @@ correctly and the machine is *aware* when a PR only needs a rebase:
 - `conflict` — rebase does not apply cleanly; needs resolution.
 - `substantive` — a code change is required (cross-PR drift, regression, human comment,
   a real defect).
+- `missing-tests` — new or changed behavior lacks required test coverage.
+- `scope-creep` — unrelated changes must be removed.
+- `contract-change` — an unauthorized load-bearing contract change requires correction
+  or escalation.
 - `cross-pr-blocked` — correct in isolation but must wait behind another PR (§7).
+
+CI failure is deliberately not a finding class. Deterministic provider check failures
+reach remediation through the separate CI evidence channel, where their check output
+and annotations remain actionable without asking the reviewer to evaluate CI.
 
 The verdict is a **checklist**: `pr-remediation` must clear *every* item and
 `merge-review` re-verifies (SHA-pinned) that *every* item is cleared before

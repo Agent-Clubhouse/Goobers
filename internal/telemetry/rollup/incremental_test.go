@@ -2,8 +2,10 @@ package rollup
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // schedulerEventTypes returns the ingested scheduler events' types in seq order,
@@ -140,6 +142,7 @@ func TestIngestSchedulerLogResumesAfterJournalShrinks(t *testing.T) {
 	if err := writeInstanceEvents(t, schedulerDir, firstFive()); err != nil {
 		t.Fatal(err)
 	}
+
 	db := openTestDB(t, tmp)
 	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
 		t.Fatalf("first ingest: %v", err)
@@ -160,6 +163,111 @@ func TestIngestSchedulerLogResumesAfterJournalShrinks(t *testing.T) {
 	_, lastSeq, _ := schedulerCursorRow(t, db)
 	if lastSeq != 7 {
 		t.Fatalf("lastSeq after shrink = %d, want 7", lastSeq)
+	}
+}
+
+func TestSchedulerRetentionSerializesCursorResetWithIngest(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEvents(t, schedulerDir, firstFive()); err != nil {
+		t.Fatal(err)
+	}
+	db := openTestDB(t, tmp)
+
+	compactEntered := make(chan struct{})
+	releaseCompact := make(chan struct{})
+	retentionDone := make(chan error, 1)
+	go func() {
+		retentionDone <- db.MaintainSchedulerRetention(
+			context.Background(),
+			schedulerDir,
+			time.Time{},
+			func() error {
+				if err := writeInstanceEvents(t, schedulerDir, nextThree()); err != nil {
+					return err
+				}
+				close(compactEntered)
+				<-releaseCompact
+				return nil
+			},
+		)
+	}()
+	<-compactEntered
+
+	ingestDone := make(chan error, 1)
+	go func() {
+		ingestDone <- db.IngestSchedulerLog(context.Background(), schedulerDir)
+	}()
+	select {
+	case err := <-ingestDone:
+		if !errors.Is(err, errSchedulerIngestInProgress) {
+			t.Fatalf("concurrent ingest error = %v, want already in progress", err)
+		}
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("concurrent ingest queued behind scheduler compaction")
+	}
+
+	close(releaseCompact)
+	if err := <-retentionDone; err != nil {
+		t.Fatalf("MaintainSchedulerRetention: %v", err)
+	}
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
+		t.Fatalf("post-compaction ingest: %v", err)
+	}
+	_, lastSeq, _ := schedulerCursorRow(t, db)
+	if lastSeq != 8 {
+		t.Fatalf("lastSeq after serialized compaction = %d, want 8", lastSeq)
+	}
+}
+
+func TestIngestSchedulerLogDeadlineLeavesCursorRetryable(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEvents(t, schedulerDir, firstFive()); err != nil {
+		t.Fatal(err)
+	}
+	db := openTestDB(t, tmp)
+
+	db.schedulerIngestTimeout = 0
+	err := db.IngestSchedulerLog(context.Background(), schedulerDir)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("IngestSchedulerLog error = %v, want context deadline exceeded", err)
+	}
+
+	db.schedulerIngestTimeout = defaultSchedulerIngestTimeout
+	if err := db.IngestSchedulerLog(context.Background(), schedulerDir); err != nil {
+		t.Fatalf("retry after deadline: %v", err)
+	}
+	if got := schedulerEventTypes(t, db); len(got) != len(firstFive()) {
+		t.Fatalf("retry ingested %d events, want %d", len(got), len(firstFive()))
+	}
+}
+
+func TestRebuildSchedulerLogUsesCallerDeadline(t *testing.T) {
+	tmp := t.TempDir()
+	schedulerDir := filepath.Join(tmp, "scheduler")
+	if err := writeInstanceEvents(t, schedulerDir, firstFive()); err != nil {
+		t.Fatal(err)
+	}
+	db := openTestDB(t, tmp)
+	db.schedulerIngestTimeout = 0
+
+	if err := db.rebuildSchedulerLog(context.Background(), schedulerDir); err != nil {
+		t.Fatalf("rebuildSchedulerLog: %v", err)
+	}
+	if got := schedulerEventTypes(t, db); len(got) != len(firstFive()) {
+		t.Fatalf("rebuild ingested %d events, want %d", len(got), len(firstFive()))
+	}
+}
+
+func TestCheckpointBusyRetryHonorsContext(t *testing.T) {
+	db := openTestDB(t, t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := execWithBusyRetry(ctx, db.sql, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("execWithBusyRetry error = %v, want context canceled", err)
 	}
 }
 

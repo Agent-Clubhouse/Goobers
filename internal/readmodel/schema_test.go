@@ -1,9 +1,13 @@
 package readmodel
 
 import (
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 // migrationPrefixDigest hashes an ordered slice of migration statements so a
@@ -28,12 +32,71 @@ func migrationPrefixDigest(prefix []string) string {
 // catch: every upgraded store silently stops applying the inserted DDL
 // forever while fresh stores get it, the worst kind of schema divergence.
 func TestMigrationPrefixIsAppendOnly(t *testing.T) {
-	const wantDigest = "230e26992f91e6952c60104aa925b12d9c1ae42a778bf5442e1a14b8d963bbfc"
+	const wantDigest = "d2eb068d5c75c2287389b62fc7e1387581d4ccaeeeb76861c0eb0ed6a89db518"
 	if got := migrationPrefixDigest(migrations[:len(migrations)-1]); got != wantDigest {
 		t.Fatalf("migration prefix digest = %s, want %s\n"+
 			"migrations must be append-only. If this commit only APPENDED a new\n"+
 			"migration to the end of the list, update wantDigest to the value\n"+
 			"above. If it did anything else to an existing entry, that is the\n"+
 			"bug #2049 exists to catch.", got, wantDigest)
+	}
+}
+
+func TestStageOutcomeMigrationMarksProjectionUnreadyAndClearsRows(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), FileName)
+	db, err := sql.Open("sqlite", path+dsnParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const stageOutcomeMigration = 8
+	for i, migration := range migrations[:stageOutcomeMigration] {
+		if _, err := tx.ExecContext(ctx, migration); err != nil {
+			t.Fatalf("apply migration %d: %v", i+1, err)
+		}
+		if err := seedState(ctx, tx, i+1); err != nil {
+			t.Fatalf("seed migration %d: %v", i+1, err)
+		}
+	}
+	started := time.Now().UTC().Format(timeFormat)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO run (run_id, gaggle, workflow, phase, terminal, started_at)
+		VALUES ('old-run', 'example', 'workflow', 'completed', 1, ?)`, started); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO run_stage (run_id, stage, attempts, last_status)
+		VALUES ('old-run', 'implement', 2, 'success')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	state, err := store.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Ready {
+		t.Fatal("migrated projection is ready before its rows have been reconstructed")
+	}
+	page, err := store.ListRuns(ctx, ListOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Runs) != 0 {
+		t.Fatalf("migration retained %d stale run rows, want none", len(page.Runs))
 	}
 }

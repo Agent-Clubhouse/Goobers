@@ -6,14 +6,14 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
+	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
 
 func TestCompileDispatchesPinnedInterpreterVersion(t *testing.T) {
 	def := Definition{
 		Name:       "current",
 		Version:    1,
-		DSLVersion: vcurrent.DSLVersion,
+		DSLVersion: vnext.DSLVersion,
 		Spec:       linearSpec(),
 	}
 
@@ -21,12 +21,12 @@ func TestCompileDispatchesPinnedInterpreterVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	want, err := vcurrent.Compile(def, vcurrent.WithPreviewFeatures(true))
+	want, err := vnext.Compile(def, vnext.WithPreviewFeatures(true))
 	if err != nil {
-		t.Fatalf("v_current.Compile: %v", err)
+		t.Fatalf("v_next.Compile: %v", err)
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("router machine differs from v_current interpreter:\n got  %#v\n want %#v", got, want)
+		t.Fatalf("router machine differs from v_next interpreter:\n got  %#v\n want %#v", got, want)
 	}
 }
 
@@ -35,7 +35,7 @@ func TestCompileAdaptsRouterOptionsToCurrentInterpreter(t *testing.T) {
 		def := Definition{
 			Name:       "harness",
 			Version:    1,
-			DSLVersion: vcurrent.DSLVersion,
+			DSLVersion: vnext.DSLVersion,
 			Spec:       linearSpec(),
 		}
 		goobers := map[string]apiv1.GooberSpec{
@@ -55,7 +55,7 @@ func TestCompileAdaptsRouterOptionsToCurrentInterpreter(t *testing.T) {
 		def := Definition{
 			Name:       "checks",
 			Version:    1,
-			DSLVersion: vcurrent.DSLVersion,
+			DSLVersion: vnext.DSLVersion,
 			Spec: apiv1.WorkflowSpec{
 				Start: "gate",
 				Tasks: []apiv1.Task{{
@@ -106,17 +106,18 @@ func TestCompileRejectsUnknownDSLVersion(t *testing.T) {
 func TestDefinitionFacadesRejectUnknownDSLVersion(t *testing.T) {
 	def := Definition{Name: "unknown", Version: 1, DSLVersion: "9.9", Spec: linearSpec()}
 	checks := map[string]func(Definition) []string{
-		"warnings":                CheckWarnings,
-		"reachability":            CheckReachability,
-		"schedules":               CheckSchedules,
-		"trigger fields":          CheckTriggerFields,
-		"admission":               func(def Definition) []string { return CheckWorkflowAdmission(def, nil) },
-		"gate parameters":         CheckGateParameters,
-		"gate outcomes":           CheckGateOutcomes,
-		"required inputs":         CheckStageRequiredInputs,
-		"stage contracts":         CheckStageContracts,
-		"stage contract warnings": CheckStageContractWarnings,
-		"timeout coherence":       CheckStageTimeoutCoherence,
+		"warnings":                     CheckWarnings,
+		"reachability":                 CheckReachability,
+		"schedules":                    CheckSchedules,
+		"trigger fields":               CheckTriggerFields,
+		"admission":                    func(def Definition) []string { return CheckWorkflowAdmission(def, nil) },
+		"gate parameters":              CheckGateParameters,
+		"gate outcomes":                CheckGateOutcomes,
+		"required inputs":              CheckStageRequiredInputs,
+		"stage contracts":              CheckStageContracts,
+		"stage contract warnings":      CheckStageContractWarnings,
+		"timeout coherence":            CheckStageTimeoutCoherence,
+		"subprocess timeout coherence": CheckSubprocessTimeoutCoherence,
 	}
 	for name, check := range checks {
 		t.Run(name, func(t *testing.T) {
@@ -140,7 +141,7 @@ func TestRuntimeFacadesDispatchByMachineVersion(t *testing.T) {
 	def := Definition{
 		Name:       "runtime",
 		Version:    1,
-		DSLVersion: vcurrent.DSLVersion,
+		DSLVersion: vnext.DSLVersion,
 		Spec: apiv1.WorkflowSpec{
 			Start: "poll",
 			Tasks: []apiv1.Task{{
@@ -150,7 +151,7 @@ func TestRuntimeFacadesDispatchByMachineVersion(t *testing.T) {
 				Inputs: map[string]string{
 					"kind": "ci-poll",
 				},
-				Capabilities:   []string{"github:pr:write"},
+				Capabilities:   []string{"provider:pr:write"},
 				TimeoutSeconds: 20,
 				Next:           "ci",
 			}},
@@ -177,21 +178,21 @@ func TestRuntimeFacadesDispatchByMachineVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TaskInvocationInputs: %v", err)
 	}
-	if want := vcurrent.TaskInvocationInputs(machine, task); !reflect.DeepEqual(inputs, want) {
+	if want := vnext.TaskInvocationInputs(machine, task); !reflect.DeepEqual(inputs, want) {
 		t.Fatalf("TaskInvocationInputs = %v, want %v", inputs, want)
 	}
 	limits, err := TaskLimits(machine, task)
 	if err != nil {
 		t.Fatalf("TaskLimits: %v", err)
 	}
-	if want := vcurrent.TaskLimits(task); limits != want {
+	if want := vnext.TaskLimits(task); limits != want {
 		t.Fatalf("TaskLimits = %+v, want %+v", limits, want)
 	}
 	gateLimits, err := GateLimits(machine, gate)
 	if err != nil {
 		t.Fatalf("GateLimits: %v", err)
 	}
-	if want := vcurrent.GateLimits(gate); gateLimits != want {
+	if want := vnext.GateLimits(gate); gateLimits != want {
 		t.Fatalf("GateLimits = %+v, want %+v", gateLimits, want)
 	}
 }

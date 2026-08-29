@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/providersnapshot"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // CredentialEnvVar returns the deterministic env var name a stage's declared
@@ -19,9 +23,8 @@ import (
 // issue-close-out, #131/#132) can look up its own injected credential by the
 // same convention buildStageEnv uses to set it, without duplicating the
 // sanitization rule.
-func CredentialEnvVar(capability string) string {
-	sanitized := nonAlnum.ReplaceAllString(capability, "_")
-	return "GOOBERS_CRED_" + strings.ToUpper(sanitized)
+func CredentialEnvVar(capabilityName string) string {
+	return capability.CredentialEnvVar(capabilityName)
 }
 
 // InputEnvVar returns the deterministic env var name a stage's declared
@@ -116,9 +119,10 @@ func baseEnv(extra []string) []string {
 // plus — only when injectRunContext is set — GOOBERS_RUN_ID/GOOBERS_GAGGLE/
 // GOOBERS_WORKFLOW/GOOBERS_BRANCH_NAMESPACE/GOOBERS_BASE_BRANCH/GOOBERS_INSTANCE_ROOT and the
 // provider snapshot identifier associated with the scheduler evaluation (when
-// present), plus one GOOBERS_INPUT_* var per entry in inputs. ShellExecutor
-// appends its executor-owned GOOBERS_BUILTIN_ERROR_FILE after this function
-// returns.
+// present), one GOOBERS_ADDITIONAL_REPO_* path per provisioned reference repo
+// when contents:read is declared, plus one GOOBERS_INPUT_* var per entry in
+// inputs. ShellExecutor appends its executor-owned GOOBERS_BUILTIN_ERROR_FILE
+// after this function returns.
 // Every resolved token is also registered with registrar so it can be scrubbed
 // from anything the stage's process writes.
 //
@@ -158,12 +162,18 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		env = append(env, key+"="+value)
 	}
 	// GOTRACEBACK=all makes every Go stage subprocess (go test under `make ci`,
-	// the goobers CLI, goober-runtime) print ALL goroutines — including runtime
+	// the goobers CLI) print ALL goroutines — including runtime
 	// and system stacks — when it dumps on SIGQUIT (the timeout-diagnostics path
 	// in shell.go) or its own -test.timeout. No runtime/perf cost: it only
 	// changes what a crash/quit dump contains. Set here so a hung stage's
 	// captured artifact shows the complete blocked-goroutine picture, not just
 	// user goroutines.
+	// Left unconditional intentionally (#2172): a non-Go stage (`dotnet test`,
+	// `npm run ci`, `pytest`) never reads this var, so it is silently inert for
+	// those stacks rather than harmful — no gating on a declared go-family
+	// capability needed. See the identical call-out already carried in
+	// config-examples/gaggles/dotnet-service/workflows/dotnet-implementation.yaml
+	// (AC5, #1093).
 	env = append(env, "GOTRACEBACK=all")
 	if injectRunContext {
 		env = append(env, "GOOBERS_RUN_ID="+runID, "GOOBERS_GAGGLE="+gaggle, "GOOBERS_WORKFLOW="+workflowID)
@@ -179,20 +189,17 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		if snapshotID := providersnapshot.ID(ctx); snapshotID != "" {
 			env = append(env, providersnapshot.EnvVar+"="+snapshotID)
 		}
-		// Read-only reference-repo checkout paths (MGV-11 #1286), sorted for a
-		// deterministic env. Run context, so gated with the other GOOBERS_* vars:
-		// a local-ci stage running the project's own build never receives them.
-		if len(additionalRepos) > 0 {
-			names := make([]string, 0, len(additionalRepos))
-			for name := range additionalRepos {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			for _, name := range names {
-				env = append(env, AdditionalRepoEnvVar(name)+"="+additionalRepos[name])
-			}
-			env = append(env, AdditionalReposEnvVar+"="+strings.Join(names, ","))
+	}
+	if slices.Contains(declared, string(capability.ContentsRead)) && len(additionalRepos) > 0 {
+		names := make([]string, 0, len(additionalRepos))
+		for name := range additionalRepos {
+			names = append(names, name)
 		}
+		sort.Strings(names)
+		for _, name := range names {
+			env = append(env, AdditionalRepoEnvVar(name)+"="+additionalRepos[name])
+		}
+		env = append(env, AdditionalReposEnvVar+"="+strings.Join(names, ","))
 	}
 	for k, v := range inputs {
 		if s, ok := v.(string); ok {
@@ -202,9 +209,15 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	if injector == nil || len(declared) == 0 {
 		return env, nil
 	}
+	// A credential that cannot be materialized is an infrastructure fault, not
+	// evidence about the work (#3361): typed with its own code AND marked via
+	// the invoke.InfrastructureFailure seam, so the runner retries it on the
+	// bounded infrastructure budget (journal AttemptClass "infra") instead of
+	// consuming the stage's policy attempts — at attempt budgets of 1, the old
+	// classification converted a transient 403 into a terminal work failure.
 	set, err := injector.Materialize(ctx, declared)
 	if err != nil {
-		return nil, err
+		return nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
 	}
 	for _, capability := range declared {
 		token, err := set.Token(ctx, capability)
@@ -212,7 +225,9 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 			if errors.Is(err, credentials.ErrNoCredentialForCapability) {
 				continue // declared but uncredentialed capability (e.g. telemetry:read)
 			}
-			return nil, err
+			// Same seam as Materialize above: a granted capability whose token
+			// resolution fails at env-build time is credential infrastructure.
+			return nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
 		}
 		registrar.Register([]byte(token))
 		env = append(env, CredentialEnvVar(capability)+"="+token)

@@ -114,6 +114,18 @@ func normalise(dims []Dim) []Dim {
 			out = append(out, want)
 		}
 	}
+	var unknown []string
+	for _, dim := range dims {
+		if _, ok := seen[dim]; ok {
+			continue
+		}
+		seen[dim] = struct{}{}
+		unknown = append(unknown, string(dim))
+	}
+	sort.Strings(unknown)
+	for _, dim := range unknown {
+		out = append(out, Dim(dim))
+	}
 	return out
 }
 
@@ -173,30 +185,18 @@ var supportedCombinations = []Combination{
 	{Dims: []Dim{DimGaggle, DimStage, DimUntil}, Index: "idx_run_stage_gaggle_recency", Bench: "list/gaggle+stage+until"},
 	{Dims: []Dim{DimGaggle, DimStage, DimSince, DimUntil}, Index: "idx_run_stage_gaggle_recency", Bench: "list/gaggle+stage+window"},
 
-	// Stage + stage-outcome is NOT here, and the omission is deliberate (#1782).
-	//
-	// It looks like the easiest of the three -- run_stage already carries
-	// last_status, and `s.last_status = ?` is a one-line predicate on an index
-	// that costs nothing to add. It is also wrong, and the differential oracle
-	// is what showed it.
-	//
-	// The reference walks EVERY attempt of the stage (matchesStageAttempt) and
-	// matches if ANY of them had the requested status. run_stage keeps only the
-	// LAST attempt's status, so a stage that failed on attempt 1 and succeeded on
-	// attempt 2 stores `success` -- and `outcome=failure` must match that run.
-	// An equality test on last_status silently misses it. The filter would look
-	// like it worked, return fewer runs than the journal path, and nothing would
-	// say so.
-	//
-	// The outcome filter is also not a plain equality even per attempt:
-	// `terminal` means success-or-failure, `other` means neither, and `finished`
-	// means any. And an outcome-filtered list additionally requires the RUN to be
-	// terminal, which is a predicate on a different table.
-	//
-	// Serving it correctly needs per-attempt status sets in the projection, not a
-	// last-status column. That is its own change with its own oracle run, so
-	// until then this stays refused and falls to the journal path -- which is
-	// slow and right, and is what it did before.
+	// Stage outcome (#2091). Cumulative status flags preserve the reference's
+	// any-attempt semantics, while run_terminal keeps the run-level terminal
+	// requirement on the same indexed row.
+	{Dims: []Dim{DimStage, DimOutcome}, Index: "idx_run_stage_outcome_success", Bench: "list/stage+outcome"},
+	{Dims: []Dim{DimStage, DimOutcome, DimSince}, Index: "idx_run_stage_outcome_success", Bench: "list/stage+outcome+since"},
+	{Dims: []Dim{DimStage, DimOutcome, DimUntil}, Index: "idx_run_stage_outcome_success", Bench: "list/stage+outcome+until"},
+	{Dims: []Dim{DimStage, DimOutcome, DimSince, DimUntil}, Index: "idx_run_stage_outcome_success", Bench: "list/stage+outcome+window"},
+
+	{Dims: []Dim{DimGaggle, DimStage, DimOutcome}, Index: "idx_run_stage_gaggle_outcome_success", Bench: "list/gaggle+stage+outcome"},
+	{Dims: []Dim{DimGaggle, DimStage, DimOutcome, DimSince}, Index: "idx_run_stage_gaggle_outcome_success", Bench: "list/gaggle+stage+outcome+since"},
+	{Dims: []Dim{DimGaggle, DimStage, DimOutcome, DimUntil}, Index: "idx_run_stage_gaggle_outcome_success", Bench: "list/gaggle+stage+outcome+until"},
+	{Dims: []Dim{DimGaggle, DimStage, DimOutcome, DimSince, DimUntil}, Index: "idx_run_stage_gaggle_outcome_success", Bench: "list/gaggle+stage+outcome+window"},
 
 	// Population, stage-scoped. Index names the token-measured member of a
 	// four-index family; the plan test asserts that each population resolves to

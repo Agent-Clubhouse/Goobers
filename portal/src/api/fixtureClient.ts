@@ -89,6 +89,9 @@ const DEFAULT_PORTAL_CONFIG: PortalConfig = {
     chatUrl: null,
     links: [],
   },
+  capabilities: {
+    revealRun: true,
+  },
 };
 
 interface FixtureRunCursor {
@@ -120,6 +123,10 @@ export class FixtureDaemonClient implements DaemonClient {
 
   getPortalConfig(options?: RequestOptions): Promise<PortalConfig> {
     return fixture(DEFAULT_PORTAL_CONFIG, options);
+  }
+
+  revealRun(_runId: string, options?: RequestOptions): Promise<void> {
+    return fixture(undefined, options);
   }
 
   listGaggles(_request?: PageRequest, options?: RequestOptions): Promise<GagglePage> {
@@ -273,6 +280,14 @@ export class FixtureDaemonClient implements DaemonClient {
     throwIfCancelled(options);
     const stats = this.fixtures.telemetryStats;
     return structuredClone({
+      creditAssignment: stats.creditAssignment.filter(
+        (item) =>
+          (!request?.gaggle || item.gaggle === request.gaggle) &&
+          (!request?.workflow || item.workflow === request.workflow),
+      ),
+      causalCredit: stats.causalCredit,
+      promotionSignals: stats.promotionSignals,
+      promotionCandidates: stats.promotionCandidates,
       gaggles: stats.gaggles.filter(
         (item) => !request?.gaggle || item.gaggle === request.gaggle,
       ),
@@ -294,6 +309,25 @@ export class FixtureDaemonClient implements DaemonClient {
       models: stats.models,
       curation: stats.curation,
       readyPool: stats.readyPool,
+      trend: request?.trendBuckets
+        ? Array.from({ length: request.trendBuckets }, (_, index) => {
+            const start = new Date(request.trendSince ?? 0).getTime();
+            const end = new Date(request.trendUntil ?? 0).getTime();
+            const bucketSize = (end - start) / request.trendBuckets!;
+            const since = new Date(start + index * bucketSize).toISOString();
+            const until = new Date(
+              index === request.trendBuckets! - 1 ? end : start + (index + 1) * bucketSize,
+            ).toISOString();
+            return { since, until, usage: stats.usage };
+          })
+        : stats.trend,
+      trendPrevious: request?.trendPreviousSince && request.trendPreviousUntil
+        ? {
+            since: request.trendPreviousSince,
+            until: request.trendPreviousUntil,
+            usage: stats.usage,
+          }
+        : stats.trendPrevious,
     });
   }
 
@@ -345,6 +379,7 @@ function matchesRunRequest(
   request?: RunListOptions,
 ): boolean {
   if (
+    (!request?.showNoWork && run.noWork) ||
     (request?.gaggle && run.gaggle !== request.gaggle) ||
     (request?.workflow && run.workflow !== request.workflow) ||
     (request?.phase && run.phase !== request.phase) ||

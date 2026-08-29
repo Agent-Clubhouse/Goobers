@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -58,40 +59,36 @@ func cfgFor(owner, repo, pullID string) CIPollConfig {
 	return CIPollConfig{Owner: owner, Repo: repo, PullID: pullID}
 }
 
-// TestBackoff_DoublesPerAttemptUpToCap is #122's missing direct unit test
-// for the capped-exponential backoff calculation: attempt 0 is base, each
-// subsequent attempt doubles, and the cap is enforced once doubling would
-// exceed it.
-func TestBackoff_DoublesPerAttemptUpToCap(t *testing.T) {
+func TestBackoff_JittersWithinCappedExponentialRange(t *testing.T) {
 	const base = 10 * time.Second
 	const max = 100 * time.Second
 	cases := []struct {
 		attempt int
-		want    time.Duration
+		ceiling time.Duration
 	}{
 		{0, 10 * time.Second},
 		{1, 20 * time.Second},
 		{2, 40 * time.Second},
 		{3, 80 * time.Second},
-		{4, 100 * time.Second}, // 160s would exceed max — capped
+		{4, 100 * time.Second},
 		{5, 100 * time.Second},
 	}
 	for _, tc := range cases {
-		if got := backoff(base, max, tc.attempt); got != tc.want {
-			t.Errorf("backoff(%s, %s, %d) = %s, want %s", base, max, tc.attempt, got, tc.want)
+		for range 100 {
+			got := backoff(base, max, tc.attempt)
+			if floor := tc.ceiling / 2; got < floor || got > tc.ceiling {
+				t.Errorf("backoff(%s, %s, %d) = %s, want range [%s, %s]", base, max, tc.attempt, got, floor, tc.ceiling)
+			}
 		}
 	}
 }
 
-// TestBackoff_OverflowSafeAtLargeAttempt proves a large attempt count (the
-// left-shift base<<attempt overflowing time.Duration's int64 into a negative
-// value) still returns max, not garbage — the `d <= 0` branch in backoff's
-// switch exists precisely for this.
 func TestBackoff_OverflowSafeAtLargeAttempt(t *testing.T) {
 	const base = time.Second
 	const max = time.Minute
-	if got := backoff(base, max, 100); got != max {
-		t.Fatalf("backoff at a large attempt count = %s, want max %s (overflow must not produce a negative/garbage duration)", got, max)
+	got := backoff(base, max, 100)
+	if got < max/2 || got > max {
+		t.Fatalf("backoff at a large attempt count = %s, want range [%s, %s]", got, max/2, max)
 	}
 }
 
@@ -113,6 +110,9 @@ func TestCIPollExecutor_Pass(t *testing.T) {
 	}
 	if result.Outputs[OutputCIStatus] != string(providers.CheckStatePassing) {
 		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], providers.CheckStatePassing)
+	}
+	if result.Outputs[OutputPRNumber] != "42" {
+		t.Fatalf("outputs[%s] = %v, want 42", OutputPRNumber, result.Outputs[OutputPRNumber])
 	}
 	if poller.calls != 0 {
 		t.Fatalf("expected exactly one poll call, got %d", poller.calls+1)
@@ -436,6 +436,9 @@ func TestCIPollExecutor_TimesOutIsAFailure(t *testing.T) {
 	// it to escalation instead of the "fail" branch's implement repass.
 	if result.Outputs[OutputCIStatus] != CIStatusTimeout {
 		t.Fatalf("outputs[%s] = %v, want %q", OutputCIStatus, result.Outputs[OutputCIStatus], CIStatusTimeout)
+	}
+	if result.Outputs[OutputPRNumber] != "42" {
+		t.Fatalf("outputs[%s] = %v, want 42", OutputPRNumber, result.Outputs[OutputPRNumber])
 	}
 }
 
@@ -812,10 +815,42 @@ func TestCIPollExecutor_AnnotationsAreBounded(t *testing.T) {
 	if len(got) != maxCICheckAnnotations {
 		t.Fatalf("annotations = %d, want capped at %d", len(got), maxCICheckAnnotations)
 	}
+	if artifact.Metadata.AnnotationsDropped != len(flood)-maxCICheckAnnotations ||
+		artifact.Metadata.AnnotationMessagesTruncated != maxCICheckAnnotations ||
+		!artifact.Metadata.Truncated {
+		t.Fatalf("metadata = %+v, want every annotation bound recorded", artifact.Metadata)
+	}
 	for i, annotation := range got {
 		if len(annotation.Message) > maxCIAnnotationMessageBytes {
 			t.Fatalf("annotation %d message = %d bytes, want <= %d", i, len(annotation.Message), maxCIAnnotationMessageBytes)
 		}
+	}
+}
+
+func TestCIPollExecutor_FailureEvidenceDistinguishesHostReproduction(t *testing.T) {
+	otherPlatform := "linux"
+	if runtime.GOOS == otherPlatform {
+		otherPlatform = "windows"
+	}
+	checks := []providers.CheckDetail{
+		{Name: "unit behavioral suite (" + runtime.GOOS + ")", State: providers.CheckStateFailing},
+		{Name: otherPlatform + " gate (build and runtime smoke)", State: providers.CheckStateFailing},
+		{Name: "provider policy", State: providers.CheckStateFailing},
+	}
+
+	poller := &fakePoller{results: []providers.CheckState{providers.CheckStateFailing}, checks: checks}
+	artifact := runFailureEvidence(t, poller)
+	if got := artifact.Checks[0].HostReproduction; got.Status != "reproducible" ||
+		got.HostPlatform != runtime.GOOS || got.CheckPlatform != runtime.GOOS {
+		t.Fatalf("same-platform reproduction = %+v", got)
+	}
+	if got := artifact.Checks[1].HostReproduction; got.Status != "not-reproducible" ||
+		got.CheckPlatform != otherPlatform || !strings.Contains(got.Diagnostic, "cannot be reproduced") {
+		t.Fatalf("other-platform reproduction = %+v", got)
+	}
+	if got := artifact.Checks[2].HostReproduction; got.Status != "unknown" ||
+		!strings.Contains(got.Diagnostic, "unknown") {
+		t.Fatalf("unspecified-platform reproduction = %+v", got)
 	}
 }
 

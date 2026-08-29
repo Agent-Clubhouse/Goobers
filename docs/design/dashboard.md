@@ -1,6 +1,6 @@
 # Design: Dashboard / Portal - calm operations workbench over the daemon API
 
-> Status: **Approved for staged implementation** (2026-07-16)
+> Status: **approved — for staged implementation** (2026-07-16)
 > Area prefixes: `API`, `DASH`
 > Milestone: **Dashboard / Portal - calm live operations workbench** (#14)
 > Epic: [#440](https://github.com/Agent-Clubhouse/Goobers/issues/440)
@@ -424,7 +424,7 @@ until its blockers are complete.
 
 # Addendum: V1.1 - diagnostic depth, insight, and visualization
 
-> Status: **Approved for staged implementation** (2026-07-21)
+> Status: **approved — for staged implementation** (2026-07-21)
 > Area prefixes: `API`, `DASH`
 > Milestone: **Dashboard / Portal - calm live operations workbench** (#14) follow-on
 > Supersedes nothing above; extends sections 4-10 after the V1 slices shipped.
@@ -648,20 +648,20 @@ Independently reviewable, each stating its blockers. Surfacing work (existing da
 is separated from capture work (new data) so the capture gaps never block the
 views that already have data.
 
-| Slice | Issue | Depends on | Merge boundary |
-|---|---|---|---|
-| Animate loading spinner | DASH-16 | - | CSS fix |
-| Attention recency window + session dismiss | DASH-17 | - | Portal view slice |
-| Index-backed run list/summary reads | DASH-18 | - | Go read service |
-| Canvas run graph with live state overlay | DASH-19 | - | Portal graph slice |
-| Live stage/attempt/artifact inspector on node click | DASH-20 | DASH-19 | Portal component slice |
-| Authoritative escalation cause + causal-path highlight | DASH-21 | DASH-19, DASH-20 | Portal view slice |
-| Deterministic replay scrubber over live events | DASH-22 | DASH-19 | Portal interaction slice |
-| Insight destination: success/failure rate + slowest stages | DASH-23 | - | Portal page slice |
-| Failure-reason breakdown (surface `TopErrorSignatures`) | DASH-24 | DASH-23 | Go telemetry route + portal |
-| AI cost & token analytics by stage/workflow | DASH-25 | DASH-23 | Portal page slice |
-| Capture: per-model token/cost attribution | DASH-26 | - | Go telemetry capture |
-| Capture: structured escalation-cause code | DASH-27 | - | Go journal/telemetry capture |
+| Slice | Issue | Depends on | Merge boundary | Status |
+|---|---|---|---|---|
+| Animate loading spinner | DASH-16 | - | CSS fix | Shipped in [#1266](https://github.com/Agent-Clubhouse/Goobers/pull/1266) |
+| Attention recency window + session dismiss | DASH-17 | - | Portal view slice | Remaining: [#1199](https://github.com/Agent-Clubhouse/Goobers/issues/1199) is open |
+| Index-backed run list/summary reads | DASH-18 | - | Go read service | Candidate indexing shipped in [#1270](https://github.com/Agent-Clubhouse/Goobers/pull/1270); the complete bounded indexed read path shipped in [#1955](https://github.com/Agent-Clubhouse/Goobers/pull/1955) |
+| Canvas run graph with live state overlay | DASH-19 | - | Portal graph slice | Shipped in [#1272](https://github.com/Agent-Clubhouse/Goobers/pull/1272) |
+| Live stage/attempt/artifact inspector on node click | DASH-20 | DASH-19 | Portal component slice | Shipped in [#1281](https://github.com/Agent-Clubhouse/Goobers/pull/1281) |
+| Authoritative escalation cause + causal-path highlight | DASH-21 | DASH-19, DASH-20 | Portal view slice | Shipped on existing data in [#1283](https://github.com/Agent-Clubhouse/Goobers/pull/1283); structured cause codes remain in DASH-27 |
+| Deterministic replay scrubber over live events | DASH-22 | DASH-19 | Portal interaction slice | Shipped in [#1282](https://github.com/Agent-Clubhouse/Goobers/pull/1282) |
+| Insight destination: success/failure rate + slowest stages | DASH-23 | - | Portal page slice | Shipped in [#1254](https://github.com/Agent-Clubhouse/Goobers/pull/1254) |
+| Failure-reason breakdown (surface `TopErrorSignatures`) | DASH-24 | DASH-23 | Go telemetry route + portal | Shipped on existing data in [#1268](https://github.com/Agent-Clubhouse/Goobers/pull/1268); escalation reason codes remain in DASH-27 |
+| AI cost & token analytics by stage/workflow | DASH-25 | DASH-23 | Portal page slice | Shipped in [#1279](https://github.com/Agent-Clubhouse/Goobers/pull/1279); corrected to nanoAIU-derived cost in [#1329](https://github.com/Agent-Clubhouse/Goobers/pull/1329) |
+| Capture: per-model token/cost attribution | DASH-26 | - | Go telemetry capture | Shipped in [#1253](https://github.com/Agent-Clubhouse/Goobers/pull/1253) |
+| Capture: structured escalation-cause code | DASH-27 | - | Go journal/telemetry capture | Remaining: [#1209](https://github.com/Agent-Clubhouse/Goobers/issues/1209) is open |
 
 DASH-24's escalation-reason categorization and DASH-21's cause summary become
 fully complete once DASH-27 lands, but both ship useful behavior on existing data

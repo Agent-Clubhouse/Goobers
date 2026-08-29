@@ -55,6 +55,14 @@ func PruneOrphans(layout instance.Layout, opts OrphanOptions) ([]OrphanResult, e
 	if err != nil {
 		return nil, err
 	}
+	if opts.Delete {
+		maintenanceLocks, err := journal.AcquireRunRootMaintenanceLocks(runRoots)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = maintenanceLocks.Release() }()
+	}
+
 	roots := orphanRoots(runRoots)
 	cutoff := opts.Now.Add(-opts.MinAge)
 	var deleted []OrphanResult
@@ -132,6 +140,12 @@ func inspectOrphan(root orphanRoot, dir string, cutoff time.Time) (OrphanResult,
 	if _, err := os.Lstat(filepath.Join(dir, "run.yaml")); err == nil {
 		return OrphanResult{}, false, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
+		return OrphanResult{}, false, fmt.Errorf("orphan cleanup: inspect %s: %w", dir, err)
+	}
+	if _, err := journal.OpenRead(dir); err == nil {
+		return OrphanResult{}, false, nil
+	} else if !errors.Is(err, journal.ErrNotRunDirectory) &&
+		!errors.Is(err, fs.ErrNotExist) {
 		return OrphanResult{}, false, fmt.Errorf("orphan cleanup: inspect %s: %w", dir, err)
 	}
 	lastModified, err := latestModification(dir)

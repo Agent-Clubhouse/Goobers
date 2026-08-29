@@ -7,20 +7,20 @@ import (
 
 // TestConfineRejectsPlatformPathsUnderNonDefaultRoot is the ported T4 (#104)
 // negative test, now exercised on a []string of changed paths: with the config
-// root set to a NON-default value ("selfhost", the dogfood config root — not a
+// root set to a NON-default value ("reference-workflows", the dogfood config root — not a
 // hardcoded "config/"), every platform path is refused. Proves platform paths
 // are unreachable and that the check honors the configured root.
 func TestConfineRejectsPlatformPathsUnderNonDefaultRoot(t *testing.T) {
-	const root = "selfhost"
+	const root = "reference-workflows"
 	platform := []string{
-		"internal/scheduler/scheduler.go",
+		"internal/localscheduler/scheduler.go",
 		".github/workflows/ci.yml",
 		".github/CODEOWNERS",
 		"Makefile",
 		"cmd/goobers/main.go",
 		"providers/github.go",
-		"config/gaggles/acme/workflows/x.yaml", // the *default* root — not inside "selfhost"
-		"selfhost-evil/secrets.yaml",           // prefix-only collision must not pass
+		"config/gaggles/acme/workflows/x.yaml",  // the *default* root — not inside "reference-workflows"
+		"reference-workflows-evil/secrets.yaml", // prefix-only collision must not pass
 		"../platform/secrets.yaml",
 		"/etc/passwd",
 	}
@@ -35,7 +35,7 @@ func TestConfineRejectsPlatformPathsUnderNonDefaultRoot(t *testing.T) {
 // configured (non-default) root are allowed, including the shapes a Tutor config
 // change produces.
 func TestConfineAcceptsPathsInsideNonDefaultRoot(t *testing.T) {
-	for _, root := range []string{"selfhost", "selfhost/", "cfg/instance-a", "custom-config"} {
+	for _, root := range []string{"reference-workflows", "reference-workflows/", "cfg/instance-a", "custom-config"} {
 		norm := normalizeConfigRoot(root)
 		inside := []string{
 			norm + "/gaggles/acme/workflows/implement.yaml",
@@ -63,9 +63,9 @@ func TestConfineRejectsEscapesRegardlessOfRoot(t *testing.T) {
 		{"", `C:\absolute`, true},
 		{"", `\\server\share`, true},
 		{"", "", true},
-		{"selfhost", "", true},
-		{"selfhost", "../x", true},
-		{"selfhost", "selfhost/../x", true},
+		{"reference-workflows", "", true},
+		{"reference-workflows", "../x", true},
+		{"reference-workflows", "reference-workflows/../x", true},
 	}
 	for _, tc := range cases {
 		err := Confine(tc.root, []string{tc.path})
@@ -82,10 +82,10 @@ func TestConfineRejectsEscapesRegardlessOfRoot(t *testing.T) {
 // set — a mixed diff is not partially accepted.
 func TestConfineRejectsAnyEscapingPathInSet(t *testing.T) {
 	changed := []string{
-		"selfhost/gaggles/acme/workflows/x.yaml", // fine
-		"internal/runner/run.go",                 // escapes
+		"reference-workflows/gaggles/acme/workflows/x.yaml", // fine
+		"internal/runner/run.go",                            // escapes
 	}
-	if err := Confine("selfhost", changed); !errors.Is(err, ErrOutsideConfigRoot) {
+	if err := Confine("reference-workflows", changed); !errors.Is(err, ErrOutsideConfigRoot) {
 		t.Fatalf("mixed set = %v; want ErrOutsideConfigRoot", err)
 	}
 }
@@ -93,8 +93,8 @@ func TestConfineRejectsAnyEscapingPathInSet(t *testing.T) {
 // TestConfineEmptyChangeSetIsAllowed: a cycle proposing no change has nothing to
 // confine.
 func TestConfineEmptyChangeSetIsAllowed(t *testing.T) {
-	if err := Confine("selfhost", nil); err != nil {
-		t.Fatalf("Confine(selfhost, nil) = %v; want nil", err)
+	if err := Confine("reference-workflows", nil); err != nil {
+		t.Fatalf("Confine(reference-workflows, nil) = %v; want nil", err)
 	}
 }
 
@@ -106,8 +106,8 @@ func TestNormalizeConfigRootRefusesBogusRoots(t *testing.T) {
 			t.Errorf("normalizeConfigRoot(%q) = %q; want \"\"", bogus, got)
 		}
 	}
-	if got := normalizeConfigRoot("selfhost/"); got != "selfhost" {
-		t.Errorf("normalizeConfigRoot(%q) = %q; want %q", "selfhost/", got, "selfhost")
+	if got := normalizeConfigRoot("reference-workflows/"); got != "reference-workflows" {
+		t.Errorf("normalizeConfigRoot(%q) = %q; want %q", "reference-workflows/", got, "reference-workflows")
 	}
 }
 
@@ -193,12 +193,12 @@ func TestConfineToAnyEmptyChangeSetIsAllowed(t *testing.T) {
 // one declared root passes and reports that root, regardless of which root it
 // is — the Tutor's TUT-A5 per-target-action boundary (#1217).
 func TestConfineExclusiveAcceptsSingleRootChangeSet(t *testing.T) {
-	roots := []string{"selfhost", "skills"}
+	roots := []string{"reference-workflows", "skills"}
 	cases := []struct {
 		changed  []string
 		wantRoot string
 	}{
-		{[]string{"selfhost/gaggles/goobers/workflows/tutor.yaml"}, "selfhost"},
+		{[]string{"reference-workflows/gaggles/goobers/workflows/tutor.yaml"}, "reference-workflows"},
 		{[]string{"skills/new-skill/SKILL.md", "skills/new-skill/references/notes.md"}, "skills"},
 	}
 	for _, c := range cases {
@@ -217,8 +217,8 @@ func TestConfineExclusiveAcceptsSingleRootChangeSet(t *testing.T) {
 // spanning two declared roots is refused even though every individual path is
 // within SOME declared root, distinguishing ConfineExclusive from ConfineToAny.
 func TestConfineExclusiveRejectsCrossRootChangeSet(t *testing.T) {
-	roots := []string{"selfhost", "skills"}
-	changed := []string{"skills/new-skill/SKILL.md", "selfhost/gaggles/goobers/workflows/tutor.yaml"}
+	roots := []string{"reference-workflows", "skills"}
+	changed := []string{"skills/new-skill/SKILL.md", "reference-workflows/gaggles/goobers/workflows/tutor.yaml"}
 	if _, err := ConfineExclusive(roots, changed); !errors.Is(err, ErrCrossRootAction) {
 		t.Fatalf("ConfineExclusive(%v, %v) = %v; want ErrCrossRootAction", roots, changed, err)
 	}
@@ -233,7 +233,7 @@ func TestConfineExclusiveRejectsCrossRootChangeSet(t *testing.T) {
 // TestConfineExclusiveRejectsPathOutsideEveryRoot mirrors ConfineToAny's own
 // out-of-root rejection.
 func TestConfineExclusiveRejectsPathOutsideEveryRoot(t *testing.T) {
-	roots := []string{"selfhost", "skills"}
+	roots := []string{"reference-workflows", "skills"}
 	for _, p := range []string{
 		"internal/runner/run.go",
 		"skills-evil/secrets.md", // prefix-only collision must not pass
@@ -259,7 +259,7 @@ func TestConfineExclusiveEmptyRootsFailsClosed(t *testing.T) {
 // TestConfineExclusiveEmptyChangeSetIsAllowed: no changes, nothing to confine
 // and no root to report.
 func TestConfineExclusiveEmptyChangeSetIsAllowed(t *testing.T) {
-	got, err := ConfineExclusive([]string{"selfhost", "skills"}, nil)
+	got, err := ConfineExclusive([]string{"reference-workflows", "skills"}, nil)
 	if err != nil {
 		t.Fatalf("ConfineExclusive(roots, nil) = %v; want nil", err)
 	}

@@ -271,7 +271,7 @@ func TestUpWebhookAuthenticatesRoutesDeduplicatesAndAppliesReadiness(t *testing.
 		if time.Now().After(deadline) {
 			t.Fatalf("webhook deliveries never reached the hourly readiness budget: %+v", events)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval; readiness is exposed only through journal events.
 	}
 
 	var invalidNotes, starts, budgetSkips int

@@ -1,6 +1,6 @@
 # ADR 0002: Name capabilities for the operation surface
 
-- Status: Accepted
+- Status: approved
 - Date: 2026-07-28
 - Decision owner: issue #1810
 
@@ -19,6 +19,10 @@ Provider-specific operations still exist. GitHub review approval and Azure
 DevOps PR status publication, for example, have different semantics and may use
 different identities. Their names must continue to expose that distinction.
 
+Operator-configured external endpoints are a third case. Goobers authorizes
+invocation of the configured target, but cannot characterize the resource or
+verb implemented by the far side.
+
 ## Decision
 
 Capability namespaces describe the operation a stage is authorized to perform,
@@ -30,6 +34,10 @@ not the credential implementation that ultimately performs it:
 - A stage that deliberately uses provider-specific semantics uses
   `<provider>:<resource>:<verb>`, such as `github:pr:review` or
   `ado:pr:status`.
+- A stage that invokes an arbitrary operator-configured external endpoint uses
+  `callout:invoke@<target>`. The target is an opaque configured endpoint
+  identifier, following the existing `base@owner/name` scoped-capability
+  convention; it is not a resource or verb inferred from the far side.
 - Provider-neutral and provider-specific spellings of the same resource and
   verb are mutually exclusive within one stage. Compilation rejects declarations
   such as `provider:pr:write` together with `github:pr:write` or
@@ -66,8 +74,25 @@ the configured provider.
 - Adding a provider does not change existing provider-neutral workflow
   definitions.
 - Provider-specific authority remains visible and independently grantable.
+- External call-out authority is scoped to the configured target without
+  claiming knowledge of that target's operation semantics.
 - Migration is intentionally fail-closed: old definitions must be updated
   instead of receiving an implicit capability alias.
 - A command's namespace is evidence about its real abstraction boundary;
   describing a provider-specific implementation as provider-neutral is a
   contract bug.
+
+## Provider-query field semantics
+
+Pull-request identity query fields follow the same rule: each independently
+portable field has its own capability. `pr.query.author`,
+`pr.query.assignee`, and `pr.query.requestedReviewer` are separate because
+Azure DevOps has no pull-request assignee concept. Its reviewers are the
+closest analog, but are not exposed as assignees.
+
+GitHub maps the fields to `user`, `assignees[]`, and
+`requested_reviewers[]`. Azure DevOps maps author to `createdBy` and requested
+reviewers to entries in `reviewers[]` whose `vote` is zero; a nonzero vote is a
+completed review, not a pending review request. First-pass list filtering is
+client-side over provider list results rather than a promise of provider-side
+query support.

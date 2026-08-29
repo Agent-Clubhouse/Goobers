@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // newSourceRepo creates a throwaway git repo with one commit on "main" and
@@ -54,6 +55,56 @@ func TestManagerRemoteGitUsesConfiguredEnvironment(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("git environment callback calls = %d, want 2", calls)
+	}
+}
+
+func TestManagerRemoteGitUsesAdmissionGate(t *testing.T) {
+	repo := newSourceRepo(t)
+	calls := 0
+	manager, err := NewManager(t.TempDir(), WithRemoteGitGate(func(_ context.Context, gotRepo string) error {
+		calls++
+		if gotRepo != repo {
+			t.Fatalf("repo URL = %q, want %q", gotRepo, repo)
+		}
+		if calls == 2 {
+			return errors.New("quota exhausted")
+		}
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.WorkingCopy(context.Background(), repo); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	if _, err := manager.WorkingCopy(context.Background(), repo); err == nil || !strings.Contains(err.Error(), "quota exhausted") {
+		t.Fatalf("fetch error = %v, want quota exhaustion", err)
+	}
+	if calls != 2 {
+		t.Fatalf("remote git admission calls = %d, want 2", calls)
+	}
+}
+
+func TestManagerCreateRunBranchDoesNotAddTrackingConfig(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	repoDir, err := m.WorkingCopy(ctx, repo)
+	if err != nil {
+		t.Fatalf("WorkingCopy: %v", err)
+	}
+	runTestGit(t, repoDir, "config", "branch.autoSetupMerge", "always")
+
+	const branch = "goobers/impl/run-1"
+	if _, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1", BaseRef: "main", Branch: branch,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	config := runTestGitAllowFailure(t, repoDir, "config", "--get-regexp", "^branch\\."+branch+"\\.")
+	if config != "" {
+		t.Fatalf("run branch tracking config = %q, want none", config)
 	}
 }
 
@@ -99,6 +150,164 @@ func TestManager_Create_ExcludesHarnessScratch(t *testing.T) {
 	}
 	if !strings.Contains(committed, "src.txt") {
 		t.Fatalf("committed tree should contain the real change:\n%s", committed)
+	}
+}
+
+// newConedSourceRepo builds a throwaway repo with two independent service
+// subtrees (services/web, services/api) plus a root file, so a sparse
+// checkout of one cone can be distinguished on disk from a full checkout.
+func newConedSourceRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runTestGit(t, dir, "init", "-b", "main")
+	runTestGit(t, dir, "config", "user.email", "test@example.com")
+	runTestGit(t, dir, "config", "user.name", "test")
+	mustWriteFile(t, filepath.Join(dir, "README.md"), "root readme\n")
+	mustWriteFile(t, filepath.Join(dir, "services", "web", "main.go"), "package web\n")
+	mustWriteFile(t, filepath.Join(dir, "services", "api", "main.go"), "package api\n")
+	runTestGit(t, dir, "add", ".")
+	runTestGit(t, dir, "commit", "-m", "init")
+	return dir
+}
+
+// TestManager_Create_SparseCheckoutMaterializesOnlyDeclaredCones is #649's
+// core acceptance criterion: a provisioned worktree contains only the
+// declared cones plus root-level files.
+func TestManager_Create_SparseCheckoutMaterializesOnlyDeclaredCones(t *testing.T) {
+	ctx := context.Background()
+	repo := newConedSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1", BaseRef: "main", Branch: "goobers/impl/run-1",
+		Sparse: []string{"services/web"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(wt.Path, "services", "web", "main.go")); err != nil {
+		t.Fatalf("declared cone missing from worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wt.Path, "README.md")); err != nil {
+		t.Fatalf("root-level file missing from sparse worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wt.Path, "services", "api")); !os.IsNotExist(err) {
+		t.Fatalf("undeclared cone present in sparse worktree (stat err = %v, want IsNotExist)", err)
+	}
+
+	// git itself must agree the tree is sparse, not just "files happen to be
+	// missing" — a real cone-mode configuration, checkable and reversible.
+	sparseList := runTestGit(t, wt.Path, "sparse-checkout", "list")
+	if strings.TrimSpace(sparseList) != "services/web" {
+		t.Fatalf("git sparse-checkout list = %q, want %q", sparseList, "services/web")
+	}
+}
+
+// TestManager_Create_SparseCheckoutStageCanCommit exercises #649's
+// integration acceptance criterion at the worktree layer: a stage can commit
+// from a sparse worktree and the resulting branch content is correct — the
+// committed change lands, and the branch, once fully checked out elsewhere,
+// still contains the untouched cone.
+func TestManager_Create_SparseCheckoutStageCanCommit(t *testing.T) {
+	ctx := context.Background()
+	repo := newConedSourceRepo(t)
+	m := newTestManager(t)
+	const branch = "goobers/impl/run-1"
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1", BaseRef: "main", Branch: branch,
+		Sparse: []string{"services/web"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	mustWriteFile(t, filepath.Join(wt.Path, "services", "web", "main.go"), "package web\n\n// updated\n")
+	runTestGit(t, wt.Path, "add", "-A")
+	runTestGit(t, wt.Path, "-c", "user.email=t@e.test", "-c", "user.name=t", "commit", "-m", "update web")
+	// Git forbids the same branch checked out in two live worktrees at once;
+	// remove this one first, exactly as a real run's stages do sequentially.
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("remove sparse worktree: %v", err)
+	}
+
+	// A second, full (non-sparse) worktree of the same branch proves the
+	// commit is real branch content, not an artifact of the sparse index —
+	// and that the untouched services/api cone survived unmodified.
+	full, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1-verify", BaseRef: branch, Branch: branch, RequireExistingBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("full-checkout verify Create: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(full.Path, "services", "web", "main.go"))
+	if err != nil {
+		t.Fatalf("read committed file from full checkout: %v", err)
+	}
+	if !strings.Contains(string(got), "updated") {
+		t.Fatalf("committed sparse-worktree change missing from full checkout: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(full.Path, "services", "api", "main.go")); err != nil {
+		t.Fatalf("untouched cone missing from full checkout: %v", err)
+	}
+}
+
+// TestManager_Create_SparseCheckoutExcludesHarnessScratch composes #649 with
+// #240: cone-mode materialization must not interfere with the scratch-path
+// exclusion a harness relies on to keep its own bookkeeping out of the
+// agent's diff.
+func TestManager_Create_SparseCheckoutExcludesHarnessScratch(t *testing.T) {
+	ctx := context.Background()
+	repo := newConedSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1", BaseRef: "main", Branch: "goobers/impl/run-1",
+		Sparse: []string{"services/web"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	mustWriteFile(t, filepath.Join(wt.Path, ".goobers", "prompt.md"), "the full prompt")
+	mustWriteFile(t, filepath.Join(wt.Path, "services", "web", "main.go"), "package web\n\n// changed\n")
+
+	status := runTestGit(t, wt.Path, "status", "--porcelain")
+	if strings.Contains(status, ".goobers") {
+		t.Fatalf("git status leaks harness scratch in a sparse worktree:\n%s", status)
+	}
+	if !strings.Contains(status, "services/web/main.go") {
+		t.Fatalf("git status should still show the in-cone change:\n%s", status)
+	}
+}
+
+// TestManager_Create_SparseFalseIsRegressionIdentical pins #649's "key
+// absent" acceptance criterion at the option level: omitting Sparse takes
+// the exact pre-existing full-checkout path, not a degenerate zero-cone
+// sparse-checkout.
+func TestManager_Create_SparseFalseIsRegressionIdentical(t *testing.T) {
+	ctx := context.Background()
+	repo := newConedSourceRepo(t)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "run-1", BaseRef: "main", Branch: "goobers/impl/run-1",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, path := range []string{
+		filepath.Join(wt.Path, "README.md"),
+		filepath.Join(wt.Path, "services", "web", "main.go"),
+		filepath.Join(wt.Path, "services", "api", "main.go"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("full checkout missing %s: %v", path, err)
+		}
+	}
+	enabled := strings.TrimSpace(runTestGitAllowFailure(t, wt.Path, "config", "--get", "core.sparseCheckout"))
+	if enabled == "true" {
+		t.Fatalf("core.sparseCheckout = %q, want unset/false with Sparse omitted", enabled)
 	}
 }
 
@@ -270,11 +479,22 @@ func mustWriteFile(t *testing.T, path, content string) {
 	}
 }
 
+// runTestGitAllowFailure runs git and returns its combined output regardless
+// of exit status — for assertions like `config --get` on a key that is
+// legitimately expected to be unset (a non-zero exit, not a test failure).
+func runTestGitAllowFailure(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := testgit.Command(hardenedGitArgs(args)...)
+	cmd.Dir = dir
+	out, _ := cmd.CombinedOutput()
+	return string(out)
+}
+
 func runTestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", hardenedGitArgs(args)...)
+	cmd := testgit.Command(hardenedGitArgs(args)...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(cmd.Env,
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=core.autocrlf",
 		"GIT_CONFIG_VALUE_0=false",
@@ -297,15 +517,167 @@ func newTestManager(t *testing.T) *Manager {
 	return m
 }
 
+func TestManagerCreatePathLengthPreflightRefusesBeforeCheckout(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	// deepest is the on-disk path used to create the fixture file; trackedPath
+	// is the same path in git's own tracked-path form. `git ls-tree` (which the
+	// preflight shells out to) always reports paths with forward slashes,
+	// regardless of OS, so the preflight's error names trackedPath -- not
+	// deepest, which is OS-native (backslashes on Windows) and only happens to
+	// equal trackedPath on POSIX.
+	deepest := filepath.Join("generated", strings.Repeat("x", 40), "header.hpp")
+	trackedPath := strings.Join([]string{"generated", strings.Repeat("x", 40), "header.hpp"}, "/")
+	mustWriteFile(t, filepath.Join(repo, deepest), "content")
+	runTestGit(t, repo, "add", ".")
+	runTestGit(t, repo, "commit", "-m", "add deep path")
+
+	root := t.TempDir()
+	runID := "path-budget"
+	checkoutPath := filepath.Join(root, repoKey(repo), "runs", worktreeDirectoryName(runID))
+	available := len(trackedPath) - 1
+	maximum := len(checkoutPath) + 1 + available + 12
+	m, err := NewManager(root, WithPathLengthLimit(repo, PathLengthLimit{
+		MaxPathLength:        maximum,
+		BuildOutputAllowance: 12,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = m.Create(ctx, CreateOptions{RepoURL: repo, RunID: runID, BaseRef: "main"})
+	if err == nil {
+		t.Fatal("Create succeeded despite exhausted path budget")
+	}
+	for _, fragment := range []string{trackedPath, fmt.Sprintf("only %d are available", available), "pathLength.disabled: true"} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Errorf("Create error %q does not contain %q", err, fragment)
+		}
+	}
+	if _, statErr := os.Stat(checkoutPath); !os.IsNotExist(statErr) {
+		t.Fatalf("checkout path exists after preflight failure: %v", statErr)
+	}
+	if _, statErr := os.Stat(m.markerPath(repoKey(repo), runID)); !os.IsNotExist(statErr) {
+		t.Fatalf("marker exists after preflight failure: %v", statErr)
+	}
+}
+
+func TestManagerCreatePathLengthPreflightAllowsFittingCheckout(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m, err := NewManager(t.TempDir(), WithPathLengthLimit(repo, PathLengthLimit{
+		MaxPathLength: 1024,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "fits", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+}
+
+func TestManagerCreatePathLengthPreflightSyncBaseIncludesBaseRef(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	root := t.TempDir()
+	m, err := NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const branch = "goobers/wf/path-budget"
+
+	first, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: "path-budget-implement", BaseRef: "main", Branch: branch,
+	})
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	if err := first.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("remove first worktree: %v", err)
+	}
+
+	// deepest is the on-disk path used to create the fixture file; trackedPath
+	// is the same path in git's own tracked-path form. `git ls-tree` (which the
+	// preflight shells out to) always reports paths with forward slashes,
+	// regardless of OS, so the preflight's error names trackedPath -- not
+	// deepest, which is OS-native (backslashes on Windows) and only happens to
+	// equal trackedPath on POSIX.
+	deepest := filepath.Join("generated", strings.Repeat("x", 40), "header.hpp")
+	trackedPath := strings.Join([]string{"generated", strings.Repeat("x", 40), "header.hpp"}, "/")
+	mustWriteFile(t, filepath.Join(repo, deepest), "content")
+	runTestGit(t, repo, "add", ".")
+	runTestGit(t, repo, "commit", "-m", "add deep base path")
+
+	runID := "path-budget-local-ci"
+	checkoutPath := filepath.Join(root, repoKey(repo), "runs", worktreeDirectoryName(runID))
+	available := len(trackedPath) - 1
+	m.SetPathLengthLimits(map[string]PathLengthLimit{
+		repo: {MaxPathLength: len(checkoutPath) + 1 + available},
+	})
+
+	_, err = m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID, BaseRef: "main", Branch: branch, SyncBase: true,
+	})
+	if err == nil {
+		t.Fatal("SyncBase Create succeeded despite base ref exhausting path budget")
+	}
+	if !strings.Contains(err.Error(), trackedPath) {
+		t.Fatalf("Create error %q does not name base ref path %q", err, trackedPath)
+	}
+	if _, statErr := os.Stat(checkoutPath); !os.IsNotExist(statErr) {
+		t.Fatalf("checkout path exists after preflight failure: %v", statErr)
+	}
+	if _, statErr := os.Stat(m.markerPath(repoKey(repo), runID)); !os.IsNotExist(statErr) {
+		t.Fatalf("marker exists after preflight failure: %v", statErr)
+	}
+}
+
+func TestManagerSetPathLengthLimitsReplacesPolicy(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+
+	m.SetPathLengthLimits(map[string]PathLengthLimit{
+		repo: {MaxPathLength: 1},
+	})
+	if _, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "enabled", BaseRef: "main"}); err == nil {
+		t.Fatal("Create succeeded after enabling an exhausted path budget")
+	}
+
+	m.SetPathLengthLimits(map[string]PathLengthLimit{
+		repo: {MaxPathLength: 1024},
+	})
+	wt, err := m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "changed", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create after raising path budget: %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove changed-policy worktree: %v", err)
+	}
+
+	m.SetPathLengthLimits(nil)
+	wt, err = m.Create(ctx, CreateOptions{RepoURL: repo, RunID: "disabled", BaseRef: "main"})
+	if err != nil {
+		t.Fatalf("Create after disabling path preflight: %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove disabled-policy worktree: %v", err)
+	}
+}
+
 // mirrorRefExists reports whether refs/heads/<branch> exists in the managed
 // mirror for repo — used to assert the mirror prune did or did not delete a
 // local-only run branch. Non-fatal (git exits non-zero when the ref is absent),
 // unlike runTestGit.
 func mirrorRefExists(t *testing.T, m *Manager, repo, branch string) bool {
 	t.Helper()
-	cmd := exec.Command("git", hardenedGitArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
+	cmd := testgit.Command(hardenedGitArgs([]string{"show-ref", "--verify", "--quiet", "refs/heads/" + branch})...)
 	cmd.Dir = m.repoDirForKey(repoKey(repo))
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(cmd.Env,
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=core.autocrlf",
 		"GIT_CONFIG_VALUE_0=false",
@@ -648,6 +1020,84 @@ func TestManager_Create_AdoptsAndResetsExistingKey(t *testing.T) {
 	}
 	if err := second.Remove(ctx, RemoveOptions{}); err != nil {
 		t.Fatalf("Remove: %v", err)
+	}
+}
+
+func TestManager_CreateUsesFixedLengthDirectoryAndPreservesFullIDs(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m, err := NewManager(t.TempDir(), WithWriterIdentity("worker-pod-a"))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	runIDs := []string{
+		"short-stage",
+		strings.Repeat("a", 80) + "-ref-" + strings.Repeat("reference", 10),
+	}
+
+	var directories []string
+	for _, runID := range runIDs {
+		wt, err := m.Create(ctx, CreateOptions{
+			RepoURL: repo, RunID: runID, OwnerRunID: "full-owner-run-id", BaseRef: "main",
+		})
+		if err != nil {
+			t.Fatalf("Create(%q): %v", runID, err)
+		}
+		directory := filepath.Base(wt.Path)
+		if len(directory) != len("wt-")+worktreeDirectoryHashBytes*2 {
+			t.Fatalf("worktree directory %q has length %d", directory, len(directory))
+		}
+		if directory != worktreeDirectoryName(runID) {
+			t.Fatalf("worktree directory = %q, want hash of full ID", directory)
+		}
+		mk, err := readMarker(m.markerPath(wt.key, runID))
+		if err != nil {
+			t.Fatalf("read marker for %q: %v", runID, err)
+		}
+		if mk.RunID != runID || mk.OwnerRunID != "full-owner-run-id" || mk.Directory != directory || mk.Writer != "worker-pod-a" {
+			t.Fatalf("marker lost ownership identity: %+v", mk)
+		}
+		directories = append(directories, directory)
+		if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+			t.Fatalf("Remove(%q): %v", runID, err)
+		}
+	}
+	if directories[0] == directories[1] {
+		t.Fatalf("distinct worktree IDs collided at %q", directories[0])
+	}
+}
+
+func TestManager_CreateProvisionFailureRemovesOwnershipRecords(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	m := newTestManager(t)
+	runID := "run-failed-provision"
+	key := repoKey(repo)
+	directory := worktreeDirectoryName(runID)
+
+	if _, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID, BaseRef: "missing-ref",
+	}); err == nil {
+		t.Fatal("Create with missing base ref unexpectedly succeeded")
+	}
+	for _, path := range []string{
+		filepath.Join(m.runsDirForKey(key), directory),
+		m.markerPath(key, runID),
+		m.ownershipPath(key, directory),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("failed provision left %s behind: %v", path, err)
+		}
+	}
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID, BaseRef: "main",
+	})
+	if err != nil {
+		t.Fatalf("retry Create after failed provision: %v", err)
+	}
+	if err := wt.Remove(ctx, RemoveOptions{}); err != nil {
+		t.Fatalf("Remove retry worktree: %v", err)
 	}
 }
 
@@ -1384,6 +1834,40 @@ func TestManager_FinalizeRunRemovesOwnedWorktreesAndPreservesOthers(t *testing.T
 	}
 	if results, err := m.FinalizeRun(ctx, "terminal-run"); err != nil || len(results) != 0 {
 		t.Fatalf("second FinalizeRun = %+v, %v; want no-op", results, err)
+	}
+}
+
+func TestManager_FinalizeRunRemovesBranchAcquisitionMarker(t *testing.T) {
+	ctx := context.Background()
+	repo := newSourceRepo(t)
+	const (
+		runID  = "terminal-run"
+		branch = "goobers/implementation/selected"
+	)
+	runTestGit(t, repo, "branch", branch)
+	m := newTestManager(t)
+
+	wt, err := m.Create(ctx, CreateOptions{
+		RepoURL: repo, RunID: runID + "-verify", OwnerRunID: runID,
+		BaseRef: "main", Branch: branch, RequireExistingBranch: true, AcquireRemoteBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	acquisitionPath := m.branchAcquisitionPath(wt.key, runID, branch)
+	if _, err := os.Stat(acquisitionPath); err != nil {
+		t.Fatalf("branch acquisition marker: %v", err)
+	}
+	repoDir := m.repoDirForKey(wt.key)
+	if refs := strings.TrimSpace(runTestGit(t, repoDir, "for-each-ref", "--format=%(refname)", "refs/goobers/acquired")); refs != "" {
+		t.Fatalf("branch acquisition retained git refs: %s", refs)
+	}
+
+	if _, err := m.FinalizeRun(ctx, runID); err != nil {
+		t.Fatalf("FinalizeRun: %v", err)
+	}
+	if _, err := os.Stat(acquisitionPath); !os.IsNotExist(err) {
+		t.Fatalf("branch acquisition marker survived finalization: %v", err)
 	}
 }
 

@@ -44,7 +44,7 @@ func remediationBriefFixture(failing bool) apiv1.RemediationBrief {
 func seedGatherCIRun(t *testing.T, root, runID string, brief apiv1.RemediationBrief) {
 	t.Helper()
 	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
-		RunID: runID, Workflow: "pr-remediation", Gaggle: "goobers",
+		RunID: runID, Workflow: "widget-pr-remediation", Gaggle: "goobers",
 	}, nil)
 	if err != nil {
 		t.Fatalf("create remediation run journal: %v", err)
@@ -67,7 +67,7 @@ func runGatherCIFixture(t *testing.T, brief apiv1.RemediationBrief) (string, str
 	root := initDemo(t)
 	seedGatherCIRun(t, root, runID, brief)
 	t.Setenv("GOOBERS_RUN_ID", runID)
-	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
+	t.Setenv("GOOBERS_WORKFLOW", "widget-pr-remediation")
 	resultFile := filepath.Join(t.TempDir(), remediationBriefResultFile)
 	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
 	return root, resultFile

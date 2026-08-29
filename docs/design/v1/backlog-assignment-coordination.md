@@ -1,6 +1,6 @@
 # Design: Assignment-aware backlog coordination (COORD)
 
-> Status: **Draft for review** · Area: `RUN` / `WF` / `SEC` · Milestone: **Backlog curation
+> Status: **draft — for review** · Area: `RUN` / `WF` / `SEC` · Milestone: **Backlog curation
 > engine — continuous, reliable, agile-inspired** (epic #1224)
 > References: mixed-mode epic **#804** / **#369** (actor-aware workflows — a different axis,
 > see Terminology); UNOP-7 **#1295** / **#1779** / **#1780** (distinct daemon identity);
@@ -9,6 +9,8 @@
 > Origin: a mixed-mode coordination gap — a repo worked by multiple humans and/or multiple
 > Goober daemon instances has no way to divide backlog work; everyone sees the same eligible
 > pool and could pick up the same item.
+>
+> Operator guide: [Coordinate a shared backlog with assignees](../../guides/assignment-aware-backlogs.md).
 
 ## Terminology (do not conflate with mixed-mode / #804)
 

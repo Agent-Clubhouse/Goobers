@@ -37,15 +37,52 @@ to verify the two-token boundary against disposable repositories.
 | `github:issues:write` | Issues: Read and write | Create, claim, comment, ordinary-label, close. Does not authorize the `goobers:approved` trust decision. |
 | `github:milestones:write` | Issues: Read and write | Assign an existing milestone to an issue. Keep roadmap mutation out of stages that only perform ordinary issue writes. |
 | `github:issues:approve` | Issues: Read and write | Apply `goobers:approved` to nominated work. Keep this out of workflow stages unless self-approval is intentional. |
-| `github:pr:write` | Pull requests: Read and write, Contents: Read and write | Only for stages that open/update PRs. The canonical implementation workflow also uses this capability for `ci-poll`, which requires Checks: Read-only and Commit statuses: Read-only. |
+| `provider:pr:write` | Pull requests: Read and write, Commit statuses: Read-only, Actions: Read | Provider-neutral pull-request stages such as `ci-poll`; credentials route only to the configured repository provider. GitHub's fine-grained PAT UI has no separate Checks permission to grant, so a private repo whose CI is entirely GitHub Actions-based is otherwise unreadable on this token type: `commits/{ref}/status` reports empty (Actions doesn't bridge into legacy statuses) and `commits/{ref}/check-runs` 403s. Also granting **Actions: Read** lets `checkDetails` fall back to `GET /actions/runs` automatically on that specific 403 (#2685), restoring CI visibility without any config change. |
+| `github:pr:write` | Pull requests: Read and write, Contents: Read and write | GitHub-specific stages that open or update PRs. |
 | `github:pr:review` | Pull requests: Read and write | Submit native approve/request-changes reviews. For goober-authored PRs, source this from a different GitHub identity than `github:pr:write`; GitHub forbids self-approval. |
 | `repo:push` | Contents: Read and write | Branch + commit + push. Broadest local-tier grant; scope to the exact target repo(s), never an org-wide token. |
 | `repo:clone` (read-only stages) | Contents: Read-only | Curation/analysis stages that never push. |
 | `configrepo:read` | Contents: Read-only | Runner-only access to the workflow-config repo. Configure only through `workflowSource.token`; stages cannot declare or source it through `credentials`. |
-| `agent:model` | Stored Copilot CLI sign-in, or *(Account permissions)* Copilot Requests: Read-only for headless use | Copilot model authentication for agentic stages. An existing per-user CLI sign-in is the local default; a configured PAT is injected as `COPILOT_GITHUB_TOKEN` for services/CI. |
+| `agent:model` | Stored Copilot CLI sign-in, or *(Account permissions)* Copilot Requests: Read-only for headless use; on claude-code, stored `claude` CLI sign-in (or a real `sk-ant-...` Anthropic API key for headless use) | Agent harness model authentication for agentic stages. An existing per-user CLI sign-in is the local default on either harness; a configured token is injected as `COPILOT_GITHUB_TOKEN` (copilot) or `ANTHROPIC_API_KEY` (claude-code) for services/CI. Only **one** `agent:model` grant exists per instance — see [Mixed-harness instances](#mixed-harness-instances-copilot--claude-code-sharing-agentmodel) below before configuring both harnesses. |
 
 Repository access: select **Only select repositories** and list exactly the
 gaggle's target repo(s) — never "All repositories".
+
+### `daemonIdentity`: one distinct bot identity for authored PRs/reviews/merges
+
+The `github:pr:review` row above already recommends sourcing that one
+capability from a second identity so GitHub's self-review refusal never
+degrades a native Review into a comment/label handoff (#870). `daemonIdentity`
+(UNOP-7/#1295, #1780) generalizes that: one `instance.yaml` block backs the
+*whole* daemon-mutation capability set — `repo:push`, `github:issues:write`,
+`github:pr:write`, `github:pr:review`, `github:branch:delete`,
+`github:pr:merge` — with one distinct machine-account identity, instead of
+repeating a `credentials:` entry per capability:
+
+```yaml
+daemonIdentity:
+  kind: pat
+  token:
+    env: DAEMON_GITHUB_TOKEN
+```
+
+Mint the machine account's fine-grained PAT with the union of the permissions
+those capabilities need (the rows above), never the operator's own token.
+Every daemon-authored PR, review, and merge then carries that account's
+login — GitHub's own attribution — instead of being indistinguishable from
+the operator's own manual activity. `merge-review`'s PR-selection stages
+(`pr-select`/`gather-sibling-context`) use this to recognize "our" PRs by
+login instead of the branch-name-prefix heuristic once configured; an
+instance that configures nothing here is completely unaffected (the
+heuristic remains exactly as before).
+
+`kind: github-app` reuses the same GitHub App installation-token minting a
+repo's own `auth.kind: github-app` uses (`appId`/`installationId`/
+`privateKey`), for consumers who provision a dedicated App instead of a
+machine-account PAT — see #1779. An explicit `credentials:` entry for any one
+of the six capabilities still overrides `daemonIdentity` for that capability
+alone, so a mixed setup (e.g. a distinct App for reviews, the daemon identity
+for everything else) is still possible.
 
 ### Agentic (Copilot-harness) stages: stored login or `agent:model` token
 
@@ -55,25 +92,38 @@ goober uses the `copilot` harness — curator, implementer, reviewer, nominator,
 analyst, config-author in the shipped gaggle). The GitHub Copilot CLI authenticates to its model backend independently of
 repository credentials. For an interactive local daemon, first run `copilot`
 and sign in normally. Goobers passes only the profile-location variables needed
-to find that stored session; it does not copy ambient token variables.
+to find that stored session. An ambient model token is copied only into the
+preflight probe, not into live stages.
 
 For a headless Windows Service, CI runner, or dedicated account without a stored
 session, configure a separate fine-grained PAT with **Copilot Requests:
-Read-only**. A PAT without that account permission fails at the first agentic
-stage even when ordinary repository operations work.
+Read-only**. A PAT without that account permission fails the auth preflight (or
+the first agentic stage when preflight is disabled) even when ordinary
+repository operations work.
 
 Goobers still models model access as **`agent:model`**. When no token grant is
-configured, the Copilot adapter uses the stored CLI session. When a grant is
-configured, it resolves fail-closed and injects `COPILOT_GITHUB_TOKEN`, distinct
-from repo/issue/PR grants injected as `GH_TOKEN`, so neither clobbers the other.
+configured, the Copilot adapter uses the stored CLI session and removes ambient
+`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN` values even if
+`runner.envPassthrough` names them. A code-authoring stage may also declare
+`repo:push`: its repository token stays out of the Copilot subprocess, and the
+later deterministic push stage receives that scoped credential under
+`GOOBERS_CRED_REPO_PUSH`. Any other capability that would materialize
+`GH_TOKEN` in the Copilot subprocess requires an explicit, distinct
+`agent:model` credential; admission rejects the workflow before an agentic
+attempt or workflow budget can be consumed. Tokenless Azure DevOps identity
+modes remain valid because they authenticate dynamically and do not materialize
+a repository token in the harness environment. When a model grant is
+configured, Goobers injects `COPILOT_GITHUB_TOKEN` alongside the repository
+`GH_TOKEN`, so the existing explicit two-token behavior is unchanged.
 
-Current limitation: the production harness auth preflight runs before this
-capability credential is resolved. A token-backed agentic stage on a clean
-service or CI profile therefore still needs a stored Copilot CLI sign-in to
-pass startup. The
+The production harness auth preflight runs before the configured capability
+credential is resolved, but since #1996 it can authenticate a clean service or
+CI profile from `COPILOT_GITHUB_TOKEN` in the ambient Goobers process
+environment. The adapter copies that value only into the tool-disabled sign-in
+probe; live stages still receive it through the `agent:model` capability
+boundary. The
 [hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md)
-records the failure and the required preflight change; do not bypass the
-capability boundary with ambient token passthrough.
+records the original limitation and its correction.
 
 **Cross-org reality — why it must be a separate token.** "Copilot Requests" is
 an **account-level** permission: it can only be granted on a **personal**
@@ -85,7 +135,7 @@ when your target repo lives in an org, `agent:model`'s token is necessarily a
   Requests: Read-only** and **no repository access at all** (it authenticates
   the model, nothing else).
 - **repository capability tokens** — org-scoped fine-grained PATs with the
-  narrow Contents, Issues, Pull-requests, Checks, and Commit-statuses permissions
+  narrow Contents, Issues, Pull-requests, and Commit-statuses permissions
   required by the selected workflows. An org owner must **approve** personal
   fine-grained PATs before they can access org repos (org *Settings → Third-party
   Access → Personal access tokens*), so budget for that approval step.
@@ -111,13 +161,19 @@ credentials:
       env: GOOBERS_GITHUB_ISSUES_TOKEN # Issues: read and write
   - capability: github:pr:write
     token:
-      env: GOOBERS_GITHUB_PR_TOKEN   # PR/Contents: read-write; CI Checks/statuses: read-only
+      env: GOOBERS_GITHUB_PR_TOKEN   # PR/Contents: read-write; commit statuses: read-only
   - capability: repo:push
     token:
       env: GOOBERS_GITHUB_PUSH_TOKEN # Contents: read and write
   - capability: agent:model
     token:
       env: GOOBERS_COPILOT_TOKEN     # Copilot Requests: read-only; no repo access
+```
+
+Also expose the same model token to the Goobers process for preflight:
+
+```sh
+export COPILOT_GITHUB_TOKEN="$GOOBERS_COPILOT_TOKEN"
 ```
 
 Each `credentials:` entry sources one capability from its own token ref; an
@@ -128,18 +184,85 @@ inline — use a supported token reference such as `token.env`, `token.file`,
 `token.keychain`, or `token.store` (`CFG-009`/`SEC-010`).
 
 Omitting only the `agent:model` entry opts into stored Copilot CLI
-authentication. Missing grants for repository capabilities remain errors.
+authentication. This supports model-only stages and local code-authoring stages
+whose `repo:push` credential is consumed by a separate deterministic publisher.
+GitHub API capabilities used inside the agentic subprocess require the explicit
+model credential described above. Missing grants for repository capabilities
+remain errors.
 
 Verify harness availability before a live run with
 `goobers validate --check-harness`. When `AuthCheckArgs` is configured, its
-authentication probe receives only the base environment, not the configured
-`agent:model` credential, so it can validate a stored CLI session but not the
-token's scope. The token is first resolved and injected as
-`COPILOT_GITHUB_TOKEN` when `CopilotAdapter.Run` executes an agentic stage, so a
-mis-scoped token fails there. On a clean profile, the current preflight blocks
-before that stage; token-backed preflight validation requires the change
-documented in the
-[hosted-runner authentication spike](copilot-hosted-runner-auth-spike.md).
+authentication probe receives a stored CLI session or an ambient
+`COPILOT_GITHUB_TOKEN`, not the configured `agent:model` credential. A
+`token.file` reference alone is therefore insufficient for daemon startup even
+though Goobers can resolve it for the eventual agentic stage: expose the same
+value to the Goobers process as `COPILOT_GITHUB_TOKEN`. On Kubernetes, mount the
+synced Secret for the file ref and also consume that Secret key through
+`secretKeyRef` for the environment variable. A mis-scoped token then fails
+during the preflight rather than at the first agentic stage.
+
+### Mixed-harness instances (`copilot` + `claude-code` sharing `agent:model`)
+
+`agent:model` is the one capability every agentic goober must declare,
+regardless of which harness it runs on — but `credentialGrant` allows only
+**one** grant per capability, instance-wide (no per-harness, per-gaggle, or
+per-goober scoping). If an instance runs goobers on *both* `copilot` and
+`claude-code`, that single grant gets resolved for every agentic stage on
+either harness, no matter which one actually needs it.
+
+This matters because each harness maps `agent:model` to a **different**
+token, and the two are never interchangeable:
+
+- `copilot` injects it as `COPILOT_GITHUB_TOKEN` — a GitHub PAT with
+  Copilot Requests: Read-only.
+- `claude-code` injects it as `ANTHROPIC_API_KEY` — a real Anthropic key,
+  shaped `sk-ant-...`.
+
+**If your only configured `agent:model` grant is a Copilot PAT** (the
+common case, since Copilot's headless CLI needs one and claude-code was
+assumed not to), that same PAT still gets resolved for claude-code goobers
+too. A GitHub PAT is never `sk-ant-...`-shaped, so `claude` immediately
+rejects it with a 401 "Invalid API key" — and the whole session fails
+before any model call happens (zero tokens used), with no diagnostic
+content anywhere an operator can see: the failure happens inside the
+`claude` subprocess before it writes any output, and `goobers up
+--diagnostics` doesn't help either, since its scope is stages hung for
+minutes, not a fast agentic-stage failure.
+
+`internal/harness/claude.go`'s `ClaudeAdapter.Run` guards
+against exactly this: it strips an `ANTHROPIC_API_KEY` env entry that
+doesn't look like a real Anthropic key before spawning `claude`, so a
+wrong-harness credential is silently dropped rather than passed through. A
+dropped credential means claude-code falls back to your stored `claude` CLI
+sign-in — the same "no grant configured" fallback described above for
+copilot — instead of authenticating with a value that was guaranteed to
+fail. A genuine `sk-ant-...` key configured for `agent:model` still passes
+through unchanged.
+
+**What this means for setup:**
+
+- **Copilot-only instance**: configure `agent:model` normally with a
+  Copilot PAT. No special handling needed.
+- **claude-code-only instance**: omit the `agent:model` credentials entry
+  entirely (same as the copilot-only "local stored auth" case above).
+  Every claude-code goober falls back to whichever account is
+  interactively signed into `claude` on that machine — simplest, but ties
+  every goober's usage to one personal login, not a true headless setup.
+- **Both harnesses on one instance**: configure the Copilot PAT as usual.
+  claude-code goobers will still have it resolved and injected, but the
+  guard above drops it and correctly falls back to the stored `claude`
+  session instead. This is the only combination that currently works
+  without a config change on your part.
+- **claude-code fully headless too** (no dependency on an interactive
+  login surviving): the schema still can't cleanly support this alongside
+  a Copilot PAT for `agent:model` — a real `sk-ant-...` key configured for
+  that same grant would then get resolved for Copilot goobers too and
+  break `COPILOT_GITHUB_TOKEN` the same way in reverse. Per-harness
+  credential scoping on `credentialGrant` (a `harness:` field, matching
+  this design's existing `capability`/`mcp` selector shape) would remove
+  this constraint entirely — not yet implemented; track before wiring a
+  third harness or a mixed instance that needs *both* sides headless
+  simultaneously.
 
 ## GitHub App installation tokens (`auth.kind: github-app`)
 
@@ -186,8 +309,9 @@ store-backed `privateKey.store` (#683) — so in a regulated deployment the App
 key itself lives in Azure Key Vault, and nothing long-lived touches disk or
 the config repo.
 
-**Installation permissions.** Grant the App the union of what the selected
-workflows' capabilities need — same table as above: Contents (Read and write
+**Installation permissions.** Unlike a fine-grained PAT, a GitHub App does
+expose a Checks permission. Grant the App the union of what the selected
+workflows' capabilities need: Contents (Read and write
 for `repo:push`, Read-only for clone-only), Issues (Read and write), Pull
 requests (Read and write), Checks + Commit statuses (Read-only, for
 `ci-poll`). Install it on **only the target repositories**.

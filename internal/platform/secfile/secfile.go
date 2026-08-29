@@ -8,8 +8,8 @@ import "errors"
 // carries the specific reason plus a platform-appropriate remediation hint.
 var ErrNotPrivate = errors.New("secret file is not private to its owner")
 
-// VerifyPrivate returns nil only if the file at path is provably private to its
-// owner: not group/other-accessible on Unix, or granting DACL access to no
+// VerifyPrivate returns nil only if the file at path is provably protected:
+// owner-only or on a read-only tmpfs on Unix, or granting DACL access to no
 // trustee beyond the owner and tolerated system principals on Windows (see the
 // package doc). It fails closed — any error determining the state (missing
 // file, unreadable ACL, unsupported filesystem) yields a non-nil error wrapping

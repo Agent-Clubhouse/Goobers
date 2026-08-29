@@ -4,11 +4,16 @@ package executor
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // TestIntegrationShellExecutor_TimeoutGivesUpOnEscapedDescendant is the
@@ -71,7 +76,7 @@ func TestIntegrationShellExecutor_DistinguishesCancelFromTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // Intentional delayed cancellation exercises shell process termination.
 		cancel()
 	}()
 
@@ -85,4 +90,81 @@ func TestIntegrationShellExecutor_DistinguishesCancelFromTimeout(t *testing.T) {
 	if result.Error == nil || result.Error.Code != "canceled" || result.Error.Retryable {
 		t.Fatalf("error = %+v, want canceled, non-retryable", result.Error)
 	}
+}
+
+func TestIntegrationShellExecutor_TimeoutRemovesOriginalProcessGroup(t *testing.T) {
+	testdep.Require(t, "ps", "sh", "sleep")
+
+	e, _ := newTestExecutor(t, nil)
+	env := baseEnvelope(t)
+	env.Inputs = map[string]interface{}{InputTimeout: "200ms"}
+
+	result, err := e.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `
+echo $$ > "$PIDDIR/stage.pid"
+trap '' QUIT
+sleep 30 >/dev/null 2>&1 &
+echo $! > "$PIDDIR/child.pid"
+trap 'exit 0' QUIT
+while :; do :; done
+`},
+		Env: map[string]string{"PIDDIR": env.Workspace},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "timeout" {
+		t.Fatalf("status=%v error=%+v, want timeout failure", result.Status, result.Error)
+	}
+
+	stagePID := readProcessPID(t, filepath.Join(env.Workspace, "stage.pid"))
+	childPID := readProcessPID(t, filepath.Join(env.Workspace, "child.pid"))
+	t.Cleanup(func() {
+		process, err := os.FindProcess(childPID)
+		if err == nil {
+			_ = process.Kill()
+		}
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		alive, err := processGroupExists(stagePID)
+		if err != nil {
+			t.Fatalf("probe process group %d: %v", stagePID, err)
+		}
+		if !alive {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process with timed-out stage's original process-group id %d remains alive", stagePID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func processGroupExists(pgid int) (bool, error) {
+	out, err := exec.Command("ps", "-axo", "pgid=").Output()
+	if err != nil {
+		return false, err
+	}
+	want := strconv.Itoa(pgid)
+	for _, field := range strings.Fields(string(out)) {
+		if field == want {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func readProcessPID(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read process pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("parse process pid %q: %v", data, err)
+	}
+	return pid
 }

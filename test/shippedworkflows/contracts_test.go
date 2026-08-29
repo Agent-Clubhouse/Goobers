@@ -7,16 +7,17 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
@@ -30,9 +31,11 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 const (
@@ -103,7 +106,7 @@ func TestShippedWorkflowContracts(t *testing.T) {
 		name string
 		path string
 	}{
-		{name: "selfhost", path: filepath.Join(root, "selfhost")},
+		{name: "reference-workflows", path: filepath.Join(root, "reference-workflows")},
 		{name: "config-examples", path: filepath.Join(root, "config-examples")},
 		{name: "ios-simulator", path: filepath.Join(root, "examples", "ios-simulator")},
 	}
@@ -144,11 +147,15 @@ func TestShippedWorkflowContracts(t *testing.T) {
 						Name: definition.Name, Version: 1, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
 					}
 					assertStaticStageContracts(t, source, def)
+					assertWindowsDeterministicCompatibility(t, source, def)
 					machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(allowPreview))
 					if err != nil {
 						t.Fatalf("%s: workflow %q compile contract: %v", source, key, err)
 					}
 					scenarios := terminalScenarios(t, machine)
+					if hasCITimeoutRoute(machine) && !hasCITimeoutRecoveryScenario(scenarios) {
+						t.Fatalf("%s: workflow %q has no CI timeout-then-pass recovery scenario", source, key)
+					}
 					for _, scenario := range scenarios {
 						scenario := scenario
 						t.Run(scenario.name, func(t *testing.T) {
@@ -183,6 +190,9 @@ func TestShippedWorkflowContracts(t *testing.T) {
 							}
 							assertJournalScenario(t, definition, events, scenario)
 							assertRequiredValueHandoffs(t, definition.Name, events)
+							if isCITimeoutRecoveryScenario(scenario) {
+								assertCITimeoutRecovery(t, events)
+							}
 							state, err := reader.State()
 							if err != nil {
 								t.Fatalf("%s: workflow %q read journal state: %v", source, key, err)
@@ -200,11 +210,299 @@ func TestShippedWorkflowContracts(t *testing.T) {
 	}
 }
 
+func hasCITimeoutRoute(machine *workflow.Machine) bool {
+	ciGate, ok := machine.Gate("ci-gate")
+	if !ok {
+		return false
+	}
+	_, ok = workflow.BranchTarget(ciGate, gate.OutcomeTimeout)
+	return ok
+}
+
+func hasCITimeoutRecoveryScenario(scenarios []terminalScenario) bool {
+	for _, scenario := range scenarios {
+		if isCITimeoutRecoveryScenario(scenario) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCITimeoutRecoveryScenario(scenario terminalScenario) bool {
+	return reflect.DeepEqual(
+		scenario.gateOutcomes["ci-gate"],
+		[]string{gate.OutcomeTimeout, gate.OutcomePass},
+	)
+}
+
+func assertCITimeoutRecovery(t *testing.T, events []journal.Event) {
+	t.Helper()
+	stageStarts := map[string]int{}
+	for _, event := range events {
+		if event.Type == journal.EventStageStarted {
+			stageStarts[event.Stage]++
+		}
+	}
+	if got := stageStarts["ci-poll"]; got != 2 {
+		t.Errorf("ci-poll starts = %d, want 2 for timeout then pass", got)
+	}
+	if got := stageStarts["implement"]; got != 1 {
+		t.Errorf("implement starts = %d, want 1; pending CI must not consume an implementation repass", got)
+	}
+	if got := stageStarts["park-escalated"]; got != 0 {
+		t.Errorf("park-escalated starts = %d, want 0 for pending CI", got)
+	}
+}
+
+func TestImplementationInfrastructureRetryPreservesReviewedCheckpoint(t *testing.T) {
+	root := repositoryRoot(t)
+	configPath := filepath.Join(root, "reference-workflows")
+	set, report, err := instance.LoadConfigDir(configPath)
+	if err != nil {
+		t.Fatalf("load shipped config: %v\n%v", err, report)
+	}
+	var definition apiv1.Workflow
+	for _, candidate := range set.Workflows {
+		if candidate.Spec.Gaggle == "goobers" && candidate.Name == "implementation" {
+			definition = candidate
+			break
+		}
+	}
+	if definition.Name == "" {
+		t.Fatal("reference implementation workflow not found")
+	}
+	machine, err := workflow.Compile(
+		workflow.Definition{
+			Name: definition.Name, Version: 1, DSLVersion: definition.DSLVersion, Spec: definition.Spec,
+		},
+		workflow.WithPreviewFeatures(workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := newScenarioScript(definition, terminalScenario{
+		gateOutcomes: map[string][]string{
+			"review":       {string(apiv1.VerdictPass)},
+			"local-gate":   {gate.OutcomeInfra, gate.OutcomePass},
+			"open-pr-gate": {gate.OutcomePass},
+			"ci-gate":      {gate.OutcomePass},
+		},
+		wantPhase: journal.PhaseCompleted,
+	})
+	localRunner, runsDir := newContractRunner(t, script, gooberCapabilities(set.Goobers))
+	const runID = "implementation-infra-retry-preserves-checkpoint"
+	if _, err := localRunner.Start(context.Background(), runner.StartInput{
+		RunID: runID, Machine: machine, Gaggle: definition.Spec.Gaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub, Owner: "fixture", Name: "repository", Branch: "main",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := map[string]int{}
+	gateEvaluations := map[string]int{}
+	var sequence []string
+	var infraDecision bool
+	for _, event := range events {
+		switch event.Type {
+		case journal.EventStageStarted:
+			starts[event.Stage]++
+			sequence = append(sequence, event.Stage)
+		case journal.EventGateEvaluated:
+			gateEvaluations[event.Gate]++
+		case journal.EventRunnerAnnotation:
+			if event.Stage == "local-ci" &&
+				event.Runner["kind"] == "stage.retry.decision" &&
+				event.Runner["retryFailureClass"] == string(journal.AttemptInfra) {
+				infraDecision = true
+			}
+		}
+	}
+	for stage, want := range map[string]int{
+		"implement":   1,
+		"push-branch": 1,
+		"local-ci":    2,
+		"open-pr":     1,
+	} {
+		if got := starts[stage]; got != want {
+			t.Errorf("%s starts = %d, want %d; sequence=%v", stage, got, want, sequence)
+		}
+	}
+	if gateEvaluations["review"] != 1 || gateEvaluations["local-gate"] != 2 {
+		t.Errorf("gate evaluations = %v, want review=1 local-gate=2", gateEvaluations)
+	}
+	if starts["park-escalated"] != 0 {
+		t.Fatalf("park-escalated starts = %d, want 0", starts["park-escalated"])
+	}
+	if !infraDecision {
+		t.Fatal("local-ci retry was not journaled as infrastructure")
+	}
+	pushIndex, firstCIIndex := slices.Index(sequence, "push-branch"), slices.Index(sequence, "local-ci")
+	if pushIndex < 0 || firstCIIndex < 0 || pushIndex > firstCIIndex {
+		t.Fatalf("execution sequence = %v, want push-branch before local-ci", sequence)
+	}
+}
+
+func assertWindowsDeterministicCompatibility(t *testing.T, source string, def workflow.Definition) {
+	t.Helper()
+	for _, problem := range windowsDeterministicCompatibilityProblems(def) {
+		t.Errorf("%s: workflow %q %s", source, def.Name, problem)
+	}
+}
+
+func windowsDeterministicCompatibilityProblems(def workflow.Definition) []string {
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if task.Type != apiv1.TaskDeterministic || task.Run == nil {
+			continue
+		}
+		if hasWindowsIncompatibleOSCapability(task.RequiredCapabilities) {
+			continue
+		}
+		switch {
+		case isPOSIXOnlyScript(task.Run.Script):
+			problems = append(problems, fmt.Sprintf(
+				"deterministic task %q uses a POSIX inline script without an incompatible os capability",
+				task.Name,
+			))
+		case isWindowsIncompatibleCommand(task.Run.Command):
+			problems = append(problems, fmt.Sprintf(
+				"deterministic task %q invokes a Windows-incompatible command without an incompatible os capability",
+				task.Name,
+			))
+		}
+	}
+	return problems
+}
+
+var posixOnlyScriptSyntax = regexp.MustCompile(
+	`(?m)(?:^|\n)[ \t]*(?:#![^\n]*\bsh\b|set[ \t]+-[a-zA-Z]*[eu][a-zA-Z]*\b|case\b|esac\b|printf\b|export\b|trap\b|test\b)|\$\{[a-zA-Z_][a-zA-Z0-9_]*[^}]*\}|\$\(`,
+)
+
+func isPOSIXOnlyScript(script string) bool {
+	return posixOnlyScriptSyntax.MatchString(script)
+}
+
+func isWindowsIncompatibleCommand(command []string) bool {
+	if len(command) == 0 {
+		return false
+	}
+	switch strings.ToLower(filepath.Base(command[0])) {
+	case "sh", "bash", "dash", "zsh", "python3":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasWindowsIncompatibleOSCapability(capabilities []string) bool {
+	for _, capability := range capabilities {
+		goos, ok := strings.CutPrefix(capability, "os=")
+		if ok && goos != "" && goos != "windows" {
+			return true
+		}
+	}
+	return false
+}
+
+func TestWindowsDeterministicCompatibilityRejectsUnconstrainedInlineScript(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "posix-script", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Script: "set -eu\nprintf done"},
+		}},
+	}}
+	problems := windowsDeterministicCompatibilityProblems(def)
+	if len(problems) != 1 || !strings.Contains(problems[0], `task "run"`) {
+		t.Fatalf("Windows compatibility problems = %v, want unconstrained task", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityRejectsUnconstrainedPOSIXCommand(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "posix-command", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Command: []string{"sh", "scripts/check.sh"}},
+		}},
+	}}
+	problems := windowsDeterministicCompatibilityProblems(def)
+	if len(problems) != 1 || !strings.Contains(problems[0], `task "run"`) {
+		t.Fatalf("Windows compatibility problems = %v, want unconstrained task", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityRejectsUnconstrainedPython3Command(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "python-command", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run: &apiv1.DeterministicRun{Command: []string{"python3", "-m", "pytest"}},
+		}},
+	}}
+	problems := windowsDeterministicCompatibilityProblems(def)
+	if len(problems) != 1 || !strings.Contains(problems[0], `task "run"`) {
+		t.Fatalf("Windows compatibility problems = %v, want unconstrained task", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityAcceptsWindowsInlineScript(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "windows-script", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run:                  &apiv1.DeterministicRun{Script: "@echo off\r\necho done"},
+			RequiredCapabilities: []string{"os=windows"},
+		}},
+	}}
+	if problems := windowsDeterministicCompatibilityProblems(def); len(problems) != 0 {
+		t.Fatalf("Windows compatibility problems = %v, want Windows-native script accepted", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityAcceptsExplicitIncompatibleOS(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "darwin-script", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run:                  &apiv1.DeterministicRun{Script: "set -eu\nprintf done"},
+			RequiredCapabilities: []string{"os=darwin"},
+		}},
+	}}
+	if problems := windowsDeterministicCompatibilityProblems(def); len(problems) != 0 {
+		t.Fatalf("Windows compatibility problems = %v, want explicit incompatible OS accepted", problems)
+	}
+}
+
+func TestWindowsDeterministicCompatibilityAcceptsExplicitIncompatibleOSCommand(t *testing.T) {
+	t.Parallel()
+	def := workflow.Definition{Name: "linux-command", Spec: apiv1.WorkflowSpec{
+		Tasks: []apiv1.Task{{
+			Name: "run", Type: apiv1.TaskDeterministic,
+			Run:                  &apiv1.DeterministicRun{Command: []string{"sh", "scripts/check.sh"}},
+			RequiredCapabilities: []string{"os=linux"},
+		}},
+	}}
+	if problems := windowsDeterministicCompatibilityProblems(def); len(problems) != 0 {
+		t.Fatalf("Windows compatibility problems = %v, want explicit incompatible OS accepted", problems)
+	}
+}
+
 func captureImplementationEvidence(t *testing.T, config, workflowName, scenario, runDir string) {
 	t.Helper()
 	evidenceDir := os.Getenv(contractEvidenceDir)
 	if evidenceDir == "" ||
-		config != "selfhost" ||
+		config != "reference-workflows" ||
 		workflowName != "goobers/implementation" ||
 		scenario != "01_query-backlog_next" {
 		return
@@ -562,6 +860,48 @@ func TestScenarioScriptFailureEmitsOnlyErrorEnvelope(t *testing.T) {
 	}
 }
 
+func TestScenarioScriptFailureClassShapesRetryability(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		outcome       string
+		wantRetryable bool
+	}{
+		{outcome: gate.OutcomeFail, wantRetryable: false},
+		{outcome: gate.OutcomeInfra, wantRetryable: true},
+	} {
+		t.Run(tc.outcome, func(t *testing.T) {
+			definition := apiv1.Workflow{
+				Spec: apiv1.WorkflowSpec{
+					Tasks: []apiv1.Task{{
+						Name: "local-ci",
+						Next: "local-gate",
+					}},
+					Gates: []apiv1.Gate{{
+						Name:      "local-gate",
+						Evaluator: apiv1.EvaluatorAutomated,
+						Automated: &apiv1.AutomatedGate{Check: "failure-class"},
+						Branches:  map[string]string{tc.outcome: workflow.TerminalComplete},
+					}},
+				},
+			}
+			script := newScenarioScript(definition, terminalScenario{
+				gateOutcomes: map[string][]string{"local-gate": {tc.outcome}},
+			})
+
+			got, err := script.deterministic("local-ci", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.exitCode != 1 {
+				t.Fatalf("exit code = %d, want 1", got.exitCode)
+			}
+			if got.outputs[executor.OutputErrorRetryable] != tc.wantRetryable {
+				t.Fatalf("errorRetryable = %v, want %t", got.outputs[executor.OutputErrorRetryable], tc.wantRetryable)
+			}
+		})
+	}
+}
+
 func TestFailedStageIncludesExplicitClassifierExtras(t *testing.T) {
 	t.Parallel()
 	got := failedStage("RATE_LIMITED", map[string]any{"rateLimitReset": "contract-reset"})
@@ -699,7 +1039,6 @@ func TestTerminalScenariosDiscoverConsecutiveGateEscalation(t *testing.T) {
 func terminalScenarios(t *testing.T, machine *workflow.Machine) []terminalScenario {
 	t.Helper()
 	graph := machine.Graph()
-	graph.Edges = resolvedJoinEdges(graph)
 	outgoing := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
 	for _, edge := range graph.Edges {
 		outgoing[edge.Source] = append(outgoing[edge.Source], edge)
@@ -814,7 +1153,11 @@ func repassEscalationPath(start string, escalation workflow.GraphEdge, outgoing 
 			continue
 		}
 		path := append([]workflow.GraphEdge(nil), prefix...)
-		for range contractMaxRepasses {
+		repasses := contractMaxRepasses
+		if candidate.Outcome == gate.OutcomeInfra {
+			repasses = gate.DefaultMaxInfrastructureRepasses
+		}
+		for range repasses {
 			path = append(path, candidate)
 			path = append(path, loopback...)
 		}
@@ -832,67 +1175,6 @@ func repassEscalationPath(start string, escalation workflow.GraphEdge, outgoing 
 		return path, true
 	}
 	return nil, false
-}
-
-// resolvedJoinEdges returns graph.Edges with each branch-internal edge whose
-// Target is the reserved "@join" marker rewritten to point at its owning
-// parallel's actual join stage instead. model.GraphEdge deliberately keeps
-// "@join" as a literal target ("Target retains the machine target,
-// including... reserved targets") since a portal-style consumer needs to
-// know structurally that an edge is a join edge — but this file's scenario
-// generator walks the graph to find a path to a terminal, and a run never
-// actually settles "at" the literal state "@join" (the runner resolves it
-// to the join stage immediately), so both the path walk and the generated
-// scenario need the real target, not the DSL-only placeholder.
-func resolvedJoinEdges(graph workflow.Graph) []workflow.GraphEdge {
-	bySource := make(map[string][]workflow.GraphEdge, len(graph.Nodes))
-	for _, edge := range graph.Edges {
-		bySource[edge.Source] = append(bySource[edge.Source], edge)
-	}
-
-	branchJoin := map[string]string{} // branch-member state -> real join target
-	for _, node := range graph.Nodes {
-		if node.Kind != workflow.GraphNodeParallel {
-			continue
-		}
-		var joinTarget string
-		var branchStarts []string
-		for _, edge := range bySource[node.ID] {
-			switch {
-			case edge.Outcome == "join":
-				joinTarget = edge.Target
-			case edge.Branch != "":
-				branchStarts = append(branchStarts, edge.Target)
-			}
-		}
-		for _, start := range branchStarts {
-			seen := map[string]bool{}
-			queue := []string{start}
-			for len(queue) > 0 {
-				state := queue[0]
-				queue = queue[1:]
-				if state == "" || state == workflow.TargetJoin || seen[state] {
-					continue
-				}
-				seen[state] = true
-				branchJoin[state] = joinTarget
-				for _, edge := range bySource[state] {
-					queue = append(queue, edge.Target)
-				}
-			}
-		}
-	}
-
-	resolved := make([]workflow.GraphEdge, len(graph.Edges))
-	for i, edge := range graph.Edges {
-		if edge.Target == workflow.TargetJoin {
-			if target, ok := branchJoin[edge.Source]; ok {
-				edge.Target = target
-			}
-		}
-		resolved[i] = edge
-	}
-	return resolved
 }
 
 func pathToTerminal(start string, outgoing map[string][]workflow.GraphEdge) ([]workflow.GraphEdge, bool) {
@@ -1210,7 +1492,7 @@ func assertRequiredValueHandoffs(t *testing.T, workflowName string, events []jou
 			continue
 		}
 		var source, destination any
-		var sourceFound, destinationFound bool
+		var sourceFound, destinationFound, consumerRan bool
 		for _, event := range events {
 			if event.Type != journal.EventStageFinished {
 				continue
@@ -1219,8 +1501,16 @@ func assertRequiredValueHandoffs(t *testing.T, workflowName string, events []jou
 			case contract.producer:
 				source, sourceFound = event.Outputs[contract.producerOutput]
 			case contract.consumer:
+				consumerRan = true
 				destination, destinationFound = event.Outputs[contract.consumerOutput]
 			}
+		}
+		// A terminal scenario that short-circuits before the consumer stage
+		// ever runs (e.g. #2340's issue-staleness-gate routing straight to a
+		// terminal stop) legitimately never exercises this handoff — that is
+		// a different scenario's contract to hold, not this one's to fail.
+		if !consumerRan {
+			continue
 		}
 		if !sourceFound || !destinationFound ||
 			!reflect.DeepEqual(source, contract.expectedValue) ||
@@ -1317,12 +1607,14 @@ func (s *scenarioScript) deterministic(stage string, inputs map[string]any) (sta
 	if stage == s.scenario.escalationTask {
 		return failedStage("ISSUE_OVER_SCOPE", nil), nil
 	}
-	failed, err := s.shapeAutomatedGateChain(task, outputs)
+	failed, retryable, err := s.shapeAutomatedGateChain(task, outputs)
 	if err != nil {
 		return stageScript{}, err
 	}
 	if failed {
-		return failedStage("CONTRACT_FAILURE", nil), nil
+		result := failedStage("CONTRACT_FAILURE", nil)
+		result.outputs[executor.OutputErrorRetryable] = retryable
+		return result, nil
 	}
 	return stageScript{outputs: outputs}, nil
 }
@@ -1403,31 +1695,36 @@ func failedStage(code string, classifierExtras map[string]any) stageScript {
 	}
 }
 
-func (s *scenarioScript) shapeAutomatedGateChain(task apiv1.Task, outputs map[string]any) (bool, error) {
+func (s *scenarioScript) shapeAutomatedGateChain(task apiv1.Task, outputs map[string]any) (bool, bool, error) {
 	next := task.Next
 	seen := map[string]bool{}
 	failed := false
+	retryable := false
 	for {
 		gateDefinition, ok := s.gates[next]
 		if !ok || gateDefinition.Evaluator != apiv1.EvaluatorAutomated {
-			return failed, nil
+			return failed, retryable, nil
 		}
 		if seen[next] {
-			return false, fmt.Errorf("task %q reaches automated gate cycle at %q", task.Name, next)
+			return false, false, fmt.Errorf("task %q reaches automated gate cycle at %q", task.Name, next)
 		}
 		seen[next] = true
 		desired, ok := s.nextGateOutcome(gateDefinition.Name)
 		if !ok {
-			return failed, nil
+			return failed, retryable, nil
 		}
 		if gateDefinition.Automated == nil {
-			return false, fmt.Errorf("task %q routes to malformed automated gate %q", task.Name, gateDefinition.Name)
+			return false, false, fmt.Errorf("task %q routes to malformed automated gate %q", task.Name, gateDefinition.Name)
 		}
 		if gateDefinition.Automated.Check == "status-equals" && desired == gate.OutcomeFail {
 			failed = true
 		}
+		if gateDefinition.Automated.Check == "failure-class" && desired != gate.OutcomePass {
+			failed = true
+			retryable = desired == gate.OutcomeInfra
+		}
 		if err := shapeGateOutputs(outputs, *gateDefinition.Automated, desired); err != nil {
-			return false, fmt.Errorf("task %q -> gate %q: %w", task.Name, gateDefinition.Name, err)
+			return false, false, fmt.Errorf("task %q -> gate %q: %w", task.Name, gateDefinition.Name, err)
 		}
 		next = gateDefinition.Branches[desired]
 	}
@@ -1443,7 +1740,7 @@ func shapeGateOutputs(outputs map[string]any, automated apiv1.AutomatedGate, des
 	}
 	pass := desired == gate.OutcomePass
 	switch automated.Check {
-	case "status-equals", "ci-status":
+	case "status-equals", "failure-class", "ci-status":
 		return nil
 	case "output-equals":
 		key := automated.Params["key"]
@@ -1544,6 +1841,9 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 		if err := validateThreadedInputs(task, request.Envelope.Inputs); err != nil {
 			return err
 		}
+		if err := writeScriptedArtifactFile(request); err != nil {
+			return err
+		}
 		result := apiv1.ResultEnvelope{
 			Status:  apiv1.ResultSuccess,
 			Summary: "scripted fake-harness completion",
@@ -1558,21 +1858,21 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 				Code: "ISSUE_OVER_SCOPE", Message: "scripted wired-workflow escalation", Retryable: false,
 			}
 		} else {
-			failed, err := s.shapeAutomatedGateChain(task, result.Outputs)
+			failed, retryable, err := s.shapeAutomatedGateChain(task, result.Outputs)
 			if err != nil {
 				return err
 			}
 			if failed {
 				result.Status = apiv1.ResultFailure
 				result.Error = &apiv1.ErrorInfo{
-					Code: "CONTRACT_FAILURE", Message: "scripted wired-workflow failure", Retryable: false,
+					Code: "CONTRACT_FAILURE", Message: "scripted wired-workflow failure", Retryable: retryable,
 				}
 			}
 		}
 		if err := commitAgentChange(request.Workspace, stage, call); err != nil {
 			return err
 		}
-		return harness.WriteCompletion(request.Workspace, request.CompletionPath, result)
+		return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, result)
 	case harness.ModeReview:
 		outcome, ok := s.nextGateOutcome(stage)
 		if !ok {
@@ -1589,9 +1889,13 @@ func (s *scenarioScript) harnessAct(_ context.Context, request harness.RunReques
 		default:
 			return fmt.Errorf("workflow %q gate %q cannot return scripted outcome %q through the harness", s.definition.Name, stage, outcome)
 		}
-		return harness.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
+		rationale := "scripted fake-harness verdict"
+		if decision == apiv1.VerdictFail {
+			rationale = "scripted fake-harness verdict. What human decision is required?"
+		}
+		return harnesstest.WriteCompletion(request.Workspace, request.CompletionPath, apiv1.Verdict{
 			Decision:  decision,
-			Rationale: "scripted fake-harness verdict",
+			Rationale: rationale,
 		})
 	default:
 		return fmt.Errorf("unsupported harness mode %q", request.Mode)
@@ -1646,7 +1950,10 @@ func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
 				Summary: "scripted CI timeout",
-				Outputs: map[string]any{executor.OutputCIStatus: executor.CIStatusTimeout},
+				Outputs: map[string]any{
+					executor.OutputCIStatus: executor.CIStatusTimeout,
+					executor.OutputPRNumber: env.Inputs[executor.InputPRNumber],
+				},
 				Error: &apiv1.ErrorInfo{
 					Code: "poll_timeout", Message: "scripted CI timeout", Retryable: true,
 				},
@@ -1659,6 +1966,17 @@ func (d *scriptedDeterministic) Run(ctx context.Context, env apiv1.InvocationEnv
 	script, err := d.script.deterministic(stage, env.Inputs)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
+	}
+	if retryable, _ := script.outputs[executor.OutputErrorRetryable].(bool); retryable {
+		code, _ := script.outputs[executor.OutputErrorCode].(string)
+		message, _ := script.outputs[executor.OutputErrorMessage].(string)
+		return apiv1.ResultEnvelope{
+			Status:  apiv1.ResultFailure,
+			Summary: message,
+			Error: &apiv1.ErrorInfo{
+				Code: code, Message: message, Retryable: true,
+			},
+		}, nil
 	}
 	payload, err := json.Marshal(script.outputs)
 	if err != nil {
@@ -1756,7 +2074,7 @@ func newContractRunner(t *testing.T, script *scenarioScript, gateCapabilities ma
 			if !ok {
 				return nil, fmt.Errorf("secret registrar %T is not a journal scrubber", registrar)
 			}
-			adapter := &harness.FakeAdapter{
+			adapter := &harnesstest.FakeAdapter{
 				Act:        script.harnessAct,
 				Transcript: []byte("scripted shipped-workflow contract harness\n"),
 			}
@@ -1802,6 +2120,26 @@ func newFixtureRepository(t *testing.T) string {
 	return bare
 }
 
+// writeScriptedArtifactFile stands in for a real invocation's publish_output
+// call: a task that declares an artifactFile input (#2406) is now eligible
+// for goobers-io auto-wiring, and the harness's post-hoc liftArtifactFile
+// (internal/harness/executor.go) fails the stage closed if that declared
+// path never gets written — this fake harness has to produce it itself,
+// same as commitAgentChange stands in for whatever else a real invocation
+// would have done to the workspace.
+func writeScriptedArtifactFile(request harness.RunRequest) error {
+	artifactFile, _ := request.Envelope.Inputs[harness.InputArtifactFile].(string)
+	if artifactFile == "" {
+		return nil
+	}
+	path := filepath.Join(request.Workspace, filepath.FromSlash(artifactFile))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	content := fmt.Sprintf("scripted fake-harness artifact for %s\n", stageName(request.Envelope.TaskID))
+	return os.WriteFile(path, []byte(content), 0o644)
+}
+
 func commitAgentChange(workspace, stage string, call int) error {
 	name := strings.NewReplacer("/", "-", ":", "-").Replace(stage)
 	path := filepath.Join(workspace, fmt.Sprintf("contract-%s-%d.txt", name, call))
@@ -1826,12 +2164,66 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// gitTransientAccessAttempts and gitTransientAccessBackoff bound the retry of a
+// git invocation that failed because it could not read a file this test itself
+// had just written (#3161-#3164).
+//
+// On Windows, real-time antivirus scanning and the filesystem's own handle
+// semantics leave a briefly-held handle on a newly created file. A test that
+// writes a workcopy and immediately runs git against it can lose that race, and
+// git reports it as `unable to access '<path>/repo.git/config': Permission
+// denied` followed by `fatal: unknown error occurred while reading the
+// configuration files`. The window is milliseconds, so a short bounded retry
+// closes it; five attempts with linear backoff spans ~375ms worst case.
+//
+// This deliberately does NOT retry every git failure. A genuine error -- a bad
+// ref, a conflict, a malformed command -- must still fail on the first attempt,
+// both to keep the suite fast and because retrying a real failure until it
+// gives the same answer is how a flake-suppression measure turns into a
+// bug-suppression measure.
+const (
+	gitTransientAccessAttempts = 5
+	gitTransientAccessBackoff  = 25 * time.Millisecond
+)
+
+// isTransientGitAccessError matches only the shape above: git could not access
+// a file, for a permission reason. Both halves are required. "Permission
+// denied" alone would also match a genuinely unreadable repository, which is
+// not transient and must not be retried.
+func isTransientGitAccessError(output string) bool {
+	lower := strings.ToLower(output)
+	deniedAccess := strings.Contains(lower, "permission denied") ||
+		strings.Contains(lower, "access is denied")
+	if !deniedAccess {
+		return false
+	}
+	return strings.Contains(lower, "unable to access") ||
+		strings.Contains(lower, "reading the configuration files")
+}
+
 func runGitCommand(dir string, args ...string) error {
-	command := exec.Command("git", args...)
+	var lastErr error
+	for attempt := 1; attempt <= gitTransientAccessAttempts; attempt++ {
+		output, err := runGitCommandOnce(dir, args...)
+		if err == nil {
+			return nil
+		}
+		lastErr = fmt.Errorf("git %v: %w\n%s", args, err, output)
+		if !isTransientGitAccessError(output) {
+			return lastErr
+		}
+		time.Sleep(time.Duration(attempt) * gitTransientAccessBackoff)
+	}
+	return fmt.Errorf("git %v still failed with a transient file-access error after %d attempts (#3161): %w",
+		args, gitTransientAccessAttempts, lastErr)
+}
+
+func runGitCommandOnce(dir string, args ...string) (string, error) {
+	command := testgit.Command(args...)
 	if dir != "" {
 		command.Dir = dir
 	}
-	command.Env = append(os.Environ(),
+	command.Env = append(command.Env,
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=core.autocrlf",
 		"GIT_CONFIG_VALUE_0=false",
@@ -1841,8 +2233,60 @@ func runGitCommand(dir string, args ...string) error {
 	var output bytes.Buffer
 	command.Stdout = &output
 	command.Stderr = &output
-	if err := command.Run(); err != nil {
-		return fmt.Errorf("git %v: %w\n%s", args, err, output.String())
+	err := command.Run()
+	return output.String(), err
+}
+
+// #3161-#3164: the retry must fire for the observed Windows signature and for
+// nothing else. Retrying a genuine git failure would convert a flake-suppression
+// measure into a bug-suppression measure.
+func TestIsTransientGitAccessError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			// Verbatim from the failure that red-lit PR #3472's CI.
+			name: "observed windows workcopy signature",
+			output: "warning: unable to access 'C:/Users/runneradmin/AppData/Local/Temp/" +
+				"TestShippedWorkflowContracts.../workcopies/b049e36e60cc66b7/repo.git/config': Permission denied\n" +
+				"fatal: unknown error occurred while reading the configuration files",
+			want: true,
+		},
+		{
+			name:   "windows phrasing of the same denial",
+			output: "warning: unable to access 'repo.git/config': Access is denied",
+			want:   true,
+		},
+		{
+			name:   "permission denied without an access failure is not transient",
+			output: "fatal: could not read Username for 'https://github.com': Permission denied",
+			want:   false,
+		},
+		{
+			name:   "ordinary git failure is not retried",
+			output: "error: pathspec 'nope' did not match any file(s) known to git",
+			want:   false,
+		},
+		{
+			name:   "merge conflict is not retried",
+			output: "CONFLICT (content): Merge conflict in README.md",
+			want:   false,
+		},
+		{
+			name:   "empty output is not retried",
+			output: "",
+			want:   false,
+		},
 	}
-	return nil
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isTransientGitAccessError(tt.output); got != tt.want {
+				t.Fatalf("isTransientGitAccessError(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
+	}
 }

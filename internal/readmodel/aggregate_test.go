@@ -231,7 +231,7 @@ func aggregateTiming(t *testing.T, ctx context.Context, workflows, runsEach int)
 
 	start = time.Now()
 	for i := 0; i < reps; i++ {
-		rows, err := store.readDB().Query(windowFunctionQuery, "alpha")
+		rows, err := store.reader.Query(windowFunctionQuery, "alpha")
 		if err != nil {
 			t.Fatal(err)
 		}

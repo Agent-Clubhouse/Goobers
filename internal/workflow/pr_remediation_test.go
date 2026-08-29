@@ -14,12 +14,12 @@ import (
 
 // loadPRRemediation reads and compiles the REAL shipped pr-remediation
 // definition against the REAL implementer/reviewer goobers, the same
-// divergence-guard approach TestSelfhostWorkflowsCompile takes (#124): a
+// divergence-guard approach TestReferenceWorkflowsCompile takes (#124): a
 // synthetic fixture would happily keep passing while the definition the
 // dogfood instance actually runs drifted.
 func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 	t.Helper()
-	root := filepath.Join("..", "..", "selfhost", "gaggles", "goobers")
+	root := filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers")
 
 	raw, err := os.ReadFile(filepath.Join(root, "workflows", "pr-remediation.yaml"))
 	if err != nil {
@@ -56,10 +56,10 @@ func loadPRRemediation(t *testing.T) (apiv1.Workflow, *Machine) {
 	m, err := compileAcknowledged(
 		Definition{Name: w.Name, Version: 1, Spec: w.Spec},
 		WithGoobers(goobers),
-		WithKnownChecks([]string{"output-equals", "status-equals"}))
+		WithKnownChecks([]string{"failure-class", "output-equals", "status-equals"}))
 
 	if err != nil {
-		t.Fatalf("compile pr-remediation against selfhost's real goobers: %v", err)
+		t.Fatalf("compile pr-remediation against the real reference workflows' goobers: %v", err)
 	}
 	return w, m
 }
@@ -72,6 +72,23 @@ func TestPRRemediationDeclaresWorkDrivenPolling(t *testing.T) {
 		}
 	}
 	t.Fatal("pr-remediation has no high-priority schedule trigger for eligibility-driven fan-out")
+}
+
+func TestPRRemediationThreadsUpdateSelectionIntoFullRemediation(t *testing.T) {
+	w, _ := loadPRRemediation(t)
+	for _, task := range w.Spec.Tasks {
+		if task.Name != "gather-pr-context" {
+			continue
+		}
+		if got := task.InputsFrom["selectedNumber"]; got != "selectedNumber" {
+			t.Fatalf("gather-pr-context selectedNumber input = %q, want update-behind-pr selectedNumber", got)
+		}
+		if !reflect.DeepEqual(task.Capabilities, []string{"github:pr:write", "repo:push"}) {
+			t.Fatalf("gather-pr-context capabilities = %v, want [github:pr:write repo:push]", task.Capabilities)
+		}
+		return
+	}
+	t.Fatal("gather-pr-context task not found")
 }
 
 // TestPRRemediationWiresTheAgenticChain is issue #392's regression guard. The
@@ -88,8 +105,8 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("update-behind-gate not found")
 	}
-	if got := updateGate.Branches["pass"]; got != "" {
-		t.Errorf("update-behind-gate pass -> %q, want terminal", got)
+	if got := updateGate.Branches["pass"]; got != "release-claim" {
+		t.Errorf("update-behind-gate pass -> %q, want release-claim", got)
 	}
 	if got := updateGate.Branches["fail"]; got != "gather-pr-context" {
 		t.Errorf("update-behind-gate fail -> %q, want gather-pr-context", got)
@@ -108,14 +125,34 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("checkpoint-gate not found — loop control cannot route into the agentic chain")
 	}
-	if got := checkpointGate.Branches["pass"]; got != "gather-review-threads" {
-		t.Errorf("checkpoint-gate pass -> %q, want gather-review-threads", got)
+	if got := checkpointGate.Branches["pass"]; got != "checkpoint-continue-gate" {
+		t.Errorf("checkpoint-gate pass -> %q, want checkpoint-continue-gate", got)
 	}
-	if checkpointGate.Automated == nil || checkpointGate.Automated.Params["key"] != "continueRemediation" {
-		t.Errorf("checkpoint-gate input = %+v, want continueRemediation", checkpointGate.Automated)
+	if checkpointGate.Automated == nil || checkpointGate.Automated.Params["key"] != "escalationOutcome" {
+		t.Errorf("checkpoint-gate input = %+v, want escalationOutcome", checkpointGate.Automated)
 	}
-	if got, ok := checkpointGate.Branches["fail"]; !ok || got != "" {
-		t.Errorf("checkpoint-gate fail -> %q, want terminal: an escalated PR must stop, not loop", got)
+	// #1860: this escalation path must release the run's PR claim like every
+	// other terminal/escalate path in this workflow, not reach @escalate
+	// directly — a policy-excluded/budget-exhausted escalation here would
+	// otherwise strand the claim the same way the pre-#1860 workflow did.
+	if got := checkpointGate.Branches["fail"]; got != "release-escalated-claim" {
+		t.Errorf("checkpoint-gate fail -> %q, want release-escalated-claim", got)
+	}
+	continueGate, ok := m.Gate("checkpoint-continue-gate")
+	if !ok {
+		t.Fatal("checkpoint-continue-gate not found")
+	}
+	if continueGate.Automated == nil || continueGate.Automated.Params["key"] != "continueRemediation" {
+		t.Errorf("checkpoint-continue-gate input = %+v, want continueRemediation", continueGate.Automated)
+	}
+	// checkpoint-continue-gate is the original checkpoint-gate (#1860), so it
+	// keeps #1860's claim-guard routing rather than the pre-#1860
+	// gather-review-threads/"" destinations.
+	if got, ok := continueGate.Branches["pass"]; !ok || got != "guard-before-agent-context" {
+		t.Errorf("checkpoint-continue-gate pass -> %q, want guard-before-agent-context", got)
+	}
+	if got, ok := continueGate.Branches["fail"]; !ok || got != "release-claim" {
+		t.Errorf("checkpoint-continue-gate fail -> %q, want release-claim: an escalated PR must stop, not loop", got)
 	}
 
 	siblings, ok := m.Task("gather-sibling-context")
@@ -194,13 +231,11 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if issues.Inputs["resultFile"] != "remediation-brief.json" {
 		t.Errorf("gather-issue-context resultFile = %q, want remediation-brief.json", issues.Inputs["resultFile"])
 	}
-	if len(issues.Capabilities) != 2 ||
-		issues.Capabilities[0] != "github:pr:write" ||
-		issues.Capabilities[1] != "github:issues:write" {
-		t.Errorf("gather-issue-context capabilities = %v, want [github:pr:write github:issues:write]", issues.Capabilities)
+	if !reflect.DeepEqual(issues.Capabilities, []string{"github:pr:write", "github:issues:read"}) {
+		t.Errorf("gather-issue-context capabilities = %v, want [github:pr:write github:issues:read]", issues.Capabilities)
 	}
-	if issues.Next != "implement" {
-		t.Errorf("gather-issue-context next = %q, want implement", issues.Next)
+	if issues.Next != "guard-before-implement" {
+		t.Errorf("gather-issue-context next = %q, want guard-before-implement", issues.Next)
 	}
 
 	implement, ok := m.Task("implement")
@@ -218,6 +253,9 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	}
 	if !containsString(implement.ExpectedOutputs, "findingResponses") {
 		t.Errorf("implement expectedOutputs = %v, missing findingResponses account", implement.ExpectedOutputs)
+	}
+	if !containsString(implement.ExpectedOutputs, "threadResponses") {
+		t.Errorf("implement expectedOutputs = %v, missing threadResponses account", implement.ExpectedOutputs)
 	}
 
 	validateResponses, ok := m.Task("validate-finding-responses")
@@ -237,11 +275,11 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if validateResponses.Inputs["resultFile"] != "finding-response-validation.json" {
 		t.Errorf("validate-finding-responses resultFile = %q, want finding-response-validation.json", validateResponses.Inputs["resultFile"])
 	}
-	if len(validateResponses.Capabilities) != 1 || validateResponses.Capabilities[0] != "github:issues:write" {
-		t.Errorf("validate-finding-responses capabilities = %v, want [github:issues:write]", validateResponses.Capabilities)
+	if len(validateResponses.Capabilities) != 0 {
+		t.Errorf("validate-finding-responses capabilities = %v, want none for check-only validation", validateResponses.Capabilities)
 	}
-	if len(validateResponses.PolicyActions) != 1 || validateResponses.PolicyActions[0] != "respond-to-findings" {
-		t.Errorf("validate-finding-responses policyActions = %v, want [respond-to-findings]", validateResponses.PolicyActions)
+	if len(validateResponses.PolicyActions) != 0 {
+		t.Errorf("validate-finding-responses policyActions = %v, want none for check-only validation", validateResponses.PolicyActions)
 	}
 	if validateResponses.Next != "finding-responses-gate" {
 		t.Errorf("validate-finding-responses next = %q, want finding-responses-gate", validateResponses.Next)
@@ -255,24 +293,29 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		responseGate.Automated.Check != "status-equals" {
 		t.Errorf("finding-responses-gate evaluator = %+v, want automated status-equals", responseGate)
 	}
-	if responseGate.Branches["pass"] != "review" ||
-		responseGate.Branches["fail"] != "implement" ||
+	if responseGate.Branches["pass"] != "guard-before-review" ||
+		responseGate.Branches["fail"] != "guard-before-implement" ||
 		responseGate.Branches["escalate"] != "park-invalid-finding-responses" {
-		t.Errorf("finding-responses-gate branches = %v, want pass->review, fail->implement, and escalate->park-invalid-finding-responses", responseGate.Branches)
+		t.Errorf("finding-responses-gate branches = %v, want pass->guard-before-review, fail->guard-before-implement, and escalate->park-invalid-finding-responses", responseGate.Branches)
 	}
 	invalidResponsesPark, ok := m.Task("park-invalid-finding-responses")
 	if !ok {
 		t.Fatal("park-invalid-finding-responses not found")
 	}
-	if invalidResponsesPark.Next != TargetEscalate {
-		t.Errorf("park-invalid-finding-responses next = %q, want %q", invalidResponsesPark.Next, TargetEscalate)
+	if invalidResponsesPark.Next != "release-escalated-claim" {
+		t.Errorf("park-invalid-finding-responses next = %q, want release-escalated-claim", invalidResponsesPark.Next)
 	}
 	if invalidResponsesPark.Run == nil ||
-		len(invalidResponsesPark.Run.Command) != 4 ||
+		len(invalidResponsesPark.Run.Command) != 6 ||
 		invalidResponsesPark.Run.Command[0] != "goobers" ||
 		invalidResponsesPark.Run.Command[1] != "remediation-checkpoint" ||
-		invalidResponsesPark.Run.Command[2] != "--escalate" {
-		t.Errorf("park-invalid-finding-responses command = %v, want goobers remediation-checkpoint --escalate <reason>", invalidResponsesPark.Run)
+		invalidResponsesPark.Run.Command[2] != "--escalate" ||
+		invalidResponsesPark.Run.Command[4] != "--escalation-outcome" ||
+		invalidResponsesPark.Run.Command[5] != "budget-exhausted" {
+		t.Errorf("park-invalid-finding-responses command = %v, want forced budget-exhausted checkpoint", invalidResponsesPark.Run)
+	}
+	if got := invalidResponsesPark.Inputs["resultFile"]; got != "finding-response-escalation-result.json" {
+		t.Errorf("park-invalid-finding-responses resultFile = %q, want finding-response-escalation-result.json", got)
 	}
 	if len(invalidResponsesPark.PolicyActions) != 2 ||
 		invalidResponsesPark.PolicyActions[0] != "record-remediation-checkpoint" ||
@@ -281,6 +324,11 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 			"park-invalid-finding-responses policyActions = %v, want [record-remediation-checkpoint escalate-pr]",
 			invalidResponsesPark.PolicyActions,
 		)
+	}
+	for _, output := range []string{"escalationOutcome", "remediationAttempted", "attemptedCauses", "escalationReason"} {
+		if !containsString(invalidResponsesPark.ExpectedOutputs, output) {
+			t.Errorf("park-invalid-finding-responses expectedOutputs = %v, missing %q", invalidResponsesPark.ExpectedOutputs, output)
+		}
 	}
 
 	// The full executor chain, exactly as implementation.yaml shapes it:
@@ -293,8 +341,8 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		t.Errorf("review evaluator = %q, want agentic", review.Evaluator)
 	}
 	for branch, want := range map[string]string{
-		"pass":          "local-ci",
-		"needs-changes": "implement",
+		"pass":          "guard-before-local-ci",
+		"needs-changes": "guard-before-implement",
 		"fail":          "park-escalated",
 		"escalate":      "park-escalated",
 	} {
@@ -308,12 +356,25 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 		t.Fatal("local-gate not found")
 	}
 	for branch, want := range map[string]string{
-		"pass": "push-remediated",
-		"fail": "implement",
+		"pass":  "guard-before-push",
+		"fail":  "guard-before-implement",
+		"infra": "park-infrastructure-failure",
 	} {
 		if got := localGate.Branches[branch]; got != want {
 			t.Errorf("local-gate %s -> %q, want %q", branch, got, want)
 		}
+	}
+	if localGate.Automated == nil || localGate.Automated.Check != "failure-class" {
+		t.Errorf("local-gate automated check = %+v, want failure-class", localGate.Automated)
+	}
+	infraPark, ok := m.Task("park-infrastructure-failure")
+	if !ok {
+		t.Fatal("park-infrastructure-failure not found")
+	}
+	if infraPark.Next != "release-escalated-claim" ||
+		infraPark.Run == nil ||
+		!containsString(infraPark.Run.Command, "infrastructure-failure") {
+		t.Errorf("park-infrastructure-failure = %+v, want explicit infrastructure disposition before claim release", infraPark)
 	}
 
 	// A reviewer "fail" verdict must terminate ESCALATED, not merely abort
@@ -323,8 +384,56 @@ func TestPRRemediationWiresTheAgenticChain(t *testing.T) {
 	if !ok {
 		t.Fatal("park-escalated not found")
 	}
-	if park.Next != TargetEscalate {
-		t.Errorf("park-escalated next = %q, want %q", park.Next, TargetEscalate)
+	if park.Next != "release-escalated-claim" {
+		t.Errorf("park-escalated next = %q, want release-escalated-claim", park.Next)
+	}
+
+	for name, next := range map[string]string{
+		"guard-before-agent-context": "gather-review-threads",
+		"guard-before-implement":     "implement",
+		"guard-before-review":        "review",
+		"guard-before-local-ci":      "local-ci",
+		"guard-before-push":          "push-remediated",
+	} {
+		guard, ok := m.Task(name)
+		if !ok {
+			t.Errorf("%s not found", name)
+			continue
+		}
+		if guard.Run == nil || !reflect.DeepEqual(guard.Run.Command, []string{"goobers", "pr-claim"}) {
+			t.Errorf("%s command = %v, want PR lifecycle check", name, guard.Run)
+		}
+		if guard.Next != next {
+			t.Errorf("%s next = %q, want %q", name, guard.Next, next)
+		}
+	}
+	release, ok := m.Task("release-claim")
+	if !ok {
+		t.Fatal("release-claim not found")
+	}
+	if release.Run == nil || !reflect.DeepEqual(release.Run.Command, []string{"goobers", "pr-claim", "--release"}) {
+		t.Errorf("release-claim command = %v, want explicit PR claim release", release.Run)
+	}
+	if release.Next != "" {
+		t.Errorf("release-claim next = %q, want terminal", release.Next)
+	}
+	escalatedRelease, ok := m.Task("release-escalated-claim")
+	if !ok {
+		t.Fatal("release-escalated-claim not found")
+	}
+	if escalatedRelease.Run == nil || !reflect.DeepEqual(escalatedRelease.Run.Command, []string{"goobers", "pr-claim", "--release"}) {
+		t.Errorf("release-escalated-claim command = %v, want explicit PR claim release", escalatedRelease.Run)
+	}
+	if escalatedRelease.Next != TargetEscalate {
+		t.Errorf("release-escalated-claim next = %q, want %q", escalatedRelease.Next, TargetEscalate)
+	}
+	if got := park.Inputs["resultFile"]; got != "reviewer-escalation-result.json" {
+		t.Errorf("park-escalated resultFile = %q, want reviewer-escalation-result.json", got)
+	}
+	for _, output := range []string{"escalationOutcome", "remediationAttempted", "attemptedCauses", "escalationReason"} {
+		if !containsString(park.ExpectedOutputs, output) {
+			t.Errorf("park-escalated expectedOutputs = %v, missing %q", park.ExpectedOutputs, output)
+		}
 	}
 }
 
@@ -443,7 +552,7 @@ func TestPRRemediationHandsTheVersionedBriefToImplement(t *testing.T) {
 
 func TestPRRemediationImplementerRequiresCompleteFindingAccount(t *testing.T) {
 	path := filepath.Join(
-		"..", "..", "selfhost", "gaggles", "goobers", "goobers", "implementer", "instructions.md",
+		"..", "..", "reference-workflows", "gaggles", "goobers", "goobers", "implementer", "instructions.md",
 	)
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -488,8 +597,8 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 	if !ok {
 		t.Fatal("respond-to-findings not found — the published remediation would remain silent")
 	}
-	if respond.Next != "" {
-		t.Errorf("respond-to-findings next = %q, want terminal", respond.Next)
+	if respond.Next != "published-remediation-gate" {
+		t.Errorf("respond-to-findings next = %q, want published-remediation-gate", respond.Next)
 	}
 	if respond.Run == nil {
 		t.Fatal("respond-to-findings has no deterministic run command")
@@ -512,6 +621,35 @@ func TestPRRemediationPublishesAndResponds(t *testing.T) {
 	}
 	if !containsString(respond.ExpectedOutputs, "posted") {
 		t.Errorf("respond-to-findings outputs = %v, missing posted status", respond.ExpectedOutputs)
+	}
+	publishedGate, ok := m.Gate("published-remediation-gate")
+	if !ok || publishedGate.Automated == nil ||
+		publishedGate.Automated.Check != "output-equals" ||
+		publishedGate.Automated.Params["key"] != "posted" ||
+		publishedGate.Automated.Params["equals"] != "true" ||
+		publishedGate.Branches["pass"] != "resolve-review-threads" ||
+		publishedGate.Branches["fail"] != "release-claim" {
+		t.Errorf("published-remediation-gate = %+v, want posted publication routing", publishedGate)
+	}
+	resolveThreads, ok := m.Task("resolve-review-threads")
+	if !ok {
+		t.Fatal("resolve-review-threads not found")
+	}
+	if resolveThreads.Run == nil || !reflect.DeepEqual(resolveThreads.Run.Command, []string{"goobers", "resolve-review-threads"}) {
+		t.Errorf("resolve-review-threads command = %v", resolveThreads.Run)
+	}
+	if resolveThreads.Next != "review-threads-gate" ||
+		!containsString(resolveThreads.ExpectedOutputs, "unresolvedThreadCount") {
+		t.Errorf("resolve-review-threads routing contract = next %q outputs %v", resolveThreads.Next, resolveThreads.ExpectedOutputs)
+	}
+	threadGate, ok := m.Gate("review-threads-gate")
+	if !ok || threadGate.Automated == nil ||
+		threadGate.Automated.Check != "output-equals" ||
+		threadGate.Automated.Params["key"] != "unresolvedThreadCount" ||
+		threadGate.Automated.Params["equals"] != "0" ||
+		threadGate.Branches["pass"] != "release-claim" ||
+		threadGate.Branches["fail"] != "park-unresolved-review-threads" {
+		t.Errorf("review-threads-gate = %+v, want unresolved-count routing", threadGate)
 	}
 	for c, granted := range wantCaps {
 		if !granted {
@@ -569,17 +707,24 @@ func TestPRRemediationCheckpointEchoesPushContext(t *testing.T) {
 		"substantiveBudget":    "2",
 		"failingCIBudget":      "2",
 		"siblingOverlapBudget": "2",
+		"humanCommentBudget":   "2",
 	}
 	for input, want := range wantBudgets {
 		if got := checkpoint.Inputs[input]; got != want {
 			t.Errorf("remediation-checkpoint inputs[%q] = %q, want DSL-declared budget %q", input, got, want)
 		}
 	}
+	if remediate := rebase.Inputs["remediate"]; !strings.Contains(remediate, "human-comment") {
+		t.Errorf("rebase-pr remediate = %q, want it to include human-comment", remediate)
+	}
 	declared := map[string]bool{}
 	for _, out := range checkpoint.ExpectedOutputs {
 		declared[out] = true
 	}
-	for _, want := range []string{"continueRemediation", "selectedNumber", "head", "headSha"} {
+	for _, want := range []string{
+		"continueRemediation", "selectedNumber", "head", "headSha",
+		"escalationOutcome", "remediationAttempted", "attemptedCauses", "escalationReason",
+	} {
 		if !declared[want] {
 			t.Errorf("remediation-checkpoint expectedOutputs = %v, missing %q", checkpoint.ExpectedOutputs, want)
 		}

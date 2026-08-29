@@ -19,7 +19,7 @@ import (
 
 func TestBacklogQueryHasNoShippedFailBranchConsumers(t *testing.T) {
 	configRoots := []string{
-		filepath.Join("..", "..", "selfhost"),
+		filepath.Join("..", "..", "reference-workflows"),
 		filepath.Join("..", "..", "config-examples"),
 		filepath.Join("..", "..", "examples", "ios-simulator"),
 		filepath.Join("..", "..", "internal", "instance", "starter"),
@@ -76,7 +76,7 @@ func TestBacklogQueryHasNoShippedFailBranchConsumers(t *testing.T) {
 		}
 	}
 
-	const wantProducers = 11
+	const wantProducers = 16
 	if producers != wantProducers {
 		t.Fatalf("found %d shipped backlog-query stages, want audited inventory of %d", producers, wantProducers)
 	}
@@ -131,15 +131,17 @@ func TestBacklogQueryFatalProviderPathInventory(t *testing.T) {
 	})
 
 	want := map[string]int{
-		"reconcile backlog metadata":           2,
-		"list open pull requests":              1,
-		"reconcile closed pull requests":       1,
-		"list work items":                      1,
-		"list ready items for re-sweep":        1,
-		"read ready-label transitions":         1,
-		"compute claimed-item staleness":       1,
-		"compute read-only re-sweep staleness": 1,
-		"release backlog claims":               1,
+		"reconcile backlog metadata":                2,
+		"list open pull requests":                   1,
+		"reconcile closed pull requests":            1,
+		"list work items":                           2,
+		"list blocked items for dependency recheck": 1,
+		"list ready items for re-sweep":             1,
+		"read ready-label transitions":              1,
+		"compute claimed-item staleness":            1,
+		"compute read-only re-sweep staleness":      1,
+		"release backlog claims":                    1,
+		"verify decomposition publication barrier":  2,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fatal provider path inventory = %v, want %v; add fault-injection coverage for any new path", got, want)

@@ -3,7 +3,7 @@ name: Provider Fixture Drift
 on:
   workflow_dispatch:
   # Enable the schedule only after #1478 provisions the designated repository,
-  # issue, and credential and reconciles the first live candidate.
+  # issue, pull request, and credential and reconciles the first live candidates.
   # schedule:
   #   - cron: "43 7 * * 1"
 
@@ -33,43 +33,69 @@ jobs:
         env:
           PROVIDER_FIXTURE_REPOSITORY: ${{ vars.PROVIDER_FIXTURE_REPOSITORY }}
           PROVIDER_FIXTURE_ISSUE: ${{ vars.PROVIDER_FIXTURE_ISSUE }}
-          PROVIDER_FIXTURE_TOKEN: ${{ secrets.PROVIDER_FIXTURE_TOKEN }}
+          PROVIDER_FIXTURE_PR: ${{ vars.PROVIDER_FIXTURE_PR }}
+          PROVIDER_FIXTURE_TOKEN: ${{ secrets.GH_READONLY_VALIDATION_PAT }}
         run: |
           missing=""
           [ -n "$PROVIDER_FIXTURE_REPOSITORY" ] || missing="$missing PROVIDER_FIXTURE_REPOSITORY"
           [ -n "$PROVIDER_FIXTURE_ISSUE" ] || missing="$missing PROVIDER_FIXTURE_ISSUE"
+          [ -n "$PROVIDER_FIXTURE_PR" ] || missing="$missing PROVIDER_FIXTURE_PR"
           [ -n "$PROVIDER_FIXTURE_TOKEN" ] || missing="$missing PROVIDER_FIXTURE_TOKEN"
           if [ -n "$missing" ]; then
             echo "::error title=Provider fixture refresh is not provisioned::Missing:$missing. Complete #1478 and docs/guides/provider-fixture-drift.md before enabling live calls."
             exit 1
           fi
 
-      - name: Refresh normalized candidate
+      - name: Refresh normalized issue candidate
         env:
-          GOOBERS_PROVIDER_FIXTURE_TOKEN: ${{ secrets.PROVIDER_FIXTURE_TOKEN }}
+          GOOBERS_PROVIDER_FIXTURE_TOKEN: ${{ secrets.GH_READONLY_VALIDATION_PAT }}
           PROVIDER_FIXTURE_REPOSITORY: ${{ vars.PROVIDER_FIXTURE_REPOSITORY }}
           PROVIDER_FIXTURE_ISSUE: ${{ vars.PROVIDER_FIXTURE_ISSUE }}
         run: >-
           go run ./test/providerfixtures refresh
           -repository "$PROVIDER_FIXTURE_REPOSITORY"
           -issue "$PROVIDER_FIXTURE_ISSUE"
-          -output provider-fixture-candidate.json
+          -output provider-issue-fixture-candidate.json
 
-      - name: Provider contract assertions
+      - name: Issue provider contract assertions
         run: >-
           go run ./test/providerfixtures contract
-          -fixture provider-fixture-candidate.json
+          -fixture provider-issue-fixture-candidate.json
 
-      - name: Normalized fixture drift
+      - name: Normalized issue fixture drift
         run: >-
           go run ./test/providerfixtures drift
           -baseline test/providers/testdata/github_contract.json
-          -candidate provider-fixture-candidate.json
+          -candidate provider-issue-fixture-candidate.json
 
-      - name: Upload normalized candidate
-        if: ${{ !cancelled() && hashFiles('provider-fixture-candidate.json') != '' }}
+      - name: Refresh normalized pull request candidate
+        env:
+          GOOBERS_PROVIDER_FIXTURE_TOKEN: ${{ secrets.GH_READONLY_VALIDATION_PAT }}
+          PROVIDER_FIXTURE_REPOSITORY: ${{ vars.PROVIDER_FIXTURE_REPOSITORY }}
+          PROVIDER_FIXTURE_PR: ${{ vars.PROVIDER_FIXTURE_PR }}
+        run: >-
+          go run ./test/providerfixtures refresh
+          -repository "$PROVIDER_FIXTURE_REPOSITORY"
+          -pull-request "$PROVIDER_FIXTURE_PR"
+          -output provider-pr-fixture-candidate.json
+
+      - name: Pull request provider contract assertions
+        run: >-
+          go run ./test/providerfixtures contract
+          -fixture provider-pr-fixture-candidate.json
+
+      - name: Normalized pull request fixture drift
+        run: >-
+          go run ./test/providerfixtures drift
+          -baseline test/providers/testdata/github_pr_contract.json
+          -candidate provider-pr-fixture-candidate.json
+
+      - name: Upload normalized candidates
+        if: ${{ !cancelled() && (hashFiles('provider-issue-fixture-candidate.json') != '' || hashFiles('provider-pr-fixture-candidate.json') != '') }}
         uses: actions/upload-artifact@v7
         with:
           name: github-provider-fixture-${{ github.run_id }}-${{ github.run_attempt }}
-          path: provider-fixture-candidate.json
+          path: |
+            provider-issue-fixture-candidate.json
+            provider-pr-fixture-candidate.json
           retention-days: 30

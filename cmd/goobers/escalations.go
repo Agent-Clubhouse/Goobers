@@ -50,15 +50,16 @@ type escalationInspection struct {
 	Cause        *readservice.EscalationCause `json:"cause,omitempty"`
 	Timeline     []escalationArtifactStep     `json:"timeline"`
 	CurrentState escalationCurrentState       `json:"currentState"`
+	Verdicts     []verdictView                `json:"verdicts,omitempty"`
 }
 
 const escalationsHelp = "Usage: goobers escalations [--json] [path]\n" +
-	"       goobers escalations show [--json] <run-id> [path]\n\n" +
+	"       goobers escalations show [--json] [--include-verdict] <run-id> [path]\n\n" +
 	"List escalated runs newest first. Use `escalations show` to inspect an\n" +
 	"escalation cause and the artifacts available before and after each stage.\n"
 
 func runEscalations(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("escalations", flag.ContinueOnError)
+	fs := newCLIFlagSet("escalations", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit escalated runs as JSON")
 	fs.Usage = helpUsage(stderr, "escalations")
@@ -95,13 +96,15 @@ func runEscalations(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const escalationsShowHelp = "Usage: goobers escalations show [--json] <run-id> [path]\n\n" +
-	"Show an escalation's structured cause and per-stage artifact timeline.\n"
+const escalationsShowHelp = "Usage: goobers escalations show [--json] [--include-verdict] <run-id> [path]\n\n" +
+	"Show an escalation's structured cause and per-stage artifact timeline.\n" +
+	"Use --include-verdict to include reviewer verdict rationale and findings.\n"
 
 func runEscalationShow(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("escalations show", flag.ContinueOnError)
+	fs := newCLIFlagSet("escalations show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit the escalation inspection as JSON")
+	includeVerdict := fs.Bool("include-verdict", false, "include review verdict content")
 	fs.Usage = helpUsage(stderr, "escalations show")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -147,6 +150,9 @@ func runEscalationShow(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	inspection := inspectEscalation(detail, events.Events)
+	if *includeVerdict {
+		inspection.Verdicts = loadVerdictViews(ctx, reads, detail.ID, events.Events)
+	}
 	if *jsonOutput {
 		if err := json.NewEncoder(stdout).Encode(inspection); err != nil {
 			pf(stderr, "error: encode escalation: %v\n", err)
@@ -155,6 +161,10 @@ func runEscalationShow(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	renderEscalationInspection(stdout, inspection)
+	if *includeVerdict {
+		pln(stdout, "")
+		renderVerdicts(stdout, inspection.Verdicts)
+	}
 	return 0
 }
 

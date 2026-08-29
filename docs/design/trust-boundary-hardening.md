@@ -1,6 +1,6 @@
 # Design: Trust-boundary hardening — proposal/executor split, staged mode, integrity labels
 
-> Status: **TBH-1 phase-0 RFC complete; human design gate pending — prescriptive** ·
+> Status: **draft — TBH-1 phase-0 RFC complete; human design gate pending; prescriptive** ·
 > Area prefix: `TBH` · Milestone: **Trust & Isolation**
 > ([#25](https://github.com/Agent-Clubhouse/Goobers/milestone/25))
 > Origin: the comparative-security review of GitHub Agentic Workflows
@@ -178,8 +178,8 @@ before it exists.
 | Phase | Ships | Gate |
 |---|---|---|
 | 0 (design) | TBH-1 envelope schema + executor contract RFC'd against stage-contract.md | PO sign-off (architectural blast radius); no implementation issue may land first until recorded |
-| 1 | TBH-1 for merge/close; TBH-2 staged-lite on those capabilities | Selfhost runs with merge/close behind proposals for a full watched round |
-| 2 | TBH-3 sandbox-on-by-default; TBH-1 push/issue migration | Zero un-journaled opt-outs on selfhost |
+| 1 | TBH-1 for merge/close; TBH-2 staged-lite on those capabilities | Reference workflow runs with merge/close behind proposals for a full watched round |
+| 2 | TBH-3 sandbox-on-by-default; TBH-1 push/issue migration | Zero un-journaled opt-outs on reference-workflows |
 | 3 | TBH-2 full staged mode; TBH-4 integrity labels | Stranger-repo pilot onboards in staged mode |
 
 The phase-0 sign-off is recorded on this sign-off PR, which pins the RFC revision

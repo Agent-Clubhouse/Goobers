@@ -4,13 +4,11 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
 )
-
-// DefaultTaskQueue is the Temporal task queue the engine worker and the
-// scheduler's TemporalStarter agree on.
-const DefaultTaskQueue = "goobers-engine"
 
 // EngineDeps are the execution seams a goober runtime provides to the engine
 // worker. Goober is required (agentic tasks/reviews); Det and Auto are optional
@@ -23,6 +21,27 @@ type EngineDeps struct {
 	Det        invoke.Deterministic
 	Auto       invoke.Automated
 	Workspaces engine.WorkspaceProvisioner
+	Scrubber   journal.Scrubber
+	// Journal is the live-journal emission seam (DS4): in the daemon it is
+	// the *livejournal.Writer itself, on a remote worker it is
+	// livejournal.HTTPEmitter at the daemon write API's journal plane. Only
+	// runs pinned with RunInput.LiveJournal need it; without one such a run's
+	// attempts fail closed as infra.
+	Journal engine.JournalEmitter
+	// Canary is the #2931 fail-closed dispatch canary: the exact-value secret
+	// registry (journal.RegistryScrubber) the activities assert serialized
+	// dispatch envelopes against before executing a stage. Wire the SAME
+	// registry every resolver-issued and credential-plane-minted value is
+	// registered with; nil disables the canary.
+	Canary journal.Scrubber
+	// Dispatcher is the mode-3 substrate seam (#3588): a
+	// *dispatcher.Dispatcher placing stage attempts as fresh pods. Nil keeps
+	// the worker local-only — a run pinned with a non-self placement then
+	// fails its dispatch activity closed with "not configured".
+	Dispatcher engine.StageDispatcher
+	// Surrenders is the plane the dispatch activity reads surrendered stage
+	// results from; required alongside Dispatcher.
+	Surrenders dispatcher.SurrenderPlane
 }
 
 // RegisterEngine registers the engine workflow and its activities (wired to the
@@ -35,16 +54,12 @@ func RegisterEngine(w worker.Worker, temporalClient client.Client, deps EngineDe
 		Auto:            deps.Auto,
 		ScheduleService: temporalClient.WorkflowService(),
 		Workspaces:      deps.Workspaces,
+		Scrubber:        deps.Scrubber,
+		Journal:         deps.Journal,
+		Canary:          deps.Canary,
+		Dispatcher:      deps.Dispatcher,
+		Surrenders:      deps.Surrenders,
 	})
-}
-
-// NewStarter builds the scheduler's run Starter over a Temporal client and task
-// queue. Pass the result as SchedulerDeps.Starter.
-func NewStarter(c client.Client, taskQueue string) engine.Starter {
-	if taskQueue == "" {
-		taskQueue = DefaultTaskQueue
-	}
-	return engine.NewTemporalStarter(c, taskQueue)
 }
 
 // DialTemporal connects to a Temporal frontend. A thin wrapper so the cmd

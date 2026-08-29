@@ -65,9 +65,9 @@ type ReapWarning struct {
 // start, before resuming any interrupted run, so a restart converges disk
 // state after a crash without operator intervention.
 //
-// A live run in progress is never touched: its marker's PID is the current
-// process (Manager.Create stamps os.Getpid()), which is always alive from
-// its own perspective.
+// PID liveness is valid only inside the manager's local ownership domain.
+// Tier-3 workers enforce a pod-private root before creating a Manager, so a
+// reaper never interprets a PID written in another pod's process namespace.
 //
 // One unreadable marker is skipped (collected in the returned warnings), not
 // fatal to the whole pass — a single corrupt marker must never prevent every
@@ -108,7 +108,7 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 
 	var results []ReapResult
 	var warnings []ReapWarning
-	seen := map[string]bool{} // RunID (== worktree dir name) with a marker, live or reaped
+	seen := map[string]bool{} // worktree directory names with a marker, live or reaped
 
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
@@ -127,10 +127,20 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 			// genuinely live run, and deleting a live run's worktree would
 			// be actively destructive, unlike skipping it.
 			warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
+			// A corrupt marker may be either legacy (full ID directory) or
+			// current (hashed directory). Preserve both possible paths.
 			seen[runID] = true
+			seen[worktreeDirectoryName(runID)] = true
 			continue
 		}
-		seen[mk.RunID] = true
+		directory, err := mk.directoryName()
+		if err != nil {
+			warnings = append(warnings, ReapWarning{Path: markerPath, Err: err})
+			seen[runID] = true
+			seen[worktreeDirectoryName(runID)] = true
+			continue
+		}
+		seen[directory] = true
 
 		var reason ReapReason
 		switch mk.Status {
@@ -148,7 +158,7 @@ func (m *Manager) reapRepo(ctx context.Context, key string, opts ReapOptions) ([
 			continue
 		}
 
-		path := filepath.Join(m.runsDirForKey(key), mk.RunID)
+		path := filepath.Join(m.runsDirForKey(key), directory)
 		if err := m.reapOne(ctx, key, path, markerPath, &mk); err != nil {
 			return results, warnings, fmt.Errorf("worktree: reap run %s: %w", mk.RunID, err)
 		}
@@ -185,15 +195,34 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 			continue
 		}
 		path := filepath.Join(runsDir, e.Name())
+		worktreeID := e.Name()
+		var ownershipMarker *marker
+		ownershipPath := m.ownershipPath(key, e.Name())
+		ownership, ownershipErr := readMarker(ownershipPath)
+		if ownershipErr == nil {
+			directory, err := ownership.directoryName()
+			if err != nil || directory != e.Name() {
+				if err == nil {
+					err = fmt.Errorf("worktree: ownership directory %q does not match %q", directory, e.Name())
+				}
+				warnings = append(warnings, ReapWarning{Path: ownershipPath, Err: err})
+				continue
+			}
+			worktreeID = ownership.RunID
+			ownershipMarker = &ownership
+		} else if !os.IsNotExist(ownershipErr) {
+			warnings = append(warnings, ReapWarning{Path: ownershipPath, Err: ownershipErr})
+			continue
+		}
 		registered, err := worktreeRegistered(ctx, m.repoDirForKey(key), path)
 		if err != nil {
-			return results, warnings, fmt.Errorf("worktree: inspect markerless run %s: %w", e.Name(), err)
+			return results, warnings, fmt.Errorf("worktree: inspect markerless run %s: %w", worktreeID, err)
 		}
 		if !registered {
 			if opts.IsRunTerminal == nil {
 				continue
 			}
-			terminal, err := opts.IsRunTerminal(e.Name())
+			terminal, err := opts.IsRunTerminal(worktreeID)
 			if err != nil {
 				warnings = append(warnings, ReapWarning{Path: path, Err: err})
 				continue
@@ -202,11 +231,11 @@ func (m *Manager) reapMarkerlessWorktrees(ctx context.Context, key string, seen 
 				continue
 			}
 		}
-		markerPath := m.markerPath(key, e.Name())
-		if err := m.reapOne(ctx, key, path, markerPath, nil); err != nil {
-			return results, warnings, fmt.Errorf("worktree: reap markerless run %s: %w", e.Name(), err)
+		markerPath := m.markerPath(key, worktreeID)
+		if err := m.reapOne(ctx, key, path, markerPath, ownershipMarker); err != nil {
+			return results, warnings, fmt.Errorf("worktree: reap markerless run %s: %w", worktreeID, err)
 		}
-		results = append(results, ReapResult{RunID: e.Name(), Path: path, Reason: ReapReasonMarkerless})
+		results = append(results, ReapResult{RunID: worktreeID, Path: path, Reason: ReapReasonMarkerless})
 	}
 	return results, warnings, nil
 }
@@ -264,6 +293,9 @@ func (m *Manager) reapOne(ctx context.Context, key, path, markerPath string, mk 
 	}
 	if err := os.Remove(markerPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("worktree: remove marker %s: %w", markerPath, err)
+	}
+	if err := os.Remove(m.ownershipPath(key, filepath.Base(path))); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("worktree: remove ownership record for %s: %w", path, err)
 	}
 	return nil
 }

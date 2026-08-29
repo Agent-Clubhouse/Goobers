@@ -3,6 +3,7 @@ package localscheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,6 +156,102 @@ func TestTickDispatchesDueWorkflow(t *testing.T) {
 	}
 }
 
+func TestReserveContinuationHoldsConcurrencyUntilReleased(t *testing.T) {
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "alpha",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+	}})
+
+	release, ok, reason := scheduler.ReserveContinuation("run-a", "alpha", "implement")
+	if !ok {
+		t.Fatalf("first reservation refused: %s", reason)
+	}
+	sameRunRelease, ok, reason := scheduler.ReserveContinuation("run-a", "alpha", "implement")
+	if !ok {
+		t.Fatalf("same run could not retain its reservation: %s", reason)
+	}
+	if _, ok, reason := scheduler.ReserveContinuation("run-b", "alpha", "implement"); ok || reason != ReasonMaxParallel {
+		t.Fatalf("second reservation = (%v, %q), want max-parallel refusal", ok, reason)
+	}
+	sameRunRelease()
+	release()
+	release()
+	if _, ok, reason := scheduler.ReserveContinuation("run-b", "alpha", "implement"); !ok {
+		t.Fatalf("reservation after release refused: %s", reason)
+	}
+}
+
+func TestReserveContinuationRetainsSlotAfterDispatchRelease(t *testing.T) {
+	block := make(chan struct{})
+	starter := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseEscalated}}
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "alpha",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Starter:   starter,
+	}})
+
+	runID, err := scheduler.Trigger(context.Background(), "implement", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForCount(t, starter.count, 1)
+	releaseContinuation, ok, reason := scheduler.ReserveContinuation(runID, "alpha", "implement")
+	if !ok {
+		t.Fatalf("continuation reservation refused: %s", reason)
+	}
+
+	close(block)
+	scheduler.Wait()
+	if release, ok, reason := scheduler.ReserveContinuation("competing-run", "alpha", "implement"); ok {
+		release()
+		t.Fatal("dispatch release removed the continuation reservation")
+	} else if reason != ReasonMaxParallel {
+		t.Fatalf("competing reservation reason = %q, want %q", reason, ReasonMaxParallel)
+	}
+
+	releaseContinuation()
+	release, ok, reason := scheduler.ReserveContinuation("competing-run", "alpha", "implement")
+	if !ok {
+		t.Fatalf("reservation after continuation release refused: %s", reason)
+	}
+	release()
+}
+
+func TestStaleContinuationReleaseDoesNotReleaseNewGeneration(t *testing.T) {
+	scheduler, _ := newTestScheduler(t, []WorkflowEntry{{
+		Workflow:  "implement",
+		Gaggle:    "alpha",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+	}})
+
+	staleRelease, ok, reason := scheduler.ReserveContinuation("run-a", "alpha", "implement")
+	if !ok {
+		t.Fatalf("first reservation refused: %s", reason)
+	}
+	scheduler.ReleaseRun("run-a", "implement")
+	currentRelease, ok, reason := scheduler.ReserveContinuation("run-a", "alpha", "implement")
+	if !ok {
+		t.Fatalf("replacement reservation refused: %s", reason)
+	}
+
+	staleRelease()
+	if release, ok, reason := scheduler.ReserveContinuation("run-b", "alpha", "implement"); ok {
+		release()
+		t.Fatal("stale release removed the replacement reservation")
+	} else if reason != ReasonMaxParallel {
+		t.Fatalf("competing reservation reason = %q, want %q", reason, ReasonMaxParallel)
+	}
+
+	currentRelease()
+	release, ok, reason := scheduler.ReserveContinuation("run-b", "alpha", "implement")
+	if !ok {
+		t.Fatalf("reservation after current release refused: %s", reason)
+	}
+	release()
+}
+
 func TestTickDispatchesWhenTriggerStatePersistenceFails(t *testing.T) {
 	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	scheduler, dir := newTestScheduler(t, []WorkflowEntry{{
@@ -239,22 +336,22 @@ func TestReloadUsesNewStarterWithoutChangingInflightRun(t *testing.T) {
 
 type blockingBacklogCounter struct {
 	started chan struct{}
-	release chan struct{}
 }
 
-func (c *blockingBacklogCounter) EligibleCount(context.Context) (int, error) {
+func (c *blockingBacklogCounter) EligibleCount(ctx context.Context) (int, error) {
 	close(c.started)
-	<-c.release
-	return 0, nil
+	<-ctx.Done()
+	return 0, ctx.Err()
 }
 
-func TestReloadWaitsForActiveTick(t *testing.T) {
-	counter := &blockingBacklogCounter{started: make(chan struct{}), release: make(chan struct{})}
+func TestStalledDemandPollDoesNotIndefinitelyDelayReload(t *testing.T) {
+	counter := &blockingBacklogCounter{started: make(chan struct{})}
 	sched, _ := newTestScheduler(t, []WorkflowEntry{{
 		Workflow:       "old",
 		BacklogCounter: counter,
 		Starter:        &fakeStarter{},
 	}})
+	sched.demandPollTimeout = 50 * time.Millisecond
 
 	tickDone := make(chan struct{})
 	go func() {
@@ -272,15 +369,13 @@ func TestReloadWaitsForActiveTick(t *testing.T) {
 	}()
 	select {
 	case err := <-reloadDone:
-		t.Fatalf("Reload returned during an active tick: %v", err)
-	case <-time.After(50 * time.Millisecond):
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Reload remained blocked after the demand poll deadline")
 	}
-
-	close(counter.release)
 	<-tickDone
-	if err := <-reloadDone; err != nil {
-		t.Fatal(err)
-	}
 	if _, err := sched.Trigger(context.Background(), "new", time.Now()); err != nil {
 		t.Fatalf("new workflow unavailable after reload: %v", err)
 	}
@@ -292,6 +387,7 @@ func TestReloadWaitsForActiveTick(t *testing.T) {
 
 func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
 	block := make(chan struct{})
+	blockClosed := false
 	alpha := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
 	beta := &fakeStarter{block: block, result: StartResult{Phase: journal.PhaseCompleted}}
 	sched, dir := newTestScheduler(t, []WorkflowEntry{
@@ -299,7 +395,9 @@ func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
 		{Gaggle: "beta", Workflow: "deploy", Signals: []string{"release"}, Starter: beta},
 	})
 	t.Cleanup(func() {
-		close(block)
+		if !blockClosed {
+			close(block)
+		}
 		sched.Wait()
 	})
 
@@ -324,8 +422,107 @@ func TestDuplicateWorkflowNamesAcrossGagglesRemainDistinct(t *testing.T) {
 		t.Fatalf("trigger.fired gaggle scopes = %v, want alpha and beta", firedGaggles)
 	}
 	if _, err := sched.Trigger(context.Background(), "deploy", time.Now()); err == nil ||
-		!strings.Contains(err.Error(), "ambiguous across gaggles") {
+		!strings.Contains(err.Error(), "candidate gaggles: alpha, beta") ||
+		!strings.Contains(err.Error(), "goobers run alpha/deploy") ||
+		!strings.Contains(err.Error(), "goobers run beta/deploy") {
 		t.Fatalf("ambiguous manual trigger error = %v", err)
+	}
+
+	close(block)
+	blockClosed = true
+	sched.Wait()
+	runID, err := sched.TriggerExact(context.Background(), WorkflowIdentity{Gaggle: "beta", Workflow: "deploy"}, time.Now())
+	if err != nil {
+		t.Fatalf("TriggerExact: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("TriggerExact returned an empty run ID")
+	}
+	waitForCount(t, beta.count, 2)
+	if alpha.count() != 1 {
+		t.Fatalf("alpha starts = %d, want 1", alpha.count())
+	}
+
+	if _, err := sched.TriggerExact(context.Background(), WorkflowIdentity{Gaggle: "gamma", Workflow: "deploy"}, time.Now()); err == nil ||
+		!strings.Contains(err.Error(), `unknown workflow "deploy" in gaggle "gamma"`) {
+		t.Fatalf("unknown exact manual trigger error = %v", err)
+	}
+}
+
+func TestTriggerSignalExactPreservesTargetedReference(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:   "example",
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}})
+
+	runID, err := sched.TriggerSignalExact(context.Background(),
+		WorkflowIdentity{Gaggle: "example", Workflow: "merge-review"},
+		"github-webhook:pull_request", "github-webhook:pull_request#3261", time.Now())
+	if err != nil {
+		t.Fatalf("TriggerSignalExact: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("TriggerSignalExact returned an empty run ID")
+	}
+	waitForCount(t, starter.count, 1)
+	starter.mu.Lock()
+	trigger := starter.starts[0].Trigger
+	starter.mu.Unlock()
+	if trigger.Kind != journal.TriggerSignal || trigger.Ref != "github-webhook:pull_request#3261" {
+		t.Fatalf("trigger = %+v, want targeted pull-request signal", trigger)
+	}
+	sched.Wait()
+}
+
+func TestTriggerSignalExactValidatesTargetedPullRequestBeforeDispatch(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:   "example",
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}}, WithTargetedPRValidator(func(_ context.Context, _ WorkflowEntry, number int) error {
+		return fmt.Errorf("pull request #%d is closed", number)
+	}))
+
+	_, err := sched.TriggerSignalExact(context.Background(),
+		WorkflowIdentity{Gaggle: "example", Workflow: "merge-review"},
+		"github-webhook:pull_request", "github-webhook:pull_request#3261", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "pull request #3261 is closed") {
+		t.Fatalf("targeted validation error = %v", err)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter count = %d, want no dispatch", starter.count())
+	}
+}
+
+func TestTriggerSignalExactRejectsUnsupportedSignalBeforeTargetValidation(t *testing.T) {
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	validationCalls := 0
+	sched, _ := newTestScheduler(t, []WorkflowEntry{{
+		Gaggle:   "example",
+		Workflow: "implementation",
+		Signals:  []string{"github-webhook:issues"},
+		Starter:  starter,
+	}}, WithTargetedPRValidator(func(_ context.Context, _ WorkflowEntry, _ int) error {
+		validationCalls++
+		return nil
+	}))
+
+	_, err := sched.TriggerSignalExact(context.Background(),
+		WorkflowIdentity{Gaggle: "example", Workflow: "implementation"},
+		"github-webhook:pull_request", "github-webhook:pull_request#3261", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "not subscribed") {
+		t.Fatalf("unsupported signal error = %v", err)
+	}
+	if validationCalls != 0 {
+		t.Fatalf("targeted validation calls = %d, want none for an unsupported signal", validationCalls)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter count = %d, want no dispatch", starter.count())
 	}
 }
 
@@ -434,6 +631,7 @@ func TestScheduledTriggerFiredClassificationMatchesFireReasons(t *testing.T) {
 		{name: "signal", kind: journal.TriggerSignal},
 		{name: "backlog item", kind: journal.TriggerItem},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reason := fireReason(tt.tick, tt.kind)
@@ -441,6 +639,19 @@ func TestScheduledTriggerFiredClassificationMatchesFireReasons(t *testing.T) {
 				t.Fatalf("scheduledTriggerFired(%q) = %t, want %t", reason, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRefillBlockedReason(t *testing.T) {
+	if !IsRefillTriggerReason("refill occupancy") || IsRefillTriggerReason("scheduled") {
+		t.Fatal("refill trigger reason classification mismatch")
+	}
+	blocking, ok := RefillBlockedReason("refill blocked: " + ReasonBudget)
+	if !ok || blocking != ReasonBudget {
+		t.Fatalf("RefillBlockedReason returned (%q, %t), want (%q, true)", blocking, ok, ReasonBudget)
+	}
+	if _, ok := RefillBlockedReason("scheduled"); ok {
+		t.Fatal("non-refill reason parsed as refill block")
 	}
 }
 
@@ -570,7 +781,7 @@ func waitForRunFinished(t *testing.T, dir, workflow string) journal.Event {
 				return ev
 			}
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval; run completion is exposed only through the journal.
 	}
 	t.Fatalf("timed out waiting for run.finished for workflow %q", workflow)
 	return journal.Event{}
@@ -1078,6 +1289,58 @@ func TestReconcileRestoresBudgetWindowFromInstanceLog(t *testing.T) {
 	}
 }
 
+func TestReconcileRestoresDailyBudgetAfterShortWindowCompaction(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "scheduler")
+	now := time.Now()
+	eventTime := now.Add(-48 * time.Hour)
+	past, _, err := journal.OpenInstanceLog(dir, journal.WithClock(func() time.Time { return eventTime }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Append(journal.Event{Type: journal.EventTickSkipped, Workflow: "curate"}); err != nil {
+		t.Fatal(err)
+	}
+	eventTime = now.Add(-12 * time.Hour)
+	if err := past.Append(journal.Event{Type: journal.EventRunStarted, Workflow: "curate", RunID: "prior-run"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := past.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := journal.CompactInstanceEvents(
+		dir,
+		now.Add(-time.Hour),
+		now.Add(-24*time.Hour),
+		false,
+	); err != nil {
+		t.Fatal(err)
+	}
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	sched := New([]WorkflowEntry{{
+		Workflow: "curate",
+		Readiness: apiv1.ReadinessConditions{
+			MaxConcurrentRuns: 100,
+			MaxRunsPerHour:    100,
+			MaxRunsPerDay:     1,
+		},
+		Starter: &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}},
+	}}, log)
+	if err := sched.Reconcile(filepath.Join(t.TempDir(), "runs"), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sched.Trigger(context.Background(), "curate", now); err == nil {
+		t.Fatal("expected the trigger to be rejected: daily budget history must survive compaction")
+	} else if !strings.Contains(err.Error(), ReasonDailyBudget) {
+		t.Fatalf("err = %v, want it to mention %q", err, ReasonDailyBudget)
+	}
+}
+
 // TestReconcileRateResetClearsBudgetWindow is #315's core: a rate-limit reset
 // marker (written by `goobers reset-rate-limit`) raises the budget window's
 // floor to the reset moment, so run.started history at or before it stops
@@ -1321,7 +1584,8 @@ func TestRunDoesNotBusyPoll(t *testing.T) {
 // when WithTelemetry is configured, a dispatched tick opens exactly one
 // scheduler decision span, attributed to the firing workflow. Before this
 // fix, Scheduler had no telemetry seam at all — dispatch() never called
-// StartSchedulerSpan, the direct parity gap vs internal/scheduler.Scheduler.
+// StartSchedulerSpan, the direct parity gap vs the since-deleted tier-3
+// scheduler fork.
 func TestDispatchEmitsSchedulerSpan(t *testing.T) {
 	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	spans := &fakeSpanStarter{}
@@ -1473,7 +1737,7 @@ func waitForCount(t *testing.T, count func() int, want int) {
 		if count() >= want {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) // Polling interval for synchronized scheduler counters.
 	}
 	t.Fatalf("timed out waiting for count >= %d, got %d", want, count())
 }

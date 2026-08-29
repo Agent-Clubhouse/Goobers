@@ -2,12 +2,15 @@ package rollup
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // seedDeployRun writes a run with a "build" stage that always succeeds and
@@ -51,6 +54,52 @@ func seedGateRun(t *testing.T, runsDir, runID, workflow, verdict string, escalat
 			verdict, escalated)),
 		eventLine(3, startedAt.Add(2*time.Second), `"type":"run.finished","status":"completed"`),
 	}
+
+	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
+}
+
+func seedCICheckFailureRun(t *testing.T, runsDir, runID, checkName string, startedAt time.Time) {
+	t.Helper()
+	seedCICheckFailurePollsRun(t, runsDir, runID, checkName, 1, startedAt)
+}
+
+func seedCICheckFailurePollsRun(t *testing.T, runsDir, runID, checkName string, polls int, startedAt time.Time) {
+	t.Helper()
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML), strings.ReplaceAll(
+		minimalRunYAML(runID, startedAt), "workflow: wf", "workflow: implementation",
+	))
+	artifact, err := json.Marshal(map[string]any{"checks": []map[string]string{{
+		"name": checkName, "state": "failing", "summary": "TestResume timed out",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := journal.Digest(artifact)
+	hexDigest := strings.TrimPrefix(digest, "sha256:")
+	artifactPath := filepath.Join("artifacts", "sha256", hexDigest[:2], hexDigest[2:])
+	mustMkdirAll(t, filepath.Join(dir, filepath.Dir(artifactPath)))
+	mustWriteFile(t, filepath.Join(dir, artifactPath), string(artifact))
+	refs, err := json.Marshal([]map[string]any{{
+		"path": artifactPath, "digest": digest, "size": len(artifact), "mediaType": "application/json",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{eventLine(1, startedAt, `"type":"run.started"`)}
+	seq := 2
+	for attempt := 1; attempt <= polls; attempt++ {
+		lines = append(lines,
+			eventLine(seq, startedAt.Add(time.Duration(seq-1)*time.Second),
+				fmt.Sprintf(`"type":"stage.started","stage":"ci-poll","attempt":%d`, attempt)),
+			eventLine(seq+1, startedAt.Add(time.Duration(seq)*time.Second),
+				fmt.Sprintf(`"type":"stage.finished","stage":"ci-poll","attempt":%d,"status":"success","outputs":{"ciStatus":"failing"},"artifacts":%s`, attempt, refs)),
+		)
+		seq += 2
+	}
+	lines = append(lines, eventLine(seq, startedAt.Add(time.Duration(seq-1)*time.Second),
+		`"type":"run.finished","status":"completed"`))
 	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join(lines, "\n")+"\n")
 }
 
@@ -145,6 +194,7 @@ func TestDetectErrorSignatureThreshold(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		seedStatsRun(t, runsDir, fmt.Sprintf("%032d", i), "implement", "failed", base.Add(time.Duration(i)*time.Hour), true, "provider.rate_limit")
 	}
+
 	// A different code occurs only twice — must not be flagged.
 	for i := 5; i < 7; i++ {
 		seedStatsRun(t, runsDir, fmt.Sprintf("%032d", i), "implement", "failed", base.Add(time.Duration(i)*time.Hour), true, "harness.crash")
@@ -178,6 +228,69 @@ func TestDetectErrorSignatureThreshold(t *testing.T) {
 	if crash != nil {
 		t.Fatalf("harness.crash flagged at count=2, want no finding below threshold 5: %+v", crash)
 	}
+}
+
+func TestDetectCICheckFailureRequiresDistinctRecurringRuns(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+	seedCICheckFailureRun(t, runsDir, fmt.Sprintf("%032d", 1), "unit-tests", base)
+	seedCICheckFailureRun(t, runsDir, fmt.Sprintf("%032d", 2), "unit-tests", base.Add(time.Hour))
+	seedCICheckFailureRun(t, runsDir, fmt.Sprintf("%032d", 3), "lint", base.Add(2*time.Hour))
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+	thresholds := DefaultThresholds()
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: thresholds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recurring *Finding
+	for i := range findings {
+		if findings[i].Kind == FindingCICheckFailure {
+			if findings[i].Subject == "lint" {
+				t.Fatalf("single-run CI failure was classified as recurring: %+v", findings[i])
+			}
+			if findings[i].Subject == "unit-tests" {
+				recurring = &findings[i]
+			}
+		}
+	}
+	if recurring == nil {
+		t.Fatalf("recurring unit-tests failure not found: %+v", findings)
+	}
+	if recurring.Metrics["distinctRuns"] != 2 || len(recurring.FlaggedRuns) != 2 {
+		t.Fatalf("recurring CI finding = %+v, want two distinct evidence runs", recurring)
+	}
+}
+
+func TestDetectCICheckFailureEvidenceUsesDistinctRuns(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	olderRun := strings.Repeat("a", 32)
+	newerRun := strings.Repeat("b", 32)
+	seedCICheckFailureRun(t, runsDir, olderRun, "unit-tests", fixtureStart)
+	seedCICheckFailurePollsRun(t, runsDir, newerRun, "unit-tests", 3, fixtureStart.Add(time.Hour))
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+	thresholds := DefaultThresholds()
+	thresholds.MaxFlaggedRuns = 2
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: thresholds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finding := range findings {
+		if finding.Kind != FindingCICheckFailure || finding.Subject != "unit-tests" {
+			continue
+		}
+		want := []JournalPointer{{RunID: newerRun}, {RunID: olderRun}}
+		if !reflect.DeepEqual(finding.FlaggedRuns, want) {
+			t.Fatalf("FlaggedRuns = %+v, want distinct runs %+v", finding.FlaggedRuns, want)
+		}
+		return
+	}
+	t.Fatalf("recurring unit-tests failure not found: %+v", findings)
 }
 
 func TestDetectGateNeverFails(t *testing.T) {
@@ -272,6 +385,83 @@ func TestDetectGateRepassChurn(t *testing.T) {
 	}
 	if len(churn.FlaggedRuns) != 2 {
 		t.Errorf("FlaggedRuns = %d, want 2 (only the escalated evaluations)", len(churn.FlaggedRuns))
+	}
+}
+
+func TestDetectGateRepassChurnExcludesInfrastructureEscalation(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+
+	for i := 0; i < 5; i++ {
+		dir := filepath.Join(runsDir, fmt.Sprintf("%032d", i))
+		mustMkdirAll(t, dir)
+		runID := fmt.Sprintf("%032d", i)
+		mustWriteFile(t, filepath.Join(dir, fileRunYAML), strings.ReplaceAll(minimalRunYAML(runID, base.Add(time.Duration(i)*time.Hour)), "workflow: wf", "workflow: implementation"))
+		line := eventLine(2, base.Add(time.Duration(i)*time.Hour), `"type":"gate.evaluated","gate":"local-gate","verdict":"infra","target":"park-escalated","runner":{"escalated":true}`)
+		mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join([]string{
+			eventLine(1, base.Add(time.Duration(i)*time.Hour), `"type":"run.started"`),
+			line,
+			eventLine(3, base.Add(time.Duration(i)*time.Hour+time.Second), `"type":"run.finished","status":"completed"`),
+		}, "\n")+"\n")
+	}
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	for _, finding := range findings {
+		if finding.Kind == FindingGateRepassChurn && finding.Subject == "local-gate" {
+			t.Fatalf("infrastructure escalation was classified as repass churn: %+v", finding)
+		}
+	}
+	var classifications int
+	if err := db.readDB().QueryRow(
+		`SELECT COUNT(*) FROM gate_classifications WHERE gate = 'local-gate'`,
+	).Scan(&classifications); err != nil {
+		t.Fatalf("gate classification count: %v", err)
+	}
+	if classifications != 5 {
+		t.Fatalf("classifications = %d, want one for each run", classifications)
+	}
+	var nonInfrastructure int
+	if err := db.readDB().QueryRow(
+		`SELECT COUNT(*) FROM gate_classifications WHERE gate = 'local-gate' AND classification != 'infrastructure'`,
+	).Scan(&nonInfrastructure); err != nil {
+		t.Fatalf("gate classification query: %v", err)
+	}
+	if nonInfrastructure != 0 {
+		t.Fatalf("non-infrastructure classifications = %d, want 0", nonInfrastructure)
+	}
+}
+
+func TestLegacyGateEscalationsAreClassifiedFromJournalOutcome(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	runID := "legacy-infrastructure-run"
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	base := fixtureStart
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML),
+		strings.ReplaceAll(minimalRunYAML(runID, base), "workflow: wf", "workflow: implementation"))
+	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join([]string{
+		eventLine(1, base, `"type":"run.started"`),
+		eventLine(2, base.Add(time.Second), `"type":"gate.evaluated","gate":"local-gate","verdict":"infra","target":"park-escalated","runner":{"escalated":true}`),
+	}, "\n")+"\n")
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+	var classification, reason string
+	if err := db.readDB().QueryRow(
+		`SELECT classification, reason FROM gate_classifications WHERE run_id = ? AND seq = 2`,
+		runID,
+	).Scan(&classification, &reason); err != nil {
+		t.Fatalf("legacy gate classification query: %v", err)
+	}
+	if classification != "infrastructure" || reason != "INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED" {
+		t.Fatalf("legacy classification = %q/%q, want infrastructure/INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED", classification, reason)
 	}
 }
 

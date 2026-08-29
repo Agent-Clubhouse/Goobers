@@ -46,8 +46,11 @@ func TestStatusAndRunsListShareRunTable(t *testing.T) {
 	// start the output with no preceding newline.
 	statusRunTableAt := strings.LastIndex(statusStdout, "RUN ID")
 	runsRunTableAt := strings.LastIndex(runsStdout, "RUN ID")
+	// Each invocation samples now independently, so compare every column except
+	// the relative LAST ACTIVITY values.
 	if statusRunTableAt == -1 || runsRunTableAt == -1 ||
-		runsStdout[runsRunTableAt:] != statusStdout[statusRunTableAt:] {
+		runTableWithoutActivityAges(runsStdout[runsRunTableAt:]) !=
+			runTableWithoutActivityAges(statusStdout[statusRunTableAt:]) {
 		t.Fatalf("runs list stdout = %q, want status run table %q", runsStdout, statusStdout)
 	}
 	if !reflect.DeepEqual(warningLines(runsStdout), warningLines(statusStdout)) {
@@ -85,6 +88,54 @@ func TestStatusAndRunsListShareRunTable(t *testing.T) {
 	}
 }
 
+func TestStatusAndRunsListFilterByGaggle(t *testing.T) {
+	root := initScheduledDemo(t)
+	start := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+	writeStatusRun(t, root, "goobers-run", "implementation", "goobers", start)
+	writeStatusRun(t, root, "site-run", "implementation", "goobers-site", start.Add(time.Minute))
+
+	commands := [][]string{{"status"}, {"runs", "list"}}
+	for _, command := range commands {
+		t.Run(strings.Join(command, " "), func(t *testing.T) {
+			args := append(append([]string{}, command...), "--json", "--workflow=implementation", "--gaggle=goobers-site", root)
+			code, stdout, stderr := runArgs(t, args...)
+			if code != 0 {
+				t.Fatalf("code = %d, stderr = %q", code, stderr)
+			}
+			var filtered statusJSONOutput
+			if err := json.Unmarshal([]byte(stdout), &filtered); err != nil {
+				t.Fatalf("JSON = %q: %v", stdout, err)
+			}
+			if len(filtered.Runs) != 1 || filtered.Runs[0].RunID != "site-run" {
+				t.Fatalf("filtered runs = %+v, want only site-run", filtered.Runs)
+			}
+
+			args = append(append([]string{}, command...), "--json", "--workflow=implementation", root)
+			code, stdout, stderr = runArgs(t, args...)
+			if code != 0 {
+				t.Fatalf("without --gaggle code = %d, stderr = %q", code, stderr)
+			}
+			var unfiltered statusJSONOutput
+			if err := json.Unmarshal([]byte(stdout), &unfiltered); err != nil {
+				t.Fatalf("JSON = %q: %v", stdout, err)
+			}
+			if len(unfiltered.Runs) != 2 {
+				t.Fatalf("runs without --gaggle = %+v, want both gaggles", unfiltered.Runs)
+			}
+		})
+	}
+}
+
+func runTableWithoutActivityAges(table string) string {
+	lines := strings.Split(table, "\n")
+	for i := 1; i < len(lines); i++ {
+		if column := strings.LastIndex(lines[i], "  "); column >= 0 {
+			lines[i] = lines[i][:column]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 func TestRunsCommandUsage(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -93,8 +144,8 @@ func TestRunsCommandUsage(t *testing.T) {
 		wantStdout string
 		wantStderr string
 	}{
-		{name: "top-level help mentions runs list", args: []string{"help"}, wantCode: 0, wantStdout: "goobers runs list"},
-		{name: "top-level help mentions runs du", args: []string{"help"}, wantCode: 0, wantStdout: "goobers runs du [--json]"},
+		{name: "complete help mentions runs list", args: []string{"help", "all"}, wantCode: 0, wantStdout: "goobers runs list"},
+		{name: "complete help mentions runs du", args: []string{"help", "all"}, wantCode: 0, wantStdout: "goobers runs du [--json]"},
 		{name: "runs help", args: []string{"runs", "help"}, wantCode: 0, wantStdout: "alias for the goobers status run table"},
 		{name: "missing action", args: []string{"runs"}, wantCode: 2, wantStderr: "Usage: goobers runs"},
 		{name: "unknown action", args: []string{"runs", "bogus"}, wantCode: 2, wantStderr: `unknown subcommand "bogus"`},

@@ -31,7 +31,7 @@ The check is **opt-in**: `open-pr` only enforces it when the workflow sets the
 (implementation, work-nomination) leave it off and are unaffected.
 
 The root is the **instance's configured config root — not a hardcoded
-`config/`**. On the dogfood instance (`selfhost/`) the root is `selfhost`;
+`config/`**. On the dogfood instance (`reference-workflows/`) the root is `reference-workflows`;
 another instance may back its config with an entirely separate repo.
 
 ## Configuring the root
@@ -41,11 +41,11 @@ The config root is repo-relative and set per instance. Two shapes:
 | Instance shape | Config root | Boundary behavior |
 | --- | --- | --- |
 | **Separate config repo** — config lives in its own repo with no platform code | empty (whole repo is config) | any in-repo path allowed; absolute paths and `..`-escapes still refused |
-| **Same repo** — config and platform code share one repo (the dogfood case) | **must be a non-empty subtree**, e.g. `selfhost` | only paths under that subtree are allowed; every platform path is refused |
+| **Same repo** — config and platform code share one repo (the dogfood case) | **must be a non-empty subtree**, e.g. `reference-workflows` | only paths under that subtree are allowed; every platform path is refused |
 
 > **Same-repo instances MUST set a non-empty root.** With an empty root the
 > boundary only prevents escaping the repository, not reaching platform paths
-> inside it. On the dogfood repo the root is `selfhost`, so `internal/…`,
+> inside it. On the dogfood repo the root is `reference-workflows`, so `internal/…`,
 > `.github/…`, `Makefile`, `providers/…` and every other platform path are
 > unreachable through the Tutor.
 
@@ -67,13 +67,13 @@ change). Each of the Tutor's actions is confined to **exactly one** target
 root per run — a skill-authoring action must never also rewrite a workflow,
 and vice versa. `open-pr` enforces this via a second, opt-in check:
 `confineToActionRoots=true` with a comma/newline `actionRoots` list (e.g.
-`selfhost,skills`) and `internal/configboundary.ConfineExclusive`, which
+`reference-workflows,skills`) and `internal/configboundary.ConfineExclusive`, which
 requires every changed file to resolve into the *same single* declared root —
 refusing a diff that spans two roots even though each individual path is
 legitimately within some declared root (`ErrCrossRootAction`). The dogfood
 `tutor.yaml` uses this in place of the plain single-root
 `confineToConfigRoot`/`configRoot` inputs described above, with
-`actionRoots: "selfhost,skills"` — an all-`selfhost` diff and an all-`skills`
+`actionRoots: "reference-workflows,skills"` — an all-`reference-workflows` diff and an all-`skills`
 diff both still pass; a diff mixing the two does not.
 
 ## Governance: CODEOWNERS + branch protection
@@ -81,7 +81,7 @@ diff both still pass; a diff mixing the two does not.
 Path-scoping keeps the Tutor *in* config; it does not decide whether a config
 change is *good*. That judgement is a human's, enforced by review:
 
-- **CODEOWNERS on the config root.** `.github/CODEOWNERS` owns `/selfhost/`, so a
+- **CODEOWNERS on the config root.** `.github/CODEOWNERS` owns `/reference-workflows/`, so a
   Tutor PR to the config root requests a CODEOWNER and — once branch protection
   requires CODEOWNER review — cannot merge without a maintainer's approval.
 - **Change-type classification.** `open-pr` stamps Tutor PR bodies with a
@@ -92,15 +92,15 @@ change is *good*. That judgement is a human's, enforced by review:
   the live diff as a fail-closed backstop, so they are never auto-merged.
 - **Branch protection on `main`.** The instance never merges (there is no merge
   stage in the Tutor workflow itself); the required checks plus the applicable
-  review path are the only route to `main`. See `selfhost/README.md`.
+  review path are the only route to `main`. See `reference-workflows/README.md`.
 
 ## Enablement checklist (before turning the Tutor on for the dogfood repo)
 
 Tutor PRs land in the **same repo as platform code** on the dogfood instance, so
 before enabling it there:
 
-1. **Config root is set to a non-empty subtree** (`selfhost`) — never empty.
-2. **CODEOWNERS covers that root** (`/selfhost/` → a maintainer/team) — present
+1. **Config root is set to a non-empty subtree** (`reference-workflows`) — never empty.
+2. **CODEOWNERS covers that root** (`/reference-workflows/` → a maintainer/team) — present
    in `.github/CODEOWNERS`.
 3. **Branch protection requires CODEOWNER review** on `main` so the ownership is
    load-bearing, not advisory.
@@ -119,7 +119,7 @@ branch protection are the boundary; keep all three in place.
 
 Two layers of tests cover it. The containment logic
 (`internal/configboundary/configboundary_test.go`) is exercised against a
-**non-default** root (`selfhost`, plus arbitrary custom roots) and asserts that
+**non-default** root (`reference-workflows`, plus arbitrary custom roots) and asserts that
 every platform path — `internal/…`, `.github/…`, `Makefile`, `../…`, absolute
 paths, and even the *default* `config/…` — is refused, proving platform paths are
 unreachable and that the check honors the configured root rather than a hardcoded

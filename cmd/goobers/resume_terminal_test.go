@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -141,6 +142,41 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 	}
 	if phase != journal.PhaseCompleted {
 		t.Fatalf("Phase() = %q, want completed", phase)
+	}
+}
+
+func TestResumeInterruptedRunsRejectsFutureJournalSchema(t *testing.T) {
+	l := instance.NewLayout(t.TempDir()).ForGaggle("g")
+	if err := os.MkdirAll(filepath.Join(l.RunsDir(), "00-unrelated"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	futureDir := filepath.Join(l.RunsDir(), "01-future")
+	if err := os.Mkdir(futureDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := json.Marshal(journal.SchemaInfo{
+		Version:       journal.CurrentSchemaVersion + 1,
+		MinimumBinary: "v2.0.0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(futureDir, "schema.json"), schema, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	_, _, err = resumeInterruptedRuns(
+		context.Background(), l, nil, nil, nil, nil, nil, nil, nil, nil,
+		func(string, string) {}, &wg,
+	)
+	if err == nil {
+		t.Fatal("resume scan accepted a future journal schema")
+	}
+	for _, want := range []string{"01-future", "version 2", "supported version 1", "minimum binary is v2.0.0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("resume scan error %q does not contain %q", err, want)
+		}
 	}
 }
 
@@ -299,5 +335,120 @@ func TestRunAbortRejectsStaleTerminalCheckpoint(t *testing.T) {
 	}
 	if finished != 1 {
 		t.Fatalf("run.finished count = %d, want exactly 1 — abort must not append a second terminal event onto an already-finished run", finished)
+	}
+}
+
+// highestJournalSeq mirrors lastJournalSeq's "take the max, not the last
+// record" logic (runnerwiring.go) so tests can assert the intake watermark
+// against the run's actual highest sequence without hardcoding a number that
+// would drift if the journal fixture setup changes shape.
+func highestJournalSeq(t *testing.T, dir string) uint64 {
+	t.Helper()
+	rd, err := journal.OpenRead(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var highest uint64
+	for _, e := range events {
+		if e.Seq > highest {
+			highest = e.Seq
+		}
+	}
+	return highest
+}
+
+// TestResumeScanRecordsIntakeWatermarkForTerminalRun is #2190's acceptance
+// scenario: a run discovered already-terminal during the daemon's startup
+// resume scan took the finalize-and-release branch without ever recording
+// its intake watermark, so the read model never learned it had advanced —
+// unlike a normal terminal run, which gets there via ingestRunTelemetry.
+func TestResumeScanRecordsIntakeWatermarkForTerminalRun(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const runID = "stale-terminal-watermark"
+	newStaleTerminalRun(t, l, runID, "default-implement", journal.PhaseCompleted, "local-ci")
+	wantSeq := highestJournalSeq(t, filepath.Join(l.RunsDir(), runID))
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(ctx, l, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer setup.Shutdown(context.Background())
+	if setup.Watermarks == nil {
+		t.Fatal("setup.Watermarks is nil — cannot assert intake recording")
+	}
+
+	resumed, warned, err := resumeInterruptedRuns(ctx, l, setup.Runner, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, func(string, string) {}, &wg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed) != 0 || len(warned) != 0 {
+		t.Fatalf("resumed=%v warned=%v, want neither for a terminal run", resumed, warned)
+	}
+	wg.Wait()
+
+	marker, ok, err := setup.Watermarks.Get(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("intake watermark not recorded for a terminal run discovered at resume scan")
+	}
+	if marker.SourceSeq != wantSeq {
+		t.Fatalf("marker.SourceSeq = %d, want %d (the run's highest journal sequence)", marker.SourceSeq, wantSeq)
+	}
+}
+
+// TestRunAbortRecordsIntakeWatermark is #2191's acceptance scenario:
+// `goobers run abort` advances the journal to a terminal phase just like any
+// other terminal run, but the one-shot CLI path never opened the intake
+// store, so the dashboard's view of the run was never refreshed.
+func TestRunAbortRecordsIntakeWatermark(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const runID = "stuck-watermark"
+
+	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "no-such-workflow", WorkflowVersion: 1, Gaggle: "example",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jr.SetMachineState("whatever-state")
+	if err := jr.Checkpoint(); err != nil {
+		t.Fatal(err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runArgs(t, "run", "abort", runID, root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	wantSeq := highestJournalSeq(t, filepath.Join(l.RunsDir(), runID))
+
+	watermarks, err := intake.Open(l.IntakeDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = watermarks.Close() }()
+
+	marker, ok, err := watermarks.Get(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("intake watermark not recorded after `run abort`")
+	}
+	if marker.SourceSeq != wantSeq {
+		t.Fatalf("marker.SourceSeq = %d, want %d (the run's highest journal sequence)", marker.SourceSeq, wantSeq)
 	}
 }

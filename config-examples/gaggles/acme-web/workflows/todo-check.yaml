@@ -1,6 +1,6 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: todo-check
 spec:
@@ -23,6 +23,8 @@ spec:
         timeout: "30s"
         maxOutputBytes: "65536"
       capabilities: []
+      requiredCapabilities:
+        - os=linux
       expectedOutputs:
         - todoCount
       next: todos-found
@@ -32,12 +34,16 @@ spec:
       run:
         command: ["sh", "-c", "printf '%s\n' 'TODO markers found; inspect the check-todos stdout artifact.'"]
       capabilities: []
+      requiredCapabilities:
+        - os=linux
     - name: report-clean
       type: deterministic
       goal: Report that no TODO markers were found.
       run:
         command: ["sh", "-c", "printf '%s\n' 'No TODO markers found.'"]
       capabilities: []
+      requiredCapabilities:
+        - os=linux
   gates:
     - name: todos-found
       evaluator: automated

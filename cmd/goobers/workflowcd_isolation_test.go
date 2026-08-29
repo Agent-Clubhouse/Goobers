@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 type workflowCDIsolationFixture struct {
@@ -52,6 +52,7 @@ func TestWorkflowCDAdversarialIsolation(t *testing.T) {
 		source, err := instance.NewWorkflowGitSource(
 			t.TempDir(),
 			*config.WorkflowSource,
+			nil,
 			sourceRegistrar,
 			nil,
 		)
@@ -77,7 +78,7 @@ func TestWorkflowCDAdversarialIsolation(t *testing.T) {
 			Ref:   "main",
 			Token: &instance.TokenRef{Env: fixture.WorkflowSource.TokenEnv},
 		}
-		crossedSource, err := instance.NewWorkflowGitSource(t.TempDir(), codeWithCDToken, &workflowCDIsolationRegistrar{}, nil)
+		crossedSource, err := instance.NewWorkflowGitSource(t.TempDir(), codeWithCDToken, nil, &workflowCDIsolationRegistrar{}, nil)
 		if err != nil {
 			t.Fatalf("NewWorkflowGitSource for adversarial code-repo probe: %v", err)
 		}
@@ -155,6 +156,7 @@ func TestWorkflowCDAdversarialIsolation(t *testing.T) {
 		source, err := instance.NewWorkflowGitSource(
 			t.TempDir(),
 			crossedWorkflowSource,
+			nil,
 			&workflowCDIsolationRegistrar{},
 			nil,
 		)
@@ -374,11 +376,11 @@ func createWorkflowCDIsolationBareRepo(t *testing.T, root string, repo workflowC
 
 func runWorkflowCDIsolationGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	command := exec.Command("git", args...)
+	command := testgit.Command(args...)
 	if dir != "" {
 		command.Dir = dir
 	}
-	command.Env = append(os.Environ(),
+	command.Env = append(command.Env,
 		"GIT_CONFIG_COUNT=3",
 		"GIT_CONFIG_KEY_0=core.fsync",
 		"GIT_CONFIG_VALUE_0=none",
@@ -432,8 +434,8 @@ func probeWorkflowCDIsolationGit(t *testing.T, repositoryURL, token string) erro
 	if err != nil {
 		return err
 	}
-	command := exec.Command("git", "ls-remote", "--exit-code", repositoryURL, "refs/heads/main")
-	command.Env = credentials.GitAuthEnvironment(askpass, token)
+	command := testgit.Command("ls-remote", "--exit-code", repositoryURL, "refs/heads/main")
+	command.Env = testgit.IsolateEnvironment(credentials.GitAuthEnvironment(askpass, token))
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git ls-remote: %w: %s", err, strings.TrimSpace(string(output)))

@@ -2,6 +2,7 @@ package localscheduler
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -129,6 +130,79 @@ func (r *OpenPRRefresher) Run(ctx context.Context) {
 			r.pollOnce(ctx)
 		}
 	}
+}
+
+// OpenPRRefresherSet routes each gaggle's MaxOpenPRs count to the refresher
+// polling that gaggle's OWN repo (#2692). A single refresher over the first
+// configured repo left any gaggle bound to another repo counting heads in a
+// repo it never opens PRs in — always zero, so its cap was silently
+// unenforced. Gaggles sharing a repo share one refresher (one poller per
+// distinct repo); a gaggle with no entry reports "unknown", so Admit fails
+// open rather than ever reading another repo's count. Implements
+// OpenPRCounter.
+type OpenPRRefresherSet struct {
+	byGaggle map[string]*OpenPRRefresher
+	// refreshers holds each distinct refresher exactly once (byGaggle may map
+	// several gaggles to one), in deterministic gaggle order, so Run polls
+	// every repo once per interval regardless of how many gaggles share it.
+	refreshers []*OpenPRRefresher
+}
+
+// NewOpenPRRefresherSet builds a set routing each gaggle in byGaggle to its
+// repo's refresher. Nil map entries are dropped (that gaggle stays "unknown").
+func NewOpenPRRefresherSet(byGaggle map[string]*OpenPRRefresher) *OpenPRRefresherSet {
+	set := &OpenPRRefresherSet{byGaggle: make(map[string]*OpenPRRefresher, len(byGaggle))}
+	gaggles := make([]string, 0, len(byGaggle))
+	for gaggle := range byGaggle {
+		gaggles = append(gaggles, gaggle)
+	}
+	sort.Strings(gaggles)
+	seen := make(map[*OpenPRRefresher]bool, len(byGaggle))
+	for _, gaggle := range gaggles {
+		refresher := byGaggle[gaggle]
+		if refresher == nil {
+			continue
+		}
+		set.byGaggle[gaggle] = refresher
+		if !seen[refresher] {
+			seen[refresher] = true
+			set.refreshers = append(set.refreshers, refresher)
+		}
+	}
+	return set
+}
+
+// OpenPRCount implements OpenPRCounter by delegating to the gaggle's own
+// repo's refresher. A gaggle with no refresher reports "unknown" — Admit fails
+// open — never another repo's count. Nil-receiver-safe because the wiring
+// hands a possibly-nil *OpenPRRefresherSet to the OpenPRCounter interface.
+func (s *OpenPRRefresherSet) OpenPRCount(gaggle, workflow string) (int, bool) {
+	if s == nil {
+		return 0, false
+	}
+	refresher, ok := s.byGaggle[gaggle]
+	if !ok {
+		return 0, false
+	}
+	return refresher.OpenPRCount(gaggle, workflow)
+}
+
+// Run polls every distinct refresher until ctx is cancelled, each on its own
+// interval with OpenPRRefresher.Run's eager-first-poll contract. Wire it where
+// a single refresher's Run was wired before (the daemon's open-PR loop).
+func (s *OpenPRRefresherSet) Run(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, refresher := range s.refreshers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			refresher.Run(ctx)
+		}()
+	}
+	wg.Wait()
 }
 
 func (r *OpenPRRefresher) pollOnce(ctx context.Context) {

@@ -27,7 +27,7 @@ import (
 const (
 	contractEvidenceDir       = "GOOBERS_SHIPPED_CONTRACT_EVIDENCE_DIR"
 	ephemeralAPIListenAddress = "127.0.0.1:0"
-	implementationTestPattern = `^TestShippedWorkflowContracts$/^selfhost$/^goobers_implementation$/^01_query-backlog_next$`
+	implementationTestPattern = `^TestShippedWorkflowContracts$/^reference-workflows$/^goobers_implementation$/^01_query-backlog_next$`
 )
 
 var (
@@ -127,7 +127,7 @@ func validateImplementationWorkflow(outDir string) (string, error) {
 	}
 
 	return "## Implementation workflow (real runner + deterministic fake harness)\n\n" +
-		"The canonical shipped `selfhost/goobers/implementation` happy path reached " +
+		"The canonical shipped `reference-workflows/goobers/implementation` happy path reached " +
 		"`phase=completed`. The captured journal records every task and gate from " +
 		"`query-backlog` through `close-out`; `implementation-workflow.json` is the " +
 		"structured test execution record.\n\n", nil
@@ -163,9 +163,9 @@ func validateImplementationJournal(runDir string) error {
 		"stage:gather-implement-context",
 		"stage:implement",
 		"gate:review=pass",
+		"stage:push-branch",
 		"stage:local-ci",
 		"gate:local-gate=pass",
-		"stage:push-branch",
 		"stage:open-pr",
 		"gate:open-pr-gate=pass",
 		"stage:ci-poll",

@@ -25,6 +25,24 @@ func (s Span) End() {
 	}
 }
 
+// EndAt finishes the span at an explicit time rather than now.
+//
+// The counterpart to RunAttributes.StartedAt, and needed for the same reason:
+// spans synthesized from a journal projection describe work that already
+// finished, so ending them at synthesis time would report a duration measured
+// against the projection rather than the run. A zero time falls back to End,
+// so a caller that does not know better cannot accidentally record the epoch.
+func (s Span) EndAt(at time.Time) {
+	if s.span == nil {
+		return
+	}
+	if at.IsZero() {
+		s.span.End()
+		return
+	}
+	s.span.End(trace.WithTimestamp(at))
+}
+
 // Succeed marks the span as successful and finishes it.
 func (s Span) Succeed(message string) {
 	if s.span == nil {

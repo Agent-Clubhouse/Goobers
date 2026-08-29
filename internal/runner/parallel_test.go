@@ -41,6 +41,89 @@ func TestNewParallelExecAssignsIdsByDeclarationOrder(t *testing.T) {
 	}
 }
 
+func TestParallelBranchEventIndexUsesLatestParallelBoundary(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventStageFinished, Parallel: "other", Branch: 1, Stage: "old"},
+		{Type: journal.EventParallelStarted, Parallel: "fan"},
+		{Type: journal.EventStageFinished, Parallel: "fan", Branch: 1, Stage: "first"},
+		{Type: journal.EventStageFinished, Parallel: "fan", Branch: 2, Stage: "second"},
+		{Type: journal.EventParallelStarted, Parallel: "fan"},
+		{Type: journal.EventStageFinished, Parallel: "fan", Branch: 1, Stage: "latest"},
+		{Type: journal.EventStageFinished, Parallel: "fan", Branch: 2, Stage: "latest-2"},
+	}
+
+	index := newParallelBranchEventIndex(events, "fan")
+	if got := index.events(1); len(got) != 1 || got[0].Stage != "latest" {
+		t.Fatalf("branch 1 events = %+v, want latest boundary only", got)
+	}
+	if got := index.events(2); len(got) != 1 || got[0].Stage != "latest-2" {
+		t.Fatalf("branch 2 events = %+v, want latest boundary only", got)
+	}
+	if got := index.events(3); len(got) != 0 {
+		t.Fatalf("missing branch events = %+v, want empty", got)
+	}
+}
+
+var benchmarkParallelBranchEventCount int
+
+func BenchmarkParallelBranchEventIndex(b *testing.B) {
+	for _, branchCount := range []int{8, 32, 128} {
+		events := benchmarkParallelBranchEvents(branchCount, 4096)
+		b.Run(fmt.Sprintf("Indexed/branches=%d", branchCount), func(b *testing.B) {
+			b.ReportAllocs()
+			b.ReportMetric(float64(len(events)), "events")
+			b.ReportMetric(float64(branchCount), "branches")
+			b.ResetTimer()
+			for b.Loop() {
+				index := newParallelBranchEventIndex(events, "fan")
+				for branch := 1; branch <= branchCount; branch++ {
+					benchmarkParallelBranchEventCount += len(index.events(branch))
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("Rescan/branches=%d", branchCount), func(b *testing.B) {
+			b.ReportAllocs()
+			b.ReportMetric(float64(len(events)), "events")
+			b.ReportMetric(float64(branchCount), "branches")
+			b.ResetTimer()
+			for b.Loop() {
+				for branch := 1; branch <= branchCount; branch++ {
+					benchmarkParallelBranchEventCount += len(scanParallelBranchEvents(events, "fan", branch))
+				}
+			}
+		})
+	}
+}
+
+func benchmarkParallelBranchEvents(branchCount, eventCount int) []journal.Event {
+	events := make([]journal.Event, 1, eventCount+1)
+	events[0] = journal.Event{Type: journal.EventParallelStarted, Parallel: "fan"}
+	for i := 0; i < eventCount; i++ {
+		events = append(events, journal.Event{
+			Type:     journal.EventStageFinished,
+			Parallel: "fan",
+			Branch:   i%branchCount + 1,
+		})
+	}
+	return events
+}
+
+func scanParallelBranchEvents(events []journal.Event, parallel string, branch int) []journal.Event {
+	start := 0
+	for i, event := range events {
+		if event.Type == journal.EventParallelStarted && event.Parallel == parallel {
+			start = i + 1
+		}
+	}
+	out := make([]journal.Event, 0)
+	for _, event := range events[start:] {
+		if event.Branch == branch {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
 func TestParallelJoinPointersAreDeclarationOrderedAndBranchTagged(t *testing.T) {
 	spec := apiv1.Parallel{
 		Name: "fan",
@@ -765,7 +848,7 @@ func TestRunnerConcurrentFailFastCancelsRunningAndQueuedBranches(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("queued branch was not cancelled after first branch failed")
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval for cancellation observed by the queued branch.
 	}
 	close(det.releaseB)
 	select {
@@ -798,11 +881,15 @@ func TestRunnerConcurrentFailFastCancelsRunningAndQueuedBranches(t *testing.T) {
 
 func TestRunnerConcurrentBlockedUsesCanonicalTerminalTransition(t *testing.T) {
 	const runID = "parallel-blocked"
+	// The blocker is deliberately a different issue than the driving item:
+	// a self-reference is dropped before the outcome is built (#2961), which
+	// would make this exercise the unattributed path instead of the named-
+	// blocker propagation it is actually about.
 	byTask := map[string]stubTaskResult{
 		runID + ":lens-a": {
 			status:    apiv1.ResultBlocked,
-			errorInfo: &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "issue #42 must merge first"},
-			outputs:   map[string]interface{}{OutputBlockedBy: "42"},
+			errorInfo: &apiv1.ErrorInfo{Code: "DEPENDENCY_NOT_MET", Message: "issue #43 must merge first"},
+			outputs:   map[string]interface{}{OutputBlockedBy: "43"},
 		},
 		runID + ":lens-b": {status: apiv1.ResultSuccess},
 		runID + ":lens-c": {status: apiv1.ResultSuccess},
@@ -830,7 +917,7 @@ func TestRunnerConcurrentBlockedUsesCanonicalTerminalTransition(t *testing.T) {
 	if result.Phase != journal.PhaseEscalated {
 		t.Fatalf("phase = %q, want escalated", result.Phase)
 	}
-	if blocked == nil || blocked.Stage != "lens-a" || len(blocked.Blockers) != 1 || blocked.Blockers[0] != "42" {
+	if blocked == nil || blocked.Stage != "lens-a" || len(blocked.Blockers) != 1 || blocked.Blockers[0] != "43" {
 		t.Fatalf("BlockedOutcome = %+v", blocked)
 	}
 
@@ -1088,7 +1175,7 @@ type slowThenFastDeterministic struct {
 func (s *slowThenFastDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	switch {
 	case strings.HasSuffix(env.TaskID, ":"+s.slowFirstTask):
-		time.Sleep(s.delay)
+		time.Sleep(s.delay) // Intentional branch delay exercises timeout and completion ordering.
 	case strings.HasSuffix(env.TaskID, ":slow-b"):
 		s.secondRan.Store(true)
 	case strings.HasSuffix(env.TaskID, ":fast"):

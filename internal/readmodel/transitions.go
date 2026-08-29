@@ -225,12 +225,14 @@ func walkOccurrence(events []journal.Event, branch, occurrence int, depth map[st
 			// parallel.finished (no case handles that event type here) so the
 			// eventual arrival records the correct source.
 			arrive(event.Parallel, event.Seq)
-		case journal.EventGateEvaluated:
+		case journal.EventGateEvaluated, journal.EventGateOverridden:
 			source := position
 			if source == "" {
 				source = event.Gate
 			}
-			if workflow.IsReservedTarget(event.Target) || event.Target == workflow.TerminalComplete {
+			if workflow.IsReservedTarget(event.Target) ||
+				event.Target == workflow.TerminalComplete ||
+				event.Target == journal.TargetComplete {
 				rows = append(rows, TransitionRow{
 					Branch: branch, Occurrence: occurrence, Seq: event.Seq,
 					Source: source, Target: event.Target, Verdict: event.Verdict,
@@ -266,7 +268,7 @@ func reservedTargetStatus(target string) string {
 		return string(journal.PhaseAborted)
 	case workflow.TargetEscalate:
 		return string(journal.PhaseEscalated)
-	default: // workflow.TerminalComplete, i.e. ""
+	default: // workflow.TerminalComplete or journal.TargetComplete
 		return string(journal.PhaseCompleted)
 	}
 }

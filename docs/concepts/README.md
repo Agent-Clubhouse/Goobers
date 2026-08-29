@@ -31,10 +31,16 @@ compiles into a step-machine, and executes when a trigger is admitted.
 | Recovery is whatever the script implements. | The runtime checkpoints progress and resumes from the append-only run journal. |
 | Editing runtime files can change later behavior. | Behavior changes originate in the definitions under `config/`. |
 
-At tiers 1-2, `goobers up` loads and validates `config/` at startup. The optional
-`--watch-config` mode can atomically reload valid edits. In either mode,
-in-flight runs remain pinned to the workflow version they started with; a
-definition change affects new runs, not the meaning of recorded history. At
+At tiers 1-2, `goobers up` materializes, validates, and loads definitions into
+`config/`. With the default local source, it reads that directory at startup;
+the optional `--watch-config` mode watches direct edits and atomically reloads
+valid changes. A Git `workflowSource` instead continuously reconciles its
+tracked ref without `--watch-config`: periodic fetch-and-compare polling is
+always active, local ref changes wake the loop immediately, and authenticated
+GitHub push deliveries wake it when `webhook.secret` is configured. Invalid
+edits or revisions leave the last-known-good definitions running. In every
+mode, in-flight runs remain pinned to the workflow version they started with;
+a definition change affects new runs, not the meaning of recorded history. At
 tier 3, Argo CD and the operator occupy the config-delivery seam, but the
 definitions keep the same shape.
 
@@ -68,10 +74,12 @@ definitions but never rewrites them as part of executing a workflow.
 The left side defines what may run: gaggles, agents, workflows, triggers,
 stages, gates, capabilities, and instructions. It can be a `config/` directory
 inside the instance, a checkout of a separate config repository, or a
-repo-relative subtree such as this project's `selfhost/` dogfood config.
+repo-relative subtree such as this project's `reference-workflows/` dogfood config.
 Use [Choose where an instance and its config live](../guides/instance-placement.md)
 to select among those layouts. The instance root and its runtime state stay
 outside every target repository in all three cases.
+To relocate that state safely, use
+[Move a local instance to another machine](../guides/move-local-instance.md).
 
 The right side records what did run:
 
@@ -124,7 +132,7 @@ edit the active definitions in place:
 The Tutor follows this same rule for self-improvement. Before its `open-pr`
 stage can open a pull request, Goobers verifies that every changed path is
 inside the configured config root and fails closed otherwise. In a same-repo
-layout such as `selfhost/`, that root must be a non-empty subtree and should be
+layout such as `reference-workflows/`, that root must be a non-empty subtree and should be
 protected by CODEOWNERS and branch rules. A separate config repository makes
 the permission boundary stronger because its credential cannot reach platform
 code.
@@ -137,11 +145,16 @@ state. The runtime never silently teaches itself a new workflow.
 
 | Goobers term | Familiar mental model |
 | --- | --- |
+| **Instance** | One Goobers installation and its runtime state: instance.yaml, validated config, scheduler journal, telemetry, managed workcopies, and gaggle run journals. |
 | **Gaggle** | A team or bounded workforce: its project/backlog connections, goobers, and workflows. |
 | **Goober** | An agent role or worker definition: instructions, harness, tools, skills, model options, and allowed capabilities. |
 | **Workflow** | A declarative, versioned step-machine describing triggers, stages, gates, retries, and run conditions. |
 | **Stage** | One unit of work. It is deterministic (a command or built-in operation) or agentic (a harness invocation with an explicit contract). |
 | **Gate** | A decision state that branches a workflow using an automated check, agentic verdict, or human approval. A gate is not a stage. |
+| **Harness** | The adapter that invokes an agentic stage's model and tools, such as GitHub Copilot CLI or Claude Code, behind the same invocation and result contract. |
+| **Capability** | A declared permission for a stage or goober to perform a specific operation. Undeclared capabilities fail closed and receive no credentials. |
+| **Manifest** | The config source's manifest.yaml: the versioned entry point that declares which gaggle definitions the instance loads. |
+| **Tier** | A deployment scale, not a product fork: solo and small-team tiers use the local runner, while cloud scale uses the conforming Temporal runner. |
 | **Backlog** | The external queue of candidate work, such as eligible GitHub issues. It remains a project system of record. |
 | **Claim ledger** | The scheduler's durable coordination record for who holds an item lease, preventing concurrent runs from processing the same work. |
 | **Reconcile** | Bring runtime execution into line with validated definitions: load and compile desired state, admit eligible work, and preserve the declared constraints. |

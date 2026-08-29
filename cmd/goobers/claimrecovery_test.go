@@ -235,7 +235,7 @@ func waitForInstanceError(t *testing.T, schedulerDir, code string) journal.Event
 				}
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) // Polling interval; the instance journal has no notification hook.
 	}
 	t.Fatalf("timed out waiting for instance-journal error %q", code)
 	return journal.Event{}
@@ -300,9 +300,10 @@ func TestRenewLiveClaimsExtendsLeaseBeyondOriginalWindow(t *testing.T) {
 		if released, err := reopened.RecoverExpired(fakeNow); err != nil || len(released) != 0 {
 			t.Fatalf("cycle %d: claim must survive recovery before its renewal lands: released=%v err=%v", i, released, err)
 		}
-		renewed, err := renewLiveClaims(l, []string{"long-run"}, DefaultClaimLease)
-		if err != nil {
-			t.Fatalf("cycle %d: renewLiveClaims: %v", i, err)
+		trackedProbe := localscheduler.TrackedRunLiveness(func() []string { return []string{"long-run"} })
+		renewed, probeErr, err := renewLiveClaims(context.Background(), l, trackedProbe, DefaultClaimLease)
+		if probeErr != nil || err != nil {
+			t.Fatalf("cycle %d: renewLiveClaims: probeErr=%v err=%v", i, probeErr, err)
 		}
 		if len(renewed) != 1 || renewed[0].ItemID != "issue-3" {
 			t.Fatalf("cycle %d: renewed = %+v, want issue-3 renewed exactly once", i, renewed)

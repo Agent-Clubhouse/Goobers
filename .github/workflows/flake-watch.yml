@@ -1,0 +1,55 @@
+name: Flake watch
+
+on:
+  schedule:
+    - cron: "47 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: flake-ledger-publish
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted scanner
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Scan failure annotations and job logs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: go run ./test/flakewatch -branch "${{ github.event.repository.default_branch }}"
+
+      - name: File novel candidates in the flake ledger
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: go run ./test/flakeledger -input flake-watch-results/failures.json
+
+      - name: Upload watch evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: flake-watch-results-${{ github.run_id }}
+          path: flake-watch-results/
+          if-no-files-found: error
+          retention-days: 30

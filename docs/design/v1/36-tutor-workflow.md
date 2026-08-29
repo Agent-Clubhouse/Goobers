@@ -1,6 +1,6 @@
 # Design: Tutor workflow (journal-mining → config PRs) — V1 epic #36
 
-> Status: **Draft for review** · Area prefix: `TUT` · Milestone: **V1**
+> Status: **draft — for review** · Area prefix: `TUT` · Milestone: **V1**
 > Requirements: [`docs/requirements/tutor.md`](../../requirements/tutor.md) ·
 > Architecture: [`docs/ARCHITECTURE.md`](../../ARCHITECTURE.md) §4 (journals), §8
 > (telemetry), §9 (security), §12 (roadmap)
@@ -130,7 +130,7 @@ Each becomes one backlog issue linking to this section.
 
 ### T4 — Config-only write-boundary
 - Confine the Tutor's PR to the **instance's configured config root** — not a
-  hardcoded `config/**`: in the dogfood instance the config root is `selfhost/`, and
+  hardcoded `config/**`: in the dogfood instance the config root is `reference-workflows/`, and
   arbitrary V1 instances may back config with a separate repo. Path-scoped diff +
   CODEOWNERS / branch protection on that root + operator docs. The *structural*
   credential enforcement (a token that structurally cannot push platform changes) is

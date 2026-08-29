@@ -135,11 +135,29 @@ function run(
     finishedAt,
     durationMillis: finishedAt ? Date.parse(finishedAt) - Date.parse(startedAt) : 120_000,
     lastActivityAt: finishedAt ?? new Date(Date.parse(startedAt) + 120_000).toISOString(),
+    stale: false,
     lastSeq,
     repassCount,
     retryCount: 0,
     policyRetryCount: 0,
     infraRetryCount: 0,
+    noWork: false,
+    operator:
+      phase === "running"
+        ? {
+            issue: { number: "3088", title: "Operator status progress" },
+            currentStage: "review",
+            heartbeatAgeMillis: 30_000,
+            liveness: "recent",
+            trajectory: "review",
+            prOpenerStage: "open-pr",
+            claim: { leaseStatus: "active", providerMarker: "verified" },
+            latestError: { code: "provider.rate_limit", message: "quota exhausted" },
+            review: { verdict: "needs-changes", rationale: "Show operator context." },
+            nextTransition: "finish review",
+            potentialBlockers: ["provider quota is exhausted"],
+          }
+        : undefined,
   };
 }
 
@@ -176,6 +194,8 @@ function workflowDetail(gaggle: string): WorkflowDetail {
         owner: null,
         evaluator: "",
         capabilities: ["github:issues:write"],
+        timeoutSeconds: 120,
+        rawYaml: "name: query\ntype: deterministic\ngoal: Claim the next approved backlog item.\ncapabilities:\n- github:issues:write\ntimeoutSeconds: 120\n",
       },
       {
         name: "implement",
@@ -184,6 +204,11 @@ function workflowDetail(gaggle: string): WorkflowDetail {
         owner: { gaggle, name: "implementer" },
         evaluator: "",
         capabilities: ["repo:push"],
+        timeoutSeconds: 3600,
+        retry: { maxAttempts: 2, backoffSeconds: 30 },
+        policyActions: ["pr:open"],
+        rawYaml:
+          "name: implement\ntype: agentic\ngoober: implementer\ngoal: Implement the claimed item in an isolated worktree.\ncapabilities:\n- repo:push\npolicyActions:\n- pr:open\nretry:\n  maxAttempts: 2\n  backoffSeconds: 30\ntimeoutSeconds: 3600\n",
       },
       {
         name: "review",
@@ -192,6 +217,9 @@ function workflowDetail(gaggle: string): WorkflowDetail {
         owner: { gaggle, name: "implementer" },
         evaluator: "agentic",
         capabilities: ["repo:read"],
+        branches: { pass: "", "needs-changes": "implement" },
+        rawYaml:
+          "name: review\nevaluator: agentic\nagentic:\n  goober: implementer\nbranches:\n  pass: \"\"\n  needs-changes: implement\n",
       },
     ],
   };
@@ -568,12 +596,30 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       ],
     },
     telemetryStats: {
+      creditAssignment: [
+        {
+          gaggle: "core",
+          workflow: "implementation",
+          kind: "gate",
+          stage: "review",
+          identity: "sha256:reviewer",
+          routedRuns: 4,
+          failureRuns: 1,
+          failureShare: 0.25,
+          escalationRuns: 1,
+          retryWasteAttempts: 2,
+          identification: "correlational-fallback",
+          caveat: "no identified causal intervention; correlational rollup retained",
+        },
+      ],
+      causalCredit: null,
       gaggles: [
         {
           gaggle: "core",
           totalRuns: 4,
           completedRuns: 1,
           failedRuns: 1,
+          infraFailedRuns: 0,
           otherRuns: 2,
           successRate: 0.5,
           avgDurationMs: 2_700_000,
@@ -585,6 +631,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           totalRuns: 1,
           completedRuns: 0,
           failedRuns: 0,
+          infraFailedRuns: 0,
           otherRuns: 1,
           avgDurationMs: 1_800_000,
           minDurationMs: 1_800_000,
@@ -603,6 +650,8 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           avgDurationMs: 2_700_000,
           minDurationMs: 1_800_000,
           maxDurationMs: 3_600_000,
+          infraFailedRuns: 0,
+          stuckAbortedRuns: 0,
         },
         {
           gaggle: "tools",
@@ -614,6 +663,8 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           avgDurationMs: 1_800_000,
           minDurationMs: 1_800_000,
           maxDurationMs: 1_800_000,
+          infraFailedRuns: 0,
+          stuckAbortedRuns: 0,
         },
       ],
       stages: [
@@ -641,6 +692,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           retryWasteDurationMs: 480_000,
           retryWasteTokens: 12_000,
           retryWasteCostUSD: 0.75,
+          stuckAbortedAttempts: 0,
         },
         {
           gaggle: "core",
@@ -663,6 +715,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           p50CostUSD: 0.4,
           p95CostUSD: 0.8,
           retryWasteAttempts: 0,
+          stuckAbortedAttempts: 0,
         },
         {
           gaggle: "tools",
@@ -675,6 +728,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           tokenSamples: 0,
           costSamples: 0,
           retryWasteAttempts: 0,
+          stuckAbortedAttempts: 0,
         },
       ],
       usage: [
@@ -798,6 +852,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       ],
       models: [],
       curation: {
+        everRecorded: true,
         runs: 3,
         reportedRuns: 3,
         ready: 8,
@@ -811,6 +866,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
         bounced: 1,
       },
       readyPool: {
+        sampleEverRecorded: true,
         observedAt: "2026-07-15T10:00:00Z",
         depth: 5,
         averageAgeSeconds: 43_200,
@@ -818,7 +874,11 @@ export function populatedDaemonFixtures(): DaemonFixtures {
         starved: false,
         claimAgeSamples: 4,
         averageClaimAgeSeconds: 64_800,
+        bounceEverRecorded: true,
         bounceRate: 1 / 9,
+        inFlightClaimSamples: 2,
+        averageInFlightClaimAgeSeconds: 5_400,
+        oldestInFlightClaimAgeSeconds: 10_800,
         forwardCurationThroughput: 8,
         implementationDemand: 6,
       },
@@ -946,6 +1006,8 @@ export function emptyDaemonFixtures(): DaemonFixtures {
     runDetails: {},
     runEvents: {},
     telemetryStats: {
+      creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],
@@ -961,6 +1023,7 @@ export function emptyDaemonFixtures(): DaemonFixtures {
 
 function emptyCurationStats() {
   return {
+    everRecorded: false,
     runs: 0,
     reportedRuns: 0,
     ready: 0,
@@ -977,7 +1040,12 @@ function emptyCurationStats() {
 
 function emptyReadyPool() {
   return {
+    sampleEverRecorded: false,
+    bounceEverRecorded: false,
     claimAgeSamples: 0,
+    inFlightClaimSamples: 0,
+    averageInFlightClaimAgeSeconds: 0,
+    oldestInFlightClaimAgeSeconds: 0,
     forwardCurationThroughput: 0,
     implementationDemand: 0,
   };

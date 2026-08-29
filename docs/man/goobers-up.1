@@ -6,12 +6,15 @@ goobers up \- run the daemon (scheduler + runner + loopback HTTP API)
 \fBgoobers up\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
+Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout duration] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
 
 Run the daemon: the embedded scheduler (cron triggers + run conditions)
 plus the local runner, loopback HTTP API, and configured GitHub webhook
 listener (default path "."). Blocks
-until interrupted (SIGINT/SIGTERM), then drains in-flight runs before
+until interrupted (SIGINT/SIGTERM), then drains in-flight runs indefinitely
+by default. --drain-timeout forces shutdown after a deadline; a repeated
+signal always forces shutdown without prompting. Interrupted runs resume
+from their last durable checkpoints on the next startup before
 exiting. Exit codes: 0 = clean shutdown, 1 = daemon/API failure,
 2 = usage/IO error.
 
@@ -22,6 +25,13 @@ startup after reporting each candidate.
 Startup validates the resolved instance config and refuses to run on
 errors. --skip-preflight bypasses that refusal with a prominent warning.
 
+A Git workflowSource continuously reconciles its tracked ref. Local Git
+ref changes wake the loop immediately; periodic fetch-and-compare polling
+is always active, and authenticated GitHub push deliveries wake it when
+webhook.secret is configured. Invalid revisions are rejected with the
+last-known-good definitions left running. --watch-config separately watches
+direct edits to the materialized config directory.
+
 --diagnostics turns on deep, opt-in capture for hard hangs: any
 deterministic stage still running past a couple of minutes gets a
 periodic native process sample + process tree + open-fd (lsof)
@@ -29,10 +39,19 @@ snapshot recorded as a run artifact, and stage stdout/stderr are kept
 un-truncated. Verbose and slightly heavier; leave off for normal runs.
 
 --disable-read-model-reads is the design's §6.6 read-model rollback: it
-forces every list request onto the journal-derived paths for this run,
-leaving read.db itself untouched. A flag flip and a restart, not a
-deploy — use it if the read-model list path is ever suspected of
-serving wrong or incomplete results.
+forces every list request to scan the authoritative journals for this
+run, bypassing both read.db and telemetry.db as run-candidate indexes.
+This can be slow on a large history. A flag flip and a restart, not a
+deploy — use it if the read-model list path is ever suspected of serving
+wrong or incomplete results.
+
+These five behavior controls are intentionally flag-only: --watch-config
+selects a process-local development watcher, --diagnostics is temporary
+debug capture, --drain-timeout applies only after this process receives a
+shutdown signal, --skip-preflight is an unsafe startup escape hatch, and
+--disable-read-model-reads is an emergency rollback. Keeping them out of
+instance.yaml prevents temporary operational overrides from becoming
+durable policy. `goobers status --daemon` reports their effective values.
 .fi
 .SH EXAMPLES
 .nf

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/api/validate"
 )
 
 const (
@@ -30,19 +31,27 @@ func TestLoadConfigDirValid(t *testing.T) {
 	for _, g := range set.Gaggles {
 		gotGaggles[g.Name] = true
 	}
-	if len(set.Gaggles) != 2 || !gotGaggles["acme-web"] || !gotGaggles["dotnet-service"] {
+	if len(set.Gaggles) != 5 || !gotGaggles["acme-web"] || !gotGaggles["acme-web-claude"] || !gotGaggles["dotnet-service"] || !gotGaggles["java-service"] || !gotGaggles["python-service"] {
 		t.Fatalf("unexpected gaggles: %+v", set.Gaggles)
 	}
-	// config-examples ships eight goobers (acme-web: coder, curator, docs,
-	// implementer, nominator, reviewer; dotnet-service: dotnet-implementer,
-	// dotnet-reviewer) and nine workflows (acme-web's eight + the
-	// dotnet-service reference's dotnet-implementation, #1093); check
-	// membership, not order.
+	// config-examples ships eighteen goobers (acme-web: coder, curator, docs,
+	// implementer, nominator, reviewer; acme-web-claude: the same six roles
+	// claude-prefixed to stay globally unique, #2777's additive parallel
+	// gaggle; dotnet-service: dotnet-implementer, dotnet-reviewer;
+	// java-service: java-implementer, java-reviewer; python-service:
+	// python-implementer, python-reviewer) and twenty-one workflows
+	// (acme-web's nine, acme-web-claude's same nine names again since
+	// workflow names are scoped by gaggle not global, and one implementation
+	// reference per polyglot service); check membership, not order.
 	gotGoobers := map[string]bool{}
 	for _, g := range set.Goobers {
 		gotGoobers[g.Name] = true
 	}
-	wantGoobers := []string{"coder", "curator", "docs", "implementer", "nominator", "reviewer", "dotnet-implementer", "dotnet-reviewer"}
+	wantGoobers := []string{
+		"coder", "curator", "docs", "implementer", "nominator", "reviewer",
+		"claude-coder", "claude-curator", "claude-docs", "claude-implementer", "claude-nominator", "claude-reviewer",
+		"dotnet-implementer", "dotnet-reviewer", "java-implementer", "java-reviewer", "python-implementer", "python-reviewer",
+	}
 	if len(set.Goobers) != len(wantGoobers) {
 		t.Fatalf("unexpected goobers: %+v", set.Goobers)
 	}
@@ -55,13 +64,17 @@ func TestLoadConfigDirValid(t *testing.T) {
 	var inlineWorkflow *apiv1.Workflow
 	for _, w := range set.Workflows {
 		gotWorkflows[w.Name] = true
-		if w.Name == "inline-policy-check" {
+		if w.Name == "inline-policy-check" && w.Spec.Gaggle == "acme-web" {
 			workflow := w
 			inlineWorkflow = &workflow
 		}
 	}
-	wantWorkflows := []string{"default-implement", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation"}
-	if len(set.Workflows) != len(wantWorkflows) {
+	wantWorkflows := []string{"default-implement", "backlog-assignment", "backlog-curation", "docs-updater", "implementation", "inline-policy-check", "work-nomination", "merge-review", "todo-check", "dotnet-implementation", "java-implementation", "python-implementation"}
+	// acme-web-claude reuses acme-web's nine workflow names verbatim (workflow
+	// identity is gaggle-scoped, unlike goober names), so the total count is
+	// twelve unique names but twenty-one total definitions.
+	const wantTotalWorkflows = 21
+	if len(set.Workflows) != wantTotalWorkflows {
 		t.Fatalf("unexpected workflows: %+v", set.Workflows)
 	}
 	for _, name := range wantWorkflows {
@@ -75,6 +88,51 @@ func TestLoadConfigDirValid(t *testing.T) {
 	if len(inlineWorkflow.Spec.Tasks) == 0 || inlineWorkflow.Spec.Tasks[0].Run == nil ||
 		inlineWorkflow.Spec.Tasks[0].Run.Script == "" {
 		t.Fatalf("inline workflow does not exercise run.script: %+v", inlineWorkflow.Spec.Tasks)
+	}
+}
+
+// TestLoadConfigDirStarterHasNoMissingSkillPackageWarnings reproduces the
+// cold-start SKILL002 probe ("goobers init scaffolds goobers whose spec.skills reference
+// packages init does not create — its own post-init validation prints
+// SKILL002 warnings on a virgin scaffold", hit by all five cold-start
+// flavors). A virgin copy of the starter template must now validate with
+// zero SKILL002 findings because the referenced "implement"/"run-tests"
+// skill packages are scaffolded alongside the goober that declares them.
+func TestLoadConfigDirStarterHasNoMissingSkillPackageWarnings(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	if err := os.CopyFS(configDir, os.DirFS("starter")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, report, err := LoadConfigDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigDir on a virgin starter scaffold: %v (report: %+v)", err, report)
+	}
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			t.Fatalf("virgin starter scaffold emitted a missing-skill-package warning: %+v", warning)
+		}
+	}
+
+	// Negative control: the check must still fire when a skill package is
+	// genuinely missing, proving the clean result above comes from the
+	// scaffolded packages and not from the check having stopped running.
+	if err := os.RemoveAll(filepath.Join(configDir, "gaggles", "example", "skills")); err != nil {
+		t.Fatal(err)
+	}
+	_, report, err = LoadConfigDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigDir with skill packages removed: %v (report: %+v)", err, report)
+	}
+	var missing []validate.CodedWarning
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningMissingSkillPackage {
+			missing = append(missing, warning)
+		}
+	}
+	if len(missing) != 2 {
+		t.Fatalf("missing skill warnings with packages removed = %+v, want implement and run-tests", missing)
 	}
 }
 
@@ -101,7 +159,7 @@ func TestLoadConfigDirForComparisonReturnsParseableInvalidSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = []byte(strings.Replace(string(data), "        pass: local-ci", "        pass: ghost-state", 1))
+	data = []byte(strings.Replace(string(data), "        pass: push-branch", "        pass: ghost-state", 1))
 	if err := os.WriteFile(workflow, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -139,8 +197,35 @@ func TestLoadConfigDirIgnoresAssetDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
 	}
-	if len(set.Goobers) != 8 {
+	if len(set.Goobers) != 18 {
 		t.Fatalf("asset definition leaked into config set: got %d goobers", len(set.Goobers))
+	}
+}
+
+func TestLoadConfigDirIgnoresSkillPackageYAML(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(validConfigDir)); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "gaggles", "acme-web", "goobers", "coder", "goober.yaml")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supportFile := filepath.Join(root, "gaggles", "acme-web", "skills", "implement", "references", "cases.yaml")
+	if err := os.MkdirAll(filepath.Dir(supportFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(supportFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	set, report, err := LoadConfigDir(root)
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if len(set.Goobers) != 18 {
+		t.Fatalf("skill support file leaked into config set: got %d goobers", len(set.Goobers))
 	}
 }
 

@@ -3,13 +3,13 @@ package main
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // churnRepo is a temp git repo whose commits are stamped at controlled times so
@@ -33,38 +33,12 @@ func (r *churnRepo) git(args ...string) {
 	r.gitAt(time.Time{}, args...)
 }
 
-// churnGitConfig is prepended to every fixture git invocation.
-//
-// gc.auto and maintenance.auto suppress the detached `git maintenance run
-// --auto --quiet --detach` that `git commit` otherwise spawns unconditionally —
-// verified with GIT_TRACE even on a three-object repository, so "the repo is
-// too small to trigger gc" does not apply. That child outlives the git
-// invocation and holds the repository's .git directory open inside a
-// t.TempDir(), which on a loaded runner is still live when RemoveAll runs.
-var churnGitConfig = []string{"-c", "gc.auto=0", "-c", "maintenance.auto=0"}
-
-// churnGitEnv isolates fixture git from host configuration. The repo sets
-// user.name/user.email locally, but that leaves ~/.gitconfig, /etc/gitconfig
-// and XDG_CONFIG_HOME in play: a host carrying commit.gpgsign, core.hooksPath
-// or init.templateDir changes whether these commits succeed at all, and a
-// failed commit fails this test immediately rather than at an assertion.
-func churnGitEnv() []string {
-	return append(os.Environ(),
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_OPTIONAL_LOCKS=0",
-	)
-}
-
 // gitAt runs a git command with author/committer dates pinned to when (when
 // non-zero) so commits land at a known point on the timeline.
 func (r *churnRepo) gitAt(when time.Time, args ...string) {
 	r.t.Helper()
-	cmd := exec.Command("git", append(append([]string(nil), churnGitConfig...), args...)...)
+	cmd := testgit.Command(args...)
 	cmd.Dir = r.dir
-	cmd.Env = churnGitEnv()
 	if !when.IsZero() {
 		stamp := when.UTC().Format(time.RFC3339)
 		cmd.Env = append(cmd.Env, "GIT_AUTHOR_DATE="+stamp, "GIT_COMMITTER_DATE="+stamp)
@@ -88,8 +62,7 @@ func (r *churnRepo) commit(when time.Time, msg string, files map[string]string) 
 	}
 	r.git("add", "-A")
 	r.gitAt(when, "commit", "-q", "-m", msg)
-	revParse := exec.Command("git", "-C", r.dir, "rev-parse", "HEAD")
-	revParse.Env = churnGitEnv()
+	revParse := testgit.Command("-C", r.dir, "rev-parse", "HEAD")
 	out, err := revParse.Output()
 	if err != nil {
 		r.t.Fatalf("rev-parse HEAD: %v", err)

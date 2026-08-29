@@ -20,7 +20,7 @@ const versionHelp = "Usage: goobers version [--json]\n" +
 // With no flags it prints the human-readable line (unchanged from the historical
 // one-liner); with --json it emits the structured version.Info object.
 func runVersion(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	fs := newCLIFlagSet("version", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "emit structured JSON instead of the human-readable line")
 	fs.Usage = helpUsage(stderr, "version")

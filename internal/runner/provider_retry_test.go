@@ -111,7 +111,7 @@ func ciPollRetryFixtureMachine(t *testing.T, maxAttempts int32) *workflow.Machin
 				executor.InputKind:     executor.KindCIPoll,
 				executor.InputPRNumber: "9",
 			},
-			Capabilities: []string{string(capability.GitHubPRWrite)},
+			Capabilities: []string{string(capability.ProviderPRWrite)},
 			Retry:        &apiv1.RetryPolicy{MaxAttempts: maxAttempts},
 			Next:         "gate",
 		}},

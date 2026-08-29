@@ -55,7 +55,7 @@ func TestOpenPRAbortsWhenClaimedIssueClosedMidFlight(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	const runID = "run-stale"
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", runID)
 
 	server.addIssue(684, "Superseded work")
 	server.closeIssue(684)
@@ -92,7 +92,7 @@ func TestOpenPRProceedsWhenClaimedIssueStillOpen(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	const runID = "run-fresh"
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", runID)
+	providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", runID)
 
 	server.addIssue(685, "Live work")
 	recordClaimedIssue(t, root, runID, "685", "Live work")

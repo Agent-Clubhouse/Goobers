@@ -1,6 +1,6 @@
 # Design: V0.6 ladder remediation — executor convergence + lifecycle unblock
 
-> Status: **Executed — historical record** (2026-07-23) · Area: `RUN` / `PRL` ·
+> Status: **historical — executed remediation record** (2026-07-23) · Area: `RUN` / `PRL` ·
 > Milestone: **V0.7 — ladder frontload** + **V0.8 (fast-follow)**. All frontload
 > items landed: L1 merge-review threading, L2 rich PR bodies (`openprbody.go`),
 > L3 repass verdict context (#412), L6 non-retryable escalate (#415), L7 open-PR
@@ -59,7 +59,7 @@ persisted only as a journal artifact `verdict/<gate>-<attempt>.json` (`recordVer
 review gate routes `needs-changes → implement`, the repass `implement` invocation is
 rebuilt from `pointers` containing only the *original* query-backlog artifacts — the
 issue, not the feedback. The stage `goal`
-(`selfhost/gaggles/goobers/workflows/implementation.yaml:82-87`) and the implementer
+(`reference-workflows/gaggles/goobers/workflows/implementation.yaml:82-87`) and the implementer
 instructions (`.../implementer/instructions.md:50-54`) **tell the agent to "read the
 reviewer rationale … attached as context"** — feedback that is never attached. The
 agent re-reads the issue, infers "repass" from git, and re-affirms the same diff.
@@ -113,7 +113,7 @@ mis-ranked it).** The **load-bearing fix is stringifying `selectedNumber` end-to
   numeric value survives into the run's `Outputs` map but is **silently dropped** at
   that step. `gather-sibling-context` emits `selectedNumber` as a native int
   (`403`), so it never reaches `apply-verdict.inputsFrom`
-  (`selfhost/gaggles/goobers/workflows/merge-review.yaml:74-82`). The **sibling** stage
+  (`reference-workflows/gaggles/goobers/workflows/merge-review.yaml:74-82`). The **sibling** stage
   `gather-pr-context` already stringifies it *for this exact reason*
   (`cmd/goobers/gatherprcontext.go:164-171`); `gather-sibling-context`'s failure to do
   so is the asymmetry that is the bug.

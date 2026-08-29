@@ -69,7 +69,7 @@ func (f *fixtureAuto) Evaluate(_ context.Context, gate apiv1.AutomatedGate, _ ap
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch gate.Check {
-	case "status-equals":
+	case "status-equals", "failure-class":
 		f.localGate++
 		if f.localOK {
 			return "pass", nil

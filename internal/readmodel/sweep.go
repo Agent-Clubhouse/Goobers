@@ -18,24 +18,47 @@ import (
 // memory would restart from the beginning on every daemon restart, and on a
 // frequently-restarted instance the tail of the corpus would never be swept.
 type SweepCursor struct {
-	Root                 string
-	AfterName            string
-	CycleStartedAt       time.Time
-	LastCycleCompletedAt time.Time
-	EntriesThisCycle     int
+	Root                  string
+	AfterName             string
+	CycleStartedAt        time.Time
+	LastCycleCompletedAt  time.Time
+	EntriesThisCycle      int
+	ReverseAfterStartedAt time.Time
+	ReverseAfterRunID     string
+	ReverseCycleBefore    time.Time
+	ForwardNext           bool
 }
 
 // SweepCursor reads the repair walk's position.
 func (s *Store) SweepCursor(ctx context.Context) (SweepCursor, error) {
 	var (
-		cursor    SweepCursor
-		started   sql.NullString
-		completed sql.NullString
+		cursor        SweepCursor
+		started       sql.NullString
+		completed     sql.NullString
+		reverseAfter  sql.NullString
+		reverseBefore sql.NullString
 	)
-	err := s.readDB().QueryRowContext(ctx, `
-		SELECT root, after_name, cycle_started_at, last_cycle_completed_at, entries_this_cycle
+	db, release, err := s.readHandle()
+	if err != nil {
+		return SweepCursor{}, err
+	}
+	defer release()
+	err = db.QueryRowContext(ctx, `
+		SELECT root, after_name, cycle_started_at, last_cycle_completed_at, entries_this_cycle,
+		       reverse_after_started_at, reverse_after_run_id, reverse_cycle_before,
+		       forward_next
 		FROM sweep_cursor WHERE id = 1`).
-		Scan(&cursor.Root, &cursor.AfterName, &started, &completed, &cursor.EntriesThisCycle)
+		Scan(
+			&cursor.Root,
+			&cursor.AfterName,
+			&started,
+			&completed,
+			&cursor.EntriesThisCycle,
+			&reverseAfter,
+			&cursor.ReverseAfterRunID,
+			&reverseBefore,
+			&cursor.ForwardNext,
+		)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SweepCursor{}, nil
 	}
@@ -48,20 +71,35 @@ func (s *Store) SweepCursor(ctx context.Context) (SweepCursor, error) {
 	if cursor.LastCycleCompletedAt, err = optionalTimeValue(completed); err != nil {
 		return SweepCursor{}, err
 	}
+	if cursor.ReverseAfterStartedAt, err = optionalTimeValue(reverseAfter); err != nil {
+		return SweepCursor{}, err
+	}
+	if cursor.ReverseCycleBefore, err = optionalTimeValue(reverseBefore); err != nil {
+		return SweepCursor{}, err
+	}
 	return cursor, nil
 }
 
 // SaveSweepCursor records the walk's position.
 func (s *Store) SaveSweepCursor(ctx context.Context, cursor SweepCursor) error {
-	_, err := s.writeDB().ExecContext(ctx, `
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = db.ExecContext(ctx, `
 		UPDATE sweep_cursor SET
 			root = ?, after_name = ?,
 			cycle_started_at = ?, last_cycle_completed_at = ?,
-			entries_this_cycle = ?
+			entries_this_cycle = ?,
+			reverse_after_started_at = ?, reverse_after_run_id = ?,
+			reverse_cycle_before = ?, forward_next = ?
 		WHERE id = 1`,
 		cursor.Root, cursor.AfterName,
 		nullTimeValue(cursor.CycleStartedAt), nullTimeValue(cursor.LastCycleCompletedAt),
-		cursor.EntriesThisCycle)
+		cursor.EntriesThisCycle,
+		nullTimeValue(cursor.ReverseAfterStartedAt), cursor.ReverseAfterRunID,
+		nullTimeValue(cursor.ReverseCycleBefore), cursor.ForwardNext)
 	if err != nil {
 		return fmt.Errorf("readmodel: save sweep cursor: %w", err)
 	}
@@ -71,7 +109,12 @@ func (s *Store) SaveSweepCursor(ctx context.Context, cursor SweepCursor) error {
 // ProjectionFloor reports the point below which runs are intentionally aged out.
 func (s *Store) ProjectionFloor(ctx context.Context) (time.Time, bool, error) {
 	var floor sql.NullString
-	err := s.readDB().QueryRowContext(ctx,
+	db, release, err := s.readHandle()
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	defer release()
+	err = db.QueryRowContext(ctx,
 		`SELECT projection_floor FROM projection_state WHERE id = 1`).Scan(&floor)
 	// The error is checked BEFORE floor.Valid, and the two are separate
 	// conditions rather than one `||`.
@@ -107,7 +150,12 @@ func (s *Store) ProjectionFloor(ctx context.Context) (time.Time, bool, error) {
 // were deliberately aged out, which is the livelock the floor exists to prevent
 // — repair projects, retention deletes, and the cycle repeats forever.
 func (s *Store) SetProjectionFloor(ctx context.Context, floor time.Time) error {
-	_, err := s.writeDB().ExecContext(ctx, `
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = db.ExecContext(ctx, `
 		UPDATE projection_state
 		SET projection_floor = ?
 		WHERE id = 1 AND (projection_floor IS NULL OR projection_floor < ?)`,
@@ -128,7 +176,12 @@ func (s *Store) SetProjectionFloor(ctx context.Context, floor time.Time) error {
 // promoted run no longer matches its memo and is examined again.
 func (s *Store) IsUnpublished(ctx context.Context, runID string, mtime time.Time) (bool, error) {
 	var recorded string
-	err := s.readDB().QueryRowContext(ctx,
+	db, release, err := s.readHandle()
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	err = db.QueryRowContext(ctx,
 		`SELECT dir_mtime FROM unpublished WHERE run_id = ?`, runID).Scan(&recorded)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -141,7 +194,12 @@ func (s *Store) IsUnpublished(ctx context.Context, runID string, mtime time.Time
 
 // MarkUnpublished remembers a directory as carrying no run.yaml.
 func (s *Store) MarkUnpublished(ctx context.Context, runID string, mtime time.Time) error {
-	_, err := s.writeDB().ExecContext(ctx, `
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = db.ExecContext(ctx, `
 		INSERT INTO unpublished (run_id, dir_mtime, seen_at) VALUES (?, ?, ?)
 		ON CONFLICT(run_id) DO UPDATE SET dir_mtime = excluded.dir_mtime, seen_at = excluded.seen_at`,
 		runID, formatTime(mtime), formatTime(s.now()))
@@ -153,7 +211,12 @@ func (s *Store) MarkUnpublished(ctx context.Context, runID string, mtime time.Ti
 
 // ClearUnpublished forgets a directory's unpublished memo.
 func (s *Store) ClearUnpublished(ctx context.Context, runID string) error {
-	if _, err := s.writeDB().ExecContext(ctx,
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if _, err := db.ExecContext(ctx,
 		`DELETE FROM unpublished WHERE run_id = ?`, runID); err != nil {
 		return fmt.Errorf("readmodel: clear unpublished %s: %w", runID, err)
 	}
@@ -163,7 +226,12 @@ func (s *Store) ClearUnpublished(ctx context.Context, runID string) error {
 // Tombstoned reports whether a run was deliberately aged out.
 func (s *Store) Tombstoned(ctx context.Context, runID string) (bool, error) {
 	var one int
-	err := s.readDB().QueryRowContext(ctx,
+	db, release, err := s.readHandle()
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	err = db.QueryRowContext(ctx,
 		`SELECT 1 FROM tombstone WHERE run_id = ?`, runID).Scan(&one)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -180,7 +248,12 @@ func (s *Store) Tombstoned(ctx context.Context, runID string) (bool, error) {
 // answers to an operator's question, and a tombstone with no reason collapses
 // them again one level down.
 func (s *Store) Tombstone(ctx context.Context, runID string, startedAt time.Time, reason string) error {
-	_, err := s.writeDB().ExecContext(ctx, `
+	db, release, err := s.writeHandle()
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = db.ExecContext(ctx, `
 		INSERT INTO tombstone (run_id, started_at, tombstoned_at, reason) VALUES (?, ?, ?, ?)
 		ON CONFLICT(run_id) DO NOTHING`,
 		runID, formatTime(startedAt), formatTime(s.now()), reason)
@@ -199,7 +272,13 @@ func (s *Store) ProjectedRunIDsBefore(ctx context.Context, before time.Time, lim
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
-	rows, err := s.readDB().QueryContext(ctx, `
+
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, `
 		SELECT run_id, started_at FROM run
 		WHERE started_at <= ?
 		ORDER BY started_at ASC, run_id ASC
@@ -227,6 +306,62 @@ func (s *Store) ProjectedRunIDsBefore(ctx context.Context, before time.Time, lim
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("readmodel: projected run rows: %w", err)
+	}
+	return out, nil
+}
+
+// ProjectedRunIDsAfter returns one keyset page for the repair reverse sweep.
+func (s *Store) ProjectedRunIDsAfter(
+	ctx context.Context,
+	afterStartedAt time.Time,
+	afterRunID string,
+	before time.Time,
+	limit int,
+) ([]RunRow, error) {
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	db, release, err := s.readHandle()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	rows, err := db.QueryContext(ctx, `
+		SELECT run_id, started_at FROM run
+		WHERE started_at <= ?
+		  AND (? = '' OR started_at > ? OR (started_at = ? AND run_id > ?))
+		ORDER BY started_at ASC, run_id ASC
+		LIMIT ?`,
+		formatTime(before),
+		afterRunID,
+		formatTime(afterStartedAt),
+		formatTime(afterStartedAt),
+		afterRunID,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("readmodel: read projected runs after cursor: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []RunRow
+	for rows.Next() {
+		var (
+			row       RunRow
+			startedAt string
+		)
+		if err := rows.Scan(&row.RunID, &startedAt); err != nil {
+			return nil, fmt.Errorf("readmodel: scan projected run after cursor: %w", err)
+		}
+		parsed, err := time.Parse(timeFormat, startedAt)
+		if err != nil {
+			return nil, fmt.Errorf("readmodel: parse started_at %q: %w", startedAt, err)
+		}
+		row.StartedAt = parsed
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("readmodel: projected run rows after cursor: %w", err)
 	}
 	return out, nil
 }

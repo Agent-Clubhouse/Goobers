@@ -37,11 +37,13 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 		return RunEventTransition, true
 
 	case journal.EventGateEvaluated,
+		journal.EventGateOverridden,
 		journal.EventTickSkipped:
 		return RunEventDecision, true
 
 	case journal.EventError,
 		journal.EventWorkflowStarved,
+		journal.EventWorkflowRefused,
 		journal.EventClaimLockTimeout,
 		journal.EventConfigReloadRejected,
 		journal.EventDaemonDirtyRestart:
@@ -63,6 +65,7 @@ func classifyRunEvent(event journal.Event) (RunEventCategory, bool) {
 		journal.EventRedaction,
 		journal.EventRepaired,
 		journal.EventRunnerAnnotation,
+		journal.EventRunnerPlacement,
 		journal.EventClaimAcquired,
 		journal.EventClaimReleased,
 		journal.EventClaimForceReleased,

@@ -4,7 +4,7 @@
 // open-pr) through the real runner via `goobers run`, offline, with a fake
 // harness standing in for the Copilot CLI on both agentic stages. Provider
 // stages use `true` sentinels here; their own behavior is covered separately.
-// Validation runs the real CLI against a drafted selfhost tree.
+// Validation runs the real CLI against a drafted reference-workflows tree.
 // gather-signals here uses `true` to keep this workflow-plumbing fixture
 // independent of telemetry-query's rollup fixture; telemetryquery_test.go
 // covers the real connector command.
@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -29,12 +28,15 @@ import (
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/testgit"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
-// tutorWorkflowYAML mirrors the real selfhost Tutor control flow while
+// tutorWorkflowYAML mirrors the real reference-workflows Tutor control flow while
 // replacing provider-backed commands with offline sentinels.
 const tutorWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: tutor
 spec:
@@ -75,7 +77,7 @@ spec:
       type: deterministic
       goal: Validate the drafted config.
       run:
-        command: ["goobers", "validate", "--source-tree", "selfhost"]
+        command: ["goobers", "validate", "--source-tree", "reference-workflows"]
       next: config-valid
     - name: check-fail-first
       type: deterministic
@@ -138,7 +140,7 @@ const (
 // acceptance_test.go's initAcceptanceDemo. repoCloneURL points worktrees at
 // a local bare git fixture; newAgenticAdapter scripts a fake harness for
 // both agentic stages. config-author's fake writes and commits a valid or
-// malformed selfhost config change in the run's real worktree, leaving
+// malformed reference-workflows config change in the run's real worktree, leaving
 // validation and publication to the later deterministic stages.
 func initTutorDemo(t *testing.T, mode tutorDraftMode) string {
 	t.Helper()
@@ -166,7 +168,7 @@ func initTutorDemo(t *testing.T, mode tutorDraftMode) string {
 	}
 	// acceptanceGooberYAML hardcodes `workflows: [acceptance]`; rewrite it to
 	// this fixture's real workflow name so goobersByName/compiledMachines
-	// resolve identically to how the real selfhost config declares it.
+	// resolve identically to how the real reference-workflows config declares it.
 	for _, name := range []string{"analyst", "config-author"} {
 		p := filepath.Join(gaggleDir, "goobers", name, "goober.yaml")
 		data, err := os.ReadFile(p)
@@ -185,7 +187,7 @@ func initTutorDemo(t *testing.T, mode tutorDraftMode) string {
 
 	prevAdapter := newAgenticAdapter
 	newAgenticAdapter = func(gooberName string, _ map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{
+		return &harnesstest.FakeAdapter{
 			Transcript: []byte("fake harness session for " + gooberName + "\n"),
 			Act: func(_ context.Context, req harness.RunRequest) error {
 				if gooberName == "config-author" {
@@ -193,7 +195,7 @@ func initTutorDemo(t *testing.T, mode tutorDraftMode) string {
 						return err
 					}
 				}
-				return harness.WriteCompletion(req.Workspace, req.CompletionPath, tutorFixtureAct(gooberName))
+				return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, tutorFixtureAct(gooberName))
 			},
 		}
 	}
@@ -212,12 +214,12 @@ func newTutorFixtureRepo(t *testing.T) string {
 	runFixtureGit(t, "", "clone", bare, work)
 	runFixtureGit(t, work, "config", "user.email", "test@example.com")
 	runFixtureGit(t, work, "config", "user.name", "test")
-	if err := os.CopyFS(filepath.Join(work, "selfhost"), os.DirFS(filepath.Join("..", "..", "selfhost"))); err != nil {
+	if err := os.CopyFS(filepath.Join(work, "reference-workflows"), os.DirFS(filepath.Join("..", "..", "reference-workflows"))); err != nil {
 		t.Fatal(err)
 	}
 	writeFixture(t, filepath.Join(work, "docs", "fixture.md"), "# Fixture documentation\n")
-	runFixtureGit(t, work, "add", "selfhost", "docs")
-	runFixtureGit(t, work, "commit", "-m", "add selfhost config fixture")
+	runFixtureGit(t, work, "add", "reference-workflows", "docs")
+	runFixtureGit(t, work, "commit", "-m", "add reference-workflows config fixture")
 	runFixtureGit(t, work, "push", "origin", "main")
 	return bare
 }
@@ -225,10 +227,10 @@ func newTutorFixtureRepo(t *testing.T) string {
 // tutorGateFixtureRelPath is the file config-author's fake edits — the same
 // path the real Tutor's draft-change stage would touch, and the path
 // check-fail-first's IsWorkflowFile match must recognize as a workflows/*.yaml.
-const tutorGateFixtureRelPath = "selfhost/gaggles/goobers/workflows/tutor.yaml"
+const tutorGateFixtureRelPath = "reference-workflows/gaggles/goobers/workflows/tutor.yaml"
 
 // tutorFailFirstValidGateBlock is the fail-first-valid gate exactly as landed
-// in the real selfhost/gaggles/goobers/workflows/tutor.yaml (#1214). The
+// in the real reference-workflows/gaggles/goobers/workflows/tutor.yaml (#1214). The
 // new-gate fixture modes rewrite its "fail" branch (never exercised by these
 // tests' successful runs) to route through a fixture-only extra task+gate,
 // making the newly added gate reachable without disturbing the traversed path.
@@ -345,7 +347,7 @@ func tutorFixtureCommit(workspace string, mode tutorDraftMode) error {
 	}
 	commitArgs = append(commitArgs, []string{"commit", "-m", "tutor: fixture config change"})
 	for _, args := range commitArgs {
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = workspace
 		var out bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &out
@@ -377,12 +379,12 @@ func tutorFixtureAct(gooberName string) apiv1.ResultEnvelope {
 }
 
 // TestTutorScheduleParsesAndFires is T1's "schedule expression parses and
-// fires" test-plan item: the real selfhost tutor.yaml's schedule expression
+// fires" test-plan item: the real reference-workflows tutor.yaml's schedule expression
 // is a valid 5-field cron and actually computes a next fire time, not just a
 // structurally-parseable string (already covered separately by
-// TestSelfhostWorkflowsCompile's CheckSchedules pass).
+// TestReferenceWorkflowsCompile's CheckSchedules pass).
 func TestTutorScheduleParsesAndFires(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "selfhost", "gaggles", "goobers", "workflows", "tutor.yaml"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers", "workflows", "tutor.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

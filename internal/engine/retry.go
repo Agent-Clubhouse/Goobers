@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -43,7 +44,13 @@ const (
 // attempt's recorded failure type (attemptFailureClass). Each dispatch still
 // carries an explicit RetryPolicy{MaximumAttempts: 1} (stageActivityOptions)
 // so the unlimited default is structurally unreachable.
-func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context) (apiv1.ResultEnvelope, error)) (apiv1.ResultEnvelope, error) {
+// deltaOut, when non-nil, receives the workspace delta digest the winning
+// attempt produced (#3763), so the caller can hand it to the next stage. It is
+// an out-param rather than a return value because only the pod arm produces
+// one: a self-placed stage's commits are already on the shared run branch, and
+// widening the return type would oblige every arm to answer a question only one
+// of them has.
+func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int) (stageActivityResult, error), deltaOut *string) (apiv1.ResultEnvelope, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -72,24 +79,71 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 			policyAttempts++
 		}
 
+		// Projection parity with runTask's attempt journaling: stage.started
+		// and the context manifest are committed before the executor runs
+		// (the local runner's own order — both stamped with the pre-dispatch
+		// time), then emitted live (DS4) so the attempt is visible before it
+		// executes, not minutes after it closes. Lazy run-branch provenance
+		// and the attempt's own outcome event follow the dispatch.
+		mark := rec.mark()
 		startedAt := workflow.Now(ctx)
-		res, err := dispatch(ctx)
-		if temporal.IsCanceledError(err) || ctx.Err() != nil {
-			return apiv1.ResultEnvelope{}, err
-		}
-		// Projection parity with runTask's attempt journaling: stage.started,
-		// the context manifest committed before the executor ran (both stamped
-		// with the pre-dispatch time), lazy run-branch provenance, then the
-		// attempt's own outcome event.
 		rec.stageStarted(startedAt, t.Name, int(attempt), class)
 		if merr := rec.contextManifest(startedAt, t.Name, int(attempt), class, pointers); merr != nil {
 			return apiv1.ResultEnvelope{}, merr
 		}
-		rec.recordDeferredRunBranch(ctx, err, res)
-		if err == nil {
-			res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
-			rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError)
-			return res, nil
+		var res apiv1.ResultEnvelope
+		var err error
+		emitErr := rec.emitPending(ctx)
+		if emitErr == nil {
+			var activityResult stageActivityResult
+			activityResult, err = dispatch(ctx, int(attempt))
+			res = activityResult.ResultEnvelope
+			if temporal.IsCanceledError(err) || ctx.Err() != nil {
+				return apiv1.ResultEnvelope{}, err
+			}
+			rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
+			if err == nil {
+				res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
+				rec.mutationIssues(ctx, t.Name, int(attempt), class, activityResult.MutationIssues)
+				rec.mutations(ctx, t.Name, int(attempt), class, activityResult.Mutations)
+				rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError)
+				emitErr = rec.emitPending(ctx)
+				if emitErr == nil {
+					// Only a WINNING attempt's delta is carried forward. A
+					// retried attempt's bundle describes a workspace that was
+					// thrown away with its pod, and building the next stage on
+					// it would resurrect abandoned work.
+					if deltaOut != nil && activityResult.WorkspaceDelta != "" {
+						*deltaOut = activityResult.WorkspaceDelta
+					}
+					return res, nil
+				}
+			}
+		}
+		if emitErr != nil {
+			// §8 failure policy: a journal emission that exhausted its bounded
+			// budget fails the attempt as attemptClass infra — never the work
+			// budget (#3361). The attempt's un-journaled ops are rolled back
+			// first (an effect that cannot be journaled did not happen; the
+			// same fail-closed stance the projection takes), so the projection
+			// and the live journal agree the attempt produced only its
+			// infra-classed failure record.
+			rec.rollbackUnemitted(mark)
+			rec.emitFailure(ctx, t.Name, int(attempt), emitErr)
+			lastErr = emitErr
+			infrastructureFailures++
+			nextRetryClass = journal.AttemptInfra
+			if infrastructureFailures >= runner.DefaultMaxInfrastructureAttempts {
+				return apiv1.ResultEnvelope{}, fmt.Errorf(
+					"engine: journal stage %q: %w (attempt %d/%d)",
+					t.Name, lastErr, infrastructureFailures, runner.DefaultMaxInfrastructureAttempts)
+			}
+			if retryDelay := infrastructureRetryDelay(emitErr, backoff, workflow.Now(ctx)); retryDelay > 0 {
+				if serr := workflow.Sleep(ctx, retryDelay); serr != nil {
+					return apiv1.ResultEnvelope{}, serr
+				}
+			}
+			continue
 		}
 		lastErr = err
 		failureClass, cerr := attemptFailureClass(err)
@@ -97,6 +151,9 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w", t.Name, cerr)
 		}
 		rec.executorError(ctx, t.Name, int(attempt), class, failureClass, err)
+		if isStartToCloseTimeout(err) && len(t.PolicyActions) > 0 {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute side-effecting stage %q: refusing to retry after worker loss: %w", t.Name, err)
+		}
 		retryLimit, retryCount := policyMaxAttempts, policyAttempts
 		shouldRetry := policyAttempts < policyMaxAttempts
 		nextRetryClass = journal.AttemptPolicy
@@ -109,8 +166,9 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 		if !shouldRetry {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w (attempt %d/%d)", t.Name, lastErr, retryCount, retryLimit)
 		}
-		if backoff > 0 {
-			if serr := workflow.Sleep(ctx, backoff); serr != nil {
+		retryDelay := infrastructureRetryDelay(err, backoff, workflow.Now(ctx))
+		if retryDelay > 0 {
+			if serr := workflow.Sleep(ctx, retryDelay); serr != nil {
 				return apiv1.ResultEnvelope{}, serr
 			}
 		}
@@ -118,6 +176,22 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 	// Unreachable: maxAttempts >= 1 always executes the loop body at least
 	// once, and every path inside either returns or continues.
 	return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: exhausted attempts: %w", t.Name, lastErr)
+}
+
+func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) time.Duration {
+	var appErr *temporal.ApplicationError
+	if !errors.As(err, &appErr) || appErr.Type() != FailureTypeInfrastructure || !appErr.HasDetails() {
+		return backoff
+	}
+	var retryAt time.Time
+	if err := appErr.Details(&retryAt); err != nil {
+		return backoff
+	}
+	until := retryAt.Sub(now)
+	if until > backoff {
+		return until
+	}
+	return backoff
 }
 
 // attemptFailureClass maps one failed dispatch to the journal attempt class
@@ -131,14 +205,24 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 //     A stage overrunning its declared duration limit lands here: the worker
 //     self-enforces the limit and surfaces it as invoke.Timeout →
 //     FailureTypeStage, the same policy class the local runner assigns (#724);
-//   - a Temporal timeout is infrastructure: StartToCloseTimeout runs
-//     stageTimeoutGrace behind the worker's own limit enforcement
-//     (stageActivityOptions), so it only fires when the worker was lost
-//     before the stage produced a verdict — the platform failed, not the
-//     stage's policy (#622);
+//   - a Temporal ScheduleToStart timeout is infrastructure because the
+//     activity never began. StartToClose is policy-classed because the worker
+//     may have been lost after the stage committed an external effect; a task
+//     declaring policyActions is therefore stopped before retry;
 //   - anything else fails closed as unclassifiable. A projection error, never
 //     a silent default to "infra".
 func attemptFailureClass(err error) (journal.AttemptClass, error) {
+	var timeoutErr *temporal.TimeoutError
+	if errors.As(err, &timeoutErr) {
+		switch timeoutErr.TimeoutType() {
+		case enumspb.TIMEOUT_TYPE_SCHEDULE_TO_START:
+			return journal.AttemptInfra, nil
+		case enumspb.TIMEOUT_TYPE_START_TO_CLOSE:
+			return journal.AttemptPolicy, nil
+		default:
+			return "", fmt.Errorf("unclassifiable Temporal timeout type %q (refusing a silent %q default): %w", timeoutErr.TimeoutType(), journal.AttemptInfra, err)
+		}
+	}
 	var appErr *temporal.ApplicationError
 	if errors.As(err, &appErr) {
 		if appErr.Type() == FailureTypeInfrastructure {
@@ -146,9 +230,10 @@ func attemptFailureClass(err error) (journal.AttemptClass, error) {
 		}
 		return journal.AttemptPolicy, nil
 	}
-	var timeoutErr *temporal.TimeoutError
-	if errors.As(err, &timeoutErr) {
-		return journal.AttemptInfra, nil
-	}
 	return "", fmt.Errorf("unclassifiable attempt failure (refusing a silent %q default): %w", journal.AttemptInfra, err)
+}
+
+func isStartToCloseTimeout(err error) bool {
+	var timeoutErr *temporal.TimeoutError
+	return errors.As(err, &timeoutErr) && timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_START_TO_CLOSE
 }

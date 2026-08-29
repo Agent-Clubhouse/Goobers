@@ -15,7 +15,7 @@ writes only to config, and humans hold the quality bar via PR controls. Only its
 source and the enforcement mechanism of its write-boundary vary by tier.
 
 > **Status note (2026-07-23):** the first Tutor **ships** — `tutor.yaml` runs in the
-> selfhost instance as a narrow slice (T1–T5 wave; see `../V0-ACCEPTANCE.md`), and
+> reference-workflows instance as a narrow slice (T1–T5 wave; see `../V0-ACCEPTANCE.md`), and
 > the config-only write boundary (`TUT-005`) is enforced by
 > `internal/configboundary`, wired into the open-pr stage. The Tutor's **forward
 > scope is superseded** by the accepted Tutor v2 redesign
@@ -94,7 +94,7 @@ source and the enforcement mechanism of its write-boundary vary by tier.
 
 ## Relationships
 
-- Is a → **Workflow** (special-purpose). Ships narrow-slice in selfhost; forward
+- Is a → **Workflow** (special-purpose). Ships narrow-slice in reference-workflows; forward
   scope per `../design/tutor-redesign.md`.
 - Reads → **run journals** + the **Telemetry** run store (rollup at tiers 1–2, ADX at
   tier 3) — the same contract the portal reads; never runner internals.

@@ -2,9 +2,6 @@ apiVersion: goobers.dev/v1alpha1
 kind: Manifest
 metadata:
   name: acme-instance
-  # The pre-GA DSL is preview and must be acknowledged at instance scope.
-  annotations:
-    goobers.dev/allow-preview-features: "true"
 spec:
   instance:
     name: acme
@@ -57,7 +54,20 @@ spec:
   # object under gaggles/<name>/.
   gaggles:
     - acme-web
+    # Fleet posture (#2777): claude-code adoption alongside Copilot, not a
+    # conversion — acme-web's Copilot config above is untouched. Additive
+    # parallel gaggle working the same reference repo under claude-code, so
+    # the shipped fleet exercises both harnesses rather than leaving one
+    # undogfooded. In a real instance manifest, running both is optional —
+    # this listing just proves neither one costs the other.
+    - acme-web-claude
     # Polyglot reference (PLY-4 / #1093): a C#/.NET gaggle sharing the same
     # connections + workflow machinery, differing only in its declared .NET CI
     # command and `dotnet@9` runtime requirement.
     - dotnet-service
+    # Java/Maven reference (TSN-2 / #2169), using the same polyglot seams with
+    # its declared Maven CI command and `java@21` runtime requirement.
+    - java-service
+    # Python reference (TSN-3 / #2170): exercises Python 3.12 admission, pytest
+    # as the gaggle CI command, and the allowlisted Python environment.
+    - python-service

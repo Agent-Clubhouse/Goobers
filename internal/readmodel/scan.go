@@ -2,6 +2,7 @@ package readmodel
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"github.com/goobers/goobers/internal/journal"
@@ -24,8 +25,9 @@ const runColumns = `r.run_id, r.gaggle, r.workflow, r.workflow_version, r.workfl
 	r.goober_digest, r.trigger_kind, r.trigger_ref, r.phase, r.terminal, r.current_stage,
 	r.started_at, r.finished_at, r.last_activity_at, r.last_seq,
 	r.repass_count, r.retry_count, r.policy_retry_count, r.infra_retry_count,
-	r.outcome_verdict, r.outcome_target,
-	r.any_token_measured, r.any_premium_measured, r.any_cost_measured, r.any_retry_waste`
+	r.outcome_verdict, r.outcome_target, r.disposition,
+	r.any_token_measured, r.any_premium_measured, r.any_cost_measured, r.any_retry_waste,
+	r.operator_json`
 
 // nullables holds the columns SQL can return as NULL, between Scan and decode.
 //
@@ -43,6 +45,7 @@ type nullables struct {
 	// plain ints -- but they are read through the same struct so that adding a
 	// column cannot desynchronise runColumns from runScanTargets.
 	anyToken, anyPremium, anyCost, anyRetryWaste int
+	operatorJSON                                 string
 }
 
 // runScanTargets returns Scan destinations for runColumns, in the same order.
@@ -54,8 +57,9 @@ func runScanTargets(out *RunRow) []any {
 		&n.gooberDigest, &n.triggerKind, &n.triggerRef, &n.phase, &n.terminal, &n.currentStage,
 		&n.startedAt, &n.finishedAt, &n.lastActivity, &out.LastSeq,
 		&out.RepassCount, &out.RetryCount, &out.PolicyRetryCount, &out.InfraRetryCount,
-		&n.verdict, &n.target,
+		&n.verdict, &n.target, &out.Disposition,
 		&n.anyToken, &n.anyPremium, &n.anyCost, &n.anyRetryWaste,
+		&n.operatorJSON,
 	}
 }
 
@@ -80,6 +84,9 @@ func (r *RunRow) finishScan() error {
 	r.AnyPremiumMeasured = n.anyPremium != 0
 	r.AnyCostMeasured = n.anyCost != 0
 	r.AnyRetryWaste = n.anyRetryWaste != 0
+	if err := json.Unmarshal([]byte(n.operatorJSON), &r.Operator); err != nil {
+		return fmt.Errorf("readmodel: decode operator facts: %w", err)
+	}
 
 	var err error
 	if r.StartedAt, err = requiredTime(n.startedAt); err != nil {

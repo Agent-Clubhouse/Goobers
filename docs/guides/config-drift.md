@@ -5,12 +5,12 @@ the shipped canonical config:
 
 ```sh
 goobers config diff ~/goobers-instance
-goobers config diff --against /path/to/Goobers/selfhost ~/goobers-instance
+goobers config diff --against /path/to/Goobers/reference-workflows ~/goobers-instance
 ```
 
 The active path must be an instance root; its workflows are loaded from
 `config/`. The canonical path is a config source tree containing `manifest.yaml`
-and `gaggles/`. It defaults to `./selfhost`, so run the first form from a
+and `gaggles/`. It defaults to `./reference-workflows`, so run the first form from a
 Goobers source checkout or pass `--against` explicitly.
 
 The comparison is name-based and deterministic. YAML file layout, map order,

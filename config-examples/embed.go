@@ -14,6 +14,7 @@ import (
 // Files contains the canonical workflows and their goober definitions.
 //
 //go:embed gaggles/acme-web/workflows/implementation.yaml
+//go:embed gaggles/acme-web/workflows/backlog-assignment.yaml
 //go:embed gaggles/acme-web/workflows/backlog-curation.yaml
 //go:embed gaggles/acme-web/workflows/work-nomination.yaml
 //go:embed gaggles/acme-web/goobers/implementer

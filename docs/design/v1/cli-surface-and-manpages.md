@@ -1,6 +1,6 @@
 # Design: CLI robustness — registry-sourced help + generated man pages
 
-> Status: **Draft for review** · Area: `area:cli` / `DX` · Milestone: **Onboarding & Authoring**
+> Status: **draft — for review** · Area: `area:cli` / `DX` · Milestone: **Onboarding & Authoring**
 > (#435) References: `cmd/goobers/main.go` (usage), `cmd/goobers/runtime_capabilities.go`
 > (registry/dispatch), `cmd/goobers/completion.go` (static completion), `internal/apicontract`.
 > Origin: the V1 usability goal — audit CLI commands for robustness, correct/complete man
@@ -98,6 +98,11 @@ inputs, invoke these commands, and render their parsed results:
 - `goobers onboarding stub-sample`
 - `goobers init --template=quickstart --source-tree`
 - `goobers onboarding stub-agent-instructions`
+- `goobers connect <owner>/<repo>` — the connect-your-repository rung
+  (onboarding-first-value-ladder §3 R3, authorized by the #2449 ruling recorded
+  on design PR #2540): rewrites instance/gaggle placeholders, records the token
+  env-var name, optionally seeds selector labels + a starter issue, and
+  validates in-process.
 - `goobers validate --source-tree --json`
 
 The three write actions return the same versioned envelope:

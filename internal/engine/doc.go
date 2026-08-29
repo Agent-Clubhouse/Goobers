@@ -41,17 +41,16 @@
 //   - taskOutcome does not honor the #415 non-retryable escalation bypass
 //     (ISSUE_OVER_SCOPE / NEEDS_DECOMPOSITION route straight to escalation on
 //     the local runner, bypassing the Next gate).
-//   - WorkspaceBranchOutput (#392) sticky workspace-branch rebinding is not
-//     applied between stages.
 //   - Cumulative agentic usage budgets (limits.maxTokens / maxCostUSD) are not
 //     enforced here — the local runner fails closed via enforceStageBudget.
 //     Moot until the agentic executor seam is wired (stages needing it fail
 //     closed today), but it must land with that wiring.
 //   - The context-manifest artifact is journaled even when workspace
-//     provisioning failed; the gate-evaluator has no per-attempt deadline; a
-//     provider-mutation ref.touched analogue is absent; and InputsFrom failures
-//     produce no stage-attributed events.
+//     provisioning failed; the gate-evaluator has no per-attempt deadline; and
+//     InputsFrom failures produce no stage-attributed events.
 //
-// The verdict-ArtifactPointer projection hazard (a pre-scrub pointer can dangle
-// when scrubbing changes the bytes) is the same class and tracked with them.
+// The #629 remnant closed the provider-mutation ref.touched gap and moved result
+// and verdict scrubbing to the activity boundary, before Temporal records the
+// payload. Verdict ArtifactPointers therefore address the exact scrubbed bytes
+// the projection commits instead of dangling when redaction changes a digest.
 package engine

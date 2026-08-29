@@ -57,7 +57,7 @@ func TestTaskExecutor_RoutesToCIPoll(t *testing.T) {
 	env := apiv1.InvocationEnvelope{
 		TaskID:       "t1",
 		RepoRef:      apiv1.RepoRef{Owner: "acme", Name: "widgets"},
-		Capabilities: []string{string(capability.GitHubPRWrite)},
+		Capabilities: []string{string(capability.ProviderPRWrite)},
 		Inputs:       map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
 	}
 	result, err := te.Run(context.Background(), env, apiv1.DeterministicRun{})
@@ -88,7 +88,7 @@ func TestTaskExecutor_CIPollHonorsDeclaredDurationLimit(t *testing.T) {
 
 	env := apiv1.InvocationEnvelope{
 		RepoRef:      apiv1.RepoRef{Owner: "acme", Name: "widgets"},
-		Capabilities: []string{string(capability.GitHubPRWrite)},
+		Capabilities: []string{string(capability.ProviderPRWrite)},
 		Limits:       apiv1.Limits{MaxDurationSeconds: 1},
 		Inputs:       map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
 	}
@@ -104,7 +104,7 @@ func TestTaskExecutor_CIPollHonorsDeclaredDurationLimit(t *testing.T) {
 	}
 }
 
-func TestTaskExecutor_CIPollHonorsDeclaredPollInterval(t *testing.T) {
+func TestTaskExecutor_CIPollUsesDeclaredPollIntervalAsJitterCeiling(t *testing.T) {
 	shell, _ := newTestExecutor(t, nil)
 	poller := &fakePoller{results: []providers.CheckState{
 		providers.CheckStatePending,
@@ -123,7 +123,7 @@ func TestTaskExecutor_CIPollHonorsDeclaredPollInterval(t *testing.T) {
 
 	env := apiv1.InvocationEnvelope{
 		RepoRef:      apiv1.RepoRef{Owner: "acme", Name: "widgets"},
-		Capabilities: []string{string(capability.GitHubPRWrite)},
+		Capabilities: []string{string(capability.ProviderPRWrite)},
 		Inputs: map[string]interface{}{
 			InputKind:            KindCIPoll,
 			InputPRNumber:        "9",
@@ -137,8 +137,8 @@ func TestTaskExecutor_CIPollHonorsDeclaredPollInterval(t *testing.T) {
 	if result.Status != apiv1.ResultSuccess {
 		t.Fatalf("status = %v, want success", result.Status)
 	}
-	if slept != 7*time.Second {
-		t.Fatalf("poll sleep = %s, want declared 7s cadence", slept)
+	if slept < 3500*time.Millisecond || slept > 7*time.Second {
+		t.Fatalf("poll sleep = %s, want jittered range [3.5s, 7s]", slept)
 	}
 }
 
@@ -165,7 +165,7 @@ func TestTaskExecutor_CIPollWithoutCapabilityFailsBeforePolling(t *testing.T) {
 		Inputs:  map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
 	}
 	_, err = te.Run(context.Background(), env, apiv1.DeterministicRun{})
-	if err == nil || !strings.Contains(err.Error(), `requires declared capability "github:pr:write"`) {
+	if err == nil || !strings.Contains(err.Error(), `requires declared capability "provider:pr:write"`) {
 		t.Fatalf("Run error = %v, want missing-capability error", err)
 	}
 	if poller.calls != 0 {
@@ -177,7 +177,7 @@ func TestTaskExecutor_CIPollWithoutConfiguredExecutorFailsClosed(t *testing.T) {
 	shell, _ := newTestExecutor(t, nil)
 	te := newRegisteredTaskExecutor(t, shell, nil)
 	env := apiv1.InvocationEnvelope{
-		Capabilities: []string{string(capability.GitHubPRWrite)},
+		Capabilities: []string{string(capability.ProviderPRWrite)},
 		Inputs:       map[string]interface{}{InputKind: KindCIPoll},
 	}
 	if _, err := te.Run(context.Background(), env, apiv1.DeterministicRun{}); err == nil || err.Error() != "executor: kind=ci-poll declared but no CIPollExecutor is configured" {
@@ -214,7 +214,7 @@ func TestTaskExecutor_ClassifiesCIPollProviderFailures(t *testing.T) {
 			env := apiv1.InvocationEnvelope{
 				TaskID:       "poll",
 				RepoRef:      apiv1.RepoRef{Owner: "acme", Name: "widgets"},
-				Capabilities: []string{string(capability.GitHubPRWrite)},
+				Capabilities: []string{string(capability.ProviderPRWrite)},
 				Inputs:       map[string]interface{}{InputKind: KindCIPoll, InputPRNumber: "9"},
 			}
 			result, runErr := te.Run(context.Background(), env, apiv1.DeterministicRun{})

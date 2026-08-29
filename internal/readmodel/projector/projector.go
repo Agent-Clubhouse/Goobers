@@ -39,6 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -58,6 +59,12 @@ type Store interface {
 	GetRun(ctx context.Context, runID string) (readmodel.RunRow, bool, error)
 	NonTerminalRuns(ctx context.Context, limit int) ([]readmodel.RunRow, error)
 	RemoveRun(ctx context.Context, runID string) error
+	SaveSweepCursor(ctx context.Context, cursor readmodel.SweepCursor) error
+	MarkUnpublished(ctx context.Context, runID string, mtime time.Time) error
+	ClearUnpublished(ctx context.Context, runID string) error
+	Tombstone(ctx context.Context, runID string, startedAt time.Time, reason string) error
+	SetProjectionFloor(ctx context.Context, floor time.Time) error
+	PruneChangeFeed(ctx context.Context, keep int) (int64, error)
 }
 
 // Projection is the unit the projector commits. Aliased so callers and tests do
@@ -152,10 +159,9 @@ type Stats struct {
 
 // commitRequest is one prepared projection awaiting its turn at the commit loop.
 type commitRequest struct {
-	projection Projection
-	remove     bool
-	runID      string
-	result     chan error
+	write  func(context.Context, Store) error
+	notify bool
+	result chan error
 }
 
 // New constructs a projector.
@@ -226,16 +232,11 @@ func (p *Projector) commitLoop(ctx context.Context) {
 		case <-p.stop:
 			return
 		case request := <-p.commits:
-			var err error
-			if request.remove {
-				err = p.store.RemoveRun(ctx, request.runID)
-			} else {
-				err = p.store.UpsertRun(ctx, request.projection)
-			}
+			err := request.write(ctx, p.store)
 			// Notify only on a successful commit, and only after it. A failed
 			// projection has published nothing, so waking subscribers would send
 			// them to read a change that does not exist.
-			if err == nil && p.options.Feed != nil {
+			if err == nil && request.notify && p.options.Feed != nil {
 				p.options.Feed.Notify()
 			}
 			request.result <- err
@@ -251,12 +252,81 @@ func (p *Projector) commit(ctx context.Context, request commitRequest) error {
 		return ctx.Err()
 	case p.commits <- request:
 	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-request.result:
+	// Once accepted, the write closure may refer to caller-owned result state.
+	// Wait for it to finish even if the context is canceled so the caller cannot
+	// observe that state while the commit loop is still updating it.
+	return <-request.result
+}
+
+// UpsertRun commits a prepared projection through the sole-writer loop.
+func (p *Projector) UpsertRun(ctx context.Context, projection Projection) error {
+	return p.commit(ctx, commitRequest{
+		write: func(ctx context.Context, store Store) error {
+			return store.UpsertRun(ctx, projection)
+		},
+		notify: true,
+	})
+}
+
+// RemoveRun removes a projected run through the sole-writer loop.
+func (p *Projector) RemoveRun(ctx context.Context, runID string) error {
+	return p.commit(ctx, commitRequest{
+		write: func(ctx context.Context, store Store) error {
+			return store.RemoveRun(ctx, runID)
+		},
+		notify: true,
+	})
+}
+
+// SaveSweepCursor commits repair progress through the sole-writer loop.
+func (p *Projector) SaveSweepCursor(ctx context.Context, cursor readmodel.SweepCursor) error {
+	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		return store.SaveSweepCursor(ctx, cursor)
+	}})
+}
+
+// MarkUnpublished commits an unpublished-directory memo through the sole-writer loop.
+func (p *Projector) MarkUnpublished(ctx context.Context, runID string, mtime time.Time) error {
+	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		return store.MarkUnpublished(ctx, runID, mtime)
+	}})
+}
+
+// ClearUnpublished removes an unpublished-directory memo through the sole-writer loop.
+func (p *Projector) ClearUnpublished(ctx context.Context, runID string) error {
+	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		return store.ClearUnpublished(ctx, runID)
+	}})
+}
+
+// Tombstone records an intentionally excluded run through the sole-writer loop.
+func (p *Projector) Tombstone(
+	ctx context.Context,
+	runID string,
+	startedAt time.Time,
+	reason string,
+) error {
+	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		return store.Tombstone(ctx, runID, startedAt, reason)
+	}})
+}
+
+// SetProjectionFloor advances retention through the sole-writer loop.
+func (p *Projector) SetProjectionFloor(ctx context.Context, floor time.Time) error {
+	return p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		return store.SetProjectionFloor(ctx, floor)
+	}})
+}
+
+// PruneChangeFeed removes expired feed entries through the sole-writer loop.
+func (p *Projector) PruneChangeFeed(ctx context.Context, keep int) (int64, error) {
+	var pruned int64
+	err := p.commit(ctx, commitRequest{write: func(ctx context.Context, store Store) error {
+		var err error
+		pruned, err = store.PruneChangeFeed(ctx, keep)
 		return err
-	}
+	}})
+	return pruned, err
 }
 
 // schedule drains intake on an interval.
@@ -349,7 +419,7 @@ func (p *Projector) applyMarker(ctx context.Context, marker intake.Marker) error
 		return nil
 	}
 
-	if err := p.commit(ctx, commitRequest{projection: projection}); err != nil {
+	if err := p.UpsertRun(ctx, projection); err != nil {
 		return err
 	}
 	p.bump(func(s *Stats) { s.Projected++ })
@@ -380,7 +450,7 @@ func (p *Projector) applyMarker(ctx context.Context, marker intake.Marker) error
 // clears `removing` when a newer sequence proves the run is still live — so a
 // marker still flagged here has not been contradicted.
 func (p *Projector) applyRemoval(ctx context.Context, marker intake.Marker) error {
-	if err := p.commit(ctx, commitRequest{remove: true, runID: marker.RunID}); err != nil {
+	if err := p.RemoveRun(ctx, marker.RunID); err != nil {
 		return err
 	}
 	p.bump(func(s *Stats) { s.Removed++ })
@@ -404,20 +474,26 @@ func (p *Projector) prepare(ctx context.Context, runID string) (Projection, bool
 	if p.prepareForTest != nil {
 		return p.prepareForTest(ctx, runID)
 	}
-	dir, found := p.locate(runID)
-	if !found {
-		return Projection{}, false, nil
+	dir, found, err := p.locate(runID)
+	if err != nil {
+		return Projection{}, false, err
 	}
-	if !journal.Recorded(dir) {
+	if !found {
 		return Projection{}, false, nil
 	}
 	reader, err := journal.OpenRead(dir)
 	if err != nil {
-		return Projection{}, false, nil
+		if errors.Is(err, os.ErrNotExist) {
+			return Projection{}, false, nil
+		}
+		return Projection{}, false, fmt.Errorf("projector: read identity for %s: %w", runID, err)
 	}
 	identity, err := reader.Identity()
 	if err != nil {
-		return Projection{}, false, nil
+		if errors.Is(err, os.ErrNotExist) {
+			return Projection{}, false, nil
+		}
+		return Projection{}, false, fmt.Errorf("projector: read identity for %s: %w", runID, err)
 	}
 	events, err := reader.Events()
 	if err != nil {
@@ -426,18 +502,36 @@ func (p *Projector) prepare(ctx context.Context, runID string) (Projection, bool
 		// read model quietly incomplete.
 		return Projection{}, false, fmt.Errorf("projector: read events for %s: %w", runID, err)
 	}
-	return readmodel.ProjectRun(identity, Projection{}, events), true, nil
+	projection, err := readmodel.ProjectRunFromJournal(reader, identity, events)
+	if err != nil {
+		return Projection{}, false, fmt.Errorf("projector: project operator facts for %s: %w", runID, err)
+	}
+	return projection, true, nil
 }
 
 // locate finds a run's directory across the configured roots.
-func (p *Projector) locate(runID string) (string, bool) {
+func (p *Projector) locate(runID string) (string, bool, error) {
 	for _, root := range p.options.RunsDirs {
 		candidate := filepath.Join(root, runID)
-		if journal.Recorded(candidate) {
-			return candidate, true
+		info, err := os.Stat(candidate)
+		if err == nil {
+			if !info.IsDir() {
+				return "", false, fmt.Errorf("projector: locate journal for %s: %s is not a directory", runID, candidate)
+			}
+			_, err = os.Stat(filepath.Join(candidate, "run.yaml"))
+			if err == nil {
+				return candidate, true, nil
+			}
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return "", false, fmt.Errorf("projector: locate journal for %s: %w", runID, err)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", false, fmt.Errorf("projector: locate journal for %s: %w", runID, err)
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 // Restart performs the bounded startup pass: drain intake, then reproject the
@@ -485,7 +579,7 @@ func (p *Projector) Restart(ctx context.Context) (RestartResult, error) {
 			result.Missing++
 			continue
 		}
-		if err := p.commit(ctx, commitRequest{projection: projection}); err != nil {
+		if err := p.UpsertRun(ctx, projection); err != nil {
 			return result, err
 		}
 		result.Reprojected++

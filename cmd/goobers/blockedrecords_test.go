@@ -133,6 +133,127 @@ func TestFindBlockedCycle(t *testing.T) {
 	}
 }
 
+// TestFindAllBlockedCyclesSequentialWrites is #1405's core regression: the
+// write order that produced the live asymmetry report — one member recorded
+// alone (no cycle yet visible), then the other member's write closes it —
+// must still resolve to every cycle member on the closing write, for both a
+// 2-member cycle (#466/#469's shape) and a 3-member cycle, in every possible
+// write order.
+func TestFindAllBlockedCyclesSequentialWrites(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+
+	permute := func(items []string, fn func([]string)) {
+		var helper func([]string, int)
+		helper = func(arr []string, k int) {
+			if k == len(arr) {
+				cp := append([]string(nil), arr...)
+				fn(cp)
+				return
+			}
+			for i := k; i < len(arr); i++ {
+				arr[k], arr[i] = arr[i], arr[k]
+				helper(arr, k+1)
+				arr[k], arr[i] = arr[i], arr[k]
+			}
+		}
+		helper(append([]string(nil), items...), 0)
+	}
+
+	tests := []struct {
+		name     string
+		blockers map[string][]string // written one at a time, in every order
+		items    []string
+	}{
+		{
+			name:     "466/469 two-member cycle",
+			blockers: map[string][]string{"466": {"469"}, "469": {"466", "468"}},
+			items:    []string{"466", "469"},
+		},
+		{
+			name:     "three-member cycle",
+			blockers: map[string][]string{"A": {"B"}, "B": {"C"}, "C": {"A"}},
+			items:    []string{"A", "B", "C"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			permute(tc.items, func(order []string) {
+				recs := map[string]blockedRecord{}
+				for _, item := range order {
+					recs[blockedRecordKey(repo, item)] = blockedRecord{
+						Repository: repo, ItemID: item, Blockers: tc.blockers[item],
+					}
+				}
+				cycles := findAllBlockedCycles(recs)
+				if len(cycles) != 1 {
+					t.Fatalf("order %v: cycles = %+v, want exactly 1", order, cycles)
+				}
+				got := make(map[string]bool, len(cycles[0].Affected))
+				for _, node := range cycles[0].Affected {
+					got[node.ItemID] = true
+				}
+				for _, item := range tc.items {
+					if !got[item] {
+						t.Errorf("order %v: cycle.Affected = %v, missing %q", order, cycles[0].Affected, item)
+					}
+				}
+				if len(got) != len(tc.items) {
+					t.Errorf("order %v: cycle.Affected = %v, want exactly %v", order, cycles[0].Affected, tc.items)
+				}
+			})
+		})
+	}
+}
+
+// TestFindAllBlockedCyclesFindsEveryDisjointCycle covers what findBlockedCycle
+// alone cannot answer: the current state can hold more than one active cycle
+// at once (e.g. #466/#469 plus an unrelated pair), and reconciliation must
+// walk all of them, not just the one touching a single key.
+func TestFindAllBlockedCyclesFindsEveryDisjointCycle(t *testing.T) {
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
+	recs := blockedCycleTestRecords(repo, map[string][]string{
+		// Cycle 1: a two-member cycle, #468 hangs off it one-way (not a member).
+		"466": {"469"},
+		"469": {"466", "468"},
+		// Cycle 2: an unrelated three-member cycle elsewhere in the graph.
+		"700": {"701"},
+		"701": {"702"},
+		"702": {"700"},
+		// Noise: a plain acyclic chain, must not be reported as a cycle.
+		"800": {"801"},
+	})
+
+	cycles := findAllBlockedCycles(recs)
+	if len(cycles) != 2 {
+		t.Fatalf("cycles = %+v, want exactly 2 disjoint cycles", cycles)
+	}
+	var got []map[string]bool
+	for _, cycle := range cycles {
+		members := make(map[string]bool, len(cycle.Affected))
+		for _, node := range cycle.Affected {
+			members[node.ItemID] = true
+		}
+		got = append(got, members)
+	}
+	wantSets := []map[string]bool{
+		{"466": true, "469": true},
+		{"700": true, "701": true, "702": true},
+	}
+	for _, want := range wantSets {
+		found := false
+		for _, members := range got {
+			if reflect.DeepEqual(members, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("cycles = %+v, want one matching %v", cycles, want)
+		}
+	}
+}
+
 func TestFindBlockedCycleBoundsDenseGraphPaths(t *testing.T) {
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	dependencies := make(map[string][]string)
@@ -557,9 +678,12 @@ func TestFilterBlockedEligibilityProviderFailureKeepsAffectedItemParked(t *testi
 		}
 	}))
 	t.Cleanup(api.Close)
+	// The 503 is here to make the blocker lookup fail, not to exercise the
+	// retry ladder: spend the transient-retry budget up front so the failure
+	// is immediate instead of costing 1+2+4+8 = 15s of real backoff sleep.
 	provider := providers.NewGitHubProvider("test-token", func(p *providers.GitHubProvider) {
 		p.BaseURL = api.URL
-	})
+	}, providers.WithMaxTransientRetries(0))
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	key509 := blockedRecordKey(repo, "509")
 	key510 := blockedRecordKey(repo, "510")
@@ -607,9 +731,10 @@ func TestFilterBlockedEligibilityProviderFailureKeepsUnresolvedItemParked(t *tes
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(api.Close)
+	// As above: the assertion is on the parked outcome, not on retry timing.
 	provider := providers.NewGitHubProvider("test-token", func(p *providers.GitHubProvider) {
 		p.BaseURL = api.URL
-	})
+	}, providers.WithMaxTransientRetries(0))
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	key510 := blockedRecordKey(repo, "510")
 	recs := map[string]blockedRecord{
@@ -947,6 +1072,165 @@ func TestBacklogQuerySkipsKnownBlockedThenSelfHeals(t *testing.T) {
 	}
 	if claims != 1 {
 		t.Fatalf("claim transitions after blocker-state change = %d, want exactly 1", claims)
+	}
+}
+
+// TestBacklogQuerySkipsBlockedThenClaimsNextEligible is #1907's repro: a
+// blocked candidate sorts first in FIFO order (it is the older issue), and a
+// separate, wholly unrelated candidate carries no block at all. The run must
+// try the second candidate after skipping the first, not stop there and
+// report a false-positive "completed, nothing claimed" the way a single
+// blocked candidate legitimately would.
+func TestBacklogQuerySkipsBlockedThenClaimsNextEligible(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(441, "open prerequisite", "goobers:approved")
+	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
+	server.addIssue(511, "unrelated unblocked item", "goobers:approved", "goobers:ready")
+
+	l := layoutFor(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	recs := map[string]blockedRecord{"510": {Blockers: []string{"441"}, RunID: "prior-run"}}
+	if err := saveBlockedRecords(blockedRecordsPath(l), recs); err != nil {
+		t.Fatalf("seed blocked.json: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var claimed map[string]interface{}
+	if err := json.Unmarshal(data, &claimed); err != nil {
+		t.Fatalf("unmarshal claimed-item.json: %v", err)
+	}
+	if claimed["id"] != "511" {
+		t.Fatalf("claimed = %v (stdout=%q stderr=%q), want item 511 claimed after 510 was skipped as blocked", claimed, stdout, stderr)
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", "claims.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := ledger.Lookup("511"); !held || entry.RunID != "run-1" {
+		t.Fatalf("ledger entry for 511 = %+v, held=%v, want held by run-1", entry, held)
+	}
+	if _, held := ledger.Lookup("510"); held {
+		t.Fatal("blocked item 510 must not be claimed")
+	}
+}
+
+// TestBacklogQueryAllCandidatesBlockedIsDistinguishableFromEmptyBacklog is
+// #1907's other explicit scenario: every candidate this cycle is blocked, so
+// zero claims is the CORRECT outcome — but that must be distinguishable from
+// a genuinely empty backlog, not just a byte-identical "completed" run. The
+// distinguishing signal is the blockedOnlyCompletionAnnotation runner
+// annotation plus the enriched no-work reason text.
+func TestBacklogQueryAllCandidatesBlockedIsDistinguishableFromEmptyBacklog(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(441, "open prerequisite", "goobers:approved")
+	server.addIssue(510, "blocked item", "goobers:approved", "goobers:ready")
+
+	l := layoutFor(root)
+	if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+		t.Fatalf("mkdir scheduler dir: %v", err)
+	}
+	recs := map[string]blockedRecord{"510": {Blockers: []string{"441"}, RunID: "prior-run"}}
+	if err := saveBlockedRecords(blockedRecordsPath(l), recs); err != nil {
+		t.Fatalf("seed blocked.json: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "1 blocked candidate(s) skipped this cycle") {
+		t.Fatalf("stdout = %q, want the blocked-skip count called out in the no-work reason", stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(workDir, "claimed-item.json"))
+	if err != nil {
+		t.Fatalf("read claimed-item.json: %v", err)
+	}
+	var noWork map[string]interface{}
+	if err := json.Unmarshal(data, &noWork); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if noWork["claimed"] != false {
+		t.Fatalf("claimed = %v, want false — every candidate this cycle is blocked, so zero claims is correct", noWork["claimed"])
+	}
+
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatalf("read instance journal: %v", err)
+	}
+	var summary int
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["annotation"] == blockedOnlyCompletionAnnotation {
+			summary++
+			if n, ok := event.Runner["skippedBlocked"].(float64); !ok || n != 1 {
+				t.Fatalf("skippedBlocked = %v, want 1", event.Runner["skippedBlocked"])
+			}
+		}
+	}
+	if summary != 1 {
+		t.Fatalf("blockedOnlyCompletionAnnotation count = %d, want exactly 1 — this run's only outcome was skipping blocked work", summary)
+	}
+}
+
+// TestBacklogQueryEmptyBacklogHasNoBlockedOnlyAnnotation is #1907's trivial
+// no-candidates scenario: with nothing in goobers:ready at all, the run must
+// still report a clean no-work completion, but WITHOUT the
+// blockedOnlyCompletionAnnotation — there was nothing to skip, so nothing to
+// distinguish from a real empty backlog.
+func TestBacklogQueryEmptyBacklogHasNoBlockedOnlyAnnotation(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "run-1")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Setenv("GOOBERS_INPUT_REQUIRELABELS", "goobers:ready")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 {
+		t.Fatalf("backlog-query: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "blocked candidate(s) skipped") {
+		t.Fatalf("stdout = %q, want no blocked-skip mention — the backlog was genuinely empty", stdout)
+	}
+
+	l := layoutFor(root)
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatalf("read instance journal: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["annotation"] == blockedOnlyCompletionAnnotation {
+			t.Fatalf("unexpected blockedOnlyCompletionAnnotation on a genuinely empty backlog: %+v", event)
+		}
 	}
 }
 
@@ -1292,5 +1576,103 @@ func TestStalledBlockedStateProviderCallDoesNotDelayFinalizer(t *testing.T) {
 	}
 	if entry, held := reopened.Lookup("900"); held {
 		t.Fatalf("terminal claim still held after finalizer: %+v", entry)
+	}
+}
+
+// TestReconcileBlockedCycleLabelsReEscalatesDriftedMember is #1405's live
+// symptom, reproduced directly: a cycle both members were correctly
+// escalated into, where one member's labels later drifted back to ready (a
+// human override, a stale re-curation pass — anything that never touched
+// blocked.json, so nothing re-fired the write-time escalation for it). The
+// next reconciliation pass must re-apply needs-human to the drifted member
+// without re-posting a comment on the member that never drifted.
+func TestReconcileBlockedCycleLabelsReEscalatesDriftedMember(t *testing.T) {
+	server, provider, repo := blockedFilterFixture(t)
+	server.addIssue(466, "466", "goobers:needs-human")
+	server.addIssue(469, "469", "goobers:ready", "goobers:approved") // drifted back to ready
+	server.addIssue(468, "468", "goobers:ready")                     // one-way blocker, not a cycle member
+
+	recs := blockedCycleTestRecords(repo, map[string][]string{
+		"466": {"469"},
+		"469": {"466", "468"},
+	})
+
+	warnings := reconcileBlockedCycleLabels(context.Background(), provider, recs, "")
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+
+	server.mu.Lock()
+	labels466 := append([]string(nil), server.issues[466].labels...)
+	labels469 := append([]string(nil), server.issues[469].labels...)
+	comments466 := len(server.issues[466].comments)
+	comments469 := append([]string(nil), server.issues[469].comments...)
+	server.mu.Unlock()
+
+	if !hasAllLabels(labels466, []string{providers.LabelNeedsHuman}) {
+		t.Errorf("466 labels = %v, want needs-human retained", labels466)
+	}
+	if comments466 != 0 {
+		t.Errorf("466 comments = %d, want 0 — it was already escalated, must not be re-commented", comments466)
+	}
+
+	if !hasAllLabels(labels469, []string{providers.LabelNeedsHuman}) {
+		t.Errorf("469 labels = %v, want needs-human re-applied after drift", labels469)
+	}
+	if hasAllLabels(labels469, []string{providers.LabelReady}) {
+		t.Errorf("469 labels = %v, want goobers:ready removed", labels469)
+	}
+	if len(comments469) != 1 {
+		t.Fatalf("469 comments = %v, want exactly 1 re-escalation comment", comments469)
+	}
+	if !strings.Contains(comments469[0], "#466") || !strings.Contains(comments469[0], "#469") {
+		t.Errorf("469 comment = %q, want both cycle members named", comments469[0])
+	}
+}
+
+// TestReconcileBlockedCycleLabelsNoopWhenAlreadyEscalated confirms the
+// common-case cost: when every cycle member already carries needs-human,
+// reconciliation performs reads only — no label writes, no new comments.
+func TestReconcileBlockedCycleLabelsNoopWhenAlreadyEscalated(t *testing.T) {
+	server, provider, repo := blockedFilterFixture(t)
+	server.addIssue(466, "466", "goobers:needs-human")
+	server.addIssue(469, "469", "goobers:needs-human")
+
+	recs := blockedCycleTestRecords(repo, map[string][]string{
+		"466": {"469"},
+		"469": {"466"},
+	})
+
+	if warnings := reconcileBlockedCycleLabels(context.Background(), provider, recs, ""); len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.issues[466].comments) != 0 || len(server.issues[469].comments) != 0 {
+		t.Fatalf("comments 466=%d 469=%d, want none posted when nothing drifted",
+			len(server.issues[466].comments), len(server.issues[469].comments))
+	}
+}
+
+// TestReconcileBlockedCycleLabelsIgnoresAcyclicRecords confirms an ordinary
+// (non-circular) blocked record — the overwhelmingly common case — costs
+// nothing beyond the per-member reads: no comments, no label churn.
+func TestReconcileBlockedCycleLabelsIgnoresAcyclicRecords(t *testing.T) {
+	server, provider, repo := blockedFilterFixture(t)
+	server.addIssue(510, "blocked item", "goobers:needs-human")
+	server.addIssue(441, "prerequisite", "goobers:ready")
+
+	recs := blockedCycleTestRecords(repo, map[string][]string{
+		"510": {"441"},
+	})
+
+	if warnings := reconcileBlockedCycleLabels(context.Background(), provider, recs, ""); len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.issues[510].comments) != 0 {
+		t.Fatalf("510 comments = %d, want none — no cycle involved", len(server.issues[510].comments))
 	}
 }

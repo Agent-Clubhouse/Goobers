@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationExecProcessRunnerTimeout(t *testing.T) {
@@ -119,7 +119,7 @@ func TestIntegrationExecProcessRunnerDistinguishesCancelFromTimeout(t *testing.T
 	runner := ExecProcessRunner{}
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // Intentional delayed cancellation exercises process-tree termination.
 		cancel()
 	}()
 	_, err := runner.Run(ctx, ProcessRequest{

@@ -20,8 +20,9 @@ package v1alpha1
 // and the api/schemas/*.schema.json documents implement. The schemas are closed:
 // unknown fields are a validation error, and additive changes bump this version.
 // v1alpha7 adds input-integrity grades to invocations, backlog items, context
-// pointers, and artifacts.
-const StageContractVersion = "v1alpha7"
+// pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
+// v1alpha9 adds runner-authored nested-agent authority and ownership fields.
+const StageContractVersion = "v1alpha9"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -43,6 +44,9 @@ const StageContractVersion = "v1alpha7"
 type InvocationEnvelope struct {
 	// TaskID identifies this stage instance within the run.
 	TaskID string `json:"taskId"`
+	// Attempt identifies the scheduler attempt so adapter provenance remains
+	// retry-safe across local and distributed runners.
+	Attempt int32 `json:"attempt,omitempty"`
 	// WorkflowID identifies the workflow definition being executed.
 	WorkflowID string `json:"workflowId"`
 	// RunID identifies this run (the OpenTelemetry trace id for the run).
@@ -68,7 +72,17 @@ type InvocationEnvelope struct {
 	// "main" (#2087). Empty means the default branch.
 	BaseBranch string `json:"baseBranch,omitempty"`
 	// Goal is the intended outcome of this stage (from the stage definition).
+	// Goober names the goober this invocation is for, empty for a
+	// deterministic stage or an automated gate. The local runner never needed
+	// it on the wire — it dispatches from the workflow Definition and passes
+	// the name to its executor factory directly. A Temporal worker has only
+	// the envelope, so without this the agentic seam cannot know WHICH goober
+	// to construct: invoke.Goober.Invoke(ctx, env) is the whole signature.
+	Goober string `json:"goober,omitempty"`
+	// Goal is the stage's goal statement.
 	Goal string `json:"goal"`
+	// OwnershipBoundary is the work this invocation owns and may mutate.
+	OwnershipBoundary string `json:"ownershipBoundary,omitempty"`
 	// InstructionAddendum is an operator-supplied, one-off addition to the
 	// agent's instructions for this invocation. It is never part of the workflow
 	// definition and is empty for ordinary invocations.
@@ -85,6 +99,19 @@ type InvocationEnvelope struct {
 	// AdditionalRepos. Each is surfaced to the stage subprocess as
 	// GOOBERS_ADDITIONAL_REPO_<UPPER_SANITIZED_NAME>=<absolute path>.
 	AdditionalWorkspaces []AdditionalWorkspace `json:"additionalWorkspaces,omitempty"`
+	// CheckoutCones declares, for each workspace whose checkout is a sparse
+	// cone-mode checkout (project.checkout.sparse, #649), the repo-relative
+	// path cones it materializes — keyed by workspace identity: "" for the
+	// primary Workspace, else the matching AdditionalWorkspaces[i].Name. A
+	// workspace absent from this map (the common case) has a full checkout.
+	// Deliberately separate from RepoRef.Checkout, which stays off the wire
+	// (RepoRef.EnvelopeRef) so the closed repoRef schema never changes — this
+	// is an additive envelope-level field instead, so a partial checkout is
+	// declared to the stage without depending on a stage ever reading
+	// RepoRef.Checkout. Populated so an agentic stage knows the tree is
+	// partial and does not "fix" apparently-missing files or misread a
+	// pruned path as deleted.
+	CheckoutCones map[string][]string `json:"checkoutCones,omitempty"`
 	// Item is the backlog item / trigger payload that started the run. Nil for
 	// schedule/signal-triggered runs with no originating item. It is a bounded
 	// provider-neutral descriptor, not another stage's state; the authoritative,
@@ -101,12 +128,45 @@ type InvocationEnvelope struct {
 	// (e.g. "github:issues:write", "repo:push"). Undeclared use fails closed:
 	// credentials for capabilities not listed here are never materialized (§5).
 	Capabilities []string `json:"capabilities,omitempty"`
+	// PolicyActions are the externally mutating actions authorized for this stage.
+	PolicyActions []string `json:"policyActions,omitempty"`
+	// ParentPlatformPolicy is the authority inherited by a nested child.
+	// It is required whenever NestedAgentPolicy is present and is authored by
+	// the runner, never copied from the requested child policy.
+	ParentPlatformPolicy *PlatformPolicy `json:"parentPlatformPolicy,omitempty"`
 	// Limits bound this stage's execution (duration/tokens/cost).
 	Limits Limits `json:"limits"`
 	// Inputs are the stage's static config from its definition (plus any values
 	// the compiler resolved for it). This is the stage's own config, not another
 	// stage's runtime state.
 	Inputs map[string]interface{} `json:"inputs,omitempty"`
+	// NestedAgentPolicy is the admitted child authority for agentic stages.
+	// It is carried in the mandatory execution envelope so adapters cannot
+	// implement nested-agent behavior from prompt text alone.
+	NestedAgentPolicy *NestedAgentPolicy `json:"nestedAgentPolicy,omitempty"`
+}
+
+// ContinuationRequest creates a new run journal linked to a terminal source
+// run. It intentionally describes creation only; execution from Target is a
+// later workflow slice.
+type ContinuationRequest struct {
+	From                string              `json:"from"`
+	ExpectedTerminalSeq uint64              `json:"expectedTerminalSeq"`
+	Target              string              `json:"target"`
+	Operator            string              `json:"operator"`
+	Inputs              []ContinuationInput `json:"inputs,omitempty"`
+	// ContextPointers are the explicitly selected source artifacts. No other
+	// source-run context is implicitly inherited.
+	ContextPointers []ContextPointer `json:"contextPointers,omitempty"`
+}
+
+// ContinuationInput is an injected immutable input reference. Content is
+// supplied by the API caller and snapshotted by the journal creator.
+type ContinuationInput struct {
+	Name      string    `json:"name"`
+	Content   string    `json:"content"`
+	Source    string    `json:"source"`
+	Integrity Integrity `json:"integrity"`
 }
 
 // AdditionalWorkspace is one read-only reference-repo checkout handed to a stage
@@ -286,7 +346,8 @@ func (s Severity) Rank() int {
 // action (issue #358, design docs/design/v0/pr-lifecycle-loop.md §4 D1).
 // Empty on an ordinary in-run gate Finding (implementation's reviewer gate,
 // etc.) — classes are a PR-lifecycle-altitude concept only merge-review
-// populates.
+// populates. CI failures deliberately do not have a finding class: deterministic
+// provider check evidence reaches remediation through its separate CI channel.
 type FindingClass string
 
 const (
@@ -301,6 +362,15 @@ const (
 	// drift, a regression, a human/other-agent review comment, or a genuine
 	// defect the holistic review caught.
 	FindingSubstantive FindingClass = "substantive"
+	// FindingMissingTests means behavior lacks the tests needed to establish
+	// and preserve its correctness.
+	FindingMissingTests FindingClass = "missing-tests"
+	// FindingScopeCreep means changes unrelated to the requested work must be
+	// removed.
+	FindingScopeCreep FindingClass = "scope-creep"
+	// FindingContractChange means a load-bearing contract was changed without
+	// the requested work authorizing that change.
+	FindingContractChange FindingClass = "contract-change"
 	// FindingCrossPRBlocked means the PR is correct in isolation but must
 	// wait behind another PR (§7 serialization/ordering).
 	FindingCrossPRBlocked FindingClass = "cross-pr-blocked"
@@ -313,7 +383,48 @@ const (
 // to be set.
 func (c FindingClass) IsValid() bool {
 	switch c {
-	case FindingRebaseNeeded, FindingConflict, FindingSubstantive, FindingCrossPRBlocked:
+	case FindingRebaseNeeded, FindingConflict, FindingSubstantive, FindingMissingTests,
+		FindingScopeCreep, FindingContractChange, FindingCrossPRBlocked:
+		return true
+	}
+	return false
+}
+
+// RequiresCodeChange reports whether resolving the finding belongs in the
+// existing substantive-remediation lane.
+func (c FindingClass) RequiresCodeChange() bool {
+	switch c {
+	case FindingConflict, FindingSubstantive, FindingMissingTests, FindingScopeCreep, FindingContractChange:
+		return true
+	}
+	return false
+}
+
+// LearningClassification names the durable action family a repeated finding
+// belongs to. It is optional on a fresh verdict; the runner derives a
+// conservative default when the reviewer does not supply one.
+type LearningClassification string
+
+const (
+	// LearningInstruction routes a finding to instruction remediation.
+	LearningInstruction LearningClassification = "instruction"
+	// LearningSkill routes a finding to skill remediation.
+	LearningSkill LearningClassification = "skill"
+	// LearningWorkflow routes a finding to workflow remediation.
+	LearningWorkflow LearningClassification = "workflow"
+	// LearningGate routes a finding to gate remediation.
+	LearningGate LearningClassification = "gate"
+	// LearningValidation routes a finding to targeted validation remediation.
+	LearningValidation LearningClassification = "validation"
+	// LearningCodeDefect routes a finding to an unapproved code issue.
+	LearningCodeDefect LearningClassification = "code-defect"
+)
+
+// IsValid reports whether c is a supported durable-learning classification.
+func (c LearningClassification) IsValid() bool {
+	switch c {
+	case LearningInstruction, LearningSkill, LearningWorkflow, LearningGate,
+		LearningValidation, LearningCodeDefect:
 		return true
 	}
 	return false
@@ -387,6 +498,18 @@ type Verdict struct {
 
 // Finding is a single issue raised by an evaluator.
 type Finding struct {
+	// ID is the stable identity of this finding across repasses. Reviewers
+	// copy it from an injected learning episode when the same finding remains
+	// unresolved; the runner assigns one on the first occurrence.
+	ID string `json:"id,omitempty"`
+	// LearningSignature is the normalized cross-run clustering key. The
+	// runner derives one when absent.
+	LearningSignature string `json:"learningSignature,omitempty"`
+	// LearningClassification selects the governed durable action family.
+	LearningClassification LearningClassification `json:"learningClassification,omitempty"`
+	// EvidenceDigest is finding-specific evidence for reopening a finding
+	// that a prior repass resolved. Reusing old evidence is suppressed.
+	EvidenceDigest string `json:"evidenceDigest,omitempty"`
 	// Severity ranks the finding.
 	Severity Severity `json:"severity"`
 	// Message describes the issue.
@@ -415,6 +538,9 @@ type Finding struct {
 // an unusable record.
 func (f Finding) IsValid() bool {
 	if f.Class != "" && !f.Class.IsValid() {
+		return false
+	}
+	if f.LearningClassification != "" && !f.LearningClassification.IsValid() {
 		return false
 	}
 	if f.Class == FindingCrossPRBlocked && len(f.BlockingPRs) == 0 {

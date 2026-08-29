@@ -209,7 +209,7 @@ func TestMonthRollsUpFromDays(t *testing.T) {
 	}
 
 	var runs int
-	if err := store.readDB().QueryRowContext(ctx,
+	if err := store.reader.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(runs), 0) FROM bucket_month WHERE month = ?`, month).Scan(&runs); err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestUnparseableDayWritesNothing(t *testing.T) {
 		t.Fatalf("recompute of a malformed key errored: %v", err)
 	}
 	var rows int
-	if err := store.readDB().QueryRowContext(ctx,
+	if err := store.reader.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM bucket_day WHERE day = ?`, "not-a-day").Scan(&rows); err != nil {
 		t.Fatal(err)
 	}

@@ -9,8 +9,8 @@ goobers apply \- reconcile a live daemon's workflow definitions now
 Usage: goobers apply [path]
 
 Ask a live `goobers up` daemon to reconcile its workflow definitions
-now, instead of waiting for --watch-config's poll interval (or running
-one at all if it's off). For a git-tracked workflowSource, first pulls
+now, instead of waiting for the configured source's poll interval. For
+a git-tracked workflowSource, first pulls
 the tracked ref's latest commit; for a local-dir source, just forces an
 immediate validate-and-reload of the config directory as it stands.
 

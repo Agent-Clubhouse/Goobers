@@ -4,11 +4,11 @@
 > architecture assumed by earlier specs and code. Where an older spec or code path
 > contradicts this document, this document wins and the spec/code carries a status
 > banner pointing here.
-> Last updated: 2026-07-28 · Descriptive/prescriptive status annotated 2026-07-23:
+> Last updated: 2026-08-07 · Descriptive/prescriptive status annotated 2026-07-23:
 > §4–§7 (as amended) describe shipped, verified behavior of the local runner,
 > except the capability namespace rule in §5, which is prescriptive pending its
-> atomic migration; §3.2, §10, and the V1/V2 parts of §12 are prescriptive
-> roadmap — mandated, not yet built.
+> atomic migration; §3.2, §10, the remaining V1 work identified in §12, and V2
+> are prescriptive roadmap — mandated, not yet built.
 
 ## 1. One system, three deployment tiers
 
@@ -77,7 +77,7 @@ execution. Two runners implement the same contract:
   (`CFG-022`, `GAG-010`), and they are not part of the cross-runner conformance
   surface. **Static parallel branches are not** — they are core DSL, implemented by the
   local runner first, and inside the conformance surface
-  ([`design/static-fan-out-fan-in.md`](design/static-fan-out-fan-in.md) §4). Dynamic
+  ([`design/static-fan-out-fan-in.md`](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/design/static-fan-out-fan-in.md) §4). Dynamic
   (data-driven) branch width remains future work.
 
 ### 3.3 Conformance property
@@ -101,6 +101,10 @@ journals** on either runner. "Equivalent" is a defined relation, not a vibe:
   every run that never forks); and runner-specific annotations, which MUST live under a
   namespaced `runner.*` field — that namespace is the *only* sanctioned runner-specific
   divergence.
+  Notification request and delivery-receipt events are also excluded: they are
+  deployment output side effects rather than workflow-machine transitions. Their
+  provider-neutral contract is documented in
+  [`design/notification-output.md`](design/notification-output.md).
 - **Fixed stage effects** means: deterministic stages with pinned commands over
   fixture inputs, provider reads mocked or replayed from journaled responses, and
   agentic stages driven by the fixture harness. For **live agentic runs** the
@@ -120,6 +124,7 @@ Every run — local or cloud — produces:
 
 ```
 gaggles/<gaggle>/runs/<run-id>/
+  schema.json       # journal schema version + minimum compatible binary
   run.yaml          # pinned identity: workflow name+version, gaggle, trigger, inputs
   state.json        # current machine state; atomically replaced checkpoint
   events.jsonl      # append-only event journal (stage started/finished, gate verdicts,
@@ -156,6 +161,10 @@ Rules:
 - **Content digests** on inputs and artifacts make runs comparable and make those
   files tamper-evident (the event log itself is trusted-at-rest at tiers 1–2; hash
   chaining is a tier-2+ option, not a baseline claim).
+- A stage may additionally mirror its durable outbox files to a configured local
+  filesystem root. Stage, workflow, then gaggle configuration wins in that order.
+  The mirror is arranged beneath `<root>/<run-id>/`; the journal remains the
+  source of truth, and every source and destination path is containment-checked.
 - **Version pinning:** a run records the workflow definition version it started on and
   completes on it; definition changes affect only new runs (`WF-016`).
 - **Redaction at the boundary:** raw secrets MUST NOT land at rest anywhere under
@@ -200,7 +209,7 @@ Contract rules:
 
 - Stages exchange **artifact pointers** (path + digest inside the journal), never
   implicit shared state.
-- Each stage runs in a **fresh, isolated, disposable workspace**. Repo-backed
+- Each stage normally runs in a **fresh, isolated, disposable workspace**. Repo-backed
   stages receive a working copy of the target repo: at tiers 1–2 that is a git
   worktree branched off the managed working copy (§6); at tier 3 it is the
   workspace of an ephemeral pod (fresh clone or sparse checkout). Deterministic
@@ -208,6 +217,17 @@ Contract rules:
   no repository resolution. The tier-neutral contract is isolation + disposal
   after the run; the worktree is the tiers-1–2 repo-backed mechanism, not the
   contract.
+- A repository may instead opt into a node-local **pinned workspace** at
+  `workcopies/<repo-key>/pin`. Pinned mode and per-stage worktrees are mutually
+  exclusive. One FIFO lease covers the entire run across all gaggles targeting
+  that repository, so their stages cannot interleave. The pinned directory is
+  outside the per-run `runs/` namespace and is structurally excluded from
+  worktree retention.
+- Pinned mode is deliberately non-hermetic. With its default `none` clean
+  policy, ignored and untracked build state persists between runs;
+  `ignored-safe` removes untracked non-ignored files and `full` also removes
+  ignored files. Operators opting in accept that the target repository's
+  `.gitignore` hygiene is load-bearing for clean run-branch diffs.
 - **Capability admission:** a stage may only touch capabilities its definition
   declares, from the canonical registry (`internal/capability`, issue #74) —
   e.g. `github:issues:write`, `repo:push`, `telemetry:read`. Undeclared use, and
@@ -230,7 +250,7 @@ Contract rules:
   and a stage may not declare both spellings of the same operation. Migrating a
   built-in to provider-neutral behavior updates its contract and bundled
   definitions atomically; workflow-version pinning preserves already-started
-  runs. See [ADR 0002](adr/0002-provider-neutral-capability-namespaces.md).
+  runs. See [ADR 0002](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/adr/0002-provider-neutral-capability-namespaces.md).
 - **Input-integrity admission:** provider reads, immutable snapshots, artifacts,
   and invocation context pointers carry `trusted`, `maintainer`, `unapproved`, or
   `derived` provenance. A task may declare `minimumIntegrity`; the compiler rejects
@@ -246,13 +266,17 @@ Contract rules:
 - **Run-control inheritance is explicit:** `runConditions` supplies instance
   defaults, `Gaggle.spec.runControls` overrides them for one workforce, and
   `Workflow.spec.runControls` overrides them for one definition. The resolved
-  `maxRepasses` and `stalledRunTimeout` are pinned in `run.yaml` when a run
-  starts, so config reloads cannot retune a run in flight. An automated or
-  agentic gate may override `maxRepasses` because separate review loops in one
-  definition can legitimately need different budgets. Stall detection does not
-  have a task-level override: task/gate `timeoutSeconds` and retry policies
-  already own per-attempt execution bounds, while the stall watchdog protects
-  the run journal as a whole.
+  `maxRepasses`, `stalledRunTimeout`, and optional `maxRunDuration` are pinned
+  in `run.yaml` when a run starts, so config reloads cannot retune a run in
+  flight. `maxRunDuration` bounds total wall-clock age independently of journal
+  activity and is disabled when omitted. An automated or
+  agentic gate may override `maxRepasses`. The value bounds cumulative
+  re-entries to a branch's target stage across all gates that route back to
+  that stage; a pass at one gate does not reset that target's live budget.
+  Separate target stages can therefore have independent budgets. Stall
+  detection does not have a task-level override: task/gate `timeoutSeconds`
+  and retry policies already own per-attempt execution bounds, while the stall
+  watchdog protects the run journal as a whole.
 - Retry attempt counts and backoff remain declared on each task or executable
   gate. They are intentionally not inherited run controls: they classify and
   repeat one stage attempt, whereas repass and stall budgets bound orchestration
@@ -276,10 +300,11 @@ Contract rules:
 `goobers init` scaffolds this; `goobers validate` checks it; `goobers up` runs the
 daemon (scheduler + runner); `goobers run <workflow>` triggers one manually (still
 honoring run conditions); `goobers status` / `goobers trace <run-id>` inspect it.
-These are the anchor commands of a wider registry-sourced CLI (~50 subcommands with
-generated help/man/completions), including the built-in stage kinds workflows invoke
-as subcommands (`backlog-query`, `open-pr`, `merge-pr`, `elect-lander`,
-`apply-verdict`, …). The daemon also serves a **loopback-only HTTP API**
+These are the anchor commands of a wider registry-sourced CLI documented in the
+guarded [generated CLI reference](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md),
+including the built-in stage kinds workflows invoke as subcommands (`backlog-query`,
+`open-pr`, `merge-pr`, `elect-lander`, `apply-verdict`, …). The daemon also serves a
+**loopback-only HTTP API**
 (`internal/httpapi`: `/api/v1/*` reads, health, event stream) backing an embedded
 dashboard (`goobers dashboard`); long-lived daemons run under platform supervision
 (systemd/launchd/Windows service — `docs/guides/supervision.md`).
@@ -326,6 +351,21 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   label selection and FIFO remain unchanged. On public repos, eligibility
   requires a maintainer-applied trust label: backlog content is untrusted input
   (`SEC-047`).
+- **A claim's lifetime is the ledger's, and the marker's lifetime is the
+  claim's.** `scheduler/claims.json` is the only source of truth for
+  exactly-once processing (`BL-005`); the provider-visible `goobers:claimed`
+  label and its claim breadcrumb are a projection of it, never an input to
+  eligibility. The projection is retired at the same moment the lease is —
+  a stage does it on the paths that have one (`issue-close-out`,
+  `backlog-query --release`), and the instance's terminal cleanup does it for
+  every run that reaches a terminal phase still holding a lease. The `no-work`
+  outcome is the case that makes the second path necessary rather than
+  defensive: it short-circuits to `completed` from whatever stage reported it,
+  so no close-out stage runs. Backlog curation's reconciliation of markers with
+  no backing lease remains the backstop for a projection that could not be
+  written (a forge outage, a credential-less instance, a non-GitHub provider),
+  not the primary mechanism — so the window in which the ledger and the forge
+  disagree is bounded by one provider call, not by one curation interval.
 - **Readiness conditions** enforced before any run starts: max parallel runs per
   workflow and per instance, `maxRunsPerHour` / `maxRunsPerDay` run budgets,
   chain-depth bounding (`maxChainDepth`), open-PR caps (`maxOpenPRs`, #353), and
@@ -374,10 +414,10 @@ implementation of a seam the local runner also implements. "This is where it goe
 | Seam | Tiers 1–2 (local) | Tier 3 (cloud drop-in) |
 |---|---|---|
 | Runner / durability | Local runner, file journal | **Temporal** (self-hosted, Postgres-backed), history → journal projection |
-| Journal & artifact store | Plain files under `gaggles/<gaggle>/runs/` + `scheduler/` | Cluster volume/blob store, **same on-disk layout** (the projection's write target) |
+| Journal & artifact store | Plain files under `gaggles/<gaggle>/runs/` + `scheduler/` | Journal projection on a single-writer RWO instance volume; fleet-wide content-addressed artifacts on RWX/blob storage |
 | Stage execution | Local process in worktree | **AKS** ephemeral agent pods |
 | Scheduling / triggers | Embedded scheduler (cron eval in `goobers up`) | **Temporal Schedules** |
-| Config delivery | Local `config/` directory watched by daemon | **ArgoCD** sync → CRDs → **Goobers operator** |
+| Config delivery | Startup-loaded local `config/`; opt-in `--watch-config` for direct edits; or continuous Git `workflowSource` reconciliation via polling, local-ref/webhook wakeups, and last-known-good retention | **ArgoCD** sync → CRDs → **Goobers operator** |
 | Run telemetry store | Journal spans + SQLite | **ADX** via OTLP |
 | Secrets | Env/file | **Azure Key Vault** |
 | AuthN | None / optional OIDC | **Entra ID** |
@@ -391,10 +431,10 @@ implementation of a seam the local runner also implements. "This is where it goe
 | `internal/engine` compile/state machine | **Extract** the substrate-neutral core (compile, states, gates) for the local runner; the Temporal workflow function around it becomes the V2 adapter |
 | `providers/` | **Keep & extend** — GitHub issues/PR operations are V0 workload |
 | `internal/telemetry` | **Keep** — add journal/SQLite exporter |
-| `internal/operator`, `cmd/operator`, `internal/configsync` (CRD apply path), `cmd/scheduler` | **Quarantine** — tier-3 components; status-bannered, kept compiling, revived in V2 |
+| `internal/operator`, `cmd/operator`, `internal/configsync` (CRD apply path) | **Quarantine** — tier-3 components; status-bannered, kept compiling, revived in V2. The tier-3 scheduler fork (`internal/scheduler`, `cmd/scheduler`) was **deleted** per goobernetes-architecture.md D5/§4 (#2055 resolved: supersede) — `internal/localscheduler` is the one scheduler |
 | `infra/` (Bicep, ArgoCD, Temporal) | **Quarantine** — tier-3 provisioning, revived in V2 |
 | `portal/` | **Keep** — retarget from mock client to reading run journals (V1) |
-| `cmd/goober-runtime` | **Superseded** by the local runner's stage execution; folds into the `goobers` binary |
+| `cmd/goober-runtime` | **Retired** (deleted) per goobernetes-architecture.md D5/§4 — superseded by the local runner's stage execution in the `goobers` binary |
 
 ## 12. Roadmap
 
@@ -412,22 +452,27 @@ Definition of done: feed issues into the backlog and watch them get curated, sco
 and implemented into PRs by the instance running on your own machine.
 
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
-then closed the PR loop: the `selfhost/` reference config now defines **six**
-workflows (backlog curation, work nomination, implementation, merge-review,
-pr-remediation, Tutor) proven to curate, implement, review, and **merge PRs
-autonomously** — a ratified product decision (G2 in
+then closed and expanded the PR loop: the `reference-workflows/` reference config
+now defines **ten** workflows: backlog curation, docs updater, implementation,
+merge review, PR remediation, quality sprint, self update, test-suite quality,
+Tutor, and work nomination. Together they provide the canonical patterns for curating and
+implementing work, reviewing, remediating, and **merging PRs autonomously**, and
+maintaining the product and its workforce — a ratified product direction (G2 in
 `docs/design/v0/pr-lifecycle-loop.md`; sibling sequencing in
-`docs/design/sibling-pr-sequencing.md`). `selfhost/` is the canonical, tested
-pattern this capability is built against — not a live mirror of any specific
-deployment's actual running config, which is maintained separately and can
-drift from what's checked in here.
+`docs/design/sibling-pr-sequencing.md`). `reference-workflows/` is the canonical, tested
+reference configuration these capabilities are built against. It is not a live
+instance or a synced mirror of any deployment's running config; operators maintain
+deployed config separately, and it can drift from the checked-in reference.
 
-### V1 — Arbitrary repos, teams, hardening
+### V1 — Teams and remaining hardening
 
-Everything V0 does, deployable over arbitrary tier-1/tier-2 repos; **Azure DevOps**
-provider (issues + PRs); packaging/install story; sandboxing + credential injection
-for agentic stages; portal reads run journals; optional team auth (OIDC); **Tutor**
-workflow if it needs more than the standard primitives.
+Arbitrary tier-1/tier-2 repositories are current scope, not a future V1
+prerequisite. Repository-neutral GitHub onboarding and multi-gaggle configuration
+are shipped, alongside the Azure DevOps provider, packaged-install machinery, the
+journal-backed portal, capability-scoped and per-goober credential injection,
+optional OIDC, and a narrow Tutor workflow. The remaining V1 roadmap is team and
+hardening work: sandboxed stage execution and expansion of the packaged-install,
+authentication, and Tutor surfaces beyond their current slices.
 
 ### V2 — Cloud scale
 

@@ -6,18 +6,26 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
+	iofs "io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/signals"
+	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/worktree"
+	"github.com/goobers/goobers/providers"
 )
 
 // runPollInterval bounds how often waitForRunTerminal re-reads a run's
@@ -38,13 +46,17 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run <workflow> [--no-wait] [path]\n" +
+const runHelp = "Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]\n" +
+	"       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort <run-id> [path]\n" +
+	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +
 	"       goobers run cancel <run-id> [path]\n\n" +
 	"Trigger a run of a config/ workflow manually, through the same scheduler\n" +
 	"(run conditions, instance journal, single-instance lock) a live `goobers up`\n" +
 	"daemon uses, then wait for it to reach a terminal state unless\n" +
-	"--no-wait is set (default path \".\"). If a live `goobers up` daemon already\n" +
+	"--no-wait is set (default path \".\"). Use --gaggle or the qualified\n" +
+	"<gaggle>/<workflow> form when multiple gaggles share a workflow name.\n" +
+	"If a live `goobers up` daemon already\n" +
 	"holds the instance lock,\n" +
 	"delegates the trigger to it instead of failing (#343) — dispatched through\n" +
 	"the same Scheduler.Trigger path either way. Exit codes after waiting: 0 =\n" +
@@ -54,14 +66,23 @@ const runHelp = "Usage: goobers run <workflow> [--no-wait] [path]\n" +
 	"available) exits 0 because it does not observe a terminal phase.\n" +
 	"`run abort` marks a stuck non-terminal run aborted directly in its own\n" +
 	"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n" +
-	"`run cancel` instead asks a live daemon to stop a run it is actively\n" +
-	"executing (active-stage cancel + worktree/claim teardown + aborted) — the\n" +
-	"live counterpart to `run abort`'s daemon-down journal repair.\n"
+	"If a live `goobers up` daemon already holds that run's journal lock, abort\n" +
+	"delegates to it instead of failing (#2270), the same way `run <workflow>`\n" +
+	"delegates triggering (#343) — dispatched through the live-cancel path\n" +
+	"either way. `run cancel` instead asks a live daemon to stop a run it is\n" +
+	"actively executing (active-stage cancel + worktree/claim teardown +\n" +
+	"aborted) — the live counterpart to `run abort`'s daemon-down journal\n" +
+	"repair.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	if len(args) > 0 && args[0] == "continue" {
+		return runRunContinue(args[1:], stdout, stderr)
+	}
+	fs := newCLIFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")
+	gaggle := fs.String("gaggle", "", "trigger the workflow in this gaggle")
+	pr := fs.Int("pr", 0, "target pull request (merge-review only)")
 	fs.Usage = helpUsage(stderr, "run")
 	if err := fs.Parse(runFlagArgs(args)); err != nil {
 		return 2
@@ -70,7 +91,16 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
-	name := fs.Arg(0)
+	target, err := parseRunTarget(fs.Arg(0), *gaggle)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if *pr < 0 || (*pr == 0 && flagWasSet(args, "pr")) {
+		pf(stderr, "error: --pr requires a positive pull request number\n")
+		return 2
+	}
+	target.PR = *pr
 	root := "."
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
@@ -98,19 +128,55 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	}
 	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
 	if err != nil {
-		return runDelegatedTrigger(ctx, l, name, root, *noWait, stdout, stderr)
+		return runDelegatedTrigger(ctx, l, target, root, *noWait, stdout, stderr)
 	}
 	if *noWait && runProcessExits {
 		release()
+		name := target.String()
+		if target.PR > 0 {
+			name += "#pr-" + strconv.Itoa(target.PR)
+		}
 		return runDetachedTrigger(ctx, l, name, root, stdout, stderr)
 	}
-	return runStandaloneTrigger(ctx, l, name, root, *noWait, false, release, stdout, stderr)
+	return runStandaloneTrigger(ctx, l, target, root, *noWait, false, release, stdout, stderr)
+}
+
+type runTarget struct {
+	Gaggle   string
+	Workflow string
+	PR       int
+}
+
+func (t runTarget) String() string {
+	if t.Gaggle == "" {
+		return t.Workflow
+	}
+	return t.Gaggle + "/" + t.Workflow
+}
+
+func parseRunTarget(selector, gaggleFlag string) (runTarget, error) {
+	target := runTarget{Gaggle: gaggleFlag, Workflow: selector}
+	if strings.Contains(selector, "/") {
+		if strings.Count(selector, "/") != 1 {
+			return runTarget{}, fmt.Errorf("invalid qualified workflow %q; expected <gaggle>/<workflow>", selector)
+		}
+		gaggle, workflow, _ := strings.Cut(selector, "/")
+		if gaggle == "" || workflow == "" {
+			return runTarget{}, fmt.Errorf("invalid qualified workflow %q; expected <gaggle>/<workflow>", selector)
+		}
+		if gaggleFlag != "" && gaggleFlag != gaggle {
+			return runTarget{}, fmt.Errorf("--gaggle %q conflicts with qualified workflow %q", gaggleFlag, selector)
+		}
+		target.Gaggle = gaggle
+		target.Workflow = workflow
+	}
+	return target, nil
 }
 
 // runStandaloneTrigger owns the one-shot scheduler and instance lock. A real
 // detached worker stays alive until Starter.Start returns so paused runs
 // release those resources; in-process callers hand that cleanup to a goroutine.
-func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root string, noWait, worker bool, release func(), stdout, stderr io.Writer) int {
+func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarget, root string, noWait, worker bool, release func(), stdout, stderr io.Writer) int {
 	releaseOnReturn := true
 	defer func() {
 		if releaseOnReturn {
@@ -119,10 +185,21 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 	}()
 
 	var wg sync.WaitGroup
-	setup, err := buildSchedulerSetup(ctx, l, &wg)
+	// DS6 for the one-shot path (#3512 review, finding 2): this command holds
+	// the instance lock, so the daemon — and with it every claim renewal — is
+	// stopped. On an engine-configured instance the setup-time reap plus
+	// Claim's expired-lease takeover would both fire on a live distributed
+	// run's stale-looking lease, so renewal must run before any
+	// scheduling/claiming does. Mode-1 gets a nil recovery: byte-identical
+	// recover-at-setup behavior.
+	claimRecovery := newOneShotClaimRecovery(l)
+	setup, err := buildSchedulerSetup(ctx, l, &wg, claimRecovery.setupOptions()...)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	if warning := windowsLargeRepoEnvironmentWarning(setup.Config, l.WorkcopiesDir(), realWindowsLargeRepoPreflightDeps()); warning != "" {
+		pln(stdout, warning)
 	}
 	shutdownOnReturn := true
 	defer func() {
@@ -130,18 +207,37 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 			setup.Shutdown(context.Background())
 		}
 	}()
+	if err := claimRecovery.finish(ctx, l, setup, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
-	found := false
-	var gaggle string
+	matches := 0
+	gaggle := target.Gaggle
+	subscribesToPullRequests := false
 	for _, e := range setup.Entries {
-		if e.Workflow == name {
-			found = true
-			gaggle = e.Gaggle
-			break
+		if e.Workflow == target.Workflow && (target.Gaggle == "" || e.Gaggle == target.Gaggle) {
+			matches++
+			if matches == 1 {
+				gaggle = e.Gaggle
+			}
+			for _, signal := range e.Signals {
+				if signal == webhookhttp.SignalName("pull_request") {
+					subscribesToPullRequests = true
+				}
+			}
 		}
 	}
-	if !found {
-		pf(stderr, "error: no workflow named %q in %s\n", name, l.ConfigDir())
+	if matches == 0 {
+		if target.Gaggle != "" {
+			pf(stderr, "error: no workflow named %q in gaggle %q\n", target.Workflow, target.Gaggle)
+		} else {
+			pf(stderr, "error: no workflow named %q in %s\n", target.Workflow, l.ConfigDir())
+		}
+		return 1
+	}
+	if target.PR > 0 && !subscribesToPullRequests {
+		pf(stderr, "error: --pr requires a workflow subscribed to the pull_request event\n")
 		return 1
 	}
 
@@ -161,12 +257,29 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 	if noWait && !worker {
 		triggerCtx = context.WithoutCancel(ctx)
 	}
-	runID, err := sched.Trigger(triggerCtx, name, time.Now())
+	var runID string
+	if target.Gaggle != "" || target.PR > 0 {
+		identity := localscheduler.WorkflowIdentity{Gaggle: gaggle, Workflow: target.Workflow}
+		if target.PR > 0 {
+			if target.Gaggle != "" {
+				runID, err = sched.TriggerSignalExact(triggerCtx, identity, webhookhttp.SignalName("pull_request"),
+					webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
+			} else {
+				runID, err = sched.TriggerSignal(triggerCtx, target.Workflow, webhookhttp.SignalName("pull_request"),
+					webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: target.PR}), time.Now())
+			}
+		} else {
+			runID, err = sched.TriggerExact(triggerCtx, identity, time.Now())
+		}
+
+	} else {
+		runID, err = sched.Trigger(triggerCtx, target.Workflow, time.Now())
+	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	pf(stdout, "created run %s (workflow=%s gaggle=%s)\n", runID, name, gaggle)
+	pf(stdout, "created run %s (workflow=%s gaggle=%s)\n", runID, target.Workflow, gaggle)
 	if noWait {
 		shutdownOnReturn = false
 		releaseOnReturn = false
@@ -204,6 +317,164 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 	return exitForPhase(phase)
 }
 
+func flagWasSet(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--"+name || arg == "-"+name || strings.HasPrefix(arg, "--"+name+"=") || strings.HasPrefix(arg, "-"+name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+type targetedPullRequestReader interface {
+	GetPullRequest(context.Context, providers.RepositoryRef, string) (providers.PullRequestSummary, error)
+}
+
+func validateTargetedPullRequest(ctx context.Context, root string, cfg *instance.Config, stores credentials.StoreResolver, registrar credentials.SecretRegistrar, entry localscheduler.WorkflowEntry, number int) error {
+	if number <= 0 {
+		return errors.New("pull request number must be a positive integer")
+	}
+	if cfg == nil {
+		return fmt.Errorf("validate pull request #%d: instance configuration is unavailable", number)
+	}
+	configured, ok := configuredRepoForProject(cfg, entry.RepoRef)
+	if !ok {
+		return fmt.Errorf("validate pull request #%d: repository %s is not configured in this instance", number, targetedRepoDisplay(entry.RepoRef))
+	}
+	resolvedRepo := apiv1.RepoRef{
+		Provider: apiv1.Provider(configured.Provider),
+		BaseURL:  configured.BaseURL,
+		Owner:    configured.Owner,
+		Project:  configured.Project,
+		Name:     configured.Name,
+	}
+	repo := providers.RepositoryRef{
+		Provider: providers.ProviderKind(resolvedRepo.Provider),
+		Owner:    resolvedRepo.Owner,
+		Project:  resolvedRepo.Project,
+		Name:     resolvedRepo.Name,
+		URL:      resolvedRepo.BaseURL,
+	}
+	repoDisplay := targetedRepoDisplay(resolvedRepo)
+
+	var provider providers.Provider
+	var err error
+	switch repo.Provider {
+	case providers.ProviderGitHub, providers.ProviderGitea:
+		owner := resolvedRepo.Owner
+		credentialCapability := capability.GitHubPRWrite
+		if repo.Provider == providers.ProviderGitea {
+			credentialCapability = capability.ProviderPRWrite
+		}
+		resolver, grants, buildErr := buildCredentials(cfg, stores, owner, resolvedRepo.Name, nil, registrar)
+		if buildErr != nil {
+			return fmt.Errorf("resolve credentials for pull request #%d in %s: %w", number, repoDisplay, buildErr)
+		}
+		injector, buildErr := credentials.NewInjector(resolver, grants, registrar)
+		if buildErr != nil {
+			return fmt.Errorf("resolve credentials for pull request #%d in %s: %w", number, repoDisplay, buildErr)
+		}
+		set, buildErr := injector.Materialize(ctx, []string{string(credentialCapability)})
+		if buildErr != nil {
+			return fmt.Errorf("not authorized to read pull request #%d in %s: %w", number, repoDisplay, buildErr)
+		}
+		token, buildErr := set.Token(ctx, string(credentialCapability))
+		if buildErr != nil {
+			return fmt.Errorf("not authorized to read pull request #%d in %s: %w", number, repoDisplay, buildErr)
+		}
+		provider, err = newProviderForStage(root, repo, true, withStageProviderToken(token))
+	default:
+		provider, err = newProviderForStage(root, repo, true)
+	}
+	if err != nil {
+		return fmt.Errorf("validate pull request #%d in configured repository %s: %w", number, repoDisplay, err)
+	}
+	reader, ok := provider.(targetedPullRequestReader)
+	if !ok {
+		return fmt.Errorf("validate pull request #%d: provider %q does not support pull-request lookup", number, repo.Provider)
+	}
+	pr, err := reader.GetPullRequest(ctx, repo, strconv.Itoa(number))
+	if err != nil {
+		return fmt.Errorf("validate pull request #%d in configured repository %s: %w", number, repoDisplay, err)
+	}
+	if pr.Number != number {
+		return fmt.Errorf("pull request #%d was not returned by the configured repository", number)
+	}
+	state := strings.TrimSpace(pr.State)
+	if !strings.EqualFold(state, "open") {
+		return fmt.Errorf("pull request #%d is %s; targeted merge review requires an open pull request", number, state)
+	}
+	if !pullRequestURLMatchesRepository(resolvedRepo, pr.URL, number) {
+		return fmt.Errorf("pull request #%d resolves outside configured repository %s", number, repoDisplay)
+	}
+	return nil
+}
+
+func targetedRepoDisplay(repo apiv1.RepoRef) string {
+	if repo.Provider == apiv1.ProviderADO && repo.Project != "" {
+		return repo.Owner + "/" + repo.Project + "/" + repo.Name
+	}
+	return repo.Owner + "/" + repo.Name
+}
+
+func pullRequestURLMatchesRepository(repo apiv1.RepoRef, rawURL string, number int) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	parts := strings.FieldsFunc(parsed.EscapedPath(), func(r rune) bool { return r == '/' })
+	for i := range parts {
+		parts[i], err = url.PathUnescape(parts[i])
+		if err != nil {
+			return false
+		}
+	}
+	numberText := strconv.Itoa(number)
+	switch repo.Provider {
+	case apiv1.ProviderGitHub:
+		if !strings.EqualFold(parsed.Hostname(), "github.com") {
+			return false
+		}
+		return pullRequestPathMatchesRepository(parts, repo.Owner, repo.Name, numberText)
+	case apiv1.ProviderGitea:
+		baseURL, baseErr := url.Parse(strings.TrimSpace(repo.BaseURL))
+		if baseErr != nil || baseURL.Host == "" || !strings.EqualFold(parsed.Host, baseURL.Host) {
+			return false
+		}
+		return pullRequestPathMatchesRepository(parts, repo.Owner, repo.Name, numberText)
+	case apiv1.ProviderADO:
+		host := strings.ToLower(parsed.Hostname())
+		visualStudioHost := strings.ToLower(repo.Owner) + ".visualstudio.com"
+		if host != "dev.azure.com" && host != visualStudioHost {
+			return false
+		}
+		for i := 1; i+3 < len(parts); i++ {
+			organizationMatches := host == visualStudioHost ||
+				(i >= 2 && strings.EqualFold(parts[i-2], repo.Owner))
+			if organizationMatches &&
+				strings.EqualFold(parts[i], "_git") &&
+				strings.EqualFold(strings.TrimSuffix(parts[i+1], ".git"), repo.Name) &&
+				strings.EqualFold(parts[i+2], "pullrequest") &&
+				parts[i+3] == numberText {
+				return repo.Project == "" || strings.EqualFold(parts[i-1], repo.Project)
+			}
+		}
+	}
+	return false
+}
+
+func pullRequestPathMatchesRepository(parts []string, owner, name, number string) bool {
+	for i := 2; i+1 < len(parts); i++ {
+		if (strings.EqualFold(parts[i], "pull") || strings.EqualFold(parts[i], "pulls")) &&
+			parts[i+1] == number &&
+			strings.EqualFold(parts[i-2], owner) &&
+			strings.EqualFold(strings.TrimSuffix(parts[i-1], ".git"), name) {
+			return true
+		}
+	}
+	return false
+}
+
 // runDelegatedTrigger is #343's actual fix: called when acquireInstanceLock
 // finds a live `goobers up` daemon already holding this instance's lock — it
 // no longer just reports that and gives up (#231's fix stopped there). It
@@ -213,8 +484,16 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, name, root str
 // dispatched run's terminal state unless noWait is set. From the caller's
 // perspective the two paths are otherwise indistinguishable except for which
 // process actually held the scheduler.
-func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root string, noWait bool, stdout, stderr io.Writer) int {
-	requestID, err := writeTriggerRequest(l.SchedulerDir(), name)
+func runDelegatedTrigger(ctx context.Context, l instance.Layout, target runTarget, root string, noWait bool, stdout, stderr io.Writer) int {
+	var (
+		requestID string
+		err       error
+	)
+	if target.PR > 0 {
+		requestID, err = writeTargetedTriggerRequestContext(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow, target.PR)
+	} else {
+		requestID, err = writeTriggerRequestContext(ctx, l.SchedulerDir(), target.Gaggle, target.Workflow)
+	}
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -225,7 +504,7 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root stri
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	pf(stdout, "created run %s (workflow=%s, dispatched via live daemon)\n", runID, name)
+	pf(stdout, "created run %s (workflow=%s, dispatched via live daemon)\n", runID, target.Workflow)
 	if noWait {
 		pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
 		return 0
@@ -246,9 +525,34 @@ func runDelegatedTrigger(ctx context.Context, l instance.Layout, name, root stri
 func runFlagArgs(args []string) []string {
 	flags := make([]string, 0, len(args))
 	positionals := make([]string, 0, len(args))
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--no-wait" || arg == "-no-wait" ||
 			strings.HasPrefix(arg, "--no-wait=") || strings.HasPrefix(arg, "-no-wait=") {
+			flags = append(flags, arg)
+			continue
+		}
+		if arg == "--gaggle" || arg == "-gaggle" {
+			flags = append(flags, arg)
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
+		if arg == "--pr" || arg == "-pr" {
+			flags = append(flags, arg)
+			if i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--gaggle=") || strings.HasPrefix(arg, "-gaggle=") {
+			flags = append(flags, arg)
+			continue
+		}
+		if strings.HasPrefix(arg, "--pr=") || strings.HasPrefix(arg, "-pr=") {
 			flags = append(flags, arg)
 			continue
 		}
@@ -262,9 +566,8 @@ func runFlagArgs(args []string) []string {
 // issue #135's sanctioned recovery path for a run resumeInterruptedRuns
 // can't resolve on its own (e.g. its workflow was renamed/removed from
 // config, so `goobers up` skips it with a warning forever rather than
-// erroring at startup). Works on the run's journal alone — it doesn't need
-// the run's workflow to still exist in config, unlike everything else in
-// this file.
+// erroring at startup). It doesn't need the run's workflow or gaggle to still
+// exist, but uses the owning gaggle's placement config when available.
 
 const runAbortHelp = "Usage: goobers run abort <run-id> [path]\n\n" +
 	"Mark a stuck non-terminal run aborted by appending a terminal\n" +
@@ -273,7 +576,7 @@ const runAbortHelp = "Usage: goobers run abort <run-id> [path]\n\n" +
 	"2 = usage/IO error (unknown run).\n"
 
 func runRunAbort(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("run abort", flag.ContinueOnError)
+	fs := newCLIFlagSet("run abort", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "run abort")
 	if err := fs.Parse(args); err != nil {
@@ -314,7 +617,39 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	if identity.Gaggle != "" && filepath.Clean(filepath.Dir(dir)) != filepath.Clean(l.RunsDir()) {
 		runLayout = l.ForGaggle(identity.Gaggle)
 	}
-	wtMgr, err := worktree.NewManager(runLayout.WorkcopiesDir())
+	cfg := &instance.Config{}
+	if loaded, loadErr := instance.LoadConfig(l.ConfigFile()); loadErr == nil {
+		cfg = loaded
+	} else if !errors.Is(loadErr, iofs.ErrNotExist) {
+		pf(stderr, "warning: load instance config for workcopies placement: %v; continuing with default workcopies layout\n", loadErr)
+	}
+	if configured, resolveErr := instance.EffectiveWorkcopiesLayout(runLayout, cfg, nil); resolveErr == nil {
+		runLayout = configured
+	} else {
+		pf(stderr, "warning: resolve instance workcopies placement: %v; continuing with default workcopies layout\n", resolveErr)
+	}
+	workcopiesRoot := runLayout.WorkcopiesDir()
+	if runLayout.Gaggle() != "" {
+		set, report, loadErr := loadConfigDirectory(l.ConfigDir())
+		if loadErr != nil {
+			printValidationIssues(stderr, report)
+			pf(stderr, "warning: load config directory for workcopies placement: %v; continuing without gaggle placement\n", loadErr)
+		} else {
+			gaggle := configuredGaggle(set, runLayout.Gaggle())
+			if configured, resolveErr := instance.EffectiveWorkcopiesLayout(runLayout, cfg, gaggle); resolveErr == nil {
+				runLayout = configured
+				workcopiesRoot = runLayout.WorkcopiesDir()
+				if gaggle != nil {
+					if repo, ok := configuredRepoForProject(cfg, gaggle.Spec.Project); ok && repo.Pinned() {
+						workcopiesRoot = runLayout.WorkcopiesBaseDir()
+					}
+				}
+			} else {
+				pf(stderr, "warning: resolve gaggle workcopies placement: %v; continuing without gaggle placement\n", resolveErr)
+			}
+		}
+	}
+	wtMgr, err := worktree.NewManager(workcopiesRoot)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -327,7 +662,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		// already-terminal run, flipping its recorded terminal phase.
 		switch phase {
 		case journal.PhaseCompleted, journal.PhaseFailed, journal.PhaseAborted, journal.PhaseEscalated:
-			if err := finalizeTerminalRun(runLayout, nil, wtMgr, runID); err != nil {
+			if err := finalizeTerminalRunForRecovery(runLayout, nil, wtMgr, runID); err != nil {
 				pf(stderr, "error: finalize terminal run %s: %v\n", runID, err)
 				return 2
 			}
@@ -339,6 +674,11 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	registrar, scrubber := journal.DefaultScrubber()
 	run, _, err := journal.Recover(dir, journal.WithScrubber(scrubber))
 	if err != nil {
+		if errors.Is(err, journal.ErrLockTimeout) {
+			if code, handled := delegateAbortToLiveDaemon(l, runID, identity, stdout, stderr); handled {
+				return code
+			}
+		}
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
@@ -350,13 +690,89 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
-	if err := finalizeTerminalRun(runLayout, nil, wtMgr, runID); err != nil {
+	// #2191: an aborted run advanced its journal just like a normal terminal
+	// run, but unlike the daemon's ingestRunTelemetry call this one-shot CLI
+	// path never opens the intake store — so the dashboard never learns the
+	// abort happened until the repair sweep eventually finds it.
+	if watermarks, err := intake.Open(runLayout.IntakeDB()); err != nil {
+		pf(stderr, "warning: open intake store for run %s: %v\n", runID, err)
+	} else {
+		recordRunIntake(watermarks, runLayout, runID, nil)
+		_ = watermarks.Close()
+	}
+	if err := finalizeTerminalRunForRecovery(runLayout, nil, wtMgr, runID); err != nil {
 		pf(stderr, "error: finalize aborted run %s: %v\n", runID, err)
 		return 2
 	}
 
 	pf(stdout, "aborted run %s\n", runID)
 	return 0
+}
+
+func configuredGaggle(set *instance.ConfigSet, name string) *apiv1.Gaggle {
+	if set == nil {
+		return nil
+	}
+	for i := range set.Gaggles {
+		if set.Gaggles[i].Name == name {
+			return &set.Gaggles[i]
+		}
+	}
+	return nil
+}
+
+// delegateAbortToLiveDaemon is invoked when journal.Recover fails because a
+// live `goobers up` daemon already holds the run's journal lock (#2270):
+// without this, abort would surface a confusing 30s lock-timeout error
+// instead of doing what the operator actually wants. It routes the request
+// through the same live-cancel protocol `run cancel` uses, mirroring
+// `run <workflow>`'s existing trigger-delegation pattern (#343) — the
+// mechanisms stay separate, only the CLI's choice of which one to use
+// becomes automatic. handled is false when there turns out to be no live
+// daemon after all (a stale/contended lock some other way, or the daemon
+// released the run between the failed Recover and this check), in which case
+// the caller should fall back to reporting the original journal error
+// unchanged.
+func delegateAbortToLiveDaemon(l instance.Layout, runID string, identity journal.RunIdentity, stdout, stderr io.Writer) (code int, handled bool) {
+	running, _, err := inspectDaemonLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil || !running {
+		return 0, false
+	}
+
+	requestID, err := writeCancelRequest(l.SchedulerDir(), cancelRequest{
+		RunID:    runID,
+		Workflow: identity.Workflow,
+		Gaggle:   identity.Gaggle,
+		Actor:    "cli",
+	})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2, true
+	}
+	resp, err := pollCancelResponse(context.Background(), l.SchedulerDir(), requestID, cancelDelegationTimeout)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2, true
+	}
+	switch {
+	case resp.Error != "":
+		pf(stderr, "error: %s\n", resp.Error)
+		return 1, true
+	case resp.Code == cancelCodeAborted:
+		pf(stdout, "aborted run %s (delegated to live daemon)\n", runID)
+		return 0, true
+	case resp.Code == cancelCodeTerminal:
+		pf(stderr, "error: run %s finished before it could be aborted (phase=%s)\n", runID, resp.Phase)
+		return 1, true
+	case resp.Code == cancelCodeNotRunning:
+		// The daemon was live when we inspected the lock but no longer owns
+		// this run by the time the sweep picked up the request — fall back to
+		// the original journal error rather than claiming success.
+		return 0, false
+	default:
+		pf(stderr, "error: unexpected cancel response for run %s\n", runID)
+		return 1, true
+	}
 }
 
 const runCancelHelp = "Usage: goobers run cancel <run-id> [path]\n\n" +
@@ -370,7 +786,7 @@ const runCancelHelp = "Usage: goobers run cancel <run-id> [path]\n\n" +
 	"no daemon to cancel it), 2 = usage/IO error (unknown run).\n"
 
 func runRunCancel(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("run cancel", flag.ContinueOnError)
+	fs := newCLIFlagSet("run cancel", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "run cancel")
 	if err := fs.Parse(args); err != nil {
@@ -526,8 +942,10 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 			if phase := journal.PhaseFromEvents(events); isTerminalPhase(phase) {
 				return phase, nil
 			}
-		} else {
+		} else if errors.Is(err, journal.ErrNotRunDirectory) {
 			progress.heartbeat(time.Now())
+		} else {
+			return journal.PhaseRunning, fmt.Errorf("open run %s while waiting for terminal phase: %w", runID, err)
 		}
 
 		select {
@@ -545,6 +963,8 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 					return phase, fmt.Errorf("run %s did not reach a terminal phase within %s (still %s); failing fast instead of hanging — a make-ci journal-IO wedge may have regressed (#827)", runID, runTerminalWaitTimeout, phase)
 				}
 				return phase, nil
+			} else if !errors.Is(err, journal.ErrNotRunDirectory) {
+				return journal.PhaseRunning, fmt.Errorf("open run %s after wait cancellation: %w", runID, err)
 			}
 			return journal.PhaseRunning, ctx.Err()
 		case <-time.After(runPollInterval):
@@ -559,7 +979,7 @@ func waitForRunTerminalInLayoutWithProgress(ctx context.Context, layout instance
 		if err == nil {
 			return waitForRunTerminalWithReporter(ctx, filepath.Dir(dir), runID, reporter)
 		}
-		if !errors.Is(err, fs.ErrNotExist) {
+		if !errors.Is(err, iofs.ErrNotExist) {
 			return journal.PhaseRunning, err
 		}
 		reporter.heartbeat(time.Now())

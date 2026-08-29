@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -14,11 +13,13 @@ import (
 
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/providers"
 )
 
 const tutorPolicyWorkflowBase = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: sample
 spec:
@@ -354,7 +355,7 @@ func gitTutorConfigWorktree(t *testing.T, sourceConfig string, mutate func(strin
 	}
 	git := func(args ...string) {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := testgit.Command(args...)
 		cmd.Dir = repoDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -381,13 +382,13 @@ func TestOpenPRStampsTutorReviewPath(t *testing.T) {
 	}{
 		{
 			name:       "persona follows normal review",
-			file:       "selfhost/gaggles/goobers/goobers/config-author/instructions.md",
+			file:       "reference-workflows/gaggles/goobers/goobers/config-author/instructions.md",
 			wantType:   "**Types:** `persona`",
 			wantReview: "Normal review path",
 		},
 		{
 			name:       "skill requires human signoff",
-			file:       "selfhost/gaggles/goobers/skills/config-author/SKILL.md",
+			file:       "reference-workflows/gaggles/goobers/skills/config-author/SKILL.md",
 			wantType:   "**Types:** `skill`",
 			wantReview: "Explicit human sign-off required",
 		},
@@ -396,7 +397,7 @@ func TestOpenPRStampsTutorReviewPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := initDemo(t)
 			server := newFakeGitHubServer(t, "your-org", "your-repo")
-			providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_PR_WRITE", "run-1")
+			providerCmdEnv(t, server, "GOOBERS_CRED_PROVIDER_PR_WRITE", "run-1")
 			t.Setenv("GOOBERS_WORKFLOW", "tutor")
 			t.Setenv(executor.RepoProviderEnvVar, "github")
 			t.Setenv(executor.RepoOwnerEnvVar, "your-org")
@@ -422,8 +423,8 @@ func TestOpenPRStampsTutorReviewPath(t *testing.T) {
 func TestPRSelectRoutesOnlyLowRiskTutorChangesToAutomatedReview(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
-	const workflowPath = "selfhost/gaggles/goobers/workflows/review.yaml"
-	const skillPath = "selfhost/gaggles/goobers/skills/review/instructions.md"
+	const workflowPath = "reference-workflows/gaggles/goobers/workflows/review.yaml"
+	const skillPath = "reference-workflows/gaggles/goobers/skills/review/instructions.md"
 	gateTune := strings.Replace(tutorPolicyWorkflowBase, `threshold: "2"`, `threshold: "1"`, 1)
 	server.addOpenPR(10, "goobers/tutor/run-10", "main", "skill-head", "base",
 		false, nil, []fakePRFile{{path: skillPath, status: "modified"}})
@@ -474,7 +475,7 @@ func TestRemoteTutorClassificationFailsClosedAtGitHubFileLimit(t *testing.T) {
 	files := make([]fakePRFile, fileLimit)
 	for i := range files {
 		files[i] = fakePRFile{
-			path:   fmt.Sprintf("selfhost/gaggles/goobers/goobers/persona-%04d/instructions.md", i),
+			path:   fmt.Sprintf("reference-workflows/gaggles/goobers/goobers/persona-%04d/instructions.md", i),
 			status: "modified",
 		}
 	}

@@ -1,0 +1,24 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS BACKLOG ASSIGNMENT" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers backlog-assignment \- assign eligible backlog items from a configured roster (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers backlog-assignment\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers backlog-assignment [path]
+
+Assign eligible, open, unassigned backlog items using the configured
+strategy and JSON roster. Supported strategies are constant-cap and
+round-robin. The trustLabel input and a valid, non-empty roster are
+required; invalid configuration fails before any provider mutation.
+
+Exit codes: 0 = assignment pass completed, 1 = configuration/provider/IO
+error, 2 = usage error.
+.fi
+.SH EXAMPLES
+.nf
+goobers backlog-assignment
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

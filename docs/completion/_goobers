@@ -13,77 +13,25 @@ _goobers_completion()
     if (( CURRENT == 2 )); then
         commands=(
             'version:print build version, commit, and date (--json for structured output)'
-            'versions:print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)'
             'init:scaffold an instance root'
-            'preflight:check WSL full-isolation readiness and optionally hand off a command'
-            'onboarding:run non-interactive onboarding actions'
+            'connect:connect an instance to your own GitHub repository'
             'examples:browse canonical workflow examples embedded in the binary'
-            'scaffold:scaffold a goober or workflow in a gaggle'
-            'agent-kit:install, inspect, or update the release-matched agent toolkit'
+            'scaffold:scaffold a goober, workflow, or gaggle'
             'validate:validate an instance or checked-in config source tree'
-            'lint:lint config via the single authoritative validation engine (alias for validate)'
-            'fix:mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)'
-            'doctor:preflight a Kubernetes cluster against the documented infra shape'
-            'config:inspect, materialize, and compare instance configuration'
-            'speech:preflight and test local speech notifications'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'
             'down:request a live daemon'\''s graceful drain-shutdown from a separate terminal'
-            'apply:reconcile a live daemon'\''s workflow definitions now'
-            'self-update:stage and request a supervised binary update'
             'service:install and manage the platform-supervised daemon'
-            'worker:host a Temporal engine worker\: task queues, graceful drain, versioned identity (tier-3, experimental)'
             'dashboard:serve and open the local operations portal'
+            'getting-started:serve and open the guided portal Getting Started walkthrough'
             'run:trigger a run manually (still honors run conditions)'
             'signal:fire an external signal to subscribed workflows'
             'workflow:inspect workflows'
-            'runs:list runs and report per-run disk usage'
-            'status:validate config, show warnings, list runs, or report daemon health'
+            'status:validate config, show warnings, list runs, report daemon health, or list live agentic stages'
             'stats:show the instance lifetime summary card'
-            'features:list the workflow-DSL features this build supports'
-            'schema:emit a JSON Schema embedded in this build'
-            'explain:project field facts from an embedded JSON Schema'
-            'reset-rate-limit:clear the hourly run-rate budget without deleting runs/'
-            'blocked:inspect and clear the learned blocked-item ledger'
-            'claims:inspect and force-release claim leases'
-            'trace:show a run'\''s journal events, follow a live run, or show transcripts'
+            'trace:show a run'\''s journal events or review verdicts, follow a live run, or show transcripts'
             'escalations:list escalated runs newest first'
             'completion:generate a shell completion script'
-            'telemetry:query, export, prune, or compact run telemetry'
-            'journal:the one sanctioned edit to the append-only journal'
-            'backlog-dedupe:surface ranked duplicate candidates for curator judgment (a workflow stage)'
-            'backlog-health:snapshot ready-pool depth and age (a workflow stage)'
-            'backlog-query:query/claim one eligible backlog item (a workflow stage)'
-            'reconcile-branches:report bounded stale goobers/* branch candidates (a workflow stage)'
-            'push-branch:push the worktree'\''s checked-out branch to origin (a workflow stage)'
-            'check-fail-first:enforce fail-first evidence for a new workflow gate (a workflow stage)'
-            'open-pr:open or update the run'\''s PR (a workflow stage)'
-            'report-pr-status:publish goobers'\'' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)'
-            'gate-removal-guard:block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)'
-            'issue-close-out:comment + close out the claimed issue (a workflow stage)'
-            'set-milestone:assign an existing milestone to an issue (a workflow stage)'
-            'merge-pr:conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)'
-            'record-merge-refusal:record a merge refusal and demote a persistently-stuck lander (a workflow stage)'
-            'merge-queue-poll:watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)'
-            'reconcile-post-merge:reconcile late merge-queue merges (a workflow stage)'
-            'post-merge:post-merge fan-out + close the referenced issue (a workflow stage)'
-            'telemetry-query:emit versioned candidate findings (a connector stage)'
-            'docs-churn:emit the docs-drift churn digest since the watermark (a connector stage)'
-            'ios-simulator-test:run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)'
-            'pr-select:select one managed or advisory open PR for merge-review (a workflow stage)'
-            'gather-sibling-context:load other open PRs as review evidence (a workflow stage)'
-            'gather-implement-context:load first-pass implementation review and hot-file context (a workflow stage)'
-            'apply-verdict:publish a managed or advisory merge-review verdict (a workflow stage)'
-            'elect-lander:elect the landing PR among a merge-review cohort (a workflow stage)'
-            'update-behind-pr:API-update a clean behind-base PR, else route to remediation (a workflow stage)'
-            'gather-pr-context:pr-remediation entrypoint\: select and load a PR'\''s context (a workflow stage)'
-            'gather-review-threads:add native reviews and anchored inline threads to a remediation brief (a workflow stage)'
-            'gather-issue-context:add originating issue bodies to a remediation brief (a workflow stage)'
-            'gather-ci-failures:add failing CI diagnostics to a remediation brief (a workflow stage)'
-            'rebase-pr:rebase-first, finding-driven remediation routing (a workflow stage)'
-            'remediation-checkpoint:durable per-cause attempt budgets + same-diff escalation (a workflow stage)'
-            'push-remediated:force-push the remediated branch and clear needs-remediation (a workflow stage)'
-            'respond-to-findings:post a validated per-finding remediation response to the claimed PR (a workflow stage)'
-            'help'
+            'help:show command or concept help'
             '--version:print the version'
             '-h:show help'
             '--help:show help'
@@ -95,8 +43,17 @@ _goobers_completion()
     command="${words[2]}"
     flags=(-h --help)
     case "${command}" in
+        version)
+            flags+=(--json)
+            ;;
+        versions)
+            flags+=(--json)
+            ;;
         init)
-            flags+=(--demo --guided --template --source-tree --json)
+            flags+=(--demo --insecure --guided --template --source-tree --json)
+            ;;
+        connect)
+            flags+=(--token-env --seed --replace --json)
             ;;
         preflight)
             flags+=(--distro --launch-wsl)
@@ -111,6 +68,7 @@ _goobers_completion()
             case "${words[3]:-}" in
                 goober) flags+=(--force) ;;
                 workflow) flags+=(--force) ;;
+                gaggle) flags+=(--force --from) ;;
             esac
             ;;
         agent-kit)
@@ -120,10 +78,19 @@ _goobers_completion()
             esac
             ;;
         validate)
-            flags+=(--json --check-harness --check-repos --source-tree --strict)
+            flags+=(--json --github-annotations --check-harness --check-repos --source-tree --strict)
             ;;
         lint)
-            flags+=(--json --check-harness --check-repos --source-tree --strict)
+            flags+=(--json --github-annotations --check-harness --check-repos --source-tree --strict)
+            ;;
+        fix)
+            flags+=(--to --write)
+            ;;
+        doctor)
+            flags+=(--k8s --repo --kubeconfig --context --report --oidc-issuer --registry --egress --timeout)
+            ;;
+        netpol-render)
+            flags+=(--out --check --baseline --write-baseline --timeout --print-blob-endpoint)
             ;;
         config)
             case "${words[3]:-}" in
@@ -138,13 +105,42 @@ _goobers_completion()
             esac
             ;;
         up)
-            flags+=(--quiet --diagnostics --notify --watch-config --cleanup-spans-only-runs --disable-read-model-reads)
+            flags+=(--quiet --diagnostics --notify --skip-preflight --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads)
+            ;;
+        self-update)
+            flags+=(--policy --branch --target --health-ticks --health-timeout)
+            ;;
+        service)
+            case "${words[3]:-}" in
+                status) flags+=(--json) ;;
+            esac
+            ;;
+        engine-start)
+            flags+=(--gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key --live-journal)
+            ;;
+        engine-project)
+            flags+=(--gaggle --temporal-hostport --temporal-namespace)
+            ;;
+        worker)
+            flags+=(--instance --blob-store --daemon-api --dispatch-namespace --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
             ;;
         dashboard)
-            flags+=(--port --no-open --dev-assets)
+            flags+=(--port --listen --no-open --dev-assets --wait-for-daemon)
+            ;;
+        getting-started)
+            flags+=(--port --no-open --workdir)
             ;;
         run)
-            flags+=(--no-wait)
+            flags+=(--gaggle --pr --no-wait)
+            ;;
+        approve)
+            flags+=(--decision --actor)
+            ;;
+        override)
+            flags+=(--rationale --decision --actor)
+            ;;
+        rerun-stage)
+            flags+=(--addendum --actor)
             ;;
         workflow)
             case "${words[3]:-}" in
@@ -153,12 +149,12 @@ _goobers_completion()
             ;;
         runs)
             case "${words[3]:-}" in
-                list) flags+=(--json --phase --workflow --limit) ;;
+                list) flags+=(--json --phase --workflow --gaggle --limit) ;;
                 du) flags+=(--json) ;;
             esac
             ;;
         status)
-            flags+=(--daemon --json --phase --workflow --limit --watch --interval)
+            flags+=(--agents --daemon --json --phase --workflow --gaggle --limit --watch --interval)
             ;;
         stats)
             flags+=(--since --json)
@@ -184,16 +180,28 @@ _goobers_completion()
             esac
             ;;
         trace)
-            flags+=(--json --follow --transcripts --transcript)
+            flags+=(--json --follow --summary --verdicts --transcripts --transcript)
+            ;;
+        e2e)
+            case "${words[3]:-}" in
+                verify) flags+=(--run --gaggle --expected --out --print-runner-class) ;;
+                kill-inject) flags+=(--run --stage --stage-class --namespace --poll-timeout --out) ;;
+            esac
             ;;
         escalations)
             flags+=(--json)
+            case "${words[3]:-}" in
+                show) flags+=(--include-verdict) ;;
+            esac
             ;;
         telemetry)
             case "${words[3]:-}" in
-                stats) flags+=(--json --workflow --gaggle --model --harness-version --group-by --since --until --rebuild) ;;
+                stats) flags+=(--json --workflow --gaggle --branch --model --harness-version --group-by --since --until --rebuild) ;;
                 errors) flags+=(--json --workflow --gaggle --class --limit --since --until --rebuild) ;;
+                export) flags+=(--since --until) ;;
+                prune) flags+=(--dry-run) ;;
                 prune-orphans) flags+=(--delete --min-age) ;;
+                compact) flags+=(--dry-run) ;;
             esac
             ;;
         journal)
@@ -201,17 +209,29 @@ _goobers_completion()
                 redact) flags+=(--run --path --reason --secret-file) ;;
             esac
             ;;
+        backlog-health)
+            flags+=(--feedback)
+            ;;
         backlog-query)
-            flags+=(--claim --release)
+            flags+=(--claim --debug --release --read-only --reconcile)
             ;;
         reconcile-branches)
             flags+=(--delete --max --min-age --after)
             ;;
+        set-milestone)
+            flags+=(--item --milestone)
+            ;;
+        reconcile-post-merge)
+            flags+=(--max --lookback)
+            ;;
         telemetry-query)
-            flags+=(--window --aggregate --threshold --format)
+            flags+=(--window --aggregate --learning-action --threshold --format --gaggle --workflow)
             ;;
         docs-churn)
             flags+=(--repo --workflow --gaggle --since --buffer-multiplier --format)
+            ;;
+        ios-simulator-test)
+            flags+=(--project --workspace --scheme --device --runtime --only-testing --result-bundle)
             ;;
         gather-sibling-context)
             flags+=(--no-cache --no-verdict-cache)
@@ -222,8 +242,17 @@ _goobers_completion()
         elect-lander)
             flags+=(--gate)
             ;;
+        pr-claim)
+            flags+=(--release)
+            ;;
         remediation-checkpoint)
-            flags+=(--budget --escalate)
+            flags+=(--budget --escalate --escalation-outcome)
+            ;;
+        respond-to-findings)
+            flags+=(--check)
+            ;;
+        mcp-io)
+            flags+=(--config)
             ;;
     esac
     if [[ "${PREFIX}" == -* ]]; then
@@ -252,7 +281,7 @@ _goobers_completion()
             ;;
         scaffold)
             if (( CURRENT == 3 )); then
-                candidates=(goober workflow)
+                candidates=(goober workflow gaggle)
                 _describe -V 'command' candidates
                 return
             fi
@@ -280,14 +309,14 @@ _goobers_completion()
             ;;
         service)
             if (( CURRENT == 3 )); then
-                candidates=(install uninstall status)
+                candidates=(install uninstall stop start status)
                 _describe -V 'command' candidates
                 return
             fi
             ;;
         run)
             if (( CURRENT == 3 )); then
-                candidates=(abort cancel approve override rerun)
+                candidates=(abort cancel)
                 candidates+=("${(@f)$(command goobers __complete workflows 2>/dev/null)}")
                 _describe -V 'workflow' candidates
                 return
@@ -315,6 +344,13 @@ _goobers_completion()
                 return
             fi
             ;;
+        workspace)
+            if (( CURRENT == 3 )); then
+                candidates=(reset)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
         blocked)
             if (( CURRENT == 3 )); then
                 candidates=(list clear)
@@ -334,6 +370,13 @@ _goobers_completion()
                 candidates=()
                 candidates+=("${(@f)$(command goobers __complete runs 2>/dev/null)}")
                 _describe -V 'run id' candidates
+                return
+            fi
+            ;;
+        e2e)
+            if (( CURRENT == 3 )); then
+                candidates=(verify kill-inject)
+                _describe -V 'command' candidates
                 return
             fi
             ;;
@@ -365,6 +408,13 @@ _goobers_completion()
         journal)
             if (( CURRENT == 3 )); then
                 candidates=(redact)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        help)
+            if (( CURRENT == 3 )); then
+                candidates=(all stages instance gaggle goober workflow stage gate harness capability)
                 _describe -V 'command' candidates
                 return
             fi

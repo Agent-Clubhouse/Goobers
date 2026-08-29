@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -137,6 +138,53 @@ func TestShellExecutor_RunSuccess(t *testing.T) {
 	}
 }
 
+func TestShellExecutor_DefaultEnvCanBeOverriddenByStage(t *testing.T) {
+	exec, rec := newPortableTestExecutor(t, nil)
+	exec.DefaultEnv = map[string]string{"GOOBERS_TEST_DEFAULT": "default"}
+	env := baseEnvelope(t)
+	run := apiv1.DeterministicRun{
+		Command: []string{"sh", "-c", `printf '%s' "$GOOBERS_TEST_DEFAULT"`},
+		Env:     map[string]string{"GOOBERS_TEST_DEFAULT": "override"},
+	}
+	if runtime.GOOS == "windows" {
+		// cmd.exe's /C parsing does not follow CommandLineToArgvW quoting
+		// (see the comment in script_windows.go) — a quoted command like
+		// `echo "%VAR%"` built directly as a Command argv element gets
+		// re-escaped by Go's Windows argv quoting before it ever reaches
+		// cmd.exe, so it no longer parses the way it would typed at a
+		// prompt. Route the same command through Script instead:
+		// scriptCommand writes it to a real .cmd file and invokes that file
+		// by path, so the syntax reaches cmd.exe byte-for-byte unmodified —
+		// the same mechanism TestShellExecutor_RunScript below already
+		// exercises successfully on Windows.
+		//
+		// A first attempt used the classic `echo|set /p="%VAR%"` no-newline
+		// trick to keep the stdout comparison below exact, but that piped
+		// form still exited 1 when invoked from a script file (the pipe
+		// spawns cmd.exe's own second shell instance to run `set /p`, and
+		// that nested instance failed to inherit the batch file's expanded
+		// variable reliably). `echo %VAR%` is the same construct
+		// TestShellExecutor_RunScript already proves works from a script
+		// file; it costs a trailing CRLF, which the comparison below
+		// trims for rather than fighting for an exact no-newline capture.
+		run = apiv1.DeterministicRun{
+			Script: "@echo off\r\necho %GOOBERS_TEST_DEFAULT%",
+			Env:    map[string]string{"GOOBERS_TEST_DEFAULT": "override"},
+		}
+	}
+
+	result, err := exec.Run(context.Background(), env, run)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+	}
+	if got := strings.TrimSpace(string(rec.recorded["task-1/stdout.log"])); got != "override" {
+		t.Fatalf("stdout = %q, want stage override", got)
+	}
+}
+
 func TestShellExecutor_RunScript(t *testing.T) {
 	exec, rec := newPortableTestExecutor(t, nil)
 	env := baseEnvelope(t)
@@ -229,6 +277,101 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 	}
 	if got := string(rec.recorded["task-1/stdout.log"]); got != "alpha|hello-from-dsl|github-webhook:pull_request#42|acme/app" {
 		t.Fatalf("stdout = %q, want gaggle context and declared environment", got)
+	}
+}
+
+// TestShellExecutor_BuiltinErrorFileHonorsScratchDir is the direct
+// regression test for #3342: a read-only-root deployment with nothing
+// writable at the OS default temp directory previously failed every
+// goobers-CLI stage at "executor: create built-in error file: open
+// /tmp/goobers-builtin-error-…: read-only file system", because the file
+// was always created via os.CreateTemp("", …) — the OS default temp dir,
+// unconditionally. With ScratchDir set, the file must be created there
+// instead (and the directory created if it doesn't exist yet), independent
+// of the OS default temp dir's writability.
+func TestShellExecutor_BuiltinErrorFileHonorsScratchDir(t *testing.T) {
+	stub := filepath.Join(t.TempDir(), "goobers")
+	script := "#!/bin/sh\nprintf '%s' \"$GOOBERS_BUILTIN_ERROR_FILE\"\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, rec := newTestExecutor(t, nil)
+	exec.SelfBin = stub
+	// Not yet created — Run must create it (0o700), mirroring the pattern
+	// internal/runner's own ScratchDir handling already uses.
+	scratchDir := filepath.Join(t.TempDir(), "scratch")
+	exec.ScratchDir = scratchDir
+	env := baseEnvelope(t)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "some-subcommand"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+	}
+	builtinErrorFile := string(rec.recorded["task-1/stdout.log"])
+	if builtinErrorFile == "" {
+		t.Fatal("stage did not observe GOOBERS_BUILTIN_ERROR_FILE")
+	}
+	if !strings.HasPrefix(builtinErrorFile, scratchDir+string(filepath.Separator)) {
+		t.Fatalf("builtin error file %q was not created under ScratchDir %q", builtinErrorFile, scratchDir)
+	}
+}
+
+// TestShellExecutor_BuiltinErrorFileDefaultsHonorTMPDIR proves the claim
+// backing the ScratchDir default (empty ScratchDir preserves prior
+// behavior): os.CreateTemp("", …) resolves against os.TempDir(), which
+// already honors a process-level TMPDIR override — a caller that never sets
+// ScratchDir is not stuck on the OS default temp dir either, as long as its
+// own process environment sets TMPDIR (e.g. a container that mounts its
+// writable scratch volume there instead of at /tmp).
+func TestShellExecutor_BuiltinErrorFileDefaultsHonorTMPDIR(t *testing.T) {
+	stub := filepath.Join(t.TempDir(), "goobers")
+	script := "#!/bin/sh\nprintf '%s' \"$GOOBERS_BUILTIN_ERROR_FILE\"\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, rec := newTestExecutor(t, nil)
+	exec.SelfBin = stub
+	// ScratchDir left unset (zero value) — the code path under test here is
+	// exclusively the os.CreateTemp("", …) fallback.
+	customTMPDIR := t.TempDir()
+	t.Setenv("TMPDIR", customTMPDIR)
+	env := baseEnvelope(t)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "some-subcommand"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+	}
+	builtinErrorFile := string(rec.recorded["task-1/stdout.log"])
+	if builtinErrorFile == "" {
+		t.Fatal("stage did not observe GOOBERS_BUILTIN_ERROR_FILE")
+	}
+	// Run's defer already removed the file by the time we observe its path
+	// (the stub only echoed it back); compare directories, resolving
+	// symlinks (e.g. macOS's /tmp -> /private/tmp) so the comparison isn't
+	// defeated by a path only one side canonicalized. The directory itself
+	// (t.TempDir()) is still present even though the file inside it is gone.
+	resolvedTMPDIR, err := filepath.EvalSymlinks(customTMPDIR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedFileDir, err := filepath.EvalSymlinks(filepath.Dir(builtinErrorFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolvedFileDir != resolvedTMPDIR {
+		t.Fatalf("builtin error file dir %q was not TMPDIR %q — os.TempDir() is no longer honoring it", resolvedFileDir, resolvedTMPDIR)
 	}
 }
 
@@ -594,12 +737,13 @@ func TestShellExecutor_TimeoutKillsProcessGroup(t *testing.T) {
 func TestShellExecutor_TimeoutSIGQUITsBeforeKillForDump(t *testing.T) {
 	exec, rec := newTestExecutor(t, nil)
 	env := baseEnvelope(t)
-	env.Inputs = map[string]interface{}{InputTimeout: "100ms"}
+	env.Inputs = map[string]interface{}{InputTimeout: "2s"}
 
 	const marker = "__SIGQUIT_DUMP_MARKER__"
 	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
-		// Trap SIGQUIT -> print the marker and exit; otherwise block forever.
-		Command: []string{"sh", "-c", `trap 'echo ` + marker + `; exit 0' QUIT; while :; do sleep 0.05; done`},
+		// Trap SIGQUIT -> print the marker and exit; otherwise block without a
+		// child process that could defer the shell's trap handling.
+		Command: []string{"sh", "-c", `trap 'echo ` + marker + `; exit 0' QUIT; while :; do :; done`},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -826,7 +970,7 @@ func TestShellExecutor_ProviderResultPreservesWeakestIntegrity(t *testing.T) {
 			exec, rec := newTestExecutor(t, nil)
 			ref, err := exec.recordResultArtifact(
 				"task-1/result", []byte(test.data),
-				stageInvokesProviderBuiltin([]string{"goobers", "backlog-query", "--claim"}),
+				StageInvokesProviderBuiltin([]string{"goobers", "backlog-query", "--claim"}),
 			)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
@@ -1085,6 +1229,50 @@ func TestShellExecutor_NonGoobersStageOmitsRunContext(t *testing.T) {
 	want := "run= gaggle= wf= root= input=goobers:approved\n"
 	if got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestShellExecutor_DeterministicStagesReceiveAdditionalRepoPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		run  apiv1.DeterministicRun
+	}{
+		{
+			name: "command",
+			run: apiv1.DeterministicRun{
+				Command: []string{"sh", "-c", `printf '%s|%s|%s' "$GOOBERS_ADDITIONAL_REPOS" "$GOOBERS_ADDITIONAL_REPO_CLUBHOUSE" "$GOOBERS_RUN_ID"`},
+			},
+		},
+		{
+			name: "script",
+			run: apiv1.DeterministicRun{
+				Script: `printf '%s|%s|%s' "$GOOBERS_ADDITIONAL_REPOS" "$GOOBERS_ADDITIONAL_REPO_CLUBHOUSE" "$GOOBERS_RUN_ID"`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec, rec := newTestExecutor(t, nil)
+			env := baseEnvelope(t)
+			env.RunID = "run-123"
+			env.Capabilities = []string{string(capability.ContentsRead)}
+			env.AdditionalWorkspaces = []apiv1.AdditionalWorkspace{{
+				Name: "clubhouse",
+				Path: "/work/refs/clubhouse",
+			}}
+
+			result, err := exec.Run(context.Background(), env, tt.run)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.Status != apiv1.ResultSuccess {
+				t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+			}
+			if got := string(rec.recorded["task-1/stdout.log"]); got != "clubhouse|/work/refs/clubhouse|" {
+				t.Fatalf("stdout = %q, want additional repo paths without run identity", got)
+			}
+		})
 	}
 }
 

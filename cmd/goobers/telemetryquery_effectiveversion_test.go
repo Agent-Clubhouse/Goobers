@@ -88,7 +88,7 @@ func writeEffectiveVersionFixtureRunForGaggle(
 }
 
 func TestTelemetryQueryAggregateAcceptsCoverageGapKinds(t *testing.T) {
-	for _, name := range []string{"workflow-untriggered", "stage-unreached"} {
+	for _, name := range []string{"workflow-untriggered", "stage-unreached", "ci-check-failure"} {
 		t.Run(name, func(t *testing.T) {
 			root := initDemo(t)
 			code, _, stderr := runArgs(t, "telemetry-query", "--window", "24h", "--aggregate", name, root)
@@ -163,6 +163,33 @@ func TestTelemetryQueryEffectiveVersionEfficacyDetectsModelOnlyTransition(t *tes
 	}
 	if got.OldVersion.Model != "claude-sonnet-5" || got.NewVersion.Model != "claude-opus-5" {
 		t.Fatalf("compared %+v -> %+v, want sonnet -> opus", got.OldVersion, got.NewVersion)
+	}
+}
+
+func TestTelemetryQueryEffectiveVersionEfficacyScopesToGaggle(t *testing.T) {
+	root := initDemo(t)
+	for i := 0; i < 5; i++ {
+		writeEffectiveVersionFixtureRunForGaggle(t, root, "alpha", "alpha-before-"+string(rune('a'+i)), "tutor", "sha256:aaaa", "sha256:goob1", "model-a", "1.0.0", journal.PhaseFailed)
+		writeEffectiveVersionFixtureRunForGaggle(t, root, "alpha", "alpha-after-"+string(rune('a'+i)), "tutor", "sha256:bbbb", "sha256:goob2", "model-a", "1.0.0", journal.PhaseCompleted)
+		writeEffectiveVersionFixtureRunForGaggle(t, root, "bravo", "bravo-before-"+string(rune('a'+i)), "tutor", "sha256:aaaa", "sha256:goob1", "model-a", "1.0.0", journal.PhaseCompleted)
+		writeEffectiveVersionFixtureRunForGaggle(t, root, "bravo", "bravo-after-"+string(rune('a'+i)), "tutor", "sha256:bbbb", "sha256:goob2", "model-a", "1.0.0", journal.PhaseFailed)
+	}
+	rebuildTelemetryQueryRollup(t, root)
+
+	code, stdout, stderr := runArgs(t,
+		"telemetry-query", "--format", "effective-version-efficacy",
+		"--gaggle", "alpha", "--workflow", "tutor",
+		"--threshold", "min-samples=5", root,
+	)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	var got effectiveVersionEfficacyArtifact
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("output is not parseable JSON: %v\n%s", err, stdout)
+	}
+	if got.Verdict != rollup.EfficacyHelped {
+		t.Fatalf("verdict = %q, want helped from alpha-only cohorts: %+v", got.Verdict, got)
 	}
 }
 

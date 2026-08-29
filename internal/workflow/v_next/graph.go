@@ -7,11 +7,25 @@ import (
 	"github.com/goobers/goobers/internal/workflow/internal/model"
 )
 
+// GraphForDefinition compiles a definition for read-only projections.
+func GraphForDefinition(def Definition) (Graph, []string) {
+	machine, problems := newMachineForCheck(def)
+	if len(problems) != 0 {
+		return Graph{}, problems
+	}
+	if problems := structuralProblems(machine); len(problems) != 0 {
+		return Graph{}, problems
+	}
+	return machine.Graph(), nil
+}
+
 func buildGraph(def Definition) model.Graph {
 	nodes := make([]model.GraphNode, 0, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels))
 	edges := make([]model.GraphEdge, 0, graphEdgeCount(def.Spec))
+	joinTargets := graphJoinTargets(def)
 
 	for _, task := range def.Spec.Tasks {
+		target := graphTarget(task.Name, task.Next, joinTargets)
 		nodes = append(nodes, model.GraphNode{
 			ID:    task.Name,
 			Kind:  model.GraphNodeKind(task.Type),
@@ -19,8 +33,8 @@ func buildGraph(def Definition) model.Graph {
 		})
 		edges = append(edges, model.GraphEdge{
 			Source:   task.Name,
-			Target:   task.Next,
-			Terminal: graphTerminal(task.Next),
+			Target:   target,
+			Terminal: graphTerminal(target),
 		})
 	}
 
@@ -36,7 +50,7 @@ func buildGraph(def Definition) model.Graph {
 		nodes = append(nodes, node)
 
 		for _, outcome := range graphOutcomes(gate.Branches) {
-			target := gate.Branches[outcome]
+			target := graphTarget(gate.Name, gate.Branches[outcome], joinTargets)
 			edges = append(edges, model.GraphEdge{
 				Source:   gate.Name,
 				Target:   target,
@@ -51,9 +65,8 @@ func buildGraph(def Definition) model.Graph {
 			ID:   parallel.Name,
 			Kind: model.GraphNodeParallel,
 		})
-		// Fan-out edges in declaration order — the same order that assigns
-		// branch ids — then the join, then the failure route. Deterministic and
-		// independent of how the runner schedules the branches.
+		// Fan-out edges stay in declaration order, the same order that assigns
+		// branch ids, independent of how the runner schedules the branches.
 		for _, branch := range parallel.Branches {
 			edges = append(edges, model.GraphEdge{
 				Source: parallel.Name,
@@ -61,12 +74,6 @@ func buildGraph(def Definition) model.Graph {
 				Branch: branch.Name,
 			})
 		}
-		edges = append(edges, model.GraphEdge{
-			Source:   parallel.Name,
-			Target:   parallel.Join,
-			Outcome:  "join",
-			Terminal: graphTerminal(parallel.Join),
-		})
 		if parallel.OnFailure != "" {
 			edges = append(edges, model.GraphEdge{
 				Source:   parallel.Name,
@@ -90,13 +97,69 @@ func graphEdgeCount(spec apiv1.WorkflowSpec) int {
 		count += len(gate.Branches)
 	}
 	for _, parallel := range spec.Parallels {
-		// one fan-out edge per branch, plus the join, plus onFailure when set
-		count += len(parallel.Branches) + 1
+		count += len(parallel.Branches)
 		if parallel.OnFailure != "" {
 			count++
 		}
 	}
 	return count
+}
+
+type graphStateIndex struct {
+	states map[string][]string
+}
+
+func newGraphStateIndex(def Definition) graphStateIndex {
+	states := make(map[string][]string, len(def.Spec.Tasks)+len(def.Spec.Gates)+len(def.Spec.Parallels))
+	for _, task := range def.Spec.Tasks {
+		states[task.Name] = []string{task.Next}
+	}
+	for _, gate := range def.Spec.Gates {
+		for _, outcome := range graphOutcomes(gate.Branches) {
+			states[gate.Name] = append(states[gate.Name], gate.Branches[outcome])
+		}
+	}
+	for _, parallel := range def.Spec.Parallels {
+		for _, branch := range parallel.Branches {
+			states[parallel.Name] = append(states[parallel.Name], branch.Start)
+		}
+		states[parallel.Name] = append(states[parallel.Name], parallel.Join)
+		if parallel.OnFailure != "" {
+			states[parallel.Name] = append(states[parallel.Name], parallel.OnFailure)
+		}
+	}
+	return graphStateIndex{states: states}
+}
+
+func (g graphStateIndex) Has(state string) bool {
+	_, ok := g.states[state]
+	return ok
+}
+
+func (g graphStateIndex) Outgoing(state string) []string {
+	return g.states[state]
+}
+
+func graphJoinTargets(def Definition) map[string]string {
+	index := newGraphStateIndex(def)
+	targets := make(map[string]string)
+	for _, parallel := range def.Spec.Parallels {
+		for _, branch := range parallel.Branches {
+			for _, terminal := range joinTerminalStates(index, branch.Start) {
+				targets[terminal] = parallel.Join
+			}
+		}
+	}
+	return targets
+}
+
+func graphTarget(source, target string, joinTargets map[string]string) string {
+	if target == TargetJoin {
+		if join, ok := joinTargets[source]; ok {
+			return join
+		}
+	}
+	return target
 }
 
 func graphOutcomes(branches map[string]string) []string {

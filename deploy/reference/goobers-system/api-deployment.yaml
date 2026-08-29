@@ -9,7 +9,9 @@ metadata:
     app.kubernetes.io/name: goobers-api
     app.kubernetes.io/component: api
 spec:
-  replicas: 1
+  # Disabled in the reference base: the daemon is loopback-only until #652,
+  # and running this stub would contend with the worker for the RWO instance.
+  replicas: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: goobers-api
@@ -20,6 +22,8 @@ spec:
         app.kubernetes.io/component: api
     spec:
       serviceAccountName: goobers-api
+      nodeSelector:
+        kubernetes.io/os: linux
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -30,18 +34,21 @@ spec:
       containers:
         - name: api
           image: goobers # rewritten by the kustomization images: transformer
-          # CHANGE-ME: today the daemon serves a loopback-only API; the
-          # in-cluster listener + asset-serving shape is #652 — until it
-          # lands this Deployment is a shape stub per #663.
-          args: ["up", "/var/lib/goobers/instance"]
+          # CHANGE-ME: enable replicas only after #652 provides the in-cluster
+          # listener and the deployment no longer runs the lock-owning daemon.
+          args: ["up", "/var/lib/goobers"]
           ports:
             - name: http
               containerPort: 8080 # CHANGE-ME to the configured listener port
           volumeMounts:
-            # Same journal layout as tiers 1-2 (§4); the API projects reads
-            # from it — run ownership lives with Temporal identity, not locks.
+            # Same instance-root layout as the worker. This lock-bearing RWO
+            # volume must remain single-node mounted.
             - name: journal
               mountPath: /var/lib/goobers
+            # Copilot keeps runtime state under $HOME/.copilot. The container
+            # root stays read-only; this state lasts for the life of the pod.
+            - name: harness-home
+              mountPath: /home/nonroot
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -58,3 +65,5 @@ spec:
         - name: journal
           persistentVolumeClaim:
             claimName: goobers-journal
+        - name: harness-home
+          emptyDir: {}

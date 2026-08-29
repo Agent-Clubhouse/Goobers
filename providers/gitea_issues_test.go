@@ -551,6 +551,13 @@ func TestGiteaReleaseWorkItemClaimRemovesMarker(t *testing.T) {
 	if released.HasLabel(LabelClaimed) {
 		t.Fatalf("released item still has %q: %v", LabelClaimed, released.Labels)
 	}
+	commentCount := len(m.comments)
+	if _, err := p.ReleaseWorkItemClaim(ctx, ClaimWorkItemRequest{Repository: repo, ID: "7", RunID: "run-A"}); err != nil {
+		t.Fatalf("retry release claim: %v", err)
+	}
+	if len(m.comments) != commentCount {
+		t.Fatalf("retry release posted duplicate comment: %d -> %d", commentCount, len(m.comments))
+	}
 	winner, claimed, err := p.claimWinner(ctx, repo, "7")
 	if err != nil {
 		t.Fatalf("claimWinner after release: %v", err)
@@ -629,5 +636,44 @@ func TestGiteaListComments(t *testing.T) {
 	}
 	if comments[0].CreatedAt == nil || !comments[0].CreatedAt.Equal(created) {
 		t.Fatalf("CreatedAt = %v, want %v", comments[0].CreatedAt, created)
+	}
+}
+
+func TestGiteaDecompositionMarkerAndCommentMutations(t *testing.T) {
+	const marker = "<!-- goobers-action:v1 key=child -->"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != "all" || r.URL.Query().Get("type") != "issues" {
+			t.Fatalf("query = %q, want authoritative all-issues listing", r.URL.RawQuery)
+		}
+		writeJSON(t, w, []map[string]interface{}{
+			{"id": 1, "number": 1, "title": "match", "body": "body\n" + marker, "state": "open"},
+			{"id": 2, "number": 2, "title": "substring", "body": "prefix " + marker, "state": "open"},
+		})
+	})
+	mux.HandleFunc("/api/v1/repos/acme/app/issues/7/comments", func(w http.ResponseWriter, r *http.Request) {
+		assertMethod(t, r, http.MethodPost)
+		var body map[string]string
+		decodeJSON(t, r, &body)
+		writeJSON(t, w, map[string]interface{}{"id": 9, "body": body["body"]})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGiteaProvider(server.URL, "token")
+	repo := RepositoryRef{Owner: "acme", Name: "app"}
+	items, err := provider.FindWorkItemsByMarker(context.Background(), repo, marker)
+	if err != nil {
+		t.Fatalf("FindWorkItemsByMarker: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "1" {
+		t.Fatalf("items = %#v, want exact marker match #1", items)
+	}
+	comment, err := provider.CreateWorkItemComment(context.Background(), repo, "7", "prepared")
+	if err != nil {
+		t.Fatalf("CreateWorkItemComment: %v", err)
+	}
+	if comment.ID != "9" || comment.Body != "prepared" {
+		t.Fatalf("comment = %#v", comment)
 	}
 }

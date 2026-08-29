@@ -32,9 +32,11 @@
             "enum": [
               "repo:read",
               "repo:push",
+              "github:issues:read",
               "github:issues:write",
               "github:milestones:write",
               "github:issues:approve",
+              "provider:pr:write",
               "github:pr:write",
               "github:pr:review",
               "github:branch:delete",
@@ -44,6 +46,7 @@
               "ado:pr:comment",
               "ado:pr:write",
               "ado:pr:status",
+              "ado:pr:complete",
               "ado:work-items:write",
               "telemetry:read",
               "journal:read",
@@ -87,9 +90,12 @@
               "record-merge-refusal",
               "record-remediation-checkpoint",
               "release-backlog-claim",
+              "release-pr-claim",
               "respond-to-findings",
+              "resolve-review-threads",
               "rework-pr",
               "route-queue-outcome",
+              "route-provider-verdict",
               "route-verdict",
               "unpark-resolved-siblings",
               "update-issue",
@@ -134,9 +140,12 @@
               "record-merge-refusal",
               "record-remediation-checkpoint",
               "release-backlog-claim",
+              "release-pr-claim",
               "respond-to-findings",
+              "resolve-review-threads",
               "rework-pr",
               "route-queue-outcome",
+              "route-provider-verdict",
               "route-verdict",
               "unpark-resolved-siblings",
               "update-issue",
@@ -149,23 +158,12 @@
         "tools": { "type": "array", "description": "Default-deny allowlist of tools or MCP servers reachable by this goober.", "items": { "type": "string" } },
         "mcpServers": {
           "type": "array",
-          "description": "External stdio or remote MCP servers materialized only for this goober's Copilot harness invocation.",
+          "description": "External stdio or remote MCP servers materialized for this goober's harness invocation (Copilot or claude-code).",
           "items": { "$ref": "#/$defs/mcpServer" }
         },
         "scaleFactor": { "type": "integer", "minimum": 1, "description": "Desired replica count for concurrent work. Omitted defaults to one." },
         "workflows": { "type": "array", "description": "Names of workflows that invoke this goober.", "items": { "type": "string" } }
-      },
-      "allOf": [
-        {
-          "if": {
-            "required": ["harness"],
-            "properties": { "harness": { "const": "claude-code" } }
-          },
-          "then": {
-            "properties": { "mcpServers": { "maxItems": 0 } }
-          }
-        }
-      ]
+      }
     }
   },
   "$defs": {
@@ -231,9 +229,11 @@
           "enum": [
             "repo:read",
             "repo:push",
+            "github:issues:read",
             "github:issues:write",
             "github:milestones:write",
             "github:issues:approve",
+            "provider:pr:write",
             "github:pr:write",
             "github:pr:review",
             "github:branch:delete",
@@ -243,6 +243,7 @@
             "ado:pr:comment",
             "ado:pr:write",
             "ado:pr:status",
+            "ado:pr:complete",
             "ado:work-items:write",
             "telemetry:read",
             "journal:read",

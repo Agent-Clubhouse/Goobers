@@ -42,7 +42,7 @@ package alpha
 import (
 	"testing"
 
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationTool(t *testing.T) {
@@ -56,7 +56,7 @@ package beta
 import (
 	"testing"
 
-	deps "github.com/goobers/goobers/internal/testdep"
+	deps "github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 func TestIntegrationTool(t *testing.T) {
@@ -88,7 +88,7 @@ func TestIntegrationDependencyGuard(t *testing.T) {
 import (
 	"os/exec"
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	testdep.Require(t, "sh")
@@ -101,7 +101,7 @@ func TestIntegrationTool(t *testing.T) {
 			source: `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	testdep.Require(t, "sh")
@@ -114,7 +114,7 @@ func TestIntegrationTool(t *testing.T) {
 			source: `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	testdep.Require(t, "sh")
@@ -134,7 +134,7 @@ func TestIntegrationTool(t *testing.T) { t.Log("no external dependency") }`,
 			source: `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	tool := "sh"
@@ -147,7 +147,7 @@ func TestIntegrationTool(t *testing.T) {
 			source: `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	t.Log("setup")
@@ -160,7 +160,7 @@ func TestIntegrationTool(t *testing.T) {
 			source: `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	testdep.RequireEnv(t)
@@ -172,7 +172,7 @@ func TestIntegrationTool(t *testing.T) {
 			source: `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestTool(t *testing.T) {
 	testdep.Require(t, "sh")
@@ -197,7 +197,7 @@ func TestIntegrationDependencyGuardAllowsRequireEnvOnlyFile(t *testing.T) {
 	source := `package fixture
 import (
 	"testing"
-	"github.com/goobers/goobers/internal/testdep"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 func TestIntegrationTool(t *testing.T) {
 	testdep.RequireEnv(t, "GOOBERS_LIVE_SMOKE")
@@ -216,8 +216,8 @@ func TestIntegrationTool(t *testing.T) {
 
 func TestValidateInventory(t *testing.T) {
 	if err := validateInventory(map[string]bool{
-		"bash": true, "bwrap": true, "copilot": true, "dirname": true, "dotnet": true,
-		"head": true, "mkdir": true, "sh": true, "sleep": true, "yes": true,
+		"bash": true, "bwrap": true, "copilot": true, "dirname": true, "dotnet": true, "git": true,
+		"head": true, "java": true, "mkdir": true, "mvn": true, "ps": true, "python3": true, "sh": true, "sleep": true, "yes": true,
 		"xcodebuild": true, "xcrun": true,
 	}); err != nil {
 		t.Fatalf("validateInventory exact match: %v", err)
@@ -234,8 +234,13 @@ func TestValidateInventory(t *testing.T) {
 		`inventory dependency "copilot" is not required`,
 		`inventory dependency "dirname" is not required`,
 		`inventory dependency "dotnet" is not required`,
+		`inventory dependency "git" is not required`,
 		`inventory dependency "head" is not required`,
+		`inventory dependency "java" is not required`,
 		`inventory dependency "mkdir" is not required`,
+		`inventory dependency "mvn" is not required`,
+		`inventory dependency "ps" is not required`,
+		`inventory dependency "python3" is not required`,
 		`inventory dependency "sleep" is not required`,
 		`inventory dependency "yes" is not required`,
 		`inventory dependency "xcodebuild" is not required`,

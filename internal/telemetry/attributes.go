@@ -1,42 +1,59 @@
 package telemetry
 
-import semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+import (
+	"time"
+
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+)
 
 // Attribute is a key in the canonical Goobers span attribute registry.
 type Attribute string
 
 // The canonical span attribute registry. Add new Goobers attributes here first.
 const (
-	AttrRunID                  = "goobers.run.id"
-	AttrGaggle                 = "goobers.gaggle"
-	AttrWorkflow               = "goobers.workflow"
-	AttrWorkflowVersion        = "goobers.workflow.version"
-	AttrWorkflowDigest         = "goobers.workflow.digest"
-	AttrGooberDigest           = "goobers.goober.digest"
-	AttrGoober                 = "goobers.goober"
-	AttrModel                  = "goobers.model"
-	AttrHarnessVersion         = "goobers.harness.version"
-	AttrStage                  = "goobers.stage"
-	AttrBranch                 = "goobers.branch"
-	AttrStageType              = "goobers.stage.type"
-	AttrAttemptNumber          = "goobers.attempt.n"
-	AttrAttemptKind            = "goobers.attempt.kind"
-	AttrItemID                 = "goobers.item.id"
-	AttrItemURL                = "goobers.item.url"
-	AttrOutcome                = "goobers.outcome"
-	AttrErrorCode              = "goobers.error.code"
-	AttrGateDecision           = "goobers.gate.decision"
-	AttrGateRepassNumber       = "goobers.gate.repass.n"
-	AttrErrorType              = string(semconv.ErrorTypeKey)
-	AttrGenAIResponseModel     = string(semconv.GenAIResponseModelKey)
-	AttrGenAIUsageInputTokens  = string(semconv.GenAIUsageInputTokensKey)
-	AttrGenAIUsageOutputTokens = string(semconv.GenAIUsageOutputTokensKey)
-	AttrCopilotPremiumRequests = "goobers.usage.copilot_premium_requests"
-	AttrUsageCostUSD           = "goobers.usage.cost_usd"
-	AttrWorktreeID             = "goobers.worktree.id"
-	AttrStorageOperation       = "goobers.storage.operation"
-	AttrUnmeasuredWorktrees    = "goobers.storage.unmeasured_worktrees"
-	AttrErrorMessage           = "goobers.error.message"
+	AttrRunID                         = "goobers.run.id"
+	AttrGaggle                        = "goobers.gaggle"
+	AttrWorkflow                      = "goobers.workflow"
+	AttrWorkflowVersion               = "goobers.workflow.version"
+	AttrWorkflowDigest                = "goobers.workflow.digest"
+	AttrGooberDigest                  = "goobers.goober.digest"
+	AttrGoober                        = "goobers.goober"
+	AttrModel                         = "goobers.model"
+	AttrHarnessVersion                = "goobers.harness.version"
+	AttrStage                         = "goobers.stage"
+	AttrBranch                        = "goobers.branch"
+	AttrStageType                     = "goobers.stage.type"
+	AttrAttemptNumber                 = "goobers.attempt.n"
+	AttrAttemptKind                   = "goobers.attempt.kind"
+	AttrItemID                        = "goobers.item.id"
+	AttrItemURL                       = "goobers.item.url"
+	AttrOutcome                       = "goobers.outcome"
+	AttrErrorCode                     = "goobers.error.code"
+	AttrGateDecision                  = "goobers.gate.decision"
+	AttrGateRepassNumber              = "goobers.gate.repass.n"
+	AttrErrorType                     = string(semconv.ErrorTypeKey)
+	AttrGenAIResponseModel            = string(semconv.GenAIResponseModelKey)
+	AttrGenAIUsageInputTokens         = string(semconv.GenAIUsageInputTokensKey)
+	AttrGenAIUsageOutputTokens        = string(semconv.GenAIUsageOutputTokensKey)
+	AttrCopilotPremiumRequests        = "goobers.usage.copilot_premium_requests"
+	AttrUsageCostUSD                  = "goobers.usage.cost_usd"
+	AttrWorktreeID                    = "goobers.worktree.id"
+	AttrStorageOperation              = "goobers.storage.operation"
+	AttrUnmeasuredWorktrees           = "goobers.storage.unmeasured_worktrees"
+	AttrErrorMessage                  = "goobers.error.message"
+	AttrAgentID                       = "goobers.agent.id"
+	AttrAgentParentID                 = "goobers.agent.parent_id"
+	AttrAgentLifecycle                = "goobers.agent.lifecycle"
+	AttrAgentRequestedModel           = "goobers.agent.requested_model"
+	AttrAgentResolvedModel            = "goobers.agent.resolved_model"
+	AttrAgentRequestedReasoningEffort = "goobers.agent.requested_reasoning_effort"
+	AttrAgentResolvedReasoningEffort  = "goobers.agent.resolved_reasoning_effort"
+	AttrAgentFidelity                 = "goobers.agent.fidelity"
+	AttrAgentPlugin                   = "goobers.agent.plugin"
+	AttrAgentMessageID                = "goobers.agent.message.id"
+	AttrAgentMessageSenderID          = "goobers.agent.message.sender_id"
+	AttrAgentMessageRecipientID       = "goobers.agent.message.recipient_id"
+	AttrAgentMessagePurpose           = "goobers.agent.message.purpose"
 )
 
 // AllAttributes returns every canonical attribute in declaration order.
@@ -72,6 +89,19 @@ func AllAttributes() []Attribute {
 		AttrStorageOperation,
 		AttrUnmeasuredWorktrees,
 		AttrErrorMessage,
+		AttrAgentID,
+		AttrAgentParentID,
+		AttrAgentLifecycle,
+		AttrAgentRequestedModel,
+		AttrAgentResolvedModel,
+		AttrAgentRequestedReasoningEffort,
+		AttrAgentResolvedReasoningEffort,
+		AttrAgentFidelity,
+		AttrAgentPlugin,
+		AttrAgentMessageID,
+		AttrAgentMessageSenderID,
+		AttrAgentMessageRecipientID,
+		AttrAgentMessagePurpose,
 	}
 }
 
@@ -113,6 +143,16 @@ const (
 
 // RunAttributes describes a workflow run root span.
 type RunAttributes struct {
+	// StartedAt backdates the span to when the run actually began, instead of
+	// stamping it at creation. Zero keeps the default (now), which is what a
+	// live tier-1 run wants.
+	//
+	// It exists for the engine path: a tier-3 run's spans are synthesized
+	// AFTER the fact, from workflow history via the journal projection, so a
+	// span stamped at synthesis time would report the wrong moment and a
+	// meaningless duration. WithTimestamp is already how this package backdates
+	// span EVENTS (span.go:125); this extends the same idea to span starts.
+	StartedAt       time.Time
 	Gaggle          string
 	WorkflowID      string
 	WorkflowVersion string
@@ -125,6 +165,8 @@ type RunAttributes struct {
 
 // TaskAttributes describes one task attempt span.
 type TaskAttributes struct {
+	// StartedAt backdates the span; see RunAttributes.StartedAt.
+	StartedAt       time.Time
 	Gaggle          string
 	WorkflowID      string
 	WorkflowVersion string
@@ -145,6 +187,8 @@ type TaskAttributes struct {
 
 // GateAttributes describes one gate evaluation span.
 type GateAttributes struct {
+	// StartedAt backdates the span; see RunAttributes.StartedAt.
+	StartedAt       time.Time
 	Gaggle          string
 	WorkflowID      string
 	WorkflowVersion string

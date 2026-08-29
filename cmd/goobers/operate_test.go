@@ -26,7 +26,20 @@ func initDemo(t *testing.T) string {
 	if code, _, stderr := runArgs(t, "init", root); code != 0 {
 		t.Fatalf("init: code = %d, stderr = %q", code, stderr)
 	}
+	// The starter scaffold ships its own gaggle-scoped implement/run-tests
+	// skill packages (SKILL002 fix) — no shared-level stand-ins needed, and
+	// adding them here would collide with the scoped ones (SKILL001) instead
+	// of being a harmless no-op.
 	return root
+}
+
+func createDeclaredSkillPackages(t *testing.T, root string, skills ...string) {
+	t.Helper()
+	for _, skill := range skills {
+		if err := os.MkdirAll(filepath.Join(root, "skills", skill), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func initScheduledDemo(t *testing.T) string {
@@ -104,6 +117,7 @@ func TestRunToleratesFailedNotifyStageAndTracesIt(t *testing.T) {
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	workflow := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -281,7 +295,7 @@ func TestTraceShowsSpansWithoutPriorTelemetryCommand(t *testing.T) {
 
 // TestRunWithTelemetryDisabledSkipsSpansAndRollup is issue #129's
 // telemetry.enabled defect: the config field was documented (and set in the
-// real self-hosting config, selfhost/instance.yaml.example) but had zero
+// real self-hosting config, reference-workflows/instance.yaml.example) but had zero
 // callers — setting it to false did nothing. It's wired now, and the
 // regression that would have shipped along with a naive wire-up is a
 // typed-nil-in-interface panic (a nil *telemetry.Client assigned to

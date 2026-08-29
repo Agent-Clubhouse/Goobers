@@ -354,12 +354,8 @@ func closedSetIsRefusedNotAnswered(t *testing.T, newBackend Factory) {
 	// gaggle, because the ordering indexes lead with gaggle and a bare workflow
 	// predicate would be residual against every one of them.
 	//
-	// This is the sharpest available case, and finding it is itself a result:
-	// ListOptions exposes no field for stage, outcome, or population, so the
-	// type system already makes those unconstructible here and the refusal for
-	// them lives at the service boundary. What remains constructible — and
-	// therefore what a backend can still get wrong — is an unsupported
-	// COMBINATION of supported dimensions.
+	// This is the sharpest available case: what a backend can still get wrong is
+	// an unsupported COMBINATION of individually supported dimensions.
 	_, err := store.ListRuns(ctx, readmodel.ListOptions{
 		Workflow: "wf",
 		Limit:    10,
@@ -566,13 +562,7 @@ func optionsForDims(dims []readmodel.Dim) readmodel.ListOptions {
 		case readmodel.DimStage:
 			options.Stage = "build"
 		case readmodel.DimOutcome:
-			// Not in the supported set: run_stage keeps only the LAST attempt's
-			// status, and the reference matches on ANY attempt's -- so an equality
-			// test would silently under-match (see queryset.go). Reaching here
-			// means the set declared it, which is a contract change that must be
-			// noticed rather than skipped.
-			panic(fmt.Sprintf("conformance: supported set declares dimension %q, which the "+
-				"contract cannot construct a request for", dim))
+			options.Outcome = readmodel.OutcomeSuccess
 		case readmodel.DimPopulation:
 			options.Population = readmodel.PopulationCostMeasured
 		case readmodel.DimActivity:

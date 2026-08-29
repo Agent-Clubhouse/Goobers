@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -150,21 +151,11 @@ func TestCutoverServesTheSameAnswersWithZeroJournalOpens(t *testing.T) {
 	}
 }
 
-// TestCutoverFallsBackRatherThanRefusing pins that turning the flag on cannot
-// REMOVE an answer the portal can get today.
-//
-// Stage+outcome is outside the closed set, so the read model refuses it. The
-// service must fall through to the journal-derived path rather than surface the
-// refusal: the cutover is an optimization, and an optimization that makes a
-// working query stop working is a regression.
-//
-// This used to use a bare stage filter. #1782 made that servable, so the case
-// moved to one that is still refused rather than being deleted -- the property
-// is about the FALLBACK, and a fallback test that no longer exercises a
-// fallback proves nothing.
-func TestCutoverFallsBackRatherThanRefusing(t *testing.T) {
+// TestCutoverRefusesUnsupportedFilterWithoutJournalFallback pins that the
+// read-model cutover never turns an unsupported filter into a journal scan.
+func TestCutoverRefusesUnsupportedFilterWithoutJournalFallback(t *testing.T) {
 	ctx := context.Background()
-	gen, service, store := differentialFixture(t, 40)
+	gen, _, store := differentialFixture(t, 40)
 
 	cutover, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      gen.Layout,
@@ -178,15 +169,27 @@ func TestCutoverFallsBackRatherThanRefusing(t *testing.T) {
 	cutover.EnableReadModelReads()
 
 	options := readservice.RunListOptions{
-		Stage:   instancefixture.StageName(0),
-		Outcome: readservice.OutcomeSuccess,
-		Limit:   50,
+		Workflow: instancefixture.WorkflowName(0),
+		Stage:    instancefixture.StageName(0),
+		Limit:    50,
 	}
-	want := referenceRunIDs(t, ctx, service, options)
-	got := referenceRunIDs(t, ctx, cutover, options)
-	compareIDs(t, want, got)
-	if len(got) == 0 {
-		t.Error("the refused query returned nothing on both paths; the fixture does not exercise the fallback")
+
+	readprobe.Enable()
+	t.Cleanup(readprobe.Disable)
+	before := readprobe.Take()
+	_, err = cutover.ListRuns(ctx, options)
+	work := readprobe.Take().Sub(before)
+
+	var unsupported *readmodel.UnsupportedCombinationError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("ListRuns() error = %v, want typed unsupported-filter refusal", err)
+	}
+	if got := readmodel.Key(unsupported.Dims); got != "workflow+stage" {
+		t.Errorf("refused dimensions = %q, want workflow+stage", got)
+	}
+	if work.JournalOpens != 0 || work.ActiveScanOpens != 0 {
+		t.Errorf("refused query opened %d journals (%d via the active scan), want zero",
+			work.JournalOpens, work.ActiveScanOpens)
 	}
 }
 
@@ -313,6 +316,8 @@ func optionsFor(dims []readmodel.Dim, gen GenerateResult) (readservice.RunListOp
 			options.Until = time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 		case readmodel.DimStage:
 			options.Stage = instancefixture.StageName(0)
+		case readmodel.DimOutcome:
+			options.Outcome = readservice.OutcomeSuccess
 		case readmodel.DimPopulation:
 			options.StagePopulation = readservice.StagePopulationRetryWaste
 		case readmodel.DimActivity:
@@ -358,6 +363,7 @@ func readModelRunIDs(t *testing.T, ctx context.Context, store *readmodel.Store, 
 		Until:      reference.Until,
 		Limit:      200,
 		Stage:      reference.Stage,
+		Outcome:    readmodel.Outcome(reference.Outcome),
 		Population: readmodel.Population(reference.StagePopulation),
 	}
 	if reference.OrderByActivity {

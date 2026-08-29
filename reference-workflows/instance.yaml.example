@@ -1,0 +1,135 @@
+# Template instance.yaml for the Goobers self-hosting instance.
+#
+# This file has no secrets in it — `token.env` names an environment variable,
+# it does not hold a value — so it's safe to check in and copy verbatim. See
+# reference-workflows/README.md for the full setup walkthrough.
+#
+# At `goobers init <path>`, the tool writes its own default instance.yaml into
+# <path>/instance.yaml. Replace that file's contents with this one (or copy
+# this file over it) before running `goobers validate`.
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: Agent-Clubhouse
+    name: Goobers
+    # Never an inline token (CFG-009, SEC-010) — set the GOOBERS_GITHUB_TOKEN
+    # environment variable before starting the instance. See README.md for
+    # the required scopes.
+    token:
+      env: GOOBERS_GITHUB_TOKEN
+# Agentic goobers use the current user's stored Copilot CLI sign-in when no
+# agent:model credential is configured. For a headless service/CI account,
+# uncomment the agent:model entry and set a separate personal token with
+# Copilot Requests: Read-only. Native PR reviews still need a different GitHub
+# identity because an author cannot approve its own PR.
+credentials:
+  # - capability: agent:model
+  #   token:
+  #     env: GOOBERS_COPILOT_TOKEN
+  - capability: github:pr:review
+    token:
+      env: GOOBERS_GITHUB_REVIEW_TOKEN
+telemetry:
+  enabled: true
+  # Automatic journal + rollup pruning is disabled unless enabled here.
+  # Omitted bounds use the 90-day and 500-run defaults. Operators can preview
+  # the same policy at any time with `goobers telemetry prune --dry-run`.
+  # retention:
+  #   enabled: true
+  #   window: 90d
+  #   maxRuns: 500
+  # Collector push is disabled unless an endpoint is configured here or with
+  # GOOBERS_OTLP_ENDPOINT. See docs/guides/jaeger-quickstart.md.
+  # otlp:
+  #   endpoint: http://127.0.0.1:4317
+  #   insecure: true
+# Optional tier-3 Temporal engine. Declaring this block also enables the
+# daemon's completed-run projection loop. The GOOBERS_TEMPORAL_HOSTPORT,
+# GOOBERS_TEMPORAL_NAMESPACE, and GOOBERS_TASK_QUEUE environment variables are
+# deployment overrides for these YAML values.
+# engine:
+#   hostPort: 127.0.0.1:7233
+#   namespace: default
+#   taskQueue: goobers-engine
+# Opt in to native notifications for escalated and failed runs. The equivalent
+# one-shot daemon override is `goobers up --notify` (`--notify=all` includes
+# completed and aborted runs too).
+# notifications: true
+# Optional instance-level ceilings on top of each workflow's own `readiness`
+# block: maxParallelRuns caps total concurrent runs across every workflow in
+# this instance; workflowBudgets (a map of workflow name -> runs/hour)
+# overrides a named workflow's own maxRunsPerHour. claimsLockTimeout bounds
+# cross-process claim-ledger lock acquisition so a wedged holder cannot convoy
+# stage dispatch or terminal cleanup. See the three workflow definitions under
+# gaggles/goobers/workflows/ for the per-workflow guardrails these ceilings sit
+# on top of.
+runConditions:
+  maxParallelRuns: 2
+  claimsLockTimeout: 30s
+# Retention pruning is opt-in. `dryRun: true` reports deterministic candidates
+# without deleting anything. With `enabled: true` and dryRun omitted/false,
+# retained terminal-failure worktrees exceeding either configured limit are
+# removed oldest-first, and merged local run branches are cleaned up. Active
+# runs are never candidates. A zero/omitted byte cap or empty age disables that
+# worktree rule.
+# retention:
+#   dryRun: true
+#   enabled: false
+#   maxRetainedWorktreeBytes: 10737418240
+#   retainedWorktreeMaxAge: 168h
+# Optional runner block. `capabilities` are the toolchains/platform properties
+# this runner advertises as preinstalled (RRQ-1); a gaggle/stage requiring one
+# the runner does not claim fails to schedule. `envPassthrough` names extra
+# ambient env vars carried into every stage and harness subprocess on top of
+# the built-in default-deny allowlist (internal/procenv) — the escape hatch for
+# a custom toolchain whose env var the built-in list (which already covers the
+# Go/.NET/Python/Node/Rust families) does not. It stays default-deny: an
+# explicit opt-in list of NAMES, never a value and never os.Environ()
+# passthrough; a name whose var is unset is a harmless no-op.
+# `defaultStageTimeout` is the baseline deadline for a deterministic stage that
+# declares no `timeoutSeconds` of its own. Unset keeps the built-in 10 minutes,
+# which is sized for short commands — raise it if your build/test entrypoint
+# routinely runs longer, rather than stamping `timeoutSeconds` onto every stage
+# in every workflow. A stage's own `timeoutSeconds` always wins; this only moves
+# the floor.
+runner:
+  capabilities: [os=linux]
+#   envPassthrough: [NUGET_CONFIG_FILE, MSBUILDDISABLENODEREUSE]
+#   defaultStageTimeout: 25m
+# Optional external secret stores (#683). A store declares WHERE a secret
+# lives, never a value; any token ref can then opt in with
+# `store: <storeName>/<secretName>` in place of `env`/`file` (still exactly
+# one source per ref). Auth to the store itself always uses an ambient
+# identity (workload-identity, managed-identity, or azure-cli) — never a
+# token ref, which would be circular. Instances that declare no stores and
+# use only env/file refs behave exactly as before. Resolved values are
+# TTL-cached per secret (default 300s; cacheTTLSeconds to tune), so a value
+# rotated in the vault is picked up within the TTL without a restart; see
+# docs/guides/secret-stores.md.
+# secretStores:
+#   - name: prod-kv
+#     kind: azure-key-vault
+#     vaultURI: https://acme.vault.azure.net
+#     auth:
+#       kind: workload-identity
+#     cacheTTLSeconds: 300
+# Example store-backed ref, anywhere a token ref is accepted:
+#     token:
+#       store: prod-kv/github-token
+# Optional isolation posture for agentic stages (#1305). Strictly opt-in:
+# omitted (or `disabled`) runs agentic stages directly on the host, exactly
+# as before. `enforced` requires the runner to isolate agentic stages and
+# fails runs it cannot isolate. A gaggle can override this instance-wide
+# posture through its own spec.sandbox block.
+# sandbox:
+#   agentic: enforced
+# Optional workcopies block. `partialClone: true` provisions NEW repo mirrors
+# as blobless partial clones (--filter=blob:none) with a heads+tags refresh
+# refspec — the large-repo clone-time/disk win (#646). Blobs are then fetched
+# on demand when a stage worktree materializes, so provisioning needs network
+# (and, on private repos, git credentials) at worktree-create time. Off (the
+# default) keeps full mirrors with byte-identical git behavior; existing
+# mirrors are never migrated either way.
+# workcopies:
+#   partialClone: true

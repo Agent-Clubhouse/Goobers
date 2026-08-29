@@ -18,7 +18,7 @@ func appendEvent(f *os.File, seq *uint64, scrubber Scrubber, now func() time.Tim
 	ev.Schema = EventSchema
 	ev.Time = now()
 
-	line, err := json.Marshal(ev)
+	line, err := marshalEvent(ev)
 	if err != nil {
 		*seq--
 		return Event{}, fmt.Errorf("journal: marshal event: %w", err)
@@ -32,6 +32,25 @@ func appendEvent(f *os.File, seq *uint64, scrubber Scrubber, now func() time.Tim
 		return Event{}, fmt.Errorf("journal: fsync event: %w", err)
 	}
 	return ev, nil
+}
+
+func marshalEvent(ev Event) ([]byte, error) {
+	type event Event
+	if ev.Type == EventGateOverridden && ev.Target == "" {
+		return nil, fmt.Errorf("%s requires a target", EventGateOverridden)
+	}
+	if ev.Type == EventNotificationRequested && ev.NotificationRequest == nil {
+		return nil, fmt.Errorf("%s requires a notification request", EventNotificationRequested)
+	}
+	if ev.Type == EventNotificationReceipt && ev.NotificationReceipt == nil {
+		return nil, fmt.Errorf("%s requires a notification receipt", EventNotificationReceipt)
+	}
+	if ev.Type == EventAgentLifecycle || ev.Type == EventAgentMessage {
+		if err := ValidateAgentEvent(ev); err != nil {
+			return nil, err
+		}
+	}
+	return json.Marshal(event(ev))
 }
 
 // truncateTornTail removes a torn final region from path, sized tornBytes as

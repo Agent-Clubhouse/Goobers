@@ -28,6 +28,10 @@ const githubSecondaryFallbackMin = time.Minute
 // missing_result_file it used to hide behind.
 const ErrorCodeRateLimited = "github_rate_limited"
 
+// ErrorCodeAuthFailed is the stable code for a credential that GitHub rejects
+// with 401 or a permission-denied 403.
+const ErrorCodeAuthFailed = "github_auth_failed"
+
 // RateLimitError is the typed error send() returns when a rate-limited
 // request cannot be absorbed by in-request backoff — the reset is further out
 // than the wait budget, or the retry budget is exhausted (#614). Callers can
@@ -184,6 +188,9 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 // AuthenticatedLogin returns the GitHub login represented by the provider's
 // credential.
 func (p *GitHubProvider) AuthenticatedLogin(ctx context.Context) (string, error) {
+	if p.configuredLogin != "" {
+		return p.configuredLogin, nil
+	}
 	endpoint, err := joinURL(p.BaseURL, "user")
 	if err != nil {
 		return "", err
@@ -264,6 +271,59 @@ type githubIssueEvent struct {
 	Issue     githubIssue  `json:"issue"`
 }
 
+// LabelTransitionScanStop* name why a bounded label-transition walk stopped
+// before it reached the end of the history (or its resume cursor).
+const (
+	LabelTransitionScanStopPageBudget = "page-budget"
+	LabelTransitionScanStopQuotaFloor = "quota-floor"
+)
+
+// LabelTransitionScan bounds one repository label-transition walk (#3392).
+// Before it, a periodic caller re-read the repo's ENTIRE issue-event history
+// on every cycle — 200+ pages on an aged repo, growing monotonically with the
+// repo's age, spent out of the same installation credential that claims, label
+// writes, and PR creation share.
+type LabelTransitionScan struct {
+	// AfterEventID resumes from a persisted high-water mark: only events with a
+	// strictly greater id are collected, and the walk stops as soon as it
+	// reaches the cursor. Zero requests a full scan.
+	AfterEventID int64
+	// MaxPages bounds a full scan. Zero means unbounded.
+	MaxPages int
+	// MinQuotaFraction stops the walk once the response rate-limit window
+	// reports less than this fraction of the window's limit remaining (0.1 =
+	// 10%). Zero disables the floor. Deferring a periodic, self-healing check
+	// to its next cycle is free; exhausting the shared credential is not.
+	MinQuotaFraction float64
+}
+
+// LabelTransitionScanResult reports a bounded walk's transitions and how far it
+// actually got. A Truncated result has a gap below its oldest transition, so a
+// caller MUST NOT advance a persisted high-water mark from it.
+type LabelTransitionScanResult struct {
+	Transitions []WorkItemLabelTransition
+	// Pages is how many event pages the walk actually read.
+	Pages int
+	// HighEventID is the greatest event id examined (matching the label or
+	// not) — the cursor a caller persists to resume from next cycle. Zero when
+	// the walk saw no events at all.
+	HighEventID int64
+	// ReachedCursor reports that the walk saw AfterEventID's generation, so
+	// everything newer than the cursor is present.
+	ReachedCursor bool
+	// Truncated is set when MaxPages or MinQuotaFraction stopped the walk with
+	// history still unread.
+	Truncated bool
+	// StopReason is one of the LabelTransitionScanStop* constants when
+	// Truncated, else empty.
+	StopReason string
+	// QuotaLimit/QuotaRemaining/QuotaKnown carry the last observed rate-limit
+	// window so a caller can log what it spent and why it stopped.
+	QuotaLimit     int
+	QuotaRemaining int
+	QuotaKnown     bool
+}
+
 // ListWorkItemLabelTransitions returns the complete paginated repository event
 // history for one issue label. Event IDs are stable provider cursors, so callers
 // can persist and deduplicate overlapping snapshots without losing transitions.
@@ -272,17 +332,33 @@ func (p *GitHubProvider) ListWorkItemLabelTransitions(
 	repo RepositoryRef,
 	label string,
 ) ([]WorkItemLabelTransition, error) {
-	if err := requireOwnerRepo(repo); err != nil {
-		return nil, err
-	}
-	if label == "" {
-		return nil, fmt.Errorf("label is required")
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "events")
+	result, err := p.ScanWorkItemLabelTransitions(ctx, repo, label, LabelTransitionScan{})
 	if err != nil {
 		return nil, err
 	}
-	return p.listWorkItemLabelTransitions(ctx, endpoint, label, "")
+	return result.Transitions, nil
+}
+
+// ScanWorkItemLabelTransitions walks the repository event history for one issue
+// label under the caller's bounds. With LabelTransitionScan.AfterEventID set,
+// steady state costs the pages holding new events instead of the whole history.
+func (p *GitHubProvider) ScanWorkItemLabelTransitions(
+	ctx context.Context,
+	repo RepositoryRef,
+	label string,
+	scan LabelTransitionScan,
+) (LabelTransitionScanResult, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return LabelTransitionScanResult{}, err
+	}
+	if label == "" {
+		return LabelTransitionScanResult{}, fmt.Errorf("label is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "events")
+	if err != nil {
+		return LabelTransitionScanResult{}, err
+	}
+	return p.scanWorkItemLabelTransitions(ctx, endpoint, label, "", scan)
 }
 
 // ListWorkItemLabelTransitionsForItem returns one issue's complete paginated
@@ -305,24 +381,50 @@ func (p *GitHubProvider) ListWorkItemLabelTransitionsForItem(
 	if err != nil {
 		return nil, err
 	}
-	return p.listWorkItemLabelTransitions(ctx, endpoint, label, id)
-}
-
-func (p *GitHubProvider) listWorkItemLabelTransitions(
-	ctx context.Context,
-	endpoint, label, itemID string,
-) ([]WorkItemLabelTransition, error) {
-	endpoint, err := addQuery(endpoint, url.Values{"per_page": []string{"100"}})
+	result, err := p.scanWorkItemLabelTransitions(ctx, endpoint, label, id, LabelTransitionScan{})
 	if err != nil {
 		return nil, err
 	}
-	var transitions []WorkItemLabelTransition
-	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+	return result.Transitions, nil
+}
+
+func (p *GitHubProvider) scanWorkItemLabelTransitions(
+	ctx context.Context,
+	endpoint, label, itemID string,
+	scan LabelTransitionScan,
+) (LabelTransitionScanResult, error) {
+	endpoint, err := addQuery(endpoint, url.Values{"per_page": []string{"100"}})
+	if err != nil {
+		return LabelTransitionScanResult{}, err
+	}
+	var result LabelTransitionScanResult
+	// GitHub serves repository issue events newest-first, so a cursor lets the
+	// walk stop at the first already-seen event. That ordering is not a
+	// documented contract, so it is *detected* per page rather than assumed:
+	// against an oldest-first server the walk simply reads on to the end, which
+	// is exactly today's cost, and never drops a transition.
+	descending, orderKnown := false, false
+	if err := p.getAllPagesWithContext(ctx, endpoint, func(page []byte, meta pageContext) error {
+		result.Pages++
+		if limit, remaining, ok := quotaFromHeaders(meta.Header); ok {
+			result.QuotaLimit, result.QuotaRemaining, result.QuotaKnown = limit, remaining, true
+		}
 		var events []githubIssueEvent
 		if err := json.Unmarshal(page, &events); err != nil {
 			return fmt.Errorf("decode issue events page: %w", err)
 		}
+		if !orderKnown && len(events) > 1 {
+			descending, orderKnown = events[0].ID > events[len(events)-1].ID, true
+		}
+		reachedCursor := false
 		for _, event := range events {
+			if event.ID > result.HighEventID {
+				result.HighEventID = event.ID
+			}
+			if scan.AfterEventID > 0 && event.ID <= scan.AfterEventID {
+				reachedCursor = true
+				continue
+			}
 			if event.Label == nil || event.Label.Name != label ||
 				(itemID == "" && event.Issue.PullRequest != nil) {
 				continue
@@ -339,7 +441,7 @@ func (p *GitHubProvider) listWorkItemLabelTransitions(
 			if eventItemID == "" {
 				eventItemID = strconv.Itoa(event.Issue.Number)
 			}
-			transitions = append(transitions, WorkItemLabelTransition{
+			result.Transitions = append(result.Transitions, WorkItemLabelTransition{
 				EventID:    event.ID,
 				ItemID:     eventItemID,
 				Label:      label,
@@ -347,17 +449,35 @@ func (p *GitHubProvider) listWorkItemLabelTransitions(
 				OccurredAt: event.CreatedAt,
 			})
 		}
+		if reachedCursor {
+			result.ReachedCursor = true
+			if descending {
+				return errStopPaging
+			}
+		}
+		if !meta.HasNext {
+			return nil
+		}
+		if scan.MaxPages > 0 && result.Pages >= scan.MaxPages {
+			result.Truncated, result.StopReason = true, LabelTransitionScanStopPageBudget
+			return errStopPaging
+		}
+		if scan.MinQuotaFraction > 0 && result.QuotaKnown &&
+			float64(result.QuotaRemaining) < scan.MinQuotaFraction*float64(result.QuotaLimit) {
+			result.Truncated, result.StopReason = true, LabelTransitionScanStopQuotaFloor
+			return errStopPaging
+		}
 		return nil
 	}); err != nil {
-		return nil, err
+		return LabelTransitionScanResult{}, err
 	}
-	sort.Slice(transitions, func(i, j int) bool {
-		if transitions[i].OccurredAt.Equal(transitions[j].OccurredAt) {
-			return transitions[i].EventID < transitions[j].EventID
+	sort.Slice(result.Transitions, func(i, j int) bool {
+		if result.Transitions[i].OccurredAt.Equal(result.Transitions[j].OccurredAt) {
+			return result.Transitions[i].EventID < result.Transitions[j].EventID
 		}
-		return transitions[i].OccurredAt.Before(transitions[j].OccurredAt)
+		return result.Transitions[i].OccurredAt.Before(result.Transitions[j].OccurredAt)
 	})
-	return transitions, nil
+	return result, nil
 }
 
 // UpdateWorkItem applies title/body edits, assignee changes, label add/remove,
@@ -378,6 +498,11 @@ func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemR
 	before, err := p.GetWorkItem(ctx, req.Repository, req.ID)
 	if err != nil {
 		return WorkItem{}, err
+	}
+	if req.ExpectedRevision != "" {
+		if err := checkWorkItemRevision(before, req.ExpectedRevision); err != nil {
+			return WorkItem{}, err
+		}
 	}
 
 	fields := map[string]FieldDigest{}
@@ -483,7 +608,7 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 	if winner, ok, err := p.claimWinner(ctx, req.Repository, req.ID); err != nil {
 		return ClaimResult{}, err
 	} else if ok {
-		return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner)
+		return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner, label)
 	}
 
 	// No existing claim: stake ours with a breadcrumb comment, then re-read to settle
@@ -496,15 +621,14 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 		return ClaimResult{}, err
 	}
 	if !ok {
-		// Our own breadcrumb must be visible; treat an empty read as us winning.
-		winner = req.RunID
+		return ClaimResult{}, fmt.Errorf("claim breadcrumb for run %q is not visible after write", req.RunID)
 	}
 	if winner == req.RunID {
 		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, []string{label}, nil); err != nil {
 			return ClaimResult{}, err
 		}
 	}
-	return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner)
+	return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner, label)
 }
 
 // ReleaseWorkItemClaim ends the current provider claim epoch and removes its label
@@ -542,12 +666,14 @@ func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWork
 	releasedRunID := req.RunID
 	if claimed {
 		releasedRunID = winner
+		if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+			return WorkItem{}, err
+		}
 	}
-	if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(releasedRunID)); err != nil {
-		return WorkItem{}, err
-	}
-	if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
-		return WorkItem{}, err
+	if before.HasLabel(label) {
+		if err := p.applyLabelChanges(ctx, req.Repository, req.ID, nil, []string{label}); err != nil {
+			return WorkItem{}, err
+		}
 	}
 	final, err := p.GetWorkItem(ctx, req.Repository, req.ID)
 	if err != nil {
@@ -637,12 +763,15 @@ func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 
 // finishClaim loads the final item, records the claim mutation, and reports whether
 // runID is the recognized winner.
-func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id, runID, winner string) (ClaimResult, error) {
+func (p *GitHubProvider) finishClaim(ctx context.Context, repo RepositoryRef, id, runID, winner, label string) (ClaimResult, error) {
 	item, err := p.GetWorkItem(ctx, repo, id)
 	if err != nil {
 		return ClaimResult{}, err
 	}
 	claimed := winner == runID
+	if claimed && !item.HasLabel(label) {
+		return ClaimResult{}, fmt.Errorf("claim label %q is not visible after write", label)
+	}
 	p.recordExternalRef(ctx, ExternalRef{
 		Provider:  ProviderGitHub,
 		Ref:       issueRef(repo, id),
@@ -722,6 +851,27 @@ func (p *GitHubProvider) postComment(ctx context.Context, repo RepositoryRef, id
 		return err
 	}
 	return p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, nil)
+}
+
+// CreateWorkItemComment appends one issue comment and returns its provider
+// identity. Retry-safe callers perform exact-marker adoption around this raw
+// non-idempotent POST.
+func (p *GitHubProvider) CreateWorkItemComment(ctx context.Context, repo RepositoryRef, id, body string) (Comment, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return Comment{}, err
+	}
+	if id == "" {
+		return Comment{}, fmt.Errorf("issue id is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
+	if err != nil {
+		return Comment{}, err
+	}
+	var comment githubComment
+	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, &comment); err != nil {
+		return Comment{}, err
+	}
+	return mapGitHubComment(comment), nil
 }
 
 type githubComment struct {

@@ -168,14 +168,25 @@ type Handler struct {
 	journal  InstanceJournal
 	gate     *DispatchGate
 	now      func() time.Time
+	onPush   func(context.Context)
 
 	mu         sync.Mutex
 	deliveries map[string]struct{}
 	order      []string
 }
 
+// HandlerOption configures optional delivery consumers.
+type HandlerOption func(*Handler)
+
+// WithPushHook wakes a config reconciler for authenticated push deliveries.
+func WithPushHook(hook func(context.Context)) HandlerOption {
+	return func(handler *Handler) {
+		handler.onPush = hook
+	}
+}
+
 // NewHandler constructs the authenticated GitHub webhook endpoint.
-func NewHandler(secret []byte, signaler Signaler, instanceJournal InstanceJournal, gate *DispatchGate) (*Handler, error) {
+func NewHandler(secret []byte, signaler Signaler, instanceJournal InstanceJournal, gate *DispatchGate, opts ...HandlerOption) (*Handler, error) {
 	if len(secret) == 0 {
 		return nil, errors.New("webhook secret is required")
 	}
@@ -189,14 +200,20 @@ func NewHandler(secret []byte, signaler Signaler, instanceJournal InstanceJourna
 		return nil, errors.New("webhook dispatch gate is required")
 	}
 	copiedSecret := append([]byte(nil), secret...)
-	return &Handler{
+	handler := &Handler{
 		secret:     copiedSecret,
 		signaler:   signaler,
 		journal:    instanceJournal,
 		gate:       gate,
 		now:        time.Now,
 		deliveries: make(map[string]struct{}),
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(handler)
+		}
+	}
+	return handler, nil
 }
 
 // ServeHTTP accepts only POST deliveries at Path.
@@ -266,6 +283,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.gate.dispatch(func(ctx context.Context) {
 		if h.seen(delivery) {
 			return
+		}
+		if metadata.Event == "push" && h.onPush != nil {
+			h.onPush(ctx)
 		}
 		h.signaler.SignalWebhook(ctx, metadata, now)
 	}) {

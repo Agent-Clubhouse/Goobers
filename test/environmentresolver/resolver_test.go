@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -636,7 +637,7 @@ func verifyToolkit(
 		}
 		sum := sha256.Sum256(data)
 		if fmt.Sprintf("%x", sum) != asset.SHA256 ||
-			int64(len(data)) != asset.Size || fmt.Sprintf("%04o", info.Mode().Perm()) != asset.Mode {
+			int64(len(data)) != asset.Size || !modeMatches(info.Mode(), asset.Mode) {
 			return contractReport{}, false
 		}
 		inventory[asset.Path], contents[asset.Path] = true, data
@@ -956,7 +957,19 @@ func newFakeCLI(output fixtureCLIOutput) *fakeCLI {
 		dsl := supportmatrix.GetDSL().Versions()
 		if output.DSLMode == "mismatch" {
 			dsl = append([]supportmatrix.Version(nil), dsl...)
-			dsl[0].Level = supportmatrix.LevelUnsupported
+			// Simulate a live binary whose reported DSL surface diverges from
+			// the toolkit's recorded release.json: flip a currently-SUPPORTED
+			// version to unsupported. Flipping dsl[0] no longer works — in
+			// Versions()' ascending order dsl[0] is 1.4, which now ships
+			// unsupported (issue #3507), so re-marking it unsupported is a
+			// no-op that leaves dsl equal to the recorded surface and produces
+			// no mismatch for verifyToolkit to detect.
+			for i := range dsl {
+				if dsl[i].Level == supportmatrix.LevelSupported {
+					dsl[i].Level = supportmatrix.LevelUnsupported
+					break
+				}
+			}
 		}
 		cli.outputs["versions --json"], _ = json.Marshal(versionsOutput{DSLVersions: dsl})
 	}
@@ -1277,9 +1290,38 @@ func isGoobersSource(root string) bool {
 		regular(filepath.Join(root, "docs", "ARCHITECTURE.md"))
 }
 
+// modeMatches reports whether a file's on-disk mode matches a manifest
+// asset's recorded "%04o" mode string. Windows has no POSIX permission
+// bits — os.Chmod there only toggles the read-only attribute — so a mode
+// captured while building the toolkit bundle (via agentkit.Build, itself
+// reading os.Stat on this same platform) can never be read back
+// byte-for-byte once it round-trips through a fresh os.Chmod/os.Stat pair.
+// Skipping the comparison on Windows mirrors internal/agentkit's
+// requiredModeMatches, which short-circuits to true for the identical
+// reason (see internal/agentkit/repository.go).
+func modeMatches(actual fs.FileMode, want string) bool {
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return fmt.Sprintf("%04o", actual.Perm()) == want
+}
+
 func executable(path string) bool {
 	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		// Windows has no POSIX executable bit — os.Chmod on this platform
+		// only ever toggles the read-only attribute, so Perm()&0o111 is
+		// always 0 regardless of what the fixture intended (mirrors
+		// internal/agentkit's requiredModeMatches, which short-circuits the
+		// same way for the same reason). A regular file the fixture placed
+		// at a "bin/goobers"-shaped path is the strongest signal available
+		// on this platform.
+		return true
+	}
+	return info.Mode().Perm()&0o111 != 0
 }
 
 func regular(path string) bool {

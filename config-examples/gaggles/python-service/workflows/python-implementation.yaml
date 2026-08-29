@@ -1,0 +1,76 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: python-implementation
+spec:
+  gaggle: python-service
+  displayName: Implementation (Python reference - implement -> review -> local-ci)
+  # This focused polyglot reference omits stack-agnostic PR lifecycle stages.
+  # Its local-ci command is resolved from the gaggle's ciCommand and the whole
+  # run is gated at schedule time on the python@3.12 runner capability.
+  triggers:
+    - type: manual
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 8
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: python-implementer
+      goal: >-
+        Implement the claimed issue in the Python service: read the acceptance
+        criteria, plan, implement, add or update pytest tests for what you
+        changed, and commit to the run branch. Do not run the full pytest suite
+        in-session; the deterministic local-ci stage owns that authoritatively.
+      capabilities:
+        - repo:push
+        - agent:model
+      policyActions:
+        - modify-repository
+      retry:
+        maxAttempts: 2
+        backoffSeconds: 15
+      onTimeout: salvage
+      expectedOutputs:
+        - changed-files
+      next: review
+
+    # ApplyGaggleCICommand resolves this stage from gaggle.yaml's ciCommand.
+    # Repeating the Python command here keeps the standalone workflow safe and
+    # makes the example free of a stack-inappropriate fallback.
+    #
+    # Go-only timeout diagnostics (GOTRACEBACK/SIGQUIT goroutine dumps) are
+    # inert for a hung pytest process until TSN-5/#2172 adds stack-aware
+    # diagnostics. Pytest's ordinary stdout/stderr is still captured.
+    - name: local-ci
+      type: deterministic
+      goal: Run the project's pytest suite in the worktree.
+      run:
+        command: ["python3", "-m", "pytest", "-q"]
+        syncBase: true
+      requiredCapabilities:
+        - os=linux
+      retry:
+        maxAttempts: 1
+      next: local-gate
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: python-reviewer
+      branches:
+        pass: local-ci
+        needs-changes: implement
+        fail: "@abort"
+        escalate: "@abort"
+
+    - name: local-gate
+      evaluator: automated
+      automated:
+        check: status-equals
+      branches:
+        pass: ""
+        fail: implement
+        escalate: "@abort"

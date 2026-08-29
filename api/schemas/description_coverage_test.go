@@ -27,6 +27,7 @@ type legacyUndocumented struct {
 var authorFacingSchemaRoots = map[string]bool{
 	"gaggle.schema.json":     true,
 	"goober.schema.json":     true,
+	"instance.schema.json":   true,
 	"invocation.schema.json": true,
 	"manifest.schema.json":   true,
 	"workflow.schema.json":   true,
@@ -40,7 +41,6 @@ var legacyUndocumentedSchemas = map[string]legacyUndocumented{
 	"diagnostics.schema.json":            {15, "a3f0cbff08fe67441b672c651d5a5d46f62ddeff43288288021a7ee9d6445362"},
 	"features.schema.json":               {9, "5a63e854710cf8efb3add20719ff1900bd99cf314d05e6abc17fa6fb0552a391"},
 	"journal-event.schema.json":          {11, "9db2f2e2a6a2686ddd5a06a4e3e3f32b538a4af4afac21b57d988eefeae10511"},
-	"journal-run.schema.json":            {17, "c092e8176ef9f8ff56862fb8743991f3e2e74eb0f67064fe2885439381173db3"},
 	"remediation-brief-v1.schema.json":   {53, "68b9a4dd55e1be7fca8b1093698a07791e47914e1dd5c3f02c81f15f07101529"},
 	"remediation-brief-v2.schema.json":   {68, "489a2a169f844fc77bc359b75627839a7b43520cabe2c068c0d9e9cdbf52996c"},
 	"result.schema.json":                 {8, "1a5331ef336ceae49591b15e92f0bbd7a7a2c7aec005de93077d9d54d3d68f40"},

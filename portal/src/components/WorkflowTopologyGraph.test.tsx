@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { WorkflowGraph } from "../api/types";
+import type { GraphAnalytics, WorkflowGraph } from "../api/types";
 import {
   MAX_GRAPH_ZOOM,
   MIN_GRAPH_ZOOM,
@@ -88,6 +88,24 @@ describe("workflow topology graph", () => {
     expect(within(topology).getByText(/Start stage.*query.*Deterministic task/)).toBeInTheDocument();
     expect(within(topology).getByText(/needs-changes to implement/)).toBeInTheDocument();
     expect(within(topology).getByText(/approve to Complete terminal/)).toBeInTheDocument();
+  });
+
+  it("shapes gate nodes as decision points and keeps every kind separable by class (#2693)", () => {
+    render(<Harness graph={cyclicGraph} />);
+
+    const gate = screen.getByRole("button", { name: /^review, Gate/ });
+    const shape = gate.querySelector(".workflow-node-shape");
+    expect(shape).not.toBeNull();
+    // The shape is decoration: the kind stays readable as text and as a class.
+    expect(shape).toHaveAttribute("aria-hidden", "true");
+    expect(gate).toHaveClass("workflow-node-gate");
+
+    const deterministic = screen.getByRole("button", { name: /^query, Deterministic task/ });
+    const agentic = screen.getByRole("button", { name: /^implement, Agentic task/ });
+    expect(deterministic.querySelector(".workflow-node-shape")).toBeNull();
+    expect(agentic.querySelector(".workflow-node-shape")).toBeNull();
+    expect(deterministic).toHaveClass("workflow-node-deterministic");
+    expect(agentic).toHaveClass("workflow-node-agentic");
   });
 
   it("scrolls the next stage into view before moving keyboard focus", () => {
@@ -479,6 +497,27 @@ function terminalGraph(): WorkflowGraph {
 }
 
 describe("workflow topology graph traversed edges (#1430)", () => {
+  it("surfaces graph analytics on nodes with accessible labels", () => {
+    const analytics: GraphAnalytics = {
+      centrality: [{ node: "implement", score: 2.5 }],
+      criticalPath: { nodes: ["query", "implement"], weight: 12 },
+      cycles: [["implement", "review"]],
+      confidence: "partial",
+      caveat: "fallback weights excluded",
+    };
+    render(
+      <WorkflowTopologyGraph
+        analytics={analytics}
+        graph={cyclicGraph}
+        onSelectStage={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /implement.*centrality 2\.50.*critical path.*cycle detected/i })).toBeInTheDocument();
+    expect(screen.getByText("Blame 2.50")).toBeInTheDocument();
+    expect(screen.getAllByText("Cycle detected")).toHaveLength(2);
+  });
+
   it("emphasizes only the edges actually crossed, not every edge whose endpoints were visited", () => {
     const { container } = render(
       <WorkflowTopologyGraph

@@ -61,7 +61,7 @@ func runAgentKit(args []string, stdout, stderr io.Writer) int {
 }
 
 func runAgentKitInstall(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("agent-kit install", flag.ContinueOnError)
+	fs := newCLIFlagSet("agent-kit install", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	harness := fs.String("harness", "generic", "harness adapter: copilot, claude, or generic")
 	fs.Usage = helpUsage(stderr, "agent-kit install")
@@ -119,7 +119,7 @@ func runAgentKitInstall(args []string, stdout, stderr io.Writer) int {
 }
 
 func runAgentKitCheck(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("agent-kit check", flag.ContinueOnError)
+	fs := newCLIFlagSet("agent-kit check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "agent-kit check")
 	if err := fs.Parse(args); err != nil {
@@ -153,7 +153,7 @@ func runAgentKitCheck(args []string, stdout, stderr io.Writer) int {
 }
 
 func runAgentKitUpdate(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("agent-kit update", flag.ContinueOnError)
+	fs := newCLIFlagSet("agent-kit update", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dryRun := fs.Bool("dry-run", false, "show the update diff without writing")
 	write := fs.Bool("write", false, "apply the displayed product-owned changes")
@@ -305,9 +305,14 @@ func writeAgentKitDiff(w io.Writer, changes []agentkit.Change) error {
 func writeAgentKitNextSteps(w io.Writer, target, instanceRoot string) {
 	prompts := agentKitStarterPrompts(instanceRoot)
 	pf(w, "\nStarter prompts:\n")
-	pf(w, "  Authoring: %q\n", prompts[0])
-	pf(w, "  Run Q&A: %q\n", prompts[1])
-	pf(w, "  Upgrade: %q\n", prompts[2])
+	// Wrapped in literal quotes via %s, not %q: %q also backslash-escapes the
+	// string, and prompts[1] embeds a filesystem path. On POSIX that's a no-op
+	// (no backslashes to escape), but on Windows it doubled every path
+	// separator (C:\Users\... became C:\\Users\\...) — a starter prompt meant
+	// to be copy-pasted verbatim then showed the wrong path.
+	pf(w, "  Authoring: \"%s\"\n", prompts[0])
+	pf(w, "  Run Q&A: \"%s\"\n", prompts[1])
+	pf(w, "  Upgrade: \"%s\"\n", prompts[2])
 	pf(w, "\nToolkit maintenance:\n")
 	commands := agentKitMaintenanceCommands(target, runtime.GOOS)
 	pf(w, "  Check:  %s\n", commands[0])

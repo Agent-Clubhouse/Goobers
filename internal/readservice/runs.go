@@ -13,10 +13,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel"
@@ -114,6 +116,15 @@ type RunListOptions struct {
 	Cursor            string
 	LatestPerWorkflow bool
 
+	// ShowNoWork includes routine no-work completions (#2188) — a run that
+	// touched exactly one stage and that stage's terminal status was
+	// apiv1.ResultNoWork. False (the default) hides them, since a live instance
+	// on a ~60s schedule cadence produces far more of these than runs an
+	// operator actually cares about; explicitly setting this to true is the
+	// escape hatch, not a second filter value, so there is no way to ask for
+	// no-work runs ONLY.
+	ShowNoWork bool
+
 	// OrderByActivity sorts and filters on the run's last journal event rather
 	// than its start (#1777).
 	//
@@ -147,26 +158,85 @@ type WorkflowRunActivity struct {
 // RunSummary is the journal-derived diagnostic summary shared by run lists and
 // run detail.
 type RunSummary struct {
-	ID               string           `json:"id"`
-	Workflow         string           `json:"workflow"`
-	WorkflowVersion  int              `json:"workflowVersion"`
-	WorkflowDigest   string           `json:"workflowDigest,omitempty"`
-	Gaggle           string           `json:"gaggle"`
-	Trigger          journal.Trigger  `json:"trigger"`
-	Phase            journal.RunPhase `json:"phase"`
-	Terminal         bool             `json:"terminal"`
-	CurrentStage     string           `json:"currentStage,omitempty"`
-	StartedAt        time.Time        `json:"startedAt"`
-	FinishedAt       *time.Time       `json:"finishedAt,omitempty"`
-	DurationMillis   int64            `json:"durationMillis"`
-	LastActivityAt   time.Time        `json:"lastActivityAt"`
-	LastSeq          uint64           `json:"lastSeq"`
-	RepassCount      int              `json:"repassCount"`
-	RetryCount       int              `json:"retryCount"`
-	PolicyRetryCount int              `json:"policyRetryCount"`
-	InfraRetryCount  int              `json:"infraRetryCount"`
-	Stages           []string         `json:"-"`
-	stageAttempts    map[string][]StageAttempt
+	ID              string           `json:"id"`
+	Workflow        string           `json:"workflow"`
+	WorkflowVersion int              `json:"workflowVersion"`
+	WorkflowDigest  string           `json:"workflowDigest,omitempty"`
+	Gaggle          string           `json:"gaggle"`
+	Trigger         journal.Trigger  `json:"trigger"`
+	Phase           journal.RunPhase `json:"phase"`
+	Terminal        bool             `json:"terminal"`
+	CurrentStage    string           `json:"currentStage,omitempty"`
+	StartedAt       time.Time        `json:"startedAt"`
+	FinishedAt      *time.Time       `json:"finishedAt,omitempty"`
+	DurationMillis  int64            `json:"durationMillis"`
+	LastActivityAt  time.Time        `json:"lastActivityAt"`
+	// Stale is true only for a running run when both its last activity and the
+	// daemon scheduler heartbeat are older than runner.livenessTimeout.
+	Stale            bool   `json:"stale"`
+	LastSeq          uint64 `json:"lastSeq"`
+	RepassCount      int    `json:"repassCount"`
+	RetryCount       int    `json:"retryCount"`
+	PolicyRetryCount int    `json:"policyRetryCount"`
+	InfraRetryCount  int    `json:"infraRetryCount"`
+	// NoWork is true for a completed run that touched exactly one stage and
+	// that stage's terminal status was apiv1.ResultNoWork (#2188) — a routine
+	// schedule tick that found nothing to do, as opposed to a genuine
+	// single-stage workflow that did real work.
+	NoWork        bool               `json:"noWork"`
+	Operator      OperatorRunSummary `json:"operator"`
+	Stages        []string           `json:"-"`
+	stageAttempts map[string][]StageAttempt
+}
+
+// OperatorRunSummary answers the operational questions that otherwise require
+// correlating the journal, claim ledger, and artifact blobs by hand.
+type OperatorRunSummary struct {
+	Issue              *OperatorIssue       `json:"issue,omitempty"`
+	CurrentStage       string               `json:"currentStage,omitempty"`
+	LastHeartbeatAt    *time.Time           `json:"lastHeartbeatAt,omitempty"`
+	HeartbeatAgeMillis *int64               `json:"heartbeatAgeMillis,omitempty"`
+	Liveness           string               `json:"liveness"`
+	Trajectory         string               `json:"trajectory"`
+	PullRequest        *journal.ExternalRef `json:"pullRequest,omitempty"`
+	PROpenerStage      string               `json:"prOpenerStage,omitempty"`
+	Claim              OperatorClaim        `json:"claim"`
+	LatestError        *journal.ErrorDetail `json:"latestError,omitempty"`
+	Review             *OperatorReview      `json:"review,omitempty"`
+	NextTransition     string               `json:"nextTransition,omitempty"`
+	// PotentialBlockers is strictly about the RUN: things impeding this run's
+	// own progress. Never put a read-side capability gap here (#3346).
+	PotentialBlockers []string `json:"potentialBlockers"`
+	// DiagnosticsLimitations records what THIS read invocation could not
+	// establish — a missing credential, an unreachable provider — as opposed to
+	// anything wrong with the run. A `goobers status` run without
+	// `github:issues:read` cannot double-check claim markers; that is a limit on
+	// the reader, and reporting it as the run's blocker manufactured a
+	// convincing false layer-N signal on two healthy runs (#3346).
+	//
+	// omitempty (unlike PotentialBlockers) so the many OperatorRunSummary
+	// construction sites cannot leak a JSON `null` into a consumer that expects
+	// an array; absent means "nothing the reader could not see".
+	DiagnosticsLimitations []string `json:"diagnosticsLimitations,omitempty"`
+}
+
+// OperatorIssue identifies the claimed work item displayed in status.
+type OperatorIssue struct {
+	Number string `json:"number"`
+	Title  string `json:"title,omitempty"`
+}
+
+// OperatorClaim describes the local lease and provider marker relationship.
+type OperatorClaim struct {
+	LeaseStatus    string     `json:"leaseStatus"`
+	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
+	ProviderMarker string     `json:"providerMarker"`
+}
+
+// OperatorReview summarizes the latest review verdict driving a repass.
+type OperatorReview struct {
+	Verdict   string `json:"verdict"`
+	Rationale string `json:"rationale,omitempty"`
 }
 
 // RunDetail includes the immutable graph pin and structured escalation cause.
@@ -237,25 +307,34 @@ func runTransitionsFrom(rows []readmodel.TransitionRow) []RunTransition {
 // propagation and the curated no-work-run disposition are intentionally left
 // as follow-up work — this is the read-model projection only.
 type RunOutcome struct {
-	// Gate is the last gate evaluated before completion. Empty when the run
-	// completed with no gate evaluation.
+	// Gate is the last gate decision before completion. Empty when the run
+	// completed with no gate decision.
 	Gate string `json:"gate,omitempty"`
 	// Verdict is that gate's decision.
 	Verdict string `json:"verdict,omitempty"`
 	// Target is the branch/state the gate selected.
 	Target string `json:"target,omitempty"`
-	// CausalEventSeq is the deciding gate.evaluated event's sequence number.
+	// CausalEventSeq is the deciding gate event's sequence number.
 	CausalEventSeq uint64 `json:"causalEventSeq,omitempty"`
 }
 
 // EscalationCause projects the durable event that selected escalation.
 type EscalationCause struct {
-	Selector       EscalationSelector `json:"selector"`
-	SelectedBranch string             `json:"selectedBranch,omitempty"`
-	RepassCount    int                `json:"repassCount"`
-	RetryCount     int                `json:"retryCount"`
-	TerminalReason string             `json:"terminalReason,omitempty"`
-	CausalEventSeq uint64             `json:"causalEventSeq,omitempty"`
+	Selector       EscalationSelector     `json:"selector"`
+	SelectedBranch string                 `json:"selectedBranch,omitempty"`
+	RepassCount    int                    `json:"repassCount"`
+	RetryCount     int                    `json:"retryCount"`
+	TerminalReason string                 `json:"terminalReason,omitempty"`
+	CausalEventSeq uint64                 `json:"causalEventSeq,omitempty"`
+	Remediation    *RemediationEscalation `json:"remediation,omitempty"`
+}
+
+// RemediationEscalation describes what the PR remediation workflow actually
+// attempted before selecting escalation.
+type RemediationEscalation struct {
+	Outcome         string   `json:"outcome"`
+	Attempted       bool     `json:"attempted"`
+	AttemptedCauses []string `json:"attemptedCauses,omitempty"`
 }
 
 // EscalationSelector identifies the gate or condition responsible.
@@ -275,42 +354,47 @@ type EventList struct {
 // populated for the schema this build owns; Raw retains an unknown event's
 // complete scrubbed JSON for forward-compatible inspection.
 type RunEvent struct {
-	Schema          string                  `json:"schema"`
-	Seq             uint64                  `json:"seq"`
-	Type            journal.EventType       `json:"type"`
-	Branch          int                     `json:"branch"`
-	Time            time.Time               `json:"time"`
-	KnownSchema     bool                    `json:"knownSchema"`
-	Category        RunEventCategory        `json:"category"`
-	ReplayChapter   bool                    `json:"replayChapter"`
-	Stage           string                  `json:"stage,omitempty"`
-	Attempt         int                     `json:"attempt,omitempty"`
-	AttemptClass    string                  `json:"attemptClass,omitempty"`
-	Gate            string                  `json:"gate,omitempty"`
-	Verdict         string                  `json:"verdict,omitempty"`
-	Target          string                  `json:"target,omitempty"`
-	Escalated       bool                    `json:"escalated,omitempty"`
-	Status          string                  `json:"status,omitempty"`
-	Actor           string                  `json:"actor,omitempty"`
-	WorkflowVersion int                     `json:"workflowVersion,omitempty"`
-	WorkflowDigest  string                  `json:"workflowDigest,omitempty"`
-	Outputs         map[string]any          `json:"outputs,omitempty"`
-	Artifacts       []ArtifactMetadata      `json:"artifacts,omitempty"`
-	Artifact        *ArtifactMetadata       `json:"artifact,omitempty"`
-	Name            string                  `json:"name,omitempty"`
-	ExternalRef     *journal.ExternalRef    `json:"externalRef,omitempty"`
-	Error           *journal.ErrorDetail    `json:"error,omitempty"`
-	Redaction       *journal.RedactionInfo  `json:"redaction,omitempty"`
-	Runner          map[string]any          `json:"runner,omitempty"`
-	Workflow        string                  `json:"workflow,omitempty"`
-	RunID           string                  `json:"runId,omitempty"`
-	Reason          string                  `json:"reason,omitempty"`
-	Parallel        string                  `json:"parallel,omitempty"`
-	BranchName      string                  `json:"branchName,omitempty"`
-	BranchStatus    journal.BranchStatus    `json:"branchStatus,omitempty"`
-	Completeness    []journal.BranchOutcome `json:"completeness,omitempty"`
-	Raw             json.RawMessage         `json:"raw,omitempty"`
-	JournalEvent    *journal.Event          `json:"-"`
+	Schema              string                  `json:"schema"`
+	Seq                 uint64                  `json:"seq"`
+	Type                journal.EventType       `json:"type"`
+	Branch              int                     `json:"branch"`
+	Time                time.Time               `json:"time"`
+	KnownSchema         bool                    `json:"knownSchema"`
+	Category            RunEventCategory        `json:"category"`
+	ReplayChapter       bool                    `json:"replayChapter"`
+	Stage               string                  `json:"stage,omitempty"`
+	Attempt             int                     `json:"attempt,omitempty"`
+	AttemptClass        string                  `json:"attemptClass,omitempty"`
+	Gate                string                  `json:"gate,omitempty"`
+	Verdict             string                  `json:"verdict,omitempty"`
+	Target              string                  `json:"target,omitempty"`
+	Escalated           bool                    `json:"escalated,omitempty"`
+	Status              string                  `json:"status,omitempty"`
+	Actor               string                  `json:"actor,omitempty"`
+	Action              string                  `json:"action,omitempty"`
+	Decision            string                  `json:"decision,omitempty"`
+	Rationale           string                  `json:"rationale,omitempty"`
+	Complete            bool                    `json:"complete,omitempty"`
+	InstructionAddendum string                  `json:"instructionAddendum,omitempty"`
+	WorkflowVersion     int                     `json:"workflowVersion,omitempty"`
+	WorkflowDigest      string                  `json:"workflowDigest,omitempty"`
+	Outputs             map[string]any          `json:"outputs,omitempty"`
+	Artifacts           []ArtifactMetadata      `json:"artifacts,omitempty"`
+	Artifact            *ArtifactMetadata       `json:"artifact,omitempty"`
+	Name                string                  `json:"name,omitempty"`
+	ExternalRef         *journal.ExternalRef    `json:"externalRef,omitempty"`
+	Error               *journal.ErrorDetail    `json:"error,omitempty"`
+	Redaction           *journal.RedactionInfo  `json:"redaction,omitempty"`
+	Runner              map[string]any          `json:"runner,omitempty"`
+	Workflow            string                  `json:"workflow,omitempty"`
+	RunID               string                  `json:"runId,omitempty"`
+	Reason              string                  `json:"reason,omitempty"`
+	Parallel            string                  `json:"parallel,omitempty"`
+	BranchName          string                  `json:"branchName,omitempty"`
+	BranchStatus        journal.BranchStatus    `json:"branchStatus,omitempty"`
+	Completeness        []journal.BranchOutcome `json:"completeness,omitempty"`
+	Raw                 json.RawMessage         `json:"raw,omitempty"`
+	JournalEvent        *journal.Event          `json:"-"`
 }
 
 // ArtifactMetadata deliberately omits journal-relative paths. Content is
@@ -348,7 +432,14 @@ type StageAttempt struct {
 	// attempt's agent-invocation span, when the telemetry rollup has ingested
 	// it. Empty when telemetry is unavailable or the attempt has no matching
 	// span yet.
-	Model          string               `json:"model,omitempty"`
+	Model string `json:"model,omitempty"`
+	// Placement is the runner.* placement provenance journaled for this
+	// attempt (goobernetes-architecture.md §7) — which runner/node/OS/image/
+	// pod executed it and when it queued/started — when the executing
+	// substrate recorded it. Nil for every journal written before placement
+	// provenance existed: absent provenance must read exactly as today
+	// (zero-declaration invariance, architecture §11 item 1).
+	Placement      *journal.Placement   `json:"placement,omitempty"`
 	StartedSeq     uint64               `json:"startedSeq,omitempty"`
 	FinishedSeq    uint64               `json:"finishedSeq,omitempty"`
 	StartedAt      *time.Time           `json:"startedAt,omitempty"`
@@ -407,18 +498,18 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 			options.Cursor != "" {
 			return RunList{}, fmt.Errorf("%w: latest-per-workflow only accepts gaggle and workflow filters", ErrInvalidArgument)
 		}
-		var (
-			result RunList
-			err    error
-		)
 		// The read-model aggregate answers the whole page — outcomes AND activity
 		// — in one indexed query with zero journal opens (#1891). It replaces the
 		// window function, the backwards terminal walk, and the separate activity
 		// call below, so it returns directly rather than falling through to them.
-		if s.readModelAggregateEligible() {
+		if s.readModelReads {
 			return s.listLatestWorkflowOutcomesFromReadModel(ctx, options)
 		}
-		if s.sources.Telemetry != nil {
+		var (
+			result RunList
+			err    error
+		)
+		if s.ReadMode() != ReadModeAuthoritative && s.sources.Telemetry != nil {
 			result, err = s.listLatestWorkflowOutcomesIndexed(ctx, options)
 		} else {
 			result, err = s.listLatestWorkflowOutcomesScanning(ctx, options)
@@ -473,12 +564,10 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 		cursor = &decoded
 	}
 
-	// The read-model path answers with ZERO journal opens (§6.6 step 3). It is
-	// tried first when eligible; anything it cannot serve — an unsupported filter
-	// combination, LatestPerWorkflow, or a store that is not attached — falls to
-	// the existing paths rather than being refused, because the cutover must not
-	// remove an answer the portal can get today.
-	if s.readModelEligible(options) {
+	// An enabled read model owns every daemon list request. Unsupported filter
+	// combinations are refused by its closed set rather than falling through to
+	// a journal scan.
+	if s.readModelReads {
 		return s.listRunsFromReadModel(ctx, options, cursor, limit)
 	}
 	// The activity axis is read-model only, and unserved is a REFUSAL rather
@@ -498,7 +587,7 @@ func (s *Local) listRunsUnannotated(ctx context.Context, options RunListOptions)
 			"%w: ordering by last activity requires the read model (mode %s)",
 			ErrBoundedReadUnavailable, s.ReadMode())
 	}
-	if s.sources.Telemetry != nil {
+	if s.ReadMode() != ReadModeAuthoritative && s.sources.Telemetry != nil {
 		return s.listRunsIndexed(ctx, options, cursor, limit)
 	}
 	// The journal-scanning path is now REACHED DELIBERATELY, not fallen into
@@ -667,6 +756,8 @@ func (s *Local) runMatches(summary RunSummary, options RunListOptions) bool {
 		journalPopulation = ""
 	}
 	switch {
+	case !options.ShowNoWork && summary.NoWork:
+		return false
 	case options.Gaggle != "" && summary.Gaggle != options.Gaggle:
 		return false
 	case options.Workflow != "" && summary.Workflow != options.Workflow:
@@ -904,7 +995,7 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 			if !s.runMatches(summary, options) {
 				continue
 			}
-			matchesUsage, err := s.matchesTelemetryPopulation(ref.RunID, options)
+			matchesUsage, err := s.matchesTelemetryPopulation(ctx, ref.RunID, options)
 			if err != nil {
 				return RunList{}, err
 			}
@@ -919,6 +1010,9 @@ func (s *Local) listRunsIndexed(ctx context.Context, options RunListOptions, cur
 		if len(refs) < pageSize {
 			break
 		}
+	}
+	if err := s.decorateOperatorClaims(ctx, kept, observedAt); err != nil {
+		return RunList{}, err
 	}
 	return paginateRuns(kept, limit)
 }
@@ -998,6 +1092,9 @@ func (s *Local) runSummariesForStage(
 		}
 		return summaries[i].StartedAt.After(summaries[j].StartedAt)
 	})
+	if err := s.decorateOperatorClaims(ctx, summaries, observedAt); err != nil {
+		return nil, err
+	}
 	return summaries, nil
 }
 
@@ -1125,7 +1222,7 @@ func (s *Local) stageAttemptsUnannotated(ctx context.Context, runID, stage strin
 	}
 
 	attempts := collectStageAttempts(run.identity.RunID, run.records, indexArtifacts(run.records), stage)[stage]
-	if telemetryAttempts, err := s.telemetryStageAttempts(run.identity.RunID); err == nil {
+	if telemetryAttempts, err := s.telemetryStageAttempts(ctx, run.identity.RunID); err == nil {
 		attachStageAttemptModels(attempts, stage, telemetryAttempts)
 	}
 	return AttemptList{RunID: run.identity.RunID, Stage: stage, Attempts: attempts}, nil
@@ -1150,7 +1247,7 @@ func attachStageAttemptModels(attempts []StageAttempt, stage string, telemetryAt
 // carrying its indexed requested model, when present) for runID. A missing
 // telemetry database is a valid empty result, matching RunSpans' contract:
 // model provenance is informational and must never make StageAttempts fail.
-func (s *Local) telemetryStageAttempts(runID string) ([]rollup.StageAttempt, error) {
+func (s *Local) telemetryStageAttempts(ctx context.Context, runID string) ([]rollup.StageAttempt, error) {
 	empty := []rollup.StageAttempt{}
 	db := s.sources.Telemetry
 	if db == nil {
@@ -1167,7 +1264,7 @@ func (s *Local) telemetryStageAttempts(runID string) ([]rollup.StageAttempt, err
 		}
 		defer func() { _ = db.Close() }()
 	}
-	return db.StageAttempts(context.Background(), runID)
+	return db.StageAttempts(ctx, runID)
 }
 
 // RunTelemetryStageAttempts returns rollup-ingested stage attempts (with each
@@ -1181,7 +1278,7 @@ func (s *Local) RunTelemetryStageAttempts(ctx context.Context, runID string) ([]
 	if _, err := s.openRun(runID); err != nil {
 		return nil, err
 	}
-	attempts, err := s.telemetryStageAttempts(runID)
+	attempts, err := s.telemetryStageAttempts(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1484,7 +1581,20 @@ func summarizeRunForStage(
 	var lastSeq uint64
 	var lastActivityAt time.Time
 	currentStage := ""
+	operator := OperatorRunSummary{
+		Trajectory:        "parked",
+		Liveness:          "no-heartbeat",
+		Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
+		PotentialBlockers: []string{},
+	}
+	if run.identity.Trigger.Kind == journal.TriggerItem && run.identity.Trigger.Ref != "" {
+		operator.Issue = &OperatorIssue{Number: run.identity.Trigger.Ref}
+	}
+	var lastHeartbeat time.Time
+	providerClaimRecorded := false
+	claimedIssueFound := false
 	seenStages := make(map[string]struct{})
+	lastStageStatus := make(map[string]string)
 	repasses, retries, policyRetries, infraRetries := countStageAttempts(run.records)
 
 	for _, record := range run.records {
@@ -1502,8 +1612,23 @@ func summarizeRunForStage(
 		if event.Gate != "" {
 			seenStages[event.Gate] = struct{}{}
 		}
+		if event.Error != nil {
+			detail := *event.Error
+			operator.LatestError = &detail
+		}
 		switch event.Type {
-		case journal.EventRunResumed:
+		case journal.EventStageHeartbeat:
+			if event.Time.After(lastHeartbeat) {
+				lastHeartbeat = event.Time
+			}
+		case journal.EventRunnerAnnotation:
+			if queue, ok := readmodel.RunnerQueueStatus(event); ok {
+				currentStage = queue
+			}
+			if suggestion, ok := readmodel.RunnerResetSuggestion(event); ok {
+				currentStage = suggestion
+			}
+		case journal.EventRunResumed, journal.EventGateOverridden:
 			phase = journal.PhaseRunning
 			finishedAt = nil
 			currentStage = event.Target
@@ -1513,11 +1638,66 @@ func summarizeRunForStage(
 			if currentStage == event.Stage {
 				currentStage = ""
 			}
+			lastStageStatus[event.Stage] = event.Status
+			if !claimedIssueFound {
+				id, idOK := event.Outputs["id"].(string)
+				title, titleOK := event.Outputs["title"].(string)
+				if !idOK || !titleOK || id == "" || title == "" {
+					break
+				}
+				if operator.Issue == nil {
+					operator.Issue = &OperatorIssue{}
+				}
+				operator.Issue.Number = id
+				operator.Issue.Title = title
+				claimedIssueFound = true
+			}
 		case journal.EventGateStarted:
 			currentStage = event.Gate
 		case journal.EventGateEvaluated:
 			if currentStage == event.Gate {
 				currentStage = ""
+			}
+			if event.Gate != "review" {
+				continue
+			}
+			review := &OperatorReview{Verdict: event.Verdict}
+			if event.Ref != nil {
+				data, err := run.reader.ArtifactBytes(*event.Ref)
+				if err != nil {
+					operator.PotentialBlockers = append(operator.PotentialBlockers,
+						fmt.Sprintf("review rationale unavailable: %v", err))
+				} else {
+					var verdict apiv1.Verdict
+					if err := json.Unmarshal(data, &verdict); err != nil {
+						operator.PotentialBlockers = append(operator.PotentialBlockers,
+							fmt.Sprintf("review rationale is invalid: %v", err))
+					} else {
+						review.Rationale = strings.TrimSpace(verdict.Rationale)
+						if review.Rationale == "" {
+							review.Rationale = strings.TrimSpace(verdict.Summary)
+						}
+					}
+				}
+			}
+			operator.Review = review
+		case journal.EventRefTouched:
+			if event.ExternalRef == nil {
+				continue
+			}
+			switch event.ExternalRef.Kind {
+			case "issue":
+				if operator.Issue == nil {
+					operator.Issue = &OperatorIssue{}
+				}
+				if !claimedIssueFound {
+					operator.Issue.Number = event.ExternalRef.ID
+				}
+				operation, _ := event.Runner["operation"].(string)
+				providerClaimRecorded = providerClaimRecorded || operation == "claim"
+			case "pr":
+				ref := *event.ExternalRef
+				operator.PullRequest = &ref
 			}
 		case journal.EventStageRerunRequested:
 			phase = journal.PhaseRunning
@@ -1530,7 +1710,9 @@ func summarizeRunForStage(
 			phase = journal.RunPhase(event.Status)
 			finished := event.Time
 			finishedAt = &finished
-			currentStage = ""
+			if !strings.HasPrefix(currentStage, "Workspace reset suggested:") {
+				currentStage = ""
+			}
 		}
 	}
 
@@ -1538,6 +1720,49 @@ func summarizeRunForStage(
 		if state, err := run.reader.State(); err == nil && state.LastSeq >= lastSeq && state.MachineState != "" {
 			currentStage = state.MachineState
 		}
+		if graph, status, err := pinnedGraph(run); err != nil {
+			return RunSummary{}, err
+		} else if status == "pinned" {
+			for _, node := range graph.Nodes {
+				if operatorTrajectory(node.ID, journal.PhaseRunning) == "open PR" {
+					operator.PROpenerStage = node.ID
+					break
+				}
+			}
+		}
+	}
+	operator.CurrentStage = currentStage
+	operator.Trajectory = operatorTrajectory(currentStage, phase)
+	if !lastHeartbeat.IsZero() {
+		heartbeat := lastHeartbeat
+		operator.LastHeartbeatAt = &heartbeat
+		age := max(observedAt.Sub(heartbeat).Milliseconds(), 0)
+		operator.HeartbeatAgeMillis = &age
+	}
+	if phase != journal.PhaseRunning {
+		operator.Liveness = "terminal"
+	}
+	if providerClaimRecorded {
+		operator.Claim.ProviderMarker = "recorded"
+	}
+	if operator.PullRequest != nil {
+		operator.PROpenerStage = ""
+	}
+	if phase == journal.PhaseRunning {
+		if currentStage == "" {
+			operator.NextTransition = "start the next workflow stage"
+		} else {
+			operator.NextTransition = "finish " + currentStage
+		}
+	}
+	if operator.LatestError != nil {
+		operator.PotentialBlockers = append(operator.PotentialBlockers,
+			operator.LatestError.Code+": "+operator.LatestError.Message)
+	}
+	if operator.Review != nil && operator.Review.Verdict != "" &&
+		operator.Review.Verdict != "pass" && operator.Review.Verdict != "approve" {
+		operator.PotentialBlockers = append(operator.PotentialBlockers,
+			"review "+operator.Review.Verdict+": "+operator.Review.Rationale)
 	}
 	durationEnd := observedAt
 	if finishedAt != nil {
@@ -1552,6 +1777,16 @@ func summarizeRunForStage(
 		stages = append(stages, stage)
 	}
 	sort.Strings(stages)
+	// A routine no-work tick is a completed run that touched exactly one
+	// stage, and that stage's own terminal status was no-work — as opposed to
+	// a multi-stage run that hit no-work partway, or a genuinely single-stage
+	// workflow that succeeded.
+	noWork := phase == journal.PhaseCompleted && len(lastStageStatus) == 1
+	if noWork {
+		for _, status := range lastStageStatus {
+			noWork = status == string(apiv1.ResultNoWork)
+		}
+	}
 	var stageAttempts map[string][]StageAttempt
 	if attemptStage != "" {
 		stageAttempts = collectStageAttempts(run.identity.RunID, run.records, artifactIndex{}, attemptStage)
@@ -1576,9 +1811,15 @@ func summarizeRunForStage(
 		RetryCount:       retries,
 		PolicyRetryCount: policyRetries,
 		InfraRetryCount:  infraRetries,
+		NoWork:           noWork,
+		Operator:         operator,
 		Stages:           stages,
 		stageAttempts:    stageAttempts,
 	}, nil
+}
+
+func operatorTrajectory(stage string, phase journal.RunPhase) string {
+	return readmodel.OperatorTrajectory(stage, phase)
 }
 
 func matchesRunOutcome(phase journal.RunPhase, outcome OutcomeFilter) bool {
@@ -1680,11 +1921,11 @@ func telemetryStagePopulation(population StagePopulation) bool {
 	}
 }
 
-func (s *Local) matchesTelemetryPopulation(runID string, options RunListOptions) (bool, error) {
+func (s *Local) matchesTelemetryPopulation(ctx context.Context, runID string, options RunListOptions) (bool, error) {
 	if !telemetryStagePopulation(options.StagePopulation) {
 		return true, nil
 	}
-	attempts, err := s.sources.Telemetry.StageAttempts(context.Background(), runID)
+	attempts, err := s.sources.Telemetry.StageAttempts(ctx, runID)
 	if err != nil {
 		return false, err
 	}
@@ -1822,6 +2063,10 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 		RepassCount: repasses,
 		RetryCount:  retries,
 	}
+	if remediation := remediationEscalation(records); remediation != nil {
+		cause.Remediation = remediation
+	}
+	remediationReason := remediationEscalationReason(records)
 	terminalStage := successfulTerminalStage(records)
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
@@ -1829,11 +2074,15 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 			cause.Selector = EscalationSelector{Kind: "gate", Name: event.Gate}
 			cause.SelectedBranch = event.Verdict
 			cause.TerminalReason = gateEscalationReason(event)
+			if remediationReason != "" {
+				cause.TerminalReason = remediationReason
+			}
 			cause.CausalEventSeq = event.Seq
 			repasses, err := gateRepassCount(records[:i+1], event.Gate)
 			if err != nil {
 				return nil, err
 			}
+
 			cause.RepassCount = repasses
 			return cause, nil
 		}
@@ -1868,8 +2117,56 @@ func escalationCause(summary RunSummary, records []journal.EventRecord) (*Escala
 	return cause, nil
 }
 
+func remediationEscalation(records []journal.EventRecord) *RemediationEscalation {
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventStageFinished ||
+			!isRemediationCheckpointStage(event.Stage) || event.Status != string(apiv1.ResultSuccess) {
+			continue
+		}
+		outcome, _ := event.Outputs["escalationOutcome"].(string)
+		if outcome == "" {
+			return nil
+		}
+		attempted, err := strconv.ParseBool(fmt.Sprint(event.Outputs["remediationAttempted"]))
+		if err != nil {
+			return nil
+		}
+		var causes []string
+		for _, cause := range strings.Split(fmt.Sprint(event.Outputs["attemptedCauses"]), ",") {
+			if cause = strings.TrimSpace(cause); cause != "" {
+				causes = append(causes, cause)
+			}
+		}
+		return &RemediationEscalation{Outcome: outcome, Attempted: attempted, AttemptedCauses: causes}
+	}
+	return nil
+}
+
+func remediationEscalationReason(records []journal.EventRecord) string {
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if !event.KnownSchema() || event.Type != journal.EventStageFinished ||
+			!isRemediationCheckpointStage(event.Stage) || event.Status != string(apiv1.ResultSuccess) {
+			continue
+		}
+		reason, _ := event.Outputs["escalationReason"].(string)
+		return strings.TrimSpace(reason)
+	}
+	return ""
+}
+
+func isRemediationCheckpointStage(stage string) bool {
+	switch stage {
+	case "remediation-checkpoint", "park-escalated", "park-invalid-finding-responses", "park-infrastructure-failure":
+		return true
+	default:
+		return false
+	}
+}
+
 // runOutcome derives the #851 business-decision axis for a completed run
-// from the last gate evaluated before completion — the same "walk backward
+// from the last gate decision before completion — the same "walk backward
 // for the decisive gate" approach escalationCause uses for the escalated
 // case. Returns nil for a non-completed run.
 func runOutcome(summary RunSummary, records []journal.EventRecord) *RunOutcome {
@@ -1879,7 +2176,8 @@ func runOutcome(summary RunSummary, records []journal.EventRecord) *RunOutcome {
 	records = currentLifecycleRecords(records)
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
-		if !event.KnownSchema() || event.Type != journal.EventGateEvaluated {
+		if !event.KnownSchema() ||
+			(event.Type != journal.EventGateEvaluated && event.Type != journal.EventGateOverridden) {
 			continue
 		}
 		return &RunOutcome{
@@ -1895,8 +2193,14 @@ func runOutcome(summary RunSummary, records []journal.EventRecord) *RunOutcome {
 func currentLifecycleRecords(records []journal.EventRecord) []journal.EventRecord {
 	for i := len(records) - 1; i >= 0; i-- {
 		event := records[i].Event
-		if event.KnownSchema() && event.Type == journal.EventRunResumed {
+		if !event.KnownSchema() {
+			continue
+		}
+		switch event.Type {
+		case journal.EventRunResumed:
 			return records[i+1:]
+		case journal.EventGateOverridden:
+			return records[i:]
 		}
 	}
 	return records
@@ -1990,7 +2294,20 @@ func gateEscalationReason(event journal.Event) string {
 	if gateMarkedEscalated(event) {
 		duplicateDiff, _ := event.Runner["duplicateDiff"].(bool)
 		if duplicateDiff {
-			return "repass produced a diff identical to the immediately prior attempt"
+			reason, _ := event.Runner["reason"].(string)
+			if reason == "" {
+				reason = "UNCHANGED_REPASS"
+			}
+			classification := "subject"
+			if repassTarget, _ := event.Runner["repassTarget"].(string); strings.TrimSpace(repassTarget) != "" {
+				classification = strings.TrimSpace(repassTarget)
+			}
+			if repassCause, ok := event.Runner["repassCause"].(map[string]interface{}); ok {
+				if infra, _ := repassCause["infrastructure"].(bool); infra {
+					classification = "infrastructure"
+				}
+			}
+			return fmt.Sprintf("%s: repass produced a diff identical to the immediately prior attempt (%s-classified failure)", reason, classification)
 		}
 		return "repass budget exhausted"
 	}
@@ -2076,6 +2393,11 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	projected.Escalated = event.Escalated
 	projected.Status = event.Status
 	projected.Actor = event.Actor
+	projected.Action = event.Action
+	projected.Decision = event.Decision
+	projected.Rationale = event.Rationale
+	projected.Complete = event.Complete
+	projected.InstructionAddendum = event.InstructionAddendum
 	projected.WorkflowVersion = event.WorkflowVersion
 	projected.WorkflowDigest = event.WorkflowDigest
 	projected.Outputs = scalarOutputs(event.Outputs)
@@ -2358,6 +2680,12 @@ func collectStageAttempts(
 			visits[event.Stage] = visit
 		case journal.EventStageStarted:
 			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
+		case journal.EventRunnerPlacement:
+			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
+				if placement, ok := journal.PlacementFromEvent(event); ok {
+					attempts[i].Placement = &placement
+				}
+			}
 		case journal.EventArtifactRecorded:
 			if event.Ref == nil {
 				continue
@@ -2598,6 +2926,9 @@ func (s *Local) ListRuns(ctx context.Context, options RunListOptions) (RunList, 
 	if err != nil {
 		return RunList{}, err
 	}
+	if err := s.annotateRunStaleness(out.Runs); err != nil {
+		return RunList{}, err
+	}
 	return annotated[RunList](ctx, s, out), nil
 }
 
@@ -2611,7 +2942,50 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 	if err != nil {
 		return RunDetail{}, err
 	}
+	if out.Phase == journal.PhaseRunning && s.sources.SchedulerHeartbeat != nil {
+		lastTickAt, err := s.sources.SchedulerHeartbeat()
+		if err != nil {
+			return RunDetail{}, fmt.Errorf("read scheduler heartbeat: %w", err)
+		}
+		out.Stale = runIsStale(out.RunSummary, s.now().UTC(), lastTickAt, s.sources.LivenessTimeout)
+	}
 	return annotated[RunDetail](ctx, s, out), nil
+}
+
+func (s *Local) annotateRunStaleness(runs []RunSummary) error {
+	if s.sources.SchedulerHeartbeat == nil {
+		return nil
+	}
+	hasRunning := false
+	for i := range runs {
+		if runs[i].Phase == journal.PhaseRunning {
+			hasRunning = true
+			break
+		}
+	}
+	if !hasRunning {
+		return nil
+	}
+	lastTickAt, err := s.sources.SchedulerHeartbeat()
+	if err != nil {
+		return fmt.Errorf("read scheduler heartbeat: %w", err)
+	}
+	observedAt := s.now().UTC()
+	for i := range runs {
+		runs[i].Stale = runIsStale(runs[i], observedAt, lastTickAt, s.sources.LivenessTimeout)
+	}
+	return nil
+}
+
+func runIsStale(run RunSummary, observedAt, lastTickAt time.Time, timeout time.Duration) bool {
+	if run.Phase != journal.PhaseRunning || timeout <= 0 ||
+		daemonstate.Evaluate(observedAt, lastTickAt, timeout).Healthy {
+		return false
+	}
+	if run.LastActivityAt.IsZero() {
+		return true
+	}
+	return observedAt.Sub(run.LastActivityAt) > timeout
 }
 
 // RunEvents returns the read response with its freshness envelope attached.

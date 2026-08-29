@@ -24,6 +24,9 @@ export const defaultPortalConfig: PortalConfig = {
     chatUrl: null,
     links: [],
   },
+  capabilities: {
+    revealRun: false,
+  },
 };
 
 export interface CobrandContextValue {
