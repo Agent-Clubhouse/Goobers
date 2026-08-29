@@ -23,7 +23,8 @@ import (
 const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]\n" +
 	"                          [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]\n" +
 	"                          [--timeout <duration>]\n" +
-	"       goobers doctor --repo [--report text|json] [instance-root]\n\n" +
+	"       goobers doctor --repo [--report text|json] [instance-root]\n" +
+	"       goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]\n\n" +
 	"--k8s preflights a target Kubernetes cluster against the documented\n" +
 	"infrastructure shape (docs/design/k8s-infra-shape.md) before installing\n" +
 	"Goobers on it — the install-time enforcement of that document (#668).\n\n" +
@@ -54,10 +55,27 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"skipped. Token-scope introspection is reported as unavailable when GitHub\n" +
 	"does not expose it (fine-grained PAT / GitHub App tokens) — never inferred\n" +
 	"from a failed call. instance-root defaults to \".\".\n\n" +
+	"--av-exclusions lists every directory Goobers writes and immediately reads\n" +
+	"back — the set real-time antivirus scanning on Windows must exclude, or a\n" +
+	"scan holding a handle on a just-written file surfaces minutes later as an\n" +
+	"unrelated git \"Permission denied\" (#3480, #3161–#3164). The list is\n" +
+	"derived from the same path code the daemon (instance root, run journals,\n" +
+	"scheduler ledger, blob store, workcopies, TEMP), the worker (--work-root\n" +
+	"and its workcopies/scratch subtrees) and a Windows stage pod (C:\\workspace,\n" +
+	"the tmp:ephemeral TEMP, the container user's profile) actually use, so it\n" +
+	"cannot drift from what the binary writes. On a Windows host it also reads\n" +
+	"Microsoft Defender's exclusion list (Get-MpPreference, read-only) and\n" +
+	"reports each directory as excluded, not-excluded, or unknown; elsewhere\n" +
+	"it lists the set and reports unknown. ADVISORY: exit 0 whatever the\n" +
+	"coverage — an organisation-wide AV policy is the operator's to set, and\n" +
+	"nothing here changes it. Declare the answer on each windows runner as\n" +
+	"provides.windows.avExclusionsVerified (validate warns RNR006 without it).\n\n" +
 	"--report json emits the stable machine-readable report; text (default)\n" +
-	"prints a human-readable table (--k8s) or per-repo findings (--repo).\n\n" +
-	"Exit codes: 0 = conformant (warns allowed for --k8s), 1 = a required check\n" +
-	"failed or drift was found, 2 = usage/IO error.\n"
+	"prints a human-readable table (--k8s), per-repo findings (--repo), or the\n" +
+	"per-directory coverage list (--av-exclusions).\n\n" +
+	"Exit codes: 0 = conformant (warns allowed for --k8s; always for\n" +
+	"--av-exclusions), 1 = a required check failed or drift was found,\n" +
+	"2 = usage/IO error.\n"
 
 // doctorKubeClient builds the typed clientset for the target
 // kubeconfig/context, returning the cluster endpoint for the report header.
@@ -84,12 +102,16 @@ var doctorKubeClient = func(kubeconfig, contextName string, timeout time.Duratio
 // (k8s-infra-shape.md deliverable K3, #668) via internal/k8spreflight and
 // renders the conformance report. --repo diffs each configured repo's
 // declared forge-policy manifest against its live GitHub state (#916, Tier 4
-// of #903). Exactly one mode is required per invocation.
+// of #903). --av-exclusions enumerates the directories Goobers writes then
+// reads and, on Windows, verifies them against Defender's exclusion list
+// (#3480, advisory). Exactly one mode is required per invocation.
 func runDoctor(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	k8sMode := fs.Bool("k8s", false, "preflight a Kubernetes cluster against docs/design/k8s-infra-shape.md")
 	repoMode := fs.Bool("repo", false, "diff declared repo forge-policy manifests against live GitHub state")
+	avMode := fs.Bool("av-exclusions", false, "list the directories Goobers writes then reads and verify antivirus exclusions (advisory)")
+	workRoot := fs.String("work-root", "", "worker work root to enumerate with --av-exclusions (default: the worker's own default)")
 	kubeconfig := fs.String("kubeconfig", "", "kubeconfig path (default: the standard loading rules)")
 	kubeContext := fs.String("context", "", "kubeconfig context (default: the current context)")
 	reportFormat := fs.String("report", "text", "report format: text or json")
@@ -105,19 +127,28 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "goobers doctor: --report must be text or json, got %q\n", *reportFormat)
 		return 2
 	}
-	if *k8sMode == *repoMode {
-		pf(stderr, "goobers doctor: exactly one of --k8s or --repo is required\n\n")
+	modes := 0
+	for _, on := range []bool{*k8sMode, *repoMode, *avMode} {
+		if on {
+			modes++
+		}
+	}
+	if modes != 1 {
+		pf(stderr, "goobers doctor: exactly one of --k8s, --repo or --av-exclusions is required\n\n")
 		fs.Usage()
 		return 2
 	}
 
-	if *repoMode {
+	if *repoMode || *avMode {
 		root := "."
 		if fs.NArg() == 1 {
 			root = fs.Arg(0)
 		} else if fs.NArg() > 1 {
 			fs.Usage()
 			return 2
+		}
+		if *avMode {
+			return runDoctorAVExclusions(root, *workRoot, *reportFormat, stdout, stderr, realAVExclusionDeps())
 		}
 		return runDoctorRepo(root, *reportFormat, stdout, stderr)
 	}

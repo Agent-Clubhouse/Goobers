@@ -56,7 +56,7 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config diff`](#goobers-config-diff) | compare active workflows with canonical definitions |
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
-| [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
+| [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions |
 | [`goobers e2e`](#goobers-e2e) | check the Goobernetes distributed e2e proof harness's assertions against a recorded run |
 | [`goobers e2e kill-inject`](#goobers-e2e-kill-inject) | perform one live S6 kill-matrix cell (pod-kill) against a real cluster |
 | [`goobers e2e verify`](#goobers-e2e-verify) | verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data |
@@ -924,13 +924,14 @@ $ goobers docs-churn --format churn-digest
 
 ## `goobers doctor`
 
-preflight a Kubernetes cluster against the documented infra shape
+preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
 
 ~~~text
 Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                           [--timeout <duration>]
        goobers doctor --repo [--report text|json] [instance-root]
+       goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
 
 --k8s preflights a target Kubernetes cluster against the documented
 infrastructure shape (docs/design/k8s-infra-shape.md) before installing
@@ -968,11 +969,29 @@ skipped. Token-scope introspection is reported as unavailable when GitHub
 does not expose it (fine-grained PAT / GitHub App tokens) — never inferred
 from a failed call. instance-root defaults to ".".
 
---report json emits the stable machine-readable report; text (default)
-prints a human-readable table (--k8s) or per-repo findings (--repo).
+--av-exclusions lists every directory Goobers writes and immediately reads
+back — the set real-time antivirus scanning on Windows must exclude, or a
+scan holding a handle on a just-written file surfaces minutes later as an
+unrelated git "Permission denied" (#3480, #3161–#3164). The list is
+derived from the same path code the daemon (instance root, run journals,
+scheduler ledger, blob store, workcopies, TEMP), the worker (--work-root
+and its workcopies/scratch subtrees) and a Windows stage pod (C:\workspace,
+the tmp:ephemeral TEMP, the container user's profile) actually use, so it
+cannot drift from what the binary writes. On a Windows host it also reads
+Microsoft Defender's exclusion list (Get-MpPreference, read-only) and
+reports each directory as excluded, not-excluded, or unknown; elsewhere
+it lists the set and reports unknown. ADVISORY: exit 0 whatever the
+coverage — an organisation-wide AV policy is the operator's to set, and
+nothing here changes it. Declare the answer on each windows runner as
+provides.windows.avExclusionsVerified (validate warns RNR006 without it).
 
-Exit codes: 0 = conformant (warns allowed for --k8s), 1 = a required check
-failed or drift was found, 2 = usage/IO error.
+--report json emits the stable machine-readable report; text (default)
+prints a human-readable table (--k8s), per-repo findings (--repo), or the
+per-directory coverage list (--av-exclusions).
+
+Exit codes: 0 = conformant (warns allowed for --k8s; always for
+--av-exclusions), 1 = a required check failed or drift was found,
+2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -980,6 +999,7 @@ failed or drift was found, 2 = usage/IO error.
 ~~~console
 $ goobers doctor --k8s
 $ goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0
+$ goobers doctor --av-exclusions --report json ./instance
 ~~~
 
 ## `goobers down`

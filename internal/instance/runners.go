@@ -123,6 +123,27 @@ type RunnerProvides struct {
 	// same rationale as Shell: a self runner satisfies harness:<name>
 	// implicitly already; this is for non-self runners only.
 	Harnesses []string `json:"harnesses,omitempty" yaml:"harnesses,omitempty"`
+	// Windows carries the claims only a Windows runner can make (#3480).
+	// nil is "undeclared"; `goobers validate` warns (RNR006) on a windows
+	// runner that leaves it out, because the daemon has no other way to
+	// learn whether the host or image was prepared. Refused at load on a
+	// runner whose OS is not windows — a Windows claim on a Linux runner is
+	// a copy-paste error, not a harmless extra.
+	Windows *RunnerWindowsClaims `json:"windows,omitempty" yaml:"windows,omitempty"`
+}
+
+// RunnerWindowsClaims is the Windows-only half of a runner's provides: set.
+type RunnerWindowsClaims struct {
+	// AVExclusionsVerified asserts that the directories Goobers writes then
+	// immediately reads on this runner — the set `goobers doctor
+	// --av-exclusions` enumerates (internal/avexclusion) — are excluded from
+	// real-time antivirus scanning, so a scan cannot hold a handle on a
+	// just-written file and surface later as an unrelated git "Permission
+	// denied" (#3161–#3164). Trusted like every other provides: claim
+	// (DI-11): nothing re-verifies it against the image or host; the
+	// stage pod's own startup advisory line is the far-side evidence. false
+	// is an honest "not prepared" and still warns.
+	AVExclusionsVerified bool `json:"avExclusionsVerified" yaml:"avExclusionsVerified"`
 }
 
 // RunnerOS is a runner's declared operating system — a validated enum, not a
@@ -409,6 +430,10 @@ func (p RunnerProvides) validate(i int, name string) error {
 			return fmt.Errorf("runners[%d] (%s): provides.harnesses[%d]: %q is declared more than once", i, name, j, harness)
 		}
 		seenHarnesses[harness] = true
+	}
+	if p.Windows != nil && p.OS != RunnerOSWindows {
+		return fmt.Errorf("runners[%d] (%s): provides.windows is declared but provides.os is %q; the Windows claim block (avExclusionsVerified) is only meaningful on a runner declaring provides.os: %s",
+			i, name, p.OS, RunnerOSWindows)
 	}
 	return nil
 }

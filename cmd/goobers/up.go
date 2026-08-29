@@ -345,6 +345,14 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if warning := windowsLargeRepoEnvironmentWarning(startupConfig, l.WorkcopiesDir(), realWindowsLargeRepoPreflightDeps()); warning != "" {
 		pln(stdout, warning)
 	}
+	// #3480: on a Windows host, say once whether the directories this daemon
+	// writes then immediately reads are excluded from real-time scanning.
+	// Advisory — startup continues regardless.
+	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
+		if line := hostAVExclusionAdvisory(ctx, "daemon", daemonAVExclusionDirectories(l, startupConfig, avDeps), avDeps); line != "" {
+			pln(stdout, line)
+		}
+	}
 	livenessTimeout, err := startupConfig.Runner.LivenessTimeoutDuration()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

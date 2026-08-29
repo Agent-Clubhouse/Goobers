@@ -172,6 +172,18 @@ const (
 	// running silently wrong), so this is advance notice at author time,
 	// not a second gate.
 	RunnerInstanceRootRequired WarningCode = "RNR005"
+	// RunnerAVExclusionsUnverified (RNR006) identifies a runners: entry
+	// declaring provides.os: windows that does not assert
+	// provides.windows.avExclusionsVerified: true — the operator has not
+	// said whether the directories Goobers writes then immediately reads on
+	// that runner are excluded from real-time antivirus scanning (#3480).
+	// Always a WARNING and only ever advisory: the claim is trusted, not
+	// verified (DI-11), an organisation-wide AV policy is the operator's to
+	// set, and the failure it guards against is a flake that surfaces as an
+	// unrelated git "Permission denied" (#3161–#3164), not a wrong result.
+	// `goobers doctor --av-exclusions` on the runner's host or image
+	// produces the answer to declare.
+	RunnerAVExclusionsUnverified WarningCode = "RNR006"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit

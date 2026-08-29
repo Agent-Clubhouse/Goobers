@@ -20,6 +20,29 @@ starts with a `largeRepo: true` repository. It warns when the root is neither
 on a Dev Drive nor excluded, or when Windows does not allow the check. It never
 changes Defender settings or creates a Dev Drive.
 
+### Every directory Goobers writes then immediately reads
+
+The workcopies root is the largest of several directories where real-time
+scanning can hold a handle on a just-written file and lose the race against the
+read that follows — run journals, the scheduler ledger, the blob store, the
+worker's `--work-root`, a Windows stage pod's `C:\workspace` and `TEMP`. The
+symptom is an unrelated-looking git error minutes later
+(`unable to access '.../repo.git/config': Permission denied`, #3161–#3164).
+
+`goobers doctor --av-exclusions [--work-root <dir>] [instance-root]` lists the
+full set, derived from the same path code the daemon, worker and stage pod use,
+and on a Windows host reports each directory as excluded, not-excluded, or
+unknown against Microsoft Defender's exclusion list (`--report json` for
+tooling). It is advisory: exit 0 whatever the coverage, and it never changes
+Defender settings. `goobers up`, `goobers worker` and every Windows stage pod
+print the same verdict once at startup (`av-exclusions (advisory, ...)`), so a
+pod's own log answers the question after the fact.
+
+Declare the answer per runner in `instance.yaml` — each `runners:` entry with
+`provides.os: windows` should carry `provides.windows.avExclusionsVerified:
+true` (or `false`, honestly); `goobers validate` warns `RNR006` otherwise. The
+claim is trusted like every other `provides:` claim, never re-verified.
+
 ## Build processes and file locks
 
 Large-repo mode defaults deterministic stages to

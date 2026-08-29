@@ -229,11 +229,17 @@ const (
 	// (dispatcher §5: readOnlyRootFilesystem + writable workspace + writable
 	// HOME).
 	LinuxHomePath = "/home/goobers"
+	// WindowsHomePath is the container user's profile in the Windows base
+	// image (USER ContainerUser, DI-4): git and harness configuration land
+	// here, and the tmp:ephemeral temp is nested inside it. Named so the
+	// #3480 antivirus-exclusion enumeration reads it from the same contract
+	// the mounts use rather than retyping it.
+	WindowsHomePath = `C:\Users\ContainerUser`
 	// LinuxTmpPath / WindowsTmpPath is the platform temp path the
 	// tmp:ephemeral volume mounts at (Linux /tmp; Windows the profile-nested
 	// temp — decision 006).
 	LinuxTmpPath   = "/tmp"
-	WindowsTmpPath = `C:\Users\ContainerUser\AppData\Local\Temp`
+	WindowsTmpPath = WindowsHomePath + `\AppData\Local\Temp`
 )
 
 // Node scheduling contract.
