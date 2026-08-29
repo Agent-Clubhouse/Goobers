@@ -38,6 +38,15 @@ function canPreview(media: string): boolean {
   return previewableMediaTypes.has(media.toLowerCase());
 }
 
+// Above this size an inline artifact preview gets a scroll cap (see
+// .artifact-content-bounded) instead of rendering in full and pushing the
+// run page long.
+const ARTIFACT_PREVIEW_BOUND_BYTES = 20_000;
+
+function isLargeArtifactPreview(bytes: ArrayBuffer): boolean {
+  return bytes.byteLength > ARTIFACT_PREVIEW_BOUND_BYTES;
+}
+
 function attemptStatusLabel(status: StageAttempt["status"]): string {
   return status === "" ? "pending" : status;
 }
@@ -850,7 +859,11 @@ function ArtifactRow({
       </dl>
       {canPreview(artifact.mediaType) ? (
         content ? (
-          <pre className="artifact-content code-block">
+          <pre
+            className={`artifact-content code-block${
+              isLargeArtifactPreview(content.bytes) ? " artifact-content-bounded" : ""
+            }`}
+          >
             {new TextDecoder().decode(content.bytes)}
           </pre>
         ) : (

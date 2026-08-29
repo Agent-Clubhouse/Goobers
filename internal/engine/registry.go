@@ -140,6 +140,17 @@ type StartSpec struct {
 	// every zero-declaration and local-mode instance, which leaves every
 	// stage on the legacy self path byte for byte.
 	Placements []PinnedPlacement
+	// RunControls is the run's already-resolved run-control policy: the
+	// starter collapses the instance → repo → gaggle → workflow inheritance
+	// (#1671) into one effective block before dispatch, exactly as the
+	// daemon's scheduler entry does, and this pins it for the run.
+	//
+	// The zero value is not "inherit later" — nothing downstream re-reads
+	// the config — it is "no configured layer", which newRunJournal resolves
+	// to the built-in 3-repass / 45m defaults. A starter that has the
+	// instance config must fill this in or every run it dispatches pins the
+	// defaults no matter what the author declared (#3820).
+	RunControls apiv1.RunControls
 }
 
 // StartInput resolves the latest version of a workflow and pins it into a
@@ -176,5 +187,6 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 		GateGooberCapabilities: s.GateGooberCapabilities,
 		LiveJournal:            s.LiveJournal,
 		Placements:             s.Placements,
+		RunControls:            s.RunControls,
 	}, nil
 }

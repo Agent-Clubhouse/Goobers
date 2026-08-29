@@ -109,14 +109,66 @@ declare it; there is no runtime discovery step to fail).
 **Effect.** The stage environment is the explicit allowlist and injected `GOOBERS_*`
 contract vars — no ambient daemon/pod environment leaks in.
 
-**Bindings.** Already enforced on every mode by internal/procenv (#736): default-deny
-with `runner.envPassthrough` as the explicit opt-in hatch
-(internal/procenv/procenv.go:45,97,112). Listing it makes it *mandatable*: an
-`env:default-deny` **mandate** additionally refuses `envPassthrough` entries on covered
-runners at apply time — the hatch closes when the operator says so.
+**Bindings.** On modes 1/2 (the daemon's own subprocesses) internal/procenv (#736)
+enforces it unconditionally: default-deny with `runner.envPassthrough` as the explicit
+opt-in hatch (internal/procenv/procenv.go:45,97,112). Listing it makes it *mandatable*:
+an `env:default-deny` **mandate** additionally refuses `envPassthrough` entries on
+covered runners at apply time — the hatch closes when the operator says so.
+
+**Mode 3 is a separate binding, and is DECLARATION-CONDITIONAL, not unconditional**
+(#3725). In a pod the ambient environment comes from the *image*, not from the daemon
+process, and image-provided variables are part of the runner contract — applying
+procenv's allowlist to every pod would drop them ("the browsers were present and
+INVISIBLE"). So the dispatcher stamps a privileged
+`GOOBERS_STAGE_ENV_DEFAULT_DENY` + `GOOBERS_STAGE_ENV_ALLOW` pair on the pods of a
+runner class that *declares* the restriction, and `__dispatch-exec` rebuilds only the
+inherited-container-environment half from `procenv.BaseEnvWith`. Two things do **not**
+pass through that filter, by construction and on purpose: the stage's resolved
+`GOOBERS_CRED_<CAP>` credentials and the executor's own extras, which are appended
+after it. Routing them through the allowlist instead is the #3725 failure — a stripped
+credential that surfaces as a 401/404 at the provider, on one runner class and not
+another.
+
+**What the mode-3 allowlist carries**, and why the list is not "the stage's declared
+`env:`" alone: every name the dispatcher stamps on the stage container arrives in the
+pod as an ordinary container variable, so anything the rebuild does not name is DELETED
+on a declaring class and present everywhere else. It therefore carries the stage's
+declared `env:` keys, its `GOOBERS_INPUT_*` inputs, its run context (`GOOBERS_REPO_*`
+and the branch conventions), **its run identity** (`GOOBERS_RUN_ID`, `GOOBERS_GAGGLE`,
+`GOOBERS_WORKFLOW`, `GOOBERS_STAGE`, `GOOBERS_ATTEMPT`), any env a DI-9 consumer
+template declared on the stage container, and the instance's `envPassthrough`. Run
+identity is on that list even though it is control plane, because the rebuild runs
+BEFORE the CLI/non-CLI control-plane strip: a goobers-CLI stage keeps its run identity
+by design (`providers.BranchName` composes the run branch from workflow + run), and a
+name missing from the allowlist is gone before the split can keep it. A **non**-CLI
+stage still loses all of it, because `DispatcherControlEnv` contains the run-identity
+half and the strip runs after the rebuild.
+
+**Scope of the "the allowlist cannot re-admit the control plane" property.** It holds
+BY NAME. A stage declaring `env: {GOOBERS_POD_TOKEN: …}` re-admits the name and the
+strip removes it again. It does not hold by VALUE: the kubelet expands `$(VAR_NAME)`
+inside a container env value against variables declared earlier in the same list, so
+`env: {X: "$(GOOBERS_POD_TOKEN)"}` delivers the token's value under a name the
+allowlist legitimately allows. That path predates this restriction and leaks on an
+unrestricted class too; closing it means validating declared env values or reserving
+the `GOOBERS_` prefix for env keys, which is its own change and not part of this
+binding.
+
+**Mode 3 needs BOTH sides on this change.** The daemon stamps the signal; the code that
+acts on it is `goobers __dispatch-exec` inside the **runner image**. A daemon carrying
+#3725 dispatching onto a runner image that predates it renders a pod that looks enforced
+— class label, NetworkPolicy, restrictions annotation, the stamp — and applies nothing.
+The restriction is therefore enforced when the class declares it AND both sides carry
+#3725. It fails OPEN by choice: an old image that refused the stamp would hard-fail
+every stage on every declaring class for the length of an image rollout, turning a
+version skew into an outage; an old image that ignores it under-enforces for the same
+window. Neither is silent to an operator who checks `goobers version` on both sides,
+and the ordering rule is "roll the image first".
 
 **Failure modes.** Idiom (a) (mandate vs. `envPassthrough` conflict at apply). The base
-enforcement itself has no failure mode; it is unconditional code.
+enforcement itself has no failure mode; it is unconditional code on modes 1/2 and
+declaration-conditional dispatcher-stamped code on mode 3 — with the daemon/runner-image
+skew above as the one open-failing edge.
 
 ---
 
@@ -133,7 +185,7 @@ requiring it simply cannot match such a runner, and apply says so.
 | `network:allowlist` | **Enforced** — CIDR NetworkPolicy per class (D5), probe-verified | Not declarable | Not declarable — no local mechanism (bwrap keeps host network; Seatbelt agentic profile allows network) | Not declarable |
 | `fs:readonly-except-workspace` | **Enforced** — dispatcher-stamped `securityContext` + mounts | Not declarable — k8s rejects the Linux securityContext fields on Windows pods | **Enforced**, agentic stages — internal/sandbox (bwrap/Seatbelt), smoke-run preflight (internal/sandbox/native_linux.go:19-42) | Not declarable — `sandbox.New` is `ErrUnsupported` |
 | `tmp:ephemeral` | **Enforced by construction** — fresh pod + emptyDir | Enforced by construction once Windows pods exist, but not independently *declarable* until D11 defines its verification | Declarable — daemon-side TMPDIR scoping | Declarable — same daemon-side binding |
-| `env:default-deny` | **Enforced** (procenv, unconditional) | Enforced | Enforced | Enforced |
+| `env:default-deny` | **Enforced when declared, and when daemon AND runner image both carry #3725** — dispatcher-stamped signal + in-pod procenv rebuild; credentials and executor extras are appended *after* the filter, never through it. Version skew fails open (§2.5) | Enforced when declared, same binding and same skew condition | Enforced (procenv, unconditional) | Enforced (procenv, unconditional) |
 
 Reading the matrix: **v1 full enforcement is Linux pods only** (decision record D7). The
 Linux/macOS `self` column is real but partial (per-idiom, probe-gated, and split across
@@ -256,7 +308,7 @@ runtime mystery.
 | --- | --- | --- |
 | Pod `securityContext` + workspace/tmp mounts (`fs:*`, `tmp:*`) | **Dispatcher**, at pod creation — the pod creator owns the pod spec | Unit-level spec assertions (the deploy_reference_test pattern) + PSS `restricted` admission on the namespace |
 | NetworkPolicies per runner class (`network:*`) | **Cluster operator applies rendered reference manifests** — the product renders per-runner-class manifests from the `runners:` inventory (allowlist CIDRs filled from instance config; render refuses CHANGE-ME placeholders) | `doctor --k8s` negative-control probe pods (D12); deploy-validate's rendered-together cross-base assertion (#3301) — every `goobers.dev/role` label rendered anywhere must be matched by a policy rendered somewhere, both bases composed |
-| Stage env (`env:default-deny`) | **Runtime**, unconditionally (procenv) | Existing procenv tests; apply-time mandate-vs-passthrough check |
+| Stage env (`env:default-deny`) | **Runtime, on both sides**: unconditionally on modes 1/2 (procenv); on mode 3 the **dispatcher** (daemon) stamps the privileged signal + allowlist for a declaring class and `__dispatch-exec` (**runner image**) applies it (#3725) — both must carry the change, §2.5 | Existing procenv tests; apply-time mandate-vs-passthrough check; in-pod seam tests asserting an ambient image var is dropped *and* `GOOBERS_CRED_<CAP>` survives *and* a CLI stage keeps its run identity while a non-CLI stage does not; a structural invariant test that every dispatcher-stamped stage var is allowlisted, stripped, or in procenv's base |
 | Local process sandbox (modes 1/2 bindings) | **Runner**, at stage launch (internal/sandbox, network_linux) | Mechanism preflights: bubblewrap smoke-run, `ProbeNoNetwork` |
 
 The Goobers operator's RBAC does not grow a `networking.k8s.io` grant in v1 (D7). The

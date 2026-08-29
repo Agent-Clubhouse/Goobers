@@ -5504,6 +5504,14 @@ a.telemetry-error-row:hover {
   word-break: break-word;
 }
 
+/* Large artifact bodies get a scroll cap so one oversized log/JSON blob
+   doesn't push the whole run page long. Small bodies keep the unbounded
+   default above, so short content shows no scroll chrome. */
+.artifact-content-bounded {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
 .definition-disclosure {
   border-top: 1px solid var(--line);
   margin-top: 18px;
