@@ -70,6 +70,7 @@ var commandPolicyActions = map[string][]string{
 	"apply-verdict":          {"publish-review", "route-provider-verdict", "close-pr"},
 	"backlog-assignment":     {"update-issue"},
 	"check-issue-staleness":  {"route-verdict"},
+	"file-issues":            {"create-issue", "label-issue", "comment-on-issue"},
 	"gather-sibling-context": {"flag-scope-drift", "route-verdict"},
 	"issue-close-out":        {"update-issue"},
 	"merge-pr":               {"merge-pr", "delete-branch"},
@@ -106,7 +107,14 @@ var commandArgumentPolicyActions = map[string]map[string][]string{
 	},
 }
 
+// readOnlyCommandArguments names, per command, the boolean flag that turns
+// the command into a read-only pass prescribing no policy action. Every
+// command listed here must make that flag win over every other flag it
+// defines (a `--check` that still writes would be a policy hole), and
+// booleanCommandArgument parses only that one flag: any other flag beside it
+// fails the parse and the command is treated as a write.
 var readOnlyCommandArguments = map[string]string{
+	"file-issues":         "check",
 	"respond-to-findings": "check",
 }
 

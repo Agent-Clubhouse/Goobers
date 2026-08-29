@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -135,6 +136,9 @@ type fakeGitHubServer struct {
 	checkStateRequests int
 	issueListRequests  int
 	issueListPageSizes []int
+	// issueListQueries records every GET /issues query string so a test can
+	// pin the shape of a listing (state, labels, since) and not only its count.
+	issueListQueries   []string
 	pullListRequests   int
 	dependencyRequests int
 	authenticatedLogin string
@@ -243,6 +247,7 @@ func newFakeGitHubServer(t *testing.T, owner, repo string) *fakeGitHubServer {
 	prefix := "/repos/" + owner + "/" + repo
 	mux.HandleFunc("/user", s.handleAuthenticatedUser)
 	mux.HandleFunc("/graphql", s.handleGraphQL)
+	mux.HandleFunc("/search/issues", s.handleSearchIssues)
 	mux.HandleFunc(prefix+"/issues/events", s.handleIssueEvents)
 	mux.HandleFunc(prefix+"/issues", s.handleIssuesCollection)
 	mux.HandleFunc(prefix+"/pulls", s.handlePullsCollection)
@@ -507,7 +512,72 @@ func (s *fakeGitHubServer) newGitHubProvider(token string, opts ...func(*provide
 	return providers.NewGitHubProvider(token, append(opts, func(p *providers.GitHubProvider) { p.BaseURL = s.server.URL })...)
 }
 
+// handleSearchIssues models GET /search/issues just far enough for
+// GitHubProvider.CreateWorkItem's run-id idempotency lookup (#140): every
+// double-quoted phrase in q must appear in the issue body.
+func (s *fakeGitHubServer) handleSearchIssues(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		return
+	}
+	var phrases []string
+	for _, match := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(r.URL.Query().Get("q"), -1) {
+		phrases = append(phrases, match[1])
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := []map[string]interface{}{}
+	for _, num := range sortedIntKeys(s.issues) {
+		issue := s.issues[num]
+		matched := len(phrases) > 0
+		for _, phrase := range phrases {
+			if !strings.Contains(issue.body, phrase) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			items = append(items, issueJSON(issue))
+		}
+	}
+	writeFakeJSON(w, map[string]interface{}{"total_count": len(items), "items": items})
+}
+
+// createIssueLocked models POST /repos/o/r/issues: the next free number, open,
+// with the requested labels and a label event per label. Callers hold s.mu.
+func (s *fakeGitHubServer) createIssueLocked(title, body string, labels []string) *fakeIssue {
+	number := 1
+	for num := range s.issues {
+		if num >= number {
+			number = num + 1
+		}
+	}
+	now := time.Now().UTC()
+	issue := &fakeIssue{
+		number: number, title: title, body: body, labels: append([]string{}, labels...), state: "open",
+		createdAt: now, updatedAt: now,
+	}
+	s.issues[number] = issue
+	for _, label := range labels {
+		s.appendLabelEventLocked(number, label, true, now)
+	}
+	return issue
+}
+
 func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var body struct {
+			Title  string   `json:"title"`
+			Body   string   `json:"body"`
+			Labels []string `json:"labels"`
+		}
+		decodeFakeJSON(r, &body)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		issue := s.createIssueLocked(body.Title, body.Body, body.Labels)
+		writeFakeJSON(w, issueJSON(issue))
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
 		return
@@ -515,10 +585,22 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.issueListRequests++
+	s.issueListQueries = append(s.issueListQueries, r.URL.RawQuery)
 	q := r.URL.Query()
 	var wantLabels []string
 	if lq := q.Get("labels"); lq != "" {
 		wantLabels = strings.Split(lq, ",")
+	}
+	// `since` filters on updated_at, as api.github.com does: an issue updated
+	// before it is not listed, whatever its state.
+	var since time.Time
+	if raw := q.Get("since"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			http.Error(w, "bad since", http.StatusUnprocessableEntity)
+			return
+		}
+		since = parsed
 	}
 	// Model api.github.com's real list behavior rather than an idealized one
 	// (#532): the issues list defaults to NEWEST-first (sort=created,
@@ -540,6 +622,9 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 			continue
 		}
 		if !hasAllLabels(issue.labels, wantLabels) {
+			continue
+		}
+		if !since.IsZero() && issue.updatedAt.Before(since) {
 			continue
 		}
 		matched = append(matched, issueJSON(issue))
