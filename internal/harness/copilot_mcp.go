@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/safepath"
 )
 
 const (
@@ -38,6 +39,15 @@ type copilotMCPServer struct {
 // goober declares (req.MCPServers) — never for goobers-io, which is
 // delivered independently; see copilot_mcp_io.go's goobersIORuntimeSubdir
 // doc comment for why the two must not share this path.
+//
+// The runtime root is created before the spawned copilot subprocess is
+// sandboxed, inside a workspace that may contain repository-controlled
+// content, so it goes through safepath.MkdirLeaf — os.MkdirAll would follow
+// a symlink planted at .goobers/mcp or at any not-yet-existing intermediate
+// component of it (#2413). Everything below it hangs off the os.MkdirTemp
+// directory, whose name no repository content can predict or pre-plant, so
+// those creates need no further resolution — but they still use os.Mkdir
+// rather than os.MkdirAll so a single component is all any of them creates.
 func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]string, error) {
 	if len(req.MCPServers) == 0 {
 		return env, nil
@@ -46,8 +56,8 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 		return nil, fmt.Errorf("harness: copilot-cli: invalid MCP configuration: %w", err)
 	}
 
-	runtimeRoot := filepath.Join(req.Workspace, filepath.FromSlash(copilotMCPRuntimeSubdir))
-	if err := os.MkdirAll(runtimeRoot, 0o700); err != nil {
+	runtimeRoot, err := safepath.MkdirLeaf(req.Workspace, filepath.FromSlash(copilotMCPRuntimeSubdir), 0o700)
+	if err != nil {
 		return nil, fmt.Errorf("harness: copilot-cli: create scoped MCP runtime root: %w", err)
 	}
 	base, err := os.MkdirTemp(runtimeRoot, copilotMCPRuntimePrefix)
@@ -61,7 +71,7 @@ func prepareCopilotMCP(ctx context.Context, req RunRequest, env []string) ([]str
 	env = removeEnvironment(env, copilotWorkspaceMCPEnv)
 	env = removeEnvironment(env, copilotPluginDirOnlyEnv)
 	env = append(env, copilotPluginDirOnlyEnv+"=true")
-	if err := os.MkdirAll(home, 0o700); err != nil {
+	if err := os.Mkdir(home, 0o700); err != nil {
 		return nil, fmt.Errorf("harness: copilot-cli: create scoped MCP home: %w", err)
 	}
 	// Ambient config.json may contain OAuth or BYOK credentials that were not

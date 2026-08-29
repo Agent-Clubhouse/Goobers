@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/goobers/goobers/internal/safepath"
 	"github.com/goobers/goobers/internal/sandbox"
 )
 
@@ -44,17 +45,32 @@ type copilotConfinement struct {
 
 // prepareCopilotConfinement creates the in-workspace runtime directories and
 // resolves the workspace's git writable roots.
+//
+// The directories are created before the sandbox boundary exists, in the
+// harness's own process, under a workspace that may contain
+// repository-controlled content — so they go through safepath.MkdirLeaf
+// rather than os.MkdirAll, which would happily follow a symlink planted at
+// .goobers/sandbox or at any not-yet-existing intermediate component of it
+// (#2413).
 func prepareCopilotConfinement(workspace string) (*copilotConfinement, error) {
-	base := filepath.Join(workspace, filepath.FromSlash(sandboxRuntimeSubdir))
-	c := &copilotConfinement{
-		copilotHome: filepath.Join(base, "copilot-home"),
-		tempDir:     filepath.Join(base, "tmp"),
-		logDir:      filepath.Join(base, "logs"),
-	}
-	for _, dir := range []string{c.copilotHome, c.tempDir, c.logDir} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("create sandbox runtime directory: %w", err)
+	base := filepath.FromSlash(sandboxRuntimeSubdir)
+	mkdir := func(name string) (string, error) {
+		dir, err := safepath.MkdirLeaf(workspace, filepath.Join(base, name), 0o700)
+		if err != nil {
+			return "", fmt.Errorf("create sandbox runtime directory: %w", err)
 		}
+		return dir, nil
+	}
+	c := &copilotConfinement{}
+	var err error
+	if c.copilotHome, err = mkdir("copilot-home"); err != nil {
+		return nil, err
+	}
+	if c.tempDir, err = mkdir("tmp"); err != nil {
+		return nil, err
+	}
+	if c.logDir, err = mkdir("logs"); err != nil {
+		return nil, err
 	}
 	roots, err := gitWritableRoots(workspace)
 	if err != nil {

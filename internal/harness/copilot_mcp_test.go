@@ -253,6 +253,32 @@ func TestPrepareCopilotMCPRejectsWildcardToolBeforeMaterialization(t *testing.T)
 	}
 }
 
+// TestPrepareCopilotMCPRefusesToTraverseAWorkspaceSymlink covers #2413 for
+// the scoped MCP runtime root: it is created in the harness's own process,
+// before the spawned copilot subprocess is sandboxed, under a workspace that
+// may hold repository-controlled content. A symlink planted at .goobers must
+// not redirect the runtime root — and with it the scoped COPILOT_HOME and
+// its mcp-config.json — outside the workspace.
+func TestPrepareCopilotMCPRefusesToTraverseAWorkspaceSymlink(t *testing.T) {
+	workspace := t.TempDir()
+	outsideDir := t.TempDir()
+	if err := os.Symlink(outsideDir, filepath.Join(workspace, ".goobers")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := prepareCopilotMCP(context.Background(), RunRequest{
+		Envelope:   testEnvelope(workspace),
+		Workspace:  workspace,
+		MCPServers: []apiv1.MCPServer{{Name: "context", Command: "context-server"}},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected prepareCopilotMCP to refuse to traverse the symlinked .goobers directory")
+	}
+	if _, statErr := os.Lstat(filepath.Join(outsideDir, "mcp")); !os.IsNotExist(statErr) {
+		t.Fatalf("MCP runtime root was created outside the workspace through the symlink: err=%v", statErr)
+	}
+}
+
 func TestCopilotAdapterMCPRequiresMaterializedModelCredential(t *testing.T) {
 	invoked := false
 	adapter := &CopilotAdapter{
