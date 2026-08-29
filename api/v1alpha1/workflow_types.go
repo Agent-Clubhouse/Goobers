@@ -580,6 +580,47 @@ func (m WorkspaceMode) IsRepoBacked() bool {
 // branch with the intent that it commit there.
 func (m WorkspaceMode) IsWritableRepo() bool { return m == WorkspaceRepo }
 
+// EffectiveWorkspace resolves the workspace mode a task DECLARES, applying
+// the one precedence Task.Workspace documents: Run.Workspace when set
+// (authoritative for a deterministic task), else Task.Workspace. Empty means
+// the task declared nothing — and what "" provisions is the substrate's
+// reading, not this function's: the local runner and the worker treat it as
+// the historical writable repo worktree, a stage pod checks nothing out.
+//
+// This is the ONE resolution of that precedence. The runner, the engine's
+// continuity record, its pod dispatch and the credential plane all decide
+// something from the declared workspace (which worktree to cut, whether to
+// hand the stage its predecessor's commits, which capability the checkout
+// needs), and the first divergent private copy — reading Run.Workspace alone
+// — silently dropped a predecessor's commits for a task-level `workspace:
+// repo` (#3803 review). A shared method makes that divergence impossible to
+// write rather than something a review has to catch.
+func (t Task) EffectiveWorkspace() WorkspaceMode {
+	return EffectiveWorkspace(t.Workspace, t.Run)
+}
+
+// EffectiveWorkspace is Task.EffectiveWorkspace over the two declarations
+// carried separately, for a caller that holds them apart from the Task (the
+// engine's pod dispatch input carries Run and the task-level Workspace as
+// two fields).
+func EffectiveWorkspace(task WorkspaceMode, run *DeterministicRun) WorkspaceMode {
+	if run != nil && run.Workspace != "" {
+		return run.Workspace
+	}
+	return task
+}
+
+// EffectiveWorkspace resolves the workspace an agentic gate's reviewer
+// declares (AgenticGate.Workspace). Empty for an unset declaration and for a
+// non-agentic gate, which evaluates in no workspace at all; as with
+// Task.EffectiveWorkspace, what "" provisions is the substrate's reading.
+func (g Gate) EffectiveWorkspace() WorkspaceMode {
+	if g.Agentic == nil {
+		return ""
+	}
+	return g.Agentic.Workspace
+}
+
 // EvaluatorKind is the pluggable evaluator a gate uses. A gate has exactly one
 // (GT-003, GT-016).
 type EvaluatorKind string

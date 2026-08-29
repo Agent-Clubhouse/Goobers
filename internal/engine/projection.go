@@ -43,6 +43,11 @@ var projectableEventTypes = map[journal.EventType]bool{
 	// re-projection of any history carrying a placement op fails closed on a
 	// type the engine itself will emit (#3529).
 	journal.EventRunnerPlacement: true,
+	// Workspace continuity (#3803/#3767) is the same shape: emitted by the
+	// engine on both the live path and this projection (DS5 — a type only
+	// one side emits files a live_journal_divergence on every mode-3 run),
+	// projectable, and excluded from conformance by the runner.* namespace.
+	journal.EventRunnerWorkspaceDelta: true,
 }
 
 // spanUnavailableErrorCode marks the EventError a projection appends in place

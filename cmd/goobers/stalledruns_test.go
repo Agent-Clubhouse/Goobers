@@ -607,7 +607,9 @@ func TestSweepStalledRunsPreservesPausedGateBehindAPodPlaneEmit(t *testing.T) {
 
 	released := false
 	if err := sweepStalledRuns(
+		context.Background(),
 		layout,
+		nil,
 		nil,
 		nil,
 		nil,

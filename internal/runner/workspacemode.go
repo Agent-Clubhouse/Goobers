@@ -13,20 +13,22 @@ import apiv1 "github.com/goobers/goobers/api/v1alpha1"
 //
 // Unset still means the writable repo worktree, preserving the historical
 // default for every stage that does not opt in.
+//
+// The precedence itself is apiv1.Task.EffectiveWorkspace — shared with the
+// engine's continuity selector, pod dispatch and activities — so the local
+// runner and the engine cannot read one declaration two ways; only the
+// self-arm default for "" is applied here.
 func taskWorkspaceMode(t apiv1.Task) apiv1.WorkspaceMode {
-	if t.Run != nil && t.Run.Workspace != "" {
-		return t.Run.Workspace
-	}
-	if t.Workspace != "" {
-		return t.Workspace
+	if mode := t.EffectiveWorkspace(); mode != "" {
+		return mode
 	}
 	return apiv1.WorkspaceRepo
 }
 
 // gateWorkspaceMode resolves the effective workspace for a gate evaluation.
 func gateWorkspaceMode(g apiv1.Gate) apiv1.WorkspaceMode {
-	if g.Agentic != nil && g.Agentic.Workspace != "" {
-		return g.Agentic.Workspace
+	if mode := g.EffectiveWorkspace(); mode != "" {
+		return mode
 	}
 	return apiv1.WorkspaceRepo
 }
