@@ -71,6 +71,14 @@ var ErrTerminal = errors.New("livejournal: run journal is terminal")
 // batch carries no Open header — nothing to create the journal from.
 var ErrUnknownRun = errors.New("livejournal: run journal does not exist and the emit carries no open header")
 
+// ErrAdoptConflict reports an Adopt for a run this writer already holds: it
+// opened the journal itself (an engine-driven run — two drivers for one run is
+// the bug, not a case to reconcile), or an earlier adoption has not been
+// released. Refused rather than replaced, because the two handles would be two
+// writers on one events.jsonl, which is exactly what D7's single-writer
+// property forbids.
+var ErrAdoptConflict = errors.New("livejournal: run journal is already held by this writer")
+
 // SpanSource fetches a recorded span's bytes by content digest (satisfied by
 // internal/blobstore.Store). Optional: without one, span ops degrade to
 // SpanUnavailableErrorCode error events exactly as the history projection
@@ -118,7 +126,9 @@ type SpanOp struct {
 // LastActivity backwards (journal.Run.append adopts Time unconditionally),
 // and one running ahead can understate observedAt.Sub(LastActivityAt). No
 // clamp or monotonic floor is applied; this is an accepted, currently
-// untested risk, not a guarantee.
+// untested risk, not a guarantee. It does not arise for an ADOPTED run
+// (Adopt): Time is not replayed there at all, because the loaned handle stamps
+// every event from its owner's single clock.
 type Op struct {
 	Kind     string         `json:"kind"`
 	Key      string         `json:"key"`
@@ -190,6 +200,11 @@ func WithClock(now func() time.Time) Option {
 // the run-dir lock the journal writer takes is the existing single-writer
 // discipline — and CloseIdle releases journals that have gone quiet so other
 // owners (the stalled-run sweep, `goobers run abort`) can take the lock.
+//
+// For a run some OTHER driver in this process already holds the journal open
+// for — the daemon's runner, driving a trigger-started run — the writer takes
+// the handle on loan instead of opening a second one; see Adopt. One handle,
+// one lock, either way.
 type Writer struct {
 	runsDir  func(gaggle string) (string, bool)
 	spans    SpanSource
@@ -198,7 +213,9 @@ type Writer struct {
 	now      func() time.Time
 
 	mu sync.Mutex
-	// open holds the journals the writer currently has open for appending.
+	// open holds the journals the writer currently has open for appending,
+	// including the ones it holds on loan through Adopt (marked adopted, and
+	// never closed from here).
 	open map[string]*liveRun
 	// reserved holds runs an external repairer (the DS5 backfill) has taken
 	// exclusive control of via Reserve; an Emit for such a run waits on the
@@ -208,11 +225,18 @@ type Writer struct {
 }
 
 type liveRun struct {
-	mu           sync.Mutex
-	gaggle       string
-	dir          string
-	jr           *journal.Run
-	clock        *replayClock
+	mu     sync.Mutex
+	gaggle string
+	dir    string
+	jr     *journal.Run
+	// clock is nil for an adopted run: the handle belongs to another driver
+	// and was constructed with that driver's clock, which this writer cannot
+	// (and must not) reach into. See Adopt.
+	clock *replayClock
+	// adopted marks jr as another driver's handle, on loan for the duration of
+	// an Adopt. The writer appends through it but never closes it and never
+	// releases its run-dir lock — CloseIdle, Close and finishRun all skip it.
+	adopted      bool
 	keys         map[string]uint64
 	artifactRefs map[string]journal.Ref
 	lastEmit     time.Time
@@ -289,7 +313,9 @@ func NewWriter(runsDir func(gaggle string) (string, bool), opts ...Option) (*Wri
 
 // IsOpen reports whether the writer currently holds runID's journal open —
 // the demoted repair projection must not touch such a run (a final emit may
-// still be in flight even after Temporal reports the workflow closed).
+// still be in flight even after Temporal reports the workflow closed). An
+// adopted run counts as open: another driver holds the handle, which is an
+// even stronger reason for a repairer to stay away.
 //
 // This is a point-in-time snapshot: an emit can rehydrate the run the
 // instant after IsOpen returns false. A repairer that goes on to REPLACE the
@@ -338,11 +364,155 @@ func (w *Writer) Reserve(runID string) (release func(), ok bool) {
 	}, true
 }
 
+// Adopt lends the writer an ALREADY-OPEN journal handle for runID — the
+// daemon runner's own *journal.Run for a run it is driving — so that
+// pod-plane emits for that run append through the runner's handle instead of
+// opening a second one. It returns a release that ends the loan; the handle
+// itself stays the caller's to close.
+//
+// WHY (decision 003 ruling 5, first bullet). D7's single-writer property is
+// enforced by a per-run-dir file lock: journal.Create and journal.Recover hold
+// it for the lifetime of the *journal.Run they return (journal/run.go's
+// acquireRunLock), and it is not reentrant — a second acquire through a
+// separate descriptor blocks even inside one process, then fails with
+// journal.ErrLockTimeout after journalLockTimeout, 30 seconds (journal/lock.go).
+// For a runner-owned run the runner holds that lock for the whole run. Without
+// this method a mode-3 stage pod's emit lands in Emit -> acquire -> rehydrate
+// -> journal.Recover -> acquireRunLock, waits out the full 30s, and fails: the
+// pod logs "record stage artifacts: ..." and surrenders pointers to bytes that
+// were never stored, while the run's own journal shows nothing. Adoption keeps
+// the invariant the lock exists to express — ONE handle, ONE lock — and makes
+// the pod's emit an append on that one handle.
+//
+// Consequences the caller is buying, all of them properties of the adopted
+// handle rather than of this writer:
+//
+//   - Event TIME is the adopted handle's clock, not the op's Time.
+//     journal.Run.Append stamps every event from the clock its handle was
+//     built with (journal/eventlog.go appendEvent), and the loaned handle's is
+//     the runner's. So the writer does not replay Op.Time for an adopted run —
+//     there is no replayClock to replay it into. That is the coherent choice
+//     here, not a loss: an adopted journal's runner-written and pod-emitted
+//     events then all come from ONE clock, which is precisely the cross-clock
+//     hazard Op's own doc records (a pod running behind moving the run's
+//     LastActivity backwards). The replay rule exists for engine-driven runs,
+//     whose ops carry workflow-deterministic decision times a history
+//     re-projection must reproduce; a runner-driven run has no such history.
+//   - LastActivity ADVANCES on the handle the stalled-run watchdog holds
+//     (journal.Run.append sets r.lastActivity, read by IfLastActivityBefore).
+//     A pod stage emitting through an adopted handle is therefore visibly
+//     alive to the sweep — the #3774 failure mode, where nothing advanced the
+//     runner's handle because the pod wrote through the plane, does not arise.
+//   - The runner's per-run SCRUBBER and append OBSERVER apply, since they are
+//     the loaned handle's. Both are what the daemon wants: the observer is the
+//     same read-model intake newLiveJournalWriter would have wired
+//     (cmd/goobers/daemon.go's runIntakeObserver), so pod events reach SSE and
+//     the portal mid-run, and the scrubber is the run's own credential-aware
+//     one rather than this writer's default.
+//
+// Dedup state is derived here the same way rehydrate derives it — the applied
+// emit keys ride the events themselves — but through journal.OpenReadOnly, a
+// lock-free read: taking the lock is the very thing being avoided. A torn
+// final record from an append in flight is skipped by Events(), not tripped
+// over. The read can race a runner append it does not see, which is harmless:
+// only this writer ever writes an EmitKeyRunnerField, so the keys a concurrent
+// runner append could add are none.
+//
+// Refusals are fail-closed: an id/gaggle whose runs directory does not resolve,
+// a handle open on some other run's directory (which would land one run's pod
+// bytes in another's journal), a run this writer already holds (ErrAdoptConflict),
+// and a run under an external Reserve, whose directory a repair is about to
+// replace.
+//
+// release must be called exactly once, on every path; it is idempotent and
+// never touches jr. It only ends the loan, so an Emit already in flight
+// through the adopted handle completes on it, and a late emit arriving after
+// release falls back to today's rehydrate path.
+func (w *Writer) Adopt(runID, gaggle string, jr *journal.Run) (release func(), err error) {
+	if !apiv1.ValidRunID(runID) {
+		return nil, fmt.Errorf("livejournal: invalid run id %q", runID)
+	}
+	if jr == nil {
+		return nil, fmt.Errorf("livejournal: adopt run %s: no open journal handle", runID)
+	}
+	runsDir, ok := w.runsDir(gaggle)
+	if !ok {
+		return nil, fmt.Errorf("livejournal: gaggle %q has no configured runs directory", gaggle)
+	}
+	dir := filepath.Join(runsDir, runID)
+	if got := filepath.Clean(jr.Dir()); got != filepath.Clean(dir) {
+		return nil, fmt.Errorf("livejournal: adopt run %s: handle is open on %s, not %s", runID, got, dir)
+	}
+	reader, err := journal.OpenReadOnly(dir)
+	if err != nil {
+		return nil, fmt.Errorf("livejournal: adopt run %s: %w", runID, err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return nil, fmt.Errorf("livejournal: adopt run %s: read applied keys: %w", runID, err)
+	}
+	run := &liveRun{
+		gaggle: gaggle, dir: dir, jr: jr, adopted: true,
+		keys:         map[string]uint64{},
+		artifactRefs: map[string]journal.Ref{},
+		lastEmit:     w.now(),
+	}
+	deriveDedupState(run, events)
+
+	w.mu.Lock()
+	if _, held := w.open[runID]; held {
+		w.mu.Unlock()
+		return nil, fmt.Errorf("%w: run %s", ErrAdoptConflict, runID)
+	}
+	if _, reserved := w.reserved[runID]; reserved {
+		w.mu.Unlock()
+		return nil, fmt.Errorf("livejournal: adopt run %s: run is reserved for repair", runID)
+	}
+	w.open[runID] = run
+	w.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			w.mu.Lock()
+			// Only this adoption's own entry: a re-adoption after release must
+			// not be dropped by a stale release closure.
+			if current, ok := w.open[runID]; ok && current == run {
+				delete(w.open, runID)
+			}
+			w.mu.Unlock()
+		})
+	}, nil
+}
+
+// deriveDedupState reads a journal's own events back into a run's dedup view:
+// the applied idempotency keys, the artifact refs a later gate.evaluated
+// references by name, and the terminal marker. Shared by rehydrate (a journal
+// this writer owns) and Adopt (one it has on loan) so the two cannot drift.
+func deriveDedupState(run *liveRun, events []journal.Event) (terminal bool) {
+	for _, ev := range events {
+		if key, ok := ev.Runner[EmitKeyRunnerField].(string); ok && key != "" {
+			run.keys[key] = ev.Seq
+		}
+		if ev.Type == journal.EventArtifactRecorded && ev.Name != "" && ev.Ref != nil {
+			run.artifactRefs[ev.Name] = *ev.Ref
+		}
+		if ev.Type == journal.EventRunFinished {
+			terminal = true
+			run.keys[terminalMarker] = ev.Seq
+		}
+	}
+	return terminal
+}
+
 // Emit applies one batch: dedupes each op on its idempotency key, appends the
 // rest in order with seq assigned at acceptance, and closes the journal when
 // the terminal run.finished lands. The first batch for a run must carry the
 // Open header (journal creation at first emit); a batch whose ops are all
 // duplicates succeeds without reopening anything.
+//
+// An ADOPTED run (see Adopt) takes this path unchanged except that it is found
+// already open, so nothing rehydrates and no lock is taken.
 func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error) {
 	if !apiv1.ValidRunID(req.RunID) {
 		return EmitResponse{}, fmt.Errorf("livejournal: invalid run id %q", req.RunID)
@@ -394,7 +564,21 @@ func (w *Writer) Emit(ctx context.Context, req EmitRequest) (EmitResponse, error
 // finishRun records the batch outcome and, when the journal reached its
 // terminal event, closes and forgets the run — the writer's map holds only
 // live journals; everything else is rehydrated from disk on demand.
+//
+// An ADOPTED run is neither closed nor forgotten on either count: the handle
+// and its lock belong to the runner, and the adoption ends only at release.
+// A terminal event reaching an adopted run is defensive — the runner writes
+// run.finished through its own handle, not through this plane — and still
+// latches the terminal marker, so a later op is refused with ErrTerminal
+// rather than appended after the terminal event.
 func (w *Writer) finishRun(runID string, run *liveRun, resp *EmitResponse) {
+	if run.adopted {
+		if run.jr != nil {
+			resp.Seq = run.jr.Seq()
+		}
+		resp.Terminal = terminalKeyed(run)
+		return
+	}
 	if run.jr != nil {
 		resp.Seq = run.jr.Seq()
 		if terminalKeyed(run) {
@@ -587,19 +771,7 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 		keys:         map[string]uint64{},
 		artifactRefs: map[string]journal.Ref{},
 	}
-	terminal := false
-	for _, ev := range report.Events {
-		if key, ok := ev.Runner[EmitKeyRunnerField].(string); ok && key != "" {
-			run.keys[key] = ev.Seq
-		}
-		if ev.Type == journal.EventArtifactRecorded && ev.Name != "" && ev.Ref != nil {
-			run.artifactRefs[ev.Name] = *ev.Ref
-		}
-		if ev.Type == journal.EventRunFinished {
-			terminal = true
-			run.keys[terminalMarker] = ev.Seq
-		}
-	}
+	terminal := deriveDedupState(run, report.Events)
 	if terminal {
 		// Terminal under the lock: release the writer immediately, having
 		// written nothing. jr stays nil on the returned run — duplicates
@@ -643,7 +815,12 @@ func (w *Writer) applyOp(ctx context.Context, run *liveRun, op Op) (bool, error)
 	if run.jr == nil || terminalKeyed(run) {
 		return false, fmt.Errorf("%w (op key %s)", ErrTerminal, op.Key)
 	}
-	run.clock.set(op.Time)
+	if run.clock != nil {
+		run.clock.set(op.Time)
+	}
+	// A nil clock is an ADOPTED run: the handle is another driver's and stamps
+	// from its own clock, so there is nothing here to replay op.Time into. See
+	// Adopt for why that is the coherent reading for a runner-driven run.
 	switch op.Kind {
 	case OpAppend:
 		if op.Event == nil {
@@ -758,11 +935,20 @@ func withEmitKey(runner map[string]any, key string) map[string]any {
 // silence threshold is necessarily longer — can terminalize a wedged run
 // instead of timing out on the writer's lock. A later emit transparently
 // rehydrates. Returns the run ids closed.
+//
+// ADOPTED runs are never closed here. The handle is the runner's, the lock is
+// already the runner's, and the run is not idle in any sense this sweep cares
+// about — the runner is driving it. Closing a loaned handle would take the
+// journal out from under its owner, and forgetting the adoption would send the
+// next pod emit back down the rehydrate path Adopt exists to keep it off.
 func (w *Writer) CloseIdle(olderThan time.Duration) []string {
 	cutoff := w.now().Add(-olderThan)
 	w.mu.Lock()
 	candidates := make(map[string]*liveRun, len(w.open))
 	for id, run := range w.open {
+		if run.adopted {
+			continue
+		}
 		candidates[id] = run
 	}
 	w.mu.Unlock()
@@ -780,13 +966,24 @@ func (w *Writer) CloseIdle(olderThan time.Duration) []string {
 	return closed
 }
 
-// Close releases every open journal (daemon shutdown).
+// Close releases every open journal the writer OWNS (daemon shutdown).
+// Adopted handles are left alone and stay registered until their release: they
+// are not this writer's to close, and their owner — the runner, shutting down
+// on the same signal — closes them itself.
 func (w *Writer) Close() {
 	w.mu.Lock()
-	open := w.open
-	w.open = make(map[string]*liveRun)
+	owned := make([]*liveRun, 0, len(w.open))
+	retained := make(map[string]*liveRun)
+	for id, run := range w.open {
+		if run.adopted {
+			retained[id] = run
+			continue
+		}
+		owned = append(owned, run)
+	}
+	w.open = retained
 	w.mu.Unlock()
-	for _, run := range open {
+	for _, run := range owned {
 		run.mu.Lock()
 		if run.jr != nil {
 			_ = run.jr.Close()
