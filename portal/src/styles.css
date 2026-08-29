@@ -4494,6 +4494,20 @@ a.telemetry-error-row:hover {
   justify-items: end;
 }
 
+.journal-search input {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  color: var(--ink);
+  font: inherit;
+  padding: 3px 6px;
+}
+
+.journal-search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .journal-view-control {
   border: 1px solid var(--line);
   border-radius: 6px;
