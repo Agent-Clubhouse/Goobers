@@ -200,8 +200,8 @@ func TestPodSpanRecorderPutsExactlyTheBytesTheRefAddresses(t *testing.T) {
 // TestPodSpanRecorderNeedsThePodBearer pins the half a green suite would
 // otherwise never notice. The blob plane is fail-closed on pod principal
 // (internal/httpapi/blobplane.go requireBlobPodPrincipal), so a regression
-// that drops Token from podBlobClient() turns EVERY span PUT into a 403 whose
-// entire visible cost is one line in a pod log — the feature silently
+// that drops Token from podBlobClient() turns EVERY span PUT into a refusal
+// whose entire visible cost is one line in a pod log — the feature silently
 // no-ops and the daemon still reports span_unavailable.
 func TestPodSpanRecorderNeedsThePodBearer(t *testing.T) {
 	plane := newPodBlobPlane(t, "run-span-2")
@@ -319,7 +319,9 @@ func TestPodSpanRecorderWithoutABlobEndpointIsUnchanged(t *testing.T) {
 // GOOBERS_BLOB_ENDPOINT and GOOBERS_POD_TOKEN the dispatcher stamps on every
 // stage pod — so a pod that HAS the endpoint gets an authenticated client and
 // one that does not gets nil. Both halves matter: the plane is fail-closed on
-// pod principal, so a client with the right address and no bearer is a 403.
+// pod principal, so a client with the right address and no bearer is refused
+// (401 from the authenticator; an authenticated non-pod principal gets 403
+// blob_plane_requires_pod_principal).
 func TestPodBlobClientFollowsTheStampedEndpoint(t *testing.T) {
 	t.Setenv(dispatcher.EnvBlobEndpoint, "")
 	t.Setenv(dispatcher.EnvPodToken, "pod-token-fixture")
@@ -336,7 +338,7 @@ func TestPodBlobClientFollowsTheStampedEndpoint(t *testing.T) {
 	}
 	if client.Token != "pod-token-fixture" {
 		t.Fatalf("client token = %q, want the stamped pod bearer; the blob plane refuses an "+
-			"unauthenticated PUT with 403 blob_plane_requires_pod_principal", client.Token)
+			"unauthenticated PUT and every span would silently 401", client.Token)
 	}
 }
 
