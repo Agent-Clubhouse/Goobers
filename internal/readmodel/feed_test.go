@@ -231,3 +231,186 @@ func TestFeedRegistersBeforeReading(t *testing.T) {
 			"fires before the read must not be lost")
 	}
 }
+
+func waiterCount(feed *Feed) int {
+	feed.mu.Lock()
+	defer feed.mu.Unlock()
+	return len(feed.waiters)
+}
+
+// TestFeedUnregistersWaitersOnEveryExit pins that no path out of Since leaves a
+// channel nothing will ever close.
+//
+// Registration happens before the read, so every early return — a query error,
+// rows already available, a cancelled context — used to abandon its channel for
+// a Notify that, on a quiet instance, never comes. Repeated SSE
+// connect/disconnect then grew memory linearly.
+func TestFeedUnregistersWaitersOnEveryExit(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	t.Run("query error", func(t *testing.T) {
+		feed := NewFeed(store)
+		head, err := feed.Head(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		feed.readChanges = func(context.Context, uint64, int) ([]Change, error) {
+			return nil, errors.New("read failed")
+		}
+		for i := 0; i < 10; i++ {
+			if _, err := feed.Since(ctx, head, 10); err == nil {
+				t.Fatal("want the query error to surface")
+			}
+		}
+		if got := waiterCount(feed); got != 0 {
+			t.Errorf("waiters after 10 failed reads = %d, want 0", got)
+		}
+	})
+
+	t.Run("immediate rows", func(t *testing.T) {
+		feed := NewFeed(store)
+		head, err := feed.Head(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedChange(t, store, 100)
+		for i := 0; i < 10; i++ {
+			if _, err := feed.Since(ctx, head, 10); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := waiterCount(feed); got != 0 {
+			t.Errorf("waiters after 10 immediate reads = %d, want 0", got)
+		}
+	})
+
+	t.Run("cancellation", func(t *testing.T) {
+		feed := NewFeed(store)
+		head, err := feed.Head(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 10; i++ {
+			cancelled, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+			_, err := feed.Since(cancelled, head, 10)
+			cancel()
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("cancelled subscription %d returned %v", i, err)
+			}
+		}
+		if got := waiterCount(feed); got != 0 {
+			t.Errorf("waiters after 10 cancelled subscriptions = %d, want 0", got)
+		}
+	})
+}
+
+// TestFeedPagedCatchUpDoesNotRetainWaiters pins that a client catching up over
+// several pages does not leave one abandoned channel per page.
+func TestFeedPagedCatchUpDoesNotRetainWaiters(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	feed := NewFeed(store)
+	cursor, err := feed.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 6; i++ {
+		seedChange(t, store, i)
+	}
+
+	pages := 0
+	for {
+		page, err := feed.Since(ctx, cursor, 2)
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		cursor = page.Cursor
+		pages++
+		changes, err := store.Changes(ctx, cursor.Seq, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(changes) == 0 {
+			break
+		}
+	}
+	if pages < 2 {
+		t.Fatalf("catch-up took %d pages, want it paged", pages)
+	}
+	if got := waiterCount(feed); got != 0 {
+		t.Errorf("waiters after %d catch-up pages = %d, want 0", pages, got)
+	}
+}
+
+// TestFeedNotifyRacesWithUnregister pins that unregistering does not cost a
+// wakeup: blocked readers must still be woken while other subscriptions are
+// being cancelled concurrently.
+func TestFeedNotifyRacesWithUnregister(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	store := openTestStore(t)
+	feed := NewFeed(store)
+	head, err := feed.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var churn sync.WaitGroup
+	stop := make(chan struct{})
+	for i := 0; i < 4; i++ {
+		churn.Add(1)
+		go func() {
+			defer churn.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				short, cancelShort := context.WithTimeout(ctx, time.Millisecond)
+				_, _ = feed.Since(short, head, 10)
+				cancelShort()
+			}
+		}()
+	}
+
+	var readers sync.WaitGroup
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			if _, err := feed.Since(ctx, head, 10); err != nil {
+				errs <- err
+			}
+		}()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	seedChange(t, store, 3)
+	for i := 0; i < 20; i++ {
+		feed.Notify()
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		readers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a blocked reader was never woken; concurrent unregister must not lose wakeups")
+	}
+	close(stop)
+	churn.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("reader failed: %v", err)
+	}
+	if got := waiterCount(feed); got != 0 {
+		t.Errorf("waiters after the race = %d, want 0", got)
+	}
+}

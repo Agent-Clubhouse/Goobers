@@ -45,7 +45,7 @@ type Feed struct {
 	store *Store
 
 	mu      sync.Mutex
-	waiters []chan struct{}
+	waiters map[chan struct{}]struct{}
 
 	readChanges func(context.Context, uint64, int) ([]Change, error)
 }
@@ -66,18 +66,33 @@ func (f *Feed) Notify() {
 	waiters := f.waiters
 	f.waiters = nil
 	f.mu.Unlock()
-	for _, waiter := range waiters {
+	for waiter := range waiters {
 		close(waiter)
 	}
 }
 
-// wait returns a channel closed on the next Notify.
-func (f *Feed) wait() <-chan struct{} {
+// wait returns a channel closed on the next Notify, and the operation that
+// removes that exact channel from the waiter set.
+//
+// Only Notify used to clear waiters, so every path out of Since that did not
+// end in a wakeup — a query error, rows already available, a cancelled
+// context — left an unreachable channel behind. On a quiet instance nothing
+// ever notifies, so repeated connect/disconnect grew the set without bound.
+// Unregistering under the same mutex keeps the register-before-read ordering
+// while bounding the set by the number of live waiters.
+func (f *Feed) wait() (<-chan struct{}, func()) {
 	waiter := make(chan struct{})
 	f.mu.Lock()
-	f.waiters = append(f.waiters, waiter)
+	if f.waiters == nil {
+		f.waiters = make(map[chan struct{}]struct{})
+	}
+	f.waiters[waiter] = struct{}{}
 	f.mu.Unlock()
-	return waiter
+	return waiter, func() {
+		f.mu.Lock()
+		delete(f.waiters, waiter)
+		f.mu.Unlock()
+	}
 }
 
 // Since returns changes after a cursor, blocking until there are some or the
@@ -105,13 +120,15 @@ func (f *Feed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPositio
 		// commits between the read and the registration — the subscriber would
 		// then block until the next unrelated commit, and a quiet instance could
 		// sit on a stale view indefinitely.
-		waiter := f.wait()
+		waiter, unregister := f.wait()
 
 		changes, err := f.readChanges(ctx, cursor.Seq, limit)
 		if err != nil {
+			unregister()
 			return FeedPosition{}, err
 		}
 		if len(changes) > 0 {
+			unregister()
 			next := cursor
 			next.Seq = changes[len(changes)-1].Seq
 			return FeedPosition{Cursor: next, Changes: changes}, nil
@@ -119,6 +136,7 @@ func (f *Feed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPositio
 
 		select {
 		case <-ctx.Done():
+			unregister()
 			return FeedPosition{}, ctx.Err()
 		case <-waiter:
 		}
