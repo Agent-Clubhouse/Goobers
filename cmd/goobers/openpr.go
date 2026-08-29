@@ -214,13 +214,26 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// failure must never block a legitimate PR — and gate on haveIssue so
 	// issue-less runs (other workflows, generic PRs) keep exactly today's
 	// behavior.
+	//
+	// The read must target the project the work item actually lives in (#3648).
+	// On ADO the backlog is a different project from the code repo the branch
+	// and PR land in, so a GetWorkItem addressed at the routed code repo returns
+	// not-found for every claimed item — and because the check fails open, that
+	// silently reinstates exactly the stale PR #947 exists to prevent. Only the
+	// work-item read is re-addressed (backlogRepoRefForStage); the PR itself
+	// still opens against the routed code repository.
 	if haveIssue && issueID != "" {
+		issuesRepo := backlogRepoRefForStage(root, repo)
 		ctxCheck, cancelCheck := providerCommandContext()
-		item, checkErr := provider.GetWorkItem(ctxCheck, repo, issueID)
+		item, checkErr := provider.GetWorkItem(ctxCheck, issuesRepo, issueID)
 		cancelCheck()
 		switch {
+		case providers.IsNotFoundError(checkErr):
+			pf(stderr, "warning: claimed issue #%s does not resolve in %s — the staleness re-check could not confirm it is still open; proceeding\n",
+				issueID, repositoryDisplayName(issuesRepo))
 		case checkErr != nil:
-			pf(stderr, "warning: could not re-check issue #%s state before opening PR (%v) — proceeding\n", issueID, checkErr)
+			pf(stderr, "warning: could not re-check issue #%s state in %s before opening PR (%v) — proceeding\n",
+				issueID, repositoryDisplayName(issuesRepo), checkErr)
 		case item.State != "" && !strings.EqualFold(item.State, "open"):
 			pf(stdout, "issue #%s is no longer open (state %q) since it was claimed — aborting without opening a PR (#947)\n", issueID, item.State)
 			if err := writeOpenPRResult(resultFile, false, 0, ""); err != nil {

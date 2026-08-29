@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/runnercap"
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
 	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
@@ -208,6 +209,37 @@ func TestPreV30SurfaceRefusedOnEarlierVersions(t *testing.T) {
 			WithGaggleRunsOn(&apiv1.GaggleRunsOn{OS: "linux"}))
 		if err == nil || !strings.Contains(err.Error(), "the gaggle declares runsOn, which requires every workflow in the gaggle to pin dslVersion \"3.0\"") {
 			t.Fatalf("Compile(%s, gaggle floor) error = %v, want pairing refusal", version, err)
+		}
+
+		// privilege=windows-admin (#3619) is the one product-interpreted
+		// capability token, and requiredCapabilities has no OS and no
+		// coherence rule: a 2.0 task naming it would pin to an admin-providing
+		// class and render ContainerAdministrator through the frozen
+		// interpreter's surface. Refused by the same router arm, on the task
+		// and on the gaggle-level set the compile option unions in.
+		withAdminToken := spec(func(s *apiv1.WorkflowSpec) {
+			s.Tasks[0].RequiredCapabilities = []string{"dotnet@8", runnercap.CapabilityWindowsAdmin}
+		})
+		_, err = Compile(Definition{Name: "admin-token", Version: 1, DSLVersion: version, Spec: withAdminToken},
+			WithPreviewFeatures(true))
+		if err == nil || !strings.Contains(err.Error(), `task "implement" declares requiredCapabilities "privilege=windows-admin"`) ||
+			!strings.Contains(err.Error(), `exists only as runsOn.capabilities under runsOn.os: windows on dslVersion "3.0"`) {
+			t.Fatalf("Compile(%s, requiredCapabilities windows-admin) error = %v, want the router refusal", version, err)
+		}
+		_, err = Compile(Definition{Name: "gaggle-admin-token", Version: 1, DSLVersion: version, Spec: spec(nil)},
+			WithPreviewFeatures(true),
+			WithGaggleRequiredCapabilities([]string{"go@1.26", runnercap.CapabilityWindowsAdmin}))
+		if err == nil || !strings.Contains(err.Error(), `the gaggle declares requiredCapabilities "privilege=windows-admin"`) {
+			t.Fatalf("Compile(%s, gaggle requiredCapabilities windows-admin) error = %v, want the router refusal", version, err)
+		}
+		// Every other token stays an opaque tag on 2.0 — byte-identity for
+		// the requiredCapabilities documents that exist today.
+		withPlainTokens := spec(func(s *apiv1.WorkflowSpec) {
+			s.Tasks[0].RequiredCapabilities = []string{"dotnet@8", "privilege=other"}
+		})
+		if _, err := Compile(Definition{Name: "plain-tokens", Version: 1, DSLVersion: version, Spec: withPlainTokens},
+			WithPreviewFeatures(true), WithGaggleRequiredCapabilities([]string{"go@1.26"})); err != nil {
+			t.Fatalf("Compile(%s, plain requiredCapabilities) = %v, want success", version, err)
 		}
 
 		// A nil floor (the value every pre-Goobernetes gaggle produces) stays
