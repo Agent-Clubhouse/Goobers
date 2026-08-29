@@ -10,11 +10,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
@@ -572,5 +575,226 @@ func TestDispatchExecRecordsExitCodeMetric(t *testing.T) {
 				t.Fatal("every terminal envelope carries a summary locally")
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// env:default-deny (#3725)
+// ---------------------------------------------------------------------------
+
+// envDefaultDenyProbe runs one stage through runDeclaredStage with a live
+// credential plane and reports what the SUBPROCESS actually saw.
+//
+// It reads the probe out of the command's own stdout rather than out of
+// stageEnvironment(), because the seam #3725 is about is the cmd.Env
+// composition — stageEnvironment() plus credEnv plus extraEnv — and a helper-
+// level assertion cannot see the append order that makes credentials survive
+// the filter (project lesson L-153: the evidence has to come from the far side
+// of the process boundary).
+//
+// Values are reported as PRESENT/ABSENT, never echoed: the same MEASURED
+// template the control-plane strip already uses ("POD_TOKEN=PRESENT in a
+// 24-variable inherited environment"), and it keeps a credential value out of
+// the test's own output.
+func envDefaultDenyProbe(t *testing.T, defaultDeny bool) map[string]string {
+	t.Helper()
+
+	const capabilityName = "provider:contents:read"
+	credVar := capability.CredentialEnvVar(capabilityName)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != apicontract.CredentialResolvePath {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"credentials": []map[string]string{{"capability": capabilityName, "value": "minted-at-stage-start"}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv(dispatcher.EnvRunID, "run-3725")
+	t.Setenv(dispatcher.EnvStage, "cli-on-pod")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
+	t.Setenv(dispatcher.EnvPodToken, "goobers-pod.tok")
+	t.Setenv(dispatcher.EnvStageCapabilities, `["`+capabilityName+`"]`)
+	t.Setenv(dispatcher.EnvStageWorkspace, "")
+	t.Setenv(dispatcher.EnvStageScript, "")
+	t.Setenv(dispatcher.EnvStageTimeout, "30s")
+
+	// What the IMAGE exports. Nothing declared it, nothing allowlists it, and
+	// under env:default-deny it is exactly what must not reach the stage.
+	t.Setenv("IMAGE_AMBIENT_VAR", "baked-into-the-runner-image")
+	// What the DISPATCHER stamped for this stage: its declared env, its
+	// inputs, and (CLI stages) its routed repository.
+	t.Setenv("DECLARED_STAGE_VAR", "from-the-workflow")
+	t.Setenv(dispatcher.InputEnvVar("probe"), "declared-input")
+	t.Setenv("GOOBERS_REPO_NAME", "Goobers")
+	t.Setenv(dispatcher.EnvStageIsCLI, "true")
+
+	if defaultDeny {
+		t.Setenv(dispatcher.EnvStageEnvDefaultDeny, "true")
+		allow, err := json.Marshal([]string{"DECLARED_STAGE_VAR", dispatcher.InputEnvVar("probe"), "GOOBERS_REPO_NAME"})
+		if err != nil {
+			t.Fatalf("marshal allowlist: %v", err)
+		}
+		t.Setenv(dispatcher.EnvStageEnvAllow, string(allow))
+	} else {
+		t.Setenv(dispatcher.EnvStageEnvDefaultDeny, "")
+		t.Setenv(dispatcher.EnvStageEnvAllow, "")
+	}
+
+	probes := []string{credVar, "IMAGE_AMBIENT_VAR", "DECLARED_STAGE_VAR", dispatcher.InputEnvVar("probe"), "GOOBERS_REPO_NAME", "PATH", dispatcher.EnvPodToken}
+	var script strings.Builder
+	for _, name := range probes {
+		// ${X:+PRESENT} reports presence without ever printing the value, so a
+		// credential cannot reach this test's output or a CI log.
+		fmt.Fprintf(&script, "printf '%s=%%s\\n' \"${%s:+PRESENT}\"; ", name, name)
+	}
+	command, err := json.Marshal([]string{"sh", "-c", script.String()})
+	if err != nil {
+		t.Fatalf("marshal command: %v", err)
+	}
+	t.Setenv(dispatcher.EnvStageCommand, string(command))
+
+	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("probe stage did not run: %+v", result)
+	}
+	stdout, _ := result.Outputs["stdout"].(string)
+	seen := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		name, state, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		if state == "" {
+			state = "ABSENT"
+		}
+		seen[name] = state
+	}
+	return seen
+}
+
+// #3725: implementing env:default-deny must NOT strip the stage's resolved
+// credentials.
+//
+// The credential plane resolves at stage start and the resulting
+// GOOBERS_CRED_<CAP> is appended to cmd.Env AFTER the inherited environment is
+// filtered — so it survives by construction, not by being named in an
+// allowlist. Routing it through procenv's allowlist instead (the natural
+// "build one map, filter once" refactor) drops it, and the failure surfaces at
+// GitHub as a 401/404 on one runner class and not another.
+func TestEnvDefaultDenyKeepsResolvedCredentials(t *testing.T) {
+	seen := envDefaultDenyProbe(t, true)
+	credVar := capability.CredentialEnvVar("provider:contents:read")
+	if seen[credVar] != "PRESENT" {
+		t.Fatalf("%s = %q, want PRESENT — env:default-deny stripped the credential the stage just resolved; "+
+			"this fails at the PROVIDER (401/404 from GitHub), not here (#3725). Full probe: %v", credVar, seen[credVar], seen)
+	}
+}
+
+// The other half of the same commit: env:default-deny must actually DENY. An
+// ambient variable the image exported, that nothing declared and nothing
+// allowlists, must not reach a stage on a class that promises isolation.
+func TestEnvDefaultDenyDropsAmbientImageVariables(t *testing.T) {
+	seen := envDefaultDenyProbe(t, true)
+	if seen["IMAGE_AMBIENT_VAR"] != "ABSENT" {
+		t.Fatalf("IMAGE_AMBIENT_VAR = %q, want ABSENT — a runner class declaring env:default-deny handed the stage "+
+			"the image's ambient environment, which is the restriction being unenforced (#3725). Full probe: %v", seen["IMAGE_AMBIENT_VAR"], seen)
+	}
+	// The restriction denies the AMBIENT environment, not the stage's own
+	// declaration. Its declared env, its inputs, and its routed repository are
+	// dispatcher-stamped and must survive, or the fix trades #3725's failure
+	// mode for the identical one a seam over.
+	for _, name := range []string{"DECLARED_STAGE_VAR", dispatcher.InputEnvVar("probe"), "GOOBERS_REPO_NAME"} {
+		if seen[name] != "PRESENT" {
+			t.Fatalf("%s = %q, want PRESENT — the dispatcher stamped it for this stage. Full probe: %v", name, seen[name], seen)
+		}
+	}
+	// procenv's own base still applies: without PATH the stage cannot find its
+	// toolchain, which is the "browsers were present and INVISIBLE" failure.
+	if seen["PATH"] != "PRESENT" {
+		t.Fatalf("PATH = %q, want PRESENT — procenv's allowlist is the floor, not an empty environment", seen["PATH"])
+	}
+	// The control-plane strip still runs after the allowlist rebuild.
+	if seen[dispatcher.EnvPodToken] != "ABSENT" {
+		t.Fatalf("%s = %q, want ABSENT — the pod token authorizes surrendering this run's results", dispatcher.EnvPodToken, seen[dispatcher.EnvPodToken])
+	}
+}
+
+// Parity, and the ablation's other side: a stage on a class WITHOUT
+// env:default-deny still inherits the pod's whole environment. The fix is
+// additive — nothing changes for the classes every existing stage runs on.
+func TestWithoutEnvDefaultDenyTheAmbientEnvironmentIsUnchanged(t *testing.T) {
+	seen := envDefaultDenyProbe(t, false)
+	for _, name := range []string{"IMAGE_AMBIENT_VAR", "DECLARED_STAGE_VAR", dispatcher.InputEnvVar("probe"), "GOOBERS_REPO_NAME", "PATH"} {
+		if seen[name] != "PRESENT" {
+			t.Fatalf("%s = %q, want PRESENT — a class not declaring env:default-deny must be unaffected. Full probe: %v", name, seen[name], seen)
+		}
+	}
+	if seen[capability.CredentialEnvVar("provider:contents:read")] != "PRESENT" {
+		t.Fatal("the credential must reach an unrestricted stage too")
+	}
+}
+
+// A stage cannot turn its own isolation off. The signal is dispatcher-stamped
+// and privileged, so it is stripped from the stage's environment before the
+// command runs — a stage that could READ it learns its posture, and one that
+// could SET it would disable the restriction it was placed under.
+func TestEnvDefaultDenySignalIsNeverVisibleToTheStage(t *testing.T) {
+	for _, name := range []string{dispatcher.EnvStageEnvDefaultDeny, dispatcher.EnvStageEnvAllow} {
+		if !slices.Contains(dispatcher.DispatcherPrivilegedEnv, name) {
+			t.Fatalf("%s must be in DispatcherPrivilegedEnv: a stage that can read or rewrite it authorizes itself", name)
+		}
+	}
+
+	t.Setenv(dispatcher.EnvStageEnvDefaultDeny, "true")
+	t.Setenv(dispatcher.EnvStageEnvAllow, `["DECLARED_STAGE_VAR"]`)
+	t.Setenv("DECLARED_STAGE_VAR", "from-the-workflow")
+	// Even a goobers-CLI stage, which keeps the run-identity half of the
+	// control plane, must not see the privileged half.
+	t.Setenv(dispatcher.EnvStageIsCLI, "true")
+
+	for _, kv := range stageEnvironment() {
+		name, _, _ := strings.Cut(kv, "=")
+		if name == dispatcher.EnvStageEnvDefaultDeny || name == dispatcher.EnvStageEnvAllow {
+			t.Fatalf("stage environment leaks the env:default-deny signal %q", name)
+		}
+	}
+}
+
+// The allowlist re-admits variables BY NAME, so a stage whose declared `env:`
+// named a control variable would re-admit it into its own environment — unless
+// the control-plane strip runs after the rebuild, not before. That ordering is
+// the property under test.
+func TestEnvDefaultDenyAllowlistCannotReadmitTheControlPlane(t *testing.T) {
+	t.Setenv(dispatcher.EnvStageEnvDefaultDeny, "true")
+	t.Setenv(dispatcher.EnvStageEnvAllow, `["`+dispatcher.EnvPodToken+`","`+dispatcher.EnvDaemonAPI+`"]`)
+	t.Setenv(dispatcher.EnvPodToken, "goobers-pod.tok")
+	t.Setenv(dispatcher.EnvDaemonAPI, "https://daemon.invalid:8080")
+	t.Setenv(dispatcher.EnvStageIsCLI, "true")
+
+	for _, kv := range stageEnvironment() {
+		name, _, _ := strings.Cut(kv, "=")
+		if name == dispatcher.EnvPodToken || name == dispatcher.EnvDaemonAPI {
+			t.Fatalf("the allowlist re-admitted control variable %q; the control-plane strip must run AFTER the rebuild", name)
+		}
+	}
+}
+
+// An unparseable or missing allowlist must fail CLOSED — procenv's built-in
+// base alone, never a fallback to os.Environ().
+func TestEnvDefaultDenyFailsClosedOnAnUnparseableAllowlist(t *testing.T) {
+	t.Setenv(dispatcher.EnvStageEnvDefaultDeny, "true")
+	t.Setenv(dispatcher.EnvStageEnvAllow, "not json at all")
+	t.Setenv("IMAGE_AMBIENT_VAR", "baked-into-the-runner-image")
+
+	for _, kv := range stageEnvironment() {
+		if name, _, _ := strings.Cut(kv, "="); name == "IMAGE_AMBIENT_VAR" {
+			t.Fatal("a malformed allowlist must fall back to procenv's base, not to os.Environ()")
+		}
 	}
 }

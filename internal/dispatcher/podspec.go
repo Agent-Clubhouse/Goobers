@@ -104,6 +104,46 @@ const (
 	// Privileged: a stage that could rewrite it would choose which instructions
 	// it runs under.
 	EnvAgenticKitDigest = "GOOBERS_AGENTIC_KIT"
+
+	// EnvStageEnvDefaultDeny is stamped "true" when the RESOLVED RUNNER CLASS
+	// enforces env:default-deny (#3725). It is what makes that restriction real
+	// in the pod: without it __dispatch-exec hands the stage the container's
+	// whole os.Environ() minus the control plane, so a class declaring
+	// env:default-deny got the label, the NetworkPolicy, and none of the
+	// environment isolation the name promises.
+	//
+	// Privileged, and this is the security property, not an accident of
+	// grouping: the restriction must be DISPATCHER-STAMPED and stage-invisible.
+	// A stage that could read it learns which posture it is under; a stage that
+	// could set or clear it turns its own isolation off — self-authorization by
+	// exactly the shape EnvStageWorkspace/EnvStageIsCLI are privileged to avoid.
+	// The signal never comes from the stage's own command.
+	//
+	// Derived from the RUNNER's enforced set rather than the stage's required
+	// set, the same source every other restriction binding in this file reads
+	// (tmp:ephemeral's tmpfs, fs:readonly's readOnlyRootFilesystem). A stage
+	// that required nothing but LANDED on a restricted class gets the class's
+	// posture — which is the case #3725 was filed about: cli-stage-probe placed
+	// on linux-shell-strict and "worked because the restriction is
+	// unimplemented".
+	EnvStageEnvDefaultDeny = "GOOBERS_STAGE_ENV_DEFAULT_DENY"
+	// EnvStageEnvAllow carries, as a JSON array, the env var NAMES the
+	// dispatcher stamped ON THE STAGE'S BEHALF — its declared `env:` keys, its
+	// GOOBERS_INPUT_* inputs, its run context — plus the instance's declared
+	// envPassthrough. Stamped only alongside EnvStageEnvDefaultDeny, because
+	// only the filter reads it.
+	//
+	// It exists because in a pod those variables arrive as ORDINARY container
+	// environment variables, indistinguishable at os.Environ() from whatever the
+	// image happens to export. Filtering the inherited environment through
+	// procenv's allowlist alone would therefore drop the stage's own declared
+	// env and its inputs — the same restriction-conditional, diagnosed-at-the-
+	// far-side failure #3725 was filed about, one seam over. The dispatcher is
+	// the only party that knows which ambient names it put there, so it says so.
+	//
+	// Privileged: a stage that could extend this list would re-admit exactly the
+	// ambient variables the restriction exists to deny it.
+	EnvStageEnvAllow = "GOOBERS_STAGE_ENV_ALLOW"
 )
 
 // DispatcherControlEnv is the set of variables the DISPATCHER stamps for its
@@ -129,6 +169,7 @@ var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
 	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvCheckoutCapability,
+	EnvStageEnvDefaultDeny, EnvStageEnvAllow,
 }
 
 // DispatcherRunIdentityEnv is the half that is operational identity rather than
@@ -351,7 +392,7 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 		ImagePullPolicy: corev1.PullAlways,
 		Command:         []string{"goobers"},
 		Args:            []string{DispatchExecCommand},
-		Env:             stageEnv(cfg, attempt),
+		Env:             stageEnv(cfg, attempt, class),
 	}
 
 	// Extra (non-goobers.dev) metadata merges FIRST; the dispatcher-owned
@@ -458,7 +499,7 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	// its own stage container actually runs the authored stage.
 	stage.Command = []string{"goobers"}
 	stage.Args = []string{DispatchExecCommand}
-	stage.Env = append(stage.Env, stageEnv(cfg, attempt)...)
+	stage.Env = append(stage.Env, stageEnv(cfg, attempt, class)...)
 	stampResources(cfg, attempt, runner, stage, class, windows)
 	stampVolumes(cfg, attempt, spec, stage, class, windows)
 	// Security bindings stamp the STAGE container and the pod level; sidecar
@@ -591,7 +632,12 @@ func activeDeadlineSeconds(cfg Config, attempt Attempt) int64 {
 	return int64(deadline.Seconds())
 }
 
-func stageEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
+// stageEnv renders the dispatcher-owned half of the stage container's
+// environment. class is the RESOLVED RUNNER's enforced restriction set — the
+// same map every other binding in this file reads — because one of those
+// bindings (env:default-deny, #3725) is now an environment stamp rather than a
+// volume or a security context.
+func stageEnv(cfg Config, attempt Attempt, class map[string]bool) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{Name: EnvRunID, Value: attempt.RunID},
 		{Name: EnvGaggle, Value: attempt.Gaggle},
@@ -655,7 +701,48 @@ func stageEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 			env = append(env, corev1.EnvVar{Name: EnvStageCapabilities, Value: string(encoded)})
 		}
 	}
+	// env:default-deny (#3725). Stamped ONLY for a class that enforces it, so
+	// every other pod spec is byte-identical to before this existed.
+	if class[string(runnercap.RestrictionEnvDefaultDeny)] {
+		allow, _ := json.Marshal(stageEnvAllowlist(cfg, attempt))
+		env = append(env,
+			corev1.EnvVar{Name: EnvStageEnvDefaultDeny, Value: "true"},
+			corev1.EnvVar{Name: EnvStageEnvAllow, Value: string(allow)},
+		)
+	}
 	return env
+}
+
+// stageEnvAllowlist names the ambient container variables __dispatch-exec must
+// keep when it applies env:default-deny: everything the DISPATCHER itself
+// stamped for the stage above, plus the instance's operator-declared
+// envPassthrough.
+//
+// The list is names only — never values — because the pod reads the values out
+// of its own environment, where the container runtime already put them.
+//
+// It deliberately does NOT name GOOBERS_CRED_* or GOOBERS_REPO_*-by-prefix.
+// Resolved credentials never pass through this filter at all: they are minted
+// in-pod at stage start and appended to the command's environment AFTER it
+// (dispatchexec.go). Naming them here would be an allowlist entry that looks
+// load-bearing and is not — and a prefix grant for any image-baked GOOBERS_CRED_*
+// besides. The run-context names (GOOBERS_REPO_* and friends) ARE listed, by
+// exact name, because those the dispatcher really does stamp; the CLI/non-CLI
+// control-plane split still decides whether a given stage keeps them.
+//
+// A control-plane name reaching this list would be re-admitted here and then
+// removed again by the control-plane strip that runs after it, so the ordering
+// in stageEnvironment() is what makes this list unable to leak the pod token
+// even if a stage declared `env: {GOOBERS_POD_TOKEN: ...}`.
+func stageEnvAllowlist(cfg Config, attempt Attempt) []string {
+	names := make([]string, 0, len(attempt.Env)+len(attempt.Inputs)+len(attempt.RunContext)+len(cfg.EnvPassthrough))
+	names = append(names, sortedKeys(attempt.Env)...)
+	for _, key := range sortedKeys(attempt.Inputs) {
+		names = append(names, InputEnvVar(key))
+	}
+	names = append(names, sortedKeys(attempt.RunContext)...)
+	names = append(names, cfg.EnvPassthrough...)
+	return names
 }
 
 // stampResources sets requests from the stage's runsOn minimums and limits

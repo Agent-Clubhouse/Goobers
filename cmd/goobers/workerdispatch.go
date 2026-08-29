@@ -132,6 +132,11 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot string) (st
 		EmbeddedVersion: build.Version,
 		BlobEndpoint:    os.Getenv("GOOBERS_BLOB_ENDPOINT"),
 		WriteAPIBase:    daemonAPI,
+		// The same operator-declared passthrough list the local executor gets
+		// (runnerwiring_executors.go: shell.ExtraEnvAllowlist), so a stage on a
+		// runner class enforcing env:default-deny keeps the vars an operator
+		// declared for it instead of losing them by substrate (#3725/#736).
+		EnvPassthrough: cfg.Runner.EnvPassthrough,
 	}, dispatcher.NewKubernetesPodAPI(client), nil, dispatcher.PlaneSurrenderGate{Plane: surrenders}, nil)
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)

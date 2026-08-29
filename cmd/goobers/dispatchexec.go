@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/platform/proc"
+	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/signals"
 )
 
@@ -217,6 +218,23 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 			extraEnv = append(extraEnv, dispatcher.InputEnvVar("resultFile")+"="+implicit)
 		}
 	}
+	// ORDER IS A SECURITY PROPERTY, not a style choice (#3725). Only
+	// stageEnvironment() — the INHERITED container environment — is subject to
+	// the env:default-deny allowlist. credEnv (the credentials this stage's own
+	// declared capabilities just resolved to) and extraEnv (the git exemption,
+	// the implicit resultFile) are appended AFTER it and never travel through
+	// it.
+	//
+	// Collapsing this into one build-a-map-then-filter-once step is the natural
+	// refactor and is exactly the bug #3725 was filed to prevent: procenv's
+	// allowlist has no knowledge of GOOBERS_CRED_*, so a single filter strips
+	// the credential the stage just resolved. The failure lands at the PROVIDER
+	// — providerToken() reads empty, the CLI makes an unauthenticated call,
+	// GitHub answers 401/404 — on a restricted runner class and not on a plain
+	// one, which is a long way from "the env allowlist dropped the credential".
+	// Answering it by allowlisting GOOBERS_CRED_* BY NAME would be worse: it
+	// would also admit any image-baked GOOBERS_CRED_* the isolation exists to
+	// deny. Keep the append.
 	cmd.Env = append(append(stageEnvironment(), credEnv...), extraEnv...)
 	capturedStdout := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
 	capturedStderr := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
@@ -494,6 +512,10 @@ func mergeResultFileOutputs(outputs map[string]interface{}, data []byte) {
 // Kept: the procenv allowlist (the same one the local executor uses) and the
 // stage's declared inputs, which a stage is meant to read.
 // Dropped: every dispatcher control variable.
+//
+// It builds ONLY the inherited-container-environment half. The stage's resolved
+// credentials and the executor's own extras are appended by the caller AFTER
+// this returns and never pass through it — see the call site.
 func stageEnvironment() []string {
 	// The pod's environment is the stage's environment: podspec stamps the
 	// stage's declared Env as NATIVE container variables, and the runner image
@@ -507,15 +529,23 @@ func stageEnvironment() []string {
 	// work that failed. MEASURED before this filter, inside a real pod:
 	// POD_TOKEN=PRESENT in a 24-variable inherited environment.
 	//
-	// NOTE, deliberately not fixed here: this is NOT procenv's default-deny
-	// allowlist, so a runner declaring env:default-deny still does not get it.
-	// True parity needs the instance's envPassthrough threaded into the pod,
-	// because in-pod the allowlisted values come from the IMAGE rather than
-	// from the daemon's environment. That is a design change, not a filter.
+	// UNLESS the runner class enforces env:default-deny (#3725), in which case
+	// inheriting the image's ambient environment is exactly what the class
+	// promises not to do, and the inherited half is rebuilt from procenv's
+	// allowlist instead — the same list the local executor composes from.
+	inherited := os.Environ()
+	if os.Getenv(dispatcher.EnvStageEnvDefaultDeny) == "true" {
+		inherited = procenv.BaseEnvWith(dispatcherStampedEnvNames())
+	}
 	// A goobers-CLI stage keeps its run identity; every other stage is stripped
 	// of the whole control plane. The privileged half — above all the pod token
 	// — is removed either way, so this widens what a CLI stage can READ, never
 	// what any stage can DO. See DispatcherRunIdentityEnv for why the split.
+	//
+	// It runs AFTER the default-deny rebuild, not before, and that order is
+	// load-bearing: the dispatcher-stamped allowlist re-admits variables by
+	// name, so a stage whose declared `env:` named a control variable would
+	// otherwise have re-admitted it into its own environment.
 	stripped := dispatcher.DispatcherControlEnv
 	if os.Getenv(dispatcher.EnvStageIsCLI) == "true" {
 		stripped = dispatcher.DispatcherPrivilegedEnv
@@ -524,7 +554,6 @@ func stageEnvironment() []string {
 	for _, name := range stripped {
 		control[name] = struct{}{}
 	}
-	inherited := os.Environ()
 	env := make([]string, 0, len(inherited))
 	for _, kv := range inherited {
 		name, _, ok := strings.Cut(kv, "=")
@@ -537,6 +566,31 @@ func stageEnvironment() []string {
 		env = append(env, kv)
 	}
 	return env
+}
+
+// dispatcherStampedEnvNames decodes the names the DISPATCHER stamped on this
+// stage's behalf (GOOBERS_STAGE_ENV_ALLOW): its declared `env:` keys, its
+// GOOBERS_INPUT_* inputs, its run context, and the instance's declared
+// envPassthrough.
+//
+// They need naming because in a pod they arrive as ordinary container
+// variables — at os.Environ() a stage's own declared `FOO=bar` is
+// indistinguishable from one the image exported — so procenv's allowlist alone
+// would drop the stage's declared environment and its inputs along with the
+// image's ambient vars.
+//
+// A missing or unparseable list yields nothing, which fails CLOSED: the stage
+// runs on procenv's built-in allowlist alone rather than on os.Environ().
+func dispatcherStampedEnvNames() []string {
+	encoded := strings.TrimSpace(os.Getenv(dispatcher.EnvStageEnvAllow))
+	if encoded == "" {
+		return nil
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(encoded), &names); err != nil {
+		return nil
+	}
+	return names
 }
 
 // resolveStageCredentials asks the daemon's credential plane for the
