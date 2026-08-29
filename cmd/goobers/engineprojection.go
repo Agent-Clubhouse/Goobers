@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
@@ -13,12 +14,27 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
+// engineProjectionClient is the Temporal surface this loop needs: the
+// reconciler's own client slice plus the Close it owns for shutdown. Narrowed
+// from client.Client (which satisfies it) so the DAEMON WIRING BELOW is
+// drivable by a fake — the reconciler's options, span source included, are
+// configured here, and #3805 was a defect in exactly this kind of call site.
+type engineProjectionClient interface {
+	engine.CompletedRunClient
+	Close()
+}
+
 var (
 	engineProjectionInterval = 30 * time.Second
-	dialEngineProjection     = bootstrap.DialTemporal
+	dialEngineProjection     = func(hostPort, namespace string) (engineProjectionClient, error) {
+		return bootstrap.DialTemporal(hostPort, namespace)
+	}
+	// startEngineProjection is a var so up.go's call — and the blob store it
+	// hands over — is assertable at the call site (#3805).
+	startEngineProjection = launchEngineProjection
 )
 
-func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, tel *telemetry.Client, liveJournals *livejournal.Writer) (func(), error) {
+func launchEngineProjection(ctx context.Context, l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, tel *telemetry.Client, liveJournals *livejournal.Writer, blobs blobstore.Store) (func(), error) {
 	if !cfg.EngineProjectionEnabled() {
 		return func() {}, nil
 	}
@@ -44,6 +60,13 @@ func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance
 	// completed run is written, backdated to the run's own timestamps. nil when
 	// telemetry is disabled, which the synthesizer treats as a no-op.
 	reconciler = reconciler.WithSpans(newEngineSpanSink(tel))
+	// The SAME blob store newLiveJournalWriter adopts spans from (#3805).
+	// Both of the reconciler's projections need it: the repair/backfill write
+	// so a recovered run keeps its transcripts, and — the load-bearing half —
+	// the DS5 verification re-projection, so a span the live writer adopted
+	// does not re-project as a conformance-normative span_unavailable error
+	// event and get filed as a divergence on every agentic run.
+	reconciler = reconciler.WithSpanSource(blobs)
 	if liveJournals != nil {
 		// DS5: the reconciler is repair/verify, never a second writer, for
 		// runs the live writer authored — skip open journals, verify complete

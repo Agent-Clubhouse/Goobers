@@ -352,6 +352,13 @@ type podArtifactRecorder struct {
 	dir      string
 }
 
+// RecordArtifact scrubs ONCE, derives the content address of the scrubbed
+// bytes, and hands those SAME bytes to recordStageArtifacts — which is both
+// the journal emit and (#3823) the blob-plane write-through. Re-scrubbing
+// between the digest and the PUT would let the stored content drift from the
+// address it is stored under, and blobstore.Dir.Get re-verifies the digest on
+// the way out, so the drift would surface as a permanently unavailable blob
+// rather than as an error here.
 func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
 	scrubbed := data
 	if r.scrubber != nil {
@@ -370,7 +377,35 @@ func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.R
 
 // RecordSpanWithSchema satisfies harness.SpanRecorder. A span is an artifact
 // under a "spans" prefix — the same shape the worker-side recorder uses, so a
-// span produced in a pod lands under the same name it would locally.
+// span produced in a pod lands under the same name it would locally — and,
+// BECAUSE it goes through RecordArtifact, it is also published to the blob
+// plane under the exact digest its ref names.
+//
+// THAT PUBLISH IS THE HALF THAT MAKES THE DAEMON'S SpanSource WIRING MEAN
+// ANYTHING (#3805). The engine workflow never holds the transcript: it emits a
+// pointer-only span op (internal/engine/journal.go JournalSpanOp) and the
+// daemon's live writer fetches the bytes by digest FROM THE BLOB STORE. Until
+// something PUT them there, wiring a span source alone would only change the
+// recorded failure from "no span source configured" to "blobstore: blob not
+// found" — the same span_unavailable code, the same missing transcript.
+//
+// PRECISELY: the daemon does already receive these exact bytes, at this exact
+// digest, moments earlier — recordStageArtifacts puts them on the wire as a
+// livejournal.OpArtifact and the daemon writes them under runs/<id>/artifacts/.
+// What it could not do is FIND them by digest: the span source reads the blob
+// store, and nothing mirrored an artifact op into it. (The alternative design —
+// have the daemon mirror artifact ops named spans/* into its store — is
+// recorded on #3805; it trades a second transfer for a dependency on artifact
+// NAMING, and loses both copies if the artifact emit fails.)
+//
+// ONE WRITE-THROUGH, NOT TWO. #3823's putStageArtifactBlob, inside
+// recordStageArtifacts, already publishes every content-addressed stream a pod
+// produces — spans included, since they reach it through RecordArtifact. A
+// second, span-specific PUT beside it would duplicate the transfer, carry its
+// own timeout, and give the same bytes two chances to disagree about which
+// slice the digest committed to. The properties #3805 needs are exactly the
+// ones that helper already has: the bytes the ref was derived from, best effort
+// with a stderr line, under one batch budget (blobWriteThroughBudget).
 func (r podArtifactRecorder) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error) {
 	_ = stage
 	_ = dataSchema
