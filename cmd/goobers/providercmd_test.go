@@ -47,6 +47,11 @@ type fakeIssueEvent struct {
 	event     string
 	label     string
 	createdAt time.Time
+	// actor is the bearer token of the request that caused the event (empty
+	// for fixture-seeded events) — the fake's stand-in for the actor login
+	// GitHub's label-event ledger records, so a test can pin WHICH credential
+	// applied a label, not only that it was applied.
+	actor string
 }
 
 type fakePR struct {
@@ -416,14 +421,44 @@ func (s *fakeGitHubServer) setIssueUpdatedAt(number int, at time.Time) {
 }
 
 func (s *fakeGitHubServer) appendLabelEventLocked(number int, label string, added bool, at time.Time) {
+	s.appendLabelEventAsLocked(number, label, added, at, "")
+}
+
+func (s *fakeGitHubServer) appendLabelEventAsLocked(number int, label string, added bool, at time.Time, actor string) {
 	s.nextEventID++
 	event := "unlabeled"
 	if added {
 		event = "labeled"
 	}
 	s.issueEvents = append(s.issueEvents, fakeIssueEvent{
-		id: s.nextEventID, number: number, event: event, label: label, createdAt: at,
+		id: s.nextEventID, number: number, event: event, label: label, createdAt: at, actor: actor,
 	})
+}
+
+// requestActor is the bearer token a request authenticated with, as the
+// fake's actor identity for the events it causes.
+func requestActor(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	for _, scheme := range []string{"Bearer ", "token "} {
+		if strings.HasPrefix(auth, scheme) {
+			return strings.TrimPrefix(auth, scheme)
+		}
+	}
+	return auth
+}
+
+// labelEvents returns an issue's label events in order as "labeled <label> by <actor>"
+// / "unlabeled <label> by <actor>" lines.
+func (s *fakeGitHubServer) labelEvents(number int) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, event := range s.issueEvents {
+		if event.number == number {
+			out = append(out, event.event+" "+event.label+" by "+event.actor)
+		}
+	}
+	return out
 }
 
 func (s *fakeGitHubServer) setLabelEventTime(number int, label string, added bool, at time.Time) {
@@ -544,8 +579,9 @@ func (s *fakeGitHubServer) handleSearchIssues(w http.ResponseWriter, r *http.Req
 }
 
 // createIssueLocked models POST /repos/o/r/issues: the next free number, open,
-// with the requested labels and a label event per label. Callers hold s.mu.
-func (s *fakeGitHubServer) createIssueLocked(title, body string, labels []string) *fakeIssue {
+// with the requested labels and a label event per label, attributed to
+// actor. Callers hold s.mu.
+func (s *fakeGitHubServer) createIssueLocked(title, body string, labels []string, actor string) *fakeIssue {
 	number := 1
 	for num := range s.issues {
 		if num >= number {
@@ -559,7 +595,7 @@ func (s *fakeGitHubServer) createIssueLocked(title, body string, labels []string
 	}
 	s.issues[number] = issue
 	for _, label := range labels {
-		s.appendLabelEventLocked(number, label, true, now)
+		s.appendLabelEventAsLocked(number, label, true, now, actor)
 	}
 	return issue
 }
@@ -574,7 +610,7 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 		decodeFakeJSON(r, &body)
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		issue := s.createIssueLocked(body.Title, body.Body, body.Labels)
+		issue := s.createIssueLocked(body.Title, body.Body, body.Labels, requestActor(r))
 		writeFakeJSON(w, issueJSON(issue))
 		return
 	}
@@ -803,12 +839,12 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			issue.labels = *body.Labels
 			for _, label := range before {
 				if !hasAllLabels(issue.labels, []string{label}) {
-					s.appendLabelEventLocked(num, label, false, time.Now().UTC())
+					s.appendLabelEventAsLocked(num, label, false, time.Now().UTC(), requestActor(r))
 				}
 			}
 			for _, label := range issue.labels {
 				if !hasAllLabels(before, []string{label}) {
-					s.appendLabelEventLocked(num, label, true, time.Now().UTC())
+					s.appendLabelEventAsLocked(num, label, true, time.Now().UTC(), requestActor(r))
 				}
 			}
 		}
@@ -868,6 +904,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 			out = append(out, map[string]any{
 				"id": event.id, "event": event.event, "created_at": event.createdAt,
 				"label": map[string]string{"name": event.label},
+				"actor": map[string]string{"login": event.actor},
 			})
 		}
 		writeFakeJSON(w, out)
@@ -893,7 +930,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 				continue
 			}
 			issue.labels = append(issue.labels, label)
-			s.appendLabelEventLocked(num, label, true, time.Now().UTC())
+			s.appendLabelEventAsLocked(num, label, true, time.Now().UTC(), requestActor(r))
 		}
 		writeFakeJSON(w, []map[string]string{})
 	case len(parts) >= 3 && parts[1] == "labels" && r.Method == http.MethodDelete:
@@ -909,7 +946,7 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		}
 		issue.labels = kept
 		if removed {
-			s.appendLabelEventLocked(num, label, false, time.Now().UTC())
+			s.appendLabelEventAsLocked(num, label, false, time.Now().UTC(), requestActor(r))
 		}
 		w.WriteHeader(http.StatusOK)
 	default:

@@ -80,11 +80,33 @@ Every field is optional, including the whole block (D3). Semantics per field:
 - **`capabilities`** — the open toolchain tag set, exact-string set membership against the
   matched runner's `provides.capabilities`, unchanged grammar
   (`internal/runnercap/runnercap.go` tokenPattern). Not a place for `os=*` tokens: CAP004
-  rejects them (D12).
+  rejects them (D12). Exactly one token is product-interpreted — **`privilege=windows-admin`**
+  (#3619, `runnercap.CapabilityWindowsAdmin`): the stage needs the Windows container's
+  administrator identity. It is a claim about what the substrate *offers*, not an isolation
+  effect, so it is a capability and the closed restriction list is unchanged. Rules: legal only
+  when the stage's effective `os` is `windows` (declared on the stage or by the gaggle floor —
+  refused, never defaulted, anywhere else); places only on a runner whose
+  `provides.capabilities` claims it (ordinary exact-match solve); the dispatcher stamps
+  `windowsOptions.runAsUserName: ContainerAdministrator` on that pod and only that pod. Every
+  other Windows stage pod is stamped `ContainerUser` explicitly — a class that *provides* the
+  privilege still runs a stage that did not *require* it as `ContainerUser`, and a stage that
+  requires it on a class that lacks it is refused at dispatch. Spelled with `=` because the
+  colon namespace is reserved for derived tags an author cannot declare. **On a 2.0 document
+  the token is refused outright** — in a task's `requiredCapabilities` and in the gaggle-level
+  set — by the router, the same arm that refuses `runsOn` there: `requiredCapabilities` has no
+  OS and no coherence rule, so the frozen interpreter must never match it (PO-D0). The
+  refusal is asserted at compile and again on the solver input (`StagePlacements`), so
+  validate's checkpoint solve and the run-start pin cannot reach `ContainerAdministrator`
+  through the 2.0 surface either. Every other token stays an opaque tag on 2.0.
 - **`restrictions`** — a stage may *require* a restricted runner (PO-D7: v1 closed list
   `network:none`, `network:allowlist`, `fs:readonly-except-workspace`, `tmp:ephemeral`,
   `env:default-deny`). Unknown token = error with suggestion (CAP005, the CAP002 idiom).
   Effects, never mechanisms. The enforcement design is the restrictions companion doc.
+  **OS-conditional (restrictions doc D4, #3619):** a stage whose effective `os` is `windows`
+  may require only `tmp:ephemeral` and `env:default-deny` — the effects Windows can bind;
+  `network:none`, `network:allowlist` and `fs:readonly-except-workspace` on a Windows-placed
+  stage are refused at validate (CAP005), on a Windows runner entry at instance load, and at
+  pod render, all through one predicate (`runnercap.DeclarableOnWindows`).
 
 **Gaggle level.** `gaggle.spec.requiredCapabilities` migrates to a gaggle-level `runsOn`
 carrying `os`, `capabilities`, and `restrictions` only (no quantities). It merges into
@@ -207,7 +229,13 @@ runners:
       memory: 8Gi
       disk: 60Gi
       capabilities: [dotnet@8]
-    # no restrictions: Windows runners are un-restrictable in v1 (restrictions doc D4)
+    restrictions: [tmp:ephemeral]   # Windows may declare only tmp:ephemeral / env:default-deny (restrictions doc D4)
+  - name: win-admin
+    host: ghcr.io/example/win-runner:v0.7.0
+    provides:
+      os: windows
+      capabilities: [dotnet@8, privilege=windows-admin]   # stages REQUIRING it run as ContainerAdministrator (#3619)
+    restrictions: [tmp:ephemeral]
 engine:
   hostPort: temporal.goobers-system:7233       # optional connection config, unchanged
 ```
@@ -223,7 +251,10 @@ engine:
   connection config exactly as shipped (`internal/instance/config.go:88-92`).
 - **`provides`** quantities are ceilings (→ limits); `provides.capabilities` is the claim
   set matched exactly. **Claims are trusted in v1** (D10): a false claim degrades to a
-  runtime error with a named diagnostic, never a silent misroute.
+  runtime error with a named diagnostic, never a silent misroute. One claim is
+  product-interpreted and load-validated: `privilege=windows-admin` (#3619) is accepted only on
+  a `provides.os: windows` entry — it names the `ContainerAdministrator` identity the
+  dispatcher stamps for a stage that requires it — and is refused on any other OS.
 - **`provides.shell`/`provides.harnesses`** are how a non-self runner satisfies the
   derived requirements above (#3513): trusted claims (D10) in the same sense as
   `provides.capabilities`, but a separate, closed, typed surface — the derived
@@ -373,10 +404,15 @@ blocks (`api/validate/validate.go:39-209`; severity strictly error|warning; the
 | RNR004 | Warning (always) | Local mode: resource minimums advisory — the `self` ceiling cannot cover a stage minimum |
 | RNR005 | Warning (always) | A 3.0 stage's resolved eligible runner set excludes every self entry, but its command or built-in kind needs the daemon's instance root (decision 003 ruling 3) |
 | CAP004 | Error | An `os=*` token appears anywhere in a 3.0 document (D12) |
-| CAP005 | Error | Unknown restriction token, with did-you-mean suggestion |
+| CAP005 | Error | Unknown restriction token, with did-you-mean suggestion; or a restriction a `windows`-placed stage cannot require (`network:none`, `network:allowlist`, `fs:readonly-except-workspace` — restrictions doc D4, #3619) |
 | WF022 | Error | Undeclared repo-handoff chain (§4) |
 | WF023 | Error | `runsOn` on a non-agentic gate, an agentic gate `runsOn` without `cpu` and `memory`, or one without an `agentic:` block naming its reviewer (§2 Gates, decision 001) |
 | WF024 | retired | Was "gate placement declared but not honoured" while decision 001's engine half was unlanded; the engine honours gate placement now (§2 Gates) and the code is not reused |
+
+The structural `runsOn` problems (invalid os enum, malformed quantity, gaggle-vs-stage OS
+conflict) report under WF010 like the other admission findings; so does the
+`privilege=windows-admin` coherence rule (#3619) — a stage or floor requiring the token whose
+effective `os` is not `windows`.
 
 CAP003 keeps its shipped meaning for 2.0 documents on inventory-less instances (frozen
 interpreter, frozen severity). `instance.yaml`'s own untyped fail-first errors

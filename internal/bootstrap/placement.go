@@ -181,6 +181,7 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 			pin.Memory = req.Memory
 			pin.Disk = req.Disk
 			pin.Restrictions = req.Restrictions
+			pin.Capabilities = req.Capabilities
 		}
 		placements = append(placements, pin)
 	}

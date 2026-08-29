@@ -408,6 +408,7 @@ func TestModeThreeStageExecutesThroughDispatchActivity(t *testing.T) {
 	in.Placements = []PinnedPlacement{{
 		Stage: "build", Queue: dispatcher.QueueName("web", "win-ci"),
 		Eligible: remoteEligible(), Memory: "4Gi",
+		Capabilities: []string{"win-tools"},
 	}}
 
 	store := surrenderStore(t)
@@ -450,6 +451,12 @@ func TestModeThreeStageExecutesThroughDispatchActivity(t *testing.T) {
 	attempts, eligible := fake.recorded()
 	if attempts[0].Stage != "build" || len(eligible[0]) != 1 || eligible[0][0].Name != "win-ci" {
 		t.Fatalf("dispatch got attempt %+v eligible %+v, want the pinned placement data", attempts[0], eligible[0])
+	}
+	// The pinned runner-capability requirement reaches the attempt (#3619:
+	// the dispatcher reads the Windows admin privilege from it) — distinct
+	// from the envelope's credential Capabilities.
+	if got := attempts[0].RunsOnCapabilities; len(got) != 1 || got[0] != "win-tools" {
+		t.Fatalf("attempt.RunsOnCapabilities = %v, want the pinned placement's capabilities [win-tools]", got)
 	}
 	mu.Lock()
 	defer mu.Unlock()
