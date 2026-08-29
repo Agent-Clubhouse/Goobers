@@ -1,0 +1,102 @@
+package engine
+
+// Parity row E2-runresult-nowork — EXPECTED FAILURE.
+//
+// Inventory row: "NoWork short-circuit accounting: Result.NoWork = terminal
+// no-work at step 1 (#233), consumed by the scheduler's schedule idle backoff
+// (recordScheduledPollResult)." Runner site:
+// internal/runner/run.go:3606 (res.NoWork = steps == 1);
+// internal/localscheduler/scheduler.go:2304. Engine: partial —
+// engine.RunResult (engine.go:131-141) has no NoWork field at all, so an
+// engine-driven backlog-curation run that finds nothing to claim is
+// indistinguishable from one that did real work, and the scheduler never backs
+// off its idle polling.
+//
+// Invisible to the journal surface: both sides journal
+// run.finished(status=completed) identically. It is only visible in the value
+// the daemon's Starter maps into StartResult, which is what parityTerminal
+// compares.
+//
+// The fixture is the real backlog-curation first stage (reconcile-backlog)
+// reporting no-work, which is the production shape: a curation tick whose very
+// first stage finds nothing.
+//
+// Closed by plan item E2: RunResult gains `NoWork bool \`json:"noWork,omitempty"\``,
+// set in taskOutcome's ResultNoWork arm when steps == 1. The harness reads the
+// field by name off the marshalled result (engineRunResultNoWork), so the row
+// flips green with no harness edit — then DELETE its parityExpectedFailures
+// entry.
+
+import (
+	"testing"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+)
+
+func init() {
+	registerParityRow(parityCase{
+		Row:   rowRunResultNoWork,
+		Name:  "no-work at step 1 sets the terminal NoWork accounting",
+		Lane:  "backlog-curation.yaml",
+		Build: buildRunResultNoWorkCase,
+		Check: checkRunResultNoWork,
+	})
+}
+
+func buildRunResultNoWorkCase(t *testing.T, c *parityCase) {
+	t.Helper()
+	lane := backlogCurationLane(t)
+	c.Spec = laneChain(t, lane, "reconcile-backlog", "implementation-feedback")
+	c.DSLVersion = lane.DSLVersion
+	c.UsesRepo = true
+	c.Script = map[string][]scriptedCall{
+		"reconcile-backlog": {{result: apiv1.ResultEnvelope{Status: apiv1.ResultNoWork, Summary: "empty tick"}}},
+	}
+}
+
+// checkRunResultNoWork pins the runner's own accounting before diffing, so the
+// row cannot pass by both sides reporting false.
+func checkRunResultNoWork(obs parityObservation) error {
+	if !obs.Runner.Terminal.NoWork {
+		return errParityRow(obs.Case.Row,
+			"runner did not report NoWork for a step-1 no-work terminal (%s) — the fixture no longer exercises #233",
+			obs.Runner.Terminal)
+	}
+	return checkAllSurfaces(obs)
+}
+
+func init() {
+	// The negative half of the same inventory row: a no-work at step 3 must
+	// NOT set NoWork. It is registered as its own row id because
+	// parityExpectedFailures is keyed by row, and this half already AGREES
+	// (both sides report false) — keeping it separate means the port that
+	// closes the positive half cannot regress the negative one unnoticed.
+	registerParityRow(parityCase{
+		Row:   rowRunResultNoWorkLateStage,
+		Name:  "no-work after step 1 leaves the NoWork accounting clear",
+		Lane:  "backlog-curation.yaml",
+		Build: buildRunResultNoWorkLateCase,
+		Check: checkRunResultNoWorkLate,
+	})
+}
+
+func buildRunResultNoWorkLateCase(t *testing.T, c *parityCase) {
+	t.Helper()
+	lane := backlogCurationLane(t)
+	c.Spec = laneChain(t, lane, "reconcile-backlog", "implementation-feedback", "sample-ready-pool")
+	c.DSLVersion = lane.DSLVersion
+	c.UsesRepo = true
+	c.Script = map[string][]scriptedCall{
+		"reconcile-backlog":       {succeed(map[string]interface{}{"backlog-reconciliation": "0"})},
+		"implementation-feedback": {succeed(map[string]interface{}{"implementation-feedback": "0"})},
+		"sample-ready-pool":       {{result: apiv1.ResultEnvelope{Status: apiv1.ResultNoWork, Summary: "nothing left"}}},
+	}
+}
+
+func checkRunResultNoWorkLate(obs parityObservation) error {
+	if obs.Runner.Terminal.NoWork {
+		return errParityRow(obs.Case.Row,
+			"runner reported NoWork for a no-work at step 3 (%s) — #233 scopes it to step 1", obs.Runner.Terminal)
+	}
+	return checkAllSurfaces(obs)
+}
