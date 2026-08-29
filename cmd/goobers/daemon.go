@@ -21,7 +21,6 @@ import (
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/readservice"
-	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -817,15 +816,9 @@ func buildSchedulerDefinitions(
 		// runner preflight-verifies the probeable toolchains among them on the
 		// host before any stage runs (#735).
 		requiredCaps := instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf)
-		instanceControls := cfg.RunConditions.RunControls()
-		if repo, ok := configuredRepoForProject(cfg, repoRefs[identity]); ok {
-			instanceControls = repo.EffectiveRunControls(instanceControls)
-		}
-		controls, err := runcontrol.Resolve(
-			instanceControls,
-			gagglesByName[wf.Spec.Gaggle].Spec.RunControls,
-			wf.Spec.RunControls,
-		)
+		// Shared with `goobers engine-start` so the two starters cannot pin
+		// different budgets for the same workflow (#3820).
+		controls, err := resolveWorkflowRunControls(cfg, repoRefs[identity], gagglesByName[wf.Spec.Gaggle], *wf)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q run controls: %w", wf.Name, err)
 		}
