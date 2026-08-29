@@ -42,6 +42,21 @@ func TestCrossProcessCrashReleasesLock(t *testing.T) {
 	assertLockAcquirable(t, path)
 }
 
+func TestTryAcquireExistingDoesNotCreateMissingLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.lock")
+	held, err := TryAcquireExisting(path)
+	if held != nil {
+		_ = held.Release()
+		t.Fatal("TryAcquireExisting returned a handle for a missing lock")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("TryAcquireExisting error = %v, want os.ErrNotExist", err)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("TryAcquireExisting created missing lock: %v", statErr)
+	}
+}
+
 func TestLockHelperProcess(t *testing.T) {
 	if os.Getenv(lockHelperEnv) != "1" {
 		return

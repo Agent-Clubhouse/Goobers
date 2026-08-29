@@ -163,6 +163,9 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        # Rebinds the following agentic review gate to the selected managed
+        # PR branch so the runner attaches the cumulative base...HEAD diff.
+        - workspaceBranch
         - advisoryMode
         # reviewDigest (#523) is threaded to apply-verdict's inputsFrom too —
         # apply-verdict stamps it onto a genuinely fresh verdict before
@@ -474,7 +477,7 @@ spec:
           equals: "false"
       branches:
         pass: gather-sibling-context
-        fail: ""
+        fail: "@abort"
 
     # Scope gate (#1313/#1814): gather-sibling-context reconciles the label and
     # computes scopeGateParked before review. The value is carried through

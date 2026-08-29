@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -30,7 +31,12 @@ const (
 	ActRunDeterministic   = "RunDeterministic"
 	ActEvaluateAutomated  = "EvaluateAutomated"
 	ActReconcileSchedules = "ReconcileSchedules"
-	mutationsSidecarFile  = "mutations.jsonl"
+	// ActDispatchStage is the mode-3 dispatch activity (#3588,
+	// dispatchstage.go): the stage executes in a dispatcher-created pod and
+	// its surrendered outputs marshal back into the same stageActivityResult
+	// the in-process activities return.
+	ActDispatchStage     = "DispatchStage"
+	mutationsSidecarFile = "mutations.jsonl"
 )
 
 // Activities bundles the engine's side-effecting operations as Temporal
@@ -54,6 +60,34 @@ type Activities struct {
 	// Scrubber removes secret-shaped material before activity results enter
 	// Temporal history. Nil uses the journal's pattern scrubber.
 	Scrubber journal.Scrubber
+	// Journal is the live-journal emission seam (DS4): in-process it is the
+	// daemon's *livejournal.Writer, remotely it is livejournal.HTTPEmitter at
+	// the write API's journal plane. Required only for runs pinned with
+	// RunInput.LiveJournal; a run that demands live journaling on a worker
+	// with no emitter fails closed as an infra-classed attempt (EmitJournal).
+	Journal JournalEmitter
+	// Canary is the #2931 fail-closed dispatch canary
+	// (distributed-state-and-coordination.md §11, decision record
+	// Goobers-Review/Goobernetes-v1/decisions/0002): it asserts that no known
+	// credential value appears in a serialized dispatch envelope, and refuses
+	// to execute the stage when one does. Wire the EXACT-VALUE registry
+	// (journal.RegistryScrubber — the same registry every resolver-issued and
+	// credential-plane-minted value is registered with), never the pattern
+	// net: a pattern can false-positive on legitimate stage inputs, and a
+	// canary that can misfire on issue text would train operators to bypass
+	// it. Nil disables the canary (the local runner path, which never
+	// serializes an envelope off-process).
+	Canary journal.Scrubber
+	// Dispatcher is the mode-3 substrate seam (#3588, dispatchstage.go):
+	// *dispatcher.Dispatcher in production, a fake in tests. Required only by
+	// DispatchStage; a run with no pinned non-self placement never reaches
+	// it, and a nil seam fails that activity closed with a clear error.
+	Dispatcher StageDispatcher
+	// Surrenders is the plane DispatchStage reads surrendered stage results
+	// from (dispatcher.ReadSurrenderedResult) — the same plane the
+	// dispatcher's SurrenderGate confirms against. Required alongside
+	// Dispatcher.
+	Surrenders dispatcher.SurrenderPlane
 }
 
 type stageActivityResult struct {
@@ -62,6 +96,11 @@ type stageActivityResult struct {
 	apiv1.ResultEnvelope
 	Mutations      []mutationFact `json:"mutations,omitempty"`
 	MutationIssues []string       `json:"mutationIssues,omitempty"`
+	// WorkspaceDelta is the blob digest of a bundle carrying what this stage
+	// committed (#3763), for the engine to hand to the next stage. Only a
+	// pod-dispatched stage produces one; a self-placed stage needs none,
+	// because its commits are already on the shared run branch.
+	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
 }
 
 type mutationFact struct {
@@ -181,10 +220,44 @@ func removeWorkspace(ctx context.Context, ws Workspace) {
 	_ = ws.Remove(context.WithoutCancel(ctx))
 }
 
+// refuseLeakedEnvelope is the dispatch-side assertion of the #2931 canary,
+// applied where the serialized envelope is first back in Go hands: at
+// activity entry, before any provisioning or execution. The envelope has just
+// crossed the engine dispatch boundary exactly as serialized, so scrubbing
+// its marshaled bytes against the exact-value registry answers the canary's
+// question — "does any known credential value appear in this dispatch
+// payload?" — and a hit refuses the stage rather than executing with a leaked
+// credential in reach. The refusal is deliberately NON-RETRYABLE: a retry
+// re-dispatches the identical envelope, so retrying converts a security
+// tripwire into a retry-budget burn with the leak intact.
+func (a *Activities) refuseLeakedEnvelope(env apiv1.InvocationEnvelope) error {
+	if a.Canary == nil {
+		return nil
+	}
+	data, err := json.Marshal(env)
+	if err != nil {
+		return classifySeamError(fmt.Errorf("marshal dispatch envelope for credential canary: %w", err))
+	}
+	if scrubbed := a.Canary.Scrub(data); !bytes.Equal(scrubbed, data) {
+		return temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf(
+				"engine: dispatch canary (#2931): a registered credential value appears in the serialized dispatch envelope for stage %q; dispatch payloads must carry opaque references only — refusing to execute",
+				env.TaskID,
+			),
+			FailureTypeStage,
+			nil,
+		)
+	}
+	return nil
+}
+
 // InvokeGoober executes an agentic task.
 func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string) (stageActivityResult, error) {
 	if a.Goober == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
+	}
+	if err := a.refuseLeakedEnvelope(env); err != nil {
+		return stageActivityResult{}, err
 	}
 	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false, workspaceBranch)
 	if err != nil {
@@ -205,6 +278,9 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if a.Goober == nil {
 		return apiv1.Verdict{}, classifySeamError(ErrNotConfigured)
 	}
+	if err := a.refuseLeakedEnvelope(env); err != nil {
+		return apiv1.Verdict{}, err
+	}
 	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false, workspaceBranch)
 	if err != nil {
 		return apiv1.Verdict{}, classifySeamError(err)
@@ -222,6 +298,9 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string) (stageActivityResult, error) {
 	if a.Det == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
+	}
+	if err := a.refuseLeakedEnvelope(env); err != nil {
+		return stageActivityResult{}, err
 	}
 	// Dispatch distinguishes absent from zero-value (#626): no stage may run
 	// without a command or script, whatever the workflow handed us.
@@ -341,6 +420,9 @@ func readMutationSidecar(workspace string) (facts []mutationFact, issues []strin
 func (a *Activities) EvaluateAutomated(ctx context.Context, gate apiv1.AutomatedGate, env apiv1.InvocationEnvelope) (string, error) {
 	if a.Auto == nil {
 		return "", classifySeamError(ErrNotConfigured)
+	}
+	if err := a.refuseLeakedEnvelope(env); err != nil {
+		return "", err
 	}
 	outcome, err := a.Auto.Evaluate(ctx, gate, env)
 	if err != nil {

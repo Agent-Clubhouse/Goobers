@@ -609,7 +609,10 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 // session events over the subprocess transcript when available, and captures
 // the completion through either the default file contract or the final response
 // used by tool-constrained sessions.
-func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
+	if err := validateStandardExecution(req); err != nil {
+		return Outcome{}, err
+	}
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
@@ -661,7 +664,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if err := os.MkdirAll(filepath.Dir(debugPath), 0o755); err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: prepare prompt dir: %w", err)
 	}
-	if err := os.WriteFile(debugPath, []byte(prompt), 0o644); err != nil {
+	if err := os.WriteFile(debugPath, []byte(prompt), 0o600); err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: write prompt: %w", err)
 	}
 
@@ -782,6 +785,15 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
 
+	agentTelemetry, err := beginAdapterAgentTelemetry(
+		req, "copilot", req.Model, resolution.Model,
+		requestedHarnessOption(req, "reasoningEffort"), harnessOptions["reasoningEffort"],
+	)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: start agent telemetry: %w", err)
+	}
+	defer agentTelemetry.finish(&out, &runErr)
+
 	runner := c.runner()
 	started := time.Now()
 	var responseCapture *syncBuffer
@@ -790,7 +802,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		responseCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
 		stdoutCapture = responseCapture
 	}
-	result, runErr := runner.Run(ctx, ProcessRequest{
+	result, processErr := runner.Run(ctx, ProcessRequest{
 		Command:            argv,
 		Dir:                req.Workspace,
 		Env:                env,
@@ -798,10 +810,24 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
 		StdoutCapture:      stdoutCapture,
 	})
+	runErr = processErr
 	var payload []byte
 	var completionErr error
-	if runErr == nil {
+	if processErr == nil {
 		payload, completionErr = readCopilotCompletion(req, responseCapture, completionInResponse)
+		if errors.Is(completionErr, ErrNoCompletion) && nativeTranscriptPath != "" {
+			// Copilot does not reliably echo its final message to stdout under
+			// --silent --output-format=text with MCP tools attached: the answer
+			// lands in the session log while the stdout capture stays empty, so
+			// the read above reports "final response is not valid JSON" for a
+			// completion the model produced correctly. Recover it from the log
+			// before spending the contract-recovery turn (which re-runs the whole
+			// session and hits the same stdout gap, failing the stage twice and
+			// stranding committed work on the branch).
+			if recovered, ok := readCopilotCompletionFromSession(req.Mode, nativeTranscriptPath, req.MaxTranscriptBytes); ok {
+				payload, completionErr = recovered, nil
+			}
+		}
 		if errors.Is(completionErr, ErrNoCompletion) {
 			// A clean Copilot exit can still omit its completion contract. Give
 			// the same session one contract-only turn without extending its budget.
@@ -838,11 +864,17 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 					completionErr = nil
 				} else {
 					payload, completionErr = readCopilotCompletion(req, recoveryCapture, completionInResponse)
+					if errors.Is(completionErr, ErrNoCompletion) && nativeTranscriptPath != "" {
+						// Same stdout gap on the recovery turn.
+						if recovered, ok := readCopilotCompletionFromSession(req.Mode, nativeTranscriptPath, req.MaxTranscriptBytes); ok {
+							payload, completionErr = recovered, nil
+						}
+					}
 				}
 			}
 		}
 	}
-	out := Outcome{
+	out = Outcome{
 		Transcript:             result.Transcript,
 		RenderedPrompt:         []byte(prompt),
 		TranscriptTruncated:    result.TranscriptTruncated,
@@ -852,6 +884,16 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
 	out.InputInspectionReceipts = receipts
 	out.InputInspectionReceiptsCollected = receiptsCollected
+	// #3456: name a registered-but-unusable MCP server instead of letting its
+	// tools go silently missing. The claude adapter reads this from a
+	// structured system/init event; Copilot has no transcript equivalent, so
+	// this reads the CLI's own run log — available because the confinement
+	// already pins --log-dir into the workspace. Unconfined runs have no
+	// run-scoped log directory, so the diagnostic stays nil rather than
+	// guessing from a shared one.
+	if confinement != nil {
+		out.MCPServerFailures = copilotMCPServerFailures(req, confinement.logDir)
+	}
 	if receiptsErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
@@ -859,6 +901,9 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
 			out.Metrics = native.metrics
 			out.ModelUsage = native.modelUsage
+			if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("harness: copilot-cli: project agent telemetry: %w", err))
+			}
 			if len(native.data) > 0 {
 				out.Transcript = native.data
 				out.TranscriptSchema = telemetry.GenAIEventSchema
@@ -897,6 +942,40 @@ func readCopilotCompletion(req RunRequest, capture *syncBuffer, completionInResp
 	default:
 		return nil, responseErr
 	}
+}
+
+// readCopilotCompletionFromSession recovers a completion envelope from the CLI's
+// own session log when the stdout capture came up empty or unparseable.
+//
+// Copilot does not reliably echo its final assistant message to stdout under
+// --silent --output-format=text once MCP tools are attached. The message is
+// always written to the session log, so when stdout yields nothing the log still
+// holds a well-formed completion. Without this fallback the harness reports
+// "Copilot final response is not valid JSON" for a completion the model produced
+// correctly, burns the contract-recovery turn on the same stdout gap, and fails
+// the stage twice -- stranding work the agent already committed to the branch.
+//
+// It is deliberately a FALLBACK, not the primary path: stdout remains
+// authoritative when present, and this only fires after the normal read has
+// already failed with ErrNoCompletion. The recovered payload goes through the
+// same extraction and envelope validation as any other completion, so a genuinely
+// malformed final message still fails.
+func readCopilotCompletionFromSession(mode Mode, path string, limit int64) ([]byte, bool) {
+	if path == "" {
+		return nil, false
+	}
+	native, ok := readCopilotSessionTranscript(path, limit)
+	if !ok || len(native.finalMessage) == 0 {
+		return nil, false
+	}
+	payload := extractCompletionJSON(bytes.TrimSpace(native.finalMessage))
+	if !json.Valid(payload) {
+		return nil, false
+	}
+	if err := validateCopilotCompletion(mode, payload); err != nil {
+		return nil, false
+	}
+	return payload, true
 }
 
 func readCopilotResponseCompletion(mode Mode, capture *syncBuffer) ([]byte, error) {
@@ -939,6 +1018,17 @@ func extractCompletionJSON(payload []byte) []byte {
 		}
 		trimmed = unfenced
 	}
+	// LAST, not first. The capture buffer holds the model's whole final turn,
+	// and a tool-using model routinely emits JSON before its completion: shell
+	// output like `git status --porcelain=v2`, a pretty-printed config it just
+	// read, or its own narration quoting a fragment. Taking the FIRST balanced
+	// value returns one of those, which then fails envelope validation and
+	// kills the stage with "final response is not valid JSON" even though the
+	// model's actual completion — the last value — was perfectly well formed.
+	// The completion is by construction what the model ends on.
+	if inner, ok := lastJSONValue(trimmed); ok {
+		return inner
+	}
 	if inner, ok := firstJSONValue(trimmed); ok {
 		return inner
 	}
@@ -973,15 +1063,42 @@ func stripCodeFence(payload []byte) ([]byte, bool) {
 	return body[:end], true
 }
 
-// firstJSONValue scans for the first balanced JSON object or array in payload,
-// honoring string literals and escapes so braces or brackets inside strings do
-// not corrupt the depth count. It returns (value, true) only when the extracted
-// span parses as valid JSON.
-func firstJSONValue(payload []byte) ([]byte, bool) {
-	start := bytes.IndexAny(payload, "{[")
-	if start < 0 {
-		return nil, false
+// lastJSONValue returns the LAST balanced, valid JSON object or array in
+// payload.
+//
+// This exists because firstJSONValue picks the wrong value for a tool-using
+// model: the captured final turn frequently contains JSON that is NOT the
+// completion (shell output the model echoed, a config file it read back, a
+// fragment it quoted while narrating), and the completion envelope is what the
+// model ends on. Scanning from the end finds the completion; scanning from the
+// start finds the noise and fails the stage on a well-formed response.
+//
+// It scans FORWARD and keeps the last match rather than walking backwards from
+// the final closer. A backwards walk cannot cheaply honour string literals --
+// a `}` or `]` inside a JSON string ("contains a brace } in prose") corrupts a
+// reverse depth count and mismatches the opener. firstJSONValue already does
+// correct forward scanning with string/escape handling, so this reuses that
+// pass repeatedly over the remaining tail.
+func lastJSONValue(payload []byte) ([]byte, bool) {
+	var last []byte
+	var found bool
+	for offset := 0; offset < len(payload); {
+		value, start, end, ok := nextJSONValue(payload[offset:])
+		if !ok {
+			break
+		}
+		last = value
+		found = true
+		_ = start
+		offset += end
 	}
+	return last, found
+}
+
+// scanBalancedJSONSpan returns the exclusive end offset of the balanced JSON
+// object or array beginning at start. String literals and escapes are honoured
+// so structural characters inside strings do not affect nesting depth.
+func scanBalancedJSONSpan(payload []byte, start int) (end int, ok bool) {
 	opener := payload[start]
 	closer := byte('}')
 	if opener == '[' {
@@ -1011,15 +1128,55 @@ func firstJSONValue(payload []byte) ([]byte, bool) {
 		case closer:
 			depth--
 			if depth == 0 {
-				candidate := payload[start : i+1]
-				if json.Valid(candidate) {
-					return candidate, true
-				}
-				return nil, false
+				return i + 1, true
 			}
 		}
 	}
-	return nil, false
+	return 0, false
+}
+
+// nextJSONValue finds the first balanced, valid JSON object or array in payload
+// and reports it along with its start and end offsets (end is exclusive).
+// When a balanced structural candidate is invalid, scanning resumes after its
+// opener so it cannot hide a later valid value.
+func nextJSONValue(payload []byte) (value []byte, start, end int, ok bool) {
+	searchFrom := 0
+	for {
+		rel := bytes.IndexAny(payload[searchFrom:], "{[")
+		if rel < 0 {
+			return nil, 0, 0, false
+		}
+		start = searchFrom + rel
+		end, balanced := scanBalancedJSONSpan(payload, start)
+		if !balanced {
+			return nil, 0, 0, false
+		}
+		candidate := payload[start:end]
+		if json.Valid(candidate) {
+			return candidate, start, end, true
+		}
+		searchFrom = start + 1
+	}
+}
+
+// firstJSONValue scans for the first balanced JSON object or array in payload,
+// honoring string literals and escapes so braces or brackets inside strings do
+// not corrupt the depth count. It returns (value, true) only when the extracted
+// span parses as valid JSON.
+func firstJSONValue(payload []byte) ([]byte, bool) {
+	start := bytes.IndexAny(payload, "{[")
+	if start < 0 {
+		return nil, false
+	}
+	end, ok := scanBalancedJSONSpan(payload, start)
+	if !ok {
+		return nil, false
+	}
+	candidate := payload[start:end]
+	if !json.Valid(candidate) {
+		return nil, false
+	}
+	return candidate, true
 }
 
 func validateCopilotCompletion(mode Mode, payload []byte) error {

@@ -162,7 +162,7 @@ func (e *Executor) materializeContext(env apiv1.InvocationEnvelope) (map[string]
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return nil, fmt.Errorf("harness: prepare context dir: %w", err)
 		}
-		if err := os.WriteFile(full, data, 0o644); err != nil {
+		if err := os.WriteFile(full, data, 0o600); err != nil {
 			return nil, fmt.Errorf("harness: write context artifact %q: %w", cp.Name, err)
 		}
 		paths[cp.Name] = relPath

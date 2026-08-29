@@ -13,7 +13,9 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/version"
@@ -49,7 +51,20 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"  --drain-timeout <dur>      graceful-drain bound after a shutdown signal\n" +
 	"                             (default 30s)\n" +
 	"  --work-root <dir>          root for stage workspaces (default: a\n" +
-	"                             goobers-worker dir under the OS temp dir)\n\n" +
+	"                             goobers-worker dir under the OS temp dir)\n" +
+	"  --daemon-api <url>         daemon write API base URL; wires live journal\n" +
+	"                             emission through the journal plane, with the\n" +
+	"                             per-run bearer from $GOOBERS_POD_TOKEN when\n" +
+	"                             set (default $GOOBERS_DAEMON_API)\n" +
+	"  --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;\n" +
+	"                             wires the dispatcher behind the stage-dispatch\n" +
+	"                             seam and serves the per-(gaggle x runner)\n" +
+	"                             dispatch queues derived from the instance's\n" +
+	"                             runners: inventory. Requires --instance and\n" +
+	"                             --blob-store (the surrender plane rides the\n" +
+	"                             same volume); cluster access uses in-cluster\n" +
+	"                             credentials or the standard kubeconfig rules\n" +
+	"                             (default $GOOBERS_DISPATCH_NAMESPACE)\n\n" +
 	"The worker identity reported to Temporal is versioned\n" +
 	"(goobers-worker/<build>@<host>#<pid>) so visibility alone answers which\n" +
 	"build serves a queue.\n\n" +
@@ -84,6 +99,8 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	workRoot := fs.String("work-root", "", "root directory for stage workspaces")
 	instanceRoot := fs.String("instance", workerEnvOr("GOOBERS_INSTANCE_ROOT", ""), "instance root; wires the real agentic and deterministic executors")
 	blobRoot := fs.String("blob-store", workerEnvOr("GOOBERS_BLOB_STORE", ""), "directory backing the fleet-wide content-addressed artifact store")
+	daemonAPI := fs.String("daemon-api", workerEnvOr("GOOBERS_DAEMON_API", ""), "daemon write API base URL for live journal emission")
+	dispatchNamespace := fs.String("dispatch-namespace", workerEnvOr("GOOBERS_DISPATCH_NAMESPACE", ""), "namespace to create mode-3 stage pods in; enables the dispatcher-backed stage-dispatch seam")
 	fs.Usage = helpUsage(stderr, "worker")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -128,7 +145,13 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// The fleet's content-addressed store, if one is configured. Without it
 		// a run is only safely served by a SINGLE worker: stage artifacts stay
 		// on the node that produced them, and the first ContextPointer resolved
-		// somewhere else fails closed (#2866).
+		// somewhere else fails closed (#2866). It is constructed HERE, its only
+		// consumer, so an instance-less worker with GOOBERS_BLOB_STORE set (a
+		// fleet-wide env var) does not MkdirAll, emit a store line, or fail
+		// closed on an unwritable path — the mode-1/2 self-only startup shape
+		// stays byte-for-byte unchanged. The --dispatch-namespace path requires
+		// --instance and reads *blobRoot directly (buildStageDispatch), never
+		// this store value.
 		var store blobstore.Store
 		if *blobRoot != "" {
 			dirStore, berr := blobstore.NewDir(*blobRoot)
@@ -146,11 +169,74 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 		engineRuntime.deps.Goober = seams.Agentic()
 		engineRuntime.deps.Det = seams.Deterministic()
+		// The #2931 dispatch canary asserts envelopes against the SAME shared
+		// registry the seams' executors register every resolved credential
+		// with — so a value that leaks into a dispatch payload after being
+		// resolved anywhere in this process refuses the stage instead of
+		// executing with it.
+		engineRuntime.deps.Canary = seams.SharedRegistry()
 		// Replace the uncredentialed provisioner too: workerEngineDeps builds
 		// its worktree manager before any instance is known, so it has no git
 		// auth and cannot clone a private repo.
 		engineRuntime.deps.Workspaces = seams.Workspaces(filepath.Join(root, "scratch"))
 		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)
+	}
+
+	if *daemonAPI != "" {
+		// The remote half of the DS4 emission seam: journal events for a
+		// LiveJournal-pinned run flow to the daemon's journal plane. The
+		// per-run pod bearer (internal/podauth) rides GOOBERS_POD_TOKEN;
+		// empty is the loopback/no-auth posture.
+		// A worker is not a stage pod and holds no run's token, so when the
+		// daemon authenticates (a split deployment: worker pod, daemon pod) a
+		// static GOOBERS_POD_TOKEN is empty and every emit was refused:
+		//   livejournal: emit refused (401 unauthenticated)
+		// It does hold the shared signing key — the same one it uses to mint
+		// the bearer it stamps on stage pods — so it mints per batch, scoped to
+		// the run being emitted for. Env token still wins when present, which
+		// keeps the single-run/pod posture working unchanged.
+		emitter := &livejournal.HTTPEmitter{
+			BaseURL: *daemonAPI,
+			Token:   workerEnvOr("GOOBERS_POD_TOKEN", ""),
+		}
+		if emitter.Token == "" {
+			cfg, cerr := instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
+			if cerr == nil {
+				// Same typed-nil care as the dispatcher's minter: a nil
+				// *SignedKey in the interface would make it non-nil and turn
+				// the no-key posture into a nil-pointer call at emit time.
+				if signed, kerr := podTokenMinter(cfg); kerr != nil {
+					pf(stderr, "error: load pod token key for live journal: %v\n", kerr)
+					return 2
+				} else if signed != nil {
+					emitter.Minter = signed
+				}
+			}
+		}
+		engineRuntime.deps.Journal = emitter
+		pf(stdout, "goobers worker: live journal emission via %s\n", *daemonAPI)
+	}
+
+	if *dispatchNamespace != "" {
+		// Mode-3 stage dispatch (#3588): wire the #3513 dispatcher behind the
+		// engine's DispatchStage seam and serve the per-(gaggle ×
+		// runner-type) dispatch queues beside the workflow queue(s). Requires
+		// --instance: the runner inventory is what names the queues and the
+		// eligible runners.
+		if *instanceRoot == "" {
+			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
+			return 2
+		}
+		dispatch, derr := buildStageDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobRoot)
+		if derr != nil {
+			pf(stderr, "error: %v\n", derr)
+			return 1
+		}
+		engineRuntime.deps.Dispatcher = dispatch.Dispatcher
+		engineRuntime.deps.Surrenders = dispatch.Surrenders
+		queues = mergeQueues(queues, dispatch.Queues)
+		pf(stdout, "goobers worker: mode-3 stage dispatch into namespace %s; dispatch queues %s\n",
+			*dispatchNamespace, strings.Join(dispatch.Queues, ", "))
 	}
 
 	host, err := workerhost.New(workerhost.Config{

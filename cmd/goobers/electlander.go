@@ -293,8 +293,12 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
-		withStageProviderCapability(capability.GitHubPRWrite),
+	stageCapability := capability.GitHubPRWrite
+	if repo.Provider == providers.ProviderADO {
+		stageCapability = capability.ADOPRWrite
+	}
+	provider, err := newMergeReviewRemediationProvider(root, repo,
+		withStageProviderCapability(stageCapability),
 		withStageProviderCache(),
 	)
 	if err != nil {
@@ -344,11 +348,15 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
 		demoted = nil
 	}
-	ineligible, ierr := electionIneligibleSet(ctx, provider, repo, prs)
-	if ierr != nil {
-		return failProviderStage(stderr, "resolve lander eligibility", ierr, resultFile)
+	// The FIFO lander election (#950) is a GitHub merge-queue concept with no
+	// Gitea equivalent; skip it on other forges rather than fail closed.
+	if githubProvider, githubSelected := provider.(*providers.GitHubProvider); githubSelected {
+		ineligible, ierr := electionIneligibleSet(ctx, githubProvider, repo, prs)
+		if ierr != nil {
+			return failProviderStage(stderr, "resolve lander eligibility", ierr, resultFile)
+		}
+		demoted = unionPRSets(demoted, ineligible)
 	}
-	demoted = unionPRSets(demoted, ineligible)
 
 	if reason := noLanderEscalationReason(verdict.Decision, effectiveFindings, selectedNumber, overlappingSiblings, policy, demoted, resolvedPolicy); reason != "" {
 		pf(stdout, "%s — routing to apply-verdict for explicit escalation\n", reason)

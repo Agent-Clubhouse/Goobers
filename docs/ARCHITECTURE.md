@@ -351,6 +351,21 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   label selection and FIFO remain unchanged. On public repos, eligibility
   requires a maintainer-applied trust label: backlog content is untrusted input
   (`SEC-047`).
+- **A claim's lifetime is the ledger's, and the marker's lifetime is the
+  claim's.** `scheduler/claims.json` is the only source of truth for
+  exactly-once processing (`BL-005`); the provider-visible `goobers:claimed`
+  label and its claim breadcrumb are a projection of it, never an input to
+  eligibility. The projection is retired at the same moment the lease is —
+  a stage does it on the paths that have one (`issue-close-out`,
+  `backlog-query --release`), and the instance's terminal cleanup does it for
+  every run that reaches a terminal phase still holding a lease. The `no-work`
+  outcome is the case that makes the second path necessary rather than
+  defensive: it short-circuits to `completed` from whatever stage reported it,
+  so no close-out stage runs. Backlog curation's reconciliation of markers with
+  no backing lease remains the backstop for a projection that could not be
+  written (a forge outage, a credential-less instance, a non-GitHub provider),
+  not the primary mechanism — so the window in which the ledger and the forge
+  disagree is bounded by one provider call, not by one curation interval.
 - **Readiness conditions** enforced before any run starts: max parallel runs per
   workflow and per instance, `maxRunsPerHour` / `maxRunsPerDay` run budgets,
   chain-depth bounding (`maxChainDepth`), open-PR caps (`maxOpenPRs`, #353), and
@@ -416,10 +431,10 @@ implementation of a seam the local runner also implements. "This is where it goe
 | `internal/engine` compile/state machine | **Extract** the substrate-neutral core (compile, states, gates) for the local runner; the Temporal workflow function around it becomes the V2 adapter |
 | `providers/` | **Keep & extend** — GitHub issues/PR operations are V0 workload |
 | `internal/telemetry` | **Keep** — add journal/SQLite exporter |
-| `internal/operator`, `cmd/operator`, `internal/configsync` (CRD apply path), `cmd/scheduler` | **Quarantine** — tier-3 components; status-bannered, kept compiling, revived in V2 |
+| `internal/operator`, `cmd/operator`, `internal/configsync` (CRD apply path) | **Quarantine** — tier-3 components; status-bannered, kept compiling, revived in V2. The tier-3 scheduler fork (`internal/scheduler`, `cmd/scheduler`) was **deleted** per goobernetes-architecture.md D5/§4 (#2055 resolved: supersede) — `internal/localscheduler` is the one scheduler |
 | `infra/` (Bicep, ArgoCD, Temporal) | **Quarantine** — tier-3 provisioning, revived in V2 |
 | `portal/` | **Keep** — retarget from mock client to reading run journals (V1) |
-| `cmd/goober-runtime` | **Superseded** by the local runner's stage execution; folds into the `goobers` binary |
+| `cmd/goober-runtime` | **Retired** (deleted) per goobernetes-architecture.md D5/§4 — superseded by the local runner's stage execution in the `goobers` binary |
 
 ## 12. Roadmap
 

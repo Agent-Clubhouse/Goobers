@@ -13,16 +13,28 @@ import (
 
 func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 	tests := []struct {
-		name string
-		root string
+		name         string
+		root         string
+		reviewerPath string
+		reviewerName string
 	}{
 		{
-			name: "reference-workflows",
-			root: filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers"),
+			name:         "reference-workflows",
+			root:         filepath.Join("..", "..", "reference-workflows", "gaggles", "goobers"),
+			reviewerPath: filepath.Join("goobers", "reviewer", "goober.yaml"),
+			reviewerName: "reviewer",
 		},
 		{
-			name: "acme-web",
-			root: filepath.Join("..", "..", "config-examples", "gaggles", "acme-web"),
+			name:         "acme-web",
+			root:         filepath.Join("..", "..", "config-examples", "gaggles", "acme-web"),
+			reviewerPath: filepath.Join("goobers", "reviewer", "goober.yaml"),
+			reviewerName: "reviewer",
+		},
+		{
+			name:         "acme-web-claude",
+			root:         filepath.Join("..", "..", "config-examples", "gaggles", "acme-web-claude"),
+			reviewerPath: filepath.Join("goobers", "claude-reviewer", "goober.yaml"),
+			reviewerName: "claude-reviewer",
 		},
 	}
 
@@ -37,7 +49,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				t.Fatalf("unmarshal workflow: %v", err)
 			}
 
-			raw, err = os.ReadFile(filepath.Join(tt.root, "goobers", "reviewer", "goober.yaml"))
+			raw, err = os.ReadFile(filepath.Join(tt.root, tt.reviewerPath))
 			if err != nil {
 				t.Fatalf("read reviewer: %v", err)
 			}
@@ -47,7 +59,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 			}
 			registered := false
 			for _, workflowName := range reviewer.Spec.Workflows {
-				if workflowName == "merge-review" {
+				if workflowName == w.Name {
 					registered = true
 					break
 				}
@@ -58,7 +70,7 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 
 			m, err := compileAcknowledged(
 				Definition{Name: w.Name, Version: 1, Spec: w.Spec},
-				WithGoobers(map[string]apiv1.GooberSpec{"reviewer": reviewer.Spec}),
+				WithGoobers(map[string]apiv1.GooberSpec{tt.reviewerName: reviewer.Spec}),
 				WithKnownChecks([]string{"output-equals", "land-outcome", "queue-outcome"}))
 
 			if err != nil {
@@ -138,6 +150,19 @@ func TestShippedMergeReviewWorkflowsWirePostMergeChain(t *testing.T) {
 				t.Errorf("gather-sibling-context.next = %q, want review so oversized PRs are still reviewed", gatherSiblings.Next)
 			}
 
+			stalenessGate, ok := m.Gate("issue-staleness-gate")
+			if !ok {
+				t.Fatal("issue-staleness-gate not found")
+			}
+			if stalenessGate.Automated == nil ||
+				stalenessGate.Automated.Check != "output-equals" ||
+				stalenessGate.Automated.Params["key"] != "issueStale" ||
+				stalenessGate.Automated.Params["equals"] != "false" {
+				t.Errorf("issue-staleness-gate check = %+v, want issueStale == false", stalenessGate.Automated)
+			}
+			if want := map[string]string{"pass": "gather-sibling-context", "fail": TargetAbort}; !reflect.DeepEqual(stalenessGate.Branches, want) {
+				t.Errorf("issue-staleness-gate branches = %v, want %v", stalenessGate.Branches, want)
+			}
 			review, ok := m.Gate("review")
 			if !ok {
 				t.Fatal("review gate not found")

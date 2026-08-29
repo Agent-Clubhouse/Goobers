@@ -282,3 +282,98 @@ func TestClaudeAdapterRunOmitsGoobersIOWithoutSelfBin(t *testing.T) {
 		t.Fatalf("must not wire goobers-io without a known self-binary path: %v", command)
 	}
 }
+
+// TestClaudeAdapterReportsRegisteredMCPServersLostAtInvocation is the
+// regression for #3356's product invariant: a stage whose resolved config
+// wired the goobers-io MCP server ran with those tools silently absent, and
+// nothing in the run named the loss. The claude CLI reports per-server
+// connection state in its system/init event's mcp_servers field; the adapter
+// must surface every registered-but-unconnected server in
+// Outcome.MCPServerFailures instead of proceeding as if nothing happened —
+// and must claim nothing when the CLI produced no report at all.
+func TestClaudeAdapterReportsRegisteredMCPServersLostAtInvocation(t *testing.T) {
+	const resultLine = `{"type":"result","subtype":"success","result":"done"}`
+	for _, tc := range []struct {
+		name string
+		init string
+		want []MCPServerFailure
+	}{
+		{
+			name: "registered server missing from the CLI report",
+			init: `{"type":"system","subtype":"init","model":"claude-sonnet-4-6","mcp_servers":[]}`,
+			want: []MCPServerFailure{{Server: goobersIOServerName, Status: "absent"}},
+		},
+		{
+			name: "registered server failed to connect",
+			init: `{"type":"system","subtype":"init","model":"claude-sonnet-4-6","mcp_servers":[{"name":"goobers-io","status":"failed"}]}`,
+			want: []MCPServerFailure{{Server: goobersIOServerName, Status: "failed"}},
+		},
+		{
+			name: "connected server reports no failure",
+			init: `{"type":"system","subtype":"init","model":"claude-sonnet-4-6","mcp_servers":[{"name":"goobers-io","status":"connected"}]}`,
+			want: nil,
+		},
+		{
+			name: "init without an mcp_servers field claims nothing",
+			init: `{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}`,
+			want: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubClaudeCredentialsHome(t)
+			workspace := t.TempDir()
+			stream := tc.init + "\n" + resultLine + "\n"
+			runner := &fakeProcessRunner{
+				result: ProcessResult{ExitCode: 0, Transcript: []byte(stream)},
+				act: func(req ProcessRequest) error {
+					return WriteCompletion(req.Dir, DefaultResultPath, apiv1.ResultEnvelope{
+						Status: apiv1.ResultSuccess,
+					})
+				},
+			}
+			adapter := &ClaudeAdapter{
+				Command: []string{"claude"},
+				Runner:  runner,
+				SelfBin: "/usr/local/bin/goobers",
+			}
+			out, err := adapter.Run(context.Background(), RunRequest{
+				Envelope:       testEnvelope(workspace),
+				Workspace:      workspace,
+				CompletionPath: DefaultResultPath,
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if !slices.Equal(out.MCPServerFailures, tc.want) {
+				t.Fatalf("MCPServerFailures = %+v, want %+v", out.MCPServerFailures, tc.want)
+			}
+		})
+	}
+}
+
+// TestClaudeMCPServerFailuresCoversDeclaredServers confirms the comparison
+// covers a goober's declared mcpServers alongside the auto-wired goobers-io
+// registration, deduplicates, and never claims anything without an explicit
+// CLI report (#3356).
+func TestClaudeMCPServerFailuresCoversDeclaredServers(t *testing.T) {
+	req := RunRequest{
+		GoobersIORegistered: true,
+		MCPServers:          []apiv1.MCPServer{{Name: "github"}, {Name: "github"}},
+	}
+	capture := transcriptCapture{
+		mcpServersReported: true,
+		mcpServerStatus:    map[string]string{goobersIOServerName: "connected"},
+	}
+	got := claudeMCPServerFailures(req, capture)
+	want := []MCPServerFailure{{Server: "github", Status: "absent"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("failures = %+v, want %+v", got, want)
+	}
+
+	if got := claudeMCPServerFailures(req, transcriptCapture{}); got != nil {
+		t.Fatalf("an unreported capture must claim nothing, got %+v", got)
+	}
+	if got := claudeMCPServerFailures(RunRequest{}, capture); got != nil {
+		t.Fatalf("no registered servers must produce no failures, got %+v", got)
+	}
+}

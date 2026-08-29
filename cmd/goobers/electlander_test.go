@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,6 +12,9 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/providers"
 )
 
 // TestElectedLander is #833's election policy in isolation: lowest PR number
@@ -38,6 +43,87 @@ func TestElectedLander(t *testing.T) {
 	}
 }
 
+func TestElectLanderADOUsesADOProviderCapability(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	t.Setenv(executor.CredentialEnvVar(string(capability.ADOPRWrite)), "ado-token")
+	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](
+		root,
+		repo,
+		false,
+		withStageProviderCapability(capability.ADOPRWrite),
+	)
+	if err != nil {
+		t.Fatalf("newMergeReviewProviderAs: %v", err)
+	}
+	if provider.Kind() != providers.ProviderADO {
+		t.Fatalf("provider kind = %q, want %q", provider.Kind(), providers.ProviderADO)
+	}
+}
+
+func TestElectLanderDispatchesADOAndElectsCandidate(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	const runID = "elect-lander-ado"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/git/repositories/"+repo.Name+"/pullrequests", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"value":[{"pullRequestId":359,"status":"active","title":"ADO candidate","sourceRefName":"refs/heads/goobers/tb-ado-implementation/359","targetRefName":"refs/heads/main","lastMergeSourceCommit":{"commitId":"head-sha"},"lastMergeTargetCommit":{"commitId":"base-sha"},"repository":{"id":"repo-guid","name":"%s","project":{"id":"project-guid","name":"%s"}}},{"pullRequestId":360,"status":"active","title":"ADO sibling","sourceRefName":"refs/heads/goobers/tb-ado-implementation/360","targetRefName":"refs/heads/main","lastMergeSourceCommit":{"commitId":"sibling-head"},"lastMergeTargetCommit":{"commitId":"base-sha"},"repository":{"id":"repo-guid","name":"%s","project":{"id":"project-guid","name":"%s"}}}]}`, repo.Name, repo.Project, repo.Name, repo.Project)
+	})
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/git/repositories/"+repo.Name+"/pullrequests/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"value":[]}`))
+	})
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/git/repositories/"+repo.Name+"/pullrequests/359/threads", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"value":[]}`))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	previous := newADOProviderForStage
+	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		return providers.NewADOProvider(routed.Owner, routed.Project, "ado-token", func(p *providers.ADOProvider) {
+			p.BaseURL = server.URL
+		}), nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = previous })
+
+	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	t.Setenv("GOOBERS_RUN_ID", runID)
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "359")
+	t.Setenv("GOOBERS_INPUT_SELECTEDHEADSHA", "head-sha")
+	t.Setenv("GOOBERS_INPUT_SELECTEDBASESHA", "base-sha")
+	t.Setenv("GOOBERS_INPUT_HEADPREFIX", "goobers/tb-ado-implementation/")
+	t.Setenv("GOOBERS_INPUT_OVERLAPPINGSIBLINGS", "360")
+	seedGateVerdictJournal(t, root, runID, apiv1.Verdict{
+		Decision: apiv1.VerdictPass,
+		HeadSHA:  "head-sha",
+		BaseSHA:  "base-sha",
+		Findings: []apiv1.Finding{{
+			Class:       apiv1.FindingCrossPRBlocked,
+			BlockingPRs: []int{360},
+		}},
+	})
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	code, stdout, stderr := runArgs(t, "elect-lander", root)
+	if code != 0 {
+		t.Fatalf("elect-lander: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result, err := os.ReadFile(filepath.Join(dir, "election.json"))
+	if err != nil {
+		t.Fatalf("read election result: %v", err)
+	}
+	var election map[string]string
+	if err := json.Unmarshal(result, &election); err != nil {
+		t.Fatalf("unmarshal election result: %v", err)
+	}
+	if election["elected"] != "true" {
+		t.Fatalf("election = %+v, want elected=true from ADO PR listing", election)
+	}
+}
+
 // TestElectionDecision is the composite gate the elect-lander stage applies:
 // election fires only for a verdict that is ENTIRELY cross-PR-ordering asks
 // (the PR is individually fine, merely sibling-blocked) AND wins its cluster.
@@ -46,6 +132,7 @@ func TestElectionDecision(t *testing.T) {
 	crossPR := func(blockers ...int) apiv1.Finding {
 		return apiv1.Finding{Class: apiv1.FindingCrossPRBlocked, BlockingPRs: blockers}
 	}
+
 	substantive := apiv1.Finding{Class: apiv1.FindingSubstantive}
 	// #1726: an `info` nit — e.g. "this generated patch is byte-for-byte
 	// identical to the selected PR's, there is no semantic conflict" — is not a
@@ -77,6 +164,7 @@ func TestElectionDecision(t *testing.T) {
 		// Info alone is not an ordering finding, so there is no cluster to win.
 		{"info nit only, no ordering finding -> not electable", []apiv1.Finding{infoNit}, 810, false},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := electionDecision(tt.findings, tt.thisPR, electedLander, nil); got != tt.want {

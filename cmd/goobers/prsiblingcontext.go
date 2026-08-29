@@ -162,7 +162,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	if repo.Provider == providers.ProviderADO {
 		return runGatherSiblingContextADO(root, repo, stdout, stderr)
 	}
-	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, true,
+	provider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, true,
 		withStageProviderCapability(capability.GitHubPRWrite),
 		withStageProviderCache(),
 	)
@@ -502,15 +502,27 @@ siblingLoop:
 		// float64 in the merged Outputs, so it was silently dropped and
 		// apply-verdict aborted with "selectedNumber is required" on every run —
 		// no PR ever received a merge-review label since #381.
-		"selectedNumber":           selectedNumberStr,
-		"head":                     selectedHead,
-		"base":                     base,
-		"hasSubstantiveFindings":   strconv.FormatBool(hasSubstantiveFindings),
-		"hasFailingCI":             providerInput("hasFailingCI", "false"),
-		"hasSiblingOverlap":        strconv.FormatBool(len(overlappingSiblings) > 0),
-		"advisoryMode":             strconv.FormatBool(advisoryMode),
-		"selectedHeadSha":          selectedHeadSHA,
-		"selectedBaseSha":          selectedBaseSHA,
+		"selectedNumber":         selectedNumberStr,
+		"head":                   selectedHead,
+		"base":                   base,
+		"hasSubstantiveFindings": strconv.FormatBool(hasSubstantiveFindings),
+		"hasFailingCI":           providerInput("hasFailingCI", "false"),
+		"hasSiblingOverlap":      strconv.FormatBool(len(overlappingSiblings) > 0),
+		"advisoryMode":           strconv.FormatBool(advisoryMode),
+		"selectedHeadSha":        selectedHeadSHA,
+		"selectedBaseSha":        selectedBaseSHA,
+		// Rebind the following review gate to the selected managed PR branch.
+		// The runner can then produce its normal provider-independent
+		// base...HEAD reviewer diff instead of asking the model to infer the
+		// selected PR's implementation from its tip commit and file names.
+		// Advisory PR branches outside the protected run namespace are left
+		// empty and therefore cannot steer the runner's workspace.
+		"workspaceBranch": func() string {
+			if strings.HasPrefix(selectedHead, managedHeadPrefix) {
+				return selectedHead
+			}
+			return ""
+		}(),
 		"reviewDigest":             reviewDigest,
 		"siblings":                 siblings,
 		"siblingLifecycleOutcomes": lifecycleOutcomes,
@@ -577,7 +589,7 @@ siblingLoop:
 // (#2061). It never resolves a github:* capability token — the ADO provider
 // resolves its own org-scoped auth from instance config.
 func runGatherSiblingContextADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, true)
+	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

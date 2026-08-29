@@ -15,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -333,6 +334,18 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 	}
 
 	return func(ctx context.Context, o runner.FailedOutcome) error {
+		// #3361/#3364: an infra-fault terminal (credential materialization, git,
+		// network, lock contention) is weather, not evidence about the item —
+		// it must not accumulate failure-streak strikes that eventually park
+		// the item goobers:needs-human. The item returns to the pool untouched
+		// and the scheduler's auth circuit / quota gates own the retry cadence.
+		// Item-judgment terminals (a verified ISSUE_NOT_APPLICABLE refusal,
+		// #3363) are likewise not work failures. Timeout deliberately still
+		// counts: a recurring harness session timeout is this circuit
+		// breaker's motivating case (#1054).
+		if class := telemetry.ClassifyError(o.Code); class.InfraFault() || class == telemetry.ErrorClassItemJudgment {
+			return nil
+		}
 		repoRef := providers.RepositoryRef{
 			Provider: providers.ProviderKind(o.RepoRef.Provider),
 			Owner:    o.RepoRef.Owner,
@@ -363,7 +376,7 @@ func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 		prevCount, _, countErr := gate.CountFailureStreak(ctx, poster, repoRef, itemID)
 		if countErr != nil {
 			errs = append(errs, fmt.Errorf("count failure streak on %s#%s: %w", repoRef.Name, itemID, countErr))
-			prevCount = 0
+			continue
 		}
 		count := prevCount + 1
 
@@ -380,6 +393,20 @@ func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 			}); err != nil {
 				errs = append(errs, fmt.Errorf("apply circuit breaker on %s#%s: %w", repoRef.Name, itemID, err))
 			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func resetCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.Layout, repoRef providers.RepositoryRef, runID, runURL string) error {
+	itemIDs, err := claimedItemIDsForRun(l, runID)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, itemID := range itemIDs {
+		if err := gate.ResetFailureComment(ctx, poster, repoRef, itemID, runID, runURL); err != nil {
+			errs = append(errs, fmt.Errorf("reset failure streak on %s#%s: %w", repoRef.Name, itemID, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -408,11 +435,15 @@ func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolv
 	}
 
 	return func(runID string, phase journal.RunPhase, finalState string) error {
-		if phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
+		if phase == journal.PhaseCompleted || phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			runURL, _ := failureRunURL(l, cfg, runID)
-			_ = applyCircuitBreaker(ctx, poster, l, repoRef, runID, finalState, runURL)
+			if phase == journal.PhaseCompleted {
+				_ = resetCircuitBreaker(ctx, poster, l, repoRef, runID, runURL)
+			} else {
+				_ = applyCircuitBreaker(ctx, poster, l, repoRef, runID, finalState, runURL)
+			}
 		}
 		if inner != nil {
 			return inner(runID, phase, finalState)
@@ -715,4 +746,38 @@ func completeCycleSummaries(paths [][]string, morePaths bool, maxLength int, add
 		summaries.WriteString(additionalPathsOmitted)
 	}
 	return summaries.String(), true
+}
+
+// buildExistingFixHandler wires runner.Config.ExistingFix (#3236): the
+// instance-level handler strips goobers:ready and goobers:critical labels from
+// an issue when the implement stage returns no-work with existingFixCommit set,
+// preventing a permanent reclaim loop when the fix is already on main.
+func buildExistingFixHandler(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar) runner.ExistingFixHandler {
+	if len(cfg.Repos) == 0 {
+		return nil
+	}
+	updater := &escalationCommenter{
+		resolver:           resolver,
+		reg:                reg,
+		layout:             l,
+		needsHumanAssignee: cfg.NeedsHumanAssignee,
+	}
+
+	return func(ctx context.Context, o runner.ExistingFixOutcome) error {
+		if o.ItemID == "" {
+			return nil
+		}
+		repoRef := providers.RepositoryRef{
+			Provider: providers.ProviderKind(o.RepoRef.Provider),
+			Owner:    o.RepoRef.Owner,
+			Name:     o.RepoRef.Name,
+		}
+		// Strip both goobers:ready and goobers:critical labels to prevent reclaim
+		_, err := updater.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository:   repoRef,
+			ID:           o.ItemID,
+			RemoveLabels: []string{providers.LabelReady, providers.LabelCritical},
+		})
+		return err
+	}
 }

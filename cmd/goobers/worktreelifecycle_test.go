@@ -46,6 +46,7 @@ type liveAgenticAttempt struct {
 // poller from dispatching runs this test never asked for.
 const abortAgenticWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: acceptance
 spec:
@@ -136,7 +137,7 @@ func TestDaemonDrainMidAgenticStageFinalizesOwnedWorktrees(t *testing.T) {
 			t.Fatalf("cycle %d daemon did not start", i)
 		}
 
-		requestID, err := writeTriggerRequest(l.SchedulerDir(), "", "acceptance")
+		requestID, err := writeTriggerRequestContext(context.Background(), l.SchedulerDir(), "", "acceptance")
 		if err != nil {
 			t.Fatalf("cycle %d write trigger request: %v", i, err)
 		}

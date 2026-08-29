@@ -96,8 +96,12 @@ func runRecordMergeRefusal(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
-		withStageProviderCapability(capability.GitHubPRWrite),
+	stageCapability := capability.GitHubPRWrite
+	if repo.Provider == providers.ProviderADO {
+		stageCapability = capability.ADOPRWrite
+	}
+	provider, err := newMergeReviewRemediationProvider(root, repo,
+		withStageProviderCapability(stageCapability),
 		withStageProviderMutations("pr"),
 	)
 	if err != nil {

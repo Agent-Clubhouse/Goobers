@@ -10,6 +10,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -22,9 +23,8 @@ import (
 // issue-close-out, #131/#132) can look up its own injected credential by the
 // same convention buildStageEnv uses to set it, without duplicating the
 // sanitization rule.
-func CredentialEnvVar(capability string) string {
-	sanitized := nonAlnum.ReplaceAllString(capability, "_")
-	return "GOOBERS_CRED_" + strings.ToUpper(sanitized)
+func CredentialEnvVar(capabilityName string) string {
+	return capability.CredentialEnvVar(capabilityName)
 }
 
 // InputEnvVar returns the deterministic env var name a stage's declared
@@ -162,7 +162,7 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 		env = append(env, key+"="+value)
 	}
 	// GOTRACEBACK=all makes every Go stage subprocess (go test under `make ci`,
-	// the goobers CLI, goober-runtime) print ALL goroutines — including runtime
+	// the goobers CLI) print ALL goroutines — including runtime
 	// and system stacks — when it dumps on SIGQUIT (the timeout-diagnostics path
 	// in shell.go) or its own -test.timeout. No runtime/perf cost: it only
 	// changes what a crash/quit dump contains. Set here so a hung stage's
@@ -209,9 +209,15 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	if injector == nil || len(declared) == 0 {
 		return env, nil
 	}
+	// A credential that cannot be materialized is an infrastructure fault, not
+	// evidence about the work (#3361): typed with its own code AND marked via
+	// the invoke.InfrastructureFailure seam, so the runner retries it on the
+	// bounded infrastructure budget (journal AttemptClass "infra") instead of
+	// consuming the stage's policy attempts — at attempt budgets of 1, the old
+	// classification converted a transient 403 into a terminal work failure.
 	set, err := injector.Materialize(ctx, declared)
 	if err != nil {
-		return nil, StageFailure(telemetry.ErrCodeCredentialUnavailable, err)
+		return nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
 	}
 	for _, capability := range declared {
 		token, err := set.Token(ctx, capability)
@@ -219,7 +225,9 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 			if errors.Is(err, credentials.ErrNoCredentialForCapability) {
 				continue // declared but uncredentialed capability (e.g. telemetry:read)
 			}
-			return nil, err
+			// Same seam as Materialize above: a granted capability whose token
+			// resolution fails at env-build time is credential infrastructure.
+			return nil, invoke.InfrastructureFailure(StageFailure(telemetry.ErrCodeCredentialUnavailable, err))
 		}
 		registrar.Register([]byte(token))
 		env = append(env, CredentialEnvVar(capability)+"="+token)

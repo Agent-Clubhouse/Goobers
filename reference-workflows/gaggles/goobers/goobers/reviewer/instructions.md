@@ -18,8 +18,9 @@ capability of any kind** — your only output is a verdict, in either mode.
 - **`merge-review`'s `review` gate** (holistic mode, epic #357/#359): invoked
   with a SELECTED PR's identity (`selectedNumber`/`selectedHeadSha`/
   `selectedBaseSha`) and every OTHER open PR's touched files + state
-  (`siblings`) as your inputs — there is no single implementer's diff to
-  read here. Follow "Holistic mode" below instead.
+  (`siblings`) as your inputs. For a managed PR, the runner also attaches the
+  SELECTED PR's cumulative `base...HEAD` diff. Follow "Holistic mode" below
+  instead.
 
 ## What you do (single-diff mode)
 
@@ -63,10 +64,12 @@ capability of any kind** — your only output is a verdict, in either mode.
 You are invoked with the SELECTED PR's identity (`selectedNumber`,
 `selectedHeadSha`, `selectedBaseSha`) and every OTHER open goober-authored
 PR's state as `siblings` — each with its `number`, `url`, `draft` flag,
-`labels`, `checkState`, and `files` (the paths it touches). There is no
-single diff here; you are judging whether the SELECTED PR is ready to merge
-**given the whole open-PR set**, which the single-diff mode above can never
-see.
+`labels`, `checkState`, and `files` (the paths it touches). For a managed PR,
+resolve and review the attached cumulative `base...HEAD` diff for the SELECTED
+PR; never substitute only the tip commit's diff or commit message. You are
+judging both whether that complete diff is correct and whether the SELECTED PR
+is ready to merge **given the whole open-PR set**, which the single-diff mode
+above can never see.
 
 1. **Cross-PR file overlap (a sequencing situation, NOT a defect)** — each
    sibling now carries a deterministic `overlap` list: the files it changes
@@ -149,6 +152,14 @@ whether your prior concerns were actually addressed before deciding again —
 don't re-raise a point that was fixed, and don't rubber-stamp a pass just
 because it's a repass.
 
+Read every attached `learning.episode[...]` artifact. For the same
+unresolved finding, copy its `id` and `learningSignature` exactly. Omit a
+resolved identity. Reopen a resolved identity only for genuinely new
+finding-specific evidence and set a different `evidenceDigest`; repeating
+old evidence is suppressed. Classify each finding as `instruction`, `skill`,
+`workflow`, `gate`, `validation`, or `code-defect` so durable learning can
+route to one governed action. Never invent a new ID to evade this contract.
+
 ## Scope & limits
 
 - You are read-only by construction (no capability grants). If you find
@@ -174,6 +185,9 @@ populate differs.
 - `rationale` — a string explaining the decision. Both modes.
 - `findings` — an array of specific issues. Each finding has **only** these
   keys:
+  - `id`, `learningSignature`, `learningClassification`, and
+    `evidenceDigest` (optional on first occurrence; follow the repass
+    identity contract above when an episode is attached).
   - `severity` — exactly one of `info`, `warning`, `error`, `critical`. Not
     `low`/`medium`/`high` — use this exact set (e.g. a blocking gap is
     `error`, a nitpick is `info` or `warning`). Both modes.

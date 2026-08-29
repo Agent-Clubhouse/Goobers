@@ -11,8 +11,11 @@ database. It owns three things:
 3. **The claim ledger** — the atomic, lease-based source of truth for
    exactly-once backlog-item processing.
 
-Distinct from `internal/scheduler`, the earlier Temporal-era (M7) scheduler —
-quarantined as a tier-3 component (§11, #15) and revived, not reused, at V2.
+This is the one scheduler. The earlier Temporal-era (M7) scheduler fork,
+`internal/scheduler`, was deleted per `goobernetes-architecture.md` D5/§4
+(#2055 resolved: supersede) — distributed execution reuses this package's
+policy on the daemon, unforked; the dispatch seam that carries it there is
+#3513's.
 
 ## Cron evaluation
 

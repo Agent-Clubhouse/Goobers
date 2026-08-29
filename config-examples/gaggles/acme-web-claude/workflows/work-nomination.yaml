@@ -31,7 +31,7 @@ spec:
       type: deterministic
       goal: Materialize threshold-crossing telemetry findings with journal evidence for the nominator.
       run:
-        command: ["goobers", "telemetry-query", "--window", "24h", "--aggregate", "stage-failure-rate", "--aggregate", "error-signature", "--aggregate", "gate-noise", "--format", "candidate-findings"]
+        command: ["goobers", "telemetry-query", "--window", "24h", "--workflow", "claude-work-nomination", "--aggregate", "stage-failure-rate", "--aggregate", "error-signature", "--aggregate", "gate-noise", "--aggregate", "credit-assignment", "--format", "candidate-findings"]
       inputs:
         # Without this the expectedOutputs below emit nothing: a shell stage's
         # outputs are harvested only from its declared result file, so
@@ -54,12 +54,22 @@ spec:
       goober: claude-nominator
       goal: >-
         Analyze the candidate-findings artifact and a read-only checkout for
-        genuine coverage gaps and recurring failure or gate-noise patterns.
+        genuine coverage gaps, recurring failure or gate-noise patterns, and
+        high-confidence credit-assignment findings. A credit finding may be
+        considered only when its node appears in the artifact's
+        promotionCandidates boundary; never nominate from promotionSignals or
+        a correlational fallback. Then honor nomination_guardrails: require an
+        upstream-cause check, dedupe by its exact key, and apply its governing-
+        target treatment.
         Query existing goobers:nominated issues first and skip
         anything already covered within the dedupe window. File a
         well-formed issue for each remaining gap: evidence pointers or a
         repro, a proposed scope, and an acceptance sketch. Stop at the
-        configured per-run cap.
+        configured per-run cap. Treat gate-never-fails as calibration evidence:
+        require a recorded expected/actual mismatch before describing a behavior
+        defect or requiring a cited run to change. Compare the gate with open and
+        recently resolved calibrations for the same gate and finding family before
+        filing new calibration work.
       capabilities:
         - repo:read
         - telemetry:read
@@ -74,6 +84,8 @@ spec:
         # file, and how far back "already covered" looks when deduping.
         maxNominationsPerRun: "5"
         dedupeWindowDays: "14"
+        creditAssignmentMinRuns: "5"
+        creditAssignmentMinFailureShare: "0.3"
       # No structured output: each nomination is already filed as a GitHub
       # issue, and a result's `outputs` are scalar-only (#302). The scalar
       # `summary` in the result envelope carries the run's counts.

@@ -212,11 +212,10 @@ func TestWorkspaceBranchRebindsLaterStagesAcrossRetries(t *testing.T) {
 func TestWorkspaceBranchHistoryReplays(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	server, err := testsuite.StartDevServer(ctx, testsuite.DevServerOptions{
-		CachedDownload: testsuite.CachedDownload{Version: "default"},
-		LogLevel:       "error",
-		Stdout:         io.Discard,
-		Stderr:         io.Discard,
+	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{
+		LogLevel: "error",
+		Stdout:   io.Discard,
+		Stderr:   io.Discard,
 	})
 	if err != nil {
 		t.Fatalf("start Temporal dev server: %v", err)

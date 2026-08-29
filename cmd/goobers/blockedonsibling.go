@@ -119,7 +119,7 @@ func filterLiveBlockedOnSiblingBlockers(ctx context.Context, provider remediatio
 
 // blockedOnSiblingStillBlocks reports whether pr's blocker-aware parking still
 // holds (#748). It is also used by post-merge unpark and pr-remediation.
-func blockedOnSiblingStillBlocks(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
+func blockedOnSiblingStillBlocks(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary) (bool, error) {
 	blockers, err := recordedBlockedOnSiblingBlockers(ctx, provider, repo, pr)
 	if err != nil {
 		return false, err
@@ -134,4 +134,51 @@ func blockedOnSiblingStillBlocks(ctx context.Context, provider *providers.GitHub
 		}
 	}
 	return false, nil
+}
+
+// blockedOnSiblingResolvedReason explains a cleared marker in the reconcile
+// report.
+const blockedOnSiblingResolvedReason = "removed `goobers:blocked-on-sibling` because every blocker it named is closed"
+
+// staleBlockedOnSiblingMarker reports whether an ISSUE's blocked-on-sibling
+// marker has outlived the blockers it named (#3355).
+//
+// The PR path has no equivalent problem: post-merge unpark clears the label
+// when a merge resolves the last blocker. Issues have no such path at all --
+// unparkResolvedSiblings iterates pull requests only, and fires only on a bot
+// PR merging, so a blocker closed by hand never triggers anything. 60 open
+// issues currently carry this label and none can shed it.
+//
+// NOTE THE POLARITY, which is deliberately the opposite of
+// recordedBlockedOnSiblingBlockers'. That function fails OPEN for an absent
+// record -- reasonable when the question is "may this PR be selected", since
+// nothing concrete is holding it. Here the question is "should I remove a
+// label", which is an action, and roughly half the parked issues record their
+// blockers as native GitHub dependencies rather than as this comment payload.
+// Failing open would strip the marker from every one of those, unparking
+// issues that are genuinely still blocked. So: clear only on positive proof
+// that named blockers exist and are all resolved; absent record means no
+// action.
+//
+// It also deliberately does not re-apply goobers:ready. Clearing a stale block
+// marker states that a condition no longer holds; deciding an item deserves
+// another attempt is a separate judgement that stays with a human (operator
+// ruling, 2026-08-22).
+func staleBlockedOnSiblingMarker(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, item providers.WorkItem) (bool, error) {
+	if !item.HasLabel(blockedOnSiblingLabel) {
+		return false, nil
+	}
+	comments, err := provider.ListComments(ctx, repo, item.ID)
+	if err != nil {
+		return false, err
+	}
+	state, _, found := latestBlockedOnSiblingState(comments)
+	if !found || len(state.Blockers) == 0 {
+		return false, nil
+	}
+	live, err := filterLiveBlockedOnSiblingBlockers(ctx, provider, repo, state.Blockers)
+	if err != nil {
+		return false, err
+	}
+	return len(live) == 0, nil
 }

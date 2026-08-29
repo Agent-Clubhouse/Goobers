@@ -72,14 +72,21 @@ Kubernetes-style *group/version* of the resource shape and only bumps on a full 
     tag rather than trusting a snapshot in the proposed source tree. Removal is allowed only when
     that tagged build already records the feature as deprecated, so adding `deprecated` and
     `removed` entries together cannot manufacture the required release window. Until the first
-    tagged release, the external snapshot is empty and no feature may enter `removed`.
+    tagged release, the external snapshot is empty and no feature may enter `removed`. This
+    `vMAJOR.MINOR.PATCH` requirement is the feature-registry's own lineage, separate from git
+    release tags below — it never accepts a SemVer pre-release identifier (`-beta.2` and similar);
+    only a stable tag advances the feature/support-matrix baseline.
 
 ### 3.2 Release process (REL)
 
 - **`goobers --version`** (#279): embed version + git SHA + build date via `-ldflags`.
-- **Tagged releases**: semver tags (`vMAJOR.MINOR.PATCH`) drive a GitHub Actions release workflow
-  that builds multi-platform binaries (darwin/linux, arm64/amd64), generates a changelog from
-  Conventional-Commit history + a curated release note, and attaches artifacts to the GitHub Release.
+- **Tagged releases**: semver tags (`vMAJOR.MINOR.PATCH`, optionally suffixed with a SemVer
+  pre-release identifier such as `-beta.2`) drive a GitHub Actions release workflow that builds
+  multi-platform binaries (darwin/linux, arm64/amd64), generates a changelog from
+  Conventional-Commit history + a curated release note, and attaches artifacts to the GitHub
+  Release. A pre-release tag runs the identical signed pipeline but publishes flagged as a
+  GitHub pre-release (see `docs/guides/releases.md`); it never advances the feature-registry
+  lineage in §3.1 above.
 - **Consumable without cloning**: publish binaries (and optionally a container image + Homebrew tap —
   ties to #33) so a consumer runs `goobers` from a downloaded artifact.
 - **Version ↔ DSL linkage**: the release tag pins the DSL feature registry it ships; the release

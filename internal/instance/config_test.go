@@ -158,6 +158,45 @@ repos:
 	}
 }
 
+func TestLoadConfigGitHubCLITokenRef(t *testing.T) {
+	path := writeInstanceYAML(t, `apiVersion: goobers.dev/v1alpha1
+kind: Instance
+selfIdentity: alice
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      githubCLI:
+        hostname: github.com
+        user: alice`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Repos[0].Token.GitHubCLI == nil || cfg.Repos[0].Token.GitHubCLI.User != "alice" {
+		t.Fatalf("githubCLI token ref = %+v, want alice", cfg.Repos[0].Token.GitHubCLI)
+	}
+}
+
+func TestLoadConfigRejectsGitHubCLIIdentityMismatch(t *testing.T) {
+	path := writeInstanceYAML(t, `apiVersion: goobers.dev/v1alpha1
+kind: Instance
+selfIdentity: alice
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      githubCLI:
+        hostname: github.com
+        user: bob`)
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), `token.githubCLI.user "bob" does not match selfIdentity "alice"`) {
+		t.Fatalf("LoadConfig error = %v, want GitHub CLI identity mismatch", err)
+	}
+}
+
 // TestLoadConfigGitHubAppAuth: appId/installationId accept both the YAML
 // number and string spellings GitHub surfaces (numeric IDs vs client-ID
 // strings), normalized to strings; the loaded repo reports GitHubAppAuth.
@@ -1059,9 +1098,11 @@ func TestConfigRejectsWorkflowSourceStoreBackedAppKeyWithoutStores(t *testing.T)
 
 // TestLoadConfigAcceptsWorkflowSourceGitHubAppFixture loads #3274's acceptance
 // fixture — a sanitized copy of the cloud deployment's real instance.yaml,
-// combining per-repo App auth, daemonIdentity App auth, and workflowSource App
-// auth in one document — through the full LoadConfig strict-decode + Validate
-// path. Before WorkflowSource carried Auth, the strict decoder refused the
+// combining per-repo App auth and workflowSource App auth in one document —
+// through the full LoadConfig strict-decode + Validate path. Its daemonIdentity
+// is a PAT rather than an App: the fixture's repos span two owners, and #3414
+// rejects a single-installation App identity in that shape because it cannot
+// mint for both. Before WorkflowSource carried Auth, the strict decoder refused the
 // document outright ("unknown field").
 func TestLoadConfigAcceptsWorkflowSourceGitHubAppFixture(t *testing.T) {
 	cfg, err := LoadConfig(filepath.Join("..", "..", "api", "schemas", "testdata", "instance-workflowsource-app-auth.fixture.yaml"))
@@ -1186,6 +1227,74 @@ func TestRetentionConfigEnabledWithNoLimitsIsRejected(t *testing.T) {
 	// nothing by design, so there is no silent-no-op trap to guard against.
 	if err := (&Config{Retention: RetentionConfig{}}).Validate(); err != nil {
 		t.Fatalf("Validate(disabled, no limits) error = %v, want nil", err)
+	}
+}
+
+func TestProjectionFullFidelityRetentionDaysPolicy(t *testing.T) {
+	if got := (*Config)(nil).ProjectionFullFidelityRetentionDays(); got != DefaultProjectionFullFidelityDays {
+		t.Fatalf("nil config default = %d, want %d", got, DefaultProjectionFullFidelityDays)
+	}
+	if got := (&Config{}).ProjectionFullFidelityRetentionDays(); got != DefaultProjectionFullFidelityDays {
+		t.Fatalf("unset config default = %d, want %d", got, DefaultProjectionFullFidelityDays)
+	}
+	if got := (&Config{Retention: RetentionConfig{ProjectionFullFidelityDays: 30}}).ProjectionFullFidelityRetentionDays(); got != 30 {
+		t.Fatalf("explicit non-zero = %d, want 30", got)
+	}
+
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+retention:
+  projectionFullFidelityDays: 0
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.Retention.ProjectionFullFidelityDaysConfigured() {
+		t.Fatal("ProjectionFullFidelityDaysConfigured = false, want true")
+	}
+	if got := cfg.ProjectionFullFidelityRetentionDays(); got != 0 {
+		t.Fatalf("explicit opt-out = %d, want 0", got)
+	}
+
+	roundTripPath := filepath.Join(t.TempDir(), ConfigFileName)
+	if err := WriteConfig(roundTripPath, cfg); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+	roundTrip, err := LoadConfig(roundTripPath)
+	if err != nil {
+		t.Fatalf("LoadConfig after WriteConfig: %v", err)
+	}
+	if !roundTrip.Retention.ProjectionFullFidelityDaysConfigured() {
+		t.Fatal("round-trip ProjectionFullFidelityDaysConfigured = false, want true")
+	}
+	if got := roundTrip.ProjectionFullFidelityRetentionDays(); got != 0 {
+		t.Fatalf("round-trip explicit opt-out = %d, want 0", got)
+	}
+}
+
+func TestLoadConfigRejectsUnknownRetentionFields(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+retention:
+  unknown: true
+`)
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("expected unknown retention field to be rejected, got %v", err)
 	}
 }
 
@@ -1351,6 +1460,35 @@ telemetry:
 	}
 	if got := cfg.Telemetry.OTLP.Headers["authorization"].Env; got != "GOOBERS_OTLP_AUTHORIZATION" {
 		t.Fatalf("authorization env = %q, want GOOBERS_OTLP_AUTHORIZATION", got)
+	}
+}
+
+// TestLoadConfigRejectsInsecureNonLoopbackOTLP reproduces #3333's incident
+// shape verbatim (telemetry.otlp.insecure: true against a non-loopback
+// collector host:port) and pins the refusal message naming both escape
+// routes — a loopback sidecar collector, or a TLS endpoint — so the boot
+// failure teaches the fix instead of just naming the rule.
+func TestLoadConfigRejectsInsecureNonLoopbackOTLP(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+telemetry:
+  otlp:
+    endpoint: goobers-collector.goobers-system:4317
+    insecure: true
+`)
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("LoadConfig: want error for insecure non-loopback OTLP endpoint, got nil")
+	}
+	for _, want := range []string{
+		"insecure mode is allowed only for localhost or a loopback IP",
+		"loopback sidecar collector",
+		"TLS collector",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("LoadConfig error = %q, want it to contain %q", err.Error(), want)
+		}
 	}
 }
 
@@ -2458,7 +2596,10 @@ func TestConfigValidateDaemonIdentity(t *testing.T) {
 				Kind: GitHubAuthApp, AppID: "123456",
 				PrivateKey: &TokenRef{File: "/run/secrets/daemon-app.pem"},
 			}},
-			wantErr: "installationId is required",
+			// #3415 widened this: either form satisfies it now, so the message
+			// names both rather than pointing at the one that no longer is the
+			// only answer.
+			wantErr: "installationId or installations is required",
 		},
 		{
 			name: "github-app non-numeric installationId",
@@ -2978,5 +3119,284 @@ func TestRepoAuthBotLogin(t *testing.T) {
 				t.Fatalf("BotLogin() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// #3414 F1: a GitHub App installation belongs to exactly one owner, so a single
+// installationId cannot cover repos spanning several. Such a config is already
+// runtime-fatal (a 422 at first cross-owner mint, #3341), so rejecting it at
+// load can only hit configs that never worked.
+func TestValidateDaemonIdentityOwnerCoverage(t *testing.T) {
+	app := func() *DaemonIdentityConfig {
+		return &DaemonIdentityConfig{
+			Kind: GitHubAuthApp, AppID: "123456", InstallationID: "999",
+			PrivateKey: &TokenRef{File: "/key.pem"},
+		}
+	}
+	gh := func(owner, name string) RepoRef {
+		return RepoRef{Provider: "github", Owner: owner, Name: name}
+	}
+
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{
+			name: "two owners on one installation is rejected and names both",
+			cfg: Config{
+				DaemonIdentity: app(),
+				Repos:          []RepoRef{gh("acme", "a"), gh("globex", "b")},
+			},
+			wantErr: "acme, globex",
+		},
+		{
+			name: "single owner is unchanged",
+			cfg: Config{
+				DaemonIdentity: app(),
+				Repos:          []RepoRef{gh("acme", "a"), gh("acme", "b")},
+			},
+		},
+		{
+			// The check is about GitHub App installation scope, so an ADO
+			// organization is not an owner for this purpose. Counting it would
+			// reject a perfectly valid mixed-provider instance.
+			name: "non-github repos do not count toward owner span",
+			cfg: Config{
+				DaemonIdentity: app(),
+				Repos: []RepoRef{
+					gh("acme", "a"),
+					{Provider: "ado", Owner: "globex", Project: "p", Name: "b"},
+				},
+			},
+		},
+		{
+			name: "pat daemon identity is untouched on multi-owner repos",
+			cfg: Config{
+				DaemonIdentity: &DaemonIdentityConfig{Kind: GitHubAuthPAT, Token: &TokenRef{Env: "DAEMON_PAT"}},
+				Repos:          []RepoRef{gh("acme", "a"), gh("globex", "b")},
+			},
+		},
+		{
+			name: "no installation id declared yet is not this check's business",
+			cfg: Config{
+				DaemonIdentity: &DaemonIdentityConfig{Kind: GitHubAuthApp, AppID: "123456"},
+				Repos:          []RepoRef{gh("acme", "a"), gh("globex", "b")},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.validateDaemonIdentityOwnerCoverage()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// #3414 F1, second arm: GitHub allows one installation per (App, owner), so a
+// repo naming the same App as the daemon identity but a different installation
+// means one half of the config is wrong. The message must not presume which.
+func TestValidateDaemonIdentitySameAppInstallations(t *testing.T) {
+	identity := &DaemonIdentityConfig{
+		Kind: GitHubAuthApp, AppID: "123456", InstallationID: "999",
+		PrivateKey: &TokenRef{File: "/key.pem"},
+	}
+	repo := func(appID, installationID GitHubID) RepoRef {
+		return RepoRef{
+			Provider: "github", Owner: "acme", Name: "a",
+			Auth: &RepoAuthConfig{Kind: GitHubAuthApp, AppID: appID, InstallationID: installationID},
+		}
+	}
+
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{
+			name:    "same app, different installation is rejected",
+			cfg:     Config{DaemonIdentity: identity, Repos: []RepoRef{repo("123456", "888")}},
+			wantErr: "disagrees with daemonIdentity.installationId",
+		},
+		{
+			name: "same app, same installation agrees",
+			cfg:  Config{DaemonIdentity: identity, Repos: []RepoRef{repo("123456", "999")}},
+		},
+		{
+			// A different App is a different installation namespace entirely,
+			// so disagreement carries no information.
+			name: "different app is not cross-checked",
+			cfg:  Config{DaemonIdentity: identity, Repos: []RepoRef{repo("654321", "888")}},
+		},
+		{
+			name: "repo without its own installation id inherits and is not a conflict",
+			cfg:  Config{DaemonIdentity: identity, Repos: []RepoRef{repo("123456", "")}},
+		},
+		{
+			name: "repo without app auth is ignored",
+			cfg: Config{DaemonIdentity: identity, Repos: []RepoRef{
+				{Provider: "github", Owner: "acme", Name: "a", Token: TokenRef{Env: "T"}},
+			}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.validateDaemonIdentitySameAppInstallations()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// #3415: one App, one key, one slug, one installation per owner. The single
+// installationId form cannot serve a multi-owner instance because an App
+// installation belongs to exactly one owner -- observed in production as a 422
+// on the first cross-owner mint, worked around by removing the daemon identity
+// entirely and giving up explicit PR attribution.
+func TestDaemonIdentityInstallationForOwner(t *testing.T) {
+	perOwner := &DaemonIdentityConfig{
+		Kind: GitHubAuthApp, AppID: "123456",
+		Installations: []DaemonInstallation{
+			{Owner: "acme", InstallationID: "111"},
+			{Owner: "globex", InstallationID: "222"},
+		},
+	}
+	if got, ok := perOwner.InstallationForOwner("globex"); !ok || got != "222" {
+		t.Fatalf("InstallationForOwner(globex) = %q,%v want 222,true", got, ok)
+	}
+	if _, ok := perOwner.InstallationForOwner("initech"); ok {
+		t.Fatal("an unbound owner must not resolve: defaulting to another owner's installation reproduces the 422")
+	}
+
+	// The single-installation form is only reachable on a validated
+	// single-owner instance, so whatever owner is asked for is the one it
+	// covers.
+	single := &DaemonIdentityConfig{Kind: GitHubAuthApp, AppID: "123456", InstallationID: "999"}
+	if got, ok := single.InstallationForOwner("acme"); !ok || got != "999" {
+		t.Fatalf("InstallationForOwner on single form = %q,%v want 999,true", got, ok)
+	}
+}
+
+func TestDaemonIdentityInstallationsValidation(t *testing.T) {
+	base := func(mutate func(*DaemonIdentityConfig)) Config {
+		d := &DaemonIdentityConfig{
+			Kind: GitHubAuthApp, AppID: "123456",
+			PrivateKey: &TokenRef{File: "/key.pem"},
+			Installations: []DaemonInstallation{
+				{Owner: "acme", InstallationID: "111"},
+			},
+		}
+		mutate(d)
+		return Config{DaemonIdentity: d}
+	}
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{name: "per-owner form is accepted", cfg: base(func(*DaemonIdentityConfig) {})},
+		{
+			name:    "both forms is ambiguous and rejected",
+			cfg:     base(func(d *DaemonIdentityConfig) { d.InstallationID = "999" }),
+			wantErr: "not both",
+		},
+		{
+			name: "neither form is rejected",
+			cfg: base(func(d *DaemonIdentityConfig) {
+				d.Installations = nil
+			}),
+			wantErr: "installationId or installations is required",
+		},
+		{
+			name: "duplicate owner is rejected",
+			cfg: base(func(d *DaemonIdentityConfig) {
+				d.Installations = append(d.Installations, DaemonInstallation{Owner: "acme", InstallationID: "222"})
+			}),
+			wantErr: "bound more than once",
+		},
+		{
+			name: "binding without an owner is rejected",
+			cfg: base(func(d *DaemonIdentityConfig) {
+				d.Installations = []DaemonInstallation{{InstallationID: "111"}}
+			}),
+			wantErr: "owner is required",
+		},
+		{
+			name: "binding without an installation id is rejected",
+			cfg: base(func(d *DaemonIdentityConfig) {
+				d.Installations = []DaemonInstallation{{Owner: "acme"}}
+			}),
+			wantErr: "installationId is required",
+		},
+		{
+			name: "non-numeric installation id is rejected",
+			cfg: base(func(d *DaemonIdentityConfig) {
+				d.Installations = []DaemonInstallation{{Owner: "acme", InstallationID: "not-a-number"}}
+			}),
+			wantErr: "must be the numeric installation ID",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.DaemonIdentity.validate(nil, nil)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// Coverage is the whole point: an owner the instance targets but does not bind
+// fails the same way the single-installation form did, just later.
+func TestDaemonIdentityInstallationsMustCoverEveryOwner(t *testing.T) {
+	gh := func(owner, name string) RepoRef {
+		return RepoRef{Provider: "github", Owner: owner, Name: name}
+	}
+	identity := func(owners ...string) *DaemonIdentityConfig {
+		d := &DaemonIdentityConfig{Kind: GitHubAuthApp, AppID: "123456", PrivateKey: &TokenRef{File: "/k.pem"}}
+		for i, o := range owners {
+			d.Installations = append(d.Installations, DaemonInstallation{
+				Owner: o, InstallationID: GitHubID(fmt.Sprintf("%d", 100+i)),
+			})
+		}
+		return d
+	}
+
+	covered := Config{
+		DaemonIdentity: identity("acme", "globex"),
+		Repos:          []RepoRef{gh("acme", "a"), gh("globex", "b")},
+	}
+	if err := covered.validateDaemonIdentityOwnerCoverage(); err != nil {
+		t.Fatalf("fully covered multi-owner instance must validate: %v", err)
+	}
+
+	missing := Config{
+		DaemonIdentity: identity("acme"),
+		Repos:          []RepoRef{gh("acme", "a"), gh("globex", "b")},
+	}
+	err := missing.validateDaemonIdentityOwnerCoverage()
+	if err == nil || !strings.Contains(err.Error(), "globex") {
+		t.Fatalf("expected an error naming the unbound owner, got %v", err)
 	}
 }

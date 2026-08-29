@@ -77,6 +77,11 @@ func newWorkerSeams(root string, store blobstore.Store) (*workerSeams, error) {
 	}, nil
 }
 
+// SharedRegistry exposes the instance-global exact-value secret registry every
+// executor this process builds registers resolved credentials into. It is what
+// the #2931 dispatch canary asserts serialized envelopes against.
+func (w *workerSeams) SharedRegistry() *journal.RegistryScrubber { return w.shared }
+
 // forGaggle builds (once) the runner config for a gaggle, reusing the daemon's
 // own wiring so the worker's executors are configured identically to tier 1 —
 // same credential grants, same env allowlist, same stage timeouts, same
@@ -112,6 +117,9 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 	goobers, err := resolveGoobersForGaggle(set, gaggle)
 	if err != nil {
 		return nil, err
+	}
+	if err := validateStoredCopilotAuthBoundaries(cfg, set, goobers); err != nil {
+		return nil, fmt.Errorf("worker: credential admission: %w", err)
 	}
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
 	if err != nil {

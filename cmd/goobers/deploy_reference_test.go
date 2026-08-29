@@ -143,6 +143,43 @@ func TestDeployReferenceWorkerProvidesWritableHarnessHome(t *testing.T) {
 	}
 }
 
+func TestDeployReferenceWorkerInitContainerIsRestrictedCompatible(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/reference/goobers-system/worker-deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+
+	initContainers := deployment.Spec.Template.Spec.InitContainers
+	if len(initContainers) != 1 {
+		t.Fatalf("got %d init containers, want 1", len(initContainers))
+	}
+	seed := initContainers[0]
+	if seed.Name != "seed-instance-root" {
+		t.Fatalf("init container name = %q, want %q", seed.Name, "seed-instance-root")
+	}
+	if seed.SecurityContext == nil {
+		t.Fatal("init container has no security context")
+	}
+	if seed.SecurityContext.AllowPrivilegeEscalation == nil || *seed.SecurityContext.AllowPrivilegeEscalation {
+		t.Error("init container allowPrivilegeEscalation = true, want false")
+	}
+	if seed.SecurityContext.ReadOnlyRootFilesystem == nil || !*seed.SecurityContext.ReadOnlyRootFilesystem {
+		t.Error("init container readOnlyRootFilesystem = false, want true")
+	}
+	if seed.SecurityContext.Capabilities == nil || !slices.Equal(seed.SecurityContext.Capabilities.Drop, []corev1.Capability{"ALL"}) {
+		t.Errorf("init container capabilities.drop = %v, want [ALL]", seed.SecurityContext.Capabilities)
+	}
+	if deployment.Spec.Template.Spec.SecurityContext == nil ||
+		deployment.Spec.Template.Spec.SecurityContext.SeccompProfile == nil ||
+		deployment.Spec.Template.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Error("init container does not inherit a RuntimeDefault seccomp profile")
+	}
+}
+
 func registeredCommandFlagSet(t *testing.T, command string) *flag.FlagSet {
 	t.Helper()
 	registration, ok := commandHelp(command)

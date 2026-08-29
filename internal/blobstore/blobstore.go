@@ -209,6 +209,17 @@ func (d *Dir) Put(ctx context.Context, digest string, data []byte) error {
 	return nil
 }
 
+// ValidDigest reports whether digest is a well-formed "sha256:<hex>" content
+// address — the same shape pathForDigest enforces as a path-traversal boundary
+// (SEC-047's threat model). Exported so a caller fronting the store over an
+// untrusted transport (the daemon's blob-plane HTTP routes, internal/httpapi)
+// can refuse a malformed digest with its own 400 before ever calling Get or
+// Put, rather than letting the format error surface as an opaque store fault.
+func ValidDigest(digest string) bool {
+	_, err := pathForDigest(digest)
+	return err == nil
+}
+
 // pathFor maps a digest to its path, rejecting anything that is not a plain
 // sha256 hex digest. This is a security boundary, not a formatting nicety: a
 // digest reaches here from a ContextPointer, which travels through Temporal

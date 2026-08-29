@@ -108,6 +108,16 @@ func newProviderForStageAs[T providers.Provider](root string, repo providers.Rep
 	return typed, nil
 }
 
+// Merge-review stages share this seam so provider selection cannot drift between
+// the GitHub and ADO operation paths.
+func newMergeReviewProvider(root string, repo providers.RepositoryRef, readOnly bool, opts ...stageProviderOption) (providers.Provider, error) {
+	return newProviderForStage(root, repo, readOnly, opts...)
+}
+
+func newMergeReviewProviderAs[T providers.Provider](root string, repo providers.RepositoryRef, readOnly bool, opts ...stageProviderOption) (T, error) {
+	return newProviderForStageAs[T](root, repo, readOnly, opts...)
+}
+
 func stageProviderToken(cfg stageProviderConfig) (string, error) {
 	var token string
 	if cfg.token != "" {

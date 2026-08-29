@@ -60,6 +60,9 @@ _goobers_completion()
         doctor)
             flags+=" --k8s --repo --kubeconfig --context --report --oidc-issuer --registry --egress --timeout"
             ;;
+        netpol-render)
+            flags+=" --out --check --baseline --write-baseline --timeout --print-blob-endpoint"
+            ;;
         config)
             case "${COMP_WORDS[2]:-}" in
                 diff) flags+=" --against" ;;
@@ -84,13 +87,13 @@ _goobers_completion()
             esac
             ;;
         engine-start)
-            flags+=" --gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key"
+            flags+=" --gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key --live-journal"
             ;;
         engine-project)
             flags+=" --gaggle --temporal-hostport --temporal-namespace"
             ;;
         worker)
-            flags+=" --instance --blob-store --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
+            flags+=" --instance --blob-store --daemon-api --dispatch-namespace --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
         dashboard)
             flags+=" --port --listen --no-open --dev-assets --wait-for-daemon"
@@ -99,7 +102,7 @@ _goobers_completion()
             flags+=" --port --no-open --workdir"
             ;;
         run)
-            flags+=" --gaggle --no-wait"
+            flags+=" --gaggle --pr --no-wait"
             ;;
         approve)
             flags+=" --decision --actor"
@@ -122,7 +125,7 @@ _goobers_completion()
             esac
             ;;
         status)
-            flags+=" --daemon --json --phase --workflow --gaggle --limit --watch --interval"
+            flags+=" --agents --daemon --json --phase --workflow --gaggle --limit --watch --interval"
             ;;
         stats)
             flags+=" --since --json"
@@ -149,6 +152,12 @@ _goobers_completion()
             ;;
         trace)
             flags+=" --json --follow --summary --verdicts --transcripts --transcript"
+            ;;
+        e2e)
+            case "${COMP_WORDS[2]:-}" in
+                verify) flags+=" --run --gaggle --expected --out --print-runner-class" ;;
+                kill-inject) flags+=" --run --stage --stage-class --namespace --poll-timeout --out" ;;
+            esac
             ;;
         escalations)
             flags+=" --json"
@@ -187,7 +196,7 @@ _goobers_completion()
             flags+=" --max --lookback"
             ;;
         telemetry-query)
-            flags+=" --window --aggregate --threshold --format --gaggle --workflow"
+            flags+=" --window --aggregate --learning-action --threshold --format --gaggle --workflow"
             ;;
         docs-churn)
             flags+=" --repo --workflow --gaggle --since --buffer-multiplier --format"
@@ -303,6 +312,11 @@ _goobers_completion()
             if (( COMP_CWORD == 2 )); then
                 dynamic=1
                 candidates="$(command goobers __complete runs 2>/dev/null)"
+            fi
+            ;;
+        e2e)
+            if (( COMP_CWORD == 2 )); then
+                candidates="verify kill-inject"
             fi
             ;;
         escalations)

@@ -665,6 +665,16 @@ export const goWireFixtures = {
         "number": 2,
         "class": "policy",
         "status": "success",
+        "placement": {
+          "runner": "self",
+          "node": "aks-linux-0001",
+          "host": "goobers-stage-implement-4x2vq",
+          "os": "linux",
+          "image": "ghcr.io/goobers/goobers-base:v0.2.0",
+          "pod": "goobers-stage-implement-4x2vq",
+          "queuedAt": "2026-07-18T12:32:56Z",
+          "podStartedAt": "2026-07-18T12:32:56Z"
+        },
         "startedSeq": 4,
         "finishedSeq": 8,
         "startedAt": "2026-07-18T12:32:56Z",
@@ -736,6 +746,7 @@ export const goWireFixtures = {
         "totalRuns": 4,
         "completedRuns": 3,
         "failedRuns": 1,
+        "infraFailedRuns": 0,
         "otherRuns": 0,
         "successRate": 0.75,
         "avgDurationMs": 120000.5,
@@ -755,6 +766,7 @@ export const goWireFixtures = {
         "avgDurationMs": 120000.5,
         "minDurationMs": 100000,
         "maxDurationMs": 140001,
+        "infraFailedRuns": 0,
         "stuckAbortedRuns": 1
       }
     ],
@@ -832,9 +844,11 @@ export const goWireFixtures = {
         "failureRuns": 1,
         "failureShare": 0.25,
         "escalationRuns": 1,
-        "retryWasteAttempts": 2
+        "retryWasteAttempts": 2,
+        "identification": ""
       }
     ],
+    "causalCredit": null,
     "curation": {
       "everRecorded": false,
       "runs": 0,

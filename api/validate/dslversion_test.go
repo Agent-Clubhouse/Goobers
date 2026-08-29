@@ -36,20 +36,27 @@ func dslWorkflow(name, version string) apiv1.Workflow {
 	return w
 }
 
-func TestCheckWorkflowDSLVersionMissingPinDefaultsAndWarns(t *testing.T) {
+func TestCheckWorkflowDSLVersionMissingPinIsHardError(t *testing.T) {
 	syntheticDSLMatrix(t)
 	r := &Report{}
 	checkWorkflowDSLVersion(r, dslWorkflow("w", ""), "w.yaml", false)
 
-	if r.HasErrors() {
-		t.Fatalf("missing dslVersion must not fail validation: %v", r.Issues)
+	// The §8.3 cutover (#3507): a missing dslVersion is a hard error now that
+	// the transitional 1.4 default is gone.
+	if !r.HasErrors() {
+		t.Fatalf("missing dslVersion must fail validation: %v", r.Issues)
 	}
-	warnings := r.Warnings()
-	if len(warnings) != 1 || warnings[0].Code != WarningMissingDSLVersion {
-		t.Fatalf("warnings = %+v, want a single DVL001", warnings)
+	var found bool
+	for _, issue := range r.Issues {
+		if issue.Code == ErrorMissingDSLVersion && issue.Severity == Error {
+			found = true
+			if !strings.Contains(issue.Message, "pin an explicit dslVersion") {
+				t.Errorf("message = %q, want a pin-your-version diagnostic", issue.Message)
+			}
+		}
 	}
-	if !strings.Contains(warnings[0].Explanation, `defaulting to "1.4"`) {
-		t.Errorf("explanation = %q, want it to name the default version", warnings[0].Explanation)
+	if !found {
+		t.Fatalf("issues = %+v, want a DVL001 error", r.Issues)
 	}
 }
 
@@ -158,31 +165,35 @@ func TestCheckWorkflowDSLVersionPreviewOptedInWarnsOnly(t *testing.T) {
 	}
 }
 
-// TestLiveMatrixDeprecates14AndKeeps20Silent pins the compiled-in support
-// matrix's lifecycle behavior after #2700: a workflow pinned to DSL 1.4 gets
-// exactly one DVL020 deprecation warning (never an error) that names the 2.0
-// replacement and the `goobers fix` migration path, while a 2.0 pin validates
-// with no diagnostics at all. Unlike the syntheticDSLMatrix tests above, this
-// deliberately uses the live supportmatrix.GetDSL registry.
-func TestLiveMatrixDeprecates14AndKeeps20Silent(t *testing.T) {
+// TestLiveMatrixDrops14AndKeeps20Silent pins the compiled-in support matrix's
+// lifecycle behavior after DSL 1.4 was dropped (#3507): a workflow pinned to
+// DSL 1.4 is REFUSED with a DVL030 error that names the 2.0 replacement and the
+// `goobers fix` migration path, while a 2.0 pin validates with no diagnostics
+// at all. Unlike the syntheticDSLMatrix tests above, this deliberately uses the
+// live supportmatrix.GetDSL registry.
+func TestLiveMatrixDrops14AndKeeps20Silent(t *testing.T) {
 	r := &Report{}
 	checkWorkflowDSLVersion(r, dslWorkflow("w", "1.4"), "w.yaml", false)
-	if r.HasErrors() {
-		t.Fatalf("a deprecated 1.4 pin must stay a warning, not an error: %v", r.Issues)
+	if !r.HasErrors() {
+		t.Fatalf("a dropped 1.4 pin must fail validation: %v", r.Issues)
 	}
-	warnings := r.Warnings()
-	if len(warnings) != 1 || warnings[0].Code != WarningDeprecatedDSLVersion {
-		t.Fatalf("warnings = %+v, want a single DVL020", warnings)
-	}
-	for _, want := range []string{
-		`dslVersion "1.4" is deprecated`,
-		`replacement "2.0"`,
-		"unsupported after v0.5.0",
-		"goobers fix --to 2.0",
-	} {
-		if !strings.Contains(warnings[0].Explanation, want) {
-			t.Errorf("explanation = %q, want it to contain %q", warnings[0].Explanation, want)
+	var found bool
+	for _, issue := range r.Issues {
+		if issue.Code == ErrorUnsupportedDSLVersion && issue.Severity == Error {
+			found = true
+			for _, want := range []string{
+				`dslVersion "1.4" is unsupported`,
+				`replacement "2.0"`,
+				"goobers fix --to 2.0",
+			} {
+				if !strings.Contains(issue.Message, want) {
+					t.Errorf("message = %q, want it to contain %q", issue.Message, want)
+				}
+			}
 		}
+	}
+	if !found {
+		t.Fatalf("issues = %+v, want a DVL030 error for the dropped 1.4 pin", r.Issues)
 	}
 
 	r = &Report{}

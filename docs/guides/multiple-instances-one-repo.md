@@ -47,6 +47,25 @@ skipping either one leaves a real gap: label-only partitioning still lets one
 instance's `merge-pr`/`pr-select` stages see and act on another team's PRs;
 namespace-only partitioning still lets two instances claim the same issue.
 
+### Opting merge-review into an instance
+
+Existing merge-review workflows retain the historical branch-prefix and
+starvation behavior. To prevent independently configured instances from
+observing the same PR, add these inputs to `pr-select`:
+
+```yaml
+requireOptInLabel: "goobers:team-frontend"
+respectAssignee: "true"
+selfIdentity: "frontend-goobers"
+```
+
+These rules compose: the label must be present, and the configured identity
+must be an assignee or requested reviewer. Starvation protection ranks only
+the resulting eligible set, so it cannot bypass either restriction. Thread
+`publishAdvisory: "false"` into `apply-verdict` when outside-prefix advisory
+reviews should remain read-only. Leave the inputs empty or false during
+migration to preserve legacy behavior.
+
 ## Worked example: two teams, one repo
 
 Team **frontend** and team **billing** both run their own instance against the

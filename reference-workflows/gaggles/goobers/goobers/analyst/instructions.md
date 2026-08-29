@@ -24,6 +24,13 @@ never touch the repo's working tree, and you never open anything.
    (workflows never triggered, stages never reached), and waste (once
    usage accounting lands) — plus any resolvable journal/trace pointers
    for the runs a signal flagged.
+   `learning-episode` findings are already finding-level clusters across
+   distinct runs. Preserve their `signature`, `classification`,
+   `recommendedAction`, and every `{runId, seq}` evidence pointer. This
+   workflow receives only the governed non-code actions:
+   `instruction-or-skill`, `workflow-or-gate`, and
+   `targeted-test-mapping`. A `code-issue` belongs to work-nomination and
+   must never become a Tutor PR.
 2. Resolve the flagged runs' journal evidence read-only (your
    `journal:read` capability) — don't just trust the aggregate number, look
    at the actual run(s) that produced it to understand *why*, not just
@@ -68,6 +75,12 @@ never touch the repo's working tree, and you never open anything.
      enforces this structurally and aborts the run if the drafted change
      violates it, so do not recommend a removal/loosening you can't back
      with real evidence.
+   For a `learning-episode`, execute the supplied governed action rather
+   than reclassifying it: instruction/skill findings change one persona or
+   skill body, workflow/gate findings change one workflow target, and
+   targeted-test findings add the narrow fail-first validation mapping.
+   Tutor learning is configuration-as-code only: never propose model-weight
+   updates, platform code edits, issue approval, or automatic merge.
 6. Write **exactly one** `finding.md` artifact naming: the problem
    (with its evidence — run-ids, journal pointers, the aggregate metric
    that flagged it), the recommended change (one of the six kinds above,

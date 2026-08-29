@@ -28,6 +28,46 @@ type StatusReader interface {
 type SchedulerStatus struct {
 	ProviderQuotaResumeAt *time.Time
 	DaemonRestart         *DaemonRestartStatus
+	// RefusedWorkflows are the workflows the startup constraint solve marked
+	// unplaceable on the declared runners: inventory (workflow.refused,
+	// #2860/dsl-3.0.md §5 checkpoint 3) for the configuration currently in
+	// force: the set resets at each daemon start and each accepted config
+	// reload, because the scheduler re-journals current refusals at both
+	// boundaries. Empty on zero-declaration instances.
+	RefusedWorkflows []WorkflowRefusalStatus
+	RefillOccupancy  []RefillOccupancyStatus
+	Retention        *RetentionStatus
+}
+
+// WorkflowRefusalStatus is one boot-refused workflow and its solver
+// diagnostic.
+type WorkflowRefusalStatus struct {
+	Gaggle   string    `json:"gaggle,omitempty"`
+	Workflow string    `json:"workflow"`
+	Reason   string    `json:"reason"`
+	At       time.Time `json:"at"`
+}
+
+// RefillOccupancyStatus summarizes desired occupancy state for one workflow.
+type RefillOccupancyStatus struct {
+	Gaggle            string `json:"gaggle"`
+	Workflow          string `json:"workflow"`
+	DesiredRuns       int32  `json:"desiredRuns"`
+	ActiveRuns        int32  `json:"activeRuns"`
+	AdmissionBlocked  bool   `json:"admissionBlocked"`
+	BlockingCondition string `json:"blockingCondition,omitempty"`
+}
+
+// RetentionStatus exposes projection retention diagnostics for the portal.
+type RetentionStatus struct {
+	// Window is the configured retention window in days, or 0 for unbounded.
+	Window int `json:"window"`
+	// AgedOut is the cumulative number of runs aged out of the projection.
+	AgedOut int `json:"agedOut"`
+	// Passes is the total number of retention passes executed.
+	Passes int `json:"passes"`
+	// LastPassAt is the time of the most recent retention pass, if any.
+	LastPassAt *time.Time `json:"lastPassAt,omitempty"`
 }
 
 // DaemonRestartStatus correlates the latest daemon lifetime with runs selected
@@ -103,9 +143,14 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 			runs[i].Operator.Issue.Number != "" {
 			item, err := s.sources.WorkItemLookup(ctx, runs[i].Gaggle, runs[i].Operator.Issue.Number)
 			if err != nil {
+				// The reader could not verify the marker; the run itself is
+				// unaffected. This belongs to the diagnostics-limitations
+				// channel, never to the run's blockers (#3346) — a
+				// credential-less `goobers status` reported two healthy runs as
+				// blocked and nearly triggered an investigation into them.
 				runs[i].Operator.Claim.ProviderMarker = "unavailable"
-				runs[i].Operator.PotentialBlockers = append(
-					runs[i].Operator.PotentialBlockers,
+				runs[i].Operator.DiagnosticsLimitations = append(
+					runs[i].Operator.DiagnosticsLimitations,
 					"provider claim marker verification unavailable: "+err.Error(),
 				)
 				continue
@@ -229,19 +274,75 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 	var restart *DaemonRestartStatus
 	var sawDaemonStart bool
 	var dirtyReason string
+	refusalOrder := make([]string, 0)
+	refusals := make(map[string]WorkflowRefusalStatus)
+	resetRefusals := func() {
+		refusalOrder = refusalOrder[:0]
+		refusals = make(map[string]WorkflowRefusalStatus)
+	}
+	refillBlocked := make(map[localscheduler.WorkflowIdentity]string)
+	resetRefillBlocked := func() {
+		refillBlocked = make(map[localscheduler.WorkflowIdentity]string)
+	}
 	for _, event := range events {
 		if err := ctx.Err(); err != nil {
 			return SchedulerStatus{}, err
 		}
 		switch event.Type {
+		case journal.EventTriggerFired:
+			if localscheduler.IsRefillTriggerReason(event.Reason) {
+				delete(refillBlocked, localscheduler.WorkflowIdentity{Gaggle: event.Gaggle, Workflow: event.Workflow})
+			}
+		case journal.EventError:
+			if event.Error != nil && event.Error.Code == providers.ErrorCodeAuthFailed && event.Workflow != "" {
+				refillBlocked[localscheduler.WorkflowIdentity{
+					Gaggle: event.Gaggle, Workflow: event.Workflow,
+				}] = localscheduler.ReasonProviderAuth
+			}
+		case journal.EventPollShed:
+			if event.Workflow != "" {
+				refillBlocked[localscheduler.WorkflowIdentity{
+					Gaggle: event.Gaggle, Workflow: event.Workflow,
+				}] = localscheduler.ReasonProviderQuota
+			}
+		case journal.EventProviderQuotaReset:
+			for identity, blocking := range refillBlocked {
+				if blocking == localscheduler.ReasonProviderQuota {
+					delete(refillBlocked, identity)
+				}
+			}
+		case journal.EventConfigReloaded:
+			// The scheduler re-journals current refusals after each accepted
+			// reload, and refill blockers may have changed with the config.
+			resetRefusals()
+			resetRefillBlocked()
 		case journal.EventTickSkipped:
 			if candidate, ok := parseProviderQuotaResumeTime(event.Reason); ok {
 				candidate = candidate.UTC()
 				resetAt = &candidate
 			}
+			if blocking, ok := localscheduler.RefillBlockedReason(event.Reason); ok {
+				identity := localscheduler.WorkflowIdentity{Gaggle: event.Gaggle, Workflow: event.Workflow}
+				if identity.Workflow != "" {
+					refillBlocked[identity] = blocking
+				}
+			}
+		case journal.EventWorkflowRefused:
+			key := event.Gaggle + "/" + event.Workflow
+			if _, known := refusals[key]; !known {
+				refusalOrder = append(refusalOrder, key)
+			}
+			refusals[key] = WorkflowRefusalStatus{
+				Gaggle:   event.Gaggle,
+				Workflow: event.Workflow,
+				Reason:   event.Reason,
+				At:       event.Time,
+			}
 		case journal.EventDaemonDirtyRestart:
 			dirtyReason = event.Reason
 		case journal.EventDaemonStarted:
+			resetRefusals()
+			resetRefillBlocked()
 			if sawDaemonStart || dirtyReason != "" {
 				reason := "clean restart"
 				if dirtyReason != "" {
@@ -272,7 +373,62 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 			return SchedulerStatus{}, err
 		}
 	}
-	return SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart}, nil
+	status := SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart}
+	for _, key := range refusalOrder {
+		status.RefusedWorkflows = append(status.RefusedWorkflows, refusals[key])
+	}
+	activeCounts, err := s.activeRunCounts()
+	if err != nil {
+		return SchedulerStatus{}, err
+	}
+	refill := make([]RefillOccupancyStatus, 0)
+	definitions := s.definitions.Load().inventory.definitions
+	for _, def := range definitions.Workflows {
+		desired := def.Spec.Readiness.DesiredConcurrentRuns
+		if desired <= 0 {
+			continue
+		}
+		identity := localscheduler.WorkflowIdentity{Gaggle: def.Spec.Gaggle, Workflow: def.Name}
+		occupancy := RefillOccupancyStatus{
+			Gaggle:      def.Spec.Gaggle,
+			Workflow:    def.Name,
+			DesiredRuns: desired,
+			ActiveRuns:  int32(activeCounts[identity]),
+		}
+		if occupancy.ActiveRuns < occupancy.DesiredRuns {
+			if blocking, ok := refillBlocked[identity]; ok {
+				occupancy.AdmissionBlocked = true
+				occupancy.BlockingCondition = blocking
+			}
+		}
+		refill = append(refill, occupancy)
+	}
+	sort.Slice(refill, func(i, j int) bool {
+		if refill[i].Gaggle == refill[j].Gaggle {
+			return refill[i].Workflow < refill[j].Workflow
+		}
+		return refill[i].Gaggle < refill[j].Gaggle
+	})
+	status.RefillOccupancy = refill
+
+	// Retention diagnostics: expose the effective policy and live loop counters.
+	if s.sources.Config != nil {
+		retention := RetentionStatus{
+			Window: s.sources.Config.ProjectionFullFidelityRetentionDays(),
+		}
+		if s.sources.RetentionStats != nil {
+			stats := s.sources.RetentionStats()
+			retention.AgedOut = stats.AgedOut
+			retention.Passes = stats.Passes
+			if !stats.LastPassAt.IsZero() {
+				lastPassAt := stats.LastPassAt
+				retention.LastPassAt = &lastPassAt
+			}
+		}
+		status.Retention = &retention
+	}
+
+	return status, nil
 }
 
 type restartRun struct {

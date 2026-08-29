@@ -16,7 +16,13 @@
 # Publishing this image from CI on tagged releases is a follow-up; nothing in
 # .github/workflows builds or pushes it yet.
 
-ARG GO_IMAGE=docker.io/library/golang:1.26
+# GO_IMAGE is pinned to the exact patch version go.mod declares, never a
+# floating minor: a floating tag builds the shipped image with whatever 1.26.x
+# the registry serves that day, with no commit recording the change (#3452).
+# Bump trigger: a change to the `go` directive in go.mod — never a calendar.
+# `go run ./test/gotoolchain` (the go-toolchain merge-gate check) fails while
+# the two disagree, so the bump has to land in the same diff.
+ARG GO_IMAGE=docker.io/library/golang:1.26.6
 ARG RUNTIME_IMAGE=docker.io/library/node:22-bookworm-slim
 ARG COPILOT_VERSION=1.0.80
 

@@ -162,8 +162,6 @@ future-design docs above until its child issues land.
 | `providers/` | Backlog + repo provider abstraction (GitHub / ADO) | Active |
 | `cmd/goobers` | The product binary: `init`, `validate`, `up`, `run`, `status`, `trace` | Active |
 | `cmd/operator` | Kubernetes operator entrypoint | **Quarantined** — reserved for cloud-scale execution |
-| `cmd/scheduler` | Cluster scheduler process (Temporal-backed) | **Quarantined** — reserved for cloud-scale execution |
-| `cmd/goober-runtime` | Per-run agent pod runtime | **Superseded** — folds into `goobers`' local stage execution |
 | `internal/operator` | Kubernetes operator reconcile logic | **Quarantined** — reserved for cloud-scale execution |
 | `internal/configsync` | Config-repo → CRD render/apply (ArgoCD bridge) | **Quarantined** — CRD-apply path is not part of the shipped local runner |
 | `internal/` (other) | Shared Go packages (engine core, telemetry, app bootstrap) | Active |
@@ -199,9 +197,11 @@ Import shared packages as e.g. `github.com/goobers/goobers/internal/version`.
 The product binary is **`goobers`** — the local runner: `init`, `validate`, `up`
 (daemon: scheduler + runner), `run`, `status`, `trace`.
 
-Pre-existing entrypoints (`operator`, `scheduler`, `goober-runtime`) are
-cloud-scale or superseded skeletons kept per the quarantine plan
-(`docs/ARCHITECTURE.md §11`).
+Pre-existing entrypoints (`operator`, `config-sync`) are cloud-scale skeletons
+kept per the quarantine plan (`docs/ARCHITECTURE.md §11`). The tier-3
+scheduler fork (`cmd/scheduler`, `internal/scheduler`) and `cmd/goober-runtime`
+were deleted per `docs/design/goobernetes-architecture.md` D5 (#2055 resolved:
+supersede).
 Every binary shares `internal/app.Main`, which wires `--version`, structured logging
 (`--log-level`, `--log-format`), and SIGINT/SIGTERM-aware shutdown.
 
@@ -218,6 +218,7 @@ the differences relevant to your environment:
 - [Onboard an arbitrary repository (tiers 1-2)](docs/guides/arbitrary-repo-onboarding.md)
 - [Custom deterministic stage cookbook](docs/guides/custom-stage-cookbook.md)
 - [Daemon supervision](docs/guides/supervision.md)
+- [Move a local instance to another machine](docs/guides/move-local-instance.md)
 - [OIDC authentication](docs/guides/oidc-authentication.md)
 - [Azure DevOps authentication](docs/guides/ado-authentication.md)
 - [External telemetry connectors](docs/guides/external-telemetry-connectors.md)

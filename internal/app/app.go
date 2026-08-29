@@ -29,7 +29,7 @@ type Scrubber interface {
 // Main is the canonical entrypoint wrapper. Call it from a binary's main():
 //
 //	func main() {
-//	    app.Main("scheduler", func(ctx context.Context, log *slog.Logger) error {
+//	    app.Main("operator", func(ctx context.Context, log *slog.Logger) error {
 //	        // ... start serving until ctx is done ...
 //	        <-ctx.Done()
 //	        return nil
@@ -40,11 +40,6 @@ type Scrubber interface {
 // fn, and translates the outcome into a process exit code. It never returns.
 func Main(name string, fn RunFunc) {
 	os.Exit(run(name, os.Args[1:], os.Stderr, fn))
-}
-
-// MainWithScrubber is Main with redaction applied to all process output.
-func MainWithScrubber(name string, scrubber Scrubber, fn RunFunc) {
-	os.Exit(runWithScrubber(name, os.Args[1:], os.Stderr, scrubber, fn))
 }
 
 // run holds the testable core of Main: it takes its args and log sink as

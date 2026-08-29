@@ -22,6 +22,55 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+func TestFormatEventShowsLearningEpisodeAndFindingOutcomes(t *testing.T) {
+	injected := formatEvent(journal.Event{
+		Seq:  9,
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":              "learning.episode.injected",
+			"episodeId":         "episode:sha256:abc",
+			"sourceRunId":       "run-1",
+			"sourceSeq":         uint64(7),
+			"gate":              "review",
+			"target":            "implement",
+			"sourceAttempt":     1,
+			"nextAttempt":       2,
+			"classification":    "validation",
+			"recommendedAction": "targeted-test-mapping",
+			"findingIdentities": []string{"finding-a", "finding-b"},
+		},
+	})
+	for _, want := range []string{
+		"kind=learning.episode.injected",
+		"episodeId=episode:sha256:abc",
+		"sourceSeq=7",
+		"sourceAttempt=1",
+		"nextAttempt=2",
+		"classification=validation",
+		"recommendedAction=targeted-test-mapping",
+		"findings=finding-a,finding-b",
+	} {
+		if !strings.Contains(injected, want) {
+			t.Fatalf("learning injection trace missing %q: %s", want, injected)
+		}
+	}
+
+	evaluated := formatEvent(journal.Event{
+		Seq: 10, Type: journal.EventGateEvaluated, Gate: "review",
+		Verdict: string(apiv1.VerdictPass), Target: "@complete",
+		Runner: map[string]any{
+			"reason":                      "REVIEW_FINDING_RESOLVED",
+			"resolvedFindingIdentities":   []any{"finding-a"},
+			"suppressedFindingIdentities": []string{"finding-b"},
+		},
+	})
+	if !strings.Contains(evaluated, "reason=REVIEW_FINDING_RESOLVED") ||
+		!strings.Contains(evaluated, "resolved=finding-a") ||
+		!strings.Contains(evaluated, "suppressed=finding-b") {
+		t.Fatalf("finding outcome trace = %s", evaluated)
+	}
+}
+
 func TestTraceJSONIncludesFailedRunErrorAndSpans(t *testing.T) {
 	root := t.TempDir()
 	l := instance.NewLayout(root)

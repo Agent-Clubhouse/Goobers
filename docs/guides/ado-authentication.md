@@ -79,16 +79,10 @@ Token files must pass Goobers' private-file permission check.
 
 ## Runtime environment
 
-The superseded `goober-runtime` worker supports the same sources through:
-
-| Variable | Purpose |
-| --- | --- |
-| `GOOBERS_ADO_AUTH_KIND` | `pat`, `azure-cli`, `workload-identity`, or `managed-identity` |
-| `GOOBERS_ADO_ORG` | Azure DevOps organization |
-| `GOOBERS_ADO_PROJECT` | Azure DevOps project |
-| `GOOBERS_ADO_TENANT` | Optional Azure CLI tenant |
-| `GOOBERS_ADO_CLIENT_ID` | Optional user-assigned managed identity |
-| `GOOBERS_ADO_TOKEN` | PAT value when `kind=pat` |
+The `goober-runtime` worker that read these sources from `GOOBERS_ADO_*`
+environment variables was retired per goobernetes-architecture.md D5 (#2055
+resolved: supersede); the `goobers` binary configures ADO credentials through
+the instance config surface documented above.
 
 ## Security behavior
 

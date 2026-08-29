@@ -1490,7 +1490,11 @@ func staticBindings(parsed *ast.File) map[string]ast.Expr {
 }
 
 func bindingsAt(function *ast.FuncDecl, target ast.Node, fileBindings map[string]ast.Expr) map[string]ast.Expr {
-	return bindingsAtScope(function.Body, function, target, fileBindings)
+	var scope ast.Node
+	if function != nil {
+		scope = function.Body
+	}
+	return bindingsAtScope(scope, function, target, fileBindings)
 }
 
 func bindingsAtScope(
@@ -1511,17 +1515,19 @@ func bindingsAtScope(
 
 	parents := make(map[ast.Node]ast.Node)
 	var stack []ast.Node
-	ast.Inspect(scope, func(node ast.Node) bool {
-		if node == nil {
-			stack = stack[:len(stack)-1]
+	if scope != nil {
+		ast.Inspect(scope, func(node ast.Node) bool {
+			if node == nil {
+				stack = stack[:len(stack)-1]
+				return true
+			}
+			if len(stack) != 0 {
+				parents[node] = stack[len(stack)-1]
+			}
+			stack = append(stack, node)
 			return true
-		}
-		if len(stack) != 0 {
-			parents[node] = stack[len(stack)-1]
-		}
-		stack = append(stack, node)
-		return true
-	})
+		})
+	}
 	for node := target; node != nil; node = parents[node] {
 		if literal, ok := node.(*ast.FuncLit); ok {
 			forgetFieldNames(bindings, literal.Type.Params)
@@ -1536,41 +1542,43 @@ func bindingsAtScope(
 		}
 	}
 
-	ast.Inspect(scope, func(node ast.Node) bool {
-		if node == nil || node.Pos() >= target.Pos() {
-			return false
-		}
-		block := enclosingBlock(node, parents)
-		if block == nil || !callScopes[block] || node.End() >= target.Pos() {
-			return true
-		}
-		switch value := node.(type) {
-		case *ast.AssignStmt:
-			for i, left := range value.Lhs {
-				name := expressionName(left)
-				if name == "" || name == "_" {
-					continue
-				}
-				if i < len(value.Rhs) {
-					bindings[name] = value.Rhs[i]
-				} else {
-					delete(bindings, name)
-				}
+	if scope != nil {
+		ast.Inspect(scope, func(node ast.Node) bool {
+			if node == nil || node.Pos() >= target.Pos() {
+				return false
 			}
-			return false
-		case *ast.ValueSpec:
-			for i, name := range value.Names {
-				if i < len(value.Values) {
-					bindings[name.Name] = value.Values[i]
-				} else {
-					delete(bindings, name.Name)
-				}
+			block := enclosingBlock(node, parents)
+			if block == nil || !callScopes[block] || node.End() >= target.Pos() {
+				return true
 			}
-			return false
-		default:
-			return true
-		}
-	})
+			switch value := node.(type) {
+			case *ast.AssignStmt:
+				for i, left := range value.Lhs {
+					name := expressionName(left)
+					if name == "" || name == "_" {
+						continue
+					}
+					if i < len(value.Rhs) {
+						bindings[name] = value.Rhs[i]
+					} else {
+						delete(bindings, name)
+					}
+				}
+				return false
+			case *ast.ValueSpec:
+				for i, name := range value.Names {
+					if i < len(value.Values) {
+						bindings[name.Name] = value.Values[i]
+					} else {
+						delete(bindings, name.Name)
+					}
+				}
+				return false
+			default:
+				return true
+			}
+		})
+	}
 	return bindings
 }
 
@@ -1613,17 +1621,19 @@ func conditionalEgressDestination(
 
 	parents := make(map[ast.Node]ast.Node)
 	var stack []ast.Node
-	ast.Inspect(scope, func(node ast.Node) bool {
-		if node == nil {
-			stack = stack[:len(stack)-1]
+	if scope != nil {
+		ast.Inspect(scope, func(node ast.Node) bool {
+			if node == nil {
+				stack = stack[:len(stack)-1]
+				return true
+			}
+			if len(stack) != 0 {
+				parents[node] = stack[len(stack)-1]
+			}
+			stack = append(stack, node)
 			return true
-		}
-		if len(stack) != 0 {
-			parents[node] = stack[len(stack)-1]
-		}
-		stack = append(stack, node)
-		return true
-	})
+		})
+	}
 	callScopes := make(map[*ast.BlockStmt]bool)
 	for node := target; node != nil; node = parents[node] {
 		if block, ok := node.(*ast.BlockStmt); ok {
@@ -1632,70 +1642,74 @@ func conditionalEgressDestination(
 	}
 
 	lastDominatingAssignment := make(map[string]token.Pos)
-	ast.Inspect(scope, func(node ast.Node) bool {
-		if node == nil || node.Pos() >= target.Pos() {
-			return false
-		}
-		block := enclosingBlock(node, parents)
-		if block == nil || !callScopes[block] || node.End() >= target.Pos() {
-			return true
-		}
-		switch value := node.(type) {
-		case *ast.AssignStmt:
-			for _, left := range value.Lhs {
-				name := expressionName(left)
-				if value.Pos() < names[name] {
-					lastDominatingAssignment[name] = value.Pos()
-				}
-			}
-			return false
-		case *ast.ValueSpec:
-			for _, name := range value.Names {
-				if value.Pos() < names[name.Name] {
-					lastDominatingAssignment[name.Name] = value.Pos()
-				}
-			}
-			return false
-		default:
-			return true
-		}
-	})
-
-	var destination string
-	ast.Inspect(scope, func(node ast.Node) bool {
-		if destination != "" || node == nil || node.Pos() >= target.Pos() {
-			return false
-		}
-		assignment, ok := node.(*ast.AssignStmt)
-		if !ok || assignment.Tok != token.ASSIGN || assignment.End() >= target.Pos() {
-			return true
-		}
-		block := enclosingBlock(assignment, parents)
-		if block == nil || callScopes[block] {
-			return true
-		}
-		for index, left := range assignment.Lhs {
-			name := expressionName(left)
-			if assignment.Pos() >= names[name] || assignment.Pos() <= lastDominatingAssignment[name] ||
-				index >= len(assignment.Rhs) {
-				continue
-			}
-			assignmentBindings := bindingsAt(function, assignment, fileBindings)
-			var found bool
-			if requireURL {
-				destination, found = processURLDestination(assignment.Rhs[index], assignmentBindings, true)
-			} else {
-				destination, found = egressDestination(api, assignment.Rhs[index], assignmentBindings, imports)
-			}
-			if found && (rejectAny ||
-				isReportingDestination(destination) ||
-				isMaintainerOwnedDestination(destination)) {
+	if scope != nil {
+		ast.Inspect(scope, func(node ast.Node) bool {
+			if node == nil || node.Pos() >= target.Pos() {
 				return false
 			}
-			destination = ""
-		}
-		return false
-	})
+			block := enclosingBlock(node, parents)
+			if block == nil || !callScopes[block] || node.End() >= target.Pos() {
+				return true
+			}
+			switch value := node.(type) {
+			case *ast.AssignStmt:
+				for _, left := range value.Lhs {
+					name := expressionName(left)
+					if value.Pos() < names[name] {
+						lastDominatingAssignment[name] = value.Pos()
+					}
+				}
+				return false
+			case *ast.ValueSpec:
+				for _, name := range value.Names {
+					if value.Pos() < names[name.Name] {
+						lastDominatingAssignment[name.Name] = value.Pos()
+					}
+				}
+				return false
+			default:
+				return true
+			}
+		})
+	}
+
+	var destination string
+	if scope != nil {
+		ast.Inspect(scope, func(node ast.Node) bool {
+			if destination != "" || node == nil || node.Pos() >= target.Pos() {
+				return false
+			}
+			assignment, ok := node.(*ast.AssignStmt)
+			if !ok || assignment.Tok != token.ASSIGN || assignment.End() >= target.Pos() {
+				return true
+			}
+			block := enclosingBlock(assignment, parents)
+			if block == nil || callScopes[block] {
+				return true
+			}
+			for index, left := range assignment.Lhs {
+				name := expressionName(left)
+				if assignment.Pos() >= names[name] || assignment.Pos() <= lastDominatingAssignment[name] ||
+					index >= len(assignment.Rhs) {
+					continue
+				}
+				assignmentBindings := bindingsAtScope(scope, function, assignment, fileBindings)
+				var found bool
+				if requireURL {
+					destination, found = processURLDestination(assignment.Rhs[index], assignmentBindings, true)
+				} else {
+					destination, found = egressDestination(api, assignment.Rhs[index], assignmentBindings, imports)
+				}
+				if found && (rejectAny ||
+					isReportingDestination(destination) ||
+					isMaintainerOwnedDestination(destination)) {
+					return false
+				}
+				destination = ""
+			}
+			return false
+		})
+	}
 	return destination, destination != ""
 }
 

@@ -204,20 +204,33 @@ spec:
         command: ["make", "ci", "test-integration-strict"]
         # Pull in build/test behavior fixes that landed after this run branched.
         syncBase: true
-      # Declared, not inherited (#1969). The executor's built-in fallback is 10
-      # minutes, sized for short commands; `make ci` on this repo runs 8.1m at
-      # p50 and 9.5m at p90, so the default left ~90 seconds of headroom and any
-      # host contention pushed the stage over. A SIGQUIT at the deadline is
-      # reported as an ordinary CI failure, routed back to implement, and the
+      inputs:
+        # `make ci` shells out to the hermetic tier's `go test -race -timeout
+        # 30m` (test/ci/main.go), the same 30-minute ceiling `GO_TEST_TIMEOUT
+        # ?= 30m` documents in the Makefile — self-documented here so
+        # validate's subprocess-timeout coherence check (#3377) catches a
+        # future regression back below it even though the bare `make ci`
+        # invocation above carries no timeout validate can parse on its own.
+        expectedSubprocessTimeoutSeconds: "1800"
+      # Declared, not inherited (#1969), corrected by #3377. The executor's
+      # built-in fallback is 10 minutes, sized for short commands; `make ci`
+      # on this repo runs 8.1m at p50 and 9.5m at p90 in the *typical* case,
+      # but that is the wrong basis for this budget: `make ci` shells out to
+      # `go test -race -timeout 30m`, and under load the inner subprocess can
+      # legitimately still be running past any budget sized off typical-case
+      # duration alone — the stage must clear the subprocess's own 30-minute
+      # ceiling, not just its p99. A deadline SIGQUIT at the old 1500s (25m)
+      # presents as an ordinary CI failure, routed back to implement, and the
       # implementer — correctly finding no defect to fix — changes nothing, so
-      # the run escalates on an identical diff. 25 minutes is ~2.5x the observed
-      # p99 and absorbs both contention, the cold golangci-lint cache each fresh
-      # worktree now pays for (#1971), and the shorter integration tier.
+      # the run escalates on an identical diff. 2400s (40m) clears the inner
+      # 30-minute ceiling with 10 minutes of headroom for contention, the cold
+      # golangci-lint cache each fresh worktree pays for (#1971), and the
+      # shorter integration tier.
       #
       # Deliberately still maxAttempts 1: result failures route through
       # local-gate, whose infrastructure branch has its own bounded,
       # crash-resumable retry budget separate from policy repasses.
-      timeoutSeconds: 1500
+      timeoutSeconds: 2400
       retry:
         maxAttempts: 1
       next: local-gate

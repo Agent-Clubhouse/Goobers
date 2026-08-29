@@ -972,6 +972,19 @@ func TestCanonicalAttributeRegistryDoesNotDrift(t *testing.T) {
 		"goobers.storage.operation",
 		"goobers.storage.unmeasured_worktrees",
 		"goobers.error.message",
+		"goobers.agent.id",
+		"goobers.agent.parent_id",
+		"goobers.agent.lifecycle",
+		"goobers.agent.requested_model",
+		"goobers.agent.resolved_model",
+		"goobers.agent.requested_reasoning_effort",
+		"goobers.agent.resolved_reasoning_effort",
+		"goobers.agent.fidelity",
+		"goobers.agent.plugin",
+		"goobers.agent.message.id",
+		"goobers.agent.message.sender_id",
+		"goobers.agent.message.recipient_id",
+		"goobers.agent.message.purpose",
 	}
 	got := AllAttributes()
 	if len(got) != len(want) {

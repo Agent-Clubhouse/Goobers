@@ -67,6 +67,7 @@ var names = []string{
 	"open-pr",
 	"post-merge",
 	"pr-claim",
+	"pr-comment-watch",
 	"pr-select",
 	"publish-batch",
 	"push-branch",

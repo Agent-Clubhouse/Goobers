@@ -12,6 +12,12 @@ import (
 	"github.com/goobers/goobers/internal/workflow/internal/model"
 )
 
+// builtinManifest is the provider-stage manifest resolved at this
+// interpreter's own DSL version: a requirement change gated to a later DSL
+// version is invisible here, so editing the manifest for a newer DSL can
+// never re-break shipped 2.0 configs (the ed11ae81 class, #3504).
+var builtinManifest = providerstage.ForVersion(DSLVersion)
+
 type options struct {
 	goobers                    map[string]apiv1.GooberSpec
 	knownChecks                map[string]bool
@@ -246,7 +252,7 @@ func claimLedgerPlacementProblems(def Definition) []string {
 	var firstPlacement []string
 	for _, task := range def.Spec.Tasks {
 		if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" ||
-			!providerstage.MutatesClaimLedger(task.Run.Command[1], task.Run.Command[2:]) {
+			!builtinManifest.MutatesClaimLedger(task.Run.Command[1], task.Run.Command[2:]) {
 			continue
 		}
 		placement := canonicalPlacement(task.RequiredCapabilities)
@@ -461,6 +467,29 @@ func reachabilityProblems(m *Machine) []string {
 // and harness checks require the referenced goober definitions.
 func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, checkAllGooberCapabilities bool) []string {
 	var problems []string
+	maxConcurrentRuns := def.Spec.Readiness.MaxConcurrentRuns
+	if maxConcurrentRuns <= 0 {
+		maxConcurrentRuns = 1
+	}
+	if def.Spec.Readiness.DesiredConcurrentRuns > maxConcurrentRuns {
+		problems = append(problems, fmt.Sprintf(
+			"spec.readiness.desiredConcurrentRuns (%d) must be less than or equal to spec.readiness.maxConcurrentRuns (%d)",
+			def.Spec.Readiness.DesiredConcurrentRuns,
+			maxConcurrentRuns,
+		))
+	}
+	for _, task := range def.Spec.Tasks {
+		if task.NestedAgentPolicy == nil {
+			continue
+		}
+		if task.Type != apiv1.TaskAgentic {
+			problems = append(problems, fmt.Sprintf("task %q: nestedAgentPolicy is only valid for agentic tasks", task.Name))
+			continue
+		}
+		if err := task.NestedAgentPolicy.Validate(); err != nil {
+			problems = append(problems, fmt.Sprintf("task %q: %v", task.Name, err))
+		}
+	}
 	for _, t := range def.Spec.Tasks {
 		capabilities := toSet(t.Capabilities)
 		if t.Run != nil && len(t.Run.Command) >= 2 && t.Run.Command[0] == "goobers" {
@@ -476,16 +505,21 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 			if t.Type == apiv1.TaskDeterministic && isShellStage(t) && !builtincmd.Known(subcommand) {
 				problems = append(problems, unknownSubcommand(t.Name, subcommand))
 			}
-			for _, use := range providerstage.RequiredCapabilities(subcommand, t.Run.Command[2:]) {
-				// A declared capability satisfies the requirement when it IS
-				// the required one or explicitly subsumes it
-				// (internal/capability.Subsumes, #2386/#3300): narrowing a
-				// built-in's requirement must not reject configs already
-				// holding strictly more authority than the new requirement.
-				if !anyCapabilitySatisfies(t.Capabilities, use.Capability) {
+			for _, use := range builtinManifest.RequiredCapabilities(subcommand, t.Run.Command[2:]) {
+				// Most requirements accept an explicitly subsuming capability,
+				// but separately brokered credentials must be declared exactly.
+				satisfied := anyCapabilitySatisfies(t.Capabilities, use.Capability)
+				if use.RequiresExactCapability() {
+					satisfied = hasExactCapability(t.Capabilities, use.Capability)
+				}
+				if !satisfied {
+					var credential string
+					if use.RequiresExactCapability() {
+						credential = fmt.Sprintf(" (requires %s)", capability.CredentialEnvVar(string(use.Capability)))
+					}
 					problems = append(problems, fmt.Sprintf(
-						"task %q invokes built-in subcommand %q but does not declare capability %q; %s",
-						t.Name, subcommand, use.Capability, use.Consequence,
+						"task %q invokes built-in subcommand %q but does not declare capability %q%s; %s",
+						t.Name, subcommand, use.Capability, credential, use.Consequence,
 					))
 				}
 			}
@@ -631,6 +665,15 @@ func unknownCapability(value string) string {
 func anyCapabilitySatisfies(declared []string, required capability.Capability) bool {
 	for _, held := range declared {
 		if capability.Subsumes(capability.Capability(held), required) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExactCapability(declared []string, required capability.Capability) bool {
+	for _, held := range declared {
+		if capability.Capability(held) == required {
 			return true
 		}
 	}

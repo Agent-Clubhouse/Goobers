@@ -45,6 +45,10 @@ spec:
             # volume must remain single-node mounted.
             - name: journal
               mountPath: /var/lib/goobers
+            # Copilot keeps runtime state under $HOME/.copilot. The container
+            # root stays read-only; this state lasts for the life of the pod.
+            - name: harness-home
+              mountPath: /home/nonroot
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -61,3 +65,5 @@ spec:
         - name: journal
           persistentVolumeClaim:
             claimName: goobers-journal
+        - name: harness-home
+          emptyDir: {}

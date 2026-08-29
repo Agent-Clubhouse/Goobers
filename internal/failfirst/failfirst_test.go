@@ -7,6 +7,7 @@ import (
 
 const workflowNoGates = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: example
 spec:
@@ -23,6 +24,7 @@ spec:
 
 const workflowOneGate = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: example
 spec:
@@ -48,6 +50,7 @@ spec:
 
 const workflowTwoGates = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: example
 spec:

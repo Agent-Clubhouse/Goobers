@@ -81,10 +81,16 @@ const blockedOnlyCompletionAnnotation = "backlog.completed-with-blocked-only"
 
 const inReviewStatusLabel = "goobers/status:in-review"
 
+const (
+	backlogFailureDeprioritizeThreshold = 3
+	backlogFailureWindow                = 7 * 24 * time.Hour
+)
+
 type backlogClaimLedger interface {
 	Claim(itemID, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
 	ClaimScoped(key localscheduler.ClaimKey, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
 	ForRunAll(runID string) []localscheduler.ClaimEntry
+	HistoryForItem(itemID string) []localscheduler.ClaimEntry
 }
 
 var openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOption) (backlogClaimLedger, error) {
@@ -499,10 +505,20 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	curationModeByID := resweep.modeByID
 	persistResweepState := resweep.persist
 
+	if claim {
+		ledger, err := openBacklogClaimLedger(filepath.Join(env.layout.SchedulerDir(), claimLedgerFileName))
+		if err != nil {
+			pf(stderr, "error: open claim ledger: %v\n", err)
+			return 1
+		}
+		eligible = deprioritizeRepeatedFailures(env.layout, ledger, eligible, observedAt, env)
+	}
+
 	if !claim {
 		reportBacklogEligibility(env, scan.eligible, nil, verifiedSkips)
 		return runPlainBacklogQuery(env, scan)
 	}
+
 	reportBacklogEligibility(env, eligible, readOnlyResweep, verifiedSkips)
 	return runClaimBacklogQuery(ctx, env, backlogClaimOptions{
 		eligible:               eligible,
@@ -528,6 +544,54 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		curationModeByID:       curationModeByID,
 		beforeClaimTransaction: beforeClaimTransaction,
 	})
+}
+
+func deprioritizeRepeatedFailures(
+	layout instance.Layout,
+	ledger backlogClaimLedger,
+	items []providers.WorkItem,
+	now time.Time,
+	env backlogQueryEnv,
+) []providers.WorkItem {
+	if len(items) < 2 {
+		return items
+	}
+	healthy := make([]providers.WorkItem, 0, len(items))
+	deprioritized := make([]providers.WorkItem, 0, len(items))
+	for _, item := range items {
+		streak := terminalFailureStreak(layout, ledger.HistoryForItem(item.ID), now)
+		if streak >= backlogFailureDeprioritizeThreshold {
+			deprioritized = append(deprioritized, item)
+			env.debugf("deprioritized %s: %d consecutive terminal failures", item.ID, streak)
+			continue
+		}
+		healthy = append(healthy, item)
+	}
+	return append(healthy, deprioritized...)
+}
+
+func terminalFailureStreak(layout instance.Layout, history []localscheduler.ClaimEntry, now time.Time) int {
+	streak := 0
+	for _, entry := range history {
+		endedAt := entry.ReleasedAt
+		if endedAt == nil || now.Sub(*endedAt) > backlogFailureWindow || now.Before(*endedAt) {
+			break
+		}
+		runDir, err := layout.FindRunDir(entry.RunID)
+		if err != nil {
+			break
+		}
+		reader, err := journal.OpenRead(runDir)
+		if err != nil {
+			break
+		}
+		phase, err := reader.PhaseBounded(context.Background())
+		if err != nil || phase != journal.PhaseFailed {
+			break
+		}
+		streak++
+	}
+	return streak
 }
 
 type backlogClaimOptions struct {
@@ -1385,6 +1449,17 @@ func runPlainBacklogQuery(env backlogQueryEnv, scan backlogEligibilityScan) int 
 		if err := advanceBacklogScanCursor(scan.lockPath, scan.cursorPath, scan.cursor, scan.nextCursor); err != nil {
 			pf(env.stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
+		}
+		// #233 parity for list/scan pumps: a stage that declares a resultFile is
+		// a scheduled pump feeding a downstream stage, not an interactive
+		// listing. An empty scan must then report ResultNoWork so the runner
+		// short-circuits to a clean PhaseCompleted before any downstream agentic
+		// stage runs — otherwise a scan-then-act workflow invokes its
+		// model-backed stage every tick only to rediscover there is nothing to
+		// act on, burning tokens on every empty poll. Interactive `backlog-query`
+		// (no declared resultFile) keeps its human-readable "no eligible items".
+		if providerInput("resultFile", "") != "" {
+			return writeNoWorkResult(env.stdout, env.stderr, "no eligible items")
 		}
 		pln(env.stdout, "no eligible items")
 		return 0

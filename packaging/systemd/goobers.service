@@ -33,14 +33,14 @@ WorkingDirectory=%INSTANCE_ROOT%
 
 # Graceful shutdown: the stable host requests a daemon drain on SIGTERM (the daemon's
 # single shutdown path). SIGTERM is systemd's default KillSignal; it is stated
-# here for clarity. TimeoutStopSec must exceed the daemon's own drain budget
-# (drainGrace 30s + HTTP shutdown grace 5s in cmd/goobers/up.go) so a legitimate
-# drain completes before systemd escalates to SIGKILL. A second SIGTERM would
-# force-exit the daemon immediately (internal/signals), so KillMode=mixed +
-# SendSIGKILL is left at defaults as the final backstop.
+# here for clarity. The daemon waits indefinitely for admitted runs by default,
+# so systemd must not impose a shorter deadline and kill their worker processes.
+# Operators who configure `goobers up --drain-timeout` may set a matching,
+# slightly longer TimeoutStopSec here. A second SIGTERM still force-exits the
+# daemon immediately (internal/signals).
 KillSignal=SIGTERM
 KillMode=mixed
-TimeoutStopSec=45
+TimeoutStopSec=infinity
 
 Restart=on-failure
 RestartSec=5

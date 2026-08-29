@@ -138,6 +138,17 @@ type fakeGitHubServer struct {
 	pullListRequests   int
 	dependencyRequests int
 	authenticatedLogin string
+	// issueEventRequests counts GET /repos/o/r/issues/events pages served, so a
+	// test can price one backlog-health cycle's full-history walk against its
+	// resumed successor (#3392).
+	issueEventRequests int
+	// issueEventQuotaLimit/Remaining, when set, put an absolute rate-limit
+	// window on every repository issue-events page. quotaDrainPerPage models a
+	// window that drains as the walk proceeds, which is what makes a
+	// proactive floor observable at all.
+	issueEventQuotaLimit     int
+	issueEventQuotaRemaining int
+	issueEventQuotaDrain     int
 	// filesFailureStatus/filesFailureBody make GET /pulls/{n}/files fail with a
 	// specific status/body instead of listing the PR's fixture files — used to
 	// distinguish "the PR is gone" (the default 404 an unregistered number
@@ -145,6 +156,27 @@ type fakeGitHubServer struct {
 	// registered, for classifier false-positive guards (#1770).
 	filesFailureStatus map[int]int
 	filesFailureBody   map[int]string
+	// commentsFailureStatus/commentsFailureBody make GET
+	// /issues/{n}/comments fail with a specific status/body instead of
+	// listing the issue's comments — used to model a transient per-PR
+	// failure the comment watcher (pr-comment-watch) must warn-and-continue
+	// past rather than abort the whole scan on.
+	commentsFailureStatus map[int]int
+	commentsFailureBody   map[int]string
+}
+
+// setIssueCommentsFailure makes GET /issues/{number}/comments respond with
+// status/body instead of the issue's normal comment list. number must already
+// be registered via addIssue.
+func (s *fakeGitHubServer) setIssueCommentsFailure(number, status int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.commentsFailureStatus == nil {
+		s.commentsFailureStatus = map[int]int{}
+		s.commentsFailureBody = map[int]string{}
+	}
+	s.commentsFailureStatus[number] = status
+	s.commentsFailureBody[number] = body
 }
 
 // setPullRequestFilesFailure makes GET /pulls/{number}/files respond with
@@ -543,6 +575,10 @@ func (s *fakeGitHubServer) handleIssuesCollection(w http.ResponseWriter, r *http
 	writeFakeJSON(w, matched[start:end])
 }
 
+// handleIssueEvents serves the repository-wide issue-event history NEWEST
+// FIRST, as GitHub does. The ordering is load-bearing for #3392: it is what
+// lets a cursored walk stop at the first already-seen event instead of paging
+// through the whole history every cycle.
 func (s *fakeGitHubServer) handleIssueEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "unsupported", http.StatusMethodNotAllowed)
@@ -550,6 +586,20 @@ func (s *fakeGitHubServer) handleIssueEvents(w http.ResponseWriter, r *http.Requ
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.issueEventRequests++
+	if s.issueEventQuotaLimit > 0 {
+		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(s.issueEventQuotaLimit))
+		remaining := s.issueEventQuotaRemaining
+		if remaining < 0 {
+			remaining = 0
+		}
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+		s.issueEventQuotaRemaining -= s.issueEventQuotaDrain
+	}
+	newestFirst := make([]fakeIssueEvent, len(s.issueEvents))
+	for i, event := range s.issueEvents {
+		newestFirst[len(s.issueEvents)-1-i] = event
+	}
 	perPage := 30
 	if pp, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && pp > 0 {
 		if pp > 100 {
@@ -562,14 +612,14 @@ func (s *fakeGitHubServer) handleIssueEvents(w http.ResponseWriter, r *http.Requ
 		page = pg
 	}
 	start := (page - 1) * perPage
-	if start > len(s.issueEvents) {
-		start = len(s.issueEvents)
+	if start > len(newestFirst) {
+		start = len(newestFirst)
 	}
 	end := start + perPage
-	if end > len(s.issueEvents) {
-		end = len(s.issueEvents)
+	if end > len(newestFirst) {
+		end = len(newestFirst)
 	}
-	if end < len(s.issueEvents) {
+	if end < len(newestFirst) {
 		next := *r.URL
 		query := next.Query()
 		query.Set("page", strconv.Itoa(page+1))
@@ -578,7 +628,7 @@ func (s *fakeGitHubServer) handleIssueEvents(w http.ResponseWriter, r *http.Requ
 		w.Header().Set("Link", fmt.Sprintf("<%s%s>; rel=%q", s.server.URL, next.String(), "next"))
 	}
 	out := make([]map[string]any, 0, end-start)
-	for _, event := range s.issueEvents[start:end] {
+	for _, event := range newestFirst[start:end] {
 		issue, ok := s.issues[event.number]
 		if !ok {
 			continue
@@ -590,6 +640,38 @@ func (s *fakeGitHubServer) handleIssueEvents(w http.ResponseWriter, r *http.Requ
 		})
 	}
 	writeFakeJSON(w, out)
+}
+
+// addLabelChurn appends n synthetic add/remove events for an unrelated label,
+// padding the repository's event history so a full-history walk costs more than
+// one page — the shape #3392 is about.
+func (s *fakeGitHubServer) addLabelChurn(number, n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	base := time.Now().UTC().Add(-time.Duration(n) * time.Minute)
+	for i := 0; i < n; i++ {
+		s.appendLabelEventLocked(number, "churn", i%2 == 0, base.Add(time.Duration(i)*time.Minute))
+	}
+}
+
+// setIssueEventQuota puts an absolute rate-limit window on the repository
+// issue-events endpoint, draining by drain on every page served.
+func (s *fakeGitHubServer) setIssueEventQuota(limit, remaining, drain int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issueEventQuotaLimit, s.issueEventQuotaRemaining, s.issueEventQuotaDrain = limit, remaining, drain
+}
+
+func (s *fakeGitHubServer) issueEventRequestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.issueEventRequests
+}
+
+func (s *fakeGitHubServer) resetIssueEventRequestCount() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issueEventRequests = 0
 }
 
 func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Request) {
@@ -676,6 +758,10 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		}
 		writeFakeJSON(w, out)
 	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
+		if status, injected := s.commentsFailureStatus[num]; injected {
+			http.Error(w, s.commentsFailureBody[num], status)
+			return
+		}
 		out := make([]map[string]interface{}, 0, len(issue.comments))
 		for i, body := range issue.comments {
 			comment := map[string]interface{}{
@@ -1144,6 +1230,27 @@ func (s *fakeGitHubServer) setPRLabels(number int, labels []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prs[number].labels = append([]string(nil), labels...)
+}
+
+// issueLabels returns a snapshot of an issue's applied labels.
+func (s *fakeGitHubServer) issueLabels(number int) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	issue, ok := s.issues[number]
+	if !ok {
+		return nil
+	}
+	return append([]string(nil), issue.labels...)
+}
+
+// issueHasLabel reports whether an issue currently carries label.
+func (s *fakeGitHubServer) issueHasLabel(number int, label string) bool {
+	for _, l := range s.issueLabels(number) {
+		if l == label {
+			return true
+		}
+	}
+	return false
 }
 
 // setPRCheckState models CI advancing or rerunning on an unchanged head.

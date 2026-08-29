@@ -2,11 +2,16 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/providers"
 )
 
 func checkIssueStalenessEnv(t *testing.T, server *fakeGitHubServer, pullNumber string) (root, dir string) {
@@ -290,5 +295,113 @@ func TestCheckIssueStalenessPassesThroughSelectionFields(t *testing.T) {
 	if result["number"] != "53" || result["head"] != "goobers/implementation/run-53" ||
 		result["base"] != "main" || result["advisoryMode"] != "true" {
 		t.Fatalf("result = %+v, want passthrough of pr-select's fields", result)
+	}
+}
+
+// TestCheckIssueStalenessADODispatchesAndDetectsStale is the ADO execution path
+// test for check-issue-staleness: it proves runCheckIssueStaleness routes through
+// the ADO provider (not GitHub), reads work items from the backlog project (via
+// backlogRepoRefForStage routing when GOOBERS_GAGGLE is set), detects stale work
+// items correctly, and correctly skips the GitHub-specific remediation write that
+// would cause the PR-as-work-item wrong-object hazard on ADO.
+func TestCheckIssueStalenessADODispatchesAndDetectsStale(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Setenv("GOOBERS_INPUT_PULLNUMBER", "360")
+
+	snapshotAt := time.Now().UTC().Add(-2 * time.Hour)
+	updatedAfterSnapshot := time.Now().UTC()
+	pin := `<!-- issue-spec-pin: {"issueId":"1457","updatedAt":"` + snapshotAt.Format(time.RFC3339) + `"} -->`
+
+	prBase := "/" + repo.Owner + "/" + repo.Project + "/_apis/git/repositories/" + repo.Name + "/pullrequests"
+	mux := http.NewServeMux()
+
+	mux.HandleFunc(prBase+"/360", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(t, w, map[string]interface{}{
+			"pullRequestId":         360,
+			"status":                "active",
+			"description":           "Implements PBI 1457\n\nFixes #1457\n" + pin,
+			"sourceRefName":         "refs/heads/goobers/tb-ado-implementation/run-360",
+			"targetRefName":         "refs/heads/main",
+			"lastMergeSourceCommit": map[string]string{"commitId": "head-sha"},
+			"lastMergeTargetCommit": map[string]string{"commitId": "base-sha"},
+			"repository": map[string]interface{}{
+				"id": "repo-guid", "name": repo.Name,
+				"project": map[string]string{"id": "proj-guid", "name": repo.Project},
+			},
+		})
+	})
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
+	})
+
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitemtypes/Issue/states", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(t, w, map[string]interface{}{
+			"value": []map[string]interface{}{
+				{
+					"name":     "Active",
+					"category": "Proposed",
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitems/1457", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSONResp(t, w, map[string]interface{}{
+				"id":  1457,
+				"rev": 1,
+				"url": "https://dev.azure.com/acme/project/_apis/wit/workitems/1457",
+				"fields": map[string]interface{}{
+					"System.WorkItemType": "Issue",
+					"System.Title":        "Updated title",
+					"System.Description":  "Updated body",
+					"System.ChangedDate":  updatedAfterSnapshot.Format(time.RFC3339Nano),
+					"System.State":        "Active",
+				},
+			})
+		} else {
+			t.Errorf("unexpected method %s on workitems/1457", r.Method)
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// The PR-as-work-item write would PATCH wit/workitems/360 — it must never be reached on ADO.
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitems/360", func(_ http.ResponseWriter, r *http.Request) {
+		t.Fatalf("wit/workitems/360 %s — check-issue-staleness ran the PR-as-work-item write on ADO when stale", r.Method)
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	original := newADOProviderForStage
+	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
+			func(p *providers.ADOProvider) { p.BaseURL = server.URL }), nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = original })
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	code, stdout, stderr := runArgs(t, "check-issue-staleness", root)
+	if code != 0 {
+		t.Fatalf("check-issue-staleness: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readIssueStalenessResult(t, dir)
+	if result["issueStale"] != "true" {
+		t.Fatalf("result = %+v, want issueStale=true when work item is stale on ADO", result)
+	}
+	if result["number"] != "360" {
+		t.Fatalf("result = %+v, want number=360", result)
+	}
+	reason, ok := result["reason"].(string)
+	if !ok || !strings.Contains(reason, "1457") {
+		t.Fatalf("reason = %q, want it to mention work item #1457", reason)
+	}
+	if !strings.Contains(stdout, "reporting issueStale without mutation") {
+		t.Fatalf("stdout = %q, want warning about ADO remediation write being skipped", stdout)
 	}
 }

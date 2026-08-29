@@ -553,6 +553,15 @@ func TestUpdateBehindPRRetryAfterLabelFailureOnlyClearsLabel(t *testing.T) {
 		failLabelDelete: true,
 	}
 	root, workspace := setupUpdateBehindPRTest(t, state)
+	// failLabelDelete's 503 is here to prove the label cleanup is retried on
+	// the NEXT run, not to time the in-request backoff ladder. Spend the
+	// transient-retry budget so the first attempt fails fast instead of
+	// burning 1+2+4+8 = 15s of real sleep; setupUpdateBehindPRTest's own
+	// t.Cleanup still restores the original factory.
+	baseFactory := newGitHubProvider
+	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		return baseFactory(token, append(opts, providers.WithMaxTransientRetries(0))...)
+	}
 
 	code, _, _, _ := invokeUpdateBehindPRTest(t, root, workspace)
 	if code != 1 {

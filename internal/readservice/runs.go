@@ -204,7 +204,20 @@ type OperatorRunSummary struct {
 	LatestError        *journal.ErrorDetail `json:"latestError,omitempty"`
 	Review             *OperatorReview      `json:"review,omitempty"`
 	NextTransition     string               `json:"nextTransition,omitempty"`
-	PotentialBlockers  []string             `json:"potentialBlockers"`
+	// PotentialBlockers is strictly about the RUN: things impeding this run's
+	// own progress. Never put a read-side capability gap here (#3346).
+	PotentialBlockers []string `json:"potentialBlockers"`
+	// DiagnosticsLimitations records what THIS read invocation could not
+	// establish — a missing credential, an unreachable provider — as opposed to
+	// anything wrong with the run. A `goobers status` run without
+	// `github:issues:read` cannot double-check claim markers; that is a limit on
+	// the reader, and reporting it as the run's blocker manufactured a
+	// convincing false layer-N signal on two healthy runs (#3346).
+	//
+	// omitempty (unlike PotentialBlockers) so the many OperatorRunSummary
+	// construction sites cannot leak a JSON `null` into a consumer that expects
+	// an array; absent means "nothing the reader could not see".
+	DiagnosticsLimitations []string `json:"diagnosticsLimitations,omitempty"`
 }
 
 // OperatorIssue identifies the claimed work item displayed in status.
@@ -419,7 +432,14 @@ type StageAttempt struct {
 	// attempt's agent-invocation span, when the telemetry rollup has ingested
 	// it. Empty when telemetry is unavailable or the attempt has no matching
 	// span yet.
-	Model          string               `json:"model,omitempty"`
+	Model string `json:"model,omitempty"`
+	// Placement is the runner.* placement provenance journaled for this
+	// attempt (goobernetes-architecture.md §7) — which runner/node/OS/image/
+	// pod executed it and when it queued/started — when the executing
+	// substrate recorded it. Nil for every journal written before placement
+	// provenance existed: absent provenance must read exactly as today
+	// (zero-declaration invariance, architecture §11 item 1).
+	Placement      *journal.Placement   `json:"placement,omitempty"`
 	StartedSeq     uint64               `json:"startedSeq,omitempty"`
 	FinishedSeq    uint64               `json:"finishedSeq,omitempty"`
 	StartedAt      *time.Time           `json:"startedAt,omitempty"`
@@ -1696,6 +1716,19 @@ func summarizeRunForStage(
 		}
 	}
 
+	// PhaseFromEvents is the journal's authoritative reconstruction rule. Keep
+	// the summary fold responsible for presentation fields, but do not duplicate
+	// terminal-state semantics here: older runs may end at an executed terminal
+	// gate when cleanup fails before run.finished is appended.
+	reconstructed := journal.PhaseFromEvents(recordEvents(run.records))
+	if phase == journal.PhaseRunning && reconstructed != journal.PhaseRunning {
+		phase = reconstructed
+		finishedAt = terminalGateTime(run.records, reconstructed)
+		if !strings.HasPrefix(currentStage, "Workspace reset suggested:") {
+			currentStage = ""
+		}
+	}
+
 	if phase == journal.PhaseRunning {
 		if state, err := run.reader.State(); err == nil && state.LastSeq >= lastSeq && state.MachineState != "" {
 			currentStage = state.MachineState
@@ -1800,6 +1833,26 @@ func summarizeRunForStage(
 
 func operatorTrajectory(stage string, phase journal.RunPhase) string {
 	return readmodel.OperatorTrajectory(stage, phase)
+}
+
+func terminalGateTime(records []journal.EventRecord, phase journal.RunPhase) *time.Time {
+	wantTarget := ""
+	switch phase {
+	case journal.PhaseAborted:
+		wantTarget = journal.TargetAbort
+	case journal.PhaseEscalated:
+		wantTarget = journal.TargetEscalate
+	default:
+		return nil
+	}
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if event.Type == journal.EventGateEvaluated && event.Target == wantTarget {
+			finished := event.Time
+			return &finished
+		}
+	}
+	return nil
 }
 
 func matchesRunOutcome(phase journal.RunPhase, outcome OutcomeFilter) bool {
@@ -2660,6 +2713,12 @@ func collectStageAttempts(
 			visits[event.Stage] = visit
 		case journal.EventStageStarted:
 			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
+		case journal.EventRunnerPlacement:
+			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
+				if placement, ok := journal.PlacementFromEvent(event); ok {
+					attempts[i].Placement = &placement
+				}
+			}
 		case journal.EventArtifactRecorded:
 			if event.Ref == nil {
 				continue

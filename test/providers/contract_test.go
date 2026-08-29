@@ -317,12 +317,22 @@ func TestContract_NonZeroHTTPSurfacesError(t *testing.T) {
 			defer srv.Close()
 			var p providers.Provider
 			var repo providers.RepositoryRef
+			// This asserts the 500 surfaces as an error, not that it is
+			// retried, so both providers are built with the transient-retry
+			// budget spent: the assertion is unchanged and the test no longer
+			// burns 15s of real backoff sleep per backend.
 			switch bf.name {
 			case "github":
-				p = providers.NewGitHubProvider("t", func(p *providers.GitHubProvider) { p.BaseURL = srv.URL })
+				p = providers.NewGitHubProvider("t",
+					func(p *providers.GitHubProvider) { p.BaseURL = srv.URL },
+					providers.WithMaxTransientRetries(0),
+				)
 				repo = providers.RepositoryRef{Owner: "acme", Name: "app"}
 			case "ado":
-				p = providers.NewADOProvider("org", "project", "t", func(p *providers.ADOProvider) { p.BaseURL = srv.URL })
+				p = providers.NewADOProvider("org", "project", "t",
+					func(p *providers.ADOProvider) { p.BaseURL = srv.URL },
+					providers.WithADOMaxRateLimitRetries(0),
+				)
 				repo = providers.RepositoryRef{Name: "repo", Project: "project"}
 			}
 			if _, err := p.GetWorkItem(context.Background(), repo, idFor(bf.kindFor())); err == nil {

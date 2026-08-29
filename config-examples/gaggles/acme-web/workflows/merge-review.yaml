@@ -50,6 +50,11 @@ spec:
       inputs:
         headPrefixes: "goobers/implementation/,goobers/docs-updater/"
         authorScope: "any"
+        # Optional stricter instance scoping. Empty/false preserves legacy
+        # branch-prefix and starvation behavior.
+        requireOptInLabel: ""
+        respectAssignee: "false"
+        selfIdentity: ""
         resultFile: "selected-pr.json"
       capabilities:
         - github:pr:write
@@ -143,6 +148,8 @@ spec:
         scopeGateParked: scopeGateParked
       inputs:
         resultFile: "verdict-result.json"
+        # Advisory reviews can be made read-only without changing selection.
+        publishAdvisory: "true"
         # MUST match elect-lander's electionPolicy. apply-verdict re-derives
         # the election rather than receiving it: `elected` is emitted only by
         # elect-lander, and this stage is also reached straight from the review
@@ -338,7 +345,7 @@ spec:
           equals: "false"
       branches:
         pass: gather-sibling-context
-        fail: ""
+        fail: "@abort"
 
     # #1313/#1814: gather-sibling-context reconciles the scope label before
     # review. This gate evaluates the carried decision only after a pass

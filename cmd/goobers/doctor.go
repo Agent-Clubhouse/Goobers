@@ -29,7 +29,7 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"Goobers on it — the install-time enforcement of that document (#668).\n\n" +
 	"The --k8s check set, each row citing the shape-doc section it enforces:\n\n" +
 	"  cluster-version    required  §1     cluster reachable, supported version\n" +
-	"  networkpolicy-api  required  §5     NetworkPolicy API served (deny-first enforceable)\n" +
+	"  networkpolicy-api  required  §5     NetworkPolicy API served (warn: enforcement unverified)\n" +
 	"  rbac-install       required  §1/§3  permissions to install goobers-system\n" +
 	"  rbac-gaggle        required  §3/§5  permissions to stamp per-gaggle namespaces\n" +
 	"  storage-rwx        required  §4     ReadWriteMany-capable StorageClass exists\n" +
@@ -42,6 +42,11 @@ const doctorHelp = "Usage: goobers doctor --k8s [--kubeconfig <path>] [--context
 	"created on the cluster, and a check that cannot run reports fail with the\n" +
 	"reason — never a silent pass. Reference manifests expressing the same\n" +
 	"requirements live under deploy/reference/ (#663).\n\n" +
+	"networkpolicy-api warns even when the API is served: a served API is only a\n" +
+	"correlate of enforcement — a CNI can serve it and still ignore policies\n" +
+	"silently. This check is API-discovery only; enforcement can only be proven\n" +
+	"by a denied attempt from an in-cluster negative control, never by doctor\n" +
+	"--k8s alone.\n\n" +
 	"--repo diffs each configured repo's declared forge-policy manifest\n" +
 	"(<instance-root>/instance.yaml repos[].policy: required merge method,\n" +
 	"merge-queue requirement, required status checks — issue #916, Tier 4 of\n" +

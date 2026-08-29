@@ -49,6 +49,24 @@ var schemaLeafExceptions = map[string]string{
 	"workflow.metadata.name":        "identity envelope: k8s-style object metadata, not a DSL capability",
 	"workflow.dslVersion":           "identity envelope: selects the interpreting DSL version; versions are the support matrix's surface, not a feature of it",
 
+	// DSL 3.0-only surface (dsl-3.0.md §2/§4, issue #3505): the schemas are
+	// shared across interpreters, so these leaves are parseable here, but the
+	// fields exist only in 3.0 — this frozen interpreter never learns them
+	// (PO-D0), and the version router refuses a 2.0 document that uses them
+	// (internal/workflow preV30SurfaceProblems). They register in the 3.0
+	// registry (internal/workflow/v_3_0).
+	"workflow.spec.tasks.runsOn.os":           "DSL 3.0-only surface; registered as task.runsOn.os in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.runsOn.cpu":          "DSL 3.0-only surface; registered as task.runsOn.cpu in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.runsOn.memory":       "DSL 3.0-only surface; registered as task.runsOn.memory in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.runsOn.disk":         "DSL 3.0-only surface; registered as task.runsOn.disk in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.runsOn.capabilities": "DSL 3.0-only surface; registered as task.runsOn.capabilities in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.runsOn.restrictions": "DSL 3.0-only surface; registered as task.runsOn.restrictions in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.repoFrom":            "DSL 3.0-only surface; registered as task.repoFrom in the 3.0 registry, refused on 2.0 by the version router",
+	"workflow.spec.tasks.commitsRepo":         "DSL 3.0-only surface; registered as task.commitsRepo in the 3.0 registry, refused on 2.0 by the version router",
+	"gaggle.spec.runsOn.os":                   "DSL 3.0-only surface; registered as gaggle.spec.runsOn.os in the 3.0 registry, refused with 2.0-pinned workflows by the version router",
+	"gaggle.spec.runsOn.capabilities":         "DSL 3.0-only surface; registered as gaggle.spec.runsOn.capabilities in the 3.0 registry, refused with 2.0-pinned workflows by the version router",
+	"gaggle.spec.runsOn.restrictions":         "DSL 3.0-only surface; registered as gaggle.spec.runsOn.restrictions in the 3.0 registry, refused with 2.0-pinned workflows by the version router",
+
 	// Registered under a FeatureID whose spelling differs from the leaf path.
 	// #3292 ruled: keep the exception rather than align. Released FeatureIDs
 	// are pinned by validateFeatureRegistryEvolution, so the id cannot be
@@ -110,16 +128,36 @@ var schemaLeafExceptions = map[string]string{
 
 	// Validate-only sibling metadata: gaggle.spec.siblings is one id over the
 	// whole element list (#3292 rule 5); nothing at runtime reads a sibling.
-	"gaggle.spec.siblings.label":                   "payload of registered gaggle.spec.siblings (one id over the sibling list)",
-	"gaggle.spec.siblings.project.baseUrl":         "payload of registered gaggle.spec.siblings (one id over the sibling list)",
-	"gaggle.spec.siblings.project.branch":          "payload of registered gaggle.spec.siblings (one id over the sibling list)",
-	"gaggle.spec.siblings.project.checkout.sparse": "payload of registered gaggle.spec.siblings (one id over the sibling list)",
-	"gaggle.spec.siblings.project.connectionRef":   "payload of registered gaggle.spec.siblings (one id over the sibling list)",
-	"gaggle.spec.siblings.project.name":            "payload of registered gaggle.spec.siblings (one id over the sibling list)",
-	"gaggle.spec.siblings.project.owner":           "payload of registered gaggle.spec.siblings (one id over the sibling list)",
-	"gaggle.spec.siblings.project.project":         "payload of registered gaggle.spec.siblings (one id over the sibling list)",
-	"gaggle.spec.siblings.project.provider":        "payload of registered gaggle.spec.siblings (one id over the sibling list)",
-	"gaggle.spec.siblings.requireLabels":           "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.label":                                              "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.baseUrl":                                    "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.branch":                                     "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.checkout.sparse":                            "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.connectionRef":                              "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.name":                                       "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.owner":                                      "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.project":                                    "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.project.provider":                                   "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"gaggle.spec.siblings.requireLabels":                                      "payload of registered gaggle.spec.siblings (one id over the sibling list)",
+	"workflow.spec.tasks.nestedAgentPolicy.version":                           "nested-agent policy contract metadata",
+	"workflow.spec.tasks.nestedAgentPolicy.delegation":                        "nested-agent policy admission vocabulary",
+	"workflow.spec.tasks.nestedAgentPolicy.maxDepth":                          "nested-agent policy admission constraint",
+	"workflow.spec.tasks.nestedAgentPolicy.permittedProfiles":                 "nested-agent profile selection consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.context.mode":                      "nested-agent context assembly consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.context.artifactNames":             "nested-agent explicit artifact selection consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.context.envelopeSections":          "nested-agent explicit envelope selection consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.model.allowlist":                   "nested-agent model selection consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.model.maxReasoningEffort":          "nested-agent model ceiling consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.peerMessaging":                     "nested-agent peer messaging ceiling consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.capabilities":       "nested-agent capability ceiling consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.policyActions":      "nested-agent action ceiling consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.credentials":        "nested-agent credential ceiling consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.sandbox":            "nested-agent sandbox ceiling consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.filesystemRoots":    "nested-agent filesystem ceiling consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.networkEgress":      "nested-agent egress ceiling consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.contentExclusions":  "nested-agent content policy consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.budget":             "nested-agent budget ceiling consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.cancellation":       "nested-agent cancellation contract consumed by adapters",
+	"workflow.spec.tasks.nestedAgentPolicy.platformPolicy.completionContract": "nested-agent completion contract consumed by adapters",
 }
 
 // TestEmbeddedSchemaLeavesMapToFeatureRegistry is the fail-closed schema-to-
