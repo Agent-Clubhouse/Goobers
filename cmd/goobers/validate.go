@@ -461,17 +461,20 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		checkRepositoryReality(root, configDir, cfg, set, stores, stdout, diagnostics)
 	}
 	printDSLVersionSummary(stdout, set.Workflows)
-	// Deprecation notices (DVL020) are strict-neutral by ruling: a deprecated
-	// dslVersion stays fully supported, so nudging users to migrate must never
-	// turn an existing green pipeline red. They print and land in diagnostics
-	// but are excluded from --strict's promotion.
-	deprecationCount := 0
+	// Two codes are strict-neutral by ruling: they print and land in
+	// diagnostics but are excluded from --strict's promotion. Both are
+	// nudges about something fully supported, and both would otherwise turn
+	// an existing green pipeline red purely on upgrade. See each code's own
+	// doc comment in api/validate for the full reasoning — RNR006's second
+	// reason (only `true` silences it, so promotion would coerce an
+	// unearned trusted claim) is the load-bearing one.
+	strictNeutral := 0
 	for _, w := range report.Warnings() {
-		if w.Code == validate.WarningDeprecatedDSLVersion {
-			deprecationCount++
+		if isStrictNeutralWarning(w.Code) {
+			strictNeutral++
 		}
 	}
-	warningCount := len(report.Warnings()) - deprecationCount + len(placeholderFindings)
+	warningCount := len(report.Warnings()) - strictNeutral + len(placeholderFindings)
 	if options.strict && warningCount > 0 {
 		pf(stdout, "\nconfiguration has %d warning(s); --strict treats warnings as errors\n", warningCount)
 		return 1
@@ -480,6 +483,20 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
 		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
 	return 0
+}
+
+// isStrictNeutralWarning reports whether code is one of the warnings
+// `--strict` deliberately does not promote to an error. Keep this list
+// short and each entry justified at its own declaration: the default for a
+// config-shape finding is to count (DI-10), and a code that opts out is
+// saying its nudge must never be able to break a green pipeline.
+func isStrictNeutralWarning(code validate.WarningCode) bool {
+	switch code {
+	case validate.WarningDeprecatedDSLVersion, validate.RunnerAVExclusionsUnverified:
+		return true
+	default:
+		return false
+	}
 }
 
 type placeholderFinding struct {

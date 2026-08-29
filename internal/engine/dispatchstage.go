@@ -84,6 +84,38 @@ type DispatchStageInput struct {
 	// WorkspaceDelta is the blob digest of what earlier stages of this run
 	// committed (#3763), for this pod to continue from.
 	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
+	// OwningWorkflowID is the id of the Temporal workflow execution whose
+	// activity is creating this pod — the one execution whose liveness
+	// decides whether the attempt is still being driven.
+	//
+	// It is set by the WORKFLOW immediately before ExecuteActivity, from
+	// workflow.GetInfo(ctx).WorkflowExecution.ID (deterministic and
+	// replay-safe), never by the activity and never by the caller who builds
+	// the payload: DispatchOne overwrites whatever the daemon put here with
+	// its own execution id, so the field cannot be forged or left stale.
+	// Both drivers therefore stamp the id that actually owns the dispatch:
+	//
+	//   - DispatchOne (runner-driven)  -> <runID>/<stage>/<attempt>
+	//   - the engine's own Run walk    -> the run workflow's id, which is
+	//     RunID for a directly started run and claimID+"-run" for a
+	//     SCHEDULED one (ClaimScheduled's child; engine.go).
+	//
+	// That second shape is why this field exists rather than the sweep
+	// composing an id from the pod's run/stage/attempt: RunScheduled rewrites
+	// in.RunID to RunID(claimID), a sha256 prefix no describe can ever find
+	// (liveness.go says so outright). A sweep composing ids from that hash
+	// asks about two executions that do not exist, reads NotFound as "nobody
+	// is driving this", and deletes the pod of a LIVE scheduled stage. The
+	// owning id is the one identity that is never a lossy address.
+	//
+	// Empty is legal and means "unstamped": the dispatcher then stamps no
+	// owning-workflow annotation, and an unstamped pod is one the orphan
+	// sweep refuses to address at all (dispatcher.podAttempt) — left in place
+	// for activeDeadlineSeconds to reclaim. Fail toward leaving, never toward
+	// deleting. It carries the omitempty tag and is additive: an
+	// ActivityTaskScheduled payload Temporal already wrote decodes with it
+	// zero, which is exactly that unstamped case.
+	OwningWorkflowID string `json:"owningWorkflowID,omitempty"`
 }
 
 // dispatchRemoteTask drives one non-self task through the dispatch activity
@@ -166,7 +198,18 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		var result stageActivityResult
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
-		err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{Envelope: attemptEnv, Placement: placement, Run: t.Run, Workspace: t.Workspace, WorkspaceDelta: workspaceDelta}).Get(ctx, &result)
+		// OwningWorkflowID is read here, inside the workflow, because this
+		// walk's execution IS the attempt's driver: for a scheduled run that
+		// is claimID+"-run", which no id composed from the pod's labels or
+		// annotations can reconstruct (RunScheduled rewrote RunID to a hash).
+		err := workflow.ExecuteActivity(ctx, ActDispatchStage, DispatchStageInput{
+			Envelope:         attemptEnv,
+			Placement:        placement,
+			Run:              t.Run,
+			Workspace:        t.Workspace,
+			WorkspaceDelta:   workspaceDelta,
+			OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		}).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
 	}, deltaOut)
@@ -294,6 +337,11 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 		Memory:         input.Placement.Memory,
 		Disk:           input.Placement.Disk,
 		Restrictions:   input.Placement.Restrictions,
+		// The driver the orphan sweep must describe. Taken from the input the
+		// WORKFLOW stamped, never from activity.GetInfo: this activity is also
+		// invoked directly in tests, and a stamp the workflow owns is the same
+		// value on the first attempt and on every activity retry.
+		OwningWorkflowID: input.OwningWorkflowID,
 		// The runner-capability requirement, for the Windows identity stamp
 		// (#3619) — distinct from the credential Capabilities set below.
 		RunsOnCapabilities: input.Placement.Capabilities,

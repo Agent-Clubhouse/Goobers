@@ -147,7 +147,47 @@ func appendStaticRealityWarnings(
 	appendUnclaimedCapabilityWarnings(root, configDir, cfg, set, add)
 	appendMaxOpenPRWarnings(root, configDir, cfg, set, add)
 	appendGateCompletionWarnings(root, configDir, set, add)
+	appendWindowsAVExclusionWarnings(root, cfg, add)
 	return warnings
+}
+
+// appendWindowsAVExclusionWarnings is #3480's declaration half (RNR006): a
+// runners: entry that claims provides.os: windows but does not assert
+// provides.windows.avExclusionsVerified: true. Always a warning — the
+// claim is trusted, never verified (DI-11), and the condition it guards is
+// a write-then-read race against real-time scanning that shows up as an
+// unrelated git "Permission denied" (#3161–#3164), not a wrong result. An
+// explicit false is reported in its own words: it is an honest answer, and
+// the operator should see that the runner is known-unprepared rather than
+// merely undeclared.
+func appendWindowsAVExclusionWarnings(
+	root string,
+	cfg *instance.Config,
+	add func(code validate.WarningCode, kind, name, file, path, message string),
+) {
+	if cfg == nil {
+		return
+	}
+	file := diagnosticFile(root, filepath.Join(root, instance.ConfigFileName))
+	for i, entry := range cfg.Runners {
+		if entry.Provides.OS != instance.RunnerOSWindows {
+			continue
+		}
+		if entry.Provides.Windows != nil && entry.Provides.Windows.AVExclusionsVerified {
+			continue
+		}
+		state := "does not declare provides.windows.avExclusionsVerified"
+		if entry.Provides.Windows != nil {
+			state = "declares provides.windows.avExclusionsVerified: false"
+		}
+		add(validate.RunnerAVExclusionsUnverified, "Instance", "runners["+entry.Name+"]", file,
+			fmt.Sprintf("/runners/%d/provides/windows/avExclusionsVerified", i),
+			fmt.Sprintf("runner %q declares provides.os: windows and %s — whether the directories Goobers writes then "+
+				"immediately reads on it are excluded from real-time antivirus scanning is unknown; a scan holding a handle "+
+				"on a just-written file surfaces later as an unrelated git \"Permission denied\" (#3480). Run `goobers doctor "+
+				"--av-exclusions` on the runner's host or image and declare the result (the claim is trusted, never verified — "+
+				"the stage pod's own startup advisory line is the evidence)", entry.Name, state))
+	}
 }
 
 // appendPlacementFindings is checkpoint 1 of the three-checkpoint admission

@@ -56,11 +56,12 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers config diff`](#goobers-config-diff) | compare active workflows with canonical definitions |
 | [`goobers config materialize`](#goobers-config-materialize) | apply the recorded checked-in source to the runtime instance |
 | [`goobers config show`](#goobers-config-show) | render the effective instance config (secrets redacted) |
-| [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster against the documented infra shape |
+| [`goobers doctor`](#goobers-doctor) | preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions |
 | [`goobers e2e`](#goobers-e2e) | check the Goobernetes distributed e2e proof harness's assertions against a recorded run |
 | [`goobers e2e kill-inject`](#goobers-e2e-kill-inject) | perform one live S6 kill-matrix cell (pod-kill) against a real cluster |
 | [`goobers e2e verify`](#goobers-e2e-verify) | verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data |
 | [`goobers engine-project`](#goobers-engine-project) | write a completed engine run's journal into the instance (experimental) |
+| [`goobers engine-queues`](#goobers-engine-queues) | report which workers poll this instance's engine and dispatch task queues (experimental) |
 | [`goobers engine-start`](#goobers-engine-start) | dispatch one run onto the tier-3 engine via Temporal (experimental) |
 | [`goobers escalations show`](#goobers-escalations-show) | show escalation cause, verdict, and per-stage artifact timeline |
 | [`goobers examples list`](#goobers-examples-list) | list canonical embedded workflow examples |
@@ -924,13 +925,14 @@ $ goobers docs-churn --format churn-digest
 
 ## `goobers doctor`
 
-preflight a Kubernetes cluster against the documented infra shape
+preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
 
 ~~~text
 Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report text|json]
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                           [--timeout <duration>]
        goobers doctor --repo [--report text|json] [instance-root]
+       goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
 
 --k8s preflights a target Kubernetes cluster against the documented
 infrastructure shape (docs/design/k8s-infra-shape.md) before installing
@@ -968,11 +970,33 @@ skipped. Token-scope introspection is reported as unavailable when GitHub
 does not expose it (fine-grained PAT / GitHub App tokens) — never inferred
 from a failed call. instance-root defaults to ".".
 
---report json emits the stable machine-readable report; text (default)
-prints a human-readable table (--k8s) or per-repo findings (--repo).
+--av-exclusions lists every directory Goobers writes and immediately reads
+back — the set real-time antivirus scanning on Windows must exclude, or a
+scan holding a handle on a just-written file surfaces minutes later as an
+unrelated git "Permission denied" (#3480, #3161–#3164). The list is
+derived from the same path code the daemon (instance root, run journals,
+scheduler ledger, blob store, workcopies, TEMP), the worker (--work-root,
+which applies to this mode only, and its workcopies/scratch subtrees) and
+a Windows stage pod (C:\workspace, the tmp:ephemeral TEMP, the container
+user's profile) actually use, so it cannot drift from what the binary
+writes. Each gaggle's own spec.workcopies.root is enumerated separately,
+since it beats the instance-wide one and may name any drive; when config/
+cannot be read, that is reported rather than passed off as no gaggles.
+On a Windows host it also reads
+Microsoft Defender's exclusion list (Get-MpPreference, read-only) and
+reports each directory as excluded, not-excluded, or unknown; elsewhere
+it lists the set and reports unknown. ADVISORY: exit 0 whatever the
+coverage — an organisation-wide AV policy is the operator's to set, and
+nothing here changes it. Declare the answer on each windows runner as
+provides.windows.avExclusionsVerified (validate warns RNR006 without it).
 
-Exit codes: 0 = conformant (warns allowed for --k8s), 1 = a required check
-failed or drift was found, 2 = usage/IO error.
+--report json emits the stable machine-readable report; text (default)
+prints a human-readable table (--k8s), per-repo findings (--repo), or the
+per-directory coverage list (--av-exclusions).
+
+Exit codes: 0 = conformant (warns allowed for --k8s; always for
+--av-exclusions), 1 = a required check failed or drift was found,
+2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -980,6 +1004,7 @@ failed or drift was found, 2 = usage/IO error.
 ~~~console
 $ goobers doctor --k8s
 $ goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0
+$ goobers doctor --av-exclusions --report json ./instance
 ~~~
 
 ## `goobers down`
@@ -1238,6 +1263,44 @@ Exit codes: 0 = projected or already present, 1 = query/write failure,
 
 ~~~console
 $ goobers engine-project --gaggle example <run-id>
+~~~
+
+## `goobers engine-queues`
+
+report which workers poll this instance's engine and dispatch task queues (experimental)
+
+~~~text
+Usage: goobers engine-queues [flags] [path]
+
+Report which workers poll this instance's engine task queues (experimental).
+The queue set is derived, not typed: the engine's workflow queue plus every
+goobers-dispatch.<gaggle>.<runner> queue the runners: inventory and the
+declared gaggles imply — the same derivation `goobers worker
+--dispatch-namespace` serves. Each queue is described for both task types
+(workflow and activity) and every poller's Temporal identity is printed.
+
+This is the evidence for the queue-ownership check: goobers-worker must poll
+the workflow queue and every dispatch queue, and goobers-api must poll none
+of them — the daemon dispatches as a Temporal client and is never a pod
+creator.
+
+Flags:
+  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort)
+  --temporal-namespace <ns>  Temporal namespace (default engine.namespace)
+  --task-queue <queue>       workflow queue to describe (default
+                             engine.taskQueue)
+  --timeout <duration>       bound on the whole describe (default 30s)
+  --json                     emit the report as JSON
+
+Exit codes: 0 = described, 1 = describe/connection failure, 2 = usage/config
+error.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers engine-queues
+$ goobers engine-queues --json
 ~~~
 
 ## `goobers engine-start`
