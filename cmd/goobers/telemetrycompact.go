@@ -92,6 +92,9 @@ func runTelemetryCompactAt(args []string, stdout, stderr io.Writer, now time.Tim
 	}
 	pf(stdout, "%s scheduler journal: %d record(s) dropped (%s -> %s)\n",
 		verb, journalResult.Dropped, formatByteSize(journalResult.BeforeBytes), formatByteSize(journalResult.AfterBytes))
+	if journalResult.StaleGenerationsRemoved > 0 {
+		pf(stdout, "reclaimed %d stale journal generation file(s)\n", journalResult.StaleGenerationsRemoved)
+	}
 	if journalResult.StaleGenerationCleanupErr != nil {
 		pf(stderr, "warning: %v\n", journalResult.StaleGenerationCleanupErr)
 	}

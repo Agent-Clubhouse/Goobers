@@ -193,7 +193,8 @@ compaction comes back for it. Removal failures are reported on
 `InstanceEventsCompaction.StaleGenerationCleanupErr` (alongside
 `StaleGenerationsRemoved`) instead of being swallowed, and are deliberately
 not fatal — the compaction that recorded new data still succeeds, since a
-stranded generation only wastes disk. A caller outside this package that needs the current file's own
+stranded generation only wastes disk. A caller outside this package that
+needs the current file's own
 path (e.g. a freshness/dead-man-switch health check reading its mtime) uses
 the exported `InstanceEventsPath`, never a hardcoded `events.jsonl` join.
 
