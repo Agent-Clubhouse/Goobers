@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -252,8 +253,13 @@ func syncWorkspaceBase(ctx context.Context, dir string, gitEnv []string, stderr 
 			// directory, and a workspace full of conflict markers is a far
 			// worse failure than the merge itself.
 			_ = runGit(ctx, dir, gitEnv, stderr, "merge", "--abort")
-			return fmt.Errorf("syncBase: merge base %s into %s: %w (conflicting files: %s; inspect: %v; resolve: %v)",
-				base, branch, err, strings.Join(files, ", "), inspectErr, resolveErr)
+			// JOINED, not formatted with %v (internal/worktree's baseSyncFailure
+			// idiom): the merge failure is the cause a reader acts on, and the
+			// inspect/resolve failures are the reasons the message is thinner
+			// than it should be. Flattening those two to text would make an
+			// already-degraded diagnosis unmatchable by errors.Is.
+			return fmt.Errorf("syncBase: merge base %s into %s (conflicting files: %s): %w",
+				base, branch, strings.Join(files, ", "), errors.Join(err, inspectErr, resolveErr))
 		}
 	}
 	pf(stderr, "workspace: synced base %s into %s\n", base, branch)
