@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
@@ -918,5 +919,152 @@ func TestEnvDefaultDenySignalIsPrivileged(t *testing.T) {
 		if slices.Contains(DispatcherRunIdentityEnv, name) {
 			t.Fatalf("%s is authority, not run identity", name)
 		}
+	}
+}
+
+// The run's operational identity is stamped in stageEnv's own base block, not
+// from attempt.Env/Inputs/RunContext — so the first cut of the allowlist did
+// not name it, and the in-pod rebuild (which runs BEFORE the CLI/non-CLI strip)
+// deleted GOOBERS_RUN_ID/GAGGLE/WORKFLOW/STAGE/ATTEMPT for every stage on a
+// declaring class, goobers-CLI stages included.
+//
+// That is #3725's own failure shape one seam over: providerRunContext() fails
+// closed with "GOOBERS_RUN_ID is not set — this subcommand must run as a
+// workflow stage", and providers.BranchName cannot compose the run branch, on
+// one runner class and not another.
+func TestEnvDefaultDenyAllowlistCarriesTheRunIdentityACLIStageKeeps(t *testing.T) {
+	pod, err := RenderPod(testConfig(), testAttempt(), envDenyRunner())
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+	var allow []string
+	if err := json.Unmarshal([]byte(podEnv(pod)[EnvStageEnvAllow]), &allow); err != nil {
+		t.Fatalf("decode %s: %v", EnvStageEnvAllow, err)
+	}
+	for _, want := range []string{EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt} {
+		if !slices.Contains(allow, want) {
+			t.Fatalf("%s = %v, missing %q — a goobers-CLI stage keeps its run identity by design, and the "+
+				"in-pod rebuild runs BEFORE the CLI/non-CLI split, so a name missing here is gone before the "+
+				"split can keep it (#3725)", EnvStageEnvAllow, allow, want)
+		}
+	}
+}
+
+// The general form of the bug above, and the durable guard: stageEnvAllowlist
+// enumerates its sources BY HAND while stageEnv stamps from ~15 sites, and the
+// two lists have no mechanical relationship. Every name the dispatcher stamps
+// on a stage container must land in exactly one of three places —
+//
+//  1. the allowlist          → re-admitted by the in-pod rebuild,
+//  2. THIS STAGE's strip set → deliberately removed in the pod,
+//  3. procenv's own base     → carried by the floor every stage gets,
+//
+// — or it is DELETED for a stage on a declaring class and PRESENT for the same
+// stage on every other class. That is restriction-conditional breakage
+// diagnosed at the far side, which is the shape #3725 itself was filed about.
+//
+// "THIS STAGE's strip set" is the load-bearing phrase, and the first cut of
+// this test got it wrong. The strip is not one set: stageEnvironment() removes
+// DispatcherControlEnv from an ordinary stage and only DispatcherPrivilegedEnv
+// from a goobers-CLI stage. Checking every stage against the wider set ACCEPTS
+// the run-identity gap the test above catches — those names are in
+// DispatcherControlEnv, and a CLI stage is nonetheless supposed to receive
+// them. So the invariant runs per stage class, against the set that class
+// actually loses.
+//
+// Populated with every Attempt field that reaches stageEnv, so the next
+// dispatcher-stamped stage-visible variable fails here rather than in a pod.
+func TestEveryStampedStageVarIsAllowlistedOrStrippedOrProcenvBase(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		cliStage bool
+		stripped []string
+	}{
+		{"goobers-CLI stage", true, DispatcherPrivilegedEnv},
+		{"ordinary stage", false, DispatcherControlEnv},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempt := testAttempt()
+			attempt.Command = []string{"sh", "-c", "true"}
+			attempt.Env = map[string]string{"DECLARED_STAGE_VAR": "from-the-workflow"}
+			attempt.Inputs = map[string]string{"probe": "declared-input"}
+			attempt.RunContext = map[string]string{
+				executorRepoNameEnv:        "Goobers",
+				executorRepoOwnerEnv:       "Agent-Clubhouse",
+				executorBranchNamespaceEnv: "goobers",
+			}
+			attempt.CLIStage = tc.cliStage
+			attempt.Workspace = "repo"
+			attempt.KitDigest = "sha256:0123456789abcdef"
+			attempt.CheckoutCapability = "provider:contents:read"
+			attempt.WorkspaceDelta = "sha256:fedcba9876543210"
+			attempt.Capabilities = []string{"provider:pr:write"}
+			cfg := testConfig()
+			cfg.EnvPassthrough = []string{"OPERATOR_DECLARED_VAR"}
+
+			pod, err := RenderPod(cfg, attempt, envDenyRunner())
+			if err != nil {
+				t.Fatalf("RenderPod: %v", err)
+			}
+			var allow []string
+			if err := json.Unmarshal([]byte(podEnv(pod)[EnvStageEnvAllow]), &allow); err != nil {
+				t.Fatalf("decode %s: %v", EnvStageEnvAllow, err)
+			}
+
+			var orphans []string
+			for _, e := range pod.Spec.Containers[0].Env {
+				switch {
+				case slices.Contains(allow, e.Name):
+				case slices.Contains(tc.stripped, e.Name):
+				case slices.Contains(procenv.Vars, e.Name):
+				default:
+					carried := false
+					for _, prefix := range procenv.Prefixes {
+						if strings.HasPrefix(e.Name, prefix) {
+							carried = true
+							break
+						}
+					}
+					if !carried {
+						orphans = append(orphans, e.Name)
+					}
+				}
+			}
+			if len(orphans) > 0 {
+				t.Fatalf("the dispatcher stamps %v on a stage container, and env:default-deny neither allowlists "+
+					"nor strips them for this stage class: they are silently DELETED on a class enforcing the "+
+					"restriction and present everywhere else. Add each to stageEnvAllowlist (stage-visible) or "+
+					"to DispatcherPrivilegedEnv (never stage-visible) — #3725", orphans)
+			}
+		})
+	}
+}
+
+// A DI-9 consumer template owns the stage container's ambient contract as well
+// as its sidecars and volumes. Those names arrive in the pod as ordinary
+// container variables, so without the allowlist carrying them the in-pod
+// rebuild drops exactly the vars the consumer declared — present on an
+// unrestricted class, silently gone on a restricted one.
+func TestTemplateDeclaredContainerEnvIsAllowlistedUnderEnvDefaultDeny(t *testing.T) {
+	deployment := testDeployment()
+	deployment.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
+		{Name: "TEMPLATE_DECLARED_VAR", Value: "from-the-consumer-deployment"},
+	}
+
+	pod, err := RenderFromTemplate(testConfig(), testAttempt(), envDenyRunner(), deployment)
+	if err != nil {
+		t.Fatalf("RenderFromTemplate: %v", err)
+	}
+	env := podEnv(pod)
+	if env["TEMPLATE_DECLARED_VAR"] == "" {
+		t.Fatalf("the template's own container env must survive rendering, env = %v", env)
+	}
+	var allow []string
+	if err := json.Unmarshal([]byte(env[EnvStageEnvAllow]), &allow); err != nil {
+		t.Fatalf("decode %s: %v", EnvStageEnvAllow, err)
+	}
+	if !slices.Contains(allow, "TEMPLATE_DECLARED_VAR") {
+		t.Fatalf("%s = %v omits TEMPLATE_DECLARED_VAR — the in-pod rebuild will drop the var the consumer "+
+			"Deployment declared, on a restricted class only (#3725)", EnvStageEnvAllow, allow)
 	}
 }

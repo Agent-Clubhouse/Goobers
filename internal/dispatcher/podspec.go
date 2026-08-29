@@ -392,7 +392,9 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 		ImagePullPolicy: corev1.PullAlways,
 		Command:         []string{"goobers"},
 		Args:            []string{DispatchExecCommand},
-		Env:             stageEnv(cfg, attempt, class),
+		// nil: the image path builds a fresh container, so the only names on
+		// it are the ones stageEnv stamps.
+		Env: stageEnv(cfg, attempt, class, nil),
 	}
 
 	// Extra (non-goobers.dev) metadata merges FIRST; the dispatcher-owned
@@ -499,7 +501,21 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	// its own stage container actually runs the authored stage.
 	stage.Command = []string{"goobers"}
 	stage.Args = []string{DispatchExecCommand}
-	stage.Env = append(stage.Env, stageEnv(cfg, attempt, class)...)
+	// The consumer's template may declare its own container env (DI-9 owns
+	// sidecars, volumes, node selectors AND the stage container's ambient
+	// contract). Those names are ambient container variables in the pod, so
+	// under env:default-deny the in-pod rebuild would drop them unless the
+	// allowlist carries them — a template-declared var present on an
+	// unrestricted class and silently gone on a restricted one. The consumer
+	// Deployment is operator-authored infrastructure, the same trust level as
+	// envPassthrough, so it is allowlisted rather than denied; a control-plane
+	// name among them is still removed by the strip that runs after the
+	// rebuild.
+	templateDeclared := make([]string, 0, len(stage.Env))
+	for _, e := range stage.Env {
+		templateDeclared = append(templateDeclared, e.Name)
+	}
+	stage.Env = append(stage.Env, stageEnv(cfg, attempt, class, templateDeclared)...)
 	stampResources(cfg, attempt, runner, stage, class, windows)
 	stampVolumes(cfg, attempt, spec, stage, class, windows)
 	// Security bindings stamp the STAGE container and the pod level; sidecar
@@ -637,7 +653,14 @@ func activeDeadlineSeconds(cfg Config, attempt Attempt) int64 {
 // same map every other binding in this file reads — because one of those
 // bindings (env:default-deny, #3725) is now an environment stamp rather than a
 // volume or a security context.
-func stageEnv(cfg Config, attempt Attempt, class map[string]bool) []corev1.EnvVar {
+//
+// alreadyOnContainer names the variables the container ALREADY carries before
+// this appends to it — the DI-9 template path's consumer-declared container
+// env. They are not stamped here, but under env:default-deny the in-pod
+// rebuild would drop them unless the allowlist names them, so they are threaded
+// in rather than re-derived: only the caller knows what the template declared.
+// The image path passes nil.
+func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnContainer []string) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{Name: EnvRunID, Value: attempt.RunID},
 		{Name: EnvGaggle, Value: attempt.Gaggle},
@@ -704,7 +727,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool) []corev1.EnvVa
 	// env:default-deny (#3725). Stamped ONLY for a class that enforces it, so
 	// every other pod spec is byte-identical to before this existed.
 	if class[string(runnercap.RestrictionEnvDefaultDeny)] {
-		allow, _ := json.Marshal(stageEnvAllowlist(cfg, attempt))
+		allow, _ := json.Marshal(stageEnvAllowlist(cfg, attempt, alreadyOnContainer))
 		env = append(env,
 			corev1.EnvVar{Name: EnvStageEnvDefaultDeny, Value: "true"},
 			corev1.EnvVar{Name: EnvStageEnvAllow, Value: string(allow)},
@@ -715,11 +738,27 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool) []corev1.EnvVa
 
 // stageEnvAllowlist names the ambient container variables __dispatch-exec must
 // keep when it applies env:default-deny: everything the DISPATCHER itself
-// stamped for the stage above, plus the instance's operator-declared
-// envPassthrough.
+// stamped for the stage above and everything a DI-9 template already declared
+// on the stage container, plus the instance's operator-declared envPassthrough.
 //
 // The list is names only — never values — because the pod reads the values out
 // of its own environment, where the container runtime already put them.
+//
+// The invariant it must satisfy, pinned by TestEveryStampedStageVarIsAllowlisted
+// OrStripped: every name stageEnv() stamps is either in this list, in
+// DispatcherControlEnv (stripped in the pod), or in procenv's own base. A name
+// that is in none of the three is DELETED for a stage on a declaring class and
+// present for the same stage on every other class — restriction-conditional
+// breakage diagnosed at the far side, which is the #3725 shape itself. The
+// run-identity names below fell exactly there in review: they are stamped in
+// stageEnv's base block, a goobers-CLI stage keeps them by design, and without
+// them here the in-pod rebuild deleted them before the CLI/non-CLI split ever
+// ran — GOOBERS_RUN_ID/GOOBERS_WORKFLOW gone, so providerRunContext() fails
+// closed and providers.BranchName cannot compose the run branch.
+//
+// Listing them is safe for a NON-CLI stage by the ordering property below:
+// DispatcherControlEnv contains DispatcherRunIdentityEnv, and the strip runs
+// after the rebuild, so a plain shell stage still loses them.
 //
 // It deliberately does NOT name GOOBERS_CRED_* or GOOBERS_REPO_*-by-prefix.
 // Resolved credentials never pass through this filter at all: they are minted
@@ -732,15 +771,27 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool) []corev1.EnvVa
 //
 // A control-plane name reaching this list would be re-admitted here and then
 // removed again by the control-plane strip that runs after it, so the ordering
-// in stageEnvironment() is what makes this list unable to leak the pod token
-// even if a stage declared `env: {GOOBERS_POD_TOKEN: ...}`.
-func stageEnvAllowlist(cfg Config, attempt Attempt) []string {
-	names := make([]string, 0, len(attempt.Env)+len(attempt.Inputs)+len(attempt.RunContext)+len(cfg.EnvPassthrough))
+// in stageEnvironment() is what makes this list unable to re-admit the pod
+// token BY NAME even if a stage declared `env: {GOOBERS_POD_TOKEN: ...}`.
+// By NAME is the whole scope of that claim: kubelet expands $(VAR_NAME) inside
+// a container env value against variables declared earlier in the same list, so
+// a stage declaring `env: {X: "$(GOOBERS_POD_TOKEN)"}` receives the token's
+// VALUE under a name this list legitimately allows. That by-value path predates
+// this restriction — it leaks on an unrestricted class too, where nothing
+// filters at all — and closing it means validating declared env values or
+// reserving the GOOBERS_ prefix for env keys, which is its own change.
+func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string) []string {
+	names := make([]string, 0, len(attempt.Env)+len(attempt.Inputs)+len(attempt.RunContext)+len(cfg.EnvPassthrough)+len(DispatcherRunIdentityEnv)+len(alreadyOnContainer))
 	names = append(names, sortedKeys(attempt.Env)...)
 	for _, key := range sortedKeys(attempt.Inputs) {
 		names = append(names, InputEnvVar(key))
 	}
 	names = append(names, sortedKeys(attempt.RunContext)...)
+	// The run's operational identity, stamped in stageEnv's base block above.
+	// A goobers-CLI stage keeps these; every other stage is stripped of them
+	// by the control-plane strip that runs after the rebuild.
+	names = append(names, DispatcherRunIdentityEnv...)
+	names = append(names, alreadyOnContainer...)
 	names = append(names, cfg.EnvPassthrough...)
 	return names
 }

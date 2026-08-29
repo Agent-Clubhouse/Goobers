@@ -19,8 +19,10 @@ import (
 	"github.com/goobers/goobers/internal/apicontract"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/runnercap"
 )
 
 func TestRunDeclaredStageCommandSuccessCapturesOutput(t *testing.T) {
@@ -596,7 +598,18 @@ func TestDispatchExecRecordsExitCodeMetric(t *testing.T) {
 // template the control-plane strip already uses ("POD_TOKEN=PRESENT in a
 // 24-variable inherited environment"), and it keeps a credential value out of
 // the test's own output.
-func envDefaultDenyProbe(t *testing.T, defaultDeny bool) map[string]string {
+// The pod's container environment is not hand-written here. It is RENDERED by
+// dispatcher.RenderPod from an Attempt and a RunnerSpec and then materialised
+// into the test process, because the allowlist is the thing under test: a
+// hand-copied GOOBERS_STAGE_ENV_ALLOW asserts what the test author believed
+// stageEnvAllowlist() emits, not what it emits. The first cut of this helper
+// hand-wrote that list, and that is exactly why its A/B ablation could not see
+// the run-identity vars going missing.
+//
+// cliStage selects the branch of the in-pod control-plane strip: true is the
+// goobers-CLI stage that keeps its run identity, false the plain shell stage —
+// the common case, which nothing exercised before.
+func envDefaultDenyProbe(t *testing.T, defaultDeny, cliStage bool) map[string]string {
 	t.Helper()
 
 	const capabilityName = "provider:contents:read"
@@ -614,50 +627,72 @@ func envDefaultDenyProbe(t *testing.T, defaultDeny bool) map[string]string {
 	}))
 	t.Cleanup(server.Close)
 
-	t.Setenv(dispatcher.EnvRunID, "run-3725")
-	t.Setenv(dispatcher.EnvStage, "cli-on-pod")
-	t.Setenv(dispatcher.EnvAttempt, "1")
-	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
-	t.Setenv(dispatcher.EnvPodToken, "goobers-pod.tok")
-	t.Setenv(dispatcher.EnvStageCapabilities, `["`+capabilityName+`"]`)
-	t.Setenv(dispatcher.EnvStageWorkspace, "")
-	t.Setenv(dispatcher.EnvStageScript, "")
-	t.Setenv(dispatcher.EnvStageTimeout, "30s")
-
-	// What the IMAGE exports. Nothing declared it, nothing allowlists it, and
-	// under env:default-deny it is exactly what must not reach the stage.
-	t.Setenv("IMAGE_AMBIENT_VAR", "baked-into-the-runner-image")
-	// What the DISPATCHER stamped for this stage: its declared env, its
-	// inputs, and (CLI stages) its routed repository.
-	t.Setenv("DECLARED_STAGE_VAR", "from-the-workflow")
-	t.Setenv(dispatcher.InputEnvVar("probe"), "declared-input")
-	t.Setenv("GOOBERS_REPO_NAME", "Goobers")
-	t.Setenv(dispatcher.EnvStageIsCLI, "true")
-
-	if defaultDeny {
-		t.Setenv(dispatcher.EnvStageEnvDefaultDeny, "true")
-		allow, err := json.Marshal([]string{"DECLARED_STAGE_VAR", dispatcher.InputEnvVar("probe"), "GOOBERS_REPO_NAME"})
-		if err != nil {
-			t.Fatalf("marshal allowlist: %v", err)
-		}
-		t.Setenv(dispatcher.EnvStageEnvAllow, string(allow))
-	} else {
-		t.Setenv(dispatcher.EnvStageEnvDefaultDeny, "")
-		t.Setenv(dispatcher.EnvStageEnvAllow, "")
+	probes := []string{
+		credVar, "IMAGE_AMBIENT_VAR", "DECLARED_STAGE_VAR", dispatcher.InputEnvVar("probe"),
+		"GOOBERS_REPO_NAME", "PATH", dispatcher.EnvPodToken,
+		// The run's operational identity. A goobers-CLI stage keeps it by
+		// design and cannot name its own run branch without it; every other
+		// stage is stripped of it. Absent from the first cut of this list,
+		// which is how the allowlist gap reached review (#3725).
+		dispatcher.EnvRunID, dispatcher.EnvGaggle, dispatcher.EnvWorkflow,
+		dispatcher.EnvStage, dispatcher.EnvAttempt,
 	}
-
-	probes := []string{credVar, "IMAGE_AMBIENT_VAR", "DECLARED_STAGE_VAR", dispatcher.InputEnvVar("probe"), "GOOBERS_REPO_NAME", "PATH", dispatcher.EnvPodToken}
 	var script strings.Builder
 	for _, name := range probes {
 		// ${X:+PRESENT} reports presence without ever printing the value, so a
 		// credential cannot reach this test's output or a CI log.
 		fmt.Fprintf(&script, "printf '%s=%%s\\n' \"${%s:+PRESENT}\"; ", name, name)
 	}
-	command, err := json.Marshal([]string{"sh", "-c", script.String()})
-	if err != nil {
-		t.Fatalf("marshal command: %v", err)
+
+	attempt := dispatcher.Attempt{
+		RunID:    "run-3725",
+		Gaggle:   "e2e",
+		Workflow: "implementation",
+		Stage:    "cli-on-pod",
+		Number:   1,
+		Timeout:  30 * time.Second,
+		PodToken: "goobers-pod.tok",
+		Command:  []string{"sh", "-c", script.String()},
+		// What the DISPATCHER stamps for this stage: its declared env, its
+		// inputs, and its routed repository.
+		Env:          map[string]string{"DECLARED_STAGE_VAR": "from-the-workflow"},
+		Inputs:       map[string]string{"probe": "declared-input"},
+		RunContext:   map[string]string{"GOOBERS_REPO_NAME": "Goobers"},
+		Capabilities: []string{capabilityName},
+		CLIStage:     cliStage,
 	}
-	t.Setenv(dispatcher.EnvStageCommand, string(command))
+	runner := dispatcher.RunnerSpec{
+		Name:     "linux-shell-envdeny",
+		OS:       "linux",
+		HostKind: instance.RunnerHostImage,
+		Host:     "ghcr.io/goobers/goobers-base:0123456789abcdef0123456789abcdef01234567",
+	}
+	if defaultDeny {
+		runner.Restrictions = []string{string(runnercap.RestrictionEnvDefaultDeny)}
+	}
+	pod, err := dispatcher.RenderPod(dispatcher.Config{
+		Namespace:    "gaggle-e2e",
+		WriteAPIBase: server.URL,
+	}, attempt, runner)
+	if err != nil {
+		t.Fatalf("RenderPod: %v", err)
+	}
+
+	// The container's environment, as the kubelet would set it. Cleared first
+	// so a name the dispatcher did NOT stamp for this shape (EnvStageIsCLI on a
+	// non-CLI stage, the deny signal on an unrestricted class) cannot arrive
+	// from the test process's own environment and quietly select the other
+	// branch.
+	for _, name := range append([]string{}, dispatcher.DispatcherControlEnv...) {
+		t.Setenv(name, "")
+	}
+	for _, e := range pod.Spec.Containers[0].Env {
+		t.Setenv(e.Name, e.Value)
+	}
+	// What the IMAGE exports. Nothing declared it, nothing allowlists it, and
+	// under env:default-deny it is exactly what must not reach the stage — so
+	// it is set here, never on the pod spec.
+	t.Setenv("IMAGE_AMBIENT_VAR", "baked-into-the-runner-image")
 
 	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
 	if result.Status != apiv1.ResultSuccess {
@@ -688,7 +723,7 @@ func envDefaultDenyProbe(t *testing.T, defaultDeny bool) map[string]string {
 // "build one map, filter once" refactor) drops it, and the failure surfaces at
 // GitHub as a 401/404 on one runner class and not another.
 func TestEnvDefaultDenyKeepsResolvedCredentials(t *testing.T) {
-	seen := envDefaultDenyProbe(t, true)
+	seen := envDefaultDenyProbe(t, true, true)
 	credVar := capability.CredentialEnvVar("provider:contents:read")
 	if seen[credVar] != "PRESENT" {
 		t.Fatalf("%s = %q, want PRESENT — env:default-deny stripped the credential the stage just resolved; "+
@@ -700,7 +735,7 @@ func TestEnvDefaultDenyKeepsResolvedCredentials(t *testing.T) {
 // ambient variable the image exported, that nothing declared and nothing
 // allowlists, must not reach a stage on a class that promises isolation.
 func TestEnvDefaultDenyDropsAmbientImageVariables(t *testing.T) {
-	seen := envDefaultDenyProbe(t, true)
+	seen := envDefaultDenyProbe(t, true, true)
 	if seen["IMAGE_AMBIENT_VAR"] != "ABSENT" {
 		t.Fatalf("IMAGE_AMBIENT_VAR = %q, want ABSENT — a runner class declaring env:default-deny handed the stage "+
 			"the image's ambient environment, which is the restriction being unenforced (#3725). Full probe: %v", seen["IMAGE_AMBIENT_VAR"], seen)
@@ -723,13 +758,61 @@ func TestEnvDefaultDenyDropsAmbientImageVariables(t *testing.T) {
 	if seen[dispatcher.EnvPodToken] != "ABSENT" {
 		t.Fatalf("%s = %q, want ABSENT — the pod token authorizes surrendering this run's results", dispatcher.EnvPodToken, seen[dispatcher.EnvPodToken])
 	}
+	// A goobers-CLI stage keeps its run identity — it cannot name its own run
+	// branch without it. The in-pod rebuild runs BEFORE the CLI/non-CLI split,
+	// so a name the dispatcher's allowlist does not carry is gone before the
+	// split can keep it: providerRunContext() then fails closed with
+	// "GOOBERS_RUN_ID is not set" and providers.BranchName composes nothing,
+	// on a declaring class only.
+	for _, name := range []string{dispatcher.EnvRunID, dispatcher.EnvGaggle, dispatcher.EnvWorkflow, dispatcher.EnvStage, dispatcher.EnvAttempt} {
+		if seen[name] != "PRESENT" {
+			t.Fatalf("%s = %q, want PRESENT — env:default-deny dropped run identity a goobers-CLI stage keeps by "+
+				"design; open-pr/push-branch/backlog-query on this class fail or name a wrong branch (#3725). "+
+				"Full probe: %v", name, seen[name], seen)
+		}
+	}
+}
+
+// The common case, and the branch nothing exercised before review: a PLAIN
+// SHELL stage under env:default-deny. It keeps its declared env, its inputs and
+// procenv's floor, and it must still lose the whole control plane — run
+// identity and run context included, which the allowlist now re-admits by name
+// and the strip removes again afterwards.
+//
+// This is the property that makes allowlisting run identity safe: widening the
+// allowlist must not widen what a non-CLI stage can read. A stage running the
+// project's own `make ci` seeing the live run's GOOBERS_* is exactly the #322
+// perturbation the CLI/non-CLI split exists to prevent.
+func TestEnvDefaultDenyNonCLIStageStillLosesTheWholeControlPlane(t *testing.T) {
+	seen := envDefaultDenyProbe(t, true, false)
+	for _, name := range []string{
+		dispatcher.EnvRunID, dispatcher.EnvGaggle, dispatcher.EnvWorkflow, dispatcher.EnvStage,
+		dispatcher.EnvAttempt, "GOOBERS_REPO_NAME", dispatcher.EnvPodToken,
+	} {
+		if seen[name] != "ABSENT" {
+			t.Fatalf("%s = %q, want ABSENT — a non-CLI stage is stripped of the whole control plane, and the "+
+				"allowlist must not be a way back in (#322/#3725). Full probe: %v", name, seen[name], seen)
+		}
+	}
+	// What it keeps: its own declaration, its inputs, procenv's floor, and the
+	// credential it resolved.
+	for _, name := range []string{"DECLARED_STAGE_VAR", dispatcher.InputEnvVar("probe"), "PATH", capability.CredentialEnvVar("provider:contents:read")} {
+		if seen[name] != "PRESENT" {
+			t.Fatalf("%s = %q, want PRESENT — the restriction denies the AMBIENT environment, not the stage's own. "+
+				"Full probe: %v", name, seen[name], seen)
+		}
+	}
+	// And the restriction still holds for it.
+	if seen["IMAGE_AMBIENT_VAR"] != "ABSENT" {
+		t.Fatalf("IMAGE_AMBIENT_VAR = %q, want ABSENT. Full probe: %v", seen["IMAGE_AMBIENT_VAR"], seen)
+	}
 }
 
 // Parity, and the ablation's other side: a stage on a class WITHOUT
 // env:default-deny still inherits the pod's whole environment. The fix is
 // additive — nothing changes for the classes every existing stage runs on.
 func TestWithoutEnvDefaultDenyTheAmbientEnvironmentIsUnchanged(t *testing.T) {
-	seen := envDefaultDenyProbe(t, false)
+	seen := envDefaultDenyProbe(t, false, true)
 	for _, name := range []string{"IMAGE_AMBIENT_VAR", "DECLARED_STAGE_VAR", dispatcher.InputEnvVar("probe"), "GOOBERS_REPO_NAME", "PATH"} {
 		if seen[name] != "PRESENT" {
 			t.Fatalf("%s = %q, want PRESENT — a class not declaring env:default-deny must be unaffected. Full probe: %v", name, seen[name], seen)

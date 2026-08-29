@@ -570,8 +570,16 @@ func stageEnvironment() []string {
 
 // dispatcherStampedEnvNames decodes the names the DISPATCHER stamped on this
 // stage's behalf (GOOBERS_STAGE_ENV_ALLOW): its declared `env:` keys, its
-// GOOBERS_INPUT_* inputs, its run context, and the instance's declared
+// GOOBERS_INPUT_* inputs, its run identity and run context, any env a DI-9
+// template declared on the stage container, and the instance's declared
 // envPassthrough.
+//
+// The run-identity half is in that list and MUST be, even though it is control
+// plane: the rebuild below runs BEFORE the CLI/non-CLI strip, so a name missing
+// here is gone before the split can decide to keep it. A goobers-CLI stage
+// keeps GOOBERS_RUN_ID/GAGGLE/WORKFLOW/STAGE/ATTEMPT by design — without them
+// providerRunContext() fails closed and providers.BranchName cannot compose the
+// run branch — while a non-CLI stage loses them again at the strip.
 //
 // They need naming because in a pod they arrive as ordinary container
 // variables — at os.Environ() a stage's own declared `FOO=bar` is
