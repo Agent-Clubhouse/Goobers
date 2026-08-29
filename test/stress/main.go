@@ -21,7 +21,16 @@ import (
 )
 
 const (
-	stressCount           = 20
+	stressCount = 20
+	// stressTimeout is the per-package `go test -timeout` budget. Go's 10m
+	// default is a whole-binary budget that ./cmd/goobers exceeds under -race
+	// even for a single pass (the Makefile already raises the same workload to
+	// GO_TEST_TIMEOUT=30m); at count=20 the default reliably expires mid-run
+	// and reports a "panic: test timed out" flake against whichever test
+	// happened to be executing (#3167). Keep it generous but finite so a
+	// genuine wedge still panics with a goroutine dump instead of burning the
+	// whole stress job.
+	stressTimeout         = 30 * time.Minute
 	reportSchema          = "goobers.dev/stress/v1"
 	failureTextLimit      = 64 * 1024
 	failureSignatureLimit = 1024
@@ -378,6 +387,7 @@ func goTestArgs(pkg string, count int, seed int64) []string {
 		"-json",
 		"-race",
 		"-count=" + strconv.Itoa(count),
+		"-timeout=" + stressTimeout.String(),
 		"-shuffle=" + strconv.FormatInt(seed, 10),
 		pkg,
 	}
