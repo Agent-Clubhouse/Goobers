@@ -1,7 +1,7 @@
-# Monitoring: Prometheus + Grafana + Home Assistant
+# Monitoring: Prometheus + Grafana
 
-Surface a Goobers daemon's health and workforce activity in Prometheus, a
-ready-made Grafana dashboard, and Home Assistant (sensors + phone alerts).
+Surface a Goobers daemon's health and workforce activity in Prometheus and a
+ready-made Grafana dashboard.
 
 The daemon does not expose a `/metrics` endpoint. Instead, a small **exporter**
 scrapes the daemon's read API (`/health`, `/runs`, `/gaggles`) plus — optionally
@@ -9,9 +9,9 @@ scrapes the daemon's read API (`/health`, `/runs`, `/gaggles`) plus — optional
 downstream is standard Prometheus.
 
 ```
- goobers daemon                       ┌─▶ Grafana        (grafana-dashboard.json)
- read API :8085 ──▶ exporter :9779 ──▶ Prometheus ──┤
- + backlog (opt)     (this dir)                      └─▶ Home Assistant (homeassistant.yaml)
+ goobers daemon
+ read API :8085 ──▶ exporter :9779 ──▶ Prometheus ──▶ Grafana (grafana-dashboard.json)
+ + backlog (opt)     (this dir)
 ```
 
 It is **read-only telemetry** — nothing here can change the workforce.
@@ -79,31 +79,6 @@ activity, and the backlog funnel.
 datasource when prompted (the board references it as the `${DS_PROMETHEUS}`
 variable, so nothing is hard-coded).
 
-### 4. Home Assistant
-
-`homeassistant.yaml` adds REST sensors that query the Prometheus HTTP API, a
-`binary_sensor` dead-man switch, and three notify automations (scheduler
-stalled, needs-human, fleet degraded).
-
-1. Drop it in as a package — in `configuration.yaml`:
-   ```yaml
-   homeassistant:
-     packages: !include_dir_named packages
-   ```
-   then save this file as `packages/goobers.yaml`. (Or paste its `rest:` /
-   `template:` / `automation:` blocks into `configuration.yaml` directly.)
-2. **Replace the placeholders** before reloading:
-   - `PROMETHEUS_HOST:9090` → your Prometheus address.
-   - `notify.YOUR_NOTIFY_TARGET` → your notify service (e.g. a mobile app).
-   - the `your-implementation-lane` / `your-second-lane` / `your-nightly-workflow`
-     sensor labels → your actual workflow names (or delete the ones you don't run).
-3. Reload without a restart: **Developer Tools → YAML → All YAML configuration**
-   (or `homeassistant.reload_all`).
-
-`lovelace-dashboard.yaml` is a matching one-view dashboard (fleet status badge,
-dead-man gauge, active-work stats, the backlog funnel, a throughput history
-graph, and PRs). Add it via a new dashboard in **raw configuration editor** mode.
-
 ## Configuration reference (exporter)
 
 | Var | Default | Purpose |
@@ -122,5 +97,3 @@ graph, and PRs). Add it via a new dashboard in **raw configuration editor** mode
 | `exporter.py` | the exporter (Python, `prometheus_client` + `requests`) |
 | `Dockerfile` | builds the exporter image |
 | `grafana-dashboard.json` | importable Grafana dashboard |
-| `homeassistant.yaml` | HA REST sensors + dead-man binary sensor + notify automations |
-| `lovelace-dashboard.yaml` | HA Lovelace dashboard view |
