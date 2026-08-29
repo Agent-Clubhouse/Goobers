@@ -30,7 +30,13 @@ const liveJournalDivergenceCode = "live_journal_divergence"
 // transparently reopens.
 const liveJournalIdleClose = 10 * time.Minute
 
-// newLiveJournalWriter builds the daemon's live journal writer when the
+// newLiveJournalWriter is buildLiveJournalWriter behind a var, so up.go's
+// call — and specifically that it hands over the SAME blob store it hands
+// startEngineProjection — is assertable at the call site rather than one
+// level below it (#3805 is a bug that lived in an unexercised call site).
+var newLiveJournalWriter = buildLiveJournalWriter
+
+// buildLiveJournalWriter builds the daemon's live journal writer when the
 // engine is configured — the same gate as the projection loop, because the
 // writer and the demoted reconciler are two halves of one authority story
 // (DS4/DS5). Returns nil (not an error) for an instance with no engine.
@@ -46,7 +52,7 @@ const liveJournalIdleClose = 10 * time.Minute
 // CompletedRunReconciler.WithSpanSource), or DS5's verification re-projection
 // will disagree with this writer by exactly one normative event per
 // transcript-carrying run.
-func newLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, blobs blobstore.Store) (*livejournal.Writer, error) {
+func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, blobs blobstore.Store) (*livejournal.Writer, error) {
 	if cfg == nil || !cfg.EngineProjectionEnabled() {
 		return nil, nil
 	}

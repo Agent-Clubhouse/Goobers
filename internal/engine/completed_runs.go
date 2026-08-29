@@ -15,7 +15,13 @@ import (
 
 const completedRunPageSize = 100
 
-type completedRunClient interface {
+// CompletedRunClient is the slice of the Temporal client the reconciler uses:
+// list the closed executions, then query each one's journal projection.
+// client.Client satisfies it. It is exported so the DAEMON's own wiring
+// (cmd/goobers/startEngineProjection) can be driven end-to-end by a fake —
+// the reconciler's options are configured at that call site, and #3805 is
+// precisely a bug that lived in a call site nothing exercised.
+type CompletedRunClient interface {
 	projectionQuerier
 	ListWorkflow(context.Context, *workflowservice.ListWorkflowExecutionsRequest) (*workflowservice.ListWorkflowExecutionsResponse, error)
 }
@@ -33,7 +39,7 @@ type ProjectionObserver func(context.Context, string, uint64) error
 // before. Reconcile is bounded to one visibility page; successive calls
 // continue pagination and cycle back to the newest page.
 type CompletedRunReconciler struct {
-	client        completedRunClient
+	client        CompletedRunClient
 	namespace     string
 	runsDirs      map[string]string
 	observe       ProjectionObserver
@@ -110,7 +116,11 @@ func (r *CompletedRunReconciler) WithSpanSource(src SpanSource) *CompletedRunRec
 	if src == nil {
 		return r
 	}
-	r.projectOpts = []ProjectOption{WithSpanSource(src)}
+	// APPEND, never assign: a later option-setter added beside this one would
+	// otherwise be silently clobbered depending on which was called last, and
+	// the symptom would be an asymmetric projection — the exact failure this
+	// method exists to remove.
+	r.projectOpts = append(r.projectOpts, WithSpanSource(src))
 	return r
 }
 
@@ -124,7 +134,7 @@ func (r *CompletedRunReconciler) reportDivergence(runID, detail string) {
 
 // NewCompletedRunReconciler constructs a reconciler scoped to configured
 // gaggle names and their journal roots.
-func NewCompletedRunReconciler(c completedRunClient, namespace string, runsDirs map[string]string, observe ProjectionObserver) (*CompletedRunReconciler, error) {
+func NewCompletedRunReconciler(c CompletedRunClient, namespace string, runsDirs map[string]string, observe ProjectionObserver) (*CompletedRunReconciler, error) {
 	if c == nil {
 		return nil, errors.New("engine: Temporal client is required")
 	}
