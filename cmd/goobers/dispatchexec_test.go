@@ -497,6 +497,98 @@ func TestRecordStageArtifactsSkipsEmptyStreams(t *testing.T) {
 	}
 }
 
+// TestRecordStageArtifactsStampsOpTime is dispatchexec.go's half of #3774,
+// tested the same way as podArtifactRecorder.Append's: through the real
+// JSON-over-HTTP wire, applied by a REAL *livejournal.Writer onto a REAL
+// on-disk journal, then read back — not an in-memory Op.Time assertion,
+// which would not cross the boundary the original defect lives on
+// (L-152/L-153).
+func TestRecordStageArtifactsStampsOpTime(t *testing.T) {
+	root := t.TempDir()
+	runsDir := filepath.Join(root, "runs")
+
+	// recordStageArtifacts, like podArtifactRecorder.Append, carries no Open
+	// header — the run must already exist on disk.
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "run-art-time", Workflow: "impl-real-probe", WorkflowVersion: 1, Gaggle: "goobers",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "build", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	writer, err := livejournal.NewWriter(func(gaggle string) (string, bool) {
+		if gaggle != "goobers" {
+			return "", false
+		}
+		return runsDir, true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(writer.Close)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req livejournal.EmitRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		resp, err := writer.Emit(r.Context(), req)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "emit_failed", "message": err.Error()}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv(dispatcher.EnvDaemonAPI, server.URL)
+	t.Setenv(dispatcher.EnvRunID, "run-art-time")
+	t.Setenv(dispatcher.EnvGaggle, "goobers")
+	t.Setenv(dispatcher.EnvStage, "build")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+
+	before := time.Now().UTC()
+	var errOut strings.Builder
+	recordStageArtifacts(context.Background(), &errOut, map[string][]byte{"stdout.log": []byte("hello")})
+	after := time.Now().UTC()
+	if errOut.Len() != 0 {
+		t.Fatalf("recordStageArtifacts reported an error: %q", errOut.String())
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-art-time"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := rd.EventRecords()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var artifact *journal.EventRecord
+	for i := range records {
+		if records[i].Event.Name == "build/stdout.log" {
+			artifact = &records[i]
+		}
+	}
+	if artifact == nil {
+		t.Fatalf("build/stdout.log artifact op never landed in the journal, records = %+v", records)
+	}
+	if artifact.Event.Time.IsZero() {
+		t.Fatal("artifact op event.Time is zero (#3774): recordStageArtifacts must stamp a real wall-clock Time on the Op before it leaves the pod, or the daemon's replayClock zeroes the event it applies")
+	}
+	if artifact.Event.Time.Before(before) || artifact.Event.Time.After(after) {
+		t.Fatalf("artifact op event.Time = %s, want between %s and %s", artifact.Event.Time, before, after)
+	}
+}
+
 // runStageWithResultFile runs one stage in a temp workspace whose command
 // writes the given result-file JSON, then returns the surrendered envelope.
 func runStageWithResultFile(t *testing.T, resultJSON string, exitCode int) apiv1.ResultEnvelope {
