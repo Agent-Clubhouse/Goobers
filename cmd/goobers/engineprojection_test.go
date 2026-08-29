@@ -110,9 +110,10 @@ func TestDaemonDialsTemporalOnceForEveryEngineConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, _, err := loadConfigDirectory(l.ConfigDir())
+	set, report, err := loadConfigDirectory(l.ConfigDir())
 	if err != nil {
-		t.Fatal(err)
+		printValidationIssues(os.Stderr, report)
+		t.Fatalf("load config directory: %v", err)
 	}
 
 	var dials int
