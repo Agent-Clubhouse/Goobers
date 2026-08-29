@@ -163,6 +163,19 @@ func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, 
 		name, strings.Join(capabilities, ", "))
 }
 
+// podHarnessRegistry builds the pod's harness registry, and is a var SO THAT
+// buildPodAgenticExecutor HAS A TEST CALLER AT ALL.
+//
+// The real builder produces adapters that preflight an actual harness binary,
+// which is why this constructor had none — and why the one invariant it cannot
+// get wrong (the staging directory it is handed must be the directory the
+// executor reads context from) was unobservable: a reviewer's ablation that
+// reintroduced a constructor-local os.MkdirTemp here, the original bug's exact
+// shape, passed the entire cmd/goobers suite. Swapping the registry is the
+// smallest seam that lets a test drive the whole constructor. Mirrors the
+// existing newAgenticAdapter / repoCloneURL test seams.
+var podHarnessRegistry = buildHarnessRegistry
+
 // buildPodAgenticExecutor constructs the executor from the kit plus the pod's
 // own local facilities.
 // runsDir is the staging root the caller already created and already
@@ -221,7 +234,7 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	// the ambient environment above, so the preflight's ambient-env-first
 	// lookup already finds it. There's no *instance.Config/StoreResolver in
 	// this pod-context function to build one anyway.
-	adapterRegistry, err := buildHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil)
+	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}

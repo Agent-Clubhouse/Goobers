@@ -15,7 +15,6 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
-	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/invoke"
@@ -53,62 +52,40 @@ func seedBlobPlane(t *testing.T, endpoint, name string, data []byte) apiv1.Conte
 }
 
 // buildPodAgenticExecutorForTest builds the executor through the POD'S OWN
-// input builder — podAgenticExecutorInput, the function buildPodAgenticExecutor
-// itself calls — rather than a hand-assembled agenticExecutorInput literal.
+// PRODUCTION CONSTRUCTOR, buildPodAgenticExecutor, with only the harness
+// registry substituted.
 //
-// That is the point of it. The bug being fixed was a staging-directory
-// DISAGREEMENT: context was materialized into one directory and the executor
-// read another. A test that rebuilds the input by hand asserts only that the
-// test's own two fields agree, and would stay green through a refactor that
-// reintroduced a constructor-local runs dir in production — measured: with an
-// `os.MkdirTemp` reassignment inserted into buildPodAgenticExecutor, the whole
-// cmd/goobers suite passed. Going through the production builder means RunsDir
-// and the recorder's Dir() are wired here by the same code that wires them in
-// the pod, so that reassignment now has one test that can see it.
-//
-// Only the harness registry (a fake adapter) and the resolver are substituted;
-// everything the staging root touches comes from the builder.
+// THAT IS THE ENTIRE POINT OF IT. The bug this file's change fixes was a
+// staging-directory DISAGREEMENT: context was materialized into one directory
+// and the executor read another. A test that hand-assembles an
+// agenticExecutorInput asserts only that the TEST's own two fields agree, and
+// stays green through a refactor that reintroduces a constructor-local runs dir
+// in production — measured by review: an `os.MkdirTemp` reassignment inserted
+// into buildPodAgenticExecutor passed the whole cmd/goobers suite, all eight
+// new tests included. buildPodAgenticExecutor had no test callers because it
+// preflights a real harness binary; podHarnessRegistry is the seam that fixes
+// that, so the dir this helper hands in is now checked by driving the same code
+// the pod runs.
 func buildPodAgenticExecutorForTest(t *testing.T, runsDir string, act func(context.Context, harness.RunRequest) error) invoke.Goober {
 	t.Helper()
-	resolver, err := credentials.NewResolver(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	registry := harness.NewRegistry()
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), &harnesstest.FakeAdapter{Act: act}); err != nil {
 		t.Fatal(err)
 	}
-	scrubberRegistry, scrubber := journal.DefaultScrubber()
-	input := podAgenticExecutorInput(podExecutorWiring{
-		Kit: &agentickit.Kit{
-			Envelope:     apiv1.InvocationEnvelope{Goober: "coder"},
-			Goobers:      map[string]apiv1.GooberSpec{"coder": {}},
-			Instructions: map[string]string{"coder": "instructions"},
-		},
-		RunsDir:         runsDir,
-		Stderr:          os.Stderr,
-		Scrubber:        scrubber,
-		Registry:        scrubberRegistry,
-		Resolver:        resolver,
-		AdapterRegistry: registry,
-	})
-	// The agreement itself, named rather than implied: the directory the caller
-	// materialized context into must be BOTH the contextResolver's root and the
-	// recorder's Dir(). buildAgenticExecutor type-asserts the recorder to
-	// interface{ Dir() string } and hands that to harness.NewContextResolver.
-	if input.RunsDir != runsDir {
-		t.Fatalf("executor RunsDir = %q, want the staging root %q that context was materialized into", input.RunsDir, runsDir)
+	previous := podHarnessRegistry
+	podHarnessRegistry = func(map[string]string, []string, map[string][]string, string, string, bool, func(context.Context) (string, error)) (*harness.Registry, error) {
+		return registry, nil
 	}
-	direr, ok := input.ArtifactRecorder.(interface{ Dir() string })
-	if !ok {
-		t.Fatal("pod artifact recorder does not report a Dir(), so the contextResolver's root cannot be checked")
+	t.Cleanup(func() { podHarnessRegistry = previous })
+
+	kit := &agentickit.Kit{
+		Envelope:     apiv1.InvocationEnvelope{Goober: "coder"},
+		Goobers:      map[string]apiv1.GooberSpec{"coder": {Harness: apiv1.HarnessCopilot}},
+		Instructions: map[string]string{"coder": "instructions"},
 	}
-	if direr.Dir() != runsDir {
-		t.Fatalf("artifact recorder Dir() = %q, want the staging root %q; the executor would read context from a directory nothing filled", direr.Dir(), runsDir)
-	}
-	exec, err := buildAgenticExecutor(input)
+	exec, err := buildPodAgenticExecutor(kit, os.Stderr, nil, runsDir)
 	if err != nil {
-		t.Fatalf("buildAgenticExecutor: %v", err)
+		t.Fatalf("buildPodAgenticExecutor: %v", err)
 	}
 	return exec
 }
@@ -360,6 +337,7 @@ func TestPodContextMaterializationRefusesAPointerThatEscapesTheStagingRoot(t *te
 		{name: "absolute", path: escaped},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			_ = os.Remove(escaped)
 			env := apiv1.InvocationEnvelope{
 				TaskID: "review",
 				ContextPointers: []apiv1.ContextPointer{{
@@ -368,8 +346,14 @@ func TestPodContextMaterializationRefusesAPointerThatEscapesTheStagingRoot(t *te
 				}},
 			}
 			gotErr := materializePodContext(context.Background(), runsDir, env, &strings.Builder{})
+			// ASSERTED FIRST because it is the property that matters: whatever
+			// the return value says, nothing may be written outside the root.
+			if data, err := os.ReadFile(escaped); err == nil {
+				t.Fatalf("CONTAINMENT BREAK: wrote %d bytes outside the staging root at %s: %q (materializePodContext returned %v)",
+					len(data), escaped, data, gotErr)
+			}
 			if gotErr == nil {
-				t.Fatal("an escaping context pointer was accepted; the stage would run on bytes written outside its staging root")
+				t.Fatal("an escaping context pointer was accepted; the stage would run without the input it declared and with no refusal recorded")
 			}
 			if !errors.Is(gotErr, errContextPointerRefused) {
 				t.Fatalf("error = %v, want one wrapping errContextPointerRefused", gotErr)
@@ -381,10 +365,6 @@ func TestPodContextMaterializationRefusesAPointerThatEscapesTheStagingRoot(t *te
 				if !strings.Contains(gotErr.Error(), want) {
 					t.Errorf("error %q does not name %q", gotErr.Error(), want)
 				}
-			}
-			// The property that actually matters: nothing was written.
-			if data, err := os.ReadFile(escaped); err == nil {
-				t.Fatalf("CONTAINMENT BREAK: wrote %d bytes outside the staging root at %s: %q", len(data), escaped, data)
 			}
 		})
 	}

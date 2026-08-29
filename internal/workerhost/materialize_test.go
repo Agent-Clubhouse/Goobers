@@ -178,6 +178,7 @@ func TestMaterializeRefusesAPointerThatEscapesTheStagingRoot(t *testing.T) {
 		{name: "absolute", path: escaped},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			_ = os.Remove(escaped)
 			store, err := blobstore.NewDir(t.TempDir())
 			if err != nil {
 				t.Fatalf("NewDir: %v", err)
@@ -192,6 +193,12 @@ func TestMaterializeRefusesAPointerThatEscapesTheStagingRoot(t *testing.T) {
 			cp.Artifact.Path = tc.path
 
 			err = MaterializeContext(ctx, store, staging, []apiv1.ContextPointer{cp})
+			// ASSERTED FIRST: whatever it returns, nothing may be written
+			// outside the staging root.
+			if data, readErr := os.ReadFile(escaped); readErr == nil {
+				t.Fatalf("CONTAINMENT BREAK: wrote %d bytes outside the staging root at %s: %q (MaterializeContext returned %v)",
+					len(data), escaped, data, err)
+			}
 			if err == nil {
 				t.Fatal("MaterializeContext accepted a pointer whose path escapes the staging root")
 			}
@@ -200,10 +207,6 @@ func TestMaterializeRefusesAPointerThatEscapesTheStagingRoot(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "upstream") {
 				t.Errorf("error %q does not name the pointer it refused", err.Error())
-			}
-			// The property that actually matters.
-			if data, readErr := os.ReadFile(escaped); readErr == nil {
-				t.Fatalf("CONTAINMENT BREAK: wrote %d bytes outside the staging root at %s: %q", len(data), escaped, data)
 			}
 		})
 	}
