@@ -85,3 +85,96 @@ func TestUpServesUnauthenticatedProbesOnRealDaemon(t *testing.T) {
 		t.Fatal("daemon did not shut down")
 	}
 }
+
+// TestReadyzReportsNotReadyBeforeStartupCompletesOnRealDaemon is the seam
+// test the wiring at up.go's WrapWithProbes call site needs and previously
+// lacked: TestUpServesUnauthenticatedProbesOnRealDaemon above only observes
+// the post-startup happy path, which a hardcoded `Ready: true` (#3806's own
+// literal regression) satisfies identically. This test polls /readyz from
+// the moment the HTTP listener opens — before "daemon started" fires, i.e.
+// before webhookGate.Start() flips the ready gate — and requires observing
+// at least one genuinely not-ready response (503, ready=false) before the
+// first ready=true one, then asserts every named check is true once ready.
+func TestReadyzReportsNotReadyBeforeStartupCompletesOnRealDaemon(t *testing.T) {
+	root := initDeterministicDemo(t)
+	address := freeLoopbackAddress(t)
+	setAPIListenAddress(t, root, address)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := &daemonStartedWriter{started: make(chan struct{})}
+	var stderr bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- runUpContext(ctx, []string{"--quiet", root}, started, &stderr)
+	}()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	url := "http://" + address + httpapi.ReadinessPath
+
+	sawNotReady := false
+	deadline := time.Now().Add(20 * time.Second)
+	var final httpapi.ReadinessStatus
+	reachedReady := false
+	for time.Now().Before(deadline) && !reachedReady {
+		select {
+		case code := <-done:
+			t.Fatalf("daemon exited before becoming ready: code = %d, stderr = %q", code, stderr.String())
+		default:
+		}
+
+		response, err := client.Get(url)
+		if err != nil {
+			// Listener not open yet, or a transient dial error during
+			// startup — keep polling.
+			continue
+		}
+		var status httpapi.ReadinessStatus
+		decodeErr := json.NewDecoder(response.Body).Decode(&status)
+		_ = response.Body.Close()
+		if decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+
+		if !status.Ready {
+			sawNotReady = true
+			if response.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("not-ready /readyz status = %d, want %d, body = %+v", response.StatusCode, http.StatusServiceUnavailable, status)
+			}
+			continue
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("ready /readyz status = %d, want %d, body = %+v", response.StatusCode, http.StatusOK, status)
+		}
+		final = status
+		reachedReady = true
+	}
+	if !reachedReady {
+		t.Fatal("daemon never reported ready within the deadline")
+	}
+	if !sawNotReady {
+		t.Fatal("never observed /readyz report ready=false before the daemon became ready — a hardcoded Ready:true (#3806's literal regression) would pass this test undetected")
+	}
+	for _, check := range []string{"configLoaded", "stateOpen", "resumeComplete", "sweepsStarted"} {
+		if !final.Checks[check] {
+			t.Fatalf("readyz check %q = false once ready: checks = %+v", check, final.Checks)
+		}
+	}
+
+	select {
+	case <-started.started:
+	case code := <-done:
+		t.Fatalf("daemon exited: code = %d, stderr = %q", code, stderr.String())
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for \"daemon started\"")
+	}
+
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not shut down")
+	}
+}

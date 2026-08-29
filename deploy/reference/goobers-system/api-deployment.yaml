@@ -46,20 +46,38 @@ spec:
           # the rest of the API requires (SEC-043/#640), so these two paths
           # are the deliberate, narrowly-scoped exception.
           #
+          # CHANGE-ME: scheme MUST track api.tls, same as containerPort above
+          # must track api.listen. internal/httpapi/server.go refuses to
+          # serve a non-loopback bind without TLS (SEC-043/#640) — so any
+          # daemon a kubelet can reach at podIP:8080 is necessarily HTTPS,
+          # exactly like the loopback-only stub this base ships (replicas: 0,
+          # CHANGE-ME above): raising replicas without also setting
+          # api.listen/api.tls (and this scheme) reproduces the exact
+          # CrashLoopBackOff #3806's httpGet probes exist to prevent, just
+          # from the probes themselves. kubelet skips certificate
+          # verification for HTTPS probes, so the cluster/self-signed cert
+          # api.tls points at is sufficient — no extra trust config needed.
+          #
           # startupProbe alone gates when liveness/readiness probing begins:
           # crash-resume of interrupted runs at daemon start
           # (cmd/goobers/up.go's resumeInterruptedRunsWithRunners) is
           # UNBOUNDED and scales with how many runs were in flight when the
           # prior process stopped — a short initialDelaySeconds on
           # livenessProbe would kill the pod mid legitimate resume. The
-          # generous failureThreshold below gives resume up to 10 minutes
-          # before kubelet gives up on startup ever completing; only then do
-          # livenessProbe/readinessProbe start being evaluated at all.
+          # failureThreshold below is NOT derived from a measured worst-case
+          # resume time (none has been collected yet) — it is a starting
+          # point giving resume up to 10 minutes before kubelet gives up on
+          # startup ever completing. CHANGE-ME: raise it if your instance's
+          # typical in-flight-run count at restart makes 10 minutes tight;
+          # only once startupProbe succeeds do livenessProbe/readinessProbe
+          # start being evaluated at all.
           startupProbe:
             httpGet:
               path: /readyz
               port: http
+              scheme: HTTPS
             periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 60
           # readinessProbe reuses /readyz's SAME signal so kubectl rollout
           # status (and the Service's endpoint set) reflect exactly what
@@ -70,18 +88,25 @@ spec:
             httpGet:
               path: /readyz
               port: http
+              scheme: HTTPS
             periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
           # livenessProbe is deliberately decoupled from startup/resume
           # completion (/healthz reports healthy before the scheduler's
           # first tick, regardless of how long that takes) — it exists only
           # to catch a genuinely wedged main loop AFTER the daemon reaches
-          # steady state, never a still-legitimately-busy one.
+          # steady state, never a still-legitimately-busy one. The check
+          # itself is in-memory only (no disk read on the RWO instance
+          # volume), so an explicit timeoutSeconds here is headroom for
+          # network/TLS overhead, not for the handler itself.
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
+              scheme: HTTPS
             periodSeconds: 15
+            timeoutSeconds: 5
             failureThreshold: 3
           volumeMounts:
             # Same instance-root layout as the worker. This lock-bearing RWO

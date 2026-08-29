@@ -263,11 +263,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// below), every one of these four has already flipped true too, in this
 	// same, sequential, error-returns-early function body.
 	var (
-		configLoaded    atomic.Bool // instance config + scheduler wiring validated
-		stateOpen       atomic.Bool // scheduler's run-tracking state reconciled from disk
-		resumeComplete  atomic.Bool // crash-resume of interrupted runs finished
-		sweepsStarted   atomic.Bool // initial sweeps ran once and their periodic tickers are live
-		schedulerTicked atomic.Bool // scheduler's heartbeat ticked at least once (liveness grace)
+		configLoaded    atomic.Bool  // instance config + scheduler wiring validated
+		stateOpen       atomic.Bool  // scheduler's run-tracking state reconciled from disk
+		resumeComplete  atomic.Bool  // crash-resume of interrupted runs finished
+		sweepsStarted   atomic.Bool  // initial sweeps ran once and their periodic tickers are live
+		schedulerTicked atomic.Bool  // scheduler's heartbeat ticked at least once (liveness grace)
+		lastTickAtNanos atomic.Int64 // in-memory heartbeat /healthz reads (#3806); unix nanos
 	)
 	stopDaemon := func() {
 		ready.Store(false)
@@ -655,42 +656,22 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// exactly as before; WrapWithProbes forwards authenticatedTransport() and
 	// shutdown() straight through so NewServer's SEC-043 gate below and
 	// apiHandler's own SSE-close lifecycle both keep working unchanged.
-	livenessCheck := func() bool {
-		if !schedulerTicked.Load() {
-			// Grace before the scheduler's first tick: a long legitimate
-			// crash-resume (resumeInterruptedRunsWithRunners, below —
-			// unbounded, scales with interrupted-run count) must not read as
-			// a wedged main loop. Liveness is deliberately decoupled from
-			// startup/resume completion — only a heartbeat that WAS
-			// established and then went stale reports unhealthy; readiness
-			// (below), not liveness, is what gates on startup actually
-			// finishing.
-			return true
-		}
-		lastTickAt, err := daemonstate.Read(lockPath)
-		if err != nil {
-			// The lock file this daemon itself holds is unreadable — treat as
-			// grace rather than failure; a transient stat error is not proof
-			// of a wedged main loop.
-			return true
-		}
-		return daemonstate.Evaluate(time.Now(), lastTickAt, livenessTimeout).Healthy
+	//
+	// The checks themselves live on daemonProbeState (daemon_probes.go) —
+	// a named type, not two inline closures — so they are directly unit
+	// testable without a real daemon.
+	probes := &daemonProbeState{
+		ready:           &ready,
+		configLoaded:    &configLoaded,
+		stateOpen:       &stateOpen,
+		resumeComplete:  &resumeComplete,
+		sweepsStarted:   &sweepsStarted,
+		schedulerTicked: &schedulerTicked,
+		lastTickAtNanos: &lastTickAtNanos,
+		livenessTimeout: livenessTimeout,
+		now:             time.Now,
 	}
-	readinessCheck := func() httpapi.ReadinessStatus {
-		return httpapi.ReadinessStatus{
-			// The single Ready gate every authenticated caller already sees
-			// on /api/v1/health.Ready — never recomputed from Checks below,
-			// so the two surfaces cannot drift out of lockstep.
-			Ready: ready.Load(),
-			Checks: map[string]bool{
-				"configLoaded":   configLoaded.Load(),
-				"stateOpen":      stateOpen.Load(),
-				"resumeComplete": resumeComplete.Load(),
-				"sweepsStarted":  sweepsStarted.Load(),
-			},
-		}
-	}
-	handler = httpapi.WrapWithProbes(handler, livenessCheck, readinessCheck)
+	handler = httpapi.WrapWithProbes(handler, probes.liveness, probes.readiness)
 	var apiServerOpts []httpapi.ServerOption
 	if tlsConfig := setup.Config.API.TLS; tlsConfig != nil {
 		apiServerOpts = append(apiServerOpts, httpapi.WithTLS(tlsConfig.CertFile, tlsConfig.KeyFile))
@@ -832,15 +813,35 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// active-run counts from the very same non-terminal runs the resume scan
 	// is about to act on, so each resumed run's ReleaseReconciled call (below)
 	// has a reserved slot to actually release.
-	sched := newDaemonScheduler(setup, localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
-		err := daemonstate.Refresh(lockPath, tickAt)
+	// markTickProgress updates the two in-memory values daemonProbeState's
+	// liveness check reads (#3806): purely an atomic store, never disk I/O,
+	// so it stays safe to call frequently — including from inside Tick's
+	// tickMu-held critical section, below — even on this cluster's
+	// documented failure mode of a stalled RWO volume attachment.
+	markTickProgress := func(tickAt time.Time) {
+		lastTickAtNanos.Store(tickAt.UnixNano())
 		// #3806: /healthz's liveness grace ends once the scheduler has ticked
-		// at least once — set regardless of a Refresh error, since the tick
-		// itself (not the on-disk write) is what "has the main loop reached
-		// its steady-state loop" means.
+		// at least once — set regardless of whether the on-disk heartbeat
+		// write below succeeds, since the tick itself (not that write) is
+		// what "has the main loop reached its steady-state loop" means.
 		schedulerTicked.Store(true)
-		return err
-	}))
+	}
+	sched := newDaemonScheduler(setup,
+		localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
+			err := daemonstate.Refresh(lockPath, tickAt)
+			markTickProgress(tickAt)
+			return err
+		}),
+		// #3806: a single Tick can poll several due, provider-backed
+		// workflows SEQUENTIALLY while holding tickMu (each bounded only by
+		// demandPollTimeout, 45s) — WithTickHeartbeat's refresh above fires
+		// only once Tick returns in full, which for N due polls can leave
+		// the liveness heartbeat looking stale for N*45s even though the
+		// scheduler is busy, not wedged. WithPollHeartbeat marks progress
+		// after EACH such poll instead, bounding staleness to a single
+		// poll's worst case.
+		localscheduler.WithPollHeartbeat(markTickProgress),
+	)
 	sourceReconcileWake := make(chan struct{}, 1)
 	wakeSourceReconcile := func(context.Context) {
 		select {
