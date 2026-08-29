@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/mergepolicy"
 	"github.com/goobers/goobers/providers"
 )
@@ -205,8 +205,23 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// completed, which serializing the whole window (not just the final
 	// MergePullRequest call) guarantees. Branch cleanup after a successful
 	// merge is independent per-PR state and does NOT need to be serialized.
+	//
+	// Over the claims plane (a stage pod, which has no instance flock) the
+	// same window is a lease on the synthetic item merge-lock/<owner>/<repo>
+	// held by this run: acquire polls until held, the lease is renewed while
+	// the window runs, and a crashed holder's lease lapses on its own instead
+	// of leaking a flock (finding 002 C1). Same-host stages keep the flock.
 	l := layoutFor(root)
-	lockPath := filepath.Join(l.SchedulerDir(), mergeLockFileName)
+	ledger, err := openStageClaimLedger(l)
+	if err != nil {
+		pf(stderr, "error: open claim ledger: %v\n", err)
+		return 1
+	}
+	mergeLock := claimsclient.MergeLock{
+		Key:      claimsclient.MergeLockKey(providerGaggle(), string(repo.Provider), repo.Owner, repo.Name),
+		RunID:    os.Getenv("GOOBERS_RUN_ID"),
+		Workflow: os.Getenv("GOOBERS_WORKFLOW"),
+	}
 
 	var poll providers.PullRequestPollResult
 	var pollErr error
@@ -217,7 +232,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	var commitErr error
 	var policyErr error
 	var optedOutReason string
-	lockErr := withFileLock(lockPath, func() error {
+	lockErr := ledger.MergeLock(ctx, mergeLock, func(ctx context.Context) error {
 		// Independent, live re-check (D6) — never trust a caller-supplied
 		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
 		// actual current state right before deciding, now guaranteed to be

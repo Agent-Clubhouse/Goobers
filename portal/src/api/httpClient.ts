@@ -86,6 +86,7 @@ const clientRoutes = {
   claimRenew: apiRoutes.claimRenew,
   claimRelease: apiRoutes.claimRelease,
   claimSettle: apiRoutes.claimSettle,
+  claimList: apiRoutes.claimList,
   triggerIngest: apiRoutes.triggerIngest,
   resolveEscalation: apiRoutes.resolveEscalation,
   journalEmit: apiRoutes.journalEmit,
