@@ -203,7 +203,10 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	}
 	// #3651: a discarded close error here would lose final telemetry, rollup,
 	// or journal state without any diagnostic; Shutdown itself runs once, so
-	// both this defer and the --no-wait cleanup below can call it.
+	// both this defer and the --no-wait cleanup below can call it. The
+	// diagnostic does not change the exit code: `run` reports the outcome of
+	// the runs it dispatched, and those results are already durable by the
+	// time shutdown starts.
 	shutdownSetup := func() {
 		if err := setup.Shutdown(context.Background()); err != nil {
 			pf(stderr, "error: shut down scheduler services: %v\n", err)

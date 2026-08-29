@@ -97,7 +97,9 @@ func runSignal(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() {
 		// #3651: surface a lost final flush or close rather than exiting as if
-		// the signal command shut down cleanly.
+		// the signal command shut down cleanly. The signal itself is already
+		// committed at this point, so the diagnostic is reported without
+		// changing the command's exit code.
 		if err := setup.Shutdown(context.Background()); err != nil {
 			pf(stderr, "error: shut down scheduler services: %v\n", err)
 		}

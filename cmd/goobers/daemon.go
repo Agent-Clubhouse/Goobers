@@ -115,7 +115,9 @@ type schedulerSetup struct {
 	// shutdownOnce/shutdownErr make Shutdown idempotent: `up` closes the setup
 	// explicitly so a flush or close failure can fail the command, while the
 	// early-return defer stays in place as a safety net. Whichever runs first
-	// owns the close; the other observes the same result.
+	// owns the close; the other observes the same result — including a
+	// memoized deadline error, which a later caller sees even if the step that
+	// blew the grace period finished afterwards.
 	shutdownOnce sync.Once
 	shutdownErr  error
 }

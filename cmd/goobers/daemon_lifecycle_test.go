@@ -84,7 +84,7 @@ func TestResumeReleasesReconciledSlotForFollowUpTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)
@@ -167,8 +167,8 @@ func TestResumeJournalsActualPhaseNotHardcodedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)
@@ -183,7 +183,7 @@ func TestResumeJournalsActualPhaseNotHardcodedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	var finished journal.Event
 	for _, ev := range events {
 		if ev.Type == journal.EventRunFinished && ev.RunID == "stuck-2" {
@@ -268,7 +268,7 @@ func TestResumePastOrphanedWorktreeAtSameKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)
@@ -551,7 +551,7 @@ spec:
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	if setup.LegacyRunner == nil || setup.LegacyWorktrees == nil {
 		t.Fatal("retained flat runtime did not receive a legacy runner")
 	}
