@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,7 +115,7 @@ func TestRecordUnpushedDiffBoundsCaptureAfterCancellation(t *testing.T) {
 func TestUnpushedDiffCaptureFailureLeavesOtherFailuresAlone(t *testing.T) {
 	cause := os.ErrPermission
 	got := unpushedDiffCaptureFailure(context.Background(), cause, "goobers/impl/run-3644")
-	if got != cause {
+	if !errors.Is(got, cause) {
 		t.Fatalf("unpushedDiffCaptureFailure(non-deadline) = %v, want the cause unchanged", got)
 	}
 }
