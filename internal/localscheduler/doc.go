@@ -17,9 +17,10 @@
 //     marker (#12's ClaimWorkItem) mirrors this ledger for human visibility; it
 //     is never the source of truth.
 //
-// This is a distinct package from internal/scheduler, which is the earlier
-// Temporal-era (M7) scheduler — quarantined as a tier-3 component (§11, #15)
-// and revived, not reused, at V2.
+// This is the one scheduler. The earlier Temporal-era (M7) scheduler fork,
+// internal/scheduler, was deleted per goobernetes-architecture.md D5/§4
+// (#2055 resolved: supersede) — distributed execution reuses this package's
+// policy on the daemon, unforked.
 //
 // Every scheduling decision and claim-ledger transition is journaled to the
 // instance journal (journal.InstanceLog, scheduler/events.jsonl) under the same

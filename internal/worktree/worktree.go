@@ -137,6 +137,11 @@ type Worktree struct {
 	assetGuard    bool
 }
 
+// HeadSHA returns the commit currently checked out in this worktree.
+func (wt *Worktree) HeadSHA(ctx context.Context) (string, error) {
+	return gitOutput(ctx, wt.Path, "rev-parse", "HEAD")
+}
+
 // validRunID reports whether id is safe to join onto a directory as a
 // single path segment: non-empty, not "." or "..", and not itself a
 // multi-segment or absolute path (filepath.Base(id) == id is false for any

@@ -388,6 +388,83 @@ func TestDetectGateRepassChurn(t *testing.T) {
 	}
 }
 
+func TestDetectGateRepassChurnExcludesInfrastructureEscalation(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	base := fixtureStart
+
+	for i := 0; i < 5; i++ {
+		dir := filepath.Join(runsDir, fmt.Sprintf("%032d", i))
+		mustMkdirAll(t, dir)
+		runID := fmt.Sprintf("%032d", i)
+		mustWriteFile(t, filepath.Join(dir, fileRunYAML), strings.ReplaceAll(minimalRunYAML(runID, base.Add(time.Duration(i)*time.Hour)), "workflow: wf", "workflow: implementation"))
+		line := eventLine(2, base.Add(time.Duration(i)*time.Hour), `"type":"gate.evaluated","gate":"local-gate","verdict":"infra","target":"park-escalated","runner":{"escalated":true}`)
+		mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join([]string{
+			eventLine(1, base.Add(time.Duration(i)*time.Hour), `"type":"run.started"`),
+			line,
+			eventLine(3, base.Add(time.Duration(i)*time.Hour+time.Second), `"type":"run.finished","status":"completed"`),
+		}, "\n")+"\n")
+	}
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+	findings, err := db.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	for _, finding := range findings {
+		if finding.Kind == FindingGateRepassChurn && finding.Subject == "local-gate" {
+			t.Fatalf("infrastructure escalation was classified as repass churn: %+v", finding)
+		}
+	}
+	var classifications int
+	if err := db.readDB().QueryRow(
+		`SELECT COUNT(*) FROM gate_classifications WHERE gate = 'local-gate'`,
+	).Scan(&classifications); err != nil {
+		t.Fatalf("gate classification count: %v", err)
+	}
+	if classifications != 5 {
+		t.Fatalf("classifications = %d, want one for each run", classifications)
+	}
+	var nonInfrastructure int
+	if err := db.readDB().QueryRow(
+		`SELECT COUNT(*) FROM gate_classifications WHERE gate = 'local-gate' AND classification != 'infrastructure'`,
+	).Scan(&nonInfrastructure); err != nil {
+		t.Fatalf("gate classification query: %v", err)
+	}
+	if nonInfrastructure != 0 {
+		t.Fatalf("non-infrastructure classifications = %d, want 0", nonInfrastructure)
+	}
+}
+
+func TestLegacyGateEscalationsAreClassifiedFromJournalOutcome(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	runID := "legacy-infrastructure-run"
+	dir := filepath.Join(runsDir, runID)
+	mustMkdirAll(t, dir)
+	base := fixtureStart
+	mustWriteFile(t, filepath.Join(dir, fileRunYAML),
+		strings.ReplaceAll(minimalRunYAML(runID, base), "workflow: wf", "workflow: implementation"))
+	mustWriteFile(t, filepath.Join(dir, fileEvents), strings.Join([]string{
+		eventLine(1, base, `"type":"run.started"`),
+		eventLine(2, base.Add(time.Second), `"type":"gate.evaluated","gate":"local-gate","verdict":"infra","target":"park-escalated","runner":{"escalated":true}`),
+	}, "\n")+"\n")
+
+	db := openTestDB(t, tmp)
+	seedAndIngest(t, db, runsDir)
+	var classification, reason string
+	if err := db.readDB().QueryRow(
+		`SELECT classification, reason FROM gate_classifications WHERE run_id = ? AND seq = 2`,
+		runID,
+	).Scan(&classification, &reason); err != nil {
+		t.Fatalf("legacy gate classification query: %v", err)
+	}
+	if classification != "infrastructure" || reason != "INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED" {
+		t.Fatalf("legacy classification = %q/%q, want infrastructure/INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED", classification, reason)
+	}
+}
+
 func TestDetectCoverageGaps(t *testing.T) {
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")

@@ -275,6 +275,8 @@ func TestDocumentationURLPinsStableReleaseBuilds(t *testing.T) {
 		{version: "dev", ref: "main"},
 		{version: "db438b0", ref: "main"},
 		{version: "v1.2.3", ref: "v1.2.3"},
+		{version: "v1.2.3-beta.2", ref: "v1.2.3-beta.2"},
+		{version: "v1.2.3-01", ref: "main"},
 	} {
 		version.Version = test.version
 		want := "https://github.com/Agent-Clubhouse/Goobers/blob/" + test.ref + "/docs/concepts/README.md"

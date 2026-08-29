@@ -52,6 +52,15 @@ func TestEveryRouteIsClassified(t *testing.T) {
 		if route.Cost == CostBlob {
 			continue
 		}
+		// The credential plane's resolve route is exempt BY DESIGN, not defect:
+		// its time is an outbound GitHub App token mint (30s ceiling,
+		// internal/githubapp mintTimeout), and its only callers are stage pods
+		// — the portal never fetches it, so the 10s portal abort that
+		// motivates this rule does not apply. TestCredentialResolveBudget
+		// below pins the mint-containment reasoning.
+		if route.ID == RouteCredentialResolve {
+			continue
+		}
 		if route.Budget >= clientAbort {
 			t.Errorf("route %s has a %s budget, at or above the client's %s abort; the client "+
 				"would give up first and the user would see a generic network error instead "+
@@ -68,7 +77,12 @@ func TestEveryRouteIsClassified(t *testing.T) {
 // shed under read load, which is the wrong policy for a user pressing Approve.
 func TestMutationsAreNotClassifiedAsReads(t *testing.T) {
 	for _, route := range V1Routes() {
-		isMutationAction := route.ActionClass == ActionRuntimeMutation || route.ActionClass == ActionMaintenance
+		// Workflow-execution routes joined the write surface with the §7
+		// planes (claims, trigger ingestion): they write runtime state and
+		// must be pooled as mutations, not shed with read traffic.
+		isMutationAction := route.ActionClass == ActionRuntimeMutation ||
+			route.ActionClass == ActionMaintenance ||
+			route.ActionClass == ActionWorkflowExecution
 		switch {
 		case isMutationAction && route.Cost != CostMutation:
 			t.Errorf("route %s is a mutation but carries cost class %q; it would be "+
@@ -143,6 +157,28 @@ func TestGetRoutesAreNotMutations(t *testing.T) {
 		if route.Method == http.MethodPost && route.Cost != CostMutation {
 			t.Errorf("route %s is a POST classified as %q", route.ID, route.Cost)
 		}
+	}
+}
+
+// TestCredentialResolveBudget pins the credential plane's mint-bound budget:
+// large enough to contain one cold GitHub App installation-token mint (the
+// 30s mintTimeout in internal/githubapp) plus margin, and deliberately above
+// the portal client abort because pods, not the portal, call it. If the mint
+// ceiling ever grows past the budget, a legitimate slow mint would surface as
+// a 503 the pod retries into the identical cold path — this test makes that
+// drift loud.
+func TestCredentialResolveBudget(t *testing.T) {
+	route, ok := V1Route(RouteCredentialResolve)
+	if !ok {
+		t.Fatal("credentialResolve route is not in the V1 contract")
+	}
+	const githubAppMintTimeout = 30 * time.Second // internal/githubapp mintTimeout
+	if route.Budget <= githubAppMintTimeout {
+		t.Errorf("credentialResolve budget %s does not contain a cold GitHub App mint (%s ceiling)",
+			route.Budget, githubAppMintTimeout)
+	}
+	if route.Budget != CredentialResolveBudget {
+		t.Errorf("credentialResolve budget = %s, want CredentialResolveBudget (%s)", route.Budget, CredentialResolveBudget)
 	}
 }
 

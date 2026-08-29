@@ -73,6 +73,7 @@ type Reader interface {
 	// CreditAssignment ranks graph nodes by their contribution to adverse run
 	// outcomes and repeated attempts.
 	CreditAssignment(ctx context.Context, options CreditOptions) ([]NodeCredit, error)
+	CausalCredit(ctx context.Context, options CausalOptions) ([]CausalNodeCredit, error)
 
 	// GetRun returns one projected run. The bool distinguishes absent from
 	// failed — a run that is not in the read model is an ordinary answer, and

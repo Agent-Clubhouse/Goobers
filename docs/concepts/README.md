@@ -78,6 +78,8 @@ repo-relative subtree such as this project's `reference-workflows/` dogfood conf
 Use [Choose where an instance and its config live](../guides/instance-placement.md)
 to select among those layouts. The instance root and its runtime state stay
 outside every target repository in all three cases.
+To relocate that state safely, use
+[Move a local instance to another machine](../guides/move-local-instance.md).
 
 The right side records what did run:
 

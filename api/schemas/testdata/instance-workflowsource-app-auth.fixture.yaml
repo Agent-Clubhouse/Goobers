@@ -68,13 +68,19 @@ repos:
 # is no GET /user equivalent), so PR attribution falls back to a branch-prefix
 # heuristic without it. We have that heuristic via branchNamespace, so this is
 # belt-and-braces — but it is free and more direct.
+# NOTE (#3414): this instance's repos span two owners, and a GitHub App
+# installation belongs to exactly one owner — so a single `installationId`
+# here could mint for example-org and would fail with a 422 on the first
+# example-user operation. The daemon identity backs the whole daemon-mutation
+# set instance-wide, so it needs coverage for every owner it acts on. Until
+# per-owner installation bindings exist (#3415), a cross-owner instance must
+# use a PAT for its daemon identity; App auth per repository (above) and for
+# workflowSource (below) is unaffected, because each of those names its own
+# installation for its own owner.
 daemonIdentity:
-  kind: github-app
-  appId: "Iv1EXAMPLECLIENTID000"
-  installationId: "10000001"
-  privateKey:
-    file: /mnt/secrets/github-app-private-key.pem
-  slug: example-bot
+  kind: pat
+  token:
+    file: /mnt/secrets/daemon-pat
 
 # --- Model access ------------------------------------------------------------
 #

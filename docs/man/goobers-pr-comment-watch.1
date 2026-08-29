@@ -1,0 +1,37 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS PR COMMENT WATCH" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers pr-comment-watch \- label open goober PRs carrying unaddressed human comments (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers pr-comment-watch\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers pr-comment-watch [path]
+
+Scan open goober-authored PRs (head under the gaggle branch namespace)
+and label any whose newest human comment is newer than the bot's own
+newest comment with goobers:needs-remediation, so pr-remediation updates
+that PR in place. A PR parked for a human (needs-human / merge-escalated)
+is un-parked when a fresh human comment lands: the park label is cleared
+and needs-remediation added in one mutation, since the human the PR was
+parked for has now weighed in. The bot identity is the token's own login
+(AuthenticatedLogin) — a dedicated bot account is required for signal;
+with a shared human identity the stage never fires. Comments landing
+mid-remediation after the brief snapshot can be masked by the bot's
+response comment until the human comments again (accepted v1 limit).
+
+Inputs: maxPullRequests (default 20), headPrefixes (default the branch
+namespace), base (default the gaggle base branch), excludeLabels (labels
+that hard-exclude a PR from the scan), unparkLabels (park labels a fresh
+human comment clears while routing, default needs-human,merge-escalated),
+excludeAuthors (extra bot logins to ignore, e.g. Gitea CI bots),
+resultFile (default comment-watch-result.json).
+Exit codes: 0 = scanned (labeled zero or more), 1 = business error,
+2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers pr-comment-watch
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

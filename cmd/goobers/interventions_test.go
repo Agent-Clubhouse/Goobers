@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"path/filepath"
@@ -196,6 +197,24 @@ func newInterventionServiceTestRunWithDeterministic(
 	deterministic invoke.Deterministic,
 ) (*runInterventionService, string) {
 	t.Helper()
+	return newDriftedInterventionServiceTestRun(t, machine, machine, false, runID, events, deterministic)
+}
+
+// newDriftedInterventionServiceTestRun creates a run pinned to pinnedMachine
+// while the definitions registry serves servedMachine — the #3376 shape: the
+// workflow config was edited (or replaced wholesale) between the run's start
+// and the operator's intervention. When snapshotDefinition is true the run
+// carries the trusted pinned-definition input that Runner.Start journals;
+// false reproduces a pre-snapshot run whose pin cannot be reconstructed.
+func newDriftedInterventionServiceTestRun(
+	t *testing.T,
+	pinnedMachine, servedMachine *workflow.Machine,
+	snapshotDefinition bool,
+	runID string,
+	events []journal.Event,
+	deterministic invoke.Deterministic,
+) (*runInterventionService, string) {
+	t.Helper()
 	layout := instance.NewLayout(t.TempDir())
 	scoped := layout.ForGaggle("example")
 	instanceLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
@@ -223,11 +242,23 @@ func newInterventionServiceTestRunWithDeterministic(
 		t.Fatal(err)
 	}
 
+	var inputs map[string][]byte
+	var createOpts []journal.Option
+	if snapshotDefinition {
+		definition, err := json.Marshal(pinnedMachine.Def)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inputs = map[string][]byte{journal.PinnedWorkflowDefinitionInputName: definition}
+		createOpts = append(createOpts, journal.WithInputIntegrity(map[string]apiv1.Integrity{
+			journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+		}))
+	}
 	run, err := journal.Create(scoped.RunsDir(), journal.RunIdentity{
-		RunID: runID, Workflow: machine.Def.Name, WorkflowVersion: machine.Def.Version,
-		WorkflowDigest: machine.Digest(), Gaggle: "example",
+		RunID: runID, Workflow: pinnedMachine.Def.Name, WorkflowVersion: pinnedMachine.Def.Version,
+		WorkflowDigest: pinnedMachine.Digest(), Gaggle: "example",
 		Trigger: journal.Trigger{Kind: journal.TriggerManual},
-	}, nil)
+	}, inputs, createOpts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +270,7 @@ func newInterventionServiceTestRunWithDeterministic(
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
 	}
-	key := localscheduler.WorkflowIdentity{Gaggle: "example", Workflow: machine.Def.Name}
+	key := localscheduler.WorkflowIdentity{Gaggle: "example", Workflow: servedMachine.Def.Name}
 	runners := map[string]*runner.Runner{"example": runRunner}
 	runnerRegistry := newDaemonRunnerRegistry()
 	runnerRegistry.Replace(runners)
@@ -247,7 +278,7 @@ func newInterventionServiceTestRunWithDeterministic(
 		layout: layout,
 		definitions: newInterventionDefinitionRegistry(interventionDefinitionSet{
 			runners:       runners,
-			machines:      map[localscheduler.WorkflowIdentity]*workflow.Machine{key: machine},
+			machines:      map[localscheduler.WorkflowIdentity]*workflow.Machine{key: servedMachine},
 			gooberDigests: map[localscheduler.WorkflowIdentity]string{key: ""},
 			repoRefs: map[localscheduler.WorkflowIdentity]apiv1.RepoRef{
 				key: {Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "repo", Branch: "main"},
@@ -257,7 +288,7 @@ func newInterventionServiceTestRunWithDeterministic(
 		instanceLog:    instanceLog,
 	}
 	service.AttachScheduler(localscheduler.New([]localscheduler.WorkflowEntry{{
-		Workflow: machine.Def.Name,
+		Workflow: servedMachine.Def.Name,
 		Gaggle:   "example",
 		Readiness: apiv1.ReadinessConditions{
 			MaxConcurrentRuns: 1,
@@ -505,6 +536,178 @@ func TestRunInterventionApproveResolvesPausedHumanGate(t *testing.T) {
 	}
 	if evaluated.Gate != "review" || evaluated.Verdict != "pass" || evaluated.Target != "finish" || evaluated.Actor != "approver" {
 		t.Fatalf("gate.evaluated = %+v", evaluated)
+	}
+}
+
+// interventionGoalDriftMachine compiles the same human-gated workflow shape
+// with a caller-chosen goal for the implement task — two goals, two digests,
+// one workflow name: the #3376 residual case, a legitimate semantic edit
+// landing between a run's start and an operator's intervention.
+func interventionGoalDriftMachine(t *testing.T, goal string) *workflow.Machine {
+	t.Helper()
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "intervention", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "example", Start: "implement",
+			Tasks: []apiv1.Task{
+				{
+					Name: "implement", Type: apiv1.TaskDeterministic, Goal: goal,
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: "review",
+				},
+				{
+					Name: "finish", Type: apiv1.TaskDeterministic, Goal: "finish",
+					Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}, Next: workflow.TerminalComplete,
+				},
+			},
+			Gates: []apiv1.Gate{{
+				Name: "review", Evaluator: apiv1.EvaluatorHuman,
+				Human: &apiv1.HumanGate{},
+				Branches: map[string]string{
+					"pass": "finish",
+					"fail": workflow.TargetEscalate,
+				},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return machine
+}
+
+// TestRunInterventionApproveResumesDriftedRunFromPinnedDefinition is the
+// #3376 residual-case regression: the workflow was legitimately edited after
+// this run paused at its human gate, so the served machine's digest no longer
+// matches the run's WF-016 pin. Before the fix the operator's approve was
+// executed against the current machine and refuseResume destroyed the paused
+// run (terminal failed, resume_refused_digest_mismatch); with the pinned
+// definition snapshot journaled at Start, resolve() must reconstruct the
+// historical machine and the approval must walk the run to completion.
+func TestRunInterventionApproveResumesDriftedRunFromPinnedDefinition(t *testing.T) {
+	pinned := interventionGoalDriftMachine(t, "implement")
+	edited := interventionGoalDriftMachine(t, "implement, but the goal was edited mid-run")
+	if pinned.Digest() == edited.Digest() {
+		t.Fatal("fixture machines must have drifted digests")
+	}
+	service, runDir := newDriftedInterventionServiceTestRun(t, pinned, edited, true, "run-drifted-approve", []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventGateStarted, Gate: "review"},
+		{Type: journal.EventGatePaused, Gate: "review"},
+	}, interventionDeterministic{})
+
+	result, err := service.Approve(context.Background(), httpapi.InterventionRequest{
+		RunID: "run-drifted-approve", Stage: "review", Actor: "approver", Decision: "pass",
+	})
+	if err != nil {
+		t.Fatalf("Approve: %v — a drifted-but-snapshotted run must resume against its pinned definition, not refuse", err)
+	}
+	if result.Phase != string(journal.PhaseCompleted) {
+		t.Fatalf("result = %+v, want completed", result)
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finished journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventRunFinished {
+			finished = event
+		}
+	}
+	if finished.Status != string(journal.PhaseCompleted) || finished.Error != nil {
+		t.Fatalf("run.finished = %+v, want clean completed terminal", finished)
+	}
+}
+
+// TestRunInterventionTerminalApproveResumesDriftedRunFromPinnedDefinition
+// covers the second intervention entrypoint, ResumeFromTerminal: an escalated
+// run whose workflow was edited afterwards must still be reopenable by a
+// human against its pinned definition (WF-016 pin verified against the
+// reconstructed machine, not the drifted current one).
+func TestRunInterventionTerminalApproveResumesDriftedRunFromPinnedDefinition(t *testing.T) {
+	pinned := interventionGoalDriftMachine(t, "implement")
+	edited := interventionGoalDriftMachine(t, "implement, but the goal was edited mid-run")
+	service, runDir := newDriftedInterventionServiceTestRun(t, pinned, edited, true, "run-drifted-terminal", []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventGateStarted, Gate: "review"},
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "fail", Target: workflow.TargetEscalate},
+		{Type: journal.EventRunFinished, Status: string(journal.PhaseEscalated)},
+	}, interventionDeterministic{})
+
+	result, err := service.Approve(context.Background(), httpapi.InterventionRequest{
+		RunID: "run-drifted-terminal", Stage: "review", Actor: "approver", Decision: "pass",
+	})
+	if err != nil {
+		t.Fatalf("Approve: %v — terminal resume must verify the pin against the reconstructed machine", err)
+	}
+	if result.Phase != string(journal.PhaseCompleted) {
+		t.Fatalf("result = %+v, want completed", result)
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finished journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventRunFinished {
+			finished = event
+		}
+	}
+	if finished.Status != string(journal.PhaseCompleted) {
+		t.Fatalf("final run.finished = %+v, want completed", finished)
+	}
+}
+
+// TestRunInterventionApproveStillRefusesDriftedRunWithoutSnapshot pins the
+// tamper-evidence property (#3376 scope: refusal MUST remain when the old
+// definition is unavailable): when the run's pin cannot be reconstructed from
+// a trusted snapshot, the intervention proceeds against the current machine
+// and the runner's WF-016 verification refuses exactly as before.
+func TestRunInterventionApproveStillRefusesDriftedRunWithoutSnapshot(t *testing.T) {
+	pinned := interventionGoalDriftMachine(t, "implement")
+	edited := interventionGoalDriftMachine(t, "implement, but the goal was edited mid-run")
+	service, runDir := newDriftedInterventionServiceTestRun(t, pinned, edited, false, "run-drifted-unpinned", []journal.Event{
+		{Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		{Type: journal.EventStageFinished, Stage: "implement", Attempt: 1, Status: string(apiv1.ResultSuccess)},
+		{Type: journal.EventGateStarted, Gate: "review"},
+		{Type: journal.EventGatePaused, Gate: "review"},
+	}, interventionDeterministic{})
+
+	result, err := service.Approve(context.Background(), httpapi.InterventionRequest{
+		RunID: "run-drifted-unpinned", Stage: "review", Actor: "approver", Decision: "pass",
+	})
+	if err != nil {
+		t.Fatalf("Approve: %v — a handled WF-016 refusal is a result, not an error", err)
+	}
+	if result.Phase != string(journal.PhaseFailed) {
+		t.Fatalf("result = %+v, want the WF-016 refusal's canonical failed terminal", result)
+	}
+	reader, err := journal.OpenRead(runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finished journal.Event
+	for _, event := range events {
+		if event.Type == journal.EventRunFinished {
+			finished = event
+		}
+	}
+	if finished.Error == nil || finished.Error.Code != "resume_refused_digest_mismatch" {
+		t.Fatalf("run.finished error = %+v, want resume_refused_digest_mismatch — tamper evidence must survive the pinned-definition fallback", finished.Error)
 	}
 }
 
@@ -794,7 +997,7 @@ func TestRunInterventionProtectsReacquiredClaimsBeforeJournalResume(t *testing.T
 	}
 	done := make(chan recoveryResult, 1)
 	go func() {
-		released, err := recoverClaims(service.layout, service.instanceLog, time.Now(), service.interventionActive)
+		released, err := recoverClaims(service.layout, service.instanceLog, time.Now(), service.interventionActive, nil)
 		done <- recoveryResult{released: released, err: err}
 	}()
 

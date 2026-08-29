@@ -14,7 +14,7 @@ set -eu
 repository="Agent-Clubhouse/Goobers"
 
 usage() {
-	printf 'Usage: install.sh vMAJOR.MINOR.PATCH [--guided [instance-path]]\n' >&2
+	printf 'Usage: install.sh vMAJOR.MINOR.PATCH[-prerelease] [--guided [instance-path]]\n' >&2
 	printf 'Installs the binary and documentation. Guided instance setup is opt-in\n' >&2
 	printf 'via --guided; the default install never prompts or configures anything.\n' >&2
 }

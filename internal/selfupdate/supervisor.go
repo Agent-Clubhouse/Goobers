@@ -537,7 +537,7 @@ func RequestDaemonStop(root string) error {
 	if err := os.MkdirAll(updatesDir(root), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(stopRequestPath(root), nil, 0o600); err != nil {
+	if err := journal.WriteFileAtomic(stopRequestPath(root), nil, 0o600); err != nil {
 		return fmt.Errorf("request daemon drain: %w", err)
 	}
 	return nil

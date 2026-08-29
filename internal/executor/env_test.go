@@ -311,8 +311,8 @@ func TestStageInvokesGoobersCLI(t *testing.T) {
 		{"empty", nil, false},
 	}
 	for _, c := range cases {
-		if got := stageInvokesGoobersCLI(c.cmd); got != c.want {
-			t.Errorf("%s: stageInvokesGoobersCLI(%v) = %v, want %v", c.name, c.cmd, got, c.want)
+		if got := StageInvokesGoobersCLI(c.cmd); got != c.want {
+			t.Errorf("%s: StageInvokesGoobersCLI(%v) = %v, want %v", c.name, c.cmd, got, c.want)
 		}
 	}
 }
@@ -343,8 +343,8 @@ func TestStageInvokesProviderBuiltin(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := stageInvokesProviderBuiltin(tc.cmd); got != tc.want {
-				t.Fatalf("stageInvokesProviderBuiltin(%v) = %v, want %v", tc.cmd, got, tc.want)
+			if got := StageInvokesProviderBuiltin(tc.cmd); got != tc.want {
+				t.Fatalf("StageInvokesProviderBuiltin(%v) = %v, want %v", tc.cmd, got, tc.want)
 			}
 		})
 	}

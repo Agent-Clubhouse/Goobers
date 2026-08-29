@@ -200,10 +200,13 @@ type WorkflowDefinition struct {
 	Digest  string `json:"digest"`
 }
 
-// WorkflowConcurrency reports active and maximum concurrent runs.
+// WorkflowConcurrency reports active, desired, maximum, and blocked occupancy.
 type WorkflowConcurrency struct {
-	ActiveRuns        int32 `json:"activeRuns"`
-	MaxConcurrentRuns int32 `json:"maxConcurrentRuns"`
+	ActiveRuns        int32  `json:"activeRuns"`
+	DesiredRuns       int32  `json:"desiredRuns,omitempty"`
+	MaxConcurrentRuns int32  `json:"maxConcurrentRuns"`
+	AdmissionBlocked  bool   `json:"admissionBlocked,omitempty"`
+	BlockingCondition string `json:"blockingCondition,omitempty"`
 }
 
 // WorkflowSummary is the inventory projection shared by workflow list and
@@ -534,11 +537,16 @@ func (s *Local) workflowsUnannotated(ctx context.Context, gaggle string, request
 	if err != nil {
 		return WorkflowPage{}, err
 	}
+	schedulerStatus, err := s.SchedulerStatus(ctx)
+	if err != nil {
+		return WorkflowPage{}, err
+	}
+	refill := refillOccupancyByWorkflow(schedulerStatus.RefillOccupancy)
 	items := make([]WorkflowSummary, 0)
 	for i := range inventory.definitions.Workflows {
 		def := &inventory.definitions.Workflows[i]
 		if def.Spec.Gaggle == gaggle {
-			items = append(items, s.workflowSummary(inventory, def, active))
+			items = append(items, s.workflowSummary(inventory, def, active, refill))
 		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Identity.Name < items[j].Identity.Name })
@@ -612,10 +620,19 @@ func (s *Local) workflowUnannotated(ctx context.Context, gaggle, name string) (W
 	if err != nil {
 		return WorkflowDetail{}, err
 	}
+	schedulerStatus, err := s.SchedulerStatus(ctx)
+	if err != nil {
+		return WorkflowDetail{}, err
+	}
 	return WorkflowDetail{
-		WorkflowSummary: s.workflowSummary(inventory, def, active),
-		Graph:           inventory.graphs[workflowKey{gaggle: gaggle, name: name}],
-		Stages:          workflowStages(def),
+		WorkflowSummary: s.workflowSummary(
+			inventory,
+			def,
+			active,
+			refillOccupancyByWorkflow(schedulerStatus.RefillOccupancy),
+		),
+		Graph:  inventory.graphs[workflowKey{gaggle: gaggle, name: name}],
+		Stages: workflowStages(def),
 	}, nil
 }
 
@@ -670,7 +687,20 @@ func hasGaggle(inventory *inventoryProjection, name string) bool {
 	return false
 }
 
-func (s *Local) workflowSummary(inventory *inventoryProjection, def *apiv1.Workflow, active map[localscheduler.WorkflowIdentity]int) WorkflowSummary {
+func refillOccupancyByWorkflow(items []RefillOccupancyStatus) map[localscheduler.WorkflowIdentity]RefillOccupancyStatus {
+	byWorkflow := make(map[localscheduler.WorkflowIdentity]RefillOccupancyStatus, len(items))
+	for _, item := range items {
+		byWorkflow[localscheduler.WorkflowIdentity{Gaggle: item.Gaggle, Workflow: item.Workflow}] = item
+	}
+	return byWorkflow
+}
+
+func (s *Local) workflowSummary(
+	inventory *inventoryProjection,
+	def *apiv1.Workflow,
+	active map[localscheduler.WorkflowIdentity]int,
+	refill map[localscheduler.WorkflowIdentity]RefillOccupancyStatus,
+) WorkflowSummary {
 	key := workflowKey{gaggle: def.Spec.Gaggle, name: def.Name}
 	graph := inventory.graphs[key]
 	readiness := def.Spec.Readiness
@@ -681,10 +711,17 @@ func (s *Local) workflowSummary(inventory *inventoryProjection, def *apiv1.Workf
 		readiness.MaxRunsPerHour = 10
 	}
 	if s.sources.Config != nil {
-		if override := s.sources.Config.RunConditions.WorkflowBudgets[def.Name]; override > 0 {
+		// #3439: comma-ok, not `> 0`. A zero override is a real, meaningful
+		// value here — the schema defines it as "stops it from starting" — so
+		// indexing without the ok is indistinguishable from an absent entry and
+		// would report the scheduler default for a workflow the scheduler has
+		// actually stopped. The effective readiness this surface reports has to
+		// match what the scheduler enforces, or the portal explains a paused
+		// workflow as running ten times an hour.
+		if override, ok := s.sources.Config.RunConditions.WorkflowBudgets[def.Name]; ok {
 			readiness.MaxRunsPerHour = int32(override)
 		}
-		if override := s.sources.Config.RunConditions.WorkflowDailyBudgets[def.Name]; override > 0 {
+		if override, ok := s.sources.Config.RunConditions.WorkflowDailyBudgets[def.Name]; ok {
 			readiness.MaxRunsPerDay = int32(override)
 		}
 	}
@@ -702,20 +739,27 @@ func (s *Local) workflowSummary(inventory *inventoryProjection, def *apiv1.Workf
 	if def.Annotations != nil {
 		purpose = def.Annotations["goobers.dev/purpose"]
 	}
+	identity := localscheduler.WorkflowIdentity{Gaggle: def.Spec.Gaggle, Workflow: def.Name}
+	concurrency := WorkflowConcurrency{
+		ActiveRuns:        int32(active[identity]),
+		DesiredRuns:       readiness.DesiredConcurrentRuns,
+		MaxConcurrentRuns: readiness.MaxConcurrentRuns,
+	}
+	if occupancy, ok := refill[identity]; ok {
+		concurrency.AdmissionBlocked = occupancy.AdmissionBlocked
+		concurrency.BlockingCondition = occupancy.BlockingCondition
+	}
 	return WorkflowSummary{
 		Identity:    WorkflowReference{Gaggle: def.Spec.Gaggle, Name: def.Name},
 		DisplayName: displayName(def.Spec.DisplayName, def.Name),
 		Purpose:     purpose,
 		Triggers:    triggers,
 		Readiness:   readiness,
-		Concurrency: WorkflowConcurrency{
-			ActiveRuns:        int32(active[localscheduler.WorkflowIdentity{Gaggle: def.Spec.Gaggle, Workflow: def.Name}]),
-			MaxConcurrentRuns: readiness.MaxConcurrentRuns,
-		},
-		Owners:     owners,
-		StageCount: len(graph.Nodes),
-		Definition: WorkflowDefinition{Version: graph.Version, Digest: graph.Digest},
-		Warnings:   workflowWarnings(inventory, def),
+		Concurrency: concurrency,
+		Owners:      owners,
+		StageCount:  len(graph.Nodes),
+		Definition:  WorkflowDefinition{Version: graph.Version, Digest: graph.Digest},
+		Warnings:    workflowWarnings(inventory, def),
 	}
 }
 

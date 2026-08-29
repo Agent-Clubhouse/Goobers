@@ -547,6 +547,13 @@ function operatorContext(run: RunSummary): string {
   if (operator.potentialBlockers.length > 0) {
     details.push(`Blockers: ${operator.potentialBlockers.join("; ")}`);
   }
+  // Kept out of "Blockers" and labelled as a reader limitation: this is what the
+  // read invocation could not verify, not something impeding the run (#3346).
+  if (operator.diagnosticsLimitations && operator.diagnosticsLimitations.length > 0) {
+    details.push(
+      `Diagnostics limited (not a run blocker): ${operator.diagnosticsLimitations.join("; ")}`,
+    );
+  }
   return details.join(" · ");
 }
 

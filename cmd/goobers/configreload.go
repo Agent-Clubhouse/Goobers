@@ -216,6 +216,12 @@ func (r *configReloader) poll(now time.Time) error {
 	}
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
 	r.setup.Interventions.Replace(interventionDefinitions(definitions, r.setup.LegacyRunner))
+	if r.setup.CredentialPlane != nil {
+		// Keep the credential plane's grants in step with the applied config:
+		// a reloaded gaggle's project/reference repos and goober declarations
+		// must govern the next resolve, not the boot-time snapshot.
+		r.setup.CredentialPlane.Replace(credentialPlaneDefinitionsFromSet(definitions.Set))
+	}
 	r.setup.Runner = definitions.Runner
 	r.setup.Runners = definitions.Runners
 	r.setup.Definitions = definitions.Set
@@ -240,6 +246,16 @@ func (r *configReloader) poll(now time.Time) error {
 		if err := r.readModel.PublishDefinitionsChanged(context.Background()); err != nil {
 			log.Printf("config reload: publish definitions change: %v", err)
 		}
+	}
+	// #3376: the applied edit just superseded the workflow digest every
+	// in-flight run is pinned to. Report which of those runs a restart can
+	// still resume from their pinned snapshot and which one would refuse —
+	// logged, never fatal, since an applied reload must not be reported as
+	// failed because its advisory report could not be written.
+	if drift, driftErr := inspectWorkflowDigestDrift(r.layout, r.setup.Machines); driftErr != nil {
+		log.Printf("config reload: inspect workflow digest drift: %v", driftErr)
+	} else if driftErr := journalWorkflowDigestDrift(r.setup.InstanceLog, drift); driftErr != nil {
+		log.Printf("config reload: journal workflow digest drift: %v", driftErr)
 	}
 	r.appliedDigest = digest
 	return nil

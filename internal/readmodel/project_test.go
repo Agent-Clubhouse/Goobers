@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -291,6 +292,120 @@ func TestProjectionKeepsPendingHumanTerminalDecisionRunning(t *testing.T) {
 	if projection.Run.Phase != journal.PhaseRunning || projection.Run.Terminal || projection.Run.FinishedAt != nil {
 		t.Fatalf("pending human decision projected as phase %q terminal %v finished %v, want running",
 			projection.Run.Phase, projection.Run.Terminal, projection.Run.FinishedAt)
+	}
+}
+
+func TestProjectRemediationExamplesRequiresExplicitOutcome(t *testing.T) {
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventError, func(e *journal.Event) {
+			e.Stage = "implement"
+			e.Error = &journal.ErrorDetail{Code: "compile", Message: "undefined symbol"}
+		}),
+		ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "implement", "success"
+			e.Outputs = map[string]any{"fix": "add import"}
+		}),
+		ev(3, 3*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseCompleted)
+		}),
+	}
+	run := ProjectRun(testIdentity(), Projection{}, events).Run
+	projection := Projection{Run: run, Remediation: projectRemediationExamples(testIdentity(), run, events)}
+	if len(projection.Remediation) != 0 {
+		t.Fatalf("remediation examples = %+v, want none without target outcome", projection.Remediation)
+	}
+}
+
+func TestProjectRemediationExamplesScrubsAndRejectsExcludedContent(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("x", 40)
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventError, func(e *journal.Event) {
+			e.Stage = "implement"
+			e.Error = &journal.ErrorDetail{Code: "compile", Message: secret}
+		}),
+		ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "implement", "success"
+			e.Outputs = map[string]any{"fix": secret, "didItHelp": true}
+		}),
+		ev(3, 3*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseCompleted)
+		}),
+	}
+	run := ProjectRun(testIdentity(), Projection{}, events).Run
+	projection := Projection{Run: run, Remediation: projectRemediationExamples(testIdentity(), run, events)}
+	if len(projection.Remediation) != 1 {
+		t.Fatalf("remediation examples = %+v, want one", projection.Remediation)
+	}
+	example := projection.Remediation[0]
+	if strings.Contains(example.FailureExcerpt, secret) || strings.Contains(example.FixExcerpt, secret) {
+		t.Fatalf("secret persisted in remediation example: %+v", example)
+	}
+
+	events[1].Outputs["contentExcluded"] = true
+	run = ProjectRun(testIdentity(), Projection{}, events).Run
+	projection = Projection{Run: run, Remediation: projectRemediationExamples(testIdentity(), run, events)}
+	if len(projection.Remediation) != 0 {
+		t.Fatalf("excluded remediation examples = %+v, want none", projection.Remediation)
+	}
+}
+
+func TestProjectRemediationExamplesRejectsContentExclusionSignals(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*journal.Event, *journal.Event)
+	}{
+		{
+			name: "blockedBy output",
+			setup: func(_, finished *journal.Event) {
+				finished.Outputs["blockedBy"] = "content-exclusion-policy"
+			},
+		},
+		{
+			name: "error code",
+			setup: func(failure, _ *journal.Event) {
+				failure.Error.Code = "CONTENT_EXCLUSION"
+			},
+		},
+		{
+			name: "error message",
+			setup: func(failure, _ *journal.Event) {
+				failure.Error.Message = "excluded by your organization"
+			},
+		},
+		{
+			name: "stage output text",
+			setup: func(_, finished *journal.Event) {
+				finished.Outputs["details"] = "the repository owner blocked this content exclusion"
+			},
+		},
+		{
+			name: "copilot disabled marker",
+			setup: func(_, finished *journal.Event) {
+				finished.Outputs["details"] = "Copilot is disabled for this file"
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []journal.Event{
+				ev(1, time.Second, journal.EventError, func(e *journal.Event) {
+					e.Stage = "implement"
+					e.Error = &journal.ErrorDetail{Code: "compile", Message: "undefined symbol"}
+				}),
+				ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+					e.Stage, e.Status = "implement", "success"
+					e.Outputs = map[string]any{"didItHelp": true}
+				}),
+				ev(3, 3*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+					e.Status = string(journal.PhaseCompleted)
+				}),
+			}
+			tc.setup(&events[0], &events[1])
+			run := ProjectRun(testIdentity(), Projection{}, events).Run
+			if examples := projectRemediationExamples(testIdentity(), run, events); len(examples) != 0 {
+				t.Fatalf("remediation examples = %+v, want none", examples)
+			}
+		})
 	}
 }
 

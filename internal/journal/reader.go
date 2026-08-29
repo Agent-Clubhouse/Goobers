@@ -34,7 +34,12 @@ type EventRecord struct {
 // legacy run.yaml marker. Callers scanning a runs root may skip only this error.
 var ErrNotRunDirectory = errors.New("journal: not a run directory")
 
-// OpenRead opens an existing run directory for reading.
+// ErrJournalMigrationRequired identifies a journal that cannot be inspected
+// without first migrating its on-disk schema.
+var ErrJournalMigrationRequired = errors.New("journal: schema migration required")
+
+// OpenRead opens an existing run directory for reading, migrating an older
+// journal schema when necessary.
 func OpenRead(dir string) (*Reader, error) {
 	_, hasManifest, err := readSchemaInfo(dir)
 	if err != nil {
@@ -55,6 +60,35 @@ func OpenRead(dir string) (*Reader, error) {
 	return &Reader{dir: dir, schema: schema}, nil
 }
 
+// OpenReadOnly opens an existing run directory without writing or migrating it.
+// Journals that are not already at the current schema are refused with
+// ErrJournalMigrationRequired.
+func OpenReadOnly(dir string) (*Reader, error) {
+	info, hasManifest, err := readSchemaInfo(dir)
+	if err != nil {
+		return nil, err
+	}
+	if !hasManifest {
+		if _, err := os.Stat(filepath.Join(dir, fileRunYAML)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("%w %q: %w", ErrNotRunDirectory, dir, err)
+			}
+			return nil, fmt.Errorf("journal: inspect run.yaml in %q: %w", dir, err)
+		}
+	}
+	done, err := admitJournalSchema(dir, info, hasManifest)
+	if err != nil {
+		return nil, err
+	}
+	if !done {
+		return nil, fmt.Errorf(
+			"%w: schema version %d must be migrated to version %d",
+			ErrJournalMigrationRequired, info.Version, CurrentSchemaVersion,
+		)
+	}
+	return &Reader{dir: dir, schema: info}, nil
+}
+
 // Dir returns the run directory.
 func (r *Reader) Dir() string { return r.dir }
 
@@ -64,18 +98,7 @@ func (r *Reader) Schema() SchemaInfo { return r.schema }
 // openCurrentJournal revalidates a journal while its writer lock is already
 // held. It must not attempt migration because migration acquires that same lock.
 func openCurrentJournal(dir string) (*Reader, error) {
-	info, exists, err := readSchemaInfo(dir)
-	if err != nil {
-		return nil, err
-	}
-	done, err := admitJournalSchema(dir, info, exists)
-	if err != nil {
-		return nil, err
-	}
-	if !done {
-		return nil, errors.New("journal: schema changed while acquiring writer lock")
-	}
-	return &Reader{dir: dir, schema: info}, nil
+	return OpenReadOnly(dir)
 }
 
 // Identity parses run.yaml and rejects payload schemas this build does not own.
@@ -250,6 +273,16 @@ type RecoverReport struct {
 	// Repaired is true when a torn tail was truncated and a corrective
 	// repaired event was appended.
 	Repaired bool
+	// Events is the full ordered event log as it stood when the writer lock
+	// was acquired — the exact state the returned Run continues from. A
+	// caller deriving state from the journal (the live writer's rehydration)
+	// MUST derive it from this view, never from a separate unlocked pre-read:
+	// the log can change while acquireRunLock blocks behind another owner (a
+	// stalled-sweep or `goobers run abort` terminalizer appending
+	// run.finished), and state derived before the lock silently misses that.
+	// The corrective repaired event appended for a torn tail (Repaired) is
+	// not included; it postdates this read.
+	Events []Event
 }
 
 // Recover reopens a run directory for appending after a crash. It replays the
@@ -272,10 +305,11 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 		return nil, RecoverReport{}, err
 	}
 
+	// The event log is read exactly once, under the locks below. An earlier
+	// revision also pre-validated it here, before acquiring anything — a
+	// second full O(N) parse whose result was discarded; corruption now
+	// surfaces from the single under-lock read instead.
 	eventsPath := filepath.Join(dir, fileEvents)
-	if _, _, err := readEvents(eventsPath); err != nil {
-		return nil, RecoverReport{}, err
-	}
 
 	var publicationLock *journalLock
 	if !publicationLocked {
@@ -315,8 +349,11 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 	}
 
 	// The log may have changed while acquireRunLock blocked behind a live
-	// writer. Refresh both the completed events and torn-tail length under the
-	// lock so truncation cannot apply a stale byte count to a newer tail.
+	// writer (another Recover's repair, a terminalizer's run.finished). This
+	// under-lock read is the ONLY event parse Recover performs and the one
+	// every derived value below — seq, phase, reason, cursors, and the
+	// report's Events — comes from, so truncation cannot apply a stale byte
+	// count to a newer tail and callers cannot rehydrate from a pre-lock view.
 	events, tornBytes, err := readEvents(eventsPath)
 	if err != nil {
 		releaseRunLock(lock)
@@ -330,7 +367,7 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 		return nil, RecoverReport{}, err
 	}
 
-	report := RecoverReport{TornBytes: tornBytes}
+	report := RecoverReport{TornBytes: tornBytes, Events: events}
 	if len(events) > 0 {
 		report.LastSeq = events[len(events)-1].Seq
 	}

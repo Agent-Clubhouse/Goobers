@@ -8,15 +8,19 @@ import (
 
 	"go.temporal.io/sdk/client"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/workflow"
 )
 
 const engineStartHelp = "Usage: goobers engine-start [flags] <workflow> [path]\n\n" +
 	"Dispatch one run onto the tier-3 engine (experimental). The run id is\n" +
 	"derived from gaggle, workflow, and --dedupe-key.\n\n" +
+	"--live-journal pins live journal authorship into the run: workers emit\n" +
+	"journal events through the daemon's journal plane as they happen, so the\n" +
+	"run is visible mid-flight; without it the journal is projected from\n" +
+	"history at close, as before. Requires the daemon's write API to be\n" +
+	"reachable from every worker serving the run (worker --daemon-api).\n\n" +
 	"Exit codes: 0 = started, 1 = dispatch failure, 2 = usage/config error.\n"
 
 func runEngineStart(args []string, stdout, stderr io.Writer) int {
@@ -27,6 +31,7 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	namespace := fs.String("temporal-namespace", "", "Temporal namespace")
 	taskQueue := fs.String("task-queue", "", "task queue to dispatch onto")
 	dedupe := fs.String("dedupe-key", "", "dedupe key used to derive the run id")
+	liveJournal := fs.Bool("live-journal", false, "author the run journal live through the daemon's journal plane (DS4)")
 	fs.Usage = helpUsage(stderr, "engine-start")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -79,22 +84,25 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	reg := engine.NewRegistryWithPreviewFeatures(set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations))
-	var project apiv1.RepoRef
-	for i := range set.Gaggles {
-		if set.Gaggles[i].Name == target {
-			project = set.Gaggles[i].Spec.Project
-			break
-		}
+	reg, project, err := bootstrap.RegisterGaggleWorkflows(set, target)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
-	for i := range set.Workflows {
-		w := set.Workflows[i]
-		if w.Spec.Gaggle == target {
-			if _, err := reg.Register(w.Name, w.Spec); err != nil {
-				pf(stderr, "error: register workflow %q: %v\n", w.Name, err)
-				return 1
-			}
-		}
+	def, ok := reg.Latest(workflowName)
+	if !ok {
+		pf(stderr, "error: workflow %q is not registered\n", workflowName)
+		return 1
+	}
+	// Mode-3 placement pinning (#3588): resolve every stage's execution
+	// placement now, against the declared runner inventory, and pin the
+	// outcome into the run input — the workflow reads it as data and never
+	// solves mid-run (the WF-016 snapshot / determinism constraint). Nil on
+	// every zero-declaration and local-mode instance.
+	placements, err := bootstrap.PinStagePlacements(cfg, set, target, def)
+	if err != nil {
+		pf(stderr, "error: resolve stage placements: %v\n", err)
+		return 1
 	}
 	in, err := reg.StartInput(workflowName, engine.StartSpec{
 		RunID:           engine.RunID(target, workflowName, *dedupe),
@@ -102,6 +110,8 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		RepoRef:         project,
 		TriggerKind:     "manual",
 		BranchNamespace: branchNamespacesByGaggle(set)[target],
+		LiveJournal:     *liveJournal,
+		Placements:      placements,
 	})
 	if err != nil {
 		pf(stderr, "error: pin workflow %q: %v\n", workflowName, err)

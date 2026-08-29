@@ -153,7 +153,7 @@ func demotedSet(ctx context.Context, provider remediationProvider, repo provider
 // self-healed PR immediately becomes eligible again. The no-lander escalation
 // is deliberately retained as a blocker because it asks a human to choose the
 // cluster's landing order rather than asking the runner to drain around one PR.
-func electionIneligibleSet(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) (map[int]bool, error) {
+func electionIneligibleSet(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary) (map[int]bool, error) {
 	out := map[int]bool{}
 	var verdictAuthor string
 	for _, pr := range prs {

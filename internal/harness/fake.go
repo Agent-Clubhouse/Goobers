@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // FakeAdapter is a scripted harness adapter: it runs no subprocess and needs
@@ -27,6 +29,9 @@ type FakeAdapter struct {
 	// Act simulates the harness's work against req.Workspace — e.g. writing
 	// req.CompletionPath. A nil Act writes nothing (exercises ErrNoCompletion).
 	Act func(ctx context.Context, req RunRequest) error
+	// NestedAct simulates the harness's work for a nested-agent invocation
+	// (RunNested). A nil NestedAct falls back to Act.
+	NestedAct func(ctx context.Context, req RunRequest) error
 	// Transcript is returned verbatim as the session's captured transcript.
 	Transcript []byte
 	// TranscriptTruncated, if set, is returned verbatim on Outcome — lets
@@ -53,6 +58,12 @@ func (f *FakeAdapter) Name() string {
 	return "fake"
 }
 
+// ValidateNestedAgentPolicy defers to the policy's own validation — the fake
+// imposes no adapter-specific nested-agent restrictions.
+func (f *FakeAdapter) ValidateNestedAgentPolicy(policy apiv1.NestedAgentPolicy) error {
+	return policy.Validate()
+}
+
 // Preflight returns PreflightErr or the fake's deterministic version.
 func (f *FakeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	if f.PreflightErr != nil {
@@ -65,17 +76,38 @@ func (f *FakeAdapter) Preflight(ctx context.Context) (PreflightInfo, error) {
 	return PreflightInfo{Version: version}, nil
 }
 
-// Run simulates one harness session: invoke Act (if set) against the
-// workspace, then read back whatever completion file resulted.
+// Run simulates one top-level harness session: invoke Act (if set) against
+// the workspace, then read back whatever completion file resulted.
 func (f *FakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+	if err := validateStandardExecution(req); err != nil {
+		return Outcome{}, err
+	}
+	return f.run(ctx, req, f.Act)
+}
+
+// RunNested simulates a nested-agent harness session: invoke NestedAct (or
+// Act if NestedAct is unset) against the workspace, then read back whatever
+// completion file resulted.
+func (f *FakeAdapter) RunNested(ctx context.Context, req RunRequest) (Outcome, error) {
+	if err := validateNestedExecution(req); err != nil {
+		return Outcome{}, err
+	}
+	act := f.NestedAct
+	if act == nil {
+		act = f.Act
+	}
+	return f.run(ctx, req, act)
+}
+
+func (f *FakeAdapter) run(ctx context.Context, req RunRequest, act func(context.Context, RunRequest) error) (Outcome, error) {
 	out := Outcome{
 		Transcript:             f.Transcript,
 		TranscriptTruncated:    f.TranscriptTruncated,
 		TranscriptDroppedBytes: f.TranscriptDroppedBytes,
 		Stderr:                 f.Stderr,
 	}
-	if f.Act != nil {
-		if err := f.Act(ctx, req); err != nil {
+	if act != nil {
+		if err := act(ctx, req); err != nil {
 			return out, err
 		}
 	}
@@ -91,16 +123,16 @@ func (f *FakeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) 
 // creating parent directories as needed — the shape a FakeAdapter.Act (or an
 // e2e fixture harness) uses to simulate a real harness writing its result or
 // verdict completion file.
-func WriteCompletion(workspace, relPath string, v interface{}) error {
-	b, err := json.Marshal(v)
+func WriteCompletion(workspace, relPath string, v any) error {
+	payload, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("harness: marshal completion payload: %w", err)
 	}
-	full := filepath.Join(workspace, relPath)
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+	path := filepath.Join(workspace, relPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("harness: create completion dir: %w", err)
 	}
-	if err := os.WriteFile(full, b, 0o644); err != nil {
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
 		return fmt.Errorf("harness: write completion file: %w", err)
 	}
 	return nil

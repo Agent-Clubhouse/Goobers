@@ -280,6 +280,101 @@ func TestShellExecutor_GoobersCommandUsesDeclaredEnvironmentAndGaggleContext(t *
 	}
 }
 
+// TestShellExecutor_BuiltinErrorFileHonorsScratchDir is the direct
+// regression test for #3342: a read-only-root deployment with nothing
+// writable at the OS default temp directory previously failed every
+// goobers-CLI stage at "executor: create built-in error file: open
+// /tmp/goobers-builtin-error-…: read-only file system", because the file
+// was always created via os.CreateTemp("", …) — the OS default temp dir,
+// unconditionally. With ScratchDir set, the file must be created there
+// instead (and the directory created if it doesn't exist yet), independent
+// of the OS default temp dir's writability.
+func TestShellExecutor_BuiltinErrorFileHonorsScratchDir(t *testing.T) {
+	stub := filepath.Join(t.TempDir(), "goobers")
+	script := "#!/bin/sh\nprintf '%s' \"$GOOBERS_BUILTIN_ERROR_FILE\"\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, rec := newTestExecutor(t, nil)
+	exec.SelfBin = stub
+	// Not yet created — Run must create it (0o700), mirroring the pattern
+	// internal/runner's own ScratchDir handling already uses.
+	scratchDir := filepath.Join(t.TempDir(), "scratch")
+	exec.ScratchDir = scratchDir
+	env := baseEnvelope(t)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "some-subcommand"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+	}
+	builtinErrorFile := string(rec.recorded["task-1/stdout.log"])
+	if builtinErrorFile == "" {
+		t.Fatal("stage did not observe GOOBERS_BUILTIN_ERROR_FILE")
+	}
+	if !strings.HasPrefix(builtinErrorFile, scratchDir+string(filepath.Separator)) {
+		t.Fatalf("builtin error file %q was not created under ScratchDir %q", builtinErrorFile, scratchDir)
+	}
+}
+
+// TestShellExecutor_BuiltinErrorFileDefaultsHonorTMPDIR proves the claim
+// backing the ScratchDir default (empty ScratchDir preserves prior
+// behavior): os.CreateTemp("", …) resolves against os.TempDir(), which
+// already honors a process-level TMPDIR override — a caller that never sets
+// ScratchDir is not stuck on the OS default temp dir either, as long as its
+// own process environment sets TMPDIR (e.g. a container that mounts its
+// writable scratch volume there instead of at /tmp).
+func TestShellExecutor_BuiltinErrorFileDefaultsHonorTMPDIR(t *testing.T) {
+	stub := filepath.Join(t.TempDir(), "goobers")
+	script := "#!/bin/sh\nprintf '%s' \"$GOOBERS_BUILTIN_ERROR_FILE\"\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec, rec := newTestExecutor(t, nil)
+	exec.SelfBin = stub
+	// ScratchDir left unset (zero value) — the code path under test here is
+	// exclusively the os.CreateTemp("", …) fallback.
+	customTMPDIR := t.TempDir()
+	t.Setenv("TMPDIR", customTMPDIR)
+	env := baseEnvelope(t)
+
+	result, err := exec.Run(context.Background(), env, apiv1.DeterministicRun{
+		Command: []string{"goobers", "some-subcommand"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Status != apiv1.ResultSuccess {
+		t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+	}
+	builtinErrorFile := string(rec.recorded["task-1/stdout.log"])
+	if builtinErrorFile == "" {
+		t.Fatal("stage did not observe GOOBERS_BUILTIN_ERROR_FILE")
+	}
+	// Run's defer already removed the file by the time we observe its path
+	// (the stub only echoed it back); compare directories, resolving
+	// symlinks (e.g. macOS's /tmp -> /private/tmp) so the comparison isn't
+	// defeated by a path only one side canonicalized. The directory itself
+	// (t.TempDir()) is still present even though the file inside it is gone.
+	resolvedTMPDIR, err := filepath.EvalSymlinks(customTMPDIR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedFileDir, err := filepath.EvalSymlinks(filepath.Dir(builtinErrorFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolvedFileDir != resolvedTMPDIR {
+		t.Fatalf("builtin error file dir %q was not TMPDIR %q — os.TempDir() is no longer honoring it", resolvedFileDir, resolvedTMPDIR)
+	}
+}
+
 func TestShellExecutor_ProviderStageUsesImplicitResultFile(t *testing.T) {
 	stub := filepath.Join(t.TempDir(), "goobers")
 	resultEnv := InputEnvVar(InputResultFile)
@@ -875,7 +970,7 @@ func TestShellExecutor_ProviderResultPreservesWeakestIntegrity(t *testing.T) {
 			exec, rec := newTestExecutor(t, nil)
 			ref, err := exec.recordResultArtifact(
 				"task-1/result", []byte(test.data),
-				stageInvokesProviderBuiltin([]string{"goobers", "backlog-query", "--claim"}),
+				StageInvokesProviderBuiltin([]string{"goobers", "backlog-query", "--claim"}),
 			)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantErr) {

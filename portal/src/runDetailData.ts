@@ -744,6 +744,7 @@ export function eventHeading(event: RunEvent): string {
     redaction: "Journal content redacted",
     repaired: "Journal repaired",
     "runner.annotation": "Runner annotation",
+    "runner.placement": "Placement recorded",
     "span.recorded": "Span recorded",
     "parallel.started": "Parallel started",
     "parallel.finished": "Parallel finished",
@@ -815,6 +816,25 @@ export function eventSummary(
     }
     case "error":
       return event.error?.message || event.error?.code || "An error was recorded.";
+    case "runner.placement": {
+      const runner = typeof event.runner?.runner === "string" ? event.runner.runner : "";
+      if (!runner) {
+        return "Placement provenance was recorded for this attempt.";
+      }
+      // node is a real cluster node; host is the executing process's own
+      // hostname (the POD name inside a pod). Name whichever one the substrate
+      // actually knew, preferring the node — never labelling a host as a node.
+      const placementNode = typeof event.runner?.node === "string" ? event.runner.node : "";
+      const where = [placementNode ? "node" : "host", "os", "pod"]
+        .map((key) => {
+          const value = event.runner?.[key];
+          return typeof value === "string" && value ? `${key} ${value}` : "";
+        })
+        .filter(Boolean)
+        .join(", ");
+      const stage = node ? `${humanize(node)} attempt` : "The attempt";
+      return `${stage} executed on runner ${runner}${where ? ` (${where})` : ""}.`;
+    }
     case "parallel.started":
       return event.parallel ? `Parallel ${event.parallel} started.` : "A parallel state started.";
     case "branch.started":

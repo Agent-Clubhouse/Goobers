@@ -39,12 +39,21 @@ const (
 )
 
 const (
-	// CurrentDSLVersion is the stable language version used for transitional
-	// unpinned workflows.
+	// CurrentDSLVersion is the legacy 1.4 language version. It is DROPPED
+	// (unsupported; issue #3507) and is no longer a default for unpinned
+	// workflows — a missing dslVersion is now a hard error. The constant name
+	// is retained (a rename would churn ~60 files) and the string still keys
+	// the matrix's 1.4 entry and the migrator's 1.4→2.0 recovery edge.
 	CurrentDSLVersion = "1.4"
 	// NextDSLVersion is the copy-forward language version with its own
 	// interpreter and semantics.
 	NextDSLVersion = "2.0"
+	// V3DSLVersion is the Goobernetes language version (dsl-3.0.md): the
+	// runsOn/runners/repoFrom surface. PREVIEW while the Goobernetes v1 waves
+	// land — DVL010/DVL011 gate it behind the instance preview opt-in; GA is a
+	// later, separate lock ceremony staged under ValidateSupportPolicy's
+	// append-only rules.
+	V3DSLVersion = "3.0"
 )
 
 // SupportTransition records when a DSL version entered one lifecycle level.
@@ -74,37 +83,50 @@ type Version struct {
 }
 
 var dslVersions = mustSupportMatrix(SupportMatrix{
-	// DSL 1.4 is deprecated (#2700, epic #2695): every shipped, reference,
-	// and example workflow now pins 2.0, and 2.0 is a verified strict
-	// superset of 1.4. Deprecation takes effect with the first tagged
-	// release; the version stays loadable (with a DVL020 warning naming
-	// `goobers fix --to 2.0`) until the support window closes.
+	// DSL 1.4 is DROPPED (dsl-3.0.md D13/§6, issue #3507): the release that
+	// ships DSL 3.0 also removes the 1.4 interpreter, so 1.4 transitions from
+	// deprecated to UNSUPPORTED here. A 1.4 document no longer loads — it is
+	// refused with DVL030 (naming `goobers fix --to 2.0`, the Replacement) —
+	// and a missing dslVersion, which used to default to 1.4, becomes a hard
+	// error in the same release (api/validate/validate.go). The interpreter
+	// package internal/workflow/v_current is deleted; the migrator's 1.4→2.0
+	// edge survives as the recovery path DVL030 names.
 	//
-	// UNSUPPORTED AT v0.5.0, NOT v0.2.0. Two policy constants apply, and the
-	// stricter one governs: MinimumDeprecatedMinorReleases (1) is the minimum
-	// deprecation period, but MinimumSupportWindowMinorReleases (3) is how long
-	// a SUPERSEDED SUPPORTED version must stay loadable. 2.0 supersedes 1.4 in
-	// v0.2.0, so declaring 1.4 unsupported in that same release leaves a
-	// zero-release window and ValidateSupportPolicy rejects it:
-	//
-	//	DSL version "1.4" has unsupported release "v0.2.0" fewer than 3 minor
-	//	releases after DSL version "2.0" superseded it in "v0.2.0"
-	//
-	// This reddened main and every open PR the moment v0.2.0 resolved as the
-	// release baseline. v0.5.0 is the first release that satisfies the window.
+	// The unsupported transition lands at v0.5.0, honoring the deprecation's
+	// previously-published unsupportedAfter target. The append-only lifecycle
+	// rules (supportpolicy.go) are satisfied: 1.4 was deprecated at v0.1.0 in
+	// every released matrix, the transition version v0.5.0 is later than the
+	// latest tag, and it clears the 3-minor support window measured from 2.0's
+	// first release (ValidateSupportPolicy / validateSupportMatrixEvolution).
 	CurrentDSLVersion: {
-		Level:            LevelDeprecated,
-		Replacement:      NextDSLVersion,
-		UnsupportedAfter: "v0.5.0",
+		Level:       LevelUnsupported,
+		Replacement: NextDSLVersion,
 		History: []SupportTransition{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
 			{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
+			{Level: LevelUnsupported, SinceVersion: "v0.5.0"},
 		},
 	},
 	NextDSLVersion: {
 		Level: LevelSupported,
 		History: []SupportTransition{
 			{Level: LevelSupported, SinceVersion: initialSupportVersion},
+		},
+	},
+	// DSL 3.0 enters at PREVIEW (dsl-3.0.md §8, issue #3505): the interpreter
+	// ships and is fully exercisable behind the instance preview opt-in
+	// (DVL010/DVL011), while the version-level GA is a later lock ceremony —
+	// the append-only evolution rules require lifecycle transitions to be
+	// staged across releases, so the preview entry and the supported flip
+	// cannot land in one PR. The since-version names the first release line
+	// after the latest tag (v0.3.3) rather than the "dev" sentinel, which the
+	// evolution check reserves for the pre-release baseline. NewestSupported()
+	// still resolves to 2.0 until the flip, so unversioned gaggles/goobers
+	// (#3297) keep resolving at 2.0 for the whole preview window.
+	V3DSLVersion: {
+		Level: LevelPreview,
+		History: []SupportTransition{
+			{Level: LevelPreview, SinceVersion: "v0.4.0"},
 		},
 	},
 })
@@ -176,6 +198,31 @@ func GetDSL() SupportMatrix {
 func cloneVersionSupport(support VersionSupport) VersionSupport {
 	support.History = slices.Clone(support.History)
 	return support
+}
+
+// CompareDSLVersions orders two DSL version strings by numeric major then
+// minor — the same ordering Versions uses. ok is false when either operand is
+// not a well-formed "<major>.<minor>" version; callers own the fail-closed
+// (or fail-loud) posture instead of this package guessing an order.
+func CompareDSLVersions(left, right string) (order int, ok bool) {
+	leftMajor, leftMinor, leftOK := parseDSLVersion(left)
+	rightMajor, rightMinor, rightOK := parseDSLVersion(right)
+	if !leftOK || !rightOK {
+		return 0, false
+	}
+	if leftMajor != rightMajor {
+		if leftMajor < rightMajor {
+			return -1, true
+		}
+		return 1, true
+	}
+	if leftMinor != rightMinor {
+		if leftMinor < rightMinor {
+			return -1, true
+		}
+		return 1, true
+	}
+	return 0, true
 }
 
 func parseDSLVersion(version string) (major, minor int, ok bool) {

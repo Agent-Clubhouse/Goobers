@@ -102,7 +102,12 @@ func TestRunConformantClusterPasses(t *testing.T) {
 	}
 	for _, result := range report.Results {
 		want := StatusPass
-		if result.ID == "storage-rwx" {
+		switch result.ID {
+		case "storage-rwx", "networkpolicy-api":
+			// storage-rwx: inferred, never a hard pass (§4). networkpolicy-api:
+			// API-discovery only — a served API is a correlate of enforcement,
+			// not proof of it, so even an "otherwise conformant" cluster warns
+			// here until an in-cluster negative control runs.
 			want = StatusWarn
 		}
 		if result.Status != want {
@@ -376,6 +381,30 @@ func TestNetworkPolicyAPINotServedFails(t *testing.T) {
 	result := resultByID(t, report, "networkpolicy-api")
 	if result.Status != StatusFail {
 		t.Fatalf("networkpolicy-api = %s, want fail", result.Status)
+	}
+}
+
+// TestNetworkPolicyAPIServedWarnsNotProof pins #3516: a served
+// networking.k8s.io/v1 API is only a correlate of enforcement — a CNI can
+// serve the API and still ignore policies silently — so this read-only check
+// must warn, never pass, and must say so rather than claim enforcement.
+func TestNetworkPolicyAPIServedWarnsNotProof(t *testing.T) {
+	report := Run(context.Background(), newFakeCluster(t), Options{})
+	result := resultByID(t, report, "networkpolicy-api")
+	if result.Status != StatusWarn {
+		t.Fatalf("networkpolicy-api = %s, want warn when the API is served (enforcement is unverified by this check)", result.Status)
+	}
+	if strings.Contains(result.Title, "deny-first defaults enforceable") {
+		t.Errorf("networkpolicy-api title %q still claims enforcement is proven", result.Title)
+	}
+	if !strings.Contains(result.Detail, "unverified") {
+		t.Errorf("networkpolicy-api detail %q does not say enforcement is unverified", result.Detail)
+	}
+	if !strings.Contains(result.Hint, "correlate") || !strings.Contains(result.Hint, "denied attempt") {
+		t.Errorf("networkpolicy-api hint %q does not explain a served API is only a correlate proven by a denied attempt", result.Hint)
+	}
+	if !report.Conformant {
+		t.Fatal("a networkpolicy-api warn must not flip an otherwise-conformant report")
 	}
 }
 

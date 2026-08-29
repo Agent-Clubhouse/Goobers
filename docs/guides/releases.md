@@ -40,6 +40,31 @@ git tag vMAJOR.MINOR.PATCH
 git push origin vMAJOR.MINOR.PATCH
 ```
 
+### Pre-release tags
+
+A tag may also carry a SemVer 2.0.0 pre-release suffix —
+`vMAJOR.MINOR.PATCH-<identifier>[.<identifier>...]`, e.g. `v1.3.0-beta.2` or
+`v1.3.0-rc.1`. Pushing one runs the **identical** full pipeline as a stable
+tag: the same packaging matrix, the same macOS notarization and Windows
+Authenticode signing, and the same curated-release-note requirement at
+`.github/release-notes/<tag>.md` (the literal tag string, dash and all, e.g.
+`v1.3.0-beta.2.md`).
+
+The only behavioral difference is at publication: the workflow detects the
+`-` in the tag and passes `--prerelease` to `gh release create`/`gh release
+edit`, so GitHub flags it as a pre-release and it never becomes the repo's
+"Latest release". The feature-registry and DSL-support-matrix baseline a
+pre-release ships still diffs against the **last stable** release (never
+another pre-release), so `goobers features`/support-matrix deltas stay
+anchored to real release lines.
+
+This is unrelated to the DSL feature/support-matrix registry's own
+`vMAJOR.MINOR.PATCH` version requirement (`internal/supportmatrix`,
+`internal/workflow/v_3_0`, `internal/workflow/v_next`) — that tracks which
+*stable* release a DSL feature or version shipped or was deprecated in, and
+intentionally does not accept pre-release identifiers. A pre-release tag
+never appears in that lineage.
+
 ## Install a pinned release
 
 On Linux or macOS, run the installer attached to the current `v0.1.0` release:

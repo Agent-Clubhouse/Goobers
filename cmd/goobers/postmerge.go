@@ -317,7 +317,7 @@ type adoWorkItemCloser interface {
 // calls target backlogRepoRefForStage so they hit the backlog project, not the
 // routed code-repo project (§6). The reconcile-lock idempotency is unchanged.
 func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	adoProvider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
+	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

@@ -135,7 +135,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		}
 		providerCapability = capability.ADOPRComplete
 	}
-	stageProvider, err := newProviderForStage(root, repo, false,
+	stageProvider, err := newMergeReviewProvider(root, repo, false,
 		withStageProviderCapability(providerCapability),
 		withStageProviderCache(),
 		withStageProviderMutations("pr"),

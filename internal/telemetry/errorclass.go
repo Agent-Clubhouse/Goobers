@@ -41,6 +41,12 @@ const (
 	// ErrorClassExecutor is a genuine runner/executor defect — the residual
 	// left once every recognized external cause has its own class.
 	ErrorClassExecutor ErrorClass = "executor"
+	// ErrorClassItemJudgment is a stage's correct terminal conclusion about
+	// the ITEM it was handed, not a failure of the work (#3363): the item is
+	// stale, already done, or otherwise not applicable. Re-running the stage
+	// can only re-derive the same conclusion, and counting it as a failure
+	// scores the machine down for being right (#3364).
+	ErrorClassItemJudgment ErrorClass = "item-judgment"
 )
 
 // Well-known error codes. These are the exact internal/journal.ErrorDetail.Code
@@ -77,6 +83,17 @@ const (
 	ErrCodeCredentialUnavailable = "credential_unavailable"
 )
 
+// Agent-authored item-judgment codes (#3363). Spelled here so the runner's
+// routing policy, the journal surface, and the rollup's disposition split all
+// share one vocabulary (#3364) instead of three hand-synced literals.
+const (
+	// ErrCodeIssueNotApplicable is an implementer's verified refusal: the
+	// issue's premise no longer holds (targets deleted files, work already
+	// done, would reintroduce removed code). A correct refusal is a terminal
+	// deliverable about the item, never a work failure.
+	ErrCodeIssueNotApplicable = "ISSUE_NOT_APPLICABLE"
+)
+
 var wellKnownErrorCodes = map[string]ErrorClass{
 	ErrCodeProviderRateLimit: ErrorClassProviderRateLimit,
 	ErrCodeTimeout:           ErrorClassTimeout,
@@ -95,6 +112,23 @@ var wellKnownErrorCodes = map[string]ErrorClass{
 	ErrCodePollProvider:          ErrorClassProvider,
 	ErrCodeGitHubAuth:            ErrorClassProvider,
 	ErrCodeCredentialUnavailable: ErrorClassInfra,
+	ErrCodeIssueNotApplicable:    ErrorClassItemJudgment,
+}
+
+// InfraFault reports whether c names an infrastructure fault — a failure of
+// the substrate the work runs on (credentials, git, network, host, lock
+// contention), which carries no evidence about the WORK or the ITEM (#3361).
+// Deliberately excludes ErrorClassTimeout: a session running past its
+// wall-clock budget is the failure-streak notifier's motivating case
+// (#1054), not weather. Consumers use this to keep infra weather out of
+// work-quality signals: the failure-streak circuit breaker and the
+// success-rate denominator (#3364).
+func (c ErrorClass) InfraFault() bool {
+	switch c {
+	case ErrorClassInfra, ErrorClassInfraGit, ErrorClassInfraNet, ErrorClassInfraLock:
+		return true
+	}
+	return false
 }
 
 // ClassifyError normalizes a journal error event's Code into an ErrorClass.

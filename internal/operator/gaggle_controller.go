@@ -46,8 +46,10 @@ const (
 	// readyConditionType summarizes whether the gaggle is fully reconciled.
 	readyConditionType = "Ready"
 
-	// defaultWorkerImage is a placeholder until the goober-runtime image (M8) is
-	// published; the reconcile shape does not depend on the image contents.
+	// defaultWorkerImage is a placeholder image ref (never published; the
+	// goober-runtime binary it named was retired per goobernetes-architecture.md
+	// D5 — the Goobernetes v1 worker images supersede it, record D8); the
+	// reconcile shape does not depend on the image contents.
 	defaultWorkerImage = "ghcr.io/goobers/goober-runtime:latest"
 )
 

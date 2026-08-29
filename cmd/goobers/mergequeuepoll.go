@@ -326,7 +326,7 @@ func mergeQueuePollNeedsRemediation(ctx context.Context, repo providers.Reposito
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	labelProvider, err := newProviderForStage(providerStageRoot(""), repo, false,
+	labelProvider, err := newMergeReviewProvider(providerStageRoot(""), repo, false,
 		withStageProviderToken(labelToken),
 		withStageProviderMutations("pr"),
 	)
@@ -481,7 +481,7 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	adoProvider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
+	adoProvider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, false)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

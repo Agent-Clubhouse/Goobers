@@ -37,7 +37,7 @@ func TestReleaseWorkflowPreservesSigningVerificationOrder(t *testing.T) {
 			job:  "sign-windows",
 			markers: []string{
 				"- name: Sign goobers.exe",
-				"uses: azure/trusted-signing-action@v2",
+				"uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82",
 				"- name: Verify Authenticode signature",
 				"if ($certificateOffset -eq 0 -or $certificateSize -eq 0)",
 				"$signature = Get-AuthenticodeSignature -FilePath $path",

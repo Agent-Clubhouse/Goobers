@@ -43,7 +43,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	metadata := buildMetadata{version: "v1.2.3", commit: "abcdef0", date: "2026-07-20T12:00:00Z"}
 
-	gotChecks := checks([]string{"config-sync", "goobers", "scheduler"}, tools, metadata, "linux", "")
+	gotChecks := checks([]string{"config-sync", "goobers", "operator"}, tools, metadata, "linux", "")
 	var got []string
 	for _, current := range gotChecks {
 		got = append(got, current.label)
@@ -57,15 +57,17 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"flake-policy",
 		"design-doc-status",
 		"markdown-links",
+		"go-toolchain",
 		"build-config-sync",
 		"portal-install",
+		"portal-audit",
 		"portal-playwright-install",
 		"portal-build",
 		"portal-dist-diff",
 		"portal-dist-untracked",
 		"build-goobers",
 		"validate-configs",
-		"build-scheduler",
+		"build-operator",
 		"shipped-workflows",
 		"schema-description-coverage",
 		"test",
@@ -110,15 +112,20 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	wantTestArgs := []string{
 		"run", "./test/hermetic", "--go-command", "custom-go", "--",
-		"-race", "-timeout", "30m", "-covermode=atomic", "-coverprofile=coverage.out", "./...",
+		"-race", "-timeout", "30m", "-count=1", "-covermode=atomic", "-coverprofile=coverage.out", "./...",
 	}
 	if !reflect.DeepEqual(testCheck.args, wantTestArgs) {
 		t.Fatalf("test arguments = %q, want %q", testCheck.args, wantTestArgs)
 	}
 	shippedCheck := checkByLabel(t, gotChecks, "shipped-workflows")
+	// Plain `go test`, NOT routed through test/hermetic: a linked-in-isolation
+	// git.exe cannot find its libexec helpers on Windows (see the comment at the
+	// construction site, and PR #3461 where every contract failed at `git init`
+	// on windows-latest).
+	wantShippedArgs := []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}
 	if shippedCheck.label != "shipped-workflows" ||
-		!reflect.DeepEqual(shippedCheck.args, []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}) {
-		t.Fatalf("shipped workflow check = %#v", shippedCheck)
+		!reflect.DeepEqual(shippedCheck.args, wantShippedArgs) {
+		t.Fatalf("shipped workflow check = %#v, want args %q", shippedCheck, wantShippedArgs)
 	}
 	schemaCoverageCheck := checkByLabel(t, gotChecks, "schema-description-coverage")
 	if schemaCoverageCheck.label != "schema-description-coverage" ||
@@ -142,7 +149,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 	t.Parallel()
 	mergeChecks := checks(
-		[]string{"config-sync", "goobers", "scheduler"},
+		[]string{"config-sync", "goobers", "operator"},
 		toolchain{
 			goCommand:       "go",
 			gofmtCommand:    "gofmt",
@@ -166,7 +173,7 @@ func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 		"vet",
 		"build-config-sync",
 		"build-goobers",
-		"build-scheduler",
+		"build-operator",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fast check order = %q, want %q", got, want)
@@ -293,7 +300,7 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	t.Parallel()
 	got := checks(
-		[]string{"scheduler"},
+		[]string{"operator"},
 		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
 		buildMetadata{},
 		"linux",
@@ -303,7 +310,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links build-scheduler portal-install portal-playwright-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links go-toolchain build-operator portal-install portal-audit portal-playwright-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -340,6 +347,10 @@ func TestChecksInstallPinnedChromiumAndRunPortalE2E(t *testing.T) {
 	}
 	if want := []string{"--prefix", "portal", "run", "deadcode"}; !reflect.DeepEqual(deadcode.args, want) {
 		t.Errorf("portal-deadcode args = %q, want %q", deadcode.args, want)
+	}
+
+	if install.skip == nil {
+		t.Fatal("portal-playwright-install has no skip hook; #3372 no-op on a read-only baked-browser PLAYWRIGHT_BROWSERS_PATH would regress")
 	}
 }
 
@@ -635,7 +646,7 @@ func TestChecksWrapUnitTestWhenTimingOutputIsConfigured(t *testing.T) {
 		if current.label != "test" {
 			continue
 		}
-		want := "run ./test/hermetic --go-command go --timing-job unit --timing-output test-timings/unit-Linux.json -- -race -timeout 30m -covermode=atomic -coverprofile=coverage.out ./..."
+		want := "run ./test/hermetic --go-command go --timing-job unit --timing-output test-timings/unit-Linux.json -- -race -timeout 30m -count=1 -covermode=atomic -coverprofile=coverage.out ./..."
 		if args := strings.Join(current.args, " "); args != want {
 			t.Fatalf("timed test args = %q, want %q", args, want)
 		}
@@ -839,7 +850,7 @@ func mergeGateChecks() []check {
 		npmCommand:      "npm",
 		golangciCommand: "golangci-lint",
 	}
-	return checks([]string{"config-sync", "goobers", "scheduler"}, tools, buildMetadata{}, "linux", "")
+	return checks([]string{"config-sync", "goobers", "operator"}, tools, buildMetadata{}, "linux", "")
 }
 
 // TestEveryMergeCheckHasAGroup guarantees the parallel CI jobs collectively run
@@ -970,6 +981,13 @@ func TestApplyRuntimeTogglesShardsUnitSuite(t *testing.T) {
 	}
 	if !slices.Contains(args, "./...") {
 		t.Errorf("sharded unit args lost the package spec (hermetic expands ./...): %q", joined)
+	}
+	// -count=1 must SURVIVE sharding even though the coverage flags do not. It
+	// is what makes deleting the dedicated `conformance` job a no-op: that job's
+	// only behavioural difference from the shards was running uncached, and the
+	// 32 TestConformance* functions it selected already execute here, unfiltered.
+	if !slices.Contains(args, "-count=1") {
+		t.Errorf("sharded unit args dropped -count=1; the shards must run uncached now that the conformance job is gone: %q", joined)
 	}
 }
 
@@ -1103,5 +1121,262 @@ func TestGolangciCacheIsDistinctPerWorkingDirectory(t *testing.T) {
 	}
 	if repeat := cacheFor(first); repeat != firstCache {
 		t.Fatalf("one working directory resolved to two golangci-lint caches (%q then %q); the cache would never stay warm", firstCache, repeat)
+	}
+}
+
+// TestPinnedChromiumRevisionParsesBrowsersManifest locks the parsing of the
+// exact file Playwright's own installer reads (playwright-core's
+// browsers.json) to decide the chromium build a given package version
+// wants. #3372's skip decision hinges on getting this revision right.
+func TestPinnedChromiumRevisionParsesBrowsersManifest(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		json    string
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "real-shape manifest",
+			json: `{"browsers":[
+				{"name":"chromium","revision":"1234","installByDefault":true},
+				{"name":"firefox","revision":"1538","installByDefault":true}
+			]}`,
+			want: "1234",
+		},
+		{
+			name:    "no chromium entry",
+			json:    `{"browsers":[{"name":"firefox","revision":"1538"}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "empty chromium revision",
+			json:    `{"browsers":[{"name":"chromium","revision":""}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "malformed json",
+			json:    `not json`,
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := pinnedChromiumRevision([]byte(tc.json))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("pinnedChromiumRevision(%q) = %q, nil; want error", tc.json, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("pinnedChromiumRevision(%q) error = %v", tc.json, err)
+			}
+			if got != tc.want {
+				t.Fatalf("pinnedChromiumRevision(%q) = %q, want %q", tc.json, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolvePortalPlaywrightSkip locks the #3372 decision matrix:
+// portal-playwright-install only no-ops when PLAYWRIGHT_BROWSERS_PATH is set
+// AND it already holds a completed install of the exact chromium revision
+// portal's installed playwright-core package expects. Every other case
+// (env unset, manifest missing/unparsable, revision absent or incomplete)
+// must report "do not skip" so the installer still runs — and, on a wrong
+// bake, still fails loudly instead of silently passing.
+//
+// Not parallel: t.Chdir and t.Setenv are incompatible with a parallel test,
+// and PLAYWRIGHT_BROWSERS_PATH plus the working directory are exactly what
+// this asserts on.
+func TestResolvePortalPlaywrightSkip(t *testing.T) {
+	writeManifest := func(t *testing.T, root, revision string) {
+		t.Helper()
+		manifestDir := filepath.Join(root, "portal", "node_modules", "playwright-core")
+		if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		manifest := `{"browsers":[{"name":"chromium","revision":"` + revision + `","installByDefault":true}]}`
+		if err := os.WriteFile(filepath.Join(manifestDir, "browsers.json"), []byte(manifest), 0o644); err != nil {
+			t.Fatalf("WriteFile browsers.json: %v", err)
+		}
+	}
+
+	t.Run("browsers path unset", func(t *testing.T) {
+		root := t.TempDir()
+		t.Chdir(root)
+		t.Setenv(playwrightBrowsersPathEnv, "")
+
+		skip, reason := resolvePortalPlaywrightSkip()
+		if skip {
+			t.Fatalf("resolvePortalPlaywrightSkip() = skip, %q; want do-not-skip", reason)
+		}
+		if !strings.Contains(reason, playwrightBrowsersPathEnv) {
+			t.Fatalf("reason = %q, want it to name %s", reason, playwrightBrowsersPathEnv)
+		}
+	})
+
+	t.Run("manifest missing", func(t *testing.T) {
+		root := t.TempDir()
+		t.Chdir(root)
+		t.Setenv(playwrightBrowsersPathEnv, t.TempDir())
+
+		skip, reason := resolvePortalPlaywrightSkip()
+		if skip {
+			t.Fatalf("resolvePortalPlaywrightSkip() = skip, %q; want do-not-skip (no node_modules yet)", reason)
+		}
+		if !strings.Contains(reason, "browsers.json") {
+			t.Fatalf("reason = %q, want it to mention browsers.json", reason)
+		}
+	})
+
+	t.Run("revision absent from browsers path", func(t *testing.T) {
+		root := t.TempDir()
+		writeManifest(t, root, "1234")
+		t.Chdir(root)
+		t.Setenv(playwrightBrowsersPathEnv, t.TempDir())
+
+		skip, reason := resolvePortalPlaywrightSkip()
+		if skip {
+			t.Fatalf("resolvePortalPlaywrightSkip() = skip, %q; want do-not-skip (revision not installed)", reason)
+		}
+		if !strings.Contains(reason, "1234") {
+			t.Fatalf("reason = %q, want it to name the missing revision 1234", reason)
+		}
+	})
+
+	t.Run("wrong revision present", func(t *testing.T) {
+		root := t.TempDir()
+		writeManifest(t, root, "1234")
+		t.Chdir(root)
+		browsersDir := t.TempDir()
+		wrongDir := filepath.Join(browsersDir, "chromium-9999")
+		if err := os.MkdirAll(wrongDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(wrongDir, "INSTALLATION_COMPLETE"), nil, 0o644); err != nil {
+			t.Fatalf("WriteFile marker: %v", err)
+		}
+		t.Setenv(playwrightBrowsersPathEnv, browsersDir)
+
+		skip, reason := resolvePortalPlaywrightSkip()
+		if skip {
+			t.Fatalf("resolvePortalPlaywrightSkip() = skip, %q; want do-not-skip (wrong bake must still fail loudly)", reason)
+		}
+		if !strings.Contains(reason, "1234") {
+			t.Fatalf("reason = %q, want it to name the expected revision 1234", reason)
+		}
+	})
+
+	t.Run("revision present but incomplete", func(t *testing.T) {
+		root := t.TempDir()
+		writeManifest(t, root, "1234")
+		t.Chdir(root)
+		browsersDir := t.TempDir()
+		// Directory exists (e.g. a download that was interrupted) but no
+		// INSTALLATION_COMPLETE marker: Playwright itself would not treat
+		// this as a finished install, so neither should we.
+		if err := os.MkdirAll(filepath.Join(browsersDir, "chromium-1234"), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		t.Setenv(playwrightBrowsersPathEnv, browsersDir)
+
+		skip, reason := resolvePortalPlaywrightSkip()
+		if skip {
+			t.Fatalf("resolvePortalPlaywrightSkip() = skip, %q; want do-not-skip (no completion marker)", reason)
+		}
+		if !strings.Contains(reason, "1234") {
+			t.Fatalf("reason = %q, want it to name revision 1234", reason)
+		}
+	})
+
+	t.Run("matching revision preinstalled", func(t *testing.T) {
+		root := t.TempDir()
+		writeManifest(t, root, "1234")
+		t.Chdir(root)
+		browsersDir := t.TempDir()
+		chromiumDir := filepath.Join(browsersDir, "chromium-1234")
+		if err := os.MkdirAll(chromiumDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(chromiumDir, "INSTALLATION_COMPLETE"), nil, 0o644); err != nil {
+			t.Fatalf("WriteFile marker: %v", err)
+		}
+		t.Setenv(playwrightBrowsersPathEnv, browsersDir)
+
+		skip, reason := resolvePortalPlaywrightSkip()
+		if !skip {
+			t.Fatalf("resolvePortalPlaywrightSkip() = do-not-skip, %q; want skip", reason)
+		}
+		if !strings.Contains(reason, chromiumDir) {
+			t.Fatalf("reason = %q, want it to name the resolved path %s", reason, chromiumDir)
+		}
+	})
+}
+
+// TestExecuteChecksSkipsWithoutRunningTheCommand locks the #3372 wiring at
+// the executeChecksAt level: when a check's skip hook reports skip=true, the
+// executor never runs the underlying command and the returned reason is
+// logged in its place, but the check still counts as a pass (the gate keeps
+// going) and still reports an elapsed line like every other check.
+func TestExecuteChecksSkipsWithoutRunningTheCommand(t *testing.T) {
+	t.Parallel()
+	exec := &fakeExecutor{}
+	var stdout, stderr bytes.Buffer
+	err := executeChecks(exec, []check{
+		{
+			label:   "portal-playwright-install",
+			command: "npm",
+			args:    []string{"--prefix", "portal", "exec", "--", "playwright", "install", "chromium"},
+			skip: func() (bool, string) {
+				return true, "browsers preinstalled at /opt/ms-playwright/chromium-1234, skipping"
+			},
+		},
+		{label: "portal-build"},
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("executeChecks() error = %v", err)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].label != "portal-build" {
+		t.Fatalf("exec.calls = %v, want only portal-build (portal-playwright-install skipped)", exec.calls)
+	}
+	if !strings.Contains(stdout.String(), "portal-playwright-install: browsers preinstalled at /opt/ms-playwright/chromium-1234, skipping") {
+		t.Fatalf("stdout missing skip reason:\n%s", &stdout)
+	}
+	if !strings.Contains(stdout.String(), "<== portal-playwright-install (elapsed") {
+		t.Fatalf("stdout missing elapsed line for skipped check:\n%s", &stdout)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty (skip is not a failure)", stderr.String())
+	}
+}
+
+// TestExecuteChecksRunsCommandWhenSkipHookDeclines locks the other half of
+// #3372: when the skip hook reports skip=false (env unset, wrong revision,
+// ...), the check runs exactly as if it had no hook at all.
+func TestExecuteChecksRunsCommandWhenSkipHookDeclines(t *testing.T) {
+	t.Parallel()
+	exec := &fakeExecutor{}
+	var stdout, stderr bytes.Buffer
+	err := executeChecks(exec, []check{
+		{
+			label:   "portal-playwright-install",
+			command: "npm",
+			args:    []string{"--prefix", "portal", "exec", "--", "playwright", "install", "chromium"},
+			skip: func() (bool, string) {
+				return false, "PLAYWRIGHT_BROWSERS_PATH not set"
+			},
+		},
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("executeChecks() error = %v", err)
+	}
+	if len(exec.calls) != 1 || exec.calls[0].label != "portal-playwright-install" {
+		t.Fatalf("exec.calls = %v, want portal-playwright-install to run", exec.calls)
+	}
+	if strings.Contains(stdout.String(), "PLAYWRIGHT_BROWSERS_PATH not set") {
+		t.Fatalf("stdout unexpectedly logged the decline reason (only the skip branch should log):\n%s", &stdout)
 	}
 }

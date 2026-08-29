@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/remediation"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
@@ -5259,6 +5260,47 @@ func TestGateDiffSeedReconstructsFromJournal(t *testing.T) {
 	}
 }
 
+func TestRemediationEvidenceRejectionSeedRebuildsSpentBudget(t *testing.T) {
+	rejection := func(gateName, digest string) journal.Event {
+		return journal.Event{
+			Type: journal.EventRunnerAnnotation, Gate: gateName, Stage: "remediate",
+			Runner: map[string]any{
+				"kind":       "remediation-evidence-validation",
+				"code":       gate.ReasonRemediationEvidenceNotInspected,
+				"diffDigest": digest,
+			},
+		}
+	}
+	events := []journal.Event{
+		// A resolved evaluation ends any streak before it: these rejections
+		// belong to a finished episode.
+		rejection("review", "sha256:aaaa"),
+		{Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes", Target: "implement"},
+		rejection("review", "sha256:bbbb"),
+		// An unrelated annotation must not charge the budget.
+		{Type: journal.EventRunnerAnnotation, Gate: "review", Runner: map[string]any{"kind": "stage.retry.decision"}},
+		rejection("review", "sha256:bbbb"),
+		// A different gate keeps its own count.
+		rejection("second-review", "sha256:cccc"),
+	}
+	seed := remediationEvidenceRejectionSeed(events)
+	if got := seed["review"]; got.count != 2 || got.digest != "sha256:bbbb" {
+		t.Fatalf("seed[review] = %+v, want 2 rejections pinned to sha256:bbbb", got)
+	}
+	if got := seed["second-review"]; got.count != 1 || got.digest != "sha256:cccc" {
+		t.Fatalf("seed[second-review] = %+v, want its own single rejection", got)
+	}
+
+	// A changed digest resets the streak on resume exactly as it does live.
+	seed = remediationEvidenceRejectionSeed(append(events, rejection("review", "sha256:dddd")))
+	if got := seed["review"]; got.count != 1 || got.digest != "sha256:dddd" {
+		t.Fatalf("seed[review] after digest change = %+v, want a fresh budget", got)
+	}
+	if seed := remediationEvidenceRejectionSeed(nil); seed != nil {
+		t.Fatalf("remediationEvidenceRejectionSeed(nil) = %v, want nil", seed)
+	}
+}
+
 func TestTargetRepassSeedRestoresCrossGateBudget(t *testing.T) {
 	events := []journal.Event{
 		{Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultSuccess)},
@@ -6363,6 +6405,41 @@ func TestTerminalGateNotificationClassifiesUnchangedRepass(t *testing.T) {
 	}
 }
 
+// TestTerminalGateNotificationClassifiesEvidenceRejectionExhaustion is #3375's
+// notification-surface acceptance: no repass was ever charged for an
+// evidence-rejection loop, so reporting it as "repass budget exhausted" would
+// send an operator looking for a repass history that does not exist.
+func TestTerminalGateNotificationClassifiesEvidenceRejectionExhaustion(t *testing.T) {
+	reason, notify := terminalGateNotificationReason(nil, gate.Result{
+		Gate: "review", Outcome: "needs-changes", Target: workflow.TargetEscalate,
+		Escalated: true, Reason: gate.ReasonRemediationEvidenceNotInspected,
+		Verdict: &apiv1.Verdict{
+			Decision:  apiv1.VerdictNeedsChanges,
+			Rationale: "runner: 3 consecutive unchanged remediation attempts were rejected without inspecting the required failure evidence",
+		},
+	})
+	if !notify || !strings.HasPrefix(reason, gate.ReasonRemediationEvidenceNotInspected) {
+		t.Fatalf("reason = %q,%t, want a REMEDIATION_EVIDENCE_NOT_INSPECTED-prefixed notification", reason, notify)
+	}
+	if !strings.Contains(reason, "3 consecutive") {
+		t.Fatalf("reason = %q, want the synthesized rejection count carried through", reason)
+	}
+	if strings.Contains(reason, ": runner: ") {
+		t.Fatalf("reason = %q, want the reason code to carry runner attribution once, not twice", reason)
+	}
+	if strings.Contains(reason, "repass budget exhausted") {
+		t.Fatalf("reason = %q, want the evidence-rejection cause, not a repass-budget claim", reason)
+	}
+
+	// Ordinary budget exhaustion is untouched.
+	budget, notify := terminalGateNotificationReason(nil, gate.Result{
+		Gate: "review", Outcome: "needs-changes", Target: workflow.TargetEscalate, Escalated: true,
+	})
+	if !notify || budget != "repass budget exhausted" {
+		t.Fatalf("budget reason = %q,%t, want the unchanged repass-exhaustion notification", budget, notify)
+	}
+}
+
 func TestPriorRepassCauseReadsCIFailureAndReviewerVerdict(t *testing.T) {
 	t.Run("CI failure", func(t *testing.T) {
 		run := newRunnerTestJournal(t, "repass-cause-ci")
@@ -6673,10 +6750,41 @@ func agenticImplementGateMachine(t *testing.T) *workflow.Machine {
 	return m
 }
 
+func agenticImplementNeedsHumanGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a diff", Next: "review"},
+			{Name: "park-needs-human", Type: apiv1.TaskDeterministic, Inputs: map[string]string{"status": "needs-human"}, Run: &apiv1.DeterministicRun{Command: []string{"issue-close-out"}}, Next: workflow.TargetAbort},
+			{Name: "park-remediation", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"record-remediation"}}, Next: workflow.TargetEscalate},
+		},
+		Gates: []apiv1.Gate{{
+			Name:      "review",
+			Evaluator: apiv1.EvaluatorAgentic,
+			Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+			Branches: map[string]string{
+				"pass":                  workflow.TerminalComplete,
+				"needs-changes":         "implement",
+				"fail":                  "park-needs-human",
+				workflow.BranchEscalate: "park-remediation",
+			},
+		}},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "agentic-needs-human-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile agentic needs-human fixture machine: %v", err)
+	}
+	return m
+}
+
 // newAgenticGateRunner mirrors newTestRunnerWithDeterministic but wires a fake
 // agentic reviewer and a GateGooberCapabilities map, for #294's gate-envelope
-// capability sourcing.
-func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, reviewer invoke.Goober, gateCaps map[string][]string) *Runner {
+// capability sourcing. The second return is the runner's runs directory, for
+// tests that inspect the journal a Start writes.
+func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, reviewer invoke.Goober, gateCaps map[string][]string) (*Runner, string) {
 	t.Helper()
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -6703,7 +6811,7 @@ func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, review
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return r
+	return r, filepath.Join(instanceRoot, "runs")
 }
 
 // TestRunnerAgenticGateSourcesGooberCapabilities is #294: an agentic gate
@@ -6729,7 +6837,7 @@ func TestRunnerAgenticGateSourcesGooberCapabilities(t *testing.T) {
 
 	t.Run("sources the reviewer goober's declared capabilities", func(t *testing.T) {
 		reviewer := &capturingReviewer{}
-		r := newAgenticGateRunner(t, byTask, reviewer, map[string][]string{"reviewer": {"agent:model"}})
+		r, runsDir := newAgenticGateRunner(t, byTask, reviewer, map[string][]string{"reviewer": {"agent:model"}})
 		if res := start(t, r); res.Phase != journal.PhaseCompleted {
 			t.Fatalf("phase = %q, want completed", res.Phase)
 		}
@@ -6739,11 +6847,32 @@ func TestRunnerAgenticGateSourcesGooberCapabilities(t *testing.T) {
 		if got := reviewer.gotCaps; len(got) != 1 || got[0] != "agent:model" {
 			t.Fatalf("gate envelope capabilities = %v, want [agent:model]", got)
 		}
+
+		// PR #3528 finding-1 producer half, local tier: Start journals the
+		// map as the trusted gate-goober-capabilities input, readable through
+		// PinnedGateGooberCapabilities — the run's pin, not the
+		// currently-served config, is what post-start consumers (the daemon
+		// credential plane) resolve an agentic gate's reviewer grants from.
+		rd, err := journal.OpenRead(filepath.Join(runsDir, "run-agentic-gate"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := rd.Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pinned, found, err := PinnedGateGooberCapabilities(rd, identity)
+		if err != nil || !found {
+			t.Fatalf("PinnedGateGooberCapabilities = (%v, %t, %v), want the pinned map", pinned, found, err)
+		}
+		if got := pinned["reviewer"]; len(got) != 1 || got[0] != "agent:model" {
+			t.Fatalf("pinned reviewer capabilities = %v, want [agent:model]", got)
+		}
 	})
 
 	t.Run("no mapping means no capabilities (fail-closed)", func(t *testing.T) {
 		reviewer := &capturingReviewer{}
-		r := newAgenticGateRunner(t, byTask, reviewer, nil)
+		r, _ := newAgenticGateRunner(t, byTask, reviewer, nil)
 		_ = start(t, r)
 		if !reviewer.called {
 			t.Fatal("reviewer was never invoked")
@@ -7283,6 +7412,81 @@ func TestRunnerFastFailsEmptyDiffFromAgenticStage(t *testing.T) {
 	if reviewer.called {
 		t.Fatal("reviewer was invoked — an agentic stage's empty diff must fast-fail on review-1 without a reviewer call")
 	}
+}
+
+func TestRunnerEmptyDiffDoesNotDispatchNeedsHumanDisposition(t *testing.T) {
+	coder := &capturingReviewer{}
+	reviewer := &capturingReviewer{}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	runsDir := filepath.Join(instanceRoot, "runs")
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
+				"run-empty-needs-human:park-remediation": {status: apiv1.ResultSuccess},
+			}}, nil
+		},
+		NewAgentic: func(gooberName string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+			if gooberName == "reviewer" {
+				return reviewer, nil
+			}
+			return coder, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-empty-needs-human",
+		Machine: agenticImplementNeedsHumanGateMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated remediation", res.Phase)
+	}
+	if reviewer.called {
+		t.Fatal("reviewer was invoked — the empty diff must be rejected before a needs-human disposition")
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-empty-needs-human"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventGateEvaluated && event.Gate == "review" {
+			if event.Target != "park-remediation" || event.Name == "" || event.Ref == nil {
+				t.Fatalf("review gate event = %+v, want remediation target with preserved verdict artifact", event)
+			}
+			verdictBytes, err := rd.ArtifactBytes(*event.Ref)
+			if err != nil {
+				t.Fatalf("read preserved verdict artifact: %v", err)
+			}
+			var verdict apiv1.Verdict
+			if err := json.Unmarshal(verdictBytes, &verdict); err != nil {
+				t.Fatalf("decode preserved verdict artifact: %v", err)
+			}
+			if verdict.Decision != apiv1.VerdictFail || !strings.Contains(verdict.Rationale, "no committed changes") {
+				t.Fatalf("preserved verdict = %+v, want synthesized fail evidence", verdict)
+			}
+			return
+		}
+	}
+	t.Fatal("review gate evaluation was not journaled")
 }
 
 // TestRunnerDeterministicSubjectEmptyDiffStillReviews is #415's collision guard
@@ -7841,6 +8045,97 @@ type remediationEvidenceDeterministic struct {
 	ciCalls int
 }
 
+type addendumCapturingGoober struct {
+	addendum string
+}
+
+func (g *addendumCapturingGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.addendum = env.InstructionAddendum
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (g *addendumCapturingGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+func remediationAugmentMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "acme-web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start: "detect",
+		Tasks: []apiv1.Task{
+			{
+				Name: "detect", Type: apiv1.TaskDeterministic, Goal: "classify failure",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "implement",
+			},
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "implement fix", Next: workflow.TerminalComplete},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "remediation-augment", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile remediation augment machine: %v", err)
+	}
+	return machine
+}
+
+func TestRunnerAugmentsAgenticStageWithRetrievedRemediationExamples(t *testing.T) {
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	capturingGoober := &addendumCapturingGoober{}
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{
+				rec: rec,
+				byTask: map[string]stubTaskResult{
+					"run-remediation-addendum:detect": {
+						status: apiv1.ResultSuccess, summary: "compiler failure: undefined symbol",
+					},
+				},
+			}, nil
+		},
+		NewAgentic: func(name string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+			if name == "coder" {
+				return capturingGoober, nil
+			}
+			return &fixedVerdictReviewer{verdict: apiv1.Verdict{Decision: apiv1.VerdictPass}}, nil
+		},
+		Automated: gate.NewAutomatedEvaluator(), Worktrees: wtMgr, RunsDir: filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		Remediation: remediation.NewIndex([]remediation.Record{{
+			ID:             "past:implement:2",
+			Stage:          "implement",
+			ErrorClass:     "",
+			FailureExcerpt: "undefined symbol",
+			FixExcerpt:     "add the missing import",
+			DidItHelp:      true,
+			OutcomeKnown:   true,
+			Integrity:      "trusted",
+		}}, nil),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: "run-remediation-addendum", Machine: remediationAugmentMachine(t),
+		Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+	if !strings.Contains(capturingGoober.addendum, "Outcome-verified historical remediation examples") ||
+		!strings.Contains(capturingGoober.addendum, "add the missing import") {
+		t.Fatalf("instruction addendum = %q", capturingGoober.addendum)
+	}
+}
+
 func (d *remediationEvidenceDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	d.t.Helper()
 	if !strings.HasSuffix(env.TaskID, ":local-ci") {
@@ -8020,6 +8315,187 @@ func TestRunnerRejectsUninspectedRemediationBeforeReview(t *testing.T) {
 	}
 	if !rejected || remediationAttempts < 2 || !escalated {
 		t.Fatalf("evidence routing = rejected:%v remediationAttempts:%d escalated:%v, want rejection, same-stage retry, and escalation", rejected, remediationAttempts, escalated)
+	}
+}
+
+// neverInspectingRemediationGoober is the #3375 production shape: an agent that
+// answers every remediation dispatch with "nothing to change" and never touches
+// a goobers-io input tool, so its result is rejected identically forever.
+type neverInspectingRemediationGoober struct {
+	t           *testing.T
+	implement   int
+	remediate   int
+	reviewCalls *int
+}
+
+func (g *neverInspectingRemediationGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.t.Helper()
+	if strings.HasSuffix(env.TaskID, ":remediate") {
+		g.remediate++
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "no changes needed"}, nil
+	}
+	g.implement++
+	if g.implement == 1 {
+		if err := os.WriteFile(filepath.Join(env.Workspace, "impl.txt"), []byte("implementation\n"), 0o644); err != nil {
+			return apiv1.ResultEnvelope{}, err
+		}
+		runGit(g.t, env.Workspace, "add", "-A")
+		runGit(g.t, env.Workspace, "commit", "-m", "implementation")
+	}
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (g *neverInspectingRemediationGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	*g.reviewCalls++
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+// TestRunnerBoundsRemediationEvidenceRejections is the #3375 regression: before
+// the fix the rejection re-dispatched the remediation stage with a corrective
+// addendum and returned BEFORE any retry/repass accounting, so an agent that
+// never inspects burned agentic invocations until DefaultMaxSteps — a `failed`
+// run, thousands of steps later, charged to no budget at all. MaxSteps is set
+// far above the bounded path here precisely so hitting it would be visible as a
+// distinct (and wrong) terminal phase.
+func TestRunnerBoundsRemediationEvidenceRejections(t *testing.T) {
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	runsDir := filepath.Join(instanceRoot, "runs")
+	var reviewCalls int
+	var coder *neverInspectingRemediationGoober
+	const maxSteps = 60
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &remediationEvidenceDeterministic{t: t, rec: rec}, nil
+		},
+		NewAgentic: func(name string, rec ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+			if name == "coder" {
+				if coder == nil {
+					coder = &neverInspectingRemediationGoober{t: t, reviewCalls: &reviewCalls}
+				}
+				return coder, nil
+			}
+			return &neverInspectingRemediationGoober{t: t, reviewCalls: &reviewCalls}, nil
+		},
+		Automated: gate.NewAutomatedEvaluator(), Worktrees: wtMgr, RunsDir: runsDir,
+		MaxSteps:     maxSteps,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: "run-remediation-evidence-budget", Machine: remediationEvidenceMachine(t),
+		Gaggle: "acme-web", RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q (steps %d, failure %q), want escalated on the rejection budget rather than a max-steps failure",
+			result.Phase, result.Steps, result.FailureMessage)
+	}
+	if result.Steps >= maxSteps {
+		t.Fatalf("steps = %d, want the run bounded by the rejection budget well before MaxSteps=%d", result.Steps, maxSteps)
+	}
+	if coder.remediate != maxRemediationEvidenceRejections {
+		t.Fatalf("remediation invocations = %d, want exactly %d — one per charged rejection",
+			coder.remediate, maxRemediationEvidenceRejections)
+	}
+	if reviewCalls != 1 {
+		t.Fatalf("review calls = %d, want 1 (only the pre-failure review; a rejected attempt never reaches the reviewer)", reviewCalls)
+	}
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-remediation-evidence-budget"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	rejections, remediationAttempts := 0, 0
+	var escalation *journal.Event
+	for i, event := range events {
+		if event.Type == journal.EventRunnerAnnotation &&
+			event.Runner["code"] == gate.ReasonRemediationEvidenceNotInspected {
+			rejections++
+			if digest, _ := event.Runner["diffDigest"].(string); digest == "" {
+				t.Fatalf("rejection annotation %+v carries no diffDigest, want the digest the budget is pinned to", event.Runner)
+			}
+		}
+		if event.Type == journal.EventStageStarted && event.Stage == "remediate" {
+			remediationAttempts++
+		}
+		if event.Type == journal.EventGateEvaluated && event.Gate == "review" && event.Escalated {
+			escalation = &events[i]
+		}
+	}
+	if rejections != maxRemediationEvidenceRejections || remediationAttempts != maxRemediationEvidenceRejections {
+		t.Fatalf("rejections = %d, remediation attempts = %d, want exactly %d of each",
+			rejections, remediationAttempts, maxRemediationEvidenceRejections)
+	}
+	if escalation == nil {
+		t.Fatal("no escalated review evaluation journaled, want the exhausted rejection budget to escalate the gate")
+	}
+	if escalation.Runner["reason"] != gate.ReasonRemediationEvidenceNotInspected {
+		t.Fatalf("escalation reason = %v, want %q — not an unchanged-repass or budget-exhaustion escalation",
+			escalation.Runner["reason"], gate.ReasonRemediationEvidenceNotInspected)
+	}
+	if duplicate, _ := escalation.Runner["duplicateDiff"].(bool); duplicate {
+		t.Fatal("escalation recorded duplicateDiff, want the evidence-rejection cause instead")
+	}
+	if escalation.Ref == nil {
+		t.Fatal("escalation journaled no verdict artifact, want the synthesized rationale readable in trace")
+	}
+	verdictBytes, err := rd.ArtifactBytes(*escalation.Ref)
+	if err != nil {
+		t.Fatalf("ArtifactBytes: %v", err)
+	}
+	var verdict apiv1.Verdict
+	if err := json.Unmarshal(verdictBytes, &verdict); err != nil {
+		t.Fatalf("decode escalation verdict: %v", err)
+	}
+	if !strings.Contains(verdict.Rationale, "last rejection:") ||
+		!strings.Contains(verdict.Rationale, fmt.Sprintf("%d consecutive", maxRemediationEvidenceRejections)) {
+		t.Fatalf("escalation rationale = %q, want the rejection count and the validation cause", verdict.Rationale)
+	}
+}
+
+func TestEvidenceRejectionBudgetResetsWhenDiffDigestChanges(t *testing.T) {
+	ws := &walkState{}
+	for i := 1; i < maxRemediationEvidenceRejections; i++ {
+		count, exhausted := ws.chargeEvidenceRejection("review", "digest-a")
+		if count != i || exhausted {
+			t.Fatalf("charge %d = count:%d exhausted:%v, want count:%d and budget remaining", i, count, exhausted, i)
+		}
+	}
+	// A genuinely new remediation attempt — the stage committed something —
+	// must not inherit the previous attempt's near-exhausted budget.
+	if count, exhausted := ws.chargeEvidenceRejection("review", "digest-b"); count != 1 || exhausted {
+		t.Fatalf("charge after digest change = count:%d exhausted:%v, want a fresh budget at count:1", count, exhausted)
+	}
+	// A second gate keeps its own budget.
+	if count, _ := ws.chargeEvidenceRejection("other-review", "digest-b"); count != 1 {
+		t.Fatalf("second gate charge = %d, want its own budget starting at 1", count)
+	}
+	for i := 2; i < maxRemediationEvidenceRejections; i++ {
+		if _, exhausted := ws.chargeEvidenceRejection("review", "digest-b"); exhausted {
+			t.Fatalf("budget exhausted at charge %d, want exhaustion only at %d", i, maxRemediationEvidenceRejections)
+		}
+	}
+	count, exhausted := ws.chargeEvidenceRejection("review", "digest-b")
+	if count != maxRemediationEvidenceRejections || !exhausted {
+		t.Fatalf("final charge = count:%d exhausted:%v, want count:%d exhausted", count, exhausted, maxRemediationEvidenceRejections)
+	}
+	// Exhaustion is sticky for the same digest: re-reaching this state must
+	// escalate again, never restart the loop.
+	if _, exhausted := ws.chargeEvidenceRejection("review", "digest-b"); !exhausted {
+		t.Fatal("charge after exhaustion reported budget remaining, want it to stay exhausted for the same digest")
 	}
 }
 
@@ -8222,5 +8698,102 @@ func TestRunnerLegitimateChangedRepassConverges(t *testing.T) {
 				t.Fatalf("review gate event has duplicateDiff=true; want false (content changed legitimately)")
 			}
 		}
+	}
+}
+
+// TestRunnerInvokesExistingFixHandlerOnImplementNoWork proves the runner
+// invokes the ExistingFix handler when implement returns no-work with
+// existingFixCommit set (issue #3236) — preventing a permanent reclaim loop.
+func TestRunnerInvokesExistingFixHandlerOnImplementNoWork(t *testing.T) {
+	machine := taskReservedNextFixtureMachine(t, workflow.TargetAbort)
+	runID := "run-existing-fix"
+	byTask := map[string]stubTaskResult{
+		runID + ":implement": {
+			status:  apiv1.ResultNoWork,
+			summary: "nothing to do",
+			outputs: map[string]interface{}{"existingFixCommit": "abc123def456"},
+		},
+	}
+
+	var handlerCalled bool
+	var handlerOutcome ExistingFixOutcome
+	handler := func(ctx context.Context, o ExistingFixOutcome) error {
+		handlerCalled = true
+		handlerOutcome = o
+		return nil
+	}
+
+	r, _ := newTestRunner(t, byTask, nil)
+	r.cfg.ExistingFix = handler
+
+	item := &apiv1.BacklogItem{ID: "123", Title: "Test issue"}
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Item:    item,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if !handlerCalled {
+		t.Fatalf("ExistingFix handler was not called")
+	}
+	if handlerOutcome.ItemID != "123" {
+		t.Fatalf("handler ItemID = %q, want 123", handlerOutcome.ItemID)
+	}
+	if handlerOutcome.Commit != "abc123def456" {
+		t.Fatalf("handler Commit = %q, want abc123def456", handlerOutcome.Commit)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+}
+
+func TestRunnerResolvesExistingFixItemFromClaimLedger(t *testing.T) {
+	machine := taskReservedNextFixtureMachine(t, workflow.TargetAbort)
+	runID := "run-existing-fix-claimed"
+	byTask := map[string]stubTaskResult{
+		runID + ":implement": {
+			status:  apiv1.ResultNoWork,
+			summary: "nothing to do",
+			outputs: map[string]interface{}{"existingFixCommit": "abc123def456"},
+		},
+	}
+
+	var got ExistingFixOutcome
+	r, _ := newTestRunner(t, byTask, nil)
+	r.cfg.ClaimedItems = func(resolvedRunID string) ([]string, error) {
+		if resolvedRunID != runID {
+			t.Fatalf("ClaimedItems run id = %q, want %q", resolvedRunID, runID)
+		}
+		return []string{"456"}, nil
+	}
+	r.cfg.ExistingFix = func(_ context.Context, o ExistingFixOutcome) error {
+		got = o
+		return nil
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got.ItemID != "456" {
+		t.Fatalf("handler ItemID = %q, want 456", got.ItemID)
+	}
+	if got.Commit != "abc123def456" {
+		t.Fatalf("handler Commit = %q, want abc123def456", got.Commit)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
 	}
 }

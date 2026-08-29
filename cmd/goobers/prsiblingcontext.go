@@ -162,7 +162,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	if repo.Provider == providers.ProviderADO {
 		return runGatherSiblingContextADO(root, repo, stdout, stderr)
 	}
-	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, true,
+	provider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, true,
 		withStageProviderCapability(capability.GitHubPRWrite),
 		withStageProviderCache(),
 	)
@@ -589,7 +589,7 @@ siblingLoop:
 // (#2061). It never resolves a github:* capability token — the ADO provider
 // resolves its own org-scoped auth from instance config.
 func runGatherSiblingContextADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, true)
+	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

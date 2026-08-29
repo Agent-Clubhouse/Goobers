@@ -95,6 +95,41 @@ func TestGooberInjectorMaterializesExplicitCredentialKeys(t *testing.T) {
 	}
 }
 
+func TestMaterializeRestrictedDoesNotAddImplicitCredentialKeys(t *testing.T) {
+	t.Setenv("BYO_MCP_TOKEN", "vendor-secret")
+	t.Setenv("REPO_READ_TOKEN", "repo-secret")
+	resolver, err := NewResolver([]TokenRef{
+		{Name: "vendor-token", Env: "BYO_MCP_TOKEN"},
+		{Name: "repo-token", Env: "REPO_READ_TOKEN"},
+	})
+	if err != nil {
+		t.Fatalf("NewResolver: %v", err)
+	}
+	inj, err := NewGooberInjectorWithCredentialKeys(
+		resolver,
+		"coder",
+		[]Grant{
+			{Goober: "coder", Capability: "mcp:vendor", Ref: "vendor-token"},
+			{Goober: "coder", Capability: "repo:read", Ref: "repo-token"},
+		},
+		[]string{"mcp:vendor"},
+		&spyRegistrar{},
+	)
+	if err != nil {
+		t.Fatalf("NewGooberInjectorWithCredentialKeys: %v", err)
+	}
+	set, err := inj.MaterializeRestricted(context.Background(), []string{"repo:read"})
+	if err != nil {
+		t.Fatalf("MaterializeRestricted: %v", err)
+	}
+	if token, err := set.Token(context.Background(), "repo:read"); err != nil || token != "repo-secret" {
+		t.Fatalf("Token(repo:read) = %q, %v", token, err)
+	}
+	if _, err := set.Token(context.Background(), "mcp:vendor"); !errors.Is(err, ErrUndeclaredCapability) {
+		t.Fatalf("Token(mcp:vendor) error = %v, want ErrUndeclaredCapability", err)
+	}
+}
+
 func TestGooberInjectorRejectsCredentialKeyWithoutGrant(t *testing.T) {
 	resolver, err := NewResolver(nil)
 	if err != nil {

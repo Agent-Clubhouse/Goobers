@@ -6,7 +6,7 @@
       "target": {"Ref": "refs/tags/v0.9.0-beta.3", "Commit": "1111111111111111111111111111111111111111", "Source": "github:Agent-Clubhouse/Goobers@1111111111111111111111111111111111111111 release notes and feature registry", "Confidence": "low"},
       "configs": {"Current": ["pre-stable.current.yaml"], "Canonical": ["pre-stable.canonical.yaml"], "Proposed": ["pre-stable.proposed.yaml"]},
       "workflows": [{
-          "Identity": "example/implementation", "CurrentDSL": "0.7", "TargetDSL": "1.4", "TargetVersionLevel": "unsupported",
+          "Identity": "example/implementation", "CurrentDSL": "0.7", "TargetDSL": "2.0", "TargetVersionLevel": "unsupported",
           "Features": [{"Name": "task.inputs", "TargetLevel": "ga", "Change": "replace the incompatible legacy claim input shape with a backlog-query task and a resultFile artifact", "Source": "v0.9.0-beta.3 release notes at commit 1111111111111111111111111111111111111111", "Confidence": "low", "Breaking": true}, {"Name": "gate.branches", "TargetLevel": "ga", "Change": "the needs-changes outcome now requires an explicit branch", "Source": "v0.9.0-beta.3 release notes at commit 1111111111111111111111111111111111111111", "Confidence": "low", "Breaking": true}],
           "Diagnostics": ["target baseline: dslVersion 0.7 is unsupported and the legacy claim input shape is incompatible", "proposed target validation: clean (0 warnings, 0 errors)"]
       }],
@@ -14,8 +14,8 @@
         {"Workflow": "example/implementation", "From": "0.7", "To": "1.0", "Tool": "manual compatibility patch from the pinned 1.0 contract", "ExpectedDiff": "gaggles/example/workflows/implementation.yaml replaces claim with query-backlog and bumps dslVersion to 1.0",
           "Validation": "/opt/goobers-v0.9.0-beta.3/bin/goobers validate --strict --source-tree <scratch-1.0>", "Dependency": "pre-stable release provenance approved", "Review": "legacy claim replacement and graph edge changes", "Available": false
         },
-        {"Workflow": "example/implementation", "From": "1.0", "To": "1.4", "Tool": "goobers fix --to 1.4", "ExpectedDiff": "gaggles/example/workflows/implementation.yaml adds the needs-changes branch and bumps dslVersion to 1.4",
-          "Validation": "/opt/goobers-v0.9.0-beta.3/bin/goobers validate --strict --source-tree <scratch-1.4>", "Dependency": "the 0.7 -> 1.0 result validates", "Review": "mechanical diff and explicit needs-changes branch", "Available": true
+        {"Workflow": "example/implementation", "From": "1.0", "To": "2.0", "Tool": "goobers fix --to 2.0", "ExpectedDiff": "gaggles/example/workflows/implementation.yaml adds the needs-changes branch and bumps dslVersion to 2.0",
+          "Validation": "/opt/goobers-v0.9.0-beta.3/bin/goobers validate --strict --source-tree <scratch-2.0>", "Dependency": "the 0.7 -> 1.0 result validates", "Review": "mechanical diff and explicit needs-changes branch", "Available": true
         }
       ],
       "writeReadiness": "blocked", "readinessReason": "pre-stable release evidence is low confidence and requires provenance approval before either adjacent edge"

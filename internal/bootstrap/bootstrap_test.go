@@ -1,175 +1,158 @@
 package bootstrap
 
 import (
-	"context"
-	"reflect"
-	"sync"
+	"os"
+	"path/filepath"
 	"testing"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/engine"
-	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/scheduler"
-	"github.com/goobers/goobers/providers"
+	"github.com/goobers/goobers/internal/instance"
 )
 
 const fixtureRoot = "../../test/fixtures/e2e/walking-skeleton"
 
-// fakeStarter records started run ids and reports duplicates as already-running.
-type fakeStarter struct {
-	mu      sync.Mutex
-	started map[string]int
-	last    engine.RunInput
-}
-
-func (f *fakeStarter) Start(_ context.Context, in engine.RunInput) (engine.StartResult, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.started == nil {
-		f.started = map[string]int{}
-	}
-	f.last = in
-	if f.started[in.RunID] > 0 {
-		f.started[in.RunID]++
-		return engine.StartResult{RunID: in.RunID, AlreadyRunning: true}, nil
-	}
-	f.started[in.RunID] = 1
-	return engine.StartResult{RunID: in.RunID}, nil
-}
-
-func TestLoadAndRegisterFixture(t *testing.T) {
-	loaded, err := LoadAndRegister(fixtureRoot, "")
+// TestRegisterGaggleWorkflowsPreservesDSLVersion is the regression test for
+// the bug found live against aks-goobernetes-prod 2026-08-24: Register (the
+// two-arg shim) drops DSLVersion, so every workflow registered through
+// RegisterGaggleWorkflows silently defaulted to supportmatrix.CurrentDSLVersion
+// (1.4) regardless of what it actually declared, and a 3.0 workflow's runsOn
+// then refused as if authored against 1.4. Copies the walking-skeleton
+// fixture (whose manifest already opts into preview features) and adds a
+// second, 3.0, runsOn-bearing workflow alongside the existing 2.0 one.
+func TestRegisterGaggleWorkflowsPreservesDSLVersion(t *testing.T) {
+	root := copyFixtureWithExtraWorkflow(t, fixtureRoot, "gaggles/acme-web/workflows/runson-3-0.yaml", `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "3.0"
+metadata:
+  name: runson-3-0
+spec:
+  gaggle: acme-web
+  triggers:
+    - type: manual
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement.
+      capabilities: [agent:model]
+      runsOn:
+        os: linux
+`)
+	set, report, err := instance.LoadConfigDir(root)
 	if err != nil {
-		t.Fatalf("LoadAndRegister: %v", err)
+		t.Fatalf("load config dir: %v", err)
 	}
-	if loaded.Manifest == nil {
-		t.Fatal("expected a manifest")
+	if report != nil && report.HasErrors() {
+		t.Fatalf("config report has errors: %v", report)
 	}
-	if !loaded.Registry.PreviewFeaturesEnabled() {
-		t.Fatal("expected manifest preview-feature acknowledgement to reach the registry")
+
+	reg, _, err := RegisterGaggleWorkflows(set, "acme-web")
+	if err != nil {
+		t.Fatalf("RegisterGaggleWorkflows: %v (a 3.0 workflow with runsOn must not be coerced to an earlier DSL version)", err)
 	}
-	if len(loaded.Gaggles) == 0 || len(loaded.Workflows) == 0 {
-		t.Fatalf("expected gaggles + workflows, got %d gaggles, %d workflows", len(loaded.Gaggles), len(loaded.Workflows))
+	def, ok := reg.Latest("runson-3-0")
+	if !ok {
+		t.Fatal("runson-3-0 was not registered")
 	}
-	// Every workflow is registered and resolvable.
-	for _, w := range loaded.Workflows {
-		def, ok := loaded.Registry.Latest(w.Name)
+	if def.DSLVersion != "3.0" {
+		t.Fatalf("DSLVersion = %q, want \"3.0\" (dropped/defaulted instead of carried through)", def.DSLVersion)
+	}
+}
+
+// copyFixtureWithExtraWorkflow copies srcRoot into a fresh temp dir and
+// writes an additional file at relPath, returning the temp dir's path.
+func copyFixtureWithExtraWorkflow(t *testing.T, srcRoot, relPath, content string) string {
+	t.Helper()
+	dst := t.TempDir()
+	if err := filepath.WalkDir(srcRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcRoot, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o644)
+	}); err != nil {
+		t.Fatalf("copy fixture: %v", err)
+	}
+	extra := filepath.Join(dst, relPath)
+	if err := os.MkdirAll(filepath.Dir(extra), 0o755); err != nil {
+		t.Fatalf("mkdir for extra workflow: %v", err)
+	}
+	if err := os.WriteFile(extra, []byte(content), 0o644); err != nil {
+		t.Fatalf("write extra workflow: %v", err)
+	}
+	return dst
+}
+
+func TestRegisterGaggleWorkflowsFixture(t *testing.T) {
+	set, report, err := instance.LoadConfigDir(fixtureRoot)
+	if err != nil {
+		t.Fatalf("load config dir: %v", err)
+	}
+	if report != nil && report.HasErrors() {
+		t.Fatalf("config report has errors: %v", report)
+	}
+	if len(set.Gaggles) == 0 || len(set.Workflows) == 0 {
+		t.Fatalf("expected gaggles + workflows in fixture, got %d gaggles, %d workflows", len(set.Gaggles), len(set.Workflows))
+	}
+	gaggle := set.Gaggles[0]
+
+	reg, project, err := RegisterGaggleWorkflows(set, gaggle.Name)
+	if err != nil {
+		t.Fatalf("RegisterGaggleWorkflows: %v", err)
+	}
+	if project != gaggle.Spec.Project {
+		t.Errorf("project = %+v, want %+v", project, gaggle.Spec.Project)
+	}
+	// Every workflow belonging to the gaggle is registered and resolvable;
+	// every workflow belonging to a different gaggle is not.
+	for _, w := range set.Workflows {
+		def, ok := reg.Latest(w.Name)
+		if w.Spec.Gaggle != gaggle.Name {
+			if ok {
+				t.Errorf("workflow %q belongs to gaggle %q, but was registered", w.Name, w.Spec.Gaggle)
+			}
+			continue
+		}
 		if !ok {
 			t.Errorf("workflow %q was not registered", w.Name)
 			continue
 		}
-		if _, err := loaded.Registry.Compile(def); err != nil {
+		if _, err := reg.Compile(def); err != nil {
 			t.Errorf("registered workflow %q does not compile: %v", w.Name, err)
 		}
 	}
 }
 
-func TestSchedulerForWiresConfigToStart(t *testing.T) {
-	loaded, err := LoadAndRegister(fixtureRoot, "")
+func TestRegisterGaggleWorkflowsUnknownGaggleRegistersNothing(t *testing.T) {
+	set, report, err := instance.LoadConfigDir(fixtureRoot)
 	if err != nil {
-		t.Fatalf("LoadAndRegister: %v", err)
+		t.Fatalf("load config dir: %v", err)
 	}
-	gaggle := loaded.Gaggles[0]
-	workflow := loaded.Workflows[0]
-
-	st := &fakeStarter{}
-	sched, err := loaded.SchedulerFor(gaggle.Name, SchedulerDeps{Starter: st})
-	if err != nil {
-		t.Fatalf("SchedulerFor: %v", err)
+	if report != nil && report.HasErrors() {
+		t.Fatalf("config report has errors: %v", report)
 	}
 
-	item := providers.WorkItem{Provider: providers.ProviderGitHub, ID: "101", Title: "smoke"}
-	d, err := sched.Dispatch(context.Background(), scheduler.Event{
-		WorkflowName: workflow.Name,
-		Item:         &item,
-		DedupeKey:    "github:101",
-	})
+	reg, project, err := RegisterGaggleWorkflows(set, "does-not-exist")
 	if err != nil {
-		t.Fatalf("Dispatch: %v", err)
+		t.Fatalf("RegisterGaggleWorkflows: %v", err)
 	}
-	if !d.Started {
-		t.Fatalf("expected the wired path to start a run, got %+v", d)
+	if project.Owner != "" || project.Name != "" {
+		t.Errorf("project = %+v, want zero value for an unknown gaggle", project)
 	}
-	// The run carried the gaggle's project repo and a pinned definition.
-	if st.last.RepoRef.Name != gaggle.Spec.Project.Name {
-		t.Errorf("run repo = %q, want the gaggle project %q", st.last.RepoRef.Name, gaggle.Spec.Project.Name)
-	}
-	if st.last.Version != 1 || st.last.WorkflowName != workflow.Name {
-		t.Errorf("run input = %+v, want pinned %q v1", st.last, workflow.Name)
-	}
-	if st.last.Item == nil || st.last.Item.ID != "101" {
-		t.Errorf("run input missing backlog item: %+v", st.last.Item)
-	}
-}
-
-// TestSchedulerForPinsGaggleAndGooberPolicy: SchedulerFor threads the
-// gaggle's branch namespace (#1109) and the reviewer goobers' declared grants
-// (#294) into every started run, and the event shape pins the trigger
-// identity the #629 projection writes into run.yaml.
-func TestSchedulerForPinsGaggleAndGooberPolicy(t *testing.T) {
-	loaded, err := LoadAndRegister(fixtureRoot, "")
-	if err != nil {
-		t.Fatalf("LoadAndRegister: %v", err)
-	}
-	// Overlay the policy surface the fixture leaves at its defaults so the
-	// derivation is visible end to end.
-	loaded.Gaggles[0].Spec.BranchNamespace = "bots/"
-	loaded.Gaggles[0].Spec.RunControls = &apiv1.RunControls{MaxRepasses: 5}
-	loaded.Goobers = append(loaded.Goobers, apiv1.Goober{
-		ObjectMeta: metav1.ObjectMeta{Name: "reviewer"},
-		Spec:       apiv1.GooberSpec{Capabilities: []string{"agent:model"}},
-	})
-
-	st := &fakeStarter{}
-	sched, err := loaded.SchedulerFor(loaded.Gaggles[0].Name, SchedulerDeps{
-		Starter: st,
-		InstanceRunControls: apiv1.RunControls{
-			MaxRepasses:       2,
-			StalledRunTimeout: "30m",
-		},
-	})
-	if err != nil {
-		t.Fatalf("SchedulerFor: %v", err)
-	}
-	item := providers.WorkItem{Provider: providers.ProviderGitHub, ID: "7", Title: "pin policy"}
-	if _, err := sched.Dispatch(context.Background(), scheduler.Event{
-		WorkflowName: loaded.Workflows[0].Name,
-		Item:         &item,
-		DedupeKey:    "github:7",
-	}); err != nil {
-		t.Fatalf("Dispatch: %v", err)
-	}
-	if st.last.TriggerKind != string(journal.TriggerItem) || st.last.TriggerRef != "github:7" {
-		t.Errorf("trigger = %q %q, want %q github:7", st.last.TriggerKind, st.last.TriggerRef, journal.TriggerItem)
-	}
-	if st.last.BranchNamespace != "bots/" {
-		t.Errorf("branchNamespace = %q, want the gaggle's configured root", st.last.BranchNamespace)
-	}
-	if want := map[string][]string{
-		"coder":    {"agent:model"},
-		"reviewer": {"agent:model"},
-	}; !reflect.DeepEqual(st.last.GateGooberCapabilities, want) {
-		t.Errorf("gateGooberCapabilities = %v, want %v", st.last.GateGooberCapabilities, want)
-	}
-	if got := st.last.RunControls; got.MaxRepasses != 5 || got.StalledRunTimeout != "30m0s" {
-		t.Errorf("runControls = %+v, want gaggle maxRepasses and instance stalledRunTimeout", got)
-	}
-}
-
-func TestSchedulerForUnknownGaggle(t *testing.T) {
-	loaded, err := LoadAndRegister(fixtureRoot, "")
-	if err != nil {
-		t.Fatalf("LoadAndRegister: %v", err)
-	}
-	if _, err := loaded.SchedulerFor("ghost", SchedulerDeps{Starter: &fakeStarter{}}); err == nil {
-		t.Error("expected an error for an unknown gaggle")
-	}
-}
-
-func TestLoadAndRegisterBadDirErrors(t *testing.T) {
-	if _, err := LoadAndRegister("does-not-exist", ""); err == nil {
-		t.Error("expected an error for a missing config dir")
+	for _, w := range set.Workflows {
+		if _, ok := reg.Latest(w.Name); ok {
+			t.Errorf("workflow %q was registered under an unknown gaggle", w.Name)
+		}
 	}
 }

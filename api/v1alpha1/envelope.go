@@ -21,7 +21,8 @@ package v1alpha1
 // unknown fields are a validation error, and additive changes bump this version.
 // v1alpha7 adds input-integrity grades to invocations, backlog items, context
 // pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
-const StageContractVersion = "v1alpha8"
+// v1alpha9 adds runner-authored nested-agent authority and ownership fields.
+const StageContractVersion = "v1alpha9"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -43,6 +44,9 @@ const StageContractVersion = "v1alpha8"
 type InvocationEnvelope struct {
 	// TaskID identifies this stage instance within the run.
 	TaskID string `json:"taskId"`
+	// Attempt identifies the scheduler attempt so adapter provenance remains
+	// retry-safe across local and distributed runners.
+	Attempt int32 `json:"attempt,omitempty"`
 	// WorkflowID identifies the workflow definition being executed.
 	WorkflowID string `json:"workflowId"`
 	// RunID identifies this run (the OpenTelemetry trace id for the run).
@@ -77,6 +81,8 @@ type InvocationEnvelope struct {
 	Goober string `json:"goober,omitempty"`
 	// Goal is the stage's goal statement.
 	Goal string `json:"goal"`
+	// OwnershipBoundary is the work this invocation owns and may mutate.
+	OwnershipBoundary string `json:"ownershipBoundary,omitempty"`
 	// InstructionAddendum is an operator-supplied, one-off addition to the
 	// agent's instructions for this invocation. It is never part of the workflow
 	// definition and is empty for ordinary invocations.
@@ -122,12 +128,45 @@ type InvocationEnvelope struct {
 	// (e.g. "github:issues:write", "repo:push"). Undeclared use fails closed:
 	// credentials for capabilities not listed here are never materialized (§5).
 	Capabilities []string `json:"capabilities,omitempty"`
+	// PolicyActions are the externally mutating actions authorized for this stage.
+	PolicyActions []string `json:"policyActions,omitempty"`
+	// ParentPlatformPolicy is the authority inherited by a nested child.
+	// It is required whenever NestedAgentPolicy is present and is authored by
+	// the runner, never copied from the requested child policy.
+	ParentPlatformPolicy *PlatformPolicy `json:"parentPlatformPolicy,omitempty"`
 	// Limits bound this stage's execution (duration/tokens/cost).
 	Limits Limits `json:"limits"`
 	// Inputs are the stage's static config from its definition (plus any values
 	// the compiler resolved for it). This is the stage's own config, not another
 	// stage's runtime state.
 	Inputs map[string]interface{} `json:"inputs,omitempty"`
+	// NestedAgentPolicy is the admitted child authority for agentic stages.
+	// It is carried in the mandatory execution envelope so adapters cannot
+	// implement nested-agent behavior from prompt text alone.
+	NestedAgentPolicy *NestedAgentPolicy `json:"nestedAgentPolicy,omitempty"`
+}
+
+// ContinuationRequest creates a new run journal linked to a terminal source
+// run. It intentionally describes creation only; execution from Target is a
+// later workflow slice.
+type ContinuationRequest struct {
+	From                string              `json:"from"`
+	ExpectedTerminalSeq uint64              `json:"expectedTerminalSeq"`
+	Target              string              `json:"target"`
+	Operator            string              `json:"operator"`
+	Inputs              []ContinuationInput `json:"inputs,omitempty"`
+	// ContextPointers are the explicitly selected source artifacts. No other
+	// source-run context is implicitly inherited.
+	ContextPointers []ContextPointer `json:"contextPointers,omitempty"`
+}
+
+// ContinuationInput is an injected immutable input reference. Content is
+// supplied by the API caller and snapshotted by the journal creator.
+type ContinuationInput struct {
+	Name      string    `json:"name"`
+	Content   string    `json:"content"`
+	Source    string    `json:"source"`
+	Integrity Integrity `json:"integrity"`
 }
 
 // AdditionalWorkspace is one read-only reference-repo checkout handed to a stage
@@ -361,6 +400,36 @@ func (c FindingClass) RequiresCodeChange() bool {
 	return false
 }
 
+// LearningClassification names the durable action family a repeated finding
+// belongs to. It is optional on a fresh verdict; the runner derives a
+// conservative default when the reviewer does not supply one.
+type LearningClassification string
+
+const (
+	// LearningInstruction routes a finding to instruction remediation.
+	LearningInstruction LearningClassification = "instruction"
+	// LearningSkill routes a finding to skill remediation.
+	LearningSkill LearningClassification = "skill"
+	// LearningWorkflow routes a finding to workflow remediation.
+	LearningWorkflow LearningClassification = "workflow"
+	// LearningGate routes a finding to gate remediation.
+	LearningGate LearningClassification = "gate"
+	// LearningValidation routes a finding to targeted validation remediation.
+	LearningValidation LearningClassification = "validation"
+	// LearningCodeDefect routes a finding to an unapproved code issue.
+	LearningCodeDefect LearningClassification = "code-defect"
+)
+
+// IsValid reports whether c is a supported durable-learning classification.
+func (c LearningClassification) IsValid() bool {
+	switch c {
+	case LearningInstruction, LearningSkill, LearningWorkflow, LearningGate,
+		LearningValidation, LearningCodeDefect:
+		return true
+	}
+	return false
+}
+
 // Verdict is the structured result a gate evaluator — or, at PR altitude,
 // the merge-review workflow (issue #358) — produces. An in-run gate maps
 // Decision to a branch; merge-review maps it to a label
@@ -429,6 +498,18 @@ type Verdict struct {
 
 // Finding is a single issue raised by an evaluator.
 type Finding struct {
+	// ID is the stable identity of this finding across repasses. Reviewers
+	// copy it from an injected learning episode when the same finding remains
+	// unresolved; the runner assigns one on the first occurrence.
+	ID string `json:"id,omitempty"`
+	// LearningSignature is the normalized cross-run clustering key. The
+	// runner derives one when absent.
+	LearningSignature string `json:"learningSignature,omitempty"`
+	// LearningClassification selects the governed durable action family.
+	LearningClassification LearningClassification `json:"learningClassification,omitempty"`
+	// EvidenceDigest is finding-specific evidence for reopening a finding
+	// that a prior repass resolved. Reusing old evidence is suppressed.
+	EvidenceDigest string `json:"evidenceDigest,omitempty"`
 	// Severity ranks the finding.
 	Severity Severity `json:"severity"`
 	// Message describes the issue.
@@ -457,6 +538,9 @@ type Finding struct {
 // an unusable record.
 func (f Finding) IsValid() bool {
 	if f.Class != "" && !f.Class.IsValid() {
+		return false
+	}
+	if f.LearningClassification != "" && !f.LearningClassification.IsValid() {
 		return false
 	}
 	if f.Class == FindingCrossPRBlocked && len(f.BlockingPRs) == 0 {

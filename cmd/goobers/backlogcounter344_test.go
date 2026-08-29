@@ -153,6 +153,53 @@ func TestBuildBacklogCounter(t *testing.T) {
 		}
 	})
 
+	t.Run("desired refill derives schedule workflow backlog eligibility", func(t *testing.T) {
+		gaggle := apiv1.Gaggle{Spec: apiv1.GaggleSpec{RequireLabels: []string{"gaggle-default"}}}
+		wf := &apiv1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
+			Spec: apiv1.WorkflowSpec{
+				Gaggle:    "goobers",
+				Triggers:  []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@every 1h"}},
+				Readiness: apiv1.ReadinessConditions{DesiredConcurrentRuns: 2, MaxConcurrentRuns: 4},
+				Start:     "query-backlog",
+				Tasks: []apiv1.Task{{
+					Name: "query-backlog",
+					Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+					Inputs: map[string]string{
+						"trustLabel":      "goobers:approved",
+						"requireLabels":   "goobers:ready",
+						"excludeLabels":   "goobers/status:in-review",
+						"respectAssignee": "true",
+					},
+				}},
+			},
+		}
+		counter, err := buildRefillDemandCounter(
+			cfg, gaggle, wf, repoRef, nil, nil, "/instance/scheduler", "goobersbot", nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refill, ok := counter.(*backlogCounter)
+		if !ok {
+			t.Fatalf("counter type = %T, want *backlogCounter", counter)
+		}
+		if got, want := refill.labels, []string{"goobers:approved", "goobers:ready"}; !slices.Equal(got, want) {
+			t.Fatalf("labels = %v, want %v", got, want)
+		}
+		if !refill.respectAssignee || refill.assignedTo != "goobersbot" {
+			t.Fatalf("assignee scope = enabled:%v value:%q, want goobersbot", refill.respectAssignee, refill.assignedTo)
+		}
+		matched, err := refill.labelPredicate.Matches([]string{"goobers:approved", "goobers:ready"})
+		if err != nil || !matched {
+			t.Fatalf("eligible labels match = %v, err = %v, want true", matched, err)
+		}
+		matched, err = refill.labelPredicate.Matches([]string{"goobers:approved", "goobers:ready", providers.LabelClaimed})
+		if err != nil || matched {
+			t.Fatalf("claimed labels match = %v, err = %v, want false", matched, err)
+		}
+	})
+
 	t.Run("pr remediation uses claim-aware pull request demand", func(t *testing.T) {
 		scheduleCfg := &instance.Config{Repos: []instance.RepoRef{
 			{Provider: "github", Owner: "acme", Name: "other", Token: instance.TokenRef{Env: "OTHER_TOK"}},
@@ -219,7 +266,7 @@ func TestBacklogCounterAppliesExactLabelPredicate(t *testing.T) {
 	predicate, err := labelpredicate.Compile(
 		`("size:s" in labels || "size:m" in labels) && !("platform:windows" in labels)`,
 		[]string{"area:runner"},
-		nil,
+		[]string{providers.LabelClaimed},
 	)
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
@@ -230,17 +277,24 @@ func TestBacklogCounterAppliesExactLabelPredicate(t *testing.T) {
 	server.addIssue(2, "Windows medium item", "area:runner", "size:m", "platform:windows")
 	server.addIssue(3, "Large runner item", "area:runner", "size:l")
 	server.addIssue(4, "Small docs item", "area:docs", "size:s")
+	server.addIssue(5, "Claimed runner item", "area:runner", "size:s", providers.LabelClaimed)
+	server.addIssue(6, "Other owner runner item", "area:runner", "size:s")
+	setFakeIssueAssignee(server, 1, "goobersbot")
+	setFakeIssueAssignee(server, 5, "goobersbot")
+	setFakeIssueAssignee(server, 6, "someone-else")
 	prev := newGitHubProvider
 	newGitHubProvider = server.newGitHubProvider
 	t.Cleanup(func() { newGitHubProvider = prev })
 
 	counter := &backlogCounter{
-		ref:            "acme/web",
-		repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
-		labels:         predicate.RequiredLabels(),
-		labelPredicate: predicate,
-		resolver:       resolver,
-		reg:            &backlogTestRegistrar{},
+		ref:             "acme/web",
+		repo:            providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"},
+		labels:          predicate.RequiredLabels(),
+		labelPredicate:  predicate,
+		respectAssignee: true,
+		assignedTo:      "goobersbot",
+		resolver:        resolver,
+		reg:             &backlogTestRegistrar{},
 	}
 	count, err := counter.EligibleCount(context.Background())
 	if err != nil {
