@@ -1,7 +1,8 @@
 # Design: EvalSuite — end-to-end workflow evaluation
 
-> Status: **Design finalized for the DSL, judge harness, and sandbox/adapter
-> API; runner, adapter shim, and CI gating still pending** (in progress)
+> Status: **draft — design finalized for the DSL, judge harness, and
+> sandbox/adapter API; runner, adapter shim, and CI gating still pending**
+> (in progress)
 > Epic: [#2662](https://github.com/Agent-Clubhouse/Goobers/issues/2662)
 > Home directory: [`evals/`](../../evals/)
 
