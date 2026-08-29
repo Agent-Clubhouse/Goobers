@@ -1,11 +1,18 @@
 package v1alpha1
 
 import (
+	"context"
+	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
+	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/validation"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/yaml"
 )
 
@@ -164,4 +171,117 @@ func TestPredicateCRDsRejectExplicitEmptyValues(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCRDsAreInstallable runs the API server's own CustomResourceDefinition
+// validator over every shipped CRD. An uninstallable schema — a forbidden
+// uniqueItems marker, or a CEL rule whose estimated cost exceeds the per-rule
+// budget because an enclosing array is unbounded — used to surface only in the
+// operator's envtest tier, which needs a downloaded control plane and so does
+// not run in the unit tier (#3166, fixed in #3168). This catches the same
+// rejection in milliseconds, with no control plane.
+func TestCRDsAreInstallable(t *testing.T) {
+	paths, err := filepath.Glob("../../config/crd/bases/*.yaml")
+	if err != nil {
+		t.Fatalf("glob CRDs: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no CRDs found under config/crd/bases")
+	}
+
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			if errs := validateCRDForInstall(t, path, nil); len(errs) != 0 {
+				t.Fatalf("CRD is not installable: %v", errs)
+			}
+		})
+	}
+}
+
+// TestCRDInstallCheckDetectsForbiddenSchema is the negative control for
+// TestCRDsAreInstallable: it reintroduces the two constraints that made the
+// Workflow CRD uninstallable and asserts the check rejects them, so the guard
+// above cannot silently degrade into a test that passes on anything.
+func TestCRDInstallCheckDetectsForbiddenSchema(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*apiextensionsv1.JSONSchemaProps)
+		want   string
+	}{
+		{
+			name: "uniqueItems",
+			mutate: func(root *apiextensionsv1.JSONSchemaProps) {
+				task := taskSchema(root)
+				contextFrom := task.Properties["contextFrom"]
+				contextFrom.UniqueItems = true
+				task.Properties["contextFrom"] = contextFrom
+			},
+			want: "uniqueItems",
+		},
+		{
+			name: "unbounded array around a CEL rule",
+			mutate: func(root *apiextensionsv1.JSONSchemaProps) {
+				spec := root.Properties["spec"]
+				tasks := spec.Properties["tasks"]
+				tasks.MaxItems = nil
+				spec.Properties["tasks"] = tasks
+				root.Properties["spec"] = spec
+			},
+			want: "estimated rule cost exceeds budget",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateCRDForInstall(t, "../../config/crd/bases/goobers.dev_workflows.yaml", tt.mutate)
+			joined := fmt.Sprint(errs)
+			if !strings.Contains(joined, tt.want) {
+				t.Fatalf("errors = %v, want one containing %q", errs, tt.want)
+			}
+		})
+	}
+}
+
+// taskSchema returns the mutable per-task schema, copying the shared item
+// schema so a mutation cannot leak across subtests.
+func taskSchema(root *apiextensionsv1.JSONSchemaProps) *apiextensionsv1.JSONSchemaProps {
+	spec := root.Properties["spec"]
+	tasks := spec.Properties["tasks"]
+	item := *tasks.Items.Schema
+	tasks.Items.Schema = &item
+	spec.Properties["tasks"] = tasks
+	root.Properties["spec"] = spec
+	return &item
+}
+
+// validateCRDForInstall decodes a shipped CRD, applies the status the API
+// server derives on create, and validates it exactly as the API server does on
+// `kubectl apply`. mutate may perturb the decoded schema first.
+func validateCRDForInstall(t *testing.T, path string, mutate func(*apiextensionsv1.JSONSchemaProps)) field.ErrorList {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read CRD: %v", err)
+	}
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(data, &crd); err != nil {
+		t.Fatalf("decode CRD: %v", err)
+	}
+	if mutate != nil {
+		mutate(crd.Spec.Versions[0].Schema.OpenAPIV3Schema)
+	}
+
+	var internal apiextensions.CustomResourceDefinition
+	if err := apiextensionsv1.Convert_v1_CustomResourceDefinition_To_apiextensions_CustomResourceDefinition(&crd, &internal, nil); err != nil {
+		t.Fatalf("convert CRD: %v", err)
+	}
+	internal.Status.AcceptedNames = internal.Spec.Names
+	for _, version := range internal.Spec.Versions {
+		if version.Storage {
+			internal.Status.StoredVersions = append(internal.Status.StoredVersions, version.Name)
+		}
+	}
+
+	return validation.ValidateCustomResourceDefinition(context.Background(), &internal)
 }
