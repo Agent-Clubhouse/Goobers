@@ -154,6 +154,15 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 		// rather than route on an empty decision.
 		return apiv1.Verdict{}, fmt.Errorf("gate %q: the dispatch activity returned no verdict for a review attempt (activity host predates gate placement?); refusing to route on nothing", g.Name)
 	}
+	if result.Verdict.Decision == "" {
+		// The workflow-side re-assertion of the activity's fail-closed rule
+		// (validateSurrenderedVerdict): an activity host that predates the
+		// check could hand back a verdict with nothing to route on, and the
+		// one field the walk branches on is re-read here so a version skew
+		// between worker and workflow can never route a run on an empty
+		// decision.
+		return apiv1.Verdict{}, fmt.Errorf("gate %q: the dispatch activity returned a verdict with an empty decision for pod attempt %d; refusing to route the run on it (fail closed)", g.Name, podAttempt)
+	}
 	return *result.Verdict, nil
 }
 

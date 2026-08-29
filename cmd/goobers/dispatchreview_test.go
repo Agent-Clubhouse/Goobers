@@ -368,3 +368,56 @@ func TestRecordPodReviewerDiffAttachesNothingWithoutAChange(t *testing.T) {
 		}
 	})
 }
+
+// The harness's own class survives the surrender plane only as Retryable, so
+// the pod commits it where the marker is still visible (self-arm parity: the
+// worker's ReviewGoober hands harness.Executor.Review's
+// invoke.InfrastructureFailure to classifySeamError, and the gate's evaluator
+// retry bound covers it). A session that ended without a completion is an
+// infrastructure fault → Retryable; a harness that refused the session is
+// the review's own outcome → not.
+func TestReviewPodKeepsTheHarnessInfrastructureClass(t *testing.T) {
+	endpoint, _ := fakeBlobPlane(t)
+	t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+	t.Setenv(dispatcher.EnvPodToken, "pod-token")
+	t.Setenv(dispatcher.EnvRunID, "run-review-class")
+	t.Setenv(dispatcher.EnvStage, "review")
+	t.Setenv(dispatcher.EnvAttempt, "1")
+	t.Setenv(dispatcher.EnvStageCapabilities, "")
+	t.Setenv(dispatcher.EnvCheckoutCapability, "")
+	t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceScratch))
+	t.Setenv(dispatcher.EnvDaemonAPI, "")
+	t.Chdir(t.TempDir())
+	env := apiv1.InvocationEnvelope{RunID: "run-review-class", TaskID: "run-review-class:review", Goober: "coder", Goal: "gate: review"}
+
+	for _, tc := range []struct {
+		name          string
+		act           func(context.Context, harness.RunRequest) error
+		wantRetryable bool
+	}{
+		{
+			name: "no completion is an infrastructure fault the engine may retry",
+			act:  func(context.Context, harness.RunRequest) error { return nil },
+			// A nil error with no completion file is harness.ErrNoCompletion,
+			// which the executor marks invoke.InfrastructureFailure.
+			wantRetryable: true,
+		},
+		{
+			name:          "a refused session is the review's own outcome",
+			act:           func(context.Context, harness.RunRequest) error { return errors.New("harness refused the prompt") },
+			wantRetryable: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			installFakeHarness(t, tc.act)
+			publishReviewKit(t, endpoint, env, agentickit.ModeReview)
+			got := runAgenticStage(context.Background(), &strings.Builder{}, &strings.Builder{})
+			if got.Verdict != nil || got.Result.Status != apiv1.ResultFailure || got.Result.Error == nil || got.Result.Error.Code != "agentic_review_failed" {
+				t.Fatalf("outcome = %+v (verdict %+v), want an agentic_review_failed failure and no verdict", got.Result, got.Verdict)
+			}
+			if got.Result.Error.Retryable != tc.wantRetryable {
+				t.Fatalf("Retryable = %t, want %t: %s", got.Result.Error.Retryable, tc.wantRetryable, got.Result.Error.Message)
+			}
+		})
+	}
+}

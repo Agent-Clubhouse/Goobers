@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -552,4 +553,133 @@ func containsString(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// One attempt is one pod (D1) and the surrender plane's Put is idempotent per
+// (run, stage, attempt), so a REPASSED gate — evaluated again after
+// needs-changes sent the run back to implement — must dispatch under a fresh
+// pod attempt or it would read its own earlier verdict back. The counter is
+// per gate for the whole run, never the gate's non-pass count (which resets
+// on pass), and each evaluation reviews the delta the implement pass before
+// it published. The implement stage stays on the self arm here so the
+// subject's publications are scripted per pass (TestRepassUsesOwnPriorDelta's
+// shape): a pod TASK re-entered by a repass is re-dispatched as attempt 1 by
+// dispatchWithRetry today, which is the task path's own numbering to settle,
+// not this gate's.
+func TestRepassedPlacedGateDispatchesUnderAFreshAttempt(t *testing.T) {
+	in := placedGateInput("placed-gate-repass")
+	in.Placements = []PinnedPlacement{remoteGatePin()}
+	in.MaxRepasses = 2
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "review", 1, reviewSurrender(apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "again"}))
+	putSurrendered(t, surrenders, in.RunID, "review", 2, reviewSurrender(apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "now fine"}))
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux-agentic", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+	det := &fakeRunner{run: func(context.Context, apiv1.InvocationEnvelope, apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+		return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "landed"}, nil
+	}}
+	workspaces := testWorkspaces(t)
+	implementRuns := 0
+	workspaces.publish = func(stage string) (WorkspaceDeltaPublication, error) {
+		if stage != "implement" {
+			return WorkspaceDeltaPublication{}, nil
+		}
+		implementRuns++
+		if implementRuns == 1 {
+			return WorkspaceDeltaPublication{Digest: deltaA}, nil
+		}
+		return WorkspaceDeltaPublication{Digest: deltaB}, nil
+	}
+	proj := executeForProjection(t, in, &Activities{Goober: refusingReviewer(t), Det: det, Workspaces: workspaces, Dispatcher: fake, Surrenders: surrenders}, false)
+
+	evaluated := gateEvaluatedEvents(proj)
+	if len(evaluated) != 2 || evaluated[0].Verdict != "needs-changes" || evaluated[1].Verdict != "pass" {
+		t.Fatalf("gate.evaluated = %+v, want needs-changes then pass", evaluated)
+	}
+	if implementRuns != 2 {
+		t.Fatalf("implement published %d time(s), want 2 (the first pass and the repass)", implementRuns)
+	}
+	attempts, _ := fake.recorded()
+	var gateNumbers []int
+	var gateDeltas []string
+	for _, a := range attempts {
+		if a.Stage != "review" {
+			t.Fatalf("dispatcher attempt %+v for a self-placed stage", a)
+		}
+		gateNumbers = append(gateNumbers, a.Number)
+		gateDeltas = append(gateDeltas, a.WorkspaceDelta)
+	}
+	if fmt.Sprint(gateNumbers) != "[1 2]" {
+		t.Fatalf("gate pod attempts = %v, want [1 2]: a repeated number would surrender against the earlier verdict", gateNumbers)
+	}
+	if fmt.Sprint(gateDeltas) != fmt.Sprint([]string{deltaA, deltaB}) {
+		t.Fatalf("gate deltas = %v, want [%s %s]: each evaluation reviews the implement pass before it", gateDeltas, deltaA, deltaB)
+	}
+}
+
+// The walk-level half of the fail-closed rule: a review pod that surrenders a
+// verdict with no decision fails the RUN — the refusal is stage-classed, so it
+// is not retried on the gate's evaluator budget (a redispatch would reproduce
+// it) and it never falls through to the in-process reviewer. The rule is
+// asserted at BOTH boundaries: the activity refuses the surrender, and the
+// workflow re-reads the one field it routes on, so an activity host that
+// predates the check (a skewed worker handing back an empty decision) cannot
+// route the run on nothing either.
+func TestPlacedGateRefusesAnEmptyVerdictFromTheActivity(t *testing.T) {
+	t.Run("the activity refuses the surrendered verdict", func(t *testing.T) {
+		in := placedGateInput("placed-gate-empty")
+		in.Placements = []PinnedPlacement{remoteGatePin()}
+		// A retry bound the gate WOULD spend on an infrastructure-classed
+		// failure: the assertion below is that the refusal does not touch it.
+		in.Spec.Gates[0].Agentic.Retry = &apiv1.RetryPolicy{MaxAttempts: 3}
+		surrenders := surrenderStore(t)
+		putSurrendered(t, surrenders, in.RunID, "review", 1, reviewSurrender(apiv1.Verdict{Summary: "no decision"}))
+		fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux-agentic", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+		var ts testsuite.WorkflowTestSuite
+		env := temporaltest.NewWorkflowEnvironment(&ts)
+		env.RegisterActivity(&Activities{Goober: refusingReviewer(t), Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+		env.ExecuteWorkflow(Run, in)
+		err := env.GetWorkflowError()
+		if err == nil {
+			t.Fatal("the run completed on a verdict with no decision")
+		}
+		if !strings.Contains(err.Error(), "empty decision") || !strings.Contains(err.Error(), "fail closed") {
+			t.Fatalf("workflow error = %v, want the fail-closed empty-decision refusal", err)
+		}
+		if got := fake.calls.Load(); got != 1 {
+			t.Fatalf("dispatcher calls = %d, want exactly one gate attempt: a stage-classed refusal is never retried on the evaluator budget", got)
+		}
+	})
+	t.Run("the workflow refuses an empty decision from a skewed activity host", func(t *testing.T) {
+		in := placedGateInput("placed-gate-empty-skew")
+		in.Placements = []PinnedPlacement{remoteGatePin()}
+		var ts testsuite.WorkflowTestSuite
+		env := temporaltest.NewWorkflowEnvironment(&ts)
+		env.RegisterActivity(&skewedDispatchHost{real: &Activities{Goober: refusingReviewer(t), Workspaces: testWorkspaces(t)}})
+		env.ExecuteWorkflow(Run, in)
+		err := env.GetWorkflowError()
+		if err == nil {
+			t.Fatal("the run routed on a verdict with no decision handed back by the activity")
+		}
+		if !strings.Contains(err.Error(), "empty decision") || !strings.Contains(err.Error(), "fail closed") {
+			t.Fatalf("workflow error = %v, want the workflow-side fail-closed empty-decision refusal", err)
+		}
+	})
+}
+
+// skewedDispatchHost is an activity host that predates the surrendered-verdict
+// check: its DispatchStage projects a review surrender without validating it —
+// a success envelope beside a verdict with no decision, which no current host
+// returns. InvokeGoober delegates to the real activity so the walk reaches the
+// gate. Registered by method name, exactly as the worker registers Activities.
+type skewedDispatchHost struct{ real *Activities }
+
+func (h *skewedDispatchHost) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch, workspaceDelta string, workspace apiv1.WorkspaceMode) (stageActivityResult, error) {
+	return h.real.InvokeGoober(ctx, env, workspaceBranch, workspaceDelta, workspace)
+}
+
+func (h *skewedDispatchHost) DispatchStage(context.Context, DispatchStageInput) (stageActivityResult, error) {
+	return stageActivityResult{
+		ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+		Verdict:        &apiv1.Verdict{Summary: "decision stripped by a skewed host"},
+	}, nil
 }

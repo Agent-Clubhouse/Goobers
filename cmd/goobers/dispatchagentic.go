@@ -48,8 +48,9 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 	// no branch for "the pod could not start", so the engine reads
 	// Retryable as the pod's own infra/policy classification and retries a
 	// substrate fault on a fresh pod under the gate's evaluator retry bound
-	// (engine.reviewActivityResult). A harness or verdict failure stays
-	// policy-classed and fails the run, as the self arm's ReviewGoober does.
+	// (engine.reviewActivityResult). A verdict failure stays policy-classed
+	// and fails the run; a harness failure carries the harness's own class
+	// (see the review arm below), as the self arm's ReviewGoober does.
 	fail := func(code, message string) stageOutcome {
 		envelope := failureEnvelope(code, message)
 		if kit.IsReview() && reviewSubstrateFailure(code) {
@@ -143,7 +144,19 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome
 		// outcome, and the engine routes on it after its own re-validation.
 		verdict, err := exec.Review(ctx, kit.Envelope)
 		if err != nil {
-			return fail("agentic_review_failed", err.Error())
+			// The harness's own class survives the surrender plane only as
+			// Retryable, so it is committed HERE, where the marker is still
+			// visible: harness.Executor.Review marks a session that ended
+			// without a completion (ErrNoCompletion) as an
+			// invoke.InfrastructureFailure, and the self arm's ReviewGoober
+			// hands exactly that class to classifySeamError, so the gate's
+			// evaluator retry bound covers it there. A pod that dropped the
+			// class would fail the run where the worker would retry. A
+			// verdict the schema refused, or a harness that would not run,
+			// carries no marker and stays the review's own outcome.
+			outcome := fail("agentic_review_failed", err.Error())
+			outcome.Result.Error.Retryable = invoke.IsInfrastructureFailure(err)
+			return outcome
 		}
 		return stageOutcome{
 			Result:  apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "reviewer verdict surrendered"},
