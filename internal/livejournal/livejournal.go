@@ -106,10 +106,19 @@ type SpanOp struct {
 // Op is one journal write, in emission order. Key is the op's idempotency
 // key, derived by the emitter from (runID, branch, scope, attempt, ordinal) —
 // deterministic within an attempt, distinct across attempts (§8). Time is the
-// workflow-deterministic timestamp the write was decided at; the writer
-// stamps events with it (the projection's own clock-replay rule, #629), so a
-// live-authored journal and a history re-projection of the same run agree on
-// event times, not only on the normative view.
+// timestamp the writer stamps the resulting event with verbatim (the
+// projection's own clock-replay rule, #629): for an op built on the worker's
+// in-process path (engine/emit.go's liveOpFrom) that is still the
+// workflow-deterministic decision time, so a live-authored journal and a
+// history re-projection of that path's events agree exactly. An op built by
+// a mode-3 stage pod (podArtifactRecorder.Append, recordStageArtifacts) has
+// no access to that deterministic time and instead stamps the pod's own wall
+// clock (#3774) — real, but not guaranteed monotonic with the daemon's or
+// with other pods': a pod whose clock runs behind can move a run's
+// LastActivity backwards (journal.Run.append adopts Time unconditionally),
+// and one running ahead can understate observedAt.Sub(LastActivityAt). No
+// clamp or monotonic floor is applied; this is an accepted, currently
+// untested risk, not a guarantee.
 type Op struct {
 	Kind     string         `json:"kind"`
 	Key      string         `json:"key"`
@@ -217,10 +226,43 @@ type replayClock struct {
 	current time.Time
 }
 
+// set adopts t as the clock's current time — except a zero t, which is
+// refused rather than adopted (#3774 defense in depth). Every legitimate
+// emitter stamps a real Time on its Op (podArtifactRecorder.Append,
+// recordStageArtifacts, engine/emit.go's liveOpFrom); a zero one reaching
+// here means some caller forgot to. Adopting it would retroactively zero the
+// clock this run's events are timestamped from — refusing it instead leaves
+// the clock at its last known-good value, so the affected event is stamped
+// with stale-but-real time rather than 0001-01-01T00:00:00Z.
+//
+// "Last known-good value" is a guarantee about this clock's own history, not
+// about a freshly constructed one: a warm liveRun's clock only ever advances
+// via applied ops, so refusing a zero one always leaves a real prior time in
+// place. rehydrate builds a brand-new replayClock per reopen, so it is the
+// one caller responsible for seeding that history from the journal itself
+// (newestTimestamped(report.Events)) before this guard's promise holds
+// there too — see rehydrate's own comments.
 func (c *replayClock) set(t time.Time) {
+	if t.IsZero() {
+		return
+	}
 	c.mu.Lock()
 	c.current = t
 	c.mu.Unlock()
+}
+
+// newestTimestamped returns the time of the most recent event carrying a
+// non-zero timestamp, or the zero time when none does. Mirrors
+// internal/runner/stalled.go's helper of the same name and rule; duplicated
+// rather than imported to keep livejournal's dependency on the runner
+// package at zero.
+func newestTimestamped(events []journal.Event) time.Time {
+	for i := len(events) - 1; i >= 0; i-- {
+		if !events[i].Time.IsZero() {
+			return events[i].Time
+		}
+	}
+	return time.Time{}
 }
 
 func (c *replayClock) nowFunc() func() time.Time {
@@ -523,7 +565,10 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 	clock := &replayClock{}
 	// Seed the clock with the batch's first op time so anything Recover
 	// itself appends (a torn-tail repaired event) carries a real,
-	// workflow-adjacent timestamp instead of the zero time.
+	// workflow-adjacent timestamp instead of the zero time. This is only a
+	// provisional seed: Recover has not read the journal's history yet, so
+	// this cannot be the "last known-good value" replayClock.set's contract
+	// promises. It is upgraded below once that history is in hand.
 	clock.set(req.Ops[0].Time)
 	opts := []journal.Option{journal.WithClock(clock.nowFunc())}
 	if w.observer != nil {
@@ -565,6 +610,19 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 		}
 		return run, nil
 	}
+	// Upgrade the seed to the newest timestamped event this run's own history
+	// (report.Events, which by now also includes any torn-tail repair event
+	// Recover just appended) actually shows — the true "last known-good
+	// value". Without this, a reopen whose first applied op is itself
+	// unstamped (#3774: a long-silent agentic stage resuming after
+	// liveJournalIdleClose, or any daemon restart) would leave the clock at
+	// the provisional, possibly-zero seed above: applyOp's clock.set(op.Time)
+	// refuses to adopt that zero op time, so nothing would ever move the
+	// clock off it. Calling set again here is safe even when req.Ops[0].Time
+	// was itself a real, newer time — applyOp re-adopts it via its own
+	// clock.set(op.Time) once the op is actually applied, after rehydrate
+	// returns.
+	clock.set(newestTimestamped(report.Events))
 	run.jr = jr
 	run.clock = clock
 	return run, nil

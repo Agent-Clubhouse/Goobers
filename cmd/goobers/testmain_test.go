@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -124,7 +125,25 @@ func TestMain(m *testing.M) {
 	disableJournalFsyncForTests()
 	runTerminalWaitTimeout = suiteRunWaitTimeout
 
-	os.Exit(m.Run())
+	packageDir, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "package directory guard: resolve working directory: %v\n", err)
+		os.Exit(1)
+	}
+	guard, err := newPackageDirGuard(packageDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "package directory guard: snapshot %s: %v\n", packageDir, err)
+		os.Exit(1)
+	}
+
+	code := m.Run()
+	if changes := guard.changes(); len(changes) > 0 {
+		fmt.Fprintln(os.Stderr, packageDirGuardFailure(packageDir, changes))
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
 }
 
 // installMakeExecutableFixture writes a copy of this test binary into dir as

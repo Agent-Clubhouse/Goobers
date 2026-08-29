@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
@@ -428,9 +429,17 @@ func (r podArtifactRecorder) Append(ev journal.Event) error {
 		RunID:  runID,
 		Gaggle: os.Getenv(dispatcher.EnvGaggle),
 		Ops: []livejournal.Op{{
-			Kind:  livejournal.OpAppend,
-			Key:   fmt.Sprintf("%s/%s/%d", os.Getenv(dispatcher.EnvStage), ev.Type, ev.Seq),
+			Kind: livejournal.OpAppend,
+			Key:  fmt.Sprintf("%s/%s/%d", os.Getenv(dispatcher.EnvStage), ev.Type, ev.Seq),
+			// The daemon's replayClock adopts THIS field as the event's own
+			// Time (livejournal.applyOp: run.clock.set(op.Time)) — a pod has
+			// no journal-plane clock of its own to inherit one from, so an
+			// unstamped Op here durably persists agent.lifecycle/agent.message
+			// events at 0001-01-01T00:00:00Z (#3774), which the run-stalled
+			// watchdog then either misreads as ancient activity or (post
+			// #3775/#3776) declines to judge at all.
 			Event: &event,
+			Time:  time.Now().UTC(),
 		}},
 	})
 	return err

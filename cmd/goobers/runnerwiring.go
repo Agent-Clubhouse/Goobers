@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
@@ -368,6 +369,25 @@ func pathLengthManagerLimits(cfg *instance.Config, cloneURL func(apiv1.RepoRef) 
 		limits[url] = limit
 	}
 	return limits, nil
+}
+
+// resolveWorkflowRunControls collapses one workflow's run-control inheritance
+// (#1671) into an effective policy: instance runConditions, then the matched
+// repo's override, then the gaggle's spec, then the workflow's own spec.
+//
+// Every starter must resolve through this one function. The daemon's
+// scheduler entry did this inline while `goobers engine-start` did it nowhere,
+// so the same workflow pinned a different watchdog budget depending on which
+// starter dispatched it (#3820) — a run identity must not depend on that.
+func resolveWorkflowRunControls(cfg *instance.Config, project apiv1.RepoRef, gaggle apiv1.Gaggle, workflowCfg apiv1.Workflow) (runcontrol.Effective, error) {
+	var instanceControls apiv1.RunControls
+	if cfg != nil {
+		instanceControls = cfg.RunConditions.RunControls()
+	}
+	if repo, ok := configuredRepoForProject(cfg, project); ok {
+		instanceControls = repo.EffectiveRunControls(instanceControls)
+	}
+	return runcontrol.Resolve(instanceControls, gaggle.Spec.RunControls, workflowCfg.Spec.RunControls)
 }
 
 func configuredRepoForProject(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {

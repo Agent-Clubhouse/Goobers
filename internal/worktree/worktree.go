@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/mergeresolve"
 )
 
 // botGitUserName/botGitUserEmail are the commit identity Create sets local
@@ -390,8 +391,14 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 			mergeErr = runGit(ctx, path, mergeArgs...)
 		}
 		if mergeErr != nil {
-			conflictingFiles, inspectErr := mergeConflictFiles(ctx, path)
-			return nil, baseSyncFailure(opts, mergeErr, conflictingFiles, inspectErr, nil)
+			resolved, resolveErr := resolveBaseSyncConflict(ctx, path)
+			if !resolved {
+				if resolveErr != nil {
+					mergeErr = errors.Join(mergeErr, resolveErr)
+				}
+				conflictingFiles, inspectErr := mergeConflictFiles(ctx, path)
+				return nil, baseSyncFailure(opts, mergeErr, conflictingFiles, inspectErr, nil)
+			}
 		}
 	}
 
@@ -477,6 +484,26 @@ func preflightPathLength(ctx context.Context, repoDir, ref, checkoutPath string,
 		"worktree: path-length preflight refused checkout: tracked path %q requires %d characters but only %d are available (maximum %d, checkout prefix %d, build-output allowance %d); shorten the instance root, raise repos[].pathLength.maxPathLength, reduce the allowance, or set repos[].pathLength.disabled: true",
 		deepest, required, available, limit.MaxPathLength, len(checkoutPath)+1, limit.BuildOutputAllowance,
 	)
+}
+
+// resolveBaseSyncConflict attempts the provably safe mechanical resolution of
+// a conflicted base merge: two concurrent implementations that each inserted a
+// distinct entry into the same line-oriented list (the shared manifest script
+// line of #3096) conflict mechanically, not substantively, so failing the
+// stage there spends a repass budget on a diff no agent can improve. Anything
+// the shared resolver cannot resolve provably safely stays a conflict.
+func resolveBaseSyncConflict(ctx context.Context, dir string) (bool, error) {
+	git := func(args ...string) ([]byte, error) {
+		return rawGitOutput(ctx, dir, nil, args...)
+	}
+	status, err := mergeresolve.ResolveAdjacentLineConflicts(dir, git)
+	if err != nil || status != mergeresolve.StatusResolved {
+		return false, err
+	}
+	if err := runGit(ctx, dir, "commit", "--no-edit"); err != nil {
+		return false, fmt.Errorf("commit mechanically resolved base merge: %w", err)
+	}
+	return true, nil
 }
 
 func mergeConflictFiles(ctx context.Context, path string) ([]string, error) {

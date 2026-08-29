@@ -6,19 +6,32 @@ package e2e
 // supported caller, hermetically (no live Temporal server), so it can run as
 // part of `make ci`.
 //
-// The run is built exactly the way cmd/goobers/enginestart.go builds one —
-// loading the config-as-code fixture with instance.LoadConfigDir (the same
-// loader `loadConfigDirectory` resolves to) and then handing it to
-// bootstrap.RegisterGaggleWorkflows, the shared constructor engine-start
-// itself calls, for a Registry-pinned RunInput. Its journal is projected the
-// same way cmd/goobers/engineproject.go projects one: engine.
-// ProjectCompletedRunForGaggle against the standard projectionQuerier shape.
-// The only substitution is the Temporal transport: the SDK's in-process test
-// workflow environment stands in for a live server for the engine-start
-// half. temporaltest.ProjectionQuerier (#2903) is the connective piece: it
-// adapts that same test environment to the query shape the completed-run
-// projection half expects, so both halves run through their real,
-// unmodified production code in one process.
+// The run is loaded and registered the way cmd/goobers/enginestart.go loads
+// and registers one — instance.LoadConfigDir (the same loader
+// `loadConfigDirectory` resolves to), then bootstrap.RegisterGaggleWorkflows,
+// the shared constructor engine-start itself calls, for a Registry-pinned
+// RunInput. Its journal is projected the same way cmd/goobers/
+// engineproject.go projects one: engine.ProjectCompletedRunForGaggle against
+// the standard projectionQuerier shape. The Temporal transport is
+// substituted: the SDK's in-process test workflow environment stands in for a
+// live server for the engine-start half. temporaltest.ProjectionQuerier
+// (#2903) is the connective piece: it adapts that same test environment to
+// the query shape the completed-run projection half expects, so both halves
+// run through their real, unmodified production code in one process.
+//
+// What this test is NOT: the StartSpec below is hand-rolled, not the one the
+// command builds. cmd/goobers/enginestart.go builds its spec in
+// engineStartSpec, which also resolves Placements (#3588), BranchNamespace,
+// LiveJournal and RunControls (#3820); engineStartSpec lives in package main
+// and is unreachable from here, so this run round-trips the built-in
+// run-control defaults (45m / 3 repasses) and no placements whatever the
+// fixture declares. A regression in any of those fields is invisible to this
+// test. They are asserted at their own seams instead:
+// cmd/goobers/enginestartruncontrols_test.go for what the command resolves
+// and pins, and internal/engine/startruncontrols_test.go for a StartSpec's
+// policy reaching run.yaml on disk. Widening this test to cover them means
+// lifting engineStartSpec out of package main — worth doing, but do not read
+// the round trip below as covering it in the meantime.
 
 import (
 	"context"
