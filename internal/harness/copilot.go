@@ -47,6 +47,11 @@ const fallbackToDefaultOption = "fallback-to-default"
 
 const copilotModelDiscoveryTimeout = 30 * time.Second
 
+// errModelDiscoveryDeferred reports that DeferDiscovery skipped a cold-cache
+// model discovery. It flows into resolveConfig's existing discovery-error
+// branch, so the model is accepted unverified with a warning (#3336).
+var errModelDiscoveryDeferred = errors.New("model discovery deferred at daemon startup (#3336); the harness verifies the model at run time")
+
 const copilotModelPolicyDisabled = "disabled"
 
 // Shipped goobers declare harness-neutral tool groups. Copilot filters the
@@ -182,9 +187,29 @@ type CopilotAdapter struct {
 	// SelfBin is the running daemon's executable path. It is exposed to the
 	// agentic subprocess so tools can invoke that exact goobers binary.
 	SelfBin string
+	// DeferDiscovery makes a cold-cache ResolveConfig skip model discovery
+	// entirely instead of spawning the Copilot CLI and waiting on its JSON-RPC
+	// handshake. The daemon sets this for startup admission (#3336): in an
+	// environment where the CLI cannot complete its handshake, the spawned
+	// child can exhaust the pod's memory cgroup before the discovery timeout
+	// fires, and the OOM killer takes the daemon down with it — a boot loop no
+	// in-process deadline can prevent. Deferred resolution takes the existing
+	// accept-unverified path (a warning, not an error); a warm cache is still
+	// served. Interactive callers (validate, status) keep discovery on, where
+	// verifying model names against the live CLI is the point.
+	DeferDiscovery bool
 
 	modelsMu        sync.Mutex
 	availableModels map[string]copilotModelCapabilities
+	// modelsErr negative-caches a failed discovery for this adapter's lifetime.
+	// Admission resolves every goober through one adapter, and without this a
+	// single unreachable CLI is re-spawned once PER GOOBER: measured in #3336
+	// as a fresh ~295MB CLI process every ~2.5s (the SDK's ForceStop kills the
+	// node wrapper but not the copilot binary it spawned, so each attempt's
+	// grandchild survives) — 14 goobers were enough to OOM a 4Gi pod before
+	// the single-attempt timeout ever fired. One spawn per adapter instance;
+	// registries are rebuilt per admission pass, so a reload retries cleanly.
+	modelsErr error
 }
 
 // Name returns the adapter's registry name.
@@ -282,6 +307,12 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	if c.availableModels != nil {
 		return c.availableModels, nil
 	}
+	if c.DeferDiscovery {
+		return nil, errModelDiscoveryDeferred
+	}
+	if c.modelsErr != nil {
+		return nil, c.modelsErr
+	}
 	command := resolveStdioHarnessCommand(c.Command)
 	if len(command) == 0 {
 		return nil, fmt.Errorf("no command configured")
@@ -294,10 +325,12 @@ func (c *CopilotAdapter) discoverModels(ctx context.Context) (map[string]copilot
 	defer cancel()
 	models, err := lister.ListModels(discoveryCtx, command, baseEnv(c.ExtraEnvAllowlist))
 	if err != nil {
+		c.modelsErr = err
 		return nil, err
 	}
 	if len(models) == 0 {
-		return nil, fmt.Errorf("authenticated Copilot runtime returned no available models")
+		c.modelsErr = fmt.Errorf("authenticated Copilot runtime returned no available models")
+		return nil, c.modelsErr
 	}
 	available := make(map[string]copilotModelCapabilities, len(models)+1)
 	autoDisabled := false
@@ -505,11 +538,7 @@ func copilotAvailableTools(req RunRequest) []string {
 		for _, server := range req.MCPServers {
 			appendTool(server.Name + "-" + declaredTool)
 		}
-		expanded := []string{declaredTool}
-		if group, ok := copilotToolGroups[strings.ToLower(declaredTool)]; ok {
-			expanded = group
-		}
-		for _, tool := range expanded {
+		for _, tool := range expandToolGroup(declaredTool, copilotToolGroups) {
 			appendTool(tool)
 		}
 	}
@@ -517,12 +546,7 @@ func copilotAvailableTools(req RunRequest) []string {
 }
 
 func validateCopilotTools(tools []string) error {
-	for i, tool := range tools {
-		if strings.Contains(tool, ",") {
-			return fmt.Errorf("harness: copilot-cli: tool allowlist entry %d %q must not contain a comma", i, tool)
-		}
-	}
-	return nil
+	return validateToolAllowlist("copilot-cli", tools)
 }
 
 func copilotDeclaresTool(declared []string, target string) bool {
@@ -556,7 +580,10 @@ func (c *CopilotAdapter) runner() ProcessRunner {
 // session events over the subprocess transcript when available, and captures
 // the completion through either the default file contract or the final response
 // used by tool-constrained sessions.
-func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
+	if err := validateStandardExecution(req); err != nil {
+		return Outcome{}, err
+	}
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: no command configured")
 	}
@@ -569,8 +596,8 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	// Auto-wire goobers-io (#2406) before anything below reads req.Tools or
 	// req.MCPServers: completionInResponse, the rendered prompt, and the MCP
 	// credential/prep block all need to see the goobers-io server and tools
-	// as already present, not added after the fact. A task with no declared
-	// artifactFile and no upstream inputs is untouched.
+	// as already present, not added after the fact. Every valid invocation
+	// receives run identity access, even without artifact or context inputs.
 	req = withAutoGoobersIO(req, c.SelfBin)
 	resolution := ConfigResolution{
 		Model:          req.Model,
@@ -608,7 +635,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 	if err := os.MkdirAll(filepath.Dir(debugPath), 0o755); err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: prepare prompt dir: %w", err)
 	}
-	if err := os.WriteFile(debugPath, []byte(prompt), 0o644); err != nil {
+	if err := os.WriteFile(debugPath, []byte(prompt), 0o600); err != nil {
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: write prompt: %w", err)
 	}
 
@@ -660,7 +687,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
 	}
 	if mcpArg != "" {
-		argv = append(argv, "--additional-mcp-config", mcpArg)
+		argv = append(argv, "--additional-mcp-config", "@"+mcpArg)
 	}
 
 	env, err := c.credentialEnv(ctx, req)
@@ -718,6 +745,26 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		promptArg += shift
 	}
 
+	// #2962: record the CLI version and the effective tool/permission
+	// arguments before the session starts. When a run later reports a tool
+	// refusal, this is what distinguishes "the goober was never granted the
+	// tool" from "the CLI changed how it grants tools" — previously
+	// unanswerable after the fact, because the invocation was never kept.
+	// Only permission-relevant flags are recorded; the prompt and environment
+	// are deliberately excluded (they carry task content and credentials).
+	if err := writeCopilotInvocationDiagnostics(req, argv); err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: %w", err)
+	}
+
+	agentTelemetry, err := beginAdapterAgentTelemetry(
+		req, "copilot", req.Model, resolution.Model,
+		requestedHarnessOption(req, "reasoningEffort"), harnessOptions["reasoningEffort"],
+	)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: copilot-cli: start agent telemetry: %w", err)
+	}
+	defer agentTelemetry.finish(&out, &runErr)
+
 	runner := c.runner()
 	started := time.Now()
 	var responseCapture *syncBuffer
@@ -726,7 +773,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		responseCapture = newTranscriptBuffer(req.MaxTranscriptBytes)
 		stdoutCapture = responseCapture
 	}
-	result, runErr := runner.Run(ctx, ProcessRequest{
+	result, processErr := runner.Run(ctx, ProcessRequest{
 		Command:            argv,
 		Dir:                req.Workspace,
 		Env:                env,
@@ -734,9 +781,10 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
 		StdoutCapture:      stdoutCapture,
 	})
+	runErr = processErr
 	var payload []byte
 	var completionErr error
-	if runErr == nil {
+	if processErr == nil {
 		payload, completionErr = readCopilotCompletion(req, responseCapture, completionInResponse)
 		if errors.Is(completionErr, ErrNoCompletion) {
 			// A clean Copilot exit can still omit its completion contract. Give
@@ -778,16 +826,36 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (Outcome, erro
 			}
 		}
 	}
-	out := Outcome{
+	out = Outcome{
 		Transcript:             result.Transcript,
 		RenderedPrompt:         []byte(prompt),
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
+		Stderr:                 result.Stderr,
+	}
+	receipts, receiptsCollected, receiptsErr := collectGoobersIOReceipts(req, c.SelfBin)
+	out.InputInspectionReceipts = receipts
+	out.InputInspectionReceiptsCollected = receiptsCollected
+	// #3456: name a registered-but-unusable MCP server instead of letting its
+	// tools go silently missing. The claude adapter reads this from a
+	// structured system/init event; Copilot has no transcript equivalent, so
+	// this reads the CLI's own run log — available because the confinement
+	// already pins --log-dir into the workspace. Unconfined runs have no
+	// run-scoped log directory, so the diagnostic stays nil rather than
+	// guessing from a shared one.
+	if confinement != nil {
+		out.MCPServerFailures = copilotMCPServerFailures(req, confinement.logDir)
+	}
+	if receiptsErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("read goobers-io input inspection receipts: %w", receiptsErr))
 	}
 	if nativeTranscriptPath != "" {
 		if native, ok := readCopilotSessionTranscript(nativeTranscriptPath, req.MaxTranscriptBytes); ok {
 			out.Metrics = native.metrics
 			out.ModelUsage = native.modelUsage
+			if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("harness: copilot-cli: project agent telemetry: %w", err))
+			}
 			if len(native.data) > 0 {
 				out.Transcript = native.data
 				out.TranscriptSchema = telemetry.GenAIEventSchema
@@ -968,6 +1036,11 @@ func validateCopilotCompletion(mode Mode, payload []byte) error {
 
 func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult {
 	firstTranscript, secondTranscript, dropped := retainedProcessTranscripts(first, second, limit)
+	firstStderr, secondStderr, stderrDropped := retainedProcessOutput(
+		processOutput{data: first.Stderr, dropped: first.StderrDroppedBytes},
+		processOutput{data: second.Stderr, dropped: second.StderrDroppedBytes},
+		limit,
+	)
 
 	transcript := append([]byte(nil), firstTranscript...)
 	if len(firstTranscript) > 0 && len(secondTranscript) > 0 {
@@ -977,45 +1050,73 @@ func mergeProcessResults(first, second ProcessResult, limit int64) ProcessResult
 	if dropped > 0 {
 		transcript = append(transcript, transcriptTruncationMarker(dropped)...)
 	}
+	stderr := append([]byte(nil), firstStderr...)
+	if len(firstStderr) > 0 && len(secondStderr) > 0 {
+		stderr = append(stderr, '\n')
+	}
+	stderr = append(stderr, secondStderr...)
+	if stderrDropped > 0 {
+		stderr = append(stderr, transcriptTruncationMarker(stderrDropped)...)
+	}
 	return ProcessResult{
 		Transcript:             transcript,
 		ExitCode:               second.ExitCode,
 		TranscriptTruncated:    first.TranscriptTruncated || second.TranscriptTruncated || dropped > 0,
 		TranscriptDroppedBytes: dropped,
+		Stderr:                 stderr,
+		StderrTruncated:        first.StderrTruncated || second.StderrTruncated || stderrDropped > 0,
+		StderrDroppedBytes:     stderrDropped,
 	}
 }
 
 func retainedProcessTranscripts(first, second ProcessResult, limit int64) ([]byte, []byte, int64) {
+	return retainedProcessOutput(
+		processOutput{data: first.Transcript, dropped: first.TranscriptDroppedBytes},
+		processOutput{data: second.Transcript, dropped: second.TranscriptDroppedBytes},
+		limit,
+	)
+}
+
+type processOutput struct {
+	data    []byte
+	dropped int64
+}
+
+func retainedProcessOutput(first, second processOutput, limit int64) ([]byte, []byte, int64) {
 	if limit <= 0 {
 		limit = DefaultMaxTranscriptBytes
 	}
 
-	firstTranscript := processTranscriptBytes(first)
-	secondTranscript := processTranscriptBytes(second)
+	firstBytes := processOutputBytes(first)
+	secondBytes := processOutputBytes(second)
 
 	// The recovery turn is the most useful diagnostic when the first turn
 	// omitted its contract, so retain it first and use the remaining allowance
 	// for the initial turn.
-	secondRetained := min(int64(len(secondTranscript)), limit)
+	secondRetained := min(int64(len(secondBytes)), limit)
 	remaining := limit - secondRetained
 	var firstRetained int64
 	if secondRetained == 0 {
-		firstRetained = min(int64(len(firstTranscript)), remaining)
-	} else if len(firstTranscript) > 0 && remaining > 1 {
-		firstRetained = min(int64(len(firstTranscript)), remaining-1)
+		firstRetained = min(int64(len(firstBytes)), remaining)
+	} else if len(firstBytes) > 0 && remaining > 1 {
+		firstRetained = min(int64(len(firstBytes)), remaining-1)
 	}
-	dropped := first.TranscriptDroppedBytes + second.TranscriptDroppedBytes +
-		int64(len(firstTranscript)) - firstRetained +
-		int64(len(secondTranscript)) - secondRetained
+	dropped := first.dropped + second.dropped +
+		int64(len(firstBytes)) - firstRetained +
+		int64(len(secondBytes)) - secondRetained
 
-	return firstTranscript[:firstRetained], secondTranscript[:secondRetained], dropped
+	return firstBytes[:firstRetained], secondBytes[:secondRetained], dropped
+}
+
+func processOutputBytes(output processOutput) []byte {
+	if output.dropped <= 0 {
+		return output.data
+	}
+	return bytes.TrimSuffix(output.data, transcriptTruncationMarker(output.dropped))
 }
 
 func processTranscriptBytes(result ProcessResult) []byte {
-	if result.TranscriptDroppedBytes <= 0 {
-		return result.Transcript
-	}
-	return bytes.TrimSuffix(result.Transcript, transcriptTruncationMarker(result.TranscriptDroppedBytes))
+	return processOutputBytes(processOutput{data: result.Transcript, dropped: result.TranscriptDroppedBytes})
 }
 
 // credentialEnv builds the subprocess environment: baseEnv() (PATH/HOME/

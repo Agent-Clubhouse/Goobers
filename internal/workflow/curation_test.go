@@ -100,6 +100,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 		health.Run == nil || len(health.Run.Command) != 2 || health.Run.Command[1] != "backlog-health" {
 		t.Errorf("sample-ready-pool = %+v, want deterministic goobers backlog-health task", health)
 	}
+	if len(health.Capabilities) != 1 || health.Capabilities[0] != "github:issues:read" {
+		t.Errorf("sample-ready-pool capabilities = %v, want [github:issues:read]", health.Capabilities)
+	}
 	query, ok := m.Task("query-backlog")
 	if !ok {
 		t.Fatal("query-backlog task not found")
@@ -120,6 +123,9 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 	if dedupe.Inputs["maxCandidates"] != "20" || dedupe.Inputs["resultFile"] != "dedupe-candidates.json" {
 		t.Errorf("surface-duplicates inputs = %v, want bounded candidate artifact", dedupe.Inputs)
+	}
+	if len(dedupe.Capabilities) != 1 || dedupe.Capabilities[0] != "github:issues:read" {
+		t.Errorf("surface-duplicates capabilities = %v, want [github:issues:read]", dedupe.Capabilities)
 	}
 	if query.Inputs["staleAfterDays"] != "90" {
 		t.Errorf("query-backlog staleAfterDays = %q, want 90", query.Inputs["staleAfterDays"])
@@ -179,15 +185,17 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	}
 
 	// Capability grant is issues-only (issue #25 scope: "no repo access").
-	if len(curator.Spec.Capabilities) != 2 ||
+	if len(curator.Spec.Capabilities) != 3 ||
 		curator.Spec.Capabilities[0] != "github:issues:write" ||
-		curator.Spec.Capabilities[1] != "github:milestones:write" {
-		t.Errorf("curator capabilities = %v, want exactly [github:issues:write github:milestones:write]", curator.Spec.Capabilities)
+		curator.Spec.Capabilities[1] != "github:milestones:write" ||
+		curator.Spec.Capabilities[2] != "agent:model" {
+		t.Errorf("curator capabilities = %v, want exactly [github:issues:write github:milestones:write agent:model]", curator.Spec.Capabilities)
 	}
 
 	// Bumped when intentional workflow contract changes alter the machine.
 	// #2332: blocked-on-sibling revalidation is bounded and happens before claim.
-	const wantDigest = "sha256:66235bc31e1a10fe13b6baaee7ca81449d750f095ad524c3d5930025dae00cf0"
+	// #2386: read-only sampling and dedupe use issue-read rather than issue-write.
+	const wantDigest = "sha256:2cef3d2bdd74216f571783769d430f2dc252fd4f8f64f012204782b8626f6484"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)

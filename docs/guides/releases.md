@@ -33,20 +33,44 @@ publication.
 
 ```sh
 mkdir -p .github/release-notes
-$EDITOR .github/release-notes/v1.2.3.md
-git add .github/release-notes/v1.2.3.md
-git commit -m "docs: curate v1.2.3 release notes"
-git tag v1.2.3
-git push origin v1.2.3
+$EDITOR .github/release-notes/vMAJOR.MINOR.PATCH.md
+git add .github/release-notes/vMAJOR.MINOR.PATCH.md
+git commit -m "docs: curate vMAJOR.MINOR.PATCH release notes"
+git tag vMAJOR.MINOR.PATCH
+git push origin vMAJOR.MINOR.PATCH
 ```
+
+### Pre-release tags
+
+A tag may also carry a SemVer 2.0.0 pre-release suffix —
+`vMAJOR.MINOR.PATCH-<identifier>[.<identifier>...]`, e.g. `v1.3.0-beta.2` or
+`v1.3.0-rc.1`. Pushing one runs the **identical** full pipeline as a stable
+tag: the same packaging matrix, the same macOS notarization and Windows
+Authenticode signing, and the same curated-release-note requirement at
+`.github/release-notes/<tag>.md` (the literal tag string, dash and all, e.g.
+`v1.3.0-beta.2.md`).
+
+The only behavioral difference is at publication: the workflow detects the
+`-` in the tag and passes `--prerelease` to `gh release create`/`gh release
+edit`, so GitHub flags it as a pre-release and it never becomes the repo's
+"Latest release". The feature-registry and DSL-support-matrix baseline a
+pre-release ships still diffs against the **last stable** release (never
+another pre-release), so `goobers features`/support-matrix deltas stay
+anchored to real release lines.
+
+This is unrelated to the DSL feature/support-matrix registry's own
+`vMAJOR.MINOR.PATCH` version requirement (`internal/supportmatrix`,
+`internal/workflow/v_3_0`, `internal/workflow/v_next`) — that tracks which
+*stable* release a DSL feature or version shipped or was deprecated in, and
+intentionally does not accept pre-release identifiers. A pre-release tag
+never appears in that lineage.
 
 ## Install a pinned release
 
-On Linux or macOS, choose an exact stable release tag and run its attached
-installer. Replace `v1.2.3` with the release you intend to adopt:
+On Linux or macOS, run the installer attached to the current `v0.1.0` release:
 
 ```sh
-VERSION=v1.2.3
+VERSION=v0.1.0
 /bin/sh -c "$(curl -fsSL "https://github.com/Agent-Clubhouse/Goobers/releases/download/${VERSION}/install.sh")" \
   -- "$VERSION"
 ```
@@ -103,7 +127,7 @@ go run ./release -previous-features previous/feature-registry.json \
 go run ./release -previous-features previous/feature-registry.json \
   -previous-support-matrix previous/dsl-support-matrix.json -targets windows/amd64
 go run ./release -previous-features previous/feature-registry.json \
-  -previous-support-matrix previous/dsl-support-matrix.json -version v1.2.3 -output dist
+  -previous-support-matrix previous/dsl-support-matrix.json -version vMAJOR.MINOR.PATCH -output dist
 ```
 
 Build metadata (`version`/`commit`/`date`) is injected via the same
@@ -249,36 +273,47 @@ toolkit, onboarding payload, and authoritative `feature-registry.json` and
 remains editable for curation and is not checksummed. The same file verifies on
 every platform: `sha256sum -c SHA256SUMS` on unix, and PowerShell
 `Get-FileHash -Algorithm SHA256` on Windows (see the
-[Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This is the
-**primary integrity mechanism** for the initially-unsigned Windows artifacts.
+[Windows quickstart](quickstart-windows.md#2-verify-the-checksum)). This
+integrity check is in addition to, not instead of, the Authenticode
+signature below — both `sign-macos` and `sign-windows` recompute this
+manifest after signing, so it always reflects the signed bytes actually
+published.
 
 ## Signing posture
 
-**Initial posture: documented-unsigned, checksum-verified.** Windows artifacts
-ship **without an Authenticode signature** at first. The integrity guarantee is
-the SHA-256 in `SHA256SUMS`, which users verify before running.
+- **macOS: Developer ID signed and notarized.** The `sign-macos` job in
+  [`release.yml`](../../.github/workflows/release.yml) imports a Developer ID
+  Application certificate, signs each darwin binary
+  (`codesign --options runtime --timestamp`), and submits it to Apple's notary
+  service (`xcrun notarytool submit --wait`) before the archive is published.
+  This is **online-only** notarization: `stapler staple` only applies to
+  `.app`/`.pkg`/`.dmg` bundles, not a bare Mach-O executable, so no
+  notarization ticket is stapled to `goobers` itself. Gatekeeper's online
+  ticket check is gated on the `com.apple.quarantine` extended attribute,
+  which browser downloads set and the documented curl-pipe `install.sh` path
+  does not — so the documented install path never triggers a Gatekeeper
+  block either way, and a user who manually downloads the tar.gz from the
+  Releases page gets the full online-verified benefit of signing. A stapled
+  `.pkg`/`.dmg` installer (for fully offline Gatekeeper coverage) is a
+  distinct-scope follow-up, not built here.
 
-- **SmartScreen expectation.** Running an unsigned executable triggers a Windows
-  SmartScreen warning ("Windows protected your PC") on first launch. This is
-  **expected and documented**, not a defect — the
-  [install guide](quickstart-windows.md#3-extract--place-on-path) tells users to
-  verify the checksum first and then *More info → Run anyway*. An unsigned binary
-  with a verified checksum is a deliberate, stated trade-off, not a silent
-  omission.
-- **Authenticode upgrade path (known gap).** Removing the SmartScreen warning
-  requires signing `goobers.exe` with an Authenticode certificate — ideally an
-  **EV (Extended Validation) code-signing certificate**, which earns SmartScreen
-  reputation immediately. That is an **organizational purchase and secret-custody
-  decision** (the signing key must live in CI secrets or an HSM), so it is out of
-  scope here and recorded as a known gap. When adopted, the upgrade is: obtain the
-  cert, add a `signtool sign /fd SHA256 /tr <timestamp-url> /td SHA256` step to
-  the [#432](https://github.com/Agent-Clubhouse/Goobers/issues/432) release
-  workflow after the packaging engine emits `goobers.exe`, and update this section
-  + the install guide to drop the SmartScreen note.
-
-macOS notarization is the analogous gap on that platform; it is tracked with the
-same "documented-unsigned first" posture wherever the macOS release story is
-written.
+- **Windows: Authenticode signed via Azure Trusted Signing.** The
+  `sign-windows` job in
+  [`release.yml`](../../.github/workflows/release.yml) authenticates to
+  Azure via OIDC (`azure/login`, no stored client secret) and signs
+  `goobers.exe` (`azure/trusted-signing-action`, SHA-256 file digest and
+  RFC 3161 timestamp) before the archive is published. This reuses the
+  sibling Clubhouse product's certificate profile
+  (`clubhouse-win-codesign`) rather than a Goobers-specific one — a
+  code-signing certificate identifies the *publisher* (Mason Allen), not a
+  specific product, matching how macOS signing above already reuses one
+  Apple Developer ID for both. No separate Windows identity or additional
+  Azure resource is needed; the account's Basic SKU only supports one
+  certificate profile, and there's no technical reason a single validated
+  identity can't sign multiple products.
+  `azure/trusted-signing-action` requires a Windows runner (it invokes the
+  Windows SDK signing client locally; only the private-key operation
+  happens in Azure).
 
 ## Distribution channels (scoop / winget)
 
@@ -299,13 +334,13 @@ bucket. The intended shape, driven by the artifact names above:
 
 ```json
 {
-  "version": "1.2.3",
+  "version": "0.1.0",
   "description": "Goobers agent-workforce daemon and CLI.",
   "homepage": "https://github.com/Agent-Clubhouse/Goobers",
   "license": "See repository",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/Agent-Clubhouse/Goobers/releases/download/v1.2.3/goobers_v1.2.3_windows_amd64.zip",
+      "url": "https://github.com/Agent-Clubhouse/Goobers/releases/download/v0.1.0/goobers_v0.1.0_windows_amd64.zip",
       "hash": "<sha256 from SHA256SUMS>"
     }
   },

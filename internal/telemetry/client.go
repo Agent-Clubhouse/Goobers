@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -44,6 +45,7 @@ type ExporterKind string
 type Config struct {
 	ServiceName        string
 	ServiceVersion     string
+	BuildCommit        string
 	Environment        string
 	Exporter           ExporterKind
 	OTLPEndpoint       string
@@ -67,21 +69,27 @@ type Client struct {
 
 // New configures OpenTelemetry tracing and metrics for a Goobers process.
 func New(ctx context.Context, cfg Config) (*Client, error) {
-	serviceName := cfg.ServiceName
-	if serviceName == "" {
-		serviceName = "goobers"
-	}
 	scrubber := cfg.Scrubber
 	if scrubber == nil {
 		scrubber = providerNet
 	}
 
+	instanceID, err := NewRunID()
+	if err != nil {
+		return nil, fmt.Errorf("generate telemetry service instance id: %w", err)
+	}
 	res, err := resource.New(ctx,
-		resource.WithAttributes(scrubAttributes(scrubber, resourceAttrs(serviceName, cfg))...),
+		resource.WithAttributes(
+			attribute.String("service.name", "goobers"),
+			attribute.String("service.instance.id", instanceID),
+		),
+		resource.WithAttributes(resourceAttrs(cfg)...),
+		resource.WithFromEnv(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build telemetry resource: %w", err)
 	}
+	res = resource.NewWithAttributes(res.SchemaURL(), scrubAttributes(scrubber, res.Attributes())...)
 
 	exporters, err := spanExporters(ctx, cfg)
 	if err != nil {
@@ -151,11 +159,13 @@ func (c *Client) StartRun(ctx context.Context, attrs RunAttributes) (context.Con
 		return ctx, Span{}, err
 	}
 	ctx = contextWithRequestedTraceID(ctx, traceID)
-	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, runSpanName(attrs.WorkflowID)),
+	opts := []trace.SpanStartOption{
 		trace.WithNewRoot(),
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(scrubAttributes(c.scrubber, runAttributeSet(attrs))...),
-	)
+	}
+	opts = appendStartTime(opts, attrs.StartedAt)
+	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, runSpanName(attrs.WorkflowID)), opts...)
 	return ctx, Span{span: span, scrubber: c.scrubber}, nil
 }
 
@@ -172,10 +182,12 @@ func (c *Client) StartTask(ctx context.Context, attrs TaskAttributes) (context.C
 	if err != nil {
 		return ctx, Span{}, err
 	}
-	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, taskSpanName(attrs.TaskID)),
+	taskOpts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(scrubAttributes(c.scrubber, taskAttributeSet(attrs))...),
-	)
+	}
+	taskOpts = appendStartTime(taskOpts, attrs.StartedAt)
+	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, taskSpanName(attrs.TaskID)), taskOpts...)
 	return ctx, Span{span: span, scrubber: c.scrubber}, nil
 }
 
@@ -192,10 +204,12 @@ func (c *Client) StartGate(ctx context.Context, attrs GateAttributes) (context.C
 	if err != nil {
 		return ctx, Span{}, err
 	}
-	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, gateSpanName(attrs.GateID)),
+	gateOpts := []trace.SpanStartOption{
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(scrubAttributes(c.scrubber, gateAttributeSet(attrs))...),
-	)
+	}
+	gateOpts = appendStartTime(gateOpts, attrs.StartedAt)
+	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, gateSpanName(attrs.GateID)), gateOpts...)
 	return ctx, Span{span: span, scrubber: c.scrubber}, nil
 }
 
@@ -323,12 +337,16 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 	return append(exporters, exporter), nil
 }
 
-func resourceAttrs(serviceName string, cfg Config) []attribute.KeyValue {
-	attrs := []attribute.KeyValue{
-		attribute.String("service.name", serviceName),
+func resourceAttrs(cfg Config) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, 4+len(cfg.ResourceAttributes))
+	if cfg.ServiceName != "" {
+		attrs = append(attrs, attribute.String("service.name", cfg.ServiceName))
 	}
 	if cfg.ServiceVersion != "" {
 		attrs = append(attrs, attribute.String("service.version", cfg.ServiceVersion))
+	}
+	if cfg.BuildCommit != "" {
+		attrs = append(attrs, attribute.String("goobers.build.commit", cfg.BuildCommit))
 	}
 	if cfg.Environment != "" {
 		attrs = append(attrs, attribute.String("deployment.environment", cfg.Environment))
@@ -347,4 +365,13 @@ func validateCommon(gaggle, workflowID, runID string) error {
 		return errors.New("telemetry span requires run id")
 	}
 	return nil
+}
+
+// appendStartTime backdates a span when an explicit start time is supplied.
+// Zero means "stamp it now", which is every live tier-1 call site.
+func appendStartTime(opts []trace.SpanStartOption, at time.Time) []trace.SpanStartOption {
+	if at.IsZero() {
+		return opts
+	}
+	return append(opts, trace.WithTimestamp(at))
 }

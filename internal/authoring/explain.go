@@ -159,22 +159,60 @@ func projectFacts(selector, purposeSelector string, declared, resolved map[strin
 	return explanation, nil
 }
 
+// resolutionFeatures returns the DSL feature projections explain resolves
+// against: every loadable (non-unsupported) DSL version, NEWEST FIRST, so a
+// selector explains at the newest version that carries it (#3291). Resolving
+// only at CurrentDSLVersion — the deprecated 1.4 — made every newer-version
+// feature, and via selectorLifecycle's ancestor walk its entire dotted
+// subtree, report "unavailable" while the coverage test skipped exactly that
+// error. Newest-first matters for the returned lifecycle too: a feature
+// carried by several versions reports the level/since of the newest one,
+// which is the version an author writing new config actually targets.
+func resolutionFeatures(allFeatures []workflow.Feature) ([][]workflow.Feature, error) {
+	versions := supportmatrix.GetDSL().Versions()
+	sets := make([][]workflow.Feature, 0, len(versions))
+	for i := len(versions) - 1; i >= 0; i-- {
+		if versions[i].Level == supportmatrix.LevelUnsupported {
+			continue
+		}
+		features, err := workflow.FeaturesAtDSLVersion(allFeatures, versions[i].Version)
+		if err != nil {
+			return nil, fmt.Errorf("resolve built-in DSL features at %s: %w", versions[i].Version, err)
+		}
+		sets = append(sets, features)
+	}
+	return sets, nil
+}
+
 func selectorLifecycle(requestedSelector string, parts []selectorPart, entry schemas.Entry) (string, string, error) {
 	selector := selectorString(parts, false)
 	allFeatures := workflow.AllFeatures()
-	versionFeatures, err := workflow.FeaturesAtDSLVersion(allFeatures, supportmatrix.CurrentDSLVersion)
+	sets, err := resolutionFeatures(allFeatures)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve built-in DSL features: %w", err)
+		return "", "", err
 	}
 
 	for _, candidate := range selectorFeatureCandidates(selector) {
-		if feature, ok := lookupFeature(versionFeatures, candidate); ok {
-			return string(feature.Level), feature.SinceVersion, nil
+		knownSomewhere := false
+		resolvedPrefix := false
+		var stability, sinceVersion string
+		for _, versionFeatures := range sets {
+			if feature, ok := lookupFeature(versionFeatures, candidate); ok {
+				return string(feature.Level), feature.SinceVersion, nil
+			}
+			if !resolvedPrefix {
+				if s, since, ok := featurePrefixLifecycle(candidate, versionFeatures); ok {
+					stability, sinceVersion, resolvedPrefix = s, since, true
+				}
+			}
+			if featureCandidateKnown(versionFeatures, candidate) {
+				knownSomewhere = true
+			}
 		}
-		if stability, sinceVersion, ok := featurePrefixLifecycle(candidate, versionFeatures); ok {
+		if resolvedPrefix {
 			return stability, sinceVersion, nil
 		}
-		if featureCandidateKnown(versionFeatures, candidate) {
+		if knownSomewhere {
 			continue
 		}
 		if featureCandidateKnown(allFeatures, candidate) {
@@ -183,8 +221,10 @@ func selectorLifecycle(requestedSelector string, parts []selectorPart, entry sch
 	}
 	for parent := selector; strings.Contains(parent, "."); {
 		parent = parent[:strings.LastIndex(parent, ".")]
-		if feature, ok := lookupFeature(versionFeatures, parent); ok {
-			return string(feature.Level), feature.SinceVersion, nil
+		for _, versionFeatures := range sets {
+			if feature, ok := lookupFeature(versionFeatures, parent); ok {
+				return string(feature.Level), feature.SinceVersion, nil
+			}
 		}
 		if _, ok := lookupFeature(allFeatures, parent); ok {
 			return "", "", unavailableSelector(requestedSelector)
@@ -226,9 +266,9 @@ func selectorAllowedValues(parts []selectorPart, values []any) ([]any, error) {
 	if selectorString(parts, false) != "workflow.spec.tasks.run.workspace" || values == nil {
 		return values, nil
 	}
-	features, err := workflow.FeaturesAtDSLVersion(workflow.AllFeatures(), supportmatrix.CurrentDSLVersion)
+	sets, err := resolutionFeatures(workflow.AllFeatures())
 	if err != nil {
-		return nil, fmt.Errorf("resolve built-in DSL features: %w", err)
+		return nil, err
 	}
 	filtered := make([]any, 0, len(values))
 	for _, value := range values {
@@ -245,8 +285,14 @@ func selectorAllowedValues(parts []selectorPart, values []any) ([]any, error) {
 		default:
 			return nil, fmt.Errorf("run.workspace schema value %q has no feature mapping", workspace)
 		}
-		if _, ok := lookupFeature(features, featureID); ok {
-			filtered = append(filtered, value)
+		// A value is explainable when ANY loadable DSL version carries its
+		// feature (#3291) — filtering at the deprecated CurrentDSLVersion
+		// hid repo-readonly, a valid 2.0 value, from explain's output.
+		for _, features := range sets {
+			if _, ok := lookupFeature(features, featureID); ok {
+				filtered = append(filtered, value)
+				break
+			}
 		}
 	}
 	return filtered, nil
@@ -822,10 +868,9 @@ func unknownSelector(selector string) error {
 
 func unavailableSelector(selector string) error {
 	return fmt.Errorf(
-		"%w %q in built-in DSL version %s",
+		"%w %q in any loadable built-in DSL version",
 		ErrUnavailableSelector,
 		selector,
-		supportmatrix.CurrentDSLVersion,
 	)
 }
 
@@ -904,7 +949,7 @@ func (r *registry) resolveProperty(doc *schemaDocument, node map[string]any, nam
 			return childDoc, child, resolved, containsString(node["required"], name), true, err
 		}
 	}
-	for _, keyword := range []string{"oneOf", "anyOf"} {
+	for _, keyword := range []string{"allOf", "oneOf", "anyOf"} {
 		alternatives, _ := node[keyword].([]any)
 		for _, value := range alternatives {
 			alternative, ok := value.(map[string]any)

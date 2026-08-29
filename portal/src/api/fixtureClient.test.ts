@@ -59,6 +59,7 @@ function fixtures(): DaemonFixtures {
         startedAt: "2026-07-18T00:00:00Z",
         durationMillis: 1,
         lastActivityAt: "2026-07-18T00:00:01Z",
+        stale: false,
         lastSeq: 1,
         repassCount: 0,
         retryCount: 0,
@@ -79,6 +80,8 @@ function fixtures(): DaemonFixtures {
       },
     },
     telemetryStats: {
+      creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],

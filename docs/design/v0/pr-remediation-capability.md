@@ -1,6 +1,6 @@
 # Design: making `pr-remediation` genuinely capable — evidence, policy, and response (V0.6)
 
-> Status: **Draft for review** · Area prefix: `PRR` · Builds on: [`pr-lifecycle-loop.md`](./pr-lifecycle-loop.md) §5/§6
+> Status: **draft — for review** · Area prefix: `PRR` · Builds on: [`pr-lifecycle-loop.md`](./pr-lifecycle-loop.md) §5/§6
 > Prerequisite: #392 / PR #933 (the workspace-branch handoff that lets the agentic chain run on the PR's own branch)
 > Origin: the `weekend_10` observation round (2026-07-19), in which 6 of 9 PRs opened converged on the same terminal state via three unrelated root causes.
 

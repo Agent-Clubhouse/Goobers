@@ -179,21 +179,50 @@ func TestFeedRegistersBeforeReading(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Commit and notify BEFORE the reader starts. A correct implementation
-	// re-reads and finds the change immediately rather than blocking.
-	seedChange(t, store, 7)
-	feed.Notify()
+	readStarted := make(chan struct{})
+	allowRead := make(chan struct{})
+	feed.readChanges = func(ctx context.Context, seq uint64, limit int) ([]Change, error) {
+		close(readStarted)
+		select {
+		case <-allowRead:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return store.Changes(ctx, seq, limit)
+	}
 
-	done := make(chan FeedPosition, 1)
+	type result struct {
+		page FeedPosition
+		err  error
+	}
+	done := make(chan result, 1)
 	go func() {
 		page, err := feed.Since(ctx, head, 10)
-		if err == nil {
-			done <- page
-		}
+		done <- result{page: page, err: err}
 	}()
 
 	select {
-	case page := <-done:
+	case <-readStarted:
+	case <-ctx.Done():
+		t.Fatal("reader did not reach the feed read")
+	}
+	feed.mu.Lock()
+	registered := len(feed.waiters) > 0
+	feed.mu.Unlock()
+	if !registered {
+		t.Fatal("reader started reading before registering a waiter")
+	}
+
+	seedChange(t, store, 7)
+	feed.Notify()
+	close(allowRead)
+
+	select {
+	case result := <-done:
+		if result.err != nil {
+			t.Fatalf("read failed: %v", result.err)
+		}
+		page := result.page
 		if len(page.Changes) == 0 {
 			t.Error("read returned no changes")
 		}

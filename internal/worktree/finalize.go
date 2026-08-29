@@ -132,6 +132,14 @@ func (m *Manager) finalizeRepoRun(ctx context.Context, key, runID string) ([]Fin
 		m.observeUsage(ctx, UsageOperationTeardown, runID, worktreeID, worktreeBytes, worktreeMeasured, measurementErr)
 		results = append(results, FinalizeResult{WorktreeID: worktreeID, Path: path})
 	}
+	acquisitionDir := m.branchAcquisitionRunDir(key, runID)
+	if err := os.RemoveAll(acquisitionDir); err != nil {
+		finalizeErr = errors.Join(finalizeErr,
+			fmt.Errorf("worktree: finalize run %s: remove branch acquisitions: %w", runID, err))
+	} else if err := fsyncDir(filepath.Dir(acquisitionDir)); err != nil && !os.IsNotExist(err) {
+		finalizeErr = errors.Join(finalizeErr,
+			fmt.Errorf("worktree: finalize run %s: sync branch acquisitions: %w", runID, err))
+	}
 	return results, finalizeErr
 }
 

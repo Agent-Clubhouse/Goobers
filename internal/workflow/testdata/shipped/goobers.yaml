@@ -10,6 +10,7 @@ spec:
   capabilities:
     - repo:push
     - provider:pr:write
+    - agent:model
   policyActions:
     - modify-repository
     - open-or-update-pr
@@ -27,6 +28,7 @@ spec:
   harness: copilot
   capabilities:
     - github:pr:write
+    - agent:model
   workflows:
     - implementation
 ---
@@ -41,6 +43,7 @@ spec:
   harness: copilot
   capabilities:
     - github:issues:write
+    - agent:model
   policyActions:
     - close-issue
     - comment-on-issue
@@ -58,8 +61,10 @@ spec:
   instructions: instructions.md
   harness: copilot
   capabilities:
+    - repo:read
     - github:issues:write
     - telemetry:read
+    - agent:model
   policyActions:
     - comment-on-issue
     - create-issue

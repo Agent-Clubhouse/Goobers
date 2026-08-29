@@ -1,6 +1,6 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: backlog-curation
 spec:
@@ -73,7 +73,7 @@ spec:
         readyLabel: "goobers:ready"
         resultFile: "backlog-health.json"
       capabilities:
-        - github:issues:write
+        - github:issues:read
       expectedOutputs:
         - backlog-health
       next: query-backlog
@@ -154,7 +154,7 @@ spec:
         resultFile: "dedupe-candidates.json"
         maxCandidates: "20"
       capabilities:
-        - github:issues:write
+        - github:issues:read
       expectedOutputs:
         - dedupe-candidates
       next: curate
@@ -178,6 +178,7 @@ spec:
       capabilities:
         - github:issues:write
         - github:milestones:write
+        - agent:model
       policyActions:
         - assign-milestone
         - close-issue

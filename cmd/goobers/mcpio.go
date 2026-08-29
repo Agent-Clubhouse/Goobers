@@ -24,7 +24,7 @@ const mcpIOHelp = "Usage: goobers mcp-io --config <path>\n\n" +
 	"1 = missing or invalid configuration, 2 = usage error.\n"
 
 func runMCPIO(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("mcp-io", flag.ContinueOnError)
+	fs := newCLIFlagSet("mcp-io", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "mcp-io")
 	configPath := fs.String("config", "", "path to the goobers-io runtime config written by the harness")

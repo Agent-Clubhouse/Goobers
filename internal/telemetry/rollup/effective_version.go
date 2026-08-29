@@ -431,7 +431,13 @@ func (db *DB) AssessEfficacyByEffectiveVersion(ctx context.Context, req Effectiv
 // EfficacyInsufficientData (no error) if the workflow has never observed an
 // EffectiveVersion transition within the recorded history.
 func (db *DB) AssessLatestEfficacyByEffectiveVersion(ctx context.Context, workflow string, since time.Time, th EfficacyThresholds) (EffectiveVersionEfficacyResult, error) {
-	changes, err := db.DigestHistoryByEffectiveVersion(ctx, workflow)
+	return db.AssessLatestEfficacyByEffectiveVersionForGaggle(ctx, "", workflow, since, th)
+}
+
+// AssessLatestEfficacyByEffectiveVersionForGaggle is the gaggle-scoped form
+// for callers that resolve a workflow definition within one gaggle.
+func (db *DB) AssessLatestEfficacyByEffectiveVersionForGaggle(ctx context.Context, gaggle, workflow string, since time.Time, th EfficacyThresholds) (EffectiveVersionEfficacyResult, error) {
+	changes, err := db.DigestHistoryByEffectiveVersionForGaggle(ctx, gaggle, workflow)
 	if err != nil {
 		return EffectiveVersionEfficacyResult{}, fmt.Errorf("rollup: assess latest effective-version efficacy for %q: %w", workflow, err)
 	}
@@ -440,6 +446,7 @@ func (db *DB) AssessLatestEfficacyByEffectiveVersion(ctx context.Context, workfl
 	}
 	latest := changes[len(changes)-1]
 	return db.AssessEfficacyByEffectiveVersion(ctx, EffectiveVersionEfficacyRequest{
+		Gaggle:     gaggle,
 		Workflow:   workflow,
 		OldVersion: latest.FromVersion,
 		NewVersion: latest.ToVersion,

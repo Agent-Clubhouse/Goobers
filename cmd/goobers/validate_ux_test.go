@@ -332,6 +332,7 @@ func TestValidateCheckRepos(t *testing.T) {
 	t.Cleanup(func() { targetRepositoryReachable = original })
 	originalSize := targetRepositorySize
 	t.Cleanup(func() { targetRepositorySize = originalSize })
+	stubRepositoryRealityChecks(t, []string{"goobers", "goobers:claimed"}, 1, 1)
 
 	called := 0
 	targetRepositoryReachable = func(_ context.Context, repo instance.RepoRef, token string, _ credentials.StoreResolver) error {
@@ -380,6 +381,41 @@ func TestValidateCheckRepos(t *testing.T) {
 	}
 	if strings.Contains(stdout, "test-token") {
 		t.Fatalf("repository check output leaked the resolved token: %q", stdout)
+	}
+}
+
+// TestValidateRejectsUnsupportedDSLVersion pins the §8.3 cutover (#3507): 1.4
+// transitioned from deprecated (the strict-neutral DVL020 nudge #2700 tested)
+// to UNSUPPORTED, so a 1.4 pin is now a hard DVL030 error naming the 1.4→2.0
+// recovery edge — it fails plain validate, not just --strict. No DSL version
+// is LevelDeprecated any more, so the CLI's DVL020 strict-exemption filter
+// (cmd/goobers/validate.go) is unreachable via a real pin; the DVL020 emission
+// it filters is still covered at the api/validate layer against a synthetic
+// matrix (TestCheckWorkflowDSLVersionDeprecatedWarnsWithReplacement).
+func TestValidateRejectsUnsupportedDSLVersion(t *testing.T) {
+	root := initDeterministicDemo(t)
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
+	replaceInFile(t, workflowPath, `dslVersion: "2.0"`, `dslVersion: "1.4"`)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("validate code=%d, want 1 (1.4 is unsupported); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		`dslVersion "1.4" is unsupported by this binary (replacement "2.0"); migrate with ` + "`goobers fix --to 2.0`",
+		"config directory failed validation",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
 	}
 }
 
@@ -506,7 +542,11 @@ func TestValidateTemplatePlaceholdersDoNotMatchEditedCoordinateSubstrings(t *tes
 
 func TestValidateWarnsOnMissingSkillPackages(t *testing.T) {
 	root := initDemo(t)
-	if err := os.RemoveAll(filepath.Join(root, "skills")); err != nil {
+	// The starter scaffold now ships its scoped packages under
+	// config/gaggles/example/skills (SKILL002 fix) rather than the
+	// instance-level fallback; remove those to reproduce the missing-package
+	// probe.
+	if err := os.RemoveAll(filepath.Join(root, "config", "gaggles", "example", "skills")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -581,24 +621,26 @@ func TestValidatePrintsDSLVersionSummary(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "DSLVERSION Workflow/default-implement: 1.4 (supported)") {
+	if !strings.Contains(stdout, "DSLVERSION Workflow/default-implement: 2.0 (supported)") {
 		t.Fatalf("validate output missing the DSL version summary line:\n%s", stdout)
 	}
 }
 
-func TestValidateWarnsOnMissingDSLVersionPin(t *testing.T) {
+func TestValidateErrorsOnMissingDSLVersionPin(t *testing.T) {
 	root := initDeterministicDemo(t)
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
-	replaceInFile(t, workflowPath, "dslVersion: \"1.4\"\n", "")
+	replaceInFile(t, workflowPath, "dslVersion: \"2.0\"\n", "")
 
 	code, stdout, stderr := runArgs(t, "validate", root)
-	if code != 0 {
-		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	// The §8.3 cutover (#3507) dropped DSL 1.4, so a missing dslVersion is no
+	// longer a warn-and-default-to-1.4 nudge — it is a hard error (DVL001)
+	// naming the versions the author may pin. Validation now fails.
+	if code != 1 {
+		t.Fatalf("validate: code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	for _, want := range []string{
-		"DVL001",
-		`spec has no dslVersion pin; defaulting to "1.4"`,
-		"DSLVERSION Workflow/default-implement: 1.4 (defaulted; no dslVersion pin) (supported)",
+		"spec has no dslVersion pin; pin an explicit dslVersion (loadable: 2.0, 3.0) — the transitional default is gone now that DSL 1.4 is dropped",
+		"config directory failed validation",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("validate output missing %q:\n%s", want, stdout)
@@ -658,6 +700,38 @@ func TestValidateWarnsOnSiblingLabelOverlap(t *testing.T) {
 		"SIB001",
 		`overlaps declared sibling "Billing team"`,
 		"area:frontend",
+		"your-org/your-repo",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+func TestValidateWarnsOnUnpartitionedGaggleWithSibling(t *testing.T) {
+	root := initDeterministicDemo(t)
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, gagglePath, "  isolation:\n    namespace: gaggle-example\n",
+		`  isolation:
+    namespace: gaggle-example
+  siblings:
+    - project:
+        provider: github
+        owner: your-org
+        name: your-repo
+      label: Billing team
+      requireLabels:
+        - area:billing
+`)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate: code=%d, want 0 (warning-only); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"SIB001",
+		"spec.requireLabels is empty",
+		`no label partition from declared sibling "Billing team"`,
 		"your-org/your-repo",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -835,6 +909,41 @@ func TestCheckTargetRepositoriesSizeCheckFailureIsNonFatal(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "REPOSITORY repos[0] acme/monorepo: could not determine repository size: rate limited") {
 		t.Fatalf("checkTargetRepositories() output missing size-check-failure diagnostic:\n%s", stdout.String())
+	}
+}
+
+// TestValidateRejectsInsecureNonLoopbackOTLP reproduces #3333's live
+// v0.2.0 Goobernetes cutover incident: an instance.yaml with
+// telemetry.otlp.insecure: true against a non-loopback collector endpoint
+// passed every check available at the time and only killed the daemon (and
+// both workers) at boot with the runtime's "insecure mode is allowed only
+// for localhost or a loopback IP" refusal. `goobers validate` must reach
+// that same refusal — config-load parity — so this dies in CI, not at
+// cutover, and the message must name both escape routes (a loopback sidecar
+// collector, or a TLS endpoint) so the failure teaches the fix.
+func TestValidateRejectsInsecureNonLoopbackOTLP(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	appendToFile(t, instancePath, "telemetry:\n"+
+		"  otlp:\n"+
+		"    endpoint: goobers-collector.goobers-system:4317\n"+
+		"    insecure: true\n")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("validate code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		`insecure mode is allowed only for localhost or a loopback IP`,
+		`loopback sidecar collector`,
+		`TLS collector`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate stdout missing %q:\n%s", want, stdout)
+		}
 	}
 }
 

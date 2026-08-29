@@ -14,6 +14,20 @@ current product claim; the cluster entrypoints in this repository remain
 quarantined. What is intended to stay constant is the configuration and run
 contract, so scaling execution does not require redefining the workforce.
 
+## Install
+
+Install the current `v0.1.0` release on Linux or macOS:
+
+```sh
+/bin/sh -c "$(curl -fsSL https://github.com/Agent-Clubhouse/Goobers/releases/download/v0.1.0/install.sh)" \
+  -- v0.1.0
+```
+
+The installer verifies the downloaded archive against the release checksum and
+places `goobers` in `$HOME/.local/bin`. See
+[Release installation and verification](docs/guides/releases.md) for
+prerequisites, install-directory overrides, and the Windows path.
+
 ## Predictable workflows around nondeterministic workers
 
 A Goobers workflow is YAML that declares triggers, stages, gates, transitions,
@@ -113,6 +127,11 @@ first-run path: a credential-free local demo, a disposable GitHub-backed run,
 and then a regular instance using the
 [production-oriented configuration examples](config-examples/README.md).
 
+Prefer a guided walkthrough over typing CLI commands yourself? `goobers
+getting-started` serves a portal-hosted alternative covering the same
+first-run-against-your-own-repository ground — see
+[the CLI reference](docs/cli/README.md#goobers-getting-started).
+
 For deeper context, read the
 [historical product vision snapshot (v0.3, July 2026)](docs/VISION.md),
 [architecture of record](docs/ARCHITECTURE.md), [concepts](docs/concepts/),
@@ -139,11 +158,10 @@ future-design docs above until its child issues land.
 | Path | Contents | Status |
 |---|---|---|
 | `api/` | Definition types, JSON invocation/result/verdict envelopes, YAML schema | Active |
+| `config/` | CRD manifests for tier-3 config delivery | **Quarantined** — reserved for cloud-scale execution |
 | `providers/` | Backlog + repo provider abstraction (GitHub / ADO) | Active |
 | `cmd/goobers` | The product binary: `init`, `validate`, `up`, `run`, `status`, `trace` | Active |
 | `cmd/operator` | Kubernetes operator entrypoint | **Quarantined** — reserved for cloud-scale execution |
-| `cmd/scheduler` | Cluster scheduler process (Temporal-backed) | **Quarantined** — reserved for cloud-scale execution |
-| `cmd/goober-runtime` | Per-run agent pod runtime | **Superseded** — folds into `goobers`' local stage execution |
 | `internal/operator` | Kubernetes operator reconcile logic | **Quarantined** — reserved for cloud-scale execution |
 | `internal/configsync` | Config-repo → CRD render/apply (ArgoCD bridge) | **Quarantined** — CRD-apply path is not part of the shipped local runner |
 | `internal/` (other) | Shared Go packages (engine core, telemetry, app bootstrap) | Active |
@@ -155,6 +173,7 @@ future-design docs above until its child issues land.
 | `samples/` | Versioned, disposable onboarding targets | Active |
 | `deploy/` | Customer-applied Kubernetes reference manifests for the cloud-scale deployment shape | Reference — not a managed deployment path |
 | `telemetryconnector/` | Versioned extension API for external operational telemetry connectors | Active |
+| `evals/` | EvalSuite design docs and prototype runner/adapter implementation for deterministic, reproducible workflow evaluation | Prototype runner in-tree — not shipped behavior |
 | `release/` | Release archive, installer, notes, metadata, and onboarding packaging tools | Active |
 | `packaging/` | Container build and embedded service-supervisor assets | Active |
 | `agent-toolkit/` | Release-owned bundle instructions and harness adapters | Active |
@@ -178,9 +197,11 @@ Import shared packages as e.g. `github.com/goobers/goobers/internal/version`.
 The product binary is **`goobers`** — the local runner: `init`, `validate`, `up`
 (daemon: scheduler + runner), `run`, `status`, `trace`.
 
-Pre-existing entrypoints (`operator`, `scheduler`, `goober-runtime`) are
-cloud-scale or superseded skeletons kept per the quarantine plan
-(`docs/ARCHITECTURE.md §11`).
+Pre-existing entrypoints (`operator`, `config-sync`) are cloud-scale skeletons
+kept per the quarantine plan (`docs/ARCHITECTURE.md §11`). The tier-3
+scheduler fork (`cmd/scheduler`, `internal/scheduler`) and `cmd/goober-runtime`
+were deleted per `docs/design/goobernetes-architecture.md` D5 (#2055 resolved:
+supersede).
 Every binary shares `internal/app.Main`, which wires `--version`, structured logging
 (`--log-level`, `--log-format`), and SIGINT/SIGTERM-aware shutdown.
 
@@ -197,6 +218,7 @@ the differences relevant to your environment:
 - [Onboard an arbitrary repository (tiers 1-2)](docs/guides/arbitrary-repo-onboarding.md)
 - [Custom deterministic stage cookbook](docs/guides/custom-stage-cookbook.md)
 - [Daemon supervision](docs/guides/supervision.md)
+- [Move a local instance to another machine](docs/guides/move-local-instance.md)
 - [OIDC authentication](docs/guides/oidc-authentication.md)
 - [Azure DevOps authentication](docs/guides/ado-authentication.md)
 - [External telemetry connectors](docs/guides/external-telemetry-connectors.md)

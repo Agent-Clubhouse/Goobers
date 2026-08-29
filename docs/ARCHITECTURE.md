@@ -101,6 +101,10 @@ journals** on either runner. "Equivalent" is a defined relation, not a vibe:
   every run that never forks); and runner-specific annotations, which MUST live under a
   namespaced `runner.*` field — that namespace is the *only* sanctioned runner-specific
   divergence.
+  Notification request and delivery-receipt events are also excluded: they are
+  deployment output side effects rather than workflow-machine transitions. Their
+  provider-neutral contract is documented in
+  [`design/notification-output.md`](design/notification-output.md).
 - **Fixed stage effects** means: deterministic stages with pinned commands over
   fixture inputs, provider reads mocked or replayed from journaled responses, and
   agentic stages driven by the fixture harness. For **live agentic runs** the
@@ -120,6 +124,7 @@ Every run — local or cloud — produces:
 
 ```
 gaggles/<gaggle>/runs/<run-id>/
+  schema.json       # journal schema version + minimum compatible binary
   run.yaml          # pinned identity: workflow name+version, gaggle, trigger, inputs
   state.json        # current machine state; atomically replaced checkpoint
   events.jsonl      # append-only event journal (stage started/finished, gate verdicts,
@@ -156,6 +161,10 @@ Rules:
 - **Content digests** on inputs and artifacts make runs comparable and make those
   files tamper-evident (the event log itself is trusted-at-rest at tiers 1–2; hash
   chaining is a tier-2+ option, not a baseline claim).
+- A stage may additionally mirror its durable outbox files to a configured local
+  filesystem root. Stage, workflow, then gaggle configuration wins in that order.
+  The mirror is arranged beneath `<root>/<run-id>/`; the journal remains the
+  source of truth, and every source and destination path is containment-checked.
 - **Version pinning:** a run records the workflow definition version it started on and
   completes on it; definition changes affect only new runs (`WF-016`).
 - **Redaction at the boundary:** raw secrets MUST NOT land at rest anywhere under
@@ -261,11 +270,13 @@ Contract rules:
   in `run.yaml` when a run starts, so config reloads cannot retune a run in
   flight. `maxRunDuration` bounds total wall-clock age independently of journal
   activity and is disabled when omitted. An automated or
-  agentic gate may override `maxRepasses` because separate review loops in one
-  definition can legitimately need different budgets. Stall detection does not
-  have a task-level override: task/gate `timeoutSeconds` and retry policies
-  already own per-attempt execution bounds, while the stall watchdog protects
-  the run journal as a whole.
+  agentic gate may override `maxRepasses`. The value bounds cumulative
+  re-entries to a branch's target stage across all gates that route back to
+  that stage; a pass at one gate does not reset that target's live budget.
+  Separate target stages can therefore have independent budgets. Stall
+  detection does not have a task-level override: task/gate `timeoutSeconds`
+  and retry policies already own per-attempt execution bounds, while the stall
+  watchdog protects the run journal as a whole.
 - Retry attempt counts and backoff remain declared on each task or executable
   gate. They are intentionally not inherited run controls: they classify and
   repeat one stage attempt, whereas repass and stall budgets bound orchestration
@@ -289,10 +300,11 @@ Contract rules:
 `goobers init` scaffolds this; `goobers validate` checks it; `goobers up` runs the
 daemon (scheduler + runner); `goobers run <workflow>` triggers one manually (still
 honoring run conditions); `goobers status` / `goobers trace <run-id>` inspect it.
-These are the anchor commands of a wider registry-sourced CLI (~50 subcommands with
-generated help/man/completions), including the built-in stage kinds workflows invoke
-as subcommands (`backlog-query`, `open-pr`, `merge-pr`, `elect-lander`,
-`apply-verdict`, …). The daemon also serves a **loopback-only HTTP API**
+These are the anchor commands of a wider registry-sourced CLI documented in the
+guarded [generated CLI reference](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md),
+including the built-in stage kinds workflows invoke as subcommands (`backlog-query`,
+`open-pr`, `merge-pr`, `elect-lander`, `apply-verdict`, …). The daemon also serves a
+**loopback-only HTTP API**
 (`internal/httpapi`: `/api/v1/*` reads, health, event stream) backing an embedded
 dashboard (`goobers dashboard`); long-lived daemons run under platform supervision
 (systemd/launchd/Windows service — `docs/guides/supervision.md`).
@@ -339,6 +351,21 @@ at tiers 1–2 (`SEC-021`, `TUT-006`).
   label selection and FIFO remain unchanged. On public repos, eligibility
   requires a maintainer-applied trust label: backlog content is untrusted input
   (`SEC-047`).
+- **A claim's lifetime is the ledger's, and the marker's lifetime is the
+  claim's.** `scheduler/claims.json` is the only source of truth for
+  exactly-once processing (`BL-005`); the provider-visible `goobers:claimed`
+  label and its claim breadcrumb are a projection of it, never an input to
+  eligibility. The projection is retired at the same moment the lease is —
+  a stage does it on the paths that have one (`issue-close-out`,
+  `backlog-query --release`), and the instance's terminal cleanup does it for
+  every run that reaches a terminal phase still holding a lease. The `no-work`
+  outcome is the case that makes the second path necessary rather than
+  defensive: it short-circuits to `completed` from whatever stage reported it,
+  so no close-out stage runs. Backlog curation's reconciliation of markers with
+  no backing lease remains the backstop for a projection that could not be
+  written (a forge outage, a credential-less instance, a non-GitHub provider),
+  not the primary mechanism — so the window in which the ledger and the forge
+  disagree is bounded by one provider call, not by one curation interval.
 - **Readiness conditions** enforced before any run starts: max parallel runs per
   workflow and per instance, `maxRunsPerHour` / `maxRunsPerDay` run budgets,
   chain-depth bounding (`maxChainDepth`), open-PR caps (`maxOpenPRs`, #353), and
@@ -387,7 +414,7 @@ implementation of a seam the local runner also implements. "This is where it goe
 | Seam | Tiers 1–2 (local) | Tier 3 (cloud drop-in) |
 |---|---|---|
 | Runner / durability | Local runner, file journal | **Temporal** (self-hosted, Postgres-backed), history → journal projection |
-| Journal & artifact store | Plain files under `gaggles/<gaggle>/runs/` + `scheduler/` | Cluster volume/blob store, **same on-disk layout** (the projection's write target) |
+| Journal & artifact store | Plain files under `gaggles/<gaggle>/runs/` + `scheduler/` | Journal projection on a single-writer RWO instance volume; fleet-wide content-addressed artifacts on RWX/blob storage |
 | Stage execution | Local process in worktree | **AKS** ephemeral agent pods |
 | Scheduling / triggers | Embedded scheduler (cron eval in `goobers up`) | **Temporal Schedules** |
 | Config delivery | Startup-loaded local `config/`; opt-in `--watch-config` for direct edits; or continuous Git `workflowSource` reconciliation via polling, local-ref/webhook wakeups, and last-known-good retention | **ArgoCD** sync → CRDs → **Goobers operator** |
@@ -404,10 +431,10 @@ implementation of a seam the local runner also implements. "This is where it goe
 | `internal/engine` compile/state machine | **Extract** the substrate-neutral core (compile, states, gates) for the local runner; the Temporal workflow function around it becomes the V2 adapter |
 | `providers/` | **Keep & extend** — GitHub issues/PR operations are V0 workload |
 | `internal/telemetry` | **Keep** — add journal/SQLite exporter |
-| `internal/operator`, `cmd/operator`, `internal/configsync` (CRD apply path), `cmd/scheduler` | **Quarantine** — tier-3 components; status-bannered, kept compiling, revived in V2 |
+| `internal/operator`, `cmd/operator`, `internal/configsync` (CRD apply path) | **Quarantine** — tier-3 components; status-bannered, kept compiling, revived in V2. The tier-3 scheduler fork (`internal/scheduler`, `cmd/scheduler`) was **deleted** per goobernetes-architecture.md D5/§4 (#2055 resolved: supersede) — `internal/localscheduler` is the one scheduler |
 | `infra/` (Bicep, ArgoCD, Temporal) | **Quarantine** — tier-3 provisioning, revived in V2 |
 | `portal/` | **Keep** — retarget from mock client to reading run journals (V1) |
-| `cmd/goober-runtime` | **Superseded** by the local runner's stage execution; folds into the `goobers` binary |
+| `cmd/goober-runtime` | **Retired** (deleted) per goobernetes-architecture.md D5/§4 — superseded by the local runner's stage execution in the `goobers` binary |
 
 ## 12. Roadmap
 
@@ -426,9 +453,9 @@ and implemented into PRs by the instance running on your own machine.
 
 **Status: V0 acceptance passed** (`docs/V0-ACCEPTANCE.md`). The V0.5/V0.6+ waves
 then closed and expanded the PR loop: the `reference-workflows/` reference config
-now defines **nine** workflows: backlog curation, docs updater, implementation,
-merge review, PR remediation, quality sprint, self update, Tutor, and work
-nomination. Together they provide the canonical patterns for curating and
+now defines **ten** workflows: backlog curation, docs updater, implementation,
+merge review, PR remediation, quality sprint, self update, test-suite quality,
+Tutor, and work nomination. Together they provide the canonical patterns for curating and
 implementing work, reviewing, remediating, and **merging PRs autonomously**, and
 maintaining the product and its workforce — a ratified product direction (G2 in
 `docs/design/v0/pr-lifecycle-loop.md`; sibling sequencing in

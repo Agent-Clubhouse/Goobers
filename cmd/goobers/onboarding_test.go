@@ -99,8 +99,13 @@ func TestOnboardingActionsComposeToCleanInstance(t *testing.T) {
 		}
 	}
 
-	skills := []string{"config-authoring", "implement", "nomination", "review", "run-tests", "triage", "tutor-diagnosis"}
-	createDeclaredSkillPackages(t, filepath.Dir(sourceRoot), skills...)
+	// implement/run-tests/review already ship as gaggle-scoped packages inside
+	// the quickstart-v1 template (SKILL002 fix); declaring shared-level
+	// stand-ins for those too would collide with the scoped ones (SKILL001)
+	// instead of being a harmless no-op. Only the stub-agent-instructions
+	// additions still need a stand-in.
+	tutorSkills := []string{"config-authoring", "nomination", "triage", "tutor-diagnosis"}
+	createDeclaredSkillPackages(t, filepath.Dir(sourceRoot), tutorSkills...)
 	assertCleanValidation("validate", "--source-tree", "--json", sourceRoot)
 
 	sourceConfig, err := instance.LoadGuidedSourceConfig(sourceRoot)
@@ -110,7 +115,7 @@ func TestOnboardingActionsComposeToCleanInstance(t *testing.T) {
 	if _, err := instance.InitGuidedFromSource(instanceRoot, sourceRoot, sourceConfig); err != nil {
 		t.Fatalf("materialize composed instance: %v", err)
 	}
-	createDeclaredSkillPackages(t, instanceRoot, skills...)
+	createDeclaredSkillPackages(t, instanceRoot, tutorSkills...)
 	assertCleanValidation("validate", "--json", instanceRoot)
 
 	var golden bytes.Buffer

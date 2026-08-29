@@ -46,6 +46,8 @@ spec:
         since: "14 days ago"
         resultFile: "churn-report.json"
       capabilities: []
+      requiredCapabilities:
+        - os=linux
       expectedOutputs:
         - churnedFileCount
         - churnSummary

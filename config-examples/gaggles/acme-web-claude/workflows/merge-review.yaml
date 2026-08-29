@@ -1,0 +1,486 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "2.0"
+metadata:
+  name: claude-merge-review
+spec:
+  gaggle: acme-web-claude
+  displayName: Merge review (PR-lifecycle decider)
+  # Review one eligible PR with all other open PRs as integration context.
+  # A pass enters the explicitly capability-gated merge/post-merge chain;
+  # other outcomes become PR feedback for remediation or a human.
+  triggers:
+    - type: webhook
+      events: [pull_request]
+    - type: schedule
+      schedule: "28 * * * *"
+  readiness:
+    maxConcurrentRuns: 1
+    maxRunsPerHour: 2
+  start: reconcile-post-merge
+  tasks:
+    - name: reconcile-post-merge
+      type: deterministic
+      goal: Reconcile merge-queue pull requests that merged after queue-watch timed out.
+      run:
+        command: ["goobers", "reconcile-post-merge"]
+      inputs:
+        resultFile: "reconcile-post-merge-result.json"
+        maxPullRequests: "10"
+        lookback: "168h"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+        - github:branch:delete
+      policyActions:
+        - close-issues
+        - fan-out-remediation
+        - unpark-resolved-siblings
+        - clear-healed-escalations
+        - clear-healed-demotions
+        - delete-branch
+      continueOnError: true
+      next: pr-select
+
+    - name: pr-select
+      type: deterministic
+      goal: Select one eligible open PR for holistic review.
+      run:
+        command: ["goobers", "pr-select"]
+      inputs:
+        # pr-select is the authoritative source of advisoryMode. With
+        # authorScope=any, daemon-owned PRs are managed (false) and all other
+        # selected PRs are advisory (true). Ownership uses the configured
+        # daemon identity when available, falling back to these head prefixes.
+        # The resulting mix follows incoming PR traffic; no fixed ratio is
+        # expected, and a window containing only one class is valid.
+        headPrefixes: "goobers/implementation/,goobers/docs-updater/"
+        authorScope: "any"
+        requireOptInLabel: ""
+        respectAssignee: "false"
+        selfIdentity: ""
+        resultFile: "selected-pr.json"
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - flag-foundation-coupling
+      expectedOutputs:
+        - number
+        - head
+        - base
+        - advisoryMode
+      next: check-issue-staleness
+
+    # #2340: re-fetch the PR's pinned linked issue and compare its live
+    # updatedAt against the implementation-time snapshot before the expensive
+    # agentic review gate runs. A PR whose issue changed materially since
+    # implementation began is routed to remediation here instead of being
+    # reviewed against stale copied criteria.
+    - name: check-issue-staleness
+      type: deterministic
+      goal: Refuse to review a PR against a stale issue snapshot.
+      run:
+        command: ["goobers", "check-issue-staleness"]
+      inputsFrom:
+        pullNumber: number
+        head: head
+        base: base
+        advisoryMode: advisoryMode
+      inputs:
+        resultFile: "issue-staleness-result.json"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+      policyActions:
+        - route-verdict
+      expectedOutputs:
+        - number
+        - head
+        - base
+        - advisoryMode
+        - issueStale
+      next: issue-staleness-gate
+
+    - name: gather-sibling-context
+      type: deterministic
+      goal: Load the other open PRs' touched files + state as review evidence.
+      run:
+        command: ["goobers", "gather-sibling-context"]
+      inputsFrom:
+        selectedNumber: number
+        advisoryMode: advisoryMode
+      inputs:
+        headPrefixes: "goobers/implementation/,goobers/docs-updater/"
+        authorScope: "any"
+        resultFile: "sibling-context.json"
+      capabilities:
+        - github:pr:write
+      policyActions:
+        - flag-scope-drift
+        - route-verdict
+      expectedOutputs:
+        - selectedNumber
+        - selectedHeadSha
+        - selectedBaseSha
+        - advisoryMode
+        - reviewDigest
+        # #990: deterministic file-overlap set, threaded to elect-lander +
+        # apply-verdict. Empty string when nothing overlaps.
+        - overlappingSiblingsCsv
+        # #1313/#1814: whether this PR is currently barred from merging for
+        # exceeding the size threshold. Review still runs to produce findings.
+        - scopeGateParked
+      next: review
+
+    - name: apply-verdict
+      type: deterministic
+      goal: Publish the verdict as a native review and retain non-pass remediation handoffs.
+      run:
+        command: ["goobers", "apply-verdict"]
+      inputsFrom:
+        selectedNumber: selectedNumber
+        # The deterministic gather outputs are authoritative; verdict SHAs are
+        # only an optional cross-check against this pin.
+        selectedHeadSha: selectedHeadSha
+        selectedBaseSha: selectedBaseSha
+        advisoryMode: advisoryMode
+        reviewDigest: reviewDigest
+        # #990: same deterministic overlap set the election used.
+        overlappingSiblings: overlappingSiblingsCsv
+        # #1814: preserve the deterministic scope decision through verdict
+        # publication so scope-gate guards only the merge path.
+        scopeGateParked: scopeGateParked
+      inputs:
+        resultFile: "verdict-result.json"
+        publishAdvisory: "true"
+        # MUST match elect-lander's electionPolicy. apply-verdict re-derives
+        # the election rather than receiving it: `elected` is emitted only by
+        # elect-lander, and this stage is also reached straight from the review
+        # gate, where a single-hop inputsFrom edge would fail closed.
+        electionPolicy: "fifo"
+      capabilities:
+        - provider:pr:write
+        - github:pr:review
+      policyActions:
+        - publish-review
+        - route-provider-verdict
+        - close-pr
+      expectedOutputs:
+        - selectedNumber
+        - selectedHeadSha
+        - selectedBaseSha
+        - advisoryMode
+        - decision
+        - verdictAuthor
+        - priorityDispatchRequested
+        - scopeGateParked
+      next: advisory-verdict
+
+    # #833: deterministic cross-PR winner-election. Crowns one lander of a
+    # mutually-sibling-blocked cluster (lowest PR number) and routes it into
+    # merge-pr; everything else flows to apply-verdict and parks.
+    - name: elect-lander
+      type: deterministic
+      goal: Elect one lander from a mutually-sibling-blocked cluster, or park the rest.
+      run:
+        command: ["goobers", "elect-lander"]
+      inputsFrom:
+        selectedNumber: selectedNumber
+        selectedHeadSha: selectedHeadSha
+        selectedBaseSha: selectedBaseSha
+        advisoryMode: advisoryMode
+        reviewDigest: reviewDigest
+        # #990: deterministic overlap set; passed through below for apply-verdict.
+        overlappingSiblings: overlappingSiblingsCsv
+        # #1814: retain the scope decision on the election path too.
+        scopeGateParked: scopeGateParked
+      inputs:
+        # Outputs reach the runner ONLY through a declared result file — a
+        # stage without one always reports empty Outputs, however much its
+        # expectedOutputs promises.
+        resultFile: "election.json"
+        # #834: lander-election policy — "fifo" (lowest PR#, default) or
+        # "newest" (highest PR#). Unknown values fall back to fifo.
+        electionPolicy: "fifo"
+      capabilities:
+        - github:pr:write
+      expectedOutputs:
+        - elected
+        - selectedNumber
+        - selectedHeadSha
+        - selectedBaseSha
+        - advisoryMode
+        - reviewDigest
+        # Passed through for apply-verdict on the parked branch (#990).
+        - overlappingSiblingsCsv
+        - scopeGateParked
+      next: elect-gate
+
+    - name: merge-pr
+      type: deterministic
+      goal: Land the selected PR only when every independent safety conjunct still holds.
+      run:
+        command: ["goobers", "merge-pr"]
+      inputsFrom:
+        pullNumber: selectedNumber
+        headSha: selectedHeadSha
+        baseSha: selectedBaseSha
+        # apply-verdict resolves this with its provider:pr:write credential, the
+        # identity that actually owns the sticky verdict. Keep merge-pr scoped
+        # to github:pr:merge instead of injecting the broader posting token.
+        verdictAuthor: verdictAuthor
+      inputs:
+        verdict: "pass"
+        # Set true to evaluate without attempting a merge. The merge capability
+        # is still required because admission always fails closed.
+        advisoryMode: "false"
+        resultFile: "merge-result.json"
+      capabilities:
+        # INSTANCE OPT-IN: this per-workflow grant enables auto-merge. Without
+        # it, remove this three-stage chain and route review:pass directly to
+        # apply-verdict; merge-pr never acquires merge authority implicitly.
+        - github:pr:merge
+        # github:branch:delete lets post-merge cleanupMergedBranch delete the
+        # merged head branch instead of failing closed and leaking it (#1075).
+        - github:branch:delete
+      policyActions:
+        - merge-pr
+        - delete-branch
+      expectedOutputs:
+        - selectedNumber
+        - merged
+        - optedOut
+        # reason is always emitted (empty on a merge/enqueue) so
+        # record-merge-refusal (#950) can thread it on merge-gate's fail branch;
+        # selectedHeadSha (the echoed SHA-pin) keys the demotion by head.
+        - reason
+        - selectedHeadSha
+      next: merge-opt-out-gate
+
+    - name: queue-watch
+      type: deterministic
+      goal: Watch an enqueued PR until it merges, is evicted, times out, or is dequeued after opting out.
+      run:
+        command: ["goobers", "merge-queue-poll"]
+      inputsFrom:
+        pullNumber: selectedNumber
+      inputs:
+        resultFile: "queue-result.json"
+        # A merge queue runs a full combined build against the projected
+        # merge state, which routinely outlasts the executor's 10-minute
+        # default stage timeout. Without an explicit budget here the stage
+        # is killed long before the queue resolves, so the run never
+        # observes the merge and post-merge (branch cleanup, issue
+        # close-out, sibling fan-out) never runs for a PR that did in fact
+        # land (#886).
+        #
+        # The stage timeout must exceed the poll timeout: merge-queue-poll
+        # clamps its own poll to a margin inside whichever stage budget is
+        # in effect (#884), so declaring only one of the two silently caps
+        # the other.
+        pollTimeoutSeconds: "25m"
+        timeout: "30m"
+      capabilities:
+        - github:pr:merge
+        - github:issues:write
+        # github:branch:delete: queue-watch runs the same post-merge
+        # cleanupMergedBranch as merge-pr when the queue reports merged (#1075).
+        - github:branch:delete
+      policyActions:
+        - watch-merge-queue
+        - route-queue-outcome
+        - delete-branch
+      expectedOutputs:
+        - selectedNumber
+        - queueOutcome
+      next: queue-opt-out-gate
+
+    - name: post-merge
+      type: deterministic
+      goal: Close referenced issues and mark now-behind sibling PRs for remediation.
+      run:
+        command: ["goobers", "post-merge"]
+      inputsFrom:
+        pullNumber: selectedNumber
+      inputs:
+        resultFile: "post-merge-result.json"
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+      policyActions:
+        - close-issues
+        - fan-out-remediation
+        - unpark-resolved-siblings
+        - clear-healed-escalations
+        - clear-healed-demotions
+
+    # #950: merge-gate's fail branch records a durable per-PR counter of merge
+    # refusals at an unchanged head and demotes a persistently-stuck lander
+    # (goobers:merge-demoted) so its cluster drains around it. No-op for a
+    # transient/first refusal; self-heals when the PR's head advances.
+    - name: record-merge-refusal
+      type: deterministic
+      goal: Record a merge refusal and demote a persistently-stuck lander (#950).
+      run:
+        command: ["goobers", "record-merge-refusal"]
+      inputsFrom:
+        selectedNumber: selectedNumber
+        reason: reason
+        selectedHeadSha: selectedHeadSha
+      capabilities:
+        - github:pr:write
+        - github:issues:write
+      policyActions:
+        - record-merge-refusal
+        - demote-pr
+
+  gates:
+    # #2340: check-issue-staleness emits issueStale before the expensive
+    # agentic review gate runs. A materially-changed issue routes here to a
+    # terminal stop (the stage itself already labeled/commented the PR)
+    # instead of into review.
+    - name: issue-staleness-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: issueStale
+          equals: "false"
+      branches:
+        pass: gather-sibling-context
+        fail: "@abort"
+
+    # #1313/#1814: gather-sibling-context reconciles the scope label before
+    # review. This gate evaluates the carried decision only after a pass
+    # verdict has been published, blocking merge without suppressing review.
+    - name: scope-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: scopeGateParked
+          equals: "false"
+      branches:
+        pass: merge-pr
+        fail: ""
+
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: claude-reviewer
+        # #765: retry a transient reviewer-harness failure (a copilot session
+        # that wrote no verdict file) within this bound instead of failing the
+        # run on the first occurrence. Non-transient errors still fail fast.
+        retry:
+          maxAttempts: 2
+      branches:
+        # #825: a pass enters apply-verdict too (every verdict is published
+        # as a native GitHub review before any merge decision) —
+        # published-verdict then gates the actual merge.
+        pass: apply-verdict
+        # #833: needs-changes routes through elect-lander (winner-election) first.
+        needs-changes: elect-lander
+        fail: apply-verdict
+
+    - name: elect-gate
+      # #833: BOTH branches route to apply-verdict. Election means "stop
+      # counting those siblings as blockers", not "merge regardless of
+      # review", so it resolves into an ordinary verdict rather than a
+      # separate merge authority — apply-verdict derives the pass itself
+      # (electedLanderPass) and published-verdict routes it onward to
+      # merge-pr on the same run.
+      #
+      # The former elected=true -> merge-pr bypass could not actually work:
+      # merge-pr builds its commit message from a `pass` verdict comment
+      # pinned to the current SHAs, and the bypass posted no verdict comment
+      # at all, so merge-pr exited 1 every cycle. It also satisfied its
+      # "reviewed favorably" conjunct from the hardcoded `verdict: "pass"`
+      # input rather than the real verdict.
+      #
+      # elected=false -> apply-verdict unchanged (park blocked-on-sibling /
+      # needs-remediation).
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: elected
+          equals: "true"
+      branches:
+        pass: apply-verdict
+        fail: apply-verdict
+
+    - name: published-verdict
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: decision
+          equals: pass
+      branches:
+        pass: scope-gate
+        fail: ""
+
+    # apply-verdict passes through pr-select's decision unchanged. Advisory
+    # selections terminate after their non-blocking review is published;
+    # managed selections continue through the independent merge safeguards.
+    - name: advisory-verdict
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: advisoryMode
+          equals: "true"
+      branches:
+        pass: ""
+        fail: published-verdict
+
+    - name: merge-opt-out-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: optedOut
+          equals: "true"
+      branches:
+        pass: ""
+        fail: merge-gate
+
+    - name: merge-gate
+      # Distinguishes an actual merge from a merge-queue enqueue (issue
+      # #758) — a plain output-equals(merged==true) would conflate
+      # "enqueued, not yet merged" with the refusal case.
+      evaluator: automated
+      automated:
+        check: land-outcome
+      branches:
+        merged: post-merge
+        enqueued: queue-watch
+        # Keep changed CI/draft state unlabeled so a later run can retry after
+        # the PR becomes eligible again. #950: route through record-merge-refusal
+        # so a lander that repeatedly cannot merge at an unchanged head is
+        # counted and eventually demoted, letting its cluster drain around it.
+        fail: record-merge-refusal
+
+    - name: queue-opt-out-gate
+      evaluator: automated
+      automated:
+        check: output-equals
+        params:
+          key: queueOutcome
+          equals: skipped
+      branches:
+        pass: ""
+        fail: queue-gate
+
+    - name: queue-gate
+      # queue-watch already labels and comments on both evicted and timed-out
+      # pull requests, so those outcomes terminate here after leaving a visible
+      # remediation trail. Timeout reconciliation continues independently.
+      evaluator: automated
+      automated:
+        check: queue-outcome
+      branches:
+        merged: post-merge
+        evicted: ""
+        timeout: ""
+        fail: ""

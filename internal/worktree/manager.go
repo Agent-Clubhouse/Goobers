@@ -55,11 +55,12 @@ type Manager struct {
 	// Windows. Defaults to os.Lstat.
 	lstat func(string) (os.FileInfo, error)
 
-	gaggle        string
-	usageObserver UsageObserver
-	diskUsage     func(string) (int64, error)
-	gitEnv        func(context.Context, string) ([]string, error)
-	remoteGitGate func(context.Context, string) error
+	gaggle         string
+	writerIdentity string
+	usageObserver  UsageObserver
+	diskUsage      func(string) (int64, error)
+	gitEnv         func(context.Context, string) ([]string, error)
+	remoteGitGate  func(context.Context, string) error
 
 	// partialClone provisions NEW mirrors as blobless partial clones and
 	// narrows their refresh refspec — see WithPartialClone. Never set for an
@@ -226,6 +227,13 @@ func WithPinnedProcessKiller(kill func(string) error) ManagerOption {
 	}
 }
 
+// WithWriterIdentity records a host-meaningful writer on each worktree marker.
+func WithWriterIdentity(identity string) ManagerOption {
+	return func(m *Manager) {
+		m.writerIdentity = identity
+	}
+}
+
 // WithPathLengthLimit enables checkout path-length preflight for repoURL. A
 // zero maximum uses DefaultMaxPathLength.
 func WithPathLengthLimit(repoURL string, limit PathLengthLimit) ManagerOption {
@@ -378,6 +386,16 @@ func (m *Manager) ownershipPath(key, directory string) string {
 
 func (m *Manager) markerPath(key, runID string) string {
 	return filepath.Join(m.markersDirForKey(key), runID+".json")
+}
+
+func (m *Manager) branchAcquisitionRunDir(key, ownerRunID string) string {
+	sum := sha256.Sum256([]byte(ownerRunID))
+	return filepath.Join(m.Root, key, "acquisitions", hex.EncodeToString(sum[:]))
+}
+
+func (m *Manager) branchAcquisitionPath(key, ownerRunID, branch string) string {
+	sum := sha256.Sum256([]byte(branch))
+	return filepath.Join(m.branchAcquisitionRunDir(key, ownerRunID), hex.EncodeToString(sum[:])+".json")
 }
 
 // lockFor returns the per-repo mutex used to serialize clone/fetch and
@@ -867,26 +885,16 @@ func IsTransientProvisionError(err error) bool {
 	if !errors.As(err, &gitErr) || gitErr.exitCode != 128 {
 		return false
 	}
-	message := strings.ToLower(string(gitErr.output))
+	output := string(gitErr.output)
+	if isNetworkGitOutput(output) {
+		return true
+	}
+	message := strings.ToLower(output)
 	for _, fragment := range []string{
-		"could not resolve host",
-		"couldn't resolve host",
-		"failed to connect to",
-		"could not connect to",
-		"connection refused",
-		"connection reset",
-		"connection timed out",
-		"ssl connection timeout",
-		"empty reply from server",
-		"network is unreachable",
-		"operation timed out",
-		"timeout was reached",
-		"timed out after",
-		"the remote end hung up unexpectedly",
-		"unexpected disconnect",
-		"early eof",
 		// Promisor blob-backfill failures at worktree checkout (#646) — see
-		// the function doc for why these wrappers classify as transient.
+		// the function doc for why these wrappers classify as transient
+		// without being provably network-owned (ClassifyProvisionError
+		// therefore leaves them on the git tier).
 		"from promisor remote",
 		"failed to fetch some objects",
 	} {
@@ -894,7 +902,7 @@ func IsTransientProvisionError(err error) bool {
 			return true
 		}
 	}
-	return remote5xxPattern.MatchString(message)
+	return false
 }
 
 // runGit runs git with args, using dir as the working directory (the process

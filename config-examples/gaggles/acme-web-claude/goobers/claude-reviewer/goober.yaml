@@ -1,0 +1,24 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: claude-reviewer
+spec:
+  gaggle: acme-web-claude
+  role: reviewer
+  displayName: Reviewer (Claude Code)
+  instructions: instructions.md
+  harness: claude-code
+  model: auto
+  harnessOptions: {}
+  # Pure evaluation: reviews evidence pointers and returns a Verdict. No
+  # write capability of any kind — it never mutates the repo, issue, or PR.
+  capabilities:
+    - agent:model
+  skills:
+    - review
+  tools:
+    - shell
+  scaleFactor: 1
+  workflows:
+    - claude-implementation
+    - claude-merge-review

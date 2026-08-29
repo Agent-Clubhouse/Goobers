@@ -103,7 +103,7 @@ const docsChurnHelp = "Usage: goobers docs-churn [--repo <dir>] [--workflow <nam
 	"2 = usage/IO error.\n"
 
 func runDocsChurn(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("docs-churn", flag.ContinueOnError)
+	fs := newCLIFlagSet("docs-churn", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	repo := fs.String("repo", ".", "git repository/worktree to scan (default the stage's worktree)")
 	workflowFlag := fs.String("workflow", "", "workflow name keying the watermark (default $GOOBERS_WORKFLOW)")

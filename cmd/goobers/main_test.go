@@ -219,6 +219,7 @@ func TestValidateRejectsUnknownAutomatedCheckName(t *testing.T) {
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	broken := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -235,6 +236,8 @@ spec:
       type: agentic
       goober: coder
       goal: Implement the backlog item and open a PR.
+      capabilities:
+        - agent:model
       next: done-check
   gates:
     - name: done-check
@@ -267,6 +270,7 @@ func TestValidateRejectsInvalidOutputMatchesPattern(t *testing.T) {
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	broken := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -316,6 +320,7 @@ func TestValidateWarnsForClaimStageWithoutResultFile(t *testing.T) {
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	workflow := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -385,14 +390,11 @@ func TestInitThenReferenceWorkflowsValidates(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "instance.yaml"), instanceYAML, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	createDeclaredSkillPackages(t, root,
-		"config-authoring", "implement", "nomination", "review", "run-tests", "triage", "tutor-diagnosis")
-
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 {
 		t.Fatalf("validate: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "1 gaggle(s), 9 goober(s), 9 workflow(s)") {
+	if !strings.Contains(stdout, "1 gaggle(s), 11 goober(s), 11 workflow(s)") {
 		t.Fatalf("validate stdout = %q, want all self-hosting objects to resolve", stdout)
 	}
 	warnings, previewCount := withoutGeneratedPreviewWarnings(stdout)

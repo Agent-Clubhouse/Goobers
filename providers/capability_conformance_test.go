@@ -20,6 +20,7 @@ var optionalCapabilityInterfaces = map[Capability]reflect.Type{
 	CapPRCompare:             reflect.TypeOf((*CommitComparer)(nil)).Elem(),
 	CapPRReviewSubmit:        reflect.TypeOf((*PullRequestReviewSubmitter)(nil)).Elem(),
 	CapPRReviewThreads:       reflect.TypeOf((*PullRequestReviewThreadProvider)(nil)).Elem(),
+	CapPRReviewResolve:       reflect.TypeOf((*PullRequestReviewThreadMutator)(nil)).Elem(),
 	CapPRMerge:               reflect.TypeOf((*PullRequestMerger)(nil)).Elem(),
 	CapPRLandingDetectPolicy: reflect.TypeOf((*MergePolicyDetector)(nil)).Elem(),
 	CapPRLandingEnqueue:      reflect.TypeOf((*PullRequestEnqueuer)(nil)).Elem(),
@@ -95,6 +96,7 @@ func TestADOStillExcludesUnimplementedSurfaces(t *testing.T) {
 	excluded := []Capability{
 		CapPRReviewSubmit,
 		CapPRReviewThreads,
+		CapPRReviewResolve,
 		CapRepoPolicyRead,
 		CapPRUpdateBranch,
 	}

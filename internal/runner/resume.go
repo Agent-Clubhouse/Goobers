@@ -22,21 +22,15 @@ var ErrTerminalGenerationChanged = errors.New("terminal run generation changed")
 
 // ResumeInput identifies an interrupted run to pick back up. Everything
 // recoverable from the journal is read from it (Gaggle, Trigger, the
-// snapshotted Item); RepoRef and Machine are NOT journaled — RunIdentity
-// pins the workflow's name/version/digest for verification, but not the
-// target repo or the compiled Machine object itself — so the caller (the
-// daemon, which already holds this per-gaggle/workflow config) supplies them
-// again, exactly as it did for the original Start.
+// snapshotted Item and workflow Definition); RepoRef is not journaled, so the
+// caller supplies it again exactly as it did for the original Start.
 type ResumeInput struct {
 	// RunID selects the run directory under Config.RunsDir.
 	RunID string
-	// Machine is the compiled workflow (#9) this run was walking. Its digest
-	// MUST match the run's pinned WorkflowDigest (WF-016) — resuming a run
-	// under a changed definition is refused, not silently reinterpreted. A
-	// refusal is itself terminal (#520): the run is journaled PhaseFailed
-	// (with the WF-016 refusal text as the run.finished event's own error
-	// detail) and finalized like any other terminal run, releasing its
-	// claims — see refuseResume.
+	// Machine is the compiled workflow (#9) this run was walking. When nil,
+	// Resume reconstructs it from the immutable workflow-definition input.
+	// When supplied, its digest MUST match the run's pinned WorkflowDigest
+	// (WF-016).
 	Machine *workflow.Machine
 	// GooberDigest is the current resolved execution identity.
 	GooberDigest string
@@ -46,6 +40,9 @@ type ResumeInput struct {
 	// HumanDecision resolves the latest durable human-gate pause. Nil performs
 	// ordinary crash recovery and leaves a paused human gate awaiting input.
 	HumanDecision *HumanGateDecision
+	// RecoveryReason marks an automatic runner recovery. Empty means this is
+	// an operator-driven or otherwise ordinary resume.
+	RecoveryReason string
 }
 
 // HumanGateDecision is an explicit outcome submitted for one paused human
@@ -125,9 +122,6 @@ type ResumeFromTerminalInput struct {
 func (r *Runner) Resume(ctx context.Context, in ResumeInput) (Result, error) {
 	if in.RunID == "" {
 		return Result{}, fmt.Errorf("runner: RunID is required")
-	}
-	if in.Machine == nil {
-		return Result{}, fmt.Errorf("runner: Machine is required")
 	}
 	if in.HumanDecision != nil {
 		decision := *in.HumanDecision
@@ -352,10 +346,18 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return r.refuseResume(jr, in.RunID, "resume_refused_missing_digest",
 			fmt.Sprintf("run %q has no pinned workflow digest, refusing to resume (WF-016)", in.RunID))
 	}
+	if in.Machine == nil {
+		in.Machine, err = PinnedWorkflowMachine(rd, id)
+		if err != nil {
+			return r.refuseResume(jr, in.RunID, "resume_refused_pinned_definition",
+				fmt.Sprintf("run %q cannot reconstruct pinned workflow digest %q: %v; refusing to resume (WF-016)", in.RunID, id.WorkflowDigest, err))
+		}
+	}
 	if id.WorkflowDigest != in.Machine.Digest() {
 		return r.refuseResume(jr, in.RunID, "resume_refused_digest_mismatch",
 			fmt.Sprintf("run %q is pinned to workflow digest %q, cannot resume against %q (WF-016)", in.RunID, id.WorkflowDigest, in.Machine.Digest()))
 	}
+
 	if id.GooberDigest != "" && id.GooberDigest != in.GooberDigest {
 		return r.refuseResume(jr, in.RunID, "resume_refused_goober_digest_mismatch",
 			fmt.Sprintf("run %q is pinned to goober digest %q, cannot resume against %q (WF-016)", in.RunID, id.GooberDigest, in.GooberDigest))
@@ -428,27 +430,45 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if activeParallel != nil {
 		pointerEvents = seedEvents[:parallelStart]
 	}
-	seed := walkSeed{
-		pointers:     reconstructPointers(pointerEvents, in.Machine),
-		stageOutputs: reconstructStageOutputs(seedEvents, in.Machine),
-		parallel:     activeParallel,
-		fanIn:        pendingFanIn(seedEvents, in.Machine),
+	resumeInput := StartInput{
+		RunID:              in.RunID,
+		Machine:            in.Machine,
+		GooberDigest:       in.GooberDigest,
+		Gaggle:             id.Gaggle,
+		Trigger:            id.Trigger,
+		RepoRef:            in.RepoRef,
+		WorkspaceBranch:    id.WorkspaceBranch,
+		WorkspaceBranchSHA: id.WorkspaceBranchSHA,
+		ContextPointers:    append([]apiv1.ContextPointer(nil), id.ContextPointers...),
 	}
+	ws := newWalkState(jr, resumeInput, registrar, "")
+	if id.ContinuedFromRunID != "" {
+		ws.pointers = append(ws.pointers, id.ContextPointers...)
+	} else {
+		ws.pointers = reconstructPointers(pointerEvents, in.Machine)
+	}
+	ws.completed = reconstructStageOutputs(seedEvents, in.Machine)
+	ws.visitedStages = stageVisitSeed(seedEvents)
+	ws.parallel = activeParallel
+	ws.fanIn = pendingFanIn(seedEvents, in.Machine)
 	if activeParallel != nil {
-		seed.parallelRootPointers = append([]apiv1.ContextPointer(nil), seed.pointers...)
+		ws.parallelRootPointers = append([]apiv1.ContextPointer(nil), ws.pointers...)
 		jr.SetBranchCursors(activeParallel.cursors())
 		if current := activeParallel.current(); current != nil {
 			jr.SetBranch(current.id)
 		}
 	}
 	if humanProgress.waiting {
-		seed.humanDecision = in.HumanDecision
+		ws.humanDecision = in.HumanDecision
 	}
 	lastStage, lastResult, hasLast := lastFinishedSubject(seedEvents)
-	seed.lastStage, seed.lastResult = lastStage, lastResult
-	seed.lastResult = discardToleratedFailureOutputs(in.Machine, lastStage, seed.lastResult)
-	seed.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
-	seed.branchRecorded = hasRunBranchRef(events)
+	ws.lastStage, ws.lastResult = lastStage, lastResult
+	ws.lastResult = discardToleratedFailureOutputs(in.Machine, lastStage, ws.lastResult)
+	ws.workspaceBranch = id.WorkspaceBranch
+	if ws.workspaceBranch == "" {
+		ws.workspaceBranch = lastWorkspaceBranch(seedEvents, in.Machine, r.branchNamespaceFor(id.Gaggle))
+	}
+	ws.branchRecorded = hasRunBranchRef(events)
 	segment, resumeTarget := currentRunSegment(events)
 	segmentLastStage, _, hasSegmentLast := lastFinishedSubject(segment)
 
@@ -479,22 +499,22 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			startState = in.Machine.Def.Spec.Start
 		}
 	}
-	if rerun == nil && seed.fanIn != nil {
+	if rerun == nil && ws.fanIn != nil {
 		// parallel.finished is authoritative over a checkpoint that still names
 		// the final branch stage from immediately before the fan-in completed.
-		startState = seed.fanIn.spec.Join
+		startState = ws.fanIn.spec.Join
 	}
 	if rerun == nil && parallelTransition != nil {
 		startState = parallelTransition.target
 	}
-	if seed.parallel != nil {
-		current := seed.parallel.current()
+	if ws.parallel != nil {
+		current := ws.parallel.current()
 		switch {
 		case current == nil:
-			return Result{}, fmt.Errorf("runner: restore active parallel %q: no current branch", seed.parallel.spec.Name)
+			return Result{}, fmt.Errorf("runner: restore active parallel %q: no current branch", ws.parallel.spec.Name)
 		case current.settled:
 			startState = workflow.TargetJoin
-		case startState == seed.parallel.spec.Name || !branchContainsState(in.Machine, current.start, startState):
+		case startState == ws.parallel.spec.Name || !branchContainsState(in.Machine, current.start, startState):
 			startState = current.machine
 			if startState == "" {
 				startState = current.start
@@ -547,6 +567,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: resume item snapshot for run %q: %w", in.RunID, err)
 	}
+	ws.in = StartInput{RunID: in.RunID, Machine: in.Machine, RepoRef: in.RepoRef, Item: item}
 	if err := runcontrol.ValidatePinned(id.RunControls); err != nil {
 		return Result{}, fmt.Errorf("runner: invalid pinned run controls: %w", err)
 	}
@@ -555,7 +576,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		return Result{}, fmt.Errorf("runner: resolve pinned run controls: %w", err)
 	}
 	if completedGate != nil {
-		next, res, advance, gerr := r.gateTransition(ctx, jr, in.RunID, in.Machine, in.RepoRef, item, *completedGate, lastStage, lastResult, 0)
+		next, res, advance, gerr := r.gateTransition(ctx, ws, *completedGate)
 		if gerr != nil {
 			return res, gerr
 		}
@@ -569,17 +590,21 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 	if t, isTask := in.Machine.Task(startState); isTask && !concurrentParallelResume {
 		if attempt := interruptedAttempt(segment, startState); attempt > 0 {
 			resume = &resumeContext{
-				stage:                startState,
-				attempt:              attempt,
-				class:                startedAttemptClass(segment, startState, attempt),
-				committedWorkOnInfra: infraFailedAttemptCommittedWork(segment, startState, attempt),
+				stage:                  startState,
+				attempt:                attempt,
+				class:                  startedAttemptClass(segment, startState, attempt),
+				committedWorkOnInfra:   infraFailedAttemptCommittedWork(segment, startState, attempt),
+				policyAttempts:         policyAttemptsBefore(segment, startState, attempt),
+				infrastructureFailures: infrastructureFailuresBefore(segment, startState, attempt),
 			}
 		} else if attempt := recordedInterruptedAttempt(segment, startState); resumedGateTransition && attempt > 0 {
 			resume = &resumeContext{
-				stage:    startState,
-				attempt:  attempt,
-				class:    startedAttemptClass(segment, startState, attempt),
-				recorded: true,
+				stage:                  startState,
+				attempt:                attempt,
+				class:                  startedAttemptClass(segment, startState, attempt),
+				recorded:               true,
+				policyAttempts:         policyAttemptsBefore(segment, startState, attempt),
+				infrastructureFailures: infrastructureFailuresBefore(segment, startState, attempt),
 			}
 		} else if rerun == nil && !resumedGateTransition && hasSegmentLast && segmentLastStage == startState {
 			// state.json's machineState still names this task (walk's
@@ -591,25 +616,25 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 			// effects (#107); instead apply the exact transition a live
 			// walk would have taken right after runTask returned.
 			replayedBranchOutcome := false
-			if seed.parallel != nil {
+			if ws.parallel != nil {
 				switch lastResult.Status {
 				case apiv1.ResultFailure:
 					if !t.ContinueOnError {
 						if _, nextIsGate := in.Machine.Gate(t.Next); !nextIsGate {
-							seed.parallel.markCurrentFailed()
-							seed.lastResult.Outputs = nil
+							ws.parallel.markCurrentFailed()
+							ws.lastResult.Outputs = nil
 							startState = workflow.TargetJoin
 							replayedBranchOutcome = true
 						}
 					}
 				case apiv1.ResultNoWork:
-					seed.parallel.markCurrentNoOutput()
+					ws.parallel.markCurrentNoOutput()
 					startState = workflow.TargetJoin
 					replayedBranchOutcome = true
 				}
 			}
 			if !replayedBranchOutcome {
-				next, res, advance, terr := r.taskOutcome(ctx, in.RunID, jr, in.Machine, in.RepoRef, item, t, lastResult, 0)
+				next, res, advance, terr := r.taskOutcome(ctx, ws, taskTransition{t, lastResult})
 				if terr != nil {
 					return res, terr
 				}
@@ -634,6 +659,32 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		// toolchain preflight in Start); re-verifying would probe the host again
 		// for a decision the original dispatch already made.
 	}
+	ws.in = startIn
+	ws.state = startState
+	ws.resume = resume
+	ws.rerun = rerun
+	if in.RecoveryReason != "" {
+		action := journal.RecoveryActionResumed
+		detail := map[string]any{
+			"kind":   journal.RunnerAnnotationRunRecovery,
+			"reason": in.RecoveryReason,
+			"action": action,
+		}
+		if resume != nil {
+			action = journal.RecoveryActionRetried
+			detail["action"] = action
+			detail["stage"] = resume.stage
+			detail["attempt"] = resume.attempt
+			detail["attemptClass"] = string(journal.AttemptInfra)
+		}
+		if err := jr.Append(journal.Event{
+			Type:   journal.EventRunnerAnnotation,
+			Stage:  startState,
+			Runner: detail,
+		}); err != nil {
+			return Result{}, fmt.Errorf("runner: journal automatic recovery for run %q: %w", in.RunID, err)
+		}
+	}
 	_, err = r.acquirePinnedWorkspace(ctx, jr, &startIn)
 	if err != nil {
 		if interrupted, ok, interruptErr := r.finishStalledRequest(ctx, in.RunID, jr, startState, 0); ok {
@@ -641,6 +692,7 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		}
 		return Result{}, err
 	}
+	ws.in = startIn
 	defer func() {
 		if retErr != nil || result.Phase != "" && result.Phase != journal.PhaseRunning {
 			retErr = errors.Join(retErr, r.releasePinnedWorkspace(in.RunID))
@@ -655,16 +707,13 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 		var transitionErr error
 		switch {
 		case parallelTransition.task != nil:
-			_, result, _, transitionErr = r.taskOutcome(
-				ctx, in.RunID, jr, in.Machine, in.RepoRef, item,
-				parallelTransition.task.task, parallelTransition.task.result, 0,
-			)
+			_, result, _, transitionErr = r.taskOutcome(ctx, ws, taskTransition{
+				parallelTransition.task.task, parallelTransition.task.result,
+			})
 		case parallelTransition.gate != nil:
-			_, result, _, transitionErr = r.gateTransition(
-				ctx, jr, in.RunID, in.Machine, in.RepoRef, item,
-				parallelTransition.gate.result, parallelTransition.gate.lastStage,
-				parallelTransition.gate.lastResult, 0,
-			)
+			ws.lastStage = parallelTransition.gate.lastStage
+			ws.lastResult = parallelTransition.gate.lastResult
+			_, result, _, transitionErr = r.gateTransition(ctx, ws, parallelTransition.gate.result)
 		default:
 			switch {
 			case parallelTransition.aggregate && parallelTransition.target == workflow.TargetAbort:
@@ -689,7 +738,11 @@ func (r *Runner) resumeOwned(ctx context.Context, in ResumeInput, jr *journal.Ru
 
 	gateAttempts, gateDiffDigests := gateRepassSeed(segment), gateDiffSeed(segment)
 	gateAttempts = resetRerunGateSeeds(in.Machine, rerun, gateAttempts, gateDiffDigests)
-	result, err = r.walk(ctx, jr, startIn, startState, resume, rerun, gateAttempts, gateDiffDigests, registrar, seed)
+	ws.gateAttempts, ws.repassAttempts, ws.gateDiffDigests = gateAttempts, targetRepassSeed(segment), gateDiffDigests
+	ws.infraGateAttempts = gateInfrastructureSeed(segment)
+	ws.infraRepassAttempts = infrastructureTargetRepassSeed(segment)
+	ws.evidenceRejections = remediationEvidenceRejectionSeed(segment)
+	result, err = r.walk(ctx, ws)
 	if err != nil {
 		span.Fail(err)
 		return result, err
@@ -777,11 +830,11 @@ func resumeCompletedRetry(jr *journal.Run, events []journal.Event, g apiv1.Gate,
 	if !ok {
 		return gate.Result{}, false, false, nil
 	}
-	class, _, retryable := retryFailureClass(g, subject)
+	result := gateResultFromEvent(evaluated)
+	class, _, retryable := retryFailureClassForGateResult(g, subject, result.Outcome)
 	if !retryable {
 		return gate.Result{}, false, false, nil
 	}
-	result := gateResultFromEvent(evaluated)
 	if hasRetryDecisionAfter(events, evaluated) {
 		if result.Outcome == gate.OutcomePass || result.Escalated {
 			return result, false, true, nil
@@ -856,7 +909,11 @@ func pendingRetryTarget(events []journal.Event, machine *workflow.Machine, subje
 			if !ok {
 				return "", false
 			}
-			if _, _, retryable := retryFailureClass(g, subject); !retryable {
+			outcome := ""
+			if class, ok := e.Runner[retryFailureClassKey].(string); ok && class == string(journal.AttemptInfra) {
+				outcome = gate.OutcomeInfra
+			}
+			if _, _, retryable := retryFailureClassForGateResult(g, subject, outcome); !retryable {
 				return "", false
 			}
 			target, ok := e.Runner["target"].(string)
@@ -889,17 +946,110 @@ func gateRepassAttempt(e journal.Event) int {
 	return int(n)
 }
 
+// PinnedWorkflowMachine reconstructs the historical machine from the trusted,
+// content-addressed Definition snapshot journaled at Start and verifies every
+// identity boundary: the input's trusted integrity, the definition's
+// name/version, and — twice, once over the raw snapshot and once over the
+// compiled machine — the run's pinned WorkflowDigest (WF-016). A caller that
+// resumes or intervenes on a run whose pin no longer matches the current
+// config should prefer this machine over the current one (#3376): the run
+// keeps walking the definition it started under, while any snapshot that is
+// missing, untrusted, corrupt, or mismatched still fails closed here and the
+// WF-016 refusal stands.
+func PinnedWorkflowMachine(rd *journal.Reader, id journal.RunIdentity) (*workflow.Machine, error) {
+	var definitionRef *journal.InputRef
+	for i := range id.Inputs {
+		if id.Inputs[i].Name == journal.PinnedWorkflowDefinitionInputName {
+			definitionRef = &id.Inputs[i]
+			break
+		}
+	}
+	if definitionRef == nil {
+		return nil, fmt.Errorf("immutable input %q is missing", journal.PinnedWorkflowDefinitionInputName)
+	}
+	if definitionRef.Integrity != apiv1.IntegrityTrusted {
+		return nil, fmt.Errorf("immutable input %q has integrity %q, want %q",
+			journal.PinnedWorkflowDefinitionInputName, definitionRef.Integrity, apiv1.IntegrityTrusted)
+	}
+	data, err := rd.ArtifactBytes(definitionRef.Ref)
+	if err != nil {
+		return nil, fmt.Errorf("read immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
+	}
+	var def workflow.Definition
+	if err := json.Unmarshal(data, &def); err != nil {
+		return nil, fmt.Errorf("parse immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
+	}
+	if def.Name != id.Workflow || def.Version != id.WorkflowVersion {
+		return nil, fmt.Errorf(
+			"immutable input %q identifies workflow %q version %d, want %q version %d",
+			journal.PinnedWorkflowDefinitionInputName, def.Name, def.Version, id.Workflow, id.WorkflowVersion,
+		)
+	}
+	digest, err := workflow.ComputeDigest(def)
+	if err != nil {
+		return nil, fmt.Errorf("digest immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
+	}
+	if digest != id.WorkflowDigest {
+		return nil, fmt.Errorf(
+			"immutable input %q digest %q does not match run pin %q",
+			journal.PinnedWorkflowDefinitionInputName, digest, id.WorkflowDigest,
+		)
+	}
+	machine, err := workflow.Compile(def, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		return nil, fmt.Errorf("compile immutable input %q: %w", journal.PinnedWorkflowDefinitionInputName, err)
+	}
+	if machine.Digest() != id.WorkflowDigest {
+		return nil, fmt.Errorf(
+			"compiled immutable input %q digest %q does not match run pin %q",
+			journal.PinnedWorkflowDefinitionInputName, machine.Digest(), id.WorkflowDigest,
+		)
+	}
+	return machine, nil
+}
+
+// PinnedGateGooberCapabilities reads the run's pinned reviewer-goober
+// capability state: the GateGooberCapabilities map the starter pinned into
+// the run at start (#294) and Start journaled as the trusted
+// journal.PinnedGateGooberCapabilitiesInputName input. It is the gate-path
+// counterpart of PinnedWorkflowMachine — an agentic reviewer gate's grants
+// are instance policy, not part of the pinned workflow definition, so a
+// post-start consumer (the daemon credential plane, PR #3528) must resolve
+// them from this pin rather than the currently-served config, or a config
+// edit after run start would change a live run's reviewer grants.
+//
+// found=false reports a journal that carries no such pin (created before the
+// pin existed, or by an author that never pins one); the caller decides — the
+// credential plane fails closed. A snapshot that is present but untrusted or
+// unparseable is an error.
+func PinnedGateGooberCapabilities(rd *journal.Reader, id journal.RunIdentity) (map[string][]string, bool, error) {
+	var ref *journal.InputRef
+	for i := range id.Inputs {
+		if id.Inputs[i].Name == journal.PinnedGateGooberCapabilitiesInputName {
+			ref = &id.Inputs[i]
+			break
+		}
+	}
+	if ref == nil {
+		return nil, false, nil
+	}
+	if ref.Integrity != apiv1.IntegrityTrusted {
+		return nil, false, fmt.Errorf("immutable input %q has integrity %q, want %q",
+			journal.PinnedGateGooberCapabilitiesInputName, ref.Integrity, apiv1.IntegrityTrusted)
+	}
+	data, err := rd.ArtifactBytes(ref.Ref)
+	if err != nil {
+		return nil, false, fmt.Errorf("read immutable input %q: %w", journal.PinnedGateGooberCapabilitiesInputName, err)
+	}
+	var capabilities map[string][]string
+	if err := json.Unmarshal(data, &capabilities); err != nil {
+		return nil, false, fmt.Errorf("parse immutable input %q: %w", journal.PinnedGateGooberCapabilitiesInputName, err)
+	}
+	return capabilities, true, nil
+}
+
 // refuseResume ends a run whose WF-016 resume verification failed at the
-// canonical PhaseFailed terminal (maintainer ruling on #520, issue comment
-// 2026-07-16T08:45:22Z): the run cannot proceed through no operator's or
-// scheduler's live decision, so the aborted/cancelled family — which implies
-// someone CHOSE to stop it — is the wrong phase; this is a failure of the
-// run, even though the refusal itself is correct behavior WF-016 must keep.
-// Landing on PhaseFailed also gets this path #498/#526's claim-release
-// coverage with zero special-casing, instead of leaving the journal's phase
-// "running" forever the way the pre-#520 bare-error return did — the live
-// failure mode was a config-only daemon restart leaking one held claim per
-// in-flight run.
+// canonical PhaseFailed terminal and releases its claim.
 //
 // Per the ruling, the WF-016 text must survive durably in two places: the
 // run.finished event's own Error field (never a separate preceding error
@@ -1042,6 +1192,19 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 					MediaType: "application/json", Integrity: e.Ref.Integrity,
 				},
 			}})
+		case journal.EventRunnerAnnotation:
+			kind, _ := e.Runner["kind"].(string)
+			if kind != "learning.episode.injected" || e.Ref == nil {
+				continue
+			}
+			record(e.Branch, []apiv1.ContextPointer{{
+				Name:      fmt.Sprintf("learning.episode[%d]", runnerUint64(e.Runner["sourceSeq"])),
+				Integrity: e.Ref.Integrity,
+				Artifact: &apiv1.ArtifactPointer{
+					Path: e.Ref.Path, Digest: e.Ref.Digest, Size: e.Ref.Size,
+					MediaType: "application/json", Integrity: e.Ref.Integrity,
+				},
+			}})
 		case journal.EventParallelFinished:
 			spec, ok := machine.Parallel(e.Parallel)
 			if ok && e.Target == spec.Join {
@@ -1062,6 +1225,26 @@ func reconstructPointers(events []journal.Event, machine *workflow.Machine) []ap
 		}
 	}
 	return out
+}
+
+func runnerUint64(value any) uint64 {
+	switch n := value.(type) {
+	case uint64:
+		return n
+	case int:
+		if n >= 0 {
+			return uint64(n)
+		}
+	case float64:
+		if n >= 0 {
+			return uint64(n)
+		}
+	case json.Number:
+		if parsed, err := n.Int64(); err == nil && parsed >= 0 {
+			return uint64(parsed)
+		}
+	}
+	return 0
 }
 
 // pendingParallel rebuilds the in-memory execution state for the latest
@@ -1347,8 +1530,9 @@ func pendingParallelTransition(events []journal.Event, machine *workflow.Machine
 		return transition
 	}
 
+	branchEvents := newParallelBranchEventIndex(events[:finished], event.Parallel)
 	for branch := 1; branch <= len(spec.Branches); branch++ {
-		history := parallelBranchEvents(events[:finished], event.Parallel, branch)
+		history := branchEvents.events(branch)
 		target, task, gate := parallelBranchTerminal(history, machine)
 		if target == event.Target {
 			transition.task = task
@@ -1457,7 +1641,17 @@ func gateRepassSeed(events []journal.Event) map[string]int {
 		if e.Type != journal.EventGateStarted && e.Type != journal.EventGateEvaluated {
 			continue
 		}
-		n, ok := e.Runner["repassAttempt"].(float64)
+		if e.Type == journal.EventGateEvaluated && e.Verdict == gate.OutcomeInfra {
+			if seed == nil {
+				seed = make(map[string]int)
+			}
+			seed[e.Gate] = 0
+			continue
+		}
+		n, ok := e.Runner["gateAttempt"].(float64)
+		if !ok {
+			n, ok = e.Runner["repassAttempt"].(float64)
+		}
 		if !ok {
 			continue
 		}
@@ -1465,6 +1659,99 @@ func gateRepassSeed(events []journal.Event) map[string]int {
 			seed = make(map[string]int)
 		}
 		seed[e.Gate] = int(n)
+	}
+	return seed
+}
+
+func gateInfrastructureSeed(events []journal.Event) map[string]int {
+	var seed map[string]int
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]int)
+		}
+		if e.Verdict != gate.OutcomeInfra {
+			seed[e.Gate] = 0
+			continue
+		}
+		n, ok := e.Runner["gateAttempt"].(float64)
+		if !ok {
+			n, ok = e.Runner["repassAttempt"].(float64)
+		}
+		if ok {
+			seed[e.Gate] = int(n)
+		}
+	}
+	return seed
+}
+
+// targetRepassSeed reconstructs the cumulative repass count for each target
+// stage. repassTarget preserves the configured branch when an exhausted
+// evaluation was instead routed to escalation.
+func targetRepassSeed(events []journal.Event) map[string]int {
+	var seed map[string]int
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated || e.Verdict == gate.OutcomeInfra {
+			continue
+		}
+		target, _ := e.Runner["repassTarget"].(string)
+		if target == "" && e.Verdict != gate.OutcomePass && !e.Escalated {
+			target = e.Target
+		}
+		n, ok := e.Runner["repassAttempt"].(float64)
+		if target == "" || !ok {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]int)
+		}
+		if int(n) > seed[target] {
+			seed[target] = int(n)
+		}
+	}
+	return seed
+}
+
+func infrastructureTargetRepassSeed(events []journal.Event) map[string]int {
+	var seed map[string]int
+	gateTargets := make(map[string]string)
+	for _, e := range events {
+		if e.Type != journal.EventGateEvaluated {
+			continue
+		}
+		if e.Verdict != gate.OutcomeInfra {
+			if target := gateTargets[e.Gate]; target != "" && seed != nil {
+				seed[target] = 0
+			}
+			continue
+		}
+		target, _ := e.Runner["repassTarget"].(string)
+		if target == "" && !e.Escalated {
+			target = e.Target
+		}
+		n, ok := e.Runner["repassAttempt"].(float64)
+		if target == "" || !ok {
+			continue
+		}
+		if seed == nil {
+			seed = make(map[string]int)
+		}
+		gateTargets[e.Gate] = target
+		if int(n) > seed[target] {
+			seed[target] = int(n)
+		}
+	}
+	return seed
+}
+
+func stageVisitSeed(events []journal.Event) map[string]bool {
+	seed := make(map[string]bool)
+	for _, e := range events {
+		if e.Type == journal.EventStageFinished && e.Stage != "" {
+			seed[e.Stage] = true
+		}
 	}
 	return seed
 }
@@ -1495,6 +1782,40 @@ func gateDiffSeed(events []journal.Event) map[string]string {
 			seed = make(map[string]string)
 		}
 		seed[e.Gate] = digest
+	}
+	return seed
+}
+
+// remediationEvidenceRejectionSeed rebuilds each gate's consecutive
+// remediation-evidence rejection count from the journaled rejection
+// annotations (#3375), so a run that crashes mid-loop resumes with the budget
+// it had already spent rather than a fresh one — the same continuity contract
+// gateDiffSeed keeps for #316's non-convergence detection.
+//
+// A gate.evaluated event ends the streak: reaching a resolved outcome means
+// that gate got past the pre-evaluation rejection entirely, so any rejections
+// before it belong to a finished episode. Within a streak the count is pinned
+// to the annotation's diffDigest, matching the live budget's reset rule.
+func remediationEvidenceRejectionSeed(events []journal.Event) map[string]evidenceRejectionBudget {
+	var seed map[string]evidenceRejectionBudget
+	for _, e := range events {
+		if e.Type == journal.EventGateEvaluated {
+			delete(seed, e.Gate)
+			continue
+		}
+		if e.Type != journal.EventRunnerAnnotation || e.Runner["kind"] != "remediation-evidence-validation" {
+			continue
+		}
+		digest, _ := e.Runner["diffDigest"].(string)
+		if seed == nil {
+			seed = make(map[string]evidenceRejectionBudget)
+		}
+		budget := seed[e.Gate]
+		if budget.digest != digest {
+			budget = evidenceRejectionBudget{digest: digest}
+		}
+		budget.count++
+		seed[e.Gate] = budget
 	}
 	return seed
 }
@@ -1556,6 +1877,34 @@ func infraFailedAttemptCommittedWork(events []journal.Event, stageName string, a
 		return event.Runner[retryFailureClassKey] == string(journal.AttemptInfra) && committed
 	}
 	return false
+}
+
+func policyAttemptsBefore(events []journal.Event, stageName string, interruptedAttempt int) int32 {
+	var attempts int32
+	for _, event := range events {
+		if event.Type != journal.EventStageStarted ||
+			event.Stage != stageName ||
+			event.Attempt >= interruptedAttempt ||
+			event.AttemptClass == journal.AttemptInfra {
+			continue
+		}
+		attempts++
+	}
+	return attempts
+}
+
+func infrastructureFailuresBefore(events []journal.Event, stageName string, interruptedAttempt int) int32 {
+	var failures int32
+	for _, event := range events {
+		if event.Type != journal.EventError ||
+			event.Stage != stageName ||
+			event.Attempt >= interruptedAttempt ||
+			event.Runner[retryFailureClassKey] != string(journal.AttemptInfra) {
+			continue
+		}
+		failures++
+	}
+	return failures
 }
 
 // resumeItem reconstructs the originating backlog item from its immutable

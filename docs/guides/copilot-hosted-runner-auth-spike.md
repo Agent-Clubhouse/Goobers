@@ -1,8 +1,10 @@
 # Copilot hosted-runner authentication spike
 
-> **Result (2026-07-28, #1126): blocked by the Goobers harness preflight.**
-> A token-only, clean-profile runner cannot reach an agentic stage through the
-> shipped binary. The operator-run path with a stored Copilot CLI sign-in works.
+> **Correction (2026-08-12, #1996): headless PAT authentication works.**
+> The limitation recorded by the original 2026-07-28 spike was fixed by #1996.
+> A clean-profile runner can pass the harness preflight and reach an agentic
+> stage when `COPILOT_GITHUB_TOKEN` is present in the Goobers process
+> environment. The observations below remain as a historical record of #1126.
 
 This timeboxed spike asked whether the repository's
 `COPILOT_GITHUB_TOKEN` secret can drive the real `CopilotAdapter`
@@ -32,20 +34,20 @@ interpretation was involved.
 
 ## Environment and observations
 
-The intended hosted target was the repository's current `ubuntu-latest`
+The intended hosted target was the repository's then-current `ubuntu-latest`
 baseline: Ubuntu 24.04 LTS, linux/amd64. No hosted job was checked in or
-dispatched because the clean-profile production preflight fails before Goobers
-creates a run. The failure is in shared Go code and the Copilot CLI invocation,
+dispatched because the clean-profile production preflight failed before Goobers
+created a run. The failure was in shared Go code and the Copilot CLI invocation,
 not an OS-specific branch.
 
-The control was captured at `2026-07-28T05:53:03Z` with:
+The control was captured with:
 
 | Component | Captured value |
 |---|---|
-| Host | macOS 26.5.2, Darwin 25.5.0, arm64 |
+| Host | macOS (Apple silicon) |
 | Go | 1.26.5 |
 | Copilot CLI | 1.0.75 |
-| Goobers | source build at `b8cbedd6` |
+| Goobers | a local source build |
 
 The results were:
 
@@ -53,36 +55,36 @@ The results were:
 |---|---|---|---|---|
 | Empty `HOME` and `COPILOT_HOME`, no ambient model token | Copilot CLI exited 1 with `No authentication information found` and directed the operator to login or set a supported token | The shipped `goobers run` failed its automatic harness preflight; no stage started | Not reached | No run ID or journal was created |
 | Empty profile with an `agent:model` token ref configured | Identical preflight failure; the capability credential was not resolved for the probe | Identical failure before run creation | Not reached | Run-directory count remained unchanged |
-| Operator profile with a stored Copilot CLI sign-in | Production auth probe succeeded | Run `01946515ef595e8dded1dee9f554193c` completed; `echo` attempt 1 succeeded in 24.2 seconds | Passed; output was the exact sentinel | `stage.finished` seq 6 records the sentinel and `run.finished` seq 8 records `completed` |
+| Operator profile with a stored Copilot CLI sign-in | Production auth probe succeeded | A run completed; the `echo` attempt succeeded | Passed; output was the exact sentinel | `stage.finished` seq 6 records the sentinel and `run.finished` seq 8 records `completed` |
 
 The successful control also recorded a `copilot-cli.transcript` span. Its
 contents are intentionally not reproduced because transcripts can contain
 repository context.
 
-## Root cause
+## Original root cause
 
 The Copilot CLI itself documents `COPILOT_GITHUB_TOKEN` as a supported
-headless authentication source. The token cannot satisfy the current Goobers
-startup path:
+headless authentication source. At the time of the spike, the token could not
+satisfy the Goobers startup path:
 
 1. Production wires an auth probe equivalent to
    `copilot -p "Reply with exactly: ok" --allow-all-tools --available-tools=`.
-2. `CopilotAdapter.Preflight` launches that probe with `baseEnv`, before any
-   invocation or scoped credential set exists.
-3. The default-deny base environment deliberately excludes
+2. `CopilotAdapter.Preflight` launched that probe with `baseEnv`, before any
+   invocation or scoped credential set existed.
+3. The default-deny base environment deliberately excluded
    `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN`.
-4. `agent:model` is resolved and injected as `COPILOT_GITHUB_TOKEN` only later,
-   in `CopilotAdapter.Run`. A clean runner never reaches that method.
+4. `agent:model` was resolved and injected as `COPILOT_GITHUB_TOKEN` only later,
+   in `CopilotAdapter.Run`. A clean runner never reached that method.
 
-The exact additional dependency is therefore a persisted interactive OAuth
-device-flow sign-in from `copilot login`, available through the runner account's
-`HOME`/credential store. An ephemeral GitHub-hosted runner does not have that
-profile.
+The additional dependency at that time was therefore a persisted interactive
+OAuth device-flow sign-in from `copilot login`, available through the runner
+account's `HOME`/credential store. An ephemeral GitHub-hosted runner does not
+have that profile.
 
-Do not work around this by adding `COPILOT_GITHUB_TOKEN` to
-`runner.envPassthrough`. That would expose the model credential to every stage
-and harness subprocess instead of preserving the `agent:model` capability
-boundary.
+#1996 changed the preflight to copy an ambient model token into only the
+tool-disabled sign-in probe. It did not add the token to general
+`runner.envPassthrough`, so live stages still receive model credentials only
+through the `agent:model` capability boundary.
 
 ## Reproduction
 
@@ -119,7 +121,7 @@ completion file and do nothing else.
 # workflows/auth-spike.yaml
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: auth-spike
 spec:
@@ -178,14 +180,15 @@ mkdir -p "$COPILOT_HOME"
 ./bin/goobers run auth-spike "$GOOBERS_INSTANCE"
 ```
 
-`validate --check-harness` fails at the sign-in probe. If validation is omitted,
-`run` performs the same preflight and fails before printing `created run`.
-Neither path writes a run journal or attempts completion parsing.
+Since #1996, `validate --check-harness` passes the sign-in probe and `run`
+reaches the agentic stage when `COPILOT_GITHUB_TOKEN` is set as above. Without
+an ambient token or stored CLI session, both paths still fail authentication
+before creating a run.
 
-For a control or future rerun that reaches the stage, capture the run ID printed
-by `goobers run` and verify the parsed result and terminal journal state
-directly. This assertion fails if the output is absent or differs by even one
-character; `expectedOutputs` alone does not provide that value check:
+For a rerun, capture the run ID printed by `goobers run` and verify the parsed
+result and terminal journal state directly. This assertion fails if the output
+is absent or differs by even one character; `expectedOutputs` alone does not
+provide that value check:
 
 ```bash
 set -euo pipefail
@@ -213,18 +216,15 @@ jq -e -s --arg sentinel "$SENTINEL" '
 ' "$RUN_DIR/events.jsonl" >/dev/null
 ```
 
-## Fallback and unblock condition
+## Remaining constraint
 
-Until preflight can authenticate with a scoped `agent:model` credential, use
-the [operator-run Linux live-smoke](quickstart-linux.md#4-operator-run-linux-live-smoke-real-copilot-cli):
-run `copilot login` as the same account that runs Goobers, persist that
-account's credential store or `~/.copilot/` fallback, then run the sentinel
-workflow. The successful control above confirms this path reaches the real
-adapter, parses the completion contract, and records the expected journal
-events.
+The preflight has no invocation from which to resolve the configured
+`agent:model` credential. It reads the token from the ambient Goobers process
+environment instead. A `token: {file: ...}` reference alone can authenticate
+the eventual agentic stage but cannot authenticate daemon startup; the same
+value must also reach the process as `COPILOT_GITHUB_TOKEN`.
 
-The blocker must be fixed by allowing the auth preflight to receive only the
-resolved `agent:model` credential, without admitting ambient token
-passthrough. After that change, repeat this exact clean-profile probe on
-`ubuntu-latest`. Only a successful rerun should unblock #1485's durable echo
-workflow; #1486 then owns the fork-safe, opt-in CI wiring.
+On Kubernetes, consume the synced Secret in both places: mount it for the file
+token reference and expose the same Secret key as `COPILOT_GITHUB_TOKEN` with
+`secretKeyRef`. A stored Copilot CLI sign-in remains a supported alternative,
+not a requirement for headless PAT authentication.

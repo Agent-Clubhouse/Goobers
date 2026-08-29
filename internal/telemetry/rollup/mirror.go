@@ -6,55 +6,50 @@ package rollup
 
 import "time"
 
-// The types below mirror internal/journal's on-disk JSON shape field-for-field
-// (same json tags) WITHOUT importing internal/journal. #8 (the journal package,
-// PR #56) is still unmerged as of this package's authoring; importing it would
-// give this package a hard build-order dependency on an unmerged PR, which the
-// mission brief explicitly asked to avoid (same decoupling playbook as #12's
-// provider seams: providers.ExternalRef/MutationRecorder mirror the journal's
-// "external ref touched" concept without importing it either).
+// The types below mirror the portions of internal/journal's on-disk JSON shape
+// that rollup consumes (with the same json tags) WITHOUT importing
+// internal/journal, keeping the production reader decoupled from the writer.
 //
-// The mirror is pinned field-for-field against internal/journal/event.go,
-// identity.go, and ref.go as read from PR #56 at authoring time; a schema_test
-// fixture (testdata/fixture-run/events.jsonl) encodes a real event of every
-// type by hand so a future field-name drift fails a test, not a silent no-op.
-// Once #8 merges, a follow-up can additionally round-trip through the real
-// journal.Event/RunIdentity types for a belt-and-suspenders check.
+// journal_roundtrip_test.go reflectively pins journalEvent's JSON field set to
+// journal.Event plus an explicit set of intentionally unmirrored fields.
+// fixture_test.go also hand-writes representative journal records inline,
+// while the round-trip tests exercise records written by the real package.
 
-// journalEvent mirrors internal/journal.Event. Workflow/RunID/Reason are only
-// populated on instance-journal events (scheduler/events.jsonl) — a run's own
-// events.jsonl never sets them, since a run event's identity is implicit from
-// its directory (internal/journal/event.go's own doc comment on those three
-// fields).
+// journalEvent mirrors the fields rollup consumes from internal/journal.Event.
+// Workflow/RunID/Reason are only populated on instance-journal events
+// (scheduler/events.jsonl) — a run's own events.jsonl never sets them, since a
+// run event's identity is implicit from its directory.
 type journalEvent struct {
-	Schema          string              `json:"schema"`
-	Seq             uint64              `json:"seq"`
-	Type            string              `json:"type"`
-	Branch          int                 `json:"branch"`
-	Time            time.Time           `json:"time"`
-	Stage           string              `json:"stage,omitempty"`
-	Attempt         int                 `json:"attempt,omitempty"`
-	AttemptClass    string              `json:"attemptClass,omitempty"`
-	Gate            string              `json:"gate,omitempty"`
-	Verdict         string              `json:"verdict,omitempty"`
-	Target          string              `json:"target,omitempty"`
-	Escalated       bool                `json:"escalated,omitempty"`
-	Status          string              `json:"status,omitempty"`
-	Outputs         map[string]any      `json:"outputs,omitempty"`
-	Artifacts       []journalRef        `json:"artifacts,omitempty"`
-	Actor           string              `json:"actor,omitempty"`
-	WorkflowVersion int                 `json:"workflowVersion,omitempty"`
-	WorkflowDigest  string              `json:"workflowDigest,omitempty"`
-	Ref             *journalRef         `json:"ref,omitempty"`
-	Name            string              `json:"name,omitempty"`
-	DataSchema      string              `json:"dataSchema,omitempty"`
-	ExternalRef     *journalExternalRef `json:"externalRef,omitempty"`
-	Error           *journalErrorDetail `json:"error,omitempty"`
-	Redaction       *journalRedaction   `json:"redaction,omitempty"`
-	Runner          map[string]any      `json:"runner,omitempty"`
-	Workflow        string              `json:"workflow,omitempty"`
-	RunID           string              `json:"runId,omitempty"`
-	Reason          string              `json:"reason,omitempty"`
+	Schema            string              `json:"schema"`
+	Seq               uint64              `json:"seq"`
+	Type              string              `json:"type"`
+	Branch            int                 `json:"branch"`
+	Time              time.Time           `json:"time"`
+	Stage             string              `json:"stage,omitempty"`
+	Attempt           int                 `json:"attempt,omitempty"`
+	AttemptClass      string              `json:"attemptClass,omitempty"`
+	Gate              string              `json:"gate,omitempty"`
+	Verdict           string              `json:"verdict,omitempty"`
+	Target            string              `json:"target,omitempty"`
+	Escalated         bool                `json:"escalated,omitempty"`
+	Status            string              `json:"status,omitempty"`
+	Outputs           map[string]any      `json:"outputs,omitempty"`
+	Artifacts         []journalRef        `json:"artifacts,omitempty"`
+	Actor             string              `json:"actor,omitempty"`
+	WorkflowVersion   int                 `json:"workflowVersion,omitempty"`
+	WorkflowDigest    string              `json:"workflowDigest,omitempty"`
+	Ref               *journalRef         `json:"ref,omitempty"`
+	Name              string              `json:"name,omitempty"`
+	DataSchema        string              `json:"dataSchema,omitempty"`
+	ExternalRef       *journalExternalRef `json:"externalRef,omitempty"`
+	Error             *journalErrorDetail `json:"error,omitempty"`
+	Redaction         *journalRedaction   `json:"redaction,omitempty"`
+	Runner            map[string]any      `json:"runner,omitempty"`
+	Workflow          string              `json:"workflow,omitempty"`
+	RunID             string              `json:"runId,omitempty"`
+	Reason            string              `json:"reason,omitempty"`
+	SourceRunID       string              `json:"sourceRunId,omitempty"`
+	SourceTerminalSeq uint64              `json:"sourceTerminalSeq,omitempty"`
 }
 
 // Event type values accepted from run and instance journals.
@@ -110,9 +105,12 @@ type journalRedaction struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
-// runSchema mirrors internal/journal.RunSchema — the only run.yaml schema
-// version this package's mirrored runIdentity shape understands (#2054).
-const runSchema = "goobers.dev/journal/run/v1"
+const (
+	// eventSchema and runSchema mirror the payload schemas this package's
+	// independent projection types understand.
+	eventSchema = "goobers.dev/journal/event/v1"
+	runSchema   = "goobers.dev/journal/run/v1"
+)
 
 // runIdentity mirrors internal/journal.RunIdentity (run.yaml). journal decodes
 // YAML via json-tagged structs (sigs.k8s.io/yaml, already a repo dependency),

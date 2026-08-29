@@ -66,7 +66,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
-	fs := flag.NewFlagSet("rebase-pr", flag.ContinueOnError)
+	fs := newCLIFlagSet("rebase-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "rebase-pr")
 	if err := fs.Parse(args); err != nil {
@@ -114,6 +114,9 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	repo, err := providerRepo(root)
 	if err != nil {
 		return fail(err)
+	}
+	if repo.Provider == providers.ProviderADO {
+		return runRebasePRADO(root, repo, stdout, stderr)
 	}
 	pushToken, err := providerToken(capability.RepoPush)
 	if err != nil {
@@ -220,6 +223,127 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	// cause. A human-comment-only cycle likewise just force-pushes the clean
 	// rebase (safe: it neither rewrites content nor drops a finding) and defers
 	// to the checkpoint for the agentic response to the comment.
+	if !conflict && !hasSubstantiveFindings && !hasSiblingOverlap {
+		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
+			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
+		}
+	}
+
+	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
+		return fail(err)
+	}
+	pf(stdout, "PR #%s needs agentic remediation (conflict=%v, substantiveFindings=%v, failingCI=%v) — routing to remediation checkpoint\n", selectedNumber, conflict, hasSubstantiveFindings, hasFailingCI)
+	return 0
+}
+
+// runRebasePRADO runs the rebase-pr stage on Azure DevOps. The git core —
+// checkout, fetch/rebase (with the portal-bundle and adjacent-line
+// auto-resolution), and the mandatory force-with-lease — is provider-neutral and
+// shared verbatim with the GitHub path (checkoutExistingBranch, attemptRebase,
+// forcePushWithLease, evaluateRemediatePolicy, writeRebaseResult, failRebasePR).
+// Only three things differ on ADO, all reached because *ADOProvider cannot
+// satisfy remediationProvider (remediation-wiring-plan §0.1/§3.2):
+//
+//   - The clean-rebase label clear routes to the native PR-label DELETE
+//     (RemovePullRequestLabel, §2.6) instead of UpdateWorkItem(ID: PR#), which on
+//     ADO would mutate the unrelated work item that shares the PR's numeric id
+//     (the wrong-object hazard, §0.5).
+//   - The trusted-sibling-overlap handoff scan is GitHub-only remediation
+//     machinery (it reads PR issue comments and uses identity semantics ADO
+//     lacks and takes a remediationProvider *ADOProvider cannot satisfy); it never
+//     runs, so hasSiblingOverlap stays whatever gather-pr-context reported
+//     (always false on ADO).
+//   - human-comment detection never runs: the ADO remediate policy drops that
+//     cause (§3.2), so no PR-comment scan is needed and — exactly as on GitHub —
+//     an old pinned policy is byte-for-byte unaffected.
+//
+// The provider is built from config-sourced ADO auth via the shared stage factory
+// (no github:* token is resolved); only the provider-neutral repo:push
+// credential feeds the git operations.
+func runRebasePRADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+
+	resultFile := providerInput("resultFile", "rebase-result.json")
+	selectedNumber := providerInput("selectedNumber", "")
+	head := providerInput("head", "")
+	base := providerInput("base", providerBaseBranch())
+	attemptedHeadSHA := ""
+	rebaseBaseSHA := ""
+	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"
+	hasFailingCI := providerInput("hasFailingCI", "false") == "true"
+	hasSiblingOverlap := providerInput("hasSiblingOverlap", "false") == "true"
+	remediate := providerInput("remediate", defaultRemediatePolicy)
+	conflict := false
+	var conflictLocations []rebaseConflictLocation
+	// human-comment is never detected on ADO (see the doc comment) — pass false.
+	policy := evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, false)
+	fail := func(err error) int {
+		return failRebasePR(
+			stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
+			conflict, conflictLocations, policy, err,
+		)
+	}
+	if selectedNumber == "" || head == "" {
+		return fail(errors.New("selectedNumber and head are required (inputsFrom gather-pr-context's own outputs)"))
+	}
+	if _, err := strconv.Atoi(selectedNumber); err != nil {
+		return fail(fmt.Errorf("invalid selectedNumber %q: %w", selectedNumber, err))
+	}
+
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, true)
+	if err != nil {
+		return fail(err)
+	}
+	pushToken, err := providerToken(capability.RepoPush)
+	if err != nil {
+		return fail(err)
+	}
+
+	attemptedHeadSHA, err = checkoutExistingBranch(".", head, pushToken)
+	if err != nil {
+		return fail(fmt.Errorf("checkout PR #%s's branch %q: %w", selectedNumber, head, err))
+	}
+
+	conflict, conflictLocations, rebaseBaseSHA, err = attemptRebase(".", base, pushToken)
+	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, false)
+	if err != nil {
+		return fail(fmt.Errorf("rebase PR #%s onto %q: %w", selectedNumber, base, err))
+	}
+
+	if !policy.needsAgent {
+		// Nothing detected at all — the liberal-default behavior this reproduces
+		// exactly regardless of the declared policy.
+		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
+			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
+		}
+		// The re-entry trigger: clear the marker via the native PR-label DELETE,
+		// NEVER UpdateWorkItem(ID: PR#) — that is the wrong-object hazard on ADO.
+		if err := provider.RemovePullRequestLabel(ctx, repo, selectedNumber, needsRemediationLabel); err != nil {
+			return fail(fmt.Errorf("clear %s from PR #%s: %w", needsRemediationLabel, selectedNumber, err))
+		}
+		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, policyResult{}, nil, attemptedHeadSHA, rebaseBaseSHA); err != nil {
+			return fail(err)
+		}
+		pf(stdout, "PR #%s: clean rebase onto %s, no substantive finding — force-pushed and cleared %s\n", selectedNumber, base, needsRemediationLabel)
+		return 0
+	}
+
+	if policy.policyExcluded {
+		// A cause WAS detected, but the declared policy excludes every detected
+		// cause (#941/PRR-6) — leave this cycle untouched for a human rather than
+		// force-pushing or dropping the finding.
+		if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
+			return fail(err)
+		}
+		pf(stdout, "PR #%s: %s\n", selectedNumber, policy.excludedReason)
+		return 0
+	}
+
+	// At least one detected cause is allowed by the declared policy. Same
+	// force-push-to-retrigger-CI-only behavior as the GitHub path when the rebase
+	// itself is clean (only failing-ci fired): that push touches neither the
+	// firing cause nor a finding.
 	if !conflict && !hasSubstantiveFindings && !hasSiblingOverlap {
 		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
 			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))

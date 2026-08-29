@@ -137,6 +137,66 @@ func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
 	}
 }
 
+// TestInitGuidedClaudeCodeHarnessAppliesToEveryGoober pins #2777: guided
+// init's harness choice is one decision for the whole generated fleet, so it
+// must override every selected goober's harness — including implementer,
+// whose acme-web template already ships harness: claude-code, and the
+// others, whose template ships harness: copilot — uniformly, and route the
+// optional model-auth token through the claude-specific field, not Copilot's.
+func TestInitGuidedClaudeCodeHarnessAppliesToEveryGoober(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "guided")
+	opts := GuidedOptions{
+		GaggleName:           "widget-service",
+		RepoOwner:            "acme",
+		RepoName:             "widget-service",
+		RepoTokenEnv:         "WIDGET_REPO_TOKEN",
+		WorkTrackingTokenEnv: "WIDGET_ISSUES_TOKEN",
+		PullRequestTokenEnv:  "WIDGET_PR_TOKEN",
+		RepoPushTokenEnv:     "WIDGET_PUSH_TOKEN",
+		Harness:              "claude-code",
+		ClaudeTokenEnv:       "WIDGET_CLAUDE_TOKEN",
+		Workflows:            []string{GuidedWorkflowImplementation, GuidedWorkflowBacklogCuration},
+		CICommand:            []string{"npm", "run", "ci"},
+		RequiredCapabilities: []string{"node@20"},
+	}
+
+	if _, err := initGuidedForTest(root, opts); err != nil {
+		t.Fatalf("InitGuided: %v", err)
+	}
+
+	layout := NewLayout(root)
+	cfg, err := LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	foundModelCredential := false
+	for _, credential := range cfg.Credentials {
+		if credential.Capability != string(capability.AgentModel) {
+			continue
+		}
+		foundModelCredential = true
+		if credential.Token.Env != "WIDGET_CLAUDE_TOKEN" {
+			t.Errorf("agent:model credential token env = %q, want WIDGET_CLAUDE_TOKEN", credential.Token.Env)
+		}
+	}
+	if !foundModelCredential {
+		t.Fatal("no agent:model credential grant was produced for the claude-code token env")
+	}
+
+	set, report, err := LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if len(set.Goobers) == 0 {
+		t.Fatal("no goobers were generated")
+	}
+	for _, goober := range set.Goobers {
+		if goober.Spec.Harness != "claude-code" {
+			t.Errorf("goober %q harness = %q, want claude-code", goober.Name, goober.Spec.Harness)
+		}
+	}
+}
+
 func TestInitGuidedRejectsInvalidOptionsBeforeWriting(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "guided")
 	_, err := initGuidedForTest(root, GuidedOptions{

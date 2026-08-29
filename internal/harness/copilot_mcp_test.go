@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -138,7 +140,12 @@ func TestPrepareCopilotMCPMaterializesOnlyDeclaredTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows has no unix-style owner/group/other permission bits: the write
+	// path below still asks for 0o600 (correct — that's the POSIX-meaningful
+	// request), but os.Stat on Windows always reports a plain writable file
+	// back regardless. Asserting an exact 0600 there would be asserting a
+	// permission model Windows doesn't have, not checking real behavior.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("MCP config mode = %o, want 600", info.Mode().Perm())
 	}
 
@@ -471,7 +478,7 @@ func TestMCPCredentialIsScrubbedFromJournalAndTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	exporter := telemetry.NewMemoryExporter()
+	exporter := telemetrytest.NewMemoryExporter()
 	client, err := telemetry.New(context.Background(), telemetry.Config{
 		ServiceName:  "mcp-secret-test",
 		SpanExporter: exporter,

@@ -150,7 +150,7 @@ spec:
                     type: string
                   labels:
                     description: |-
-                      Query/labels narrow which items this gaggle considers work. Routing of an
+                      Labels narrow which items this gaggle considers work. Routing of an
                       item to a specific workflow is handled by workflow selectors (SCH-010).
                     items:
                       type: string
@@ -167,8 +167,6 @@ spec:
                     - github
                     - ado
                     - gitea
-                    type: string
-                  query:
                     type: string
                 required:
                 - project
@@ -222,6 +220,14 @@ spec:
                 required:
                 - namespace
                 type: object
+              outboxMirrorPath:
+                description: |-
+                  OutboxMirrorPath is the default local filesystem root where workflows in
+                  this gaggle mirror their durable journal outbox. A workflow or task may
+                  override it. The local runner appends the run id and journal outbox layout
+                  beneath this root; the journal remains the source of truth.
+                minLength: 1
+                type: string
               project:
                 description: Project is the codebase this gaggle works on.
                 properties:
@@ -320,8 +326,9 @@ spec:
                   this gaggle. A workflow may override either value again.
                 properties:
                   maxRepasses:
-                    description: MaxRepasses bounds consecutive non-pass evaluations
-                      before escalation.
+                    description: |-
+                      MaxRepasses bounds how many times gates may route a run back to the same
+                      already-completed stage before escalation, regardless of gate or outcome.
                     format: int32
                     minimum: 1
                     type: integer
@@ -337,6 +344,44 @@ spec:
                       silent before the watchdog escalates it. It uses Go duration syntax.
                     minLength: 1
                     type: string
+                type: object
+              runsOn:
+                description: |-
+                  RunsOn is the gaggle-level placement floor (DSL 3.0, dsl-3.0.md §2): OS,
+                  toolchain capability tags, and required runner restrictions that merge
+                  into every stage of every workflow in this gaggle — capabilities and
+                  restrictions union with the stage's own; an OS conflict between gaggle
+                  and stage is a compile error, never a silent override. No quantities at
+                  gaggle level. It is the 3.0 successor of RequiredCapabilities above and
+                  activates only for gaggles whose workflows are pinned to DSL 3.0; the
+                  3.0 interpreter refuses a gaggle that still declares
+                  RequiredCapabilities, and earlier interpreters refuse this field.
+                properties:
+                  capabilities:
+                    description: |-
+                      Capabilities union into every stage's runsOn.capabilities. Same open
+                      tag grammar (internal/runnercap); os=* tokens are rejected (CAP004).
+                    items:
+                      type: string
+                    maxItems: 32
+                    type: array
+                  os:
+                    description: |-
+                      OS every stage of this gaggle requires. Enum, same vocabulary as a
+                      stage's runsOn.os.
+                    enum:
+                    - linux
+                    - windows
+                    - macOS
+                    type: string
+                  restrictions:
+                    description: |-
+                      Restrictions union into every stage's runsOn.restrictions. Closed v1
+                      effect list; unknown tokens are rejected with a suggestion (CAP005).
+                    items:
+                      type: string
+                    maxItems: 8
+                    type: array
                 type: object
               sandbox:
                 description: |-

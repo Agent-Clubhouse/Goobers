@@ -491,20 +491,16 @@ func TestSelectSourceFailsClosedOnIneligibleParent(t *testing.T) {
 	}
 }
 
-// TestSelectSourceClaimPreventsDoubleClaim exercises the exact ClaimScoped
-// call select-source makes against the exact key it builds, from concurrent
-// goroutines with distinct run IDs — the property the acceptance boundary
-// requires ("concurrent selector runs against the same parent must not
-// double-claim"). A full concurrent CLI-process test can't easily vary
-// GOOBERS_RUN_ID per goroutine (env vars are process-global in Go's testing
-// model), so this drives the ledger call directly instead of through
-// runSelectSource's env-var-derived run identity.
+// TestSelectSourceClaimPreventsDoubleClaim uses a fresh ledger snapshot for
+// every attempt, matching separate select-source processes racing on one file.
 func TestSelectSourceClaimPreventsDoubleClaim(t *testing.T) {
 	root := t.TempDir()
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "claims.json"))
+	schedulerDir := filepath.Join(root, "scheduler")
+	instanceLog, _, err := journal.OpenInstanceLog(schedulerDir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = instanceLog.Close() }()
 	key := localscheduler.ClaimKey{Gaggle: "goobers", Provider: "github", ExternalID: "555"}
 
 	const attempts = 8
@@ -514,9 +510,16 @@ func TestSelectSourceClaimPreventsDoubleClaim(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			ok, _, err := ledger.ClaimScoped(key, "decomposition-run-"+itoa(i), "decomposition", time.Hour)
+			ok, _, err := claimSelectSourceParent(
+				schedulerDir,
+				instanceLog,
+				key,
+				"decomposition-run-"+itoa(i),
+				"decomposition",
+				time.Hour,
+			)
 			if err != nil {
-				t.Errorf("ClaimScoped run %d: %v", i, err)
+				t.Errorf("claim run %d: %v", i, err)
 				return
 			}
 			results[i] = ok

@@ -26,7 +26,11 @@ function guidedState(fixture: GuidedFixture) {
     instancePath,
     sampleExists: fixture.sampleExists,
     instanceExists: fixture.instanceExists,
-    env: { goobersGithubToken: true, goobersGithubIssuesToken: false },
+    env: {
+      tokenEnv: "GOOBERS_GITHUB_TOKEN",
+      goobersGithubToken: true,
+      goobersGithubIssuesToken: false,
+    },
     job: fixture.jobStarted ? jobDetail() : null,
     apiReady: fixture.instanceExists,
     connected: { repo: null },

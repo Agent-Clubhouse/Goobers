@@ -189,6 +189,15 @@ func newWireFixtures() wireFixtures {
 		RetryCount:       2,
 		PolicyRetryCount: 1,
 		InfraRetryCount:  1,
+		Operator: readservice.OperatorRunSummary{
+			Issue:             &readservice.OperatorIssue{Number: "673", Title: "Improve operator status"},
+			CurrentStage:      "review",
+			Liveness:          "terminal",
+			Trajectory:        "parked",
+			Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
+			NextTransition:    "",
+			PotentialBlockers: []string{},
+		},
 	}
 	artifact := readservice.ArtifactMetadata{
 		Name:         "result",
@@ -277,7 +286,6 @@ func newWireFixtures() wireFixtures {
 					Provider:      apiv1.ProviderGitHub,
 					Project:       "Agent-Clubhouse/Goobers",
 					Labels:        []string{"goobers:ready"},
-					Query:         "is:issue",
 					ConnectionRef: "github",
 				},
 				GooberCount:    1,
@@ -452,6 +460,16 @@ func newWireFixtures() wireFixtures {
 					DurationMillis: 120000,
 					Outputs:        map[string]any{"summary": "implemented"},
 					Artifacts:      []readservice.ArtifactMetadata{artifact},
+					Placement: &journal.Placement{
+						Runner:       "self",
+						Node:         "aks-linux-0001",
+						Host:         "goobers-stage-implement-4x2vq",
+						OS:           "linux",
+						Image:        "ghcr.io/goobers/goobers-base:v0.2.0",
+						Pod:          "goobers-stage-implement-4x2vq",
+						QueuedAt:     &startedAt,
+						PodStartedAt: &startedAt,
+					},
 				},
 				{
 					ID:             "sta_visit_2_attempt_1",
@@ -497,6 +515,12 @@ func newWireFixtures() wireFixtures {
 			},
 		},
 		TelemetryStats: readservice.TelemetryStatsResult{
+			CreditAssignment: []readservice.NodeCredit{{
+				Gaggle: "core", Workflow: "implementation", Kind: "gate",
+				Stage: "review", Identity: "sha256:reviewer",
+				RoutedRuns: 4, FailureRuns: 1, FailureShare: 0.25,
+				EscalationRuns: 1, RetryWasteAttempts: 2,
+			}},
 			Gaggles: []readservice.TelemetryGaggleStats{{
 				Gaggle:        "core",
 				TotalRuns:     4,
@@ -559,6 +583,7 @@ func newWireFixtures() wireFixtures {
 				P50CopilotPremiumRequests: &p50PremiumRequests,
 				P95CopilotPremiumRequests: &p95PremiumRequests,
 				CostSamples:               4,
+				CostUSD:                   &modelCostUSD,
 				P50CostUSD:                &p50CostUSD,
 				P95CostUSD:                &p95CostUSD,
 				RetryWasteAttempts:        1,

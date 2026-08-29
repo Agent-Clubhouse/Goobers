@@ -206,8 +206,23 @@ func TestExecutorEnforcedSandboxRealConstructorNeverRunsUnconfined(t *testing.T)
 	}
 }
 
+// minimalRecorder implements SpanRecorder, ArtifactRecorder, and ContextResolver but NOT EventAppender,
+// for testing that sandbox enforcement requires a journal-backed recorder.
+type minimalRecorder struct{}
+
+func (m *minimalRecorder) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error) {
+	return journal.Ref{}, nil
+}
+
+func (m *minimalRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
+	return journal.Ref{}, nil
+}
+
+func (m *minimalRecorder) Dir() string     { return "" }
+func (m *minimalRecorder) RunsDir() string { return "" }
+
 func TestExecutorEnforcedSandboxRequiresJournalBackedRecorder(t *testing.T) {
-	rec := &fakeRecorder{} // no Append: cannot journal the posture
+	rec := &minimalRecorder{} // no Append: cannot journal the posture
 	adapter := &sandboxCapturingAdapter{}
 	exec, err := NewExecutor(adapter, testInjector(t, "", "", noopRegistrar{}), rec, rec, rec,
 		journal.NewPatternScrubber(), "instructions", WithSandboxEnforcement())

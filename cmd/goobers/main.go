@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	_ "time/tzdata"
 )
 
 // runProcessExits is true only for the real CLI entrypoint. In-process callers

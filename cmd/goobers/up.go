@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -14,14 +15,18 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/daemonstate"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/oidcauth"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/platform/proc"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/selfupdate"
@@ -220,10 +225,18 @@ const upHelp = "Usage: goobers up [--quiet] [--diagnostics] [--notify[=all]] [--
 	"snapshot recorded as a run artifact, and stage stdout/stderr are kept\n" +
 	"un-truncated. Verbose and slightly heavier; leave off for normal runs.\n\n" +
 	"--disable-read-model-reads is the design's §6.6 read-model rollback: it\n" +
-	"forces every list request onto the journal-derived paths for this run,\n" +
-	"leaving read.db itself untouched. A flag flip and a restart, not a\n" +
-	"deploy — use it if the read-model list path is ever suspected of\n" +
-	"serving wrong or incomplete results.\n"
+	"forces every list request to scan the authoritative journals for this\n" +
+	"run, bypassing both read.db and telemetry.db as run-candidate indexes.\n" +
+	"This can be slow on a large history. A flag flip and a restart, not a\n" +
+	"deploy — use it if the read-model list path is ever suspected of serving\n" +
+	"wrong or incomplete results.\n\n" +
+	"These five behavior controls are intentionally flag-only: --watch-config\n" +
+	"selects a process-local development watcher, --diagnostics is temporary\n" +
+	"debug capture, --drain-timeout applies only after this process receives a\n" +
+	"shutdown signal, --skip-preflight is an unsafe startup escape hatch, and\n" +
+	"--disable-read-model-reads is an emergency rollback. Keeping them out of\n" +
+	"instance.yaml prevents temporary operational overrides from becoming\n" +
+	"durable policy. `goobers status --daemon` reports their effective values.\n"
 
 // runUpContext is runUp's testable core: the OS signal wiring lives only in
 // runUp, so tests can drive shutdown deterministically via ctx cancellation
@@ -258,7 +271,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		<-parentBridgeDone
 	}()
 
-	fs := flag.NewFlagSet("up", flag.ContinueOnError)
+	fs := newCLIFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "up")
 	quiet := fs.Bool("quiet", false, "suppress periodic liveness heartbeats")
@@ -269,7 +282,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	fs.Var(&notifications, "notify", "send desktop notifications for escalated and failed runs; use --notify=all for every terminal outcome")
 	skipPreflight := fs.Bool("skip-preflight", false, "start despite instance config validation errors (unsafe)")
 	cleanupSpansOnlyRuns := fs.Bool("cleanup-spans-only-runs", false, "delete reported legacy spans-only run directories at startup")
-	disableReadModelReads := fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force journal-derived list paths for this run, leaving read.db untouched")
+	disableReadModelReads := fs.Bool("disable-read-model-reads", false, "design §6.6 rollback: force authoritative journal scans for this run")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -287,7 +300,18 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		root = fs.Arg(0)
 	}
 
+	// The shipped image runs the daemon as its container's pid 1, which makes
+	// it the kernel's reparent target for every stage descendant that outlives
+	// its parent — and a Go program waits for nothing but its own exec.Cmd
+	// children, so those descendants would stay zombies for the life of the pod
+	// (#3398). Install the missing init half before any stage can start. It is
+	// pid-1-guarded, so a local `goobers up` is untouched and stays silent.
+	if proc.StartOrphanReaper(ctx) {
+		pf(stdout, "startup: running as container init (pid 1); reaping orphaned stage descendants\n")
+	}
+
 	l := instance.NewLayout(root)
+	pf(stdout, "startup: validating instance configuration\n")
 	if _, err := os.Stat(l.ConfigFile()); err != nil {
 		pf(stderr, "error: %s not found (not an instance root — run `goobers init` first)\n", l.ConfigFile())
 		return 2
@@ -295,6 +319,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if code := runStartupConfigPreflight(root, *skipPreflight, stderr); code != 0 {
 		return code
 	}
+	pf(stdout, "startup: instance configuration valid\n")
 	startupConfig, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
 		pf(stderr, "error: invalid instance.yaml: %v\n", err)
@@ -321,7 +346,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	release, err := acquireDaemonLockWithTimeout(lockPath, root, livenessTimeout)
+	release, err := acquireDaemonLock(lockPath, root, livenessTimeout, &daemonBehavior{
+		WatchConfig:           *watchConfig,
+		Diagnostics:           *diagnostics,
+		DrainTimeoutNanos:     int64(*drainTimeout),
+		SkipPreflight:         *skipPreflight,
+		DisableReadModelReads: *disableReadModelReads,
+	})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -340,16 +371,28 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	var wg sync.WaitGroup
 	var setup *schedulerSetup
+	// DS6 (distributed-state-and-coordination.md §10): the gate keeps every
+	// expired-claim reap — setup's included — a no-op until the renewal set
+	// has been rebuilt from ledger + liveness below.
+	claimRecoveryGate := localscheduler.NewRecoveryGate()
+	setupOptions := []schedulerSetupOption{
+		withDesktopNotifications(notifications, stderr),
+		withStartupProgress(func(message string) {
+			pf(stdout, "startup: %s\n", message)
+		}),
+		withClaimRecoveryGate(claimRecoveryGate),
+	}
 	if *skipPreflight {
-		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, setupOptions...)
 	} else {
-		setup, err = buildSchedulerSetup(ctx, l, &wg, withDesktopNotifications(notifications, stderr))
+		setup, err = buildSchedulerSetup(ctx, l, &wg, setupOptions...)
 	}
 	if err != nil {
 		printValidationIssues(stderr, validationReportFromError(err))
-		pf(stderr, "error: %v\n", err)
+		pf(stderr, "error: initialize daemon scheduler: %v\n", err)
 		return 1
 	}
+	pf(stdout, "startup: scheduler initialized\n")
 	defer setup.Shutdown(context.Background())
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -359,6 +402,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// The live journal writer (DS4) authors engine-run journals from events
+	// emitted as they happen; the projection reconciler below is thereby the
+	// repair/verify path (DS5), never the authority, for live-authored runs.
+	liveJournals, err := newLiveJournalWriter(l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog)
+	if err != nil {
+		pf(stderr, "error: initialize live journal writer: %v\n", err)
+		return 1
+	}
+	if liveJournals != nil {
+		defer liveJournals.Close()
+	}
+	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, setup.Telemetry, liveJournals)
+	if err != nil {
+		pf(stderr, "error: start engine projection reconciler: %v\n", err)
+		return 1
+	}
+	defer stopEngineProjection()
 	printValidationWarnings(stdout, setup.Validation.CLIWarnings())
 	if warning := webhookConfigurationWarning(setup.Definitions, setup.Config); warning != "" {
 		pln(stdout, warning)
@@ -387,7 +447,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// nothing here. Found by auditing which topologies attach which sources
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
-		ReadModel: setup.ReadModel,
+		ReadModel:      setup.ReadModel,
+		RetentionStats: setup.RetentionStats,
+		WorkItemLookup: statusWorkItemLookup(l.Root, setup.Definitions),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
 		},
@@ -402,7 +464,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// DisableReadModelReads previously had no caller anywhere, so the
 		// documented "a flag flip, never a deploy" rollback did not exist in
 		// practice. read.db itself is untouched — this only forces every list
-		// request back onto the journal-derived paths for this run.
+		// request back onto authoritative journal scans for this run.
 		reads.DisableReadModelReads()
 	}
 	// Move the active-run count off the request path (#1741). Six read routes
@@ -411,7 +473,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// The daemon is the only construction that is long-lived enough for a
 	// background sample to be warm, so it is the only one that starts it.
 	stopActiveSampler := reads.StartActiveRunSampler(0)
-	defer stopActiveSampler()
+	defer func() {
+		if err := stopActiveSampler(); err != nil {
+			pf(stderr, "error: stop active-run sampler: %v\n", err)
+		}
+	}()
 	apiLog := log.New(stderr, "http API: ", log.LstdFlags)
 	// Unconfigured instances keep the tier-1 posture verbatim: null
 	// authenticator, allow-all authorizer, plain HTTP on loopback. api.auth
@@ -435,12 +501,86 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
+	// The write planes (#3509, distributed-state-and-coordination.md §7):
+	// claims over the same ledger + flock the CLI claimants use, triggers
+	// through the same scheduler path the pending-triggers sweep dispatches,
+	// HITL resolution over the intervention machinery. The file seams remain
+	// for local/mode-1 callers.
+	triggerPlane := newDaemonTriggerService()
+	// The credential plane (#3511, distributed-state-and-coordination.md §11,
+	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
+	// stage start through the same capability-gated machinery the local
+	// runner's executors resolve through. The snapshot is replaced on config
+	// reload (see configreload.go) so a reloaded gaggle's grants apply.
+	//
+	// Wired on every daemon, but RULED fail-closed (PR #3528 finding 2): the
+	// route itself requires an authenticated POD principal unconditionally —
+	// on this file's loopback null-auth posture (no api.auth block, so no
+	// authenticator below) every resolve answers a typed 403 rather than
+	// handing raw secret material to any local caller. Local modes never need
+	// the plane; their resolution stays in-process via buildCredentialEnv.
+	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog)
+	credentialPlane.Replace(credentialPlaneDefinitionsFromSet(setup.Definitions))
+	setup.CredentialPlane = credentialPlane
+	// The blob plane (decision 010/012, §2a): a mode-3 stage pod's BlobClient
+	// (internal/dispatcher/blob.go) fetches and puts content-addressed
+	// artifacts by digest over this route instead of a shared filesystem. The
+	// daemon fronts the SAME blobstore.Store type a local worker plugs into
+	// MaterializeContext/StagingArtifacts (cmd/goobers/worker.go's
+	// --blob-store), rooted at its own instance-local directory — wired
+	// unconditionally like the claims and trigger planes, because it is inert
+	// without a caller: a mode-1/2 daemon that never serves a mode-3 stage
+	// never gets a request on these routes, and the blob plane's own
+	// fail-closed pod-principal gate (registerBlobPlaneRoutes) keeps a
+	// loopback null-auth daemon from handing out raw content to any local
+	// caller either — the same posture the credential plane already takes.
+	blobStore, err := blobstore.NewDir(l.BlobStoreDir())
+	if err != nil {
+		pf(stderr, "error: initialize blob store: %v\n", err)
+		return 1
+	}
+	// The surrender plane (#3699) rides beside the blob store, under the same
+	// instance-local root — the "<blob-store>/surrender" convention
+	// cmd/goobers/workerdispatch.go's buildStageDispatch already documents
+	// and constructs identically from its own --blob-store flag. When an
+	// operator points a mode-3 `goobers worker --dispatch-namespace` at this
+	// daemon's blob-store volume (the documented --dispatch-namespace
+	// requirement), the two independently-built SurrenderDirs resolve to the
+	// identical path and interoperate: the worker's activity reads what a
+	// stage pod PUT here over HTTP. Wired unconditionally, like the blob
+	// plane above — inert without a caller, and the surrender route's own
+	// pod-principal gate (registerSurrenderPlaneRoutes) refuses everyone
+	// else.
+	surrenderStore, err := dispatcher.NewSurrenderDir(filepath.Join(l.BlobStoreDir(), "surrender"))
+	if err != nil {
+		pf(stderr, "error: initialize surrender plane: %v\n", err)
+		return 1
+	}
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
+		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog)),
+		httpapi.WithTriggerService(triggerPlane),
+		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
+		httpapi.WithCredentialService(credentialPlane),
+		httpapi.WithBlobService(blobStore),
+		httpapi.WithSurrenderService(surrenderStore),
 	)
+	if liveJournals != nil {
+		// The journal plane (§8): remote stage pods emit their run's journal
+		// events here; the daemon's own in-process emitters use the writer
+		// directly and never pass through HTTP.
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithJournalService(liveJournals))
+	}
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
+	}
+	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
+	// deployments — Goobers#3701), else the daemon-local in-memory registry.
+	podVerifier, perr := buildPodVerifier(setup.Config)
+	if perr != nil {
+		pf(stderr, "error: initialize pod token verifier: %v\n", perr)
+		return 1
 	}
 	if auth := setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
@@ -457,7 +597,30 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(authenticator))
+		// Pod-to-daemon authn (#3509 §14 open point, resolved as per-run
+		// minted bearers): chain the pod-token verifier in front of the human
+		// OIDC authenticator. The registry is daemon-local (sound under DS1);
+		// the mode-3 dispatcher mints into it at stage dispatch (#3482).
+		chained, err := podauth.NewAuthenticator(podVerifier, authenticator)
+		if err != nil {
+			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
+			return 1
+		}
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
+		apiAuthorizer = httpapi.RequireRoles()
+	} else if !instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
+		// Non-loopback with no human authenticator configured: serve the pod
+		// plane only, denying every non-pod request. This satisfies SEC-043's
+		// requirement for a REAL authenticator without forcing an operator who
+		// wants no human surface to stand up an OIDC issuer to get one
+		// (Goobers#3701). It never admits an unauthenticated request — the
+		// fallback denies rather than allowing.
+		chained, err := podauth.NewAuthenticator(podVerifier, httpapi.DenyAllAuthenticator{})
+		if err != nil {
+			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
+			return 1
+		}
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
 		apiAuthorizer = httpapi.RequireRoles()
 	}
 	handler, err := httpapi.NewHandler(reads, apiAuthorizer, apiLog, apiHandlerOpts...)
@@ -474,6 +637,28 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
 	}
+	// Rebuild the claim-renewal set from the LEDGER plus run liveness before
+	// any reap is permitted — DS6's load-bearing ordering
+	// (distributed-state-and-coordination.md §10): this process's in-memory
+	// run tracking is empty right now, but a distributed run dispatched by
+	// the previous daemon process is still executing on the engine, and its
+	// claims must be renewed — not reaped — across the restart. Only a
+	// renewal pass whose ledger write completed opens the gate; a failed pass
+	// leaves it closed and the periodic tick below retries both halves.
+	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, setup.RunnerRegistry.RunIDs)
+	if err != nil {
+		pf(stderr, "error: build claim liveness probe: %v\n", err)
+		return 1
+	}
+	defer closeClaimLiveness()
+	if probeErr, renewErr := rebuildClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate); renewErr != nil {
+		if !isJournaledClaimsLockTimeout(renewErr) {
+			pf(stdout, "warning: rebuild claim renewal set: %v\n", renewErr)
+		}
+	} else if probeErr != nil {
+		pf(stdout, "warning: claim liveness probe degraded (renewed fail-live): %v\n", probeErr)
+	}
+
 	// Claim recovery (#131/#793): released once now and periodically thereafter
 	// to recover expired leases and claim cleanup deferred by a terminal
 	// finalizer's bounded lock timeout — before the scheduler starts admitting
@@ -485,7 +670,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// synchronous startup call site below prints; the periodic goroutine
 	// below deliberately does not (see its own comment).
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive)
+		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive, claimRecoveryGate)
 	}
 	startupReleased := append([]localscheduler.ClaimEntry(nil), setup.RecoveredClaims...)
 	newlyReleased, err := recoverExpiredClaims(time.Now())
@@ -595,6 +780,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}
 	interventions.AttachScheduler(sched)
+	triggerPlane.AttachScheduler(sched)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {
@@ -628,7 +814,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			setup.LegacyRunner,
 			setup.InstanceLog,
 			func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
-				return buildTerminalBranchPreparer(runLayout, setup.Config, setup.SharedRegistry, setup.SecretStores)
+				// The stalled run's gaggle is only knowable from its runs-tree
+				// scope; cleanup must target that gaggle's own repo (#2692).
+				project, err := terminalGaggleProject(runLayout)
+				if err != nil {
+					return nil, err
+				}
+				return buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
 			},
 			setup.TerminalNotifier,
 			sched.ReleaseRun,
@@ -712,11 +904,15 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// recovery sweep above already ran BEFORE resume tracked anything, on the
 	// prior process's now possibly-stale leases, so a resumed run's claim
 	// could otherwise sit unrenewed — and so reapable — for most of a sweep
-	// interval right when a restart just made that most likely. Best-effort,
+	// interval right when a restart just made that most likely. The resumed
+	// runs are tracked by the registry now, so the ledger-driven pass covers
+	// exactly them (plus any engine-live holders — idempotent). Best-effort,
 	// same as the periodic sweep: a renewal failure here does not fail daemon
 	// start, since the claim ledger's own reap is what it would fail open to.
-	if _, err := renewLiveClaims(l, resumed, DefaultClaimLease); err != nil && !isJournaledClaimsLockTimeout(err) {
-		pf(stdout, "warning: renew resumed claims: %v\n", err)
+	if len(resumed) > 0 {
+		if _, _, err := renewLiveClaims(ctx, l, claimLiveness, DefaultClaimLease); err != nil && !isJournaledClaimsLockTimeout(err) {
+			pf(stdout, "warning: renew resumed claims: %v\n", err)
+		}
 	}
 	for _, runID := range warned {
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
@@ -747,6 +943,20 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// contract reloader.pollOnce already enforces for a hand-edited file
 	// applies unchanged to a git-sourced one.
 	applySweepErrors := newSweepErrorReporter(setup.InstanceLog, "apply_sweep_failed")
+	// #3274: a github-app workflowSource mints installation tokens instead of
+	// reading a static token ref. The minter is built once here — the
+	// composition root, since internal/instance cannot import
+	// internal/githubapp — and shared by the apply sweep and the reconcile
+	// loop below, so both draw on one near-expiry-refreshing token cache.
+	var workflowSourceAppTokens instance.GitTokenSource
+	if source := setup.Config.WorkflowSource; source != nil && source.GitHubAppAuth() {
+		minted, mintErr := newWorkflowSourceAppTokenSource(*source, setup.SharedRegistry, setup.SecretStores)
+		if mintErr != nil {
+			pf(stderr, "error: configure workflow-source GitHub App authentication: %v\n", mintErr)
+			return 1
+		}
+		workflowSourceAppTokens = minted
+	}
 	var sourceReconcileMu sync.Mutex
 	var sourceRevision string
 	reconcileApply := func(applyCtx context.Context, now time.Time) applyResponse {
@@ -754,7 +964,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		defer sourceReconcileMu.Unlock()
 		var resp applyResponse
 		if source := setup.Config.WorkflowSource; source != nil && source.Kind == instance.WorkflowSourceKindGit {
-			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, setup.SharedRegistry, setup.SecretStores)
+			revision, _, syncErr := instance.SyncGitWorkflowSource(applyCtx, root, *source, workflowSourceAppTokens, setup.SharedRegistry, setup.SecretStores)
 			if syncErr != nil {
 				resp.Error = fmt.Sprintf("sync workflow source: %v", syncErr)
 				return resp
@@ -799,17 +1009,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case now := <-claimTicker.C:
-				// Renew before reaping (#2014): both run in the same tick, and a
-				// still-tracked run's lease must be pushed back into the future
+				// Renew before reaping (#2014/DS6): both run in the same tick,
+				// and a live run's lease must be pushed back into the future
 				// before recoverExpiredClaims below checks it against now — doing
-				// it in the other order would let a run this process is still
-				// actively driving get reaped on the exact tick its lease was due
-				// to be renewed, on nothing worse than ordinary ticker jitter.
-				_, renewErr := renewLiveClaims(l, setup.RunnerRegistry.RunIDs(), DefaultClaimLease)
+				// it in the other order would let a run that is still live get
+				// reaped on the exact tick its lease was due to be renewed, on
+				// nothing worse than ordinary ticker jitter.
+				// rebuildClaimRenewalSet also self-heals DS6's startup ordering:
+				// if the startup rebuild failed (gate still closed), a completed
+				// pass here IS the rebuild — recovery below is permitted from
+				// here on.
+				probeErr, renewErr := rebuildClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate)
 				if isJournaledClaimsLockTimeout(renewErr) {
 					claimRenewErrors.report(nil)
-				} else {
+				} else if renewErr != nil {
 					claimRenewErrors.report(renewErr)
+				} else {
+					claimRenewErrors.report(probeErr)
 				}
 				released, err := recoverExpiredClaims(now)
 				if isJournaledClaimsLockTimeout(err) {
@@ -985,6 +1201,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 					root,
 					*source,
 					sourceRevision,
+					workflowSourceAppTokens,
 					setup.SharedRegistry,
 					setup.SecretStores,
 				)
@@ -1032,13 +1249,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
-		lastSeq := uint64(0)
-		if events, err := journal.ReadInstanceLog(l.SchedulerDir()); err == nil && len(events) > 0 {
-			lastSeq = events[len(events)-1].Seq
-		}
+		tail, tailErr := journal.OpenInstanceLogTail(l.SchedulerDir())
 		done := make(chan struct{})
 		heartbeatDone = done
-		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), lastSeq, heartbeatInterval, done)
+		go emitHeartbeats(ctx, stdout, l.SchedulerDir(), len(setup.Entries), tail, tailErr, heartbeatInterval, done)
 	}
 	schedulerDone := make(chan error, 1)
 	go func() { schedulerDone <- sched.Run(ctx) }()
@@ -1143,7 +1357,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: scheduler stopped: %v\n", runErr)
 	}
 
-	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout)
+	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout,
+		func(active []trackedRun) []parkedRun { return parkedNonTerminalRuns(l, active) })
 	if !drainResult.forced {
 		pln(stdout, "shutdown complete: all runs drained")
 	} else {
@@ -1173,6 +1388,10 @@ func drainDaemonRuns(
 	timeout time.Duration,
 	force <-chan struct{},
 	stdout io.Writer,
+	// listParked reports non-terminal runs the drain is NOT holding (#3453).
+	// Nil disables the report, which keeps callers that have no layout — and
+	// every existing test — unchanged.
+	listParked func(active []trackedRun) []parkedRun,
 ) daemonDrainResult {
 	done := make(chan struct{})
 	go func() {
@@ -1181,6 +1400,30 @@ func drainDaemonRuns(
 		close(done)
 	}()
 
+	// #3453: a gate-paused run is not held by the drain — Start returns on a
+	// pause, releasing both the WaitGroup and the registry entry — so it is
+	// invisible to ActiveRuns(). Reporting only the held population let the
+	// drain print "no in-flight runs remain" while a non-terminal run sat
+	// there. Naming them does not make the drain wait (since #3426 they are
+	// recovered automatically at next boot via the pinned definition); it
+	// stops "safe to restart" from being something the operator has to infer
+	// from a message that is silent about what it cannot see.
+	reportParked := func(prefix string, active []trackedRun) {
+		if listParked == nil {
+			return
+		}
+		parked := listParked(active)
+		if len(parked) == 0 {
+			return
+		}
+		ids := make([]string, len(parked))
+		for i, run := range parked {
+			ids[i] = run.Workflow + "/" + run.RunID
+		}
+		pf(stdout, "%s: %d run(s) parked at a gate and NOT held by this drain [%s]; "+
+			"they are not waited for and resume at next boot\n",
+			prefix, len(ids), strings.Join(ids, ", "))
+	}
 	printProgress := func(prefix string) {
 		active := runners.ActiveRuns()
 		ids := make([]string, len(active))
@@ -1189,10 +1432,12 @@ func drainDaemonRuns(
 		}
 		if len(ids) == 0 {
 			pf(stdout, "%s: no in-flight runs remain; waiting for scheduler shutdown\n", prefix)
+			reportParked(prefix, active)
 			return
 		}
 		pf(stdout, "%s: %d run(s) remaining [%s]; send SIGINT/SIGTERM again to force shutdown\n",
 			prefix, len(ids), strings.Join(ids, ", "))
+		reportParked(prefix, active)
 	}
 	printProgress("shutting down: draining")
 
@@ -1319,11 +1564,13 @@ func emitHeartbeats(
 	stdout io.Writer,
 	schedulerDir string,
 	workflowCount int,
-	lastSeq uint64,
+	tail *journal.InstanceLogTail,
+	err error,
 	interval time.Duration,
 	done chan<- struct{},
 ) {
 	defer close(done)
+	defer func() { _ = tail.Close() }()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -1332,15 +1579,42 @@ func emitHeartbeats(
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			events, err := journal.ReadInstanceLog(schedulerDir)
+			if tail == nil {
+				tail, err = journal.OpenInstanceLogTail(schedulerDir)
+			}
+			if err == nil {
+				var events []journal.Event
+				events, err = tail.Events()
+				if err == nil {
+					activity, _ := summarizeHeartbeat(events, 0)
+					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped\n",
+						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped)
+					continue
+				}
+				_ = tail.Close()
+				tail = nil
+			}
 			if err != nil {
 				pf(stdout, "[%s] alive — scheduler activity unavailable: %v\n", now.Format("15:04:05"), err)
 				continue
 			}
-			activity, nextSeq := summarizeHeartbeat(events, lastSeq)
-			lastSeq = nextSeq
-			pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped\n",
-				now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped)
 		}
 	}
+}
+
+// buildPodVerifier selects the pod-token verifier. A configured key file gives
+// stateless shared-key tokens, which is what a SPLIT deployment needs: the
+// dispatcher runs inside `goobers worker`, so a token it mints must be
+// verifiable by a different process. Unset keeps the daemon-local in-memory
+// registry, correct whenever daemon and dispatcher share a process.
+func buildPodVerifier(cfg *instance.Config) (podauth.Verifier, error) {
+	path := strings.TrimSpace(cfg.API.PodTokenKeyFile)
+	if path == "" {
+		return podauth.NewRegistry(), nil
+	}
+	key, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read pod token key %s: %w", path, err)
+	}
+	return podauth.NewSignedKey(bytes.TrimSpace(key))
 }

@@ -16,6 +16,11 @@ metadata:
     # Annotations shown for ingress-nginx — CHANGE-ME for your ingress class.
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # Optional: an edge auth-basic annotation here works transparently with
+    # the portal's own /api/* and SSE fetch calls as long as it protects this
+    # whole host, not a subset of paths — see "HTTP Basic Auth at the edge"
+    # in docs/guides/oidc-authentication.md. It is a network-level gate, not
+    # a substitute for api.auth.oidc.
 spec:
   ingressClassName: CHANGE-ME
   tls:

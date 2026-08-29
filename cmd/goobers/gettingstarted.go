@@ -34,16 +34,21 @@ const (
 )
 
 const gettingStartedHelp = "Usage: goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]\n\n" +
-	"Serve and open the portal's guided Getting Started experience: a walkthrough\n" +
-	"from an empty working directory to a first autonomous pull request against\n" +
-	"the disposable getting-started-task-api sample. Every write action the guide\n" +
-	"offers is a thin wrapper over the documented CLI commands — goobers\n" +
-	"onboarding stub-sample, goobers init --template=quickstart, and goobers\n" +
-	"validate --json — it never scaffolds or validates on its own. The manual\n" +
-	"steps stay yours, and the guide states each one explicitly: creating the\n" +
-	"disposable GitHub repository, pushing the sample, editing placeholders, and\n" +
-	"exporting tokens. Time to First PR is computed locally and reported only to\n" +
-	"you; nothing leaves your machine.\n\n" +
+	"Serve and open the portal's guided Getting Started walkthrough: two paths\n" +
+	"from an empty working directory to a first autonomous pull request. The\n" +
+	"recommended path connects a repository you already work in — goobers init,\n" +
+	"goobers connect --json, goobers validate --json --check-harness\n" +
+	"--check-repos, and goobers run default-implement — and ends with a real PR\n" +
+	"against your own backlog. The alternative walks a disposable\n" +
+	"getting-started-task-api sample instead — goobers onboarding stub-sample,\n" +
+	"goobers init --template=quickstart, the same validate call, and goobers run\n" +
+	"quickstart. Every write action the guide offers is a thin wrapper over\n" +
+	"these documented CLI commands; it never scaffolds, connects, or validates\n" +
+	"on its own. The manual steps stay yours, and the guide states each one\n" +
+	"explicitly: exporting your token for the own-repository path, or creating\n" +
+	"the disposable GitHub repository, pushing the sample, and exporting tokens\n" +
+	"for the sample path. Time to First PR is computed locally and reported\n" +
+	"only to you; nothing leaves your machine.\n\n" +
 	"--workdir (default \".\") holds the sample checkout and the tutorial\n" +
 	"instance; no instance root needs to exist yet. The default --port is auto,\n" +
 	"incrementing from %d until a port is available. Blocks until interrupted.\n" +
@@ -57,7 +62,7 @@ func runGettingStarted(args []string, stdout, stderr io.Writer) int {
 }
 
 func runGettingStartedContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("getting-started", flag.ContinueOnError)
+	flags := newCLIFlagSet("getting-started", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	portValue := flags.String("port", "auto", "server port, or \"auto\" to use the first available port from 8081")
 	noOpen := flags.Bool("no-open", false, "print the getting-started URL without opening a browser")
@@ -102,7 +107,7 @@ func runGettingStartedContext(ctx context.Context, args []string, stdout, stderr
 		pf(stderr, "error: initialize portal assets: %v\n", errors.Join(err, guided.close()))
 		return 1
 	}
-	listener, err := listenDashboard(port)
+	listener, err := listenDashboard("127.0.0.1", port)
 	if err != nil {
 		pf(stderr, "error: %v\n", errors.Join(err, guided.close()))
 		return 1

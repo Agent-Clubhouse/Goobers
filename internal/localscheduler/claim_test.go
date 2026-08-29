@@ -124,6 +124,47 @@ func TestClaimHistorySurvivesReleaseAndReopen(t *testing.T) {
 	}
 }
 
+func TestClaimHistoryForTerminalRunAgesOut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claims.json")
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	ledger, err := OpenClaimLedger(path, WithLedgerClock(clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKey := ClaimKey{Gaggle: "alpha", Provider: "github", ExternalID: "466"}
+	if ok, _, err := ledger.ClaimScoped(oldKey, "terminal-run", "implement", 365*24*time.Hour); err != nil || !ok {
+		t.Fatalf("ClaimScoped: ok=%v err=%v", ok, err)
+	}
+	now = now.Add(time.Hour)
+	if err := ledger.ReleaseScoped(oldKey, "terminal-run"); err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(claimHistoryTTL + 2*time.Hour)
+	if history := ledger.HistoryForRun("terminal-run"); len(history) != 1 ||
+		!history[0].ExpiresAt.After(now) {
+		t.Fatalf("terminal-run history before pruning = %+v, want unexpired long lease", history)
+	}
+	if ok, _, err := ledger.Claim("current-item", "current-run", "implement", time.Hour); err != nil || !ok {
+		t.Fatalf("trigger history pruning: ok=%v err=%v", ok, err)
+	}
+	if history := ledger.HistoryForRun("terminal-run"); len(history) != 0 {
+		t.Fatalf("expired terminal-run history = %+v, want none", history)
+	}
+
+	reopened, err := OpenClaimLedger(path, WithLedgerClock(clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if history := reopened.HistoryForRun("terminal-run"); len(history) != 0 {
+		t.Fatalf("persisted terminal-run history = %+v, want none", history)
+	}
+	if history := reopened.HistoryForRun("current-run"); len(history) != 1 {
+		t.Fatalf("current-run history = %+v, want one entry", history)
+	}
+}
+
 func TestClaimsAreIndependentAcrossGaggles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claims.json")
 	ledger, err := OpenClaimLedger(path)

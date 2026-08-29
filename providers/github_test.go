@@ -1353,6 +1353,93 @@ func TestNormalizeCheckRunStateStartupFailure(t *testing.T) {
 	}
 }
 
+// TestGitHubProviderCheckDetailsFallsBackToActionsRunsOnForbiddenPAT covers
+// #2685: a fine-grained PAT on a private repo can read the Actions API but
+// gets a 403 from check-runs (no grantable "Checks" permission exists for
+// that token type). checkDetails must recognize that specific 403 and retry
+// via actions/runs rather than losing CI visibility entirely, while still
+// merging worst-case-wins with the combined-status statuses (#139).
+func TestGitHubProviderCheckDetailsFallsBackToActionsRunsOnForbiddenPAT(t *testing.T) {
+	var requested []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/status", func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		writeJSON(t, w, map[string]interface{}{"statuses": []map[string]interface{}{}})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		w.WriteHeader(http.StatusForbidden)
+		writeJSON(t, w, map[string]interface{}{"message": "Resource not accessible by personal access token"})
+	})
+	mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		requested = append(requested, r.URL.Path)
+		if got := r.URL.Query().Get("head_sha"); got != "deadbeef" {
+			t.Fatalf("head_sha query = %q, want deadbeef", got)
+		}
+		writeJSON(t, w, map[string]interface{}{
+			"workflow_runs": []map[string]interface{}{
+				{"id": 201, "name": "CI", "status": "completed", "conclusion": "failure", "html_url": "https://ci/actions/201"},
+				{"id": 202, "name": "Deploy", "status": "completed", "conclusion": "success", "html_url": "https://ci/actions/202"},
+			},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	state, details, err := provider.combinedCheckState(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "deadbeef")
+	if err != nil {
+		t.Fatalf("combinedCheckState: %v", err)
+	}
+	if state != CheckStateFailing {
+		t.Fatalf("state = %q, want %q (worst-case-wins over the fallback's failing run)", state, CheckStateFailing)
+	}
+	if len(details) != 2 || details[0].Name != "CI" || details[0].State != CheckStateFailing ||
+		details[1].Name != "Deploy" || details[1].State != CheckStatePassing {
+		t.Fatalf("details = %+v, want CI(failing)+Deploy(passing) from the actions/runs fallback", details)
+	}
+	wantRequests := []string{
+		"/repos/acme/app/commits/deadbeef/status",
+		"/repos/acme/app/commits/deadbeef/check-runs",
+		"/repos/acme/app/actions/runs",
+	}
+	if !reflect.DeepEqual(requested, wantRequests) {
+		t.Fatalf("requested paths = %v, want %v", requested, wantRequests)
+	}
+}
+
+// TestGitHubProviderCheckDetailsDoesNotFallBackOnUnrelated403 guards
+// IsForbiddenPATError's narrowness: an ordinary 403 (rate limit, org SSO
+// block, wrong scope) must surface as a normal error, not be silently
+// reinterpreted as the specific fine-grained-PAT-checks gap and trigger an
+// actions/runs request that was never warranted.
+func TestGitHubProviderCheckDetailsDoesNotFallBackOnUnrelated403(t *testing.T) {
+	var actionsRunsRequested bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]interface{}{"statuses": []map[string]interface{}{}})
+	})
+	mux.HandleFunc("/repos/acme/app/commits/deadbeef/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		writeJSON(t, w, map[string]interface{}{"message": "API rate limit exceeded"})
+	})
+	mux.HandleFunc("/repos/acme/app/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		actionsRunsRequested = true
+		writeJSON(t, w, map[string]interface{}{"workflow_runs": []map[string]interface{}{}})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	_, _, err := provider.combinedCheckState(context.Background(), RepositoryRef{Owner: "acme", Name: "app"}, "deadbeef")
+	if err == nil {
+		t.Fatal("combinedCheckState err = nil, want the unrelated 403 surfaced")
+	}
+	if actionsRunsRequested {
+		t.Fatal("actions/runs was requested for an unrelated 403 — IsForbiddenPATError matched too broadly")
+	}
+}
+
 func TestGitHubProviderPollPullRequestChangesRequestedWins(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/app/pulls/9", func(w http.ResponseWriter, r *http.Request) {
@@ -1572,6 +1659,41 @@ func TestGitHubProviderListPullRequestsSkipCheckState(t *testing.T) {
 
 	if len(out) != 1 || out[0].CheckState != "" {
 		t.Fatalf("out = %+v, want one summary with empty CheckState", out)
+	}
+}
+
+func TestGitHubProviderListPullRequestsLimitsRawCandidateWindow(t *testing.T) {
+	var calls int
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if got := r.URL.Query().Get("per_page"); got != "1" {
+			t.Fatalf("per_page = %q, want 1", got)
+		}
+		if calls > 1 {
+			t.Fatal("bounded pull request list followed the next-page link")
+		}
+		w.Header().Set("Link", "<"+server.URL+r.URL.Path+"?page=2&per_page=1>; rel=\"next\"")
+		writeJSON(t, w, []map[string]interface{}{{
+			"number": 10,
+			"head":   map[string]interface{}{"ref": "human/manual-fix"},
+			"base":   map[string]interface{}{"ref": "main"},
+		}})
+	}))
+	defer server.Close()
+
+	provider := NewGitHubProvider("token", func(p *GitHubProvider) { p.BaseURL = server.URL })
+	out, err := provider.ListPullRequests(context.Background(), ListPullRequestsRequest{
+		Repository:     RepositoryRef{Owner: "acme", Name: "app"},
+		HeadPrefix:     "goobers/",
+		Limit:          1,
+		SkipCheckState: true,
+	})
+	if err != nil {
+		t.Fatalf("ListPullRequests: %v", err)
+	}
+	if len(out) != 0 || calls != 1 {
+		t.Fatalf("out = %+v, calls = %d; want one raw candidate inspected", out, calls)
 	}
 }
 

@@ -1,0 +1,32 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: claude-coder
+spec:
+  gaggle: acme-web-claude
+  role: coder
+  displayName: Coder (Claude Code)
+  # Markdown (with YAML frontmatter) defining behavior/persona/scope, resolved
+  # relative to this goober definition directory (CFG-003, GBO-002).
+  instructions: instructions.md
+  harness: claude-code
+  model: auto
+  harnessOptions: {}
+  capabilities:
+    - agent:model
+  skills:
+    - implement
+    - run-tests
+  # "github" has no claude-code tool-group mapping yet (internal/harness/
+  # claude.go's claudeToolGroups doc comment) — Copilot resolves it to
+  # github-mcp-server-* tools, claude-code passes it through unexpanded and
+  # unenforced. Left declared here to mirror acme-web's Copilot config
+  # byte-for-byte.
+  tools:
+    - github
+    - shell
+  # Single-threaded to start; raise + redeploy to add concurrent replicas
+  # (GBO-030).
+  scaleFactor: 1
+  workflows:
+    - claude-default-implement

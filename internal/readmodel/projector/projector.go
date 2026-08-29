@@ -252,12 +252,10 @@ func (p *Projector) commit(ctx context.Context, request commitRequest) error {
 		return ctx.Err()
 	case p.commits <- request:
 	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-request.result:
-		return err
-	}
+	// Once accepted, the write closure may refer to caller-owned result state.
+	// Wait for it to finish even if the context is canceled so the caller cannot
+	// observe that state while the commit loop is still updating it.
+	return <-request.result
 }
 
 // UpsertRun commits a prepared projection through the sole-writer loop.
@@ -488,7 +486,7 @@ func (p *Projector) prepare(ctx context.Context, runID string) (Projection, bool
 		if errors.Is(err, os.ErrNotExist) {
 			return Projection{}, false, nil
 		}
-		return Projection{}, false, fmt.Errorf("projector: open journal for %s: %w", runID, err)
+		return Projection{}, false, fmt.Errorf("projector: read identity for %s: %w", runID, err)
 	}
 	identity, err := reader.Identity()
 	if err != nil {
@@ -504,7 +502,11 @@ func (p *Projector) prepare(ctx context.Context, runID string) (Projection, bool
 		// read model quietly incomplete.
 		return Projection{}, false, fmt.Errorf("projector: read events for %s: %w", runID, err)
 	}
-	return readmodel.ProjectRun(identity, Projection{}, events), true, nil
+	projection, err := readmodel.ProjectRunFromJournal(reader, identity, events)
+	if err != nil {
+		return Projection{}, false, fmt.Errorf("projector: project operator facts for %s: %w", runID, err)
+	}
+	return projection, true, nil
 }
 
 // locate finds a run's directory across the configured roots.

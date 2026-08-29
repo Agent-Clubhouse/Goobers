@@ -171,7 +171,42 @@ func (s *gatherPRContextServer) start(t *testing.T) *httptest.Server {
 		t.Fatalf("initial pull-request list resolved check state for unselected PR: %s", r.URL.Path)
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/comments", prefix, s.prNumber), func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			var comment map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&comment); err != nil {
+				t.Fatalf("decode comment: %v", err)
+			}
+			comment["id"] = len(s.comments) + 1
+			s.comments = append(s.comments, comment)
+			writeFakeJSON(w, comment)
+			return
+		}
 		writeFakeJSON(w, s.comments)
+	})
+	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/labels", prefix, s.prNumber), func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Labels []string `json:"labels"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode labels: %v", err)
+		}
+		for _, label := range request.Labels {
+			if !hasAnyLabel(s.labels, []string{label}) {
+				s.labels = append(s.labels, label)
+			}
+		}
+		writeFakeJSON(w, labelsJSON(s.labels))
+	})
+	mux.HandleFunc(fmt.Sprintf("%s/issues/%d/labels/", prefix, s.prNumber), func(w http.ResponseWriter, r *http.Request) {
+		label := strings.TrimPrefix(r.URL.Path, fmt.Sprintf("%s/issues/%d/labels/", prefix, s.prNumber))
+		filtered := s.labels[:0]
+		for _, existing := range s.labels {
+			if existing != label {
+				filtered = append(filtered, existing)
+			}
+		}
+		s.labels = filtered
+		w.WriteHeader(http.StatusNoContent)
 	})
 	if s.includeEarlierCrown {
 		mux.HandleFunc(fmt.Sprintf("%s/issues/%d/comments", prefix, s.prNumber+1000), func(w http.ResponseWriter, r *http.Request) {
@@ -559,6 +594,14 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 	t.Chdir(wt.Path)
 	resultFile := filepath.Join(wt.Path, remediationBriefResultFile)
 	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+	if err := updateRemediationNoopState(
+		layoutFor(instanceRoot).SchedulerDir(),
+		remediationNoopKey("", 1974),
+		remediationNoopSignature{HeadSHA: headSHA, DiffDigest: digest},
+		"prior-digest-run",
+	); err != nil {
+		t.Fatalf("seed digest no-op state: %v", err)
+	}
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
 	if code != 0 {
@@ -568,6 +611,21 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 		t.Fatalf("stdout = %q, want no-work before remediation for an already escalated digest", stdout)
 	}
 	assertNoWorkProviderStageResult(t, resultFile)
+	if !hasAnyLabel(srv.labels, []string{remediationEscalatedLabel}) ||
+		hasAnyLabel(srv.labels, []string{needsRemediationLabel}) {
+		t.Fatalf("labels = %v, want visibly parked escalation", srv.labels)
+	}
+	if len(srv.comments) != 1 || !strings.Contains(fmt.Sprint(srv.comments[0]["body"]), "unchanged diff digest") {
+		t.Fatalf("comments = %v, want visible unchanged-digest reason", srv.comments)
+	}
+	state, err := readRemediationNoopState(layoutFor(instanceRoot).SchedulerDir())
+	if err != nil {
+		t.Fatalf("read no-op state: %v", err)
+	}
+	record := state.Records[remediationNoopKey("", 1974)]
+	if record.Attempts != remediationNoopLimit || !record.Parked {
+		t.Fatalf("no-op record = %+v, want parked at limit %d", record, remediationNoopLimit)
+	}
 }
 
 func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
@@ -608,6 +666,49 @@ func TestVerdictHasSubstantiveFindingForSelectedPR(t *testing.T) {
 		if !verdictHasSubstantiveFindingForPR(verdict, 485, apiv1.SeverityInfo) {
 			t.Errorf("selected PR #485's %q finding was not routed to substantive remediation", class)
 		}
+	}
+}
+
+func TestSequencingOnlyRemediationWaitUsesLiveState(t *testing.T) {
+	pr := providers.PullRequestSummary{CheckState: providers.CheckStatePassing}
+	state := blockedOnSiblingState{Blockers: []int{41}}
+	if !shouldParkRemediation(pr, state) {
+		t.Fatal("sequencing-only blocked PR was not parked")
+	}
+
+	pr.CheckState = providers.CheckStateFailing
+	if shouldParkRemediation(pr, state) {
+		t.Fatal("failing CI was treated as sequencing-only")
+	}
+
+	pr.CheckState = providers.CheckStatePassing
+	pr.Labels = []string{needsRemediationLabel}
+	if shouldParkRemediation(pr, state) {
+		t.Fatal("live needs-remediation state was treated as sequencing-only")
+	}
+
+	pr.Labels = nil
+	state.Blockers = nil
+	if shouldParkRemediation(pr, state) {
+		t.Fatal("resolved blocker was treated as live sequencing")
+	}
+}
+
+func TestFoundationCoupledRemediationWaitParksUntilFoundationResolves(t *testing.T) {
+	pr := providers.PullRequestSummary{
+		Labels:     []string{needsRemediationLabel},
+		CheckState: providers.CheckStatePassing,
+	}
+	state := blockedOnSiblingState{
+		Blockers: []int{41},
+		Reason:   "foundation-coupled to PR #41, which substantially rewrites shared files",
+	}
+	if !shouldParkRemediation(pr, state) {
+		t.Fatal("foundation-coupled PR was not parked while its foundation is live")
+	}
+	pr.CheckState = providers.CheckStateFailing
+	if shouldParkRemediation(pr, state) {
+		t.Fatal("foundation-coupled PR with failing CI was parked")
 	}
 }
 

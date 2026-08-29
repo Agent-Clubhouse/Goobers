@@ -10,6 +10,7 @@ import {
   largeJournalFixtures,
   populatedDaemonFixtures,
 } from "../test/daemonFixtures";
+import styles from "../styles.css?inline";
 
 const storedValues = new Map<string, string>();
 const originalLocalStorage = Object.getOwnPropertyDescriptor(window, "localStorage");
@@ -133,6 +134,16 @@ describe("operational overview", () => {
     expect(within(recent).queryByText("Failed")).not.toBeInTheDocument();
     expect(within(counts).getAllByText("2", { selector: "dd" })).toHaveLength(2);
     expect(within(counts).getByText("1", { selector: "dd" })).toBeInTheDocument();
+  });
+
+  it("top-aligns attention row controls", () => {
+    expect(styles).toMatch(/\.attention-row\s*\{[^}]*align-items:\s*start;/s);
+  });
+
+  it("keeps scope pivots visible while long workflow names truncate", () => {
+    expect(styles).toMatch(
+      /\.scope-pivot\s*\{[^}]*flex-shrink:\s*0;[^}]*white-space:\s*nowrap;/s,
+    );
   });
 
   it("pivots an attention row's workflow into a pre-scoped Insight view without triggering the run link (#2529)", async () => {
@@ -521,6 +532,49 @@ describe("workflow and gaggle inventory", () => {
     expect(
       within(attentionSection).getByRole("link", { name: "Open run 01JZ400FAILED" }),
     ).toBeInTheDocument();
+  });
+
+  it("collapses the attention section and persists that durably across remounts (#2660)", async () => {
+    const user = userEvent.setup();
+    const rendered = render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    const attentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const attentionSection = attentionHeading.closest("section");
+    if (!attentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    const toggle = within(attentionSection).getByRole("button", {
+      name: "Collapse needs attention",
+    });
+    // Defaults to expanded for a first-time visitor with no stored preference.
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(
+      within(attentionSection).getByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).toBeInTheDocument();
+
+    await user.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(attentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(attentionSection).getByRole("button", { name: "Expand needs attention" }),
+    ).toBeInTheDocument();
+
+    rendered.unmount();
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+    const reattentionHeading = await screen.findByRole("heading", { name: "Needs attention" });
+    const reattentionSection = reattentionHeading.closest("section");
+    if (!reattentionSection) {
+      throw new Error("Attention section was not rendered.");
+    }
+    expect(
+      within(reattentionSection).getByRole("button", { name: "Expand needs attention" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(reattentionSection).queryByRole("link", { name: "Open run 01JZ400FAILED" }),
+    ).not.toBeInTheDocument();
   });
 
   it("reports an unknown gaggle without substituting another inventory", async () => {

@@ -39,18 +39,26 @@ NPM           ?= npm
 # Minimum testable-logic coverage enforced by `make cover-check` (ratchet up over
 # time). Overridable: `make cover-check COVERAGE_THRESHOLD=75`.
 COVERAGE_THRESHOLD ?= 70
+
+# Per-package test timeout. Go defaults to 10m, which cmd/goobers exceeds under
+# -race plus coverage instrumentation. test/ci already raises its own ceiling to
+# 30m for the identical workload; these Makefile targets are the same tests run
+# directly, so they carry the same budget.
+GO_TEST_TIMEOUT ?= 30m
 STRESS_OUTPUT_DIR   ?= stress-results
 STRESS_SEED         ?= 0
-BENCH_WORKCOPY_ARGS ?= -preset medium
+BENCH_WORKCOPY_ARGS ?= -preset small
 
 # Pinned codegen + test tooling (run via `go run`, no global installs).
 CONTROLLER_GEN_VERSION ?= v0.16.5
 SETUP_ENVTEST_VERSION  ?= release-0.19
 GOVULNCHECK_VERSION    ?= v1.6.0
+KUBECONFORM_VERSION    ?= v0.7.0
 ENVTEST_K8S_VERSION    ?= 1.31.0
 CONTROLLER_GEN := $(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 SETUP_ENVTEST  := $(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
 GOVULNCHECK    := $(GO) run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+KUBECONFORM    := $(GO) run github.com/yannh/kubeconform/cmd/kubeconform@$(KUBECONFORM_VERSION)
 
 ## help: Show this help.
 .PHONY: help
@@ -58,9 +66,9 @@ help:
 	@echo "Goobers — make targets:"
 	@grep -E '^## [a-z-]+:' $(MAKEFILE_LIST) | sed -E 's/^## ([a-z-]+): /  \1\t/' | expand -t20
 	@echo ""
-	@echo "Note: 'make build' also builds quarantined/superseded binaries (kept"
-	@echo "compiling, not on the V0 path) — operator, scheduler are tier-3 (V2),"
-	@echo "goober-runtime is superseded by the goobers binary. See docs/ARCHITECTURE.md §11."
+	@echo "Note: 'make build' also builds quarantined binaries (kept compiling,"
+	@echo "not on the V0 path) — operator, config-sync are tier-3 (V2). See"
+	@echo "docs/ARCHITECTURE.md §11."
 
 ## tidy: Sync go.mod/go.sum.
 .PHONY: tidy
@@ -91,14 +99,10 @@ manifests:
 manifests-check: manifests
 	git diff --exit-code -- config/crd/bases
 
-## docs: Regenerate the committed CLI reference (docs/cli), man pages (docs/man),
-## and shell completions (docs/completion) from the command registry, and the feature matrix (docs/feature-matrix.md)
-## from the workflow feature registry + DSL SupportMatrix. CI's TestCLIDocsUpToDate and
-## TestFeatureMatrixDocUpToDate fail the build if the committed output drifts
-## from this, so run it after any CLI help or DSL-feature change.
+## docs: Regenerate all committed documentation derived from runtime registries.
 .PHONY: docs
 docs:
-	UPDATE_GOLDEN=1 $(GO) test ./cmd/goobers -run 'TestCLIDocsUpToDate|TestFeatureMatrixDocUpToDate|TestCapabilityMatrixDocUpToDate'
+	$(GO) run ./cmd/goobers __generate-docs docs
 
 ## test-integration: Run declared-dependency integration tests (missing tools skip locally).
 .PHONY: test-integration
@@ -114,7 +118,15 @@ test-integration-strict:
 .PHONY: test-envtest
 test-envtest:
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
-		$(GO) test -tags=integration -race -covermode=atomic -coverprofile=coverage.out ./...
+		$(GO) test -tags=integration -race -timeout $(GO_TEST_TIMEOUT) -covermode=atomic -coverprofile=coverage.out ./...
+
+## envtest-assets: Print the provisioned KUBEBUILDER_ASSETS path (downloads on first use).
+# Single-sources the pinned control-plane version for CI, which exports the path
+# into the integration job's environment rather than running a second whole-tree
+# pass. Prints the path and nothing else so it is safe to capture.
+.PHONY: envtest-assets
+envtest-assets:
+	@$(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path
 
 ## test-e2e: Run the walking-skeleton E2E harness scaffold.
 .PHONY: test-e2e
@@ -206,16 +218,18 @@ image:
 		--build-arg DATE=$(DATE) \
 		-t $(IMAGE) .
 
-## deploy-validate: Build the k8s reference manifests (deploy/reference) with kubectl kustomize.
-# Optional local validation for the #663 reference tree; requires kubectl.
-# Schema validation (kubeconform) + helm-template rendering are follow-ups for
-# the Validation & CI milestone.
+## deploy-validate: Render and schema-check the CI-gated k8s reference manifests.
+# Requires kubectl; kubeconform is pinned and run through the Go toolchain.
 .PHONY: deploy-validate
 deploy-validate:
 	kubectl kustomize deploy/reference/goobers-system >/dev/null
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a >/dev/null
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b >/dev/null
-	@echo "deploy/reference kustomize builds OK"
+	kubectl kustomize deploy/reference/goobers-system | $(KUBECONFORM) -strict -summary
+	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a | $(KUBECONFORM) -strict -summary
+	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b | $(KUBECONFORM) -strict -summary
+	$(GO) test ./cmd/goobers -run 'TestDeployReference' -count=1
+	@echo "deploy/reference kustomize builds, schemas, and rendered-together cross-base assertion (#3301) OK"
 
 ## validate-configs: Build the validator, strictly check reference-workflows, and check other shipped config trees.
 .PHONY: validate-configs
@@ -262,12 +276,16 @@ schema-description-coverage:
 ## test: Run unit tests with race detector and coverage.
 .PHONY: test
 test: schema-description-coverage
-	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic --go-command "$(GO)" -- -race -covermode=atomic -coverprofile=coverage.out ./...
+	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic --go-command "$(GO)" -- -race -timeout $(GO_TEST_TIMEOUT) -covermode=atomic -coverprofile=coverage.out ./...
 
-## portal-ci: Install, type-check, build, test, run browser e2e, and verify the Go wire contract.
-.PHONY: portal-install portal-typecheck portal-build portal-test portal-playwright-install portal-e2e portal-contract portal-ci
+## portal-ci: Audit dependencies, install, type-check, build, test, run browser e2e, check dead code, and verify the Go wire contract.
+.PHONY: portal-install portal-audit portal-typecheck portal-build portal-test portal-playwright-install portal-e2e portal-deadcode portal-contract portal-ci
 portal-install:
 	$(NPM) --prefix portal ci --no-audit --no-fund
+
+## portal-audit: Fail when portal dependencies have known vulnerabilities.
+portal-audit: portal-install
+	$(NPM) --prefix portal audit --audit-level=low
 
 ## portal-typecheck: Install and type-check the portal.
 portal-typecheck: portal-install
@@ -285,6 +303,10 @@ portal-playwright-install: portal-install
 portal-e2e: portal-playwright-install
 	$(NPM) --prefix portal run test:e2e
 
+## portal-deadcode: Reject unreviewed production TypeScript files and exports.
+portal-deadcode: portal-install
+	$(NPM) --prefix portal run deadcode
+
 ## portal-contract: Regenerate, diff, type-check, and test the Go/TypeScript wire contract.
 portal-contract: portal-install
 	$(GO) generate ./internal/apicontract
@@ -292,7 +314,7 @@ portal-contract: portal-install
 	$(NPM) --prefix portal run typecheck
 	$(NPM) --prefix portal run test:contract
 
-portal-ci: portal-build portal-test portal-e2e portal-contract
+portal-ci: portal-audit portal-build portal-test portal-e2e portal-deadcode portal-contract
 
 ## cover: Show total test coverage.
 .PHONY: cover
@@ -307,6 +329,18 @@ cover: test
 cover-check: test
 	COVERAGE_PROFILE=coverage.out $(GO) run ./test/coveragegate $(COVERAGE_THRESHOLD)
 
+## cover-gate: Enforce COVERAGE_THRESHOLD against an ALREADY-WRITTEN coverage.out.
+# Same gate as cover-check, minus the `test` prerequisite. CI uses this from the
+# unit-macos job, which runs the whole-tree suite unsharded and therefore already
+# emits a complete profile — so the threshold is enforced without paying for a
+# second full run, and the number stays single-sourced here rather than being
+# duplicated into the workflow. Refuses a missing profile rather than passing
+# vacuously: an absent file must red the gate, never silently skip it.
+.PHONY: cover-gate
+cover-gate:
+	@test -s coverage.out || { echo "cover-gate: coverage.out is missing or empty; the unit suite did not emit a profile" >&2; exit 1; }
+	COVERAGE_PROFILE=coverage.out $(GO) run ./test/coveragegate $(COVERAGE_THRESHOLD)
+
 ## verify-fast: Run the pre-push format, vet, and Go build tier.
 .PHONY: verify-fast
 verify-fast:
@@ -317,7 +351,7 @@ verify-fast:
 ci: deadcode
 	$(GO) run ./test/ci
 
-## bench-workcopy: Benchmark working-copy provisioning on a synthetic fixture (dev tool, not part of ci).
+## bench-workcopy: Run the small working-copy provisioning benchmark locally (dev tool, not part of ci).
 # Emits JSON timings (see test/benchworkcopy's doc comment for the schema and
 # how to crank the fixture to a true multi-GB repo). Override the fixture with
 # e.g. `make bench-workcopy BENCH_WORKCOPY_ARGS="-preset large"`.

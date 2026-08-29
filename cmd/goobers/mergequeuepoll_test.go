@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/providers"
 )
 
 // mergeQueuePollServerState scripts one pull request's live state across
@@ -65,6 +66,30 @@ type mergeQueuePollServerState struct {
 	dequeueCalls            int
 	dequeueFails            bool
 	dequeueFailures         int
+}
+
+func TestMergeQueuePollBackoffJittersWithinCappedExponentialRange(t *testing.T) {
+	const base = 10 * time.Second
+	const max = 100 * time.Second
+	cases := []struct {
+		attempt int
+		ceiling time.Duration
+	}{
+		{0, 10 * time.Second},
+		{1, 20 * time.Second},
+		{2, 40 * time.Second},
+		{3, 80 * time.Second},
+		{4, 100 * time.Second},
+		{100, 100 * time.Second},
+	}
+	for _, tc := range cases {
+		for range 100 {
+			got := mergeQueuePollBackoff(base, max, tc.attempt)
+			if floor := tc.ceiling / 2; got < floor || got > tc.ceiling {
+				t.Errorf("mergeQueuePollBackoff(%s, %s, %d) = %s, want range [%s, %s]", base, max, tc.attempt, got, floor, tc.ceiling)
+			}
+		}
+	}
 }
 
 func newMergeQueuePollServer(t *testing.T, owner, repo string, st *mergeQueuePollServerState) *httptest.Server {
@@ -844,6 +869,156 @@ func TestMergeQueuePollClampsPollTimeoutToStageBudget(t *testing.T) {
 	result := readQueueResult(t, dir)
 	if result["queueOutcome"] != "timeout" {
 		t.Fatalf("result = %+v, want queueOutcome=timeout written before the stage deadline", result)
+	}
+}
+
+// adoPRDetailState scripts the single ADO pull-request detail merge-queue-poll's
+// ADO land oracle reads (PollMergeQueueEntry → getPullRequestDetail). workItemHits
+// records any /_apis/wit/ path touched — on ADO a work-item write from this stage
+// would be the PR-as-work-item hazard, so the tests assert it stays empty.
+type adoPRDetailState struct {
+	mu           sync.Mutex
+	status       string // "completed" | "active" | "abandoned"
+	mergeCommit  string
+	autoComplete bool
+	detailCalls  int
+	workItemHits []string
+}
+
+func newADOMergeQueuePollServer(t *testing.T, owner, project, name string, st *adoPRDetailState) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	prPath := "/" + owner + "/" + project + "/_apis/git/repositories/" + name + "/pullrequests/9"
+	mux.HandleFunc(prPath, func(w http.ResponseWriter, _ *http.Request) {
+		st.mu.Lock()
+		st.detailCalls++
+		body := map[string]interface{}{
+			"pullRequestId":   9,
+			"status":          st.status,
+			"lastMergeCommit": map[string]string{"commitId": st.mergeCommit},
+		}
+		if st.autoComplete {
+			body["autoCompleteSetBy"] = map[string]string{"uniqueName": "goobers"}
+		}
+		st.mu.Unlock()
+		writeFakeJSON(w, body)
+	})
+	// Catch-all: a work-item touch is the PR-as-work-item hazard this stage
+	// must never trigger on ADO; record it so the assertions can prove it did
+	// not happen.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/_apis/wit/") {
+			st.mu.Lock()
+			st.workItemHits = append(st.workItemHits, r.URL.Path)
+			st.mu.Unlock()
+		}
+		writeFakeJSON(w, map[string]interface{}{})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func adoMergeQueuePollEnv(t *testing.T, serverURL, owner, project, name string, grantComplete bool, inputs map[string]string) (root, workDir string) {
+	t.Helper()
+	root = initDemo(t)
+	prev := newADOProviderForStage
+	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
+			func(p *providers.ADOProvider) { p.BaseURL = serverURL }), nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = prev })
+
+	t.Setenv("GOOBERS_RUN_ID", "run-merge-ado-1")
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	if grantComplete {
+		// The ADO counterpart to github:pr:merge — completion authority.
+		t.Setenv("GOOBERS_CRED_ADO_PR_COMPLETE", "test-token")
+	}
+	t.Setenv(executor.RepoProviderEnvVar, "ado")
+	t.Setenv(executor.RepoOwnerEnvVar, owner)
+	t.Setenv(executor.RepoProjectEnvVar, project)
+	t.Setenv(executor.RepoNameEnvVar, name)
+	for k, v := range inputs {
+		t.Setenv("GOOBERS_INPUT_"+strings.ToUpper(k), v)
+	}
+	workDir = t.TempDir()
+	t.Chdir(workDir)
+	return root, workDir
+}
+
+// TestMergeQueuePollADOReportsMergedWithoutBranchCleanupOrWorkItemWrite is the
+// CORE ADO land oracle (merge-wiring-plan §1d/§7-step-2): an auto-complete PR
+// that ADO reports completed lands as queueOutcome=merged, with the GitHub-only
+// branch cleanup and PR-as-work-item remediation both documented no-ops.
+func TestMergeQueuePollADOReportsMergedWithoutBranchCleanupOrWorkItemWrite(t *testing.T) {
+	st := &adoPRDetailState{status: "completed", mergeCommit: "adomergesha"}
+	server := newADOMergeQueuePollServer(t, "acme", "proj", "svc", st)
+	root, dir := adoMergeQueuePollEnv(t, server.URL, "acme", "proj", "svc", true, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "merged" {
+		t.Fatalf("result = %+v, want queueOutcome=merged", result)
+	}
+	if result["mergeSha"] != "adomergesha" {
+		t.Fatalf("result = %+v, want mergeSha=adomergesha", result)
+	}
+	if _, ok := result["branchCleanup"]; ok {
+		t.Fatalf("result = %+v, want no branchCleanup on ADO — cleanupMergedBranch is a documented no-op (nil HeadRepository)", result)
+	}
+	if len(st.workItemHits) != 0 {
+		t.Fatalf("work-item writes = %v, want none — a merged PR must never mutate a work item that shares its numeric id", st.workItemHits)
+	}
+}
+
+// TestMergeQueuePollADORequiresCompleteCapability proves completion authority on
+// ADO rides on ado:pr:complete (capability.ADOPRComplete), resolved before the
+// provider is ever constructed — mirroring how the GitHub path gates on
+// github:pr:merge.
+func TestMergeQueuePollADORequiresCompleteCapability(t *testing.T) {
+	st := &adoPRDetailState{status: "completed", mergeCommit: "adomergesha"}
+	server := newADOMergeQueuePollServer(t, "acme", "proj", "svc", st)
+	root, _ := adoMergeQueuePollEnv(t, server.URL, "acme", "proj", "svc", false, map[string]string{
+		"pullNumber": "9",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 1 || !strings.Contains(stderr, "ado:pr:complete") {
+		t.Fatalf("code = %d, stderr = %q, want an ado:pr:complete capability error", code, stderr)
+	}
+	if st.detailCalls != 0 {
+		t.Fatalf("detail calls = %d, want 0 — completion authority must be resolved before the provider polls", st.detailCalls)
+	}
+}
+
+// TestMergeQueuePollADOEvictionRecordsOutcomeWithoutWorkItemWrite proves the
+// eviction remediation labeling (UpdateWorkItem(ID: prNumber, …) on GitHub) is
+// gated OFF on ADO: the outcome is written for queue-gate, but no work item is
+// touched (PR-as-work-item hazard, merge-wiring-plan §1d/§8).
+func TestMergeQueuePollADOEvictionRecordsOutcomeWithoutWorkItemWrite(t *testing.T) {
+	// Active with no auto-complete armed → ADO cleared it → Evicted.
+	st := &adoPRDetailState{status: "active"}
+	server := newADOMergeQueuePollServer(t, "acme", "proj", "svc", st)
+	root, dir := adoMergeQueuePollEnv(t, server.URL, "acme", "proj", "svc", true, map[string]string{
+		"pullNumber": "9", "pollIntervalSeconds": "1ms", "pollMaxIntervalSeconds": "2ms", "pollTimeoutSeconds": "5s",
+	})
+
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	result := readQueueResult(t, dir)
+	if result["queueOutcome"] != "evicted" {
+		t.Fatalf("result = %+v, want queueOutcome=evicted", result)
+	}
+	if len(st.workItemHits) != 0 {
+		t.Fatalf("work-item writes = %v, want none — eviction remediation labeling is gated off on ADO", st.workItemHits)
 	}
 }
 

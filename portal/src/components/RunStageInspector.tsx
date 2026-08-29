@@ -3,6 +3,7 @@ import { useLiveData } from "../liveData";
 import type {
   ArtifactContent,
   ArtifactMetadata,
+  AttemptPlacement,
   DaemonClient,
   RunEvent,
   StageAttempt,
@@ -69,6 +70,18 @@ function groupAttemptsByVisit(attempts: StageAttempt[]): StageVisit[] {
 function attemptLabel(attempt: StageAttempt): string {
   const retry = attempt.class === "initial" ? "" : ` (${attempt.class} retry)`;
   return `Attempt ${attempt.number}${retry}`;
+}
+
+// queueWaitMillis derives the dispatch latency from placement's two
+// timestamps, when both are present and parseable — the carrier the scale
+// rung reads (goobernetes-smoke.md §6.3). Local attempts never queue and
+// carry neither timestamp.
+function queueWaitMillis(placement: AttemptPlacement): number | undefined {
+  if (!placement.queuedAt || !placement.podStartedAt) {
+    return undefined;
+  }
+  const wait = Date.parse(placement.podStartedAt) - Date.parse(placement.queuedAt);
+  return Number.isFinite(wait) && wait >= 0 ? wait : undefined;
 }
 
 function repassDecision(
@@ -429,27 +442,50 @@ function EvidenceDetail({
         </span>
         <strong>{eventHeading(event)}</strong>
       </div>
-      {isTranscriptEvent(event) ? (
-        <TranscriptRow client={client} event={event} runId={runId} />
-      ) : event.artifact ? (
-        <div className="artifact-list">
-          <ArtifactRow
-            artifact={{
-              ...event.artifact,
-              recordedSeq: event.artifact.recordedSeq ?? event.seq,
-            }}
-            attemptNumber={event.artifact.attempt ?? event.attempt}
-            attemptVisit={visit}
-            client={client}
-            runId={runId}
-          />
-        </div>
-      ) : (
-        <p className="artifact-load-error" role="alert">
-          Evidence content is unavailable.
-        </p>
-      )}
+      <EvidencePayload client={client} event={event} runId={runId} visit={visit} />
     </div>
+  );
+}
+
+// EvidencePayload renders whatever an inspectable evidence event (transcript
+// or artifact) carries, without assuming a graph node context — the shared
+// core EvidenceDetail wraps for the stage inspector and KeyMomentsDigest
+// reuses directly for its inline "state change and payload" preview (#2537),
+// so the two views never grow separate rendering logic for the same evidence.
+export function EvidencePayload({
+  client,
+  event,
+  runId,
+  visit,
+}: {
+  client: DaemonClient;
+  event: RunEvent;
+  runId: string;
+  visit?: number;
+}) {
+  if (isTranscriptEvent(event)) {
+    return <TranscriptRow client={client} event={event} runId={runId} />;
+  }
+  if (event.artifact) {
+    return (
+      <div className="artifact-list">
+        <ArtifactRow
+          artifact={{
+            ...event.artifact,
+            recordedSeq: event.artifact.recordedSeq ?? event.seq,
+          }}
+          attemptNumber={event.artifact.attempt ?? event.attempt}
+          attemptVisit={visit}
+          client={client}
+          runId={runId}
+        />
+      </div>
+    );
+  }
+  return (
+    <p className="artifact-load-error" role="alert">
+      Evidence content is unavailable.
+    </p>
   );
 }
 
@@ -686,6 +722,30 @@ function AttemptDetail({
         <span>{attemptLabel(attempt)}</span>
         {attempt.model && <span className="mono">model: {attempt.model}</span>}
       </div>
+      {attempt.placement && (
+        <div aria-label="Attempt placement" className="attempt-summary-row">
+          <span className="mono">runner: {attempt.placement.runner}</span>
+          {/* node is a real cluster node; host is the executing process's own
+              hostname, which inside a pod is the pod name. Show the node when
+              some authority declared one, and otherwise the honest host —
+              never one labelled as the other. */}
+          {attempt.placement.node ? (
+            <span className="mono">node: {attempt.placement.node}</span>
+          ) : (
+            attempt.placement.host && <span className="mono">host: {attempt.placement.host}</span>
+          )}
+          {attempt.placement.os && <span className="mono">os: {attempt.placement.os}</span>}
+          {attempt.placement.image && (
+            <span className="mono">image: {attempt.placement.image}</span>
+          )}
+          {attempt.placement.pod && <span className="mono">pod: {attempt.placement.pod}</span>}
+          {queueWaitMillis(attempt.placement) !== undefined && (
+            <span className="mono">
+              queue wait: {formatDuration(queueWaitMillis(attempt.placement) ?? 0)}
+            </span>
+          )}
+        </div>
+      )}
       {attempt.error && (
         <p className="artifact-load-error">
           {attempt.error.code}

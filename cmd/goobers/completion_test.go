@@ -1,10 +1,17 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -67,7 +74,7 @@ func TestCompletionModelCoversRegistry(t *testing.T) {
 func TestCompletionAnnotationsAreRegistryCommands(t *testing.T) {
 	registry := registryCommandIDs()
 	for id := range completionFlagSpecs {
-		if !registry[id] {
+		if id != "version" && !registry[id] {
 			t.Errorf("completionFlagSpecs key %q is not a registry command id", id)
 		}
 	}
@@ -81,6 +88,140 @@ func TestCompletionAnnotationsAreRegistryCommands(t *testing.T) {
 			t.Errorf("completionPositionalArgValues key %q is not a registry command id", id)
 		}
 	}
+}
+
+func TestCompletionFlagsMatchHandlerFlagSetsAndSynopsis(t *testing.T) {
+	observed := make(map[string]*flag.FlagSet)
+	cliFlagSetObserverMu.Lock()
+	cliFlagSetObserver = func(id string, fs *flag.FlagSet) {
+		observed[id] = fs
+	}
+	cliFlagSetObserverMu.Unlock()
+	defer func() {
+		cliFlagSetObserverMu.Lock()
+		cliFlagSetObserver = nil
+		cliFlagSetObserverMu.Unlock()
+	}()
+
+	nodes := collectAuditNodes(cliCommands, nil)
+	for _, node := range nodes {
+		node.cmd.run([]string{"-h"}, io.Discard, io.Discard)
+	}
+
+	for _, node := range nodes {
+		fs := observed[node.id]
+		actual := make(map[string]bool)
+		if fs != nil {
+			fs.VisitAll(func(f *flag.Flag) {
+				boolFlag, isBool := f.Value.(interface{ IsBoolFlag() bool })
+				actual[f.Name] = !isBool || !boolFlag.IsBoolFlag()
+			})
+		}
+		annotated := make(map[string]bool)
+		for _, spec := range completionFlagSpecs[node.id] {
+			annotated[spec.name] = spec.takesArg
+		}
+		if !reflect.DeepEqual(actual, annotated) {
+			t.Errorf("%s: handler flags %v, completion flags %v", node.id, sortedFlagKinds(actual), sortedFlagKinds(annotated))
+		}
+
+		synopsis := node.cmd.synopsis
+		if synopsis == "" {
+			synopsis = strings.SplitN(node.cmd.long, "\n\n", 2)[0]
+		}
+		synopsisFlags := parseSynopsisFlags(strings.SplitN(synopsis, "\n", 2)[0])
+		if !reflect.DeepEqual(actual, synopsisFlags) {
+			t.Errorf("%s: handler flags %v, synopsis flags %v", node.id, sortedFlagKinds(actual), sortedFlagKinds(synopsisFlags))
+		}
+	}
+}
+
+var (
+	synopsisFlagPattern        = regexp.MustCompile(`--([a-z0-9][a-z0-9-]*)`)
+	synopsisDescriptionPattern = regexp.MustCompile(`[ \t]{2,}`)
+)
+
+func parseSynopsisFlags(line string) map[string]bool {
+	line = strings.TrimSpace(line)
+	if description := synopsisDescriptionPattern.FindStringIndex(line); description != nil {
+		line = line[:description[0]]
+	}
+	flags := make(map[string]bool)
+	matches := synopsisFlagPattern.FindAllStringSubmatchIndex(line, -1)
+	for _, match := range matches {
+		name := line[match[2]:match[3]]
+		if _, exists := flags[name]; exists {
+			continue
+		}
+		rest := line[match[1]:]
+		takesArg := strings.HasPrefix(rest, "=")
+		if !takesArg && rest != "" && rest[0] == ' ' {
+			next := strings.TrimLeft(rest, " ")
+			takesArg = next != "" &&
+				!strings.HasPrefix(next, "--") &&
+				!strings.ContainsRune("[()|", rune(next[0]))
+		}
+		flags[name] = takesArg
+	}
+	return flags
+}
+
+func TestParseSynopsisFlags(t *testing.T) {
+	line := "goobers example [--check] [--check-harness] --format candidate-findings --output=<path> [--notify[=all]]  describe --stale"
+	want := map[string]bool{
+		"check":         false,
+		"check-harness": false,
+		"format":        true,
+		"output":        true,
+		"notify":        false,
+	}
+	if got := parseSynopsisFlags(line); !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseSynopsisFlags() = %v, want %v", sortedFlagKinds(got), sortedFlagKinds(want))
+	}
+}
+
+func TestCLIHandlersUseObservableFlagSetConstructor(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") || path == "runtime_capabilities.go" {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "NewFlagSet" {
+				return true
+			}
+			pkg, ok := selector.X.(*ast.Ident)
+			if ok && pkg.Name == "flag" {
+				t.Errorf("%s: use newCLIFlagSet so registry parity audits the handler flags", path)
+			}
+			return true
+		})
+	}
+}
+
+func sortedFlagKinds(flags map[string]bool) []string {
+	kinds := make([]string, 0, len(flags))
+	for name, takesArg := range flags {
+		suffix := ""
+		if takesArg {
+			suffix = "=<value>"
+		}
+		kinds = append(kinds, "--"+name+suffix)
+	}
+	sort.Strings(kinds)
+	return kinds
 }
 
 func TestCompletionScriptsGolden(t *testing.T) {

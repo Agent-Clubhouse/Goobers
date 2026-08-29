@@ -256,6 +256,12 @@ func TestConformanceViewSkipsExcludedEvents(t *testing.T) {
 		// Isolation posture is runner-substrate bookkeeping (#1305): the same
 		// definition must produce the same conformance view sandboxed or not.
 		{Type: EventRunnerIsolationPosture, Stage: "implement", Runner: map[string]any{"posture": "enforced"}},
+		// Placement provenance is a substrate fact (goobernetes-architecture
+		// §7): the same definition must produce the same conformance view
+		// wherever its attempts were placed.
+		PlacementEvent("implement", 2, AttemptPolicy, Placement{Runner: PlacementRunnerSelf, OS: "linux"}),
+		{Type: EventNotificationRequested, NotificationRequest: &apiv1.NotificationRequest{NotificationID: "notice-1"}},
+		{Type: EventNotificationReceipt, NotificationReceipt: &apiv1.NotificationReceipt{NotificationID: "notice-1"}},
 	}
 	view := ConformanceView(events)
 	if len(view) != 4 {
@@ -265,7 +271,7 @@ func TestConformanceViewSkipsExcludedEvents(t *testing.T) {
 		if ne.AttemptClass == AttemptInfra {
 			t.Errorf("infra-tagged event leaked through: %+v", ne)
 		}
-		if ne.Type == EventStageHeartbeat || ne.Type == EventGateStarted || ne.Type == EventGatePaused || ne.Type == EventSpanRecorded || ne.Type == EventRepaired || ne.Type == EventRunnerAnnotation || ne.Type == EventRunnerIsolationPosture {
+		if ne.Type == EventStageHeartbeat || ne.Type == EventGateStarted || ne.Type == EventGatePaused || ne.Type == EventSpanRecorded || ne.Type == EventRepaired || ne.Type == EventRunnerAnnotation || ne.Type == EventRunnerIsolationPosture || ne.Type == EventRunnerPlacement {
 			t.Errorf("excluded event type leaked through: %+v", ne)
 		}
 	}
@@ -470,5 +476,47 @@ func TestConformanceViewOnRealJournal(t *testing.T) {
 	}
 	if !sawRef {
 		t.Error("expected a ref.touched event in the view")
+	}
+}
+
+// TestRunnerNamespaceIsExcludedWithoutEnumeration: the runner.* exclusion is a
+// NAMESPACE rule, not a hand-maintained list. IsConformanceNormative's default
+// arm fails OPEN (returns true), so a runner.* type added later without a
+// matching switch case would silently enter the conformance surface — exactly
+// the divergence §3.3 says the namespace can never cause. A type invented here,
+// that no production code knows about, must already be excluded.
+func TestRunnerNamespaceIsExcludedWithoutEnumeration(t *testing.T) {
+	future := Event{Type: EventType(RunnerEventNamespace + "gpu.topology"), Stage: "implement", Attempt: 1}
+	if future.IsConformanceNormative() {
+		t.Fatalf("%q reports conformance-normative — the runner.* exclusion is enumerated, not a namespace rule", future.Type)
+	}
+	if !IsRunnerNamespace(future.Type) {
+		t.Fatalf("IsRunnerNamespace(%q) = false", future.Type)
+	}
+	if view := ConformanceView([]Event{
+		{Schema: EventSchema, Seq: 1, Type: EventRunStarted},
+		{Schema: EventSchema, Seq: 2, Type: future.Type, Stage: "implement", Runner: map[string]any{"gpus": "8"}},
+		{Schema: EventSchema, Seq: 3, Type: EventRunFinished, Status: "completed"},
+	}); len(view) != 2 {
+		t.Fatalf("conformance view = %v, want the two non-runner events only", view)
+	}
+
+	// Every runner.* type that exists today rides the same rule, and nothing
+	// outside the namespace is swept up by it.
+	for _, declared := range []EventType{EventRunnerAnnotation, EventRunnerIsolationPosture, EventRunnerPlacement} {
+		if !IsRunnerNamespace(declared) {
+			t.Errorf("IsRunnerNamespace(%q) = false", declared)
+		}
+		if (Event{Type: declared}).IsConformanceNormative() {
+			t.Errorf("%q reports conformance-normative", declared)
+		}
+	}
+	for _, outside := range []EventType{EventStageStarted, EventStageFinished, EventGateEvaluated, EventRunFinished, EventType("runnerless.thing")} {
+		if IsRunnerNamespace(outside) {
+			t.Errorf("IsRunnerNamespace(%q) = true — the rule is the %q PREFIX, not a substring match", outside, RunnerEventNamespace)
+		}
+		if !(Event{Type: outside}).IsConformanceNormative() {
+			t.Errorf("%q lost its conformance-normative status", outside)
+		}
 	}
 }

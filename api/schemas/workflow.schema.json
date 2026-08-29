@@ -42,14 +42,16 @@
           "description": "Admission limits that bound when runs may start. maxChainDepth is reserved and is not currently enforced.",
           "additionalProperties": false,
           "properties": {
+            "desiredConcurrentRuns": { "type": "integer", "minimum": 1, "description": "Opt-in target occupancy for eligible queue work. Refill remains subject to every admission limit and never exceeds maxConcurrentRuns." },
             "maxConcurrentRuns": { "type": "integer", "minimum": 1, "description": "Maximum simultaneous runs of this workflow." },
-            "maxRunsPerHour": { "type": "integer", "minimum": 0, "description": "Rolling hourly run budget. Omitted uses the scheduler default." },
+            "maxRunsPerHour": { "type": "integer", "minimum": 0, "description": "Rolling hourly run budget. Zero or omitted both fall back to the scheduler default of 10 — NOT unlimited (that is instance.yaml's runConditions.maxParallelRuns, where zero does mean unlimited). Set an explicit large value if you want a high hourly ceiling." },
             "maxRunsPerDay": { "type": "integer", "minimum": 0, "description": "Rolling 24-hour run budget. Zero or omitted disables the daily cap." },
             "maxChainDepth": { "type": "integer", "minimum": 0, "description": "Reserved maximum depth for signal-triggered workflow chains. The scheduler does not currently enforce this field, and configuring it has no effect." },
             "maxOpenPRs": { "type": "integer", "minimum": 0, "description": "Maximum open pull requests produced by this workflow. Zero or omitted disables the cap." }
           }
         },
         "runControls": { "$ref": "#/$defs/runControls", "description": "Workflow-level overrides for inherited runner safety budgets." },
+        "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Absolute local filesystem root (or ~/ path) where durable journal outbox files are additionally mirrored. Tasks may override it." },
         "start": { "type": "string", "minLength": 1, "examples": ["act"], "description": "Name of the first task, gate, or parallel state." },
         "docsRoots": {
           "type": "array",
@@ -131,7 +133,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum consecutive non-pass gate evaluations before escalation." },
+        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Maximum number of times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome." },
         "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Maximum journal-silent period before watchdog escalation, expressed as a Go duration." },
         "maxRunDuration": { "type": "string", "minLength": 1, "description": "Maximum total wall-clock age of a run, expressed as a Go duration. Omit to disable." }
       }
@@ -171,6 +173,16 @@
           "description": "Provider polling priority. Higher values are preserved first when a quota window cannot cover every due poll."
         },
         "schedule": { "type": "string", "description": "Cron expression or @every interval used by a schedule trigger." },
+        "idleBackoff": {
+          "type": "object",
+          "description": "Adaptive delay after consecutive scheduled runs find no work. Omitted defaults to enabled with a one-minute floor and fifteen-minute ceiling.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "description": "Enable adaptive idle backoff. Defaults to true." },
+            "floor": { "type": "string", "minLength": 1, "description": "Minimum idle interval as a positive Go duration. Defaults to 1m." },
+            "ceiling": { "type": "string", "minLength": 1, "description": "Maximum idle interval as a positive Go duration. Defaults to 15m and must not be below floor." }
+          }
+        },
         "signal": { "type": "string", "description": "External signal name used by a signal trigger." },
         "events": {
           "type": "array",
@@ -184,6 +196,12 @@
           "if": { "required": ["trustLabel"] },
           "then": {
             "properties": { "type": { "const": "backlog-item" } }
+          }
+        },
+        {
+          "if": { "required": ["idleBackoff"] },
+          "then": {
+            "properties": { "type": { "const": "schedule" } }
           }
         }
       ]
@@ -232,6 +250,7 @@
           "maxItems": 32,
           "items": { "type": "string" }
         },
+        "outboxMirrorPath": { "type": "string", "minLength": 1, "description": "Task-level override for the local outbox mirror root. Most specific value wins over workflow and gaggle settings." },
         "inputs": { "type": "object", "description": "Static task-specific values merged into the invocation envelope's inputs.", "additionalProperties": { "type": "string" } },
         "inputsFrom": { "type": "object", "description": "Explicit input-key to preceding-output-key mappings for task-to-task scalar handoff.", "additionalProperties": { "type": "string" } },
         "capabilities": {
@@ -256,6 +275,7 @@
               "ado:pr:comment",
               "ado:pr:write",
               "ado:pr:status",
+              "ado:pr:complete",
               "ado:work-items:write",
               "telemetry:read",
               "journal:read",
@@ -312,6 +332,7 @@
               "release-backlog-claim",
               "release-pr-claim",
               "respond-to-findings",
+              "resolve-review-threads",
               "rework-pr",
               "route-queue-outcome",
               "route-provider-verdict",
@@ -323,10 +344,107 @@
             ]
           }
         },
+        "nestedAgentPolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Versioned policy governing delegated children of this agentic task.",
+          "required": ["version", "delegation", "permittedProfiles", "context", "model", "platformPolicy"],
+          "properties": {
+            "version": { "type": "string", "const": "v1alpha1", "description": "Portable nested-agent policy schema version." },
+            "delegation": { "type": "string", "enum": ["disabled", "coordinator-only", "bounded"], "description": "Delegation authority available to children." },
+            "maxDepth": { "type": "integer", "minimum": 0, "description": "Maximum additional delegation depth for bounded authority." },
+            "permittedProfiles": { "type": "array", "minItems": 1, "uniqueItems": true, "description": "Agent profiles a child may select.", "items": { "type": "string", "minLength": 1 } },
+            "context": {
+              "type": "object", "additionalProperties": false, "required": ["mode"], "description": "Whether and which task context is selected for the child.",
+              "properties": {
+                "mode": { "type": "string", "enum": ["fresh", "inherited", "explicit"], "description": "Context assembly mode." },
+                "artifactNames": { "type": "array", "uniqueItems": true, "description": "Selected artifact handles for explicit context.", "items": { "type": "string", "minLength": 1 } },
+                "envelopeSections": { "type": "array", "uniqueItems": true, "description": "Selected execution-envelope sections for explicit context.", "items": { "type": "string", "minLength": 1 } }
+              }
+            },
+            "model": {
+              "type": "object", "additionalProperties": false, "description": "Model allowlist and reasoning-effort ceiling.",
+              "properties": {
+                "allowlist": { "type": "array", "uniqueItems": true, "description": "Models a child may select.", "items": { "type": "string", "minLength": 1 } },
+                "maxReasoningEffort": { "type": "string", "enum": ["minimal", "low", "medium", "high"], "description": "Highest reasoning effort a child may request." }
+              }
+            },
+            "peerMessaging": { "type": "boolean", "description": "Whether the child may message peer agents." },
+            "platformPolicy": {
+              "type": "object", "additionalProperties": false, "description": "Immutable platform restrictions inherited by every child.",
+              "required": ["sandbox", "budget", "cancellation", "completionContract"],
+              "properties": {
+                "capabilities": { "type": "array", "uniqueItems": true, "description": "Capability ceiling inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
+                "policyActions": { "type": "array", "uniqueItems": true, "description": "Externally mutating action ceiling inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
+                "credentials": { "type": "array", "uniqueItems": true, "description": "Credential grants inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
+                "sandbox": { "type": "string", "minLength": 1, "description": "Sandbox posture inherited from the parent." },
+                "filesystemRoots": { "type": "array", "uniqueItems": true, "description": "Writable/readable filesystem roots inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
+                "networkEgress": { "type": "array", "uniqueItems": true, "description": "Permitted network egress inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
+                "contentExclusions": { "type": "array", "uniqueItems": true, "description": "Content exclusions inherited from the parent.", "items": { "type": "string", "minLength": 1 } },
+                "budget": { "$ref": "invocation.schema.json#/$defs/limits", "description": "Child budget ceiling." },
+                "cancellation": { "type": "string", "minLength": 1, "description": "Cancellation channel inherited from the parent." },
+                "completionContract": { "type": "string", "minLength": 1, "description": "Completion contract inherited from the parent." }
+              }
+            }
+          }
+        },
         "requiredCapabilities": {
-          "description": "Runner (toolchain/platform) capabilities this stage needs, matched at schedule time against a runner's advertised set (RRQ-1/#1101) — distinct from credential capabilities above.",
+          "description": "Runner (toolchain/platform) capabilities this stage needs, matched at schedule time against a runner's advertised set (RRQ-1/#1101) — distinct from credential capabilities above. DSL ≤2.0 only: DSL 3.0 removes this field in favor of runsOn.capabilities (dsl-3.0.md D1/D12); the 3.0 interpreter refuses it with a pointer diagnostic.",
           "type": "array",
           "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@=+-]*$" }
+        },
+        "runsOn": {
+          "description": "Where this stage may execute (DSL 3.0 only, dsl-3.0.md §2): OS, resource minimums, toolchain capability tags, and required runner restrictions. Every field is optional — unspecified means no requirement (explicit-complete semantics); interpreters before 3.0 refuse the block.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "os": {
+              "description": "Required operating system — a validated enum (product spellings, not GOOS). Unset means no OS requirement; placement policy prefers, and will wait bounded for, a Linux-class runner when the inventory has one.",
+              "type": "string",
+              "enum": ["linux", "windows", "macOS"]
+            },
+            "cpu": {
+              "description": "Minimum CPU as a Kubernetes quantity string (e.g. \"2000m\"), verbatim. Minimums become pod resource requests in distributed mode; limits come from the matched runner's ceiling. Advisory on local modes.",
+              "type": "string",
+              "minLength": 1
+            },
+            "memory": {
+              "description": "Minimum memory as a Kubernetes quantity string (e.g. \"4Gi\"), verbatim.",
+              "type": "string",
+              "minLength": 1
+            },
+            "disk": {
+              "description": "Minimum disk as a Kubernetes quantity string (e.g. \"20Gi\"), verbatim.",
+              "type": "string",
+              "minLength": 1
+            },
+            "capabilities": {
+              "description": "Open toolchain tag set — DSL 2.0's requiredCapabilities moved, not re-invented (internal/runnercap grammar, exact set membership, no ranges). os=* tokens are rejected (CAP004): runsOn.os is the only platform vocabulary in a 3.0 document. maxItems bounds CRD CEL validation cost (#3168).",
+              "type": "array",
+              "maxItems": 32,
+              "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@=+-]*$" }
+            },
+            "restrictions": {
+              "description": "Isolation effects the matched runner must ENFORCE, from the closed v1 effect list (Goobernetes decision D7). Unknown tokens are rejected with a suggestion (CAP005). maxItems bounds CRD CEL validation cost (#3168).",
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "enum": ["network:none", "network:allowlist", "fs:readonly-except-workspace", "tmp:ephemeral", "env:default-deny"]
+              }
+            }
+          }
+        },
+        "repoFrom": {
+          "description": "Producer stage(s) whose run-branch state this repo stage consumes — the declared repo-handoff edge (DSL 3.0 only, dsl-3.0.md §4). Scalar or list; a list means \"the run branch head as of the most recent listed producer that executed\". The compiler computes required coverage as reaching definitions over the stage graph and rejects an undeclared chain, an uncovered producer, or a dead entry (WF022).",
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+          ]
+        },
+        "commitsRepo": {
+          "description": "Declares that this deterministic stage's script/command commits to the run branch — the explicit producer opt-in of DSL 3.0's repo-handoff model (dsl-3.0.md §4). Agentic non-readonly stages and the ref-advancing builtins are producers by classification and never need it.",
+          "type": "boolean"
         },
         "retry": {
           "type": "object",
@@ -350,7 +468,7 @@
           }
         },
         "expectedOutputs": { "type": "array", "description": "Intended task postconditions. Accepted for forward compatibility but not enforced by the local runner.", "items": { "type": "string" } },
-        "continueOnError": { "type": "boolean", "description": "Whether a failed result remains visible to the next gate instead of immediately failing the run. Failed-task outputs are discarded." },
+        "continueOnError": { "type": "boolean", "description": "Whether this stage's failure is tolerated. With a task as `next`, a failed stage fails the run unless this is true. With a gate as `next`, the failed status always reaches the gate and its branches are honored either way; this flag then only decides how a failure the gate routes to workflow completion is recorded — tolerated (run completes) or preserved (run marked failed). Failed-task outputs are discarded in every case." },
         "onTimeout": { "type": "string", "enum": ["fail", "salvage"], "description": "Agentic timeout behavior: fail the attempt or salvage a viable committed diff." },
         "next": { "type": "string", "description": "Next task, gate, or parallel state. Empty means successful terminal completion." }
       },
@@ -438,7 +556,7 @@
           }
         },
         "maxRepasses": {
-          "description": "Per-gate override of the inherited repass budget; valid for automated and agentic gates.",
+          "description": "Override of the inherited target-stage re-entry budget when this gate routes to an already-completed stage; valid for automated and agentic gates.",
           "type": "integer",
           "minimum": 1
         },

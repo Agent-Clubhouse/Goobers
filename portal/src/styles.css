@@ -573,6 +573,12 @@ summary:focus-visible {
   justify-content: space-between;
 }
 
+.daemon-state-auth {
+  align-items: end;
+  border-color: color-mix(in srgb, var(--warning) 38%, var(--line));
+  justify-content: space-between;
+}
+
 .empty-state img {
   height: 64px;
   object-fit: contain;
@@ -904,7 +910,7 @@ summary:focus-visible {
 }
 
 .attention-row {
-  align-items: center;
+  align-items: start;
   background: var(--danger-soft);
   border: 1px solid color-mix(in srgb, var(--danger) 38%, var(--line));
   border-radius: 11px;
@@ -956,6 +962,24 @@ summary:focus-visible {
   align-items: center;
   display: flex;
   gap: 16px;
+}
+
+.attention-collapse-toggle {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: inline-flex;
+  padding: 4px;
+}
+
+.attention-collapse-chevron {
+  color: var(--muted);
+  display: inline-flex;
+  transition: transform 0.15s ease;
+}
+
+.attention-collapse-toggle[aria-expanded="true"] .attention-collapse-chevron {
+  transform: rotate(90deg);
 }
 
 .attention-dismissed-list {
@@ -1164,8 +1188,10 @@ summary:focus-visible {
 
 .scope-pivot {
   display: inline-flex;
+  flex-shrink: 0;
   gap: 8px;
   vertical-align: middle;
+  white-space: nowrap;
 }
 
 .scope-pivot-link {
@@ -1235,6 +1261,10 @@ summary:focus-visible {
 
 .status-running {
   color: var(--active);
+}
+
+.status-stale {
+  color: var(--warning-ink);
 }
 
 .status-completed {
@@ -1531,6 +1561,32 @@ summary:focus-visible {
   border: 1px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
+}
+
+.credit-assignment-row {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(220px, 2fr) repeat(4, minmax(80px, 1fr));
+  padding: 12px 14px;
+}
+
+.credit-assignment-header {
+  background: var(--panel);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.credit-assignment-link {
+  border-top: 1px solid var(--line);
+  color: inherit;
+  text-decoration: none;
+}
+
+.credit-assignment-link:hover {
+  background: var(--surface);
 }
 
 .insight-outcome-header,
@@ -2757,7 +2813,8 @@ a.telemetry-error-row:hover {
 .graph-panel,
 .definition-panel,
 .run-inspector,
-.event-ledger {
+.event-ledger,
+.key-moments-digest {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 11px;
@@ -3016,13 +3073,92 @@ a.telemetry-error-row:hover {
   overflow-wrap: anywhere;
 }
 
-.workflow-node-agentic {
-  border-left: 3px solid var(--accent);
+/* #2693: a stage's kind reads from its silhouette before its label — an
+   agentic stage is the round-cornered card, a deterministic one is
+   square-cornered, a parallel keeps its double border, and a gate takes the
+   decision shape below. Each card kind also carries a left rail whose pattern
+   differs (solid vs. hatched), so the distinction survives without color. */
+.workflow-node-agentic,
+.workflow-node-deterministic {
+  overflow: hidden;
+  padding-left: 18px;
 }
 
-.workflow-node-gate {
-  border-color: var(--warning);
-  border-style: dashed;
+/* The rail is a pseudo-element rather than a border-left stripe because the
+   run-state overlays repaint border-color, which would erase the kind cue. */
+.workflow-node-agentic::before,
+.workflow-node-deterministic::before {
+  bottom: 0;
+  content: "";
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 6px;
+}
+
+.workflow-node-agentic {
+  border-radius: 16px;
+}
+
+.workflow-node-agentic::before {
+  background: var(--accent);
+}
+
+.workflow-node-deterministic {
+  border-radius: 0;
+}
+
+.workflow-node-deterministic::before {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--muted-strong) 0 2px,
+    transparent 2px 5px
+  );
+}
+
+/* A gate is a decision point, so it drops the shared rounded rectangle for the
+   flowchart decision shape drawn by .workflow-node-shape. The button's own
+   border and background go transparent at two-class specificity, so the
+   run-state overlays cannot repaint a rectangle behind the shape, while the
+   box keeps carrying the focus, selection, and escalation-cause rings that a
+   clip-path on the button itself would have cut away. */
+.workflow-graph-node.workflow-node-gate {
+  background: transparent;
+  border-color: transparent;
+  padding-left: 26px;
+  padding-right: 26px;
+}
+
+.workflow-node-gate > strong,
+.workflow-node-gate > span {
+  position: relative;
+}
+
+.workflow-node-shape {
+  height: 100%;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  width: 100%;
+}
+
+/* The dashed edge is the gate's established non-color cue and stays, now on
+   the decision shape instead of the rectangle. */
+.workflow-node-shape polygon {
+  fill: var(--panel);
+  stroke: var(--warning);
+  stroke-dasharray: 5 4;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.workflow-graph-node.workflow-node-gate:hover .workflow-node-shape polygon,
+.workflow-graph-node.workflow-node-gate[aria-pressed="true"]
+  .workflow-node-shape
+  polygon {
+  stroke: var(--accent);
 }
 
 .workflow-node-parallel {
@@ -3369,13 +3505,21 @@ a.telemetry-error-row:hover {
   justify-content: space-between;
 }
 
-.run-stale-state-error > span {
+.run-stale-state-error > span,
+.run-stale-run > span {
   display: grid;
   gap: 2px;
 }
 
-.run-stale-state-error small {
+.run-stale-state-error small,
+.run-stale-run small {
   color: var(--muted-strong);
+}
+
+.run-stale-run {
+  background: var(--warning-soft);
+  border-color: var(--warning);
+  color: var(--warning-ink);
 }
 
 .run-id {
@@ -4242,6 +4386,107 @@ a.telemetry-error-row:hover {
   padding: 18px;
 }
 
+.run-journal-column {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.key-moments-digest {
+  padding: 18px;
+}
+
+.key-moments-digest ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.key-moment-item {
+  border-top: 1px solid var(--line);
+}
+
+.key-moment-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 74px minmax(210px, 1fr) 40px;
+  padding: 10px 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.key-moment-button:hover,
+.key-moment-item-active .key-moment-button {
+  background: var(--surface);
+}
+
+.key-moment-kind {
+  border-radius: 4px;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 6px;
+  text-align: center;
+  text-transform: uppercase;
+  width: fit-content;
+}
+
+.key-moment-kind-escalation {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
+.key-moment-kind-decision {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.key-moment-kind-handoff {
+  background: var(--surface);
+  color: var(--muted-strong);
+}
+
+.key-moment-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.key-moment-meta {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.key-moment-copy strong {
+  font-size: 10px;
+}
+
+.key-moment-copy span:not(.key-moment-meta) {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.key-moment-disclosure {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  text-align: right;
+  text-transform: uppercase;
+}
+
+.key-moment-button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.key-moment-payload {
+  padding: 0 8px 14px;
+}
+
 .journal-heading-actions {
   align-items: end;
   display: grid;
@@ -4564,6 +4809,30 @@ a.telemetry-error-row:hover {
 }
 .workflow-graph-node[data-run-state="skipped"] .graph-node-state {
   color: var(--muted);
+}
+
+/* A gate's border box is transparent (#2693), so the same run-state vocabulary
+   paints onto its decision shape instead — stroke for the border treatment,
+   fill for the tint. */
+.workflow-graph-node[data-run-state="pending"] .workflow-node-shape polygon {
+  stroke-dasharray: 2 4;
+}
+.workflow-graph-node.run-node-state-running .workflow-node-shape polygon {
+  fill: var(--active-soft);
+  stroke: var(--active);
+}
+.workflow-graph-node.run-node-state-completed .workflow-node-shape polygon {
+  stroke: color-mix(in srgb, var(--success) 60%, var(--line));
+}
+.workflow-graph-node.run-node-state-failed .workflow-node-shape polygon,
+.workflow-graph-node.run-node-state-aborted .workflow-node-shape polygon,
+.workflow-graph-node.run-node-state-escalated .workflow-node-shape polygon {
+  fill: var(--danger-soft);
+  stroke: var(--danger);
+}
+.workflow-graph-node.run-node-state-blocked .workflow-node-shape polygon {
+  fill: var(--warning-soft);
+  stroke: var(--warning);
 }
 
 /* The single node the authoritative escalation cause points at (DASH-21).
@@ -5588,7 +5857,8 @@ a.telemetry-error-row:hover {
     grid-template-columns: 1fr;
   }
 
-  .daemon-state-error {
+  .daemon-state-error,
+  .daemon-state-auth {
     align-items: start;
     display: grid;
   }

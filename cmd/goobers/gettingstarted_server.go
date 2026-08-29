@@ -21,7 +21,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/providers"
 )
 
 // The guided endpoints are thin process wrappers over the documented CLI
@@ -121,7 +124,10 @@ func (s *guidedServer) apiHandler() http.Handler {
 		s.errorLog.Printf("guided API: invalid tutorial instance.yaml: %v", err)
 		return nil
 	}
-	api, err := standaloneDashboardAPI(layout, config, s.errorLog)
+	// The guided onboarding server always binds loopback (see the
+	// listenDashboard("127.0.0.1", ...) call in dashboard.go's getting-started
+	// path), so the reveal-in-Finder action is always same-machine here.
+	api, err := standaloneDashboardAPI(layout, config, s.errorLog, true)
 	if err != nil {
 		s.errorLog.Printf("guided API: initialize standalone read API: %v", err)
 		return nil
@@ -152,6 +158,8 @@ func (s *guidedServer) serveGuided(w http.ResponseWriter, r *http.Request) {
 		s.handleConnect(w, r)
 	case r.URL.Path == "/guided/actions/validate":
 		s.handleValidate(w, r)
+	case r.URL.Path == "/guided/actions/probe-backlog":
+		s.handleProbeBacklog(w, r)
 	case r.URL.Path == "/guided/actions/run":
 		s.handleRun(w, r)
 	case strings.HasPrefix(r.URL.Path, "/guided/jobs/"):
@@ -170,8 +178,17 @@ type guidedErrorBody struct {
 }
 
 type guidedEnvState struct {
-	GoobersGithubToken       bool `json:"goobersGithubToken"`
-	GoobersGithubIssuesToken bool `json:"goobersGithubIssuesToken"`
+	// TokenEnv is the RECORDED repository-token environment variable name —
+	// the connect-time --token-env value persisted in instance.yaml, or
+	// connectDefaultTokenEnv when the instance has not connected a repo yet.
+	// GoobersGithubToken reports presence for exactly this name, in THIS
+	// server process's environment. Never a client-supplied name: there is
+	// no query parameter that lets a caller ask "is <arbitrary env var> set"
+	// (#2639) — this is a presence check against one fixed, server-chosen
+	// name, not a general environment-oracle endpoint.
+	TokenEnv                 string `json:"tokenEnv"`
+	GoobersGithubToken       bool   `json:"goobersGithubToken"`
+	GoobersGithubIssuesToken bool   `json:"goobersGithubIssuesToken"`
 }
 
 type guidedJobSummary struct {
@@ -243,6 +260,7 @@ func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	apiReady := s.api != nil
 	s.mu.Unlock()
+	tokenEnv := s.recordedTokenEnv()
 	writeGuidedJSON(w, http.StatusOK, guidedStateBody{
 		Version:        guidedStateVersion,
 		Workdir:        s.workdir,
@@ -252,13 +270,29 @@ func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
 		InstanceExists: instanceExists,
 		Env: guidedEnvState{
 			// Presence only — the values themselves never cross this API.
-			GoobersGithubToken:       os.Getenv("GOOBERS_GITHUB_TOKEN") != "",
+			TokenEnv:                 tokenEnv,
+			GoobersGithubToken:       os.Getenv(tokenEnv) != "",
 			GoobersGithubIssuesToken: os.Getenv(defaultWorkTrackingTokenEnv) != "",
 		},
 		Job:       job,
 		APIReady:  apiReady,
 		Connected: connected,
 	})
+}
+
+// recordedTokenEnv is the one env var name /guided/state reports presence
+// for and handleRun's preflight (below) checks — the connect-time
+// --token-env value persisted in instance.yaml when the instance has
+// connected a repository, otherwise the CLI's own default. This process's
+// environment is fixed at launch (os.Environ() below is a snapshot, not a
+// live view — see handleRun), so this always answers "does the server that
+// is actually about to exec a run have this token," never "did the user's
+// current shell export something" (#2639).
+func (s *guidedServer) recordedTokenEnv() string {
+	if env := connectedTokenEnv(s.instancePath); env != "" {
+		return env
+	}
+	return connectDefaultTokenEnv
 }
 
 type guidedStubSampleRequest struct {
@@ -393,6 +427,104 @@ func (s *guidedServer) handleValidate(w http.ResponseWriter, r *http.Request) {
 	s.respondEnvelope(w, r, argv)
 }
 
+// guidedProbeBody is a purpose-built envelope, not `backlog-query
+// --read-only`'s raw output: that subcommand has no --json mode (adding one
+// is out of #2638's scope — cmd/goobers/backlogquery.go is read-only,
+// don't-modify evidence for this issue), so this handler parses its plain-
+// text stdout itself and reports only what the wizard needs.
+//
+// EligibleCount is nil when the probe could not run at all (no issues token
+// exported yet) — distinct from a real zero, so the wizard can tell "haven't
+// checked" from "checked: none eligible".
+type guidedProbeBody struct {
+	ExitCode      int    `json:"exitCode"`
+	EligibleCount *int   `json:"eligibleCount"`
+	Stderr        string `json:"stderr"`
+}
+
+// handleProbeBacklog runs the SAME read-only eligibility scan the sample
+// quickstart's query-backlog stage is about to run when dispatched
+// (`goobers backlog-query --read-only`, cmd/goobers/backlogquery.go's
+// runReadOnlyBacklogQuery — read-only, untouched by this issue), but before
+// the run starts, so the wizard can warn "0 eligible issues" instead of
+// letting the user watch a run complete with nothing to show for it (#2638).
+//
+// This is deliberately NOT how a workflow stage normally gets its
+// capability-scoped credential (the runner injects GOOBERS_CRED_* env vars
+// per declared capability, buildStageEnv) — there is no run yet to inject
+// one. Standalone use is the documented fallback (providerToken's own error
+// message: "or set %s directly for standalone use"), so this handler
+// performs that same translation itself: the plain issues token the wizard
+// already tracks (state.env.goobersGithubIssuesToken) into the
+// capability-scoped var backlog-query's --read-only path reads.
+func (s *guidedServer) handleProbeBacklog(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodGet) {
+		return
+	}
+	token := os.Getenv(defaultWorkTrackingTokenEnv)
+	if token == "" {
+		token = os.Getenv("GOOBERS_GITHUB_TOKEN")
+	}
+	if token == "" {
+		// No token exported yet — this is a normal, early wizard state (the
+		// "export the token" step hasn't happened), not a probe failure.
+		writeGuidedJSON(w, http.StatusOK, guidedProbeBody{})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), guidedSyncActionTimeout)
+	defer cancel()
+	command := guidedExecCommand(ctx, s.executable, "backlog-query", "--read-only", s.instancePath)
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	command.Env = append(
+		os.Environ(),
+		executor.CredentialEnvVar(string(capability.GitHubIssuesRead))+"="+token,
+		// The sample quickstart's own query-backlog stage inputs
+		// (internal/instance/quickstart-v1/gaggles/example/workflows/quickstart.yaml)
+		// — mirrored here (#2638) so this probe asks the exact same question
+		// that stage is about to ask when the run actually dispatches, sourced
+		// through the same providers label constants the stage-name lint wants
+		// rather than as bare literals. Sample-path only: an own-repo
+		// connect's label conventions are the user's own (#2609's `goobers
+		// connect --seed` choreography), not a fixed pair this server can
+		// assume.
+		executor.InputEnvVar("trustLabel")+"="+providers.LabelApproved,
+		executor.InputEnvVar("requireLabels")+"="+providers.LabelReady,
+	)
+	err := command.Run()
+	exitCode := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			writeGuidedExecFailure(w, err)
+			return
+		}
+		exitCode = exitErr.ExitCode()
+	}
+	count := countEligibleBacklogLines(stdout.String())
+	writeGuidedJSON(w, http.StatusOK, guidedProbeBody{
+		ExitCode:      exitCode,
+		EligibleCount: &count,
+		Stderr:        stderr.String(),
+	})
+}
+
+// countEligibleBacklogLines parses runReadOnlyBacklogQuery's plain-text
+// stdout (cmd/goobers/backlogquery.go): "no eligible items" on its own line
+// when the scan found nothing, otherwise one "ID\tTitle" line per eligible
+// item. That contract is a comment away from this function, not a
+// compile-time link, but it's read-only production behavior (#233) that
+// isn't expected to change casually.
+func countEligibleBacklogLines(stdout string) int {
+	trimmed := strings.TrimSpace(stdout)
+	if trimmed == "" || trimmed == "no eligible items" {
+		return 0
+	}
+	return len(strings.Split(trimmed, "\n"))
+}
+
 func (s *guidedServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if !requireGuidedMethod(w, r, http.MethodGet) {
 		return
@@ -426,6 +558,24 @@ func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Credential preflight (#2639): the subprocess below inherits THIS
+	// process's environment, fixed at server launch — no export a user runs
+	// afterward, in any shell, can ever reach it. Checking here, synchronously,
+	// before a job is even created, turns a run that would silently fail deep
+	// inside the CLI (or worse, dispatch and let the workflow's own git-auth
+	// step fail unhelpfully) into one actionable error at the point the
+	// server actually knows the credential is missing.
+	tokenEnv := s.recordedTokenEnv()
+	if os.Getenv(tokenEnv) == "" {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code: "token_env_unset",
+			Message: fmt.Sprintf(
+				"%s is not set in the getting-started server's own process — export it in the shell that runs \"goobers getting-started\" and restart the server; a later export in a different shell cannot reach an already-running process",
+				tokenEnv,
+			),
+		})
+		return
+	}
 	s.mu.Lock()
 	if s.job != nil && !s.job.isDone() {
 		s.mu.Unlock()
@@ -446,8 +596,13 @@ func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
 	// terminal user would see them.
 	command.Stdout = job
 	command.Stderr = job
-	// The subprocess inherits this process's environment — that is how the
-	// exported tokens reach it, same as any shell invocation.
+	// The subprocess inherits this process's environment — a snapshot fixed
+	// at server launch, NOT a live view of any shell. A token exported after
+	// the server started, in any shell (including the one that launched it),
+	// is not in os.Environ() here; only a token exported before launch, or a
+	// server restart after exporting, changes what this actually contains.
+	// The preflight above already refused to reach this line if the recorded
+	// token env is unset in this snapshot.
 	command.Env = os.Environ()
 	go func() {
 		defer cancel()

@@ -354,8 +354,8 @@ func TestApplyVerdictPR2478OverlapOnlyRoutesToSiblingBlock(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
 	const selectedNumber = 2478
-	server.addIssue(selectedNumber, "Selected PR")
-	server.addOpenPR(selectedNumber, "goobers/implementation/run-x", "main", "selected-head", "main-base", false, nil, []fakePRFile{
+	server.addIssue(selectedNumber, "Selected PR", needsRemediationLabel)
+	server.addOpenPR(selectedNumber, "goobers/implementation/run-x", "main", "selected-head", "main-base", false, []string{needsRemediationLabel}, []fakePRFile{
 		{path: "docs/guides/quickstart.md", status: "modified", additions: 2, deletions: 1},
 	})
 	for _, number := range []int{2475, 2476, 2481} {
@@ -394,7 +394,7 @@ func TestApplyVerdictPR2478OverlapOnlyRoutesToSiblingBlock(t *testing.T) {
 		t.Fatalf("labels = %v, want %q", issue.labels, blockedOnSiblingLabel)
 	}
 	if hasAllLabels(issue.labels, []string{needsRemediationLabel}) {
-		t.Fatalf("labels = %v, overlap-only verdict entered remediation", issue.labels)
+		t.Fatalf("labels = %v, overlap-only verdict retained stale remediation label", issue.labels)
 	}
 	posted, ok := parseVerdictComment(issue.comments[len(issue.comments)-1])
 	if !ok {
@@ -408,15 +408,11 @@ func TestApplyVerdictPR2478OverlapOnlyRoutesToSiblingBlock(t *testing.T) {
 	}
 }
 
-// TestApplyVerdictRaceElectsOverNeedsHumanSibling is #2268's end-to-end
-// reproduction, mirrored on the PR numbers from the issue's own evidence
-// (#2266 blocked behind #2265, which carried goobers:needs-human): a
-// critical-lane PR (electionPolicy: race) whose own review is clean must
-// reach merge-pr as an elected pass even though it deterministically overlaps
-// a live sibling stuck goobers:needs-human — contrasted with the same input
-// under fifo, which parks it blocked-on-sibling exactly as #2266 was.
-func TestApplyVerdictRaceElectsOverNeedsHumanSibling(t *testing.T) {
-	const stuckSibling = 2265 // lower number, would win fifo — carries goobers:needs-human
+// TestApplyVerdictElectsOverNeedsHumanSibling verifies that election policy
+// orders only currently eligible PRs. A lower-numbered needs-human sibling
+// cannot retain the crown and deadlock an otherwise clean PR.
+func TestApplyVerdictElectsOverNeedsHumanSibling(t *testing.T) {
+	const stuckSibling = 2265
 	const criticalPR = 2266
 
 	for _, tc := range []struct {
@@ -427,11 +423,10 @@ func TestApplyVerdictRaceElectsOverNeedsHumanSibling(t *testing.T) {
 		wantElected  bool
 	}{
 		{
-			name:         "fifo: parked behind the needs-human sibling (the reported bug)",
+			name:         "fifo: elected despite the needs-human sibling",
 			policy:       "fifo",
-			wantDecision: apiv1.VerdictNeedsChanges,
-			wantLabel:    blockedOnSiblingLabel,
-			wantElected:  false,
+			wantDecision: apiv1.VerdictPass,
+			wantElected:  true,
 		},
 		{
 			name:         "race: elected and lands despite the needs-human sibling",

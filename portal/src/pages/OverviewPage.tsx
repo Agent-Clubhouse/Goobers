@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { DaemonClient, RunSummary } from "../api/types";
+import { useAttentionCollapsed } from "../attentionCollapse";
 import { useAttentionDismissals } from "../attentionDismissals";
 import type { ConfigurationWarningsProps } from "../components/ConfigurationWarnings";
 import { ConfigurationWarnings } from "../components/ConfigurationWarnings";
@@ -79,6 +80,7 @@ function Overview({
   const healthy = standalone || overview.health.healthy;
 
   const { dismissedRunIds, dismiss, restore } = useAttentionDismissals();
+  const [attentionCollapsed, setAttentionCollapsed] = useAttentionCollapsed();
   const [selectedRunIds, setSelectedRunIds] = useState<ReadonlySet<string>>(() => new Set());
   const [showDismissed, setShowDismissed] = useState(false);
   const activeAttention = groups.attention.filter((run) => !dismissedRunIds.has(run.id));
@@ -176,100 +178,116 @@ function Overview({
               <span className="section-count">
                 {activeAttention.length} {activeAttention.length === 1 ? "run" : "runs"}
               </span>
+              <button
+                aria-controls="attention-section-body"
+                aria-expanded={!attentionCollapsed}
+                className="attention-collapse-toggle"
+                onClick={() => setAttentionCollapsed(!attentionCollapsed)}
+                type="button"
+              >
+                <span className="sr-only">
+                  {attentionCollapsed ? "Expand needs attention" : "Collapse needs attention"}
+                </span>
+                <span aria-hidden="true" className="attention-collapse-chevron">
+                  <Icon name="chevron" size={14} />
+                </span>
+              </button>
             </div>
           </div>
-          {activeAttention.length === 0 ? (
-            <p className="inline-empty">Nothing needs attention right now.</p>
-          ) : (
-            <div className="attention-list">
-              {activeAttention.map((run) => {
-                const reason = run.phase === "failed" ? failureReasons.get(run.id) : undefined;
-                const selected = selectedRunIds.has(run.id);
-                return (
-                  <div className="attention-row" key={run.id}>
-                    <input
-                      aria-label={`Select run ${run.id} for bulk actions`}
-                      checked={selected}
-                      className="attention-select"
-                      onChange={() => toggleSelected(run.id)}
-                      type="checkbox"
-                    />
-                    <div className="attention-link-shell data-row-stretched">
-                      <a
-                        aria-label={`Open run ${run.id}`}
-                        className="data-row-stretch-link"
-                        href={routeHash({ page: "run", id: run.id })}
+          <div hidden={attentionCollapsed} id="attention-section-body">
+            {activeAttention.length === 0 ? (
+              <p className="inline-empty">Nothing needs attention right now.</p>
+            ) : (
+              <div className="attention-list">
+                {activeAttention.map((run) => {
+                  const reason = run.phase === "failed" ? failureReasons.get(run.id) : undefined;
+                  const selected = selectedRunIds.has(run.id);
+                  return (
+                    <div className="attention-row" key={run.id}>
+                      <input
+                        aria-label={`Select run ${run.id} for bulk actions`}
+                        checked={selected}
+                        className="attention-select"
+                        onChange={() => toggleSelected(run.id)}
+                        type="checkbox"
                       />
-                      <span className="attention-icon">
-                        <Icon name="alert" />
-                      </span>
-                      <span className="attention-copy">
-                        <strong>{runLabel(run)}</strong>
-                        <span>
-                          {run.phase === "escalated"
-                            ? "Run escalated and needs human review."
-                            : reason
-                              ? `${reason.code || "failed"} · ${reason.message}`
-                              : "Run failed and needs investigation."}
+                      <div className="attention-link-shell data-row-stretched">
+                        <a
+                          aria-label={`Open run ${run.id}`}
+                          className="data-row-stretch-link"
+                          href={routeHash({ page: "run", id: run.id })}
+                        />
+                        <span className="attention-icon">
+                          <Icon name="alert" />
                         </span>
-                      </span>
-                      <span className="attention-meta">
-                        <span className="attention-workflow">
-                          {workflowDisplayName(overview, run)}
-                          <ScopePivot
-                            label={workflowDisplayName(overview, run)}
-                            scope={{ gaggle: run.gaggle, workflow: run.workflow }}
-                          />
+                        <span className="attention-copy">
+                          <strong>{runLabel(run)}</strong>
+                          <span>
+                            {run.phase === "escalated"
+                              ? "Run escalated and needs human review."
+                              : reason
+                                ? `${reason.code || "failed"} · ${reason.message}`
+                                : "Run failed and needs investigation."}
+                          </span>
                         </span>
-                        <time dateTime={run.finishedAt ?? run.startedAt}>
-                          {formatTimestamp(run.finishedAt ?? run.startedAt)}
-                        </time>
-                      </span>
-                      <Icon name="arrow" />
+                        <span className="attention-meta">
+                          <span className="attention-workflow">
+                            {workflowDisplayName(overview, run)}
+                            <ScopePivot
+                              label={workflowDisplayName(overview, run)}
+                              scope={{ gaggle: run.gaggle, workflow: run.workflow }}
+                            />
+                          </span>
+                          <time dateTime={run.finishedAt ?? run.startedAt}>
+                            {formatTimestamp(run.finishedAt ?? run.startedAt)}
+                          </time>
+                        </span>
+                        <Icon name="arrow" />
+                      </div>
+                      <button
+                        aria-label={`Dismiss run ${run.id}`}
+                        className="attention-dismiss"
+                        onClick={() => dismissRuns([run.id])}
+                        type="button"
+                      >
+                        Dismiss
+                      </button>
                     </div>
-                    <button
-                      aria-label={`Dismiss run ${run.id}`}
-                      className="attention-dismiss"
-                      onClick={() => dismissRuns([run.id])}
-                      type="button"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {showDismissed && dismissedAttention.length > 0 && (
-            <div className="attention-dismissed-list">
-              <div className="section-heading">
-                <p className="section-kicker">Dismissed</p>
-                <button
-                  className="text-button"
-                  onClick={() => restore(dismissedAttention.map((run) => run.id))}
-                  type="button"
-                >
-                  Restore all
-                </button>
+                  );
+                })}
               </div>
-              {dismissedAttention.map((run) => (
-                <div className="attention-row attention-row-dismissed" key={run.id}>
-                  <span className="attention-copy">
-                    <strong>{runLabel(run)}</strong>
-                    <span>{workflowDisplayName(overview, run)}</span>
-                  </span>
+            )}
+            {showDismissed && dismissedAttention.length > 0 && (
+              <div className="attention-dismissed-list">
+                <div className="section-heading">
+                  <p className="section-kicker">Dismissed</p>
                   <button
-                    aria-label={`Undo dismiss for run ${run.id}`}
                     className="text-button"
-                    onClick={() => restore([run.id])}
+                    onClick={() => restore(dismissedAttention.map((run) => run.id))}
                     type="button"
                   >
-                    Undo
+                    Restore all
                   </button>
                 </div>
-              ))}
-            </div>
-          )}
+                {dismissedAttention.map((run) => (
+                  <div className="attention-row attention-row-dismissed" key={run.id}>
+                    <span className="attention-copy">
+                      <strong>{runLabel(run)}</strong>
+                      <span>{workflowDisplayName(overview, run)}</span>
+                    </span>
+                    <button
+                      aria-label={`Undo dismiss for run ${run.id}`}
+                      className="text-button"
+                      onClick={() => restore([run.id])}
+                      type="button"
+                    >
+                      Undo
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </section>
       )}
 
@@ -439,9 +457,13 @@ function RunSection({
               <span className="row-primary">
                 <span className="row-title">{runLabel(run)}</span>
                 <span className="row-subtitle">
-                  {run.trigger.ref ? `Trigger ${run.trigger.ref} · ` : ""}
-                  {run.id}
+                  {active && run.operator
+                    ? operatorSubtitle(run)
+                    : `${run.trigger.ref ? `Trigger ${run.trigger.ref} · ` : ""}${run.id}`}
                 </span>
+                {active && operatorContext(run) ? (
+                  <span className="row-subtitle">{operatorContext(run)}</span>
+                ) : null}
               </span>
               {active ? (
                 <>
@@ -454,7 +476,7 @@ function RunSection({
                   </span>
                   <span className="stage-progress">
                     <span aria-hidden="true" className="stage-progress-mark" />
-                    {run.currentStage ?? "Awaiting stage"}
+                    {operatorProgress(run)}
                   </span>
                 </>
               ) : (
@@ -479,7 +501,60 @@ function RunSection({
 }
 
 function runLabel(run: RunSummary): string {
+  if (run.operator?.issue) {
+    return `#${run.operator.issue.number}${run.operator.issue.title ? ` ${run.operator.issue.title}` : ""}`;
+  }
   return `${run.workflow} · ${run.id}`;
+}
+
+function operatorSubtitle(run: RunSummary): string {
+  const operator = run.operator;
+  if (!operator) {
+    return run.id;
+  }
+  const heartbeat =
+    operator.heartbeatAgeMillis === undefined
+      ? "no heartbeat"
+      : `${operator.liveness} heartbeat ${formatDuration(operator.heartbeatAgeMillis)} ago`;
+  return `${operator.trajectory} · ${heartbeat} · claim ${operator.claim.leaseStatus}/${operator.claim.providerMarker}`;
+}
+
+function operatorProgress(run: RunSummary): string {
+  const operator = run.operator;
+  if (!operator) {
+    return run.currentStage ?? "Awaiting stage";
+  }
+  const pr = operator.pullRequest
+    ? `PR #${operator.pullRequest.id}`
+    : operator.prOpenerStage
+      ? `PR via ${operator.prOpenerStage}`
+      : "no PR stage";
+  return `${operator.currentStage ?? "Awaiting stage"} · ${pr} · ${operator.nextTransition ?? "no next transition"}`;
+}
+
+function operatorContext(run: RunSummary): string {
+  const operator = run.operator;
+  if (!operator) {
+    return "";
+  }
+  const details: string[] = [];
+  if (operator.latestError) {
+    details.push(`Error ${operator.latestError.code}${operator.latestError.message ? `: ${operator.latestError.message}` : ""}`);
+  }
+  if (operator.review) {
+    details.push(`Review ${operator.review.verdict}${operator.review.rationale ? `: ${operator.review.rationale}` : ""}`);
+  }
+  if (operator.potentialBlockers.length > 0) {
+    details.push(`Blockers: ${operator.potentialBlockers.join("; ")}`);
+  }
+  // Kept out of "Blockers" and labelled as a reader limitation: this is what the
+  // read invocation could not verify, not something impeding the run (#3346).
+  if (operator.diagnosticsLimitations && operator.diagnosticsLimitations.length > 0) {
+    details.push(
+      `Diagnostics limited (not a run blocker): ${operator.diagnosticsLimitations.join("; ")}`,
+    );
+  }
+  return details.join(" · ");
 }
 
 function attentionHeading(count: number): string {

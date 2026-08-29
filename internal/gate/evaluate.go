@@ -3,6 +3,7 @@ package gate
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -11,13 +12,16 @@ import (
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
-// DefaultMaxRepasses is the default bounded-repass budget: a gate may
-// evaluate to a non-"pass" outcome this many times before Evaluator overrides
-// its own configured branch and routes to workflow.TargetEscalate instead —
-// "bounded repass loops (loop budget journaled and enforced)" (issue #20).
+// DefaultMaxRepasses is the default bounded-repass budget: a stage may be
+// re-entered from a gate this many times before Evaluator overrides the gate's
+// configured branch and routes to workflow.TargetEscalate instead.
 // Inherited run policy may override this default, and Gate.MaxRepasses may
 // override the inherited value for one automated or agentic gate.
 const DefaultMaxRepasses = runcontrol.DefaultMaxRepasses
+
+// DefaultMaxInfrastructureRepasses bounds gate-driven retries for retryable
+// infrastructure outcomes without consuming the policy repass budget.
+const DefaultMaxInfrastructureRepasses = 2
 
 // Result is the outcome of one gate evaluation.
 type Result struct {
@@ -34,10 +38,15 @@ type Result struct {
 	// Outcome, unless the repass budget was exhausted, in which case it is the
 	// optional escalate control branch or workflow.TargetEscalate.
 	Target string
-	// Attempt is this gate's consecutive non-pass evaluation count,
-	// including this one when Outcome != OutcomePass (0 when Outcome ==
-	// OutcomePass, since a pass resets the budget).
+	// Attempt is the number of times the repass target has been re-entered,
+	// including this evaluation. It is 0 when the outcome does not repass.
 	Attempt int
+	// RepassTarget is the configured branch target charged by Attempt. It
+	// remains set when budget exhaustion overrides Target with escalation.
+	RepassTarget string
+	// GateAttempt is this gate's consecutive non-pass evaluation count. It is
+	// retained separately to recover dangling gate evaluations after a crash.
+	GateAttempt int
 	// Escalated is true when Target was overridden by the runner because the
 	// repass budget was exhausted or evaluation cannot make progress.
 	Escalated bool
@@ -49,6 +58,13 @@ type Result struct {
 	// RepassCause identifies the gate or stage failure that sent the run back
 	// to the subject stage before DuplicateDiff detected no resulting change.
 	RepassCause *RepassCause
+	// Reason is a machine-readable classification of this Result, distinct
+	// from the free-form rationale text elsewhere on Result/Verdict. Set to
+	// ReasonUnchangedRepass when DuplicateDiff fired (issue #3250) so a
+	// caller (the runner's escalation notification, `goobers trace`/status,
+	// and merge-review's automation) can match on a stable code instead of
+	// parsing prose. Empty for every other outcome.
+	Reason string
 	// CacheHit is true when Evaluator.CachedVerdict was set for this
 	// evaluation (issue #523's cross-run verdict cache): the reviewer was
 	// never called, and Verdict is the caller-supplied cached verdict,
@@ -77,6 +93,21 @@ type Result struct {
 	// persisted — instead of re-inferring "something needs to change" from
 	// git alone.
 	VerdictArtifact *apiv1.ArtifactPointer
+	// ResolvedFindingIDs were present in the latest injected episode but are
+	// absent from this verdict. They are durable proof that a repass cleared
+	// those finding identities even when another finding still blocks.
+	ResolvedFindingIDs []string
+	// SuppressedFindingIDs tried to reopen a previously resolved identity
+	// without new finding-specific evidence and were removed fail-closed.
+	SuppressedFindingIDs []string
+	// ReopenedFindingIDs were previously resolved but carried a genuinely new
+	// evidence digest, so the reviewer was allowed to raise them again.
+	ReopenedFindingIDs []string
+	// DisprovenFindingIDs were removed by deterministic source evidence.
+	DisprovenFindingIDs []string
+	// DisprovenFindings retain the complete finding-level contract so a
+	// same-evaluation deterministic disproval projects as false-finding.
+	DisprovenFindings []apiv1.Finding
 }
 
 // RepassCause is the machine-readable upstream reason for a repass.
@@ -88,7 +119,53 @@ type RepassCause struct {
 	ErrorCode    string `json:"errorCode,omitempty"`
 	ErrorMessage string `json:"errorMessage,omitempty"`
 	Rationale    string `json:"rationale,omitempty"`
+	// Infrastructure is true when Kind is "stage-failure" and the failed
+	// attempt that triggered this repass was itself classified as an
+	// infrastructure/environment failure rather than an ordinary
+	// implementation defect (issue #3250). The runner sets this from the
+	// journaled retry decision — never from an attempt's start class. It lets an UNCHANGED_REPASS
+	// escalation (see ReasonUnchangedRepass) distinguish "the implementer
+	// correctly found nothing to fix after an environmental CI failure"
+	// from "the implementer failed to converge on a genuine defect",
+	// without guessing from error-code heuristics a second time.
+	Infrastructure bool `json:"infrastructure,omitempty"`
 }
+
+// ReasonUnchangedRepass is Result.Reason's value when DuplicateDiff fired:
+// the subject stage's repass produced no commit movement — an effective
+// diff byte-identical to the immediately prior attempt (issue #3250). A
+// stable, matchable code, distinct from RepassCause's free-form prose,
+// intended for callers (the runner's escalation notification, `goobers
+// trace`/status, and any automation classifying terminal outcomes) that
+// need to tell this specific loop-stopping condition apart from an
+// ordinary repass-budget exhaustion or a genuine reviewer/CI fail verdict.
+const ReasonUnchangedRepass = "UNCHANGED_REPASS"
+
+// ReasonFindingDisproven marks a reviewer needs-changes verdict that was
+// converted to pass because deterministic source evidence disproved every
+// finding.
+const ReasonFindingDisproven = "REVIEW_FINDING_DISPROVEN"
+
+// ReasonFindingResolved marks a needs-changes verdict whose only findings
+// attempted to reopen identities already resolved by an earlier repass without
+// supplying new finding-specific evidence.
+const ReasonFindingResolved = "REVIEW_FINDING_RESOLVED"
+
+// ReasonRemediationEvidenceNotInspected is both the ErrorInfo code the runner
+// rejects an unchanged remediation under, and Result.Reason's value when
+// EscalateUninspectedRemediation finally stops that rejection loop (issue
+// #3375). One token, declared once, because the two live at opposite ends of
+// the same story: the runner-annotation stream records every rejection under
+// this code, and the terminal gate.evaluated event records why the run gave
+// up under the same one.
+const ReasonRemediationEvidenceNotInspected = "REMEDIATION_EVIDENCE_NOT_INSPECTED"
+
+// Escalation reason codes are journaled so telemetry can distinguish policy
+// repass churn from an exhausted infrastructure retry budget.
+const (
+	ReasonRepassBudgetExhausted         = "REPASS_BUDGET_EXHAUSTED"
+	ReasonInfrastructureBudgetExhausted = "INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED"
+)
 
 func (c RepassCause) String() string {
 	switch c.Kind {
@@ -100,7 +177,11 @@ func (c RepassCause) String() string {
 		if c.ErrorMessage != "" {
 			detail += ": " + c.ErrorMessage
 		}
-		return fmt.Sprintf("the prior repass was triggered by gate %q outcome %q after stage %q failed%s", c.Gate, c.Outcome, c.Stage, detail)
+		classification := "an implementation"
+		if c.Infrastructure {
+			classification = "an infrastructure/environment"
+		}
+		return fmt.Sprintf("the prior repass was triggered by gate %q outcome %q after stage %q failed with %s failure%s", c.Gate, c.Outcome, c.Stage, classification, detail)
 	case "reviewer":
 		detail := ""
 		if c.Rationale != "" {
@@ -131,22 +212,29 @@ type Evaluator struct {
 	// MaxRepasses is the inherited run budget. Gate.MaxRepasses takes precedence.
 	MaxRepasses int
 
-	// Attempts holds each gate's current consecutive non-pass count, keyed by
-	// gate name — the same value Result.Attempt reports after Evaluate. Nil
-	// (equivalently, a zero count for every gate) is the correct zero value
-	// for a fresh run. A caller resuming an interrupted run seeds this on
-	// construction (Evaluator{Attempts: restored, ...}) so the repass budget
-	// continues rather than resetting to 0 — e.g. Runner.Resume (#89)
-	// reconstructing it from each gate's last gate.started/gate.evaluated
-	// event (Runner["repassAttempt"], journal.go), the same source state.json
-	// itself is always reconstructable from. Evaluate mutates this map in
-	// place, so it also serves as the live, inspectable checkpoint source for
-	// a caller that wants to persist it after each gate — read
-	// Attempts[gateName], not Result.Attempt, if a pass may have reset it
-	// since the last read. Nil-safe: Evaluate lazily allocates it on first
-	// use. Exported instead of a constructor because every other Evaluator
-	// field is already set via struct literal (see internal/runner/run.go).
+	// Attempts holds each gate's consecutive non-pass count for recovering
+	// crash-interrupted evaluations. Budget enforcement uses RepassAttempts.
+	// A resuming caller reconstructs this map from gateAttempt annotations.
 	Attempts map[string]int
+
+	// RepassAttempts holds cumulative repasses keyed by configured branch
+	// target. Unlike Attempts, the verdict does not affect this count: every
+	// non-infrastructure branch back to an already-completed stage consumes its
+	// shared policy budget. A resuming caller reconstructs it from repassTarget
+	// and repassAttempt annotations.
+	RepassAttempts map[string]int
+
+	// InfrastructureAttempts and InfrastructureRepassAttempts track retryable
+	// infrastructure outcomes separately from policy repasses. This preserves
+	// the policy budget for code-review and validation failures while keeping
+	// infrastructure retries bounded and crash-resumable.
+	InfrastructureAttempts       map[string]int
+	InfrastructureRepassAttempts map[string]int
+
+	// IsReentry reports whether a configured branch target is a stage that has
+	// already completed in this run. Nil preserves the historical assumption
+	// that non-pass branches are repasses for direct Evaluator callers.
+	IsReentry func(target string) bool
 
 	// LastDiffDigest holds each agentic gate's most recently evaluated diff
 	// digest, keyed by gate name (issue #316: an implementer stuck in a
@@ -185,6 +273,11 @@ type Evaluator struct {
 	// siblings, or digests, only "a caller-verified verdict is available,
 	// reuse it."
 	CachedVerdict *apiv1.Verdict
+
+	// IsNeedsHumanTarget identifies a disposition branch whose task semantics
+	// require a human decision. The runner supplies this from the compiled task
+	// inputs so the evaluator does not depend on a task or gate name.
+	IsNeedsHumanTarget func(target string) bool
 }
 
 // Evaluate runs gate g's evaluator against env (already built by the caller,
@@ -283,6 +376,9 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			cacheHit = true
 			verdict = e.CachedVerdict
 			outcome = string(verdict.Decision)
+			if e.invalidNeedsHumanVerdict(g, *verdict) {
+				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit, "", findingResolution{})
+			}
 		} else if emptyDiff {
 			// #415 sibling: the implement stage produced no committed change,
 			// so there is nothing for the reviewer to evaluate or a repass to
@@ -309,20 +405,49 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			}
 		} else {
 			var v apiv1.Verdict
-			if err := e.evaluateWithRetry(ctx, g.Name, policy, env.Limits.MaxDurationSeconds, func(attemptCtx context.Context) error {
-				var callErr error
-				v, callErr = e.Reviewer.Review(attemptCtx, env, subjectStage, subject)
-				return callErr
-			}); err != nil {
+			invalidNeedsHuman, err := e.evaluateReviewerWithRetry(ctx, g.Name, policy, env.Limits.MaxDurationSeconds, &env, subjectStage, subject, g, &v)
+			if err != nil {
 				return Result{}, fmt.Errorf("gate %q: reviewer evaluation: %w", g.Name, err)
 			}
 			verdict = &v
 			outcome = string(v.Decision)
+			if invalidNeedsHuman {
+				return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, true, cacheHit, "", findingResolution{})
+			}
 		}
 
 	}
 
-	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit)
+	outcomeReason := ""
+	var learningResolution findingResolution
+	// Empty/duplicate-diff verdicts are synthesized by the runner without a
+	// reviewer evaluation. Their empty finding sets cannot prove that findings
+	// from the prior episode were corrected.
+	if verdict != nil && !duplicateDiff && !emptyDiff {
+		normalized, resolution := reconcileLearningFindings(
+			*verdict, env.ContextPointers, journalDir(e.Journal), g.Name, diffDigest,
+		)
+		verdict = &normalized
+		learningResolution = resolution
+		outcome = string(normalized.Decision)
+		if resolution.AllSuppressed {
+			outcomeReason = ReasonFindingResolved
+		}
+	}
+	if outcome == string(apiv1.VerdictNeedsChanges) && verdict != nil {
+		beforeFindings := append([]apiv1.Finding(nil), verdict.Findings...)
+		before := findingIDs(beforeFindings)
+		normalized, allDisproven := disproveReviewerFindings(*verdict, env.ContextPointers, journalDir(e.Journal), g.Name)
+		verdict = &normalized
+		outcome = string(normalized.Decision)
+		learningResolution.Disproven = removedFindingIDs(before, normalized.Findings)
+		learningResolution.DisprovenFindings = removedFindings(beforeFindings, normalized.Findings)
+		if allDisproven {
+			outcomeReason = ReasonFindingDisproven
+		}
+	}
+
+	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit, outcomeReason, learningResolution)
 }
 
 // EvaluateHuman applies an explicit human decision to a human gate. The
@@ -385,10 +510,10 @@ func (e *Evaluator) EvaluateKnownOutcome(g apiv1.Gate, outcome string) (Result, 
 	if err := recordStart(e.Journal, g.Name, e.Attempts[g.Name]+1); err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal evaluation start: %w", g.Name, err)
 	}
-	return e.resolveOutcome(g, outcome, nil, "", false, false, false)
+	return e.resolveOutcome(g, outcome, nil, "", false, false, false, "", findingResolution{})
 }
 
-func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, forcedEscalation, cacheHit bool) (Result, error) {
+func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.Verdict, diffDigest string, duplicateDiff, forcedEscalation, cacheHit bool, outcomeReason string, resolution findingResolution) (Result, error) {
 	if diffDigest != "" {
 		if e.LastDiffDigest == nil {
 			e.LastDiffDigest = make(map[string]string)
@@ -401,17 +526,32 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 		return Result{}, fmt.Errorf("gate %q: outcome %q has no defined branch (never a silent pass, GT-002)", g.Name, outcome)
 	}
 
-	attempt, exceeded := e.trackRepass(g, outcome)
+	attempt, gateAttempt, repassTarget, exceeded := e.trackRepass(g, outcome, target)
 	escalated := exceeded || duplicateDiff || forcedEscalation
 	if escalated {
 		target = escalationTarget(g)
 	}
 
 	var repassCause *RepassCause
+	reason := outcomeReason
 	if duplicateDiff {
 		repassCause = e.RepassCause
+		reason = ReasonUnchangedRepass
 	}
-	r := Result{Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt, Escalated: escalated, DuplicateDiff: duplicateDiff, RepassCause: repassCause, CacheHit: cacheHit, Verdict: verdict}
+	if escalated && reason == "" {
+		reason = ReasonRepassBudgetExhausted
+		if outcome == OutcomeInfra {
+			reason = ReasonInfrastructureBudgetExhausted
+		}
+	}
+	r := Result{
+		Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt,
+		RepassTarget: repassTarget, GateAttempt: gateAttempt, Escalated: escalated,
+		DuplicateDiff: duplicateDiff, RepassCause: repassCause, Reason: reason, CacheHit: cacheHit, Verdict: verdict,
+		ResolvedFindingIDs: resolution.Resolved, SuppressedFindingIDs: resolution.Suppressed,
+		ReopenedFindingIDs: resolution.Reopened, DisprovenFindingIDs: resolution.Disproven,
+		DisprovenFindings: resolution.DisprovenFindings,
+	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
 		return Result{}, fmt.Errorf("gate %q: journal verdict: %w", g.Name, err)
@@ -434,8 +574,10 @@ func (e *Evaluator) RecoverInterrupted(g apiv1.Gate, diffDigest string) (Result,
 		Outcome:     OutcomeFail,
 		Target:      escalationTarget(g),
 		Attempt:     attempt,
+		GateAttempt: attempt,
 		Escalated:   true,
 		Interrupted: true,
+		Reason:      ReasonRepassBudgetExhausted,
 	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
@@ -445,6 +587,54 @@ func (e *Evaluator) RecoverInterrupted(g apiv1.Gate, diffDigest string) (Result,
 	return r, true, nil
 }
 
+// EscalateUninspectedRemediation synthesizes and journals the escalation that
+// ends a remediation-evidence rejection loop (issue #3375).
+//
+// The runner rejects an unchanged remediation whose stage never inspected the
+// required failure evidence, and re-dispatches the stage with a corrective
+// addendum — BEFORE this gate ever resolves an outcome, so no repass,
+// infrastructure, or evaluator-retry budget is charged. An agent that never
+// inspects therefore cycles stage-dispatch → rejection → addendum forever,
+// bounded only by the walk's step ceiling. The runner counts those rejections
+// itself and calls this on exhaustion.
+//
+// The shape deliberately mirrors the identical-diff guard (Evaluate's
+// duplicateDiff branch): a synthesized needs-changes verdict, Escalated set so
+// Target is the gate's escalate control branch, and the cause carried in the
+// rationale — the reviewer is never invoked for an attempt it was already
+// determined cannot be evaluated. cause is the last rejection's validation
+// ErrorInfo; rejections is how many were charged.
+func (e *Evaluator) EscalateUninspectedRemediation(g apiv1.Gate, cause *apiv1.ErrorInfo, rejections int, diffDigest string) (Result, error) {
+	rationale := fmt.Sprintf(
+		"runner: %d consecutive unchanged remediation attempts were rejected without inspecting the required failure evidence",
+		rejections,
+	)
+	if cause != nil && cause.Message != "" {
+		rationale += "; last rejection: " + cause.Message
+	}
+	attempt := e.Attempts[g.Name]
+	r := Result{
+		Gate:        g.Name,
+		Outcome:     string(apiv1.VerdictNeedsChanges),
+		Target:      escalationTarget(g),
+		Attempt:     attempt,
+		GateAttempt: attempt,
+		Escalated:   true,
+		RepassCause: e.RepassCause,
+		Reason:      ReasonRemediationEvidenceNotInspected,
+		Verdict: &apiv1.Verdict{
+			Decision:  apiv1.VerdictNeedsChanges,
+			Rationale: rationale,
+		},
+	}
+	artifact, err := recordVerdict(e.Journal, r, diffDigest)
+	if err != nil {
+		return Result{}, fmt.Errorf("gate %q: journal uninspected remediation escalation: %w", g.Name, err)
+	}
+	r.VerdictArtifact = artifact
+	return r, nil
+}
+
 func escalationTarget(g apiv1.Gate) string {
 	if target, ok := wf.BranchTarget(g, wf.BranchEscalate); ok {
 		return target
@@ -452,25 +642,123 @@ func escalationTarget(g apiv1.Gate) string {
 	return wf.TargetEscalate
 }
 
-// trackRepass updates gate g's consecutive non-pass counter: a "pass" outcome
-// resets it to 0; any other outcome increments it. It returns the post-update
-// count and whether that count exceeds the repass budget (in which case the
-// caller must escalate instead of following the gate's own branch).
-func (e *Evaluator) trackRepass(g apiv1.Gate, outcome string) (attempt int, exceeded bool) {
+// trackRepass charges branches that re-enter an already-completed target stage.
+// Retryable infrastructure outcomes use their own bounded counters so they do
+// not consume policy repasses.
+func (e *Evaluator) trackRepass(g apiv1.Gate, outcome, target string) (attempt, gateAttempt int, repassTarget string, exceeded bool) {
 	if e.Attempts == nil {
 		e.Attempts = make(map[string]int)
 	}
-	if outcome == OutcomePass {
-		e.Attempts[g.Name] = 0
-		return 0, false
+	if e.InfrastructureAttempts == nil {
+		e.InfrastructureAttempts = make(map[string]int)
 	}
-	e.Attempts[g.Name]++
-	attempt = e.Attempts[g.Name]
-	return attempt, attempt > e.maxRepasses(g)
+	if outcome != OutcomeInfra && e.InfrastructureRepassAttempts != nil {
+		if infrastructureTarget, ok := wf.BranchTarget(g, OutcomeInfra); ok {
+			e.InfrastructureRepassAttempts[infrastructureTarget] = 0
+		}
+	}
+	switch outcome {
+	case OutcomePass:
+		e.Attempts[g.Name] = 0
+		e.InfrastructureAttempts[g.Name] = 0
+	case OutcomeInfra:
+		e.Attempts[g.Name] = 0
+		e.InfrastructureAttempts[g.Name]++
+		gateAttempt = e.InfrastructureAttempts[g.Name]
+	default:
+		e.InfrastructureAttempts[g.Name] = 0
+		e.Attempts[g.Name]++
+		gateAttempt = e.Attempts[g.Name]
+	}
+	reentry := outcome != OutcomePass
+	if e.IsReentry != nil {
+		reentry = e.IsReentry(target)
+	}
+	if !reentry {
+		return 0, gateAttempt, "", false
+	}
+	if outcome == OutcomeInfra {
+		if e.InfrastructureRepassAttempts == nil {
+			e.InfrastructureRepassAttempts = make(map[string]int)
+		}
+		e.InfrastructureRepassAttempts[target]++
+		attempt = e.InfrastructureRepassAttempts[target]
+		return attempt, gateAttempt, target, attempt > DefaultMaxInfrastructureRepasses
+	}
+	if e.RepassAttempts == nil {
+		e.RepassAttempts = make(map[string]int)
+	}
+	e.RepassAttempts[target]++
+	attempt = e.RepassAttempts[target]
+	return attempt, gateAttempt, target, attempt > e.maxRepasses(g)
 }
 
 func (e *Evaluator) maxRepasses(g apiv1.Gate) int {
 	return runcontrol.MaxRepassesForGate(g, e.MaxRepasses)
+}
+
+const needsHumanRationaleFeedback = "Reviewer verdict rejected: when this verdict selects a needs-human disposition, the trimmed rationale must end with a non-empty human decision question ending in '?'. Return a corrected verdict without changing the disposition."
+
+func validNeedsHumanRationale(rationale string) bool {
+	rationale = strings.TrimSpace(rationale)
+	question := strings.TrimSpace(strings.TrimSuffix(rationale, "?"))
+	return question != "" && strings.HasSuffix(rationale, "?")
+}
+
+func (e *Evaluator) invalidNeedsHumanVerdict(g apiv1.Gate, verdict apiv1.Verdict) bool {
+	target, hasTarget := wf.BranchTarget(g, string(verdict.Decision))
+	return e.IsNeedsHumanTarget != nil &&
+		hasTarget &&
+		e.IsNeedsHumanTarget(target) &&
+		!validNeedsHumanRationale(verdict.Rationale)
+}
+
+func (e *Evaluator) evaluateReviewerWithRetry(ctx context.Context, gateName string, policy *apiv1.RetryPolicy, timeoutSeconds int32, env *apiv1.InvocationEnvelope, subjectStage string, subject apiv1.ResultEnvelope, g apiv1.Gate, verdict *apiv1.Verdict) (bool, error) {
+	maxAttempts, backoff := retryBounds(policy)
+	for attempt := 1; ; attempt++ {
+		attemptCtx := ctx
+		var cancel context.CancelFunc
+		if timeoutSeconds > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+		}
+		current, err := e.Reviewer.Review(attemptCtx, *env, subjectStage, subject)
+		if cancel != nil {
+			cancel()
+		}
+		if err != nil {
+			if !invoke.IsInfrastructureFailure(err) {
+				return false, err
+			}
+			if jerr := recordEvaluatorRetry(e.Journal, gateName, attempt, err); jerr != nil {
+				return false, jerr
+			}
+			if attempt >= maxAttempts {
+				return false, err
+			}
+		} else {
+			*verdict = current
+			if !e.invalidNeedsHumanVerdict(g, current) {
+				return false, nil
+			}
+			invalidErr := fmt.Errorf("%s", needsHumanRationaleFeedback)
+			if jerr := recordVerdictValidationRetry(e.Journal, gateName, attempt, invalidErr); jerr != nil {
+				return false, jerr
+			}
+			if attempt >= maxAttempts {
+				return true, nil
+			}
+			env.InstructionAddendum = strings.TrimSpace(env.InstructionAddendum + "\n\n" + needsHumanRationaleFeedback)
+		}
+		if backoff > 0 {
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return false, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
 }
 
 // gateRetryPolicy returns the gate's declared evaluator retry policy, read off

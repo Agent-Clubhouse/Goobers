@@ -54,9 +54,13 @@ func loadShippedWorkflow(t *testing.T, file string) Definition {
 var goldenDigests = map[string]string{
 	// #2213/#2341: await-ci and PR-opening tasks declare provider-neutral PR
 	// capabilities.
-	"implementation.yaml":   "sha256:8833722e3d1b4d4b64b890e0d0a68a56d88a714be15bb9e6320fef2cf2daef5d",
-	"backlog-curation.yaml": "sha256:38a219bae84d738acba00d8bde4695a311f712fabb36c430ff6bb8143eab24c1",
-	"work-nomination.yaml":  "sha256:67eb702aba404b995e806964a9aaf52f9a176a497fc24848fc8ac3b217d65b73",
+	// #2386: read-only duplicate discovery declares issue-read, not issue-write.
+	// C+D2/#2861 wave: await-ci gained inputs.kind=ci-poll — its command was
+	// always a placeholder (there is no `goobers ci-poll` CLI command), and the
+	// new unknown-subcommand admission makes the kind dispatch explicit.
+	"implementation.yaml":   "sha256:8a7ea8c6942f2a1bdbb94e56631573bf690c6e7dc4a18b23efbcc2eafc672df5",
+	"backlog-curation.yaml": "sha256:73b4c30bc6a74f64d912709b7414a5e4ad52b08afbddc74dd3612df91b69cdbd",
+	"work-nomination.yaml":  "sha256:e44ee1e09a463011056038605d75c65a930c3489a5e363d44b5e6ad8ad9fc627",
 }
 
 // TestShippedWorkflowsCompile proves the three V0 shipped workflows (curation,
@@ -107,7 +111,7 @@ func TestExampleConfigWorkflowCompiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	const want = "sha256:e9964709dc240a2bc9da9c6f61517f93e8606faeeddba0efb7d86ceb1d539e77"
+	const want = "sha256:2f5c49dd24ca4361622268c979628ea1ce12a2d398210f72e1424dded501ff38"
 	t.Logf("default-implement digest = %s", m.Digest())
 	if m.Digest() != want {
 		t.Errorf("digest drift for default-implement:\n got  %s\n want %s\n(update if intended)", m.Digest(), want)
@@ -140,7 +144,7 @@ func TestDigestIncludesDSLVersionWhenPresent(t *testing.T) {
 		t.Fatal(err)
 	}
 	versioned := unversioned
-	versioned.DSLVersion = "1.4"
+	versioned.DSLVersion = "2.0"
 	m2, err := compileAcknowledged(versioned)
 	if err != nil {
 		t.Fatal(err)

@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -205,7 +206,7 @@ func TestTerminalClaimReleaseTimeoutDefersToRecoverySweep(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	holder, err := lock.Acquire(lockPath)
+	holder, err := lock.TryAcquire(lockPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +247,7 @@ func TestTerminalClaimReleaseTimeoutDefersToRecoverySweep(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = log.Close() }()
-	released, err := recoverClaims(l, log, time.Now(), nil)
+	released, err := recoverClaims(l, log, time.Now(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +305,7 @@ func TestRecoverClaimsSkipsCorruptHolderJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	released, err := recoverClaims(l, log, time.Now(), nil)
+	released, err := recoverClaims(l, log, time.Now(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,5 +338,122 @@ func TestRecoverClaimsSkipsCorruptHolderJournal(t *testing.T) {
 	}
 	if !foundInspectionError {
 		t.Fatalf("instance events lack corrupt-holder inspection error: %+v", instanceEvents)
+	}
+}
+
+// newLiveRun hand-constructs a run journal with no run.finished event, so its
+// reconstructed phase is journal.PhaseRunning — a live holder to hold
+// conservatively against, as opposed to newStaleTerminalRun's terminal one.
+func newLiveRun(t *testing.T, l instance.Layout, runID, workflowName string) {
+	t.Helper()
+	set, report, err := instance.LoadConfigDir(l.ConfigDir())
+	if err != nil {
+		t.Fatalf("load fixture config: %v (report: %+v)", err, report)
+	}
+	var gaggle, digest string
+	found := false
+	for i := range set.Workflows {
+		if set.Workflows[i].Name == workflowName {
+			m, err := workflow.Compile(workflow.Definition{Name: set.Workflows[i].Name, Version: 1, DSLVersion: set.Workflows[i].DSLVersion, Spec: set.Workflows[i].Spec}, workflow.WithPreviewFeatures(true))
+			if err != nil {
+				t.Fatalf("compile fixture workflow: %v", err)
+			}
+			gaggle = set.Workflows[i].Spec.Gaggle
+			digest = m.Digest()
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("workflow %q not found in fixture config", workflowName)
+	}
+	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: workflowName, WorkflowVersion: 1,
+		WorkflowDigest: digest, Gaggle: gaggle,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	}, nil)
+	if err != nil {
+		t.Fatalf("hand-construct live run journal: %v", err)
+	}
+	if err := jr.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRecoverClaimsResolvesBacklogReconcileClaimsByOwningRun covers the
+// backlogreconcile.go/claims.go half of the askpass-relative-residual
+// cluster: a synthesized backlog-reconcile claim RunID ("<owner-run>/
+// backlog-reconcile/<pid>/<seq>") is not itself a run FindRunDir can look up
+// (it contains "/"), so claimHolderTerminal must recover the owning run's
+// id and inspect that instead — terminal owner releases, live owner holds,
+// and a shape that fails to parse holds conservatively without spamming a
+// terminal_claim_inspection_failed event on every recovery sweep (#found:
+// 64 occurrences/hour in production before this fix).
+func TestRecoverClaimsResolvesBacklogReconcileClaimsByOwningRun(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const (
+		terminalOwner = "reconcile-owner-terminal"
+		liveOwner     = "reconcile-owner-live"
+	)
+	newStaleTerminalRun(t, l, terminalOwner, "default-implement", journal.PhaseCompleted, "local-ci")
+	newLiveRun(t, l, liveOwner, "default-implement")
+
+	terminalClaim := formatBacklogReconcileRunID(terminalOwner, 555, 1)
+	liveClaim := formatBacklogReconcileRunID(liveOwner, 555, 2)
+	malformedClaim := terminalOwner + "/" + backlogReconcileRunIDComponent + "/not-a-pid/3"
+
+	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for itemID, runID := range map[string]string{
+		"700": terminalClaim,
+		"701": liveClaim,
+		"702": malformedClaim,
+	} {
+		if ok, _, err := ledger.Claim(itemID, runID, "backlog-reconcile", time.Hour); err != nil || !ok {
+			t.Fatalf("seed claim %s (run %s): ok=%v err=%v", itemID, runID, ok, err)
+		}
+	}
+
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	released, err := recoverClaims(l, log, time.Now(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(released) != 1 || released[0].ItemID != "700" {
+		t.Fatalf("released = %+v, want only the terminal-owner reconcile claim (700)", released)
+	}
+
+	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := reopened.Lookup("700"); held {
+		t.Fatal("reconcile claim owned by a terminal run survived recovery")
+	}
+	if entry, held := reopened.Lookup("701"); !held || entry.RunID != liveClaim {
+		t.Fatalf("reconcile claim owned by a live run changed: (%+v, %v)", entry, held)
+	}
+	if entry, held := reopened.Lookup("702"); !held || entry.RunID != malformedClaim {
+		t.Fatalf("malformed reconcile-shaped claim changed: (%+v, %v)", entry, held)
+	}
+
+	instanceEvents, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range instanceEvents {
+		if event.Error != nil && event.Error.Code == "terminal_claim_inspection_failed" {
+			t.Fatalf("unexpected terminal_claim_inspection_failed event for a reconcile-format run id: %+v", event)
+		}
 	}
 }

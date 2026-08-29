@@ -1,6 +1,6 @@
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -38,6 +38,7 @@ spec:
       goal: Implement the claimed backlog item and commit the change.
       capabilities:
         - repo:push
+        - agent:model
       policyActions:
         - modify-repository
       next: push-branch

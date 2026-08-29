@@ -8,6 +8,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DaemonApiError,
+  DaemonAuthError,
   DaemonUnavailableError,
   MalformedResponseError,
   RequestCancelledError,
@@ -169,6 +170,11 @@ describe("HttpDaemonClient", () => {
       gaggle: "core",
       since: "2026-07-01T00:00:00Z",
       until: "2026-07-18T00:00:00Z",
+      trendSince: "2026-06-01T00:00:00Z",
+      trendUntil: "2026-07-01T00:00:00Z",
+      trendBuckets: 3,
+      trendPreviousSince: "2026-05-01T00:00:00Z",
+      trendPreviousUntil: "2026-06-01T00:00:00Z",
     });
     await client.getTelemetryErrorSignatures({
       workflow: "implementation",
@@ -205,7 +211,7 @@ describe("HttpDaemonClient", () => {
       "/api/v1/runs/run-1/stages/implement/attempts",
       "/api/v1/runs/run-1/artifacts/sha256%3Aabc",
       "/api/v1/runs/run-1/transcripts/7",
-      "/api/v1/telemetry/stats?workflow=implementation&gaggle=core&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z",
+      "/api/v1/telemetry/stats?workflow=implementation&gaggle=core&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z&trendSince=2026-06-01T00%3A00%3A00Z&trendUntil=2026-07-01T00%3A00%3A00Z&trendBuckets=3&trendPreviousSince=2026-05-01T00%3A00%3A00Z&trendPreviousUntil=2026-06-01T00%3A00%3A00Z",
       "/api/v1/telemetry/error-signatures?workflow=implementation&gaggle=core&stage=review&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z&limit=20",
       "/api/v1/telemetry/errors?workflow=implementation&gaggle=core&stage=review&code=harness.crash&class=timeout&since=2026-07-01T00%3A00%3A00Z&until=2026-07-18T00%3A00%3A00Z&limit=20&cursor=error-page",
     ]);
@@ -276,6 +282,68 @@ describe("HttpDaemonClient", () => {
 
     await expect(new HttpDaemonClient({ baseUrl: started.baseUrl }).getHealth()).rejects.toBeInstanceOf(
       DaemonUnavailableError,
+    );
+  });
+
+  // #2916: a 401/403 must be classified as an auth failure — not
+  // "malformed response" or "daemon unavailable" — no matter what shape the
+  // response body takes, since a proxy/gateway in front of the daemon may
+  // reject the request itself with something other than the daemon's JSON
+  // error envelope.
+  describe("auth failures (#2916)", () => {
+    it.each([401, 403] as const)(
+      "classifies a %d response with a JSON body as an auth failure",
+      async (status) => {
+        const { baseUrl } = await startServer((_request, response) => {
+          json(response, { error: { code: "unauthorized", message: "nope" } }, status);
+        });
+
+        const error = await new HttpDaemonClient({ baseUrl }).getHealth().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(DaemonAuthError);
+        expect((error as DaemonAuthError).status).toBe(status);
+      },
+    );
+
+    it.each([401, 403] as const)(
+      "classifies a %d response with a non-JSON (HTML) body as an auth failure",
+      async (status) => {
+        const { baseUrl } = await startServer((_request, response) => {
+          response.writeHead(status, { "Content-Type": "text/html" });
+          response.end("<html><body>Please log in</body></html>");
+        });
+
+        const error = await new HttpDaemonClient({ baseUrl }).getHealth().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(DaemonAuthError);
+        expect((error as DaemonAuthError).status).toBe(status);
+      },
+    );
+
+    it.each([401, 403] as const)(
+      "classifies a %d response with a non-JSON (plain text) body as an auth failure",
+      async (status) => {
+        const { baseUrl } = await startServer((_request, response) => {
+          response.writeHead(status, { "Content-Type": "text/plain" });
+          response.end("Forbidden by the proxy");
+        });
+
+        const error = await new HttpDaemonClient({ baseUrl }).getHealth().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(DaemonAuthError);
+        expect((error as DaemonAuthError).status).toBe(status);
+      },
+    );
+
+    it.each([401, 403] as const)(
+      "classifies a %d response with an empty body as an auth failure",
+      async (status) => {
+        const { baseUrl } = await startServer((_request, response) => {
+          response.writeHead(status);
+          response.end();
+        });
+
+        const error = await new HttpDaemonClient({ baseUrl }).getHealth().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(DaemonAuthError);
+        expect((error as DaemonAuthError).status).toBe(status);
+      },
     );
   });
 });

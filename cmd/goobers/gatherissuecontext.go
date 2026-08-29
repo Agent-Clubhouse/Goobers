@@ -25,7 +25,7 @@ const gatherIssueContextHelp = "Usage: goobers gather-issue-context [path]\n\n" 
 	"usage/IO error.\n"
 
 func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("gather-issue-context", flag.ContinueOnError)
+	fs := newCLIFlagSet("gather-issue-context", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "gather-issue-context")
 	if err := fs.Parse(args); err != nil {
@@ -61,13 +61,13 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
+	issuesToken, err := providerToken(capability.GitHubIssuesRead)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	// The PR listing and the originating-issue reads authenticate with
-	// distinct capabilities (github:pr:write vs github:issues:write), which
+	// distinct capabilities (github:pr:write vs github:issues:read), which
 	// per-capability credential overrides may back with different tokens.
 	// Use each capability's own provider so issue resolution never fails on a
 	// PR-scoped credential.

@@ -2,13 +2,21 @@
 # tier-3 resolution of SEC-Q5):
 #   - default: everything denied, both directions;
 #   - stage pods: egress ONLY to the git/backlog provider, the model endpoint,
-#     the gaggle's sandbox targets, and DNS. Journal/artifact access is a
-#     volume mount, not a network path;
+#     the gaggle's sandbox targets, DNS, and the blob endpoint — granted
+#     PER RUNNER CLASS by the rendered `goobers netpol-render` manifests, not
+#     by this base (delivery decision 004, goobernetes-restrictions.md §6:
+#     NetworkPolicy composition is additive — effective egress is the UNION of
+#     every policy selecting the pod, so a generic role-wide grant here would
+#     make every narrower per-class policy a no-op; the former generic
+#     allow-stage-egress policy is removed for exactly that reason);
 #   - no pod-to-pod chatter across gaggles (nothing here selects another
 #     namespace);
 #   - NO INBOUND TO STAGE PODS. EVER. (No Ingress rule exists for them.)
-# NetworkPolicy is IP/label-based: FQDN allowlists need the provider CIDRs
-# below (CHANGE-ME documentation CIDRs) or a CNI with FQDN policy support.
+# This base is exactly the class-independent floor: default-deny-all +
+# allow-dns (+ the dedicated-worker Temporal egress). Compose it with the
+# per-runner-class output of `goobers netpol-render` (issue #3568), which
+# fills the egress CIDRs from instance.yaml egress.allowlist and refuses
+# CHANGE-ME placeholders instead of shipping stubs.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -43,40 +51,6 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-stage-egress
-spec:
-  # Stage pods (ephemeral per-attempt pods/Jobs, §2) carry
-  # goobers.dev/role=stage. Egress list per §5 — replace the documentation
-  # CIDRs with your provider/model/sandbox endpoints.
-  podSelector:
-    matchLabels:
-      goobers.dev/role: stage
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        # CHANGE-ME: git/backlog provider (github.com or ADO) egress CIDRs.
-        - ipBlock:
-            cidr: 198.51.100.0/24
-      ports:
-        - protocol: TCP
-          port: 443
-    - to:
-        # CHANGE-ME: model/agent endpoint the harness uses.
-        - ipBlock:
-            cidr: 203.0.113.0/24
-      ports:
-        - protocol: TCP
-          port: 443
-    - to:
-        # CHANGE-ME: this gaggle's sandbox/provisioner targets
-        # (v2-cloud-scale C4). Remove if the gaggle uses none.
-        - ipBlock:
-            cidr: 192.0.2.0/24
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

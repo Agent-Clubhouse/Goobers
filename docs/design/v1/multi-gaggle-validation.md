@@ -1,6 +1,6 @@
 # Design: V1 multi-gaggle + per-repo credential scoping
 
-> Status: **Draft for review** · Area: `RUN` / `SEC` / `WF` · Milestone: **V1 — arbitrary
+> Status: **draft — for review** · Area: `RUN` / `SEC` / `WF` · Milestone: **V1 — arbitrary
 > repos, teams, hardening** (epic #34)
 > Extends: [`34-arbitrary-repo-hardening.md`](34-arbitrary-repo-hardening.md)
 > (runtime scoping), [`35-sandboxing-per-goober-creds.md`](35-sandboxing-per-goober-creds.md)

@@ -2,7 +2,12 @@ package gate
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
@@ -14,6 +19,82 @@ func evalCheck(t *testing.T, check string, params map[string]string, inputs map[
 	e := NewAutomatedEvaluator()
 	env := apiv1.InvocationEnvelope{Inputs: inputs}
 	return e.Evaluate(context.Background(), apiv1.AutomatedGate{Check: check, Params: params}, env)
+}
+
+func TestAcmeClaudeAdvisoryVerdictRoutesBothModes(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config-examples", "gaggles", "acme-web-claude", "workflows", "merge-review.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var definition apiv1.Workflow
+	if err := yaml.Unmarshal(raw, &definition); err != nil {
+		t.Fatal(err)
+	}
+
+	var selector, publisher apiv1.Task
+	for _, task := range definition.Spec.Tasks {
+		switch task.Name {
+		case "pr-select":
+			selector = task
+		case "apply-verdict":
+			publisher = task
+		}
+	}
+	if !containsString(selector.ExpectedOutputs, "advisoryMode") {
+		t.Fatal("pr-select does not declare advisoryMode as an expected output")
+	}
+	if got := publisher.InputsFrom["advisoryMode"]; got != "advisoryMode" {
+		t.Fatalf("apply-verdict advisoryMode input source = %q, want advisoryMode", got)
+	}
+	if !containsString(publisher.ExpectedOutputs, "advisoryMode") {
+		t.Fatal("apply-verdict does not declare advisoryMode as an expected output")
+	}
+
+	var configured apiv1.Gate
+	for _, candidate := range definition.Spec.Gates {
+		if candidate.Name == "advisory-verdict" {
+			configured = candidate
+			break
+		}
+	}
+	if configured.Automated == nil {
+		t.Fatal("advisory-verdict automated gate not found")
+	}
+
+	for _, test := range []struct {
+		mode        string
+		wantOutcome string
+		wantTarget  string
+	}{
+		{mode: "true", wantOutcome: OutcomePass, wantTarget: wf.TerminalComplete},
+		{mode: "false", wantOutcome: OutcomeFail, wantTarget: "published-verdict"},
+	} {
+		t.Run(test.mode, func(t *testing.T) {
+			outcome, err := NewAutomatedEvaluator().Evaluate(
+				context.Background(),
+				*configured.Automated,
+				apiv1.InvocationEnvelope{Inputs: map[string]interface{}{"advisoryMode": test.mode}},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if outcome != test.wantOutcome {
+				t.Fatalf("outcome = %q, want %q", outcome, test.wantOutcome)
+			}
+			if target, ok := configured.Branches[outcome]; !ok || target != test.wantTarget {
+				t.Fatalf("branch target = %q, %t; want %q, true", target, ok, test.wantTarget)
+			}
+		})
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestStatusEqualsDefaultsToSuccess(t *testing.T) {
@@ -53,24 +134,231 @@ func TestFailureClass(t *testing.T) {
 			name: "business failure",
 			result: apiv1.ResultEnvelope{
 				Status: apiv1.ResultFailure,
-				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit"},
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; stderr: TestWidget failed"},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "golangci lock contention",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 3; stderr: Parallel golangci-lint is running"},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "process resource contention",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "fork/exec test binary: resource temporarily unavailable"},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "dependency download TLS handshake failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "npm error OpenSSL/3.6.0: error:0A000410:SSL routines::ssl/tls alert handshake failure"},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "business TLS handshake failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; stderr: TestTLSConfig failed: tls alert handshake failure"},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "persistent TLS certificate failure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "tls: failed to verify certificate: x509: certificate signed by unknown authority"},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "typed business failure with contention words",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "validation_failed", Message: "resource temporarily unavailable"},
+			},
+			want: OutcomeFail,
+		},
+
+		// #3373: observed 2026-08-20 on the cloud instance. Each of these
+		// classified `fail` and routed to implement repasses against a
+		// problem no diff can fix.
+		{
+			name: "observed: playwright install on a read-only browsers mount",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{
+					Code:    "nonzero_exit",
+					Message: `command exited 1; failure: Error: EROFS: read-only file system, mkdir '/opt/ms-playwright/__dirlock'`,
+				},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "observed: module zip fetch denied by the egress proxy",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{
+					Code:    "nonzero_exit",
+					Message: `command exited 1; failure: go: golang.org/x/tools/cmd/deadcode@v0.35.0: Get "https://storage.googleapis.com/proxy-golang-org-prod/module/golang.org/x/tools/@v/v0.35.0.zip": Forbidden`,
+				},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			// The third observed message is the make trailer that #3374's
+			// last-equal-priority-wins defect substituted for the EROFS
+			// diagnostic above. It carries no signature and must not be
+			// invented into one — recognizing this failure depends on
+			// #3374 delivering the real diagnostic to the classifier.
+			name: "observed: stolen make trailer stays unrecognized (needs #3374)",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error: &apiv1.ErrorInfo{
+					Code:    "nonzero_exit",
+					Message: `command exited 1; failure: ci: portal-playwright-install: exit status 1`,
+				},
+			},
+			want: OutcomeFail,
+		},
+
+		// Filesystem errno family.
+		{
+			name: "go-style read-only filesystem write",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; failure: mkdir /workspace/.cache: read-only file system"},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "eacces on an install target",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: Error: EACCES: permission denied, open '/usr/local/lib/node_modules/.package-lock.json'`},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "go-style permission denied on a directory create",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; failure: mkdir /opt/cache: permission denied"},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "authorization denial is not a filesystem errno",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "command exited 1; failure: gh: Resource not accessible by integration (permission denied)"},
+			},
+			want: OutcomeFail,
+		},
+
+		// Dependency-transport family: both axes required.
+		{
+			name: "module proxy returns 403",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: go: example.com/mod@v1.2.3: reading https://proxy.golang.org/example.com/mod/@v/v1.2.3.zip: 403 Forbidden`},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "module proxy connection refused",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: go: downloading example.com/mod v1.2.3: dial tcp 10.0.0.1:443: connect: connection refused`},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "npm registry i/o timeout",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: npm error network request to https://registry.npmjs.org/@playwright%2ftest failed, reason: connect ETIMEDOUT 104.16.0.1:443`},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			name: "application 403 without a dependency fetch",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: --- FAIL: TestForbidden: want 200, got 403 Forbidden from https://api.example.com/v1/widgets`},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "dependency fetch host without a transport denial",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 1; failure: go: downloading example.com/mod v1.2.3: checksum mismatch against sum.golang.org`},
+			},
+			want: OutcomeFail,
+		},
+		{
+			name: "typed failure keeps its class despite an infra signature",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "validation_failed", Message: "read-only file system"},
 			},
 			want: OutcomeFail,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			inputs := AutomatedInputs(tc.result)
+			inputs, inputErr := AutomatedInputs(tc.result)
+			if inputErr != nil {
+				t.Fatalf("AutomatedInputs: %v", inputErr)
+			}
 			out, err := evalCheck(t, "failure-class", nil, inputs)
 			if err != nil || out != tc.want {
 				t.Fatalf("got %q, %v; want %q", out, err, tc.want)
 			}
 			if tc.result.Error != nil {
 				if inputs[InputKeyErrorCode] != tc.result.Error.Code ||
+					inputs[InputKeyErrorMessage] != tc.result.Error.Message ||
 					inputs[InputKeyErrorRetryable] != tc.result.Error.Retryable {
-					t.Fatalf("error inputs = %v, want code=%q retryable=%t", inputs, tc.result.Error.Code, tc.result.Error.Retryable)
+					t.Fatalf("error inputs = %v, want code=%q message=%q retryable=%t", inputs, tc.result.Error.Code, tc.result.Error.Message, tc.result.Error.Retryable)
 				}
 			}
 		})
+	}
+}
+
+func TestAutomatedInputsRejectsReservedOutputKeys(t *testing.T) {
+	subject := apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: "actual", Message: "actual failure", Retryable: true},
+		Outputs: map[string]interface{}{
+			InputKeyStatus:         "success",
+			InputKeyErrorCode:      "forged",
+			InputKeyErrorMessage:   "forged success",
+			InputKeyErrorRetryable: false,
+		},
+	}
+
+	inputs, err := AutomatedInputs(subject)
+	if err == nil {
+		t.Fatal("AutomatedInputs error = nil, want reserved-key collision")
+	}
+	for _, key := range []string{InputKeyStatus, InputKeyErrorCode, InputKeyErrorMessage, InputKeyErrorRetryable} {
+		if !strings.Contains(err.Error(), key) {
+			t.Errorf("AutomatedInputs error = %q, want reserved key %q", err, key)
+		}
+	}
+	if inputs[InputKeyStatus] != string(apiv1.ResultFailure) ||
+		inputs[InputKeyErrorCode] != "actual" ||
+		inputs[InputKeyErrorMessage] != "actual failure" ||
+		inputs[InputKeyErrorRetryable] != true {
+		t.Fatalf("automated inputs = %#v, want runner-owned result fields", inputs)
 	}
 }
 

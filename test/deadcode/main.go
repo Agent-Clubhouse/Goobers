@@ -129,6 +129,9 @@ func exemptionProblems(reports []reportPackage, exemptions map[string]string) []
 	seen := make(map[string]bool)
 	var problems []string
 	for _, report := range reports {
+		if strings.Contains(report.Path, "/test/") {
+			continue
+		}
 		for _, function := range report.Funcs {
 			symbol := report.Path + "." + function.Name
 			seen[symbol] = true

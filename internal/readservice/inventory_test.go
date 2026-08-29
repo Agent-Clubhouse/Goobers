@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -312,6 +313,44 @@ func TestInventoryProjectsScopedWorkflowIdentityGraphOwnershipAndActiveCounts(t 
 		strings.Contains(string(encoded), "docs-read-token") ||
 		strings.Contains(string(encoded), "shared-read-token") {
 		t.Fatalf("connections response exposes credential routing references: %s", encoded)
+	}
+}
+
+func TestWorkflowInventoryProjectsDesiredAndBlockedOccupancy(t *testing.T) {
+	definitions := inventoryDefinitions()
+	for i := range definitions.Workflows {
+		if definitions.Workflows[i].Spec.Gaggle == "alpha" && definitions.Workflows[i].Name == "deploy" {
+			definitions.Workflows[i].Spec.Readiness.DesiredConcurrentRuns = 2
+		}
+	}
+	service, layout := newInventoryService(t, definitions, nil)
+	createActiveRun(t, layout, strings.Repeat("4", 32), "alpha", "deploy")
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{
+		Type:     journal.EventTickSkipped,
+		Gaggle:   "alpha",
+		Workflow: "deploy",
+		Reason:   "refill blocked: " + localscheduler.ReasonBudget,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	workflow, err := service.Workflow(context.Background(), "alpha", "deploy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workflow.Concurrency.ActiveRuns != 1 ||
+		workflow.Concurrency.DesiredRuns != 2 ||
+		workflow.Concurrency.MaxConcurrentRuns != 2 ||
+		!workflow.Concurrency.AdmissionBlocked ||
+		workflow.Concurrency.BlockingCondition != localscheduler.ReasonBudget {
+		t.Fatalf("workflow concurrency = %+v", workflow.Concurrency)
 	}
 }
 

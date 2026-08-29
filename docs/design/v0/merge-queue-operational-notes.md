@@ -1,6 +1,6 @@
 # Merge queue — operational notes (prep draft)
 
-> Status: **Draft — prep slice, not the full #631 design.** Written ahead of the queue
+> Status: **draft — prep slice, not the full #631 design.** Written ahead of the queue
 > actually being enabled (that changeover is #759, separate and PM-executed) and ahead
 > of #758 (merge-policy abstraction), which `merge-review`/auto-merge will consume to
 > become queue-aware. Terminology here should be reconciled against #758's once that

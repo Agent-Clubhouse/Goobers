@@ -72,7 +72,7 @@ func TestGatherReviewThreadsAddsReviewEvidenceAndPreservesBrief(t *testing.T) {
 		case "/repos/your-org/your-repo/pulls/77/comments":
 			_, _ = w.Write([]byte(`[{"id":101,"user":{"login":"reviewer"},"body":"Guard this write.","path":"worker.go","line":42,"original_line":40,"side":"RIGHT","start_line":40,"original_start_line":38,"start_side":"RIGHT","diff_hunk":"@@ -38,3 +40,5 @@","created_at":"2026-07-23T10:05:00Z","html_url":"https://example/comments/101"}]`))
 		case "/graphql":
-			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":false,"isOutdated":false,"path":"worker.go","line":42,"originalLine":40,"diffSide":"RIGHT","startLine":40,"originalStartLine":38,"startDiffSide":"RIGHT","comments":{"nodes":[{"databaseId":101}]}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`))
+			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"PRRT_101","isResolved":false,"isOutdated":false,"path":"worker.go","line":42,"originalLine":40,"diffSide":"RIGHT","startLine":40,"originalStartLine":38,"startDiffSide":"RIGHT","comments":{"nodes":[{"databaseId":101}]}}],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`))
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
@@ -117,6 +117,7 @@ func TestGatherReviewThreadsAddsReviewEvidenceAndPreservesBrief(t *testing.T) {
 			Integrity: apiv1.IntegrityUnapproved,
 		}},
 		InlineComments: []apiv1.RemediationInlineComment{{
+			ID: 101, ThreadID: "PRRT_101",
 			Author: "reviewer", Body: "Guard this write.", Path: "worker.go",
 			Line: 42, OriginalLine: 40, Side: "RIGHT", DiffHunk: "@@ -38,3 +40,5 @@",
 			StartLine: 40, OriginalStartLine: 38, StartSide: "RIGHT",

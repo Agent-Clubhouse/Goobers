@@ -27,9 +27,10 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
-	"github.com/goobers/goobers/internal/testdep"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
+	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
 // dotnetServiceMachine loads the SHIPPED dotnet-service gaggle + implementation
@@ -118,7 +119,7 @@ func newPolyglotGaggleRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, r
 			if ierr != nil {
 				return nil, ierr
 			}
-			adapter := &harness.FakeAdapter{
+			adapter := &harnesstest.FakeAdapter{
 				Transcript: []byte("fake harness session for " + gooberName + "\n"),
 				Act: func(_ context.Context, req harness.RunRequest) error {
 					if gooberName == implementerName {
@@ -129,9 +130,9 @@ func newPolyglotGaggleRunner(t *testing.T, mgr *worktree.Manager, fixtureRepo, r
 						}
 						runSkeletonGit(t, req.Workspace, "add", "CHANGELOG.md")
 						runSkeletonGit(t, req.Workspace, "-c", "user.email=impl@test", "-c", "user.name=impl", "commit", "-m", "implement: touch changelog")
-						return harness.WriteCompletion(req.Workspace, req.CompletionPath, resultPayload(apiv1.ResultSuccess, "implemented"))
+						return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, resultPayload(apiv1.ResultSuccess, "implemented"))
 					}
-					return harness.WriteCompletion(req.Workspace, req.CompletionPath, verdictPayload(apiv1.VerdictPass, "looks good"))
+					return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, verdictPayload(apiv1.VerdictPass, "looks good"))
 				},
 			}
 			recorder, ok := rec.(harness.SpanRecorder)

@@ -37,6 +37,12 @@ describe("Insight page", () => {
     );
     expect(screen.getByRole("heading", { name: "Success and failure" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Failure reasons" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Highest-contributing nodes" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "View runs behind core implementation review: 1 failures, 1 escalations, 2 wasted attempts",
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Slowest stages" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Ready-pool health" })).toBeInTheDocument();
     expect(screen.getByText("Throughput / demand")).toBeInTheDocument();
@@ -280,29 +286,49 @@ describe("Insight page", () => {
         since: request?.since,
         until: request?.until,
       }));
-      // One call per trend bucket (7 for the default 7d window), plus one for
-      // the immediately preceding 7-day period, plus the page's own snapshot
-      // fetch for the selected window.
-      expect(ranges.length).toBeGreaterThanOrEqual(9);
-      const uniqueRanges = new Set(ranges.map((range) => `${range.since}:${range.until}`));
-      expect(uniqueRanges.size).toBeGreaterThanOrEqual(8);
+      expect(ranges.length).toBeGreaterThanOrEqual(2);
+      expect(getTelemetryStats.mock.calls.some(([request]) => request?.trendBuckets === 14)).toBe(
+        true,
+      );
     });
 
+    const trendRequestsBeforeAll = getTelemetryStats.mock.calls.filter(
+      ([request]) => request?.trendBuckets !== undefined,
+    ).length;
     await user.selectOptions(screen.getByLabelText("Time window"), "all");
     expect(
       await screen.findByText(
         "Trend and period comparison need a bounded time window — choose 24h, 7d, or 30d.",
       ),
     ).toBeInTheDocument();
+    expect(
+      getTelemetryStats.mock.calls.filter(([request]) => request?.trendBuckets !== undefined),
+    ).toHaveLength(trendRequestsBeforeAll);
   });
 
   it("shows an instance-wide cost rollup broken down by gaggle, unaffected by the selected scope", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
     getTelemetryStats.mockResolvedValue({
+      creditAssignment: [],
+      causalCredit: null,
       gaggles: [
-        { gaggle: "core", totalRuns: 4, completedRuns: 1, failedRuns: 1, otherRuns: 2 },
-        { gaggle: "tools", totalRuns: 1, completedRuns: 0, failedRuns: 0, otherRuns: 1 },
+        {
+          gaggle: "core",
+          totalRuns: 4,
+          completedRuns: 1,
+          failedRuns: 1,
+          infraFailedRuns: 0,
+          otherRuns: 2,
+        },
+        {
+          gaggle: "tools",
+          totalRuns: 1,
+          completedRuns: 0,
+          failedRuns: 0,
+          infraFailedRuns: 0,
+          otherRuns: 1,
+        },
       ],
       runs: [],
       stages: [],
@@ -314,6 +340,7 @@ describe("Insight page", () => {
           tokenSamples: 8,
           premiumRequestSamples: 0,
           costSamples: 8,
+          costUSD: 4,
           p50CostUSD: 0.8,
           p95CostUSD: 2.5,
           retryWasteAttempts: 0,
@@ -324,7 +351,10 @@ describe("Insight page", () => {
           totalAttempts: 1,
           tokenSamples: 0,
           premiumRequestSamples: 0,
-          costSamples: 0,
+          costSamples: 3,
+          costUSD: 6,
+          p50CostUSD: 0.1,
+          p95CostUSD: 5.8,
           retryWasteAttempts: 0,
         },
       ],
@@ -367,9 +397,10 @@ describe("Insight page", () => {
       name: /View instance spend for gaggle core: 8 samples, P50 \$0\.80, P95 \$2\.50/,
     });
     expect(coreLink).toBeInTheDocument();
-    expect(
-      screen.queryByRole("link", { name: /View instance spend for gaggle tools/ }),
-    ).not.toBeInTheDocument();
+    const toolsLink = screen.getByRole("link", {
+      name: /View instance spend for gaggle tools: 3 samples, P50 \$0\.10, P95 \$5\.80/,
+    });
+    expect(toolsLink.compareDocumentPosition(coreLink) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
     // Selecting a narrower scope must not change the instance-wide rollup —
     // it always reports across all gaggles regardless of the Scope dropdown.
@@ -384,6 +415,8 @@ describe("Insight page", () => {
   it("flags spend against a configured soft budget threshold", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     vi.spyOn(client, "getTelemetryStats").mockResolvedValue({
+      creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],
@@ -541,6 +574,8 @@ describe("Insight page", () => {
       screen.getByRole("option", { name: "Workflow · core / implementation" }),
     );
     getTelemetryStats.mockResolvedValueOnce({
+      creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],
@@ -652,6 +687,8 @@ describe("Insight page", () => {
     // bounce-cohort writers never once fired for this scope — the exact
     // #2277 bug shape (one writer dead, a sibling writer fine).
     getTelemetryStats.mockResolvedValueOnce({
+      creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],
@@ -691,6 +728,8 @@ describe("Insight page", () => {
     // Same writers HAVE fired historically, but this window has no rows —
     // must read differently from "never recorded" above.
     getTelemetryStats.mockResolvedValueOnce({
+      creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],

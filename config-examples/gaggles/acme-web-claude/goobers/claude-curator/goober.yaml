@@ -1,0 +1,40 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: claude-curator
+spec:
+  gaggle: acme-web-claude
+  role: curator
+  displayName: Curator (Claude Code)
+  instructions: instructions.md
+  harness: claude-code
+  model: auto
+  harnessOptions: {}
+  # Issues-only, no repo access (issue #25 scope) — enforced by capability
+  # non-injection (SEC-042/SEC-045): credentials for github:pr/repo:* are simply
+  # never materialized into this goober's run environment.
+  capabilities:
+    - github:issues:write
+    - github:milestones:write
+    - agent:model
+  policyActions:
+    - assign-milestone
+    - close-issue
+    - comment-on-issue
+    - create-issue
+    - edit-issue
+    - label-issue
+  skills:
+    - triage
+  # "github" has no claude-code tool-group mapping yet (internal/harness/
+  # claude.go's claudeToolGroups doc comment) — Copilot resolves it to
+  # github-mcp-server-* tools, claude-code passes it through unexpanded and
+  # unenforced. Left declared here to mirror acme-web's Copilot config
+  # byte-for-byte; github:issues:write/github:milestones:write above are
+  # still the actual, real gate on what this goober can do.
+  tools:
+    - github
+    - shell
+  scaleFactor: 1
+  workflows:
+    - claude-backlog-curation

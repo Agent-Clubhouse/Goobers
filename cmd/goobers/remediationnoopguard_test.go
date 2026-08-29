@@ -143,7 +143,7 @@ func TestTerminalPRRemediationNoopLockTimeoutDefersRecordingToRecovery(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	holder, err := lock.Acquire(filepath.Join(l.SchedulerDir(), claimLockFileName))
+	holder, err := lock.TryAcquire(filepath.Join(l.SchedulerDir(), claimLockFileName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestTerminalPRRemediationNoopLockTimeoutDefersRecordingToRecovery(t *testin
 		t.Fatal(err)
 	}
 	defer func() { _ = log.Close() }()
-	released, err := recoverClaims(l, log, time.Now(), nil)
+	released, err := recoverClaims(l, log, time.Now(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +224,40 @@ func TestRemediationNoopAttemptsResetsOnHeadOrCauseChange(t *testing.T) {
 	}
 	if record, err := remediationNoopRecordForSignature(l, 77, changedCause); err != nil || record.Attempts != 0 {
 		t.Fatalf("post-progress record = %+v, err = %v; want reset", record, err)
+	}
+}
+
+func TestGatherPRContextDigestNoopIsIdempotentAndHonorsOperatorReset(t *testing.T) {
+	l := layoutFor(initDemo(t))
+	signature := remediationNoopSignature{HeadSHA: "head-a", DiffDigest: "sha256:diff-a"}
+	key := remediationNoopKey("", 77)
+
+	record, reset, err := recordGatherPRContextDigestNoop(l, 77, signature, "run-1", false)
+	if err != nil || reset || record.Attempts != 1 {
+		t.Fatalf("first record = %+v, reset = %v, err = %v; want one attempt", record, reset, err)
+	}
+	record, reset, err = recordGatherPRContextDigestNoop(l, 77, signature, "run-1", false)
+	if err != nil || reset || record.Attempts != 1 {
+		t.Fatalf("duplicate record = %+v, reset = %v, err = %v; want idempotent attempt", record, reset, err)
+	}
+	record, reset, err = recordGatherPRContextDigestNoop(l, 77, signature, "run-2", false)
+	if err != nil || reset || record.Attempts != remediationNoopLimit {
+		t.Fatalf("second run record = %+v, reset = %v, err = %v; want limit %d", record, reset, err, remediationNoopLimit)
+	}
+	if err := markRemediationNoopParked(l, key); err != nil {
+		t.Fatal(err)
+	}
+
+	record, reset, err = recordGatherPRContextDigestNoop(l, 77, signature, "run-3", false)
+	if err != nil || !reset || record.Attempts != 0 {
+		t.Fatalf("operator reset record = %+v, reset = %v, err = %v; want cleared guard", record, reset, err)
+	}
+	state, err := readRemediationNoopState(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.Records[key]; ok {
+		t.Fatalf("record = %+v, want operator-cleared guard removed", state.Records[key])
 	}
 }
 

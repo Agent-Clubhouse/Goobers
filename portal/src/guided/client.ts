@@ -10,6 +10,11 @@
 // generated wire-contract drift checks.
 
 export interface GuidedEnvState {
+  /** The repository-token environment variable name the server is actually
+   *  checking — the default, or whatever `connect --token-env` recorded.
+   *  goobersGithubToken reports presence for exactly this name, read from
+   *  the getting-started server's own process. */
+  tokenEnv: string;
   goobersGithubToken: boolean;
   goobersGithubIssuesToken: boolean;
 }
@@ -99,6 +104,17 @@ export interface StatusEnvelope {
   };
 }
 
+/** `/guided/actions/probe-backlog` result (#2638): a read-only eligibility
+ *  scan run BEFORE the sample quickstart's own run dispatches, so the wizard
+ *  can warn "0 eligible issues" instead of letting a no-work run masquerade
+ *  as success. `eligibleCount` is null when the probe could not run yet (no
+ *  issues token exported) — distinct from a checked, genuine zero. */
+export interface GuidedProbeResult {
+  exitCode: number;
+  eligibleCount: number | null;
+  stderr: string;
+}
+
 export interface StubSampleRequest {
   workTracking?: string;
   tokenEnv?: string;
@@ -179,6 +195,10 @@ export class GuidedClient {
 
   getStatus(): Promise<GuidedEnvelopeResult<StatusEnvelope>> {
     return this.request("/guided/status");
+  }
+
+  probeBacklog(): Promise<GuidedProbeResult> {
+    return this.request("/guided/actions/probe-backlog");
   }
 
   private post<T>(path: string, body: unknown): Promise<T> {

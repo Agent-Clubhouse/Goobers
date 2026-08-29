@@ -50,10 +50,11 @@ func runTraceWithFollowContextAndFactory(
 	)
 }
 
-const traceHelp = "Usage: goobers trace [--json] [--follow] [--transcripts | --transcript=<stage>] <run-id> [path]\n\n" +
+const traceHelp = "Usage: goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]\n\n" +
 	"Show a run's journal events and, if the telemetry rollup has ingested it,\n" +
 	"its trace spans. Use --transcripts to show all recorded agent transcripts,\n" +
-	"or --transcript to select one stage. With --follow, stream a live run's\n" +
+	"or --transcript to select one stage. Use --summary for run metadata and\n" +
+	"review verdicts, or --verdicts for verdicts alone. With --follow, stream a live run's\n" +
 	"events until it finishes; --json --follow emits JSON Lines (default path\n" +
 	"\".\"). Remediation escalations include the typed outcome, attempted flag,\n" +
 	"and attempted causes in the text summary and JSON `escalation.remediation`\n" +
@@ -66,10 +67,12 @@ func runTraceWithFactories(
 	newOfflineRuns func(instance.Layout) (readservice.OfflineRuns, error),
 	newFollowContext func() (context.Context, func()),
 ) int {
-	fs := flag.NewFlagSet("trace", flag.ContinueOnError)
+	fs := newCLIFlagSet("trace", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit the run trace as JSON")
 	follow := fs.Bool("follow", false, "stream events until the run reaches a terminal phase")
+	summary := fs.Bool("summary", false, "show run metadata and review verdicts")
+	showVerdicts := fs.Bool("verdicts", false, "show review verdict content")
 	showTranscripts := fs.Bool("transcripts", false, "show every recorded agent-stage transcript")
 	transcriptStage := fs.String("transcript", "", "show recorded transcript data for one stage")
 	fs.Usage = helpUsage(stderr, "trace")
@@ -86,8 +89,16 @@ func runTraceWithFactories(
 		pf(stderr, "error: --transcripts and --transcript cannot be used together\n")
 		return 2
 	}
+	if *summary && *showVerdicts {
+		pf(stderr, "error: --summary and --verdicts cannot be used together\n")
+		return 2
+	}
 	if *follow && (*showTranscripts || transcriptSelected) {
 		pf(stderr, "error: --follow cannot be used with --transcripts or --transcript\n")
+		return 2
+	}
+	if *follow && (*summary || *showVerdicts) {
+		pf(stderr, "error: --follow cannot be used with --summary or --verdicts\n")
 		return 2
 	}
 	selectedStage := strings.TrimSpace(*transcriptStage)
@@ -205,6 +216,7 @@ func runTraceWithFactories(
 	now := time.Now()
 	timeline := buildTraceTimeline(detail, ledger.Events, transcripts, telemetryAttempts, now)
 	terminal := terminalCause(detail, ledger.Events)
+	verdicts := loadVerdictViews(ctx, reads, runID, ledger.Events)
 	if *jsonOutput {
 		result := traceJSONResult{
 			Identity:      identity,
@@ -217,11 +229,22 @@ func runTraceWithFactories(
 			Outcome:       detail.Outcome,
 			Events:        traceJSONEvents(ledger.Events),
 			Spans:         spans,
+			Verdicts:      verdicts,
 		}
 		if err := json.NewEncoder(stdout).Encode(result); err != nil {
 			pf(stderr, "error: encode trace: %v\n", err)
 			return 2
 		}
+		return 0
+	}
+	if *showVerdicts {
+		renderVerdicts(stdout, verdicts)
+		return 0
+	}
+	if *summary {
+		printTraceRunSummary(stdout, detail, state, repasses, now)
+		pln(stdout, "")
+		renderVerdicts(stdout, verdicts)
 		return 0
 	}
 	ciFailures, err := traceCIFailures(ctx, reads, runID, ledger.Events)
@@ -359,6 +382,18 @@ type traceJSONResult struct {
 	Outcome       *readservice.RunOutcome `json:"outcome,omitempty"`
 	Events        []traceJSONEvent        `json:"events"`
 	Spans         []rollup.SpanSummary    `json:"spans"`
+	Verdicts      []verdictView           `json:"verdicts"`
+}
+
+func printTraceRunSummary(stdout io.Writer, detail readservice.RunDetail, state *journal.State, repasses int, now time.Time) {
+	pf(stdout, "run:      %s\n", detail.ID)
+	pf(stdout, "workflow: %s (v%d)\n", detail.Workflow, detail.WorkflowVersion)
+	pf(stdout, "phase:    %s\n", detail.Phase)
+	pf(stdout, "started:  %s\n", detail.StartedAt.Format(time.RFC3339))
+	if state != nil {
+		pf(stdout, "last activity: %s (%s)\n", formatLastActivity(now, state.UpdatedAt), state.UpdatedAt.Format(time.RFC3339))
+	}
+	pf(stdout, "repasses: %d\n", repasses)
 }
 
 type traceJSONEvent struct {
@@ -562,7 +597,24 @@ func formatEvent(ev journal.Event) string {
 		}
 		return s
 	case journal.EventGateEvaluated:
-		return fmt.Sprintf("%s gate=%s verdict=%s target=%s", prefix, ev.Gate, ev.Verdict, ev.Target)
+		s := fmt.Sprintf("%s gate=%s verdict=%s target=%s", prefix, ev.Gate, ev.Verdict, ev.Target)
+		if reason, _ := ev.Runner["reason"].(string); reason != "" {
+			s += " reason=" + reason
+		}
+		for _, field := range []struct {
+			key   string
+			label string
+		}{
+			{"resolvedFindingIdentities", "resolved"},
+			{"suppressedFindingIdentities", "suppressed"},
+			{"reopenedFindingIdentities", "reopened"},
+			{"disprovenFindingIdentities", "disproven"},
+		} {
+			if ids := runnerStringList(ev.Runner[field.key]); len(ids) > 0 {
+				s += fmt.Sprintf(" %s=%s", field.label, strings.Join(ids, ","))
+			}
+		}
+		return s
 	case journal.EventArtifactRecorded, journal.EventInputSnapshot:
 		s := fmt.Sprintf("%s name=%s", prefix, ev.Name)
 		if ev.Ref != nil {
@@ -590,6 +642,42 @@ func formatEvent(ev journal.Event) string {
 			"%s actor=%s target=%s from=%s workflowVersion=%d workflowDigest=%s",
 			prefix, ev.Actor, ev.Target, ev.Status, ev.WorkflowVersion, ev.WorkflowDigest,
 		)
+	case journal.EventRunnerAnnotation:
+		kind, _ := ev.Runner["kind"].(string)
+		action, _ := ev.Runner["action"].(string)
+		reason, _ := ev.Runner["reason"].(string)
+		s := prefix
+		if kind != "" {
+			s += " kind=" + kind
+		}
+		if action != "" {
+			s += " action=" + action
+		}
+		if reason != "" {
+			s += " reason=" + reason
+		}
+		if stage, _ := ev.Runner["stage"].(string); stage != "" {
+			s += " stage=" + stage
+		}
+		if kind == "learning.episode.injected" {
+			for _, field := range []string{"episodeId", "sourceRunId", "sourceSeq", "gate", "target", "sourceAttempt", "nextAttempt", "classification", "recommendedAction"} {
+				if value, ok := ev.Runner[field]; ok && fmt.Sprint(value) != "" {
+					s += fmt.Sprintf(" %s=%v", field, value)
+				}
+			}
+			if ids := runnerStringList(ev.Runner["findingIdentities"]); len(ids) > 0 {
+				s += " findings=" + strings.Join(ids, ",")
+			}
+		}
+		return s
+	case journal.EventRunnerPlacement:
+		s := prefix
+		for _, key := range []string{"runner", "node", "host", "os", "image", "pod"} {
+			if value, _ := ev.Runner[key].(string); value != "" {
+				s += " " + key + "=" + value
+			}
+		}
+		return s
 	case journal.EventRunStarted, journal.EventRunFinished:
 		if ev.Status != "" {
 			return fmt.Sprintf("%s status=%s", prefix, ev.Status)
@@ -597,6 +685,23 @@ func formatEvent(ev journal.Event) string {
 		return prefix
 	default:
 		return prefix
+	}
+}
+
+func runnerStringList(value any) []string {
+	switch values := value.(type) {
+	case []string:
+		return values
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok && text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

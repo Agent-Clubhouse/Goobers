@@ -56,6 +56,75 @@ func TestCompileValid(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsIncompatibleClaimLedgerPlacement(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "claim",
+		Tasks: []apiv1.Task{
+			{
+				Name: "claim", Type: apiv1.TaskDeterministic, Goal: "claim", Next: "release",
+				Run:                  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+				RequiredCapabilities: []string{"os=linux"},
+			},
+			{
+				Name: "release", Type: apiv1.TaskDeterministic, Goal: "release",
+				Run:                  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--release"}},
+				RequiredCapabilities: []string{"os=windows"},
+			},
+		},
+	}
+	_, err := compileAcknowledged(Definition{Name: "claims-placement", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), `claims-mutating tasks "claim" and "release" declare incompatible requiredCapabilities`) {
+		t.Fatalf("Compile error = %v, want incompatible claims placement", err)
+	}
+}
+
+func TestClaimLedgerPlacementProblems(t *testing.T) {
+	task := func(name, command string, args, required []string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:                  &apiv1.DeterministicRun{Command: append([]string{"goobers", command}, args...)},
+			RequiredCapabilities: required,
+		}
+	}
+	tests := []struct {
+		name  string
+		tasks []apiv1.Task
+		want  bool
+	}{
+		{
+			name: "same placement in different order",
+			tasks: []apiv1.Task{
+				task("select", "pr-select", nil, []string{"git", "os=linux"}),
+				task("release", "pr-claim", []string{"--release"}, []string{"os=linux", "git"}),
+			},
+		},
+		{
+			name: "pinned and unpinned differ",
+			tasks: []apiv1.Task{
+				task("select", "select-source", nil, nil),
+				task("close", "issue-close-out", nil, []string{"os=linux"}),
+			},
+			want: true,
+		},
+		{
+			name: "non-mutating backlog query ignored",
+			tasks: []apiv1.Task{
+				task("read", "backlog-query", []string{"--read-only"}, []string{"os=windows"}),
+				task("claim", "backlog-query", []string{"--claim"}, []string{"os=linux"}),
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := claimLedgerPlacementProblems(Definition{Spec: apiv1.WorkflowSpec{Tasks: test.tasks}})
+			if (len(got) > 0) != test.want {
+				t.Fatalf("claimLedgerPlacementProblems() = %v, want problem %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestCompileRejectsUnknownMinimumIntegrity(t *testing.T) {
 	spec := linearSpec()
 	spec.Tasks[0].MinimumIntegrity = "owner-ish"
@@ -289,7 +358,7 @@ func TestCheckWarningsBacklogClaimRequiresResultFile(t *testing.T) {
 		{name: "empty result file", command: task.Run.Command, inputs: map[string]string{"resultFile": "  "}, wantWarn: true},
 		{name: "configured result file", command: task.Run.Command, inputs: map[string]string{"resultFile": "claimed-item.json"}},
 		{name: "read only query", command: []string{"goobers", "backlog-query"}},
-		{name: "unrelated claim flag", command: []string{"goobers", "status", "--claim"}},
+		{name: "unrelated claim flag", command: []string{"goobers", "publish-batch", "--claim"}},
 		{name: "shell command", command: []string{"sh", "-c", "goobers backlog-query --claim"}, wantWarn: true},
 	}
 	for _, tc := range cases {
@@ -515,6 +584,28 @@ func TestCompileRejectsBadSchedule(t *testing.T) {
 	}
 }
 
+func TestCompileValidatesScheduleIdleBackoff(t *testing.T) {
+	spec := linearSpec()
+	spec.Triggers = []apiv1.Trigger{{
+		Type:        apiv1.TriggerSchedule,
+		Schedule:    "* * * * *",
+		IdleBackoff: &apiv1.IdleBackoff{Floor: "10m", Ceiling: "2m"},
+	}}
+	_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "ceiling 2m0s must not be below floor 10m0s") {
+		t.Fatalf("expected invalid idle-backoff bounds, got %v", err)
+	}
+}
+
+func TestCompileRejectsScheduleThatNeverFires(t *testing.T) {
+	spec := linearSpec()
+	spec.Triggers = []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "0 0 30 2 *"}}
+	_, err := compileAcknowledged(Definition{Name: "x", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "can never fire") {
+		t.Fatalf("expected unsatisfiable-schedule error, got %v", err)
+	}
+}
+
 func TestValidSchedulesAccepted(t *testing.T) {
 	for _, ok := range []string{"0 * * * *", "*/5 0 * * * *", "@daily", "@hourly", "@every 1h30m", "0 0 1 * *"} {
 		spec := linearSpec()
@@ -647,7 +738,7 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 		Start:  "implement",
 		Tasks: []apiv1.Task{
 			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "g",
-				Capabilities:  []string{"github:issues:write", "repo:push"},
+				Capabilities:  []string{"github:issues:write", "repo:push", string(capability.AgentModel)},
 				PolicyActions: []string{"label-issue", "modify-repository"}},
 		},
 	}
@@ -655,7 +746,7 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 		"coder": {
 			Role:          "coder",
 			Harness:       apiv1.HarnessCopilot,
-			Capabilities:  []string{"github:issues:write", "repo:push"},
+			Capabilities:  []string{"github:issues:write", "repo:push", string(capability.AgentModel)},
 			PolicyActions: []string{"label-issue", "modify-repository"},
 		},
 	}
@@ -670,7 +761,7 @@ func TestCompileAdmissionCapabilities(t *testing.T) {
 	goobers["coder"] = apiv1.GooberSpec{
 		Role:          "coder",
 		Harness:       apiv1.HarnessCopilot,
-		Capabilities:  []string{"github:issues:write"},
+		Capabilities:  []string{"github:issues:write", string(capability.AgentModel)},
 		PolicyActions: []string{"label-issue", "modify-repository"},
 	}
 	_, err := compileAcknowledged(
@@ -689,11 +780,12 @@ func TestCompileRequiresTaskMCPCredentialCapabilities(t *testing.T) {
 		Start:  "implement",
 		Tasks: []apiv1.Task{{
 			Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "g",
+			Capabilities: []string{string(capability.AgentModel)},
 		}},
 	}
 	goobers := map[string]apiv1.GooberSpec{
 		"coder": {
-			Capabilities: []string{"contents:read"},
+			Capabilities: []string{"contents:read", string(capability.AgentModel)},
 			MCPServers: []apiv1.MCPServer{{
 				Name: "context",
 				URL:  "https://mcp.example.test",
@@ -713,7 +805,7 @@ func TestCompileRequiresTaskMCPCredentialCapabilities(t *testing.T) {
 		t.Fatalf("Compile error = %v, want missing MCP credential capability", err)
 	}
 
-	spec.Tasks[0].Capabilities = []string{"contents:read"}
+	spec.Tasks[0].Capabilities = []string{"contents:read", string(capability.AgentModel)}
 	if _, err := compileAcknowledged(
 		Definition{Name: "mcp-capability", Version: 1, Spec: spec},
 		WithGoobers(goobers),
@@ -817,18 +909,23 @@ func TestCompileValidatesBuiltInProviderCapabilityManifest(t *testing.T) {
 	}
 
 	readOnlyTask := apiv1.Task{
-		Name:         "read-backlog",
-		Type:         apiv1.TaskDeterministic,
-		Goal:         "confirm backlog access",
-		Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--read-only"}},
-		Capabilities: []string{string(capability.GitHubIssuesWrite)},
+		Name: "read-backlog",
+		Type: apiv1.TaskDeterministic,
+		Goal: "confirm backlog access",
+		Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--read-only"}},
 	}
-	_, err := compileAcknowledged(definition("write-only-backlog-read", readOnlyTask))
+	_, err := compileAcknowledged(definition("no-capability-backlog-read", readOnlyTask))
 	want := `task "read-backlog" invokes built-in subcommand "backlog-query" but does not declare capability "github:issues:read"`
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Compile error = %v, want containing %q", err, want)
 	}
-	readOnlyTask.Capabilities = append(readOnlyTask.Capabilities, string(capability.GitHubIssuesRead))
+	// Issue-read credentials are separately brokered, so a broader write grant
+	// cannot satisfy this requirement.
+	readOnlyTask.Capabilities = []string{string(capability.GitHubIssuesWrite)}
+	if _, err := compileAcknowledged(definition("write-subsumes-backlog-read", readOnlyTask)); err == nil || !strings.Contains(err.Error(), "GOOBERS_CRED_GITHUB_ISSUES_READ") {
+		t.Fatalf("read-only backlog-query with write capability should fail exact admission: %v", err)
+	}
+	readOnlyTask.Capabilities = []string{string(capability.GitHubIssuesRead)}
 	if _, err := compileAcknowledged(definition("explicit-backlog-read", readOnlyTask)); err != nil {
 		t.Fatalf("read-only backlog-query with explicit read capability should compile: %v", err)
 	}
@@ -1191,6 +1288,41 @@ func TestCompileBacklogHealthFeedbackRequiresUpdateAction(t *testing.T) {
 	}
 }
 
+func TestRespondToFindingsCheckDoesNotPrescribeMutation(t *testing.T) {
+	cases := []struct {
+		name         string
+		args         []string
+		wantMutation bool
+	}{
+		{name: "long flag", args: []string{"--check"}},
+		{name: "short flag", args: []string{"-check"}},
+		{name: "explicit true", args: []string{"--check=true"}},
+		{name: "before path", args: []string{"--check", "path"}},
+		{name: "explicit false", args: []string{"--check=false"}, wantMutation: true},
+		{name: "overridden false", args: []string{"--check", "--check=false"}, wantMutation: true},
+		{name: "after path", args: []string{"path", "--check"}, wantMutation: true},
+		{name: "after terminator", args: []string{"--", "--check"}, wantMutation: true},
+		{name: "missing flag", wantMutation: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := apiv1.Task{
+				Run: &apiv1.DeterministicRun{
+					Command: append([]string{"goobers", "respond-to-findings"}, tc.args...),
+				},
+			}
+			got := prescribedCommandPolicyActions(task)
+			if tc.wantMutation {
+				if len(got) != 1 || got[0] != "respond-to-findings" {
+					t.Fatalf("policy actions = %v, want [respond-to-findings]", got)
+				}
+			} else if len(got) != 0 {
+				t.Fatalf("policy actions = %v, want none", got)
+			}
+		})
+	}
+}
+
 func TestCompileReconcileBranchesDeletePolicyAction(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -1282,11 +1414,11 @@ func TestCompileMutationCapabilityWithoutPrescribedAction(t *testing.T) {
 			Type:         apiv1.TaskAgentic,
 			Goober:       "implementer",
 			Goal:         "run a fixture agent",
-			Capabilities: []string{string(capability.RepoPush)},
+			Capabilities: []string{string(capability.RepoPush), string(capability.AgentModel)},
 		}},
 	}
 	goobers := map[string]apiv1.GooberSpec{
-		"implementer": {Capabilities: []string{string(capability.RepoPush)}},
+		"implementer": {Capabilities: []string{string(capability.RepoPush), string(capability.AgentModel)}},
 	}
 
 	if _, err := compileAcknowledged(
@@ -1306,12 +1438,12 @@ func TestCompileAgenticPersonaActionsAreLoadBearing(t *testing.T) {
 			Type:         apiv1.TaskAgentic,
 			Goober:       "implementer",
 			Goal:         "remediate the pull request",
-			Capabilities: []string{string(capability.RepoPush)},
+			Capabilities: []string{string(capability.RepoPush), string(capability.AgentModel)},
 		}},
 	}
 	goobers := map[string]apiv1.GooberSpec{
 		"implementer": {
-			Capabilities:  []string{string(capability.RepoPush)},
+			Capabilities:  []string{string(capability.RepoPush), string(capability.AgentModel)},
 			PolicyActions: []string{"modify-repository"},
 		},
 	}
@@ -1337,7 +1469,7 @@ func TestCompileAgenticPersonaActionsAreLoadBearing(t *testing.T) {
 func TestCompileConditionalPersonaActionRequiresTaskOptIn(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{
 		"nominator": {
-			Capabilities:             []string{string(capability.GitHubIssuesWrite), string(capability.GitHubIssuesApprove)},
+			Capabilities:             []string{string(capability.GitHubIssuesWrite), string(capability.GitHubIssuesApprove), string(capability.AgentModel)},
 			PolicyActions:            []string{"create-issue"},
 			ConditionalPolicyActions: []string{"approve-issue"},
 		},
@@ -1383,7 +1515,7 @@ func TestCompileConditionalPersonaActionRequiresTaskOptIn(t *testing.T) {
 					Type:          apiv1.TaskAgentic,
 					Goober:        "nominator",
 					Goal:          "file evidence-backed issues",
-					Capabilities:  tc.capabilities,
+					Capabilities:  append(tc.capabilities, string(capability.AgentModel)),
 					PolicyActions: tc.policyActions,
 				}},
 			}
@@ -1697,6 +1829,108 @@ func TestCompileAdmissionUsesRegisteredHarnessNames(t *testing.T) {
 	if _, err := compileAcknowledged(def, WithGoobers(goobers), WithKnownHarnesses(nil)); err == nil ||
 		!strings.Contains(err.Error(), `unknown harness "alternate"`) {
 		t.Fatalf("unregistered harness should fail closed, got %v", err)
+	}
+}
+
+func TestCompileAdmissionRequiresModelCapabilityForTokenBackedHarness(t *testing.T) {
+	spec := linearSpec()
+	spec.Tasks[0].Capabilities = []string{string(capability.AgentModel)}
+
+	tests := []struct {
+		name         string
+		harness      apiv1.Harness
+		gooberCaps   []string
+		taskCaps     []string
+		wantErr      string
+		wantAccepted bool
+	}{
+		{
+			name:     "goober grant missing",
+			harness:  apiv1.HarnessCopilot,
+			taskCaps: []string{string(capability.AgentModel)},
+			wantErr:  `task "implement" uses goober "coder" (harness: copilot) but the goober does not grant capability "agent:model"; the harness will receive no model credential`,
+		},
+		{
+			name:       "task declaration missing",
+			harness:    apiv1.HarnessCopilot,
+			gooberCaps: []string{string(capability.AgentModel)},
+			wantErr:    `task "implement" uses goober "coder" (harness: copilot) but does not declare capability "agent:model"; the harness will receive no model credential`,
+		},
+		{
+			name:         "both declared",
+			harness:      apiv1.HarnessCopilot,
+			gooberCaps:   []string{string(capability.AgentModel)},
+			taskCaps:     []string{string(capability.AgentModel)},
+			wantAccepted: true,
+		},
+		{
+			name:         "custom harness does not require platform model credential",
+			harness:      apiv1.Harness("alternate"),
+			wantAccepted: true,
+		},
+		{
+			name:     "claude code goober grant missing",
+			harness:  apiv1.HarnessClaudeCode,
+			taskCaps: []string{string(capability.AgentModel)},
+			wantErr:  `task "implement" uses goober "coder" (harness: claude-code) but the goober does not grant capability "agent:model"; the harness will receive no model credential`,
+		},
+		{
+			name:       "claude code task declaration missing",
+			harness:    apiv1.HarnessClaudeCode,
+			gooberCaps: []string{string(capability.AgentModel)},
+			wantErr:    `task "implement" uses goober "coder" (harness: claude-code) but does not declare capability "agent:model"; the harness will receive no model credential`,
+		},
+		{
+			name:         "claude code both declared",
+			harness:      apiv1.HarnessClaudeCode,
+			gooberCaps:   []string{string(capability.AgentModel)},
+			taskCaps:     []string{string(capability.AgentModel)},
+			wantAccepted: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec.Tasks[0].Capabilities = tc.taskCaps
+			_, err := compileAcknowledged(
+				Definition{Name: "x", Version: 1, Spec: spec},
+				WithGoobers(map[string]apiv1.GooberSpec{
+					"coder": {Role: "coder", Harness: tc.harness, Capabilities: tc.gooberCaps},
+				}),
+				WithKnownHarnesses([]string{string(tc.harness)}),
+			)
+			if tc.wantAccepted {
+				if err != nil {
+					t.Fatalf("Compile() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Compile() error = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestCompileAdmissionRequiresReviewerModelCapability(t *testing.T) {
+	spec := gatedSpec()
+	spec.Tasks[0].Capabilities = []string{string(capability.AgentModel)}
+	goobers := map[string]apiv1.GooberSpec{
+		"coder": {
+			Role:         "coder",
+			Harness:      apiv1.HarnessCopilot,
+			Capabilities: []string{string(capability.AgentModel)},
+		},
+		"reviewer": {Role: "reviewer", Harness: apiv1.HarnessCopilot},
+	}
+
+	_, err := compileAcknowledged(
+		Definition{Name: "x", Version: 1, Spec: spec},
+		WithGoobers(goobers),
+		WithKnownHarnesses([]string{string(apiv1.HarnessCopilot)}),
+	)
+	want := `gate "review" reviewer uses goober "reviewer" (harness: copilot) but the goober does not grant capability "agent:model"; the harness will receive no model credential`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Compile() error = %v, want containing %q", err, want)
 	}
 }
 

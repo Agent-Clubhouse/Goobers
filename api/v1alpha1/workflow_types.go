@@ -1,6 +1,12 @@
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // TriggerType differentiates workflow archetypes without splitting the taxonomy:
 // workflows run manually, consume backlog items, or react to a schedule,
@@ -27,6 +33,7 @@ const (
 // Trigger declares one condition under which the scheduler may start a run. A run
 // starts only when a trigger fires AND readiness is satisfied (WF-011).
 // +kubebuilder:validation:XValidation:rule="!has(self.trustLabel) || self.type == 'backlog-item'",message="trustLabel is supported only for type=backlog-item"
+// +kubebuilder:validation:XValidation:rule="!has(self.idleBackoff) || self.type == 'schedule'",message="idleBackoff is supported only for type=schedule"
 type Trigger struct {
 	// +kubebuilder:validation:Enum=manual;backlog-item;schedule;signal;webhook
 	// +kubebuilder:validation:Required
@@ -62,6 +69,10 @@ type Trigger struct {
 	// type=schedule.
 	// +optional
 	Schedule string `json:"schedule,omitempty" yaml:"schedule,omitempty"`
+	// IdleBackoff reduces no-work polling while preserving the configured
+	// schedule whenever work is available. Omitted uses the default policy.
+	// +optional
+	IdleBackoff *IdleBackoff `json:"idleBackoff,omitempty" yaml:"idleBackoff,omitempty"`
 	// Signal is the named external signal for type=signal.
 	// +optional
 	Signal string `json:"signal,omitempty" yaml:"signal,omitempty"`
@@ -70,6 +81,20 @@ type Trigger struct {
 	// +kubebuilder:validation:MinItems=1
 	// +optional
 	Events []string `json:"events,omitempty" yaml:"events,omitempty"`
+}
+
+// IdleBackoff configures adaptive delay after consecutive scheduled runs find
+// no work. Floor and Ceiling are Go duration strings.
+type IdleBackoff struct {
+	// Enabled defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Floor defaults to one minute.
+	// +optional
+	Floor string `json:"floor,omitempty" yaml:"floor,omitempty"`
+	// Ceiling defaults to fifteen minutes.
+	// +optional
+	Ceiling string `json:"ceiling,omitempty" yaml:"ceiling,omitempty"`
 }
 
 // ReadinessConditions bound when a run may start and how emergent chains are
@@ -84,6 +109,12 @@ type ReadinessConditions struct {
 	// Unset falls back to a spec default of 10 (internal/localscheduler's
 	// Conditions.Admit), not "unenforced" — every workflow gets some
 	// guardrail against a runaway chain out of the box (#339).
+	//
+	// Zero means the same thing as unset here (falls back to 10) — NOT
+	// "unlimited". That is the opposite convention from instance.yaml's
+	// runConditions.maxParallelRuns, where zero means unlimited. There is
+	// currently no way to express "no hourly budget" for a single workflow;
+	// set an explicit large value instead if you want a high ceiling (#3360).
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=10
 	// +optional
@@ -116,6 +147,14 @@ type ReadinessConditions struct {
 	// would wrongly block them on an unrelated open implementation PR.
 	// +optional
 	MaxOpenPRs int32 `json:"maxOpenPRs,omitempty" yaml:"maxOpenPRs,omitempty"`
+	// DesiredConcurrentRuns targets a minimum concurrent occupancy for queue-processing
+	// workflows. When set and less than or equal to MaxConcurrentRuns, the scheduler maintains
+	// refill intent to keep active runs at this level when eligible work is available.
+	// Budget/deadline rejections retain refill intent and retry with backoff. A workflow
+	// remains trigger-driven unless this is explicitly set (#3491).
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	DesiredConcurrentRuns int32 `json:"desiredConcurrentRuns,omitempty" yaml:"desiredConcurrentRuns,omitempty"`
 }
 
 // TaskType is the execution kind of a task: code-driven or goober-executed.
@@ -156,6 +195,11 @@ type Task struct {
 	// type=agentic; must be empty when type=deterministic (TSK-010).
 	// +optional
 	Goober string `json:"goober,omitempty" yaml:"goober,omitempty"`
+	// Experiment routes this task across two or three declared safety arms.
+	// Variants overlay task inputs; selection and outcomes are journaled by the
+	// runner and promotion remains an external approval decision.
+	// +optional
+	Experiment *BanditExperiment `json:"experiment,omitempty" yaml:"experiment,omitempty"`
 	// Run defines the code to execute for a deterministic task. Required when
 	// type=deterministic; must be empty when type=agentic.
 	// +optional
@@ -179,7 +223,8 @@ type Task struct {
 	// ContextFrom limits this task's context pointers to artifacts and verdicts
 	// produced by the named tasks or gates. Empty preserves the historical
 	// behavior of receiving every accumulated pointer.
-	// +kubebuilder:validation:UniqueItems=true
+	// Duplicate entries are rejected by api/validate (CTX001) rather than by a
+	// CRD uniqueness marker, which Kubernetes refuses to install.
 	// +optional
 	ContextFrom []string `json:"contextFrom,omitempty" yaml:"contextFrom,omitempty"`
 	// PolicyActions declares the closed vocabulary of externally mutating
@@ -192,6 +237,10 @@ type Task struct {
 	// set so policy changes cannot silently outrun capability admission.
 	// +optional
 	PolicyActions []string `json:"policyActions,omitempty" yaml:"policyActions,omitempty"`
+	// NestedAgentPolicy controls child-agent delegation and context. It is
+	// admitted before execution; omitted preserves legacy non-nested behavior.
+	// +optional
+	NestedAgentPolicy *NestedAgentPolicy `json:"nestedAgentPolicy,omitempty" yaml:"nestedAgentPolicy,omitempty"`
 	// RequiredCapabilities are the runner (toolchain/platform) capabilities this
 	// stage needs on the runner it executes on — e.g. `dotnet@8`, `xcode`,
 	// `os=windows` (RRQ-1/#1101, docs/design/v1/polyglot-stacks.md §5). Distinct
@@ -285,9 +334,138 @@ type Task struct {
 	// +kubebuilder:validation:MaxItems=32
 	// +optional
 	Outbox []string `json:"outbox,omitempty" yaml:"outbox,omitempty"`
+	// OutboxMirrorPath overrides the workflow and gaggle local outbox mirror
+	// root for this task. It is used only when Outbox exports at least one file.
+	// The configured path must be absolute, or start with "~/".
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	OutboxMirrorPath string `json:"outboxMirrorPath,omitempty" yaml:"outboxMirrorPath,omitempty"`
 	// Next is the name of the next state (task or gate). Empty means terminal.
 	// +optional
 	Next string `json:"next,omitempty" yaml:"next,omitempty"`
+	// RunsOn declares where this stage may execute (DSL 3.0, dsl-3.0.md §2):
+	// OS, resource minimums, toolchain capability tags, and required runner
+	// restrictions. Every field is optional — unspecified means no requirement
+	// (explicit-complete semantics, D3). Interpreters before 3.0 refuse the
+	// field; the compiler enforces that, not the shared schema.
+	// +optional
+	RunsOn *RunsOn `json:"runsOn,omitempty" yaml:"runsOn,omitempty"`
+	// RepoFrom names the producer stage(s) whose run-branch state this repo
+	// stage consumes — the declared repo-handoff edge (DSL 3.0, dsl-3.0.md §4).
+	// Scalar or list in YAML; a list means "the run branch head as of the most
+	// recent listed producer that executed". The 3.0 compiler computes the
+	// required coverage as reaching definitions over the stage graph and
+	// rejects an undeclared chain, an uncovered producer, or a dead entry
+	// (WF022).
+	// +optional
+	RepoFrom RepoFrom `json:"repoFrom,omitempty" yaml:"repoFrom,omitempty"`
+	// CommitsRepo declares that this deterministic stage's script/command
+	// commits to the run branch — the explicit producer opt-in of DSL 3.0's
+	// repo-handoff model (dsl-3.0.md §4, delivery decision 002). Agentic
+	// non-readonly stages and the ref-advancing builtins are producers by
+	// classification and never need it; a make/sh stage is a non-producer
+	// unless it sets this. In 3.0 the runtime records the branch head around
+	// every non-producer repo stage and fails closed on an undeclared advance.
+	// +optional
+	CommitsRepo bool `json:"commitsRepo,omitempty" yaml:"commitsRepo,omitempty"`
+}
+
+// BanditArm declares one variant and the gate strength required to evaluate it.
+type BanditArm struct {
+	Name    string            `json:"name" yaml:"name"`
+	Variant map[string]string `json:"variant,omitempty" yaml:"variant,omitempty"`
+	// GateLevel is the required safety strength for the gate evaluating this arm:
+	// automated=1, agentic=2, human=3.
+	GateLevel int `json:"gateLevel" yaml:"gateLevel"`
+}
+
+// BanditExperiment configures bounded exploration and promotion criteria.
+type BanditExperiment struct {
+	Seed              uint64      `json:"seed" yaml:"seed"`
+	Arms              []BanditArm `json:"arms" yaml:"arms"`
+	ExplorationBudget int         `json:"explorationBudget" yaml:"explorationBudget"`
+	MinSamples        int         `json:"minSamples" yaml:"minSamples"`
+	MaxFailureRate    float64     `json:"maxFailureRate" yaml:"maxFailureRate"`
+	MinLift           float64     `json:"minLift" yaml:"minLift"`
+	Confidence        float64     `json:"confidence" yaml:"confidence"`
+	TrainWindow       int         `json:"trainWindow" yaml:"trainWindow"`
+	EvalWindow        int         `json:"evalWindow" yaml:"evalWindow"`
+	DefaultGateLevel  int         `json:"defaultGateLevel" yaml:"defaultGateLevel"`
+}
+
+// RunsOn is a stage's placement requirement block (DSL 3.0, dsl-3.0.md §2 /
+// decision record D2). It is the scheduling surface; credential grants keep
+// the separate `capabilities:` field unchanged.
+type RunsOn struct {
+	// OS is the required operating system — a validated enum, never a free
+	// token (the #659 supersession). Empty means no OS requirement: placement
+	// policy prefers, and will wait bounded for, a Linux-class runner when the
+	// inventory has one.
+	// +kubebuilder:validation:Enum=linux;windows;macOS
+	// +optional
+	OS string `json:"os,omitempty" yaml:"os,omitempty"`
+	// CPU is the minimum CPU as a Kubernetes quantity string (e.g. "2000m").
+	// Minimums become pod resource requests in mode 3; limits come from the
+	// matched runner's ceiling, never from the stage. Advisory on local modes.
+	// +optional
+	CPU string `json:"cpu,omitempty" yaml:"cpu,omitempty"`
+	// Memory is the minimum memory as a Kubernetes quantity string (e.g. "4Gi").
+	// +optional
+	Memory string `json:"memory,omitempty" yaml:"memory,omitempty"`
+	// Disk is the minimum disk as a Kubernetes quantity string (e.g. "20Gi").
+	// +optional
+	Disk string `json:"disk,omitempty" yaml:"disk,omitempty"`
+	// Capabilities is the open toolchain tag set — DSL 2.0's
+	// requiredCapabilities moved, not re-invented (internal/runnercap grammar,
+	// exact set membership, no ranges). os=* tokens are rejected here (CAP004):
+	// the OS field above is the only platform vocabulary in a 3.0 document.
+	// MaxItems bounds CRD CEL validation cost (#3168, dsl-3.0.md open point 7).
+	// +kubebuilder:validation:MaxItems=32
+	// +optional
+	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// Restrictions are isolation effects the matched runner must ENFORCE,
+	// drawn from the closed v1 effect list (decision record D7): network:none,
+	// network:allowlist, fs:readonly-except-workspace, tmp:ephemeral,
+	// env:default-deny. Unknown tokens are rejected with a suggestion (CAP005).
+	// MaxItems bounds CRD CEL validation cost (#3168, dsl-3.0.md open point 7).
+	// +kubebuilder:validation:MaxItems=8
+	// +optional
+	Restrictions []string `json:"restrictions,omitempty" yaml:"restrictions,omitempty"`
+}
+
+// RepoFrom is a scalar-or-list stage reference list: YAML/JSON may spell one
+// producer as a bare string or several as a list (dsl-3.0.md §4, delivery
+// decision 001 — CI-repass lanes create true fan-in a scalar cannot express).
+// It marshals back to the scalar form when it holds exactly one entry.
+type RepoFrom []string
+
+// UnmarshalJSON accepts either a single string or a list of strings.
+// sigs.k8s.io/yaml routes YAML through JSON, so this covers both encodings.
+func (r *RepoFrom) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var list []string
+		if err := json.Unmarshal(trimmed, &list); err != nil {
+			return err
+		}
+		*r = list
+		return nil
+	}
+	var scalar string
+	if err := json.Unmarshal(trimmed, &scalar); err != nil {
+		return fmt.Errorf("repoFrom must be a stage name or a list of stage names: %w", err)
+	}
+	*r = RepoFrom{scalar}
+	return nil
+}
+
+// MarshalJSON emits the scalar spelling for a single producer and the list
+// spelling otherwise, matching how authors write the field.
+func (r RepoFrom) MarshalJSON() ([]byte, error) {
+	if len(r) == 1 {
+		return json.Marshal(r[0])
+	}
+	return json.Marshal([]string(r))
 }
 
 // RetryPolicy declares how many times, and how far apart, the runner retries a
@@ -309,7 +487,8 @@ type RetryPolicy struct {
 // RunControls tunes runner-level safety budgets. An omitted field inherits from
 // the next broader scope: workflow, then gaggle, then instance defaults.
 type RunControls struct {
-	// MaxRepasses bounds consecutive non-pass evaluations before escalation.
+	// MaxRepasses bounds how many times gates may route a run back to the same
+	// already-completed stage before escalation, regardless of gate or outcome.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
@@ -441,8 +620,9 @@ type Gate struct {
 	// workflow state; when absent, escalation terminates at @escalate.
 	// +kubebuilder:validation:Required
 	Branches map[string]string `json:"branches" yaml:"branches"`
-	// MaxRepasses overrides the inherited workflow repass budget for this gate.
-	// It is valid only for automated and agentic gates.
+	// MaxRepasses overrides the inherited target-stage re-entry budget when this
+	// gate routes to an already-completed stage. It is valid only for automated
+	// and agentic gates.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
@@ -529,6 +709,12 @@ type WorkflowSpec struct {
 	// MaxRepasses.
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
+	// OutboxMirrorPath is the default local filesystem root where this
+	// workflow mirrors durable journal outbox files. A task may override it.
+	// The configured path must be absolute, or start with "~/".
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	OutboxMirrorPath string `json:"outboxMirrorPath,omitempty" yaml:"outboxMirrorPath,omitempty"`
 	// Start is the name of the first state (task or gate) of the machine.
 	// +kubebuilder:validation:Required
 	Start string `json:"start" yaml:"start"`
@@ -573,6 +759,7 @@ type WorkflowSpec struct {
 	// +optional
 	Requires *WorkflowRequirements `json:"requires,omitempty" yaml:"requires,omitempty"`
 	// Tasks are the work states of the machine.
+	// +kubebuilder:validation:MaxItems=128
 	// +optional
 	Tasks []Task `json:"tasks,omitempty" yaml:"tasks,omitempty"`
 	// Gates are the validation/branching states of the machine.

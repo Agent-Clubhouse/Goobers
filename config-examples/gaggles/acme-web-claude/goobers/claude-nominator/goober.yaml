@@ -1,0 +1,43 @@
+apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: claude-nominator
+spec:
+  gaggle: acme-web-claude
+  role: nominator
+  displayName: Nominator (Claude Code)
+  instructions: instructions.md
+  harness: claude-code
+  model: auto
+  harnessOptions: {}
+  # Read-only repo + telemetry, issues-only — never repo:push/github:pr:write
+  # (issue #26 scope: "writes issues only — never code"). Approval is allowed
+  # at the goober boundary but materialized only when a workflow stage explicitly
+  # declares github:issues:approve; the shipped workflow leaves it undeclared.
+  capabilities:
+    - repo:read
+    - telemetry:read
+    - github:issues:write
+    - github:issues:approve
+    - agent:model
+  policyActions:
+    - comment-on-issue
+    - create-issue
+    - label-issue
+  conditionalPolicyActions:
+    - approve-issue
+  skills:
+    - analysis
+  # "github" has no claude-code tool-group mapping yet (internal/harness/
+  # claude.go's claudeToolGroups doc comment) — Copilot resolves it to
+  # github-mcp-server-* tools, claude-code passes it through unexpanded and
+  # unenforced. Left declared here to mirror acme-web's Copilot config
+  # byte-for-byte; the capabilities/policyActions above are still the
+  # actual, real gate on what this goober can do.
+  tools:
+    - github
+    - telemetry
+    - shell
+  scaleFactor: 1
+  workflows:
+    - claude-work-nomination

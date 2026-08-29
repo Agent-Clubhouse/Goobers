@@ -17,6 +17,7 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/dslmigrate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -280,7 +281,7 @@ func TestFixturePlansDecomposeVersionJumpsAndPreserveCustomDrift(t *testing.T) {
 	}
 	if len(preStable.Migrations) != 2 ||
 		preStable.Migrations[0].From != "0.7" || preStable.Migrations[0].To != "1.0" ||
-		preStable.Migrations[1].From != "1.0" || preStable.Migrations[1].To != "1.4" {
+		preStable.Migrations[1].From != "1.0" || preStable.Migrations[1].To != "2.0" {
 		t.Fatalf("pre-stable migration path is not adjacent: %+v", preStable.Migrations)
 	}
 	report := renderAdvisory(custom)
@@ -711,9 +712,21 @@ func loadFixtureConfig(
 	if allowInvalid && loadErr != nil && !scenarioAllowsInvalidCurrent(scenario) {
 		t.Fatalf("current fixture config is unexpectedly invalid: %v (report: %+v)", loadErr, report)
 	}
-	if report != nil && len(report.Warnings()) != 0 &&
+	// DVL020 (deprecated dslVersion) is expected on fixtures that deliberately
+	// sit on a historical DSL version (#2700 deprecated 1.4): the advisor's
+	// whole subject is configs on old versions, so the deprecation warning is
+	// evidence the lifecycle works, not fixture rot. Every other warning still
+	// fails the load.
+	var unexpected []validate.CodedWarning
+	for _, warning := range report.Warnings() {
+		if warning.Code == validate.WarningDeprecatedDSLVersion {
+			continue
+		}
+		unexpected = append(unexpected, warning)
+	}
+	if len(unexpected) != 0 &&
 		(!allowInvalid || !scenarioAllowsInvalidCurrent(scenario)) {
-		t.Fatalf("target validation is not clean: %v", report.Warnings())
+		t.Fatalf("target validation is not clean: %v", unexpected)
 	}
 
 	loaded := make(map[string]loadedFixtureWorkflow, len(set.Workflows))
@@ -725,7 +738,14 @@ func loadFixtureConfig(
 			Spec:       document.Spec,
 		}
 		machine, compileErr := workflow.Compile(definition, workflow.WithPreviewFeatures(true))
-		if compileErr != nil && allowInvalid && strings.Contains(compileErr.Error(), "not supported") {
+		// An un-loadable current pin (an ancient pre-stable version, or 1.4
+		// after #3507 dropped it) is discovered at the scenario's TARGET DSL
+		// instead. The router phrases the two cases differently — "is not
+		// supported by this build" (unknown) and "is unsupported" (dropped) —
+		// so match both.
+		if compileErr != nil && allowInvalid &&
+			(strings.Contains(compileErr.Error(), "not supported") ||
+				strings.Contains(compileErr.Error(), "unsupported")) {
 			definition.DSLVersion = targetDSLFor(scenario, workflowIdentity(document))
 			machine, compileErr = workflow.Compile(definition, workflow.WithPreviewFeatures(true))
 		}
@@ -778,6 +798,14 @@ func featureLevelAtDSLVersion(feature workflow.Feature, version string) (string,
 func scenarioAllowsInvalidCurrent(scenario fixtureScenario) bool {
 	for _, candidate := range scenario.Workflows {
 		if candidate.TargetVersionLevel == "unsupported" {
+			return true
+		}
+		// A scenario whose CURRENT config sits on a version this binary no
+		// longer loads (an ancient pre-stable pin, or 1.4 after #3507 dropped
+		// it) deliberately carries an un-loadable current — that is the
+		// advisor's whole subject, not fixture rot.
+		if support, ok := supportmatrix.GetDSL().Lookup(candidate.CurrentDSL); !ok ||
+			support.Level == supportmatrix.LevelUnsupported {
 			return true
 		}
 	}

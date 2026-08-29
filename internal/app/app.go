@@ -29,7 +29,7 @@ type Scrubber interface {
 // Main is the canonical entrypoint wrapper. Call it from a binary's main():
 //
 //	func main() {
-//	    app.Main("scheduler", func(ctx context.Context, log *slog.Logger) error {
+//	    app.Main("operator", func(ctx context.Context, log *slog.Logger) error {
 //	        // ... start serving until ctx is done ...
 //	        <-ctx.Done()
 //	        return nil
@@ -42,11 +42,6 @@ func Main(name string, fn RunFunc) {
 	os.Exit(run(name, os.Args[1:], os.Stderr, fn))
 }
 
-// MainWithScrubber is Main with redaction applied to all process output.
-func MainWithScrubber(name string, scrubber Scrubber, fn RunFunc) {
-	os.Exit(runWithScrubber(name, os.Args[1:], os.Stderr, scrubber, fn))
-}
-
 // run holds the testable core of Main: it takes its args and log sink as
 // parameters and returns an exit code instead of calling os.Exit.
 func run(name string, args []string, logOut io.Writer, fn RunFunc) int {
@@ -57,23 +52,17 @@ func runWithScrubber(name string, args []string, logOut io.Writer, scrubber Scru
 	if scrubber != nil {
 		logOut = scrubbedWriter{dst: logOut, scrubber: scrubber}
 	}
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(logOut)
-	var (
-		showVersion = fs.Bool("version", false, "print version information and exit")
-		logLevel    = fs.String("log-level", "info", "log level: debug, info, warn, error")
-		logFormat   = fs.String("log-format", "json", "log format: json or text")
-	)
-	if err := fs.Parse(args); err != nil {
+	options, err := ParseArgs(name, args, logOut, false)
+	if err != nil {
 		return 2
 	}
 
-	if *showVersion {
+	if options.showVersion {
 		_, _ = fmt.Fprintf(logOut, "%s %s\n", name, version.Get())
 		return 0
 	}
 
-	log := newLogger(logOut, *logLevel, *logFormat).With("component", name)
+	log := newLogger(logOut, options.logLevel, options.logFormat).With("component", name)
 	log.Info("starting", "version", version.Get().String())
 
 	ctx, stop := signals.SetupSignalContext()
@@ -85,6 +74,29 @@ func runWithScrubber(name string, args []string, logOut io.Writer, scrubber Scru
 	}
 	log.Info("shutdown complete")
 	return 0
+}
+
+type cliOptions struct {
+	showVersion bool
+	logLevel    string
+	logFormat   string
+}
+
+// ParseArgs parses control-plane binary arguments without starting the binary.
+func ParseArgs(name string, args []string, output io.Writer, rejectPositionals bool) (cliOptions, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(output)
+	var options cliOptions
+	fs.BoolVar(&options.showVersion, "version", false, "print version information and exit")
+	fs.StringVar(&options.logLevel, "log-level", "info", "log level: debug, info, warn, error")
+	fs.StringVar(&options.logFormat, "log-format", "json", "log format: json or text")
+	if err := fs.Parse(args); err != nil {
+		return cliOptions{}, err
+	}
+	if rejectPositionals && fs.NArg() != 0 {
+		return cliOptions{}, fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	return options, nil
 }
 
 type scrubbedWriter struct {

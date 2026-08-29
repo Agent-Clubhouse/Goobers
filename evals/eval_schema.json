@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://goobers.dev/schemas/evalsuite.json",
+  "title": "EvalSuite",
+  "description": "A suite of scenarios for deterministic, reproducible evaluation of agentic workflows (side-by-side, shadow, single, and synthetic runs).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["suite_name", "scenarios"],
+  "properties": {
+    "suite_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A unique, human-readable name for this suite."
+    },
+    "description": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Free-form provenance metadata (e.g. created_by, version)."
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/scenario" }
+    }
+  },
+  "definitions": {
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "input"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique identifier for this scenario within its suite."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["side-by-side", "shadow", "single", "synthetic"],
+          "default": "single",
+          "description": "side-by-side: compare two candidate versions. shadow: run a candidate against real input with no side effects. single: evaluate one candidate in isolation. synthetic: run against a labeled/synthetic input."
+        },
+        "input": {
+          "type": ["string", "object"],
+          "description": "The scenario's input: either a raw prompt string or a structured payload."
+        },
+        "stages": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/stage" }
+        },
+        "expected": {
+          "type": ["string", "object"],
+          "description": "An optional expected output or reference used by deterministic checks."
+        },
+        "judge": {
+          "$ref": "#/definitions/judge"
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "type": {
+          "type": "string",
+          "enum": ["deterministic", "agentic"],
+          "description": "deterministic: a seeded, reproducible step. agentic: a step that invokes an LLM-driven agent and may be non-deterministic."
+        },
+        "seed": {
+          "type": "integer",
+          "description": "A seed for reproducible deterministic stages."
+        },
+        "tool_mocks": {
+          "type": "object",
+          "description": "Per-adapter mock/replay configuration, keyed by adapter id. Each entry's `mode` selects the adapter's behavior (see EVALS_SANDBOX_API.md); other keys are adapter-specific extras such as a recorded `response` override.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": ["real", "mock", "replay", "no-op"]
+              }
+            }
+          }
+        }
+      }
+    },
+    "judge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prompt_template": { "type": "string", "minLength": 1 },
+        "threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum judge score (0-1) required for the scenario to pass."
+        }
+      }
+    }
+  }
+}

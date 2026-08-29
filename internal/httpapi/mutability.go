@@ -11,19 +11,17 @@ import (
 
 // The mutability seam (#1934, design §7.4).
 //
-// # No new mutations
+// # Mutation guarantees
 //
-// The portal is read-only today: twenty read routes, and three mutation routes
-// that deliberately return 501. This adds none. What it adds are the REQUIREMENTS
-// that light mutability will impose on the read model — settled now, while the
-// read model is still setting, rather than reopened immediately afterwards.
+// Alongside its read routes, the HTTP API serves three API-first run intervention
+// routes: approve, override, and rerun. Each requires an idempotency key. This
+// seam defines the requirements those mutations impose on the read model.
 //
-// Four things, each of which is a read-side constraint rather than a write
-// feature:
+// Four things, each of which is a read-side constraint:
 //
-//   - read-your-write, which is currently impossible;
-//   - idempotency, because the interface's normal failure mode is a client
-//     abort followed by the user clicking again;
+//   - read-your-write through source positions;
+//   - required idempotency, because the interface's normal failure mode is a
+//     client abort followed by the user clicking again;
 //   - concurrency detection on definition edits;
 //   - attribution.
 

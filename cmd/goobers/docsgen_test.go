@@ -9,6 +9,17 @@ import (
 	"github.com/goobers/goobers/internal/clidocs"
 )
 
+func docSlugsUnique(cmds []clidocs.Command) (string, bool) {
+	seen := map[string]bool{}
+	for _, c := range cmds {
+		if seen[c.Slug()] {
+			return c.Slug(), false
+		}
+		seen[c.Slug()] = true
+	}
+	return "", true
+}
+
 // docsDir resolves the repository docs/ directory from the package directory
 // (cmd/goobers -> ../../docs).
 func docsDir(t *testing.T) string {
@@ -178,7 +189,9 @@ func TestGenerateDocsCommand(t *testing.T) {
 		"completion/goobers.bash",
 		"completion/goobers.fish",
 		"completion/_goobers",
+		"feature-matrix.md",
 		"man/goobers.1",
+		"provider-capability-matrix.md",
 	} {
 		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
 			t.Errorf("__generate-docs did not write %s: %v", rel, err)

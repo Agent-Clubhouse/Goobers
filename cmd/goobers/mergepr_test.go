@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1312,6 +1313,45 @@ func TestMergePRRefusesWithoutCapability(t *testing.T) {
 	}
 }
 
+func TestMergePRDispatchesADOAndRequiresCompletionCapability(t *testing.T) {
+	server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+
+	rootNoGrant, _ := adoMergePREnv(t, server.URL, true, map[string]string{
+		"pullNumber": "359",
+		"verdict":    "pass",
+		"headSha":    "headsha1",
+		"baseSha":    "basesha1",
+	})
+	code, _, stderr := runArgs(t, "merge-pr", rootNoGrant)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1 without ado:pr:complete; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "ADO_PR_COMPLETE") {
+		t.Fatalf("stderr = %q, want missing ado:pr:complete capability", stderr)
+	}
+
+	root, dir := adoMergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "359",
+		"verdict":    "pass",
+		"headSha":    "headsha1",
+		"baseSha":    "basesha1",
+	})
+	code, stdout, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); !merged {
+		t.Fatalf("result = %+v, want merged=true via ADO provider", result)
+	}
+	if result["mergeSha"] != "mergedsha1" {
+		t.Fatalf("result = %+v, want mergeSha=mergedsha1", result)
+	}
+	if atomic.LoadInt64(&state.patchCalls) == 0 {
+		t.Fatalf("ADO completion PATCH calls = %d, want > 0", atomic.LoadInt64(&state.patchCalls))
+	}
+}
+
 // TestMergePRWaitsForHeldMergeLock is issue #719's core acceptance: with
 // merge-review's readiness now allowing several concurrent runs to review
 // DIFFERENT PRs at once, only one PR may be inside merge-pr's poll->decide->
@@ -1332,7 +1372,7 @@ func TestMergePRWaitsForHeldMergeLock(t *testing.T) {
 
 	l := layoutFor(root)
 	lockPath := filepath.Join(l.SchedulerDir(), mergeLockFileName)
-	held, err := lock.Acquire(lockPath)
+	held, err := lock.TryAcquire(lockPath)
 	if err != nil {
 		t.Fatalf("pre-acquire merge lock: %v", err)
 	}

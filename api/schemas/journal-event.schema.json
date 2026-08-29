@@ -15,6 +15,24 @@
       "then": {
         "required": ["gate", "verdict", "target", "actor", "rationale", "status", "workflowVersion", "workflowDigest"]
       }
+    },
+    {
+      "if": {
+        "properties": { "type": { "const": "notification.requested" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["notificationRequest"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "type": { "const": "notification.delivery.receipt" } },
+        "required": ["type"]
+      },
+      "then": {
+        "required": ["notificationReceipt"]
+      }
     }
   ],
   "properties": {
@@ -30,7 +48,7 @@
       "x-conformance": "normative"
     },
     "type": {
-      "description": "Event kind. init.completed, trigger.fired, tick.skipped, workflow.starved, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, and daemon.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
+      "description": "Event kind. init.completed, trigger.fired, tick.skipped, workflow.starved, workflow.refused, provider.quota.reset, poll.shed, claim lifecycle/lock, config.*, and daemon.* events are instance-journal-only (scheduler/events.jsonl, ARCHITECTURE.md §4/§6); the rest appear in a run's own events.jsonl (run.started/run.finished are reused in both streams).",
       "type": "string",
       "enum": [
         "run.started",
@@ -53,19 +71,26 @@
         "repaired",
         "runner.annotation",
         "runner.isolation.posture",
+        "runner.placement",
+        "notification.requested",
+        "notification.delivery.receipt",
         "parallel.started",
         "branch.started",
         "branch.finished",
         "parallel.finished",
+        "agent.lifecycle",
+        "agent.message",
         "init.completed",
         "trigger.fired",
         "tick.skipped",
         "workflow.starved",
+        "workflow.refused",
         "provider.quota.reset",
         "poll.shed",
         "claim.acquired",
         "claim.released",
         "claim.force_released",
+        "claim.refused",
         "claim_lock_slow",
         "claims_lock_timeout",
         "config.reloaded",
@@ -79,7 +104,7 @@
         "daemon.update.rolled_back",
         "daemon.update.escalated"
       ],
-      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, init.completed, daemon.*, and the runner-scoped bookkeeping types (runner.isolation.posture) are excluded; all other event types are normative unless separately excluded"
+      "x-conformance": "conditional: stage.heartbeat, gate.started, gate.paused, init.completed, daemon.*, runner-scoped bookkeeping, and notification output events are excluded; all other event types are normative unless separately excluded"
     },
     "branch": {
       "description": "Parallel-branch id. 0 at tiers 1-2; reserved for tier-3 parallel branches. Secondary ordering key.",
@@ -183,6 +208,18 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "x-conformance": "normative"
     },
+    "sourceRunId": {
+      "description": "Source run for a continuation provenance record.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "x-conformance": "normative"
+    },
+    "sourceTerminalSeq": {
+      "description": "Selected terminal source sequence for a continuation.",
+      "type": "integer",
+      "minimum": 1,
+      "x-conformance": "normative"
+    },
     "outputs": {
       "description": "Small, named scalar values a stage.finished's ResultEnvelope.Outputs carried (docs/stage-contract.md) — journaled so a resumed run can reconstruct a finished stage's result (its lastStage/lastResult, or a resumed gate's subject) without it having lived only in the runner's process memory.",
       "type": "object",
@@ -265,6 +302,26 @@
       "type": "object",
       "x-conformance": "excluded"
     },
+    "notificationRequest": {
+      "description": "Exact provider-neutral request recorded before dispatch. The event is operational output and excluded from workflow conformance.",
+      "$ref": "notification-request.schema.json",
+      "x-conformance": "excluded"
+    },
+    "notificationReceipt": {
+      "description": "Durable delivery or suppression result. The event is operational output and excluded from workflow conformance.",
+      "$ref": "notification-receipt.schema.json",
+      "x-conformance": "excluded"
+    },
+    "agent": {
+      "description": "Versioned nested-agent provenance projected by a structured adapter.",
+      "$ref": "#/$defs/agentProvenance",
+      "x-conformance": "excluded"
+    },
+    "peerMessage": {
+      "description": "Orchestration-relevant peer metadata; raw message content is never retained.",
+      "$ref": "#/$defs/peerMessage",
+      "x-conformance": "excluded"
+    },
     "workflow": {
       "description": "Instance-journal only: workflow name for a scheduler decision (trigger.fired, tick.skipped, poll.shed, or an instance-level run.started/run.finished echo). Not present in a run's own events.jsonl.",
       "type": "string",
@@ -341,7 +398,67 @@
           "description": "Convenience link. Not normative — identity is (provider, kind, id).",
           "type": "string",
           "x-conformance": "excluded"
+        },
+        "commitSha": {
+          "description": "Commit observed for a branch reference.",
+          "type": "string",
+          "minLength": 1,
+          "x-conformance": "normative"
         }
+      }
+    },
+    "agentProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "id", "runId", "stage", "attempt", "lifecycle", "startedAt", "updatedAt"],
+      "properties": {
+        "schema": { "description": "Versioned schema identifier for the agent provenance record.", "const": "goobers.dev/journal/agent/v1" },
+        "id": { "description": "Stable identifier for this agent invocation.", "type": "string", "minLength": 1 },
+        "parentId": { "description": "Identifier of the parent agent invocation, when nested.", "type": "string", "minLength": 1 },
+        "runId": { "description": "Run that owns this agent invocation.", "type": "string", "minLength": 1 },
+        "stage": { "description": "Workflow stage that launched the agent.", "type": "string", "minLength": 1 },
+        "attempt": { "description": "One-based stage attempt containing the invocation.", "type": "integer", "minimum": 1 },
+        "plugin": { "description": "Adapter or plugin that executed the agent.", "type": "string" },
+        "objective": { "description": "Bounded objective assigned to the agent.", "type": "string" },
+        "coordinator": { "description": "Whether the invocation coordinates child agents.", "type": "boolean" },
+        "worker": { "description": "Whether the invocation performs delegated worker tasks.", "type": "boolean" },
+        "leaf": { "description": "Whether the invocation has no child agents.", "type": "boolean" },
+        "requestedModel": { "description": "Model requested before adapter resolution.", "type": "string" },
+        "resolvedModel": { "description": "Model selected by the executing adapter.", "type": "string" },
+        "requestedReasoningEffort": { "description": "Reasoning effort requested before adapter resolution.", "type": "string" },
+        "resolvedReasoningEffort": { "description": "Reasoning effort selected by the executing adapter.", "type": "string" },
+        "lifecycle": { "description": "Current lifecycle state of the agent invocation.", "type": "string", "enum": ["started", "waiting", "resumed", "completed", "failed", "cancelled"] },
+        "startedAt": { "description": "Time the agent invocation started.", "type": "string", "format": "date-time" },
+        "updatedAt": { "description": "Time the lifecycle record was last updated.", "type": "string", "format": "date-time" },
+        "budget": { "description": "Usage budget assigned to the invocation.", "$ref": "#/$defs/agentUsage" },
+        "usage": { "description": "Observed usage attributed to the invocation.", "$ref": "#/$defs/agentUsage" },
+        "usageAggregated": { "description": "Whether usage already includes descendant invocations.", "type": "boolean" },
+        "results": { "description": "Artifacts or external references produced by the invocation.", "type": "array", "items": { "$ref": "#/$defs/ref" } },
+        "dependsOn": { "description": "Agent invocation identifiers that must complete first.", "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "fidelity": { "description": "Completeness of lifecycle telemetry emitted by the adapter.", "type": "string", "enum": ["full", "partial", "none"] }
+      }
+    },
+    "agentUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputTokens": { "description": "Input tokens attributed to the invocation.", "type": "integer", "minimum": 0 },
+        "outputTokens": { "description": "Output tokens attributed to the invocation.", "type": "integer", "minimum": 0 },
+        "costUsd": { "description": "Estimated invocation cost in US dollars.", "type": "number", "minimum": 0 }
+      }
+    },
+    "peerMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "senderId", "recipientId", "occurredAt", "purpose"],
+      "properties": {
+        "id": { "description": "Stable identifier for the peer message.", "type": "string", "minLength": 1 },
+        "senderId": { "description": "Agent invocation that sent the message.", "type": "string", "minLength": 1 },
+        "recipientId": { "description": "Agent invocation intended to receive the message.", "type": "string", "minLength": 1 },
+        "occurredAt": { "description": "Time the peer message was emitted.", "type": "string", "format": "date-time" },
+        "purpose": { "description": "Orchestration purpose without retaining raw message content.", "type": "string", "minLength": 1 },
+        "artifact": { "description": "Artifact reference carrying message content, when persisted separately.", "$ref": "#/$defs/ref" },
+        "contentHash": { "description": "Digest of the omitted raw message content.", "type": "string" }
       }
     },
     "errorDetail": {

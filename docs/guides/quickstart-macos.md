@@ -27,10 +27,17 @@ brew install go golangci-lint
 ```
 
 Use the Go version pinned in [`go.mod`](../../go.mod) when building this
-checkout. Install a current stable
-[GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)
-only for workflows whose goober uses that harness, then authenticate as the
-same macOS user that will run Goobers.
+checkout. Install whichever agent harness your goobers declare — only the one
+they use, and authenticated as the same macOS user that will run Goobers:
+
+- [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)
+  for `harness: copilot` goobers.
+- Claude Code CLI for `harness: claude-code` goobers:
+
+  ```sh
+  npm install -g @anthropic-ai/claude-code
+  claude auth login
+  ```
 
 Homebrew uses `/opt/homebrew/bin` on Apple silicon and `/usr/local/bin` on
 Intel. A launchd service does not read shell startup files, so include the
@@ -44,7 +51,7 @@ download its archive and `SHA256SUMS`. This example selects the archive for the
 current Mac:
 
 ```sh
-VERSION=v1.2.3
+VERSION=v0.1.0
 case "$(uname -m)" in
   arm64) ARCH=arm64 ;;
   x86_64) ARCH=amd64 ;;
@@ -65,8 +72,9 @@ test "$ACTUAL" = "$EXPECTED" || {
 echo "OK: checksum matches"
 ```
 
-Release artifacts are initially unsigned, so do not skip checksum
-verification. Extract and install the verified binary:
+The binary is Developer ID signed and notarized, but verify the checksum
+too — it's recomputed after signing, so it always covers the exact
+published bytes. Extract and install the verified binary:
 
 ```sh
 tar -xzf "$ARCHIVE"

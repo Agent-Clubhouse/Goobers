@@ -2,6 +2,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +23,7 @@ import (
 )
 
 const integrationGuidance = "tag this test with //go:build integration and run it in the integration tier"
+const shardWeightsPath = ".github/unit-shard-weights.json"
 
 type toolSpec struct {
 	name     string
@@ -53,6 +56,19 @@ type shardSpec struct {
 }
 
 func (s shardSpec) enabled() bool { return s.total > 0 }
+
+type shardWeights struct {
+	SchemaVersion  int                `json:"schemaVersion"`
+	DefaultSeconds float64            `json:"defaultSeconds"`
+	Packages       map[string]float64 `json:"packages"`
+}
+
+func (w shardWeights) packageSeconds(pkg string) float64 {
+	if seconds, ok := w.Packages[pkg]; ok {
+		return seconds
+	}
+	return w.DefaultSeconds
+}
 
 type diagnosticCollector struct {
 	mu      sync.Mutex
@@ -90,6 +106,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
 		return 1
 	}
+	goroot, err := resolveGoroot(tools[0].path)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "hermetic tier: %v\n", err)
+		return 1
+	}
+
 	allowed := toolNames(tools)
 	violations, err := auditTestExecs(root, allowed)
 	if err != nil {
@@ -127,7 +149,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	goArgs := goCommandArgs(invocation)
 	command := exec.Command(filepath.Join(toolDir, executableName("go")), goArgs...)
 	command.Dir = root
-	command.Env = hermeticEnvironment(os.Environ(), toolDir, compilerName)
+	command.Env = hermeticEnvironment(os.Environ(), toolDir, compilerName, goroot)
 
 	collector := &diagnosticCollector{allowed: allowed, tools: make(map[string]struct{})}
 	stdoutWriter := &diagnosticWriter{destination: stdout, collector: collector}
@@ -204,20 +226,60 @@ func parseShard(raw string) (shardSpec, error) {
 	return shardSpec{index: index, total: total}, nil
 }
 
-// selectShard partitions pkgs deterministically (sorted, then round-robin by
-// index) into `spec.total` disjoint groups and returns group `spec.index`.
-// Round-robin (rather than contiguous blocks) balances the slow integration
-// packages across shards instead of piling them into one.
-func selectShard(pkgs []string, spec shardSpec) []string {
-	sorted := append([]string(nil), pkgs...)
-	sort.Strings(sorted)
-	var selected []string
-	for position, pkg := range sorted {
-		if position%spec.total == spec.index-1 {
-			selected = append(selected, pkg)
+// selectShard uses longest-processing-time-first assignment so measured slow
+// packages are distributed before smaller packages fill the remaining gaps.
+func selectShard(pkgs []string, spec shardSpec, weights shardWeights) []string {
+	ordered := append([]string(nil), pkgs...)
+	sort.Slice(ordered, func(i, j int) bool {
+		left := weights.packageSeconds(ordered[i])
+		right := weights.packageSeconds(ordered[j])
+		if left == right {
+			return ordered[i] < ordered[j]
+		}
+		return left > right
+	})
+
+	shards := make([][]string, spec.total)
+	totals := make([]float64, spec.total)
+	for _, pkg := range ordered {
+		target := 0
+		for index := 1; index < spec.total; index++ {
+			if totals[index] < totals[target] {
+				target = index
+			}
+		}
+		shards[target] = append(shards[target], pkg)
+		totals[target] += weights.packageSeconds(pkg)
+	}
+	return shards[spec.index-1]
+}
+
+func loadShardWeights(root string) (shardWeights, error) {
+	path := filepath.Join(root, shardWeightsPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return shardWeights{}, fmt.Errorf("read shard weights %s: %w", path, err)
+	}
+	var weights shardWeights
+	if err := json.Unmarshal(data, &weights); err != nil {
+		return shardWeights{}, fmt.Errorf("parse shard weights %s: %w", path, err)
+	}
+	if weights.SchemaVersion != 1 {
+		return shardWeights{}, fmt.Errorf("shard weights %s: unsupported schemaVersion %d", path, weights.SchemaVersion)
+	}
+	if !validShardWeight(weights.DefaultSeconds) {
+		return shardWeights{}, fmt.Errorf("shard weights %s: defaultSeconds must be finite and positive", path)
+	}
+	for pkg, seconds := range weights.Packages {
+		if strings.TrimSpace(pkg) == "" || !validShardWeight(seconds) {
+			return shardWeights{}, fmt.Errorf("shard weights %s: package %q must have a finite positive duration", path, pkg)
 		}
 	}
-	return selected
+	return weights, nil
+}
+
+func validShardWeight(seconds float64) bool {
+	return seconds > 0 && !math.IsInf(seconds, 0) && !math.IsNaN(seconds)
 }
 
 // shardTestArgs replaces the `./...` package spec in testArgs with the subset
@@ -233,7 +295,11 @@ func shardTestArgs(goCommand, root string, testArgs []string, spec shardSpec) ([
 	if len(packages) == 0 {
 		return nil, 0, errors.New("go list ./... returned no packages to shard")
 	}
-	selected := selectShard(packages, spec)
+	weights, err := loadShardWeights(root)
+	if err != nil {
+		return nil, 0, err
+	}
+	selected := selectShard(packages, spec, weights)
 	if len(selected) == 0 {
 		return nil, 0, fmt.Errorf("shard %d/%d selected no packages from %d", spec.index, spec.total, len(packages))
 	}
@@ -332,9 +398,19 @@ func platformToolSpecs(goos string) []toolSpec {
 		return []toolSpec{
 			{name: "git", required: true},
 			{name: "cmd.exe", required: true},
+			// Both spellings: internal/platform/secfile execs bare "icacls",
+			// internal/credentials execs "icacls.exe". The audit matches the
+			// literal argv[0], so dropping either one fails that package.
 			{name: "icacls", required: true},
+			{name: "icacls.exe", required: true},
 			{name: "node", required: true},
 			{name: "npm.cmd", required: true},
+			{name: "powershell.exe", required: true},
+			// Optional: PowerShell 7 ships as pwsh alongside the built-in
+			// Windows PowerShell. Hosted runners have it, developer machines
+			// need not.
+			{name: "pwsh"},
+			{name: "sh", required: true},
 		}
 	}
 
@@ -344,6 +420,14 @@ func platformToolSpecs(goos string) []toolSpec {
 		{name: "npm", required: true},
 		{name: "sh", required: true},
 		{name: "bash"},
+		// Optional: PowerShell is cross-platform and preinstalled on hosted
+		// runners, so allowlisting it lets the PowerShell quoting tests execute
+		// in the hermetic tier instead of skipping. It must stay optional -
+		// developer machines without PowerShell simply run those tests as
+		// skips, exactly as they do today. Both spellings are listed because
+		// the binary is pwsh off Windows and powershell on it.
+		{name: "pwsh"},
+		{name: "powershell"},
 		{name: "cat", required: true},
 		{name: "dirname", required: true},
 		{name: "echo", required: true},
@@ -375,8 +459,18 @@ func toolNames(tools []resolvedTool) map[string]struct{} {
 }
 
 func populateToolPath(directory string, tools []resolvedTool) error {
+	// Distinct allowlist names can normalise to one executable: on Windows
+	// executableName maps both "icacls" and "icacls.exe" to icacls.exe. The
+	// allowlist needs both spellings so the audit matches either literal
+	// argv[0], but the binary must only be linked once — linkTool fails with
+	// "The file exists" on the second attempt.
+	linked := make(map[string]struct{}, len(tools))
 	for _, tool := range tools {
 		destination := filepath.Join(directory, executableName(tool.name))
+		if _, done := linked[destination]; done {
+			continue
+		}
+		linked[destination] = struct{}{}
 		if err := linkTool(tool.path, destination); err != nil {
 			return fmt.Errorf("link %s: %w", tool.name, err)
 		}
@@ -422,7 +516,28 @@ func executableName(name string) string {
 	return name
 }
 
-func hermeticEnvironment(base []string, toolPath, compilerName string) []string {
+// resolveGoroot asks the real Go binary where its GOROOT is, before that binary
+// is linked into the hermetic tool PATH.
+//
+// The tool PATH cannot be relied on to answer this. Off Windows linkTool makes
+// a symlink, so the Go runtime follows it back to the original binary and infers
+// GOROOT by itself. On Windows linkTool hardlinks or copies, and a copied go.exe
+// has no path home — it fails with "'go' binary is trimmed and GOROOT is not
+// set". Setting GOROOT explicitly makes the environment correct on every
+// platform rather than relying on symlink resolution.
+func resolveGoroot(goPath string) (string, error) {
+	output, err := exec.Command(goPath, "env", "GOROOT").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve GOROOT from %s: %w", goPath, err)
+	}
+	goroot := strings.TrimSpace(string(output))
+	if goroot == "" {
+		return "", fmt.Errorf("resolve GOROOT from %s: empty result", goPath)
+	}
+	return goroot, nil
+}
+
+func hermeticEnvironment(base []string, toolPath, compilerName, goroot string) []string {
 	excluded := map[string]string{
 		"GOOBERS_OTLP_ENDPOINT": "",
 		"GOOBERS_OTLP_INSECURE": "",
@@ -430,6 +545,7 @@ func hermeticEnvironment(base []string, toolPath, compilerName string) []string 
 	overrides := map[string]string{
 		"CC":          compilerName,
 		"GO":          executableName("go"),
+		"GOROOT":      goroot,
 		"GOENV":       "off",
 		"GOFLAGS":     "-mod=readonly",
 		"GONOPROXY":   "none",

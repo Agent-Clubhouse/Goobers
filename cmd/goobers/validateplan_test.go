@@ -7,10 +7,27 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestDecompositionStageArtifactSelectsLatestSuccessfulStageResult(t *testing.T) {
+	oldRef := journal.Ref{Path: "artifacts/old", Digest: "sha256:old"}
+	newRef := journal.Ref{Path: "artifacts/new", Digest: "sha256:new"}
+	events := []journal.Event{
+		{Type: journal.EventArtifactRecorded, Name: "run:select-source/result", Ref: &oldRef},
+		{Type: journal.EventStageFinished, Stage: "select-source", Status: string(apiv1.ResultSuccess), Artifacts: []journal.Ref{oldRef}},
+		{Type: journal.EventArtifactRecorded, Name: "run:select-source/result", Ref: &newRef},
+		{Type: journal.EventStageFinished, Stage: "select-source", Status: string(apiv1.ResultFailure), Artifacts: []journal.Ref{newRef}},
+	}
+
+	got, ok := decompositionStageArtifact(events, "select-source", "/result")
+	if !ok || got.Digest != oldRef.Digest {
+		t.Fatalf("artifact = %+v, %v; want latest successful ref %+v", got, ok, oldRef)
+	}
+}
 
 func (s *fakeGitHubServer) setIssueTitle(number int, title string) {
 	s.mu.Lock()
@@ -68,6 +85,7 @@ func TestValidatePlanAgainstRealSelectSourceOutput(t *testing.T) {
 	server := newFakeGitHubServer(t, "acme", "widgets")
 	server.addIssue(419, "A very large issue", providers.LabelApproved)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "test-token")
 	decompositionInstanceEnv(t, root)
 
 	workDir := t.TempDir()
@@ -111,6 +129,9 @@ func TestValidatePlanAgainstRealSelectSourceOutput(t *testing.T) {
 	if !got.Valid {
 		t.Fatalf("plan-validation = %+v, stdout = %q, want valid", got, stdout)
 	}
+	if got.PlanDigest == "" {
+		t.Fatalf("plan-validation = %+v, want digest binding for publisher", got)
+	}
 }
 
 func TestValidatePlanDetectsLiveParentConflict(t *testing.T) {
@@ -127,6 +148,7 @@ func TestValidatePlanDetectsLiveParentConflict(t *testing.T) {
 	server := newFakeGitHubServer(t, "acme", "widgets")
 	server.addIssue(420, "A very large issue", providers.LabelApproved)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "test-token")
 	decompositionInstanceEnv(t, root)
 
 	workDir := t.TempDir()
@@ -167,11 +189,67 @@ func TestValidatePlanDetectsLiveParentConflict(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Valid || got.Conflict == nil {
+	if got.Valid || !got.Conflict {
 		t.Fatalf("plan-validation = %+v, want a conflict, not an ordinary valid/invalid result", got)
 	}
 	if len(got.Errors) != 0 {
 		t.Fatalf("plan-validation errors = %v, want none alongside a conflict", got.Errors)
+	}
+}
+
+func TestValidatePlanEmitsScalarUnresolvedDecisionSignal(t *testing.T) {
+	root := t.TempDir()
+	server := newFakeGitHubServer(t, "acme", "widgets")
+	server.addIssue(422, "A product decision is needed", providers.LabelApproved)
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "test-token")
+	decompositionInstanceEnv(t, root)
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	selection := decomposition.Selection{
+		Mode: decomposition.SelectionModeEscalation, SourceRunID: "r1",
+		Parent: decomposition.ParentRef{Provider: "github", Repository: "acme/widgets", ID: "422"},
+	}
+	digest, err := decomposition.IssueSnapshotDigest(
+		"422", "A product decision is needed", "", []string{providers.LabelApproved}, "open",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.IssueSnapshotDigest = digest
+	plan := validDecompositionPlan(selection)
+	plan.UnresolvedDecision = "Should this preserve the legacy API?"
+	selectionData, err := json.Marshal(selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("selection.json", selectionData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planData, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("plan.json", planData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "validate-plan", root)
+	if code != 0 {
+		t.Fatalf("validate-plan: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	resultData, err := os.ReadFile("plan-validation.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got validatePlanResult
+	if err := json.Unmarshal(resultData, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Valid || got.Conflict || !got.UnresolvedDecision ||
+		got.UnresolvedDecisionReason != plan.UnresolvedDecision {
+		t.Fatalf("plan-validation = %+v, want unresolved-decision routing output", got)
 	}
 }
 
@@ -180,6 +258,7 @@ func TestValidatePlanRejectsUnsupportedSchemaVersionCLI(t *testing.T) {
 	server := newFakeGitHubServer(t, "acme", "widgets")
 	server.addIssue(421, "Some issue", providers.LabelApproved)
 	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "decomposition-run-1")
+	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_READ", "test-token")
 	decompositionInstanceEnv(t, root)
 
 	workDir := t.TempDir()
@@ -220,5 +299,11 @@ func TestValidatePlanRejectsUnsupportedSchemaVersionCLI(t *testing.T) {
 	}
 	if got.Valid {
 		t.Fatalf("plan-validation = %+v, want invalid for an unsupported schema version", got)
+	}
+	if !got.SchemaInvalid {
+		t.Fatalf("plan-validation = %+v, want distinct schema-invalid outcome", got)
+	}
+	if got.Repassable {
+		t.Fatalf("plan-validation = %+v, schema-invalid outcome must not be repassable", got)
 	}
 }

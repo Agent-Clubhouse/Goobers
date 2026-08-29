@@ -229,6 +229,30 @@ func TestResultShapeHintPresentsErrorConditionally(t *testing.T) {
 	}
 }
 
+// TestResultShapeHintRequiresNumericMetrics guards the producer-side contract:
+// metrics is optional and must not invite freeform labels or references that
+// the numeric-only result schema rejects.
+func TestResultShapeHintRequiresNumericMetrics(t *testing.T) {
+	req := RunRequest{
+		Envelope:       apiv1.InvocationEnvelope{Goal: "nominate flaky tests"},
+		CompletionPath: DefaultResultPath,
+		Mode:           ModeInvoke,
+	}
+	prompt := renderPrompt(req)
+	if strings.Contains(prompt, `"metrics": {...}`) {
+		t.Fatalf("result shape still presents optional metrics as always present: %q", prompt)
+	}
+	for _, want := range []string{
+		`Do not populate "metrics" unless you have numeric measurements`,
+		"Every metrics value must be a JSON number",
+		`issue references belong in "summary" or scalar "outputs", not in metrics`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("result hint missing numeric-metrics guidance %q: %q", want, prompt)
+		}
+	}
+}
+
 // TestResultEnvelopeErrorContract pins the schema behavior the #297 prompt fix
 // aligns the model output to (Lead's ruling: fix the template, NOT the schema).
 // Success and no-work results omitting error validate; the #297 bug shape

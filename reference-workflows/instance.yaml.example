@@ -44,6 +44,14 @@ telemetry:
   # otlp:
   #   endpoint: http://127.0.0.1:4317
   #   insecure: true
+# Optional tier-3 Temporal engine. Declaring this block also enables the
+# daemon's completed-run projection loop. The GOOBERS_TEMPORAL_HOSTPORT,
+# GOOBERS_TEMPORAL_NAMESPACE, and GOOBERS_TASK_QUEUE environment variables are
+# deployment overrides for these YAML values.
+# engine:
+#   hostPort: 127.0.0.1:7233
+#   namespace: default
+#   taskQueue: goobers-engine
 # Opt in to native notifications for escalated and failed runs. The equivalent
 # one-shot daemon override is `goobers up --notify` (`--notify=all` includes
 # completed and aborted runs too).
@@ -85,8 +93,8 @@ runConditions:
 # routinely runs longer, rather than stamping `timeoutSeconds` onto every stage
 # in every workflow. A stage's own `timeoutSeconds` always wins; this only moves
 # the floor.
-# runner:
-#   capabilities: [dotnet@8]
+runner:
+  capabilities: [os=linux]
 #   envPassthrough: [NUGET_CONFIG_FILE, MSBUILDDISABLENODEREUSE]
 #   defaultStageTimeout: 25m
 # Optional external secret stores (#683). A store declares WHERE a secret

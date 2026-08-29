@@ -66,22 +66,6 @@ const busyRetryMaxAttempts = 12
 // without conversion when a human is reading both.
 const timeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
-const schema = `
-CREATE TABLE IF NOT EXISTS run_intake (
-	run_id      TEXT PRIMARY KEY,
-	source_seq  INTEGER NOT NULL,
-	-- removing is retention's intent, recorded BEFORE the journal is unlinked.
-	-- It is a separate column rather than a sentinel source_seq because a
-	-- removal must never be mistakable for progress: the ordinary ack carries
-	-- removing = 0 in its WHERE clause, so it cannot consume a removal marker.
-	removing    INTEGER NOT NULL DEFAULT 0,
-	observed_at TEXT NOT NULL
-);
-
--- The projector drains oldest-first so a burst cannot starve an early marker.
-CREATE INDEX IF NOT EXISTS idx_run_intake_observed ON run_intake(observed_at, run_id);
-`
-
 // Store is the intake database.
 type Store struct {
 	db   *sql.DB
@@ -111,11 +95,73 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	store := &Store{db: db, path: path}
-	if _, err := store.execWriteWithBusyRetry(context.Background(), schema); err != nil {
+	if err := store.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("intake: initialise schema in %s: %w", path, err)
 	}
 	return store, nil
+}
+
+func (s *Store) migrate(ctx context.Context) error {
+	var err error
+	for attempt := 1; attempt <= busyRetryMaxAttempts; attempt++ {
+		err = s.migrateOnce(ctx)
+		if err == nil || !isSQLiteBusy(err) {
+			return err
+		}
+		timer := time.NewTimer(time.Duration(attempt) * 20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
+}
+
+func (s *Store) migrateOnce(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)`); err != nil {
+		return fmt.Errorf("create schema_meta: %w", err)
+	}
+	version, err := schemaVersionTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if version > len(migrations) {
+		return fmt.Errorf("store schema version %d is newer than this build supports (%d)",
+			version, len(migrations))
+	}
+	for i := version; i < len(migrations); i++ {
+		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
+			return fmt.Errorf("apply migration %d: %w", i+1, err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM schema_meta`); err != nil {
+			return fmt.Errorf("reset schema_meta after migration %d: %w", i+1, err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_meta (version) VALUES (?)`, i+1); err != nil {
+			return fmt.Errorf("record schema version %d: %w", i+1, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func schemaVersionTx(ctx context.Context, tx *sql.Tx) (int, error) {
+	var version int
+	err := tx.QueryRowContext(ctx, `SELECT version FROM schema_meta LIMIT 1`).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read schema version: %w", err)
+	}
+	return version, nil
 }
 
 // Path reports the file backing this store.

@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/providers"
@@ -58,7 +57,7 @@ func runBacklogAssignmentWithMutationHook(
 	stdout, stderr io.Writer,
 	beforeMutation func(assignmentPlanEntry),
 ) int {
-	fs := flag.NewFlagSet("backlog-assignment", flag.ContinueOnError)
+	fs := newCLIFlagSet("backlog-assignment", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "backlog-assignment")
 	if err := fs.Parse(args); err != nil {
@@ -246,24 +245,7 @@ func parseAssignmentMaxItems(raw string) (int, error) {
 }
 
 func assignmentProvider(root string, repo providers.RepositoryRef) (providers.BacklogProvider, error) {
-	switch repo.Provider {
-	case providers.ProviderADO:
-		return newADOProviderForStage(root, repo)
-	case providers.ProviderGitea:
-		token, err := providerToken(capability.GitHubIssuesWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-	case providers.ProviderGitHub:
-		token, err := providerToken(capability.GitHubIssuesWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"})), nil
-	default:
-		return nil, fmt.Errorf("backlog-assignment does not support repository provider %q", repo.Provider)
-	}
+	return newProviderForStage(root, repo, false, withStageProviderCache(), withStageProviderMutations("issue"))
 }
 
 func assignmentEligibleItems(

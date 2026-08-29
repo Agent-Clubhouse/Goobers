@@ -3,16 +3,24 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
+	historypb "go.temporal.io/api/history/v1"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
+	temporalworker "go.temporal.io/sdk/worker"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -24,6 +32,27 @@ import (
 
 // envelopeDigest is a syntactically valid sha256 digest for fixture artifacts.
 const envelopeDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+type workspaceBranchDeterministic struct {
+	mu       sync.Mutex
+	attempts map[string]int
+	branch   string
+}
+
+func (d *workspaceBranchDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	stage := strings.TrimPrefix(env.TaskID, env.RunID+":")
+	d.attempts[stage]++
+	if stage == "rework" && d.attempts[stage] == 1 {
+		return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(errors.New("worker restarted"))
+	}
+	result := apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}
+	if stage == "select" {
+		result.Outputs = map[string]interface{}{runner.WorkspaceBranchOutput: d.branch}
+	}
+	return result, nil
+}
 
 // capturingDeterministic records every envelope it is dispatched with and
 // returns a canned result — usable behind both runners' invoke.Deterministic
@@ -75,6 +104,7 @@ func TestBuildInvocationCompleteEnvelope(t *testing.T) {
 			Limits:         &apiv1.Limits{MaxTokens: 2000, MaxCostUSD: 3.5},
 		}},
 	}
+
 	in := runInput("complete", spec)
 	in.TriggerRef = "item#42"
 	in.BranchNamespace = "goobers/"
@@ -97,6 +127,9 @@ func TestBuildInvocationCompleteEnvelope(t *testing.T) {
 
 	if captured.TaskID != in.RunID+":implement" {
 		t.Errorf("taskId = %q, want %q", captured.TaskID, in.RunID+":implement")
+	}
+	if captured.Goober != "coder" {
+		t.Errorf("goober = %q, want %q — a Temporal worker has only the envelope to route the agentic seam on (#2904)", captured.Goober, "coder")
 	}
 	if captured.Workspace == "" {
 		t.Fatal("envelope workspace is empty — the closed invocation schema requires it")
@@ -137,6 +170,171 @@ func TestBuildInvocationCompleteEnvelope(t *testing.T) {
 	}
 	if err := validator.ValidateJSON("invocation.schema.json", raw); err != nil {
 		t.Fatalf("engine envelope does not validate against the closed invocation schema: %v", err)
+	}
+}
+
+func TestWorkspaceBranchRebindsLaterStagesAcrossRetries(t *testing.T) {
+	const selected = "goobers/implementation/pr-head"
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "select",
+		Tasks: []apiv1.Task{
+			{Name: "select", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "rework"},
+			{Name: "rework", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "verify"},
+			{Name: "verify", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+		},
+	}
+	workspaces := testWorkspaces(t)
+	det := &workspaceBranchDeterministic{attempts: map[string]int{}, branch: selected}
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Det: det, Workspaces: workspaces})
+	env.ExecuteWorkflow(Run, runInput("workspace-rebind", spec))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+
+	requests := workspaces.provisioned()
+	if len(requests) != 4 {
+		t.Fatalf("workspace requests = %+v, want select, two rework attempts, and verify", requests)
+	}
+	if requests[0].Stage != "select" || requests[0].WorkspaceBranch != "" {
+		t.Errorf("select request = %+v, want the run's default branch", requests[0])
+	}
+	for _, request := range requests[1:] {
+		if request.WorkspaceBranch != selected {
+			t.Errorf("%s request selected branch = %q, want %q", request.Stage, request.WorkspaceBranch, selected)
+		}
+	}
+}
+
+func TestWorkspaceBranchHistoryReplays(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{
+		LogLevel: "error",
+		Stdout:   io.Discard,
+		Stderr:   io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("start Temporal dev server: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("stop Temporal dev server: %v", err)
+		}
+	})
+
+	const (
+		selected  = "goobers/implementation/pr-head"
+		taskQueue = "workspace-branch-replay"
+	)
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "select",
+		Tasks: []apiv1.Task{
+			{Name: "select", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "verify"},
+			{Name: "verify", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+		},
+	}
+	in := runInput("workspace-history-replay", spec)
+	det := &workspaceBranchDeterministic{attempts: map[string]int{}, branch: selected}
+	temporalClient := server.Client()
+	w := temporalworker.New(temporalClient, taskQueue, temporalworker.Options{})
+	RegisterWith(w, &Activities{Det: det, Workspaces: testWorkspaces(t)})
+	if err := w.Start(); err != nil {
+		t.Fatalf("start Temporal worker: %v", err)
+	}
+	t.Cleanup(w.Stop)
+
+	run, err := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:        "workspace-branch-history-replay",
+		TaskQueue: taskQueue,
+	}, Run, in)
+	if err != nil {
+		t.Fatalf("execute workflow: %v", err)
+	}
+	var result RunResult
+	if err := run.Get(ctx, &result); err != nil {
+		t.Fatalf("workflow result: %v", err)
+	}
+
+	iter := temporalClient.GetWorkflowHistory(ctx, run.GetID(), run.GetRunID(), false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	history := &historypb.History{}
+	for iter.HasNext() {
+		event, err := iter.Next()
+		if err != nil {
+			t.Fatalf("read workflow history: %v", err)
+		}
+		history.Events = append(history.Events, event)
+	}
+	replayer := temporalworker.NewWorkflowReplayer()
+	replayer.RegisterWorkflow(Run)
+	if err := replayer.ReplayWorkflowHistory(nil, history); err != nil {
+		t.Fatalf("replay selected-branch workflow history: %v", err)
+	}
+}
+
+func TestSelectedWorkspaceBranchRejectsInvalidOutput(t *testing.T) {
+	task := apiv1.Task{Name: "select", Type: apiv1.TaskDeterministic}
+	tests := []struct {
+		name    string
+		outputs map[string]interface{}
+		want    string
+		wantErr string
+	}{
+		{name: "absent", outputs: nil},
+		{name: "blank", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: "  "}},
+		{name: "selected", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: " goobers/implementation/pr-head "}, want: "goobers/implementation/pr-head"},
+		{name: "non-string", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: 42}, wantErr: "must be a string"},
+		{name: "outside namespace", outputs: map[string]interface{}{runner.WorkspaceBranchOutput: "main"}, wantErr: "outside namespace"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := selectedWorkspaceBranch(task, apiv1.ResultEnvelope{Outputs: tt.outputs}, providers.DefaultBranchNamespace)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("selectedWorkspaceBranch error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("selectedWorkspaceBranch error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("selectedWorkspaceBranch = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInvalidWorkspaceBranchFailsWorkflow(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "select",
+		Tasks: []apiv1.Task{
+			{Name: "select", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "verify"},
+			{Name: "verify", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"true"}}},
+		},
+	}
+	det := &capturingDeterministic{result: apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Outputs: map[string]interface{}{runner.WorkspaceBranchOutput: "main"},
+	}}
+	workspaces := testWorkspaces(t)
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Det: det, Workspaces: workspaces})
+	env.ExecuteWorkflow(Run, runInput("workspace-invalid", spec))
+	err := env.GetWorkflowError()
+	if err == nil || !strings.Contains(err.Error(), "outside namespace") {
+		t.Fatalf("workflow error = %v, want invalid selected branch failure", err)
+	}
+	if requests := workspaces.provisioned(); len(requests) != 1 || requests[0].Stage != "select" {
+		t.Fatalf("workspace requests = %+v, want only the selecting stage", requests)
 	}
 }
 
@@ -279,6 +477,9 @@ func TestAgenticGateEnvelopeCarriesReviewerGrantsAndPointers(t *testing.T) {
 	if want := []string{"agent:model"}; !reflect.DeepEqual(captured.Capabilities, want) {
 		t.Errorf("gate capabilities = %v, want %v (the reviewer goober's pinned grants)", captured.Capabilities, want)
 	}
+	if captured.Goober != "reviewer" {
+		t.Errorf("gate goober = %q, want %q (AgenticGate.Goober, #2904)", captured.Goober, "reviewer")
+	}
 	if captured.Goal != "gate: review" {
 		t.Errorf("gate goal = %q, want %q (local-runner naming)", captured.Goal, "gate: review")
 	}
@@ -334,7 +535,7 @@ func TestRunDeterministicBaseSyncConflictIsBusinessFailure(t *testing.T) {
 	a := &Activities{Det: det, Workspaces: workspaces}
 	res, err := a.RunDeterministic(context.Background(),
 		apiv1.InvocationEnvelope{TaskID: "run-x:local-ci", RunID: "run-x"},
-		apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true})
+		apiv1.DeterministicRun{Command: []string{"true"}, SyncBase: true}, "")
 	if err != nil {
 		t.Fatalf("RunDeterministic error = %v, want a business-failure envelope", err)
 	}
@@ -466,12 +667,57 @@ func TestAutomatedGateGetsNoWorkspace(t *testing.T) {
 	if gateEnv.Workspace != "" {
 		t.Errorf("automated gate workspace = %q, want empty (#112: no worktree for pure checks)", gateEnv.Workspace)
 	}
+	if gateEnv.Goober != "" {
+		t.Errorf("automated gate goober = %q, want empty — automated gates run no agent", gateEnv.Goober)
+	}
 	if len(gateEnv.Capabilities) != 0 {
 		t.Errorf("automated gate capabilities = %v, want none", gateEnv.Capabilities)
 	}
 	provisioned := workspaces.provisioned()
 	if len(provisioned) != 1 || provisioned[0].Stage != "implement" {
 		t.Errorf("workspace requests = %+v, want only the task's", provisioned)
+	}
+}
+
+func TestAutomatedGateRejectsReservedSubjectOutputs(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{{
+			Name: "implement", Type: apiv1.TaskDeterministic, Goal: "produce a result",
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+			Next: "check",
+		}},
+		Gates: []apiv1.Gate{{
+			Name:      "check",
+			Evaluator: apiv1.EvaluatorAutomated,
+			Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+			Branches:  map[string]string{"pass": wf.TerminalComplete, "fail": wf.TargetAbort},
+		}},
+	}
+	called := false
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{
+		Det: &capturingDeterministic{result: apiv1.ResultEnvelope{
+			Status:  apiv1.ResultFailure,
+			Error:   &apiv1.ErrorInfo{Code: "actual", Message: "failed"},
+			Outputs: map[string]interface{}{gate.InputKeyStatus: "success"},
+		}},
+		Auto: automatedFunc(func(context.Context, apiv1.AutomatedGate, apiv1.InvocationEnvelope) (string, error) {
+			called = true
+			return gate.OutcomePass, nil
+		}),
+		Workspaces: testWorkspaces(t),
+	})
+	env.ExecuteWorkflow(Run, runInput("reserved-output", spec))
+	err := env.GetWorkflowError()
+	if err == nil || !strings.Contains(err.Error(), "reserved automated input keys: status") {
+		t.Fatalf("workflow error = %v, want reserved status output diagnostic", err)
+	}
+	if called {
+		t.Fatal("automated evaluator was called with a reserved subject output")
 	}
 }
 

@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/goobers/goobers/internal/journal"
 )
@@ -38,11 +40,27 @@ func newTestClient(t *testing.T, dir string) (*Client, string) {
 
 func writeTestRunMarker(t *testing.T, runsDir, runID string) {
 	t.Helper()
-	runDir := filepath.Join(runsDir, runID)
-	if err := os.MkdirAll(filepath.Join(runDir, spansDirName), 0o755); err != nil {
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: "fixture", WorkflowVersion: 1, Gaggle: "fixture",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create test run journal: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close test run journal: %v", err)
+	}
+}
+
+func writeFutureJournalSchema(t *testing.T, runDir string) {
+	t.Helper()
+	data, err := json.Marshal(journal.SchemaInfo{
+		Version:       journal.CurrentSchemaVersion + 1,
+		MinimumBinary: "v2.0.0",
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "run.yaml"), []byte("runId: "+runID+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(runDir, "schema.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -173,6 +191,34 @@ func TestJournalSpanExporterDoesNotCreateRunWithoutJournal(t *testing.T) {
 	}
 }
 
+func TestJournalSpanExporterRejectsFutureJournalSchema(t *testing.T) {
+	runsDir := t.TempDir()
+	runID, err := NewRunID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestRunMarker(t, runsDir, runID)
+	runDir := filepath.Join(runsDir, runID)
+	writeFutureJournalSchema(t, runDir)
+
+	err = NewJournalSpanExporter(runsDir, nil).ExportSpans(t.Context(), []sdktrace.ReadOnlySpan{
+		exportFixtureSpan(t, runID, "0000000000000001", "future", time.Now()),
+	})
+	if err == nil {
+		t.Fatal("span exporter accepted a future journal schema")
+	}
+	for _, want := range []string{"version 2", "supported version 1", "minimum binary is v2.0.0"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("span exporter error %q does not contain %q", err, want)
+		}
+	}
+	for _, name := range []string{spanFileName, otlpFileName} {
+		if _, err := os.Stat(filepath.Join(runDir, spansDirName, name)); !os.IsNotExist(err) {
+			t.Errorf("span exporter mutated %s for future journal: %v", name, err)
+		}
+	}
+}
+
 func TestJournalSpanExporterDoesNotRecreateMissingSpansDirectory(t *testing.T) {
 	dir := t.TempDir()
 	runID, err := NewRunID()
@@ -180,10 +226,8 @@ func TestJournalSpanExporterDoesNotRecreateMissingSpansDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	runDir := filepath.Join(dir, runID)
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(runDir, "run.yaml"), []byte("runId: "+runID+"\n"), 0o644); err != nil {
+	writeTestRunMarker(t, dir, runID)
+	if err := os.RemoveAll(filepath.Join(runDir, spansDirName)); err != nil {
 		t.Fatal(err)
 	}
 	client, err := New(context.Background(), Config{

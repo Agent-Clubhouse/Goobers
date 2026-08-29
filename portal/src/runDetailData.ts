@@ -369,6 +369,102 @@ export function isInspectableEvidenceEvent(event: RunEvent): boolean {
   return isTranscriptEvent(event) || (event.type === "artifact.recorded" && !!event.artifact);
 }
 
+// KeyMomentKind is the digest's own vocabulary for "why does this event
+// matter", derived entirely from RunEvent.category and the escalated/type
+// fields the journal already carries — no second event taxonomy, per #2537's
+// mandate that the digest reuse runDetailData's existing classification.
+export type KeyMomentKind = "escalation" | "decision" | "handoff";
+
+export interface KeyMoment {
+  event: RunEvent;
+  kind: KeyMomentKind;
+}
+
+// Escalations outrank decisions, which outrank handoffs: an operator scanning
+// the digest cares most about "did this need a human", then "what did the
+// run decide", then "who did the run hand off to".
+const KEY_MOMENT_SIGNIFICANCE: Record<KeyMomentKind, number> = {
+  escalation: 3,
+  decision: 2,
+  handoff: 1,
+};
+
+function keyMomentKind(event: RunEvent): KeyMomentKind | undefined {
+  if (
+    event.escalated === true ||
+    event.status === "escalated" ||
+    (event.category === "decision" && event.target?.toLowerCase().includes("escalate"))
+  ) {
+    return "escalation";
+  }
+  if (event.category === "decision") {
+    return "decision";
+  }
+  if (event.type === "branch.started" || event.type === "branch.finished") {
+    return "handoff";
+  }
+  return undefined;
+}
+
+// keyMoments curates the flat, scannable list #2537 asks for: agent
+// decisions, gate evaluations (both carry category "decision"), and
+// handoffs/escalations, ordered by significance rather than the durable
+// sequence journalEntries/EventLedger use — the ledger is still the place to
+// read a run start-to-finish; this is the place to see what mattered.
+export function keyMoments(events: RunEvent[]): KeyMoment[] {
+  const moments: KeyMoment[] = [];
+  for (const event of orderRunEvents(events)) {
+    const kind = keyMomentKind(event);
+    if (kind) {
+      moments.push({ event, kind });
+    }
+  }
+  return moments.sort(
+    (left, right) =>
+      KEY_MOMENT_SIGNIFICANCE[right.kind] - KEY_MOMENT_SIGNIFICANCE[left.kind] ||
+      right.event.seq - left.event.seq,
+  );
+}
+
+export function keyMomentLabel(kind: KeyMomentKind): string {
+  switch (kind) {
+    case "escalation":
+      return "Escalation";
+    case "decision":
+      return "Decision";
+    case "handoff":
+      return "Handoff";
+  }
+}
+
+// keyMomentEvidence finds the payload a key moment's inline preview shows:
+// the latest inspectable evidence (an artifact or transcript) recorded on the
+// same branch, scoped to the same node when the moment resolves to one, at or
+// before the moment's own sequence. For a gate.evaluated decision this is the
+// verdict artifact that carried the rationale; for a branch handoff it is the
+// branch's own recorded output.
+export function keyMomentEvidence(
+  events: RunEvent[],
+  moment: RunEvent,
+  runId?: string,
+): RunEvent | undefined {
+  const nodeId = eventNodeId(moment, runId);
+  let evidence: RunEvent | undefined;
+  for (const event of orderRunEvents(events)) {
+    if (event.seq > moment.seq) {
+      break;
+    }
+    if (event.branch !== moment.branch || !isInspectableEvidenceEvent(event)) {
+      continue;
+    }
+    if (nodeId && eventNodeId(event, runId) !== nodeId) {
+      continue;
+    }
+    evidence = event;
+  }
+  return evidence;
+}
+
 export function isMajorJournalEvent(event: RunEvent): boolean {
   if (!event.knownSchema || !event.category) {
     return true;
@@ -648,6 +744,7 @@ export function eventHeading(event: RunEvent): string {
     redaction: "Journal content redacted",
     repaired: "Journal repaired",
     "runner.annotation": "Runner annotation",
+    "runner.placement": "Placement recorded",
     "span.recorded": "Span recorded",
     "parallel.started": "Parallel started",
     "parallel.finished": "Parallel finished",
@@ -719,6 +816,25 @@ export function eventSummary(
     }
     case "error":
       return event.error?.message || event.error?.code || "An error was recorded.";
+    case "runner.placement": {
+      const runner = typeof event.runner?.runner === "string" ? event.runner.runner : "";
+      if (!runner) {
+        return "Placement provenance was recorded for this attempt.";
+      }
+      // node is a real cluster node; host is the executing process's own
+      // hostname (the POD name inside a pod). Name whichever one the substrate
+      // actually knew, preferring the node — never labelling a host as a node.
+      const placementNode = typeof event.runner?.node === "string" ? event.runner.node : "";
+      const where = [placementNode ? "node" : "host", "os", "pod"]
+        .map((key) => {
+          const value = event.runner?.[key];
+          return typeof value === "string" && value ? `${key} ${value}` : "";
+        })
+        .filter(Boolean)
+        .join(", ");
+      const stage = node ? `${humanize(node)} attempt` : "The attempt";
+      return `${stage} executed on runner ${runner}${where ? ` (${where})` : ""}.`;
+    }
     case "parallel.started":
       return event.parallel ? `Parallel ${event.parallel} started.` : "A parallel state started.";
     case "branch.started":

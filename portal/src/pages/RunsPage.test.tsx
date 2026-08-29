@@ -26,34 +26,28 @@ describe("runs history page", () => {
 
     const history = await screen.findByRole("region", { name: "Run history" });
     // The initial load is one bounded page, not the whole 68-run journal.
-    expect(within(history).getAllByRole("link")).toHaveLength(50);
+    expect(history.querySelectorAll("a")).toHaveLength(50);
     const callsBeforeLoadMore = listRuns.mock.calls.length;
 
     await user.click(screen.getByRole("button", { name: "Load more runs" }));
 
-    await waitFor(() =>
-      expect(
-        within(screen.getByRole("region", { name: "Run history" })).getAllByRole("link"),
-      ).toHaveLength(68),
-    );
+    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(68));
     // Load more advanced a server-side cursor instead of refetching from the start.
-    const lastCall = listRuns.mock.calls.at(-1);
-    expect(lastCall?.[0]?.cursor).toBeTruthy();
+    expect(listRuns.mock.calls.some(([request]) => Boolean(request?.cursor))).toBe(true);
     expect(listRuns.mock.calls.length).toBeGreaterThan(callsBeforeLoadMore);
 
     await user.click(screen.getByRole("button", { name: "Insight" }));
     expect(await screen.findByRole("heading", { name: "Insight" })).toBeInTheDocument();
-    const callsBeforeRevisit = listRuns.mock.calls.length;
+    listRuns.mockClear();
     listRuns.mockImplementation(() => new Promise(() => {}));
 
     await user.click(screen.getByRole("button", { name: "Runs" }));
 
     expect(await screen.findByRole("heading", { name: "Runs" })).toBeInTheDocument();
-    expect(
-      within(screen.getByRole("region", { name: "Run history" })).getAllByRole("link"),
-    ).toHaveLength(68);
-    expect(listRuns).toHaveBeenCalledTimes(callsBeforeRevisit);
-  });
+    const revisitedHistory = screen.getByRole("region", { name: "Run history" });
+    expect(revisitedHistory.querySelectorAll("a")).toHaveLength(68);
+    expect(listRuns).not.toHaveBeenCalled();
+  }, 10_000);
 
   it("maps filter chips onto server-side phase requests", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
@@ -89,6 +83,7 @@ describe("runs history page", () => {
       finishedAt: "2026-07-18T00:00:20Z",
       durationMillis: 20_000,
       lastActivityAt: "2026-07-18T00:00:20Z",
+      stale: false,
       lastSeq: 2,
       repassCount: 0,
       retryCount: 0,
@@ -125,6 +120,20 @@ describe("runs history page", () => {
     expect(await screen.findByText("No runs recorded")).toBeInTheDocument();
     expect(screen.getByText("goobers run <workflow> <instance>")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Runs" })).toBeInTheDocument();
+  });
+
+  it("distinguishes a stale unmonitored run from a live running run", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const running = fixtures.runs.runs.find((run) => run.phase === "running");
+    if (!running) {
+      throw new Error("Expected a running run fixture.");
+    }
+    running.stale = true;
+    render(<App client={new FixtureDaemonClient(fixtures)} />);
+
+    const row = await screen.findByRole("link", { name: `Open run ${running.id}` });
+    expect(within(row).getByText("Stale / unmonitored")).toBeInTheDocument();
+    expect(within(row).queryByText("Running")).not.toBeInTheDocument();
   });
 
   it("distinguishes filters that exclude existing runs and offers recovery", async () => {

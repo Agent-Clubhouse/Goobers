@@ -142,6 +142,15 @@ func TestCrossRunnerTerminalOutcomeParity(t *testing.T) {
 	reviewAbort := crSpec("implement",
 		[]apiv1.Task{crTask("implement", "review")},
 		[]apiv1.Gate{crGate("review", map[string]string{"pass": wf.TerminalComplete, "fail": wf.TargetAbort})})
+	reviewCILoop := crSpec("implement",
+		[]apiv1.Task{
+			crTask("implement", "review"),
+			crTask("local-ci", "local-gate"),
+		},
+		[]apiv1.Gate{
+			crGate("review", map[string]string{"pass": "local-ci", "fail": "implement"}),
+			crGate("local-gate", map[string]string{"pass": wf.TerminalComplete, "fail": "implement"}),
+		})
 
 	cases := []struct {
 		name        string
@@ -189,6 +198,15 @@ func TestCrossRunnerTerminalOutcomeParity(t *testing.T) {
 			wantStatus:  StatusEscalated,
 			wantCalls:   map[string]int{"implement": 2},
 			wantEvals:   2,
+		},
+		{
+			name:        "review pass and CI fail share the implement re-entry budget",
+			spec:        reviewCILoop,
+			results:     map[string][]apiv1.ResultEnvelope{"local-ci": {failureResult("ci", "always fails")}},
+			maxRepasses: 2,
+			wantStatus:  StatusEscalated,
+			wantCalls:   map[string]int{"implement": 3, "local-ci": 3},
+			wantEvals:   6,
 		},
 		{
 			name: "escalation routes through the escalate control branch",
@@ -367,9 +385,8 @@ func TestCrossRunnerTerminalOutcomeParity(t *testing.T) {
 }
 
 // TestResolveGateOutcome pins the workflow-side port of gate.Evaluator's
-// repass tracking: pass resets, non-pass increments, exceeding the budget
-// escalates via the escalate control branch (or @escalate without one), and
-// an unmapped outcome is an error, never a silent pass.
+// repass tracking: target-stage re-entry increments regardless of outcome,
+// exceeding the budget escalates, and an unmapped outcome is an error.
 func TestResolveGateOutcome(t *testing.T) {
 	branches := map[string]string{"pass": wf.TerminalComplete, "fail": "implement"}
 	g := crGate("review", branches)
@@ -377,20 +394,20 @@ func TestResolveGateOutcome(t *testing.T) {
 		"pass": wf.TerminalComplete, "fail": "implement", wf.BranchEscalate: "park",
 	})
 
-	t.Run("pass resets the budget", func(t *testing.T) {
-		attempts := map[string]int{"review": 2}
-		gr, err := resolveGateOutcome(g, gate.OutcomePass, attempts, 3)
+	t.Run("pass resets gate recovery count without charging a forward branch", func(t *testing.T) {
+		gateAttempts := map[string]int{"review": 2}
+		repassAttempts := map[string]int{}
+		gr, err := resolveGateOutcome(g, gate.OutcomePass, false, gateAttempts, repassAttempts, 3)
 		if err != nil {
 			t.Fatalf("resolveGateOutcome: %v", err)
 		}
-		if gr.Escalated || gr.Attempt != 0 || attempts["review"] != 0 || gr.Target != wf.TerminalComplete {
-			t.Fatalf("pass result = %+v attempts=%d, want reset to 0 and the pass branch", gr, attempts["review"])
+		if gr.Escalated || gr.Attempt != 0 || gateAttempts["review"] != 0 || gr.Target != wf.TerminalComplete {
+			t.Fatalf("pass result = %+v gateAttempts=%d, want reset to 0 and the pass branch", gr, gateAttempts["review"])
 		}
 	})
 
 	t.Run("non-pass within budget follows the gate's own branch", func(t *testing.T) {
-		attempts := map[string]int{}
-		gr, err := resolveGateOutcome(g, gate.OutcomeFail, attempts, 1)
+		gr, err := resolveGateOutcome(g, gate.OutcomeFail, true, map[string]int{}, map[string]int{}, 1)
 		if err != nil {
 			t.Fatalf("resolveGateOutcome: %v", err)
 		}
@@ -399,9 +416,21 @@ func TestResolveGateOutcome(t *testing.T) {
 		}
 	})
 
+	t.Run("pass-driven re-entry consumes the target budget", func(t *testing.T) {
+		passBack := crGate("review", map[string]string{"pass": "implement", "fail": wf.TargetAbort})
+		repasses := map[string]int{"implement": 1}
+		gr, err := resolveGateOutcome(passBack, gate.OutcomePass, true, map[string]int{"review": 2}, repasses, 1)
+		if err != nil {
+			t.Fatalf("resolveGateOutcome: %v", err)
+		}
+		if !gr.Escalated || gr.Attempt != 2 || gr.RepassTarget != "implement" || gr.Target != wf.TargetEscalate {
+			t.Fatalf("result = %+v, want pass-driven target-stage escalation", gr)
+		}
+	})
+
 	t.Run("exhaustion escalates to @escalate without a control branch", func(t *testing.T) {
-		attempts := map[string]int{"review": 1}
-		gr, err := resolveGateOutcome(g, gate.OutcomeFail, attempts, 1)
+		repasses := map[string]int{"implement": 1}
+		gr, err := resolveGateOutcome(g, gate.OutcomeFail, true, map[string]int{"review": 1}, repasses, 1)
 		if err != nil {
 			t.Fatalf("resolveGateOutcome: %v", err)
 		}
@@ -413,7 +442,7 @@ func TestResolveGateOutcome(t *testing.T) {
 	t.Run("gate budget overrides the inherited run budget", func(t *testing.T) {
 		gateOverride := g
 		gateOverride.MaxRepasses = 1
-		gr, err := resolveGateOutcome(gateOverride, gate.OutcomeFail, map[string]int{"review": 1}, 5)
+		gr, err := resolveGateOutcome(gateOverride, gate.OutcomeFail, true, map[string]int{"review": 1}, map[string]int{"implement": 1}, 5)
 		if err != nil {
 			t.Fatalf("resolveGateOutcome: %v", err)
 		}
@@ -423,8 +452,7 @@ func TestResolveGateOutcome(t *testing.T) {
 	})
 
 	t.Run("exhaustion routes through the escalate control branch", func(t *testing.T) {
-		attempts := map[string]int{"review": 1}
-		gr, err := resolveGateOutcome(withEscalate, gate.OutcomeFail, attempts, 1)
+		gr, err := resolveGateOutcome(withEscalate, gate.OutcomeFail, true, map[string]int{"review": 1}, map[string]int{"implement": 1}, 1)
 		if err != nil {
 			t.Fatalf("resolveGateOutcome: %v", err)
 		}
@@ -434,7 +462,7 @@ func TestResolveGateOutcome(t *testing.T) {
 	})
 
 	t.Run("unmapped outcome errors", func(t *testing.T) {
-		if _, err := resolveGateOutcome(g, "maybe", map[string]int{}, 1); err == nil || !strings.Contains(err.Error(), "GT-002") {
+		if _, err := resolveGateOutcome(g, "maybe", false, map[string]int{}, map[string]int{}, 1); err == nil || !strings.Contains(err.Error(), "GT-002") {
 			t.Fatalf("err = %v, want the GT-002 no-silent-pass error", err)
 		}
 	})

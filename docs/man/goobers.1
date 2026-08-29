@@ -51,7 +51,7 @@ scaffold an instance root
 trigger a run manually (still honors run conditions)
 .TP
 \fBgoobers scaffold\fR
-scaffold a goober or workflow in a gaggle
+scaffold a goober, workflow, or gaggle
 .TP
 \fBgoobers service\fR
 install and manage the platform-supervised daemon
@@ -63,10 +63,10 @@ fire an external signal to subscribed workflows
 show the instance lifetime summary card
 .TP
 \fBgoobers status\fR
-validate config, show warnings, list runs, or report daemon health
+validate config, show warnings, list runs, report daemon health, or list live agentic stages
 .TP
 \fBgoobers trace\fR
-show a run's journal events, follow a live run, or show transcripts
+show a run's journal events or review verdicts, follow a live run, or show transcripts
 .TP
 \fBgoobers up\fR
 run the daemon (scheduler + runner + loopback HTTP API)
@@ -147,8 +147,23 @@ render the effective instance config (secrets redacted)
 \fBgoobers doctor\fR
 preflight a Kubernetes cluster against the documented infra shape
 .TP
+\fBgoobers e2e\fR
+check the Goobernetes distributed e2e proof harness's assertions against a recorded run
+.TP
+\fBgoobers e2e kill-inject\fR
+perform one live S6 kill-matrix cell (pod-kill) against a real cluster
+.TP
+\fBgoobers e2e verify\fR
+verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
+.TP
+\fBgoobers engine-project\fR
+write a completed engine run's journal into the instance (experimental)
+.TP
+\fBgoobers engine-start\fR
+dispatch one run onto the tier-3 engine via Temporal (experimental)
+.TP
 \fBgoobers escalations show\fR
-show escalation cause + per-stage artifact timeline
+show escalation cause, verdict, and per-stage artifact timeline
 .TP
 \fBgoobers examples list\fR
 list canonical embedded workflow examples
@@ -173,6 +188,9 @@ remove a leaked secret from a stored blob (SEC-041)
 .TP
 \fBgoobers lint\fR
 lint config via the single authoritative validation engine (alias for validate)
+.TP
+\fBgoobers netpol-render\fR
+render per-runner-class NetworkPolicy reference manifests from the runners: inventory
 .TP
 \fBgoobers onboarding\fR
 run non-interactive onboarding actions
@@ -209,6 +227,9 @@ report per-run journal and artifact bytes
 .TP
 \fBgoobers runs list\fR
 alias for the status run table (same flags, no --watch)
+.TP
+\fBgoobers scaffold gaggle\fR
+scaffold a gaggle, or rename one with --from
 .TP
 \fBgoobers scaffold goober\fR
 scaffold a goober in a gaggle
@@ -355,6 +376,9 @@ check PR liveness or release its remediation claim (a workflow stage)
 \fBgoobers pr-select\fR
 select one managed or advisory open PR for merge-review (a workflow stage)
 .TP
+\fBgoobers publish-batch\fR
+publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
+.TP
 \fBgoobers push-branch\fR
 push the worktree's checked-out branch to origin (a workflow stage)
 .TP
@@ -378,6 +402,9 @@ durable per-cause attempt budgets + same-diff escalation (a workflow stage)
 .TP
 \fBgoobers report-pr-status\fR
 publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
+.TP
+\fBgoobers resolve-review-threads\fR
+reply to and resolve remediated native review threads (a workflow stage)
 .TP
 \fBgoobers respond-to-findings\fR
 post a validated per-finding remediation response to the claimed PR (a workflow stage)
@@ -430,7 +457,12 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-docs-churn\fR(1),
 \fBgoobers-doctor\fR(1),
 \fBgoobers-down\fR(1),
+\fBgoobers-e2e\fR(1),
+\fBgoobers-e2e-kill-inject\fR(1),
+\fBgoobers-e2e-verify\fR(1),
 \fBgoobers-elect-lander\fR(1),
+\fBgoobers-engine-project\fR(1),
+\fBgoobers-engine-start\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),
 \fBgoobers-examples\fR(1),
@@ -457,6 +489,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-mcp-io\fR(1),
 \fBgoobers-merge-pr\fR(1),
 \fBgoobers-merge-queue-poll\fR(1),
+\fBgoobers-netpol-render\fR(1),
 \fBgoobers-onboarding\fR(1),
 \fBgoobers-onboarding-stub-agent-instructions\fR(1),
 \fBgoobers-onboarding-stub-sample\fR(1),
@@ -466,6 +499,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-pr-claim\fR(1),
 \fBgoobers-pr-select\fR(1),
 \fBgoobers-preflight\fR(1),
+\fBgoobers-publish-batch\fR(1),
 \fBgoobers-push-branch\fR(1),
 \fBgoobers-push-remediated\fR(1),
 \fBgoobers-rebase-pr\fR(1),
@@ -476,6 +510,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-report-pr-status\fR(1),
 \fBgoobers-rerun-stage\fR(1),
 \fBgoobers-reset-rate-limit\fR(1),
+\fBgoobers-resolve-review-threads\fR(1),
 \fBgoobers-respond-to-findings\fR(1),
 \fBgoobers-run\fR(1),
 \fBgoobers-run-abort\fR(1),
@@ -484,6 +519,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-runs-du\fR(1),
 \fBgoobers-runs-list\fR(1),
 \fBgoobers-scaffold\fR(1),
+\fBgoobers-scaffold-gaggle\fR(1),
 \fBgoobers-scaffold-goober\fR(1),
 \fBgoobers-scaffold-workflow\fR(1),
 \fBgoobers-schema\fR(1),

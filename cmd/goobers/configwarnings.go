@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
@@ -30,6 +31,23 @@ func validationReportFromError(err error) *validate.Report {
 		return reportErr.report
 	}
 	return nil
+}
+
+// validationIssueSummary renders a report's error-severity issues as a single
+// line for scopes that must carry them inside a returned error rather than
+// print to a stream they own. Empty when there is nothing at error severity.
+func validationIssueSummary(report *validate.Report) string {
+	if report == nil {
+		return ""
+	}
+	var lines []string
+	for _, issue := range report.Issues {
+		if issue.Severity != validate.Error {
+			continue
+		}
+		lines = append(lines, issue.CLIString())
+	}
+	return strings.Join(lines, "; ")
 }
 
 func printValidationIssues(w io.Writer, report *validate.Report) {

@@ -1,6 +1,6 @@
 # Kubernetes Infrastructure Shape — what Goobers needs from a customer-managed cluster
 
-**Status:** Approved for backlog planning (PO directive, 2026-07-16). Documentation-first:
+**Status:** approved — for backlog planning (PO directive, 2026-07-16). Documentation-first:
 this doc (plus reference manifests filed as backlog issues) is the deliverable.
 **Provisioning code (Bicep/Terraform/cloud accounts) is explicitly out of scope** — the
 customer brings a cluster they procure and manage. The existing `infra/` Bicep tree remains
@@ -57,17 +57,22 @@ vendor-neutral form.
 ## 4. State & storage
 
 - **Journal & artifacts:** same on-disk layout as tiers 1–2 (`runs/`, `scheduler/`) on a
-  cluster volume — requirement: a `ReadWriteMany`-capable StorageClass **or** blob-backed
-  CSI mount; append-only usage, digested artifacts. Run ownership/single-writer is
-  enforced by Temporal workflow identity at tier 3, **not** by file flocks — shared
-  storage is a projection target, not a coordination mechanism.
+  cluster volume. `ReadWriteMany` or blob-backed storage is suitable only for projected
+  journals and artifacts that do not use filesystem coordination. The current instance
+  root also contains POSIX lock files and SQLite WAL databases; it must use RWO storage
+  mounted by a single node until those storage roles are split or the provisioner is
+  verified safe for cross-client `flock` and SQLite WAL. Provisioner names alone do not
+  establish either property. Temporal workflow identity enforces run ownership at tier 3,
+  but does not replace the instance root's other file locks.
 - **Temporal persistence:** PostgreSQL (managed recommended); sizing guidance: modest —
   history is bounded per run and projected out; retention window configurable.
 - **Telemetry:** OTLP export; reference substrate ADX, vendor-neutral form = any OTLP
   collector endpoint the customer runs. Partitioned/tagged per gaggle.
-- **Workspace/object caches** (v2-cloud-scale B3/B5): node-local ephemeral volumes for
-  worktrees; PVC snapshots or OCI images for baked workspaces; a per-repo object cache
-  volume class. All rebuildable — never durable state.
+- **Workspace/object caches** (v2-cloud-scale B3/B5): pod-private ephemeral volumes for
+  active worktrees; PVC snapshots or OCI images for baked workspaces; a per-repo object
+  cache volume class. Active worktree roots must not be shared across worker pods because
+  their process-liveness records are namespace-local. All rebuildable — never durable
+  state.
 
 ## 5. Networking
 
@@ -99,7 +104,11 @@ vendor-neutral form.
 - Large-repo pools: nodes hosting object caches/baked snapshots want fast local NVMe;
   label + affinity (`goobers.dev/cache-node`) documented.
 - Windows node pools: only for teams whose stages require Windows
-  (cross-platform-support P13); default is Linux-only.
+  (cross-platform-support P13); default is Linux-only. Every Linux workload must select
+  `kubernetes.io/os: linux`, and every Windows node must carry the
+  `kubernetes.io/os=windows:NoSchedule` taint. Windows workloads select
+  `kubernetes.io/os: windows` and tolerate that taint. This defense in depth prevents an
+  unpinned Linux pod from attaching a Linux filesystem volume to a Windows node.
 
 ## 8. Deliverables filed from this doc
 

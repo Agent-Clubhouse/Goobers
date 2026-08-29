@@ -1,6 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -144,5 +149,77 @@ func TestPinnedWorkspaceLayoutRejectsDifferentGaggleRoots(t *testing.T) {
 	_, err := pinnedWorkspaceLayout(instance.NewLayout(t.TempDir()), cfg, set, project)
 	if err == nil || !strings.Contains(err.Error(), "different workcopies roots") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+// TestRunWorkspaceResetGitAskpassUsesAbsoluteWorkcopiesRoot pins the
+// `goobers workspace reset` half of the askpass-relative-residual fix:
+// a3b2e636 absolutized the daemon path's workcopies root
+// (cmd/goobers/runnerwiring.go) but left this command building its
+// GIT_ASKPASS from layout.WorkcopiesBaseDir() un-Abs'd. With the command's
+// own default instance path "." (workspaceHelp), that produced a relative
+// askpass script path — and worktree.Manager's git subprocesses run with
+// cmd.Dir set to a mirror directory nested under the workcopies root, not
+// the process's own cwd (internal/worktree/manager.go's NewManager doc),
+// so git resolved the relative path against the wrong directory and never
+// got as far as presenting a token. This drives a real reset against a
+// local HTTPS remote and asserts git got far enough to authenticate.
+func TestRunWorkspaceResetGitAskpassUsesAbsoluteWorkcopiesRoot(t *testing.T) {
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "test-token")
+	root := initDemo(t)
+
+	instanceYAMLPath := filepath.Join(root, "instance.yaml")
+	raw, err := os.ReadFile(instanceYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(
+		string(raw),
+		"  provider: github\n",
+		"  provider: github\n  workspace:\n    pinned: true\n",
+		1,
+	)
+	if updated == string(raw) {
+		t.Fatalf("starter instance.yaml did not contain the expected repo provider line:\n%s", raw)
+	}
+	if err := os.WriteFile(instanceYAMLPath, []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	authenticated := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		select {
+		case authenticated <- struct{}{}:
+		default:
+		}
+		http.Error(w, "stop after authentication", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	gitConfig := filepath.Join(root, "gitconfig")
+	rewrite := fmt.Sprintf("[url %q]\n\tinsteadOf = https://github.com/\n", server.URL+"/")
+	if err := os.WriteFile(gitConfig, []byte(rewrite), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	t.Chdir(root)
+
+	var stdout, stderr bytes.Buffer
+	// No explicit path argument, so the instance root defaults to "." —
+	// exactly the relative root workspaceHelp documents and the one that
+	// broke the daemon path pre-a3b2e636.
+	runWorkspaceReset([]string{"your-repo"}, &stdout, &stderr)
+
+	select {
+	case <-authenticated:
+	default:
+		t.Fatalf("git never presented a token to the remote — askpass path likely failed to resolve; stderr: %s", stderr.String())
 	}
 }

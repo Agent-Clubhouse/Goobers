@@ -251,7 +251,7 @@ Only east installs the scheduled `backlog-assignment` workflow:
 ```yaml
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: backlog-assignment
 spec:

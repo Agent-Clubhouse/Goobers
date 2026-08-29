@@ -26,7 +26,7 @@ const gatherCIFailuresHelp = "Usage: goobers gather-ci-failures [path]\n\n" +
 	"2 = usage/IO error.\n"
 
 func runGatherCIFailures(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("gather-ci-failures", flag.ContinueOnError)
+	fs := newCLIFlagSet("gather-ci-failures", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "gather-ci-failures")
 	if err := fs.Parse(args); err != nil {

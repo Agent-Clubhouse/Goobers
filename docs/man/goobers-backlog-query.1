@@ -6,7 +6,7 @@ goobers backlog-query \- query/claim one eligible backlog item (a workflow stage
 \fBgoobers backlog-query\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers backlog-query [--read-only | --claim | --reconcile | --release] [path]
+Usage: goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release] [path]
 
 Query the provider for eligible backlog items — labeled with trustLabel
 (SEC-047: required on public repos, since backlog content is untrusted
@@ -21,6 +21,10 @@ trustLabel is required with --claim (SEC-047 fails closed, not open) —
 a plain list (no --claim) does not require it. --read-only also bypasses
 claim locks, blocked-record reconciliation, scan cursors, and read caches,
 and uses only the github:issues:read capability.
+
+--debug writes candidate eligibility, exclusion, and claim-loss details to
+stderr. Diagnostics contain item IDs and selection metadata only; normal
+output and claim behavior are unchanged.
 
 With --release, removes the provider-visible claim marker and then releases
 every claim this run holds in the local ledger (issues #234/#1003). A

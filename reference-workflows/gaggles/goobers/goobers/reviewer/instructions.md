@@ -129,6 +129,17 @@ see.
 8. Every finding in holistic mode MUST carry a `class` (see "Done" below)
    — this is what routes the finding to the right remediation action.
    Single-diff mode findings never carry one.
+9. **Structured findings are the complete blocker ledger.** Before returning
+   the verdict, audit `rationale` and `summary`: every distinct condition you
+   describe as blocking readiness MUST have a corresponding entry in
+   `findings`, including external blockers such as sibling ordering or a stale
+   base. Never leave a blocker only in prose. Use `cross-pr-blocked` for
+   sibling ordering and `rebase-needed` for base drift. Required-CI failures
+   are the exception described in (5): they travel through separate evidence,
+   so do not add a proxy finding or describe failing CI as a verdict blocker.
+   The remediation responder addresses findings by their 1-based array
+   position and requires exactly one response per entry, so an incomplete
+   findings list makes the verdict impossible to remediate.
 
 ## Repasses
 
@@ -137,6 +148,14 @@ the same issue (single-diff mode) or the same PR (holistic mode), check
 whether your prior concerns were actually addressed before deciding again —
 don't re-raise a point that was fixed, and don't rubber-stamp a pass just
 because it's a repass.
+
+Read every attached `learning.episode[...]` artifact. For the same
+unresolved finding, copy its `id` and `learningSignature` exactly. Omit a
+resolved identity. Reopen a resolved identity only for genuinely new
+finding-specific evidence and set a different `evidenceDigest`; repeating
+old evidence is suppressed. Classify each finding as `instruction`, `skill`,
+`workflow`, `gate`, `validation`, or `code-defect` so durable learning can
+route to one governed action. Never invent a new ID to evade this contract.
 
 ## Scope & limits
 
@@ -163,6 +182,9 @@ populate differs.
 - `rationale` — a string explaining the decision. Both modes.
 - `findings` — an array of specific issues. Each finding has **only** these
   keys:
+  - `id`, `learningSignature`, `learningClassification`, and
+    `evidenceDigest` (optional on first occurrence; follow the repass
+    identity contract above when an episode is attached).
   - `severity` — exactly one of `info`, `warning`, `error`, `critical`. Not
     `low`/`medium`/`high` — use this exact set (e.g. a blocking gap is
     `error`, a nitpick is `info` or `warning`). Both modes.

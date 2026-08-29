@@ -29,12 +29,14 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/testgit"
+	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 )
 
 // tutorWorkflowYAML mirrors the real reference-workflows Tutor control flow while
 // replacing provider-backed commands with offline sentinels.
 const tutorWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: tutor
 spec:
@@ -185,7 +187,7 @@ func initTutorDemo(t *testing.T, mode tutorDraftMode) string {
 
 	prevAdapter := newAgenticAdapter
 	newAgenticAdapter = func(gooberName string, _ map[string]string) harness.Adapter {
-		return &harness.FakeAdapter{
+		return &harnesstest.FakeAdapter{
 			Transcript: []byte("fake harness session for " + gooberName + "\n"),
 			Act: func(_ context.Context, req harness.RunRequest) error {
 				if gooberName == "config-author" {
@@ -193,7 +195,7 @@ func initTutorDemo(t *testing.T, mode tutorDraftMode) string {
 						return err
 					}
 				}
-				return harness.WriteCompletion(req.Workspace, req.CompletionPath, tutorFixtureAct(gooberName))
+				return harnesstest.WriteCompletion(req.Workspace, req.CompletionPath, tutorFixtureAct(gooberName))
 			},
 		}
 	}

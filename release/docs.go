@@ -15,6 +15,16 @@ import (
 const releaseDocsVersionFile = "docs/RELEASE.md"
 
 const (
+	readmeSourceReleaseInstall = "## Install\n\n" +
+		"Install the current `v0.1.0` release on Linux or macOS:\n\n" +
+		"```sh\n" +
+		"/bin/sh -c \"$(curl -fsSL https://github.com/Agent-Clubhouse/Goobers/releases/download/v0.1.0/install.sh)\" \\\n" +
+		"  -- v0.1.0\n" +
+		"```\n\n" +
+		"The installer verifies the downloaded archive against the release checksum and\n" +
+		"places `goobers` in `$HOME/.local/bin`. See\n" +
+		"[Release installation and verification](docs/guides/releases.md) for\n" +
+		"prerequisites, install-directory overrides, and the Windows path.\n\n"
 	readmeSourceInstall = "Follow the [canonical quickstart](docs/guides/quickstart.md) for the ordered\n" +
 		"first-run path: a credential-free local demo, a disposable GitHub-backed run,\n" +
 		"and then a regular instance using the\n" +
@@ -64,22 +74,40 @@ const (
 		"the first manual run below uses the workflow the guided setup created. Guided\n" +
 		"setup validates the instance and refuses an already configured target.\n\n"
 	quickstartSourceOnboardingAssets = "Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
-		"against a disposable GitHub repository. This path requires a GitHub token and\n" +
-		"an authenticated Copilot CLI. Copy the paired sample into a separate throwaway\n" +
-		"directory:\n\n" +
+		"against a disposable GitHub repository you control. This path requires a\n" +
+		"GitHub token and an authenticated agent harness. The shipped template's\n" +
+		"goobers default to `harness: copilot`; to run it on Claude Code instead, set\n" +
+		"`harness: claude-code` in `./tutorial-instance/config/gaggles/example/goobers/{implementer,reviewer}/goober.yaml`\n" +
+		"after materializing the instance below (see\n" +
+		"[`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)\n" +
+		"for a full claude-code gaggle reference).\n\n" +
+		"### Check prerequisites\n\n" +
+		"The sample's CI command requires Node.js 20 or newer and npm. Confirm both are\n" +
+		"available on the same `PATH` Goobers will use before materializing the sample:\n\n" +
+		"```sh\n" +
+		"node --version\n" +
+		"npm --version\n" +
+		"```\n\n" +
+		"The first command must report `v20.0.0` or newer, and both commands must\n" +
+		"succeed. At run start, Goobers preflights the configured `npm` CI executable\n" +
+		"before any workflow stage executes. If npm is missing, the run fails before it\n" +
+		"claims or changes an issue with a `ciCommand executable \"npm\" not found` error;\n" +
+		"install Node.js 20+ and npm, then run the command again. The preflight checks\n" +
+		"that npm exists, not the Node.js major version, so do not skip the literal\n" +
+		"version checks above.\n\n" +
+		"### Materialize the sample and the instance\n\n" +
+		"Copy the paired sample into a separate throwaway directory, then scaffold the\n" +
+		"instance that will operate on it:\n\n" +
 		"```sh\n" +
 		"bin/goobers onboarding stub-sample \\\n" +
 		"  --destination ./getting-started-task-api \\\n" +
 		"  --json\n" +
+		"bin/goobers init --template=quickstart ./tutorial-instance\n" +
 		"```\n\n" +
-		"The action is non-interactive, embeds the release-matched sample, and is safe to\n" +
-		"re-run. It refuses conflicting user-owned files unless `--force` is explicit.\n" +
-		"To also seed the catalog's labels and issues into an existing disposable GitHub\n" +
-		"repository, add `--work-tracking owner/repo`; the command reads\n" +
-		"`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,\n" +
-		"the JSON envelope reports the issues pending and still materializes the local\n" +
-		"sample without network access. It never creates or pushes a remote.\n\n" +
-		"The `--json` output is a versioned action envelope:\n\n" +
+		"`stub-sample` is non-interactive, embeds the release-matched sample, and is\n" +
+		"safe to re-run; it refuses conflicting user-owned files unless `--force` is\n" +
+		"explicit, and never creates or pushes a remote itself. Its `--json` output is\n" +
+		"a versioned action envelope:\n\n" +
 		"```json\n" +
 		"{\n" +
 		"  \"action\": \"stub-sample\",\n" +
@@ -91,11 +119,70 @@ const (
 		"}\n" +
 		"```\n\n" +
 		"`created` lists paths written in this run; `skipped` lists paths already\n" +
-		"present. When `--work-tracking` is supplied, `label:<name>` and `issue:<id>`\n" +
-		"entries appear in `created` when newly seeded and in `skipped` when the label\n" +
-		"or issue already exists. Without a\n" +
-		"configured token, seed entries appear as `issue:<id> (pending: <reason>)` in\n" +
-		"`skipped`. `nextCommand` is the next command to run.\n\n"
+		"present. `nextCommand` is the next command to run. `init --template=quickstart`\n" +
+		"materializes `./tutorial-instance` still pointing at the template's\n" +
+		"placeholder repository (`your-org/your-repo`); the next step replaces that\n" +
+		"with a real one.\n\n" +
+		"### Create a disposable repository and connect the instance to it\n\n" +
+		"1. Create a new, empty GitHub repository to hold the sample, and push it —\n" +
+		"   any name, delete it whenever you're done. With the GitHub CLI:\n\n" +
+		"   ```sh\n" +
+		"   gh repo create <owner>/<repo> --private --source ./getting-started-task-api --push\n" +
+		"   ```\n\n" +
+		"   Without it, create the repository at <https://github.com/new>, then:\n\n" +
+		"   ```sh\n" +
+		"   git -C ./getting-started-task-api init -b main\n" +
+		"   git -C ./getting-started-task-api add -A\n" +
+		"   git -C ./getting-started-task-api commit -m \"Getting Started sample\"\n" +
+		"   git -C ./getting-started-task-api remote add origin https://github.com/<owner>/<repo>.git\n" +
+		"   git -C ./getting-started-task-api push -u origin main\n" +
+		"   ```\n\n" +
+		"   Already have a disposable repository you'd rather reuse? Skip this step\n" +
+		"   and use its `<owner>/<repo>` below instead.\n\n" +
+		"2. Export a GitHub token with repo/issues access, once, under the name\n" +
+		"   `connect` expects by default:\n\n" +
+		"   ```sh\n" +
+		"   export GOOBERS_GITHUB_TOKEN=<your token>\n" +
+		"   ```\n\n" +
+		"3. Point the instance at the repository, and seed it in the same step:\n\n" +
+		"   ```sh\n" +
+		"   bin/goobers connect <owner>/<repo> --seed ./tutorial-instance\n" +
+		"   ```\n\n" +
+		"   `connect` rewrites the placeholder `your-org/your-repo` in\n" +
+		"   `./tutorial-instance`'s `instance.yaml` and gaggle config to the repository\n" +
+		"   you gave it, records `GOOBERS_GITHUB_TOKEN` (or the name you passed via\n" +
+		"   `--token-env NAME`, if you keep the token under a different variable) as\n" +
+		"   the credential reference by name only — the value never passes through\n" +
+		"   this command — and validates the result in-process. `--seed` derives the\n" +
+		"   labels the quickstart workflow's backlog selector requires, ensures they\n" +
+		"   exist on the repository, and files one safe starter issue, using that same\n" +
+		"   token — one `GOOBERS_GITHUB_TOKEN` export covers connecting and seeding.\n" +
+		"   Configuration already pointing at a real repository is left alone unless\n" +
+		"   you pass `--replace`.\n\n" +
+		"4. Confirm Goobers can see and use your installed harness before the first\n" +
+		"   run — `--check-harness` preflights every harness referenced by the\n" +
+		"   instance's goobers and prints `HARNESS claude-code: OK` (or `HARNESS\n" +
+		"   copilot: OK`) once the CLI is installed and signed in:\n\n" +
+		"   ```sh\n" +
+		"   bin/goobers validate --check-harness ./tutorial-instance\n" +
+		"   ```\n\n" +
+		"### Run it\n\n" +
+		"```sh\n" +
+		"bin/goobers run quickstart ./tutorial-instance\n" +
+		"```\n\n" +
+		"`run` waits for the run to reach a terminal state by default. This is a real\n" +
+		"autonomous run against your disposable repository, so it takes noticeably\n" +
+		"longer than the offline demo: it claims one approved issue, implements it,\n" +
+		"performs an advisory code-review task, pushes the run branch, and opens a\n" +
+		"pull request. It is **not for production**: it intentionally omits CI gates,\n" +
+		"remediation loops, bounded escalation, merge policy, and issue close-out so\n" +
+		"the onboarding happy path has no stall points.\n\n" +
+		"`dashboard` blocks until interrupted, so open it in a second terminal to\n" +
+		"browse the run in the Portal, and press Ctrl-C there when you're done:\n\n" +
+		"```sh\n" +
+		"# second terminal\n" +
+		"bin/goobers dashboard ./tutorial-instance\n" +
+		"```\n\n"
 	quickstartSourceRun               = "```sh\ngoobers run <workflow>\n```"
 	quickstartSourceStatusWorkflow    = "default-implement         example"
 	quickstartInstalledStatusWorkflow = "implementation            example"
@@ -104,7 +191,7 @@ const (
 		"[`quickstart.md`](quickstart.md) for the single ordered first-run path and CLI\n" +
 		"walkthrough.\n\n"
 	linuxQuickstartSourceCIJob      = "CI job (`.github/workflows/ci.yml`), which runs the shipped binary end to end —\n"
-	linuxQuickstartSourceToolchain  = "| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.5**) |\n"
+	linuxQuickstartSourceToolchain  = "| Go toolchain | the version pinned in [`go.mod`](../../go.mod) (currently **1.26.6**) |\n"
 	linuxQuickstartSourceValidation = "> **Linux delta — deterministic `network: none` stages use user namespaces.** On\n" +
 		"> Linux, a workflow stage that declares `network: none` is isolated with an\n" +
 		"> unprivileged user + network namespace (`CLONE_NEWUSER`), not an external\n" +
@@ -120,9 +207,9 @@ const (
 		"```\n\n"
 	linuxQuickstartSourcePrerequisites = "## 1. Install prerequisites\n\n" +
 		"```sh\n" +
-		"# Go — install the toolchain matching go.mod (1.26.5). Distro packages often lag;\n" +
+		"# Go — install the toolchain matching go.mod (1.26.6). Distro packages often lag;\n" +
 		"# prefer the official tarball:\n" +
-		"curl -sSfL https://go.dev/dl/go1.26.5.linux-amd64.tar.gz | sudo tar -C /usr/local -xz\n" +
+		"curl -sSfL https://go.dev/dl/go1.26.6.linux-amd64.tar.gz | sudo tar -C /usr/local -xz\n" +
 		"export PATH=\"/usr/local/go/bin:$(go env GOPATH)/bin:$PATH\"\n\n" +
 		"# Git (>= 2.17 — any supported Ubuntu/Debian is newer):\n" +
 		"sudo apt-get update && sudo apt-get install --yes git\n\n" +
@@ -241,6 +328,10 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 		{
 			path: "README.md",
 			sections: []onboardingSectionRewrite{
+				{
+					source:    readmeSourceReleaseInstall,
+					installed: "",
+				},
 				{
 					source: readmeSourceInstall,
 					installed: fmt.Sprintf(

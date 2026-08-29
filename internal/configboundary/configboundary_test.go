@@ -13,7 +13,7 @@ import (
 func TestConfineRejectsPlatformPathsUnderNonDefaultRoot(t *testing.T) {
 	const root = "reference-workflows"
 	platform := []string{
-		"internal/scheduler/scheduler.go",
+		"internal/localscheduler/scheduler.go",
 		".github/workflows/ci.yml",
 		".github/CODEOWNERS",
 		"Makefile",

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/providers"
 )
@@ -100,6 +101,90 @@ func TestAPIReadCacheConditionalGET(t *testing.T) {
 	}
 	if !conditionalSeen {
 		t.Fatal("fresh cache instance did not reuse the on-disk ETag")
+	}
+}
+
+func TestAcquireAPIReadCacheLockDeduplicatesBlockedFileOpen(t *testing.T) {
+	blocked := make(chan struct{})
+	started := make(chan struct{})
+	var calls atomic.Int32
+	acquire := func(string) (*lock.Handle, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		<-blocked
+		return nil, os.ErrClosed
+	}
+	manager := newAPIReadCacheLockManager(2)
+
+	begin := time.Now()
+	for range 3 {
+		handle, err := manager.acquire("blocked.lock", 20*time.Millisecond, acquire)
+		if handle != nil || err == nil {
+			t.Fatalf("blocked acquisition = (%v, %v), want timeout error", handle, err)
+		}
+	}
+	if elapsed := time.Since(begin); elapsed > time.Second {
+		t.Fatalf("blocked file opens returned after %s, want bounded fallback", elapsed)
+	}
+	<-started
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("file open attempts = %d, want one deduplicated attempt", got)
+	}
+	close(blocked)
+}
+
+func TestAcquireAPIReadCacheLockCapsBlockedFileOpens(t *testing.T) {
+	blocked := make(chan struct{})
+	started := make(chan struct{})
+	var calls atomic.Int32
+	acquire := func(string) (*lock.Handle, error) {
+		calls.Add(1)
+		close(started)
+		<-blocked
+		return nil, os.ErrClosed
+	}
+	manager := newAPIReadCacheLockManager(1)
+
+	if _, err := manager.acquire("first.lock", 20*time.Millisecond, acquire); err == nil {
+		t.Fatal("first blocked acquisition returned no error")
+	}
+	<-started
+	if _, err := manager.acquire("second.lock", 20*time.Millisecond, acquire); err == nil {
+		t.Fatal("acquisition beyond capacity returned no error")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("file open attempts = %d, want capacity-limited single attempt", got)
+	}
+	close(blocked)
+}
+
+func TestAPIReadCacheLockDeadlineFallsBackToLiveRequest(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"number":420}`)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	held, err := lock.TryAcquire(filepath.Join(dir, apiReadCacheLockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Release() }()
+
+	cache := newAPIReadCache(dir, "", &http.Client{})
+	begin := time.Now()
+	body := apiReadBody(t, apiReadGet(t, cache, srv.URL+"/repos/acme/widgets/issues/420", ""))
+	if body != `{"number":420}` {
+		t.Fatalf("body = %q, want live provider response", body)
+	}
+	if elapsed := time.Since(begin); elapsed > 3*apiReadCacheLockAcquireTimeout {
+		t.Fatalf("cache contention delayed live request for %s", elapsed)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("provider requests = %d, want 1 live fallback", got)
 	}
 }
 
@@ -621,5 +706,75 @@ func TestAPIReadCacheSnapshotPreservesPullRequestFilteringAndOrder(t *testing.T)
 	}
 	if requests != 1 {
 		t.Fatalf("provider list reads = %d, want 1 shared raw snapshot", requests)
+	}
+}
+
+// TestNewAPIReadCacheCleansStaleListLocksAtStartup covers the per-list-key
+// lock file debris (apiReadListLockPath): acquiring a lock creates its file
+// with O_CREATE but Release only unlocks and closes it, never unlinking it, so
+// every distinct list-request key a scheduler dir has ever seen leaves a
+// permanent zero-byte file behind. newAPIReadCache's startup sweep must
+// remove only the ones old enough to be safely considered abandoned, leave a
+// fresh one untouched, and never touch the single shared cache-file lock
+// (same name, no per-key suffix).
+func TestNewAPIReadCacheCleansStaleListLocksAtStartup(t *testing.T) {
+	dir := t.TempDir()
+
+	stale := apiReadListLockPath(dir, "stale-key")
+	if err := os.WriteFile(stale, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	staleTime := time.Now().Add(-apiReadCacheStaleLockAge - time.Hour)
+	if err := os.Chtimes(stale, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh := apiReadListLockPath(dir, "fresh-key")
+	if err := os.WriteFile(fresh, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mainLock := filepath.Join(dir, apiReadCacheLockName)
+	if err := os.WriteFile(mainLock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(mainLock, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	newAPIReadCache(dir, "", &http.Client{})
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale list lock survived startup cleanup: err=%v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh list lock was removed: %v", err)
+	}
+	if _, err := os.Stat(mainLock); err != nil {
+		t.Fatalf("shared cache-file lock (not a per-list-key lock) was removed: %v", err)
+	}
+}
+
+// TestNewAPIReadCacheCleanupSkipsHeldLock guards the TOCTOU-avoidance half
+// of the sweep: even a lock file old enough to pass the age check must
+// survive if a peer still holds it — cleanStaleAPIReadCacheLocks confirms
+// via a non-blocking lock.TryAcquire before removing anything.
+func TestNewAPIReadCacheCleanupSkipsHeldLock(t *testing.T) {
+	dir := t.TempDir()
+	held := apiReadListLockPath(dir, "held-key")
+	handle, err := lock.TryAcquire(held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = handle.Release() }()
+	staleTime := time.Now().Add(-apiReadCacheStaleLockAge - time.Hour)
+	if err := os.Chtimes(held, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	newAPIReadCache(dir, "", &http.Client{})
+
+	if _, err := os.Stat(held); err != nil {
+		t.Fatalf("held (even if old) list lock was removed out from under its holder: %v", err)
 	}
 }

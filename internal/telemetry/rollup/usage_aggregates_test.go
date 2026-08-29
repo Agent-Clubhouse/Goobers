@@ -174,6 +174,39 @@ func TestUsageRollupPreservesTaskRepasses(t *testing.T) {
 	}
 }
 
+func TestTrendStatsUsesOnlyFinalTraversal(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "runs")
+	dir := seedUsageRun(t, runsDir, fixtureRunID, "implement", "agent", fixtureStart,
+		usageAttemptFixture{number: 1, duration: 10 * time.Millisecond, status: "failure", metrics: map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens: 5, telemetry.AttrGenAIUsageOutputTokens: 10,
+			telemetry.AttrUsageCostUSD: 0.5,
+		}},
+		usageAttemptFixture{number: 1, duration: 20 * time.Millisecond, status: "success", metrics: map[string]float64{
+			telemetry.AttrGenAIUsageInputTokens: 15, telemetry.AttrGenAIUsageOutputTokens: 20,
+			telemetry.AttrUsageCostUSD: 1.5,
+		}})
+	db := openTestDB(t, tmp)
+	if err := db.IngestRun(context.Background(), dir); err != nil {
+		t.Fatalf("IngestRun: %v", err)
+	}
+	results, err := db.TrendStats(context.Background(), TrendRequest{
+		Stats:   StatsRequest{Workflow: "implement"},
+		Windows: []TrendWindow{{Since: fixtureStart.Add(-time.Hour), Until: fixtureStart.Add(time.Hour)}},
+	})
+	if err != nil {
+		t.Fatalf("TrendStats: %v", err)
+	}
+	if len(results) != 1 || len(results[0].Usage) != 4 {
+		t.Fatalf("trend results = %#v, want four usage aggregates", results)
+	}
+	usage := results[0].Usage[3]
+	if usage.TotalAttempts != 1 || usage.CostUSD != 1.5 || usage.TokenSamples != 1 ||
+		usage.P50Tokens != 35 || usage.P95Tokens != 35 {
+		t.Fatalf("final traversal usage = %#v, want one attempt, cost 1.5, one 35-token sample", usage)
+	}
+}
+
 func TestUsageStatsFilterAndGroupByBranch(t *testing.T) {
 	tmp := t.TempDir()
 	runsDir := filepath.Join(tmp, "runs")
@@ -448,8 +481,12 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 		byStage[stat.Stage] = stat
 	}
 	usageByStage := make(map[string]UsageStats)
+	var gaggleUsage UsageStats
 	var workflowUsage UsageStats
 	for _, usage := range stats.Usage {
+		if usage.Scope == "gaggle" && usage.Gaggle == "web" {
+			gaggleUsage = usage
+		}
 		if usage.Scope == "workflow" && usage.Workflow == "implement" {
 			workflowUsage = usage
 		}
@@ -463,8 +500,12 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 		!workflowUsage.HasPremiumRequests || workflowUsage.PremiumRequestSamples != 7 ||
 		workflowUsage.P50CopilotPremiumRequests != 1 || workflowUsage.P95CopilotPremiumRequests != 4 ||
 		!workflowUsage.HasCost || workflowUsage.CostSamples != 6 ||
+		workflowUsage.CostUSD != 7.5 ||
 		workflowUsage.P50CostUSD != 0.75 || workflowUsage.P95CostUSD != 3 {
 		t.Fatalf("workflow usage rollup = %#v", workflowUsage)
+	}
+	if !gaggleUsage.HasCost || gaggleUsage.CostSamples != 6 || gaggleUsage.CostUSD != 7.5 {
+		t.Fatalf("gaggle cost rollup = %#v", gaggleUsage)
 	}
 	if workflowUsage.RetryWasteAttempts != 3 ||
 		workflowUsage.HasRetryWasteTokens || workflowUsage.HasRetryWasteCost {
@@ -530,7 +571,8 @@ func TestUsageRollupPercentilesAndRetryWaste(t *testing.T) {
 	if zeroUsage := usageByStage["zero-metered"]; !zeroUsage.HasPremiumRequests ||
 		zeroUsage.PremiumRequestSamples != 1 ||
 		zeroUsage.P50CopilotPremiumRequests != 0 ||
-		zeroUsage.P95CopilotPremiumRequests != 0 {
+		zeroUsage.P95CopilotPremiumRequests != 0 ||
+		!zeroUsage.HasCost || zeroUsage.CostSamples != 1 || zeroUsage.CostUSD != 0 {
 		t.Fatalf("reported zero premium requests became missing: %#v", zeroUsage)
 	}
 

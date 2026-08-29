@@ -59,6 +59,80 @@ func TestSchemaEmitsEveryEmbeddedContractByteForByte(t *testing.T) {
 	}
 }
 
+// Reproduces the cold-start probes: every flavor reached for `goobers schema instance` and
+// `goobers explain instance.repos` on the first file `goobers init` tells them
+// to edit, and got `unknown schema kind "instance"` /
+// `unknown selector "instance.repos"` — the only major object with no
+// introspection. Both now answer.
+func TestSchemaAndExplainIntrospectInstanceConfig(t *testing.T) {
+	code, stdout, stderr := runArgs(t, "schema", "instance")
+	if code != 0 || stderr != "" {
+		t.Fatalf("schema instance: code=%d stderr=%q", code, stderr)
+	}
+	var document struct {
+		Kind   string `json:"kind"`
+		Schema struct {
+			Title      string         `json:"title"`
+			Required   []string       `json:"required"`
+			Properties map[string]any `json:"properties"`
+		} `json:"schema"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.Kind != "instance" || document.Schema.Title != "Instance" {
+		t.Fatalf("schema instance emitted kind=%q title=%q", document.Kind, document.Schema.Title)
+	}
+	for _, section := range []string{"repos", "credentials", "telemetry", "engine", "runConditions", "runner"} {
+		if _, ok := document.Schema.Properties[section]; !ok {
+			t.Errorf("instance schema does not publish %q", section)
+		}
+	}
+
+	code, stdout, stderr = runArgs(t, "schema", "--list")
+	if code != 0 || stderr != "" {
+		t.Fatalf("schema --list: code=%d stderr=%q", code, stderr)
+	}
+	var list schemaListOutput
+	if err := json.Unmarshal([]byte(stdout), &list); err != nil {
+		t.Fatal(err)
+	}
+	listed := false
+	for _, kind := range list.Kinds {
+		if kind == "instance" {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatalf("schema --list omits instance: %v", list.Kinds)
+	}
+
+	for _, selector := range []string{
+		"instance.repos",
+		"instance.repos[].provider",
+		"instance.repos[].project",
+		"instance.credentials[].capability",
+		"instance.telemetry.retention",
+		"instance.runConditions.maxParallelRuns",
+		"instance.runner.capabilities",
+		"instance.runner.envPassthrough",
+		"instance.runner.defaultStageTimeout",
+	} {
+		explanation := runExplainJSON(t, selector)
+		if strings.TrimSpace(explanation.Description) == "" ||
+			explanation.Type == nil ||
+			explanation.Stability == "" ||
+			explanation.SinceVersion == "" {
+			t.Errorf("explain %q: incomplete guidance: %+v", selector, explanation)
+		}
+	}
+
+	code, stdout, stderr = runArgs(t, "explain", "--human", "instance.runner.capabilities")
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "never schedules a single run") {
+		t.Fatalf("explain --human instance.runner.capabilities: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestAuthoringCommandsSupportSourceFreeValidation(t *testing.T) {
 	root := initDemo(t)
 	t.Chdir(root)
@@ -82,6 +156,10 @@ func TestAuthoringCommandsSupportSourceFreeValidation(t *testing.T) {
 	workflowSpec["tasks"] = []any{
 		runExplainJSON(t, "workflow.spec.tasks[]").Example,
 	}
+	// dslVersion is not in the schema's `required` set, but since the §8.3
+	// cutover (#3507) dropped DSL 1.4 an omitted pin is a hard error, not a
+	// default — so an offline-authored workflow must pin a loadable version.
+	workflow["dslVersion"] = supportmatrix.NextDSLVersion
 	writeJSONDocument(t, filepath.Join(root, "config", "gaggles", "example", "workflows", workflowName+".yaml"), workflow)
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 || !strings.Contains(stdout, "2 goober(s), 2 workflow(s)") {
@@ -97,7 +175,9 @@ func TestAuthoringCommandsRejectInvalidInputAndRenderHumanOutput(t *testing.T) {
 	}{
 		{[]string{"schema", "not-a-schema"}, 1, `unknown schema kind "not-a-schema"`},
 		{[]string{"explain", "workflow.stages[].gate"}, 1, `unknown selector "workflow.stages[].gate"`},
-		{[]string{"explain", "workflow.spec.tasks[].run.script"}, 1, "unavailable selector"},
+		// workflow.spec.tasks[].run.script is 2.0 surface and explains
+		// successfully now that resolution spans every loadable DSL version
+		// (#3291); internal/authoring's tests pin the positive behavior.
 		{[]string{"schema"}, 2, "Usage:"},
 		{[]string{"schema", "--list", "goober"}, 2, "Usage:"},
 		{[]string{"explain"}, 2, "Usage:"},

@@ -4,18 +4,64 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
 type memoryRecorder struct {
 	mu       sync.Mutex
 	receipts []Receipt
 	err      error
+}
+
+type FakeSynthesizer struct {
+	Report       Preflight
+	PreflightErr error
+	Err          error
+
+	mu         sync.Mutex
+	utterances []string
+}
+
+func (*FakeSynthesizer) Name() string { return "fake" }
+
+func (f *FakeSynthesizer) Preflight(context.Context, Config) (Preflight, error) {
+	report := f.Report
+	if report.Engine == "" {
+		report = Preflight{
+			Engine:            "fake",
+			Executable:        "in-process",
+			Voice:             "fake",
+			Language:          "und",
+			Rate:              DefaultRate,
+			AudioPrerequisite: "none",
+			AudioAvailable:    true,
+		}
+	}
+	return report, f.PreflightErr
+}
+
+func (f *FakeSynthesizer) Synthesize(ctx context.Context, _ Config, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.utterances = append(f.utterances, text)
+	f.mu.Unlock()
+	return f.Err
+}
+
+func (f *FakeSynthesizer) Utterances() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.utterances...)
 }
 
 func (r *memoryRecorder) Record(_ context.Context, receipt Receipt) error {
@@ -282,6 +328,122 @@ func TestFileRecorderWritesJSONLWithoutText(t *testing.T) {
 	}
 	if got.NotificationID != receipt.NotificationID || strings.Contains(string(raw), "speech text") {
 		t.Fatalf("receipt = %s", raw)
+	}
+}
+
+func TestFileRecorderBoundsReceiptLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scheduler", ReceiptFileName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, make([]byte, receiptFileMaxSize), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := NewFileRecorder(path)
+	receipt := Receipt{
+		Version:        receiptVersion,
+		NotificationID: "newest",
+		Engine:         EngineSay,
+		Status:         StatusDelivered,
+	}
+	if err := recorder.Record(context.Background(), receipt); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > receiptFileMaxSize {
+		t.Fatalf("receipt log size = %d, want at most %d", len(raw), receiptFileMaxSize)
+	}
+	var got Receipt
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode retained receipt: %v", err)
+	}
+	if got.NotificationID != receipt.NotificationID {
+		t.Fatalf("retained notification ID = %q, want %q", got.NotificationID, receipt.NotificationID)
+	}
+}
+
+func TestFileRecorderBoundsReceiptLogAcrossConcurrentRecorders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scheduler", ReceiptFileName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, make([]byte, receiptFileMaxSize), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := platformlock.TryAcquire(path + receiptLockSuffix)
+	if err != nil {
+		t.Fatalf("hold receipt lock: %v", err)
+	}
+
+	const recorderCount = 8
+	start := make(chan struct{})
+	results := make(chan error, recorderCount)
+	for i := range recorderCount {
+		recorder := NewFileRecorder(path)
+		go func() {
+			<-start
+			results <- recorder.Record(context.Background(), Receipt{
+				Version:        receiptVersion,
+				NotificationID: strings.Repeat("x", 4096) + fmt.Sprint(i),
+				Engine:         EngineSay,
+				Status:         StatusDelivered,
+			})
+		}()
+	}
+	close(start)
+	select {
+	case err := <-results:
+		t.Fatalf("Record completed without acquiring shared lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := held.Release(); err != nil {
+		t.Fatalf("release receipt lock: %v", err)
+	}
+	for range recorderCount {
+		if err := <-results; err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > receiptFileMaxSize {
+		t.Fatalf("receipt log size = %d, want at most %d", len(raw), receiptFileMaxSize)
+	}
+	for line := range strings.SplitSeq(strings.TrimSuffix(string(raw), "\n"), "\n") {
+		var receipt Receipt
+		if err := json.Unmarshal([]byte(line), &receipt); err != nil {
+			t.Fatalf("decode receipt: %v", err)
+		}
+	}
+}
+
+func TestFileRecorderRejectsReceiptLargerThanLogBound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ReceiptFileName)
+	recorder := NewFileRecorder(path)
+	receipt := Receipt{
+		Version:        receiptVersion,
+		NotificationID: strings.Repeat("x", receiptFileMaxSize),
+		Engine:         EngineSay,
+		Status:         StatusDelivered,
+	}
+	if err := recorder.Record(context.Background(), receipt); err == nil ||
+		!strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("Record error = %v, want size limit", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("receipt log size = %d, want 0", info.Size())
 	}
 }
 

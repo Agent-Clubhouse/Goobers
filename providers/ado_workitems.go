@@ -477,6 +477,11 @@ func (p *ADOProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRequ
 	if err != nil {
 		return WorkItem{}, err
 	}
+	if req.ExpectedRevision != "" {
+		if err := checkWorkItemRevision(current, req.ExpectedRevision); err != nil {
+			return WorkItem{}, err
+		}
+	}
 	raw, err := rawADOWorkItem(current)
 	if err != nil {
 		return WorkItem{}, err
@@ -575,8 +580,7 @@ func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReques
 		return ClaimResult{}, err
 	}
 	if !claimed {
-		// Our own breadcrumb must be visible; treat an empty read as us winning.
-		winner = req.RunID
+		return ClaimResult{}, fmt.Errorf("claim breadcrumb for run %q is not visible after write", req.RunID)
 	}
 	if winner != req.RunID {
 		item, getErr := p.GetWorkItem(ctx, req.Repository, req.ID)
@@ -591,6 +595,9 @@ func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReques
 	item, err := p.setADOClaimLabel(ctx, req.Repository, req.ID, []string{label}, nil)
 	if err != nil {
 		return ClaimResult{}, err
+	}
+	if !item.HasLabel(label) {
+		return ClaimResult{}, fmt.Errorf("claim label %q is not visible after write", label)
 	}
 	return ClaimResult{Claimed: true, ClaimedBy: req.RunID, Item: item}, nil
 }
@@ -712,17 +719,23 @@ func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkIte
 	if err != nil {
 		return WorkItem{}, err
 	}
-	if !claimed {
-		return p.GetWorkItem(ctx, req.Repository, req.ID)
-	}
-	if winner != req.RunID && !req.LedgerAuthorized {
+	if claimed && winner != req.RunID && !req.LedgerAuthorized {
 		return WorkItem{}, fmt.Errorf("provider claim is held by run %q", winner)
 	}
 
-	// The breadcrumb lands first so a successful release never leaves a later
-	// claimer stuck behind the previous owner's durable marker.
-	if err := p.postWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+	if claimed {
+		// The breadcrumb lands first so a successful release never leaves a later
+		// claimer stuck behind the previous owner's durable marker.
+		if err := p.postWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+			return WorkItem{}, err
+		}
+	}
+	current, err := p.GetWorkItem(ctx, req.Repository, req.ID)
+	if err != nil {
 		return WorkItem{}, err
+	}
+	if !current.HasLabel(label) {
+		return current, nil
 	}
 	remove := []string{label}
 	// Legacy owner-tag cleanup; removed with the rest of the fallback in #1990.
@@ -837,26 +850,27 @@ func mapADOWorkItemState(item adoWorkItem, state string, status WorkItemStatus) 
 	parent, links, hierarchy := adoHierarchy(item.Relations)
 	updated := timeField(item.Fields, "System.ChangedDate")
 	return WorkItem{
-		Provider:   ProviderADO,
-		ID:         strconv.Itoa(item.ID),
-		ExternalID: strconv.Itoa(item.Rev),
-		Revision:   strconv.Itoa(item.Rev),
-		Type:       stringField(item.Fields, "System.WorkItemType"),
-		Title:      stringField(item.Fields, "System.Title"),
-		Body:       stringField(item.Fields, "System.Description"),
-		Labels:     labels,
-		State:      state,
-		Status:     statusFromLabels(labels, string(status)),
-		Assignee:   stringField(item.Fields, "System.AssignedTo"),
-		Links:      links,
-		Parent:     parent,
-		Hierarchy:  hierarchy,
-		URL:        item.URL,
-		CreatedAt:  timeField(item.Fields, "System.CreatedDate"),
-		UpdatedAt:  updated,
-		Fields:     adoWorkItemFields(item),
-		Raw:        item,
-		Integrity:  apiintegrity.Unapproved,
+		Provider:       ProviderADO,
+		ID:             strconv.Itoa(item.ID),
+		ExternalID:     strconv.Itoa(item.Rev),
+		Revision:       strconv.Itoa(item.Rev),
+		Type:           stringField(item.Fields, "System.WorkItemType"),
+		Title:          stringField(item.Fields, "System.Title"),
+		Body:           stringField(item.Fields, "System.Description"),
+		Labels:         labels,
+		State:          state,
+		Status:         statusFromLabels(labels, string(status)),
+		Assignee:       stringField(item.Fields, "System.AssignedTo"),
+		Links:          links,
+		Parent:         parent,
+		Hierarchy:      hierarchy,
+		URL:            item.URL,
+		CreatedAt:      timeField(item.Fields, "System.CreatedDate"),
+		UpdatedAt:      updated,
+		Fields:         adoWorkItemFields(item),
+		BlockedByCount: adoBlockedByCount(item.Relations),
+		Raw:            item,
+		Integrity:      apiintegrity.Unapproved,
 	}
 }
 
@@ -930,6 +944,16 @@ func adoHierarchy(relations []adoRelation) (*WorkItemRef, []Link, map[string]int
 		}
 	}
 	return parent, links, hierarchy
+}
+
+func adoBlockedByCount(relations []adoRelation) int {
+	count := 0
+	for _, relation := range relations {
+		if relation.Rel == "System.LinkTypes.Dependency-Reverse" {
+			count++
+		}
+	}
+	return count
 }
 
 func lastPathSegment(value string) string {

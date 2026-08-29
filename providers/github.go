@@ -44,10 +44,27 @@ type GitHubProvider struct {
 	// maxRateLimitWait bounds the total time one request spends sleeping on
 	// rate-limit backoff before giving up with a typed RateLimitError (#614).
 	maxRateLimitWait time.Duration
+	// configuredLogin, when set, is the provider identity's GitHub login,
+	// declared in config rather than fetched. GitHub App installation tokens
+	// cannot call GET /user ("Resource not accessible by integration"), so a
+	// provider authenticating as an App CANNOT self-report its login — which
+	// broke every trusted-comment check (claim markers, verdicts, handoffs)
+	// the first time claiming ran under App auth (#3343). Bot logins are the
+	// App slug plus "[bot]".
+	configuredLogin string
 	// now and sleep are injectable for deterministic rate-limit tests.
 	now    func() time.Time
 	sleep  func(context.Context, time.Duration) error
 	jitter func(time.Duration) time.Duration
+}
+
+// WithConfiguredLogin declares the login AuthenticatedLogin returns instead
+// of calling GET /user — required when the credential is a GitHub App
+// installation token, which cannot self-report (#3343).
+func WithConfiguredLogin(login string) func(*GitHubProvider) {
+	return func(p *GitHubProvider) {
+		p.configuredLogin = strings.TrimSpace(login)
+	}
 }
 
 // NewGitHubProvider constructs a GitHub provider with optional overrides.
@@ -158,7 +175,7 @@ func (p *GitHubProvider) Capabilities() CapabilitySet {
 	return mandatoryCapabilities().With(
 		CapPRCompare,
 		CapPRQueryAuthor, CapPRQueryAssignee, CapPRQueryRequestedReviewer,
-		CapPRReviewSubmit, CapPRReviewThreads,
+		CapPRReviewSubmit, CapPRReviewThreads, CapPRReviewResolve,
 		CapPRMerge, CapPRLandingDetectPolicy, CapPRLandingEnqueue, CapPRLandingPoll,
 		CapPRUpdateBranch, CapBranchDelete,
 		CapRepoPolicyRead,
@@ -1073,6 +1090,18 @@ func (p *GitHubProvider) DetectMergePolicy(ctx context.Context, req RepoMergePol
 	}
 	var rules []githubBranchRule
 	if err := p.do(ctx, http.MethodGet, endpoint, nil, &rules); err != nil {
+		// The rules endpoint is entitlement-gated: private repos on free
+		// plans answer 403 ("Upgrade to ...") even to an admin token. That
+		// is a plan limitation, not an auth failure — treating it as one
+		// fails every merge and can latch the auth circuit. No readable
+		// rules means no merge-queue rule is detectable; degrade to
+		// direct-merge and let GitHub remain the enforcer at merge time (a
+		// server-side queue requirement still rejects the direct merge
+		// loudly there).
+		var respErr *providerResponseError
+		if errors.As(err, &respErr) && respErr.statusCode == http.StatusForbidden {
+			return RepoMergePolicyResult{Policy: MergePolicyDirect}, nil
+		}
 		return RepoMergePolicyResult{}, err
 	}
 	for _, rule := range rules {
@@ -1532,6 +1561,12 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 		values.Set("sort", "updated")
 		values.Set("direction", "desc")
 	}
+	if req.Limit > 0 {
+		values.Set("per_page", strconv.Itoa(min(req.Limit, 100)))
+		if req.Page > 1 {
+			values.Set("page", strconv.Itoa(req.Page))
+		}
+	}
 	endpoint, err = addQuery(endpoint, values)
 	if err != nil {
 		return nil, err
@@ -1544,6 +1579,9 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 			return fmt.Errorf("decode pulls page: %w", err)
 		}
 		for _, pr := range pageOut {
+			if req.Limit > 0 && len(prs) >= req.Limit {
+				return errStopPaging
+			}
 			if !updatedSince.IsZero() && pr.UpdatedAt.Before(updatedSince) {
 				return errStopPaging
 			}
@@ -1555,6 +1593,9 @@ func (p *GitHubProvider) listPullRequests(ctx context.Context, req ListPullReque
 				}
 			}
 			prs = append(prs, pr)
+		}
+		if req.Limit > 0 && len(prs) >= req.Limit {
+			return errStopPaging
 		}
 		return nil
 	}); err != nil {
@@ -1996,7 +2037,25 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		checkRuns = append(checkRuns, pageOut.CheckRuns...)
 		return nil
 	}); err != nil {
-		return nil, err
+		if !IsForbiddenPATError(err) {
+			return nil, err
+		}
+		// Fine-grained PATs have no grantable "Checks" permission at all, so
+		// this specific 403 is permanent, not transient (#2685). If the token
+		// has instead been granted "Actions: Read", actions/runs exposes the
+		// same success/failure signal for Actions-based CI, so retry there
+		// before failing CI visibility closed.
+		runs, actionsErr := p.actionsRunsForRef(ctx, repo, ref)
+		if actionsErr != nil {
+			return nil, fmt.Errorf("check-runs forbidden for fine-grained PAT (%w), actions/runs fallback also failed: %w", err, actionsErr)
+		}
+		for _, run := range runs {
+			state := normalizeCheckRunState(run.Status, run.Conclusion)
+			details = append(details, resolvedCheckDetail{CheckDetail: CheckDetail{
+				Name: run.Name, State: state, Conclusion: run.Conclusion, URL: run.HTMLURL,
+			}})
+		}
+		return details, nil
 	}
 	for _, run := range checkRuns {
 		state := normalizeCheckRunState(run.Status, run.Conclusion)
@@ -2009,6 +2068,36 @@ func (p *GitHubProvider) checkDetails(ctx context.Context, repo RepositoryRef, r
 		})
 	}
 	return details, nil
+}
+
+// actionsRunsForRef reads workflow-run conclusions for ref via the Actions
+// API (GET .../actions/runs?head_sha=ref) — the fallback CI-state source for
+// a fine-grained PAT that can reach Actions runs but not check-runs (#2685).
+// It carries the same success/failure signal as check-runs (one entry per
+// workflow run rather than per job/check), normalized through the same
+// status/conclusion mapping so it merges into checkDetails' worst-case-wins
+// result indistinguishably from a native check-run.
+func (p *GitHubProvider) actionsRunsForRef(ctx context.Context, repo RepositoryRef, ref string) ([]githubActionsRun, error) {
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "actions", "runs")
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"head_sha": []string{ref}})
+	if err != nil {
+		return nil, err
+	}
+	var runs []githubActionsRun
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageOut githubActionsRunsResponse
+		if err := json.Unmarshal(page, &pageOut); err != nil {
+			return fmt.Errorf("decode actions runs page: %w", err)
+		}
+		runs = append(runs, pageOut.WorkflowRuns...)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return runs, nil
 }
 
 func (p *GitHubProvider) checkRunAnnotations(ctx context.Context, repo RepositoryRef, checkRunID int64) ([]CheckAnnotation, error) {
@@ -2540,6 +2629,40 @@ func (p *GitHubProvider) HasOpenWorkItemBlocker(ctx context.Context, repo Reposi
 	return open, nil
 }
 
+// AttachWorkItemBlocker adds one native blocked-by dependency after checking
+// both immediately observed revisions.
+func (p *GitHubProvider) AttachWorkItemBlocker(ctx context.Context, req AttachWorkItemBlockerRequest) error {
+	if err := requireOwnerRepo(req.Repository); err != nil {
+		return err
+	}
+	if req.ItemID == "" || req.BlockerID == "" {
+		return fmt.Errorf("item and blocker issue ids are required")
+	}
+	item, err := p.GetWorkItem(ctx, req.Repository, req.ItemID)
+	if err != nil {
+		return err
+	}
+	blocker, err := p.GetWorkItem(ctx, req.Repository, req.BlockerID)
+	if err != nil {
+		return err
+	}
+	if err := checkWorkItemRevision(item, req.ExpectedItemRevision); err != nil {
+		return err
+	}
+	if err := checkWorkItemRevision(blocker, req.ExpectedBlockerRevision); err != nil {
+		return err
+	}
+	blockerDatabaseID, err := strconv.ParseInt(blocker.ExternalID, 10, 64)
+	if err != nil || blockerDatabaseID <= 0 {
+		return fmt.Errorf("blocker issue %q has invalid provider id %q", req.BlockerID, blocker.ExternalID)
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ItemID, "dependencies", "blocked_by")
+	if err != nil {
+		return err
+	}
+	return p.do(ctx, http.MethodPost, endpoint, map[string]int64{"issue_id": blockerDatabaseID}, nil)
+}
+
 // CreateWorkItem creates a GitHub issue from a unified work item request.
 func (p *GitHubProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequest) (WorkItem, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
@@ -2591,6 +2714,55 @@ func (p *GitHubProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemR
 		},
 	})
 	return item, nil
+}
+
+// RepositoryLabelNames lists the repository's issue-label names, read-only —
+// the validator's selector-reality pass compares config selectors against
+// them and must never create anything (creation is EnsureWorkItemLabels'
+// job, invoked only by connect --seed).
+func (p *GitHubProvider) RepositoryLabelNames(ctx context.Context, repo RepositoryRef) ([]string, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "labels")
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	if err := p.getAllPages(ctx, endpoint, func(page []byte) error {
+		var pageLabels []githubLabel
+		if err := json.Unmarshal(page, &pageLabels); err != nil {
+			return fmt.Errorf("decode labels page: %w", err)
+		}
+		for _, label := range pageLabels {
+			names = append(names, label.Name)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+// ActionsWorkflowCount reports how many GitHub Actions workflows the
+// repository defines — the cheap "does anything here produce check runs"
+// signal the validator's ci-poll reality warning keys on. External check
+// apps are invisible to this probe by design; callers must hedge.
+func (p *GitHubProvider) ActionsWorkflowCount(ctx context.Context, repo RepositoryRef) (int, error) {
+	if err := requireOwnerRepo(repo); err != nil {
+		return 0, err
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "actions", "workflows")
+	if err != nil {
+		return 0, err
+	}
+	var out struct {
+		TotalCount int `json:"total_count"`
+	}
+	if err := p.doStatus(ctx, http.MethodGet, endpoint, nil, &out, nil); err != nil {
+		return 0, err
+	}
+	return out.TotalCount, nil
 }
 
 // EnsureWorkItemLabels creates missing GitHub issue labels without modifying existing labels.
@@ -3006,6 +3178,27 @@ func (p *GitHubProvider) doStatus(ctx context.Context, method, endpoint string, 
 // first (default 30-item) page, so a claim breadcrumb, failing check, or
 // changes-requested review beyond page 1 was silently invisible.
 func (p *GitHubProvider) getAllPages(ctx context.Context, endpoint string, onPage func([]byte) error) error {
+	return p.getAllPagesWithContext(ctx, endpoint, func(body []byte, _ pageContext) error {
+		return onPage(body)
+	})
+}
+
+// pageContext is the per-page metadata getAllPagesWithContext hands a callback
+// alongside the body: the response headers (so a walk can price itself against
+// the live rate-limit window) and whether another page exists (so a callback
+// that stops early can tell "budget exhausted mid-history" from "reached the
+// natural end").
+type pageContext struct {
+	Header  http.Header
+	HasNext bool
+}
+
+// getAllPagesWithContext is getAllPages with each page's response metadata
+// exposed to the callback (#3392). A periodic full-history walk needs to honor
+// x-ratelimit-remaining *while* it walks — deciding to stop only after a 403
+// means the shared credential is already at zero for every other operation in
+// the window.
+func (p *GitHubProvider) getAllPagesWithContext(ctx context.Context, endpoint string, onPage func([]byte, pageContext) error) error {
 	next, err := withPerPage(endpoint, maxPerPage)
 	if err != nil {
 		return err
@@ -3015,11 +3208,12 @@ func (p *GitHubProvider) getAllPages(ctx context.Context, endpoint string, onPag
 		if err != nil {
 			return err
 		}
+		header := resp.Header.Clone()
 		body, nextLink, err := readPage(resp, http.MethodGet, next)
 		if err != nil {
 			return err
 		}
-		if err := onPage(body); err != nil {
+		if err := onPage(body, pageContext{Header: header, HasNext: nextLink != ""}); err != nil {
 			if errors.Is(err, errStopPaging) {
 				return nil
 			}
@@ -3028,6 +3222,21 @@ func (p *GitHubProvider) getAllPages(ctx context.Context, endpoint string, onPag
 		next = nextLink
 	}
 	return nil
+}
+
+// quotaFromHeaders reads the absolute rate-limit window off a provider
+// response. A response replayed from the shared snapshot cache spent no quota
+// and carries no window, so it reports unknown rather than a stale number.
+func quotaFromHeaders(header http.Header) (limit, remaining int, ok bool) {
+	if header == nil || header.Get(QuotaCacheHitHeader) == "true" {
+		return 0, 0, false
+	}
+	limit, limitErr := strconv.Atoi(strings.TrimSpace(header.Get("X-RateLimit-Limit")))
+	remaining, remainingErr := strconv.Atoi(strings.TrimSpace(header.Get("X-RateLimit-Remaining")))
+	if limitErr != nil || remainingErr != nil || limit <= 0 || remaining < 0 {
+		return 0, 0, false
+	}
+	return limit, remaining, true
 }
 
 // resolveToken returns the per-request token from the token source when configured,
@@ -3287,6 +3496,18 @@ type githubCheckRun struct {
 	Output     struct {
 		Summary string `json:"summary"`
 	} `json:"output"`
+}
+
+type githubActionsRunsResponse struct {
+	WorkflowRuns []githubActionsRun `json:"workflow_runs"`
+}
+
+type githubActionsRun struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
 }
 
 type githubCheckAnnotation struct {

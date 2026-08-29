@@ -6,8 +6,15 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["taskId", "workflowId", "runId", "gaggle", "goal", "workspace", "repoRef", "limits"],
+  "allOf": [
+    {
+      "if": { "required": ["nestedAgentPolicy"] },
+      "then": { "required": ["attempt", "goober", "ownershipBoundary", "parentPlatformPolicy"] }
+    }
+  ],
   "properties": {
     "taskId": { "type": "string", "minLength": 1, "description": "Stage instance identifier within this run." },
+    "attempt": { "type": "integer", "minimum": 1, "description": "Stage attempt number used for retry-safe provenance. Omitted only by legacy callers, which default to attempt 1." },
     "workflowId": { "type": "string", "minLength": 1, "description": "Workflow definition identifier being executed." },
     "runId": { "type": "string", "minLength": 1, "description": "Run identifier, also used as the run's OpenTelemetry trace ID." },
     "triggerRef": {
@@ -24,7 +31,10 @@
       "type": "string",
       "description": "The gaggle's configured default branch (GaggleSpec.Project.Branch/RepoRef.Branch); empty means the default 'main'. Injected as GOOBERS_BASE_BRANCH (#2087)."
     },
+    "goober": { "type": "string", "minLength": 1, "description": "Goober this invocation is for; absent for a deterministic stage or an automated gate. The local runner dispatches from the workflow definition and never needed it on the wire; a Temporal worker has only the envelope, so without it the agentic seam cannot resolve which goober to construct." },
     "goal": { "type": "string", "minLength": 1, "description": "Intended outcome of this stage, copied from its workflow definition." },
+    "attempt": { "type": "integer", "minimum": 1, "description": "One-based attempt number for this stage execution." },
+    "ownershipBoundary": { "type": "string", "minLength": 1, "description": "Runner-authored boundary identifying the work this invocation owns." },
     "instructionAddendum": {
       "type": "string",
       "minLength": 1,
@@ -83,6 +93,7 @@
           "ado:pr:comment",
           "ado:pr:write",
           "ado:pr:status",
+          "ado:pr:complete",
           "ado:work-items:write",
           "telemetry:read",
           "journal:read",
@@ -90,7 +101,20 @@
         ]
       }
     },
+    "policyActions": {
+      "type": "array",
+      "description": "Runner-admitted externally mutating actions available to this stage.",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "parentPlatformPolicy": {
+      "$ref": "workflow.schema.json#/$defs/task/properties/nestedAgentPolicy/properties/platformPolicy",
+      "description": "Runner-derived parent authority used to admit a nested child. Never derived from nestedAgentPolicy."
+    },
     "limits": { "$ref": "#/$defs/limits", "description": "Execution and agent-usage limits applied to this stage." },
+    "nestedAgentPolicy": {
+      "$ref": "workflow.schema.json#/$defs/task/properties/nestedAgentPolicy",
+      "description": "Admitted nested-agent authority carried in the mandatory execution envelope."
+    },
     "inputs": {
       "type": "object",
       "description": "The stage's static config from its definition. The stage's own config — not another stage's state. Unlike result.schema.json's outputs (scalar-bounded by schema), inputs is intentionally unconstrained: the anti-smuggling invariant here is convention-backed, not schema-enforced, because the runner deliberately routes a gate's subject-stage status/outputs through a gate's own inputs (internal/runner's flattening into env.Inputs before an automated/agentic gate evaluation, internal/gate.InputKeyStatus) — a small, scalar-only, one-directional bridge, not the general reach-through §2.4 forbids (#125)."

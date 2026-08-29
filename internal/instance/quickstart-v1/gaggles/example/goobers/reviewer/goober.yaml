@@ -10,7 +10,8 @@ spec:
   harness: copilot
   model: auto
   harnessOptions: {}
-  capabilities: []
+  capabilities:
+    - agent:model
   policyActions: []
   skills:
     - review

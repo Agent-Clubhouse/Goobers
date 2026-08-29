@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS RESOLVE REVIEW THREADS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers resolve-review-threads \- reply to and resolve remediated native review threads (a workflow stage)
+.SH SYNOPSIS
+\fBgoobers resolve-review-threads\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers resolve-review-threads [path]
+
+Validate the implementer's threadResponses against every gathered live review
+thread, reply to each thread, resolve addressed threads after the reply is
+visible, and re-query the published PR head. Exit codes: 0 = responses
+applied and verified, 1 = business/provider error, 2 = usage/IO error.
+.fi
+.SH EXAMPLES
+.nf
+goobers resolve-review-threads
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

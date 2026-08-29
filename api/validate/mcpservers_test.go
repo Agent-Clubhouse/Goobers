@@ -123,7 +123,10 @@ func TestGooberSchemaLimitsMCPServerNameOnly(t *testing.T) {
 	}
 }
 
-func TestGooberSchemaRejectsMCPServersForUnsupportedHarness(t *testing.T) {
+// TestGooberSchemaAllowsMCPServersForClaudeCode pins #1492: mcpServers is
+// adapter-neutral at the schema level — declaring it for claude-code is no
+// longer rejected, matching Copilot.
+func TestGooberSchemaAllowsMCPServersForClaudeCode(t *testing.T) {
 	raw := []byte(`{
 		"apiVersion": "goobers.dev/v1alpha1",
 		"kind": "Goober",
@@ -136,8 +139,8 @@ func TestGooberSchemaRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 			"mcpServers": [{"name": "context", "command": "context-server"}]
 		}
 	}`)
-	if err := newV(t).ValidateJSON("goober.schema.json", raw); err == nil {
-		t.Fatal("claude-code MCP configuration passed schema validation")
+	if err := newV(t).ValidateJSON("goober.schema.json", raw); err != nil {
+		t.Fatalf("claude-code MCP configuration failed schema validation: %v", err)
 	}
 }
 
@@ -178,7 +181,9 @@ func TestValidateDirRejectsUndeclaredMCPCredential(t *testing.T) {
 	}
 }
 
-func TestValidateDirRejectsMCPServersForUnsupportedHarness(t *testing.T) {
+// TestValidateDirAllowsMCPServersForClaudeCode pins #1492 end to end through
+// directory validation, mirroring TestGooberSchemaAllowsMCPServersForClaudeCode.
+func TestValidateDirAllowsMCPServersForClaudeCode(t *testing.T) {
 	root := t.TempDir()
 	if err := os.CopyFS(root, os.DirFS("../../config-examples")); err != nil {
 		t.Fatal(err)
@@ -202,8 +207,8 @@ func TestValidateDirRejectsMCPServersForUnsupportedHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.HasErrors() {
-		t.Fatal("unsupported MCP harness passed directory validation")
+	if issues := joinIssues(report); report.HasErrors() {
+		t.Fatalf("claude-code MCP configuration failed directory validation:\n%s", issues)
 	}
 }
 

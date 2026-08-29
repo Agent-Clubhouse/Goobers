@@ -1,0 +1,1053 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goobers.dev/schemas/instance.schema.json",
+  "title": "Instance",
+  "description": "instance.yaml — the deployment-owned provisioning file `goobers init` writes first and the first file an operator edits. It declares which repositories this instance connects to, WHERE each credential is read from (never the value itself, CFG-009/SEC-010), and the instance-wide runner claims, run conditions, and telemetry every gaggle inherits. Gaggle/goober/workflow definitions are config-as-code reconciled from the workflow source; this file is provisioning, so it is loaded strictly — an unknown field is an error, never a silently ignored setting.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "repos"],
+  "properties": {
+    "apiVersion": { "const": "goobers.dev/v1alpha1", "description": "API version of this instance file." },
+    "kind": { "const": "Instance", "description": "Definition kind; always Instance." },
+    "schemaVersion": {
+      "description": "Instance-config schema revision — this file's first version field. Absent means 1, the pre-Goobernetes schema every existing install is on; 2 introduces the runners: inventory. Loading is strict on both halves of the contract, so a config that declares 2 and uses runners: hard-fails on an older binary by design instead of being silently misread.",
+      "type": "integer",
+      "enum": [1, 2]
+    },
+    "repos": {
+      "description": "Repositories this instance connects to. Every gaggle's project and backlog must resolve to an entry here — a gaggle whose provider/owner/name matches no entry has no credential and can never run — so this list, not the gaggle, is where a repository's identity and auth live.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/repo" }
+    },
+    "selfIdentity": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider login this instance acts as, used for assignment-aware backlog selection. An identity value, never a credential. A gaggle's own spec.selfIdentity overrides it; empty leaves assignment-aware selection opted out."
+    },
+    "needsHumanAssignee": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Provider identity work items are assigned to when Goobers parks them for human attention. Empty leaves parked items unassigned, so nobody is notified."
+    },
+    "credentials": {
+      "description": "Per-capability and per-MCP credential sources. A capability entry overrides the repo-token default for that one capability (e.g. a separate review identity, since an author cannot approve its own pull request); an MCP entry is reachable only through a goober's explicit MCP server reference. Agentic stages fall back to the current user's stored harness sign-in when no agent:model entry is configured, which is why a headless service account needs one.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/credentialGrant" }
+    },
+    "daemonIdentity": {
+      "description": "Distinct bot identity for the daemon's own authored pull requests, reviews, merges, and comments (UNOP-7). Omitted keeps every mutation on the repository token. Configuring it backs the standard daemon-mutation capability set (repo:push, github:issues:write, github:pr:write, github:pr:review, github:branch:delete, github:pr:merge) without declaring each one under credentials; an explicit credentials entry for one of those still wins.",
+      "$ref": "#/$defs/daemonIdentity"
+    },
+    "secretStores": {
+      "description": "Named external secret stores a token ref may resolve through (SEC-010). A store declares WHERE a secret lives, never a value; any token ref then opts in with `store: <storeName>/<secretName>` instead of env/file. Authentication to the store itself always uses an ambient identity — never a token ref, which would be circular. An instance that declares no stores and uses only env/file refs behaves exactly as it did before this field existed.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/secretStore" }
+    },
+    "workflowSource": {
+      "description": "Where the definitions-as-code tree (gaggles, goobers, workflows) is read from, independently of the target code repositories. Omitted keeps the local <instance-root>/config directory.",
+      "$ref": "#/$defs/workflowSource"
+    },
+    "runner": {
+      "description": "This runner's static claims and execution defaults: the toolchains it advertises, the extra ambient environment variables stages may see, and the baseline stage deadline.",
+      "$ref": "#/$defs/runner"
+    },
+    "runners": {
+      "description": "The runner inventory (plural; supersedes the singular runner block's capability claims). Each entry is one runner class the scheduler may place stages on: the daemon host itself (host: self), a container image the dispatcher instantiates one fresh, never-reused pod per stage attempt from, or a consumer-authored Deployment named as a pod template by reference. Absent, the singular runner block maps to the implicit self entry — the zero-change upgrade every existing install rides. Declared, runner.capabilities must be empty: the inventory owns capability claims (the runner block's execution settings keep their current homes). Inventory edits are restart-only in v1; in-flight runs finish against their pinned snapshot (accept-and-pin).",
+      "type": "array",
+      "items": { "$ref": "#/$defs/runnerEntry" }
+    },
+    "egress": {
+      "description": "Operator-supplied network destination set the per-runner-class NetworkPolicy renderer (`goobers netpol-render`, issue #3568) fills into the rendered reference manifests. Omitted renders nothing and changes nothing about local execution — the daemon never applies cluster networking; it renders, and the cluster operator applies.",
+      "$ref": "#/$defs/egress"
+    },
+    "engine": {
+      "description": "Tier-3 Temporal engine connection shared by the runtime, scheduler, workers, dispatchers, and daemon projection loop. GOOBERS_TEMPORAL_HOSTPORT, GOOBERS_TEMPORAL_NAMESPACE, and GOOBERS_TASK_QUEUE override these values at process startup.",
+      "$ref": "#/$defs/engine"
+    },
+    "runConditions": {
+      "description": "Instance-wide ceilings on top of each workflow's own readiness block. They only ever narrow what a workflow already permits.",
+      "$ref": "#/$defs/runConditions"
+    },
+    "telemetry": {
+      "description": "Local telemetry rollup store, optional collector push, and journal/rollup retention.",
+      "$ref": "#/$defs/telemetry"
+    },
+    "externalTelemetry": {
+      "description": "Named, read-only operational telemetry connectors workflows may query. A workflow selects only a connector name and generic query inputs, so provider-specific fields stay confined to this section.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "connectors": {
+          "description": "Connector instances available to workflows, addressed by name. Names are unique within the instance.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/externalTelemetryConnector" }
+        }
+      }
+    },
+    "retention": {
+      "description": "Opt-in pruning of retained failure worktrees and merged local run branches, plus the portal projection window. Distinct from telemetry.retention, which bounds journals and rollups.",
+      "$ref": "#/$defs/retention"
+    },
+    "notifications": {
+      "type": "boolean",
+      "default": false,
+      "description": "Opts `goobers up` into native desktop notifications for escalated and failed runs. The one-shot daemon override is `goobers up --notify` (`--notify=all` adds completed and aborted runs)."
+    },
+    "speech": {
+      "description": "Opt-in local speech sink for the same terminal alerts. Omitted stays silent.",
+      "$ref": "#/$defs/speech"
+    },
+    "sandbox": {
+      "description": "Instance-wide isolation posture for agentic stages. Omitted (or `disabled`) runs agentic stages directly on the host, exactly as before it existed — isolation is strictly opt-in. A gaggle may STRENGTHEN this posture through its own spec.sandbox but never weaken an operator-enforced one.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentic": {
+          "type": "string",
+          "enum": ["disabled", "enforced"],
+          "description": "Isolation posture for agentic stages. `enforced` requires the runner to isolate every agentic stage and FAILS runs it cannot isolate, so enable it only where the runner can actually sandbox."
+        }
+      }
+    },
+    "workcopies": {
+      "description": "How managed mirrors and worktrees are provisioned. Omitted keeps every default; existing mirrors are never migrated in either direction when these change.",
+      "$ref": "#/$defs/workcopies"
+    },
+    "api": {
+      "description": "The daemon's read-only HTTP API (the portal's backend).",
+      "$ref": "#/$defs/api"
+    },
+    "webhook": {
+      "description": "Optional provider webhook receiver. The daemon starts this listener only when a secret is configured AND at least one workflow declares a webhook trigger, so configuring it alone changes nothing.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "listen": {
+          "type": "string",
+          "minLength": 1,
+          "description": "host:port for the webhook listener. Loopback hosts only — a non-loopback host is refused at load. Empty defaults to 127.0.0.1:8081.",
+          "examples": ["127.0.0.1:8081"]
+        },
+        "secret": {
+          "description": "Where the provider webhook signing secret is read from. Exactly one source; never an inline value.",
+          "$ref": "#/$defs/tokenRef"
+        }
+      }
+    },
+    "portal": {
+      "description": "Operator-supplied dashboard co-branding. Cosmetic only — nothing here affects scheduling or credentials.",
+      "$ref": "#/$defs/portal"
+    },
+    "timezone": {
+      "type": "string",
+      "minLength": 1,
+      "description": "IANA location name every workflow's cron schedule is evaluated in. Empty defaults to UTC — a fixed, reproducible zone rather than whatever the host process's local zone happens to be. An unresolvable name is rejected at load, not at the first tick.",
+      "examples": ["America/New_York"]
+    }
+  },
+  "$defs": {
+    "tokenRef": {
+      "description": "Where a credential is READ FROM — never the value itself (CFG-009, SEC-010). Exactly one source per ref: an environment variable name, a file path, a macOS Keychain service name, a secret in a declared secretStores entry, or one explicitly selected GitHub CLI account. An inline secret value is rejected at load.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "env": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Name of an environment variable holding the token, read from the DAEMON process — so it must be exported before `goobers up`, not inside a stage. A name that stages can also see (through runner.envPassthrough or the built-in allowlist) is refused for secrets that must never reach a stage.",
+          "examples": ["GOOBERS_GITHUB_TOKEN"]
+        },
+        "file": { "type": "string", "minLength": 1, "description": "Path to a file whose entire contents are the token." },
+        "keychain": { "type": "string", "minLength": 1, "description": "Service name of a generic-password item in the macOS login keychain." },
+        "store": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Secret in a declared secret store, written as `<storeName>/<secretName>`. The store name must match a secretStores entry; the secret name is interpreted by that store's resolver.",
+          "examples": ["prod-kv/github-token"]
+        },
+        "githubCLI": {
+          "description": "One explicitly selected GitHub CLI account. The daemon resolves and verifies this account at startup, caches only the token in memory, and never follows later ambient account switches.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hostname", "user"],
+          "properties": {
+            "hostname": {
+              "type": "string",
+              "minLength": 1,
+              "description": "GitHub hostname whose CLI credential store is queried explicitly, independent of the ambient `gh auth switch` selection.",
+              "examples": ["github.com"]
+            },
+            "user": {
+              "type": "string",
+              "minLength": 1,
+              "description": "GitHub login selected with `gh auth token --hostname ... --user ...` and verified against the provider identity before work is admitted.",
+              "examples": ["octocat"]
+            }
+          }
+        }
+      }
+    },
+    "repo": {
+      "description": "One target repository and the identity this instance reaches it with. GitHub and Gitea are two-part (owner/name); Azure DevOps is THREE-part (organization/project/repository) — owner carries the organization and project carries the middle segment.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "owner", "name"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["github", "ado", "gitea"],
+          "description": "Backing system for this repository. It selects both the API surface and which auth kinds are accepted."
+        },
+        "baseUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Forge root URL (e.g. https://gitea.example.com). Required for provider `gitea`, which has no fixed host; omitted for github and ado."
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "description": "GitHub organization or user, Gitea owner, or Azure DevOps ORGANIZATION (the first segment of dev.azure.com/<organization>)."
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Azure DevOps PROJECT — the middle segment of the three-part organization/project/repository identity. Required for provider `ado`; rejected for github and gitea, where it has no meaning."
+        },
+        "name": { "type": "string", "minLength": 1, "description": "Repository name — the last segment of the identity." },
+        "token": {
+          "description": "Where this repository's credential is read from. Required for PAT auth on every provider. It must be ABSENT for an auth kind that mints or borrows an identity (github-app, azure-cli, workload-identity, managed-identity): exactly one identity mechanism per repository, since a token alongside a minted one could only act as a silent fallback.",
+          "$ref": "#/$defs/tokenRef"
+        },
+        "auth": {
+          "description": "Non-default credential source for this repository. Omitted means PAT auth with token configured — byte-identical to an instance that predates this block.",
+          "$ref": "#/$defs/repoAuth"
+        },
+        "policy": {
+          "description": "This repository's declared forge-conformance manifest: the live settings `goobers doctor --repo` diffs against. GitHub-only. Omitted declares no expectation and changes nothing.",
+          "$ref": "#/$defs/repoPolicy"
+        },
+        "largeRepo": {
+          "$ref": "instance-repository-execution.schema.json#/properties/largeRepo",
+          "description": "Enables the monolith-safe execution preset (pinned serial workspace, 4h stage timeout, path-length preflight, retention exemption, narrowed mirror refresh). The preset supplies DEFAULTS only — every explicit setting below overrides it."
+        },
+        "workspace": {
+          "$ref": "instance-repository-execution.schema.json#/properties/workspace",
+          "description": "How this repository is materialized for local runs. Pinned mode is deliberately non-hermetic: ignored and untracked build state may persist between runs, so the repository's .gitignore hygiene becomes load-bearing for clean run-branch diffs."
+        },
+        "pathLength": {
+          "$ref": "instance-repository-execution.schema.json#/properties/pathLength",
+          "description": "Checkout path-length preflight for this repository. Declaring the block enables it on every host, not just Windows; set disabled to opt out."
+        },
+        "defaultStageTimeout": {
+          "$ref": "instance-repository-execution.schema.json#/properties/defaultStageTimeout",
+          "description": "Deadline for this repository's deterministic stages that declare no timeoutSeconds. It overrides both the large-repo preset and the instance-wide runner.defaultStageTimeout.",
+          "examples": ["4h"]
+        },
+        "runControls": {
+          "$ref": "instance-repository-execution.schema.json#/properties/runControls",
+          "description": "Watchdog budgets for runs targeting this repository, overriding runConditions. Gaggle and workflow runControls remain more specific."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "provider": { "const": "ado" } }, "required": ["provider"] },
+          "then": { "required": ["project"] }
+        },
+        {
+          "if": { "properties": { "provider": { "const": "gitea" } }, "required": ["provider"] },
+          "then": { "required": ["baseUrl"] }
+        }
+      ]
+    },
+    "repoAuth": {
+      "description": "Credential SOURCE selector for one repository — never credential material. Kind values are provider-specific: github accepts pat and github-app; ado accepts pat, azure-cli, workload-identity, and managed-identity; gitea accepts no auth block at all (static token only). Fields belonging to another provider's kinds are rejected at load rather than ignored.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["pat", "github-app", "azure-cli", "workload-identity", "managed-identity"],
+          "description": "Identity mechanism: `pat` reads the static token ref; `github-app` mints short-lived installation tokens (GitHub); `azure-cli` borrows the current local az login, `workload-identity` uses federated Azure workload identity, and `managed-identity` uses an Azure managed identity (all Azure DevOps). Every kind except `pat` forbids a token ref on the same repository."
+        },
+        "tenant": { "type": "string", "minLength": 1, "description": "Pins Azure CLI authentication to one tenant. Azure DevOps only." },
+        "clientId": { "type": "string", "minLength": 1, "description": "Selects a user-assigned managed identity. Valid only with kind `managed-identity`." },
+        "appId": {
+          "$ref": "#/$defs/githubId",
+          "description": "GitHub App identifier for kind `github-app`: the numeric App ID or the App's client ID string — GitHub accepts either as the App JWT issuer."
+        },
+        "installationId": {
+          "$ref": "#/$defs/githubId",
+          "description": "Numeric ID of the App's installation on this repository's owner, for kind `github-app`. It must be the installation ID, not the App ID."
+        },
+        "privateKey": {
+          "description": "Where the App's PEM-encoded private key is read from, for kind `github-app`. The key only ever signs short-lived App JWTs in this process; stages receive minted installation tokens, never the key, so an env name that stages can see is refused.",
+          "$ref": "#/$defs/tokenRef"
+        },
+        "slug": {
+          "type": "string",
+          "description": "The App's URL-safe handle (the part before `[bot]` in its GitHub login), for kind `github-app`. Installation tokens cannot call GET /user, so the identity behind trusted-comment checks — claim markers, verdicts, handoffs — must be declared here; without it those checks fail with `Resource not accessible by integration` the first time they run under App auth (#3343)."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "github-app" } }, "required": ["kind"] },
+          "then": { "required": ["appId", "installationId", "privateKey"] }
+        }
+      ]
+    },
+    "repoPolicy": {
+      "description": "Declared expectations about a repository's live branch protection, checked by `goobers doctor --repo`. Deployment-owned rules, which is why they live here rather than in workflow config. Nothing here changes the repository; it only reports drift.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "branch": { "type": "string", "minLength": 1, "description": "Branch these expectations apply to. Empty defaults to main." },
+        "requiredMergeMethod": {
+          "type": "string",
+          "enum": ["merge", "squash", "rebase"],
+          "description": "The one merge method the repository must allow exclusively. Set it when a squash-only ruleset and a merge-commit setting can disagree; empty imposes no requirement."
+        },
+        "mergeQueueRequired": { "type": "boolean", "description": "Requires the branch to use the provider's native merge queue rather than accepting a direct-merge path." },
+        "requiredStatusChecks": {
+          "description": "Check contexts the branch's live rules must require. Entries are matched by exact context name, so a renamed CI job silently stops being required — that rename is what this list catches.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "credentialGrant": {
+      "description": "One credential source for exactly one capability OR one named BYO MCP credential. Set exactly one of capability and mcp; each may be sourced only once per instance.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token"],
+      "properties": {
+        "capability": {
+          "type": "string",
+          "enum": [
+            "repo:read",
+            "repo:push",
+            "github:issues:read",
+            "github:issues:write",
+            "github:milestones:write",
+            "github:issues:approve",
+            "provider:pr:write",
+            "github:pr:write",
+            "github:pr:review",
+            "github:branch:delete",
+            "github:pr:merge",
+            "contents:read",
+            "ado:code:read",
+            "ado:pr:comment",
+            "ado:pr:write",
+            "ado:pr:status",
+            "ado:pr:complete",
+            "ado:work-items:write",
+            "telemetry:read",
+            "journal:read",
+            "agent:model"
+          ],
+          "description": "Canonical capability this token backs, overriding the repository-token default for that capability alone. `agent:model` is the agent harness credential; github:pr:review needs a DIFFERENT identity from the one authoring pull requests, because an author cannot approve its own. Runner-owned capabilities are not grantable here — configrepo:read comes from workflowSource.token."
+        },
+        "mcp": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Name of a bring-your-own MCP credential. It is NOT a stage capability: it is reachable only by goobers whose MCP server declarations reference this name."
+        },
+        "token": {
+          "description": "Where this credential is read from — exactly one source, never an inline value.",
+          "$ref": "#/$defs/tokenRef"
+        }
+      },
+      "oneOf": [
+        { "required": ["capability"], "not": { "required": ["mcp"] } },
+        { "required": ["mcp"], "not": { "required": ["capability"] } }
+      ]
+    },
+    "daemonIdentity": {
+      "description": "The identity the daemon authors its own provider mutations as. Omitted is byte-identical to an instance that never declared one.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["pat", "github-app"],
+          "description": "Identity mechanism: `pat` reads a machine account's token ref; `github-app` mints installation tokens. New mechanisms are additive kinds, never a change to these two."
+        },
+        "token": {
+          "description": "Where the machine account's token is read from, for kind `pat`. Rejected for kind `github-app`, whose token is minted.",
+          "$ref": "#/$defs/tokenRef"
+        },
+        "appId": { "$ref": "#/$defs/githubId", "description": "GitHub App identifier for kind `github-app` (see repos[].auth.appId)." },
+        "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID for kind `github-app` (see repos[].auth.installationId). Covers ONE owner, so it is valid only when every GitHub repo in this instance shares a single owner; use `installations` otherwise. Mutually exclusive with `installations`." },
+        "installations": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Per-owner installation bindings for kind `github-app`: one App, one key, one slug, one installation per owner. Required when the instance's repos span more than one GitHub owner — an App installation belongs to exactly one owner, so a single `installationId` mints tokens that fail with a 422 on the first repo in any other owner. Every owner appearing in `repos[]` must be bound. Mutually exclusive with `installationId`.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["owner", "installationId"],
+            "properties": {
+              "owner": { "type": "string", "minLength": 1, "description": "GitHub owner this installation covers; matches a repos[].owner value." },
+              "installationId": { "$ref": "#/$defs/githubId", "description": "Numeric installation ID of the App on that owner." }
+            }
+          }
+        },
+        "privateKey": {
+          "description": "Where the App's PEM-encoded private key is read from, for kind `github-app`.",
+          "$ref": "#/$defs/tokenRef"
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The App's URL-safe handle — the part before `[bot]` in its login. Installation tokens cannot self-report a login the way a token can, so pull-request attribution needs it declared explicitly."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "pat" } }, "required": ["kind"] },
+          "then": { "required": ["token"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "github-app" } }, "required": ["kind"] },
+          "then": {
+            "required": ["appId", "privateKey"],
+            "oneOf": [
+              { "required": ["installationId"] },
+              { "required": ["installations"] }
+            ]
+          }
+        }
+      ]
+    },
+    "secretStore": {
+      "description": "One named external secret store. Declaring a store no ref uses is harmless.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "vaultURI", "auth"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Handle store-backed token refs address this store by. A lowercase DNS label, so it can never be confused with the `/`-separated secret name that follows it in a ref."
+        },
+        "kind": { "type": "string", "enum": ["azure-key-vault"], "description": "Store vendor. The seam is vendor-neutral by name+kind indirection; azure-key-vault is the only kind implemented today." },
+        "vaultURI": {
+          "type": "string",
+          "format": "uri",
+          "description": "The https vault endpoint — scheme and host only, no path, query, fragment, or userinfo.",
+          "examples": ["https://acme.vault.azure.net"]
+        },
+        "auth": {
+          "description": "How this process authenticates to the store. Always an ambient identity, never a token ref — a token ref would need a secret to read a secret.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["workload-identity", "managed-identity", "azure-cli"],
+              "description": "Ambient identity chain used to reach the store."
+            },
+            "clientId": { "type": "string", "minLength": 1, "description": "Pins a user-assigned identity. Valid for workload-identity and managed-identity; azure-cli has no client to pin." }
+          }
+        },
+        "cacheTTLSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Bounds the in-memory cache of resolved secrets, so a value rotated in the vault is picked up within the TTL with no restart and without re-reading the store on every resolve. Zero or omitted keeps the resolver default of 300 seconds."
+        }
+      }
+    },
+    "workflowSource": {
+      "description": "Location of the definitions-as-code tree. A local-dir source reads a directory directly; a git source reads a committed ref from either a local repository path or a remote https URL.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["local-dir", "git"], "description": "How the workflow tree is obtained. `local-dir` accepts only path; `git` accepts exactly one of path or url." },
+        "path": { "type": "string", "minLength": 1, "description": "Directory (kind local-dir) or local repository (kind git) holding the definitions tree." },
+        "url": { "type": "string", "format": "uri", "description": "Remote https git URL holding the definitions tree. Requires its own token ref or a github-app auth block." },
+        "ref": { "type": "string", "minLength": 1, "description": "Committed git ref that is tracked. Empty defaults to main. Valid only for kind git." },
+        "token": {
+          "description": "Where the credential for a REMOTE git source is read from. This token reads the config repository, so it is deliberately not exposed to stages: an env name stages can also see is refused at load.",
+          "$ref": "#/$defs/tokenRef"
+        },
+        "auth": {
+          "description": "GitHub App installation-token minting for a REMOTE git source: kind `github-app` with appId, installationId, and privateKey, the same shape repos[].auth uses. Mutually exclusive with token — exactly one identity mechanism per source; short-lived minted tokens replace the static ref, and the private key is refused any env name stages can see.",
+          "$ref": "#/$defs/repoAuth"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "local-dir" } }, "required": ["kind"] },
+          "then": { "required": ["path"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "git" } }, "required": ["kind"] },
+          "then": { "oneOf": [{ "required": ["path"] }, { "required": ["url"] }] }
+        }
+      ]
+    },
+    "runner": {
+      "description": "What this runner advertises and how it bounds a stage. These are claims and defaults, not installation instructions: Goobers never installs a toolchain.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "description": "Toolchain and platform capabilities this runner claims are ALREADY INSTALLED. The scheduler admits a run only when this set contains every capability the run's gaggle (spec.requiredCapabilities) and stages (task requiredCapabilities) declare, so a gaggle requiring `dotnet@8` on a runner that does not claim it never schedules a single run — the run does not fail, it never starts. Empty claims nothing, which is correct only while no gaggle or stage requires anything. Matching is exact string membership, so `dotnet@8` and `dotnet@10` are distinct capabilities, never a range. A false claim is not caught here: it degrades to a runtime error in the stage that needs the toolchain.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/runnerCapability" }
+        },
+        "envPassthrough": {
+          "description": "Additional ambient environment variable NAMES carried from the daemon process into every deterministic stage and harness subprocess, on top of the built-in default-deny allowlist. That allowlist already covers PATH/HOME/TMPDIR, Windows profile and shell paths, locale and proxy variables, and the Go, .NET/NuGet, Python, Node, Rust, and Java/Maven/Gradle toolchain families — so this list is for a variable those families miss, such as a private NUGET_CONFIG_FILE or a bespoke FOO_HOME. It stays default-deny: an explicit opt-in list of names, never a value and never a whole-environment passthrough. A name whose variable is unset is a harmless no-op, and a name that would expose a configured secret ref to stages is refused at load.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "description": "A POSIX-shaped environment variable name. Malformed names are rejected at load rather than mis-split at stage launch.",
+            "examples": ["NUGET_CONFIG_FILE"]
+          }
+        },
+        "defaultStageTimeout": {
+          "description": "Baseline deadline for a deterministic stage that declares no timeoutSeconds of its own, as a Go duration. Unset keeps the built-in 10 minutes, which is sized for short commands rather than a mature repository's build+test entrypoint: if `make ci` routinely runs 15 minutes, raise this once here instead of stamping timeoutSeconds onto every such stage in every workflow. A stage's own timeoutSeconds always wins; this only moves the floor. Sizing it too low is not free — a timed-out stage is reported retryable, so a workflow that routes the failure to an agent spends a repass on something no diff can fix.",
+          "$ref": "#/$defs/duration",
+          "examples": ["25m"]
+        },
+        "livenessTimeout": {
+          "description": "Maximum age of the scheduler tick heartbeat before the daemon reports itself unhealthy. Empty defaults to 2 minutes; values below 2 seconds are rejected.",
+          "$ref": "#/$defs/duration",
+          "examples": ["2m"]
+        },
+        "harnessCommand": {
+          "description": "Overrides the base CLI invocation (argv[0..]) launched for a harness, keyed by harness name. Unset keys keep the built-in default. This is the adopter escape hatch for running the same engine CLI through a wrapper — the wrapper name lives only in this file, never in the harness enum. It replaces the launch prefix only, so it is safe solely for a launcher that honors the same CLI contract (session capture, completion-file readback) as the harness it overrides.",
+          "type": "object",
+          "additionalProperties": {
+            "description": "Full argv for the harness launcher. The first element is the program and must be non-empty.",
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "propertyNames": { "$ref": "#/$defs/harnessName" }
+        }
+      }
+    },
+    "engine": {
+      "description": "Temporal frontend and routing configuration. Omitted fields use the documented local defaults.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hostPort": {
+          "type": "string",
+          "minLength": 3,
+          "pattern": "^\\S+:\\S+$",
+          "description": "Temporal frontend in host:port form. GOOBERS_TEMPORAL_HOSTPORT overrides this value.",
+          "examples": ["temporal.example.com:7233"]
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "description": "Temporal namespace. Defaults to `default`; GOOBERS_TEMPORAL_NAMESPACE overrides this value."
+        },
+        "taskQueue": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "description": "Task queue used for engine workflows and activities. Defaults to `goobers-engine`; GOOBERS_TASK_QUEUE overrides this value."
+        }
+      }
+    },
+    "runnerCapability": {
+      "description": "A free-form, version-parameterized runner capability token (e.g. dotnet@8, xcode, os=windows) — distinct from a credential capability, and deliberately not a closed enum. An alphanumeric start then letters, digits, and any of . _ - + @ =, no whitespace.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._@=+-]*$",
+      "examples": ["dotnet@8"]
+    },
+    "egress": {
+      "description": "The egress destination configuration: named CIDR allowlist groups rendered into every network-granting runner class's NetworkPolicy (goobernetes-restrictions.md §2.2: the allowlist CIDR set is instance-operator-supplied configuration rendered into the manifests).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowlist": {
+          "description": "Named destination groups. Every runner class without network:none is rendered with all of them; a class with network:none gets only DNS and the blob-endpoint data path.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/egressAllowlistGroup" }
+        }
+      }
+    },
+    "egressAllowlistGroup": {
+      "description": "One named CIDR destination group: the git/backlog provider ranges, the model endpoint ranges, or a gaggle's sandbox targets. The render refuses CHANGE-ME documentation placeholders (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32) — fill in real ranges before rendering.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "cidrs"],
+      "properties": {
+        "name": {
+          "description": "The group's handle in rendered provenance markers and errors. A lowercase DNS label, unique within the allowlist.",
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "examples": ["github-provider"]
+        },
+        "kind": {
+          "description": "The destination family: provider (git/backlog provider), model (model/agent endpoint — the coverage ratchet's reference set), or sandbox (the gaggle's declared sandbox/provisioner targets).",
+          "type": "string",
+          "enum": ["provider", "model", "sandbox"]
+        },
+        "source": {
+          "description": "The upstream document the CIDRs were transcribed from (e.g. https://api.github.com/meta). Optional: omitted declares an operator-local set with no upstream to drift from. When set, sourceSHA256 is required and `goobers netpol-render --check` fails when the live document's hash no longer matches — a stale CIDR set otherwise fails mid-run as a connect timeout indistinguishable from a correct denial.",
+          "type": "string",
+          "examples": ["https://api.github.com/meta"]
+        },
+        "sourceSHA256": {
+          "description": "The hex sha256 of the source document at transcription time — the provenance marker the drift check validates. Required when source is set.",
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "cidrs": {
+          "description": "The granted destination blocks, spelled as exact network addresses (no host bits — a normalized-away host part is how a grant silently widens).",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "description": "One CIDR destination block.",
+            "type": "string",
+            "examples": ["140.82.112.0/20"]
+          }
+        },
+        "ports": {
+          "description": "The allowed TCP ports; omitted defaults to 443.",
+          "type": "array",
+          "items": {
+            "description": "One allowed TCP port.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          }
+        }
+      }
+    },
+    "runnerEntry": {
+      "description": "One declared runner: a name, where stages placed on it execute (host), what it claims to provide, and the restriction effects it enforces. Claims are trusted in v1 — a false claim degrades to a runtime error with a named diagnostic, never a silent misroute.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "host"],
+      "properties": {
+        "name": {
+          "description": "This runner's handle in diagnostics, placement provenance, and (later) queue keying. A lowercase DNS label, unique within the inventory.",
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "examples": ["ci-linux"]
+        },
+        "host": {
+          "description": "Where a stage placed on this runner executes: the literal \"self\" (the daemon host — the only kind that executes locally), a container image reference (registry[:port]/repository[:tag][@digest] — the dispatcher instantiates one fresh pod per stage attempt from it), or the bare name of a consumer-authored Deployment whose pod template is instantiated per stage attempt, by reference — never resident execution. A value carrying \"/\", \":\", or \"@\" is read as an image reference; any other bare name is read as a Deployment name, so a plain image shorthand like \"ubuntu\" must spell a registry, tag, or digest. A host that is not \"self\" requires the instance to declare an engine: block, or the config is refused at load.",
+          "type": "string",
+          "minLength": 1,
+          "examples": ["self", "ghcr.io/example/goobers-ci:v0.7.0"]
+        },
+        "provides": {
+          "description": "This runner's claim set: OS, resource ceilings, and preinstalled toolchain/platform capabilities.",
+          "$ref": "#/$defs/runnerProvides"
+        },
+        "restrictions": {
+          "description": "The isolation effects this runner ENFORCES — effects, never mechanisms. A stage requiring a restriction matches only runners that enforce it. Drawn from the closed v1 effect list; an unknown token is refused at load.",
+          "type": "array",
+          "items": {
+            "description": "One enforced restriction effect from the closed v1 list.",
+            "type": "string",
+            "enum": ["network:none", "network:allowlist", "fs:readonly-except-workspace", "tmp:ephemeral", "env:default-deny"]
+          }
+        }
+      }
+    },
+    "runnerProvides": {
+      "description": "What a runner claims to provide. Quantities are ceilings — they become pod resource limits, while a stage's declared minimums become requests — written as Kubernetes quantity strings verbatim.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "os": {
+          "description": "The runner's operating system. Empty claims no OS.",
+          "type": "string",
+          "enum": ["linux", "windows", "macOS"]
+        },
+        "cpu": {
+          "description": "CPU ceiling as a Kubernetes quantity string, e.g. 8000m.",
+          "$ref": "#/$defs/quantity",
+          "examples": ["8000m"]
+        },
+        "memory": {
+          "description": "Memory ceiling as a Kubernetes quantity string, e.g. 16Gi.",
+          "$ref": "#/$defs/quantity",
+          "examples": ["16Gi"]
+        },
+        "disk": {
+          "description": "Disk ceiling as a Kubernetes quantity string, e.g. 100Gi.",
+          "$ref": "#/$defs/quantity",
+          "examples": ["100Gi"]
+        },
+        "capabilities": {
+          "description": "Toolchain and platform capabilities this runner claims are ALREADY INSTALLED — the same open vocabulary as runner.capabilities, matched exactly at schedule time.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/runnerCapability" }
+        },
+        "shell": {
+          "description": "Declares that this runner's image provides a POSIX-compatible shell, satisfying a shell stage's derived run:shell requirement. Only meaningful for a non-self runner (a self runner already satisfies this implicitly); trusted like every other provides: claim, never verified against the image's actual contents.",
+          "type": "boolean"
+        },
+        "harnesses": {
+          "description": "The agent-harness names (e.g. \"copilot\", \"claude\") this runner's image provides on PATH, each satisfying an agentic stage's derived harness:<name> requirement for that name. Only meaningful for a non-self runner (a self runner already satisfies every configured harness implicitly); trusted like every other provides: claim, never verified against the image's actual contents.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+          }
+        }
+      }
+    },
+    "quantity": {
+      "description": "A positive Kubernetes quantity string, verbatim (2000m, 4Gi): a decimal number with an optional binary (Ki/Mi/Gi/Ti/Pi/Ei), decimal (n/u/m/k/M/G/T/P/E), or scientific-notation suffix. Parsed with Kubernetes semantics at load, where zero and negative values are refused.",
+      "type": "string",
+      "pattern": "^(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\+|-)?(([0-9]+(\\.[0-9]*)?)|(\\.[0-9]+))))?$"
+    },
+    "harnessName": {
+      "description": "An agent harness whose launcher may be overridden.",
+      "type": "string",
+      "enum": ["copilot", "claude-code"]
+    },
+    "githubId": {
+      "description": "A GitHub identifier that may be written as a number (appId: 123456) or a quoted string; both parse to the same value.",
+      "type": ["string", "integer"],
+      "minLength": 1
+    },
+    "duration": {
+      "description": "A Go duration string such as 30s, 45m, or 6h. Must be positive.",
+      "type": "string",
+      "minLength": 1
+    },
+    "runConditions": {
+      "description": "Instance-level ceilings. They sit on top of, and never widen, each workflow's own readiness guardrails.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxParallelRuns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total concurrent runs allowed across every workflow in this instance. Zero or omitted MEANS UNLIMITED — concurrency bounded only by each workflow's own limits, which on a laptop-class host is usually not what you want — `goobers init` writes 1. Note this is the opposite of a workflow's own readiness.maxRunsPerHour, where zero/omitted falls back to a default of 10 rather than unlimited."
+        },
+        "workflowBudgets": {
+          "description": "Per-workflow runs-per-HOUR ceiling, keyed by workflow name. An entry REPLACES that workflow's own maxRunsPerHour rather than combining with it. A name matching no workflow is inert.",
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0, "description": "Maximum runs per hour for the named workflow. Zero stops it from starting." }
+        },
+        "workflowDailyBudgets": {
+          "description": "Per-workflow runs-per-DAY ceiling, keyed by workflow name — the daily twin of workflowBudgets, applied in addition to it.",
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0, "description": "Maximum runs per day for the named workflow. Zero stops it from starting." }
+        },
+        "maxRepasses": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Instance default for how many times gates may cumulatively route a run back to the same already-completed stage before escalation, regardless of gate or outcome. Omitted uses the built-in default; a gaggle, repository, or workflow runControls value is more specific."
+        },
+        "stalledRunTimeout": {
+          "description": "How long a running journal may stay silent before the watchdog escalates the run. Empty defaults to 45 minutes. Size it above your slowest single stage, or a healthy long stage looks stalled.",
+          "$ref": "#/$defs/duration",
+          "examples": ["45m"]
+        },
+        "maxRunDuration": {
+          "description": "Maximum total wall-clock age of a run. Empty disables the limit.",
+          "$ref": "#/$defs/duration",
+          "examples": ["24h"]
+        },
+        "claimsLockTimeout": {
+          "description": "Bounds cross-process claim-ledger lock acquisition, so a wedged holder cannot convoy stage dispatch or terminal cleanup. Empty defaults to 30 seconds.",
+          "$ref": "#/$defs/duration",
+          "examples": ["30s"]
+        }
+      }
+    },
+    "telemetry": {
+      "description": "Local rollup store, optional collector push, and journal retention.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Toggles span emission, local SQLite ingest, and any configured collector push. Disabling it also forbids an OTLP endpoint, since there would be nothing to push."
+        },
+        "otlp": {
+          "description": "Optional OTLP/gRPC collector push. Absent (and no GOOBERS_OTLP_ENDPOINT in the environment) means no push at all — local rollups are unaffected.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Collector endpoint. The GOOBERS_OTLP_ENDPOINT environment variable overrides this value at load.",
+              "examples": ["http://127.0.0.1:4317"]
+            },
+            "insecure": { "type": "boolean", "default": false, "description": "Sends to the collector without TLS. Non-loopback endpoints with insecure=true are refused at load — use a loopback sidecar collector, or a TLS endpoint. GOOBERS_OTLP_INSECURE overrides it." },
+            "headers": {
+              "description": "Extra gRPC headers, keyed by header name. Every value is an indirect secret ref, never a literal header value.",
+              "type": "object",
+              "additionalProperties": { "$ref": "#/$defs/tokenRef" }
+            }
+          }
+        },
+        "retention": {
+          "description": "Bounds terminal run journals and their rollup rows. Automatic pruning is OPT-IN: with this block absent nothing is ever pruned, and `goobers telemetry prune --dry-run` can preview the same policy at any time.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false, "description": "Lets the daemon prune automatically. False keeps the policy available to explicit prune commands only." },
+            "window": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Age beyond which terminal runs are prunable, as a Go duration or a whole number of days (90d). Empty uses 90 days.",
+              "examples": ["90d"]
+            },
+            "maxRuns": { "type": "integer", "minimum": 0, "description": "Maximum terminal runs retained regardless of age. Zero or omitted uses 500." }
+          }
+        }
+      }
+    },
+    "externalTelemetryConnector": {
+      "description": "One named, read-only telemetry connector instance. Workflows reference it by name only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind", "version", "config"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}$",
+          "description": "Handle workflows select this connector by. Unique within the instance."
+        },
+        "kind": { "type": "string", "minLength": 1, "description": "Registered connector kind that builds this instance." },
+        "version": { "type": "string", "minLength": 1, "description": "Connector contract version this configuration was written against." },
+        "config": { "type": "object", "description": "Connector-kind-specific settings, validated by that kind's factory. Required — a connector with no config cannot be built." },
+        "auth": {
+          "description": "How this connector acquires its credential. Omitted means no credential (mode `none`).",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["none", "bearer-token", "azure-cli", "workload-identity", "managed-identity", "default-azure"],
+              "description": "Credential acquisition mode. `bearer-token` requires exactly one of token.env or token.file; every other mode forbids a token ref."
+            },
+            "token": {
+              "description": "Where the bearer token is read from — exactly one of env or file, never an inline value. An env name that stages can also see is refused at load.",
+              "type": "object",
+              "additionalProperties": false,
+              "minProperties": 1,
+              "maxProperties": 1,
+              "properties": {
+                "env": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Name of an environment variable holding the token." },
+                "file": { "type": "string", "minLength": 1, "description": "Path to a file whose contents are the token." }
+              }
+            },
+            "tenant": { "type": "string", "minLength": 1, "description": "Pins Azure authentication to one tenant." },
+            "clientId": { "type": "string", "minLength": 1, "description": "Selects a user-assigned identity." }
+          }
+        },
+        "policy": {
+          "description": "Host-side ceilings for this connector. They bound what a workflow query may consume; a connector can never raise them.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "timeout": { "description": "Maximum wall-clock time for one query.", "$ref": "#/$defs/duration", "examples": ["30s"] },
+            "maxAttempts": { "type": "integer", "minimum": 1, "description": "Total attempts including the first; one disables retries." },
+            "retryBackoff": { "description": "Delay between attempts.", "$ref": "#/$defs/duration", "examples": ["2s"] },
+            "maxRows": { "type": "integer", "minimum": 0, "description": "Maximum rows returned before the result is marked truncated." },
+            "maxBytes": { "type": "integer", "minimum": 0, "description": "Maximum result size in bytes before the result is marked truncated." }
+          }
+        },
+        "network": {
+          "description": "The ONLY network access this connector's host-provided HTTP client allows. An empty allowlist permits nothing.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allowedHosts": {
+              "description": "Hosts this connector may reach. Anything else is refused by the host HTTP boundary, not by the connector.",
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "allowHTTP": { "type": "boolean", "default": false, "description": "Permits plaintext http:// to the allowed hosts. Off keeps every request https." }
+          }
+        }
+      }
+    },
+    "retention": {
+      "description": "Opt-in cleanup of on-disk run remains and the portal's listable history window.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enables pruning of retained terminal-failure worktrees and merged local run branches. It requires at least one of maxRetainedWorktreeBytes or retainedWorktreeMaxAge — enabling retention with no limits would prune nothing. Active runs are never candidates."
+        },
+        "dryRun": { "type": "boolean", "default": false, "description": "Reports the deterministic candidate set without deleting anything." },
+        "maxRetainedWorktreeBytes": { "type": "integer", "minimum": 0, "description": "Byte ceiling for retained failure worktrees; the oldest are removed first once exceeded. Zero or omitted disables the size rule." },
+        "retainedWorktreeMaxAge": {
+          "description": "Age beyond which a retained failure worktree is prunable. Empty disables the age rule.",
+          "$ref": "#/$defs/duration",
+          "examples": ["168h"]
+        },
+        "projectionFullFidelityDays": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 90,
+          "description": "How many days of history stay INDIVIDUALLY LISTABLE in the portal. Defaults to 90 days (product policy decision per issue #3056 for unattended operation: opt-out with safe first-enable semantics). Set to 0 or negative to disable retention (UNBOUNDED — never a zero-day window). Independent of journal retention: the journal is the source of truth, this is only about what the derived projection lists, so aging a run out removes no evidence."
+        }
+      }
+    },
+    "speech": {
+      "description": "Local speech sink for terminal alerts. Enabled explicitly; the engine must exist on the host.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false, "description": "Speaks the same alerts the terminal prints." },
+        "engine": { "type": "string", "enum": ["auto", "say", "espeak"], "description": "Speech backend. `auto` selects whichever of say/espeak the host provides." },
+        "voice": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Engine-specific voice name. It must not begin with `-` or contain control characters." },
+        "language": { "type": "string", "minLength": 1, "description": "BCP 47-style language tag such as en-US.", "examples": ["en-US"] },
+        "rate": { "type": "integer", "description": "Speaking rate in words per minute, within the engine's supported range." },
+        "timeout": { "description": "Maximum time one utterance may take before it is abandoned.", "$ref": "#/$defs/duration", "examples": ["30s"] }
+      }
+    },
+    "workcopies": {
+      "description": "Managed mirror and worktree provisioning. Each option applies to NEWLY created mirrors only — existing mirrors are never migrated either way.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "root": { "type": "string", "minLength": 1, "description": "Absolute base path for managed mirrors and worktrees. The gaggle name and repository key are appended beneath it, preserving workforce isolation. A gaggle's own workcopies.root overrides it." },
+        "partialClone": {
+          "type": "boolean",
+          "default": false,
+          "description": "Provisions new mirrors as blobless partial clones with a heads+tags refresh refspec — the large-repo clone-time and disk win. Blobs are then fetched on demand when a stage worktree materializes, so worktree creation becomes network-dependent (and, on private repositories, credential-dependent). Off keeps full mirrors with byte-identical git behavior."
+        },
+        "objectCache": {
+          "type": "boolean",
+          "default": false,
+          "description": "Lets new mirrors borrow objects from a shared node-level object cache via git alternates: one bare clone per repository URL shared by every gaggle on the node, instead of one full clone per gaggle. Off never creates the cache directory."
+        }
+      }
+    },
+    "api": {
+      "description": "The daemon's read-only HTTP API. The default posture is tier-1 local trust: loopback only, no authenticator.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "listen": {
+          "type": "string",
+          "minLength": 1,
+          "description": "host:port for the API listener. Empty defaults to 127.0.0.1:8080. A NON-loopback host is refused at load unless BOTH tls and auth are configured — fail closed, with no insecure override.",
+          "examples": ["127.0.0.1:8080"]
+        },
+        "podTokenKeyFile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path to shared key material for STATELESS pod tokens. Set it when the mode-3 dispatcher runs in a different process from the daemon (the split `goobers up` / `goobers worker --dispatch-namespace` deployment): the in-memory token registry is daemon-local, so a token minted in the worker cannot otherwise be verified by the daemon receiving the surrender. A path only — key material never appears in this file. Unset keeps the in-memory registry, which is correct whenever daemon and dispatcher share a process.",
+          "examples": ["/mnt/secrets/pod-token.key"]
+        },
+        "tls": {
+          "description": "Serves the API over HTTPS from an on-disk certificate and key. Required for a non-loopback listen address.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["certFile", "keyFile"],
+          "properties": {
+            "certFile": { "type": "string", "minLength": 1, "description": "Path to the PEM certificate. A path only — key material never appears in this file." },
+            "keyFile": { "type": "string", "minLength": 1, "description": "Path to the PEM private key. A path only." }
+          }
+        },
+        "auth": {
+          "description": "Replaces the tier-1 null authenticator. Required for a non-loopback listen address.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "oidc": {
+              "description": "Validates bearer JWTs against one issuer and maps its claims onto instance roles. Entra ID is a configured issuer here, not a separate code path.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["issuer", "audience", "roles"],
+              "properties": {
+                "issuer": { "type": "string", "format": "uri", "description": "Issuer URL exactly as tokens state it in `iss`. Discovery uses <issuer>/.well-known/openid-configuration." },
+                "audience": { "type": "string", "minLength": 1, "description": "The `aud` claim value tokens must carry." },
+                "rolesClaim": { "type": "string", "minLength": 1, "description": "Claim carrying role or group values. Empty defaults to `roles`." },
+                "roles": {
+                  "description": "Maps claim values onto instance roles. DENY BY DEFAULT: an authenticated principal whose claim values match nothing gets no role at all. Roles nest — admin implies operate, operate implies view.",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "view": { "description": "Claim values granted read-only access.", "type": "array", "items": { "type": "string", "minLength": 1 } },
+                    "operate": { "description": "Claim values granted run operations in addition to view.", "type": "array", "items": { "type": "string", "minLength": 1 } },
+                    "admin": { "description": "Claim values granted full control in addition to operate.", "type": "array", "items": { "type": "string", "minLength": 1 } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "portal": {
+      "description": "Dashboard co-branding. Every field is optional and cosmetic.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "brand": {
+          "description": "Instance identity shown in the portal header.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Instance name. Empty defaults to `goobers`." },
+            "tagline": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Short subtitle under the name. Empty defaults to `local operations`." },
+            "scopeMark": { "type": "string", "minLength": 1, "description": "Short mark used where the full name does not fit. Empty derives the first letter of the name." },
+            "logoUrl": { "type": "string", "minLength": 1, "description": "Logo path. It must start with /assets/ — the portal serves operator assets from that root and refuses off-instance URLs." },
+            "faviconUrl": { "type": "string", "minLength": 1, "description": "Favicon path. It must start with /assets/." }
+          }
+        },
+        "theme": {
+          "description": "Accent color overrides. Each value must be a plausible CSS color; light and dark variants are set independently so neither theme is left unreadable.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "accentLight": { "type": "string", "minLength": 1, "description": "Primary accent in the light theme." },
+            "accentDark": { "type": "string", "minLength": 1, "description": "Primary accent in the dark theme." },
+            "accentSoftLight": { "type": "string", "minLength": 1, "description": "Muted accent fill in the light theme." },
+            "accentSoftDark": { "type": "string", "minLength": 1, "description": "Muted accent fill in the dark theme." },
+            "accentInkLight": { "type": "string", "minLength": 1, "description": "Text color drawn on the light accent." },
+            "accentInkDark": { "type": "string", "minLength": 1, "description": "Text color drawn on the dark accent." }
+          }
+        },
+        "support": {
+          "description": "Support channels rendered in the portal sidebar.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "docsUrl": { "type": "string", "format": "uri", "description": "Documentation link. It must start with https://." },
+            "issuesUrl": { "type": "string", "format": "uri", "description": "Issue tracker link. It must start with https://." },
+            "chatUrl": { "type": "string", "minLength": 1, "description": "Chat link. It must start with https://, slack://, or msteams://." },
+            "links": {
+              "description": "Extra labeled links, at most six.",
+              "type": "array",
+              "maxItems": 6,
+              "items": {
+                "description": "One labeled support link.",
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["label", "url"],
+                "properties": {
+                  "label": { "type": "string", "minLength": 1, "maxLength": 32, "description": "Link text." },
+                  "url": { "type": "string", "format": "uri", "description": "Link target. It must start with https://." }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -265,7 +265,7 @@ func conformanceFixtures() []conformanceFixture {
 			// invoke.Timeout, a POLICY-classed failure on both runners — the
 			// worker self-enforces the limit, and the engine's
 			// StartToCloseTimeout runs stageTimeoutGrace behind it so
-			// Temporal's infra-classed timeout never fires first. Same
+			// Temporal's worker-loss timeout never fires first. Same
 			// definition, same retry budget, same terminal journal.
 			name: "worker-enforced stage timeout retries as policy",
 			spec: fixtureSpec("implement",

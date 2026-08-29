@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha8` (`api/v1alpha1.StageContractVersion`).
+> version: `v1alpha9` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -118,6 +118,16 @@ The runner hands the stage an `InvocationEnvelope`:
   render this map into the invocation prompt as data.
   A parallel join additionally receives `inputs.branchCompleteness`, with one
   terminal status and artifact count per declared branch in declaration order.
+- `nestedAgentPolicy` — optional versioned policy for a mechanically launched
+  child agent. When present, the runner also supplies `attempt`,
+  `ownershipBoundary`, `policyActions`, and a runner-authored
+  `parentPlatformPolicy`. Admission intersects that authority with the stage
+  policy, selected profile/model, and adapter capability. Missing parent
+  authority or an adapter without a policy-enforcing child-launch path fails
+  before any harness process starts. Fresh context drops optional parent item,
+  inputs, addenda, and context pointers; inherited context retains them;
+  explicit context carries only named pointers and selected envelope sections.
+  The immutable child execution policy is delivered in every mode.
 - `item`, `repoRef`, `limits` — the triggering backlog item, target repo, and
   execution bounds. `repoRef` carries repository identity and connection
   fields only: config-side declarations such as `project.checkout` (B2, #649)
@@ -146,6 +156,12 @@ The stage returns a `ResultEnvelope`:
   existing journal span and is diagnostic only; it is not added to
   `artifacts[]` or passed to downstream stages. Legacy results omit it.
 - `outputs` — small declared **scalar** values only.
+  A deterministic bandit assignment may publish the reserved fact
+  `randomizedIntervention=true`,
+  `randomizedInterventionSource=bandit-assignment`, and `arm=control|treatment`.
+  The read model requires all three values before treating an observation as
+  randomized. An `arm` (or generic `randomized`) output by itself remains
+  observational and is never promotion-eligible.
 - `error` — structured failure detail (`code`, `message`, `retryable`); **required
   when `status == failure`**.
 - `summary`, `metrics` — human and telemetry detail. Agentic usage uses
@@ -430,12 +446,14 @@ currently backs both agent-authored issue intent and runner bookkeeping whose
 ordering is part of the scheduler or PR-lifecycle contract. Migration assigns
 every existing operation to exactly one of these routes:
 
-| Route | Operations and preserved contract |
+| Exclusive owner | Closed method surface and preserved contract |
 |---|---|
-| `github:issues:write` proposals | Agentic curation and nomination create/edit/comment/label/state intents. These are the only initial agent-produced issue mutations; reserved trust labels remain excluded. |
-| Claim adapter | Backlog claim/release, expired/terminal claim cleanup, and orphaned-claim reconciliation. It owns the claim-ledger lock and provider claim epoch as one runner operation: reserve in the ledger, publish the provider breadcrumb, settle the server-assigned winner, roll back a losing provisional ledger reservation, and only then expose the claimed item. Release posts the release breadcrumb and removes the provider marker before freeing the ledger entry, preserving retry ownership if provider cleanup fails. These steps are not decomposed into independently replayable proposals. |
-| Backlog metadata adapter | Ready/stale/tracking/status drift reconciliation and closed-unmerged requeue. Its closed inputs are the trusted label policy, ledger snapshot, provider item/child state, and selected item IDs; it cannot perform arbitrary edits or comments. |
-| Issue disposition adapter | Implementation close-out and parking, scheduler/gate escalation notification, post-merge issue closure, queue outcome routing, and other run-terminal status/claim-marker bookkeeping. It preserves each command's fixed operation ordering, comments, and status vocabulary. |
+| `github:issues:write` proposal executor | Agentic curator and nominator create/edit/comment/label/state intents. These are the only initial agent-produced issue mutations; reserved trust labels remain excluded. |
+| `backlog-query` adapter | Claim, release, expired/terminal claim cleanup, orphaned-claim reconciliation, and ready/stale/tracking/status drift repair performed while selecting work, including policy-authorized tracking-item auto-close. It owns the claim-ledger lock and provider claim epoch as one runner operation: reserve in the ledger, publish the provider breadcrumb, settle the server-assigned winner, roll back a losing provisional ledger reservation, and only then expose the claimed item. Release posts its breadcrumb and removes the provider marker before freeing the ledger entry, preserving retry ownership if provider cleanup fails. It cannot perform caller-supplied issue edits or comments. |
+| `backlog-health` adapter | Ready-pool health sampling and implementation-failure feedback: remove the ready marker and append the bounded run/error evidence only after the configured threshold is met. Its inputs are the pinned trust/ready labels, threshold, telemetry evidence, and provider issue state; it cannot claim, release, close, or make free-form edits. |
+| `issue-close-out` adapter | Implementation close-out and parking only: publish the fixed status comment/labels, remove the ready marker when required, and release the claim in the command's fixed order. Its status and outcome vocabularies are closed; it cannot select another issue or create/edit arbitrary content. |
+| Backlog-assignment adapter | Assign or clear the configured assignee for selector-admitted backlog items. It cannot alter issue content, labels, state, or claims. |
+| Issue-disposition adapter | Scheduler/gate escalation notification, post-merge issue closure, queue outcome routing, self-update rollback escalation issue creation, and other run-terminal status/claim-marker bookkeeping not owned by `issue-close-out`. It preserves each entrypoint's fixed operation ordering, comments, and status vocabulary. |
 | PR-lifecycle bookkeeping adapter | Merge-review verdict labels/status comments, queue eviction/timeout remediation, merge-refusal demotion, post-merge fan-out/unparking/healing, remediation checkpoint/escalation, update-behind/rebase/push-remediated cleanup, and finding responses. It is target-scoped to the selected PR and any trusted selector outputs already admitted by the run. |
 
 Read-only issue/PR consumers use broker-held read handles and receive no writer
@@ -448,6 +466,33 @@ and compatibility entrypoints and reject the new routing version if any
 `github:issues:write` provider mutation is unassigned. Older workflow versions
 remain pinned to direct injection until that inventory and all adapters land
 together; curation/nomination alone are not a completed capability migration.
+
+#### Shipped and example issue-write route audit
+
+The route inventory below was checked on 2026-08-17 against every workflow
+under `reference-workflows/` and `config-examples/`. A listed entrypoint maps to
+one owner in the table above; braces denote identical workflow paths in the two
+ACME examples. Entries that currently declare the broad capability but only read issue state
+are called out separately and do not acquire an issue-write method in the
+migrated route; any PR mutation they perform belongs to the PR route.
+
+| Exclusive owner | Shipped/example workflow paths |
+|---|---|
+| Proposal executor (curator) | `reference-workflows`: `backlog-curation/curate`; `config-examples/{acme-web,acme-web-claude}`: `backlog-curation/curate` |
+| Proposal executor (nominator) | `reference-workflows`: `work-nomination/nominate`, `quality-sprint/nominate`; `config-examples/{acme-web,acme-web-claude}`: `work-nomination/nominate` |
+| `backlog-query` | `reference-workflows`: `backlog-curation/{reconcile-backlog,query-backlog,release-claim}`, `implementation/query-backlog`; `config-examples/{acme-web,acme-web-claude}`: `backlog-curation/{reconcile-backlog,query-backlog,release-claim}`, `{default-implement,implementation}/query-backlog` |
+| `backlog-health` | `reference-workflows` and `config-examples/{acme-web,acme-web-claude}`: `backlog-curation/{implementation-feedback,sample-ready-pool}` |
+| `issue-close-out` | `reference-workflows` and `config-examples/{acme-web,acme-web-claude}`: `implementation/{close-out,park-escalated,park-needs-human}` |
+| Backlog-assignment adapter | `config-examples/{acme-web,acme-web-claude}`: `backlog-assignment/assign-backlog` |
+| Issue-disposition adapter | `reference-workflows`: `self-update/stage-update`; `reference-workflows` and `config-examples/{acme-web,acme-web-claude}`: `merge-review/{queue-watch,post-merge}` |
+| PR-lifecycle bookkeeping adapter | `reference-workflows` and `config-examples/{acme-web,acme-web-claude}`: `merge-review/{reconcile-post-merge,record-merge-refusal}`; `reference-workflows`: `pr-remediation/{update-behind-pr,rebase-pr,remediation-checkpoint,push-remediated,respond-to-findings,park-escalated,park-infrastructure-failure,park-invalid-finding-responses}` |
+| No issue-write owner (issue access is read-only) | `reference-workflows` and `config-examples/{acme-web,acme-web-claude}`: `backlog-curation/surface-duplicates`, `merge-review/check-issue-staleness`; `reference-workflows`: `pr-remediation/{gather-pr-context,gather-issue-context,validate-finding-responses}` |
+
+This assignment is exhaustive and disjoint for the audited trees: no
+shipped/example issue mutation is unassigned or has two owners. The audit found
+no implementation gap requiring a follow-up issue. Adding a workflow entry that
+declares `github:issues:write` must update this inventory and select exactly one
+owner before the migrated routing version can validate.
 
 The DSL implementation adds runner-owned deterministic run kinds, mutually
 exclusive with `run.command`. The initial kinds are `prepare-merge-proposal`,
@@ -685,14 +730,14 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 | Status | Runner action |
 |---|---|
 | `success` | advance the state machine to the next stage/gate |
-| `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION`), bypass the `Next` gate's evaluator and route through its optional `escalate` control branch; without one, terminate directly at `@escalate`. Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
+| `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION` / `ISSUE_NOT_APPLICABLE`), bypass the `Next` gate's evaluator and route through its optional `escalate` control branch; without one, terminate directly at `@escalate`. The stage's own `summary` posts to the driving item as the disposition's reasoning (#3363). Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
 | `blocked` | **finish the run `escalated`** (#544/#545) — never a pause. The blocked cause is journaled (`blocked_by_agent`, carrying `error`), the shared escalation notifier preserves that reason on the driving issue, normal terminal cleanup releases the claim/worktrees, and the issue is parked with its ready/claimed markers removed (#539's convention). The park label depends on whether `outputs.blockedBy` named a blocker (#2028): a named, non-cyclic blocker parks `goobers:blocked-on-sibling` (self-healing — see below); an unattributed block, or a detected circular dependency, parks `goobers:needs-human`. If `outputs.blockedBy` names blocking issue numbers, backlog selection also records the block and skips the issue if it is re-promoted before every named blocker closes (#552). |
 | `no-work` | finish the run `completed` without evaluating the task's declared next state |
 
 > **Non-retryable escalate disposition (#415, V0.7 ladder remediation L6 —
 > `docs/design/v07-ladder-remediation.md` §3.4):** a `failure` result carrying
 > `error.retryable == false` **and** a recognized escalate code (`ISSUE_OVER_SCOPE`
-> / `NEEDS_DECOMPOSITION`) bypasses the `Next` gate evaluator and its repass
+> / `NEEDS_DECOMPOSITION` / `ISSUE_NOT_APPLICABLE`) bypasses the `Next` gate evaluator and its repass
 > loop after one attempt. When that gate declares an `escalate` control branch,
 > the runner follows it so the workflow can perform deterministic disposition
 > work before terminating; otherwise it routes straight to `@escalate`
@@ -704,6 +749,31 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > distinct from `Task.Retry` below (which is infra-only). A recognized escalate
 > code with `retryable == true`, or a `failure` with an unrecognized/absent code,
 > follows the ordinary failure route above.
+>
+> **Item judgment vs. work failure (#3363):** `ISSUE_NOT_APPLICABLE` is the
+> disposition for an item whose premise no longer holds — the issue targets
+> files a later change deleted, or asks for work already done. It is a verified
+> conclusion ABOUT THE ITEM, not a failure of the work, so re-running the stage
+> can only re-derive it. Two consequences follow from recognizing it here.
+> First, the refusal is terminal on attempt 1 rather than review-failing an
+> empty diff and burning the repass budget. Second, the stage's own `summary`
+> is the deliverable: the runner posts it to the driving item as the
+> escalation's reasoning, so a correct refusal's citation reaches a human
+> instead of living only in the run journal. Emit the citation in `summary`
+> (the machine-readable code goes in `error.code`, a short restatement in
+> `error.message`). The code classifies as the `item-judgment` error class,
+> which status rollups count separately from work failures (#3364).
+>
+> **Infrastructure faults never charge the work budget (#3361):** a failure of
+> the substrate a stage runs ON — credential materialization, git provisioning,
+> network transport, host/workspace, claims-lock contention — is not evidence
+> about the work. Those failures are marked at their construction site, retried
+> on the runner's bounded INFRASTRUCTURE budget (journaled `attemptClass:
+> infra`, conformance-excluded), and never decrement `Task.Retry`'s attempts.
+> Their terminals carry a typed `infra*` error class, which keeps them out of
+> the failure-streak circuit breaker and out of the success-rate denominator
+> (#3364) — at attempt budgets of 1, the prior classification converted
+> transient infrastructure weather into permanent-looking work failures.
 >
 > **Reviewer sibling (#415):** at an agentic review gate whose subject is an
 > **agentic** stage, a run branch with **no committed change (an empty diff)**
@@ -733,9 +803,41 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > blocker instead parks `goobers:blocked-on-sibling` (#2028: a self-healing
 > dependency wait, not a decision), and `blockedBy` additionally prevents
 > premature re-selection if the item is re-promoted while a named dependency
-> remains open. See `docs/design/needs-human-taxonomy.md` for the full model,
+> remains open. **Never name the driving issue itself (#2961)** — an issue
+> cannot be its own dependency. A self-reference is normalized away before the
+> block is recorded (`#441`, `owner/repo#441` and `441` all match item 441), a
+> `runner.annotation` of kind `blocked_by.self_reference_dropped` records the
+> run, stage and item, and if it was the only entry the block is treated as
+> unattributed and parks `goobers:needs-human`. Persisted-graph self-loop
+> handling is unchanged, so legacy or corrupt records still surface as cycles.
+> See `docs/design/needs-human-taxonomy.md` for the full model,
 > including the circular-dependency exception (still `goobers:needs-human` —
 > it can't self-heal).
+
+> **A tool you could not call is not an organization policy (#2962).** Do not
+> report `blocked` on organization content exclusion because a tool call was
+> refused. Content exclusion is a policy fact the runtime states explicitly;
+> a bare permission refusal (e.g. `Permission denied and could not request
+> permission from user`) is an infrastructure fault an operator can fix, and
+> reporting it as a policy block parks the driving issue for a human who has
+> nothing to decide. The executor enforces this rather than trusting the
+> classification: a `blocked` result whose prose claims content exclusion is
+> rejected unless the captured transcript or stderr carries an explicit
+> runtime content-exclusion signal, and becomes a `failure` carrying
+>
+> | Observed | `error.code` | Meaning |
+> |---|---|---|
+> | a runtime tool-permission refusal | `HARNESS_TOOL_PERMISSION_DENIED` | grant the tool to the goober, or fix the harness invocation; `outputs.toolPermissionDenied` is `true` and the refusal lines are quoted in `error.message` |
+> | no runtime signal at all | `UNSUBSTANTIATED_CONTENT_EXCLUSION` | the classification was inferred, not observed |
+>
+> Both are non-retryable (the identical invocation reproduces the identical
+> refusal), both set `outputs.contentExclusionClaimRejected: true`, and both
+> preserve your original summary and error detail inside `error.message` — no
+> cause is ever invented or discarded. Blocks that do not mention content
+> exclusion are untouched. The effective CLI version and tool/permission
+> arguments for every Copilot session are recorded at
+> `.goobers/copilot-invocation.json` in the workspace, so a refusal can be
+> attributed to the invocation after the fact.
 
 `Task.Retry` (declared retry policy, attempt budget, backoff) governs only
 **dispatch/infra errors** — a Go error returned by the executor, not a
@@ -788,7 +890,7 @@ from the diff alone.
 
 ## Versioning & unknown-field policy
 
-- The contract version is `v1alpha8` (`StageContractVersion`). The Go types retain
+- The contract version is `v1alpha9` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`
   invocation field for bounded scheduler trigger provenance; `v1alpha3` adds the
@@ -801,7 +903,9 @@ from the diff alone.
   input-integrity grades to invocation items, context pointers, and artifact
   pointers, plus the stage's declared minimum; `v1alpha8` adds the optional
   `checkoutCones` invocation field declaring a stage's sparse-checkout cones
-  (project.checkout.sparse, #649).
+  (project.checkout.sparse, #649); `v1alpha9` adds attempt, ownership,
+  policy-action, nested-policy, and runner-authored parent-authority fields for
+  mechanically enforced nested agents.
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a

@@ -93,7 +93,7 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	fs := flag.NewFlagSet("reconcile-branches", flag.ContinueOnError)
+	fs := newCLIFlagSet("reconcile-branches", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	deleteBranches := fs.Bool("delete", deleteDefault, "delete eligible branches (opt-in; default is dry-run)")
 	limit := fs.Int("max", limitDefault, "maximum candidates inspected in one sweep (1-100)")
@@ -136,14 +136,22 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubBranchDelete)
+	registry, scrubber := journal.DefaultScrubber()
+	stageProvider, err := newProviderForStage(root, repo, false,
+		withStageProviderCapability(capability.GitHubBranchDelete),
+		withStageProviderMutations("branch"),
+		withStageProviderRetriesDisabled(),
+		withStageProviderTokenObserver(func(token string) { registry.Register([]byte(token)) }),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-
-	registry, scrubber := journal.DefaultScrubber()
-	registry.Register([]byte(token))
+	provider, ok := stageProvider.(providers.BranchReconciliationProvider)
+	if !ok {
+		pf(stderr, "error: repository provider %q does not support branch reconciliation\n", repo.Provider)
+		return 1
+	}
 	log, _, err := journal.OpenInstanceLog(layoutFor(root).SchedulerDir(), journal.WithScrubber(scrubber))
 	if err != nil {
 		pf(stderr, "error: open instance log: %v\n", err)
@@ -151,12 +159,6 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = log.Close() }()
 
-	provider := newGitHubProvider(
-		token,
-		providers.WithMutationRecorder(sidecarMutationRecorder{kind: "branch"}),
-		providers.WithMaxRateLimitRetries(0),
-		providers.WithMaxTransientRetries(0),
-	)
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	report, err := reconcileRemoteBranches(ctx, provider, log, branchReconcileOptions{

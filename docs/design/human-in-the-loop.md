@@ -1,6 +1,6 @@
 # Design: Human-in-the-Loop — escalation visibility & intervention
 
-> Status: **Draft for review — tiers 1–2 for build, tier 3 is a forward sketch** · Area prefix: `HITL` (new) · Milestone: **Human-in-the-Loop** (#16)
+> Status: **draft — for review; tiers 1–2 for build, tier 3 is a forward sketch** · Area prefix: `HITL` (new) · Milestone: **Human-in-the-Loop** (#16)
 > Requirements: [`docs/requirements/gate.md`](../requirements/gate.md), [`docs/requirements/portal.md`](../requirements/portal.md)
 > Architecture: [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
 > Related issues: #168 (human-gate evaluator + durable pause/resume), #170 (CLI approve/approvals), #172 (access-control seam), #309 (surface terminal run_failed cause)

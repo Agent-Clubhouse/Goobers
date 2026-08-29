@@ -24,17 +24,20 @@ import (
 const JournalQuery = "goobers.journal.v1"
 
 // Journal op kinds. An op is one journal write the workflow committed to:
-// either a plain event append or a content-addressed artifact record (which
-// the projection writer turns into blob + artifact.recorded event, exactly as
-// the local runner's journal does).
+// a plain event append, a content-addressed artifact record (which the
+// projection writer turns into blob + artifact.recorded event, exactly as
+// the local runner's journal does), or a span record (#2907) — an
+// executor-produced blob (a harness transcript) the workflow can reference by
+// digest but never itself hold the bytes of.
 const (
 	opAppend   = "append"
 	opArtifact = "artifact"
+	opSpan     = "span"
 )
 
 // JournalOp is one journal write in a run's projection, in append order.
 type JournalOp struct {
-	// Kind is opAppend or opArtifact.
+	// Kind is opAppend, opArtifact, or opSpan.
 	Kind string `json:"kind"`
 	// Event is the append payload (Kind == opAppend). Seq and Schema are
 	// assigned by the journal writer; Time here is the deterministic
@@ -43,8 +46,16 @@ type JournalOp struct {
 	Event *journal.Event `json:"event,omitempty"`
 	// Artifact is the record payload (Kind == opArtifact).
 	Artifact *JournalArtifactOp `json:"artifact,omitempty"`
+	// Span is the record payload (Kind == opSpan).
+	Span *JournalSpanOp `json:"span,omitempty"`
 	// Time is the workflow-deterministic timestamp for this write.
 	Time time.Time `json:"time"`
+	// EmitKey is the op's live-emission idempotency key (DS4), assigned once
+	// by assignEmitKeys for a run with live journaling and empty otherwise.
+	// The repair projection (ProjectRun) deliberately ignores it: a
+	// re-projected journal carries no emit keys, which is what
+	// livejournal.Authored keys the live/projected distinction on.
+	EmitKey string `json:"emitKey,omitempty"`
 }
 
 // JournalArtifactOp records one content-addressed artifact the projection
@@ -62,6 +73,23 @@ type JournalArtifactOp struct {
 	Integrity apiv1.Integrity      `json:"integrity"`
 }
 
+// JournalSpanOp records one within-stage span (a harness transcript) the
+// executor that ran the stage already committed to content-addressed storage
+// — journal.Run.RecordSpanWithSchema on the local runner, workerhost's
+// StagingArtifacts on a tier-3 worker (#2900, #2935). Unlike JournalArtifactOp
+// the workflow never holds the bytes: apiv1.ResultEnvelope.Transcript carries
+// only the pointer the executor already wrote, so Ref is what the workflow
+// deterministically knows from history, and the projection writer adopts the
+// span by fetching Ref.Digest rather than recomputing it (#2907).
+type JournalSpanOp struct {
+	Stage      string               `json:"stage,omitempty"`
+	Attempt    int                  `json:"attempt,omitempty"`
+	Class      journal.AttemptClass `json:"class,omitempty"`
+	Name       string               `json:"name"`
+	DataSchema string               `json:"dataSchema,omitempty"`
+	Ref        journal.Ref          `json:"ref"`
+}
+
 // JournalProjection is the complete, self-contained journal projection of one
 // engine run: the pinned identity for run.yaml, the immutable input snapshots
 // (pinned graph, item), and the seq-ordered journal ops. ProjectRun turns it
@@ -77,6 +105,16 @@ type JournalProjection struct {
 	// Graph is the pinned canonical workflow graph JSON — the
 	// journal.PinnedWorkflowGraphInputName input snapshot.
 	Graph json.RawMessage `json:"graph,omitempty"`
+	// Definition is the pinned workflow definition used for crash-safe local
+	// reconstruction of this projection.
+	Definition json.RawMessage `json:"definition,omitempty"`
+	// GateGooberCapabilities is the reviewer-goober capability map pinned into
+	// the run input at start (#294) — journaled as the
+	// journal.PinnedGateGooberCapabilitiesInputName input snapshot so
+	// post-start consumers (the daemon credential plane, PR #3528) resolve an
+	// agentic gate's reviewer grants from the run's pin, never the
+	// currently-served config.
+	GateGooberCapabilities json.RawMessage `json:"gateGooberCapabilities,omitempty"`
 	// Ops are the journal writes in order. The first is always the run.started
 	// append; a projectable history ends with exactly one run.finished.
 	Ops []JournalOp `json:"ops"`
@@ -98,6 +136,14 @@ type runJournal struct {
 	usesRepo       bool
 	branchRecorded bool
 	branchRef      *journal.ExternalRef
+
+	// Live emission state (DS4). live mirrors RunInput.LiveJournal — pinned
+	// input, so replay agrees. emitted is the count of ops the live writer has
+	// durably accepted; ordinals drives idempotency-key assignment
+	// (assignEmitKeys). All plain workflow state.
+	live     bool
+	emitted  int
+	ordinals map[string]int
 }
 
 // newRunJournal builds the recorder and registers the projection query. The
@@ -107,6 +153,18 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 	graph, err := json.Marshal(m.Graph())
 	if err != nil {
 		return nil, fmt.Errorf("engine: marshal pinned workflow graph: %w", err)
+	}
+	definition, err := json.Marshal(m.Def)
+	if err != nil {
+		return nil, fmt.Errorf("engine: marshal pinned workflow definition: %w", err)
+	}
+	// json.Marshal sorts map keys, so this is workflow-deterministic.
+	var gateGooberCapabilities json.RawMessage
+	if len(in.GateGooberCapabilities) > 0 {
+		gateGooberCapabilities, err = json.Marshal(in.GateGooberCapabilities)
+		if err != nil {
+			return nil, fmt.Errorf("engine: marshal pinned gate-goober capabilities: %w", err)
+		}
 	}
 	runControls := in.RunControls
 	if runControls.MaxRepasses == 0 && in.MaxRepasses > 0 {
@@ -128,10 +186,13 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				RunControls:     &runControls,
 				Trigger:         journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
 			},
-			Item:  in.Item,
-			Graph: graph,
+			Item:                   in.Item,
+			Graph:                  graph,
+			Definition:             definition,
+			GateGooberCapabilities: gateGooberCapabilities,
 		},
 		usesRepo: runner.MachineUsesRepo(m),
+		live:     in.LiveJournal,
 		branchRef: &journal.ExternalRef{
 			Provider: string(in.RepoRef.Provider),
 			Kind:     "branch",
@@ -172,6 +233,11 @@ func (r *runJournal) triggerFiredAt(at time.Time, in RunInput) {
 func (r *runJournal) artifactAt(at time.Time, op JournalArtifactOp) {
 	o := op
 	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opArtifact, Artifact: &o, Time: at})
+}
+
+func (r *runJournal) spanAt(at time.Time, op JournalSpanOp) {
+	o := op
+	r.proj.Ops = append(r.proj.Ops, JournalOp{Kind: opSpan, Span: &o, Time: at})
 }
 
 // runStarted mirrors journal.Create's own opening append.
@@ -285,8 +351,17 @@ func (r *runJournal) integrityRefused(ctx workflow.Context, stage string, admiss
 }
 
 // stageFinished mirrors runTask's stage.finished append, including the
-// tolerated-failure output discard.
+// tolerated-failure output discard. A transcript the executor recorded is
+// journaled as a span op immediately before stage.finished, mirroring the
+// local runner's own ordering (the harness executor records its span mid-run,
+// before runTask appends stage.finished) — see JournalSpanOp (#2907).
 func (r *runJournal) stageFinished(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, result apiv1.ResultEnvelope, continueOnError bool) {
+	if result.Transcript != nil {
+		r.spanAt(workflow.Now(ctx), JournalSpanOp{
+			Stage: stage, Attempt: attempt, Class: class,
+			Name: stage + ".transcript", Ref: journalRefFrom(*result.Transcript),
+		})
+	}
 	outputs := result.Outputs
 	if result.Status == apiv1.ResultFailure && continueOnError {
 		outputs = nil
@@ -382,8 +457,12 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 		Gate: gr.Gate, Verdict: gr.Outcome, Target: gr.Target, Escalated: gr.Escalated,
 		Runner: map[string]any{
 			"repassAttempt": gr.Attempt,
+			"gateAttempt":   gr.GateAttempt,
 			"escalated":     gr.Escalated,
 		},
+	}
+	if gr.RepassTarget != "" {
+		ev.Runner["repassTarget"] = gr.RepassTarget
 	}
 	var artifact *apiv1.ArtifactPointer
 	if verdict != nil {
@@ -479,9 +558,14 @@ func journalRefsFrom(artifacts []apiv1.ArtifactPointer) []journal.Ref {
 	}
 	out := make([]journal.Ref, len(artifacts))
 	for i, a := range artifacts {
-		out[i] = journal.Ref{
-			Path: a.Path, Digest: a.Digest, Size: a.Size, MediaType: a.MediaType, Integrity: a.Integrity,
-		}
+		out[i] = journalRefFrom(a)
 	}
 	return out
+}
+
+// journalRefFrom converts one wire ArtifactPointer to journal.Ref form.
+func journalRefFrom(a apiv1.ArtifactPointer) journal.Ref {
+	return journal.Ref{
+		Path: a.Path, Digest: a.Digest, Size: a.Size, MediaType: a.MediaType, Integrity: a.Integrity,
+	}
 }

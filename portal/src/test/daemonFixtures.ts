@@ -135,12 +135,29 @@ function run(
     finishedAt,
     durationMillis: finishedAt ? Date.parse(finishedAt) - Date.parse(startedAt) : 120_000,
     lastActivityAt: finishedAt ?? new Date(Date.parse(startedAt) + 120_000).toISOString(),
+    stale: false,
     lastSeq,
     repassCount,
     retryCount: 0,
     policyRetryCount: 0,
     infraRetryCount: 0,
     noWork: false,
+    operator:
+      phase === "running"
+        ? {
+            issue: { number: "3088", title: "Operator status progress" },
+            currentStage: "review",
+            heartbeatAgeMillis: 30_000,
+            liveness: "recent",
+            trajectory: "review",
+            prOpenerStage: "open-pr",
+            claim: { leaseStatus: "active", providerMarker: "verified" },
+            latestError: { code: "provider.rate_limit", message: "quota exhausted" },
+            review: { verdict: "needs-changes", rationale: "Show operator context." },
+            nextTransition: "finish review",
+            potentialBlockers: ["provider quota is exhausted"],
+          }
+        : undefined,
   };
 }
 
@@ -579,12 +596,30 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       ],
     },
     telemetryStats: {
+      creditAssignment: [
+        {
+          gaggle: "core",
+          workflow: "implementation",
+          kind: "gate",
+          stage: "review",
+          identity: "sha256:reviewer",
+          routedRuns: 4,
+          failureRuns: 1,
+          failureShare: 0.25,
+          escalationRuns: 1,
+          retryWasteAttempts: 2,
+          identification: "correlational-fallback",
+          caveat: "no identified causal intervention; correlational rollup retained",
+        },
+      ],
+      causalCredit: null,
       gaggles: [
         {
           gaggle: "core",
           totalRuns: 4,
           completedRuns: 1,
           failedRuns: 1,
+          infraFailedRuns: 0,
           otherRuns: 2,
           successRate: 0.5,
           avgDurationMs: 2_700_000,
@@ -596,6 +631,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           totalRuns: 1,
           completedRuns: 0,
           failedRuns: 0,
+          infraFailedRuns: 0,
           otherRuns: 1,
           avgDurationMs: 1_800_000,
           minDurationMs: 1_800_000,
@@ -614,6 +650,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           avgDurationMs: 2_700_000,
           minDurationMs: 1_800_000,
           maxDurationMs: 3_600_000,
+          infraFailedRuns: 0,
           stuckAbortedRuns: 0,
         },
         {
@@ -626,6 +663,7 @@ export function populatedDaemonFixtures(): DaemonFixtures {
           avgDurationMs: 1_800_000,
           minDurationMs: 1_800_000,
           maxDurationMs: 1_800_000,
+          infraFailedRuns: 0,
           stuckAbortedRuns: 0,
         },
       ],
@@ -968,6 +1006,8 @@ export function emptyDaemonFixtures(): DaemonFixtures {
     runDetails: {},
     runEvents: {},
     telemetryStats: {
+      creditAssignment: [],
+      causalCredit: null,
       gaggles: [],
       runs: [],
       stages: [],

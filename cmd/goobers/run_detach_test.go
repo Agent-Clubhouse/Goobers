@@ -160,3 +160,45 @@ func TestDetachedRunCreatedRequiresCompleteLine(t *testing.T) {
 		t.Fatalf("line = %q, runID = %q, warnings = %q, ok = %v", line, runID, warnings, ok)
 	}
 }
+
+func TestParseRunTarget(t *testing.T) {
+	tests := []struct {
+		name       string
+		selector   string
+		gaggleFlag string
+		want       runTarget
+		wantError  string
+	}{
+		{name: "unqualified", selector: "deploy", want: runTarget{Workflow: "deploy"}},
+		{name: "flag", selector: "deploy", gaggleFlag: "beta", want: runTarget{Gaggle: "beta", Workflow: "deploy"}},
+		{name: "qualified", selector: "beta/deploy", want: runTarget{Gaggle: "beta", Workflow: "deploy"}},
+		{name: "matching forms", selector: "beta/deploy", gaggleFlag: "beta", want: runTarget{Gaggle: "beta", Workflow: "deploy"}},
+		{name: "conflicting forms", selector: "beta/deploy", gaggleFlag: "alpha", wantError: "conflicts"},
+		{name: "malformed", selector: "beta/", wantError: "expected <gaggle>/<workflow>"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseRunTarget(tt.selector, tt.gaggleFlag)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("error = %v, want it to contain %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("target = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunFlagArgsMovesGaggleFlagAfterWorkflow(t *testing.T) {
+	got := runFlagArgs([]string{"deploy", "--gaggle", "beta", "--no-wait", "root"})
+	want := []string{"--gaggle", "beta", "--no-wait", "deploy", "root"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("runFlagArgs = %q, want %q", got, want)
+	}
+}

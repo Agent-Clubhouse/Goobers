@@ -122,23 +122,33 @@ func TestCurrentFeatureClassification(t *testing.T) {
 	previewSeen := 0
 	for _, feature := range features {
 		wantLevel := SupportGA
+		wantSince := initialFeatureSinceVersion
+		wantHistory := []SupportTransition{{Level: SupportGA, SinceVersion: initialFeatureSinceVersion}}
 		switch feature.ID {
-		case featureGaggleSandbox,
-			featureTaskInputsFromQualified:
+		case featureGaggleSandbox:
 			wantLevel = SupportPreview
+			wantHistory = []SupportTransition{{Level: SupportPreview, SinceVersion: initialFeatureSinceVersion}}
 			previewSeen++
+		case featureTaskInputsFromQualified:
+			// Promoted preview -> ga by the 2.0 lock (#3292): the released
+			// preview baseline stays in history and the ga transition is
+			// pinned to the promoting release, not the "dev" baseline.
+			wantSince = "v0.2.0"
+			wantHistory = []SupportTransition{
+				{Level: SupportPreview, SinceVersion: initialFeatureSinceVersion},
+				{Level: SupportGA, SinceVersion: "v0.2.0"},
+			}
 		}
 		if feature.Level != wantLevel {
 			t.Errorf("feature %q level = %q, want %q", feature.ID, feature.Level, wantLevel)
 		}
-		if feature.SinceVersion != initialFeatureSinceVersion {
-			t.Errorf("feature %q since-version = %q, want %q", feature.ID, feature.SinceVersion, initialFeatureSinceVersion)
+		if feature.SinceVersion != wantSince {
+			t.Errorf("feature %q since-version = %q, want %q", feature.ID, feature.SinceVersion, wantSince)
 		}
 		if len(feature.DSLVersions) != 1 ||
 			feature.DSLVersions[0] != (DSLFeatureSupport{Version: DSLVersion, Level: wantLevel}) {
 			t.Errorf("feature %q DSL versions = %+v, want level %q", feature.ID, feature.DSLVersions, wantLevel)
 		}
-		wantHistory := []SupportTransition{{Level: wantLevel, SinceVersion: initialFeatureSinceVersion}}
 		if !slices.Equal(feature.History, wantHistory) {
 			t.Errorf("feature %q history = %+v, want %+v", feature.ID, feature.History, wantHistory)
 		}
@@ -164,6 +174,46 @@ func TestStandardFeaturesAreGA(t *testing.T) {
 		}
 		if feature.Level != SupportGA {
 			t.Errorf("standard feature %q level = %q, want GA (#1196)", id, feature.Level)
+		}
+	}
+}
+
+func TestFeaturesForWorkflowIncludesContractFields(t *testing.T) {
+	def := Definition{
+		DSLVersion: DSLVersion,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:      "test",
+			Triggers:    []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem, TrustLabel: "approved", LabelPredicate: `"ready" in labels`, FieldPredicate: `fields["number"] > 0`}},
+			RunControls: &apiv1.RunControls{MaxRepasses: 2},
+			Start:       "query",
+			Tasks: []apiv1.Task{{
+				Name:             "query",
+				Type:             apiv1.TaskDeterministic,
+				Goal:             "query backlog",
+				Inputs:           map[string]string{"fieldOrder": "number:asc"},
+				MinimumIntegrity: apiv1.IntegrityMaintainer,
+				ContextFrom:      []string{"claim"},
+				PolicyActions:    []string{"claim-item"},
+			}},
+		},
+	}
+	features, err := FeaturesForWorkflow(def)
+	if err != nil {
+		t.Fatalf("FeaturesForWorkflow: %v", err)
+	}
+	got := featureIDs(features)
+	for _, id := range []FeatureID{
+		featureWorkflowRunControls,
+		featureTriggerBacklogItemTrustLabel,
+		featureTriggerLabelPredicate,
+		featureTriggerFieldPredicate,
+		featureTaskInputFieldOrder,
+		featureTaskMinimumIntegrity,
+		featureTaskContextFrom,
+		featureTaskPolicyActions,
+	} {
+		if !slices.Contains(got, id) {
+			t.Errorf("FeaturesForWorkflow omitted %q: %v", id, got)
 		}
 	}
 }
@@ -295,6 +345,106 @@ func TestFeatureRegistryCompatibilityPolicyPreservesReleasedSnapshot(t *testing.
 			}
 		})
 	}
+}
+
+// TestFeatureRegistryCompatibilityPolicyPinsReleasedDSLVersions is the
+// failing-direction guard for the #3292 append-only per-version rule:
+// validateFeatureRegistryEvolution pins lifecycle History, but before this
+// guard a released feature could silently drop a DSL version from DSLVersions
+// or regress that version's level.
+func TestFeatureRegistryCompatibilityPolicyPinsReleasedDSLVersions(t *testing.T) {
+	transition := func(level SupportLevel, version string) SupportTransition {
+		return SupportTransition{Level: level, SinceVersion: version}
+	}
+	history := []SupportTransition{
+		transition(SupportPreview, "dev"),
+		transition(SupportGA, "v1.1.0"),
+	}
+	feature := func(id FeatureID, versions ...DSLFeatureSupport) Feature {
+		return Feature{
+			ID:           id,
+			Level:        SupportGA,
+			SinceVersion: "v1.1.0",
+			DSLVersions:  versions,
+			History:      slices.Clone(history),
+		}
+	}
+	bothVersions := []DSLFeatureSupport{
+		{Version: "1.4", Level: SupportGA},
+		{Version: "2.0", Level: SupportGA},
+	}
+	// A sibling keeps every released version declared, so the versions stay in
+	// the current registry's domain and the accident under test is one feature
+	// losing (or regressing) a version its siblings keep.
+	sibling := feature("sibling.feature", bothVersions...)
+	released, err := NewFeatureRegistry([]Feature{
+		feature("example.feature", bothVersions...),
+		sibling,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		candidate Feature
+		want      string
+	}{
+		{
+			name:      "released DSL version dropped",
+			candidate: feature("example.feature", DSLFeatureSupport{Version: "2.0", Level: SupportGA}),
+			want:      `released DSL feature "example.feature" must remain available at DSL version "1.4"`,
+		},
+		{
+			name: "released DSL version level regressed",
+			candidate: feature("example.feature",
+				DSLFeatureSupport{Version: "1.4", Level: SupportPreview},
+				DSLFeatureSupport{Version: "2.0", Level: SupportGA},
+			),
+			want: `at DSL version "1.4" may not move from "ga" to "preview"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := newFeatureRegistryAgainstReleased(released, []Feature{test.candidate, sibling})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("newFeatureRegistryAgainstReleased() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+
+	t.Run("valid transition and appended version", func(t *testing.T) {
+		releasedNarrow, err := NewFeatureRegistry([]Feature{feature(
+			"example.feature",
+			DSLFeatureSupport{Version: "1.4", Level: SupportGA},
+		)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 1.4 advancing ga -> deprecated follows the lifecycle transition
+		// rules, and declaring the feature in 2.0 is an append, not a change.
+		candidate := feature("example.feature",
+			DSLFeatureSupport{Version: "1.4", Level: SupportDeprecated},
+			DSLFeatureSupport{Version: "2.0", Level: SupportGA},
+		)
+		if _, err := newFeatureRegistryAgainstReleased(releasedNarrow, []Feature{candidate}); err != nil {
+			t.Fatalf("append-only-compatible candidate was rejected: %v", err)
+		}
+	})
+
+	t.Run("interpreter-scoped version domains stay comparable", func(t *testing.T) {
+		// Released snapshots come from the merged cross-interpreter registry,
+		// so they declare versions (1.4) this interpreter never serves. A
+		// version absent from the current registry's whole domain is out of
+		// frame — whole-version retirement belongs to the support matrix.
+		nextOnly := []Feature{
+			feature("example.feature", DSLFeatureSupport{Version: "2.0", Level: SupportGA}),
+			feature("sibling.feature", DSLFeatureSupport{Version: "2.0", Level: SupportGA}),
+		}
+		if _, err := newFeatureRegistryAgainstReleased(released, nextOnly); err != nil {
+			t.Fatalf("interpreter-scoped registry was rejected: %v", err)
+		}
+	})
 }
 
 func TestFeatureRegistryCompatibilityPolicy(t *testing.T) {
@@ -463,25 +613,57 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		DisplayName: "All features",
 		Triggers: []apiv1.Trigger{
 			{Type: apiv1.TriggerManual},
-			{Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"ready": "true"}},
-			{Type: apiv1.TriggerSchedule, Schedule: "@hourly"},
+			{
+				Type:           apiv1.TriggerBacklogItem,
+				Selector:       map[string]string{"ready": "true"},
+				TrustLabel:     "approved",
+				LabelPredicate: `"ready" in labels`,
+				FieldPredicate: `fields["number"] > 0`,
+				Priority:       3,
+			},
+			{
+				Type:     apiv1.TriggerSchedule,
+				Schedule: "@hourly",
+				IdleBackoff: &apiv1.IdleBackoff{
+					Enabled: func() *bool { enabled := true; return &enabled }(),
+					Floor:   "1m",
+					Ceiling: "15m",
+				},
+			},
 			{Type: apiv1.TriggerSignal, Signal: "done"},
 			{Type: apiv1.TriggerWebhook, Events: []string{"issues"}},
 		},
 		Readiness: apiv1.ReadinessConditions{
-			MaxConcurrentRuns: 1,
-			MaxRunsPerHour:    2,
-			MaxRunsPerDay:     3,
-			MaxChainDepth:     4,
-			MaxOpenPRs:        5,
+			DesiredConcurrentRuns: 1,
+			MaxConcurrentRuns:     1,
+			MaxRunsPerHour:        2,
+			MaxRunsPerDay:         3,
+			MaxChainDepth:         4,
+			MaxOpenPRs:            5,
 		},
-		Start: "agent-fail",
+		RunControls: &apiv1.RunControls{
+			MaxRepasses:       2,
+			StalledRunTimeout: "30m",
+			MaxRunDuration:    "4h",
+		},
+		OutboxMirrorPath: "/var/goobers/outbox",
+		DocsRoots:        []string{"docs"},
+		TutorScope:       &apiv1.TutorScope{Tier: apiv1.TutorScopePerWorkflow, Target: "all-features"},
+		Requires:         &apiv1.WorkflowRequirements{Capabilities: []string{"pr.merge"}},
+		Start:            "agent-fail",
 		Tasks: []apiv1.Task{
 			{
 				Name: "agent-fail", Type: apiv1.TaskAgentic, Goal: "agent",
-				Goober: "coder", Inputs: map[string]string{"x": "y"},
-				Capabilities: []string{"repo:push"}, Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
-				TimeoutSeconds: 30, Limits: &apiv1.Limits{MaxDurationSeconds: 30, MaxTokens: 1000, MaxCostUSD: 1},
+				Goober: "coder", Inputs: map[string]string{"x": "y", "fieldOrder": "number:asc"},
+				Capabilities: []string{"repo:push"}, MinimumIntegrity: apiv1.IntegrityMaintainer,
+				ContextFrom: []string{"claim"}, PolicyActions: []string{"claim-item"},
+				NestedAgentPolicy:    nestedFeaturePolicy(),
+				RequiredCapabilities: []string{"dotnet@8"},
+				Outbox:               []string{"reports"},
+				OutboxMirrorPath:     "/var/goobers/task-outbox",
+				Experiment:           &apiv1.BanditExperiment{},
+				Retry:                &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3},
+				TimeoutSeconds:       30, Limits: &apiv1.Limits{MaxDurationSeconds: 30, MaxTokens: 1000, MaxCostUSD: 1},
 				OnTimeout: apiv1.TaskOnTimeoutFail, ExpectedOutputs: []string{"result"}, Next: "agent-salvage",
 			},
 			{
@@ -566,14 +748,94 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 		HarnessOptions: map[string]apiextensionsv1.JSON{"effort": {Raw: []byte(`"high"`)}},
 		TimeoutSeconds: 3600,
 		Capabilities:   []string{"repo:push"}, Skills: []string{"go"}, Tools: []string{"shell"},
-		MCPServers:  []apiv1.MCPServer{{Name: "context", Command: "context-mcp"}},
-		ScaleFactor: 2, Workflows: []string{"all-features"},
+		MCPServers:               []apiv1.MCPServer{{Name: "context", Command: "context-mcp"}},
+		PolicyActions:            []string{"claim-item"},
+		ConditionalPolicyActions: []string{"merge-pr"},
+		ScaleFactor:              2, Workflows: []string{"all-features"},
 	}
-	gaggle := apiv1.GaggleSpec{
+	// One GaggleSpec carries one provider per site, and RepoRef.Project is
+	// ADO-only while BaseURL is gitea-only — so the mutually exclusive enum
+	// values need per-provider gaggle variants whose resolutions are unioned,
+	// mirroring the goober/claudeGoober split below.
+	githubGaggle := apiv1.GaggleSpec{
+		DisplayName:  "Example",
+		SelfIdentity: "goobers-bot",
 		Project: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitHub,
+			Owner:    "acme",
+			Name:     "app",
 			Checkout: &apiv1.CheckoutSpec{Sparse: []string{"src"}},
 		},
-		Sandbox: &apiv1.GaggleSandbox{Agentic: "enforced"},
+		Backlog: apiv1.BacklogRef{
+			Provider:       apiv1.ProviderGitHub,
+			Project:        "acme/app",
+			Labels:         []string{"goobers:ready"},
+			LabelPredicate: `"ready" in labels`,
+			FieldPredicate: `fields["number"] > 0`,
+		},
+		Isolation: apiv1.GaggleIsolation{
+			Namespace:   "gaggle-example",
+			IdentityRef: "gaggle-example-identity",
+		},
+		AdditionalRepos: []apiv1.RepoRef{{
+			Provider: apiv1.ProviderGitHub,
+			Owner:    "acme",
+			Name:     "docs",
+			Checkout: &apiv1.CheckoutSpec{Sparse: []string{"docs"}},
+		}},
+		CICommand:            []string{"make", "ci"},
+		RequiredCapabilities: []string{"dotnet@8"},
+		BranchNamespace:      "goobers/",
+		RunControls: &apiv1.RunControls{
+			MaxRepasses:       2,
+			StalledRunTimeout: "30m",
+			MaxRunDuration:    "4h",
+		},
+		OutboxMirrorPath: "/var/goobers/outbox",
+		Sandbox:          &apiv1.GaggleSandbox{Agentic: "enforced"},
+		Workcopies:       &apiv1.GaggleWorkcopies{Root: "/var/goobers/workcopies"},
+		RequireLabels:    []string{"team:web"},
+		Siblings: []apiv1.GaggleSibling{{
+			Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "app"},
+			Label:   "Billing team",
+		}},
+	}
+	adoGaggle := apiv1.GaggleSpec{
+		Project: apiv1.RepoRef{
+			Provider: apiv1.ProviderADO,
+			Owner:    "acme",
+			Project:  "platform",
+			Name:     "app",
+		},
+		Backlog: apiv1.BacklogRef{
+			Provider: apiv1.ProviderADO,
+			Project:  "platform",
+		},
+		AdditionalRepos: []apiv1.RepoRef{{
+			Provider: apiv1.ProviderADO,
+			Owner:    "acme",
+			Project:  "platform",
+			Name:     "docs",
+		}},
+	}
+	giteaGaggle := apiv1.GaggleSpec{
+		Project: apiv1.RepoRef{
+			Provider: apiv1.ProviderGitea,
+			BaseURL:  "https://gitea.example.com",
+			Owner:    "acme",
+			Name:     "app",
+		},
+		Backlog: apiv1.BacklogRef{
+			Provider: apiv1.ProviderGitea,
+			BaseURL:  "https://gitea.example.com",
+			Project:  "acme/app",
+		},
+		AdditionalRepos: []apiv1.RepoRef{{
+			Provider: apiv1.ProviderGitea,
+			BaseURL:  "https://gitea.example.com",
+			Owner:    "acme",
+			Name:     "docs",
+		}},
 	}
 
 	workflowFeatures, err := FeaturesForWorkflow(def)
@@ -592,9 +854,17 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FeaturesForGoober (claude-code): %v", err)
 	}
-	gaggleFeatures, err := FeaturesForGaggle(gaggle)
-	if err != nil {
-		t.Fatalf("FeaturesForGaggle: %v", err)
+	var gaggleFeatures []Feature
+	for name, gaggle := range map[string]apiv1.GaggleSpec{
+		"github": githubGaggle,
+		"ado":    adoGaggle,
+		"gitea":  giteaGaggle,
+	} {
+		features, err := FeaturesForGaggle(gaggle)
+		if err != nil {
+			t.Fatalf("FeaturesForGaggle (%s): %v", name, err)
+		}
+		gaggleFeatures = append(gaggleFeatures, features...)
 	}
 	got := featureIDs(append(append(append(workflowFeatures, gooberFeatures...), claudeFeatures...), gaggleFeatures...))
 	want := append(expectedCurrentDSLFeatureIDs(), gaggleOnlyFeatureIDs()...)
@@ -728,6 +998,18 @@ func TestCompileConsumesFeatureRegistry(t *testing.T) {
 	}
 }
 
+func nestedFeaturePolicy() *apiv1.NestedAgentPolicy {
+	return &apiv1.NestedAgentPolicy{
+		Version:           apiv1.NestedAgentPolicyVersion,
+		Delegation:        apiv1.DelegationDisabled,
+		PermittedProfiles: []string{"worker"},
+		Context:           apiv1.NestedContextPolicy{Mode: apiv1.ContextFresh},
+		PlatformPolicy: apiv1.PlatformPolicy{
+			Sandbox: "workspace", Cancellation: "stage-context", CompletionContract: "result",
+		},
+	}
+}
+
 func automatedFeatureGate(check, next string) apiv1.Gate {
 	return apiv1.Gate{
 		Name: check, Evaluator: apiv1.EvaluatorAutomated,
@@ -735,7 +1017,8 @@ func automatedFeatureGate(check, next string) apiv1.Gate {
 			Check: check, Params: map[string]string{"key": "value"}, TimeoutSeconds: 30,
 			Retry: &apiv1.RetryPolicy{MaxAttempts: 2, BackoffSeconds: 3}, PollIntervalSeconds: 5,
 		},
-		Branches: map[string]string{"pass": next, "fail": TargetAbort, BranchEscalate: TargetEscalate},
+		MaxRepasses: 2,
+		Branches:    map[string]string{"pass": next, "fail": TargetAbort, BranchEscalate: TargetEscalate},
 	}
 }
 
@@ -753,6 +1036,8 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"workflow.spec.displayName",
 		"workflow.spec.triggers",
 		"workflow.spec.readiness",
+		"workflow.spec.runControls",
+		"workflow.spec.readiness.desiredConcurrentRuns",
 		"workflow.spec.readiness.maxConcurrentRuns",
 		"workflow.spec.readiness.maxRunsPerHour",
 		"workflow.spec.readiness.maxRunsPerDay",
@@ -789,6 +1074,9 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"trigger.manual",
 		"trigger.backlog-item",
 		"trigger.backlog-item.selector",
+		"trigger.backlog-item.trustLabel",
+		"trigger.labelPredicate",
+		"trigger.fieldPredicate",
 		"trigger.schedule",
 		"trigger.signal",
 		"trigger.webhook",
@@ -798,9 +1086,14 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"task.goal",
 		"task.goober",
 		"task.inputs",
+		"task.inputs.fieldOrder",
 		"task.inputsFrom",
 		"task.inputsFrom.stageQualified",
 		"task.capabilities",
+		"task.minimumIntegrity",
+		"task.contextFrom",
+		"task.policyActions",
+		"task.nestedAgentPolicy",
 		"task.retry",
 		"task.retry.maxAttempts",
 		"task.retry.backoff",
@@ -814,6 +1107,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"task.expectedOutputs",
 		"task.continueOnError",
 		"task.next",
+		"task.experiment",
 		"stage.shell",
 		"stage.ci-poll",
 		"stage.external-telemetry",
@@ -862,6 +1156,28 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"gate.evaluator.human.onTimeout.remind",
 		"gate.evaluator.human.onTimeout.escalate",
 		"gate.evaluator.human.onTimeout.reject",
+		// The #3292 backfill: workflow/task/trigger/gate/goober surface that
+		// shipped before the registry covered it.
+		"workflow.spec.docsRoots",
+		"workflow.spec.outboxMirrorPath",
+		"workflow.spec.requires.capabilities",
+		"workflow.spec.tutorScope",
+		"workflow.spec.tutorScope.tier",
+		"workflow.spec.tutorScope.target",
+		"workflow.spec.runControls.maxRepasses",
+		"workflow.spec.runControls.stalledRunTimeout",
+		"workflow.spec.runControls.maxRunDuration",
+		"task.outbox",
+		"task.outboxMirrorPath",
+		"task.requiredCapabilities",
+		"trigger.priority",
+		"trigger.idleBackoff",
+		"trigger.idleBackoff.enabled",
+		"trigger.idleBackoff.floor",
+		"trigger.idleBackoff.ceiling",
+		"gate.maxRepasses",
+		"goober.spec.policyActions",
+		"goober.spec.conditionalPolicyActions",
 	}
 	slices.Sort(ids)
 	return ids
@@ -869,7 +1185,46 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 
 // gaggleOnlyFeatureIDs are DSL features declared on Gaggle objects.
 func gaggleOnlyFeatureIDs() []FeatureID {
-	return []FeatureID{featureGaggleSandbox, featureGaggleCheckoutSparse}
+	return []FeatureID{
+		featureGaggleSandbox,
+		featureGaggleCheckoutSparse,
+		// The #3292 backfill: the authorable Gaggle surface predated the
+		// registry entirely, except sandbox and project.checkout.sparse.
+		featureGaggleDisplayName,
+		featureGaggleSelfIdentity,
+		featureGaggleProject,
+		featureGaggleProjectProviderGitHub,
+		featureGaggleProjectProviderADO,
+		featureGaggleProjectProviderGitea,
+		featureGaggleProjectBaseURL,
+		featureGaggleBacklog,
+		featureGaggleBacklogProviderGitHub,
+		featureGaggleBacklogProviderADO,
+		featureGaggleBacklogProviderGitea,
+		featureGaggleBacklogBaseURL,
+		featureGaggleBacklogLabels,
+		featureGaggleBacklogLabelPredicate,
+		featureGaggleBacklogFieldPredicate,
+		featureGaggleIsolationNamespace,
+		featureGaggleIsolationIdentityRef,
+		featureGaggleAdditionalRepos,
+		featureGaggleAdditionalReposProviderGitHub,
+		featureGaggleAdditionalReposProviderADO,
+		featureGaggleAdditionalReposProviderGitea,
+		featureGaggleAdditionalReposBaseURL,
+		featureGaggleAdditionalReposCheckoutSparse,
+		featureGaggleCICommand,
+		featureGaggleRequiredCapabilities,
+		featureGaggleBranchNamespace,
+		featureGaggleRunControls,
+		featureGaggleRunControlsMaxRepasses,
+		featureGaggleRunControlsStalledRunTimeout,
+		featureGaggleRunControlsMaxRunDuration,
+		featureGaggleOutboxMirrorPath,
+		featureGaggleWorkcopiesRoot,
+		featureGaggleRequireLabels,
+		featureGaggleSiblings,
+	}
 }
 
 func featureIDs(features []Feature) []FeatureID {

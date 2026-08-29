@@ -234,6 +234,7 @@ Use only the target release's registry. The current set is:
 | `ado:pr:comment` | Post Azure Repos pull-request threads without voting or completing. |
 | `ado:pr:write` | Open and update Azure Repos pull requests (no completion or merge authority). |
 | `ado:pr:status` | Publish Azure Repos pull-request statuses that branch policies gate on. |
+| `ado:pr:complete` | Complete (merge) an Azure Repos pull request; the ADO counterpart to `github:pr:merge`. |
 | `ado:work-items:write` | Update explicitly selected Azure Boards work items. |
 | `telemetry:read` | Read the Goobers telemetry rollup. |
 | `journal:read` | Resolve evidence from another run's journal. |

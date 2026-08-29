@@ -2,6 +2,7 @@ package mcpio
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"regexp"
@@ -32,6 +33,24 @@ type Toolset struct {
 // Config.
 func NewToolset(cfg Config) *Toolset {
 	return &Toolset{cfg: cfg}
+}
+
+// RunInfo is get_run_info's return shape.
+type RunInfo struct {
+	RunID      string `json:"runId"`
+	WorkflowID string `json:"workflowId"`
+	TaskID     string `json:"taskId"`
+	Gaggle     string `json:"gaggle"`
+}
+
+// GetRunInfo returns the stage identity captured in the invocation envelope.
+func (t *Toolset) GetRunInfo() RunInfo {
+	return RunInfo{
+		RunID:      t.cfg.RunID,
+		WorkflowID: t.cfg.WorkflowID,
+		TaskID:     t.cfg.TaskID,
+		Gaggle:     t.cfg.Gaggle,
+	}
 }
 
 // resolveInWorkspace resolves rel against the workspace root using the same
@@ -109,6 +128,14 @@ func (t *Toolset) readInputFile(name string) ([]byte, error) {
 		return nil, fmt.Errorf("read input %q: %w", name, err)
 	}
 	return data, nil
+}
+
+func (t *Toolset) inputDigest(name string) (string, error) {
+	data, err := t.readInputFile(name)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(data)), nil
 }
 
 // splitLines splits data on newlines with a trailing newline (if any)

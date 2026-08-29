@@ -217,7 +217,7 @@ func runBlocked(args []string, stdout, stderr io.Writer) int {
 // it never reads a record mid-write. Exit codes: 0 = printed (an empty ledger
 // is a normal outcome, not an error), 2 = usage/IO error.
 func runBlockedList(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("blocked list", flag.ContinueOnError)
+	fs := newCLIFlagSet("blocked list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit the records as JSON")
 	fs.Usage = helpUsage(stderr, "blocked list")
@@ -274,7 +274,7 @@ func runBlockedList(args []string, stdout, stderr io.Writer) int {
 // from `blocked list` disambiguates same-number items in multiple repositories.
 // Exit codes: 0 = cleared, 1 = business error, 2 = usage/IO error.
 func runBlockedClear(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("blocked clear", flag.ContinueOnError)
+	fs := newCLIFlagSet("blocked clear", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "blocked clear")
 	if err := fs.Parse(args); err != nil {

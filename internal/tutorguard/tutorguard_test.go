@@ -77,6 +77,7 @@ func TestFindingMetaIsGateNoise(t *testing.T) {
 
 const workflowFixture = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: example
 spec:
@@ -227,6 +228,7 @@ func TestClassifyGateEditRejectsMalformedYAML(t *testing.T) {
 // loosened-detection dead code for exactly this — the most common — shape.
 const repassLoopWorkflowFixture = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: example
 spec:

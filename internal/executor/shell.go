@@ -53,7 +53,7 @@ const providerRateLimitResetSlack = 2 * time.Second
 
 // timeoutDumpGrace bounds how long Run waits, after sending SIGQUIT to a
 // timed-out stage's process group, for the Go processes in it (go test, the
-// goobers CLI, goober-runtime) to write their FULL goroutine traces to the
+// goobers CLI) to write their FULL goroutine traces to the
 // captured stdout/stderr and exit before Run escalates to SIGKILL. Go's
 // default SIGQUIT handler dumps every goroutine's stack (regardless of
 // GOTRACEBACK level) and exits — so on the one path that matters, a stage that
@@ -185,6 +185,23 @@ type ShellExecutor struct {
 	// DefaultEnv supplies runner-owned stage defaults. A stage's explicitly
 	// declared run.env values override matching keys.
 	DefaultEnv map[string]string
+	// ScratchDir, if set, roots the built-in error file this executor creates
+	// for every goobers-CLI stage (BuiltinErrorFileEnvVar) instead of the OS
+	// default temp directory. Wiring sets this to the same already-writable
+	// scratch directory the runner uses for scratch-mode workspaces
+	// (under the instance's workcopies root), which — unlike the OS default
+	// temp dir — is guaranteed to exist and be writable on any instance that
+	// runs at all, independent of whether the process environment happens to
+	// set TMPDIR or the container happens to mount something at /tmp. A
+	// read-only-root deployment that mounts nothing at /tmp and sets no
+	// TMPDIR previously failed here with "open /tmp/goobers-builtin-error-…:
+	// read-only file system" on the first stage that errored (#3342) — the
+	// path is exercised only when a goobers-CLI stage reports a typed
+	// failure, so it validated and booted clean and only broke later. Empty
+	// by default: an unset caller (e.g. an existing test) gets unchanged
+	// behavior — os.CreateTemp("", ...) resolves against os.TempDir(), which
+	// already honors TMPDIR when the process environment sets it.
+	ScratchDir string
 }
 
 type builtinErrorReport struct {
@@ -207,22 +224,49 @@ func NewShellExecutor(injector *credentials.Injector, rec ArtifactRecorder) (*Sh
 	return &ShellExecutor{Injector: injector, Journal: rec}, nil
 }
 
-// stageInvokesGoobersCLI reports whether a stage's command is the goobers CLI
+// StageInvokesGoobersCLI reports whether a stage's command is the goobers CLI
 // itself (e.g. backlog-query/open-pr/ci-poll/issue-close-out) rather than an
 // external tool (make, go, git). It is the single discriminator for two
 // goobers-CLI-specific behaviors: substituting the daemon's own binary for the
 // bare "goobers" token (SelfBin, #229), and injecting the run's operational
 // identity into the stage env (#322). A stage that runs the project's own
 // build/test suite (`make ci`) is not a goobers-CLI stage on either axis.
-func stageInvokesGoobersCLI(command []string) bool {
+func StageInvokesGoobersCLI(command []string) bool {
 	return len(command) > 0 && command[0] == "goobers"
 }
 
-// stageInvokesProviderBuiltin narrows transient stderr classification to the
+// stageCommandsRequiringInstanceConfig are goobers subcommands that read the
+// instance CONFIG DIRECTORY — the workflow/gaggle definitions — not just the
+// routed repo and a credential. A stage pod has no config directory, so these
+// cannot run there.
+//
+// DERIVED, and re-derivable: `grep -l LoadConfigDir cmd/goobers/*.go`, then map
+// each file to the command its newCLIFlagSet declares. That yields 16 files, of
+// which all but this one are operator commands (config, connect, fix, features,
+// onboarding, run, workflow) that a workflow never invokes as a stage. If that
+// grep ever names a new STAGE command, it belongs here.
+var stageCommandsRequiringInstanceConfig = map[string]bool{
+	"telemetry-query": true,
+}
+
+// StageRequiresInstanceConfig reports whether a stage command needs the instance
+// config directory, and so cannot run in a stage pod. This is deliberately a
+// NARROW list rather than "every goobers CLI stage": measured against the
+// commands this instance's workflows actually invoke, all the rest reach their
+// repo and credential through providerRepo/providerToken, both of which read
+// the environment first — which is exactly what the pod stamps.
+func StageRequiresInstanceConfig(command []string) bool {
+	if !StageInvokesGoobersCLI(command) || len(command) < 2 {
+		return false
+	}
+	return stageCommandsRequiringInstanceConfig[command[1]]
+}
+
+// StageInvokesProviderBuiltin narrows transient stderr classification to the
 // built-in stages that call a provider. Other goobers subcommands can fail
 // with similar words but have separate retry contracts.
-func stageInvokesProviderBuiltin(command []string) bool {
-	if !stageInvokesGoobersCLI(command) || len(command) < 2 {
+func StageInvokesProviderBuiltin(command []string) bool {
+	if !StageInvokesGoobersCLI(command) || len(command) < 2 {
 		return false
 	}
 	_, ok := ProviderStageResultFile(command[1])
@@ -273,7 +317,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		// fail-closed misconfiguration error an unset workspace should be.
 		return apiv1.ResultEnvelope{}, errors.New("executor: InvocationEnvelope.Workspace is empty")
 	}
-	command, commandEnv, cleanup, err := deterministicCommand(run)
+	command, commandEnv, cleanup, err := DeterministicCommand(run)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
@@ -288,7 +332,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	resultFile := stringInput(env, InputResultFile)
 	implicitResultFile := ""
-	if resultFile == "" && stageInvokesGoobersCLI(command) && len(command) > 1 {
+	if resultFile == "" && StageInvokesGoobersCLI(command) && len(command) > 1 {
 		if defaultResultFile, ok := ProviderStageResultFile(command[1]); ok {
 			resultFile = defaultResultFile
 			implicitResultFile = defaultResultFile
@@ -303,7 +347,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// run env leaks into its own test suite (#322). This is the same
 	// command[0]=="goobers" discriminator the SelfBin substitution uses below:
 	// the goobers-CLI-stage-ness of a stage is what decides both.
-	injectRunContext := stageInvokesGoobersCLI(command)
+	injectRunContext := StageInvokesGoobersCLI(command)
 	declaredEnv := make(map[string]string, len(e.DefaultEnv)+len(run.Env))
 	for key, value := range e.DefaultEnv {
 		declaredEnv[key] = value
@@ -334,7 +378,12 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 	builtinErrorFile := ""
 	if injectRunContext {
-		file, createErr := os.CreateTemp("", "goobers-builtin-error-*")
+		if e.ScratchDir != "" {
+			if mkdirErr := os.MkdirAll(e.ScratchDir, 0o700); mkdirErr != nil {
+				return apiv1.ResultEnvelope{}, fmt.Errorf("executor: create built-in error scratch dir: %w", mkdirErr)
+			}
+		}
+		file, createErr := os.CreateTemp(e.ScratchDir, "goobers-builtin-error-*")
 		if createErr != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: create built-in error file: %w", createErr)
 		}
@@ -360,10 +409,11 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// the worktree — so it fails at exec (#229). SelfBin is byte-identical to the
 	// running daemon, avoiding version skew.
 	name := command[0]
-	if e.SelfBin != "" && stageInvokesGoobersCLI(command) {
+	if e.SelfBin != "" && StageInvokesGoobersCLI(command) {
 		name = e.SelfBin
 	}
-	cmd := exec.Command(name, command[1:]...)
+	invokeName, invokeArgs := commandInvocation(name, command[1:])
+	cmd := exec.Command(invokeName, invokeArgs...)
 	cmd.Dir = env.Workspace
 	cmd.Env = stageEnv
 	// Configure tree ownership before the network isolation below layers its
@@ -523,11 +573,11 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	}
 
 	if timedOut {
-		if stageInvokesProviderBuiltin(command) {
-			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+		if StageInvokesProviderBuiltin(command) {
+			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure("timeout", fmt.Errorf(
 				"executor: provider stage %q exceeded timeout %s: %w",
 				command[1], timeout, context.DeadlineExceeded,
-			))
+			)))
 		}
 		result.Status = apiv1.ResultFailure
 		result.Error = &apiv1.ErrorInfo{
@@ -572,9 +622,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 				stageName = command[1]
 			}
 			if report.Retryable {
-				return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+				return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure(report.Code, fmt.Errorf(
 					"executor: goobers stage %q reported %s: %s", stageName, report.Code, message,
-				))
+				)))
 			}
 			result.Status = apiv1.ResultFailure
 			result.Error = &apiv1.ErrorInfo{Code: report.Code, Message: message, Retryable: false}
@@ -583,7 +633,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
-	if exitCode != 0 && stageInvokesProviderBuiltin(command) {
+	if exitCode != 0 && StageInvokesProviderBuiltin(command) {
 		// #control precedence ruling (2026-07-17, the #613/#711/#712
 		// chokepoint): a provider-builtin stage that got far enough to
 		// self-report structurally via its declared result file
@@ -600,19 +650,19 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			if full, perr := apiv1.ResolveContainedPath(env.Workspace, resultFile); perr == nil {
 				if data, rerr := os.ReadFile(full); rerr == nil {
 					ref, aerr := e.recordResultArtifact(
-						env.TaskID+"/result", scrubber.Scrub(data), stageInvokesProviderBuiltin(command),
+						env.TaskID+"/result", scrubber.Scrub(data), StageInvokesProviderBuiltin(command),
 					)
 					if aerr != nil {
 						return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 					}
 					result.Artifacts = append(result.Artifacts, refToPointer(ref, mediaTypeFor(resultFile)))
 					mergeResultFileOutputs(&result, data)
-					if code, ok := result.Outputs[OutputErrorCode].(string); ok && code != "" {
-						message, _ := result.Outputs[OutputErrorMessage].(string)
+					code, message, retryable := consumeErrorOutputs(result.Outputs)
+					if code != "" {
 						if message == "" {
 							message = fmt.Sprintf("command exited %d", exitCode)
 						}
-						if retryable, _ := result.Outputs[OutputErrorRetryable].(bool); retryable {
+						if retryable {
 							return apiv1.ResultEnvelope{}, providerStageInfrastructureFailure(command[1], code, message, result.Outputs)
 						}
 
@@ -641,9 +691,9 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 		providerErr := errors.New(message)
 		if providers.IsTransientError(providerErr) {
-			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(fmt.Errorf(
+			return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure("provider_error", fmt.Errorf(
 				"executor: provider stage %q failed: %w", command[1], providerErr,
-			))
+			)))
 		}
 		result.Status = apiv1.ResultFailure
 		result.Error = &apiv1.ErrorInfo{
@@ -663,7 +713,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 			switch {
 			case rerr == nil:
 				ref, aerr := e.recordResultArtifact(
-					env.TaskID+"/result", scrubber.Scrub(data), stageInvokesProviderBuiltin(command),
+					env.TaskID+"/result", scrubber.Scrub(data), StageInvokesProviderBuiltin(command),
 				)
 				if aerr != nil {
 					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
@@ -708,6 +758,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		}
 	}
 
+	code, message, retryable := consumeErrorOutputs(result.Outputs)
 	if exitCode == 0 {
 		// OutputNoWork (issue #233) only ever downgrades a would-be Success
 		// to NoWork — it's read from result.Outputs, which is only ever
@@ -728,12 +779,10 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	// A typed error reported through the declared result file (see
 	// OutputErrorCode) beats the generic nonzero_exit: the command knew
 	// exactly why it failed and said so structurally.
-	if code, ok := result.Outputs[OutputErrorCode].(string); ok && code != "" {
-		message, _ := result.Outputs[OutputErrorMessage].(string)
+	if code != "" {
 		if message == "" {
 			message = fmt.Sprintf("command exited %d", exitCode)
 		}
-		retryable, _ := result.Outputs[OutputErrorRetryable].(bool)
 		result.Error = &apiv1.ErrorInfo{Code: code, Message: message, Retryable: retryable}
 		result.Summary = message
 		return result, nil
@@ -743,12 +792,29 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		Message:   fmt.Sprintf("command exited %d", exitCode),
 		Retryable: false,
 	}
+	diagnostic := summarizeCommandFailure(outBytes, errBytes)
+	if applyCommandFailureDiagnostic(&result, exitCode, diagnostic, stdoutRef.Path, stderrRef.Path) {
+		return result, nil
+	}
+	if excerpt := stderrFailureExcerpt(errBytes); excerpt != "" {
+		result.Error.Message += "; stderr: " + excerpt
+	}
 	result.Summary = fmt.Sprintf("command exited %d", exitCode)
 	return result, nil
 }
 
+func consumeErrorOutputs(outputs map[string]interface{}) (code, message string, retryable bool) {
+	code, _ = outputs[OutputErrorCode].(string)
+	message, _ = outputs[OutputErrorMessage].(string)
+	retryable, _ = outputs[OutputErrorRetryable].(bool)
+	delete(outputs, OutputErrorCode)
+	delete(outputs, OutputErrorMessage)
+	delete(outputs, OutputErrorRetryable)
+	return code, message, retryable
+}
+
 func providerStageInfrastructureFailure(stage, code, message string, outputs map[string]interface{}) error {
-	err := fmt.Errorf("executor: provider stage %q reported %s: %s", stage, code, message)
+	err := StageFailure(code, fmt.Errorf("executor: provider stage %q reported %s: %s", stage, code, message))
 	if code != providers.ErrorCodeRateLimited {
 		return invoke.InfrastructureFailure(err)
 	}
@@ -921,6 +987,22 @@ func stderrExcerpt(errBytes []byte) string {
 		s += "…"
 	}
 	return s
+}
+
+// Generic command failures keep both ends: runtimes may print the cause before
+// a long stack dump, while tools conventionally print terminal causes last.
+func stderrFailureExcerpt(errBytes []byte) string {
+	if len(errBytes) == 0 {
+		return ""
+	}
+	if len(errBytes) <= missingResultFileStderrExcerptBytes {
+		return strings.TrimSpace(string(errBytes))
+	}
+	headBytes := missingResultFileStderrExcerptBytes / 2
+	tailBytes := missingResultFileStderrExcerptBytes - headBytes
+	head := strings.TrimSpace(string(errBytes[:headBytes]))
+	tail := strings.TrimSpace(string(errBytes[len(errBytes)-tailBytes:]))
+	return head + "…" + tail
 }
 
 func refToPointer(ref journal.Ref, mediaType string) apiv1.ArtifactPointer {

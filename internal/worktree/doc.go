@@ -10,10 +10,12 @@
 // git's ref locks; runs against different repos proceed independently.
 //
 // Each run gets its own worktree via Manager.Create and tears it down via
-// Worktree.Remove. A small on-disk marker (owning PID, created-at, status)
-// travels alongside each worktree so that Manager.Reap can find and remove
-// worktrees left behind by a process that died mid-run (e.g. kill -9),
-// converging disk state on daemon restart without operator intervention.
+// Worktree.Remove. A small on-disk marker (writer identity, owning PID,
+// created-at, status) travels alongside each worktree so that Manager.Reap can
+// find and remove worktrees left behind by a process that died mid-run (e.g.
+// kill -9), converging disk state on daemon restart without operator
+// intervention. PID liveness is local to the manager's ownership domain;
+// distributed workers must use pod-private roots.
 //
 // This package has no dependency on the run journal, workflow DSL, or stage
 // contract packages, and does not itself push branches — branch creation

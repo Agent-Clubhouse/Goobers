@@ -222,6 +222,54 @@ describe("run stage inspector", () => {
     expect(screen.queryByText(/^model:/)).not.toBeInTheDocument();
   });
 
+  it("shows placement provenance when the attempt's journal recorded it (#3515)", async () => {
+    const client = stubClient([
+      attempt({
+        number: 1,
+        status: "success",
+        placement: {
+          runner: "linux-large",
+          node: "aks-linux-0001",
+          host: "goobers-stage-review-4x2vq",
+          os: "linux",
+          pod: "goobers-stage-review-4x2vq",
+          queuedAt: "2026-08-22T10:00:00Z",
+          podStartedAt: "2026-08-22T10:00:09Z",
+        },
+      }),
+    ]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    expect(await screen.findByText("runner: linux-large")).toBeInTheDocument();
+    expect(screen.getByText("node: aks-linux-0001")).toBeInTheDocument();
+    expect(screen.getByText("pod: goobers-stage-review-4x2vq")).toBeInTheDocument();
+    expect(screen.getByText("queue wait: 9s")).toBeInTheDocument();
+    // The pod's hostname is redundant once a real node is known.
+    expect(screen.queryByText(/^host:/)).not.toBeInTheDocument();
+  });
+
+  it("labels a local attempt's hostname as a host, never as a node (#3515)", async () => {
+    const client = stubClient([
+      attempt({
+        number: 1,
+        status: "success",
+        placement: { runner: "self", host: "build-box-07", os: "darwin" },
+      }),
+    ]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    expect(await screen.findByText("host: build-box-07")).toBeInTheDocument();
+    expect(screen.queryByText(/^node:/)).not.toBeInTheDocument();
+  });
+
+  it("omits the placement row for journals recorded before provenance existed", async () => {
+    const client = stubClient([attempt({ number: 1, status: "success" })]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    await screen.findByText("success");
+    expect(screen.queryByLabelText("Attempt placement")).not.toBeInTheDocument();
+  });
+
   it("only shows attempts started by the selected sequence", async () => {
     const client = stubClient([
       attempt({ number: 1, startedSeq: 1, finishedSeq: 2 }),

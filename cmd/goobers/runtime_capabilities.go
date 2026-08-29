@@ -1,15 +1,38 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 )
 
 type cliCommandHandler func([]string, io.Writer, io.Writer) int
+
+var (
+	cliFlagSetObserverMu sync.RWMutex
+	cliFlagSetObserver   func(string, *flag.FlagSet)
+)
+
+func observeCLIFlagSet(id string, fs *flag.FlagSet) {
+	cliFlagSetObserverMu.RLock()
+	observer := cliFlagSetObserver
+	cliFlagSetObserverMu.RUnlock()
+	if observer != nil {
+		observer(id, fs)
+	}
+}
+
+func newCLIFlagSet(id string, errorHandling flag.ErrorHandling) *flag.FlagSet {
+	fs := flag.NewFlagSet(id, errorHandling)
+	observeCLIFlagSet(id, fs)
+	return fs
+}
 
 type cliCommandTier uint8
 
@@ -163,10 +186,16 @@ func init() {
 					return runScaffoldKind("workflow", args, stdout, stderr)
 				},
 			).withHelp("scaffold a workflow in a gaggle", scaffoldHelp),
+			subcommand(
+				"scaffold gaggle",
+				"gaggle",
+				apicontract.ActionConfigTime,
+				runScaffoldGaggle,
+			).withHelp("scaffold a gaggle, or rename one with --from", scaffoldGaggleHelp),
 		).
 			withSynopsis(synopsisByID["scaffold"]).
-			withHelp("scaffold a goober or workflow in a gaggle", scaffoldHelp).
-			withExamples("goobers scaffold goober my-coder", "goobers scaffold workflow my-flow"),
+			withHelp("scaffold a goober, workflow, or gaggle", scaffoldHelp).
+			withExamples("goobers scaffold goober my-coder", "goobers scaffold workflow my-flow", "goobers scaffold gaggle ledger --from example"),
 		groupCommand(
 			"agent-kit",
 			runAgentKit,
@@ -199,6 +228,14 @@ func init() {
 			withSynopsis(synopsisByID["doctor"]).
 			withHelp("preflight a Kubernetes cluster against the documented infra shape", doctorHelp).
 			withExamples("goobers doctor --k8s", "goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0"),
+		command("netpol-render", apicontract.ActionConfigTime, runNetpolRender).
+			withSynopsis(synopsisByID["netpol-render"]).
+			withHelp("render per-runner-class NetworkPolicy reference manifests from the runners: inventory", netpolRenderHelp).
+			withExamples(
+				"goobers netpol-render --out ./deploy/netpol",
+				"goobers netpol-render --out ./deploy/netpol --write-baseline",
+				"goobers netpol-render --out ./deploy/netpol --check",
+			),
 		groupCommand(
 			"config",
 			runConfig,
@@ -243,7 +280,7 @@ func init() {
 		command("self-update", apicontract.ActionDaemonLifecycle, runSelfUpdate).
 			withSynopsis(synopsisByID["self-update"]).
 			withHelp("stage and request a supervised binary update", selfUpdateHelp).
-			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v1.2.3"),
+			withExamples("goobers self-update --policy on-release", "goobers self-update --policy manual --target v0.1.0"),
 		command("__service-supervise", apicontract.ActionDaemonLifecycle, runServiceSupervise),
 		coreGroupCommand(
 			"service",
@@ -267,6 +304,14 @@ func init() {
 			withSynopsis(synopsisByID["service"]).
 			withHelp("install and manage the platform-supervised daemon", serviceHelp).
 			withExamples("goobers service install", "goobers service status", "goobers service uninstall"),
+		command("engine-start", apicontract.ActionDaemonLifecycle, runEngineStart).
+			withSynopsis(synopsisByID["engine-start"]).
+			withHelp("dispatch one run onto the tier-3 engine via Temporal (experimental)", engineStartHelp).
+			withExamples("goobers engine-start default-implement"),
+		command("engine-project", apicontract.ActionDaemonLifecycle, runEngineProject).
+			withSynopsis(synopsisByID["engine-project"]).
+			withHelp("write a completed engine run's journal into the instance (experimental)", engineProjectHelp).
+			withExamples("goobers engine-project --gaggle example <run-id>"),
 		command("worker", apicontract.ActionDaemonLifecycle, runWorker).
 			withSynopsis(synopsisByID["worker"]).
 			withHelp("host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)", workerHelp).
@@ -297,7 +342,7 @@ func init() {
 		).
 			withSynopsis(synopsisByID["run"]).
 			withHelp("trigger a run manually (still honors run conditions)", runHelp).
-			withExamples("goobers run default-implement", "goobers run default-implement --no-wait"),
+			withExamples("goobers run default-implement", "goobers run --gaggle example default-implement", "goobers run example/default-implement --no-wait"),
 		runtimeCommand("approve", "approve", runApprove).
 			withSynopsis(synopsisByID["approve"]).
 			withHelp("approve a paused or escalated gate", approveHelp).
@@ -311,6 +356,7 @@ func init() {
 			withHelp("rerun a stage with a recorded instruction addendum", rerunStageHelp).
 			withExamples(`goobers rerun-stage --addendum="use the parser seam" <run-id> <stage>`),
 		command(detachedRunWorkerCommand, apicontract.ActionWorkflowExecution, runDetachedWorker),
+		command(dispatcher.DispatchExecCommand, apicontract.ActionWorkflowExecution, runDispatchExec),
 		command(demoProviderCommand, apicontract.ActionWorkflowExecution, runDemoProvider),
 		command(wslNetworkPreflightCommand, apicontract.ActionConfigTime, runWSLNetworkPreflight),
 		coreCommand("signal", apicontract.ActionWorkflowExecution, runSignal).
@@ -339,8 +385,8 @@ func init() {
 		).withHelp("list runs and report per-run disk usage", runsHelp),
 		coreCommand("status", apicontract.ActionReadOnlyNavigation, runStatus).
 			withSynopsis(synopsisByID["status"]).
-			withHelp("validate config, show warnings, list runs, or report daemon health", statusHelp).
-			withExamples("goobers status", "goobers status --daemon", "goobers status --watch"),
+			withHelp("validate config, show warnings, list runs, report daemon health, or list live agentic stages", statusHelp).
+			withExamples("goobers status", "goobers status --daemon", "goobers status --watch", "goobers status --agents", "goobers status --agents --json"),
 		coreCommand("stats", apicontract.ActionReadOnlyNavigation, runStats).
 			withSynopsis(synopsisByID["stats"]).
 			withHelp("show the instance lifetime summary card", statsHelp).
@@ -348,7 +394,7 @@ func init() {
 		command("features", apicontract.ActionReadOnlyNavigation, runFeatures).
 			withSynopsis(synopsisByID["features"]).
 			withHelp("list the workflow-DSL features this build supports", featuresHelp).
-			withExamples("goobers features", "goobers features --json --dsl-version 1.4", "goobers features --used"),
+			withExamples("goobers features", "goobers features --json --dsl-version 2.0", "goobers features --used"),
 		command("schema", apicontract.ActionReadOnlyNavigation, runSchema).
 			withSynopsis(synopsisByID["schema"]).
 			withHelp("emit a JSON Schema embedded in this build", schemaHelp).
@@ -397,16 +443,28 @@ func init() {
 		).withHelp("inspect and force-release claim leases", claimsHelp),
 		coreCommand("trace", apicontract.ActionReadOnlyNavigation, runTrace).
 			withSynopsis(synopsisByID["trace"]).
-			withHelp("show a run's journal events, follow a live run, or show transcripts", traceHelp).
-			withExamples("goobers trace <run-id>", "goobers trace --follow <run-id>", "goobers trace --transcripts <run-id>"),
+			withHelp("show a run's journal events or review verdicts, follow a live run, or show transcripts", traceHelp).
+			withExamples("goobers trace <run-id>", "goobers trace --summary <run-id>", "goobers trace --verdicts <run-id>", "goobers trace --follow <run-id>", "goobers trace --transcripts <run-id>"),
+		groupCommand(
+			"e2e",
+			runE2E,
+			subcommand("e2e verify", "verify", apicontract.ActionReadOnlyNavigation, runE2EVerify).
+				withSynopsis(synopsisByID["e2e verify"]).
+				withHelp("verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data", e2eVerifyHelp).
+				withExamples("goobers e2e verify --run <run-id>", "goobers e2e verify --run <run-id> --expected topology.json --out bundle.json", "goobers e2e verify --print-runner-class network:allowlist"),
+			subcommand("e2e kill-inject", "kill-inject", apicontract.ActionMaintenance, runE2EKillInject).
+				withSynopsis(synopsisByID["e2e kill-inject"]).
+				withHelp("perform one live S6 kill-matrix cell (pod-kill) against a real cluster", e2eKillInjectHelp).
+				withExamples("goobers e2e kill-inject --run <run-id> --stage probe-builtin --stage-class builtin --namespace gaggle-goobers"),
+		).withHelp("check the Goobernetes distributed e2e proof harness's assertions against a recorded run", e2eHelp),
 		coreCommandWithSubcommands(
 			"escalations",
 			apicontract.ActionReadOnlyNavigation,
 			runEscalations,
 			subcommand("escalations show", "show", apicontract.ActionReadOnlyNavigation, runEscalationShow).
 				withSynopsis(synopsisByID["escalations show"]).
-				withHelp("show escalation cause + per-stage artifact timeline", escalationsShowHelp).
-				withExamples("goobers escalations show <run-id>"),
+				withHelp("show escalation cause, verdict, and per-stage artifact timeline", escalationsShowHelp).
+				withExamples("goobers escalations show <run-id>", "goobers escalations show --include-verdict <run-id>"),
 		).
 			withSynopsis(synopsisByID["escalations"]).
 			withHelp("list escalated runs newest first", escalationsHelp).
@@ -511,6 +569,10 @@ func init() {
 			withSynopsis(synopsisByID["validate-plan"]).
 			withHelp("validate a decomposition plan against its selector artifact and the live parent (a workflow stage)", validatePlanHelp).
 			withExamples("goobers validate-plan"),
+		stageCommand("publish-batch", apicontract.ActionWorkflowExecution, runPublishBatch).
+			withSynopsis(synopsisByID["publish-batch"]).
+			withHelp("publish a verified decomposition batch behind one eligibility barrier (a workflow stage)", publishBatchHelp).
+			withExamples("goobers publish-batch"),
 		stageCommand("reconcile-branches", apicontract.ActionWorkflowExecution, runReconcileBranches).
 			withSynopsis(synopsisByID["reconcile-branches"]).
 			withHelp("report bounded stale goobers/* branch candidates (a workflow stage)", reconcileBranchesHelp).
@@ -615,6 +677,10 @@ func init() {
 			withSynopsis(synopsisByID["gather-review-threads"]).
 			withHelp("add native reviews and anchored inline threads to a remediation brief (a workflow stage)", gatherReviewThreadsHelp).
 			withExamples("goobers gather-review-threads"),
+		stageCommand("resolve-review-threads", apicontract.ActionWorkflowExecution, runResolveReviewThreads).
+			withSynopsis(synopsisByID["resolve-review-threads"]).
+			withHelp("reply to and resolve remediated native review threads (a workflow stage)", resolveReviewThreadsHelp).
+			withExamples("goobers resolve-review-threads"),
 		stageCommand("gather-issue-context", apicontract.ActionWorkflowExecution, runGatherIssueContext).
 			withSynopsis(synopsisByID["gather-issue-context"]).
 			withHelp("add originating issue bodies to a remediation brief (a workflow stage)", gatherIssueContextHelp).

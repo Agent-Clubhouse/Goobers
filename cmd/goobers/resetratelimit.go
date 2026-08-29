@@ -33,7 +33,7 @@ const resetRateLimitHelp = "Usage: goobers reset-rate-limit [path]\n\n" +
 	"Exit codes: 0 = reset written, 2 = usage/IO error.\n"
 
 func runResetRateLimit(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("reset-rate-limit", flag.ContinueOnError)
+	fs := newCLIFlagSet("reset-rate-limit", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "reset-rate-limit")
 	if err := fs.Parse(args); err != nil {

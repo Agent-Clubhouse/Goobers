@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -24,6 +23,11 @@ import (
 const backlogHealthHelp = "Usage: goobers backlog-health [--feedback] [path]\n\n" +
 	"Snapshot ready-pool depth and age from provider label-event timestamps, and\n" +
 	"persist the paginated ready-transition ledger for telemetry rollups.\n" +
+	"The ledger resumes from a durable per-repo/label event cursor; a full history\n" +
+	"scan runs only on the first cycle or an integrity mismatch, bounded by the\n" +
+	"transitionScanMaxPages input. Below the transitionScanQuotaFloor fraction of\n" +
+	"the provider rate-limit window the scan defers to the next cycle rather than\n" +
+	"spending the shared credential to zero.\n" +
 	"--feedback instead de-readies items whose consecutive failed/escalated\n" +
 	"implementation runs meet the implementationFailureThreshold input (minimum 2).\n" +
 	"Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.\n"
@@ -31,6 +35,15 @@ const backlogHealthHelp = "Usage: goobers backlog-health [--feedback] [path]\n\n
 const (
 	defaultImplementationFailureThreshold = 3
 	maxImplementationFailureEvidence      = 5
+	// defaultTransitionScanMaxPages bounds a full-history rescan. It is
+	// deliberately high — a bound is a safety valve against an unbounded walk,
+	// not a tuning knob, and truncating a first-run scan costs a deferral.
+	defaultTransitionScanMaxPages = 400
+	// defaultTransitionScanQuotaFloor keeps a tenth of the provider rate-limit
+	// window in reserve for the operations that actually move work: claims,
+	// label writes, PR creation, merge-review. This check is periodic and
+	// self-healing, so deferring it is free.
+	defaultTransitionScanQuotaFloor = 0.10
 )
 
 type backlogHealthReport struct {
@@ -40,12 +53,14 @@ type backlogHealthReport struct {
 	ReadyPoolStarved       bool                                `json:"readyPoolStarved"`
 	ReadyPoolObservedAt    string                              `json:"readyPoolObservedAt"`
 	ReadyTransitions       []providers.WorkItemLabelTransition `json:"readyTransitions,omitempty"`
+	Scan                   *backlogHealthScan                  `json:"scan,omitempty"`
 }
 
 type implementationFeedbackReport struct {
 	ImplementationFailureThreshold int                          `json:"implementationFailureThreshold"`
 	Recurated                      int                          `json:"recurated"`
 	Items                          []implementationFeedbackItem `json:"items,omitempty"`
+	Scan                           *backlogHealthScan           `json:"scan,omitempty"`
 }
 
 type implementationFeedbackItem struct {
@@ -67,8 +82,54 @@ type repositoryLabelTransitionProvider interface {
 	ListWorkItemLabelTransitions(context.Context, providers.RepositoryRef, string) ([]providers.WorkItemLabelTransition, error)
 }
 
+// labelTransitionScanner is the resumable, self-bounding form of
+// repositoryLabelTransitionProvider (#3392). A provider that implements it gets
+// the durable-cursor path; one that does not keeps the full-history walk.
+type labelTransitionScanner interface {
+	ScanWorkItemLabelTransitions(
+		context.Context,
+		providers.RepositoryRef,
+		string,
+		providers.LabelTransitionScan,
+	) (providers.LabelTransitionScanResult, error)
+}
+
+// backlogHealthScanOptions carries the stage-tunable bounds on a transition
+// scan, resolved from stage inputs.
+type backlogHealthScanOptions struct {
+	maxPages   int
+	quotaFloor float64
+	// forceFull discards any durable cursor and rescans all history. Set only
+	// after a resumed ledger failed to explain the live ready pool.
+	forceFull bool
+}
+
+func resolveBacklogHealthScanOptions(stderr io.Writer) (backlogHealthScanOptions, bool) {
+	opts := backlogHealthScanOptions{
+		maxPages:   defaultTransitionScanMaxPages,
+		quotaFloor: defaultTransitionScanQuotaFloor,
+	}
+	if raw := providerInput("transitionScanMaxPages", ""); raw != "" {
+		pages, err := strconv.Atoi(raw)
+		if err != nil || pages < 1 {
+			pf(stderr, "error: input transitionScanMaxPages must be an integer of at least 1, got %q\n", raw)
+			return opts, false
+		}
+		opts.maxPages = pages
+	}
+	if raw := providerInput("transitionScanQuotaFloor", ""); raw != "" {
+		floor, err := strconv.ParseFloat(raw, 64)
+		if err != nil || floor < 0 || floor >= 1 {
+			pf(stderr, "error: input transitionScanQuotaFloor must be a fraction in [0,1), got %q\n", raw)
+			return opts, false
+		}
+		opts.quotaFloor = floor
+	}
+	return opts, true
+}
+
 func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("backlog-health", flag.ContinueOnError)
+	fs := newCLIFlagSet("backlog-health", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	feedback := fs.Bool("feedback", false, "route chronically failing ready items back to curation")
 	fs.Usage = helpUsage(stderr, "backlog-health")
@@ -83,13 +144,17 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() == 1 {
 		pathArg = fs.Arg(0)
 	}
+	scanOpts, ok := resolveBacklogHealthScanOptions(stderr)
+	if !ok {
+		return 2
+	}
 	root := providerStageRoot(pathArg)
 	repo, err := providerRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issueProvider, err := newBacklogHealthProvider(root, repo)
+	issueProvider, err := newBacklogHealthProvider(root, repo, !*feedback)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -118,14 +183,21 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "snapshot ready backlog", err, "backlog-health.json")
 	}
-	transitions, err := backlogHealthTransitions(ctx, issueProvider, backlogRepo, items, readyLabel)
+	transitions, scan, err := resolveBacklogReadyTimes(
+		ctx, issueProvider, root, backlogRepo, items, readyLabel, scanOpts, stdout)
 	if err != nil {
-		return failProviderStage(stderr, "read ready-label transitions", err, "backlog-health.json")
+		return backlogReadyLedgerExitCode(err, stderr)
 	}
-	transitions = transitionsForItems(transitions, items)
-	if err := annotateBacklogReadyTimes(backlogRepo.Provider, items, readyLabel, transitions); err != nil {
-		pf(stderr, "error: snapshot ready backlog: %v\n", err)
-		return 1
+	pf(stdout, "ready-transition scan: mode=%s%s pages=%d new=%d ledger=%d\n",
+		scan.Mode, backlogHealthScanReasonSuffix(scan), scan.Pages, scan.NewTransitions, scan.LedgerSize)
+	if scan.Deferred {
+		pf(stdout, "deferring the ready-pool snapshot to the next cycle: %s\n", scan.DeferReason)
+		if *feedback {
+			return writeImplementationFeedbackReport(
+				implementationFeedbackReport{Scan: &scan}, stdout, stderr)
+		}
+		return writeBacklogHealthReport(
+			backlogHealthReport{Scan: &scan}, stdout, stderr)
 	}
 	if *feedback {
 		return applyImplementationFeedback(
@@ -136,6 +208,7 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 			items,
 			trustLabel,
 			readyLabel,
+			scan,
 			stdout,
 			stderr,
 		)
@@ -150,6 +223,11 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	items = unclaimedReadyItems(items, ledger, providerGaggle(), string(backlogRepo.Provider), observedAt)
 	report := measureReadyPool(items, readyLabel, observedAt)
 	report.ReadyTransitions = transitions
+	report.Scan = &scan
+	return writeBacklogHealthReport(report, stdout, stderr)
+}
+
+func writeBacklogHealthReport(report backlogHealthReport, stdout, stderr io.Writer) int {
 	data, err := json.Marshal(report)
 	if err != nil {
 		pf(stderr, "error: marshal backlog health: %v\n", err)
@@ -160,57 +238,160 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: write %s: %v\n", resultFile, err)
 		return 1
 	}
+	if report.ReadyPoolObservedAt == "" {
+		// A deferred snapshot deliberately carries no observation: an absent
+		// readyPoolObservedAt is what keeps the telemetry rollup from recording
+		// "depth 0" — a starvation signal — for a cycle that never measured.
+		return 0
+	}
 	pf(stdout, "ready pool: %d items, oldest age %.0fs\n", report.ReadyPoolDepth, report.OldestReadyAgeSeconds)
 	return 0
 }
 
-func newBacklogHealthProvider(root string, repo providers.RepositoryRef) (backlogHealthProvider, error) {
-	switch repo.Provider {
-	case providers.ProviderADO:
-		return newADOProviderForStage(root, repo)
-	case providers.ProviderGitea:
-		token, err := providerToken(capability.GitHubIssuesWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-	case providers.ProviderGitHub:
-		token, err := providerToken(capability.GitHubIssuesWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"})), nil
-	default:
+func backlogHealthScanReasonSuffix(scan backlogHealthScan) string {
+	if scan.Reason == "" {
+		return ""
+	}
+	return " reason=" + scan.Reason
+}
+
+func newBacklogHealthProvider(root string, repo providers.RepositoryRef, readOnly bool) (backlogHealthProvider, error) {
+	provider, err := newProviderForStage(root, repo, readOnly, withStageProviderCache(), withStageProviderMutations("issue"))
+	if err != nil {
+		return nil, err
+	}
+	healthProvider, ok := provider.(backlogHealthProvider)
+	if !ok {
 		return nil, fmt.Errorf("backlog-health does not support repository provider %q", repo.Provider)
 	}
+	return healthProvider, nil
 }
 
 func backlogHealthTransitions(
 	ctx context.Context,
 	provider backlogHealthProvider,
+	root string,
 	repo providers.RepositoryRef,
 	items []providers.WorkItem,
 	label string,
-) ([]providers.WorkItemLabelTransition, error) {
+	opts backlogHealthScanOptions,
+) ([]providers.WorkItemLabelTransition, backlogHealthScan, error) {
+	if scanner, ok := provider.(labelTransitionScanner); ok {
+		return resumedBacklogHealthTransitions(ctx, scanner, root, repo, label, opts)
+	}
 	if repositoryProvider, ok := provider.(repositoryLabelTransitionProvider); ok {
-		return repositoryProvider.ListWorkItemLabelTransitions(ctx, repo, label)
+		transitions, err := repositoryProvider.ListWorkItemLabelTransitions(ctx, repo, label)
+		return transitions, backlogHealthScan{
+			Mode:           backlogHealthScanFull,
+			Reason:         backlogHealthScanUnsupported,
+			NewTransitions: len(transitions),
+			LedgerSize:     len(transitions),
+		}, err
 	}
 	if repo.Provider == providers.ProviderADO {
-		return nil, nil
+		return nil, backlogHealthScan{Mode: backlogHealthScanFull, Reason: backlogHealthScanUnsupported}, nil
 	}
 	itemProvider, ok := provider.(itemLabelTransitionProvider)
 	if !ok {
-		return nil, fmt.Errorf("%s does not support work-item label transitions", repo.Provider)
+		return nil, backlogHealthScan{}, fmt.Errorf("%s does not support work-item label transitions", repo.Provider)
 	}
 	var transitions []providers.WorkItemLabelTransition
 	for _, item := range items {
 		itemTransitions, err := itemProvider.ListWorkItemLabelTransitionsForItem(ctx, repo, item.ID, label)
 		if err != nil {
-			return nil, err
+			return nil, backlogHealthScan{}, err
 		}
 		transitions = append(transitions, itemTransitions...)
 	}
-	return transitions, nil
+	return transitions, backlogHealthScan{
+		Mode:           backlogHealthScanFull,
+		Reason:         backlogHealthScanUnsupported,
+		NewTransitions: len(transitions),
+		LedgerSize:     len(transitions),
+	}, nil
+}
+
+// resumedBacklogHealthTransitions reads only the provider events newer than the
+// durable high-water mark and folds them into the persisted ledger, falling back
+// to a bounded full scan when no usable cursor exists. A truncated scan is
+// reported as deferred and leaves the cursor untouched: a partial walk has a gap
+// below its oldest transition, so advancing the mark from it would silently lose
+// every transition in that gap forever.
+func resumedBacklogHealthTransitions(
+	ctx context.Context,
+	scanner labelTransitionScanner,
+	root string,
+	repo providers.RepositoryRef,
+	label string,
+	opts backlogHealthScanOptions,
+) ([]providers.WorkItemLabelTransition, backlogHealthScan, error) {
+	gaggle := providerGaggle()
+	path := layoutFor(root).BacklogHealthCursorPath(
+		gaggle, string(repo.Provider), backlogHealthCursorKey(repo), label)
+
+	var (
+		cursor backlogHealthCursor
+		reason string
+	)
+	if opts.forceFull {
+		reason = backlogHealthScanLedgerMismatch
+		if err := discardBacklogHealthCursor(path); err != nil {
+			return nil, backlogHealthScan{}, &backlogReadyLedgerError{
+				what: "reset ready-transition ledger", err: err,
+			}
+		}
+	} else {
+		cursor, reason = readBacklogHealthCursor(path, gaggle, repo, label)
+	}
+
+	request := providers.LabelTransitionScan{MinQuotaFraction: opts.quotaFloor}
+	report := backlogHealthScan{Mode: backlogHealthScanFull, Reason: reason}
+	if reason == "" {
+		report.Mode, report.FromEventID = backlogHealthScanIncremental, cursor.HighWaterEventID
+		request.AfterEventID = cursor.HighWaterEventID
+	} else {
+		cursor = backlogHealthCursor{}
+		request.MaxPages = opts.maxPages
+	}
+
+	result, err := scanner.ScanWorkItemLabelTransitions(ctx, repo, label, request)
+	if err != nil {
+		return nil, report, err
+	}
+	report.Pages = result.Pages
+	report.NewTransitions = len(result.Transitions)
+	report.QuotaLimit, report.QuotaRemaining = result.QuotaLimit, result.QuotaRemaining
+	if result.Truncated {
+		report.Deferred, report.DeferReason = true, result.StopReason
+		return nil, report, nil
+	}
+
+	merged := mergeLabelTransitions(cursor.Transitions, result.Transitions)
+	highWater := cursor.HighWaterEventID
+	if result.HighEventID > highWater {
+		highWater = result.HighEventID
+	}
+	report.LedgerSize, report.ToEventID = len(merged), highWater
+	if highWater <= 0 {
+		// A repository with no issue events at all: nothing to resume from, so
+		// leave the cursor absent rather than persisting an unusable one.
+		return merged, report, nil
+	}
+	if err := writeBacklogHealthCursor(path, backlogHealthCursor{
+		Schema:           backlogHealthCursorSchema,
+		Gaggle:           gaggle,
+		Provider:         string(repo.Provider),
+		Repository:       backlogHealthCursorKey(repo),
+		Label:            label,
+		HighWaterEventID: highWater,
+		ScannedAt:        time.Now().UTC(),
+		Transitions:      merged,
+	}); err != nil {
+		return nil, report, &backlogReadyLedgerError{
+			what: "persist ready-transition ledger " + path, err: err,
+		}
+	}
+	return merged, report, nil
 }
 
 func backlogHealthItemTransitions(
@@ -230,6 +411,93 @@ func backlogHealthItemTransitions(
 	return itemProvider.ListWorkItemLabelTransitionsForItem(ctx, repo, item.ID, label)
 }
 
+// backlogReadyLedgerError tags which of the stage's two failure shapes a
+// ledger resolution hit, so each keeps the exit semantics it had before the
+// resume path existed: a provider read failure still writes the typed
+// error-code result file executor/shell.go lifts into ErrorInfo, while a local
+// consistency or IO failure stays a plain business error.
+type backlogReadyLedgerError struct {
+	what     string
+	provider bool
+	err      error
+}
+
+func (e *backlogReadyLedgerError) Error() string { return e.what + ": " + e.err.Error() }
+func (e *backlogReadyLedgerError) Unwrap() error { return e.err }
+
+// classifyBacklogReadyLedgerError treats an unclassified failure as a provider
+// read — the only unclassified thing a ledger resolution does is call the
+// provider. Locally-raised failures (cursor IO, ledger consistency) carry their
+// own classification already.
+func classifyBacklogReadyLedgerError(err error) error {
+	var ledgerErr *backlogReadyLedgerError
+	if errors.As(err, &ledgerErr) {
+		return err
+	}
+	return &backlogReadyLedgerError{what: "read ready-label transitions", provider: true, err: err}
+}
+
+func backlogReadyLedgerExitCode(err error, stderr io.Writer) int {
+	var ledgerErr *backlogReadyLedgerError
+	if errors.As(err, &ledgerErr) && ledgerErr.provider {
+		return failProviderStage(stderr, ledgerErr.what, ledgerErr.err, "backlog-health.json")
+	}
+	pf(stderr, "error: %v\n", err)
+	return 1
+}
+
+// resolveBacklogReadyTimes resolves every ready item's ReadyAt from the
+// transition ledger, annotating items in place, and returns the ledger slice the
+// artifact carries.
+//
+// A resumed ledger is the one input that can be stale in a way the stage can
+// detect: if it cannot explain an item that currently carries the ready label,
+// the ledger — not the repository — is wrong. That is the integrity mismatch
+// the bounded full rescan exists for, so it is retried once from scratch rather
+// than failing the stage.
+func resolveBacklogReadyTimes(
+	ctx context.Context,
+	issueProvider backlogHealthProvider,
+	root string,
+	repo providers.RepositoryRef,
+	items []providers.WorkItem,
+	readyLabel string,
+	opts backlogHealthScanOptions,
+	stdout io.Writer,
+) ([]providers.WorkItemLabelTransition, backlogHealthScan, error) {
+	transitions, scan, err := backlogHealthTransitions(ctx, issueProvider, root, repo, items, readyLabel, opts)
+	if err != nil {
+		return nil, scan, classifyBacklogReadyLedgerError(err)
+	}
+	if scan.Deferred {
+		return nil, scan, nil
+	}
+	filtered := transitionsForItems(transitions, items)
+	annotateErr := annotateBacklogReadyTimes(repo.Provider, items, readyLabel, filtered)
+	if annotateErr == nil {
+		return filtered, scan, nil
+	}
+	if !scan.resumable() {
+		return nil, scan, &backlogReadyLedgerError{what: "snapshot ready backlog", err: annotateErr}
+	}
+	pf(stdout, "resumed ready-transition ledger does not explain the live ready pool (%v); rescanning full history\n",
+		annotateErr)
+
+	opts.forceFull = true
+	transitions, scan, err = backlogHealthTransitions(ctx, issueProvider, root, repo, items, readyLabel, opts)
+	if err != nil {
+		return nil, scan, classifyBacklogReadyLedgerError(err)
+	}
+	if scan.Deferred {
+		return nil, scan, nil
+	}
+	filtered = transitionsForItems(transitions, items)
+	if err := annotateBacklogReadyTimes(repo.Provider, items, readyLabel, filtered); err != nil {
+		return nil, scan, &backlogReadyLedgerError{what: "snapshot ready backlog", err: err}
+	}
+	return filtered, scan, nil
+}
+
 func applyImplementationFeedback(
 	ctx context.Context,
 	root string,
@@ -238,6 +506,7 @@ func applyImplementationFeedback(
 	items []providers.WorkItem,
 	trustLabel string,
 	readyLabel string,
+	scan backlogHealthScan,
 	stdout, stderr io.Writer,
 ) int {
 	threshold, err := strconv.Atoi(providerInput(
@@ -248,7 +517,7 @@ func applyImplementationFeedback(
 		pf(stderr, "error: implementationFailureThreshold must be an integer of at least 2\n")
 		return 1
 	}
-	report := implementationFeedbackReport{ImplementationFailureThreshold: threshold}
+	report := implementationFeedbackReport{ImplementationFailureThreshold: threshold, Scan: &scan}
 
 	var earliestReadyAt time.Time
 	for _, item := range items {
@@ -359,15 +628,15 @@ func reCurateImplementationFeedbackItem(
 	if !implementationFeedbackEligibleWithoutReadyAt(current, trustLabel, readyLabel) {
 		return nil, false, nil
 	}
-	transitions, err := backlogHealthItemTransitions(ctx, issueProvider, repo, current, readyLabel)
+	current, eligible, err := resolveImplementationFeedbackReadyAt(
+		ctx, issueProvider, repo, current, readyLabel,
+	)
 	if err != nil {
-		return nil, false, fmt.Errorf("re-read ready-label transitions: %w", err)
+		return nil, false, err
 	}
-	live := []providers.WorkItem{current}
-	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err != nil {
-		return nil, false, fmt.Errorf("resolve current ready cohort: %w", err)
+	if !eligible {
+		return nil, false, nil
 	}
-	current = live[0]
 	count, evidence := consecutiveImplementationFailures(outcomes, itemID, *current.ReadyAt)
 	if count < threshold {
 		return nil, false, nil
@@ -401,6 +670,37 @@ func reCurateImplementationFeedbackItem(
 		ConsecutiveFailures: count,
 		Evidence:            evidence,
 	}, true, nil
+}
+
+func resolveImplementationFeedbackReadyAt(
+	ctx context.Context,
+	issueProvider backlogHealthProvider,
+	repo providers.RepositoryRef,
+	current providers.WorkItem,
+	readyLabel string,
+) (providers.WorkItem, bool, error) {
+	readTransitions := func() ([]providers.WorkItemLabelTransition, error) {
+		return backlogHealthItemTransitions(ctx, issueProvider, repo, current, readyLabel)
+	}
+
+	transitions, err := readTransitions()
+	if err != nil {
+		return providers.WorkItem{}, false, fmt.Errorf("re-read ready-label transitions: %w", err)
+	}
+	live := []providers.WorkItem{current}
+	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err == nil {
+		return live[0], true, nil
+	}
+
+	transitions, err = readTransitions()
+	if err != nil {
+		return providers.WorkItem{}, false, fmt.Errorf("re-read ready-label transitions: %w", err)
+	}
+	live = []providers.WorkItem{current}
+	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err != nil {
+		return providers.WorkItem{}, false, nil
+	}
+	return live[0], true, nil
 }
 
 func implementationFeedbackEligibleWithoutReadyAt(
@@ -569,7 +869,8 @@ func annotateReadyTimes(
 		}
 	}
 	for i := range items {
-		if !items[i].HasLabel(readyLabel) {
+		if !items[i].HasLabel(readyLabel) ||
+			(items[i].State != "" && !strings.EqualFold(items[i].State, "open")) {
 			continue
 		}
 		readyAt, ok := active[items[i].ID]

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/providers"
@@ -42,6 +43,7 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 	server.addIssue(22, "Bot-active stale item", "goobers:approved", providers.LabelReady, providers.LabelStale)
 
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	newStaleTerminalRun(t, layoutFor(root), "historical-run", "default-implement", journal.PhaseCompleted, "local-ci")
 	server.mu.Lock()
 	server.issues[13].body = "- [ ] #14"
 	server.issues[15].body = "- [x] #16"
@@ -59,6 +61,12 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if ok, _, err := ledger.ClaimScoped(
+		localscheduler.ClaimKey{Gaggle: "goobers", Provider: string(providers.ProviderGitHub), ExternalID: "7"},
+		"historical-run", "default-implement", time.Hour,
+	); err != nil || !ok {
+		t.Fatalf("seed terminal orphan claim: ok=%v err=%v", ok, err)
 	}
 	claimKey := localscheduler.ClaimKey{Gaggle: "goobers", Provider: string(providers.ProviderGitHub), ExternalID: "8"}
 	if ok, _, err := ledger.ClaimScoped(claimKey, "live-run", "implementation", time.Hour); err != nil || !ok {
@@ -111,6 +119,37 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 		if !strings.Contains(comments[len(comments)-1], "Goobers backlog reconciliation corrected metadata drift") {
 			t.Fatalf("issue %d comments = %q, want reconciliation explanation", id, comments)
 		}
+	}
+	server.mu.Lock()
+	comments := append([]string(nil), server.issues[7].comments...)
+	server.mu.Unlock()
+	var releasedOrphan bool
+	for _, comment := range comments {
+		if strings.Contains(comment, "goobers-claim-release: run=historical-run") {
+			releasedOrphan = true
+			break
+		}
+	}
+	if !releasedOrphan {
+		t.Fatalf("issue 7 comments = %q, want release marker for historical-run", comments)
+	}
+	claim, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
+		Repository: repo,
+		ID:         "7",
+		RunID:      "later-run",
+	})
+	if err != nil {
+		t.Fatalf("claim recovered issue 7: %v", err)
+	}
+	if !claim.Claimed || claim.ClaimedBy != "later-run" {
+		t.Fatalf("reclaimed issue 7 = %+v, want later-run to win", claim)
+	}
+	if _, err := provider.ReleaseWorkItemClaim(context.Background(), providers.ClaimWorkItemRequest{
+		Repository: repo,
+		ID:         "7",
+		RunID:      "later-run",
+	}); err != nil {
+		t.Fatalf("release follow-up claim: %v", err)
 	}
 	server.mu.Lock()
 	beforeComments := make(map[int]int, len(server.issues))
@@ -692,6 +731,39 @@ func TestTrackingChecklistIssueIDs(t *testing.T) {
 	got := trackingChecklistIssueIDs("- [ ] #12 first\n* [x] done in #13\n- ordinary ref #14\n- [ ] duplicate #12")
 	if strings.Join(got, ",") != "12,13" {
 		t.Fatalf("trackingChecklistIssueIDs = %v, want [12 13]", got)
+	}
+}
+
+// TestParseBacklogReconcileRunIDRoundTripsFormat pins the shape
+// reserveBacklogClaimReconciliation persists into the claim ledger:
+// claims.go's claimHolderTerminal must keep parsing it to recover the
+// owning run, so the format/parse pair must stay inverses, and anything
+// that only superficially resembles the shape (wrong segment count, a
+// non-numeric pid/seq, or an empty owner) must not parse.
+func TestParseBacklogReconcileRunIDRoundTripsFormat(t *testing.T) {
+	got := formatBacklogReconcileRunID("run-123", 4242, 7)
+	want := "run-123/backlog-reconcile/4242/7"
+	if got != want {
+		t.Fatalf("formatBacklogReconcileRunID = %q, want %q", got, want)
+	}
+	owner, ok := parseBacklogReconcileRunID(got)
+	if !ok || owner != "run-123" {
+		t.Fatalf("parseBacklogReconcileRunID(%q) = (%q, %v), want (\"run-123\", true)", got, owner, ok)
+	}
+
+	for _, malformed := range []string{
+		"",
+		"run-123",
+		"run-123/backlog-reconcile/4242",
+		"run-123/backlog-reconcile/not-a-pid/7",
+		"run-123/backlog-reconcile/4242/not-a-seq",
+		"/backlog-reconcile/4242/7",
+		"run-123/backlog-reconcile/4242/7/extra",
+		"run-123/some-other-kind/4242/7",
+	} {
+		if owner, ok := parseBacklogReconcileRunID(malformed); ok {
+			t.Fatalf("parseBacklogReconcileRunID(%q) = (%q, true), want ok=false", malformed, owner)
+		}
 	}
 }
 

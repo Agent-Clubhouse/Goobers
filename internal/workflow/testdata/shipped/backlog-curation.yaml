@@ -29,6 +29,7 @@ spec:
         resultFile: "claimed-item.json"
       capabilities:
         - github:issues:write
+        - agent:model
       policyActions:
         - claim-backlog-items
         - close-issue
@@ -42,7 +43,7 @@ spec:
         resultFile: "dedupe-candidates.json"
         maxCandidates: "20"
       capabilities:
-        - github:issues:write
+        - github:issues:read
       next: curate
     - name: curate
       type: agentic
@@ -50,6 +51,7 @@ spec:
       goal: Triage, label, and de-duplicate the claimed backlog items.
       capabilities:
         - github:issues:write
+        - agent:model
       policyActions:
         - close-issue
         - comment-on-issue

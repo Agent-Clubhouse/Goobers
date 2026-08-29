@@ -69,6 +69,13 @@ type GaggleSpec struct {
 	// this gaggle. A workflow may override either value again.
 	// +optional
 	RunControls *RunControls `json:"runControls,omitempty" yaml:"runControls,omitempty"`
+	// OutboxMirrorPath is the default local filesystem root where workflows in
+	// this gaggle mirror their durable journal outbox. A workflow or task may
+	// override it. The local runner appends the run id and journal outbox layout
+	// beneath this root; the journal remains the source of truth.
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	OutboxMirrorPath string `json:"outboxMirrorPath,omitempty" yaml:"outboxMirrorPath,omitempty"`
 	// Sandbox overrides the instance-wide isolation posture for this gaggle's
 	// agentic stages (#1305). Effective posture is gaggle override, else the
 	// instance.yaml sandbox block, else disabled — sandboxing is strictly
@@ -90,6 +97,17 @@ type GaggleSpec struct {
 	// behaves exactly as before.
 	// +optional
 	RequireLabels []string `json:"requireLabels,omitempty" yaml:"requireLabels,omitempty"`
+	// RunsOn is the gaggle-level placement floor (DSL 3.0, dsl-3.0.md §2): OS,
+	// toolchain capability tags, and required runner restrictions that merge
+	// into every stage of every workflow in this gaggle — capabilities and
+	// restrictions union with the stage's own; an OS conflict between gaggle
+	// and stage is a compile error, never a silent override. No quantities at
+	// gaggle level. It is the 3.0 successor of RequiredCapabilities above and
+	// activates only for gaggles whose workflows are pinned to DSL 3.0; the
+	// 3.0 interpreter refuses a gaggle that still declares
+	// RequiredCapabilities, and earlier interpreters refuse this field.
+	// +optional
+	RunsOn *GaggleRunsOn `json:"runsOn,omitempty" yaml:"runsOn,omitempty"`
 	// Siblings declares other gaggles/instances this gaggle knows are
 	// independently working the same target repo (MIRC-2, #1901). Each
 	// sibling is identified by the repo it targets — never by gaggle/instance
@@ -105,6 +123,29 @@ type GaggleSpec struct {
 	// siblings is a no-op — purely additive, opt-in config.
 	// +optional
 	Siblings []GaggleSibling `json:"siblings,omitempty" yaml:"siblings,omitempty"`
+}
+
+// GaggleRunsOn is the gaggle-level placement floor of DSL 3.0 (dsl-3.0.md §2):
+// the fields of a stage RunsOn that make sense for a whole gaggle — OS,
+// capability tags, and restrictions, but never quantities. It merges into
+// every stage as a floor: capabilities and restrictions union; an os conflict
+// with a stage's own runsOn.os is a compile error.
+type GaggleRunsOn struct {
+	// OS every stage of this gaggle requires. Enum, same vocabulary as a
+	// stage's runsOn.os.
+	// +kubebuilder:validation:Enum=linux;windows;macOS
+	// +optional
+	OS string `json:"os,omitempty" yaml:"os,omitempty"`
+	// Capabilities union into every stage's runsOn.capabilities. Same open
+	// tag grammar (internal/runnercap); os=* tokens are rejected (CAP004).
+	// +kubebuilder:validation:MaxItems=32
+	// +optional
+	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// Restrictions union into every stage's runsOn.restrictions. Closed v1
+	// effect list; unknown tokens are rejected with a suggestion (CAP005).
+	// +kubebuilder:validation:MaxItems=8
+	// +optional
+	Restrictions []string `json:"restrictions,omitempty" yaml:"restrictions,omitempty"`
 }
 
 // GaggleWorkcopies configures managed working-copy placement for one gaggle.

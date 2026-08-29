@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/capability"
+
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -218,7 +218,7 @@ func implementationInReviewComment(prURL string) string {
 }
 
 func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("issue-close-out", flag.ContinueOnError)
+	fs := newCLIFlagSet("issue-close-out", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "issue-close-out")
 	if err := fs.Parse(args); err != nil {
@@ -239,38 +239,13 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Explicit per-kind dispatch (github | ado | gitea | default-error): the old
-	// ADO-or-GitHub-default silently sent a gitea-routed repo's PR lookup and
-	// work-item close-out to api.github.com.
-	var provider issueCloseOutProvider
-	switch repo.Provider {
-	case providers.ProviderADO:
-		adoProvider, aerr := newADOProviderForStage(root, repo)
-		if aerr != nil {
-			pf(stderr, "error: %v\n", aerr)
-			return 1
-		}
-		provider = adoProvider
-	case providers.ProviderGitea:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
-		if terr != nil {
-			pf(stderr, "error: %v\n", terr)
-			return 1
-		}
-		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-		if gerr != nil {
-			pf(stderr, "error: %v\n", gerr)
-			return 1
-		}
-		provider = giteaProvider
-	case providers.ProviderGitHub:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
-		if terr != nil {
-			pf(stderr, "error: %v\n", terr)
-			return 1
-		}
-		provider = newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-	default:
+	stageProvider, err := newProviderForStage(root, repo, false, withStageProviderMutations("issue"))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	provider, ok := stageProvider.(issueCloseOutProvider)
+	if !ok {
 		pf(stderr, "error: issue-close-out does not support repository provider %q\n", repo.Provider)
 		return 1
 	}
@@ -326,6 +301,10 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	comment := providerInput("comment", "")
+	reason := strings.TrimSpace(providerInput("reason", ""))
+	if reason != "" {
+		comment = reason + "\n\n" + comment
+	}
 	if issueCloseOutIsParkStatus(status) {
 		// #2028: the comment prefix names the disposition — a genuine
 		// needs-human park is framed as awaiting a human's review; a
@@ -462,15 +441,12 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// not this label, is what's actually authoritative for eligibility, so a
 	// failed removal here leaves only a stale human-visible marker, not a
 	// stuck item.
-	// The claim marker's label form diverges by provider: GitHub uses the plain
-	// LabelClaimed ("goobers:claimed"), while ADO writes the status-form
-	// "goobers/status:claimed" (ClaimWorkItem via statusLabel). Removing the
-	// GitHub constant on ADO never matches, leaving the marker stuck — so
-	// translate to the ADO status form when parking an ADO work item.
+	// The claim marker is the plain LabelClaimed on every provider —
+	// ClaimWorkItem defaults req.ClaimLabel to it on ADO too, so removal
+	// uses the same constant everywhere. (A prior status-form translation
+	// here targeted a tag the claim path never writes, wire-confirmed as
+	// the stale-marker leak on ADO work items.)
 	claimMarker := providers.LabelClaimed
-	if repo.Provider == providers.ProviderADO {
-		claimMarker = providers.StatusLabelFor(providers.WorkItemStatusClaimed)
-	}
 	if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 		Repository:   backlogRepo,
 		ID:           claim.ItemID,

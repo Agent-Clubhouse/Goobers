@@ -8,6 +8,7 @@ import {
   type GuidedEnvelopeResult,
   type GuidedInitResult,
   type GuidedJobDetail,
+  type GuidedProbeResult,
   type GuidedState,
   type OnboardingActionEnvelope,
   type StatusEnvelope,
@@ -89,6 +90,11 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     useState<GuidedEnvelopeResult<DiagnosticsEnvelope> | null>(null);
   const [statusResult, setStatusResult] =
     useState<GuidedEnvelopeResult<StatusEnvelope> | null>(null);
+  // #2638: the sample path's read-only pre-run eligibility probe. null means
+  // "not checked yet (or reset for a fresh check)" — distinct from a probe
+  // result whose own eligibleCount is null (no issues token exported yet).
+  const [probeResult, setProbeResult] = useState<GuidedProbeResult | null>(null);
+  const [probeChecking, setProbeChecking] = useState(false);
 
   const [workTracking, setWorkTracking] = useState("");
   const [useMainToken, setUseMainToken] = useState(false);
@@ -120,9 +126,13 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     }
   }, [client]);
 
-  // Server truth is polled: env-token badges, sample/instance existence, and
-  // the connected repository update live as the user works in a terminal
-  // alongside this page.
+  // Server truth is polled: sample/instance existence and the connected
+  // repository reflect the filesystem on every poll. The env-token badges do
+  // NOT — they read the getting-started server's own process environment,
+  // fixed at server launch (#2639). A token exported in any terminal after
+  // the server started, including the one that launched it, never reaches
+  // this process; only exporting before launch (or restarting the server
+  // after exporting) changes what these badges report.
   useEffect(() => {
     void refreshState();
     const timer = setInterval(() => void refreshState(), statePollIntervalMs);
@@ -179,14 +189,53 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   }, [activeJobId, client, refreshState]);
 
   const job = jobDetail ?? serverState?.job ?? null;
-  const runDone = job !== null && job.done && job.exitCode === 0;
-  const runFailed = job !== null && job.done && job.exitCode !== null && job.exitCode !== 0;
+  const connectedRepo = serverState?.connected?.repo ?? null;
+
+  // The chosen path: the stored choice wins (switching stays possible after a
+  // connect); with nothing stored, server truth infers it on reload — a
+  // connected repository means the own-repo path, an existing sample means
+  // the tutorial path.
+  const path: GuidedPath | null =
+    storedPath === "own-repo" || storedPath === "sample"
+      ? storedPath
+      : connectedRepo !== null
+        ? "own-repo"
+        : (serverState?.sampleExists ?? false)
+          ? "sample"
+          : null;
+
+  // #2638: a run that exits 0 only means the workflow reached PhaseCompleted
+  // — the SAME terminal phase a genuine no-eligible-work backlog-query tick
+  // short-circuits to (issue #233's shared runner/backlog-query contract,
+  // untouched here). exitCode alone cannot distinguish "opened a PR" from
+  // "found nothing to do", so this reads the same stage-transition lines
+  // RunProgress already greps for progress display: if the terminal
+  // "open-pr" stage never started, query-backlog (or whatever gated it)
+  // never handed off — nothing was implemented or opened, regardless of the
+  // clean exit.
+  const runStages = path === "own-repo" ? defaultImplementRunStages : quickstartRunStages;
+  const runOutput = jobDetail?.output ?? [];
+  const runStageProgress = useMemo(
+    () => runStageStates(runOutput, runStages),
+    [runOutput, runStages],
+  );
+  const runOutcome: "success" | "no-work" | "failed" | null =
+    job === null || !job.done
+      ? null
+      : job.exitCode !== 0
+        ? "failed"
+        : runStageProgress?.["open-pr"] === "pending" || runStageProgress?.["open-pr"] === undefined
+          ? "no-work"
+          : "success";
+  const runFinishedOk = runOutcome === "success" || runOutcome === "no-work";
+  const runFailed = runOutcome === "failed";
 
   // Success step: the Time-to-First-PR readout is computed by `goobers status
   // --json` from local journal timestamps. It is a local number — nothing on
-  // this page reports it (or anything else) anywhere.
+  // this page reports it (or anything else) anywhere. Only fetched on an
+  // actual success — a no-work run has no first PR to time.
   useEffect(() => {
-    if (!runDone || statusResult !== null) {
+    if (runOutcome !== "success" || statusResult !== null) {
       return;
     }
     let cancelled = false;
@@ -203,9 +252,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     return () => {
       cancelled = true;
     };
-  }, [runDone, statusResult, client]);
+  }, [runOutcome, statusResult, client]);
 
-  const connectedRepo = serverState?.connected?.repo ?? null;
   const sampleDone = (serverState?.sampleExists ?? false) || stubResult?.exitCode === 0;
   const initDone = serverState?.instanceExists ?? false;
   const stubFailed = stubResult !== null && stubResult.exitCode !== 0 && !sampleDone;
@@ -215,18 +263,38 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   const validateFailed = validateResult !== null && validateResult.exitCode !== 0;
   const validateDone = validateOk && !validateFailed;
 
-  // The chosen path: the stored choice wins (switching stays possible after a
-  // connect); with nothing stored, server truth infers it on reload — a
-  // connected repository means the own-repo path, an existing sample means
-  // the tutorial path.
-  const path: GuidedPath | null =
-    storedPath === "own-repo" || storedPath === "sample"
-      ? storedPath
-      : connectedRepo !== null
-        ? "own-repo"
-        : (serverState?.sampleExists ?? false)
-          ? "sample"
-          : null;
+  // #2638: a read-only "how many eligible issues are there right now" check,
+  // run before the sample quickstart's Run button is used — surfacing "0
+  // eligible issues" as a pre-run warning instead of letting the user
+  // discover it only after a run completes with nothing to show. Sample
+  // path only (own-repo's label conventions are the user's own, out of
+  // scope here — see the server-side handler's comment).
+  const checkBacklogProbe = useCallback(async () => {
+    setProbeChecking(true);
+    try {
+      const result = await client.probeBacklog();
+      setProbeResult(result);
+    } catch {
+      // A failed probe is a soft warning, not a blocking error — leave
+      // whatever was there (nothing, on a first check) and let the user
+      // just start the run if they want to.
+    } finally {
+      setProbeChecking(false);
+    }
+  }, [client]);
+
+  useEffect(() => {
+    if (
+      path !== "sample" ||
+      !validateDone ||
+      probeResult !== null ||
+      probeChecking ||
+      (job !== null && !job.done)
+    ) {
+      return;
+    }
+    void checkBacklogProbe();
+  }, [path, validateDone, probeResult, probeChecking, job, checkBacklogProbe]);
 
   const choosePath = (next: GuidedPath) => {
     if (path === next) {
@@ -261,10 +329,11 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       (serverState?.env.goobersGithubToken ?? false));
 
   // Step done/failed flags per branch, in render order. The success step is
-  // rendered explicitly from runDone, as before.
+  // rendered explicitly from runOutcome, as before (it also needs to tell
+  // "no PR opened" apart from "opened one", which a single boolean can't).
   const doneFlags =
     path === "own-repo"
-      ? [welcomeDone, chooserDone, initDone, connectDone, tokenDone, validateDone, runDone, false]
+      ? [welcomeDone, chooserDone, initDone, connectDone, tokenDone, validateDone, runFinishedOk, false]
       : path === "sample"
         ? [
             welcomeDone,
@@ -274,7 +343,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             initDone,
             placeholdersDone,
             validateDone,
-            runDone,
+            runFinishedOk,
             false,
           ]
         : [welcomeDone, false];
@@ -401,36 +470,45 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     </GuidedStep>
   );
 
+  const startRun = (workflow: "quickstart" | "default-implement") =>
+    void runAction(
+      "run",
+      () => client.startRun({ workflow }),
+      ({ jobId }) => {
+        setJobDetail(null);
+        setStatusResult(null);
+        // Reset so the next completion re-triggers the eligibility probe
+        // effect above — eligible issues can change between runs (e.g. the
+        // user just labeled one in response to a "0 eligible" warning).
+        setProbeResult(null);
+        setActiveJobId(jobId);
+      },
+    );
+
   const runStep = (
     index: number,
     workflow: "quickstart" | "default-implement",
     stages: readonly string[],
     description: string,
+    probeSection?: React.ReactNode,
   ) => (
     <GuidedStep index={index} status={stepStatus(index)} title="Run your first autonomous workflow">
       <p>{description}</p>
+      {probeSection}
       <RecoveryCommand command={`goobers run ${workflow} ${instancePath}`} />
       <button
         className="reconnect-button"
         disabled={busy !== null || (job !== null && !job.done)}
-        onClick={() =>
-          void runAction(
-            "run",
-            () => client.startRun({ workflow }),
-            ({ jobId }) => {
-              setJobDetail(null);
-              setStatusResult(null);
-              setActiveJobId(jobId);
-            },
-          )
-        }
+        onClick={() => startRun(workflow)}
         type="button"
       >
         {job !== null && !job.done
           ? "Running…"
-          : runFailed
+          : runOutcome === "failed"
             ? "Retry the run"
-            : "Start the run"}
+            : runOutcome === "no-work"
+              ? "Run again"
+              : "Start the run"}
       </button>
       {job !== null && (
         <RunProgress detail={jobDetail} failed={runFailed} job={job} stages={stages} />
@@ -438,14 +516,28 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     </GuidedStep>
   );
 
-  const successStep = (index: number, variant: GuidedPath) => (
-    <GuidedStep index={index} status={runDone ? "active" : "pending"} title="Success">
-      {runDone ? (
+  const successStep = (
+    index: number,
+    variant: GuidedPath,
+    workflow: "quickstart" | "default-implement",
+  ) => (
+    <GuidedStep
+      index={index}
+      status={runOutcome === "success" || runOutcome === "no-work" ? "active" : "pending"}
+      title="Success"
+    >
+      {runOutcome === "success" ? (
         <SuccessStep
           instancePath={instancePath}
           runId={job?.runId ?? null}
           status={statusResult}
           variant={variant}
+        />
+      ) : runOutcome === "no-work" ? (
+        <NoWorkStep
+          disabled={busy !== null}
+          onRerun={() => startRun(workflow)}
+          runId={job?.runId ?? null}
         />
       ) : (
         <p className="guided-note">
@@ -488,11 +580,14 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             <li>A GitHub account and a repository to work against.</li>
             <li>Copilot CLI installed and signed in.</li>
             <li>
-              Node.js &gt;= 20 and npm on <code>PATH</code> (the sample's CI uses them).
-            </li>
-            <li>
               <code>export GOOBERS_GITHUB_TOKEN=...</code> — and optionally{" "}
               <code>GOOBERS_GITHUB_ISSUES_TOKEN</code> for seeding starter issues.
+            </li>
+            <li>
+              Connecting your own repository? Its own workflow determines any further
+              tooling it needs — the checks step below (<code>goobers validate
+              --check-harness --check-repos</code>) confirms what your connected instance
+              actually requires.
             </li>
           </ul>
           <div aria-label="Token environment status" className="guided-badges">
@@ -503,8 +598,11 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             />
           </div>
           <p className="guided-note">
-            Token badges update live from this machine's environment; token values never
-            reach this page — only whether each variable is set.
+            Token badges reflect the getting-started server's own environment as of when it
+            launched — not this machine's environment generally, and not anything exported
+            afterward. Export before running <code>goobers getting-started</code>, or restart
+            it after exporting. Token values never reach this page — only whether each
+            variable is set.
           </p>
           {!welcomeDone && (
             <button
@@ -682,24 +780,25 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
 
             <GuidedStep index={4} manual status={stepStatus(4)} title="Export the token">
               <p>
-                <strong>Manual step.</strong> The instance reads your GitHub token from the
-                environment variable named at connect time — export it in the shell that
-                launched <code>goobers getting-started</code>. Only its presence is checked;
-                the value never reaches this page.
+                <strong>Manual step.</strong> The instance reads your GitHub token from{" "}
+                <code>{state.env.tokenEnv}</code>, the environment variable named at connect
+                time — but only from the getting-started server's OWN process, fixed at
+                launch. Export it in the shell that will LAUNCH{" "}
+                <code>goobers getting-started</code>, then (re)start that command; exporting
+                in the already-running shell, or any other shell, does not reach this
+                process. Only presence is checked — the value never reaches this page.
               </p>
-              <RecoveryCommand command={`export ${tokenEnvName}=...`} />
+              <RecoveryCommand command={`export ${state.env.tokenEnv}=...`} />
+              <p className="guided-note">
+                Then relaunch: <code>goobers getting-started</code> resumes this walkthrough
+                from the instance you already created.
+              </p>
               <div aria-label="Connect token status" className="guided-badges">
                 <EnvBadge
-                  name="GOOBERS_GITHUB_TOKEN"
+                  name={state.env.tokenEnv}
                   present={state.env.goobersGithubToken}
                 />
               </div>
-              {tokenEnvName !== defaultConnectTokenEnv && (
-                <p className="guided-note">
-                  The live badge tracks <code>GOOBERS_GITHUB_TOKEN</code> only; confirm your
-                  custom variable is exported, then check the box.
-                </p>
-              )}
               <label className="guided-check">
                 <input
                   checked={tokenExported}
@@ -717,7 +816,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               defaultImplementRunStages,
               "Starts one default-implement workflow run: your coder goober claims a labeled issue from your backlog, implements it, pushes a branch, and opens a pull request on your repository.",
             )}
-            {successStep(7, "own-repo")}
+            {successStep(7, "own-repo", "default-implement")}
           </>
         )}
 
@@ -728,6 +827,12 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                 Writes the embedded <code>getting-started-task-api</code> sample to{" "}
                 <code>{samplePath}</code>. With a work-tracking repo named, it also seeds the
                 starter labels and issues there.
+              </p>
+              <p className="guided-note">
+                The sample is a small Node.js/TypeScript project — its own CI expects
+                Node.js &gt;= 20 and npm on <code>PATH</code> to build and test it. Nothing
+                here enforces that for you; it's the sample's own tooling, not this
+                walkthrough's.
               </p>
               <RecoveryCommand
                 command={stubSampleCommand(samplePath, workTracking, useMainToken, forceRerun)}
@@ -900,9 +1005,11 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                   <code>spec.backlog.project</code> (<code>your-org/your-repo</code>).
                 </li>
                 <li>
-                  Make sure <code>GOOBERS_GITHUB_TOKEN</code> is exported in the shell that
-                  launched <code>goobers getting-started</code> — the instance's token ref
-                  reads it from the environment.
+                  Make sure <code>{state.env.tokenEnv}</code> is exported in the shell that
+                  will LAUNCH <code>goobers getting-started</code>, then (re)start that
+                  command — the instance's token ref reads it from the getting-started
+                  server's own process environment, fixed at launch, not from any shell an
+                  export happens in afterward.
                 </li>
               </ul>
               <label className="guided-check">
@@ -921,8 +1028,13 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               "quickstart",
               quickstartRunStages,
               "Starts one quickstart workflow run: an agent picks up a starter issue, implements it, reviews it, runs CI, and opens a pull request on your repository.",
+              <BacklogProbeWarning
+                checking={probeChecking}
+                onRecheck={() => void checkBacklogProbe()}
+                result={probeResult}
+              />,
             )}
-            {successStep(8, "sample")}
+            {successStep(8, "sample", "quickstart")}
           </>
         )}
       </ol>
@@ -1236,6 +1348,86 @@ function OutputTail({ lines }: { lines: string[] }) {
     <pre className="code-block guided-output" ref={pre}>
       {lines.join("\n")}
     </pre>
+  );
+}
+
+/** #2638: the read-only pre-run probe's result, rendered inside the Run step
+ *  BEFORE the user clicks Start — distinct from NoWorkStep below, which
+ *  reports what a run that already happened found (or didn't). Renders
+ *  nothing when there's genuinely nothing to say yet: no check has run, or
+ *  the check couldn't run because no issues token is exported (that's the
+ *  earlier "export the token" step's job to flag, not this one's). */
+function BacklogProbeWarning({
+  checking,
+  onRecheck,
+  result,
+}: {
+  checking: boolean;
+  onRecheck: () => void;
+  result: GuidedProbeResult | null;
+}) {
+  if (result === null) {
+    return checking ? <p className="guided-note">Checking for eligible issues…</p> : null;
+  }
+  if (result.eligibleCount === null) {
+    return null;
+  }
+  if (result.eligibleCount > 0) {
+    return (
+      <p className="guided-note">
+        {result.eligibleCount} eligible {result.eligibleCount === 1 ? "issue" : "issues"} found —
+        ready to run.
+      </p>
+    );
+  }
+  return (
+    <div className="guided-note guided-failed-note" role="alert">
+      <p>
+        <strong>0 eligible issues found.</strong> This workflow only claims issues labeled{" "}
+        <code>goobers:approved</code> and <code>goobers:ready</code> — starting the run now would
+        likely finish without opening a pull request. Label an issue (the sample repository
+        includes one to label), then check again.
+      </p>
+      <button className="reconnect-button" disabled={checking} onClick={onRecheck} type="button">
+        {checking ? "Checking…" : "Check again"}
+      </button>
+    </div>
+  );
+}
+
+/** #2638: the run completed (exit 0) but never reached the "open-pr" stage —
+ *  no eligible backlog item was found, so nothing was implemented or opened.
+ *  Rendered instead of SuccessStep, never alongside it — a clean exit with
+ *  no PR is not the "first autonomous PR" the walkthrough promises. */
+function NoWorkStep({
+  disabled,
+  onRerun,
+  runId,
+}: {
+  disabled: boolean;
+  onRerun: () => void;
+  runId: string | null;
+}) {
+  return (
+    <div className="guided-result" role="status">
+      <p>
+        <strong>No eligible issues found.</strong> The run finished without an error, but no
+        issue in your backlog carried the labels this workflow claims from — so nothing was
+        implemented and no pull request was opened.
+      </p>
+      <p className="guided-note">
+        Label an issue (or seed a new one), then re-run. Nothing else in the walkthrough needs
+        to change.
+      </p>
+      <button className="reconnect-button" disabled={disabled} onClick={onRerun} type="button">
+        Re-run
+      </button>
+      {runId && (
+        <p className="guided-run-link">
+          <a href={`#/run/${encodeURIComponent(runId)}`}>Inspect run {runId} →</a>
+        </p>
+      )}
+    </div>
   );
 }
 

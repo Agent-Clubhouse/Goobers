@@ -1,6 +1,6 @@
 # Design: Assignment-aware backlog coordination (COORD)
 
-> Status: **Draft for review** · Area: `RUN` / `WF` / `SEC` · Milestone: **Backlog curation
+> Status: **draft — for review** · Area: `RUN` / `WF` / `SEC` · Milestone: **Backlog curation
 > engine — continuous, reliable, agile-inspired** (epic #1224)
 > References: mixed-mode epic **#804** / **#369** (actor-aware workflows — a different axis,
 > see Terminology); UNOP-7 **#1295** / **#1779** / **#1780** (distinct daemon identity);

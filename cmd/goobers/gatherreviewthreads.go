@@ -22,7 +22,7 @@ const gatherReviewThreadsHelp = "Usage: goobers gather-review-threads [path]\n\n
 	"2 = usage/IO error.\n"
 
 func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("gather-review-threads", flag.ContinueOnError)
+	fs := newCLIFlagSet("gather-review-threads", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "gather-review-threads")
 	if err := fs.Parse(args); err != nil {
@@ -95,6 +95,8 @@ func runGatherReviewThreads(args []string, stdout, stderr io.Writer) int {
 			createdAt = comment.CreatedAt.Format(time.RFC3339)
 		}
 		comments = append(comments, apiv1.RemediationInlineComment{
+			ID:                comment.ID,
+			ThreadID:          comment.ThreadID,
 			Author:            comment.Author,
 			Body:              comment.Body,
 			Path:              comment.Path,

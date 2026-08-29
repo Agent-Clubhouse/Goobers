@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/journal"
+	wf "github.com/goobers/goobers/internal/workflow"
 )
 
 // flakyReviewer is a reviewer Goober that returns a transient error for its
@@ -19,6 +21,28 @@ type flakyReviewer struct {
 	err      error
 	verdict  apiv1.Verdict
 	calls    int
+}
+
+type correctingReviewer struct {
+	invalid bool
+	calls   int
+	addenda []string
+}
+
+func (r *correctingReviewer) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	return apiv1.ResultEnvelope{}, nil
+}
+
+func (r *correctingReviewer) Review(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	r.calls++
+	r.addenda = append(r.addenda, env.InstructionAddendum)
+	if r.invalid {
+		return apiv1.Verdict{Decision: apiv1.VerdictFail, Rationale: "The approach needs a policy decision."}, nil
+	}
+	if r.calls == 1 {
+		return apiv1.Verdict{Decision: apiv1.VerdictFail, Rationale: "The approach needs a policy decision."}, nil
+	}
+	return apiv1.Verdict{Decision: apiv1.VerdictFail, Rationale: "Should this policy be adopted?"}, nil
 }
 
 func (f *flakyReviewer) Invoke(_ context.Context, _ apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
@@ -162,7 +186,59 @@ func TestEvaluateNoRetryPolicyFailsFast(t *testing.T) {
 	if err == nil {
 		t.Fatal("Evaluate returned nil, want fail-fast when no RetryPolicy is declared")
 	}
+
 	if rev.calls != 1 {
 		t.Errorf("reviewer called %d times, want 1 (no declared retry = single attempt)", rev.calls)
+	}
+}
+
+func TestEvaluateRetriesInvalidNeedsHumanVerdictWithCorrection(t *testing.T) {
+	rev := &correctingReviewer{}
+	ev := &Evaluator{
+		Reviewer:           &ReviewerEvaluator{Goober: rev},
+		IsNeedsHumanTarget: func(target string) bool { return target == "human" },
+	}
+	g := retryGate(&apiv1.RetryPolicy{MaxAttempts: 2})
+	g.Branches[OutcomeFail] = "human"
+
+	result, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false)
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if rev.calls != 2 {
+		t.Fatalf("reviewer calls = %d, want 2", rev.calls)
+	}
+	if result.Target != "human" || result.Escalated {
+		t.Fatalf("result = %+v, want the valid needs-human disposition", result)
+	}
+	if len(rev.addenda) != 2 || !strings.Contains(rev.addenda[1], "must end with") {
+		t.Fatalf("retry addendum = %q, want actionable rationale correction", rev.addenda)
+	}
+}
+
+func TestEvaluateExhaustedInvalidNeedsHumanVerdictEscalatesWithArtifact(t *testing.T) {
+	rev := &correctingReviewer{invalid: true}
+	run := newTestJournal(t)
+	ev := &Evaluator{
+		Reviewer:           &ReviewerEvaluator{Goober: rev},
+		Journal:            run,
+		IsNeedsHumanTarget: func(target string) bool { return target == "human" },
+	}
+	g := retryGate(&apiv1.RetryPolicy{MaxAttempts: 2})
+	g.Branches[OutcomeFail] = "human"
+	g.Branches[wf.BranchEscalate] = "remediation"
+
+	result, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false)
+	if err != nil {
+		t.Fatalf("Evaluate returned error: %v", err)
+	}
+	if result.Target != "remediation" || !result.Escalated {
+		t.Fatalf("result = %+v, want escalated remediation target", result)
+	}
+	if result.Verdict == nil || result.VerdictArtifact == nil {
+		t.Fatalf("result = %+v, want invalid verdict and preserved artifact", result)
+	}
+	if result.Verdict.Rationale != "The approach needs a policy decision." {
+		t.Fatalf("preserved rationale = %q, want original invalid rationale", result.Verdict.Rationale)
 	}
 }

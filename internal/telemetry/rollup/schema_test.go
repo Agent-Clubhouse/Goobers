@@ -3,11 +3,13 @@ package rollup
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // migrationPrefixDigest hashes an ordered slice of migration statements so a
@@ -31,7 +33,7 @@ func migrationPrefixDigest(prefix []string) string {
 // every upgraded store silently stops applying the inserted DDL forever while
 // fresh stores get it, the worst kind of schema divergence.
 func TestMigrationPrefixIsAppendOnly(t *testing.T) {
-	const wantDigest = "cff8ba8d9636b385a92bfb449d905c68d2a0e91694f99f077c503047673ed7c5"
+	const wantDigest = "99ff297c5118ff4efd45966ce0b9d28286f8ff499e4cf4c4d2c43f2e5afed5d8"
 	if got := migrationPrefixDigest(migrations[:len(migrations)-1]); got != wantDigest {
 		t.Fatalf("migration prefix digest = %s, want %s\n"+
 			"migrations must be append-only. If this commit only APPENDED a new\n"+
@@ -66,9 +68,63 @@ func TestMigrateOnceRefusesANewerSchema(t *testing.T) {
 
 	if _, err := Open(path); err == nil {
 		t.Fatal("opened a store whose schema is newer than this build supports")
-	} else if !strings.Contains(err.Error(), "newer than this build") {
+	} else if !strings.Contains(err.Error(), "newer than supported") {
 		t.Errorf("error = %v; want a clear newer-schema refusal", err)
 	}
+}
+
+func TestCICheckFailureMigrationBackfillsExistingRunJournals(t *testing.T) {
+	tmp := t.TempDir()
+	runsDir := filepath.Join(tmp, "gaggles", "example", "runs")
+	seedCICheckFailureRun(t, runsDir, strings.Repeat("a", 32), "unit-tests", fixtureStart)
+	seedCICheckFailureRun(t, runsDir, strings.Repeat("b", 32), "unit-tests", fixtureStart.Add(time.Hour))
+
+	path := filepath.Join(tmp, "telemetry.db")
+	legacy, err := sql.Open("sqlite", path+dsnParams)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE schema_meta (version INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("create legacy schema metadata: %v", err)
+	}
+	for i := 0; i < 18; i++ {
+		if _, err := legacy.Exec(migrations[i]); err != nil {
+			t.Fatalf("apply legacy migration %d: %v", i+1, err)
+		}
+	}
+	if _, err := legacy.Exec(`INSERT INTO schema_meta (version) VALUES (18)`); err != nil {
+		t.Fatalf("set legacy schema version: %v", err)
+	}
+	for i, runID := range []string{strings.Repeat("a", 32), strings.Repeat("b", 32)} {
+		if _, err := legacy.Exec(`
+			INSERT INTO runs (run_id, workflow, workflow_version, gaggle, started_at)
+			VALUES (?, 'implementation', 1, 'example', ?)`,
+			runID, fixtureStart.Add(time.Duration(i)*time.Hour).Format(time.RFC3339Nano)); err != nil {
+			t.Fatalf("insert legacy run %s: %v", runID, err)
+		}
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	upgraded, err := Open(path)
+	if err != nil {
+		t.Fatalf("upgrade Open: %v", err)
+	}
+	defer func() { _ = upgraded.Close() }()
+	findings, err := upgraded.Detect(context.Background(), DetectRequest{Thresholds: DefaultThresholds()})
+	if err != nil {
+		t.Fatalf("Detect after upgrade: %v", err)
+	}
+	for _, finding := range findings {
+		if finding.Kind == FindingCICheckFailure && finding.Subject == "unit-tests" {
+			if finding.Metrics["distinctRuns"] != 2 {
+				t.Fatalf("distinct runs = %v, want 2", finding.Metrics["distinctRuns"])
+			}
+			return
+		}
+	}
+	t.Fatalf("backfilled recurring CI failure not found: %+v", findings)
 }
 
 // TestIngestRefusesUnknownRunSchema pins #2054 on the ingest side: a run.yaml
@@ -98,8 +154,8 @@ func TestIngestRefusesUnknownRunSchema(t *testing.T) {
 	db := openTestDB(t, tmp)
 	if err := db.IngestRun(context.Background(), runDir); err == nil {
 		t.Fatal("IngestRun accepted a run.yaml with an unknown schema version instead of refusing it")
-	} else if !strings.Contains(err.Error(), "unknown schema") {
-		t.Errorf("error = %v; want a clear unknown-schema refusal", err)
+	} else if !strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("error = %v; want a clear unsupported-schema refusal", err)
 	}
 
 	runs, err := db.Runs(context.Background())

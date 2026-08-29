@@ -16,6 +16,23 @@ through pull requests.
 go build -o bin/goobers ./cmd/goobers    # or: make build
 ```
 
+## Pick an agent harness
+
+Every agentic goober needs one configured harness: GitHub Copilot CLI or
+Claude Code CLI. Install and sign in to whichever one your goobers declare
+(`harness: copilot` or `harness: claude-code` in their `goober.yaml`) before
+section 2 below — the deterministic demo in section 1 needs neither. For
+Claude Code:
+
+```sh
+npm install -g @anthropic-ai/claude-code
+claude auth login
+```
+
+For host setup differences (Homebrew paths, WSL 2, launchd/systemd PATH
+quirks), see the platform guide linked in section 1 below. Section 2
+shows how to confirm Goobers can see whichever harness you installed.
+
 ## 1. Run the zero-credential demo
 
 The hermetic demo uses mock providers and requires no repository, provider
@@ -30,39 +47,74 @@ path instead.
 ```sh
 bin/goobers init --demo ./demo-instance
 bin/goobers run demo ./demo-instance
-bin/goobers dashboard ./demo-instance
-bin/goobers trace <run-id> ./demo-instance
 ```
 
-The dashboard opens the Portal for the demo instance so you can follow the run
-and inspect its workflow. The run flows through curate -> implement -> review,
-passes the automated `review-verdict` gate, and produces a merge-preview
-artifact before finishing — fully deterministic and offline, with no pause for
-user input. `run` prints the run ID used by `trace`; the trace shows the
-complete journal, including the gate's recorded verdict.
+`run` waits for the run to reach a terminal state by default, so by the time
+it returns the demo has already flowed through curate -> implement -> review,
+passed the automated `review-verdict` gate, and produced a merge-preview
+artifact — fully deterministic and offline, with no pause for user input.
+`run` prints the run ID used by `trace`.
+
+`dashboard` blocks until interrupted, so open it in a second terminal to
+browse the run in the Portal:
+
+```sh
+# second terminal
+bin/goobers dashboard ./demo-instance
+```
+
+Press Ctrl-C in that terminal when you're done. Back in the first terminal,
+inspect the complete journal, including the gate's recorded verdict:
+
+```sh
+bin/goobers trace <run-id> ./demo-instance
+```
 
 ## 2. Graduate to the token-bearing quickstart template
 
 Next, use the versioned `quickstart@v1` template for a first autonomous run
-against a disposable GitHub repository. This path requires a GitHub token and
-an authenticated Copilot CLI. Copy the paired sample into a separate throwaway
-directory:
+against a disposable GitHub repository you control. This path requires a
+GitHub token and an authenticated agent harness. The shipped template's
+goobers default to `harness: copilot`; to run it on Claude Code instead, set
+`harness: claude-code` in `./tutorial-instance/config/gaggles/example/goobers/{implementer,reviewer}/goober.yaml`
+after materializing the instance below (see
+[`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)
+for a full claude-code gaggle reference).
+
+### Check prerequisites
+
+The sample's CI command requires Node.js 20 or newer and npm. Confirm both are
+available on the same `PATH` Goobers will use before materializing the sample:
+
+```sh
+node --version
+npm --version
+```
+
+The first command must report `v20.0.0` or newer, and both commands must
+succeed. At run start, Goobers preflights the configured `npm` CI executable
+before any workflow stage executes. If npm is missing, the run fails before it
+claims or changes an issue with a `ciCommand executable "npm" not found` error;
+install Node.js 20+ and npm, then run the command again. The preflight checks
+that npm exists, not the Node.js major version, so do not skip the literal
+version checks above.
+
+### Materialize the sample and the instance
+
+Copy the paired sample into a separate throwaway directory, then scaffold the
+instance that will operate on it:
 
 ```sh
 bin/goobers onboarding stub-sample \
   --destination ./getting-started-task-api \
   --json
+bin/goobers init --template=quickstart ./tutorial-instance
 ```
 
-The action is non-interactive, embeds the release-matched sample, and is safe to
-re-run. It refuses conflicting user-owned files unless `--force` is explicit.
-To also seed the catalog's labels and issues into an existing disposable GitHub
-repository, add `--work-tracking owner/repo`; the command reads
-`GOOBERS_GITHUB_ISSUES_TOKEN` by default. With no target or no configured token,
-the JSON envelope reports the issues pending and still materializes the local
-sample without network access. It never creates or pushes a remote.
-
-The `--json` output is a versioned action envelope:
+`stub-sample` is non-interactive, embeds the release-matched sample, and is
+safe to re-run; it refuses conflicting user-owned files unless `--force` is
+explicit, and never creates or pushes a remote itself. Its `--json` output is
+a versioned action envelope:
 
 ```json
 {
@@ -76,16 +128,86 @@ The `--json` output is a versioned action envelope:
 ```
 
 `created` lists paths written in this run; `skipped` lists paths already
-present. When `--work-tracking` is supplied, `label:<name>` and `issue:<id>`
-entries appear in `created` when newly seeded and in `skipped` when the label
-or issue already exists. Without a
-configured token, seed entries appear as `issue:<id> (pending: <reason>)` in
-`skipped`. `nextCommand` is the next command to run.
+present. `nextCommand` is the next command to run. `init --template=quickstart`
+materializes `./tutorial-instance` still pointing at the template's
+placeholder repository (`your-org/your-repo`); the next step replaces that
+with a real one.
+
+### Create a disposable repository and connect the instance to it
+
+1. Create a new, empty GitHub repository to hold the sample, and push it —
+   any name, delete it whenever you're done. With the GitHub CLI:
+
+   ```sh
+   gh repo create <owner>/<repo> --private --source ./getting-started-task-api --push
+   ```
+
+   Without it, create the repository at <https://github.com/new>, then:
+
+   ```sh
+   git -C ./getting-started-task-api init -b main
+   git -C ./getting-started-task-api add -A
+   git -C ./getting-started-task-api commit -m "Getting Started sample"
+   git -C ./getting-started-task-api remote add origin https://github.com/<owner>/<repo>.git
+   git -C ./getting-started-task-api push -u origin main
+   ```
+
+   Already have a disposable repository you'd rather reuse? Skip this step
+   and use its `<owner>/<repo>` below instead.
+
+2. Export a GitHub token with repo/issues access, once, under the name
+   `connect` expects by default:
+
+   ```sh
+   export GOOBERS_GITHUB_TOKEN=<your token>
+   ```
+
+3. Point the instance at the repository, and seed it in the same step:
+
+   ```sh
+   bin/goobers connect <owner>/<repo> --seed ./tutorial-instance
+   ```
+
+   `connect` rewrites the placeholder `your-org/your-repo` in
+   `./tutorial-instance`'s `instance.yaml` and gaggle config to the repository
+   you gave it, records `GOOBERS_GITHUB_TOKEN` (or the name you passed via
+   `--token-env NAME`, if you keep the token under a different variable) as
+   the credential reference by name only — the value never passes through
+   this command — and validates the result in-process. `--seed` derives the
+   labels the quickstart workflow's backlog selector requires, ensures they
+   exist on the repository, and files one safe starter issue, using that same
+   token — one `GOOBERS_GITHUB_TOKEN` export covers connecting and seeding.
+   Configuration already pointing at a real repository is left alone unless
+   you pass `--replace`.
+
+4. Confirm Goobers can see and use your installed harness before the first
+   run — `--check-harness` preflights every harness referenced by the
+   instance's goobers and prints `HARNESS claude-code: OK` (or `HARNESS
+   copilot: OK`) once the CLI is installed and signed in:
+
+   ```sh
+   bin/goobers validate --check-harness ./tutorial-instance
+   ```
+
+### Run it
 
 ```sh
-bin/goobers init --template=quickstart ./tutorial-instance
-bin/goobers validate ./tutorial-instance
 bin/goobers run quickstart ./tutorial-instance
+```
+
+`run` waits for the run to reach a terminal state by default. This is a real
+autonomous run against your disposable repository, so it takes noticeably
+longer than the offline demo: it claims one approved issue, implements it,
+performs an advisory code-review task, pushes the run branch, and opens a
+pull request. It is **not for production**: it intentionally omits CI gates,
+remediation loops, bounded escalation, merge policy, and issue close-out so
+the onboarding happy path has no stall points.
+
+`dashboard` blocks until interrupted, so open it in a second terminal to
+browse the run in the Portal, and press Ctrl-C there when you're done:
+
+```sh
+# second terminal
 bin/goobers dashboard ./tutorial-instance
 ```
 
@@ -98,12 +220,11 @@ bin/goobers init --template=quickstart --source-tree ./tutorial-config --json
 bin/goobers validate --source-tree --json ./tutorial-config
 ```
 
-The dashboard opens the same Portal against this first GitHub-backed run. This
-linear template claims one approved issue, implements it, performs an
-advisory code-review task, pushes the run branch, and opens a pull request. It
-is **not for production**: it intentionally omits CI gates, remediation loops,
-bounded escalation, merge policy, and issue close-out so the onboarding happy
-path has no stall points.
+Prefer a guided walkthrough over typing these commands yourself? `goobers
+getting-started` serves a portal-hosted alternative covering the same
+first-run-against-your-own-repository ground — see
+[the CLI reference](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md#goobers-getting-started)
+for its exact steps.
 
 Continue with section 3 to configure a regular instance and run its selected
 canonical workflow. Once that works, read the

@@ -463,14 +463,21 @@ func TestPinnedWorkspaceIsOutsideRetentionInventory(t *testing.T) {
 
 func TestAcquirePinnedAppliesPathLengthPreflightBeforeCheckout(t *testing.T) {
 	repo := newSourceRepo(t)
+	// deepest is the on-disk path used to create the fixture file; trackedPath
+	// is the same path in git's own tracked-path form. `git ls-tree` (which the
+	// preflight shells out to) always reports paths with forward slashes,
+	// regardless of OS, so the preflight's error names trackedPath -- not
+	// deepest, which is OS-native (backslashes on Windows) and only happens to
+	// equal trackedPath on POSIX.
 	deepest := filepath.Join("generated", strings.Repeat("x", 40), "header.hpp")
+	trackedPath := strings.Join([]string{"generated", strings.Repeat("x", 40), "header.hpp"}, "/")
 	mustWriteFile(t, filepath.Join(repo, deepest), "content")
 	runTestGit(t, repo, "add", ".")
 	runTestGit(t, repo, "commit", "-m", "add deep path")
 
 	root := t.TempDir()
 	checkoutPath := filepath.Join(root, repoKey(repo), "pin")
-	available := len(filepath.FromSlash(deepest)) - 1
+	available := len(trackedPath) - 1
 	manager, err := NewManager(root, WithPathLengthLimit(repo, PathLengthLimit{
 		MaxPathLength: len(checkoutPath) + 1 + available,
 	}))
@@ -483,8 +490,8 @@ func TestAcquirePinnedAppliesPathLengthPreflightBeforeCheckout(t *testing.T) {
 	if err == nil {
 		t.Fatal("AcquirePinned succeeded despite exhausted path budget")
 	}
-	if !strings.Contains(err.Error(), deepest) {
-		t.Fatalf("AcquirePinned error %q does not name deepest path %q", err, deepest)
+	if !strings.Contains(err.Error(), trackedPath) {
+		t.Fatalf("AcquirePinned error %q does not name deepest path %q", err, trackedPath)
 	}
 	if _, statErr := os.Stat(checkoutPath); !os.IsNotExist(statErr) {
 		t.Fatalf("pinned checkout exists after preflight refusal: %v", statErr)

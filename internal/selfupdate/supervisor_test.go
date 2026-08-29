@@ -6,10 +6,24 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+type staticVersionRunner struct {
+	info versionInfo
+	err  error
+}
+
+func (r staticVersionRunner) Run(context.Context, string, []string, string, ...string) ([]byte, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return []byte(`{"version":"` + r.info.Version + `","commit":"` + r.info.Commit + `"}`), nil
+}
 
 type fakeProcess struct {
 	done chan error
@@ -52,6 +66,56 @@ func (f escalatorFunc) Escalate(ctx context.Context, request Request, reason str
 	return f(ctx, request, reason)
 }
 
+func TestEnsureCurrentBinaryRefreshesOlderVersion(t *testing.T) {
+	root := t.TempDir()
+	current := currentBinary(root, "linux")
+	installed := filepath.Join(root, "installed", "goobers")
+	writeTestExecutable(t, current, "old")
+	writeTestExecutable(t, installed, "new")
+	var stderr strings.Builder
+
+	err := ensureCurrentBinary(defaultSupervisorOptions(SupervisorOptions{
+		Root: root, GOOS: "linux", Stderr: &stderr,
+		runner:     staticVersionRunner{info: versionInfo{Version: "v1.2.3", Commit: "old"}},
+		executable: installed,
+		supervisor: versionInfo{Version: "v1.3.0", Commit: "new"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(current); err != nil || string(got) != "new" {
+		t.Fatalf("current binary = %q, %v; want installed binary", got, err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "refreshed supervised daemon from v1.2.3") {
+		t.Fatalf("stderr = %q, want refresh diagnosis", got)
+	}
+}
+
+func TestEnsureCurrentBinaryDoesNotReplaceNewerActiveVersion(t *testing.T) {
+	root := t.TempDir()
+	current := currentBinary(root, "linux")
+	installed := filepath.Join(root, "installed", "goobers")
+	writeTestExecutable(t, current, "new")
+	writeTestExecutable(t, installed, "old")
+	var stderr strings.Builder
+
+	err := ensureCurrentBinary(defaultSupervisorOptions(SupervisorOptions{
+		Root: root, GOOS: "linux", Stderr: &stderr,
+		runner:     staticVersionRunner{info: versionInfo{Version: "v1.3.0", Commit: "new"}},
+		executable: installed,
+		supervisor: versionInfo{Version: "v1.2.3", Commit: "old"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(current); err != nil || string(got) != "new" {
+		t.Fatalf("current binary = %q, %v; want newer active binary", got, err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "keeping existing binary") {
+		t.Fatalf("stderr = %q, want skew diagnosis", got)
+	}
+}
+
 func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
 	root, now, _ := setupSupervisorRequest(t)
 	lockPath := filepath.Join(root, "scheduler", "up.lock")
@@ -73,11 +137,13 @@ func TestSupervisorPromotesHealthyCandidate(t *testing.T) {
 	old := <-launcher.started
 	drainAndComplete(t, root, old)
 	candidate := <-launcher.started
-	time.Sleep(30 * time.Millisecond) // Intentional age gap distinguishes stale and current lock timestamps.
-	if err := os.Chtimes(lockPath, now.Add(2*time.Second), now.Add(2*time.Second)); err != nil {
-		t.Fatal(err)
-	}
+	heartbeat := now.Add(time.Second)
+	// Keep advancing heartbeats until the supervisor observes two distinct ticks.
 	waitFor(t, func() bool {
+		heartbeat = heartbeat.Add(time.Second)
+		if err := os.Chtimes(lockPath, heartbeat, heartbeat); err != nil {
+			t.Fatal(err)
+		}
 		_, err := os.Stat(requestPath(root))
 		return errors.Is(err, os.ErrNotExist)
 	})
@@ -154,6 +220,8 @@ func startSupervisor(root string, launcher launcher, escalator escalator) (conte
 			Root: root, GOOS: "linux",
 			Launcher: launcher, Escalator: escalator, PollInterval: 5 * time.Millisecond,
 			DrainTimeout: 100 * time.Millisecond,
+			runner:       staticVersionRunner{info: versionInfo{Version: "v1", Commit: "old"}},
+			supervisor:   versionInfo{Version: "v1", Commit: "old"},
 		})
 	}()
 	return cancel, done
@@ -186,9 +254,22 @@ func stopSupervisor(t *testing.T, root string, cancel context.CancelFunc, proces
 		t.Fatal("supervisor did not stop")
 	}
 }
+
+// waitForBudget is 1s on POSIX; Windows CI runners are measurably slower at
+// the file-mtime polling and process spawning this package's supervisor loop
+// does (ci.yml's windows-smoke job documents the same finding for the
+// package-level `go test` timeout), so give the loop more real time to catch
+// up there rather than tightening the flake margin.
+func waitForBudget() time.Duration {
+	if runtime.GOOS == "windows" {
+		return 5 * time.Second
+	}
+	return time.Second
+}
+
 func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(waitForBudget())
 	for time.Now().Before(deadline) {
 		if condition() {
 			return

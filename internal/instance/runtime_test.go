@@ -9,6 +9,28 @@ import (
 	"testing"
 )
 
+// isCompatibilityAlias reports whether path is a legacy-runtime compatibility
+// alias, and fails the test if path does not exist.
+//
+// Tests must not check fs.ModeSymlink for this. On Windows the alias is a
+// directory junction, which Go 1.23+ deliberately does not report as a symlink,
+// so a ModeSymlink check reads false for a perfectly good alias — and, worse,
+// reads false for a missing one too, so the negative assertions pass for the
+// wrong reason. isLegacyRuntimeAlias is the platform-aware predicate the
+// production code itself uses.
+func isCompatibilityAlias(t *testing.T, path string) bool {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	alias, err := isLegacyRuntimeAlias(path, info)
+	if err != nil {
+		t.Fatalf("inspect compatibility alias %s: %v", path, err)
+	}
+	return alias
+}
+
 func TestGaggleRuntimeLayout(t *testing.T) {
 	root := t.TempDir()
 	layout := NewLayout(root)
@@ -149,9 +171,8 @@ func TestMigrateLegacyRuntimeToSingleGaggle(t *testing.T) {
 		}
 	}
 	for _, path := range []string{layout.RunsDir(), layout.WorkcopiesDir()} {
-		info, err := os.Lstat(path)
-		if err != nil || info.Mode()&os.ModeSymlink == 0 {
-			t.Fatalf("legacy path %s is not a compatibility symlink: %v", path, err)
+		if !isCompatibilityAlias(t, path) {
+			t.Fatalf("legacy path %s is not a compatibility alias", path)
 		}
 	}
 	migration, err = layout.MigrateLegacyRuntimeWithReport([]string{"alpha"})
@@ -214,8 +235,8 @@ func TestMigrateLegacyRuntimeRetainsRetryStateUntilMetadataIsDurable(t *testing.
 		}
 	}
 	for _, path := range []string{layout.RunsDir(), layout.WorkcopiesDir()} {
-		if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
-			t.Fatalf("compatibility alias missing before metadata became durable: %s: %v", path, err)
+		if !isCompatibilityAlias(t, path) {
+			t.Fatalf("compatibility alias missing before metadata became durable: %s", path)
 		}
 	}
 	pending, exists, err := layout.readLegacyRuntimeMigration()
@@ -340,11 +361,7 @@ func TestMigrateLegacyRuntimePreservesAmbiguousRootAfterReducingToOneGaggle(t *t
 		t.Fatalf("transition to new sole gaggle: %v", err)
 	}
 	for _, legacy := range []string{layout.RunsDir(), layout.WorkcopiesDir()} {
-		info, err := os.Lstat(legacy)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		if isCompatibilityAlias(t, legacy) {
 			t.Fatalf("ambiguous legacy runtime %s became a single-gaggle alias", legacy)
 		}
 	}
@@ -371,15 +388,18 @@ func TestMigrateLegacyRuntimeRetainsGeneratedAliases(t *testing.T) {
 			t.Fatalf("MigrateLegacyRuntime(%v): %v", gaggles, err)
 		}
 		for _, alias := range []string{layout.RunsDir(), layout.WorkcopiesDir()} {
-			info, err := os.Lstat(alias)
-			if err != nil || info.Mode()&os.ModeSymlink == 0 {
-				t.Fatalf("legacy alias %s was not retained: %v", alias, err)
+			if !isCompatibilityAlias(t, alias) {
+				t.Fatalf("legacy alias %s was not retained", alias)
 			}
 		}
 		if _, err := os.Stat(legacyRepo); err != nil {
 			t.Fatalf("retained workcopies alias is unusable: %v", err)
 		}
-		target, err := filepath.EvalSymlinks(layout.WorkcopiesDir())
+		// ResolveRuntimeAlias, not EvalSymlinks: the left-hand side is the
+		// alias itself, which is a junction on Windows and would otherwise
+		// resolve to its own path. The right-hand side is a real directory, so
+		// EvalSymlinks is correct there and normalises it the same way.
+		target, err := ResolveRuntimeAlias(layout.WorkcopiesDir())
 		if err != nil {
 			t.Fatal(err)
 		}

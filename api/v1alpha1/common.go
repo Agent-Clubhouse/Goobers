@@ -105,7 +105,7 @@ type BacklogRef struct {
 	// Project scopes the backlog (GitHub repo "owner/name" or ADO project).
 	// +kubebuilder:validation:Required
 	Project string `json:"project" yaml:"project"`
-	// Query/labels narrow which items this gaggle considers work. Routing of an
+	// Labels narrow which items this gaggle considers work. Routing of an
 	// item to a specific workflow is handled by workflow selectors (SCH-010).
 	// +optional
 	Labels []string `json:"labels,omitempty" yaml:"labels,omitempty"`
@@ -121,8 +121,6 @@ type BacklogRef struct {
 	// +kubebuilder:validation:MinLength=1
 	// +optional
 	FieldPredicate string `json:"fieldPredicate,omitempty" yaml:"fieldPredicate,omitempty"`
-	// +optional
-	Query string `json:"query,omitempty" yaml:"query,omitempty"`
 	// ConnectionRef names the connection (credentials) used to reach the backlog.
 	// +optional
 	ConnectionRef string `json:"connectionRef,omitempty" yaml:"connectionRef,omitempty"`

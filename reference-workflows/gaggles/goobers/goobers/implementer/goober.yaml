@@ -26,9 +26,6 @@ spec:
     - agent:model
   policyActions:
     - modify-repository
-  skills:
-    - implement
-    - run-tests
   tools:
     - shell
   scaleFactor: 1

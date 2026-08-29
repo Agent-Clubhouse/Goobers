@@ -34,7 +34,7 @@ const openPRHelp = "Usage: goobers open-pr [path]\n\n" +
 	"Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.\n"
 
 func runOpenPR(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("open-pr", flag.ContinueOnError)
+	fs := newCLIFlagSet("open-pr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "open-pr")
 	if err := fs.Parse(args); err != nil {
@@ -55,41 +55,16 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Explicit per-kind dispatch (github | ado | gitea | default-error): the old
-	// ADO-or-GitHub-default silently opened a gitea-routed repo's PR against
-	// api.github.com with a GitHub capability token.
-	var provider openPRProvider
-	switch repo.Provider {
-	case providers.ProviderADO:
-		adoProvider, err := newADOProviderForOpenPR(root, repo)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		provider = adoProvider
-	case providers.ProviderGitea:
-		token, err := providerToken(capability.ProviderPRWrite)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		giteaProvider, err := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		provider = giteaProvider
-	case providers.ProviderGitHub:
-		token, err := providerToken(capability.ProviderPRWrite)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		provider = newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
-	default:
-		pf(stderr, "error: open-pr does not support repository provider %q\n", repo.Provider)
+	stageProvider, err := newProviderForStage(root, repo, false,
+		withStageProviderCapability(capability.ProviderPRWrite),
+		withStageProviderMutations("pr"),
+		withStageProviderOpenPR(),
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	provider := openPRProvider(stageProvider)
 
 	runID, workflow, err := providerRunContext()
 	if err != nil {

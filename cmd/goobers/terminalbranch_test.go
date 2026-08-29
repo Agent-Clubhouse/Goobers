@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/providers"
@@ -189,6 +190,35 @@ func TestFinalizeTerminalBranchIsIdempotent(t *testing.T) {
 	}
 	if events := terminalBranchCleanupEvents(t, runsDir, runID); len(events) != 1 {
 		t.Fatalf("cleanup events = %d, want 1", len(events))
+	}
+}
+
+func TestFinalizeTerminalBranchPreservesRemediableValidationFailure(t *testing.T) {
+	runsDir, runID, jr := newTerminalBranchJournal(t, true, false)
+	if err := jr.Append(journal.Event{
+		Type:      journal.EventGateEvaluated,
+		Gate:      "local-gate",
+		Verdict:   gate.OutcomeInfra,
+		Target:    "park-escalated",
+		Escalated: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	deleteBranch := func(context.Context, providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
+		calls++
+		return providers.DeleteBranchResult{Deleted: true}, nil
+	}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "app"}
+	if err := finalizeTerminalBranch(runsDir, runID, jr, repo, deleteBranch); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("delete calls = %d, want 0", calls)
+	}
+	events := terminalBranchCleanupEvents(t, runsDir, runID)
+	if len(events) != 1 || events[0].Runner["reason"] != "remediable-validation-failure" {
+		t.Fatalf("cleanup events = %+v, want preserved remediable validation branch", events)
 	}
 }
 
@@ -400,7 +430,7 @@ func TestBuildTerminalBranchDeleteAdmitsDedicatedCapability(t *testing.T) {
 	}
 	t.Cleanup(func() { newTerminalBranchDeleter = previous })
 
-	deleteBranch, repo, err := buildTerminalBranchDelete(cfg, registrar, nil)
+	deleteBranch, repo, err := buildTerminalBranchDelete(cfg, apiv1.RepoRef{}, registrar, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,6 +455,65 @@ func TestBuildTerminalBranchDeleteAdmitsDedicatedCapability(t *testing.T) {
 	}
 }
 
+// TestBuildTerminalBranchDeleteScopesToGaggleProject is the #2692 sibling: a
+// run belonging to a gaggle bound to the SECOND configured repo must have its
+// leftover branch deleted in that repo with that repo's own token. Pinning
+// cfg.Repos[0] made every second-gaggle delete hit the wrong repo, report
+// 'branch-not-found', and leak the real branch forever.
+func TestBuildTerminalBranchDeleteScopesToGaggleProject(t *testing.T) {
+	t.Setenv("FIRST_REPO_TOKEN", "first-repo-token")
+	t.Setenv("SECOND_REPO_TOKEN", "second-repo-token")
+	cfg := &instance.Config{Repos: []instance.RepoRef{
+		{Provider: "github", Owner: "acme", Name: "app", Token: instance.TokenRef{Env: "FIRST_REPO_TOKEN"}},
+		{Provider: "github", Owner: "masra", Name: "site", Token: instance.TokenRef{Env: "SECOND_REPO_TOKEN"}},
+	}}
+	registrar := journal.NewRegistryScrubber()
+	previous := newTerminalBranchDeleter
+	var gotToken string
+	newTerminalBranchDeleter = func(source providers.TokenSource) providers.BranchDeleter {
+		return fakeBranchDeleter(func(ctx context.Context, _ providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
+			token, err := source.Token(ctx)
+			if err != nil {
+				return providers.DeleteBranchResult{}, err
+			}
+			gotToken = token
+			return providers.DeleteBranchResult{Deleted: true}, nil
+		})
+	}
+	t.Cleanup(func() { newTerminalBranchDeleter = previous })
+
+	project := apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "masra", Name: "site"}
+	deleteBranch, repo, err := buildTerminalBranchDelete(cfg, project, registrar, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.Owner != "masra" || repo.Name != "site" {
+		t.Fatalf("repo = %+v, want the gaggle's own masra/site", repo)
+	}
+	if _, err := deleteBranch(context.Background(), providers.DeleteBranchRequest{Repository: repo, Name: "goobers-site/implementation/run"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotToken != "second-repo-token" {
+		t.Fatalf("token = %q, want the gaggle repo's own token", gotToken)
+	}
+
+	// A zero project (single-gaggle / legacy instance) keeps the first repo
+	// and its first-binding token — unchanged behavior.
+	deleteBranch, repo, err = buildTerminalBranchDelete(cfg, apiv1.RepoRef{}, registrar, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.Owner != "acme" || repo.Name != "app" {
+		t.Fatalf("repo = %+v, want first-repo fallback for a zero project", repo)
+	}
+	if _, err := deleteBranch(context.Background(), providers.DeleteBranchRequest{Repository: repo, Name: "goobers/implementation/run"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotToken != "first-repo-token" {
+		t.Fatalf("token = %q, want the first repo's token for a zero project", gotToken)
+	}
+}
+
 // TestBuildTerminalBranchPreparerSkipsCleanupWithoutARepo is issue #587's
 // regression: an instance with no configured repo (the credential-free demo)
 // runs workflows that never touch a branch by design — that absence is not
@@ -436,7 +525,7 @@ func TestBuildTerminalBranchDeleteAdmitsDedicatedCapability(t *testing.T) {
 func TestBuildTerminalBranchPreparerSkipsCleanupWithoutARepo(t *testing.T) {
 	cfg := &instance.Config{}
 	registrar := journal.NewRegistryScrubber()
-	prepare, err := buildTerminalBranchPreparer(instance.Layout{}, cfg, registrar, nil)
+	prepare, err := buildTerminalBranchPreparer(instance.Layout{}, cfg, apiv1.RepoRef{}, registrar, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

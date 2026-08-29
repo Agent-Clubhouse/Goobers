@@ -32,7 +32,7 @@ type prRemediationLifecycleResult struct {
 }
 
 func runPRRemediationLifecycle(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("pr-claim", flag.ContinueOnError)
+	fs := newCLIFlagSet("pr-claim", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "pr-claim")
 	release := fs.Bool("release", false, "release this run's PR claim without checking provider state")
@@ -134,7 +134,7 @@ func writePRRemediationLifecycleResult(result prRemediationLifecycleResult, stdo
 		if result.SelectedNumber == "" {
 			pln(stdout, "no work: this run holds no PR claim")
 		} else {
-			pf(stdout, "no work: claimed PR #%s is no longer open; claim released\n", result.SelectedNumber)
+			pf(stdout, "no work: this run's claimed PR #%s is no longer open; claim released\n", result.SelectedNumber)
 		}
 		return 0
 	}

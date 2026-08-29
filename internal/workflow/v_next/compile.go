@@ -6,16 +6,24 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/builtincmd"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/providerstage"
 	"github.com/goobers/goobers/internal/workflow/internal/model"
 )
 
+// builtinManifest is the provider-stage manifest resolved at this
+// interpreter's own DSL version: a requirement change gated to a later DSL
+// version is invisible here, so editing the manifest for a newer DSL can
+// never re-break shipped 2.0 configs (the ed11ae81 class, #3504).
+var builtinManifest = providerstage.ForVersion(DSLVersion)
+
 type options struct {
-	goobers              map[string]apiv1.GooberSpec
-	knownChecks          map[string]bool
-	knownHarnesses       map[string]bool
-	allowPreviewFeatures *bool
+	goobers                    map[string]apiv1.GooberSpec
+	knownChecks                map[string]bool
+	knownHarnesses             map[string]bool
+	allowPreviewFeatures       *bool
+	gaggleRequiredCapabilities []string
 }
 
 // Option customizes compilation.
@@ -50,6 +58,18 @@ func WithKnownChecks(names []string) Option {
 // admission use the same source of truth.
 func WithKnownHarnesses(names []string) Option {
 	return func(o *options) { o.knownHarnesses = toSet(names) }
+}
+
+// WithGaggleRequiredCapabilities supplies the workflow's gaggle-level runner
+// capability requirements (GaggleSpec.RequiredCapabilities) so per-stage
+// platform admission (#2861) evaluates each stage's EFFECTIVE requirement set
+// — the gaggle-level tokens union the stage-level ones, mirroring
+// internal/instance's schedule-time merge (WorkflowRequiredCapabilities).
+// Callers that hold the gaggle must pass it: a gaggle-level os= token is a
+// platform every stage shares, and evaluating stage-level requirements alone
+// could flag a transition the shared token proves same-platform.
+func WithGaggleRequiredCapabilities(caps []string) Option {
+	return func(o *options) { o.gaggleRequiredCapabilities = caps }
 }
 
 // PreviewFeaturesAnnotation is the instance Manifest annotation that explicitly
@@ -161,8 +181,15 @@ func blockingFeatureProblems(diagnostics []FeatureDiagnostic) []string {
 // a capability outside the canonical registry (internal/capability, issue #74),
 // stages using capabilities their goober does not grant, and goobers on an
 // unknown harness when WithKnownHarnesses is also supplied. Built-in task
-// capability requirements are always enforced. Errors are aggregated so one
-// compile reports every problem, each message actionable on its own.
+// capability requirements are always enforced (a declared capability that
+// explicitly subsumes the required one satisfies it —
+// internal/capability.Subsumes); a deterministic shell-out task naming a
+// `goobers` subcommand outside the internal/builtincmd inventory is
+// rejected (a non-shell inputs.kind exempts its placeholder command); and a
+// provably cross-platform task transition handing off unpushed repo
+// workspace state is rejected (#2861, see pushBoundaryProblems). Errors are
+// aggregated so one compile reports every problem, each message actionable
+// on its own.
 func Compile(def Definition, opts ...Option) (*Machine, error) {
 	o := &options{}
 	for _, opt := range opts {
@@ -205,17 +232,58 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	problems = append(problems, gateOutcomeProblems(def, o.knownChecks)...)
 	problems = append(problems, triggerFieldProblems(def)...)
 	problems = append(problems, admissionProblems(def, o.goobers, o.knownHarnesses, true)...)
+	problems = append(problems, pushBoundaryProblems(def, o.gaggleRequiredCapabilities)...)
 	problems = append(problems, gateVocabProblems(def)...)
 	problems = append(problems, gateParamProblems(def)...)
 	problems = append(problems, workspaceProblems(def)...)
 	problems = append(problems, dottedStateNameProblems(def)...)
 	problems = append(problems, parallelProblems(m)...)
+	problems = append(problems, claimLedgerPlacementProblems(def)...)
 
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
 	}
 
 	return m, nil
+}
+
+func claimLedgerPlacementProblems(def Definition) []string {
+	var firstTask string
+	var firstPlacement []string
+	for _, task := range def.Spec.Tasks {
+		if task.Run == nil || len(task.Run.Command) < 2 || task.Run.Command[0] != "goobers" ||
+			!builtinManifest.MutatesClaimLedger(task.Run.Command[1], task.Run.Command[2:]) {
+			continue
+		}
+		placement := canonicalPlacement(task.RequiredCapabilities)
+		if firstTask == "" {
+			firstTask = task.Name
+			firstPlacement = placement
+			continue
+		}
+		if strings.Join(placement, "\x00") != strings.Join(firstPlacement, "\x00") {
+			return []string{fmt.Sprintf(
+				"claims-mutating tasks %q and %q declare incompatible requiredCapabilities %q and %q; all claims-mutating tasks must use identical placement requirements",
+				firstTask, task.Name, firstPlacement, placement,
+			)}
+		}
+	}
+	return nil
+}
+
+func canonicalPlacement(required []string) []string {
+	placement := append([]string(nil), required...)
+	sort.Strings(placement)
+	if len(placement) < 2 {
+		return placement
+	}
+	distinct := placement[:1]
+	for _, value := range placement[1:] {
+		if value != distinct[len(distinct)-1] {
+			distinct = append(distinct, value)
+		}
+	}
+	return distinct
 }
 
 func runScriptProblems(def Definition) []string {
@@ -399,15 +467,59 @@ func reachabilityProblems(m *Machine) []string {
 // and harness checks require the referenced goober definitions.
 func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, knownHarnesses map[string]bool, checkAllGooberCapabilities bool) []string {
 	var problems []string
+	maxConcurrentRuns := def.Spec.Readiness.MaxConcurrentRuns
+	if maxConcurrentRuns <= 0 {
+		maxConcurrentRuns = 1
+	}
+	if def.Spec.Readiness.DesiredConcurrentRuns > maxConcurrentRuns {
+		problems = append(problems, fmt.Sprintf(
+			"spec.readiness.desiredConcurrentRuns (%d) must be less than or equal to spec.readiness.maxConcurrentRuns (%d)",
+			def.Spec.Readiness.DesiredConcurrentRuns,
+			maxConcurrentRuns,
+		))
+	}
+	for _, task := range def.Spec.Tasks {
+		if task.NestedAgentPolicy == nil {
+			continue
+		}
+		if task.Type != apiv1.TaskAgentic {
+			problems = append(problems, fmt.Sprintf("task %q: nestedAgentPolicy is only valid for agentic tasks", task.Name))
+			continue
+		}
+		if err := task.NestedAgentPolicy.Validate(); err != nil {
+			problems = append(problems, fmt.Sprintf("task %q: %v", task.Name, err))
+		}
+	}
 	for _, t := range def.Spec.Tasks {
 		capabilities := toSet(t.Capabilities)
 		if t.Run != nil && len(t.Run.Command) >= 2 && t.Run.Command[0] == "goobers" {
 			subcommand := t.Run.Command[1]
-			for _, use := range providerstage.RequiredCapabilities(subcommand, t.Run.Command[2:]) {
-				if !capabilities[string(use.Capability)] {
+			// A deterministic stage that actually shells out (inputs.kind empty
+			// or "shell") may only invoke an inventoried built-in subcommand
+			// (internal/builtincmd): anything else reaches the CLI's own
+			// unknown-command error only at runtime, after the run has already
+			// claimed work and provisioned a worktree. The kind exemption is
+			// load-bearing: a non-shell inputs.kind (ci-poll,
+			// external-telemetry) dispatches on the kind and the command is a
+			// schema-required placeholder that must stay unchecked.
+			if t.Type == apiv1.TaskDeterministic && isShellStage(t) && !builtincmd.Known(subcommand) {
+				problems = append(problems, unknownSubcommand(t.Name, subcommand))
+			}
+			for _, use := range builtinManifest.RequiredCapabilities(subcommand, t.Run.Command[2:]) {
+				// Most requirements accept an explicitly subsuming capability,
+				// but separately brokered credentials must be declared exactly.
+				satisfied := anyCapabilitySatisfies(t.Capabilities, use.Capability)
+				if use.RequiresExactCapability() {
+					satisfied = hasExactCapability(t.Capabilities, use.Capability)
+				}
+				if !satisfied {
+					var credential string
+					if use.RequiresExactCapability() {
+						credential = fmt.Sprintf(" (requires %s)", capability.CredentialEnvVar(string(use.Capability)))
+					}
 					problems = append(problems, fmt.Sprintf(
-						"task %q invokes built-in subcommand %q but does not declare capability %q; %s",
-						t.Name, subcommand, use.Capability, use.Consequence,
+						"task %q invokes built-in subcommand %q but does not declare capability %q%s; %s",
+						t.Name, subcommand, use.Capability, credential, use.Consequence,
 					))
 				}
 			}
@@ -453,10 +565,10 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		}
 	}
 
-	checkHarness := func(gooberName, ctx string) {
+	checkHarness := func(gooberName, ctx string) (apiv1.GooberSpec, apiv1.Harness, bool) {
 		g, ok := goobers[gooberName]
 		if !ok {
-			return // existence is the config validator's cross-ref concern.
+			return apiv1.GooberSpec{}, "", false // existence is the config validator's cross-ref concern.
 		}
 		h := g.Harness
 		if h == "" {
@@ -465,6 +577,13 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		if knownHarnesses != nil && !knownHarnesses[string(h)] {
 			problems = append(problems, fmt.Sprintf("%s goober %q uses unknown harness %q", ctx, gooberName, h))
 		}
+		if requiresModelCapability(h, knownHarnesses) && !toSet(g.Capabilities)[string(capability.AgentModel)] {
+			problems = append(problems, fmt.Sprintf(
+				"%s uses goober %q (harness: %s) but the goober does not grant capability %q; the harness will receive no model credential",
+				ctx, gooberName, h, capability.AgentModel,
+			))
+		}
+		return g, h, true
 	}
 
 	for _, t := range def.Spec.Tasks {
@@ -483,8 +602,7 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 		if t.Type != apiv1.TaskAgentic || t.Goober == "" {
 			continue
 		}
-		checkHarness(t.Goober, fmt.Sprintf("task %q", t.Name))
-		g, ok := goobers[t.Goober]
+		g, h, ok := checkHarness(t.Goober, fmt.Sprintf("task %q", t.Name))
 		if !ok {
 			continue
 		}
@@ -495,6 +613,12 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 			}
 		}
 		taskCapabilities := toSet(t.Capabilities)
+		if requiresModelCapability(h, knownHarnesses) && !taskCapabilities[string(capability.AgentModel)] {
+			problems = append(problems, fmt.Sprintf(
+				"task %q uses goober %q (harness: %s) but does not declare capability %q; the harness will receive no model credential",
+				t.Name, t.Goober, h, capability.AgentModel,
+			))
+		}
 		requiredMCPCapabilities := map[string]bool{}
 		for _, server := range g.MCPServers {
 			for _, ref := range server.CredentialRefs {
@@ -517,10 +641,14 @@ func admissionProblems(def Definition, goobers map[string]apiv1.GooberSpec, know
 	}
 	for _, gate := range def.Spec.Gates {
 		if gate.Evaluator == apiv1.EvaluatorAgentic && gate.Agentic != nil && gate.Agentic.Goober != "" {
-			checkHarness(gate.Agentic.Goober, fmt.Sprintf("gate %q reviewer", gate.Name))
+			_, _, _ = checkHarness(gate.Agentic.Goober, fmt.Sprintf("gate %q reviewer", gate.Name))
 		}
 	}
 	return problems
+}
+
+func requiresModelCapability(h apiv1.Harness, knownHarnesses map[string]bool) bool {
+	return knownHarnesses != nil && (h == apiv1.HarnessCopilot || h == apiv1.HarnessClaudeCode)
 }
 
 func unknownCapability(value string) string {
@@ -529,6 +657,162 @@ func unknownCapability(value string) string {
 		message += fmt.Sprintf(" (did you mean %q?)", suggestion)
 	}
 	return message
+}
+
+// anyCapabilitySatisfies reports whether any declared capability satisfies a
+// requirement for required — exact membership or an explicit subsumption
+// (internal/capability.Subsumes).
+func anyCapabilitySatisfies(declared []string, required capability.Capability) bool {
+	for _, held := range declared {
+		if capability.Subsumes(capability.Capability(held), required) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExactCapability(declared []string, required capability.Capability) bool {
+	for _, held := range declared {
+		if capability.Capability(held) == required {
+			return true
+		}
+	}
+	return false
+}
+
+func unknownSubcommand(taskName, subcommand string) string {
+	message := fmt.Sprintf(
+		"task %q shells out to unknown built-in subcommand %q (not in the built-in inventory; the stage would only fail at runtime)",
+		taskName, subcommand,
+	)
+	if suggestion, ok := builtincmd.Suggest(subcommand); ok {
+		message += fmt.Sprintf(" (did you mean %q?)", suggestion)
+	}
+	return message
+}
+
+// pushBoundaryProblems rejects a provably cross-platform task transition that
+// hands off unpushed repo workspace state (#2861, admission-scoped MVP): when
+// task A transitions to task B (directly or through gates), BOTH declare
+// explicit os= runner-capability tokens pinning disjoint platforms (each
+// stage's EFFECTIVE set — gaggle-level requirements union stage-level ones),
+// A runs in a writable repo workspace, and A is not itself a push boundary (a
+// stage invoking the push-branch or push-remediated built-in), then B's
+// runner can never see A's worktree state — the branch must be published
+// before the platform crossing. Stages WITHOUT explicit os= tokens are never
+// flagged: absence of a token is not absence of a platform difference, but
+// admission cannot prove one, and only provable crossings reject (the
+// conservative-noise tradeoff was ruled against).
+func pushBoundaryProblems(def Definition, gaggleRequired []string) []string {
+	tasks := make(map[string]apiv1.Task, len(def.Spec.Tasks))
+	for _, t := range def.Spec.Tasks {
+		tasks[t.Name] = t
+	}
+	gates := make(map[string]apiv1.Gate, len(def.Spec.Gates))
+	for _, g := range def.Spec.Gates {
+		gates[g.Name] = g
+	}
+
+	var problems []string
+	for _, t := range def.Spec.Tasks {
+		upstream := osTokens(gaggleRequired, t.RequiredCapabilities)
+		if len(upstream) == 0 || !writesRepoWorkspace(t) || isPushBoundaryStage(t) {
+			continue
+		}
+		for _, successor := range taskSuccessorsThroughGates(t, tasks, gates) {
+			downstream := osTokens(gaggleRequired, tasks[successor].RequiredCapabilities)
+			if len(downstream) == 0 || tokenSetsIntersect(upstream, downstream) {
+				continue
+			}
+			problems = append(problems, fmt.Sprintf(
+				"task %q (%s) writes repo workspace state and transitions to task %q (%s) on a provably different platform with no push boundary; make %q invoke the push-branch (or push-remediated) built-in, or insert such a stage on %q's platform before the transition, so the branch is published before crossing runners",
+				t.Name, strings.Join(upstream, ", "), successor, strings.Join(downstream, ", "), t.Name, t.Name,
+			))
+		}
+	}
+	return problems
+}
+
+// osTokens returns the sorted, de-duplicated os= tokens in a stage's
+// effective runner-capability requirements — its gaggle's RequiredCapabilities
+// union its own (the same merge internal/instance applies at schedule time).
+func osTokens(gaggleRequired, stageRequired []string) []string {
+	seen := map[string]bool{}
+	var tokens []string
+	for _, c := range append(append([]string(nil), gaggleRequired...), stageRequired...) {
+		if strings.HasPrefix(c, "os=") && !seen[c] {
+			seen[c] = true
+			tokens = append(tokens, c)
+		}
+	}
+	sort.Strings(tokens)
+	return tokens
+}
+
+func tokenSetsIntersect(a, b []string) bool {
+	set := toSet(a)
+	for _, token := range b {
+		if set[token] {
+			return true
+		}
+	}
+	return false
+}
+
+// writesRepoWorkspace reports whether a task runs on the writable repository
+// worktree — Run.Workspace when set (authoritative for deterministic tasks),
+// else Task.Workspace, else the historical writable-repo default.
+func writesRepoWorkspace(t apiv1.Task) bool {
+	workspace := t.Workspace
+	if t.Run != nil && t.Run.Workspace != "" {
+		workspace = t.Run.Workspace
+	}
+	return workspace == "" || workspace.IsWritableRepo()
+}
+
+// isPushBoundaryStage reports whether a task is itself the push boundary: a
+// shell-out to the push-branch or push-remediated built-in, which publishes
+// the run branch so a subsequent stage on any runner can fetch it.
+func isPushBoundaryStage(t apiv1.Task) bool {
+	if !isShellStage(t) || len(t.Run.Command) < 2 || t.Run.Command[0] != "goobers" {
+		return false
+	}
+	return t.Run.Command[1] == "push-branch" || t.Run.Command[1] == "push-remediated"
+}
+
+// taskSuccessorsThroughGates returns the names of every task reachable from
+// t's Next by crossing only gates — the tasks that can run immediately after
+// t with no intermediate stage. Terminals, reserved targets, and parallel
+// states end the walk (a parallel's branches are scheduled by the
+// orchestrator, not handed t's worktree). The result is deterministic:
+// discovery order with gate branches visited in sorted-outcome order.
+func taskSuccessorsThroughGates(t apiv1.Task, tasks map[string]apiv1.Task, gates map[string]apiv1.Gate) []string {
+	var successors []string
+	seenTasks := map[string]bool{}
+	seenGates := map[string]bool{}
+	var walk func(target string)
+	walk = func(target string) {
+		if !isStateName(target) {
+			return
+		}
+		if _, ok := tasks[target]; ok {
+			if !seenTasks[target] {
+				seenTasks[target] = true
+				successors = append(successors, target)
+			}
+			return
+		}
+		gate, ok := gates[target]
+		if !ok || seenGates[target] {
+			return
+		}
+		seenGates[target] = true
+		for _, outcome := range sortedKeys(gate.Branches) {
+			walk(gate.Branches[outcome])
+		}
+	}
+	walk(t.Next)
+	return successors
 }
 
 // agenticOutcomes is the closed set of decisions an agentic gate's reviewer

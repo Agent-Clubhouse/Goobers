@@ -15,6 +15,7 @@ import (
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 const runsHelp = "Usage: goobers runs <command> [flags] [path]\n\n" +
@@ -63,7 +64,7 @@ const runsDuHelp = "Usage: goobers runs du [--json] [path]\n\n" +
 	"Exit codes: 0 = OK, 2 = usage/IO error.\n"
 
 func runRunsDU(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("runs du", flag.ContinueOnError)
+	fs := newCLIFlagSet("runs du", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOutput := fs.Bool("json", false, "emit disk usage as JSON")
 	fs.Usage = helpUsage(stderr, "runs du")
@@ -181,6 +182,7 @@ type runSummary struct {
 	Phase          journal.RunPhase
 	StartedAt      time.Time
 	LastActivityAt time.Time
+	Operator       readservice.OperatorRunSummary
 }
 
 // listRuns scans an instance's runs/ directory for run subdirectories and

@@ -25,7 +25,7 @@ func TestBacklogHealthProviderDispatchesADOAndGitea(t *testing.T) {
 	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
 		t.Run(string(kind), func(t *testing.T) {
 			root, repo := providerDispatchFixture(t, kind)
-			provider, err := newBacklogHealthProvider(root, repo)
+			provider, err := newBacklogHealthProvider(root, repo, true)
 			if err != nil {
 				t.Fatalf("newBacklogHealthProvider(%s): %v", kind, err)
 			}
@@ -147,6 +147,73 @@ func TestMeasureReadyPoolDepthAndAge(t *testing.T) {
 	}
 }
 
+func TestAnnotateReadyTimesSkipsClosedItems(t *testing.T) {
+	readyAt := time.Date(2026, time.July, 23, 10, 0, 0, 0, time.UTC)
+	items := []providers.WorkItem{
+		{ID: "closed", State: "closed", Labels: []string{providers.LabelReady}},
+		{ID: "open", State: "open", Labels: []string{providers.LabelReady}},
+	}
+	transitions := []providers.WorkItemLabelTransition{{
+		ItemID: "open", Label: providers.LabelReady, Added: true, OccurredAt: readyAt,
+	}}
+
+	if err := annotateReadyTimes(items, providers.LabelReady, transitions); err != nil {
+		t.Fatalf("annotateReadyTimes: %v", err)
+	}
+	if items[0].ReadyAt != nil {
+		t.Fatalf("closed item readyAt = %v, want nil", items[0].ReadyAt)
+	}
+	if items[1].ReadyAt == nil || !items[1].ReadyAt.Equal(readyAt) {
+		t.Fatalf("open item readyAt = %v, want %v", items[1].ReadyAt, readyAt)
+	}
+
+	if err := annotateReadyTimes(items[1:], providers.LabelReady, nil); err == nil {
+		t.Fatal("annotateReadyTimes accepted open ready item without an active label-add event")
+	}
+}
+
+func TestResolveImplementationFeedbackReadyAtSkipsUnexplainedReadyItem(t *testing.T) {
+	provider := &implementationFeedbackTransitionProvider{
+		transitions: [][]providers.WorkItemLabelTransition{nil, nil},
+	}
+	item := providers.WorkItem{
+		ID:     "ready-without-history",
+		State:  "open",
+		Labels: []string{providers.LabelReady},
+	}
+
+	_, eligible, err := resolveImplementationFeedbackReadyAt(
+		context.Background(),
+		provider,
+		providers.RepositoryRef{Provider: providers.ProviderGitHub},
+		item,
+		providers.LabelReady,
+	)
+	if err != nil {
+		t.Fatalf("resolveImplementationFeedbackReadyAt: %v", err)
+	}
+	if eligible {
+		t.Fatal("unexplained ready item was eligible")
+	}
+	if provider.calls != 2 {
+		t.Fatalf("transition reads = %d, want fallback read", provider.calls)
+	}
+}
+
+type implementationFeedbackTransitionProvider struct {
+	providers.BacklogProvider
+	transitions [][]providers.WorkItemLabelTransition
+	calls       int
+}
+
+func (p *implementationFeedbackTransitionProvider) ListWorkItemLabelTransitionsForItem(
+	context.Context, providers.RepositoryRef, string, string,
+) ([]providers.WorkItemLabelTransition, error) {
+	result := p.transitions[p.calls]
+	p.calls++
+	return result, nil
+}
+
 func TestBacklogHealthCommandWritesFlatSnapshot(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -166,7 +233,7 @@ func TestBacklogHealthCommandWritesFlatSnapshot(t *testing.T) {
 	); err != nil {
 		t.Fatalf("remove ready label: %v", err)
 	}
-	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "health-run")
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_READ", "health-run")
 	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
 	workDir := t.TempDir()
 	t.Chdir(workDir)

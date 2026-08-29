@@ -76,7 +76,7 @@ func TestBacklogQueryHasNoShippedFailBranchConsumers(t *testing.T) {
 		}
 	}
 
-	const wantProducers = 11
+	const wantProducers = 16
 	if producers != wantProducers {
 		t.Fatalf("found %d shipped backlog-query stages, want audited inventory of %d", producers, wantProducers)
 	}
@@ -141,6 +141,7 @@ func TestBacklogQueryFatalProviderPathInventory(t *testing.T) {
 		"compute claimed-item staleness":            1,
 		"compute read-only re-sweep staleness":      1,
 		"release backlog claims":                    1,
+		"verify decomposition publication barrier":  2,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fatal provider path inventory = %v, want %v; add fault-injection coverage for any new path", got, want)

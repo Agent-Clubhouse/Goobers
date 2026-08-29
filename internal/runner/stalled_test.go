@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,20 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/worktree"
 )
+
+// stalledWaitTimeout is the budget these tests give an async run/escalation
+// to reach the state they're polling for. Windows CI runners are measurably
+// slower at the process/goroutine-scheduling and file I/O this package
+// exercises than POSIX ones (ci.yml's windows-smoke job documents the same
+// finding for the package-level `go test` timeout), so 5s that's comfortable
+// on Linux/macOS CI intermittently starved these tests of time on Windows.
+// Widen instead of shrinking the margin further with the flake.
+func stalledWaitTimeout() time.Duration {
+	if runtime.GOOS == "windows" {
+		return 20 * time.Second
+	}
+	return 5 * time.Second
+}
 
 type wedgedDeterministic struct {
 	started chan struct{}
@@ -54,7 +69,7 @@ func waitForRunEvent(t *testing.T, runDir, description string, matches func(jour
 	t.Helper()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	timeout := time.NewTimer(5 * time.Second)
+	timeout := time.NewTimer(stalledWaitTimeout())
 	defer timeout.Stop()
 	for {
 		reader, err := journal.OpenRead(runDir)
@@ -771,7 +786,7 @@ func TestEscalateStalledDoesNotTakeOverNormalTerminalPreparation(t *testing.T) {
 
 	select {
 	case <-prepareStarted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(stalledWaitTimeout()):
 		t.Fatal("run did not enter normal terminal preparation")
 	}
 
@@ -866,7 +881,7 @@ func TestEscalateStalledTakesOverWedgedOwnerAfterIdleHeartbeatTicks(t *testing.T
 
 	select {
 	case <-wedged.started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(stalledWaitTimeout()):
 		t.Fatal("wedged executor did not start")
 	}
 	for i := 0; i < 2; i++ {
@@ -924,7 +939,7 @@ func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *t
 	}()
 	runID := "progressing-gate"
 	machine := agenticGateMachine(t)
-	r := newAgenticGateRunner(t, map[string]stubTaskResult{
+	r, _ := newAgenticGateRunner(t, map[string]stubTaskResult{
 		runID + ":implement": {status: apiv1.ResultSuccess},
 	}, reviewer, nil)
 	taskTicker := &fakeHeartbeatTicker{ticks: make(chan time.Time), stopped: make(chan struct{})}
@@ -1001,7 +1016,7 @@ func TestEscalateStalledPreservesProgressingAgenticGateBeforeHeartbeatFlush(t *t
 		if outcome.err != nil || outcome.result.Phase != journal.PhaseCompleted {
 			t.Fatalf("Start() = %+v, %v", outcome.result, outcome.err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(stalledWaitTimeout()):
 		t.Fatal("run did not finish after reviewer release")
 	}
 }

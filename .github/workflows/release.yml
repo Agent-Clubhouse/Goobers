@@ -2,28 +2,33 @@ name: Release
 
 on:
   push:
+    # The trailing "*" matches past embedded dots/dashes, so this also
+    # triggers on pre-release tags (e.g. "v1.2.3-beta.2") — see
+    # docs/guides/releases.md "Pre-release tags".
     tags:
       - "v*.*.*"
+  workflow_dispatch:
 
 permissions:
   contents: write
+  id-token: write
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build and publish ${{ github.ref_name }}
+  build:
+    name: Build release artifacts
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -85,6 +90,291 @@ jobs:
             -output dist \
             "${baseline[@]}"
 
+      - name: Upload unsigned artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dist-unsigned
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  sign-macos:
+    name: Sign and notarize macOS binaries
+    needs: build
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download unsigned artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: dist-unsigned
+          path: dist
+
+      # Bare-file executable bits (install.sh) aren't guaranteed to survive an
+      # upload/download round-trip; the binaries inside the tar/zip archives
+      # carry their own mode as archive metadata and are unaffected.
+      - name: Restore executable bits
+        run: chmod -R a+x dist
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          CERT_PATH="$RUNNER_TEMP/apple-cert.p12"
+
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 1800 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm -f "$CERT_PATH"
+
+          # codesign resolves signing identities through the keychain search
+          # list, not just an explicit --keychain flag on the sign command —
+          # without this, codesign reports "no identity found" even when
+          # --keychain correctly points at the unlocked keychain containing
+          # the imported identity. Existing keychains are preserved, not
+          # replaced.
+          existing_keychains="$(security list-keychains -d user | sed 's/[[:space:]]*"//;s/"$//')"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $existing_keychains
+
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Discover signing identity
+        run: |
+          set -euo pipefail
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep "Developer ID Application" \
+            | head -n 1 \
+            | sed -E 's/.*"(.+)"/\1/')"
+          if [[ -z "$IDENTITY" ]]; then
+            echo "::error::No 'Developer ID Application' identity found in the imported certificate."
+            exit 1
+          fi
+          echo "IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      # Signs the raw binary inside each darwin archive, submits it for
+      # notarization, and re-packages the archive under the same name.
+      # Stapling doesn't apply here: `stapler staple` only works on
+      # .app/.pkg/.dmg bundles, not a bare Mach-O executable, so this is
+      # online-only notarization (see docs/guides/releases.md).
+      - name: Sign and notarize darwin binaries
+        env:
+          TAG: ${{ github.ref_name }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for ARCH in amd64 arm64; do
+            ARCHIVE="dist/goobers_${TAG}_darwin_${ARCH}.tar.gz"
+            WORKDIR="$RUNNER_TEMP/darwin-${ARCH}"
+            mkdir -p "$WORKDIR"
+            tar -xzf "$ARCHIVE" -C "$WORKDIR"
+            chmod 755 "$WORKDIR/goobers"
+
+            codesign --force --options runtime --timestamp \
+              --keychain "$KEYCHAIN_PATH" --sign "$IDENTITY" \
+              "$WORKDIR/goobers"
+            codesign --verify --deep --strict "$WORKDIR/goobers"
+
+            NOTARIZE_ZIP="$RUNNER_TEMP/goobers-notarize-${ARCH}.zip"
+            ditto -c -k --keepParent "$WORKDIR/goobers" "$NOTARIZE_ZIP"
+            xcrun notarytool submit "$NOTARIZE_ZIP" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_ID_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait --timeout 20m
+
+            rm -f "$ARCHIVE"
+            tar -czf "$ARCHIVE" -C "$WORKDIR" $(ls -A "$WORKDIR")
+            rm -rf "$WORKDIR" "$NOTARIZE_ZIP"
+          done
+
+      # sha256sum isn't guaranteed on the macOS runner image (GNU coreutils);
+      # shasum always ships. Same "<hex>  <filename>" format as
+      # release/pack.go's checksumsManifest, so the later `sha256sum --check`
+      # on a Linux runner still verifies.
+      - name: Recompute SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist
+          files="$(awk '{print $2}' SHA256SUMS)"
+          : > SHA256SUMS.new
+          for f in $files; do
+            shasum -a 256 "$f" >> SHA256SUMS.new
+          done
+          sort SHA256SUMS.new -o SHA256SUMS
+          rm SHA256SUMS.new
+
+      - name: Clean up signing keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dist-signed
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  sign-windows:
+    name: Sign Windows binary
+    needs: sign-macos
+    runs-on: windows-latest
+    timeout-minutes: 30
+    # Entra federated identity credentials match the OIDC subject claim
+    # exactly — there is no wildcard support, so a per-tag subject
+    # (refs/tags/*) never matches a real tag push. Scoping to a GitHub
+    # Environment gives a stable, exact subject regardless of which tag
+    # triggered the run. Matches the sibling Clubhouse product's working
+    # setup (repo:Agent-Clubhouse/Clubhouse:environment:release).
+    environment: release
+    steps:
+      - name: Download signed artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: dist-signed
+          path: dist
+
+      # Explicit bash: the Windows runner defaults to PowerShell.
+      - name: Extract goobers.exe
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir winsign
+          unzip -q "dist/goobers_${TAG}_windows_amd64.zip" -d winsign
+
+      - name: Azure login
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Reuses the sibling Clubhouse product's certificate profile — a
+      # code-signing certificate identifies the publisher (Mason Allen), not
+      # a specific product, matching how macOS signing above already reuses
+      # one Apple Developer ID for both. No separate Windows identity or
+      # Azure resource is needed.
+      - name: Sign goobers.exe
+        uses: azure/trusted-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82
+        with:
+          endpoint: https://wus2.codesigning.azure.net/
+          trusted-signing-account-name: Clubhouse-Win-Signing
+          certificate-profile-name: clubhouse-win-codesign
+          files-folder: winsign
+          files-folder-filter: exe
+          files-folder-depth: 1
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify Authenticode signature
+        run: |
+          $path = 'winsign\goobers.exe'
+          $pe = [IO.File]::ReadAllBytes($path)
+          $optionalHeader = [BitConverter]::ToInt32($pe, 0x3c) + 24
+          $dataDirectoryOffset = switch ([BitConverter]::ToUInt16($pe, $optionalHeader)) {
+            0x10b { 96 }
+            0x20b { 112 }
+            default { throw "Unsupported PE optional-header format in $path" }
+          }
+          $certificateTable = $optionalHeader + $dataDirectoryOffset + (4 * 8)
+          $certificateOffset = [BitConverter]::ToUInt32($pe, $certificateTable)
+          $certificateSize = [BitConverter]::ToUInt32($pe, $certificateTable + 4)
+          if ($certificateOffset -eq 0 -or $certificateSize -eq 0) {
+            throw "PE Certificate Table is empty: $path is unsigned"
+          }
+          if ([uint64]$certificateOffset + $certificateSize -gt $pe.Length) {
+            throw "PE Certificate Table extends beyond the end of $path"
+          }
+
+          $signature = Get-AuthenticodeSignature -FilePath $path
+          if ($signature.Status -ne 'Valid') {
+            throw "Authenticode signature is not valid: $($signature.Status) ($($signature.StatusMessage))"
+          }
+
+      # bash on the windows-latest image has no `zip`; Compress-Archive is
+      # built into Windows and needs no extra install.
+      - name: Repackage signed archive
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $Archive = "dist\goobers_${env:TAG}_windows_amd64.zip"
+          Remove-Item -ErrorAction SilentlyContinue $Archive
+          Compress-Archive -Path (Join-Path winsign '*') -DestinationPath $Archive
+          Remove-Item -Recurse -Force winsign
+
+      # --text forces GNU coreutils' non-asterisk "<hex>  <filename>" marker;
+      # its Windows build defaults to binary-mode "<hex> *<filename>", which
+      # breaks the later `grep --fixed-strings "  <filename>"` checks in
+      # "Verify release artifacts" (shasum never adds this marker at all).
+      - name: Recompute SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v sha256sum >/dev/null 2>&1; then
+            cksum() { sha256sum --text "$1"; }
+          else
+            cksum() { shasum -a 256 "$1"; }
+          fi
+          cd dist
+          files="$(awk '{print $2}' SHA256SUMS)"
+          : > SHA256SUMS.new
+          for f in $files; do
+            cksum "$f" >> SHA256SUMS.new
+          done
+          sort SHA256SUMS.new -o SHA256SUMS
+          rm SHA256SUMS.new
+
+      - name: Upload fully-signed artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dist-signed
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  verify-and-publish:
+    name: Verify and publish ${{ github.ref_name }}
+    needs: sign-windows
+    runs-on: ubuntu-latest
+    steps:
+      # "Generate release notes" below shells out to real git commands for
+      # changelog history, so this job needs its own checkout (the previous
+      # single-job design got this for free; a download-artifact-only
+      # workspace has no .git at all).
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download signed artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: dist-signed
+          path: dist
+
+      - name: Restore executable bits
+        run: chmod -R a+x dist
+
       - name: Generate release notes
         env:
           TAG: ${{ github.ref_name }}
@@ -122,7 +412,6 @@ jobs:
           grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
           grep --fixed-strings "goobers-${TAG} init --guided ./my-instance" smoke/docs/guides/quickstart.md
           grep --fixed-strings "goobers-${TAG} run implementation ./my-instance" smoke/docs/guides/quickstart.md
-          grep --fixed-strings "GOOBERS_RELEASE_ROOT=\"\${GOOBERS_RELEASE_ROOT:-\${GOOBERS_DATA_ROOT}/${TAG}}\"" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "go build -o bin/goobers" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "bin/goobers init" smoke/docs/guides/quickstart.md
           test -f smoke/onboarding/manifest.json
@@ -134,21 +423,8 @@ jobs:
           mkdir onboarding-asset
           unzip -q "dist/goobers-onboarding_${TAG}.zip" -d onboarding-asset
           diff --recursive smoke/onboarding onboarding-asset
-          printf '%s\n' \
-            'new-local' \
-            'smoke/quickstart-config' \
-            'Agent-Clubhouse/Goobers' \
-            '' \
-            'implementation' \
-            '' \
-            '' \
-            '' \
-            '' \
-            '' \
-            '' \
-            'no' \
-            'yes' |
-            goobers init --guided smoke/quickstart-instance
+          goobers init --guided smoke/quickstart-instance \
+            < cmd/goobers/testdata/guided-init-release.answers
           goobers validate smoke/quickstart-instance
           test -f smoke/quickstart-instance/config/gaggles/goobers/workflows/implementation.yaml
           test -f smoke/quickstart-config/instance.yaml.example
@@ -166,12 +442,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          # Stable tags never contain a literal "-"; a SemVer pre-release
+          # suffix always does (v1.2.3-beta.2), so this is enough to tell
+          # them apart without re-implementing the full grammar in bash.
+          prerelease=()
+          if [[ "$TAG" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md
+            gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md "${prerelease[@]}"
             gh release upload "$TAG" dist/* --clobber
           else
             gh release create "$TAG" dist/* \
               --verify-tag \
               --title "$TAG" \
-              --notes-file dist/RELEASE_NOTES.md
+              --notes-file dist/RELEASE_NOTES.md \
+              "${prerelease[@]}"
           fi

@@ -160,7 +160,7 @@ func TestRunEndToEnd(t *testing.T) {
 			t.Errorf("README.md missing installed onboarding command %q:\n%s", want, readme)
 		}
 	}
-	for _, stale := range []string{"curl -fsSL", "install.sh", "$HOME/.local/bin/goobers", "bin/goobers init"} {
+	for _, stale := range []string{"curl -fsSL", "install.sh", "$HOME/.local/bin", "bin/goobers init"} {
 		if strings.Contains(string(readme), stale) {
 			t.Errorf("README.md retains pre-install command %q:\n%s", stale, readme)
 		}
@@ -199,8 +199,8 @@ func TestRunEndToEnd(t *testing.T) {
 		"--destination ./getting-started-task-api",
 		"--json",
 		"embeds the release-matched sample",
-		"--work-tracking owner/repo",
-		"GOOBERS_GITHUB_ISSUES_TOKEN",
+		"goobers-v1.2.3 connect <owner>/<repo> --seed ./tutorial-instance",
+		"GOOBERS_GITHUB_TOKEN",
 		"[`config-examples` reference layout](../../onboarding/templates/canonical/README.md)",
 		"[`implementation` workflow](../../onboarding/templates/canonical/gaggles/acme-web/workflows/implementation.yaml)",
 		"installs the binary and documentation only",
@@ -210,6 +210,8 @@ func TestRunEndToEnd(t *testing.T) {
 		"quoting it if needed",
 		"goobers-v1.2.3 init --guided ./my-instance",
 		"goobers-v1.2.3 init --template=quickstart ./tutorial-instance",
+		"goobers-v1.2.3 run quickstart ./tutorial-instance",
+		"goobers-v1.2.3 dashboard ./tutorial-instance",
 		"goobers-v1.2.3 run " + instance.GuidedWorkflowImplementation + " ./my-instance",
 	} {
 		if !strings.Contains(string(quickstart), want) {

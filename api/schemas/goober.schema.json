@@ -46,6 +46,7 @@
               "ado:pr:comment",
               "ado:pr:write",
               "ado:pr:status",
+              "ado:pr:complete",
               "ado:work-items:write",
               "telemetry:read",
               "journal:read",
@@ -91,6 +92,7 @@
               "release-backlog-claim",
               "release-pr-claim",
               "respond-to-findings",
+              "resolve-review-threads",
               "rework-pr",
               "route-queue-outcome",
               "route-provider-verdict",
@@ -140,6 +142,7 @@
               "release-backlog-claim",
               "release-pr-claim",
               "respond-to-findings",
+              "resolve-review-threads",
               "rework-pr",
               "route-queue-outcome",
               "route-provider-verdict",
@@ -155,23 +158,12 @@
         "tools": { "type": "array", "description": "Default-deny allowlist of tools or MCP servers reachable by this goober.", "items": { "type": "string" } },
         "mcpServers": {
           "type": "array",
-          "description": "External stdio or remote MCP servers materialized only for this goober's Copilot harness invocation.",
+          "description": "External stdio or remote MCP servers materialized for this goober's harness invocation (Copilot or claude-code).",
           "items": { "$ref": "#/$defs/mcpServer" }
         },
         "scaleFactor": { "type": "integer", "minimum": 1, "description": "Desired replica count for concurrent work. Omitted defaults to one." },
         "workflows": { "type": "array", "description": "Names of workflows that invoke this goober.", "items": { "type": "string" } }
-      },
-      "allOf": [
-        {
-          "if": {
-            "required": ["harness"],
-            "properties": { "harness": { "const": "claude-code" } }
-          },
-          "then": {
-            "properties": { "mcpServers": { "maxItems": 0 } }
-          }
-        }
-      ]
+      }
     }
   },
   "$defs": {
@@ -251,6 +243,7 @@
             "ado:pr:comment",
             "ado:pr:write",
             "ado:pr:status",
+            "ado:pr:complete",
             "ado:work-items:write",
             "telemetry:read",
             "journal:read",

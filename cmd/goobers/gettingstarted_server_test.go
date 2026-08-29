@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -273,9 +275,135 @@ func TestGettingStartedAllowlistRejections(t *testing.T) {
 	}
 }
 
+// stubGuidedExecCapturingCmd is stubGuidedExec's sibling: it hands back the
+// live *exec.Cmd the handler goes on to configure, so a test can inspect
+// .Env after the handler sets it (unlike argv, which stubGuidedExec's
+// closure parameters already capture, .Env is set by the CALLER on the
+// returned *exec.Cmd, so it isn't visible until after the handler runs).
+func stubGuidedExecCapturingCmd(t *testing.T, script string) (argv *[]string, cmd **exec.Cmd) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("guided exec stubs use /bin/sh")
+	}
+	previous := guidedExecCommand
+	var gotArgv []string
+	var gotCmd *exec.Cmd
+	guidedExecCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		gotArgv = append([]string{}, args...)
+		gotCmd = exec.CommandContext(ctx, "/bin/sh", "-c", script)
+		return gotCmd
+	}
+	t.Cleanup(func() { guidedExecCommand = previous })
+	return &gotArgv, &gotCmd
+}
+
+func TestGettingStartedProbeBacklogNoTokenYetSkipsExec(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "")
+	t.Setenv(defaultWorkTrackingTokenEnv, "")
+	calls := stubGuidedExec(t, `printf 'no eligible items\n'`)
+
+	recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/actions/probe-backlog")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	body := decodeGuidedResponse[guidedProbeBody](t, recorder)
+	if body.EligibleCount != nil {
+		t.Fatalf("eligibleCount = %v, want nil (no token exported yet)", *body.EligibleCount)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("must not exec backlog-query without a token: %v", *calls)
+	}
+}
+
+func TestGettingStartedProbeBacklogParsesEligibleCount(t *testing.T) {
+	cases := []struct {
+		name   string
+		stdout string
+		want   int
+	}{
+		{"none eligible", "no eligible items\n", 0},
+		{"one eligible", "123\tFix the flaky test\n", 1},
+		{"multiple eligible", "1\tFirst\n2\tSecond\n3\tThird\n", 3},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := newTestGuidedServer(t, t.TempDir())
+			t.Setenv(defaultWorkTrackingTokenEnv, "issues-token")
+			stubGuidedExec(t, fmt.Sprintf("printf %q", testCase.stdout))
+
+			recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/actions/probe-backlog")
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+			}
+			body := decodeGuidedResponse[guidedProbeBody](t, recorder)
+			if body.EligibleCount == nil || *body.EligibleCount != testCase.want {
+				t.Fatalf("eligibleCount = %v, want %d", body.EligibleCount, testCase.want)
+			}
+		})
+	}
+}
+
+func TestGettingStartedProbeBacklogArgvAndCredentialEnv(t *testing.T) {
+	workdir := t.TempDir()
+	tutorial := filepath.Join(workdir, "tutorial-instance")
+	server := newTestGuidedServer(t, workdir)
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "")
+	t.Setenv(defaultWorkTrackingTokenEnv, "super-secret-issues-token")
+	argv, cmd := stubGuidedExecCapturingCmd(t, `printf 'no eligible items\n'`)
+
+	recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/actions/probe-backlog")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+
+	wantArgv := []string{"backlog-query", "--read-only", tutorial}
+	if !reflect.DeepEqual(*argv, wantArgv) {
+		t.Fatalf("argv = %v, want %v", *argv, wantArgv)
+	}
+	if *cmd == nil {
+		t.Fatal("guidedExecCommand was not invoked")
+	}
+	wantEnvContains := []string{
+		"GOOBERS_CRED_GITHUB_ISSUES_READ=super-secret-issues-token",
+		"GOOBERS_INPUT_TRUSTLABEL=goobers:approved",
+		"GOOBERS_INPUT_REQUIRELABELS=goobers:ready",
+	}
+	for _, want := range wantEnvContains {
+		if !slices.Contains((*cmd).Env, want) {
+			t.Fatalf("command.Env missing %q; env = %v", want, (*cmd).Env)
+		}
+	}
+}
+
+func TestGettingStartedProbeBacklogFallsBackToMainToken(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	t.Setenv(defaultWorkTrackingTokenEnv, "")
+	t.Setenv("GOOBERS_GITHUB_TOKEN", "main-token-value")
+	_, cmd := stubGuidedExecCapturingCmd(t, `printf 'no eligible items\n'`)
+
+	recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/actions/probe-backlog")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	want := "GOOBERS_CRED_GITHUB_ISSUES_READ=main-token-value"
+	if !slices.Contains((*cmd).Env, want) {
+		t.Fatalf("command.Env missing %q (main-token fallback); env = %v", want, (*cmd).Env)
+	}
+}
+
+func TestGettingStartedProbeBacklogRejectsPost(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	recorder := guidedPost(http.HandlerFunc(server.serveGuided), "/guided/actions/probe-backlog", `{}`)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", recorder.Code)
+	}
+}
+
 func TestGettingStartedRunWorkflowChooser(t *testing.T) {
 	workdir := t.TempDir()
 	tutorial := filepath.Join(workdir, "tutorial-instance")
+	t.Setenv(connectDefaultTokenEnv, "token-value")
 	for _, testCase := range []struct {
 		body string
 		want []string
@@ -341,6 +469,89 @@ func TestGettingStartedStateReportsConnectedRepo(t *testing.T) {
 	state = decodeGuidedResponse[guidedStateBody](t, guidedGet(handler, "/guided/state"))
 	if state.Connected.Repo == nil || *state.Connected.Repo != "acme/web" {
 		t.Fatalf("connected after connect = %+v", state.Connected)
+	}
+}
+
+// TestGettingStartedRunRefusesWhenRecordedTokenEnvUnset is the #2639
+// regression: a token export reaching some OTHER variable than the one the
+// server actually recorded (default GOOBERS_GITHUB_TOKEN, or whatever
+// `connect --token-env` persisted) must never mark credentials ready or
+// unblock dispatch — there is no mechanism, live or otherwise, for a client
+// to make the server's own process environment agree with a shell the
+// server doesn't share. The only thing that changes the outcome is the
+// RECORDED name's own variable, in THIS process, before the request.
+func TestGettingStartedRunRefusesWhenRecordedTokenEnvUnset(t *testing.T) {
+	workdir := t.TempDir()
+	t.Setenv(connectDefaultTokenEnv, "")
+	server := newTestGuidedServer(t, workdir)
+	handler := http.HandlerFunc(server.serveGuided)
+	calls := stubGuidedExec(t, `exit 0`)
+
+	// Unconnected instance, default recorded name, nothing exported: refused.
+	refused := guidedPost(handler, "/guided/actions/run", `{}`)
+	if refused.Code != http.StatusBadRequest {
+		t.Fatalf("unset-token run status = %d body = %q", refused.Code, refused.Body.String())
+	}
+	body := decodeGuidedResponse[guidedErrorBody](t, refused)
+	if body.Code != "token_env_unset" || !strings.Contains(body.Message, connectDefaultTokenEnv) {
+		t.Fatalf("unset-token run body = %+v", body)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("refused run still exec'd: %v", *calls)
+	}
+	state := decodeGuidedResponse[guidedStateBody](t, guidedGet(handler, "/guided/state"))
+	if state.Env.GoobersGithubToken {
+		t.Fatalf("state reported ready with nothing exported: %+v", state.Env)
+	}
+
+	// Connect with a NON-default recorded name.
+	if _, err := instance.InitQuickstart(server.instancePath); err != nil {
+		t.Fatal(err)
+	}
+	if code := executeConnect(connectOptions{
+		owner:    "acme",
+		name:     "web",
+		root:     server.instancePath,
+		tokenEnv: "MY_CUSTOM_TOKEN",
+	}, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("connect exit = %d", code)
+	}
+
+	// A post-launch export landing on the DEFAULT name (what an operator who
+	// missed the "--token-env" detail, or exported in the wrong shell, would
+	// actually do) must not satisfy the preflight — the recorded name is
+	// MY_CUSTOM_TOKEN now, not the default, and that is the only name that
+	// counts.
+	t.Setenv(connectDefaultTokenEnv, "token-value")
+	wrongName := guidedPost(handler, "/guided/actions/run", `{}`)
+	if wrongName.Code != http.StatusBadRequest {
+		t.Fatalf("wrong-name run status = %d body = %q", wrongName.Code, wrongName.Body.String())
+	}
+	wrongNameBody := decodeGuidedResponse[guidedErrorBody](t, wrongName)
+	if wrongNameBody.Code != "token_env_unset" || !strings.Contains(wrongNameBody.Message, "MY_CUSTOM_TOKEN") {
+		t.Fatalf("wrong-name run body = %+v", wrongNameBody)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("run with wrong exported name still exec'd: %v", *calls)
+	}
+	stateAfterConnect := decodeGuidedResponse[guidedStateBody](t, guidedGet(handler, "/guided/state"))
+	if stateAfterConnect.Env.TokenEnv != "MY_CUSTOM_TOKEN" {
+		t.Fatalf("state.env.tokenEnv = %q, want MY_CUSTOM_TOKEN", stateAfterConnect.Env.TokenEnv)
+	}
+	if stateAfterConnect.Env.GoobersGithubToken {
+		t.Fatalf("state reported ready for the recorded name despite only the default being exported: %+v", stateAfterConnect.Env)
+	}
+
+	// Exporting the actually-recorded name, in THIS process (standing in for
+	// "before the server launched"), is the only thing that unblocks it.
+	t.Setenv("MY_CUSTOM_TOKEN", "token-value")
+	ready := decodeGuidedResponse[guidedStateBody](t, guidedGet(handler, "/guided/state"))
+	if !ready.Env.GoobersGithubToken {
+		t.Fatalf("state still not ready with the recorded name exported: %+v", ready.Env)
+	}
+	accepted := guidedPost(handler, "/guided/actions/run", `{}`)
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("run with the recorded name exported status = %d body = %q", accepted.Code, accepted.Body.String())
 	}
 }
 
@@ -436,6 +647,7 @@ func TestGettingStartedPostRejectsUnknownFields(t *testing.T) {
 
 func TestGettingStartedJobLifecycle(t *testing.T) {
 	workdir := t.TempDir()
+	t.Setenv(connectDefaultTokenEnv, "token-value")
 	server := newTestGuidedServer(t, workdir)
 	handler := http.HandlerFunc(server.serveGuided)
 	calls := stubGuidedExec(t,
@@ -491,6 +703,7 @@ func TestGettingStartedJobLifecycle(t *testing.T) {
 }
 
 func TestGettingStartedSecondRunWhileRunningConflicts(t *testing.T) {
+	t.Setenv(connectDefaultTokenEnv, "token-value")
 	server := newTestGuidedServer(t, t.TempDir())
 	handler := http.HandlerFunc(server.serveGuided)
 	stubGuidedExec(t, `sleep 5`)
@@ -533,7 +746,8 @@ func TestGettingStartedAPIUnavailableThenReady(t *testing.T) {
 	if code, _, stderr := runArgs(t, "init", server.instancePath); code != 0 {
 		t.Fatalf("init tutorial instance: code = %d stderr = %q", code, stderr)
 	}
-	createDeclaredSkillPackages(t, server.instancePath, "implement", "run-tests")
+	// The starter scaffold ships its own gaggle-scoped implement/run-tests
+	// skill packages (SKILL002 fix); no shared-level stand-ins needed here.
 
 	after := guidedGet(handler, "/api/v1/health")
 	if after.Code != http.StatusOK {

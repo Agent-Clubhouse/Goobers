@@ -1,12 +1,19 @@
 # Onboarding first-value ladder & DSL authoring support (#435, #2431, #2430)
 
-Status: draft for review. Filed 2026-08-07 from a nine-dimension recon of the
+Status: draft — for review. Filed 2026-08-07 from a nine-dimension recon of the
 onboarding journey, the init/setup code surface, the DSL and its validation,
 the shipped agent-context assets, the backlog, prior design art, test/e2e
 coverage, stack neutrality, and CLI-surface coherence — plus PO directives
 recorded in §1. First deliverable: this doc. Decision-free mechanical children
 are filed immediately (§8, wave B); decision-bearing children are filed only
 after the rulings in §7 land.
+
+**Implementation status (updated 2026-08-08):** this is a point-in-time
+recon snapshot, so its current-state analysis dates as Wave A/B items land —
+§8's "landed" list is the source of truth for what's shipped since filing,
+not the narrative prose in §3-§7. One correction already folded in: #2549
+(R4's local-ci wiring, below) landed the same day this doc was filed and has
+moved from Wave B to Wave A accordingly (#2636).
 
 ## 0. Verdict up front
 
@@ -212,13 +219,30 @@ the same core instead of its parallel prompt path.
 the repo's real build command) — embedded into `goobers examples` and offered
 by connect; proves credentials, backlog visibility, and the build gate with
 zero writes. (b) *agentic PR*: the starter workflow gains deterministic
-push-branch/open-pr stages and capabilities (Decision 7.3), and the
-quickstart template gains a real local-ci stage wired to the detected/declared
-stack (today the hello-world chain proves agent+forge plumbing but executes no
-CI command for ANY stack; sample.json's localCI field is parsed by nothing).
-Per-stack samples: seed from test/e2e/testdata/{java,python,dotnet}service so
+push-branch/open-pr stages and capabilities (Decision 7.3).
+
+**Shipped since filing (#2549, PR #2583, landed 2026-08-07):** the quickstart
+template's `local-ci` stage runs a real command
+(`internal/instance/quickstart-v1/gaggles/example/workflows/quickstart.yaml`),
+and the getting-started sample gaggle declares `ciCommand: ["npm", "run",
+"ci"]` (`internal/instance/quickstart-v1/gaggles/example/gaggle.yaml`), which
+`instance.ApplyGaggleCICommand` compiles into
+that stage in place of its `make ci` default (MGV-1/#1009's pre-existing
+mechanism). `cmd/goobers/gettingstarted_sample_test.go`'s
+`assertGettingStartedLocalCI` asserts the stage actually executes and
+inspects its artifacts for the sample's real `npm run ci` output — this is
+tested, passing, end-to-end behavior for the Node path, not aspirational.
+`samples/getting-started-task-api/sample.json`'s `localCI` field is a
+separate, still-unread leftover (`onboardingSampleMetadata` in
+`release/onboarding.go` has no field for it) — a small hygiene item, not
+evidence that CI wiring is missing.
+
+**Still open:** the wiring above only covers the Node/npm sample. Per-stack
+samples — seed from test/e2e/testdata/{java,python,dotnet}service so
 non-Node users don't need Node for the tutorial rung (Decision 7.5 covers
-Swift, which has no prober today).
+Swift, which has no prober today) — remain unbuilt; those stacks' fixtures
+exist only under e2e test coverage today, not wired into `goobers examples`
+or the connect/hello-world flow.
 
 **R5 — customize with confidence.** `goobers agent-kit install` offered where
 users actually are (guided completion, connect output, quickstart §6);
@@ -403,7 +427,9 @@ first published installer is never the guided-forcing one.
 **Wave A — landed with this design (direct PRs, 2026-08-07):** #2513 (PR
 #2539), #2446 (PR #2525), #2452 + releases.md + macOS anchor + hello-world
 defaults (PR #2524), #2514 (PR #2523), #2508 + #2512 (PR #2526), stale design
-headers (PR alongside this doc).
+headers (PR alongside this doc), #2549 quickstart local-ci stage wired to the
+gaggle's declared `ciCommand` (PR #2583 — see R4 above; also most of #2171's
+proof).
 
 **Wave B — decision-free, filed 2026-08-07 (goobers:approved, assigned):**
 - #2541 guided-init resume/replace for partial targets (EventInitCompleted).
@@ -424,8 +450,6 @@ headers (PR alongside this doc).
   assets.
 - #1557 demo-tour flake fix + wall-clock assert removal (gate hygiene,
   approved+assigned).
-- #2549 quickstart local-ci stage wired to sample localCI (or field dropped) —
-  also most of #2171's proof.
 - #2550 stack-support.md parity test; config-examples 'make ci' literal guard.
 - #2551 stage-code hardcoded-name lint (#2490 class).
 

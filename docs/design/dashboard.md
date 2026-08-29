@@ -1,6 +1,6 @@
 # Design: Dashboard / Portal - calm operations workbench over the daemon API
 
-> Status: **Approved for staged implementation** (2026-07-16)
+> Status: **approved — for staged implementation** (2026-07-16)
 > Area prefixes: `API`, `DASH`
 > Milestone: **Dashboard / Portal - calm live operations workbench** (#14)
 > Epic: [#440](https://github.com/Agent-Clubhouse/Goobers/issues/440)
@@ -424,7 +424,7 @@ until its blockers are complete.
 
 # Addendum: V1.1 - diagnostic depth, insight, and visualization
 
-> Status: **Approved for staged implementation** (2026-07-21)
+> Status: **approved — for staged implementation** (2026-07-21)
 > Area prefixes: `API`, `DASH`
 > Milestone: **Dashboard / Portal - calm live operations workbench** (#14) follow-on
 > Supersedes nothing above; extends sections 4-10 after the V1 slices shipped.

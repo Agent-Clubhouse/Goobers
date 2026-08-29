@@ -8,6 +8,8 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // fakeRun is a minimal client.WorkflowRun for tests.
@@ -84,6 +86,46 @@ func TestTemporalStarterStartsRun(t *testing.T) {
 	}
 	if fs.gotOpts.TaskQueue != "goobers" {
 		t.Errorf("task queue = %q, want goobers", fs.gotOpts.TaskQueue)
+	}
+	if got := fs.gotOpts.Memo[RunGaggleMemoKey]; got != "web" {
+		t.Errorf("gaggle memo = %q, want web", got)
+	}
+	if got := fs.gotOpts.Memo[RunWorkflowMemoKey]; got != "flow" {
+		t.Errorf("workflow memo = %q, want flow", got)
+	}
+	if got := fs.gotOpts.Memo[RunWorkflowVersionMemoKey]; got != "1" {
+		t.Errorf("workflow version memo = %q, want \"1\"", got)
+	}
+	if _, ok := fs.gotOpts.Memo[RunBacklogItemMemoKey]; ok {
+		t.Errorf("backlog item memo present for a run with no Item: %v", fs.gotOpts.Memo[RunBacklogItemMemoKey])
+	}
+}
+
+// TestTemporalStarterMemoCarriesBacklogItem covers #2911's other arm: a run
+// driven by a backlog item carries an identifiable item memo, so an operator
+// reading the Temporal execution does not need to decode RunInput's input
+// payload to find it.
+func TestTemporalStarterMemoCarriesBacklogItem(t *testing.T) {
+	fs := &fakeStarter{run: fakeRun{id: "web/flow/item-1", runID: "exec-1"}}
+	s := &TemporalStarter{client: fs, taskQueue: "goobers"}
+
+	in := sampleInput()
+	in.Item = &apiv1.BacklogItem{ID: "42", Provider: apiv1.ProviderGitHub, URL: "https://example/issues/42"}
+
+	if _, err := s.Start(context.Background(), in); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	got, ok := fs.gotOpts.Memo[RunBacklogItemMemoKey]
+	if !ok {
+		t.Fatalf("no backlog item memo for a run with Item set")
+	}
+	item, ok := got.(BacklogItemMemo)
+	if !ok {
+		t.Fatalf("backlog item memo = %#v (%T), want BacklogItemMemo", got, got)
+	}
+	want := BacklogItemMemo{ID: "42", Provider: string(apiv1.ProviderGitHub), URL: "https://example/issues/42"}
+	if item != want {
+		t.Errorf("backlog item memo = %+v, want %+v", item, want)
 	}
 }
 

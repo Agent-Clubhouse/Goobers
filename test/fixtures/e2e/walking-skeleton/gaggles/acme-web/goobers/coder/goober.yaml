@@ -8,6 +8,8 @@ spec:
   displayName: Coder
   instructions: coder.md
   harness: copilot
+  capabilities:
+    - agent:model
   scaleFactor: 1
   workflows:
     - default-implement

@@ -58,6 +58,7 @@ func newRebindFixtureRepo(t *testing.T) string {
 // present in it.
 type observedWorkspace struct {
 	branch    string
+	revision  string
 	hasMarker bool
 }
 
@@ -83,10 +84,12 @@ func (b *branchObservingDeterministic) Run(ctx context.Context, env apiv1.Invoca
 		b.t.Fatalf("resolve branch in %s: %v\n%s", env.Workspace, err, out.String())
 	}
 	_, statErr := os.Stat(filepath.Join(env.Workspace, rebindMarkerFile))
+	revision := strings.TrimSpace(gitOutput(b.t, env.Workspace, "rev-parse", "HEAD"))
 	// TaskID is "<runID>:<stageName>"; key on the stage name alone.
 	_, stage, _ := strings.Cut(env.TaskID, ":")
 	b.observed[stage] = observedWorkspace{
 		branch:    strings.TrimSpace(out.String()),
+		revision:  revision,
 		hasMarker: statErr == nil,
 	}
 	return (&stubDeterministic{rec: b.rec, byTask: b.byTask}).Run(ctx, env, dr)
@@ -201,6 +204,9 @@ func TestWorkspaceBranchOutputRebindsEveryLaterStage(t *testing.T) {
 		got := observed[stage]
 		if got.branch != rebindBranch {
 			t.Errorf("%s ran on branch %q, want the rebound branch %q", stage, got.branch, rebindBranch)
+		}
+		if got.revision != observed["rework"].revision {
+			t.Errorf("%s ran at revision %q, want selected revision %q", stage, got.revision, observed["rework"].revision)
 		}
 		if !got.hasMarker {
 			t.Errorf("%s could not see %s — its worktree is not really on the PR's branch, so it would remediate the wrong tree", stage, rebindMarkerFile)

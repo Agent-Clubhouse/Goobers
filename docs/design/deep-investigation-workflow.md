@@ -1,6 +1,6 @@
 # Design: Deep-investigation workflow
 
-> **Status:** Accepted design (2026-07-25); runtime implementation is deferred.
+> **Status:** approved — accepted design (2026-07-25); runtime implementation is deferred.
 > **Related:** #816 (this design), #1482 (workflow and goobers), #1483 (triage
 > label and routing), #1484 (evidence schema and durable emission),
 > [`ARCHITECTURE.md` sections 4-5](../ARCHITECTURE.md), and

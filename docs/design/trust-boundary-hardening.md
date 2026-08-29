@@ -1,6 +1,6 @@
 # Design: Trust-boundary hardening — proposal/executor split, staged mode, integrity labels
 
-> Status: **TBH-1 phase-0 RFC complete; human design gate pending — prescriptive** ·
+> Status: **draft — TBH-1 phase-0 RFC complete; human design gate pending; prescriptive** ·
 > Area prefix: `TBH` · Milestone: **Trust & Isolation**
 > ([#25](https://github.com/Agent-Clubhouse/Goobers/milestone/25))
 > Origin: the comparative-security review of GitHub Agentic Workflows

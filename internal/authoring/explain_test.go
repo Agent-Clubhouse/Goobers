@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/goobers/goobers/api/schemas"
-	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
 func TestExplainProjectsSchemaAndRegistryGuidance(t *testing.T) {
@@ -25,6 +24,16 @@ func TestExplainProjectsSchemaAndRegistryGuidance(t *testing.T) {
 		{"goober.spec.capabilities", "array", nil, &optional, []any{"repo:read"}, "ga"},
 		{"gaggle.spec.sandbox", "object", nil, &optional, map[string]any{}, "preview"},
 		{"goober.apiVersion", "string", []any{"goobers.dev/v1alpha1"}, &required, "goobers.dev/v1alpha1", "ga"},
+		// instance.yaml selectors: the first file `goobers init` tells an
+		// operator to edit had no explain surface at all until #2685's
+		// cold-start pass (`goobers explain instance.repos` -> unknown
+		// selector), so these pin that it answers like any other kind.
+		{"instance.repos", "array", nil, &required, []any{map[string]any{"provider": "github", "owner": "x", "name": "x"}}, "ga"},
+		{"instance.repos[].provider", "string", []any{"github", "ado", "gitea"}, &required, "github", "ga"},
+		{"instance/repos[]/project", "string", nil, &optional, "x", "ga"},
+		{"instance.runner.capabilities", "array", nil, &optional, []any{"dotnet@8"}, "ga"},
+		{"instance.runner.defaultStageTimeout", "string", nil, &optional, "25m", "ga"},
+		{"instance.repos[].workspace.cleanPolicy", "string", []any{"none", "ignored-safe", "full"}, &optional, "none", "ga"},
 	}
 	for _, test := range tests {
 		t.Run(test.selector, func(t *testing.T) {
@@ -65,8 +74,36 @@ func TestExplainProjectsSchemaAndRegistryGuidance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []any{"repo", "scratch"}; !reflect.DeepEqual(workspace.AllowedValues, want) {
+	// repo-readonly is a 2.0 feature; resolving across every loadable DSL
+	// version (#3291) means explain no longer hides it behind the deprecated
+	// 1.4 projection.
+	if want := []any{"repo", "scratch", "repo-readonly"}; !reflect.DeepEqual(workspace.AllowedValues, want) {
 		t.Fatalf("workspace values = %#v, want %#v", workspace.AllowedValues, want)
+	}
+}
+
+// TestExplainResolvesNewerVersionSelectors pins #3291's fix: selectors backed
+// by features that exist only in a NEWER loadable DSL version than the
+// transitional CurrentDSLVersion must explain, with a concrete lifecycle —
+// before the fix every one of these returned ErrUnavailableSelector, and the
+// coverage test skipped exactly that error, so the whole 2.0-only authoring
+// surface was dark with green CI.
+func TestExplainResolvesNewerVersionSelectors(t *testing.T) {
+	for _, selector := range []string{
+		"workflow.spec.parallels",
+		"workflow.spec.parallels[].branches",
+		"workflow.spec.parallels[].name",
+		"workflow.spec.tasks[].run.script",
+		"workflow.spec.tasks[].workspace",
+	} {
+		got, err := Explain(selector)
+		if err != nil {
+			t.Errorf("%q: %v", selector, err)
+			continue
+		}
+		if got.Stability == "" || got.SinceVersion == "" {
+			t.Errorf("%q: missing lifecycle: stability=%q sinceVersion=%q", selector, got.Stability, got.SinceVersion)
+		}
 	}
 }
 
@@ -82,9 +119,11 @@ func TestEveryEmbeddedSelectorReturnsCompleteGuidance(t *testing.T) {
 	}
 	for selector := range selectors {
 		got, err := Explain(selector)
-		if errors.Is(err, ErrUnavailableSelector) {
-			continue
-		}
+		// ErrUnavailableSelector is deliberately NOT skipped (#3291): explain
+		// resolves across every loadable DSL version, so a selector backed by
+		// a registered feature must explain. Skipping it here is how the
+		// entire 2.0-only surface (parallels, run.script, task workspace)
+		// went dark without a single red test.
 		if err != nil {
 			t.Errorf("%q: %v", selector, err)
 			continue
@@ -130,6 +169,35 @@ func collectSelectors(t *testing.T, r *registry, doc *schemaDocument, node map[s
 	}
 }
 
+// The instance.yaml traps the cold-start walkthroughs hit are only fixed if
+// the projected guidance names the CONSEQUENCE, not just the field: a runner
+// that under-claims never schedules, envPassthrough sits on top of an existing
+// allowlist, and the stage-timeout default is sized for short commands.
+func TestExplainProjectsInstanceRunnerTrapGuidance(t *testing.T) {
+	tests := []struct {
+		selector string
+		want     []string
+	}{
+		{"instance.runner.capabilities", []string{"requiredCapabilities", "never schedules a single run"}},
+		{"instance.runner.envPassthrough", []string{"default-deny", "Java/Maven/Gradle"}},
+		{"instance.runner.defaultStageTimeout", []string{"10 minutes", "timeoutSeconds"}},
+		{"instance.repos[].project", []string{"three-part", "Required for provider `ado`"}},
+	}
+	for _, test := range tests {
+		t.Run(test.selector, func(t *testing.T) {
+			got, err := Explain(test.selector)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range test.want {
+				if !strings.Contains(got.Description, want) {
+					t.Errorf("description %q does not mention %q", got.Description, want)
+				}
+			}
+		})
+	}
+}
+
 func TestExplainRejectsInvalidSelectors(t *testing.T) {
 	for _, selector := range []string{"", " goober.spec.role", "goober.", "goober[]", "goober.spec[]", "missing.spec", "goober.unknown", "goober.spec.role[]", "workflow.spec.tasks.name", "workflow/spec.tasks"} {
 		_, err := Explain(selector)
@@ -137,11 +205,8 @@ func TestExplainRejectsInvalidSelectors(t *testing.T) {
 			t.Errorf("%q: error = %v, want ErrUnknownSelector", selector, err)
 		}
 	}
-	for _, selector := range []string{"workflow.spec.tasks[].run.script", "Workflow.spec.tasks[].run.script", "workflow.spec.tasks[].workspace", "workflow.spec.gates[].agentic.workspace", "workflow.spec.parallels"} {
-		_, err := Explain(selector)
-		if !errors.Is(err, ErrUnavailableSelector) ||
-			!strings.Contains(err.Error(), supportmatrix.CurrentDSLVersion) {
-			t.Errorf("%q: error = %v, want unavailable in DSL %s", selector, err, supportmatrix.CurrentDSLVersion)
-		}
-	}
+	// The 2.0-surface selectors this test once asserted UNAVAILABLE
+	// (parallels, run.script, task workspace) enshrined #3291's bug; they now
+	// explain at the newest loadable version and are pinned positively by
+	// TestExplainResolvesNewerVersionSelectors.
 }

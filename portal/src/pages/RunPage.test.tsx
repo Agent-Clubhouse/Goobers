@@ -44,6 +44,23 @@ describe("run detail", () => {
     expect(screen.getByRole("heading", { name: "Event ledger" })).toBeInTheDocument();
   });
 
+  it("renders stale run detail as visibly unmonitored", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const detail = fixtures.runDetails?.["01JZ441DAEMONAPI"];
+    if (!detail) {
+      throw new Error("Expected active run detail fixture.");
+    }
+    detail.stale = true;
+    renderRun("01JZ441DAEMONAPI", new FixtureDaemonClient(fixtures));
+
+    expect(
+      await screen.findByText("Stale / unmonitored", { selector: ".status-badge" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("No recent run activity is available and the daemon heartbeat is stale."),
+    ).toBeInTheDocument();
+  });
+
   it("reveals the run directory when the local capability is available", async () => {
     const user = userEvent.setup();
     const client = new FixtureDaemonClient(populatedDaemonFixtures());

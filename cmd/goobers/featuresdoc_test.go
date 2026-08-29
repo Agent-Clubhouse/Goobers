@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/workflow"
 )
 
@@ -47,6 +49,195 @@ func TestFeatureMatrixCoversEveryFeature(t *testing.T) {
 		if !strings.Contains(doc, "`"+string(feature.ID)+"`") {
 			t.Errorf("feature %q missing from the generated matrix", feature.ID)
 		}
+	}
+}
+
+func TestFeatureRegistryCoversSpecFields(t *testing.T) {
+	mapped := map[string][]workflow.FeatureID{
+		"WorkflowSpec.Gaggle":      {"workflow.spec.gaggle"},
+		"WorkflowSpec.DisplayName": {"workflow.spec.displayName"},
+		"WorkflowSpec.Triggers":    {"workflow.spec.triggers"},
+		"WorkflowSpec.Readiness":   {"workflow.spec.readiness"},
+		"WorkflowSpec.RunControls": {
+			"workflow.spec.runControls",
+			"workflow.spec.runControls.maxRepasses",
+			"workflow.spec.runControls.stalledRunTimeout",
+			"workflow.spec.runControls.maxRunDuration",
+		},
+		"WorkflowSpec.OutboxMirrorPath": {"workflow.spec.outboxMirrorPath"},
+		"WorkflowSpec.Start":            {"workflow.spec.start"},
+		"WorkflowSpec.DocsRoots":        {"workflow.spec.docsRoots"},
+		"WorkflowSpec.TutorScope": {
+			"workflow.spec.tutorScope",
+			"workflow.spec.tutorScope.tier",
+			"workflow.spec.tutorScope.target",
+		},
+		"WorkflowSpec.Requires":  {"workflow.spec.requires.capabilities"},
+		"WorkflowSpec.Tasks":     {"workflow.spec.tasks"},
+		"WorkflowSpec.Gates":     {"workflow.spec.gates"},
+		"WorkflowSpec.Parallels": {"workflow.spec.parallels"},
+
+		"GaggleSpec.DisplayName":  {"gaggle.spec.displayName"},
+		"GaggleSpec.SelfIdentity": {"gaggle.spec.selfIdentity"},
+		"GaggleSpec.Project": {
+			"gaggle.spec.project",
+			"gaggle.spec.project.provider.github",
+			"gaggle.spec.project.provider.ado",
+			"gaggle.spec.project.provider.gitea",
+			"gaggle.spec.project.baseUrl",
+			"gaggle.spec.project.checkout.sparse",
+		},
+		"GaggleSpec.Backlog": {
+			"gaggle.spec.backlog",
+			"gaggle.spec.backlog.provider.github",
+			"gaggle.spec.backlog.provider.ado",
+			"gaggle.spec.backlog.provider.gitea",
+			"gaggle.spec.backlog.baseUrl",
+			"gaggle.spec.backlog.labels",
+			"gaggle.spec.backlog.labelPredicate",
+			"gaggle.spec.backlog.fieldPredicate",
+		},
+		"GaggleSpec.Isolation": {
+			"gaggle.spec.isolation.namespace",
+			"gaggle.spec.isolation.identityRef",
+		},
+		"GaggleSpec.AdditionalRepos": {
+			"gaggle.spec.additionalRepos",
+			"gaggle.spec.additionalRepos.provider.github",
+			"gaggle.spec.additionalRepos.provider.ado",
+			"gaggle.spec.additionalRepos.provider.gitea",
+			"gaggle.spec.additionalRepos.baseUrl",
+			"gaggle.spec.additionalRepos.checkout.sparse",
+		},
+		"GaggleSpec.CICommand":            {"gaggle.spec.ciCommand"},
+		"GaggleSpec.RequiredCapabilities": {"gaggle.spec.requiredCapabilities"},
+		"GaggleSpec.BranchNamespace":      {"gaggle.spec.branchNamespace"},
+		"GaggleSpec.RunControls": {
+			"gaggle.spec.runControls",
+			"gaggle.spec.runControls.maxRepasses",
+			"gaggle.spec.runControls.stalledRunTimeout",
+			"gaggle.spec.runControls.maxRunDuration",
+		},
+		"GaggleSpec.OutboxMirrorPath": {"gaggle.spec.outboxMirrorPath"},
+		"GaggleSpec.Sandbox":          {"gaggle.spec.sandbox"},
+		"GaggleSpec.Workcopies":       {"gaggle.spec.workcopies.root"},
+		"GaggleSpec.RequireLabels":    {"gaggle.spec.requireLabels"},
+		"GaggleSpec.Siblings":         {"gaggle.spec.siblings"},
+		"GaggleSpec.RunsOn": {
+			"gaggle.spec.runsOn",
+			"gaggle.spec.runsOn.os",
+			"gaggle.spec.runsOn.capabilities",
+			"gaggle.spec.runsOn.restrictions",
+		},
+
+		"GooberSpec.Gaggle":                   {"goober.spec.gaggle"},
+		"GooberSpec.Role":                     {"goober.spec.role"},
+		"GooberSpec.DisplayName":              {"goober.spec.displayName"},
+		"GooberSpec.Instructions":             {"goober.spec.instructions"},
+		"GooberSpec.Harness":                  {"goober.spec.harness.copilot", "goober.spec.harness.claude-code"},
+		"GooberSpec.Model":                    {"goober.spec.model"},
+		"GooberSpec.HarnessOptions":           {"goober.spec.harnessOptions"},
+		"GooberSpec.TimeoutSeconds":           {"goober.spec.timeoutSeconds"},
+		"GooberSpec.Capabilities":             {"goober.spec.capabilities"},
+		"GooberSpec.Skills":                   {"goober.spec.skills"},
+		"GooberSpec.Tools":                    {"goober.spec.tools"},
+		"GooberSpec.MCPServers":               {"goober.spec.mcpServers"},
+		"GooberSpec.PolicyActions":            {"goober.spec.policyActions"},
+		"GooberSpec.ConditionalPolicyActions": {"goober.spec.conditionalPolicyActions"},
+		"GooberSpec.ScaleFactor":              {"goober.spec.scaleFactor"},
+		"GooberSpec.Workflows":                {"goober.spec.workflows"},
+
+		"Trigger.Type":           {"trigger.manual", "trigger.backlog-item", "trigger.schedule", "trigger.signal", "trigger.webhook"},
+		"Trigger.Selector":       {"trigger.backlog-item.selector"},
+		"Trigger.TrustLabel":     {"trigger.backlog-item.trustLabel"},
+		"Trigger.LabelPredicate": {"trigger.labelPredicate"},
+		"Trigger.FieldPredicate": {"trigger.fieldPredicate"},
+		"Trigger.Priority":       {"trigger.priority"},
+		"Trigger.Schedule":       {"trigger.schedule"},
+		"Trigger.IdleBackoff": {
+			"trigger.idleBackoff",
+			"trigger.idleBackoff.enabled",
+			"trigger.idleBackoff.floor",
+			"trigger.idleBackoff.ceiling",
+		},
+		"Trigger.Signal": {"trigger.signal"},
+		"Trigger.Events": {"trigger.webhook"},
+
+		"Task.Name":                 {"task.name"},
+		"Task.Type":                 {"task.deterministic", "task.agentic"},
+		"Task.Goal":                 {"task.goal"},
+		"Task.Goober":               {"task.goober"},
+		"Task.Run":                  {"stage.run.command", "stage.run.script"},
+		"Task.Inputs":               {"task.inputs"},
+		"Task.Capabilities":         {"task.capabilities"},
+		"Task.MinimumIntegrity":     {"task.minimumIntegrity"},
+		"Task.ContextFrom":          {"task.contextFrom"},
+		"Task.PolicyActions":        {"task.policyActions"},
+		"Task.NestedAgentPolicy":    {"task.nestedAgentPolicy"},
+		"Task.Retry":                {"task.retry"},
+		"Task.TimeoutSeconds":       {"task.timeoutSeconds"},
+		"Task.Limits":               {"task.limits"},
+		"Task.OnTimeout":            {"task.onTimeout.fail", "task.onTimeout.salvage"},
+		"Task.ExpectedOutputs":      {"task.expectedOutputs"},
+		"Task.ContinueOnError":      {"task.continueOnError"},
+		"Task.InputsFrom":           {"task.inputsFrom"},
+		"Task.RequiredCapabilities": {"task.requiredCapabilities"},
+		"Task.Outbox":               {"task.outbox"},
+		"Task.OutboxMirrorPath":     {"task.outboxMirrorPath"},
+		"Task.Workspace":            {"stage.workspace"},
+		"Task.Next":                 {"task.next"},
+		"Task.RunsOn": {
+			"task.runsOn",
+			"task.runsOn.os",
+			"task.runsOn.cpu",
+			"task.runsOn.memory",
+			"task.runsOn.disk",
+			"task.runsOn.capabilities",
+			"task.runsOn.restrictions",
+		},
+		"Task.RepoFrom":    {"task.repoFrom"},
+		"Task.CommitsRepo": {"task.commitsRepo"},
+		"Task.Experiment":  {"task.experiment"},
+	}
+	// The feature registry covers EVERY author-facing spec field (#3292, the
+	// PO-ruled reversal of #3003's operational-metadata exclusion): an
+	// unregistered field carries no declared compatibility promise at all,
+	// and the excluded fields were exactly the ones where that absence bit —
+	// capability-requirement changes and outboxMirrorPath both shipped with
+	// zero version linkage. The map stays so a future field without a mapping
+	// still fails this guard until someone writes down a reason, but no
+	// current field qualifies.
+	excluded := map[string]string{}
+
+	registry := make(map[workflow.FeatureID]struct{})
+	for _, feature := range workflow.AllFeatures() {
+		registry[feature.ID] = struct{}{}
+	}
+	for _, typ := range []reflect.Type{
+		reflect.TypeOf(apiv1.WorkflowSpec{}),
+		reflect.TypeOf(apiv1.GaggleSpec{}),
+		reflect.TypeOf(apiv1.GooberSpec{}),
+		reflect.TypeOf(apiv1.Trigger{}),
+		reflect.TypeOf(apiv1.Task{}),
+	} {
+		for i := 0; i < typ.NumField(); i++ {
+			key := typ.Name() + "." + typ.Field(i).Name
+			ids, ok := mapped[key]
+			if !ok {
+				if _, excluded := excluded[key]; !excluded {
+					t.Errorf("%s maps to neither a FeatureID nor an explicit exclusion", key)
+				}
+				continue
+			}
+			for _, id := range ids {
+				if _, ok := registry[id]; !ok {
+					t.Errorf("%s maps to missing FeatureID %q", key, id)
+				}
+			}
+		}
+	}
+	if _, ok := registry["task.inputs.fieldOrder"]; !ok {
+		t.Error("validated task input fieldOrder maps to missing FeatureID task.inputs.fieldOrder")
 	}
 }
 

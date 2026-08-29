@@ -3,12 +3,10 @@ import type {
   DaemonClient,
   TelemetryErrorSignature,
   TelemetryCurationStats,
-  TelemetryGaggleStats,
+  NodeCredit,
   TelemetryReadyPool,
-  TelemetryRunStats,
   TelemetryStageStats,
   TelemetryStatsOptions,
-  TelemetryStatsResult,
   TelemetryUsageStats,
 } from "../api/types";
 import type { QueryState } from "../api/queryState";
@@ -16,37 +14,35 @@ import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryS
 import { ScopeStrip } from "../components/ScopeStrip";
 import {
   type InsightCostRollupSnapshot,
-  type InsightCostTrendSnapshot,
   type InsightErrorSignaturesSnapshot,
   type InsightGaggleSpend,
-  type InsightSnapshot,
   type InsightWindow,
   useInsightCostRollup,
   useInsightCostTrend,
   useInsightErrorSignatures,
   useInsightStats,
 } from "../insightData";
+import {
+  deriveInsightCostTrendState,
+  deriveInsightViewModel,
+  hasInsightScopeIdentity,
+  type InsightCostTrendViewModel,
+  type InsightScope,
+  type InsightViewModel,
+  insightRunFilters,
+  insightScopeApiParameters,
+  insightScopeFromKey,
+  insightScopeFromRoute,
+  insightScopeKey,
+  insightScopeOption,
+  insightScopeOptions,
+  insightScopeRouteFilters,
+  type OutcomeMetric,
+} from "../insightScope";
 import { routeHash, type ErrorRouteFilters, type Navigate, type RunRouteFilters } from "../routing";
-import { hasScopeFilters, type ScopeFilters } from "../scope";
+import type { ScopeFilters } from "../scope";
 import { formatDuration, formatTimestamp } from "../runDetailData";
 import { Icon } from "../ui/Icon";
-
-type InsightScope =
-  | { kind: "instance" }
-  | { kind: "gaggle"; gaggle: string }
-  | { kind: "workflow"; gaggle: string; workflow: string }
-  | { kind: "stage"; gaggle: string; workflow: string; stage: string };
-
-interface OutcomeMetric {
-  failed: number;
-  filters: RunRouteFilters;
-  label: string;
-  other: number;
-  successRate?: number;
-  succeeded: number;
-  total: number;
-  unit: "attempts" | "runs";
-}
 
 const WINDOWS: readonly { label: string; value: InsightWindow }[] = [
   { label: "Last 24 hours", value: "24h" },
@@ -67,12 +63,12 @@ export function InsightPage({
   standalone: boolean;
 }) {
   const window = filters?.window ?? "7d";
-  const requestedScope = scopeFromFilters(filters);
+  const requestedScope = insightScopeFromRoute(filters);
   const setScope = (nextScope: InsightScope) =>
-    navigate({ page: "insight", filters: insightRouteFilters(nextScope, window) });
+    navigate({ page: "insight", filters: insightScopeRouteFilters(nextScope, window) });
   const setWindow = (nextWindow: InsightWindow) =>
-    navigate({ page: "insight", filters: insightRouteFilters(requestedScope, nextWindow) });
-  const errorScope = errorSignatureScope(requestedScope);
+    navigate({ page: "insight", filters: insightScopeRouteFilters(requestedScope, nextWindow) });
+  const errorScope = insightScopeApiParameters(requestedScope);
   const query = useInsightStats(client, window, errorScope.gaggle, errorScope.workflow);
   const errorSignatures = useInsightErrorSignatures(
     client,
@@ -94,10 +90,12 @@ export function InsightPage({
     return null;
   }
   const snapshot = query.state.data;
-  const availableScopes = scopeOptions(snapshot.stats);
-  const scopes = availableScopes.some((option) => option.key === scopeToKey(requestedScope))
+  const availableScopes = insightScopeOptions(snapshot.stats);
+  const scopes = availableScopes.some((option) => option.key === insightScopeKey(requestedScope))
     ? availableScopes
-    : [...availableScopes, scopeOption(requestedScope)];
+    : [...availableScopes, insightScopeOption(requestedScope)];
+  const view = deriveInsightViewModel(requestedScope, snapshot);
+  const costTrendView = deriveInsightCostTrendState(requestedScope, costTrend.state);
 
   return (
     <>
@@ -115,8 +113,8 @@ export function InsightPage({
           <span>Scope</span>
           <select
             aria-label="Scope"
-            onChange={(event) => setScope(scopeFromKey(event.target.value))}
-            value={scopeToKey(requestedScope)}
+            onChange={(event) => setScope(insightScopeFromKey(event.target.value))}
+            value={insightScopeKey(requestedScope)}
           >
             {scopes.map((option) => (
               <option key={option.key} value={option.key}>
@@ -141,12 +139,12 @@ export function InsightPage({
         </label>
       </div>
 
-      {requestedScope.kind !== "instance" && (
+      {hasInsightScopeIdentity(requestedScope) && (
         <ScopeStrip
           ariaLabel="Insight scope"
           clearHref={routeHash({
             page: "insight",
-            filters: insightRouteFilters({ kind: "instance" }, window),
+            filters: insightScopeRouteFilters({ kind: "instance" }, window),
           })}
           filters={errorScope}
         />
@@ -161,12 +159,11 @@ export function InsightPage({
       <InsightContent
         costRollup={costRollup.state}
         costRollupRetry={costRollup.retry}
-        costTrend={costTrend.state}
+        costTrend={costTrendView}
         costTrendRetry={costTrend.retry}
         errorSignatures={errorSignatures.state}
         errorSignaturesRetry={errorSignatures.retry}
-        scope={requestedScope}
-        snapshot={snapshot}
+        view={view}
       />
     </>
   );
@@ -179,28 +176,18 @@ function InsightContent({
   costTrendRetry,
   errorSignatures,
   errorSignaturesRetry,
-  scope,
-  snapshot,
+  view,
 }: {
   costRollup: QueryState<InsightCostRollupSnapshot>;
   costRollupRetry: () => void;
-  costTrend: QueryState<InsightCostTrendSnapshot>;
+  costTrend: QueryState<InsightCostTrendViewModel>;
   costTrendRetry: () => void;
   errorSignatures: QueryState<InsightErrorSignaturesSnapshot>;
   errorSignaturesRetry: () => void;
-  scope: InsightScope;
-  snapshot: InsightSnapshot;
+  view: InsightViewModel;
 }) {
-  const summary = scopeMetric(scope, snapshot.stats, snapshot.filters);
-  const breakdown = outcomeBreakdown(scope, snapshot.stats, snapshot.filters);
-  const usage = usageForScope(scope, snapshot.stats.usage);
-  const stages = stagesInScope(scope, snapshot.stats.stages)
-    .filter((stage) => stage.durationSamples > 0)
-    .sort(
-      (left, right) =>
-        (right.p95DurationMs ?? -1) - (left.p95DurationMs ?? -1) ||
-        left.stage.localeCompare(right.stage),
-    );
+  const { breakdown, creditAssignment, curationHealth, filters, stages, summary, usage, window } =
+    view;
   const hasOutcomes = Boolean(summary) || breakdown.length > 0;
   const hasFailureReasons =
     (errorSignatures.status === "ready" || errorSignatures.status === "stale") &&
@@ -208,26 +195,20 @@ function InsightContent({
   const failureReasonsFailed =
     errorSignatures.status === "error" ||
     (errorSignatures.status === "stale" && Boolean(errorSignatures.error));
-  const hasCurationHealth =
-    scope.kind === "instance" &&
-    (snapshot.stats.curation.runs > 0 ||
-      snapshot.stats.readyPool.depth !== undefined ||
-      snapshot.stats.curation.everRecorded ||
-      snapshot.stats.readyPool.sampleEverRecorded ||
-      snapshot.stats.readyPool.bounceEverRecorded);
 
   const isEmpty =
     !hasOutcomes &&
+    creditAssignment.length === 0 &&
     !usage &&
     stages.length === 0 &&
     !hasFailureReasons &&
     !failureReasonsFailed &&
-    !hasCurationHealth &&
+    !curationHealth &&
     errorSignatures.status !== "loading";
 
   return (
     <>
-      <InstanceCostRollup costRollup={costRollup} retry={costRollupRetry} window={snapshot.window} />
+      <InstanceCostRollup costRollup={costRollup} retry={costRollupRetry} window={window} />
 
       {isEmpty ? (
         <section className="empty-state insight-empty">
@@ -267,11 +248,15 @@ function InsightContent({
         </section>
       )}
 
-      {hasCurationHealth && (
+      {curationHealth && (
         <CurationHealth
-          curation={snapshot.stats.curation}
-          readyPool={snapshot.stats.readyPool}
+          curation={curationHealth.curation}
+          readyPool={curationHealth.readyPool}
         />
+      )}
+
+      {creditAssignment.length > 0 && (
+        <CreditAssignment credits={creditAssignment} filters={filters} />
       )}
 
       {usage && (
@@ -287,13 +272,12 @@ function InsightContent({
             Attempt measurements are aggregated for the selected scope. Runners that do not
             report usage remain unmeasured.
           </p>
-          <UsageAnalytics filters={snapshot.filters} usage={usage} />
+          <UsageAnalytics filters={filters} usage={usage} />
           <CostTrend
             costTrend={costTrend}
             currentUsage={usage}
             retry={costTrendRetry}
-            scope={scope}
-            window={snapshot.window}
+            window={window}
           />
         </section>
       )}
@@ -312,13 +296,69 @@ function InsightContent({
           {stages.length === 0 ? (
             <p className="inline-empty">No stage duration samples in this scope.</p>
           ) : (
-            <StageDistributions filters={snapshot.filters} stages={stages} />
+            <StageDistributions filters={filters} stages={stages} />
           )}
         </section>
       )}
         </>
       )}
     </>
+  );
+}
+
+function CreditAssignment({
+  credits,
+  filters,
+}: {
+  credits: NodeCredit[];
+  filters: TelemetryStatsOptions;
+}) {
+  return (
+    <section className="content-section">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">Credit assignment</p>
+          <h2>Highest-contributing nodes</h2>
+        </div>
+        <span className="section-count">Failure, escalation, and retry waste</span>
+      </div>
+      <div className="insight-outcomes">
+        <div aria-hidden="true" className="credit-assignment-row credit-assignment-header">
+          <span>Node</span>
+          <span>Failure share</span>
+          <span>Failures</span>
+          <span>Escalations</span>
+          <span>Retry waste</span>
+        </div>
+        {credits.map((credit) => (
+          <a
+            aria-label={`View runs behind ${credit.gaggle} ${credit.workflow} ${credit.stage}: ${credit.failureRuns} failures, ${credit.escalationRuns} escalations, ${credit.retryWasteAttempts} wasted attempts`}
+            className="credit-assignment-row credit-assignment-link"
+            href={routeHash({
+              page: "runs",
+              filters: insightRunFilters(
+                filters,
+                credit.gaggle,
+                credit.workflow,
+                credit.kind === "stage" ? credit.stage : undefined,
+              ),
+            })}
+            key={`${credit.gaggle}:${credit.workflow}:${credit.kind}:${credit.stage}:${credit.identity ?? ""}`}
+          >
+            <span className="distribution-name">
+              <strong>{credit.stage}</strong>
+              <small>
+                {credit.kind} · {credit.gaggle} / {credit.workflow} · {credit.routedRuns} routed runs
+              </small>
+            </span>
+            <strong>{formatRate(credit.failureShare)}</strong>
+            <strong>{credit.failureRuns}</strong>
+            <strong>{credit.escalationRuns}</strong>
+            <strong>{credit.retryWasteAttempts}</strong>
+          </a>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -594,7 +634,7 @@ function UsageAnalytics({
   const label = usageMetricLabel(usage);
   const tokenHref = routeHash({
     page: "runs",
-    filters: drillFilters(
+    filters: insightRunFilters(
       filters,
       usage.gaggle,
       usage.workflow,
@@ -605,7 +645,7 @@ function UsageAnalytics({
   });
   const costHref = routeHash({
     page: "runs",
-    filters: drillFilters(
+    filters: insightRunFilters(
       filters,
       usage.gaggle,
       usage.workflow,
@@ -616,7 +656,7 @@ function UsageAnalytics({
   });
   const wasteHref = routeHash({
     page: "runs",
-    filters: drillFilters(
+    filters: insightRunFilters(
       filters,
       usage.gaggle,
       usage.workflow,
@@ -756,13 +796,11 @@ function CostTrend({
   costTrend,
   currentUsage,
   retry,
-  scope,
   window,
 }: {
-  costTrend: QueryState<InsightCostTrendSnapshot>;
+  costTrend: QueryState<InsightCostTrendViewModel>;
   currentUsage: TelemetryUsageStats;
   retry: () => void;
-  scope: InsightScope;
   window: InsightWindow;
 }) {
   if (window === "all") {
@@ -789,13 +827,8 @@ function CostTrend({
     return null;
   }
   const data = costTrend.data;
-  const points = data.buckets.map((bucket) => ({
-    since: bucket.since,
-    until: bucket.until,
-    usage: usageForScope(scope, bucket.usage),
-  }));
+  const points = data.points;
   const hasSamples = points.some((point) => (point.usage?.costSamples ?? 0) > 0);
-  const previousUsage = data.previous ? usageForScope(scope, data.previous.usage) : undefined;
 
   return (
     <div className="usage-trend">
@@ -816,7 +849,7 @@ function CostTrend({
       ) : (
         <p className="usage-trend-note">No cost samples across buckets in this scope.</p>
       )}
-      <CostTrendComparison current={currentUsage} previous={previousUsage} window={window} />
+      <CostTrendComparison current={currentUsage} previous={data.previousUsage} window={window} />
     </div>
   );
 }
@@ -1083,7 +1116,14 @@ function GaggleSpendRow({
   const usage = entry.usage;
   const href = routeHash({
     page: "runs",
-    filters: drillFilters(filters, entry.gaggle, undefined, undefined, undefined, "cost-measured"),
+    filters: insightRunFilters(
+      filters,
+      entry.gaggle,
+      undefined,
+      undefined,
+      undefined,
+      "cost-measured",
+    ),
   });
   return (
     <a
@@ -1190,7 +1230,7 @@ function StageDistributions({
           className="stage-distribution-row"
           href={routeHash({
             page: "runs",
-            filters: drillFilters(
+            filters: insightRunFilters(
               filters,
               stage.gaggle,
               stage.workflow,
@@ -1274,164 +1314,6 @@ function DistributionPlot({
   );
 }
 
-function scopeOptions(stats: TelemetryStatsResult): { key: string; label: string }[] {
-  return [
-    scopeOption({ kind: "instance" }),
-    ...stats.gaggles.map((item) => scopeOption({ kind: "gaggle", gaggle: item.gaggle })),
-    ...stats.runs.map((item) =>
-      scopeOption({ kind: "workflow", gaggle: item.gaggle, workflow: item.workflow }),
-    ),
-    ...stats.stages.map((item) =>
-      scopeOption({
-        kind: "stage",
-        gaggle: item.gaggle,
-        workflow: item.workflow,
-        stage: item.stage,
-      }),
-    ),
-  ];
-}
-
-function scopeOption(scope: InsightScope): { key: string; label: string } {
-  switch (scope.kind) {
-    case "instance":
-      return { key: scopeToKey(scope), label: "Instance" };
-    case "gaggle":
-      return { key: scopeToKey(scope), label: `Gaggle · ${scope.gaggle}` };
-    case "workflow":
-      return {
-        key: scopeToKey(scope),
-        label: `Workflow · ${scope.gaggle} / ${scope.workflow}`,
-      };
-    case "stage":
-      return {
-        key: scopeToKey(scope),
-        label: `Stage · ${scope.gaggle} / ${scope.workflow} / ${scope.stage}`,
-      };
-  }
-}
-
-function errorSignatureScope(scope: InsightScope): {
-  gaggle?: string;
-  workflow?: string;
-  stage?: string;
-} {
-  switch (scope.kind) {
-    case "instance":
-      return {};
-    case "gaggle":
-      return { gaggle: scope.gaggle };
-    case "workflow":
-      return { gaggle: scope.gaggle, workflow: scope.workflow };
-    case "stage":
-      return { gaggle: scope.gaggle, workflow: scope.workflow, stage: scope.stage };
-  }
-}
-
-function scopeMetric(
-  scope: InsightScope,
-  stats: TelemetryStatsResult,
-  filters: TelemetryStatsOptions,
-): OutcomeMetric | undefined {
-  switch (scope.kind) {
-    case "instance":
-      return sumGaggles(stats.gaggles, filters);
-    case "gaggle": {
-      const item = stats.gaggles.find((candidate) => candidate.gaggle === scope.gaggle);
-      return item && gaggleMetric(item, filters);
-    }
-    case "workflow": {
-      const item = stats.runs.find(
-        (candidate) =>
-          candidate.gaggle === scope.gaggle && candidate.workflow === scope.workflow,
-      );
-      return item && runMetric(item, filters);
-    }
-    case "stage": {
-      const item = stats.stages.find(
-        (candidate) =>
-          candidate.gaggle === scope.gaggle &&
-          candidate.workflow === scope.workflow &&
-          candidate.stage === scope.stage,
-      );
-      return item && stageMetric(item, filters);
-    }
-  }
-}
-
-function outcomeBreakdown(
-  scope: InsightScope,
-  stats: TelemetryStatsResult,
-  filters: TelemetryStatsOptions,
-): OutcomeMetric[] {
-  switch (scope.kind) {
-    case "instance":
-      return stats.gaggles.map((item) => gaggleMetric(item, filters));
-    case "gaggle":
-      return stats.runs
-        .filter((item) => item.gaggle === scope.gaggle)
-        .map((item) => runMetric(item, filters));
-    case "workflow":
-      return stats.stages
-        .filter(
-          (item) => item.gaggle === scope.gaggle && item.workflow === scope.workflow,
-        )
-        .map((item) => stageMetric(item, filters));
-    case "stage":
-      return [];
-  }
-}
-
-function stagesInScope(
-  scope: InsightScope,
-  stages: TelemetryStageStats[],
-): TelemetryStageStats[] {
-  switch (scope.kind) {
-    case "instance":
-      return [...stages];
-    case "gaggle":
-      return stages.filter((stage) => stage.gaggle === scope.gaggle);
-    case "workflow":
-      return stages.filter(
-        (stage) => stage.gaggle === scope.gaggle && stage.workflow === scope.workflow,
-      );
-    case "stage":
-      return stages.filter(
-        (stage) =>
-          stage.gaggle === scope.gaggle &&
-          stage.workflow === scope.workflow &&
-          stage.stage === scope.stage,
-      );
-  }
-}
-
-function usageForScope(
-  scope: InsightScope,
-  usage: TelemetryUsageStats[],
-): TelemetryUsageStats | undefined {
-  return usage.find((item) => {
-    switch (scope.kind) {
-      case "instance":
-        return item.scope === "instance";
-      case "gaggle":
-        return item.scope === "gaggle" && item.gaggle === scope.gaggle;
-      case "workflow":
-        return (
-          item.scope === "workflow" &&
-          item.gaggle === scope.gaggle &&
-          item.workflow === scope.workflow
-        );
-      case "stage":
-        return (
-          item.scope === "stage" &&
-          item.gaggle === scope.gaggle &&
-          item.workflow === scope.workflow &&
-          item.stage === scope.stage
-        );
-    }
-  });
-}
-
 function usageMetricLabel(usage: TelemetryUsageStats): string {
   switch (usage.scope) {
     case "instance":
@@ -1471,96 +1353,6 @@ function usageMetricContext(usage: TelemetryUsageStats): string {
   }
 }
 
-function sumGaggles(
-  gaggles: TelemetryGaggleStats[],
-  filters: TelemetryStatsOptions,
-): OutcomeMetric | undefined {
-  if (gaggles.length === 0) {
-    return undefined;
-  }
-  const total = gaggles.reduce(
-    (sum, item) => ({
-      completed: sum.completed + item.completedRuns,
-      failed: sum.failed + item.failedRuns,
-      other: sum.other + item.otherRuns,
-      runs: sum.runs + item.totalRuns,
-    }),
-    { completed: 0, failed: 0, other: 0, runs: 0 },
-  );
-  const terminal = total.completed + total.failed;
-  return {
-    failed: total.failed,
-    filters: drillFilters(filters),
-    label: "Instance",
-    other: total.other,
-    successRate: terminal > 0 ? total.completed / terminal : undefined,
-    succeeded: total.completed,
-    total: total.runs,
-    unit: "runs",
-  };
-}
-
-function gaggleMetric(
-  item: TelemetryGaggleStats,
-  filters: TelemetryStatsOptions,
-): OutcomeMetric {
-  return {
-    failed: item.failedRuns,
-    filters: drillFilters(filters, item.gaggle),
-    label: item.gaggle,
-    other: item.otherRuns,
-    successRate: item.successRate,
-    succeeded: item.completedRuns,
-    total: item.totalRuns,
-    unit: "runs",
-  };
-}
-
-function runMetric(item: TelemetryRunStats, filters: TelemetryStatsOptions): OutcomeMetric {
-  return {
-    failed: item.failedRuns,
-    filters: drillFilters(filters, item.gaggle, item.workflow),
-    label: `${item.gaggle} / ${item.workflow}`,
-    other: item.otherRuns,
-    successRate: item.successRate,
-    succeeded: item.completedRuns,
-    total: item.totalRuns,
-    unit: "runs",
-  };
-}
-
-function stageMetric(item: TelemetryStageStats, filters: TelemetryStatsOptions): OutcomeMetric {
-  return {
-    failed: item.failedAttempts,
-    filters: drillFilters(filters, item.gaggle, item.workflow, item.stage),
-    label: `${item.gaggle} / ${item.workflow} / ${item.stage}`,
-    other: item.totalAttempts - item.succeededAttempts - item.failedAttempts,
-    successRate: item.successRate,
-    succeeded: item.succeededAttempts,
-    total: item.totalAttempts,
-    unit: "attempts",
-  };
-}
-
-function drillFilters(
-  filters: TelemetryStatsOptions,
-  gaggle?: string,
-  workflow?: string,
-  stage?: string,
-  outcome?: RunRouteFilters["outcome"],
-  population?: RunRouteFilters["population"],
-): RunRouteFilters {
-  return {
-    gaggle,
-    workflow,
-    stage,
-    outcome,
-    population,
-    since: filters.since,
-    until: filters.until,
-  };
-}
-
 function metricHref(
   metric: OutcomeMetric,
   outcome: RunRouteFilters["outcome"] = "finished",
@@ -1573,62 +1365,6 @@ function metricHref(
       population: metric.unit === "attempts" ? "attempts" : undefined,
     },
   });
-}
-
-function scopeToKey(scope: InsightScope): string {
-  switch (scope.kind) {
-    case "instance":
-      return JSON.stringify(["instance"]);
-    case "gaggle":
-      return JSON.stringify(["gaggle", scope.gaggle]);
-    case "workflow":
-      return JSON.stringify(["workflow", scope.gaggle, scope.workflow]);
-    case "stage":
-      return JSON.stringify(["stage", scope.gaggle, scope.workflow, scope.stage]);
-  }
-}
-
-function scopeFromKey(key: string): InsightScope {
-  try {
-    const parts = JSON.parse(key) as unknown;
-    if (!Array.isArray(parts) || !parts.every((part) => typeof part === "string")) {
-      return { kind: "instance" };
-    }
-    if (parts[0] === "gaggle" && parts[1]) {
-      return { kind: "gaggle", gaggle: parts[1] };
-    }
-    if (parts[0] === "workflow" && parts[1] && parts[2]) {
-      return { kind: "workflow", gaggle: parts[1], workflow: parts[2] };
-    }
-    if (parts[0] === "stage" && parts[1] && parts[2] && parts[3]) {
-      return { kind: "stage", gaggle: parts[1], workflow: parts[2], stage: parts[3] };
-    }
-  } catch {
-    return { kind: "instance" };
-  }
-  return { kind: "instance" };
-}
-
-// Derives the scope select's value from the shared ScopeFilters model
-// (#2528) — the URL, not local component state, is the source of truth for
-// which gaggle/workflow/stage is selected, so a scope chosen on Insight
-// survives a reload and a scope carried in from Runs pre-selects here.
-function scopeFromFilters(filters: ScopeFilters | undefined): InsightScope {
-  if (filters?.gaggle && filters.workflow && filters.stage) {
-    return { kind: "stage", gaggle: filters.gaggle, workflow: filters.workflow, stage: filters.stage };
-  }
-  if (filters?.gaggle && filters.workflow) {
-    return { kind: "workflow", gaggle: filters.gaggle, workflow: filters.workflow };
-  }
-  if (filters?.gaggle) {
-    return { kind: "gaggle", gaggle: filters.gaggle };
-  }
-  return { kind: "instance" };
-}
-
-function insightRouteFilters(scope: InsightScope, window: InsightWindow): ScopeFilters | undefined {
-  const filters: ScopeFilters = { ...errorSignatureScope(scope), window };
-  return hasScopeFilters(filters) ? filters : undefined;
 }
 
 function formatRate(value: number | undefined): string {

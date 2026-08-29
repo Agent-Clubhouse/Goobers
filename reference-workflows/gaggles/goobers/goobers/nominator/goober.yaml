@@ -14,6 +14,7 @@ spec:
   # approval authority is materialized only when the invoking workflow stage
   # explicitly opts in; the checked-in work-nomination workflow does not.
   capabilities:
+    - repo:read
     - github:issues:write
     - github:issues:approve
     - telemetry:read
@@ -25,8 +26,6 @@ spec:
   conditionalPolicyActions:
     # Enabled only when a workflow task deliberately opts into self-approval.
     - approve-issue
-  skills:
-    - nomination
   tools:
     - github
     - telemetry
@@ -35,3 +34,4 @@ spec:
   workflows:
     - work-nomination
     - quality-sprint
+    - test-suite-quality

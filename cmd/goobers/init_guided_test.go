@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pmezard/go-difflib/difflib"
+
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/version"
@@ -26,6 +28,75 @@ func (w *guidedInitCallbackWriter) Write(p []byte) (int, error) {
 	return w.Buffer.Write(p)
 }
 
+type guidedPromptTranscriptWriter struct {
+	bytes.Buffer
+	transcript strings.Builder
+}
+
+func (w *guidedPromptTranscriptWriter) Write(p []byte) (int, error) {
+	if bytes.HasSuffix(p, []byte(": ")) {
+		w.transcript.Write(p)
+		w.transcript.WriteByte('\n')
+	}
+	return w.Buffer.Write(p)
+}
+
+func TestGuidedInitReleasePromptTranscript(t *testing.T) {
+	goldenPath, err := filepath.Abs(filepath.Join("testdata", "guided-init-release.prompts.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, err := os.ReadFile(filepath.Join("testdata", "guided-init-release.answers"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := bytes.NewReader(answers)
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "Makefile"), []byte("ci:\n\t@true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(workspace)
+
+	var stdout guidedPromptTranscriptWriter
+	var stderr bytes.Buffer
+	code := runInitWithInput(
+		[]string{"--guided", filepath.Join("smoke", "quickstart-instance")},
+		input,
+		&stdout,
+		&stderr,
+	)
+	got := strings.ReplaceAll(stdout.transcript.String(), workspace, "<workspace>")
+	got = strings.ReplaceAll(got, string(filepath.Separator), "/")
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(goldenPath, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != string(want) {
+		diff, diffErr := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+			A:        difflib.SplitLines(string(want)),
+			B:        difflib.SplitLines(got),
+			FromFile: goldenPath,
+			ToFile:   "actual guided-init prompts",
+			Context:  3,
+		})
+		if diffErr != nil {
+			t.Fatalf("diff guided-init prompt transcript: %v", diffErr)
+		}
+		t.Fatalf("guided-init prompt transcript changed:\n%s", diff)
+	}
+	if code != 0 {
+		t.Fatalf("guided init code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if input.Len() != 0 {
+		t.Fatalf("guided init left %d scripted answer bytes unread", input.Len())
+	}
+}
+
 func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "widget-instance")
 	sourceRoot := root + "-config"
@@ -37,6 +108,7 @@ func TestGuidedInitProducesValidatedRunnableInstance(t *testing.T) {
 		"",
 		"make ci", // #2071: no build manifest in this test's cwd, so no default is offered
 		"make",
+		"", // accept the default harness (copilot)
 		"",
 		"",
 		"",
@@ -167,6 +239,7 @@ func TestGuidedInitDefaultPathCreatesSiblingConfigSource(t *testing.T) {
 		"acme/widget",
 		"",
 		"work-nomination",
+		"", // accept the default harness (copilot)
 		"",
 		"",
 		"",
@@ -202,12 +275,48 @@ func TestDocumentationURLPinsStableReleaseBuilds(t *testing.T) {
 		{version: "dev", ref: "main"},
 		{version: "db438b0", ref: "main"},
 		{version: "v1.2.3", ref: "v1.2.3"},
+		{version: "v1.2.3-beta.2", ref: "v1.2.3-beta.2"},
+		{version: "v1.2.3-01", ref: "main"},
 	} {
 		version.Version = test.version
 		want := "https://github.com/Agent-Clubhouse/Goobers/blob/" + test.ref + "/docs/concepts/README.md"
 		if got := documentationURL("docs/concepts/README.md"); got != want {
 			t.Errorf("documentationURL with version %q = %q, want %q", test.version, got, want)
 		}
+	}
+}
+
+// TestPromptGuidedOptionsSelectsClaudeCodeHarness pins #2777: claude-code
+// must be choosable in the guided prompt flow (not just discoverable via
+// --harness), and choosing it must route the optional model-auth token
+// through ClaudeTokenEnv instead of CopilotTokenEnv.
+func TestPromptGuidedOptionsSelectsClaudeCodeHarness(t *testing.T) {
+	input := strings.NewReader(strings.Join([]string{
+		"acme/widget",
+		"",
+		"work-nomination",
+		"claude-code",
+		"",
+		"",
+		"WIDGET_CLAUDE_TOKEN",
+	}, "\n") + "\n")
+	var stdout bytes.Buffer
+
+	opts, err := promptGuidedOptions(input, &stdout)
+	if err != nil {
+		t.Fatalf("promptGuidedOptions: %v", err)
+	}
+	if opts.Harness != "claude-code" {
+		t.Fatalf("opts.Harness = %q, want claude-code", opts.Harness)
+	}
+	if opts.ClaudeTokenEnv != "WIDGET_CLAUDE_TOKEN" || opts.CopilotTokenEnv != "" {
+		t.Fatalf("unexpected model-auth token refs: claude=%q copilot=%q", opts.ClaudeTokenEnv, opts.CopilotTokenEnv)
+	}
+	if !strings.Contains(stdout.String(), "Claude Code model auth") {
+		t.Errorf("stdout lacks the Claude Code model-auth prompt:\n%s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "Copilot model auth") {
+		t.Errorf("stdout unexpectedly shows the Copilot model-auth prompt:\n%s", stdout.String())
 	}
 }
 

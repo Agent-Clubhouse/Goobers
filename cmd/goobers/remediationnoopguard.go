@@ -23,8 +23,9 @@ const (
 )
 
 type remediationNoopSignature struct {
-	HeadSHA string `json:"headSha"`
-	Causes  string `json:"causes"`
+	HeadSHA    string `json:"headSha"`
+	Causes     string `json:"causes,omitempty"`
+	DiffDigest string `json:"diffDigest,omitempty"`
 }
 
 type remediationNoopRecord struct {
@@ -162,6 +163,45 @@ func updateRemediationNoopState(schedulerDir, key string, signature remediationN
 	record.LastRunID = runID
 	state.Records[key] = record
 	return writeRemediationNoopState(schedulerDir, state)
+}
+
+func recordGatherPRContextDigestNoop(l instance.Layout, number int, signature remediationNoopSignature, runID string, escalatedLabelPresent bool) (remediationNoopRecord, bool, error) {
+	if runID == "" {
+		return remediationNoopRecord{}, false, fmt.Errorf("GOOBERS_RUN_ID is required to record an unchanged remediation digest")
+	}
+	var recorded remediationNoopRecord
+	var operatorReset bool
+	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRLookup, func() error {
+		state, err := readRemediationNoopState(l.SchedulerDir())
+		if err != nil {
+			return err
+		}
+		gaggle := l.Gaggle()
+		if gaggle == "" {
+			gaggle = providerGaggle()
+		}
+		key := remediationNoopKey(gaggle, number)
+		record := state.Records[key]
+		if record.remediationNoopSignature == signature && record.Parked && !escalatedLabelPresent {
+			delete(state.Records, key)
+			operatorReset = true
+			return writeRemediationNoopState(l.SchedulerDir(), state)
+		}
+		if record.remediationNoopSignature != signature {
+			record = remediationNoopRecord{remediationNoopSignature: signature}
+		}
+		if record.LastRunID != runID {
+			record.Attempts++
+			record.LastRunID = runID
+			state.Records[key] = record
+			if err := writeRemediationNoopState(l.SchedulerDir(), state); err != nil {
+				return err
+			}
+		}
+		recorded = record
+		return nil
+	})
+	return recorded, operatorReset, err
 }
 
 func clearRemediationNoopState(schedulerDir, key string) error {

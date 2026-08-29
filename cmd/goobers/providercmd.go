@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -73,6 +72,8 @@ const (
 	claimLockOperationBacklogReconcile     = "backlog-query.reconcile"
 	claimLockOperationBacklogClaim         = "backlog-query.claim"
 	claimLockOperationBacklogRelease       = "backlog-query.release"
+	claimLockOperationSelectSourceClaim    = "select-source.claim"
+	claimLockOperationSelectSourceRelease  = "select-source.release"
 	claimLockOperationPRLookup             = "pr-claim.lookup"
 	claimLockOperationPRAcquire            = "pr-claim.acquire"
 	claimLockOperationPRRelease            = "pr-claim.release"
@@ -332,7 +333,7 @@ const (
 	// reports those as *RateLimitError before a plain status error can ever
 	// see one) — a real permission failure. Never retryable: retrying with
 	// the same bad or expired credential cannot succeed.
-	errorCodeAuthFailed = "github_auth_failed"
+	errorCodeAuthFailed = providers.ErrorCodeAuthFailed
 	// errorCodeNetwork is either a transport-level failure (dial/DNS/reset/
 	// timeout) that exhausted send()'s own in-request retry budget, or any
 	// other condition providers.IsTransientError recognizes without a
@@ -396,10 +397,11 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	if strings.Contains(message, "gh006") && strings.Contains(message, "added to a merge queue") {
 		return errorCodeBranchMergeQueued, true, nil
 	}
+	if providers.IsAuthenticationError(err) {
+		return errorCodeAuthFailed, false, nil
+	}
 	if status, ok := statusCodeFrom(err); ok {
 		switch {
-		case status == http.StatusUnauthorized, status == http.StatusForbidden:
-			return errorCodeAuthFailed, false, nil
 		case status >= 500:
 			return errorCodeServerError, true, nil
 		}
@@ -840,29 +842,38 @@ func writeClaimLockTimeoutOutcome(timeoutErr *claimsLockTimeoutError) error {
 	return errors.Join(errs...)
 }
 
-// withFileLock is the un-instrumented blocking lock used by non-claim cache
-// and merge locks. Claim-ledger and blocked-record access must go through
-// withClaimLock instead so its wait/hold contention is measured (#791).
+// withFileLock is the blocking lock used by non-claim cache and merge locks.
+// Claim-ledger and blocked-record access must go through withClaimLock instead
+// so its wait/hold contention is measured (#791).
+//
+// BOUNDED, where it used to block forever. It called lock.Acquire directly —
+// no timeout, no context — so a stale holder wedged the caller permanently with
+// no diagnostic and nothing to time out. Six call sites shared that behaviour
+// (merge.lock, the sibling-context / merge-policy / api-read caches, and
+// post-merge reconcile), and the bounded discipline already existed 200 lines
+// away for claims: acquireClaimLock retries against a deadline and reports the
+// operation by name.
+//
+// Reusing it means a wedged lock now fails with the operation named instead of
+// hanging, and the fix is one function rather than six.
 func withFileLock(lockPath string, fn func() error) error {
-	return withBlockingFileLock(lockPath, nil, nil, fn)
+	return withBoundedFileLock(lockPath, "file-lock", fn)
 }
 
-// withBlockingFileLock provides the blocking lock discipline shared by the
-// claims lock and unrelated cache/merge locks. The optional callbacks run
-// immediately after acquisition and release.
-func withBlockingFileLock(lockPath string, onAcquired, onReleased func(), fn func() error) error {
-	held, err := lock.Acquire(lockPath)
+// withBoundedFileLock is withFileLock with the operation named for diagnostics.
+func withBoundedFileLock(lockPath, operation string, fn func() error) error {
+	// The instance's configured claims-lock timeout, falling back to the
+	// package default when this lock is not inside an instance root. These are
+	// cache and merge locks, so the same bound is the right order of magnitude
+	// and stays operator-tunable through one setting rather than two.
+	timeout, err := claimsLockTimeoutForPath(lockPath)
+	if err != nil || timeout <= 0 {
+		timeout = instance.DefaultClaimsLockTimeout
+	}
+	held, err := acquireClaimLock(lockPath, operation, timeout, time.Now())
 	if err != nil {
-		return fmt.Errorf("acquire lock: %w", err)
+		return fmt.Errorf("acquire %s lock: %w", operation, err)
 	}
-	if onAcquired != nil {
-		onAcquired()
-	}
-	defer func() {
-		_ = held.Release()
-		if onReleased != nil {
-			onReleased()
-		}
-	}()
+	defer func() { _ = held.Release() }()
 	return fn()
 }

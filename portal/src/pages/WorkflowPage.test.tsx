@@ -1,11 +1,71 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import { FixtureDaemonClient } from "../api/fixtureClient";
+import { fixtureKey, FixtureDaemonClient } from "../api/fixtureClient";
+import type {
+  DaemonEventStream,
+  DaemonUpdateEvent,
+  EventStreamRequest,
+  RequestOptions,
+} from "../api/types";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
 
 const storedValues = new Map<string, string>();
+
+class PushableClient extends FixtureDaemonClient {
+  private readers: ((result: IteratorResult<DaemonUpdateEvent>) => void)[] = [];
+  private queued: DaemonUpdateEvent[] = [];
+
+  connectEvents(
+    _request?: EventStreamRequest,
+    _options?: RequestOptions,
+  ): Promise<DaemonEventStream> {
+    const self = this;
+    return Promise.resolve({
+      close: () => {},
+      [Symbol.asyncIterator]() {
+        return {
+          next(): Promise<IteratorResult<DaemonUpdateEvent>> {
+            const queued = self.queued.shift();
+            if (queued) {
+              return Promise.resolve({ done: false, value: queued });
+            }
+            return new Promise((resolve) => self.readers.push(resolve));
+          },
+        };
+      },
+    });
+  }
+
+  push(event: DaemonUpdateEvent): void {
+    const reader = this.readers.shift();
+    if (reader) {
+      reader({ done: false, value: event });
+    } else {
+      this.queued.push(event);
+    }
+  }
+}
+
+function workflowEvent(
+  id: string,
+  gaggle: string,
+  workflow: string,
+  models: ("run" | "workflow")[] = ["run", "workflow"],
+): DaemonUpdateEvent {
+  return {
+    id,
+    type: "invalidate",
+    data: {
+      cursor: id,
+      models,
+      runIds: [],
+      workflows: [{ gaggle, name: workflow }],
+    },
+  };
+}
 
 beforeEach(() => {
   storedValues.clear();
@@ -30,6 +90,7 @@ describe("workflow detail page", () => {
   it("renders live definition metadata, the canonical graph, stage context, and filtered runs", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const listRuns = vi.spyOn(client, "listRuns");
+    const getTelemetryStats = vi.spyOn(client, "getTelemetryStats");
     const user = userEvent.setup();
     render(<App client={client} />);
 
@@ -57,6 +118,106 @@ describe("workflow detail page", () => {
       { gaggle: "core", workflow: "implementation", limit: 20 },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+    await waitFor(() =>
+      expect(getTelemetryStats).toHaveBeenCalledWith(
+        expect.objectContaining({ gaggle: "core", workflow: "implementation" }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+  });
+
+  it("refreshes workflow metadata and recent runs after a scoped live invalidation", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const client = new PushableClient(fixtures);
+    render(<App client={client} />);
+
+    expect(await screen.findByText("v7 · sha256:core")).toBeInTheDocument();
+    const workflow = fixtures.workflowDetails?.[fixtureKey("core", "implementation")];
+    if (!workflow) {
+      throw new Error("Expected the core workflow fixture.");
+    }
+    workflow.definition = { version: 8, digest: "sha256:refreshed" };
+    workflow.graph.version = 8;
+    workflow.graph.digest = "sha256:refreshed";
+    fixtures.runs.runs.push({
+      ...fixtures.runs.runs[0],
+      id: "01JZLIVEWORKFLOW",
+      startedAt: "2026-07-18T08:00:00Z",
+      finishedAt: "2026-07-18T08:01:00Z",
+      lastActivityAt: "2026-07-18T08:01:00Z",
+    });
+
+    act(() => client.push(workflowEvent("session:workflow-1", "core", "implementation")));
+
+    expect(await screen.findByText("v8 · sha256:refreshed")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Open run 01JZLIVEWORKFLOW" }),
+    ).toBeInTheDocument();
+  });
+
+  it("retains stale detail after a failed refresh and replaces it on retry", async () => {
+    const fixtures = populatedDaemonFixtures();
+    const client = new PushableClient(fixtures);
+    const getWorkflow = vi.spyOn(client, "getWorkflow");
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    expect(await screen.findByText("v7 · sha256:core")).toBeInTheDocument();
+    const workflow = fixtures.workflowDetails?.[fixtureKey("core", "implementation")];
+    if (!workflow) {
+      throw new Error("Expected the core workflow fixture.");
+    }
+    workflow.definition = { version: 8, digest: "sha256:recovered" };
+    workflow.graph.version = 8;
+    workflow.graph.digest = "sha256:recovered";
+    getWorkflow.mockRejectedValueOnce(new Error("Refresh failed."));
+
+    act(() => client.push(workflowEvent("session:workflow-2", "core", "implementation")));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Workflow detail may be stale");
+    expect(alert).toHaveTextContent("Refresh failed.");
+    expect(screen.getByText("v7 · sha256:core")).toBeInTheDocument();
+
+    await user.click(within(alert).getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByText("v8 · sha256:recovered")).toBeInTheDocument();
+    expect(screen.queryByText("Workflow detail may be stale")).not.toBeInTheDocument();
+  });
+
+  it("scopes live refreshes to the workflow and aborts an in-flight refresh on workflow change", async () => {
+    const client = new PushableClient(populatedDaemonFixtures());
+    const getWorkflow = vi.spyOn(client, "getWorkflow");
+    render(<App client={client} />);
+
+    expect(await screen.findByText("v7 · sha256:core")).toBeInTheDocument();
+    getWorkflow.mockClear();
+
+    await act(async () => {
+      client.push(workflowEvent("session:unrelated", "tools", "implementation"));
+      await new Promise((resolve) => setTimeout(resolve, 75));
+    });
+    expect(getWorkflow).not.toHaveBeenCalled();
+
+    let refreshSignal: AbortSignal | undefined;
+    getWorkflow.mockImplementationOnce((_gaggle, _workflow, options) => {
+      refreshSignal = options?.signal;
+      return new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+          once: true,
+        });
+      });
+    });
+    act(() => client.push(workflowEvent("session:matching", "core", "implementation")));
+    await waitFor(() => expect(refreshSignal).toBeInstanceOf(AbortSignal));
+    expect(refreshSignal?.aborted).toBe(false);
+
+    act(() => {
+      window.location.hash = "#/workflow/tools/implementation";
+    });
+
+    await waitFor(() => expect(refreshSignal?.aborted).toBe(true));
+    expect(await screen.findByText("v7 · sha256:tools")).toBeInTheDocument();
   });
 
   it("surfaces stage timeout/retry in fields and the full config in raw YAML (#2185)", async () => {

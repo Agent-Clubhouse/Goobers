@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
@@ -33,7 +32,7 @@ const selectSourceHelp = "Usage: goobers select-source [path]\n\n" +
 	"error) / 2 = usage/IO error.\n"
 
 func runSelectSource(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("select-source", flag.ContinueOnError)
+	fs := newCLIFlagSet("select-source", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "select-source")
 	if err := fs.Parse(args); err != nil {
@@ -61,36 +60,9 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	var issueProvider providers.BacklogProvider
-	switch repo.Provider {
-	case providers.ProviderADO:
-		adoProvider, aerr := newADOProviderForStage(root, repo)
-		if aerr != nil {
-			pf(stderr, "error: %v\n", aerr)
-			return 1
-		}
-		issueProvider = adoProvider
-	case providers.ProviderGitea:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
-		if terr != nil {
-			pf(stderr, "error: %v\n", terr)
-			return 1
-		}
-		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-		if gerr != nil {
-			pf(stderr, "error: %v\n", gerr)
-			return 1
-		}
-		issueProvider = giteaProvider
-	case providers.ProviderGitHub:
-		token, terr := providerToken(capability.GitHubIssuesWrite)
-		if terr != nil {
-			pf(stderr, "error: %v\n", terr)
-			return 1
-		}
-		issueProvider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-	default:
-		pf(stderr, "error: select-source does not support repository provider %q\n", repo.Provider)
+	issueProvider, err := newProviderForStage(root, repo, false, withStageProviderCache(), withStageProviderMutations("issue"))
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 
@@ -131,14 +103,6 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = instanceLog.Close() }()
 
-	ledger, err := localscheduler.OpenClaimLedger(
-		filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-		localscheduler.WithInstanceLog(instanceLog),
-	)
-	if err != nil {
-		return failProviderStage(stderr, "open claim ledger", err, "selection.json")
-	}
-
 	for _, candidate := range candidates {
 		item, getErr := issueProvider.GetWorkItem(ctx, repo, candidate.ParentID)
 		if getErr != nil {
@@ -161,7 +125,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 		}
 
 		key := localscheduler.ClaimKey{Gaggle: gaggle, Provider: string(repo.Provider), ExternalID: item.ID}
-		ok, _, claimErr := claimSelectSourceParent(ledger, key, runID, workflow, leaseDuration)
+		ok, _, claimErr := claimSelectSourceParent(l.SchedulerDir(), instanceLog, key, runID, workflow, leaseDuration)
 		if claimErr != nil {
 			return failProviderStage(stderr, fmt.Sprintf("claim parent %s", item.ID), claimErr, "selection.json")
 		}
@@ -174,7 +138,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 
 		digest, digestErr := decomposition.IssueSnapshotDigest(item.ID, item.Title, item.Body, decompositionDigestLabels(item.Labels), item.State)
 		if digestErr != nil {
-			if releaseErr := releaseSelectSourceParent(ledger, key, runID); releaseErr != nil {
+			if releaseErr := releaseSelectSourceParent(l.SchedulerDir(), instanceLog, key, runID); releaseErr != nil {
 				pf(stderr, "error: release claim %s after digest failure: %v\n", item.ID, releaseErr)
 			}
 			return failProviderStage(stderr, "compute issue snapshot digest", digestErr, "selection.json")
@@ -202,7 +166,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 
 		data, marshalErr := json.Marshal(selection)
 		if marshalErr != nil {
-			if releaseErr := releaseSelectSourceParent(ledger, key, runID); releaseErr != nil {
+			if releaseErr := releaseSelectSourceParent(l.SchedulerDir(), instanceLog, key, runID); releaseErr != nil {
 				pf(stderr, "error: release claim %s after marshal failure: %v\n", item.ID, releaseErr)
 			}
 			pf(stderr, "error: marshal selection: %v\n", marshalErr)
@@ -210,7 +174,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 		}
 		resultFile := providerInput("resultFile", "selection.json")
 		if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-			if releaseErr := releaseSelectSourceParent(ledger, key, runID); releaseErr != nil {
+			if releaseErr := releaseSelectSourceParent(l.SchedulerDir(), instanceLog, key, runID); releaseErr != nil {
 				pf(stderr, "error: release claim %s after write failure: %v\n", item.ID, releaseErr)
 			}
 			pf(stderr, "error: write %s: %v\n", resultFile, err)
@@ -252,18 +216,41 @@ func writeSelectSourceNoWork(stdout, stderr io.Writer, reason string) int {
 // own gaggle-empty fallback (backlogquery.go): ClaimKey.storageKey requires a
 // non-empty Gaggle, so a gaggle-less instance must use the legacy unscoped
 // Claim/Release rather than ClaimScoped.
-func claimSelectSourceParent(ledger *localscheduler.ClaimLedger, key localscheduler.ClaimKey, runID, workflow string, leaseDuration time.Duration) (bool, string, error) {
-	if key.Gaggle == "" {
-		return ledger.Claim(key.ExternalID, runID, workflow, leaseDuration)
-	}
-	return ledger.ClaimScoped(key, runID, workflow, leaseDuration)
+func claimSelectSourceParent(schedulerDir string, instanceLog *journal.InstanceLog, key localscheduler.ClaimKey, runID, workflow string, leaseDuration time.Duration) (bool, string, error) {
+	var ok bool
+	var holder string
+	err := withClaimLock(filepath.Join(schedulerDir, claimLockFileName), claimLockOperationSelectSourceClaim, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(
+			filepath.Join(schedulerDir, claimLedgerFileName),
+			localscheduler.WithInstanceLog(instanceLog),
+		)
+		if err != nil {
+			return fmt.Errorf("open claim ledger: %w", err)
+		}
+		if key.Gaggle == "" {
+			ok, holder, err = ledger.Claim(key.ExternalID, runID, workflow, leaseDuration)
+		} else {
+			ok, holder, err = ledger.ClaimScoped(key, runID, workflow, leaseDuration)
+		}
+		return err
+	})
+	return ok, holder, err
 }
 
-func releaseSelectSourceParent(ledger *localscheduler.ClaimLedger, key localscheduler.ClaimKey, runID string) error {
-	if key.Gaggle == "" {
-		return ledger.Release(key.ExternalID, runID)
-	}
-	return ledger.ReleaseScoped(key, runID)
+func releaseSelectSourceParent(schedulerDir string, instanceLog *journal.InstanceLog, key localscheduler.ClaimKey, runID string) error {
+	return withClaimLock(filepath.Join(schedulerDir, claimLockFileName), claimLockOperationSelectSourceRelease, func() error {
+		ledger, err := localscheduler.OpenClaimLedger(
+			filepath.Join(schedulerDir, claimLedgerFileName),
+			localscheduler.WithInstanceLog(instanceLog),
+		)
+		if err != nil {
+			return fmt.Errorf("open claim ledger: %w", err)
+		}
+		if key.Gaggle == "" {
+			return ledger.Release(key.ExternalID, runID)
+		}
+		return ledger.ReleaseScoped(key, runID)
+	})
 }
 
 // parentEligibleForDecomposition re-verifies the live parent state

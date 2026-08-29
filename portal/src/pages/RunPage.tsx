@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DaemonClient, RunDetail, RunEvent } from "../api/types";
 import { EscalationPanel } from "../components/EscalationPanel";
 import { FailurePanel } from "../components/FailurePanel";
+import { KeyMomentsDigest } from "../components/KeyMomentsDigest";
 import { ReplayScrubber } from "../components/ReplayScrubber";
 import { RunStageInspector } from "../components/RunStageInspector";
 import { ScopePivot } from "../components/ScopePivot";
@@ -266,7 +267,7 @@ function RunDetailWorkspace({
       <header className="run-heading">
         <div className="run-heading-main">
           <div className="run-title-line">
-            <StatusBadge status={run.phase} />
+            <StatusBadge stale={run.stale} status={run.phase} />
             <span className="mono run-id">{run.id}</span>
           </div>
           <h1>Run {run.id}</h1>
@@ -325,6 +326,15 @@ function RunDetailWorkspace({
           </div>
         </dl>
       </header>
+
+      {run.stale && (
+        <div className="run-stale-state run-stale-run" role="status">
+          <span>
+            <strong>Stale / unmonitored</strong>
+            <small>No recent run activity is available and the daemon heartbeat is stale.</small>
+          </span>
+        </div>
+      )}
 
       {run.escalation && (
         <EscalationPanel
@@ -438,12 +448,22 @@ function RunDetailWorkspace({
           )}
         </div>
 
-        <EventLedger
-          events={events}
-          onSelect={selectEvent}
-          run={run}
-          selectedSeq={selectedSeq}
-        />
+        <div className="run-journal-column">
+          <KeyMomentsDigest
+            client={client}
+            events={events}
+            onSelect={selectEvent}
+            runId={runId}
+            runStartedAt={run.startedAt}
+            selectedSeq={selectedSeq}
+          />
+          <EventLedger
+            events={events}
+            onSelect={selectEvent}
+            run={run}
+            selectedSeq={selectedSeq}
+          />
+        </div>
       </section>
     </>
   );

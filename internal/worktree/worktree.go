@@ -65,6 +65,11 @@ type CreateOptions struct {
 	// stage in this same run fetched it. Anything that clears the mirror
 	// between stages reaches this path.
 	RequireExistingBranch bool
+	// AcquireRemoteBranch fetches Branch explicitly from origin once per
+	// OwnerRunID before requiring it. A durable metadata marker makes a retry or
+	// process restart reuse the same logical branch without resetting commits
+	// made by earlier stages in the run.
+	AcquireRemoteBranch bool
 	// SyncBase merges the freshly fetched BaseRef into an existing Branch
 	// before returning the worktree. New branches already start at BaseRef.
 	SyncBase bool
@@ -132,6 +137,11 @@ type Worktree struct {
 	assetGuard    bool
 }
 
+// HeadSHA returns the commit currently checked out in this worktree.
+func (wt *Worktree) HeadSHA(ctx context.Context) (string, error) {
+	return gitOutput(ctx, wt.Path, "rev-parse", "HEAD")
+}
+
 // validRunID reports whether id is safe to join onto a directory as a
 // single path segment: non-empty, not "." or "..", and not itself a
 // multi-segment or absolute path (filepath.Base(id) == id is false for any
@@ -168,6 +178,9 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	if opts.SyncBase && opts.Branch == "" {
 		return nil, fmt.Errorf("worktree: SyncBase requires Branch")
 	}
+	if opts.AcquireRemoteBranch && !opts.RequireExistingBranch {
+		return nil, fmt.Errorf("worktree: AcquireRemoteBranch requires RequireExistingBranch")
+	}
 
 	repoDir, err := m.WorkingCopy(ctx, opts.RepoURL)
 	if err != nil {
@@ -189,6 +202,24 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		}
 	}()
 
+	if opts.AcquireRemoteBranch {
+		acquisitionPath := m.branchAcquisitionPath(key, opts.OwnerRunID, opts.Branch)
+		if _, err := os.Stat(acquisitionPath); os.IsNotExist(err) {
+			ref := "refs/heads/" + opts.Branch
+			if err := m.runRemoteGit(ctx, opts.RepoURL, repoDir, "fetch", "origin", "+"+ref+":"+ref); err != nil {
+				return nil, fmt.Errorf("worktree: acquire branch %q for run %s: %w", opts.Branch, opts.OwnerRunID, err)
+			}
+			if err := writeBranchAcquisition(acquisitionPath, branchAcquisition{
+				OwnerRunID: opts.OwnerRunID,
+				Branch:     opts.Branch,
+			}); err != nil {
+				return nil, fmt.Errorf("worktree: record acquired branch %q for run %s: %w", opts.Branch, opts.OwnerRunID, err)
+			}
+		} else if err != nil {
+			return nil, fmt.Errorf("worktree: inspect acquired branch %q for run %s: %w", opts.Branch, opts.OwnerRunID, err)
+		}
+	}
+
 	existingBranch := opts.Branch != "" && branchExists(ctx, repoDir, opts.Branch)
 	if limit, ok := m.pathLengthLimit(opts.RepoURL); ok {
 		refs := []string{opts.BaseRef}
@@ -207,15 +238,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 
 	if _, err := os.Stat(path); err == nil {
 		// Adopt-and-reset (issue #136), not a hard error: a leftover
-		// worktree at this exact key can only be a previous attempt of the
-		// SAME (run, stage) that never got torn down — a crash mid-attempt
-		// (this key survives until the daemon resumes the same stage), or a
-		// same-process retry whose own Remove call failed (RemoveOptions
-		// errors were being silently discarded). Both cases are always
-		// sequential with whatever is calling Create now — a genuinely
-		// concurrent second attempt of the same (run, stage) never happens
-		// — so it is always safe to clear it and start fresh rather than
-		// refusing forever until an operator does disk surgery.
+		// worktree at this exact key is a previous attempt of the SAME
+		// (run, stage) that never got torn down. This is safe only within
+		// one manager ownership domain; worker startup enforces a pod-private
+		// root before distributed attempts can reach this path.
 		if err := m.forceClear(ctx, key, path, opts.RunID); err != nil {
 			return nil, fmt.Errorf("worktree: clear stale worktree for run %s: %w", opts.RunID, err)
 		}
@@ -271,6 +297,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 		OwnerRunID:   opts.OwnerRunID,
 		Directory:    directory,
 		Branch:       opts.Branch,
+		Writer:       m.writerIdentity,
 		PID:          pid,
 		PIDStartedAt: startedAt,
 		CreatedAt:    time.Now(),

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,6 +146,50 @@ func TestProjectionIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestProjectionKeepsEarliestClaimedIssueIdentity(t *testing.T) {
+	identity := testIdentity()
+	identity.Trigger = journal.Trigger{Kind: journal.TriggerItem, Ref: "trigger-item"}
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "prepare", "success"
+			e.Outputs = map[string]any{"title": "Preparation title"}
+		}),
+		ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "query-backlog", "success"
+			e.Outputs = map[string]any{"id": "3088", "title": "Claimed issue title"}
+		}),
+		ev(3, 3*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "open-pr", "success"
+			e.Outputs = map[string]any{"id": "4001", "title": "Pull request title"}
+		}),
+		ev(4, 4*time.Second, journal.EventRefTouched, func(e *journal.Event) {
+			e.ExternalRef = &journal.ExternalRef{Kind: "issue", ID: "other-issue"}
+		}),
+	}
+
+	whole := ProjectRun(identity, Projection{}, events)
+	if got := whole.Run.Operator; got.IssueNumber != "3088" || got.IssueTitle != "Claimed issue title" {
+		t.Fatalf("operator issue = #%s %q, want #3088 claimed issue title", got.IssueNumber, got.IssueTitle)
+	}
+
+	first := ProjectRun(identity, Projection{}, events[:2])
+	incremental := ProjectRun(identity, first, events[2:])
+	if !reflect.DeepEqual(incremental.Run.Operator, whole.Run.Operator) {
+		t.Fatalf("incremental operator = %+v, whole = %+v", incremental.Run.Operator, whole.Run.Operator)
+	}
+}
+
+func TestOperatorTrajectoryDefaultsActiveStagesToImplementing(t *testing.T) {
+	for _, stage := range []string{"query-backlog", "gather-implement-context", "custom-active-stage"} {
+		if got := OperatorTrajectory(stage, journal.PhaseRunning); got != "implementing" {
+			t.Errorf("OperatorTrajectory(%q, running) = %q, want implementing", stage, got)
+		}
+	}
+	if got := OperatorTrajectory("query-backlog", journal.PhaseCompleted); got != "parked" {
+		t.Fatalf("terminal trajectory = %q, want parked", got)
+	}
+}
+
 // TestProjectionMatchesTheRunContract checks the projected values against what
 // the read contract says a run summary means.
 func TestProjectionMatchesTheRunContract(t *testing.T) {
@@ -181,6 +226,120 @@ func TestProjectionMatchesTheRunContract(t *testing.T) {
 	}
 	if !p.Stages[0].HadSuccess || !p.Stages[0].HadFailure {
 		t.Errorf("attempt status set = %+v, want both success and failure", p.Stages[0])
+	}
+}
+
+func TestProjectRemediationExamplesRequiresExplicitOutcome(t *testing.T) {
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventError, func(e *journal.Event) {
+			e.Stage = "implement"
+			e.Error = &journal.ErrorDetail{Code: "compile", Message: "undefined symbol"}
+		}),
+		ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "implement", "success"
+			e.Outputs = map[string]any{"fix": "add import"}
+		}),
+		ev(3, 3*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseCompleted)
+		}),
+	}
+	run := ProjectRun(testIdentity(), Projection{}, events).Run
+	projection := Projection{Run: run, Remediation: projectRemediationExamples(testIdentity(), run, events)}
+	if len(projection.Remediation) != 0 {
+		t.Fatalf("remediation examples = %+v, want none without target outcome", projection.Remediation)
+	}
+}
+
+func TestProjectRemediationExamplesScrubsAndRejectsExcludedContent(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("x", 40)
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventError, func(e *journal.Event) {
+			e.Stage = "implement"
+			e.Error = &journal.ErrorDetail{Code: "compile", Message: secret}
+		}),
+		ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "implement", "success"
+			e.Outputs = map[string]any{"fix": secret, "didItHelp": true}
+		}),
+		ev(3, 3*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseCompleted)
+		}),
+	}
+	run := ProjectRun(testIdentity(), Projection{}, events).Run
+	projection := Projection{Run: run, Remediation: projectRemediationExamples(testIdentity(), run, events)}
+	if len(projection.Remediation) != 1 {
+		t.Fatalf("remediation examples = %+v, want one", projection.Remediation)
+	}
+	example := projection.Remediation[0]
+	if strings.Contains(example.FailureExcerpt, secret) || strings.Contains(example.FixExcerpt, secret) {
+		t.Fatalf("secret persisted in remediation example: %+v", example)
+	}
+
+	events[1].Outputs["contentExcluded"] = true
+	run = ProjectRun(testIdentity(), Projection{}, events).Run
+	projection = Projection{Run: run, Remediation: projectRemediationExamples(testIdentity(), run, events)}
+	if len(projection.Remediation) != 0 {
+		t.Fatalf("excluded remediation examples = %+v, want none", projection.Remediation)
+	}
+}
+
+func TestProjectRemediationExamplesRejectsContentExclusionSignals(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*journal.Event, *journal.Event)
+	}{
+		{
+			name: "blockedBy output",
+			setup: func(_, finished *journal.Event) {
+				finished.Outputs["blockedBy"] = "content-exclusion-policy"
+			},
+		},
+		{
+			name: "error code",
+			setup: func(failure, _ *journal.Event) {
+				failure.Error.Code = "CONTENT_EXCLUSION"
+			},
+		},
+		{
+			name: "error message",
+			setup: func(failure, _ *journal.Event) {
+				failure.Error.Message = "excluded by your organization"
+			},
+		},
+		{
+			name: "stage output text",
+			setup: func(_, finished *journal.Event) {
+				finished.Outputs["details"] = "the repository owner blocked this content exclusion"
+			},
+		},
+		{
+			name: "copilot disabled marker",
+			setup: func(_, finished *journal.Event) {
+				finished.Outputs["details"] = "Copilot is disabled for this file"
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []journal.Event{
+				ev(1, time.Second, journal.EventError, func(e *journal.Event) {
+					e.Stage = "implement"
+					e.Error = &journal.ErrorDetail{Code: "compile", Message: "undefined symbol"}
+				}),
+				ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+					e.Stage, e.Status = "implement", "success"
+					e.Outputs = map[string]any{"didItHelp": true}
+				}),
+				ev(3, 3*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+					e.Status = string(journal.PhaseCompleted)
+				}),
+			}
+			tc.setup(&events[0], &events[1])
+			run := ProjectRun(testIdentity(), Projection{}, events).Run
+			if examples := projectRemediationExamples(testIdentity(), run, events); len(examples) != 0 {
+				t.Fatalf("remediation examples = %+v, want none", examples)
+			}
+		})
 	}
 }
 
@@ -335,6 +494,22 @@ func TestGateOverrideReopensATerminalRun(t *testing.T) {
 	}
 }
 
+func TestTerminalGateOverridePreservesOutcome(t *testing.T) {
+	events := append(completedRunEvents(),
+		ev(8, 8*time.Second, journal.EventGateOverridden, func(e *journal.Event) {
+			e.Gate, e.Verdict, e.Target = "review", "pass", journal.TargetComplete
+		}),
+		ev(9, 9*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseCompleted)
+		}),
+	)
+	run := ProjectRun(testIdentity(), Projection{}, events).Run
+
+	if run.OutcomeVerdict != "pass" || run.OutcomeTarget != journal.TargetComplete {
+		t.Fatalf("outcome = %q/%q, want terminal override decision", run.OutcomeVerdict, run.OutcomeTarget)
+	}
+}
+
 // TestUnrecognisedTerminalStatusDoesNotCorruptPhase pins the refusal.
 //
 // phase is an indexed, filtered column. Writing an unrecognised terminal status
@@ -444,6 +619,45 @@ func TestCountByPhaseIsAnIndexedAggregate(t *testing.T) {
 	}
 	if counts[journal.PhaseCompleted] != 2 {
 		t.Errorf("completed = %d, want 2", counts[journal.PhaseCompleted])
+	}
+}
+
+func TestActiveRunCountsGroupsProjectedRunningRunsByWorkflow(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), FileName))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	for i, events := range [][]journal.Event{
+		completedRunEvents()[:3],
+		completedRunEvents()[:3],
+		completedRunEvents(),
+	} {
+		identity := testIdentity()
+		identity.RunID = fmt.Sprintf("run-%d", i)
+		if i == 1 {
+			identity.Workflow = "other-workflow"
+		}
+		if err := store.UpsertRun(ctx, ProjectRun(identity, Projection{}, events)); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+	}
+
+	counts, err := store.ActiveRunCounts(ctx)
+	if err != nil {
+		t.Fatalf("active run counts: %v", err)
+	}
+	if len(counts) != 2 {
+		t.Fatalf("counts = %#v, want two active workflows", counts)
+	}
+	got := map[string]int{}
+	for _, count := range counts {
+		got[count.Gaggle+"/"+count.Workflow] = count.Count
+	}
+	if got["alpha/implementation"] != 1 || got["alpha/other-workflow"] != 1 {
+		t.Errorf("counts = %#v, want one active run for each workflow", got)
 	}
 }
 
