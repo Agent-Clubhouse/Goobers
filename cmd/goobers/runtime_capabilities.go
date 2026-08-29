@@ -226,8 +226,8 @@ func init() {
 			withExamples("goobers fix --to 2.0", "goobers fix --to 2.0 --write ./instance"),
 		command("doctor", apicontract.ActionReadOnlyNavigation, runDoctor).
 			withSynopsis(synopsisByID["doctor"]).
-			withHelp("preflight a Kubernetes cluster against the documented infra shape", doctorHelp).
-			withExamples("goobers doctor --k8s", "goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0"),
+			withHelp("preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions", doctorHelp).
+			withExamples("goobers doctor --k8s", "goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0", "goobers doctor --av-exclusions --report json ./instance"),
 		command("netpol-render", apicontract.ActionConfigTime, runNetpolRender).
 			withSynopsis(synopsisByID["netpol-render"]).
 			withHelp("render per-runner-class NetworkPolicy reference manifests from the runners: inventory", netpolRenderHelp).

@@ -150,11 +150,10 @@ func TestTeardownFailureLeavesStageResultIntact(t *testing.T) {
 		}),
 	}
 
-	// The trailing workspaceDelta/workspace positionals (#3803, merged into
-	// main after this test was written) are passed empty, which is the shape
-	// an in-flight activity scheduled by the previous build decodes as and
-	// which InvokeGoober defaults to WorkspaceRepo — the mode this test
-	// asserted before those arguments existed.
+	// #3845 gave InvokeGoober its (workspaceDelta, workspace) positional
+	// arguments; this test predates that merge and needs neither, so it
+	// passes the no-delta / default-workspace pair the engine passes for an
+	// unbranched, non-continuing stage.
 	res, err := activities.InvokeGoober(context.Background(), apiv1.InvocationEnvelope{
 		RunID: "run-5", TaskID: "run-5:implement",
 	}, "", "", "")

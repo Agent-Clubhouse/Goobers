@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -126,12 +127,20 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 
 	root := *workRoot
 	if root == "" {
-		root = filepath.Join(os.TempDir(), "goobers-worker")
+		root = defaultWorkerRoot(os.TempDir())
 	}
 	engineRuntime, err := workerEngineDeps(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	// #3480: on a Windows host, say once whether the work root and temp the
+	// worker is about to write-then-read are excluded from real-time
+	// scanning. Advisory — the worker starts regardless.
+	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
+		if line := hostAVExclusionAdvisory(context.Background(), "worker", workerAVExclusionDirectories(root, avDeps), avDeps); line != "" {
+			pln(stdout, line)
+		}
 	}
 	defer func() { _ = engineRuntime.Close() }()
 
@@ -309,6 +318,14 @@ func workerEngineDeps(workRoot string) (workerEngineRuntime, error) {
 
 const workerRootOwnerFile = ".goobers-worker-owner"
 
+// The worker's work-root layout, named once so the provisioner
+// (workerEngineDepsForPlatform) and the #3480 antivirus-exclusion
+// enumeration (`goobers doctor --av-exclusions`, the worker's startup
+// advisory) read the same paths.
+func defaultWorkerRoot(tempDir string) string    { return filepath.Join(tempDir, "goobers-worker") }
+func workerWorkcopiesDir(workRoot string) string { return filepath.Join(workRoot, "workcopies") }
+func workerScratchDir(workRoot string) string    { return filepath.Join(workRoot, "scratch") }
+
 func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRuntime, error) {
 	rootClaim, err := claimWorkerRoot(workRoot, owner)
 	if err != nil {
@@ -318,7 +335,7 @@ func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRunt
 	if goos == "windows" {
 		managerOptions = append(managerOptions, worktree.WithDefaultPathLengthLimit(worktree.PathLengthLimit{}))
 	}
-	wtMgr, err := worktree.NewManager(filepath.Join(workRoot, "workcopies"), managerOptions...)
+	wtMgr, err := worktree.NewManager(workerWorkcopiesDir(workRoot), managerOptions...)
 	if err != nil {
 		return workerEngineRuntime{}, errors.Join(err, rootClaim.Release())
 	}
@@ -328,7 +345,7 @@ func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRunt
 			Auto: gate.NewAutomatedEvaluator(),
 			Workspaces: &workerhost.WorktreeWorkspaces{
 				Manager:    wtMgr,
-				ScratchDir: filepath.Join(workRoot, "scratch"),
+				ScratchDir: workerScratchDir(workRoot),
 			},
 			Scrubber: scrubber,
 		},
