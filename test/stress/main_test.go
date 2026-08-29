@@ -197,10 +197,13 @@ func TestGoTestArgsLockStressFlags(t *testing.T) {
 	t.Parallel()
 	got := goTestArgs("./internal/localscheduler", stressCount, 42)
 	want := []string{
-		"test", "-json", "-race", "-count=20", "-shuffle=42", "./internal/localscheduler",
+		"test", "-json", "-race", "-count=20", "-timeout=30m0s", "-shuffle=42", "./internal/localscheduler",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("goTestArgs() = %v, want %v", got, want)
+	}
+	if stressTimeout <= 10*time.Minute {
+		t.Fatalf("stressTimeout = %v, want more than Go's 10m default (#3167)", stressTimeout)
 	}
 }
 
