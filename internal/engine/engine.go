@@ -299,11 +299,13 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
 	var workspaceBranch string
-	// The mode-3 counterpart of workspaceBranch. A pod is disposed after
-	// surrender, so what one stage committed reaches the next only as a bundle
-	// digest threaded here (#3763); on the worker the shared branch ref does
-	// this and this stays empty.
-	var workspaceDelta string
+	// The workspace continuity record (continuity.go, #3803/#3767): every
+	// workspace-delta publication so far, keyed by producing stage. A pod is
+	// disposed after surrender and a worker's mirror never sees a pod's
+	// commit, so what one stage committed reaches the next only through this
+	// record — selected per consumer by selectTaskDelta/selectGateDelta and
+	// threaded to every arm (pod, self, gate).
+	var continuity []continuityEntry
 	state := in.Spec.Start
 	steps := 0
 
@@ -323,10 +325,17 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 		}
 
 		if t, ok := m.Task(state); ok {
-			res, terr := runTask(ctx, in, m, t, pointers, lastResult, workspaceBranch, workspaceDelta, &workspaceDelta, rec)
+			_, remote := remotePlacementFor(in, t.Name)
+			selected, serr := selectTaskDelta(ctx, t, remote, continuity, rec)
+			if serr != nil {
+				return RunResult{}, serr
+			}
+			var published deltaPublication
+			res, terr := runTask(ctx, in, m, t, pointers, lastResult, workspaceBranch, selected.Digest, &published, rec)
 			if terr != nil {
 				return RunResult{}, terr
 			}
+			continuity = recordPublication(ctx, t, published, continuity, rec)
 			if res.Status == apiv1.ResultFailure && t.ContinueOnError {
 				// Outputs from a tolerated failure are discarded so downstream
 				// stages cannot consume partial results (Task.ContinueOnError,
@@ -362,7 +371,8 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			// verdict — the same durable wait marker the local runner persists
 			// before dispatch.
 			rec.gatePaused(ctx, g.Name)
-			outcome, verdict, gerr := evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateAttempts, rec)
+			gateDelta := selectGateDelta(ctx, g, continuity, rec)
+			outcome, verdict, gerr := evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, gateAttempts, rec)
 			if gerr != nil {
 				return RunResult{}, gerr
 			}
@@ -478,7 +488,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 	return e.Code, e.Message
 }
 
-func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, workspaceBranch string, workspaceDelta string, deltaOut *string, rec *runJournal) (apiv1.ResultEnvelope, error) {
+func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, workspaceBranch string, workspaceDelta string, deltaOut *deltaPublication, rec *runJournal) (apiv1.ResultEnvelope, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
@@ -548,14 +558,16 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// Graded inside the closure: dispatchWithRetry journals stage.finished
 		// from what the closure returns, so setting it afterwards would leave
 		// the journal ungraded and diverge from the local runner.
+		// workspaceDelta rides beside workspaceBranch as a trailing positional
+		// argument (see Activities.InvokeGoober for why positional).
 		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
 			var result stageActivityResult
 			attemptEnv := env
 			attemptEnv.Attempt = int32(attempt)
-			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch).Get(ctx, &result)
+			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta).Get(ctx, &result)
 			result.Integrity = produced
 			return result, err
-		}, nil)
+		}, deltaOut)
 	}
 	// Fail closed on an absent or zero-value run (#626/#156): a
 	// DeterministicRun{} previously masked nil and dispatched an empty run. The
@@ -572,17 +584,17 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		var result stageActivityResult
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
-		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch).Get(ctx, &result)
+		err := workflow.ExecuteActivity(ctx, ActRunDeterministic, attemptEnv, run, workspaceBranch, workspaceDelta).Get(ctx, &result)
 		result.Integrity = produced
 		return result, err
-	}, nil)
+	}, deltaOut)
 }
 
 // evaluateGate dispatches one gate evaluation and returns the evaluator
 // outcome plus, for an agentic gate, the reviewer's full Verdict (journaled as
 // the verdict artifact alongside gate.evaluated, mirroring internal/gate's
 // recordVerdict).
-func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, gateAttempts map[string]int, rec *runJournal) (string, *apiv1.Verdict, error) {
+func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, gateAttempts map[string]int, rec *runJournal) (string, *apiv1.Verdict, error) {
 	limits, err := wf.GateLimits(machine, g)
 	if err != nil {
 		return "", nil, fmt.Errorf("project gate %q limits: %w", g.Name, err)
@@ -639,9 +651,14 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		if err := rec.emitPending(ctx); err != nil {
 			return "", nil, err
 		}
+		// The reviewer inherits its subject's repo state through the
+		// continuity record's nil-repoFrom arm (#3803) and evaluates in the
+		// workspace the gate declares (AgenticGate.Workspace, "" = the
+		// historical writable repo worktree) — both trailing positionals so a
+		// history recorded before them replays (see Activities.ReviewGoober).
 		var verdict apiv1.Verdict
 		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
-			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch).Get(ctx, &verdict)
+			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch, workspaceDelta, gateWorkspaceMode(g)).Get(ctx, &verdict)
 		}); err != nil {
 			return "", nil, err
 		}

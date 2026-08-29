@@ -97,10 +97,22 @@ type stageActivityResult struct {
 	Mutations      []mutationFact `json:"mutations,omitempty"`
 	MutationIssues []string       `json:"mutationIssues,omitempty"`
 	// WorkspaceDelta is the blob digest of a bundle carrying what this stage
-	// committed (#3763), for the engine to hand to the next stage. Only a
-	// pod-dispatched stage produces one; a self-placed stage needs none,
-	// because its commits are already on the shared run branch.
+	// committed (#3763), for the engine's continuity record to hand to a
+	// later stage. A pod surrenders one; a self-placed stage on a writable
+	// repo workspace publishes one through its workspace's DeltaPublisher
+	// (#3803) — its commits are on this worker's mirror, which the next pod
+	// (or another worker) cannot see.
 	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
+	// WorkspaceDeltaBase / WorkspaceDeltaTip are the bundle's two commits,
+	// journaled beside the digest (runner.workspace.delta). Additive and
+	// omitempty so histories recorded before them decode unchanged.
+	WorkspaceDeltaBase string `json:"workspaceDeltaBase,omitempty"`
+	WorkspaceDeltaTip  string `json:"workspaceDeltaTip,omitempty"`
+	// WorkspaceDeltaUnchanged reports that a writable repo stage succeeded
+	// WITHOUT moving its branch, so there was nothing to publish — distinct
+	// from "could not publish" (an error) and from "not a repo stage" (no
+	// flag), and journaled explicitly so the record's silence is a fact.
+	WorkspaceDeltaUnchanged bool `json:"workspaceDeltaUnchanged,omitempty"`
 }
 
 type mutationFact struct {
@@ -182,9 +194,17 @@ func classifySeamError(err error) error {
 // is an error — the stage never dispatches with a partial envelope, which is
 // what previously made every capability-scoped credential fail closed the
 // moment a real executor was wired.
-func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch string) (Workspace, error) {
+//
+// workspaceDelta is handed to the provisioner only for a writable repo mode:
+// a scratch or read-only workspace has no run branch to land it on, and a
+// read-only stage reads the pinned base by definition (the same gate the pod
+// arm applies in dispatchstage.go).
+func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.InvocationEnvelope, mode apiv1.WorkspaceMode, syncBase bool, workspaceBranch, workspaceDelta string) (Workspace, error) {
 	if a.Workspaces == nil {
 		return nil, fmt.Errorf("stage %q requires a workspace but no provisioner is wired: %w", env.TaskID, ErrNotConfigured)
+	}
+	if !writableWorkspace(mode) {
+		workspaceDelta = ""
 	}
 	ws, err := a.Workspaces.Provision(ctx, WorkspaceRequest{
 		RunID:           env.RunID,
@@ -196,6 +216,7 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 		RepoRef:         env.RepoRef,
 		Mode:            mode,
 		SyncBase:        syncBase,
+		WorkspaceDelta:  workspaceDelta,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err)
@@ -252,14 +273,24 @@ func (a *Activities) refuseLeakedEnvelope(env apiv1.InvocationEnvelope) error {
 }
 
 // InvokeGoober executes an agentic task.
-func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string) (stageActivityResult, error) {
+//
+// workspaceDelta (#3803) is a TRAILING POSITIONAL argument, like
+// workspaceBranch before it, rather than a struct replacing both. The Go
+// SDK decodes activity arguments positionally and zero-fills parameters the
+// recorded payload does not carry (converter.FromPayloads stops at the
+// shorter side), so an activity scheduled by the previous engine build — an
+// in-flight run at deploy — executes here with workspaceDelta == "" and
+// behaves exactly as it did, and a history recorded with the two-argument
+// shape replays under this code (TestContinuityPreChangeHistoryReplays). A
+// struct in the second position would fail to decode those payloads.
+func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string) (stageActivityResult, error) {
 	if a.Goober == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
 	if err := a.refuseLeakedEnvelope(env); err != nil {
 		return stageActivityResult{}, err
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false, workspaceBranch)
+	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false, workspaceBranch, workspaceDelta)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
@@ -268,20 +299,32 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
-	return a.scrubStageActivityResult(stageActivityResult{ResultEnvelope: res})
+	result := stageActivityResult{ResultEnvelope: res}
+	if err := publishWorkspaceDelta(ctx, ws, apiv1.WorkspaceRepo, &result); err != nil {
+		return stageActivityResult{}, classifySeamError(err)
+	}
+	return a.scrubStageActivityResult(result)
 }
 
 // ReviewGoober executes an agentic reviewer gate. Like the local runner, the
 // reviewer runs a real goober subprocess and therefore gets a repository
-// workspace (unlike an automated gate).
-func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string) (apiv1.Verdict, error) {
+// workspace (unlike an automated gate) — in the mode the gate declares
+// (AgenticGate.Workspace; "" keeps the historical writable repo worktree),
+// continuing from the delta the walk selected for it (#3803). A reviewer
+// never publishes: it returns a Verdict, not a stage result, and must not
+// commit. Both new arguments are trailing positionals for the replay reason
+// InvokeGoober documents.
+func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode) (apiv1.Verdict, error) {
 	if a.Goober == nil {
 		return apiv1.Verdict{}, classifySeamError(ErrNotConfigured)
 	}
 	if err := a.refuseLeakedEnvelope(env); err != nil {
 		return apiv1.Verdict{}, err
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, apiv1.WorkspaceRepo, false, workspaceBranch)
+	if workspace == "" {
+		workspace = apiv1.WorkspaceRepo
+	}
+	ws, err := a.provisionWorkspace(ctx, &env, workspace, false, workspaceBranch, workspaceDelta)
 	if err != nil {
 		return apiv1.Verdict{}, classifySeamError(err)
 	}
@@ -295,7 +338,9 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 
 // RunDeterministic executes a deterministic task in the workspace mode the
 // task's run block declares (repo by default, scratch on request).
-func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string) (stageActivityResult, error) {
+// workspaceDelta is a trailing positional for the replay reason InvokeGoober
+// documents.
+func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationEnvelope, run apiv1.DeterministicRun, workspaceBranch string, workspaceDelta string) (stageActivityResult, error) {
 	if a.Det == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
@@ -307,7 +352,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 	if len(run.Command) == 0 && run.Script == "" {
 		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: stage %q has an empty run command and script; refusing to execute (fail closed)", env.TaskID))
 	}
-	ws, err := a.provisionWorkspace(ctx, &env, run.Workspace, run.SyncBase, workspaceBranch)
+	ws, err := a.provisionWorkspace(ctx, &env, run.Workspace, run.SyncBase, workspaceBranch, workspaceDelta)
 	if err != nil {
 		var conflict *worktree.BaseSyncConflictError
 		if errors.As(err, &conflict) {
@@ -337,9 +382,41 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 		return stageActivityResult{}, classifySeamError(err)
 	}
 	mutations, issues := readMutationSidecar(ws.Path())
-	return a.scrubStageActivityResult(stageActivityResult{
-		ResultEnvelope: res, Mutations: mutations, MutationIssues: issues,
-	})
+	result := stageActivityResult{ResultEnvelope: res, Mutations: mutations, MutationIssues: issues}
+	if err := publishWorkspaceDelta(ctx, ws, run.Workspace, &result); err != nil {
+		return stageActivityResult{}, classifySeamError(err)
+	}
+	return a.scrubStageActivityResult(result)
+}
+
+// publishWorkspaceDelta is the self arm's PUBLISH half (#3803): after a stage
+// SUCCEEDED on a writable repo workspace, ask the workspace to bundle what
+// the stage committed and stamp the digest on the result for the walk's
+// continuity record. Only success publishes — a failed stage's half-finished
+// commits are not a base for the next stage, and the engine retries it from
+// the last good delta — and only a workspace that implements DeltaPublisher
+// can (scratch and test fakes do not, and publish nothing).
+//
+// A publish FAILURE fails the stage: the commits exist and nothing else will
+// carry them to a pod, so reporting success would strand exactly the diff
+// this mechanism protects — the same rule the pod's dispatch-exec applies.
+func publishWorkspaceDelta(ctx context.Context, ws Workspace, mode apiv1.WorkspaceMode, result *stageActivityResult) error {
+	if result.Status != apiv1.ResultSuccess || !writableWorkspace(mode) {
+		return nil
+	}
+	publisher, ok := ws.(DeltaPublisher)
+	if !ok {
+		return nil
+	}
+	pub, err := publisher.PublishDelta(ctx)
+	if err != nil {
+		return fmt.Errorf("engine: stage committed work that could not be carried to the next stage: %w", err)
+	}
+	result.WorkspaceDelta = pub.Digest
+	result.WorkspaceDeltaBase = pub.Base
+	result.WorkspaceDeltaTip = pub.Tip
+	result.WorkspaceDeltaUnchanged = pub.Unchanged && pub.Digest == ""
+	return nil
 }
 
 func (a *Activities) scrubStageActivityResult(result stageActivityResult) (stageActivityResult, error) {

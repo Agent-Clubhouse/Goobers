@@ -92,6 +92,13 @@ type SurrenderedResult struct {
 	// workspaceBranch: a pod is disposed after surrender, so a commit that does
 	// not leave through here does not exist for anything downstream.
 	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
+	// WorkspaceDeltaBase and WorkspaceDeltaTip are the two commits the bundle
+	// was cut between (base..tip), surrendered beside the digest so the
+	// engine can journal them (runner.workspace.delta) and a far-side reader
+	// can compare the next stage's checkout against the tip by SHA rather
+	// than by trusting the digest. Both empty whenever WorkspaceDelta is.
+	WorkspaceDeltaBase string `json:"workspaceDeltaBase,omitempty"`
+	WorkspaceDeltaTip  string `json:"workspaceDeltaTip,omitempty"`
 }
 
 // ReadSurrenderedResult fetches and decodes one attempt's surrendered result.

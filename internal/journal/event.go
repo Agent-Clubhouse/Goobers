@@ -92,6 +92,15 @@ const (
 	// run's journal remains conformant with none of it). The typed payload
 	// is Placement (placement.go).
 	EventRunnerPlacement EventType = "runner.placement"
+	// EventRunnerWorkspaceDelta records one movement of the mode-3 workspace
+	// continuity record (#3803/#3767): a stage published a bundle of its
+	// commits, a consumer selected a producer's bundle to build on, or a
+	// writable stage finished with its branch unchanged. Like the other
+	// runner.* events its payload (WorkspaceDelta, workspacedelta.go) lives
+	// entirely under Runner and it is excluded from conformance: continuity
+	// on a single-host runner is the shared branch ref and journals nothing,
+	// so the same workflow must conform with or without these events.
+	EventRunnerWorkspaceDelta EventType = "runner.workspace.delta"
 	// EventNotificationRequested records exact pre-rendered content before any
 	// sink is attempted.
 	EventNotificationRequested EventType = "notification.requested"

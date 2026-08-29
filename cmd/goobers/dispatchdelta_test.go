@@ -88,10 +88,11 @@ func TestWorkspaceDeltaCarriesACommitBetweenTwoWorkspaces(t *testing.T) {
 	runGitT(t, podA, "commit", "-m", "the commit that must survive")
 	want := strings.TrimSpace(runGitOutputT(t, podA, "rev-parse", "HEAD"))
 
-	digest, err := publishWorkspaceDelta(context.Background(), podA, os.Stderr)
+	published, err := publishWorkspaceDelta(context.Background(), podA, os.Stderr)
 	if err != nil {
 		t.Fatalf("publishWorkspaceDelta: %v", err)
 	}
+	digest := published.Digest
 	if digest == "" {
 		t.Fatal("no delta published for a branch that carries a commit — this is the bug, not the fix")
 	}
@@ -133,7 +134,8 @@ func TestWorkspaceDeltaRefusesNonWritableWorkspaces(t *testing.T) {
 	for _, mode := range []apiv1.WorkspaceMode{apiv1.WorkspaceScratch, apiv1.WorkspaceRepoReadOnly, ""} {
 		t.Run(string(mode)+"/none", func(t *testing.T) {
 			t.Setenv(dispatcher.EnvStageWorkspace, string(mode))
-			digest, err := publishWorkspaceDelta(context.Background(), t.TempDir(), os.Stderr)
+			published, err := publishWorkspaceDelta(context.Background(), t.TempDir(), os.Stderr)
+			digest := published.Digest
 			if err != nil {
 				t.Fatalf("publishWorkspaceDelta(%q) = error %v; a non-writable workspace is ordinary, not a failure", mode, err)
 			}
@@ -189,10 +191,11 @@ func publishDeltaFrom(t *testing.T, dir, branch, file, content string) (digest, 
 	runGitT(t, dir, "add", file)
 	runGitT(t, dir, "commit", "-m", "commit "+file)
 	head = strings.TrimSpace(runGitOutputT(t, dir, "rev-parse", "HEAD"))
-	digest, err := publishWorkspaceDelta(context.Background(), dir, os.Stderr)
+	published, err := publishWorkspaceDelta(context.Background(), dir, os.Stderr)
 	if err != nil {
 		t.Fatalf("publishWorkspaceDelta: %v", err)
 	}
+	digest = published.Digest
 	if digest == "" {
 		t.Fatal("no delta published for a branch that carries a commit")
 	}
@@ -422,7 +425,8 @@ func TestWorkspaceDeltaFailsLoudlyWhenTheBranchCannotBeDetermined(t *testing.T) 
 	// for every reason git might refuse the workspace.
 	notARepo := t.TempDir()
 
-	digest, err := publishWorkspaceDelta(context.Background(), notARepo, os.Stderr)
+	published, err := publishWorkspaceDelta(context.Background(), notARepo, os.Stderr)
+	digest := published.Digest
 	if err == nil {
 		t.Fatalf("publishWorkspaceDelta returned digest %q and no error; a writable repo workspace whose branch is undeterminable must fail rather than silently carry nothing", digest)
 	}

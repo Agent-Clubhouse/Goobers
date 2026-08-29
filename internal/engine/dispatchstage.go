@@ -118,7 +118,7 @@ type dispatchStageInput struct {
 //
 // STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
 // so a stage declaring a workspace other than scratch is still refused.
-func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceDelta string, deltaOut *string) (apiv1.ResultEnvelope, error) {
+func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceDelta string, deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	// An AGENTIC stage cannot execute in a stage pod: the pod entrypoint runs a
 	// declared command or script (dispatchexec), and invoking a goober through
 	// its harness has no pod-side path at all — the local arm reaches it via
@@ -391,10 +391,17 @@ func (a *Activities) DispatchStage(ctx context.Context, input dispatchStageInput
 		return stageActivityResult{}, classifySeamError(fmt.Errorf("engine: surrendered result for stage %q attempt %d carries no status; refusing to project a partial envelope (fail closed)", input.Envelope.TaskID, attempt.Number))
 	}
 	return a.scrubStageActivityResult(stageActivityResult{
-		ResultEnvelope: surrendered.Result,
-		Mutations:      surrenderedMutationFacts(surrendered.Mutations),
-		MutationIssues: surrendered.MutationIssues,
-		WorkspaceDelta: surrendered.WorkspaceDelta,
+		ResultEnvelope:     surrendered.Result,
+		Mutations:          surrenderedMutationFacts(surrendered.Mutations),
+		MutationIssues:     surrendered.MutationIssues,
+		WorkspaceDelta:     surrendered.WorkspaceDelta,
+		WorkspaceDeltaBase: surrendered.WorkspaceDeltaBase,
+		WorkspaceDeltaTip:  surrendered.WorkspaceDeltaTip,
+		// A pod on a writable repo workspace that succeeded and surrendered
+		// no digest had no commits beyond base (dispatch-exec fails the stage
+		// rather than guess when it cannot tell), so the record's silence is
+		// a fact worth journaling.
+		WorkspaceDeltaUnchanged: surrendered.WorkspaceDelta == "" && workspace.IsWritableRepo() && surrendered.Result.Status == apiv1.ResultSuccess,
 	})
 }
 

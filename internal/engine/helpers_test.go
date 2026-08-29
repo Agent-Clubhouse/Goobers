@@ -27,6 +27,10 @@ type fakeWorkspaces struct {
 	// one until the script is exhausted, then provisioning succeeds.
 	provisionErrs []error
 	emptyPath     bool
+	// publish, when set, is what a provisioned workspace reports from
+	// PublishDelta (keyed by stage) — the fake's stand-in for the worker's
+	// bundle-and-Put. Nil publishes nothing, the pre-#3803 self-arm shape.
+	publish func(stage string) (WorkspaceDeltaPublication, error)
 }
 
 func testWorkspaces(t *testing.T) *fakeWorkspaces {
@@ -44,13 +48,13 @@ func (f *fakeWorkspaces) Provision(_ context.Context, req WorkspaceRequest) (Wor
 	}
 	f.requests = append(f.requests, req)
 	if f.emptyPath {
-		return &fakeWorkspace{owner: f}, nil
+		return &fakeWorkspace{owner: f, stage: req.Stage}, nil
 	}
 	path, err := os.MkdirTemp(f.root, fmt.Sprintf("%s-%s-*", req.RunID, req.Stage))
 	if err != nil {
 		return nil, err
 	}
-	return &fakeWorkspace{owner: f, path: path}, nil
+	return &fakeWorkspace{owner: f, path: path, stage: req.Stage}, nil
 }
 
 func (f *fakeWorkspaces) provisioned() []WorkspaceRequest {
@@ -68,9 +72,21 @@ func (f *fakeWorkspaces) removedPaths() []string {
 type fakeWorkspace struct {
 	owner *fakeWorkspaces
 	path  string
+	stage string
 }
 
 func (w *fakeWorkspace) Path() string { return w.path }
+
+// PublishDelta implements DeltaPublisher through the owner's publish hook.
+func (w *fakeWorkspace) PublishDelta(context.Context) (WorkspaceDeltaPublication, error) {
+	w.owner.mu.Lock()
+	publish := w.owner.publish
+	w.owner.mu.Unlock()
+	if publish == nil {
+		return WorkspaceDeltaPublication{}, nil
+	}
+	return publish(w.stage)
+}
 
 func (w *fakeWorkspace) Remove(context.Context) error {
 	w.owner.mu.Lock()
