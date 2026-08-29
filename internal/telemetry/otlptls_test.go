@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"io/fs"
 	"math/big"
 	"net"
 	"os"
@@ -370,4 +371,63 @@ func emitTestSpan(t *testing.T, client *Client) {
 		t.Fatal(err)
 	}
 	span.End()
+}
+
+// TestNewOTLPTLSErrorPreservesUnderlyingCause pins that a caller can tell
+// "the CA secret isn't mounted yet" (fs.ErrNotExist — retryable, common on a
+// rolling restart racing a volume mount) apart from any other TLS-material
+// failure by unwrapping past ErrOTLPUnavailable, not just string-matching
+// the message. A %w:%v join (rather than %w:%w) would satisfy
+// errors.Is(err, ErrOTLPUnavailable) while silently discarding this
+// (review of #3826).
+func TestNewOTLPTLSErrorPreservesUnderlyingCause(t *testing.T) {
+	local := telemetrytest.NewMemoryExporter()
+	client, err := New(context.Background(), Config{
+		ServiceName:  "otlp-degrade-cause-test",
+		SpanExporter: local,
+		Batch:        true,
+		Exporter:     ExporterOTLP,
+		OTLPEndpoint: "127.0.0.1:1",
+		OTLPCAFile:   filepath.Join(t.TempDir(), "missing-ca.crt"),
+	})
+	if client == nil {
+		t.Fatal("New() returned a nil client on an OTLP TLS degrade — local-only telemetry must still work")
+	}
+	t.Cleanup(func() { _ = client.Shutdown(context.Background()) })
+	if err == nil || !errors.Is(err, ErrOTLPUnavailable) {
+		t.Fatalf("New() error = %v, want it to wrap ErrOTLPUnavailable", err)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("New() error = %v, want errors.Is(err, fs.ErrNotExist) to hold so a caller can distinguish "+
+			"a missing CA file from an unparsable one", err)
+	}
+}
+
+// TestBuildOTLPTLSConfigLeavesRootCAsNilByDefault pins the tls-block-absent
+// path against a silent verification-behavior change (review of #3826):
+// crypto/x509 hands verification to the platform verifier on
+// darwin/windows/ios only when tls.Config.RootCAs is nil. Once RootCAs is
+// set to anything — even an unmodified SystemCertPool clone with nothing
+// appended — the platform verifier's rejection no longer settles the
+// question outright; Go's own verifier against those same roots gets a
+// second try. That would make a certificate the OS distrusts (CT policy,
+// Apple/Microsoft distrust lists, name constraints) newly acceptable on the
+// documented "system trust only, exactly as before" path.
+func TestBuildOTLPTLSConfigLeavesRootCAsNilByDefault(t *testing.T) {
+	tlsConfig, err := buildOTLPTLSConfig(Config{})
+	if err != nil {
+		t.Fatalf("buildOTLPTLSConfig(no caFile) = %v, want no error", err)
+	}
+	if tlsConfig.RootCAs != nil {
+		t.Fatalf("buildOTLPTLSConfig(no caFile).RootCAs = %v, want nil (system/platform trust unmodified)", tlsConfig.RootCAs)
+	}
+
+	validCert := generateOTLPTestCertificate(t, nil, []net.IP{net.ParseIP("127.0.0.1")})
+	tlsConfig, err = buildOTLPTLSConfig(Config{OTLPCAFile: validCert.certFile})
+	if err != nil {
+		t.Fatalf("buildOTLPTLSConfig(caFile set) = %v, want no error", err)
+	}
+	if tlsConfig.RootCAs == nil {
+		t.Fatal("buildOTLPTLSConfig(caFile set).RootCAs = nil, want the extra root actually trusted")
+	}
 }

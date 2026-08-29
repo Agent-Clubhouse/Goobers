@@ -324,8 +324,12 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 				return nil, err
 			}
 			// tel is still a valid, usable client (local-only — see
-			// ErrOTLPUnavailable's doc); park the cause to log loudly once
-			// instanceLog opens, and let startup continue.
+			// ErrOTLPUnavailable's doc); warn now on stderr — the daemon has
+			// no instance log open yet, and `kubectl logs` is the only place
+			// an operator watching a rollout will see this — then park the
+			// cause to also log loudly once instanceLog opens, matching the
+			// other non-fatal degrades in this function.
+			fmt.Fprintf(os.Stderr, "warning: otlp telemetry unavailable, continuing local-only: %v\n", err)
 			telemetryOTLPDegradeErr = err
 			err = nil
 		}

@@ -594,11 +594,31 @@ func TestBuildSchedulerSetupDegradesOnInvalidOTLPTLSMaterial(t *testing.T) {
 
 	l := instance.NewLayout(root)
 	var wg sync.WaitGroup
+
+	// The other non-fatal degrades in buildSchedulerSetupWithConfigPolicy
+	// all mirror to stderr so an operator watching `kubectl logs` (who has
+	// no instance log to read yet) sees them; the OTLP degrade must too, or
+	// a mistyped caFile is invisible until someone thinks to go looking in
+	// the instance journal (review of #3826).
+	stderrR, stderrW, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatal(pipeErr)
+	}
+	origStderr := os.Stderr
+	os.Stderr = stderrW
 	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	os.Stderr = origStderr
+	stderrW.Close()
+	var stderrBuf bytes.Buffer
+	stderrBuf.ReadFrom(stderrR)
 	if err != nil {
 		t.Fatalf("buildSchedulerSetup() = %v, want a bad otlp.tls.caFile to degrade rather than fail setup", err)
 	}
 	defer setup.Shutdown(context.Background())
+
+	if !strings.Contains(stderrBuf.String(), "otlp") || !strings.Contains(stderrBuf.String(), missingCAFile) {
+		t.Fatalf("stderr = %q, want an otlp degrade warning naming %q", stderrBuf.String(), missingCAFile)
+	}
 
 	if setup.Telemetry == nil {
 		t.Fatal("Telemetry == nil after an OTLP TLS degrade, want local-only telemetry still wired")

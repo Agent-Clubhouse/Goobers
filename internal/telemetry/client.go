@@ -359,7 +359,7 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 				// The exporter cannot be built, but exporters collected so
 				// far (cfg.SpanExporter's local journal export, if
 				// configured) are untouched — see ErrOTLPUnavailable's doc.
-				return exporters, fmt.Errorf("%w: %v", ErrOTLPUnavailable, tlsErr)
+				return exporters, fmt.Errorf("%w: %w", ErrOTLPUnavailable, tlsErr)
 			}
 			opts = append(opts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig)))
 		}
@@ -379,18 +379,30 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 	return append(exporters, exporter), nil
 }
 
-// buildOTLPTLSConfig assembles the OTLP exporter's client TLS config: the
-// system trust pool (SystemCertPool already returns a defensive copy safe
-// to mutate — "clone" in #3804's design) plus an optional extra root, an
-// optional SNI/verification override, and an optional client certificate
-// for mTLS. MinVersion stays TLS 1.2, unchanged from the system-pool-only
-// path this extends.
+// buildOTLPTLSConfig assembles the OTLP exporter's client TLS config: with
+// no CAFile it leaves RootCAs nil (the pre-#3804 default-verifier path,
+// unchanged); with one configured it builds a system trust pool
+// (SystemCertPool already returns a defensive copy safe to mutate — "clone"
+// in #3804's design) plus the extra root. Also applies an optional
+// SNI/verification override and an optional client certificate for mTLS.
+// MinVersion stays TLS 1.2, unchanged from the path this extends.
 func buildOTLPTLSConfig(cfg Config) (*tls.Config, error) {
-	pool, err := x509.SystemCertPool()
-	if err != nil || pool == nil {
-		pool = x509.NewCertPool()
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
 	}
+	// RootCAs stays nil (pre-#3804 behavior) unless an extra CA is actually
+	// configured. On darwin/windows/ios, crypto/x509 hands verification to
+	// the platform verifier when opts.Roots == nil but falls through to Go's
+	// own verifier against RootCAs once it is non-nil — so unconditionally
+	// setting a SystemCertPool clone here, even with nothing appended to it,
+	// would silently swap in a different (and more permissive: CT policy,
+	// OS distrust lists, and name constraints all go unevaluated) trust
+	// decision on the tls-block-absent path this PR claims is untouched.
 	if cfg.OTLPCAFile != "" {
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
 		pem, err := os.ReadFile(cfg.OTLPCAFile)
 		if err != nil {
 			return nil, fmt.Errorf("read ca file %q: %w", cfg.OTLPCAFile, err)
@@ -398,10 +410,7 @@ func buildOTLPTLSConfig(cfg Config) (*tls.Config, error) {
 		if !pool.AppendCertsFromPEM(pem) {
 			return nil, fmt.Errorf("ca file %q: no certificates found", cfg.OTLPCAFile)
 		}
-	}
-	tlsConfig := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		RootCAs:    pool,
+		tlsConfig.RootCAs = pool
 	}
 	if cfg.OTLPServerName != "" {
 		tlsConfig.ServerName = cfg.OTLPServerName

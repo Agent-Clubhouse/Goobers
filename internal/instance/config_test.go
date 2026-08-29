@@ -1463,6 +1463,48 @@ telemetry:
 	}
 }
 
+// TestLoadConfigOTLPTLSAllFields is a LoadConfig-level (not just
+// OTLPTLSConfig.Validate-level) pin that every one of the four tls fields —
+// not just caFile, the only one any real-YAML test exercised — actually
+// decodes off the wire through the full loader seam: YAML -> strict JSON
+// decode -> ResolveOTLPConfig -> Config.Validate. caFile/certFile/keyFile
+// are shape-validated paths, never read from disk at load time (see
+// OTLPTLSConfig's doc), so arbitrary non-existent paths are fine here.
+func TestLoadConfigOTLPTLSAllFields(t *testing.T) {
+	path := writeInstanceYAML(t, `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+telemetry:
+  otlp:
+    endpoint: https://collector.example.com:4317
+    tls:
+      caFile: /etc/goobers/otlp-ca.crt
+      serverName: goobers-collector.goobers-system.svc.cluster.local
+      certFile: /etc/goobers/otlp-client.crt
+      keyFile: /etc/goobers/otlp-client.key
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	tls := cfg.Telemetry.OTLP.TLS
+	if tls == nil {
+		t.Fatal("LoadConfig: telemetry.otlp.tls did not decode at all")
+	}
+	if tls.CAFile != "/etc/goobers/otlp-ca.crt" {
+		t.Errorf("tls.caFile = %q, want /etc/goobers/otlp-ca.crt", tls.CAFile)
+	}
+	if tls.ServerName != "goobers-collector.goobers-system.svc.cluster.local" {
+		t.Errorf("tls.serverName = %q, want goobers-collector.goobers-system.svc.cluster.local", tls.ServerName)
+	}
+	if tls.CertFile != "/etc/goobers/otlp-client.crt" {
+		t.Errorf("tls.certFile = %q, want /etc/goobers/otlp-client.crt", tls.CertFile)
+	}
+	if tls.KeyFile != "/etc/goobers/otlp-client.key" {
+		t.Errorf("tls.keyFile = %q, want /etc/goobers/otlp-client.key", tls.KeyFile)
+	}
+}
+
 // TestLoadConfigRejectsInsecureNonLoopbackOTLP reproduces #3333's incident
 // shape verbatim (telemetry.otlp.insecure: true against a non-loopback
 // collector host:port) and pins the refusal message naming both escape

@@ -2,8 +2,10 @@ package schemas
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -505,10 +507,21 @@ func TestInstanceSchemaOTLPInsecureLoopbackShapes(t *testing.T) {
 		"http://localhost:4317",
 		"localhost:4317",
 		"http://LOCALHOST:4317",
+		// Bracketed IPv6 loopback spellings net.IP.IsLoopback() (and so
+		// isLoopbackHost) accepts but the earlier ::1-only alternative did
+		// not: the schema's if/then is belt-and-braces documentation of the
+		// Go rule, not a second enforcement boundary, so it must not be
+		// stricter than the validator it is describing.
+		"[0:0:0:0:0:0:0:1]:4317",
+		"http://[0:0:0:0:0:0:0:1]:4317",
+		"[::ffff:127.0.0.1]:4317",
 	}
 	for _, endpoint := range accepted {
 		t.Run("accepts "+endpoint, func(t *testing.T) {
-			document := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\ntelemetry:\n  otlp:\n    endpoint: " + endpoint + "\n    insecure: true\n"
+			// Double-quoted: some endpoints (bracketed IPv6) start with "["
+			// or contain ":", which YAML would otherwise parse as a flow
+			// sequence/mapping indicator rather than plain scalar text.
+			document := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\ntelemetry:\n  otlp:\n    endpoint: \"" + endpoint + "\"\n    insecure: true\n"
 			if err := validateInstanceYAML(t, schema, document); err != nil {
 				t.Fatalf("loopback insecure endpoint %q was rejected: %v", endpoint, err)
 			}
@@ -522,7 +535,10 @@ func TestInstanceSchemaOTLPInsecureLoopbackShapes(t *testing.T) {
 	}
 	for _, endpoint := range rejected {
 		t.Run("rejects "+endpoint, func(t *testing.T) {
-			document := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\ntelemetry:\n  otlp:\n    endpoint: " + endpoint + "\n    insecure: true\n"
+			// Double-quoted: some endpoints (bracketed IPv6) start with "["
+			// or contain ":", which YAML would otherwise parse as a flow
+			// sequence/mapping indicator rather than plain scalar text.
+			document := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\ntelemetry:\n  otlp:\n    endpoint: \"" + endpoint + "\"\n    insecure: true\n"
 			if err := validateInstanceYAML(t, schema, document); err == nil {
 				t.Fatalf("non-loopback insecure endpoint %q was accepted", endpoint)
 			}
@@ -570,6 +586,65 @@ func TestInstanceSchemaDescriptionsCarryTheColdStartTraps(t *testing.T) {
 	} {
 		if !strings.Contains(document, want) {
 			t.Errorf("instance schema no longer documents %q", want)
+		}
+	}
+}
+
+// TestSchemaPatternsAreECMA262Portable guards against a Go-only regex
+// construct silently breaking every non-Go consumer of these schemas. JSON
+// Schema 2020-12 §6.4 mandates the ECMA-262 regex dialect for "pattern",
+// which has no inline-flag group ((?i), (?s), (?i:...), and friends) — that
+// syntax compiles only under Go's RE2 (via santhosh-tekuri/jsonschema in
+// this test suite), so a pattern using it would pass every test here while
+// making ajv, Python's jsonschema/check-jsonschema, and the VS Code YAML
+// extension reject the WHOLE schema document — not just the rule that used
+// it (#3804 review: instance.schema.json:833 shipped exactly this once).
+func TestSchemaPatternsAreECMA262Portable(t *testing.T) {
+	// Matches an inline-flag group: (?i), (?is), (?i:...), etc. Deliberately
+	// does NOT match the ECMA-262-legal constructs that also start "(?" —
+	// non-capturing (?:, lookahead (?=/(?!, lookbehind (?<=/(?<!, and named
+	// groups (?<name> — those are all followed by ":", "=", "!", or "<",
+	// while an inline-flag group is always followed by a bare regex-flag
+	// letter (i, s, m, U, ...).
+	inlineFlagGroup := regexp.MustCompile(`\(\?[A-Za-z]`)
+	for _, file := range Files() {
+		raw, err := FS.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		var doc any
+		if err := yaml.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("decode %s: %v", file, err)
+		}
+		walkSchemaPatterns(doc, "$", func(path, pattern string) {
+			if inlineFlagGroup.MatchString(pattern) {
+				t.Errorf("%s: pattern %q at %s uses a Go-only inline-flag group — "+
+					"not valid ECMA-262 (the dialect JSON Schema 2020-12 mandates) and "+
+					"will not compile in ajv/python jsonschema/etc; spell case-"+
+					"insensitivity out as character classes instead, e.g. [Hh][Tt][Tt][Pp]",
+					file, pattern, path)
+			}
+		})
+	}
+}
+
+// walkSchemaPatterns recursively visits every string value found under a
+// "pattern" object key anywhere in a decoded JSON Schema document.
+func walkSchemaPatterns(node any, path string, fn func(path, pattern string)) {
+	switch v := node.(type) {
+	case map[string]any:
+		for key, val := range v {
+			childPath := path + "." + key
+			if key == "pattern" {
+				if s, ok := val.(string); ok {
+					fn(childPath, s)
+				}
+			}
+			walkSchemaPatterns(val, childPath, fn)
+		}
+	case []any:
+		for i, val := range v {
+			walkSchemaPatterns(val, fmt.Sprintf("%s[%d]", path, i), fn)
 		}
 	}
 }
