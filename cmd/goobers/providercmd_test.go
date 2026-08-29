@@ -156,6 +156,27 @@ type fakeGitHubServer struct {
 	// registered, for classifier false-positive guards (#1770).
 	filesFailureStatus map[int]int
 	filesFailureBody   map[int]string
+	// commentsFailureStatus/commentsFailureBody make GET
+	// /issues/{n}/comments fail with a specific status/body instead of
+	// listing the issue's comments — used to model a transient per-PR
+	// failure the comment watcher (pr-comment-watch) must warn-and-continue
+	// past rather than abort the whole scan on.
+	commentsFailureStatus map[int]int
+	commentsFailureBody   map[int]string
+}
+
+// setIssueCommentsFailure makes GET /issues/{number}/comments respond with
+// status/body instead of the issue's normal comment list. number must already
+// be registered via addIssue.
+func (s *fakeGitHubServer) setIssueCommentsFailure(number, status int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.commentsFailureStatus == nil {
+		s.commentsFailureStatus = map[int]int{}
+		s.commentsFailureBody = map[int]string{}
+	}
+	s.commentsFailureStatus[number] = status
+	s.commentsFailureBody[number] = body
 }
 
 // setPullRequestFilesFailure makes GET /pulls/{number}/files respond with
@@ -737,6 +758,10 @@ func (s *fakeGitHubServer) handleIssueItem(w http.ResponseWriter, r *http.Reques
 		}
 		writeFakeJSON(w, out)
 	case len(parts) == 2 && parts[1] == "comments" && r.Method == http.MethodGet:
+		if status, injected := s.commentsFailureStatus[num]; injected {
+			http.Error(w, s.commentsFailureBody[num], status)
+			return
+		}
 		out := make([]map[string]interface{}, 0, len(issue.comments))
 		for i, body := range issue.comments {
 			comment := map[string]interface{}{
@@ -1205,6 +1230,27 @@ func (s *fakeGitHubServer) setPRLabels(number int, labels []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prs[number].labels = append([]string(nil), labels...)
+}
+
+// issueLabels returns a snapshot of an issue's applied labels.
+func (s *fakeGitHubServer) issueLabels(number int) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	issue, ok := s.issues[number]
+	if !ok {
+		return nil
+	}
+	return append([]string(nil), issue.labels...)
+}
+
+// issueHasLabel reports whether an issue currently carries label.
+func (s *fakeGitHubServer) issueHasLabel(number int, label string) bool {
+	for _, l := range s.issueLabels(number) {
+		if l == label {
+			return true
+		}
+	}
+	return false
 }
 
 // setPRCheckState models CI advancing or rerunning on an unchanged head.

@@ -40,6 +40,7 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 	"merge-queue-poll":         {test: TestMergeQueuePollADOReportsMergedWithoutBranchCleanupOrWorkItemWrite},
 	"open-pr":                  {test: TestOpenPRRoutesADOThroughExecutorInjectedAuthentication},
 	"pr-claim":                 {test: TestPRClaimDispatchesFromCommand},
+	"pr-comment-watch":         {test: TestPRCommentWatchGiteaEndToEnd},
 	"pr-select":                {test: TestPRSelectDispatchesADOAndSelectsPolicyGreenPR},
 	"publish-batch":            {test: TestPublishBatchDispatchesFromCommand},
 	"push-branch":              {test: TestPushBranchDispatchesADOOrigin},

@@ -78,6 +78,7 @@ var commandPolicyActions = map[string][]string{
 	"report-pr-status":       {"report-pr-status"},
 	"post-merge":             {"close-issues", "fan-out-remediation", "unpark-resolved-siblings", "clear-healed-escalations", "clear-healed-demotions"},
 	"pr-claim":               {"release-pr-claim"},
+	"pr-comment-watch":       {"label-issue"},
 	"pr-select":              {"flag-foundation-coupling"},
 	"push-branch":            {"push-repository-branch"},
 	"push-remediated":        {"push-pr-branch", "clear-remediation"},
