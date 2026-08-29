@@ -280,3 +280,98 @@ func TestCircuitBreakerOutboxSurvivesCorruptFile(t *testing.T) {
 		t.Fatal("expected a parse error for a corrupt outbox file")
 	}
 }
+
+// TestComposeTerminalNotifierPropagatesCircuitBreakerError covers the daemon
+// wiring boundary: the composed NotifyTerminal used to discard the circuit
+// breaker's error, so a failed park never reached the runner and never landed
+// as terminal_notification_failed in a real deployment (#3646).
+func TestComposeTerminalNotifierPropagatesCircuitBreakerError(t *testing.T) {
+	breakerErr := errors.New("park failed")
+	notifierCalls := 0
+	composed := composeTerminalNotifier(
+		func(string, journal.RunPhase, string) error { return breakerErr },
+		func(string, journal.RunPhase, string) error {
+			notifierCalls++
+			return nil
+		},
+	)
+
+	err := composed("run-1", journal.PhaseCompleted, "failure")
+	if !errors.Is(err, breakerErr) {
+		t.Fatalf("composed notifier error = %v, want circuit-breaker error %v", err, breakerErr)
+	}
+	if notifierCalls != 1 {
+		t.Fatalf("terminal notifier calls = %d, want 1: a breaker failure must not suppress the notification", notifierCalls)
+	}
+}
+
+// TestComposeTerminalNotifierJoinsBothErrors asserts neither half's failure
+// masks the other, so both land in the journaled diagnostic (#3646).
+func TestComposeTerminalNotifierJoinsBothErrors(t *testing.T) {
+	breakerErr := errors.New("park failed")
+	notifyErr := errors.New("notify failed")
+	composed := composeTerminalNotifier(
+		func(string, journal.RunPhase, string) error { return breakerErr },
+		func(string, journal.RunPhase, string) error { return notifyErr },
+	)
+
+	err := composed("run-1", journal.PhaseCompleted, "failure")
+	if !errors.Is(err, breakerErr) || !errors.Is(err, notifyErr) {
+		t.Fatalf("composed notifier error = %v, want both %v and %v", err, breakerErr, notifyErr)
+	}
+}
+
+// TestComposeTerminalNotifierPassesThroughSingleHook keeps the existing
+// behavior for the wirings where only one of the two hooks is configured.
+func TestComposeTerminalNotifierPassesThroughSingleHook(t *testing.T) {
+	if got := composeTerminalNotifier(nil, nil); got != nil {
+		t.Fatalf("composeTerminalNotifier(nil, nil) = non-nil, want nil")
+	}
+
+	breakerCalls := 0
+	breakerOnly := composeTerminalNotifier(func(string, journal.RunPhase, string) error {
+		breakerCalls++
+		return nil
+	}, nil)
+	if err := breakerOnly("run-1", journal.PhaseCompleted, "success"); err != nil {
+		t.Fatalf("breaker-only notifier: %v", err)
+	}
+	if breakerCalls != 1 {
+		t.Fatalf("breaker calls = %d, want 1", breakerCalls)
+	}
+
+	notifyCalls := 0
+	notifierOnly := composeTerminalNotifier(nil, func(string, journal.RunPhase, string) error {
+		notifyCalls++
+		return nil
+	})
+	if err := notifierOnly("run-1", journal.PhaseCompleted, "success"); err != nil {
+		t.Fatalf("notifier-only notifier: %v", err)
+	}
+	if notifyCalls != 1 {
+		t.Fatalf("notifier calls = %d, want 1", notifyCalls)
+	}
+}
+
+// TestComposeTerminalNotifierSuccessReturnsNil pins that the healthy path is
+// unchanged: both hooks run and the composed notifier reports no error.
+func TestComposeTerminalNotifierSuccessReturnsNil(t *testing.T) {
+	order := make([]string, 0, 2)
+	composed := composeTerminalNotifier(
+		func(string, journal.RunPhase, string) error {
+			order = append(order, "breaker")
+			return nil
+		},
+		func(string, journal.RunPhase, string) error {
+			order = append(order, "notify")
+			return nil
+		},
+	)
+
+	if err := composed("run-1", journal.PhaseCompleted, "success"); err != nil {
+		t.Fatalf("composed notifier error = %v, want nil", err)
+	}
+	if !slices.Equal(order, []string{"breaker", "notify"}) {
+		t.Fatalf("hook order = %v, want [breaker notify]", order)
+	}
+}
