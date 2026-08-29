@@ -191,6 +191,18 @@ func appendPlacementFindings(
 	// HostOS substitution is runtime-only (boot/admission on the actual
 	// executing host — see instance.Config.PlacementRunners).
 	inventory := runnersolve.Inventory{Runners: cfg.PlacementRunners("")}
+	// selfRunnerNames is every inventory entry the solver treats as the
+	// daemon host (runnersolve.Runner.Self — a self entry's Name is author-
+	// chosen, not necessarily the literal "self": internal/instance's
+	// PlacementRunners copies entry.Name verbatim and sets Self from
+	// entry.Host alone). RNR005 below tests eligible-set membership against
+	// this set, never the literal string "self".
+	selfRunnerNames := make(map[string]bool, len(inventory.Runners))
+	for _, r := range inventory.Runners {
+		if r.Self {
+			selfRunnerNames[r.Name] = true
+		}
+	}
 	gaggleSpecs := make(map[string]apiv1.GaggleSpec, len(set.Gaggles))
 	for i := range set.Gaggles {
 		gaggleSpecs[set.Gaggles[i].Name] = set.Gaggles[i].Spec
@@ -239,6 +251,10 @@ func appendPlacementFindings(
 				add(validate.RunnerQuantityAdvisory, validate.Warning, "Workflow", wf.Name,
 					file, pathFor(placement.Stage), note.Diagnostic)
 			}
+			if ti, ok := taskIndex[placement.Stage]; ok {
+				appendInstanceRootFinding(&wf.Spec.Tasks[ti], placement, selfRunnerNames,
+					wf.Name, file, pathFor(placement.Stage), add)
+			}
 			if placement.Unsat == nil {
 				continue
 			}
@@ -270,6 +286,71 @@ func appendPlacementFindings(
 			add(code, severity, "Workflow", wf.Name, file, pathFor(placement.Stage), message)
 		}
 	}
+}
+
+// appendInstanceRootFinding is decision 003 ruling 3's static advance-notice
+// half of the refusal that actually lives at dispatch
+// (executor.StageRequiresInstanceRoot, consumed by internal/engine's
+// dispatchRemoteTask before a pod is ever created): it warns on a 3.0 stage
+// whose resolved ELIGIBLE RUNNER SET excludes every self entry, but whose
+// command or built-in stage kind needs the daemon's instance root — the
+// file claim ledger, a merge lock, an on-disk run journal, or a kind with
+// no pod-side execution path (ci-poll, external-telemetry).
+//
+// Eligibility comes from the exact solve appendPlacementFindings just ran
+// for placement, reused here rather than re-derived, so this can never
+// disagree with it the way inferring off-self-ness from a bare
+// "runsOn.restrictions is non-empty" check could: a `host: self` inventory
+// entry MAY declare restrictions (self enforces only what it declares,
+// never implicitly — the appendPlacementFindings comment above states the
+// same invariant, runnersolve.go's `enforces`), and when it declares the
+// ones a stage requires, self stays eligible and this must NOT warn.
+//
+// A bare runsOn with no restrictions is NOT flagged: self trivially
+// satisfies an empty requirement and so is always in the eligible set,
+// exactly like every other stage with no runsOn at all.
+//
+// Always a WARNING (RNR005), never promoted the way RNR001/RNR003 are on a
+// declared inventory: dispatch is the enforcement — a placed run of this
+// workflow is refused loud with the same named code, never silently wrong —
+// so this is advance notice at author time, not a second gate.
+func appendInstanceRootFinding(
+	task *apiv1.Task, placement runnersolve.StagePlacement, selfRunnerNames map[string]bool,
+	workflowName, file, path string,
+	add func(code validate.WarningCode, severity validate.Severity, kind, name, file, path, message string),
+) {
+	if task.Type != apiv1.TaskDeterministic || task.Run == nil {
+		return
+	}
+	kind := strings.TrimSpace(task.Inputs[executor.InputKind])
+	if !executor.StageRequiresInstanceRoot(task.Run.Command, kind) {
+		return
+	}
+	if placementIncludesSelf(placement.Eligible, selfRunnerNames) {
+		return
+	}
+	why := fmt.Sprintf("command %v", task.Run.Command)
+	if kind != "" && kind != executor.KindShell {
+		why = fmt.Sprintf("inputs.kind=%q", kind)
+	}
+	add(validate.RunnerInstanceRootRequired, validate.Warning, "Workflow", workflowName, file, path,
+		fmt.Sprintf(
+			"cannot resolve to the daemon's own host (self) — its %s needs the daemon's instance root (the file claim ledger, a merge lock, an on-disk run journal, or a built-in stage kind with no pod-side execution path), but the eligible runner set for this stage is %v; it will be refused at dispatch (decision 003, code %q) — declare the requirement(s) this stage's runsOn needs on the self runner entry, if it genuinely provides them, or restructure the workflow so this stage's command runs on a stage that resolves to self",
+			why, placement.Eligible, executor.StageRequiresInstanceRootCode,
+		))
+}
+
+// placementIncludesSelf reports whether any name in eligible names a self
+// runner (see selfRunnerNames in appendPlacementFindings) — never checked
+// against the literal string "self", since a self entry's Name is
+// author-chosen (internal/instance.PlacementRunners).
+func placementIncludesSelf(eligible []string, selfRunnerNames map[string]bool) bool {
+	for _, name := range eligible {
+		if selfRunnerNames[name] {
+			return true
+		}
+	}
+	return false
 }
 
 // selfOSUnknownUnsat reports whether a stage's unsatisfiability is

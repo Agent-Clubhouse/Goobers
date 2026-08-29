@@ -159,6 +159,26 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	}
 	defer cleanup()
 
+	// Decision 003 ruling 3, pod-entrypoint backstop: the engine's
+	// dispatchRemoteTask already refuses a stage that needs the daemon's
+	// instance root before ever creating a pod (a ledger-touching or
+	// journal-reading goobers CLI command, or a built-in stage kind with no
+	// pod-side execution path). This re-asserts the identical refusal HERE,
+	// at the one point in the tree where every substrate skew — an older
+	// engine image dispatching to a newer worker, a hand-built attempt —
+	// would actually surface, rather than trusting that the workflow-side
+	// check happened. Gated on GOOBERS_INSTANCE_ROOT being unset (always
+	// true in a pod today, since the dispatcher never stamps it) rather than
+	// "this is a pod": once a plane client lands and a pod gets a scoped
+	// root, this stops firing on its own, no dispatchexec.go change needed.
+	if executor.StageRequiresInstanceRoot(argv, os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) &&
+		strings.TrimSpace(os.Getenv(executor.InstanceRootEnvVar)) == "" {
+		return failureEnvelope(executor.StageRequiresInstanceRootCode, fmt.Sprintf(
+			"stage command %v requires the daemon's instance root (%s is unset in this pod); this should have been refused before dispatch",
+			argv, executor.InstanceRootEnvVar,
+		))
+	}
+
 	timeout := dispatcher.DefaultStageTimeout
 	if declared, err := time.ParseDuration(os.Getenv(dispatcher.EnvStageTimeout)); err == nil && declared > 0 {
 		timeout = declared
