@@ -3,11 +3,12 @@ package main
 import (
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // suiteWorktreeDir and suiteWorktreeStatus are TestMain's baseline for the
@@ -29,7 +30,7 @@ func worktreeStatus(dir string) string {
 	if dir == "" {
 		return ""
 	}
-	out, err := exec.Command("git", "-C", dir, "status", "--porcelain", "--", ".").Output()
+	out, err := testgit.Command("-C", dir, "status", "--porcelain", "--", ".").Output()
 	if err != nil {
 		return ""
 	}
@@ -113,7 +114,7 @@ func TestReportWorktreeDriftDetectsFileWrittenIntoRepository(t *testing.T) {
 		{"config", "user.email", "guard@example.com"},
 		{"config", "user.name", "guard"},
 	} {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd := testgit.Command(append([]string{"-C", dir}, args...)...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
