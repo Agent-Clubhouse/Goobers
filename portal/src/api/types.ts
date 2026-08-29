@@ -346,6 +346,14 @@ export interface RunListOptions {
   limit?: number;
   cursor?: string;
   latestPerWorkflow?: boolean;
+  /**
+   * Filters and orders by the run's last journal activity instead of its
+   * start (#1777). `since`/`until` bound last activity on this axis, which is
+   * what makes "runs active in the last N hours" expressible. Requires the
+   * read model — an instance without one refuses rather than silently
+   * ordering by start.
+   */
+  orderByActivity?: boolean;
   /** Includes routine no-work schedule ticks (#2188); omitted/false hides them. */
   showNoWork?: boolean;
 }
