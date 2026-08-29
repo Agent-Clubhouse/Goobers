@@ -282,19 +282,20 @@ func appendPlacementFindings(
 // appendInstanceRootFinding is decision 003 ruling 3's static advance-notice
 // half of the refusal that actually lives at dispatch
 // (executor.StageRequiresInstanceRoot, consumed by internal/engine's
-// dispatchRemoteTask before a pod is ever created): a 3.0 stage whose
-// resolved ELIGIBLE RUNNER SET excludes every self entry — the exact solve
-// appendPlacementFindings just ran for placement, reused here rather than
-// re-derived, so this can never disagree with it the way inferring
-// off-self-ness from a bare "runsOn.restrictions is non-empty" check could:
-// a `host: self` inventory entry MAY declare restrictions (self enforces
-// only what it declares, never implicitly — the appendPlacementFindings
-// comment above states the same invariant, runnersolve.go's `enforces`),
-// and when it declares the ones a stage requires, self stays eligible and
-// this must NOT warn. But whose command or built-in stage kind needs the
-// daemon's instance root — the file claim ledger, a merge lock, an on-disk
-// run journal, or a kind with no pod-side execution path (ci-poll,
-// external-telemetry).
+// dispatchRemoteTask before a pod is ever created): it warns on a 3.0 stage
+// whose resolved ELIGIBLE RUNNER SET excludes every self entry, but whose
+// command or built-in stage kind needs the daemon's instance root — the
+// file claim ledger, a merge lock, an on-disk run journal, or a kind with
+// no pod-side execution path (ci-poll, external-telemetry).
+//
+// Eligibility comes from the exact solve appendPlacementFindings just ran
+// for placement, reused here rather than re-derived, so this can never
+// disagree with it the way inferring off-self-ness from a bare
+// "runsOn.restrictions is non-empty" check could: a `host: self` inventory
+// entry MAY declare restrictions (self enforces only what it declares,
+// never implicitly — the appendPlacementFindings comment above states the
+// same invariant, runnersolve.go's `enforces`), and when it declares the
+// ones a stage requires, self stays eligible and this must NOT warn.
 //
 // A bare runsOn with no restrictions is NOT flagged: self trivially
 // satisfies an empty requirement and so is always in the eligible set,
