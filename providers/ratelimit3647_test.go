@@ -127,3 +127,21 @@ func TestRateLimitErrorMessageNamesProvider(t *testing.T) {
 		t.Fatalf("message = %q, want the stable rate-limit code carried", neutral)
 	}
 }
+
+// TestGitHubGitPushRateLimitErrorNamesGitHub guards the diagnostics of the
+// pre-existing git-push path: it builds the typed error directly rather than
+// from a RateLimitEvent, so it must still name the forge instead of falling
+// back to the provider-neutral wording (#3647).
+func TestGitHubGitPushRateLimitErrorNamesGitHub(t *testing.T) {
+	repo := RepositoryRef{Provider: ProviderGitHub, Owner: "acme", Name: "app"}
+	limit := githubGitPushRateLimitError(repo, []byte("remote: error: 429 Too Many Requests"))
+	if limit == nil {
+		t.Fatal("githubGitPushRateLimitError() = nil, want a typed rate limit")
+	}
+	if limit.Provider != ProviderGitHub {
+		t.Fatalf("Provider = %q, want %q", limit.Provider, ProviderGitHub)
+	}
+	if !strings.HasPrefix(limit.Error(), "github rate limited") {
+		t.Fatalf("message = %q, want the github prefix", limit.Error())
+	}
+}

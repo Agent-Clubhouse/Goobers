@@ -165,8 +165,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 // later" decision but different operator problems, and both used to reach the
 // journal as the generic executor_error.
 func transientPollCode(err error) string {
-	var rateLimited *providers.RateLimitError
-	if errors.As(err, &rateLimited) {
+	if _, ok := providers.AsRateLimitError(err); ok {
 		return providers.ErrorCodeRateLimited
 	}
 	return "poll_provider_error"
