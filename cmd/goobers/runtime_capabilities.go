@@ -308,6 +308,10 @@ func init() {
 			withSynopsis(synopsisByID["engine-start"]).
 			withHelp("dispatch one run onto the tier-3 engine via Temporal (experimental)", engineStartHelp).
 			withExamples("goobers engine-start default-implement"),
+		command("engine-queues", apicontract.ActionReadOnlyNavigation, runEngineQueues).
+			withSynopsis(synopsisByID["engine-queues"]).
+			withHelp("report which workers poll this instance's engine and dispatch task queues (experimental)", engineQueuesHelp).
+			withExamples("goobers engine-queues", "goobers engine-queues --json"),
 		command("engine-project", apicontract.ActionDaemonLifecycle, runEngineProject).
 			withSynopsis(synopsisByID["engine-project"]).
 			withHelp("write a completed engine run's journal into the instance (experimental)", engineProjectHelp).

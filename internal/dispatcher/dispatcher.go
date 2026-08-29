@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -64,6 +65,23 @@ var DefaultTmpfsSizeLimit = resource.MustParse("512Mi")
 type Config struct {
 	// Namespace is the gaggle namespace stage pods are created in.
 	Namespace string
+	// Owner identifies THIS dispatcher process among the workers sharing a
+	// namespace. It is stamped on every pod as LabelOwner and is the scope
+	// SweepOrphans sweeps within, so it must be stable across a restart of
+	// the same worker and distinct between workers. The worker wires its
+	// hostname — in-cluster, its pod name: stable while the pod lives, unique
+	// per replica.
+	//
+	// A rollout gives the replacement worker a NEW pod name, so stage pods
+	// left by the outgoing one fall outside every sweep's scope. That is the
+	// intended trade: the sweep's job is to reclaim ITS OWN interrupted
+	// attempts, and the always-on activeDeadlineSeconds stamp (dispatcher §5)
+	// is what bounds every other leak. Deleting a pod on a guess is the
+	// failure this whole path is built to avoid.
+	//
+	// Empty stamps no owner label and makes SweepOrphans refuse: an ownerless
+	// fleet cannot be swept safely by one of its members.
+	Owner string
 	// EmbeddedCommit is this dispatcher binary's embedded commit sha
 	// (internal/version.Commit at wiring) — the left side of the decision-009
 	// version-skew tag comparison.
@@ -128,6 +146,16 @@ type Config struct {
 	// CapacityInterval overrides DefaultCapacityInterval; zero uses the
 	// default.
 	CapacityInterval time.Duration
+}
+
+// ownerLabel is Owner rendered into label grammar. The stamp and the sweep's
+// selector both go through it, so they cannot disagree about what an owner's
+// pods are labeled with.
+func (c Config) ownerLabel() string {
+	if strings.TrimSpace(c.Owner) == "" {
+		return ""
+	}
+	return sanitizeNameSegment(c.Owner, 63)
 }
 
 func (c Config) tmpfsSizeLimit() resource.Quantity {
@@ -218,6 +246,21 @@ type Attempt struct {
 	CPU    string
 	Memory string
 	Disk   string
+	// OwningWorkflowID is the id of the Temporal workflow execution driving
+	// this attempt — the caller's own execution, stamped on the pod as
+	// AnnotationOwningWorkflowID and describable VERBATIM by the orphan
+	// sweep.
+	//
+	// Distinct from two neighbours it is easy to confuse it with:
+	// Config.Owner / LabelOwner names the dispatcher PROCESS that created the
+	// pod (the sweep's scope), and Workflow above is the goobers workflow
+	// NAME from the DSL. This is a Temporal execution id, and it is the only
+	// field on the attempt that addresses one.
+	//
+	// Empty means the caller did not state a driver. The pod is then stamped
+	// without the annotation and the sweep leaves it alone forever rather
+	// than guessing an id — see stampIdentityAnnotations and podAttempt.
+	OwningWorkflowID string
 	// Restrictions is the stage's effective restriction requirement
 	// (declared ∪ mandates, as solved). It must be a subset of the resolved
 	// runner's enforced set; the dispatcher refuses the mismatch at create.

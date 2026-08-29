@@ -32,6 +32,47 @@ const (
 	LabelStage = "goobers.dev/stage"
 	// LabelAttempt carries the attempt ordinal.
 	LabelAttempt = "goobers.dev/attempt"
+	// LabelOwner names the dispatcher process that created the pod
+	// (Config.Owner, sanitized to label grammar). Decision 003 wires
+	// SweepOrphans on the WORKER, and a cluster legitimately runs more than
+	// one: without this the sweep's selector matches a sibling worker's live
+	// stage pods too, and one worker's restart would dispose another's
+	// in-flight attempts. Scoped by owner, a sweep can only ever reach pods
+	// it created.
+	LabelOwner = "goobers.dev/owner"
+)
+
+// Dispatcher-owned annotations carrying the attempt identity VERBATIM.
+//
+// The matching labels exist for humans and for selectors, so they are run
+// through sanitizeNameSegment — which lowercases and maps every non-alphanumeric
+// rune to '-'. That makes them unusable as an ADDRESS: the orphan sweep has to
+// ask the engine whether <runID>/<stage>/<attempt> is still executing, and
+// "run-2026-08-22-0001" does not survive the round trip. These carry the exact
+// strings the attempt was dispatched under. (The attempt ordinal needs no
+// annotation — LabelAttempt is already exact, being a decimal integer.)
+const (
+	// AnnotationRunID is the attempt's run ID, unsanitized.
+	AnnotationRunID = "goobers.dev/run-id"
+	// AnnotationStage is the attempt's stage name, unsanitized.
+	AnnotationStage = "goobers.dev/stage-name"
+	// AnnotationOwningWorkflowID is the Temporal workflow execution that owns
+	// the dispatch: the execution whose activity created this pod, and the
+	// only one whose liveness answers "is anything still driving this
+	// attempt?".
+	//
+	// It is stamped rather than DERIVED because the attempt's own identity
+	// cannot address its driver. A SCHEDULED run executes under
+	// claimID+"-run" while its RunID has been rewritten to a sha256 prefix of
+	// claimID (engine's RunScheduled; engine/liveness.go states the mapping),
+	// so an id composed from AnnotationRunID names no execution at all — and a
+	// sweep that reads "no such workflow" as "settled" would delete the pod of
+	// a live, possibly mutating, stage. Composing is a lossy address on a
+	// DELETE path; this is the verbatim one.
+	//
+	// Absent = unaddressable, not disposable: podAttempt refuses the pod and
+	// the sweep leaves it to activeDeadlineSeconds.
+	AnnotationOwningWorkflowID = "goobers.dev/owning-workflow-id"
 )
 
 // The pod environment contract: what a stage pod needs to reach the planes
@@ -468,7 +509,7 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 	// to overwrite even the managed-by marker (that is how a pod hides from
 	// the orphan sweep).
 	labels := copyStringMap(attempt.ExtraLabels)
-	for key, value := range stampedLabels(attempt, runner) {
+	for key, value := range stampedLabels(cfg, attempt, runner) {
 		labels[key] = value
 	}
 	pod := &corev1.Pod{
@@ -486,6 +527,7 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 		},
 	}
 	stampClassRestrictionsAnnotation(pod.Annotations, runner)
+	stampIdentityAnnotations(pod.Annotations, attempt)
 
 	stampResources(cfg, attempt, runner, &container, class, windows)
 	stampVolumes(cfg, attempt, &pod.Spec, &container, class, windows)
@@ -537,7 +579,7 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	for key, value := range attempt.ExtraLabels {
 		labels[key] = value
 	}
-	for key, value := range stampedLabels(attempt, runner) {
+	for key, value := range stampedLabels(cfg, attempt, runner) {
 		labels[key] = value
 	}
 	annotations := copyStringMap(template.Annotations)
@@ -605,6 +647,7 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	}
 
 	stampClassRestrictionsAnnotation(annotations, runner)
+	stampIdentityAnnotations(annotations, attempt)
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        PodName(attempt),
@@ -724,16 +767,43 @@ func restrictionSet(restrictions []string) map[string]bool {
 // stampedLabels are the dispatcher-owned labels every stage pod carries:
 // exactly one runner-class label DERIVED from the resolved restriction set
 // via the single shared producer (runnercap.RunnerClassValue, delivery
-// decision 015), the role marker the baseline policies select on, and the
-// run/attempt identity the reconcile sweep keys on.
-func stampedLabels(attempt Attempt, runner RunnerSpec) map[string]string {
-	return map[string]string{
+// decision 015), the role marker the baseline policies select on, the
+// run/attempt identity the reconcile sweep keys on, and — when this
+// dispatcher declares one — the owner the sweep scopes itself to.
+func stampedLabels(cfg Config, attempt Attempt, runner RunnerSpec) map[string]string {
+	labels := map[string]string{
 		LabelManagedBy:             ManagedByValue,
 		runnercap.LabelRole:        runnercap.RoleStage,
 		runnercap.LabelRunnerClass: runnercap.RunnerClassValue(runner.Restrictions),
 		LabelRun:                   sanitizeNameSegment(attempt.RunID, 63),
 		LabelStage:                 sanitizeNameSegment(attempt.Stage, 63),
 		LabelAttempt:               fmt.Sprintf("%d", attempt.Number),
+	}
+	// Absent owner stamps nothing rather than an "unknown" placeholder: a
+	// placeholder is a value a second ownerless dispatcher would also match,
+	// which is the cross-worker disposal this label exists to prevent. An
+	// unlabeled pod is instead unreachable by any sweep, and SweepOrphans
+	// refuses to run without an owner at all.
+	if owner := cfg.ownerLabel(); owner != "" {
+		labels[LabelOwner] = owner
+	}
+	return labels
+}
+
+// stampIdentityAnnotations records the attempt's verbatim run ID and stage
+// name (see AnnotationRunID) and the workflow execution driving it (see
+// AnnotationOwningWorkflowID). Both render paths call it, so a pod that the
+// sweep can select is always a pod the sweep can address.
+//
+// An absent OwningWorkflowID stamps NOTHING rather than an empty value, for
+// the same reason ownerLabel stamps nothing: a value the sweep would then
+// have to special-case is a value it can get wrong, and podAttempt's
+// "annotation missing" arm already means exactly "leave this pod alone".
+func stampIdentityAnnotations(annotations map[string]string, attempt Attempt) {
+	annotations[AnnotationRunID] = attempt.RunID
+	annotations[AnnotationStage] = attempt.Stage
+	if attempt.OwningWorkflowID != "" {
+		annotations[AnnotationOwningWorkflowID] = attempt.OwningWorkflowID
 	}
 }
 
