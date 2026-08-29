@@ -429,6 +429,26 @@ describe("loadOperationalOverview attention recency window (#1199)", () => {
     expect(overview.sectionErrors?.runs).toBeUndefined();
   });
 
+  it("reports the runs section as failed, not silently empty, when the read model refuses orderByActivity", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const real = client.listRuns.bind(client);
+    const refusal = new Error("orderByActivity requires the bounded read model");
+    vi.spyOn(client, "listRuns").mockImplementation(async (request, options) => {
+      if (request?.phase === "escalated" || request?.phase === "failed") {
+        throw refusal;
+      }
+      return real(request, options);
+    });
+
+    const overview = await loadOperationalOverview(client);
+
+    // The other three phases succeeding must not mask the attention group's
+    // refusal — that would render an attention list empty for the same
+    // reason as a genuinely idle instance, hiding real escalations.
+    expect(overview.sectionErrors?.runs).toBe(refusal);
+    expect(overview.groups).toEqual({ active: [], attention: [], recent: [] });
+  });
+
   it("filters and orders escalated/failed queries by last activity within the window", async () => {
     const client = new FixtureDaemonClient(emptyDaemonFixtures());
     const listRuns = vi.spyOn(client, "listRuns");

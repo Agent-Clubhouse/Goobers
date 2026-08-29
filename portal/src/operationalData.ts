@@ -1376,11 +1376,30 @@ async function loadOverviewRunGroups(
     byPhase("completed", RECENT_OUTCOME_LIMIT),
     byPhase("aborted", RECENT_OUTCOME_LIMIT),
   ]);
+  const [, escalatedResult, failedResult] = settled;
   // Every phase failing means the run list as a whole is unreadable, which the
   // caller reports as a failed section rather than silently showing "no runs".
+  //
+  // The attention group is a further special case: escalated/failed are both
+  // queried on the last-activity axis (#1199), which a read-model-less
+  // instance refuses outright. That refusal doesn't fail every phase — running/
+  // completed/aborted still succeed — so the check above would let it through,
+  // and the `?? []` fallback below would render an attention list that is
+  // empty for the same reason as a genuinely idle instance: hiding real
+  // escalations behind no error at all. Treat either attention query rejecting
+  // as unreadable too.
   const firstError = settled.find((result) => result.status === "rejected");
-  if (firstError && settled.every((result) => result.status === "rejected")) {
-    throw settledError(firstError) ?? new Error("Unable to read runs.");
+  if (
+    (firstError && settled.every((result) => result.status === "rejected")) ||
+    escalatedResult.status === "rejected" ||
+    failedResult.status === "rejected"
+  ) {
+    throw (
+      settledError(escalatedResult) ??
+      settledError(failedResult) ??
+      (firstError ? settledError(firstError) : undefined) ??
+      new Error("Unable to read runs.")
+    );
   }
   const [running, escalated, failed, completed, aborted] = settled.map((result) =>
     settledValue(result)?.runs ?? [],
