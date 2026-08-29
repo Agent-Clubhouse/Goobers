@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
@@ -159,7 +160,7 @@ func replaceDB(dbPath, stagingPath string) error {
 			return fmt.Errorf("rollup: remove existing %s%s: %w", dbPath, suffix, err)
 		}
 	}
-	if err := os.Rename(stagingPath, dbPath); err != nil {
+	if err := durability.ReplaceFile(stagingPath, dbPath); err != nil {
 		return fmt.Errorf("rollup: replace %s with staged rollup %s: %w", dbPath, stagingPath, err)
 	}
 	return nil
@@ -174,8 +175,12 @@ func removeDBFiles(path string) {
 	}
 }
 
+// syncFile opens the staged database for WRITING purely to flush it: Windows
+// implements File.Sync as FlushFileBuffers, which requires a handle with write
+// access and answers ERROR_ACCESS_DENIED for the read-only handle os.Open
+// returns.
 func syncFile(path string) error {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
 		return err
 	}

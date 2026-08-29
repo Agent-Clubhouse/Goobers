@@ -83,6 +83,31 @@ func TestRebuildFailureKeepsPreviousProjection(t *testing.T) {
 	}
 }
 
+// TestSyncStagedFileFlushesThroughWritableHandle pins the handle syncFile
+// flushes with: Windows implements Sync as FlushFileBuffers, which rejects the
+// read-only handle os.Open returns with "Access is denied" and failed every
+// rebuild on that platform while passing on POSIX.
+func TestSyncStagedFileFlushesThroughWritableHandle(t *testing.T) {
+	tmp := t.TempDir()
+	stagingPath, err := createStagingDB(filepath.Join(tmp, "telemetry.db"))
+	if err != nil {
+		t.Fatalf("createStagingDB: %v", err)
+	}
+	if err := os.WriteFile(stagingPath, []byte("staged"), 0o644); err != nil {
+		t.Fatalf("write staged file: %v", err)
+	}
+	if err := syncFile(stagingPath); err != nil {
+		t.Fatalf("syncFile: %v", err)
+	}
+	body, err := os.ReadFile(stagingPath)
+	if err != nil {
+		t.Fatalf("read staged file: %v", err)
+	}
+	if string(body) != "staged" {
+		t.Fatalf("staged file contents = %q, want it untouched by the flush", body)
+	}
+}
+
 // TestRebuildReplacesRatherThanMergesWithPreviousProjection guards the other
 // side of staging: the staged database must actually replace the active one, so
 // rows for a run whose directory is gone do not survive a rebuild.
