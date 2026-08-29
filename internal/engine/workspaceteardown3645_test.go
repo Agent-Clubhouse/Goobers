@@ -152,7 +152,7 @@ func TestTeardownFailureLeavesStageResultIntact(t *testing.T) {
 
 	res, err := activities.InvokeGoober(context.Background(), apiv1.InvocationEnvelope{
 		RunID: "run-5", TaskID: "run-5:implement",
-	}, "")
+	}, "", "", "")
 	if err != nil {
 		t.Fatalf("InvokeGoober = %v, want the stage's own success despite a teardown failure", err)
 	}
