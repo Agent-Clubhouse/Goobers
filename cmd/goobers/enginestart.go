@@ -185,7 +185,44 @@ func engineStartSpec(req engineStartRequest) (engine.StartSpec, error) {
 		LiveJournal:     req.liveJournal,
 		Placements:      placements,
 		RunControls:     controls,
+		// #294/#3528: an agentic gate's reviewer capabilities are instance
+		// policy, pinned into the run at start and read back from the run's
+		// own snapshot afterwards — the daemon's credential plane resolves a
+		// gate stage's grants from journal.PinnedGateGooberCapabilities, not
+		// from the currently-served config. A starter that leaves this empty
+		// pins an EMPTY map, so every gate branch on the run resolves to no
+		// reviewer grants at all; the daemon's scheduler entry has always
+		// filled it in (runnerwiring.go) and engine-start did not.
+		GateGooberCapabilities: engineStartGateGooberCapabilities(req.set, req.gaggle),
 	}, nil
+}
+
+// engineStartGateGooberCapabilities maps each goober a gaggle's stages may
+// name to its declared capabilities — the same projection of the config set
+// the daemon's runner config builds (runnerwiring.go's gateGooberCaps). A
+// goober with no declared capabilities is omitted rather than mapped to an
+// empty slice, so the pinned snapshot matches the daemon's byte for byte.
+// Nil when the gaggle declares no capability-bearing goobers, which pins no
+// snapshot at all rather than an empty one.
+func engineStartGateGooberCapabilities(set *instance.ConfigSet, gaggle string) map[string][]string {
+	if set == nil {
+		return nil
+	}
+	var caps map[string][]string
+	for i := range set.Goobers {
+		g := set.Goobers[i]
+		if g.Spec.Gaggle != "" && g.Spec.Gaggle != gaggle {
+			continue
+		}
+		if len(g.Spec.Capabilities) == 0 {
+			continue
+		}
+		if caps == nil {
+			caps = make(map[string][]string)
+		}
+		caps[g.Name] = append([]string(nil), g.Spec.Capabilities...)
+	}
+	return caps
 }
 
 // engineStartRunControls resolves the run-control policy for one manually

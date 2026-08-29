@@ -11,9 +11,31 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
+// noDaemonEngineClient asserts that cfg builds no shared Temporal client at
+// all — the dial seam fails the test if it is reached — and returns the nil
+// client the daemon would thread into every engine consumer.
+func noDaemonEngineClient(t *testing.T, cfg *instance.Config) *daemonEngineClient {
+	t.Helper()
+	previousDial := dialDaemonEngine
+	dialDaemonEngine = func(string, string) (client.Client, error) {
+		return nil, errors.New("daemon dialed Temporal unexpectedly")
+	}
+	t.Cleanup(func() { dialDaemonEngine = previousDial })
+
+	engineClient, err := newDaemonEngineClient(cfg)
+	if err != nil {
+		t.Fatalf("newDaemonEngineClient: %v", err)
+	}
+	if engineClient != nil {
+		t.Fatal("newDaemonEngineClient built a client for an instance with no engine configuration")
+	}
+	return engineClient
+}
+
 func TestEngineProjectionIsInertWithoutTemporalConfiguration(t *testing.T) {
 	root := t.TempDir()
-	stop, err := startEngineProjection(context.Background(), instance.NewLayout(root), &instance.Config{}, nil, nil, nil, nil, nil)
+	cfg := &instance.Config{}
+	stop, err := startEngineProjection(context.Background(), instance.NewLayout(root), cfg, nil, noDaemonEngineClient(t, cfg), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("startEngineProjection: %v", err)
 	}
@@ -32,13 +54,7 @@ func TestEngineProjectionIsInertWithNamespaceAndTaskQueueOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	previousDial := dialEngineProjection
-	dialEngineProjection = func(string, string) (client.Client, error) {
-		return nil, errors.New("projection dialed unexpectedly")
-	}
-	t.Cleanup(func() { dialEngineProjection = previousDial })
-
-	stop, err := startEngineProjection(context.Background(), instance.NewLayout(root), cfg, nil, nil, nil, nil, nil)
+	stop, err := startEngineProjection(context.Background(), instance.NewLayout(root), cfg, nil, noDaemonEngineClient(t, cfg), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("startEngineProjection: %v", err)
 	}

@@ -183,8 +183,18 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				WorkflowVersion: in.Version,
 				WorkflowDigest:  m.Digest(),
 				Gaggle:          in.Gaggle,
-				RunControls:     &runControls,
-				Trigger:         journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
+				// Every run this workflow journals is, by construction, driven
+				// by the engine. The daemon reads it back from run.yaml to
+				// keep its resume scan, stall sweep and operator paths off a
+				// run it does not own (decision 003, Phase-0 hygiene). It is
+				// pinned here — in the workflow, as deterministic state —
+				// rather than stamped by the projection writer, so the live
+				// journal plane's OpenHeader carries it from the very first
+				// emit and a run is never briefly indistinguishable from a
+				// runner-driven one.
+				Driver:      journal.DriverEngine,
+				RunControls: &runControls,
+				Trigger:     journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
 			},
 			Item:                   in.Item,
 			Graph:                  graph,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -221,10 +222,23 @@ func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Ru
 	return fallback, false
 }
 
+// sweepStalledRuns terminalizes runs whose journals have gone quiet past
+// their pinned stalledRunTimeout (or past maxRunDuration).
+//
+// An engine-driven run (journal.RunIdentity.EngineDriven) is cancelled on the
+// engine instead, through guards. Terminalizing its journal file would settle
+// nothing: the workflow keeps executing, keeps placing stages and keeps
+// emitting into a journal this sweep just declared finished — nothing in the
+// tree called CancelWorkflow before this change, so a stalled engine run's
+// only outcome was a lie on disk. When no engine client exists the sweep
+// refuses both options and reports it, because terminalizing is the failure
+// mode, not the fallback.
 func sweepStalledRuns(
+	ctx context.Context,
 	l instance.Layout,
 	runners *daemonRunnerRegistry,
 	fallback *runner.Runner,
+	guards *engineRunGuards,
 	log *journal.InstanceLog,
 	prepare stalledTerminalPreparer,
 	notify runner.TerminalNotifier,
@@ -306,6 +320,36 @@ func sweepStalledRuns(
 				if !events[len(events)-1].Time.Before(now.Add(-runTimeout)) {
 					continue
 				}
+			}
+
+			// Past the timeout and engine-driven: cancel the workflow and
+			// leave the journal alone. The engine writes the run's terminal
+			// event itself once the cancellation lands, through the same
+			// journal plane that has been authoring the run all along.
+			if identity.EngineDriven() {
+				if err := guards.cancel(ctx, identity.RunID); err != nil {
+					sweepErrs = append(sweepErrs, fmt.Errorf("cancel stalled engine run %q: %w", identity.RunID, err))
+					continue
+				}
+				if log != nil {
+					message := fmt.Sprintf("run exceeded %s without journal activity", runTimeout)
+					if durationExceeded {
+						message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
+					}
+					appendErr := log.Append(journal.Event{
+						Type: journal.EventRunnerAnnotation, Gaggle: identity.Gaggle, Workflow: identity.Workflow, RunID: identity.RunID,
+						Runner: map[string]any{
+							"kind":   journal.RunnerAnnotationRunRecovery,
+							"reason": message,
+							"action": "engine_cancel_requested",
+							"driver": string(identity.Driver),
+						},
+					})
+					if appendErr != nil {
+						sweepErrs = append(sweepErrs, fmt.Errorf("journal engine cancel for run %q: %w", identity.RunID, appendErr))
+					}
+				}
+				continue
 			}
 
 			runLayout := l

@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -13,20 +12,19 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 )
 
-var (
-	engineProjectionInterval = 30 * time.Second
-	dialEngineProjection     = bootstrap.DialTemporal
-)
+var engineProjectionInterval = 30 * time.Second
 
-func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, tel *telemetry.Client, liveJournals *livejournal.Writer) (func(), error) {
-	if !cfg.EngineProjectionEnabled() {
+// startEngineProjection runs the completed-run projection reconciler over the
+// daemon's shared Temporal client (enginerunguards.go). It does not dial and
+// does not close: engineClient is owned by `goobers up`, which hands the same
+// connection to the projection reconciler, the DS6 liveness probe and the
+// engine-driven run guards. A nil engineClient is the no-engine topology.
+func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, engineClient *daemonEngineClient, watermarks *intake.Store, instanceLog *journal.InstanceLog, tel *telemetry.Client, liveJournals *livejournal.Writer) (func(), error) {
+	if !cfg.EngineProjectionEnabled() || engineClient == nil {
 		return func() {}, nil
 	}
+	c := engineClient.Temporal()
 	engineConfig := cfg.EffectiveEngineConfig()
-	c, err := dialEngineProjection(engineConfig.HostPort, engineConfig.Namespace)
-	if err != nil {
-		return nil, err
-	}
 	runsDirs := make(map[string]string)
 	for _, gaggle := range configuredGaggleNames(set) {
 		runsDirs[gaggle] = l.ForGaggle(gaggle).RunsDir()
@@ -37,7 +35,6 @@ func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance
 	}
 	reconciler, err := engine.NewCompletedRunReconciler(c, engineConfig.Namespace, runsDirs, observe)
 	if err != nil {
-		c.Close()
 		return nil, err
 	}
 	// Spans for tier-3 runs (#2865). Synthesized from the projection each time a
@@ -75,6 +72,5 @@ func startEngineProjection(ctx context.Context, l instance.Layout, cfg *instance
 	return func() {
 		cancel()
 		<-done
-		c.Close()
 	}, nil
 }

@@ -85,7 +85,7 @@ func TestSweepStalledRunsTerminalizesWedgedLiveEngineRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sweepStalledRuns(layout, nil, runRunner, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
+	if err := sweepStalledRuns(context.Background(), layout, nil, runRunner, nil, nil, nil, nil, nil, now, 45*time.Minute, 0); err != nil {
 		t.Fatal(err)
 	}
 	assertWatchdogPhase(t, layout.RunsDir(), runID, journal.PhaseEscalated)

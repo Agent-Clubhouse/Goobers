@@ -613,6 +613,14 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	// `run abort` appends a terminal event straight into the run's own
+	// journal. On an engine-driven run that is a forgery: the workflow keeps
+	// executing on the engine and keeps emitting into the journal this
+	// command just declared finished.
+	if identity.EngineDriven() {
+		pf(stderr, "error: %v\n", engineDrivenRefusal(identity.RunID, "run abort"))
+		return 1
+	}
 	runLayout := l
 	if identity.Gaggle != "" && filepath.Clean(filepath.Dir(dir)) != filepath.Clean(l.RunsDir()) {
 		runLayout = l.ForGaggle(identity.Gaggle)
@@ -822,6 +830,16 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
+	}
+	// `run cancel` asks the daemon to stop a run it is executing in-process.
+	// It never is for an engine-driven run, so the honest answer names the
+	// driver instead of the daemon's generic "not currently running under
+	// this daemon" — which reads like a race and invites the operator to
+	// reach for `run abort`, the one command that would actually corrupt the
+	// journal.
+	if identity.EngineDriven() {
+		pf(stderr, "error: %v\n", engineDrivenRefusal(identity.RunID, "run cancel"))
+		return 1
 	}
 	// Event-log-first terminal guard (#242), matching `run abort`: a run that
 	// already finished has nothing live to cancel.

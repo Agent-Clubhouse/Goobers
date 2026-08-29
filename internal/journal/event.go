@@ -240,6 +240,17 @@ const (
 	RecoveryActionRetried = "retried"
 	// RecoveryActionNewClaim records an item claimed after daemon restart.
 	RecoveryActionNewClaim = "new_claim"
+	// RecoveryActionReattached records that a restarted daemon found an
+	// engine-driven run (RunIdentity.Driver == DriverEngine) still in flight
+	// and waited for its workflow instead of re-driving it in-process. It is
+	// deliberately distinct from RecoveryActionResumed: "resumed" means this
+	// process took the walk back, and an engine-driven run must never show
+	// that.
+	RecoveryActionReattached = "reattached"
+	// RecoveryActionUnresolved records that an engine-driven run could not be
+	// located on the engine at all, so the daemon neither drove nor
+	// terminalized it.
+	RecoveryActionUnresolved = "unresolved"
 )
 
 // Event is the versioned journal envelope: one JSON object per line in
