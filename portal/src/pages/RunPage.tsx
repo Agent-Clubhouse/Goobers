@@ -482,13 +482,20 @@ function EventLedger({
 }) {
   const [view, setView] = useState<"major" | "all">("major");
   const [stageFilter, setStageFilter] = useState<string>("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const stages = runEventStages(events);
   // A filter naming a stage this run never visited would silently empty the
   // ledger; treat it as unset instead.
   const activeStage = stageFilter && stages.includes(stageFilter) ? stageFilter : "";
-  const visible = activeStage ? events.filter((event) => eventStage(event) === activeStage) : events;
+  const stageFiltered = activeStage
+    ? events.filter((event) => eventStage(event) === activeStage)
+    : events;
+  const query = searchQuery.trim().toLowerCase();
+  const visible = query
+    ? stageFiltered.filter((event) => eventMatchesQuery(event, events, run.id, query))
+    : stageFiltered;
   const grouped = journalEntries(visible, run.id);
   const rows: JournalEntry[] =
     view === "all"
@@ -556,6 +563,15 @@ function EventLedger({
         </div>
         <div className="journal-heading-actions">
           <span className="graph-legend">Ordered by durable sequence</span>
+          <label className="journal-search">
+            <span className="sr-only">Search journal</span>
+            <input
+              onChange={(changeEvent) => setSearchQuery(changeEvent.target.value)}
+              placeholder="Search events"
+              type="search"
+              value={searchQuery}
+            />
+          </label>
           <div aria-label="Journal event kind" className="journal-view-control" role="group">
             <button
               aria-describedby="journal-view-major-hint"
@@ -611,6 +627,11 @@ function EventLedger({
       {events.length === 0 ? (
         <div className="empty-detail" role="status">
           <strong>No durable events recorded</strong>
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="empty-detail" role="status">
+          <strong>No events match</strong>
+          {query && <span>No events match “{searchQuery.trim()}”.</span>}
         </div>
       ) : (
         <ol>
@@ -734,6 +755,25 @@ function EventLedger({
       )}
     </section>
   );
+}
+
+/**
+ * eventMatchesQuery decides whether an event's ledger row would show the
+ * given lowercased query, matching against the same text a reader sees on
+ * the row: its heading, summary, stage, and raw type.
+ */
+function eventMatchesQuery(
+  event: RunEvent,
+  allEvents: RunEvent[],
+  runId: string,
+  query: string,
+): boolean {
+  const summary = eventSummary(event, evidenceDecision(allEvents, event, runId), runId);
+  const haystack = [eventHeading(event), summary, eventStage(event), event.type]
+    .filter((value): value is string => typeof value === "string")
+    .join("\n")
+    .toLowerCase();
+  return haystack.includes(query);
 }
 
 function ledgerGroupScope(group: JournalEventGroup): string {
