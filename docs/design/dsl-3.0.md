@@ -116,6 +116,58 @@ Derived requirements merge with declared ones by union; a declaration can add to
 set but never subtract from it. Credentials remain strictly capability-gated: nothing is
 materialized without a declared credential capability, derived or not.
 
+**Gates (Goobernetes-E2E-Core decision 001, #3798).** Placement is a *stage* property, and
+an agentic gate is a stage: `gates[].runsOn` carries the identical block a task carries —
+`os`, `cpu`/`memory`/`disk`, `capabilities`, `restrictions` — with the identical gaggle-floor
+merge, and the reviewer derives `harness:<its goober's harness>` by the same rule an agentic
+task does. Three rules are gate-specific:
+
+- **Only agentic gates are placeable.** An automated gate is a pure function over its inputs
+  and a human gate pauses for a portal decision; both evaluate in the daemon/control plane by
+  definition, so `runsOn` on either is a compile error (WF023), never a silently ignored block.
+- **A placed gate declares `cpu` and `memory`.** The gaggle floor deliberately carries no
+  quantities, and an agentic review is the most expensive stage class in a lane; inheriting the
+  floor's capabilities with no envelope would be a silent under-provision. A gate `runsOn`
+  without both is a compile error (WF023), not a default — default-to-self was rejected because
+  it makes "did my gate place?" invisible in the yaml.
+- **An agentic gate without `runsOn` is unplaced.** It contributes no solver row, receives no
+  pin, and evaluates in the control plane byte-for-byte as before the field existed; `goobers
+  fix --to 3.0` never invents one. A placed gate inherits its subject's repo state (no
+  `repoFrom` on gates in this ruling — a #3767 follow-up if a branching shape ever needs it),
+  and there is no `goober.spec.runsOn`: a goober is shared by tasks and gates across
+  workflows, so inheriting placement from it would make one goober place differently
+  depending on who names it.
+
+The solver input (`v30.StagePlacements`) lists every task in task order, then every placed
+agentic gate in gate order; every consumer keys on the stage *name* (the run-start pin,
+`bootstrap.PinStagePlacements`, looks each row up against the task and gate lists and never
+by position — a gate is never ledger-touching). Parallels remain control-plane. The frozen
+2.0 interpreter refuses `gates[].runsOn` through the router, exactly as it refuses the task
+field. The engine/pod half — routing `evaluateGate` through the dispatch seam, a review mode
+on the agentic kit, the surrendered verdict — is decision 001's rulings 7–8 and lands
+separately.
+
+**Until the engine half lands, a gate placement is declared but not honoured — and the
+system says so.** `engine.evaluateGate` has no placement arm: an agentic gate always runs
+`ActReviewGoober` in-process on the workflow's own queue, so a remote gate pin would be
+manufactured and ignored and the reviewer would run with that host's OS, network and
+envelope instead of the isolation the author declared. Three things hold the line:
+
+- `goobers validate` emits **WF024** (warning) for every agentic gate that declares
+  `runsOn`, naming the consequence.
+- A gate placement **self cannot satisfy is refused at start, never run unrestricted.**
+  For daemon-scheduled runs this is checkpoint 3 (§5) exactly as for a task: the workflow is
+  marked refused (`workflow.refused`, `ReasonPlacementUnsatisfiable`) — deliberately so,
+  because the daemon cannot honour the declared restrictions either. For `engine-start`,
+  `bootstrap.PinStagePlacements` refuses a non-self gate pin with an error naming the runner
+  and queue the gate would have pinned to.
+- A gate placement **self satisfies pins self** (`LedgerTouching=false`) and evaluates
+  in-process exactly as ruling 8's unpinned arm.
+
+The CRD and JSON-schema descriptions of `gates[].runsOn` carry the same caveat. WF024 and
+the `PinStagePlacements` refusal retire together when `evaluateGate` honours a non-self
+gate pin.
+
 ---
 
 ## 3. The runner surface: `runners:` inventory
@@ -316,6 +368,8 @@ blocks (`api/validate/validate.go:39-209`; severity strictly error|warning; the
 | CAP004 | Error | An `os=*` token appears anywhere in a 3.0 document (D12) |
 | CAP005 | Error | Unknown restriction token, with did-you-mean suggestion |
 | WF022 | Error | Undeclared repo-handoff chain (§4) |
+| WF023 | Error | `runsOn` on a non-agentic gate, an agentic gate `runsOn` without `cpu` and `memory`, or one without an `agentic:` block naming its reviewer (§2 Gates, decision 001) |
+| WF024 | Warning | An agentic gate declares `runsOn` while no execution path honours a gate placement (decision 001 rulings 7–8 unlanded); a placement self cannot satisfy is refused at start (§2 Gates) |
 
 CAP003 keeps its shipped meaning for 2.0 documents on inventory-less instances (frozen
 interpreter, frozen severity). `instance.yaml`'s own untyped fail-first errors

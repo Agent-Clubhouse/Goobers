@@ -214,9 +214,18 @@ func appendPlacementFindings(
 		for ti := range wf.Spec.Tasks {
 			taskIndex[wf.Spec.Tasks[ti].Name] = ti
 		}
+		// A solver row can name an agentic gate that declares runsOn
+		// (decision 001); attribute it to the gate's own block.
+		gateIndex := make(map[string]int, len(wf.Spec.Gates))
+		for gi := range wf.Spec.Gates {
+			gateIndex[wf.Spec.Gates[gi].Name] = gi
+		}
 		pathFor := func(stage string) string {
 			if ti, ok := taskIndex[stage]; ok {
 				return fmt.Sprintf("/spec/tasks/%d/runsOn", ti)
+			}
+			if gi, ok := gateIndex[stage]; ok {
+				return fmt.Sprintf("/spec/gates/%d/runsOn", gi)
 			}
 			return "/spec/tasks"
 		}

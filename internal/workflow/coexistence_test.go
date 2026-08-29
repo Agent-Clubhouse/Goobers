@@ -177,6 +177,23 @@ func TestPreV30SurfaceRefusedOnEarlierVersions(t *testing.T) {
 			t.Fatalf("Compile(%s, runsOn) error = %v, want version-gate refusal", version, err)
 		}
 
+		// gates[].runsOn (decision 001) is refused by the same router arm: the
+		// frozen 2.0 interpreter never learns that a gate can be placed.
+		withGateRunsOn := spec(func(s *apiv1.WorkflowSpec) {
+			s.Tasks[0].Next = "review"
+			s.Gates = []apiv1.Gate{{
+				Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:  &apiv1.AgenticGate{Goober: "reviewer"},
+				RunsOn:   &apiv1.RunsOn{CPU: "1000m", Memory: "2Gi"},
+				Branches: map[string]string{"pass": "", "fail": "@abort", "needs-changes": "implement"},
+			}}
+		})
+		_, err = Compile(Definition{Name: "gate-runs-on", Version: 1, DSLVersion: version, Spec: withGateRunsOn},
+			WithPreviewFeatures(true))
+		if err == nil || !strings.Contains(err.Error(), `gate "review" declares runsOn, which requires dslVersion "3.0"`) {
+			t.Fatalf("Compile(%s, gate runsOn) error = %v, want version-gate refusal", version, err)
+		}
+
 		withRepoFrom := spec(func(s *apiv1.WorkflowSpec) {
 			s.Tasks[0].RepoFrom = apiv1.RepoFrom{"other"}
 		})

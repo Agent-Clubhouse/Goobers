@@ -285,3 +285,44 @@ func validateCRDForInstall(t *testing.T, path string, mutate func(*apiextensions
 
 	return validation.ValidateCustomResourceDefinition(context.Background(), &internal)
 }
+
+// TestWorkflowCRDPinsGateCELRules pins the exact text of the two gate-level
+// CEL rules: the maxRepasses evaluator rule and decision 001 ruling 2's
+// "runsOn is only valid for agentic gates". `make manifests-check`
+// regenerates from the Go markers and diffs, so deleting a marker regenerates
+// a CRD without the rule and the diff is still empty — only a test that reads
+// the committed rule can notice its removal (the precedent
+// TestWorkflowCRDRejectsSyncBaseInScratchWorkspace sets for run).
+func TestWorkflowCRDPinsGateCELRules(t *testing.T) {
+	data, err := os.ReadFile("../../config/crd/bases/goobers.dev_workflows.yaml")
+	if err != nil {
+		t.Fatalf("read Workflow CRD: %v", err)
+	}
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(data, &crd); err != nil {
+		t.Fatalf("decode Workflow CRD: %v", err)
+	}
+
+	root := crd.Spec.Versions[0].Schema.OpenAPIV3Schema
+	gateSchema := root.Properties["spec"].Properties["gates"].Items.Schema
+	if len(gateSchema.XValidations) != 2 {
+		t.Fatalf("gate schema CEL validations = %d, want 2 (maxRepasses, runsOn)", len(gateSchema.XValidations))
+	}
+	maxRepasses := gateSchema.XValidations[0]
+	if maxRepasses.Rule != "!has(self.maxRepasses) || self.evaluator != 'human'" {
+		t.Fatalf("gate maxRepasses CEL rule = %q", maxRepasses.Rule)
+	}
+	if maxRepasses.Message != "maxRepasses is only valid for automated or agentic gates" {
+		t.Fatalf("gate maxRepasses CEL message = %q", maxRepasses.Message)
+	}
+	runsOn := gateSchema.XValidations[1]
+	if runsOn.Rule != "!has(self.runsOn) || self.evaluator == 'agentic'" {
+		t.Fatalf("gate runsOn CEL rule = %q, want decision 001 ruling 2 (only agentic gates are placeable)", runsOn.Rule)
+	}
+	if runsOn.Message != "runsOn is only valid for agentic gates" {
+		t.Fatalf("gate runsOn CEL message = %q", runsOn.Message)
+	}
+	if _, ok := gateSchema.Properties["runsOn"]; !ok {
+		t.Fatal("gate schema must carry the runsOn property the rule guards")
+	}
+}
