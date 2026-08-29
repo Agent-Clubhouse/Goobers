@@ -123,6 +123,70 @@ func TestRunSurfacesHeartbeatFailure(t *testing.T) {
 	}
 }
 
+// sleepingBacklogCounter simulates a real provider-backed demand poll that
+// takes a controlled amount of wall time to answer, without exercising
+// demandPollTimeout (the sleep is far below it).
+type sleepingBacklogCounter struct {
+	sleep time.Duration
+}
+
+func (c sleepingBacklogCounter) EligibleCount(ctx context.Context) (int, error) {
+	select {
+	case <-time.After(c.sleep):
+		return 0, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
+// TestTickMarksPollProgressBetweenSlowSequentialPolls is #3806's fix for the
+// staleness a liveness probe would otherwise observe: a single Tick call can
+// poll several due, provider-backed workflows SEQUENTIALLY (they share a
+// provider key, so Tick's inner loop processes them one at a time) while
+// holding tickMu, and previously nothing observed progress until Tick
+// returned in full. With WithPollHeartbeat wired, a mark must land after
+// EACH due poll, not just once at the very end.
+func TestTickMarksPollProgressBetweenSlowSequentialPolls(t *testing.T) {
+	const pollSleep = 40 * time.Millisecond
+	const workflowCount = 3
+
+	entries := make([]WorkflowEntry, workflowCount)
+	for i := range entries {
+		entries[i] = WorkflowEntry{
+			Workflow:       fmt.Sprintf("wf-%d", i),
+			BacklogCounter: sleepingBacklogCounter{sleep: pollSleep},
+		}
+	}
+
+	var mu sync.Mutex
+	var marks []time.Time
+	sched, _ := newTestScheduler(t, entries, WithPollHeartbeat(func(at time.Time) {
+		mu.Lock()
+		marks = append(marks, at)
+		mu.Unlock()
+	}))
+
+	start := time.Now()
+	sched.Tick(context.Background(), start)
+
+	mu.Lock()
+	got := append([]time.Time(nil), marks...)
+	mu.Unlock()
+
+	if len(got) != workflowCount {
+		t.Fatalf("poll-progress marks = %d, want %d (one per sequential due poll) — without WithPollHeartbeat wired into Tick's poll loop, Tick alone (not yet followed by Run's once-per-tick refresh) emits none at all", len(got), workflowCount)
+	}
+	// The load-bearing assertion: the FIRST mark must land after roughly one
+	// poll, not after the whole multi-poll tick. Reverting the mid-tick call
+	// (leaving only Run's once-per-Tick refresh) collapses this to a single
+	// mark recorded only once Tick fully returns — indistinguishable from
+	// "no progress observed until the entire tick finished," which is
+	// exactly the staleness window #3806 exists to close.
+	if firstMarkAt := got[0].Sub(start); firstMarkAt >= workflowCount*pollSleep {
+		t.Fatalf("first poll-progress mark arrived %s after Tick started — that is the FULL multi-poll tick duration, not just the first poll; a liveness check reading this heartbeat would see it as stale for the whole tick", firstMarkAt)
+	}
+}
+
 func TestTickDispatchesDueWorkflow(t *testing.T) {
 	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
 	sched, dir := newTestScheduler(t, []WorkflowEntry{{
