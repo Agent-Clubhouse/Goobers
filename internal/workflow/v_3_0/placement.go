@@ -55,13 +55,21 @@ func StagePlacements(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn, goobers m
 
 // placeableStages is the ordered list StagePlacements walks: tasks, then the
 // agentic gates that declare runsOn.
+//
+// The gate predicate is the SAME one DerivedGateCapabilities applies
+// (evaluator agentic AND an agentic: block): a gate without its reviewer
+// block derives no harness tag, and emitting a row for it would let the
+// solver place the reviewer on a harness-less runner image. Compile refuses
+// that shape first (gateRunsOnProblems, WF023); this keeps the two
+// predicates from drifting if a caller reaches here with an uncompiled
+// definition — the gate is then unplaced, never placed without a harness.
 func placeableStages(def Definition, goobers map[string]apiv1.GooberSpec) []PlacementStage {
 	stages := make([]PlacementStage, 0, len(def.Spec.Tasks)+len(def.Spec.Gates))
 	for _, task := range def.Spec.Tasks {
 		stages = append(stages, taskPlacementStage(task, goobers))
 	}
 	for _, gate := range def.Spec.Gates {
-		if gate.Evaluator != apiv1.EvaluatorAgentic || gate.RunsOn == nil {
+		if gate.Evaluator != apiv1.EvaluatorAgentic || gate.Agentic == nil || gate.RunsOn == nil {
 			continue
 		}
 		stages = append(stages, gatePlacementStage(gate, goobers))

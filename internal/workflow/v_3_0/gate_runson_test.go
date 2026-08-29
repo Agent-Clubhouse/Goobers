@@ -254,3 +254,71 @@ func TestFeaturesForWorkflowCollectsGateRunsOn(t *testing.T) {
 		}
 	}
 }
+
+// A placed agentic gate must name its reviewer: with no agentic: block the
+// harness cannot be derived, and the row would otherwise solve with NO
+// harness tag (placeable on a harness-less runner image). Compile refuses
+// it (WF023, third rule); the same document with the block present compiles.
+func TestCompileRefusesPlacedGateWithoutReviewerBlock(t *testing.T) {
+	noReviewer := func(g *apiv1.Gate) { g.Agentic = nil }
+	def := Definition{Name: "no-reviewer", Version: 1, Spec: gatedSpecWithReviewRunsOn(placedReviewRunsOn(), noReviewer)}
+	_, err := compileAcknowledged(def)
+	if err == nil || !strings.Contains(err.Error(), `gate "review" declares runsOn but has no agentic: block`) {
+		t.Fatalf("Compile error = %v, want the WF023 missing-reviewer refusal", err)
+	}
+	if _, err := compileAcknowledged(Definition{Name: "with-reviewer", Version: 1, Spec: gatedSpecWithReviewRunsOn(placedReviewRunsOn(), nil)}); err != nil {
+		t.Fatalf("control: the same gate with its agentic: block must compile: %v", err)
+	}
+}
+
+// Defence in depth behind the compile refusal above: StagePlacements applies
+// the SAME predicate DerivedGateCapabilities does, so an uncompiled definition
+// with an agentic gate lacking its reviewer block emits no row at all — the
+// gate is unplaced, never placed without a harness requirement.
+func TestStagePlacementsSkipsPlacedGateWithoutReviewerBlock(t *testing.T) {
+	spec := gatedSpecWithReviewRunsOn(placedReviewRunsOn(), func(g *apiv1.Gate) { g.Agentic = nil })
+	goobers := map[string]apiv1.GooberSpec{"coder": {Harness: apiv1.HarnessClaudeCode}, "reviewer": {Harness: apiv1.HarnessClaudeCode}}
+	rows := StagePlacements(Definition{Spec: spec}, nil, goobers)
+	for _, row := range rows {
+		if row.Stage == "review" {
+			t.Fatalf("StagePlacements emitted a row for a gate with no reviewer block: %+v (caps=%v) — it would place on a harness-less runner", row, row.Capabilities)
+		}
+	}
+	control := StagePlacements(Definition{Spec: gatedSpecWithReviewRunsOn(placedReviewRunsOn(), nil)}, nil, goobers)
+	var found *runnersolve.StageRequirement
+	for i := range control {
+		if control[i].Stage == "review" {
+			found = &control[i]
+		}
+	}
+	if found == nil || !reflect.DeepEqual(found.Capabilities, []string{"harness:claude-code"}) {
+		t.Fatalf("control: the gate with its reviewer block must emit a row carrying the reviewer harness, got %+v", found)
+	}
+}
+
+// WF024 (decision 001 rulings 7–8 unlanded): every agentic gate that declares
+// runsOn is warned about — the placement is validated, solved and pinned but
+// not honoured at execution. Unplaced and non-agentic gates draw no warning.
+func TestGatePlacementWarnings(t *testing.T) {
+	placed := Definition{Spec: gatedSpecWithReviewRunsOn(placedReviewRunsOn(), nil)}
+	got := CheckGatePlacementWarnings(placed)
+	if len(got) != 1 || !strings.HasPrefix(got[0], `gate "review" declares runsOn: the block is validated, solved and pinned by name, but no execution path honours a gate placement yet`) {
+		t.Fatalf("CheckGatePlacementWarnings = %v, want one WF024 naming the gate", got)
+	}
+	for _, want := range []string{"rulings 7–8", "refused at start", "declared isolation"} {
+		if !strings.Contains(got[0], want) {
+			t.Errorf("WF024 message missing %q: %s", want, got[0])
+		}
+	}
+	if got := CheckGatePlacementWarnings(Definition{Spec: gatedSpec()}); len(got) != 0 {
+		t.Fatalf("an unplaced agentic gate must draw no WF024, got %v", got)
+	}
+	automated := func(g *apiv1.Gate) {
+		g.Evaluator = apiv1.EvaluatorAutomated
+		g.Agentic = nil
+		g.Automated = &apiv1.AutomatedGate{Check: "status-equals"}
+	}
+	if got := CheckGatePlacementWarnings(Definition{Spec: gatedSpecWithReviewRunsOn(placedReviewRunsOn(), automated)}); len(got) != 0 {
+		t.Fatalf("a non-agentic gate is WF023's, not WF024's: got %v", got)
+	}
+}

@@ -198,6 +198,8 @@ func reviewerConfigSet() *instance.ConfigSet {
 	return set
 }
 
+// placedReviewGate declares a placement only the remote agentic runner
+// satisfies (a restriction self does not enforce).
 func placedReviewGate(name, next string) apiv1.Gate {
 	return apiv1.Gate{
 		Name: name, Evaluator: apiv1.EvaluatorAgentic,
@@ -205,6 +207,15 @@ func placedReviewGate(name, next string) apiv1.Gate {
 		RunsOn:   &apiv1.RunsOn{CPU: "1000m", Memory: "2Gi", Restrictions: []string{"network:allowlist"}},
 		Branches: map[string]string{"pass": next, "fail": "@abort"},
 	}
+}
+
+// selfPlacedReviewGate declares a placement self satisfies (quantities only;
+// self declares no ceiling, which constrains nothing), so the Linux-preferring
+// selector pins it self.
+func selfPlacedReviewGate(name, next string) apiv1.Gate {
+	gate := placedReviewGate(name, next)
+	gate.RunsOn = &apiv1.RunsOn{CPU: "1000m", Memory: "2Gi"}
+	return gate
 }
 
 func findPin(t *testing.T, placements []engine.PinnedPlacement, stage string) engine.PinnedPlacement {
@@ -218,10 +229,10 @@ func findPin(t *testing.T, placements []engine.PinnedPlacement, stage string) en
 	return engine.PinnedPlacement{}
 }
 
-// A placed agentic gate is pinned BY NAME with its own requirement facts —
-// the runner class its restriction selects, its declared cpu/memory — and is
-// never ledger-touching; the task pins around it keep theirs (decision 001
-// ruling 6).
+// A placed agentic gate is pinned BY NAME — its own pin, never ledger-touching
+// — and the task pins around it keep their own facts (decision 001 ruling 6).
+// The gate here declares a placement self satisfies, so it pins self: that is
+// the only gate pin the engine can honour today (see the hold test below).
 func TestPinStagePlacementsPinsPlacedGateByName(t *testing.T) {
 	def := placementSpecV30(
 		[]apiv1.Task{
@@ -230,7 +241,7 @@ func TestPinStagePlacementsPinsPlacedGateByName(t *testing.T) {
 				PolicyActions: []string{"claim-backlog-items"},
 				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query"}}},
 		},
-		[]apiv1.Gate{placedReviewGate("review", "close-out")},
+		[]apiv1.Gate{selfPlacedReviewGate("review", "close-out")},
 	)
 	placements, err := PinStagePlacements(agenticConfig(), reviewerConfigSet(), "web", def)
 	if err != nil {
@@ -241,17 +252,8 @@ func TestPinStagePlacementsPinsPlacedGateByName(t *testing.T) {
 	}
 
 	review := findPin(t, placements, "review")
-	if review.Self || review.Queue != "goobers-dispatch.web.linux-agentic" {
-		t.Fatalf("review placement = %+v, want the remote (gaggle x linux-agentic) queue pin", review)
-	}
-	if len(review.Eligible) != 1 || review.Eligible[0].Name != "linux-agentic" {
-		t.Fatalf("review eligible = %+v, want the agentic runner class alone", review.Eligible)
-	}
-	if review.CPU != "1000m" || review.Memory != "2Gi" {
-		t.Fatalf("review pin carries cpu=%q memory=%q, want the gate's own declared envelope (ruling 5)", review.CPU, review.Memory)
-	}
-	if len(review.Restrictions) != 1 || review.Restrictions[0] != "network:allowlist" {
-		t.Fatalf("review restrictions = %v, want the gate's declared restriction", review.Restrictions)
+	if !review.Self || review.Queue != "" || review.Eligible != nil {
+		t.Fatalf("review placement = %+v, want the self pin (ruling 8's in-process arm) with no dispatch facts", review)
 	}
 	if review.LedgerTouching {
 		t.Fatal("a gate must never pin as ledger-touching: only a task's PolicyActions can name a claims action")
@@ -267,12 +269,45 @@ func TestPinStagePlacementsPinsPlacedGateByName(t *testing.T) {
 	}
 }
 
+// HOLD until decision 001's engine half (rulings 7–8): engine.evaluateGate has
+// no placement arm, so a gate whose placement only a REMOTE runner satisfies
+// must refuse the start — naming the runner and queue it would have pinned to
+// — rather than manufacture a pin nothing reads and run the reviewer outside
+// its declared isolation. The same document with the restriction dropped
+// pins self (the test above), so the refusal is attributable to the
+// unsatisfiable-on-self placement alone. When evaluateGate honours a non-self
+// gate pin, this test flips to assert the remote pin (queue
+// goobers-dispatch.web.linux-agentic, the gate's cpu/memory/restrictions).
+func TestPinStagePlacementsRefusesRemoteGatePinUntilEngineHalf(t *testing.T) {
+	def := placementSpecV30(
+		[]apiv1.Task{{Name: "implement", Type: apiv1.TaskAgentic, Goober: "reviewer", Goal: "implement", Next: "review"}},
+		[]apiv1.Gate{placedReviewGate("review", "")},
+	)
+	placements, err := PinStagePlacements(agenticConfig(), reviewerConfigSet(), "web", def)
+	if err == nil {
+		t.Fatalf("PinStagePlacements = %+v, want the start refused: a remote gate pin is not honoured at execution yet", placements)
+	}
+	for _, want := range []string{
+		`gate "review"`,
+		`runner "linux-agentic"`,
+		"queue goobers-dispatch.web.linux-agentic",
+		"not honoured at execution yet",
+		"rulings 7–8",
+		"outside its declared isolation",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal missing %q: %v", want, err)
+		}
+	}
+}
+
 // The index-shuffle discriminator (decision 001 ruling 6): the workflow is
 // written with its gates: block BEFORE its tasks: block, the gate name sorts
 // before the task name, and the workflow carries exactly one task — so a
 // solver row for the gate sits at index 1 while def.Spec.Tasks has length 1.
 // Positional keying (requirements[i] -> def.Spec.Tasks[i]) cannot survive
-// this document; name keying pins both stages with the right facts.
+// this document; name keying pins both stages with the right facts. The gate
+// declares a self-satisfiable placement so the hold above does not fire.
 func TestPinStagePlacementsGateBeforeTaskInYAMLOrderKeysByName(t *testing.T) {
 	const doc = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
@@ -292,7 +327,6 @@ spec:
       runsOn:
         cpu: 1000m
         memory: 2Gi
-        restrictions: [network:allowlist]
       branches:
         pass: ""
         fail: "@abort"
@@ -323,8 +357,30 @@ spec:
 		t.Fatalf("z-close-out placement = %+v, want self + ledger-touching (its own facts)", closeOut)
 	}
 	review := findPin(t, placements, "a-review")
-	if review.Self || review.LedgerTouching || review.Queue != "goobers-dispatch.web.linux-agentic" || review.CPU != "1000m" {
-		t.Fatalf("a-review placement = %+v, want the gate's own remote pin, never the task's facts", review)
+	if !review.Self || review.LedgerTouching || review.Queue != "" {
+		t.Fatalf("a-review placement = %+v, want the gate's own self pin (never ledger-touching), never the task's facts", review)
+	}
+}
+
+// Name keying is only as safe as name uniqueness: a task and a gate sharing a
+// name would let the gate's ledgerFor=false silently erase the task's
+// claims-action fact — the inverse of the ruling-6 mis-attribution. The 3.0
+// compiler refuses duplicate state names first; this is the pin's own
+// defence in depth for an uncompiled definition: an error, never a silent
+// overwrite.
+func TestPinStagePlacementsRefusesTaskAndGateSharingAName(t *testing.T) {
+	def := placementSpecV30(
+		[]apiv1.Task{{Name: "review", Type: apiv1.TaskDeterministic,
+			PolicyActions: []string{"claim-backlog-items"},
+			Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query"}}}},
+		[]apiv1.Gate{selfPlacedReviewGate("review", "")},
+	)
+	placements, err := PinStagePlacements(agenticConfig(), reviewerConfigSet(), "web", def)
+	if err == nil {
+		t.Fatalf("PinStagePlacements = %+v, want a duplicate-name refusal", placements)
+	}
+	if !strings.Contains(err.Error(), `"review"`) || !strings.Contains(err.Error(), "stage names must be unique") {
+		t.Fatalf("error = %v, want the duplicate stage name refused by name", err)
 	}
 }
 

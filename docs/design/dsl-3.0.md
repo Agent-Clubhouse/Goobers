@@ -147,6 +147,27 @@ field. The engine/pod half — routing `evaluateGate` through the dispatch seam,
 on the agentic kit, the surrendered verdict — is decision 001's rulings 7–8 and lands
 separately.
 
+**Until the engine half lands, a gate placement is declared but not honoured — and the
+system says so.** `engine.evaluateGate` has no placement arm: an agentic gate always runs
+`ActReviewGoober` in-process on the workflow's own queue, so a remote gate pin would be
+manufactured and ignored and the reviewer would run with that host's OS, network and
+envelope instead of the isolation the author declared. Three things hold the line:
+
+- `goobers validate` emits **WF024** (warning) for every agentic gate that declares
+  `runsOn`, naming the consequence.
+- A gate placement **self cannot satisfy is refused at start, never run unrestricted.**
+  For daemon-scheduled runs this is checkpoint 3 (§5) exactly as for a task: the workflow is
+  marked refused (`workflow.refused`, `ReasonPlacementUnsatisfiable`) — deliberately so,
+  because the daemon cannot honour the declared restrictions either. For `engine-start`,
+  `bootstrap.PinStagePlacements` refuses a non-self gate pin with an error naming the runner
+  and queue the gate would have pinned to.
+- A gate placement **self satisfies pins self** (`LedgerTouching=false`) and evaluates
+  in-process exactly as ruling 8's unpinned arm.
+
+The CRD and JSON-schema descriptions of `gates[].runsOn` carry the same caveat. WF024 and
+the `PinStagePlacements` refusal retire together when `evaluateGate` honours a non-self
+gate pin.
+
 ---
 
 ## 3. The runner surface: `runners:` inventory
@@ -347,7 +368,8 @@ blocks (`api/validate/validate.go:39-209`; severity strictly error|warning; the
 | CAP004 | Error | An `os=*` token appears anywhere in a 3.0 document (D12) |
 | CAP005 | Error | Unknown restriction token, with did-you-mean suggestion |
 | WF022 | Error | Undeclared repo-handoff chain (§4) |
-| WF023 | Error | `runsOn` on a non-agentic gate, or an agentic gate `runsOn` without `cpu` and `memory` (§2 Gates, decision 001) |
+| WF023 | Error | `runsOn` on a non-agentic gate, an agentic gate `runsOn` without `cpu` and `memory`, or one without an `agentic:` block naming its reviewer (§2 Gates, decision 001) |
+| WF024 | Warning | An agentic gate declares `runsOn` while no execution path honours a gate placement (decision 001 rulings 7–8 unlanded); a placement self cannot satisfy is refused at start (§2 Gates) |
 
 CAP003 keeps its shipped meaning for 2.0 documents on inventory-less instances (frozen
 interpreter, frozen severity). `instance.yaml`'s own untyped fail-first errors

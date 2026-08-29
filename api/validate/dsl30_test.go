@@ -316,15 +316,37 @@ func TestValidateTwoPointOhGateRunsOnIsRefused(t *testing.T) {
 	if len(issuesWithCode(report, errorGateRunsOn)) != 0 {
 		t.Fatalf("issues = %+v, want no WF023 on a 2.0 document (the router refuses the field first)", report.Issues)
 	}
+	if len(issuesWithCode(report, WarningGatePlacementUnhonoured)) != 0 {
+		t.Fatalf("issues = %+v, want no WF024 on a 2.0 document (nothing is pinned there)", report.Issues)
+	}
 }
 
 func TestValidateGateRunsOnRules(t *testing.T) {
-	t.Run("agentic gate with cpu and memory is accepted", func(t *testing.T) {
+	t.Run("agentic gate with cpu and memory is accepted with a WF024 warning", func(t *testing.T) {
 		report := validateDSL30(t, dsl30Config(true, gatedDSL30Workflow("3.0", "agentic", placedGateRunsOnYAML)))
 		for _, issue := range report.Issues {
 			if issue.Severity == Error {
 				t.Fatalf("issues = %+v, want no errors for a placed agentic gate", report.Issues)
 			}
+		}
+		// Decision 001 rulings 7–8 are unlanded: the placement is accepted
+		// and pinned but not honoured, and validate must say so.
+		found := issuesWithCode(report, WarningGatePlacementUnhonoured)
+		if len(found) != 1 || found[0].Severity != Warning || !strings.Contains(found[0].Message, `gate "review" declares runsOn: the block is validated, solved and pinned by name, but no execution path honours a gate placement yet`) {
+			t.Fatalf("issues = %+v, want exactly one WF024 warning naming the gate", report.Issues)
+		}
+	})
+	t.Run("agentic gate with runsOn but no agentic block is WF023", func(t *testing.T) {
+		noReviewer := strings.Replace(gatedDSL30Workflow("3.0", "agentic", placedGateRunsOnYAML), "      agentic:\n        goober: coder\n", "", 1)
+		report := validateDSL30(t, dsl30Config(true, noReviewer))
+		var matched bool
+		for _, issue := range issuesWithCode(report, errorGateRunsOn) {
+			if strings.Contains(issue.Message, `gate "review" declares runsOn but has no agentic: block`) {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Fatalf("issues = %+v, want a WF023 naming the missing reviewer block", report.Issues)
 		}
 	})
 	t.Run("automated gate with runsOn is WF023", func(t *testing.T) {

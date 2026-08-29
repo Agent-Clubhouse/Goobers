@@ -627,17 +627,27 @@ type Gate struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
-	// RunsOn declares where an AGENTIC gate's reviewer executes (DSL 3.0,
-	// dsl-3.0.md §2 "Gates"; Goobernetes-E2E-Core decision 001): the identical
-	// placement block tasks carry, with the identical gaggle-floor merge and
-	// the derived harness:<reviewer goober's harness> tag. Optional — absent,
-	// the reviewer evaluates in the daemon/control plane exactly as before the
-	// field existed. Valid only when evaluator=agentic (automated and human
-	// gates are control-plane by definition, ruling 2), and a declared block
-	// must carry cpu AND memory (ruling 5: the gaggle floor has no quantities
-	// and a review is the most expensive stage class in a lane, so an
-	// inherited envelope would silently under-provision). Interpreters before
-	// 3.0 refuse the field; the compiler enforces that, not the shared schema.
+	// RunsOn declares the placement an AGENTIC gate's reviewer requires (DSL
+	// 3.0, dsl-3.0.md §2 "Gates"; Goobernetes-E2E-Core decision 001): the
+	// identical placement block tasks carry, with the identical gaggle-floor
+	// merge and the derived harness:<reviewer goober's harness> tag. Optional
+	// — absent, the reviewer evaluates in the daemon/control plane exactly as
+	// before the field existed. Valid only when evaluator=agentic (automated
+	// and human gates are control-plane by definition, ruling 2), and a
+	// declared block must carry cpu AND memory (ruling 5: the gaggle floor
+	// has no quantities and a review is the most expensive stage class in a
+	// lane, so an inherited envelope would silently under-provision).
+	//
+	// NOT YET HONOURED AT EXECUTION: the block is validated, solved
+	// (RNR001/RNR003) and pinned by name, but the engine's gate evaluator has
+	// no placement arm until decision 001's engine/pod half (rulings 7–8)
+	// lands. Until then `goobers validate` warns (WF024) and the start seams
+	// fail closed — a gate placement self cannot satisfy is refused (the
+	// workflow is marked refused for daemon-scheduled runs; engine-start
+	// returns a named error) rather than run the reviewer outside its
+	// declared isolation; a placement self satisfies pins self and evaluates
+	// in-process. Interpreters before 3.0 refuse the field; the compiler
+	// enforces that, not the shared schema.
 	// +optional
 	RunsOn *RunsOn `json:"runsOn,omitempty" yaml:"runsOn,omitempty"`
 }

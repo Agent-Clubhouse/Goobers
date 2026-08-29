@@ -772,4 +772,66 @@ func TestValidatePlacementCoversPlacedGate(t *testing.T) {
 	if strings.Contains(stdout, "RNR001") || strings.Contains(stdout, "WF023") {
 		t.Errorf("satisfiable placed gate must produce no placement finding:\n%s", stdout)
 	}
+	// Valid, but not yet honoured at execution (decision 001 rulings 7–8):
+	// the satisfiable placement still carries the WF024 warning.
+	if !strings.Contains(stdout, "WARNING WF024 ") || !strings.Contains(stdout, `Workflow/win-build: gate "review" declares runsOn`) || !strings.Contains(stdout, "no execution path honours a gate placement yet") {
+		t.Errorf("a placed gate must carry the WF024 not-yet-honoured warning:\n%s", stdout)
+	}
+}
+
+// TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses pins the documented
+// consequence (dsl-3.0.md §2 Gates) of declaring a gate placement the daemon's
+// own substrate cannot satisfy while the engine half is unlanded: checkpoint 1
+// is clean (the declared remote runner satisfies it; WF024 warns), and
+// checkpoint 3 marks the workflow refused exactly as it would for a task —
+// deliberately, because the daemon can neither dispatch the reviewer nor
+// honour its declared placement in-process, and refusing is the only arm
+// that never runs the reviewer outside its declared isolation.
+func TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses(t *testing.T) {
+	root := initDeterministicDemo(t)
+	declareInventory(t, root)
+	declareRemoteRunner(t, root, "  - name: ci\n    host: ghcr.io/example/ci:v1\n    provides:\n      os: windows\n      harnesses: [copilot]\n")
+	writeReviewerGoober(t, root)
+	writeSecondWorkflow(t, root, placedGateV30WorkflowYAML)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code = %d, want 0 (the declared remote runner satisfies the gate); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "RNR001") {
+		t.Errorf("checkpoint 1 must not flag a remote-satisfiable gate:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "WARNING WF024 ") || !strings.Contains(stdout, `Workflow/win-build: gate "review" declares runsOn`) {
+		t.Errorf("checkpoint 1 must warn that the gate placement is not honoured yet:\n%s", stdout)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if err != nil {
+		t.Fatalf("boot must never kill (#2860): %v", err)
+	}
+	defer setup.Shutdown(context.Background())
+	var refused *localscheduler.WorkflowEntry
+	for i := range setup.Entries {
+		if setup.Entries[i].Workflow == "win-build" {
+			refused = &setup.Entries[i]
+		}
+	}
+	if refused == nil {
+		t.Fatalf("win-build missing from entries: %+v", setup.Entries)
+	}
+	for _, want := range []string{
+		`stage "review" placeable only on runner(s) [ci (host: ghcr.io/example/ci:v1)]`,
+		"distributed dispatch arrives with #3513",
+	} {
+		if !strings.Contains(refused.PlacementRefusal, want) {
+			t.Errorf("gate refusal diagnostic missing %q: %s", want, refused.PlacementRefusal)
+		}
+	}
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
+	_, err = sched.Trigger(context.Background(), "win-build", time.Now())
+	var rejected *localscheduler.TriggerRejectedError
+	if !errors.As(err, &rejected) || !strings.HasPrefix(rejected.Reason, localscheduler.ReasonPlacementUnsatisfiable) {
+		t.Fatalf("a run of a workflow whose gate placement self cannot satisfy must be refused with %s, got %v", localscheduler.ReasonPlacementUnsatisfiable, err)
+	}
 }
