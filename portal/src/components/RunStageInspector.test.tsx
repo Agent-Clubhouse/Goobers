@@ -401,8 +401,34 @@ describe("run stage inspector", () => {
     renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "View content" }));
-    expect(await screen.findByText(body)).toBeInTheDocument();
+    const preview = await screen.findByText(body);
+    expect(preview).toBeInTheDocument();
+    expect(preview.className).not.toContain("artifact-content-bounded");
     expect(client.getArtifact).toHaveBeenCalledWith("run-1", "sha256:abc");
+  });
+
+  it("caps an oversized artifact preview with an internal scroll bound (#fix-artifact-windowing)", async () => {
+    const body = "x".repeat(20_001);
+    const bytes = new TextEncoder().encode(body).buffer;
+    const client = stubClient(
+      [
+        attempt({
+          artifacts: [{ name: "big.log", digest: "sha256:big", size: body.length, mediaType: "text/plain" }],
+        }),
+      ],
+      { digest: "sha256:big", mediaType: "text/plain", size: body.length, etag: null, bytes },
+    );
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View content" }));
+    await waitFor(() => {
+      expect(document.querySelector(".artifact-content")).not.toBeNull();
+    });
+    const preview = document.querySelector(".artifact-content") as HTMLElement;
+
+    expect(preview.className).toContain("artifact-content-bounded");
+    expect(window.getComputedStyle(preview).maxHeight).toBe("320px");
+    expect(window.getComputedStyle(preview).overflowY).toBe("auto");
   });
 
   it("keeps an open artifact preview readable across initial, light, and dark themes", async () => {
