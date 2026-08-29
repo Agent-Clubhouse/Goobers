@@ -805,3 +805,136 @@ func TestGitHubRealityFetchers(t *testing.T) {
 		t.Fatal("expected an error for a non-200 response")
 	}
 }
+
+// TestAppendWindowsAVExclusionWarnings is #3480's declaration half (RNR006):
+// a runners: entry claiming provides.os: windows warns unless it asserts
+// provides.windows.avExclusionsVerified: true; an explicit false is reported
+// in its own words; Linux runners and a runner-less instance never warn.
+func TestAppendWindowsAVExclusionWarnings(t *testing.T) {
+	tests := []struct {
+		name        string
+		runners     []instance.RunnerEntry
+		wantWarning bool
+		wantText    []string
+	}{
+		{
+			name:        "windows runner without the claim block",
+			runners:     []instance.RunnerEntry{{Name: "windows-shell", Host: "ghcr.io/example/win:v1", Provides: instance.RunnerProvides{OS: instance.RunnerOSWindows}}},
+			wantWarning: true,
+			wantText:    []string{`runner "windows-shell"`, "does not declare provides.windows.avExclusionsVerified", "goobers doctor --av-exclusions", "#3480"},
+		},
+		{
+			name: "windows runner declaring false",
+			runners: []instance.RunnerEntry{{Name: "windows-shell", Host: "ghcr.io/example/win:v1", Provides: instance.RunnerProvides{
+				OS: instance.RunnerOSWindows, Windows: &instance.RunnerWindowsClaims{AVExclusionsVerified: false}}}},
+			wantWarning: true,
+			wantText:    []string{"declares provides.windows.avExclusionsVerified: false"},
+		},
+		{
+			name: "windows runner declaring true",
+			runners: []instance.RunnerEntry{{Name: "windows-shell", Host: "ghcr.io/example/win:v1", Provides: instance.RunnerProvides{
+				OS: instance.RunnerOSWindows, Windows: &instance.RunnerWindowsClaims{AVExclusionsVerified: true}}}},
+		},
+		{
+			name:    "linux runner never warns",
+			runners: []instance.RunnerEntry{{Name: "linux-shell", Host: "ghcr.io/example/linux:v1", Provides: instance.RunnerProvides{OS: instance.RunnerOSLinux}}},
+		},
+		{
+			name: "no inventory never warns",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			set := &instance.ConfigSet{}
+			report := &validate.Report{}
+			cfg := &instance.Config{Runners: tc.runners}
+			var got []realityWarning
+			for _, w := range appendStaticRealityWarnings("", "config", cfg, set, nil, report, false) {
+				if w.warning.Code == validate.RunnerAVExclusionsUnverified {
+					got = append(got, w)
+				}
+			}
+			if (len(got) == 1) != tc.wantWarning {
+				t.Fatalf("RNR006 warnings = %#v, want warning %t", got, tc.wantWarning)
+			}
+			if !tc.wantWarning {
+				return
+			}
+			w := got[0]
+			if w.warning.Severity != validate.Warning {
+				t.Errorf("severity = %q, want %q (RNR006 is never promoted)", w.warning.Severity, validate.Warning)
+			}
+			if w.warning.Scope != "Instance/runners[windows-shell]" {
+				t.Errorf("scope = %q", w.warning.Scope)
+			}
+			if w.path != "/runners/0/provides/windows/avExclusionsVerified" {
+				t.Errorf("path = %q", w.path)
+			}
+			for _, want := range tc.wantText {
+				if !strings.Contains(w.warning.Explanation, want) {
+					t.Errorf("warning missing %q: %s", want, w.warning.Explanation)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateWarnsWindowsAVExclusionsUndeclared drives RNR006 through the
+// real `goobers validate` on a scaffolded instance: the warning is printed
+// with the stable code, exit stays 0 (advisory), and declaring the claim
+// silences it.
+func TestValidateWarnsWindowsAVExclusionsUndeclared(t *testing.T) {
+	root := initDeterministicDemo(t)
+	declareInventory(t, root)
+	declareRemoteRunner(t, root,
+		"  - name: windows-shell\n    host: ghcr.io/example/win:v1\n    provides:\n      os: windows\n      shell: true\n")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code = %d, want 0 (RNR006 is always a warning); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"WARNING RNR006 Instance/runners[windows-shell]",
+		"does not declare provides.windows.avExclusionsVerified",
+		"goobers doctor --av-exclusions",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("validate stdout missing %q:\n%s", want, stdout)
+		}
+	}
+
+	// RNR006 is strict-neutral, like DVL020. A new warning that lands on
+	// configs nobody edited must not turn an existing --strict pipeline red
+	// on upgrade — and because declaring `false` does NOT silence RNR006,
+	// promoting it would leave `true` as the only way to get green, putting
+	// an operator under CI pressure to assert a trusted claim they have not
+	// earned.
+	// Clear the scaffold's unedited template markers first: PLACEHOLDER001
+	// is a finding of its own, and this assertion is about RNR006 alone.
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+	code, stdout, stderr = runArgs(t, "validate", "--strict", root)
+	if code != 0 {
+		t.Fatalf("validate --strict code = %d, want 0 (RNR006 is strict-neutral); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "WARNING RNR006") {
+		t.Errorf("--strict must still PRINT RNR006, only not promote it:\n%s", stdout)
+	}
+
+	replaceInFile(t, filepath.Join(root, "instance.yaml"),
+		"      os: windows\n      shell: true\n",
+		"      os: windows\n      shell: true\n      windows:\n        avExclusionsVerified: true\n")
+	code, stdout, stderr = runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("declared validate code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "RNR006") {
+		t.Errorf("a declared avExclusionsVerified: true must not warn RNR006:\n%s", stdout)
+	}
+}
