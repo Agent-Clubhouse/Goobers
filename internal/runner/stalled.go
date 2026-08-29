@@ -450,7 +450,16 @@ func inspectStalledCandidate(dir, runID string, now time.Time, timeout time.Dura
 	if len(events) == 0 {
 		return stalledCandidate{}, false, fmt.Errorf("runner: running run %q has no journal events", runID)
 	}
-	if events[len(events)-1].Type == journal.EventGatePaused {
+	// A run parked at a gate is not a stalled run, and the parked verdict must
+	// survive events appended AFTER the pause by someone other than the runner.
+	// A mode-3 stage pod emits into this same journal through the write API's
+	// journal plane (livejournal.Writer.Adopt appends on the runner's own
+	// handle), so a retried emit, a late agent.lifecycle or a pod-executed
+	// gate's artifacts can follow the runner's gate.paused. Testing only the
+	// LAST event read false in exactly that case and escalated a run parked for
+	// a human — see journal.ParkedAtGate, which skips observational events and
+	// stops at the first one that actually moves control flow.
+	if journal.ParkedAtGate(events) {
 		return candidate, false, nil
 	}
 	// Take the newest event that actually carries a TIMESTAMP. An event written
