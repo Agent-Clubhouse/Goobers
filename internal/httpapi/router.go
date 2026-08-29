@@ -201,6 +201,28 @@ func surrenderPlanePath(path string) bool {
 	return run != "" && stage != "" && attempt != ""
 }
 
+// telemetryPlanePath reports whether path is one of the telemetry read routes
+// a pod principal may GET (decision 005 R4 / finding 002 C3): the stats and
+// errors aggregates, plus the implementation-outcome evidence derived from
+// the same rows. Derived, low-sensitivity data — no raw secret, no other
+// gaggle's configuration — and gaggle containment is enforced by the
+// handlers, which can see the query string and the principal together
+// (registerTelemetryRoutes/podTelemetryGaggle).
+//
+// TelemetryErrorSignaturesPath is deliberately NOT here: the ruling named
+// stats and errors, and the signature aggregate has no consumer on the pod
+// side. Adding it is a ruling amendment, not an oversight to fix silently.
+func telemetryPlanePath(path string) bool {
+	switch path {
+	case apicontract.TelemetryStatsPath,
+		apicontract.TelemetryErrorsPath,
+		apicontract.TelemetryImplementationOutcomesPath:
+		return true
+	default:
+		return false
+	}
+}
+
 // RequireRoles authorizes read requests (GET/HEAD) for principals holding
 // view or stronger and every other method for operate or stronger. Requests
 // without an authenticated principal are denied, so this authorizer must be
@@ -209,15 +231,18 @@ func surrenderPlanePath(path string) bool {
 //
 // Pod principals (PodPrincipalIssuer) bypass the role ladder and are confined
 // to the pod planes (claims + credential resolve + journal emit + blob
-// get/put + surrender put): their token proves "I am run X's stage pod",
-// which authorizes ledger operations, credential resolution, journal
-// emission, blob transfer, and result surrender for that run and nothing
-// else. Per-run containment (the request body's runId, or the path run id
-// for the journal and surrender planes, matching the pod's run) is enforced
-// by the plane handlers, which can see the request — the credential and blob
-// handlers additionally refuse human principals outright (DS9: those planes
-// serve stage pods only; the blob plane's digest carries no run to compare
-// against).
+// get/put + surrender put + telemetry read): their token proves "I am run X's
+// stage pod", which authorizes ledger operations, credential resolution,
+// journal emission, blob transfer, result surrender, and its own gaggle's
+// derived telemetry for that run and nothing else. Per-run containment (the
+// request body's runId, or the path run id for the journal and surrender
+// planes, matching the pod's run) is enforced by the plane handlers, which
+// can see the request — the credential and blob handlers additionally refuse
+// human principals outright (DS9: those planes serve stage pods only; the
+// blob plane's digest carries no run to compare against). The telemetry read
+// is contained by GAGGLE rather than by run, because the evidence it serves
+// is a gaggle-wide rollup by construction; that check also lives in the
+// handlers, for the same reason.
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
@@ -231,7 +256,10 @@ func RequireRoles() Authorizer {
 			if blobPlanePath(request.URL.Path) && (request.Method == http.MethodGet || request.Method == http.MethodPut) {
 				return nil
 			}
-			return fmt.Errorf("pod principal %q may only call the claims, credential, journal, blob, and surrender planes", principal.Subject)
+			if telemetryPlanePath(request.URL.Path) && request.Method == http.MethodGet {
+				return nil
+			}
+			return fmt.Errorf("pod principal %q may only call the claims, credential, journal, blob, surrender, and telemetry-read planes", principal.Subject)
 		}
 		required := RoleView
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
@@ -326,6 +354,7 @@ type handlerConfig struct {
 	credentials         CredentialService
 	blobs               blobstore.Store
 	surrenders          SurrenderService
+	podRunGaggle        func(context.Context, string) (string, error)
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -377,6 +406,22 @@ func WithInterventionContext(ctx context.Context) HandlerOption {
 			return errors.New("http API intervention context is required")
 		}
 		config.interventionContext = ctx
+		return nil
+	}
+}
+
+// WithPodRunGaggle supplies the run-to-gaggle resolution the telemetry read
+// plane contains pod principals with (decision 005 R4 / finding 002 C3). A
+// pod token proves "I am run X's stage pod" and nothing about which gaggle X
+// belongs to; without this seam the handler cannot answer that question, so
+// it refuses every pod telemetry read rather than serving an unscoped one.
+// Wiring it is therefore what OPENS the plane, not what restricts it.
+func WithPodRunGaggle(resolve func(context.Context, string) (string, error)) HandlerOption {
+	return func(config *handlerConfig) error {
+		if resolve == nil {
+			return errors.New("pod run gaggle resolver is required")
+		}
+		config.podRunGaggle = resolve
 		return nil
 	}
 }
@@ -618,7 +663,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		w.Header().Set("Cache-Control", "no-cache")
 		writeJSON(w, http.StatusOK, portalConfig)
 	})
-	registerTelemetryRoutes(router, reader, errorLog)
+	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
