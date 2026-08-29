@@ -146,6 +146,48 @@ func TestProjectionIsDeterministic(t *testing.T) {
 	}
 }
 
+// TestProjectRunSkipsUnstampedEventsWhenAdvancingLastActivity is #3774's
+// readmodel-side surface fix: a pod-side writer defect (fixed separately, at
+// its call sites) could durably persist an event with a zero Time — the
+// newest such event must not clobber LastActivity with the zero, which the
+// run-stalled watchdog (#3775/#3776) and runIsStale both now treat as
+// undeterminable rather than as "just happened". Mirrors newestTimestamped's
+// skip rule (internal/runner/stalled.go), applied here incrementally as
+// ProjectRun folds over the event stream.
+func TestProjectRunSkipsUnstampedEventsWhenAdvancingLastActivity(t *testing.T) {
+	identity := testIdentity()
+	stamped := projectBase.Add(time.Minute)
+	events := []journal.Event{
+		ev(1, 0, journal.EventRunStarted, nil),
+		ev(2, time.Minute, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "implement-on-pod" }),
+		// The newest event, unstamped — the shape #3774's writer defect
+		// produced for agent.lifecycle/agent.message.
+		ev(3, 2*time.Minute, journal.EventAgentLifecycle, func(e *journal.Event) {
+			e.Stage = "implement-on-pod"
+			e.Time = time.Time{}
+		}),
+	}
+	row := ProjectRun(identity, Projection{}, events).Run
+	if row.LastSeq != 3 {
+		t.Fatalf("LastSeq = %d, want 3 (Seq is structural and always advances)", row.LastSeq)
+	}
+	if row.LastActivity.IsZero() {
+		t.Fatal("LastActivity is zero (#3774): an unstamped newest event must not clobber a real, previously-observed LastActivity")
+	}
+	if !row.LastActivity.Equal(stamped) {
+		t.Fatalf("LastActivity = %s, want %s (the newest STAMPED event's time)", row.LastActivity, stamped)
+	}
+
+	// A wholly unstamped run (no timestamped event at all) has no LastActivity
+	// to report — undeterminable, not "just happened".
+	unstampedOnly := []journal.Event{
+		ev(1, 0, journal.EventAgentLifecycle, func(e *journal.Event) { e.Time = time.Time{} }),
+	}
+	if got := ProjectRun(identity, Projection{}, unstampedOnly).Run.LastActivity; !got.IsZero() {
+		t.Fatalf("LastActivity = %s for a wholly unstamped run, want the zero time", got)
+	}
+}
+
 func TestProjectionKeepsEarliestClaimedIssueIdentity(t *testing.T) {
 	identity := testIdentity()
 	identity.Trigger = journal.Trigger{Kind: journal.TriggerItem, Ref: "trigger-item"}

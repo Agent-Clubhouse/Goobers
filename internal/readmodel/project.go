@@ -326,7 +326,18 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 	for _, event := range events {
 		if event.Seq > row.LastSeq {
 			row.LastSeq = event.Seq
-			row.LastActivity = event.Time
+			// Seq is structural (journal.MonotonicSeq) and always advances on
+			// the newest event regardless of its Time, but LastActivity only
+			// advances when that event actually carries one: an unstamped
+			// event (#3774 — a pod-side writer defect, now fixed at the
+			// source but still possible from an older journal) must not
+			// clobber a real, previously-observed LastActivity with the zero
+			// time, which is exactly the value runIsStale and the run-stalled
+			// watchdog now (post #3775/#3776) treat as undeterminable rather
+			// than as fresh activity. Mirrors newestTimestamped's skip rule.
+			if !event.Time.IsZero() {
+				row.LastActivity = event.Time
+			}
 		}
 		// An event from a schema this build does not know still advances the
 		// sequence and activity time — it happened — but its semantics are not
