@@ -35,7 +35,10 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		// Kind admission does not launder the COMMAND check: a ci-poll kind
 		// declared over a ledger-touching command is still refused, so the
 		// allowlist cannot become a way to smuggle one past the list below.
-		{name: "ci-poll kind over a ledger command is still refused", cmd: []string{"goobers", "merge-pr"}, kind: "ci-poll", want: true},
+		// (merge-pr was this case's subject until Goobers#3897/#3898; it is
+		// now plane-served end to end, so the exemplar moved to a command
+		// that still holds an instance-root file.)
+		{name: "ci-poll kind over a ledger command is still refused", cmd: []string{"goobers", "select-source"}, kind: "ci-poll", want: true},
 
 		// --- STILL REFUSED: a direct instance-root file no plane serves ---
 		// Each of these names the specific file in shell.go's map comment.
