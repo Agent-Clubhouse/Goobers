@@ -289,6 +289,13 @@ func TestCuratorInstructionsClassifySiblingDependencies(t *testing.T) {
 			},
 		},
 		{
+			name: "recorded blockers decide a clear",
+			required: []string{
+				"not whichever issues the surrounding prose happens to cite",
+				"Require **every** recorded blocker closed",
+			},
+		},
+		{
 			name: "repeated pass",
 			required: []string{
 				"cleared or refuted the same needs-human rationale",
