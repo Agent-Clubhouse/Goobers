@@ -198,9 +198,18 @@ func TestMixedInfraAndPolicyBudgets(t *testing.T) {
 // infrastructure-class error rather than being mistaken for a stage failure.
 func TestTransientWorkspaceProvisioningIsInfrastructure(t *testing.T) {
 	gitDir := t.TempDir()
+	// Write both a POSIX shell shim and a Windows .cmd shim with the same
+	// base name: exec.LookPath resolves "git" via PATHEXT on Windows, where
+	// the extensionless POSIX script alone is never found (it would fall
+	// through to the real git binary elsewhere on PATH and issue an
+	// unintended network operation instead of exercising this branch).
 	gitPath := filepath.Join(gitDir, "git")
 	if err := os.WriteFile(gitPath, []byte("#!/bin/sh\nprintf '%s\\n' \"fatal: The requested URL returned error: 503\" >&2\nexit 128\n"), 0o755); err != nil {
 		t.Fatalf("write git shim: %v", err)
+	}
+	gitCmdPath := filepath.Join(gitDir, "git.cmd")
+	if err := os.WriteFile(gitCmdPath, []byte("@echo off\r\necho fatal: The requested URL returned error: 503 1>&2\r\nexit /b 128\r\n"), 0o755); err != nil {
+		t.Fatalf("write git.cmd shim: %v", err)
 	}
 	t.Setenv("PATH", gitDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
