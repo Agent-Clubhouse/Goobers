@@ -23,7 +23,11 @@ type adoMergePRServer struct {
 	evalCalls   int64
 	cfgCalls    int64
 	threadCalls int64
-	patchBody   atomic.Value // map[string]interface{}
+	// threadStatus, when non-zero, is the HTTP status the threads endpoint
+	// answers with instead of the comment list, standing in for a transient
+	// ADO threads-API failure.
+	threadStatus int
+	patchBody    atomic.Value // map[string]interface{}
 }
 
 // adoMergePRVerdictAuthor is the identity the fake connectionData endpoint
@@ -56,6 +60,10 @@ func newADOMergePRServer(t *testing.T, headSHA, baseSHA string, threadComments .
 	})
 	mux.HandleFunc("/myorg/myproject/_apis/git/repositories/myrepo/pullrequests/359/threads", func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt64(&state.threadCalls, 1)
+		if state.threadStatus != 0 {
+			w.WriteHeader(state.threadStatus)
+			return
+		}
 		comments := make([]map[string]any, 0, len(threadComments))
 		for i, comment := range threadComments {
 			comments = append(comments, map[string]any{
@@ -403,5 +411,78 @@ func TestMergePRADOIgnoresUntrustedThreadVerdict(t *testing.T) {
 	opts, _ := body["completionOptions"].(map[string]interface{})
 	if got := opts["mergeCommitMessage"]; got != "Closes #1456" {
 		t.Fatalf("mergeCommitMessage = %q, want the unattributed fallback for an untrusted verdict", got)
+	}
+}
+
+// TestMergePRADORecoversNewestThreadVerdict covers the normal ADO review
+// sequence: needs-changes, remediation, then pass. apply-verdict POSTs a NEW
+// thread comment each time and ADO returns them oldest-first, so an oldest-first
+// selection would recover the stale needs-changes (pinned to a superseded head)
+// and land unattributed. The newest trusted pass verdict must win.
+func TestMergePRADORecoversNewestThreadVerdict(t *testing.T) {
+	staleComment := renderVerdictComment(apiv1.Verdict{
+		Decision:  apiv1.VerdictNeedsChanges,
+		Summary:   "Recovery selector is inert.",
+		Rationale: "Fix the selection order.",
+		HeadSHA:   "oldhead",
+		BaseSHA:   "basesha1",
+	})
+	passComment := renderVerdictComment(apiv1.Verdict{
+		Decision:  apiv1.VerdictPass,
+		Summary:   "Parity fix looks right.",
+		Rationale: "Reviewed the whole ADO land path.",
+		HeadSHA:   "headsha1",
+		BaseSHA:   "basesha1",
+	})
+	server, state := newADOMergePRServer(t, "headsha1", "basesha1",
+		adoMergePRThreadComment{author: adoMergePRVerdictAuthor, body: staleComment},
+		adoMergePRThreadComment{author: adoMergePRVerdictAuthor, body: passComment})
+	root, dir := adoMergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "359",
+		"verdict":    "pass",
+		"headSha":    "headsha1",
+		"baseSha":    "basesha1",
+	})
+
+	code, stdout, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if merged, _ := readMergeResult(t, dir)["merged"].(bool); !merged {
+		t.Fatalf("want merged=true; stdout = %q", stdout)
+	}
+	body, _ := state.patchBody.Load().(map[string]interface{})
+	opts, _ := body["completionOptions"].(map[string]interface{})
+	want := "Parity fix looks right.\n\nReviewed the whole ADO land path.\n\nCloses #1456\n\nReviewed-by: " + adoMergePRVerdictAuthor
+	if got := opts["mergeCommitMessage"]; got != want {
+		t.Fatalf("mergeCommitMessage = %q, want %q", got, want)
+	}
+}
+
+// TestMergePRADOThreadReadFailureStillLands pins the fallback
+// adoMergeCommitMessage's contract promises: the recovered verdict feeds only
+// the commit message, so a threads-API failure degrades the audit trail instead
+// of blocking an otherwise fully authorized land.
+func TestMergePRADOThreadReadFailureStillLands(t *testing.T) {
+	server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+	state.threadStatus = http.StatusInternalServerError
+	root, dir := adoMergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "359",
+		"verdict":    "pass",
+		"headSha":    "headsha1",
+		"baseSha":    "basesha1",
+	})
+
+	code, stdout, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if merged, _ := readMergeResult(t, dir)["merged"].(bool); !merged {
+		t.Fatalf("want merged=true; stdout = %q", stdout)
+	}
+	body, _ := state.patchBody.Load().(map[string]interface{})
+	opts, _ := body["completionOptions"].(map[string]interface{})
+	if got := opts["mergeCommitMessage"]; got != "Closes #1456" {
+		t.Fatalf("mergeCommitMessage = %q, want the unattributed fallback after a thread read failure", got)
 	}
 }

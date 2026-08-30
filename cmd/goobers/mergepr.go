@@ -202,19 +202,24 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// live poll), it only supplies the reviewer attribution and rationale the
 	// merge commit records, and it is re-pinned to the locked poll's own head
 	// before any of it is used. A PR with no recoverable pass verdict on its
-	// thread still lands with the title + closing refs, exactly as before.
+	// thread still lands with the title + closing refs, exactly as before —
+	// and so does one whose thread simply could not be read: the recovered
+	// verdict feeds ONLY the commit message, never a merge conjunct, so a
+	// transient threads-API hiccup degrades the audit trail rather than
+	// blocking a land that is otherwise fully authorized.
 	var adoVerdict *apiv1.Verdict
 	adoVerdictAuthor := ""
 	if isADO && strings.TrimSpace(commitMessage) == "" {
 		threadProvider, ok := stageProvider.(adoThreadVerdictProvider)
 		if !ok {
-			pf(stderr, "error: repository provider %q does not support pull request thread comments\n", repo.Provider)
-			return 1
-		}
-		var err error
-		adoVerdict, adoVerdictAuthor, err = recoverADOThreadVerdict(ctx, threadProvider, repo, pullNumber)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("recover merge-review verdict from pr #%s thread", pullNumber), err, resultFile)
+			pf(stderr, "warning: repository provider %q does not support pull request thread comments; merging without reviewer attribution\n", repo.Provider)
+		} else {
+			var err error
+			adoVerdict, adoVerdictAuthor, err = recoverADOThreadVerdict(ctx, threadProvider, repo, pullNumber)
+			if err != nil {
+				pf(stderr, "warning: recover merge-review verdict from PR #%s thread: %v; merging without reviewer attribution\n", pullNumber, err)
+				adoVerdict, adoVerdictAuthor = nil, ""
+			}
 		}
 	}
 
@@ -572,10 +577,10 @@ type adoThreadVerdictProvider interface {
 // the commit message, never a merge conjunct, so this round-trip must not join
 // the serialized window #719 exists to keep free of extra provider calls.
 //
-// A thread carrying no trusted verdict, or one whose verdict is not a pass, is a
-// normal outcome (an older PR reviewed before apply-verdict posted pass verdicts
-// to the thread), reported as a nil verdict rather than an error: the land then
-// falls back to the title + closing refs it always used.
+// A thread carrying no trusted pass verdict is a normal outcome (an older PR
+// reviewed before apply-verdict posted pass verdicts to the thread), reported as
+// a nil verdict rather than an error: the land then falls back to the title +
+// closing refs it always used.
 func recoverADOThreadVerdict(ctx context.Context, provider adoThreadVerdictProvider, repo providers.RepositoryRef, pullID string) (*apiv1.Verdict, string, error) {
 	author, err := provider.AuthenticatedLogin(ctx)
 	if err != nil {
@@ -585,11 +590,32 @@ func recoverADOThreadVerdict(ctx context.Context, provider adoThreadVerdictProvi
 	if err != nil {
 		return nil, "", err
 	}
-	verdict := gatherPRVerdict(comments, author)
-	if verdict == nil || verdict.Decision != apiv1.VerdictPass {
-		return nil, author, nil
+	return newestTrustedPassVerdict(comments, author), author, nil
+}
+
+// newestTrustedPassVerdict picks the LAST trusted pass verdict in comments,
+// which arrive oldest-first. It deliberately does not reuse gatherPRVerdict:
+// that selector prefers the OLDEST marked comment because GitHub reconciles its
+// sticky verdict comment in place, whereas apply-verdict POSTs a brand-new ADO
+// thread on every run. On the normal needs-changes -> remediation -> pass
+// sequence the oldest marked comment is the stale non-pass, so an
+// oldest-first selection would recover nothing on exactly the PRs that reach an
+// ADO merge through remediation (#2746). Staleness is still caught downstream:
+// adoMergeCommitMessage attributes only a verdict pinned to the locked poll's
+// live head.
+func newestTrustedPassVerdict(comments []providers.Comment, author string) *apiv1.Verdict {
+	for i := len(comments) - 1; i >= 0; i-- {
+		comment := comments[i]
+		if !isTrustedMergeReviewAuthor(comment.Author, author) {
+			continue
+		}
+		candidate, ok := parseVerdictComment(comment.Body)
+		if !ok || candidate.Decision != apiv1.VerdictPass {
+			continue
+		}
+		return &candidate
 	}
-	return verdict, author, nil
+	return nil
 }
 
 // adoMergeCommitMessage builds the land's commit title and body for an Azure
