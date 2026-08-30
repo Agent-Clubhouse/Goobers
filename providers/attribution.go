@@ -10,6 +10,8 @@ import (
 	"unicode/utf8"
 )
 
+// AttributionMarkerPrefix opens the versioned HTML comment marker that
+// carries base64-encoded attribution payloads in provider-authored bodies.
 const AttributionMarkerPrefix = "<!-- goobers:attribution v1 "
 
 var attributionMarkerStartPattern = regexp.MustCompile(`<!--\s*goobers:attribution\b`)
@@ -50,14 +52,17 @@ func AttributionFromContext(ctx context.Context) (Attribution, bool) {
 	return attribution, ok
 }
 
+// SetAttribution stamps subsequent GitHub writes with the given run attribution.
 func (p *GitHubProvider) SetAttribution(attribution Attribution) {
 	p.attribution = attribution
 }
 
+// SetAttribution stamps subsequent Gitea writes with the given run attribution.
 func (p *GiteaProvider) SetAttribution(attribution Attribution) {
 	p.attribution = attribution
 }
 
+// SetAttribution stamps subsequent ADO writes with the given run attribution.
 func (p *ADOProvider) SetAttribution(attribution Attribution) {
 	p.attribution = attribution
 }
