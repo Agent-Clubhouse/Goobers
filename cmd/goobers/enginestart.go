@@ -3,33 +3,22 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
-	"path/filepath"
 	"time"
 
 	"go.temporal.io/sdk/client"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 const engineStartHelp = "Usage: goobers engine-start [flags] <workflow> [path]\n\n" +
-	"Dispatch one run onto the tier-3 engine (experimental).\n\n" +
-	"When a `goobers up` daemon holds this instance's lock the dispatch is\n" +
-	"DELEGATED to it: the daemon admits the run through the scheduler (so it\n" +
-	"takes a concurrency slot, records an instance-log run.started, reserves\n" +
-	"the run journal and fires the terminal hooks on completion) and starts\n" +
-	"the workflow through its own engine starter. The run id is the\n" +
-	"scheduler's, and --dedupe-key is refused, because the daemon mints a\n" +
-	"fresh run id per admission.\n\n" +
-	"--direct bypasses the daemon and starts the workflow straight on\n" +
-	"Temporal with REJECT_DUPLICATE, deriving the run id from gaggle,\n" +
-	"workflow and --dedupe-key. That is the only mode in which --dedupe-key\n" +
-	"means anything: a direct start's run id IS its dedupe unit, whereas a\n" +
-	"delegated dispatch dedupes DELIVERIES (by request id) and not work.\n" +
-	"A direct start takes no scheduler slot and fires no terminal hooks.\n" +
-	"--direct is implied when no daemon is running.\n\n" +
+	"Dispatch one run onto the tier-3 engine (experimental). The run id is\n" +
+	"derived from gaggle, workflow, and --dedupe-key.\n\n" +
 	"--live-journal pins live journal authorship into the run: workers emit\n" +
 	"journal events through the daemon's journal plane as they happen, so the\n" +
 	"run is visible mid-flight; without it the journal is projected from\n" +
@@ -46,7 +35,6 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	taskQueue := fs.String("task-queue", "", "task queue to dispatch onto")
 	dedupe := fs.String("dedupe-key", "", "dedupe key used to derive the run id")
 	liveJournal := fs.Bool("live-journal", false, "author the run journal live through the daemon's journal plane (DS4)")
-	direct := fs.Bool("direct", false, "start the workflow straight on Temporal, bypassing the daemon's scheduler")
 	fs.Usage = helpUsage(stderr, "engine-start")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -60,8 +48,6 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), engineStartTimeout)
-	defer cancel()
 
 	l := instance.NewLayout(root)
 	cfg, err := instance.LoadConfig(l.ConfigFile())
@@ -111,37 +97,7 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: workflow %q is not registered\n", workflowName)
 		return 1
 	}
-	// Delegation decision, before anything is pinned: a live daemon owns the
-	// scheduler, and a direct start behind its back takes no concurrency
-	// slot, writes no instance-log run.started, and fires none of the
-	// terminal hooks that release claims and record the circuit breaker. That
-	// is the #343 rule `goobers run` has followed for the runner; decision
-	// 005 D1 extends it to the engine now that the daemon can start engine
-	// runs itself.
-	release, lockErr := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
-	daemonUp := lockErr != nil
-	if release != nil {
-		release()
-	}
-	if daemonUp && !*direct {
-		if *dedupe != "" {
-			// Refused, not silently ignored. The trigger plane's RequestID
-			// dedupes DELIVERIES — it stops one request being dispatched
-			// twice — and the scheduler mints a fresh run id on every
-			// admission, so there is no unit-of-work identity for a dedupe
-			// key to name on this path. Accepting the flag and dropping it
-			// would let an operator believe two dispatches had collapsed
-			// into one run when they had not.
-			pf(stderr, "error: --dedupe-key requires --direct; a daemon-delegated dispatch dedupes deliveries by request id, not work, and the scheduler mints a fresh run id per admission\n")
-			return 2
-		}
-		return delegateEngineStart(ctx, l, target, workflowName, stdout, stderr)
-	}
-	if !daemonUp && !*direct {
-		pf(stderr, "note: no daemon holds %s; starting directly on Temporal (no scheduler slot, no terminal hooks)\n", l.SchedulerDir())
-	}
-
-	spec, err := engineRunSpec(engineRunRequest{
+	spec, err := engineStartSpec(engineStartRequest{
 		cfg:         cfg,
 		set:         set,
 		gaggle:      target,
@@ -160,6 +116,8 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	c, err := client.DialContext(ctx, client.Options{HostPort: *hostPort, Namespace: *namespace})
 	if err != nil {
 		pf(stderr, "error: dial temporal at %s: %v\n", *hostPort, err)
@@ -175,35 +133,155 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// engineStartTimeout bounds the whole dispatch — the Temporal dial and start
-// on the direct path, and the delegation round trip on the daemon path.
-const engineStartTimeout = 60 * time.Second
-
-// delegateEngineStart hands one engine dispatch to the live daemon through
-// the pending-trigger file the daemon's sweep already serves, and reports the
-// run id the daemon admitted.
+// engineStartRequest is everything one `goobers engine-start` dispatch needs
+// to build its StartSpec. It is a struct rather than a positional argument
+// list because the inputs are otherwise a run of same-typed values — the
+// gaggle name and the dedupe key both feed engine.RunID, and transposing them
+// compiles cleanly while pinning a different run identity. Naming them at the
+// call site makes that transposition visible rather than silent.
 //
-// It reuses `goobers run`'s delegation channel verbatim rather than adding an
-// engine-specific one, because after decision 005 D1 the daemon's per-entry
-// Starter selection is what decides whether a lane runs on the engine or the
-// local runner. An engine-specific delegation channel would have to make that
-// decision a second time, in a second place, from a CLI process that does not
-// hold the runner inventory the daemon resolved at boot — and the two answers
-// would drift the moment a lane's pins changed. Asking the daemon to trigger
-// the workflow means the lane's CURRENT selection applies, and this command
-// reports which starter actually ran.
-func delegateEngineStart(ctx context.Context, l instance.Layout, gaggle, workflowName string, stdout, stderr io.Writer) int {
-	requestID, err := writeTriggerRequestContext(ctx, l.SchedulerDir(), gaggle, workflowName)
+// The workflow name is deliberately absent: it is def.Name. The registry
+// returned def for the requested name, so reading it back from the definition
+// keeps the graph, the placements and the run controls sourced from one
+// object instead of from a name that a second lookup might resolve elsewhere.
+type engineStartRequest struct {
+	cfg         *instance.Config
+	set         *instance.ConfigSet
+	gaggle      string
+	dedupeKey   string
+	project     apiv1.RepoRef
+	def         workflow.Definition
+	liveJournal bool
+}
+
+// engineStartSpec builds the StartSpec one `goobers engine-start` dispatch
+// pins. It is the engine-side counterpart of the daemon's scheduler entry
+// (schedulerDefinitions): everything a run's identity commits to at start and
+// never re-reads from config is resolved here, so both starters can be
+// compared at one seam instead of two divergent literals.
+func engineStartSpec(req engineStartRequest) (engine.StartSpec, error) {
+	// Mode-3 placement pinning (#3588): resolve every stage's execution
+	// placement now, against the declared runner inventory, and pin the
+	// outcome into the run input — the workflow reads it as data and never
+	// solves mid-run (the WF-016 snapshot / determinism constraint). Nil on
+	// every zero-declaration and local-mode instance.
+	placements, err := bootstrap.PinStagePlacements(req.cfg, req.set, req.gaggle, req.def)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
+		return engine.StartSpec{}, fmt.Errorf("resolve stage placements: %w", err)
 	}
-	runID, err := pollTriggerResponse(ctx, l.SchedulerDir(), requestID, triggerDelegationTimeout)
+	// #3820: run controls are pinned at start and the watchdog enforces the
+	// pinned value, so a starter that skips this resolution silently commits
+	// the run to the 3-repass / 45m defaults whatever the author declared.
+	controls, err := engineStartRunControls(req)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return engine.StartSpec{}, err
 	}
-	pf(stdout, "run dispatched via live daemon: %s (workflow=%s, gaggle=%s)\n", runID, workflowName, gaggle)
-	pf(stdout, "inspect with: goobers trace %s\n", runID)
-	return 0
+	return engine.StartSpec{
+		RunID:           engine.RunID(req.gaggle, req.def.Name, req.dedupeKey),
+		Gaggle:          req.gaggle,
+		RepoRef:         req.project,
+		TriggerKind:     "manual",
+		BranchNamespace: branchNamespacesByGaggle(req.set)[req.gaggle],
+		LiveJournal:     req.liveJournal,
+		Placements:      placements,
+		RunControls:     controls,
+		// #294/#3528: an agentic gate's reviewer capabilities are instance
+		// policy, pinned into the run at start and read back from the run's
+		// own snapshot afterwards — the daemon's credential plane resolves a
+		// gate stage's grants from journal.PinnedGateGooberCapabilities, not
+		// from the currently-served config. A starter that leaves this empty
+		// pins an EMPTY map, so every gate branch on the run resolves to no
+		// reviewer grants at all; the daemon's scheduler entry has always
+		// filled it in (runnerwiring.go) and engine-start did not.
+		GateGooberCapabilities: engineStartGateGooberCapabilities(req.set, req.gaggle),
+		// #3873 (MIRC-2 claim partition): the gaggle's self identity and
+		// RequireLabels default, resolved through the SAME helpers that feed
+		// the daemon's runner Config (daemon.go:1156-1157). The engine walk
+		// injects them into every `goobers backlog-query` stage that does not
+		// declare its own, exactly as dispatchTask does. A dispatch that
+		// leaves them empty hands the stage no partition, and on this
+		// instance's shared backlog that claims the sibling (laptop)
+		// instance's goobers:local items.
+		BacklogQueryAssignedTo:    selfIdentitiesByGaggle(req.cfg, req.set)[req.gaggle],
+		BacklogQueryRequireLabels: requireLabelsByGaggle(req.set)[req.gaggle],
+	}, nil
+}
+
+// engineStartGateGooberCapabilities maps each goober a gaggle's stages may
+// name to its declared capabilities. A goober with no declared capabilities is
+// omitted rather than mapped to an empty slice; nil when the gaggle declares
+// no capability-bearing goobers, which pins no snapshot at all rather than an
+// empty one.
+//
+// The projection is GAGGLE-SCOPED, and deliberately so — it is NOT the
+// daemon's map. runnerwiring.go's gateGooberCaps is built from goobersByName,
+// which is instance-wide and shared across every gaggle; this one applies
+// workerwiring.go's resolveGoobersForGaggle rule (a goober with no gaggle, or
+// with this gaggle), because an engine-start run executes on a worker whose
+// goober admission uses exactly that rule. Pinning a reviewer the worker will
+// not admit would put a capability grant in the run's immutable snapshot for a
+// goober that cannot participate in it.
+//
+// The divergence is fail-closed in one direction: a workflow in gaggle A whose
+// agentic gate names a reviewer declared under gaggle B gets its grants pinned
+// on the daemon's own dispatch path and nothing pinned here, and the
+// credential plane's gate branch resolves an absent reviewer to no grants.
+// Nothing validates that cross-gaggle reference today; making it an error at
+// compile time is the fix, not widening the pin.
+func engineStartGateGooberCapabilities(set *instance.ConfigSet, gaggle string) map[string][]string {
+	if set == nil {
+		return nil
+	}
+	var caps map[string][]string
+	for i := range set.Goobers {
+		g := set.Goobers[i]
+		if g.Spec.Gaggle != "" && g.Spec.Gaggle != gaggle {
+			continue
+		}
+		if len(g.Spec.Capabilities) == 0 {
+			continue
+		}
+		if caps == nil {
+			caps = make(map[string][]string)
+		}
+		caps[g.Name] = append([]string(nil), g.Spec.Capabilities...)
+	}
+	return caps
+}
+
+// engineStartRunControls resolves the run-control policy for one manually
+// dispatched workflow through resolveWorkflowRunControls — the same four
+// layers, in the same order, the daemon's scheduler entry resolves.
+func engineStartRunControls(req engineStartRequest) (apiv1.RunControls, error) {
+	var gaggleCfg apiv1.Gaggle
+	for i := range req.set.Gaggles {
+		if req.set.Gaggles[i].Name == req.gaggle {
+			gaggleCfg = req.set.Gaggles[i]
+			break
+		}
+	}
+	// Resolution is layer-complete or it fails: silently defaulting a
+	// workflow the config set does not carry is the #3820 failure mode.
+	declared := false
+	for i := range req.set.Workflows {
+		if req.set.Workflows[i].Name == req.def.Name && req.set.Workflows[i].Spec.Gaggle == req.gaggle {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return apiv1.RunControls{}, fmt.Errorf("workflow %q is not declared in gaggle %q", req.def.Name, req.gaggle)
+	}
+	// The workflow layer comes from the definition the registry pinned, NOT
+	// from a fresh scan of set.Workflows. bootstrap.RegisterGaggleWorkflows
+	// registers every entry in the gaggle, so two same-named workflow files
+	// become v1 and v2 of one name; reg.Latest hands back the LAST, while a
+	// forward scan finds the FIRST. Sourcing both from def is what keeps the
+	// dispatched graph and its watchdog budget the same version.
+	workflowCfg := apiv1.Workflow{Spec: req.def.Spec}
+	controls, err := resolveWorkflowRunControls(req.cfg, req.project, gaggleCfg, workflowCfg)
+	if err != nil {
+		return apiv1.RunControls{}, fmt.Errorf("workflow %q run controls: %w", req.def.Name, err)
+	}
+	return controls.Overrides(), nil
 }

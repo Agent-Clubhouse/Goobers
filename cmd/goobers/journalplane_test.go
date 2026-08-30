@@ -121,7 +121,7 @@ func TestNewLiveJournalWriterRequiresEngineConfiguration(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	set := &instance.ConfigSet{Gaggles: []apiv1.Gaggle{{ObjectMeta: metav1.ObjectMeta{Name: "web"}}}}
 
-	writer, err := newLiveJournalWriter(layout, &instance.Config{}, set, nil, nil, nil, nil)
+	writer, err := newLiveJournalWriter(layout, &instance.Config{}, set, nil, nil, nil)
 	if err != nil || writer != nil {
 		t.Fatalf("writer without engine config = (%v, %v), want (nil, nil)", writer, err)
 	}
@@ -136,7 +136,7 @@ func TestNewLiveJournalWriterRequiresEngineConfiguration(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = watermarks.Close() })
 	cfg := &instance.Config{Engine: &instance.EngineConfig{HostPort: "127.0.0.1:7233", Namespace: "default", TaskQueue: "q"}}
-	writer, err = newLiveJournalWriter(layout, cfg, set, watermarks, nil, nil, nil)
+	writer, err = newLiveJournalWriter(layout, cfg, set, watermarks, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestLiveJournalWriterAdoptsSpansFromTheDaemonBlobStore(t *testing.T) {
 	at := time.Date(2026, 8, 22, 11, 0, 0, 0, time.UTC)
 	runsDir := layout.ForGaggle("web").RunsDir()
 
-	writer, err := newLiveJournalWriter(layout, cfg, set, nil, nil, blobs, nil)
+	writer, err := newLiveJournalWriter(layout, cfg, set, nil, nil, blobs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestLiveJournalWriterAdoptsSpansFromTheDaemonBlobStore(t *testing.T) {
 	// A daemon with no store still degrades softly rather than failing the
 	// emit — the pre-#3805 behaviour, and the posture an instance with no
 	// blob plane keeps.
-	bare, err := newLiveJournalWriter(layout, cfg, set, nil, nil, nil, nil)
+	bare, err := newLiveJournalWriter(layout, cfg, set, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

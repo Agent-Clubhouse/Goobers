@@ -141,7 +141,6 @@ func runFleetJoinWithInput(ctx context.Context, args []string, stdin io.Reader, 
 		return 2
 	}
 	association, err := client.JoinDiscovered(ctx, storage, discovery, fleet.JoinOptions{
-		URL:          *fleetURL,
 		Grant:        grant,
 		InstanceRoot: root,
 		DisplayName:  filepath.Base(canonicalRoot),
@@ -181,7 +180,7 @@ func runFleetStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: initialize Fleet storage: %v\n", err)
 		return 2
 	}
-	record, err := storage.Load(root)
+	association, err := storage.LoadAssociation(root)
 	if errors.Is(err, fleet.ErrNotAssociated) {
 		if *asJSON {
 			_ = json.NewEncoder(stdout).Encode(map[string]any{
@@ -198,23 +197,23 @@ func runFleetStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	status := fleetStatusOutput{
 		Associated:             true,
-		InstanceID:             record.Association.InstanceID,
-		DisplayName:            record.Association.DisplayName,
-		FleetID:                record.Association.FleetID,
-		RegistrationID:         record.Association.RegistrationID,
-		RegistrationGeneration: record.Association.RegistrationGeneration,
-		CanonicalURI:           record.Association.CanonicalURI,
-		ConnectionEndpoint:     record.Association.ConnectionEndpoint,
-		ProtocolVersion:        record.Association.ProtocolVersion,
-		ACLVersion:             record.Association.ACL.PolicyVersion,
-		CredentialExpiresAt:    record.Association.CredentialExpiresAt,
-		Revoked:                record.Association.Revoked,
-		RevokeReason:           record.Association.RevokeReason,
-		Connected:              record.Association.Connected,
-		ConnectionID:           record.Association.ConnectionID,
-		LastConnectedAt:        record.Association.LastConnectedAt,
-		LastHeartbeatAt:        record.Association.LastHeartbeatAt,
-		LastError:              record.Association.LastError,
+		InstanceID:             association.InstanceID,
+		DisplayName:            association.DisplayName,
+		FleetID:                association.FleetID,
+		RegistrationID:         association.RegistrationID,
+		RegistrationGeneration: association.RegistrationGeneration,
+		CanonicalURI:           association.CanonicalURI,
+		ConnectionEndpoint:     association.ConnectionEndpoint,
+		ProtocolVersion:        association.ProtocolVersion,
+		ACLVersion:             association.ACL.PolicyVersion,
+		CredentialExpiresAt:    association.CredentialExpiresAt,
+		Revoked:                association.Revoked,
+		RevokeReason:           association.RevokeReason,
+		Connected:              association.Connected,
+		ConnectionID:           association.ConnectionID,
+		LastConnectedAt:        association.LastConnectedAt,
+		LastHeartbeatAt:        association.LastHeartbeatAt,
+		LastError:              association.LastError,
 	}
 	if *asJSON {
 		if err := json.NewEncoder(stdout).Encode(status); err != nil {

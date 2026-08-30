@@ -18,7 +18,6 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -55,22 +54,13 @@ type fakeEngineWorkflows struct {
 	// gate, when non-nil, blocks Get until closed — standing in for a
 	// workflow that is still executing while the daemon holds the attachment.
 	gate chan struct{}
-	// result is what the workflow RETURNED, decoded into the caller's out
-	// parameter. The resume scan discards it; the engine starter (#3876)
-	// needs it, because the phase it reports to the scheduler and the
-	// terminal hooks it fires are both derived from it.
-	result engine.RunResult
-	// workflowIDs, when non-empty, is the run-id -> workflow-id mapping a
-	// scheduled engine run needs: describing the RUN id yields NotFound for
-	// one, which is why the guards carry a resolver at all.
-	workflowIDs map[string]string
 }
 
 func (f *fakeEngineWorkflows) DescribeWorkflowExecution(_ context.Context, workflowID, _ string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
 	f.mu.Lock()
 	f.described = append(f.described, workflowID)
 	f.mu.Unlock()
-	if f.notFound || (len(f.workflowIDs) > 0 && !f.knownWorkflowID(workflowID)) {
+	if f.notFound {
 		return nil, serviceerror.NewNotFound("workflow not found")
 	}
 	if f.describeErr != nil {
@@ -96,16 +86,6 @@ func (f *fakeEngineWorkflows) CancelWorkflow(_ context.Context, workflowID, _ st
 	return f.cancelErr
 }
 
-// knownWorkflowID reports whether workflowID is one the fake actually hosts.
-func (f *fakeEngineWorkflows) knownWorkflowID(workflowID string) bool {
-	for _, id := range f.workflowIDs {
-		if id == workflowID {
-			return true
-		}
-	}
-	return false
-}
-
 func (f *fakeEngineWorkflows) snapshot() (described, awaited, cancelled []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -120,12 +100,11 @@ type fakeWorkflowRun struct {
 func (r *fakeWorkflowRun) GetID() string    { return r.id }
 func (r *fakeWorkflowRun) GetRunID() string { return "" }
 
-func (r *fakeWorkflowRun) Get(ctx context.Context, out any) error {
+func (r *fakeWorkflowRun) Get(ctx context.Context, _ any) error {
 	r.parent.mu.Lock()
 	r.parent.awaited = append(r.parent.awaited, r.id)
 	gate := r.parent.gate
 	getErr := r.parent.getErr
-	result := r.parent.result
 	r.parent.mu.Unlock()
 	if gate != nil {
 		select {
@@ -134,13 +113,7 @@ func (r *fakeWorkflowRun) Get(ctx context.Context, out any) error {
 			return ctx.Err()
 		}
 	}
-	if getErr != nil {
-		return getErr
-	}
-	if decoded, ok := out.(*engine.RunResult); ok && decoded != nil {
-		*decoded = result
-	}
-	return nil
+	return getErr
 }
 
 func (r *fakeWorkflowRun) GetWithOptions(ctx context.Context, valuePtr any, _ client.WorkflowRunGetOptions) error {

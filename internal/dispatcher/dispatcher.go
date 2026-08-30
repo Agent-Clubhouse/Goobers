@@ -129,27 +129,6 @@ type Config struct {
 	//
 	// Unset leaves the pod on procenv's built-in list alone, which fails closed.
 	EnvPassthrough []string
-	// BotLogins is the instance config's declared GitHub App bot login per
-	// configured github repository, keyed by instance.GitHubBotLoginKey —
-	// i.e. instance.Config.GitHubBotLogins(), threaded at wiring
-	// (workerdispatch.go) exactly like EnvPassthrough above and for the same
-	// class of reason.
-	//
-	// It is here because THIS process can read the instance config and a
-	// stage pod cannot (Goobers#3914). The pod's CLI resolved the login from
-	// the config itself, fail-open, so in a pod it always resolved "" and
-	// silently regressed every AuthenticatedLogin consult to GET /user —
-	// which a GitHub App installation token cannot call. Resolving it here
-	// and stamping ProviderBotLoginEnv is what closes that, and stamping it
-	// as dispatcher-owned run identity is what keeps a workflow from
-	// authoring its own bot identity in the process.
-	//
-	// Nil is a legitimate posture — an instance whose repos all authenticate
-	// with PATs declares no bot login at all — and is NOT the same as "not
-	// wired": the stamp is unconditional for a CLI stage, so a nil map stamps
-	// an EMPTY login, which the pod reads as "resolved: none declared" and
-	// serves through GET /user exactly as the local substrate does.
-	BotLogins map[string]string
 	// TmpfsSizeLimit overrides DefaultTmpfsSizeLimit; zero uses the default.
 	TmpfsSizeLimit resource.Quantity
 	// DeadlineMargin overrides DefaultDeadlineMargin; zero uses the default.

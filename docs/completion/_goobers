@@ -122,7 +122,7 @@ _goobers_completion()
             esac
             ;;
         engine-start)
-            flags+=(--gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key --direct --live-journal)
+            flags+=(--gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key --live-journal)
             ;;
         engine-queues)
             flags+=(--temporal-hostport --temporal-namespace --task-queue --timeout --json)

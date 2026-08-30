@@ -312,14 +312,7 @@ func podCIPollPoller(token string) (executor.PRPoller, error) {
 	if newPRPoller != nil {
 		return newPRPoller(token), nil
 	}
-	// Through the shared stage-provider seam: this runs IN a pod, which is
-	// exactly where the configured bot login has to come from the dispatcher's
-	// stamped run identity rather than an instance config that is not there
-	// (#3914). The poller itself reads CI state, but the seam is what keeps
-	// every in-pod GitHub construction identical.
-	return newProviderForStageAs[*providers.GitHubProvider](providerStageRoot(""), repo, true,
-		withStageProviderToken(token),
-	)
+	return newGitHubProvider(token), nil
 }
 
 // podStageTimeout is the effective wall-clock budget for this attempt, read

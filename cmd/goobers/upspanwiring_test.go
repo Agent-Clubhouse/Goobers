@@ -19,7 +19,6 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
-	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/telemetry"
 )
@@ -45,10 +44,9 @@ func TestUpHandsTheDaemonBlobStoreToBothSpanConsumers(t *testing.T) {
 
 	originalWriter := newLiveJournalWriter
 	newLiveJournalWriter = func(l instance.Layout, cfg *instance.Config, set *instance.ConfigSet,
-		watermarks *intake.Store, instanceLog *journal.InstanceLog, blobs blobstore.Store,
-		providerQuota *localscheduler.ProviderQuotaState) (*livejournal.Writer, error) {
+		watermarks *intake.Store, instanceLog *journal.InstanceLog, blobs blobstore.Store) (*livejournal.Writer, error) {
 		builtWriter, writerBlobs = true, blobs
-		return originalWriter(l, cfg, set, watermarks, instanceLog, blobs, providerQuota)
+		return originalWriter(l, cfg, set, watermarks, instanceLog, blobs)
 	}
 	t.Cleanup(func() { newLiveJournalWriter = originalWriter })
 

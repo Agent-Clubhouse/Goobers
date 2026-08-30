@@ -98,4 +98,27 @@ func TestFileStorageDeleteRemovesAssociation(t *testing.T) {
 	if _, err := store.Load(root); !errors.Is(err, ErrNotAssociated) {
 		t.Fatalf("Load after Delete error = %v, want ErrNotAssociated", err)
 	}
+	dir, err := store.InstanceDirectory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{associationFileName, privateKeyFileName, credentialFileName} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s still exists after Delete: %v", name, err)
+		}
+	}
+	if err := store.Save(root, Record{
+		Association: Association{InstanceID: "instance-2", ProtocolVersion: ProtocolVersion},
+		PrivateKey:  []byte("new-key"),
+		Credential:  "new-credential",
+	}); err != nil {
+		t.Fatalf("Save after Delete: %v", err)
+	}
+	loaded, err := store.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Association.InstanceID != "instance-2" {
+		t.Fatalf("rejoined association = %+v", loaded.Association)
+	}
 }

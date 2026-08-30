@@ -1791,25 +1791,6 @@ func (s *Scheduler) journalProviderQuotaResetDecision(provider apiv1.Provider, r
 // silent no-op here, unlike a cron Tick's skip, since a human explicitly
 // asked for this run and deserves to know why it didn't start).
 func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time) (runID string, err error) {
-	return s.TriggerWithDispatchContext(ctx, ctx, workflow, now)
-}
-
-// TriggerWithDispatchContext validates with ctx while starting an admitted run
-// with dispatchCtx — Trigger's separated-lifetime form, the same shape
-// TriggerSignalWithDispatchContext has had since delegated webhook triggers
-// landed.
-//
-// It exists because dispatch() runs the Starter goroutine on the context it is
-// handed (scheduler.go's dispatch), and the trigger plane calls in on
-// request.Context() — which Go cancels the instant the HTTP handler returns.
-// For the local runner that silently drains a trigger-plane-started run at its
-// first stage boundary; for an engine-driven run, whose Starter BLOCKS on the
-// workflow's Get, it would return PhaseRunning the moment the POST responded,
-// release the maxConcurrentRuns slot, and skip every terminal hook while the
-// workflow kept executing — silent duplicate admission (decision 005 D1,
-// finding 002 "D1 BLOCKING SEMANTICS"). Both bugs are the same bug; this is
-// the seam that closes it for the unqualified-name path.
-func (s *Scheduler) TriggerWithDispatchContext(ctx, dispatchCtx context.Context, workflow string, now time.Time) (runID string, err error) {
 	s.mu.Lock()
 	var entry WorkflowEntry
 	var gaggles []string
@@ -1834,10 +1815,7 @@ func (s *Scheduler) TriggerWithDispatchContext(ctx, dispatchCtx context.Context,
 			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
 		)
 	}
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	return s.triggerWorkflow(dispatchCtx, entry, now,
+	return s.triggerWorkflow(ctx, entry, now,
 		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
 		"manual")
 }
@@ -1881,23 +1859,13 @@ func (s *Scheduler) TriggerSignalWithDispatchContext(ctx, dispatchCtx context.Co
 
 // TriggerExact manually fires one workflow identified by its gaggle and name.
 func (s *Scheduler) TriggerExact(ctx context.Context, identity WorkflowIdentity, now time.Time) (runID string, err error) {
-	return s.TriggerExactWithDispatchContext(ctx, ctx, identity, now)
-}
-
-// TriggerExactWithDispatchContext is TriggerExact with separate validation and
-// run-lifetime contexts. See TriggerWithDispatchContext for why the trigger
-// plane and the pending-trigger sweep must use this form and not TriggerExact.
-func (s *Scheduler) TriggerExactWithDispatchContext(ctx, dispatchCtx context.Context, identity WorkflowIdentity, now time.Time) (runID string, err error) {
 	s.mu.Lock()
 	entry, ok := s.workflows[identity]
 	s.mu.Unlock()
 	if !ok {
 		return "", fmt.Errorf("localscheduler: unknown workflow %q in gaggle %q", identity.Workflow, identity.Gaggle)
 	}
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	return s.triggerWorkflow(dispatchCtx, entry, now,
+	return s.triggerWorkflow(ctx, entry, now,
 		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
 		"manual")
 }
@@ -1951,12 +1919,6 @@ func (s *Scheduler) TriggerSignalExactWithDispatchContext(ctx, dispatchCtx conte
 // publishes state that can change its selection order. It is an output-driven
 // signal, not a bypass: normal readiness admission still applies.
 func (s *Scheduler) TriggerPriority(ctx context.Context, identity WorkflowIdentity, sourceRun string, now time.Time) (runID string, err error) {
-	return s.TriggerPriorityWithDispatchContext(ctx, ctx, identity, sourceRun, now)
-}
-
-// TriggerPriorityWithDispatchContext is TriggerPriority with separate
-// validation and run-lifetime contexts. See TriggerWithDispatchContext.
-func (s *Scheduler) TriggerPriorityWithDispatchContext(ctx, dispatchCtx context.Context, identity WorkflowIdentity, sourceRun string, now time.Time) (runID string, err error) {
 	s.mu.Lock()
 	entry, ok := s.workflows[identity]
 	s.mu.Unlock()
@@ -1966,10 +1928,7 @@ func (s *Scheduler) TriggerPriorityWithDispatchContext(ctx, dispatchCtx context.
 	if strings.TrimSpace(sourceRun) == "" {
 		return "", errors.New("localscheduler: priority trigger source run is required")
 	}
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	return s.triggerWorkflow(dispatchCtx, entry, now,
+	return s.triggerWorkflow(ctx, entry, now,
 		journal.Trigger{Kind: journal.TriggerSignal, Ref: "priority-re-tick:" + sourceRun},
 		"priority re-tick requested by run "+sourceRun)
 }

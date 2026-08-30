@@ -133,19 +133,6 @@ type RunInput struct {
 	// these fields existed — is a no-op, byte for byte as before.
 	BacklogQueryAssignedTo    string `json:"backlogQueryAssignedTo,omitempty"`
 	BacklogQueryRequireLabels string `json:"backlogQueryRequireLabels,omitempty"`
-	// GooberDigest is the content digest of the goober kit this run's stages
-	// are meant to execute, pinned at start exactly as the local scheduler
-	// stamps it onto a runner-driven StartRequest
-	// (localscheduler.gooberDigestStarter). It lands in the run.yaml identity
-	// so an engine run's provenance names its kit and the parity harness can
-	// compare the two drivers' run.yaml side by side.
-	//
-	// It is provenance, NOT selection: the worker resolves the kit it
-	// actually runs from its own mounted config, so a kit rolled forward
-	// mid-flight is still observed by an in-flight run. Closing that is
-	// #3884. Empty — every input persisted before this field existed —
-	// projects exactly as before.
-	GooberDigest string `json:"gooberDigest,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {
@@ -280,8 +267,8 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		return RunResult{}, err
 	}
 	for _, g := range in.Spec.Gates {
-		if err := refuseHumanGate(g); err != nil {
-			return RunResult{}, err
+		if g.Evaluator == apiv1.EvaluatorHuman {
+			return RunResult{}, fmt.Errorf("%s: gate %q", temporalHumanGateUnsupported, g.Name)
 		}
 	}
 	rec, err := newRunJournal(ctx, in, m)
@@ -602,6 +589,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			if terminal {
 				return out, nil
 			}
+			var injected *apiv1.ContextPointer
 			if verdictArtifact != nil {
 				// #412: the next dispatch — most commonly a repass back to the
 				// stage that produced the subject this gate just evaluated —
@@ -609,16 +597,25 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				// infer "something needs to change" from git. The local
 				// runner's walk appends the same "<gate>.verdict" pointer on
 				// both its retry route and its advance path.
-				pointers = append(pointers, apiv1.ContextPointer{
+				pointer := apiv1.ContextPointer{
 					Name: g.Name + ".verdict", Integrity: verdictArtifact.Integrity, Artifact: verdictArtifact,
-				})
+				}
+				injected = &pointer
+				pointers = append(pointers, pointer)
 			}
-			// The #3843 learning-episode INJECTION that belongs on this arm —
-			// the episode artifact and the learning.episode[<seq>] pointer the
-			// repass is dispatched with — is deliberately absent: it needs an
-			// in-walk artifact-recording seam and is owned by #3913, which
-			// lands before this lane's cutover. The bounded gap is asserted by
-			// the retry-decision parity row so it cannot widen silently.
+			// #3843: a gate sending a stage BACK commits a learning episode
+			// and hands the repass a pointer to it, so the next attempt argues
+			// with the reviewer's finding instead of rediscovering it. Only on
+			// the retry route — an advancing gate has nothing to teach.
+			if retryRoute && gateSendsBack(gr, next, upstream) {
+				episode, eerr := rec.learningEpisode(ctx, in, g.Name, next, gr, verdict, lastStage, lastResult, injected)
+				if eerr != nil {
+					return RunResult{}, fmt.Errorf("engine: journal learning episode for gate %q: %w", g.Name, eerr)
+				}
+				if episode != nil {
+					pointers = append(pointers, *episode)
+				}
+			}
 			state = next
 			continue
 		}

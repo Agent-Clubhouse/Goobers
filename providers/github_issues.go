@@ -198,17 +198,9 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 
 // AuthenticatedLogin returns the GitHub login represented by the provider's
 // credential.
-//
-// Three arms, in this order: the login declared by configuration (#3343, the
-// only arm an App installation token can satisfy), a REFUSAL when the caller
-// declared identity resolution unavailable and the fallback unsafe (#3914),
-// and GET /user — which is PAT-only and remains the correct answer for one.
 func (p *GitHubProvider) AuthenticatedLogin(ctx context.Context) (string, error) {
 	if p.configuredLogin != "" {
 		return p.configuredLogin, nil
-	}
-	if p.loginSelfReportRefusal != "" {
-		return "", &LoginSelfReportRefusedError{Reason: p.loginSelfReportRefusal}
 	}
 	endpoint, err := joinURL(p.BaseURL, "user")
 	if err != nil {
@@ -223,24 +215,6 @@ func (p *GitHubProvider) AuthenticatedLogin(ctx context.Context) (string, error)
 		return "", fmt.Errorf("authenticated GitHub user has no login")
 	}
 	return login, nil
-}
-
-// LoginSelfReportRefusedError is returned by AuthenticatedLogin when the
-// provider was constructed with WithLoginSelfReportRefused: the caller could
-// not resolve the declared identity and refused the GET /user fallback rather
-// than issue a request an App installation token cannot make (Goobers#3914).
-//
-// A distinct type so a caller can tell "this platform could not tell me who I
-// am" from a forge-side permission failure, and so a test can prove the
-// refusal happened WITHOUT a request rather than inferring it from a message.
-type LoginSelfReportRefusedError struct {
-	// Reason states what was missing and where, for the operator who has to
-	// fix it.
-	Reason string
-}
-
-func (e *LoginSelfReportRefusedError) Error() string {
-	return "github: the authenticated login is unresolved and self-report (GET /user) is refused: " + e.Reason
 }
 
 // UpdateComment edits an existing issue/PR comment's body in place — the

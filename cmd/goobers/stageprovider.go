@@ -2,13 +2,10 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"regexp"
+
 	"strings"
 
 	"github.com/goobers/goobers/internal/capability"
-	"github.com/goobers/goobers/internal/dispatcher"
-	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
@@ -115,17 +112,6 @@ func newProviderForStage(root string, repo providers.RepositoryRef, readOnly boo
 }
 
 func newProviderForStageAs[T providers.Provider](root string, repo providers.RepositoryRef, readOnly bool, opts ...stageProviderOption) (T, error) {
-	return newProviderForStageSurface[T](root, repo, readOnly, opts...)
-}
-
-// newProviderForStageSurface is newProviderForStageAs for a stage surface that
-// is not itself a superset of providers.Provider — a lane interface naming
-// only the calls one stage makes (prCommentWatchProvider, remediationProvider).
-// Those exist so a stage declares its own needs, and they must not be a reason
-// to construct a backend directly: an off-seam constructor is one with no
-// configured login, which is #3885/#3890 on the local substrate and #3914 in a
-// pod.
-func newProviderForStageSurface[T any](root string, repo providers.RepositoryRef, readOnly bool, opts ...stageProviderOption) (T, error) {
 	var zero T
 	provider, err := newProviderForStage(root, repo, readOnly, opts...)
 	if err != nil {
@@ -174,13 +160,12 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 	// Under GitHub App auth the minted installation token cannot self-report
 	// its login (GET /user is PAT-only), so every trusted-comment check —
 	// claim markers first among them — needs the login declared in config
-	// and threaded here (#3343). In a stage pod there IS no config, so the
-	// dispatcher resolves it daemon-side and stamps it as run identity; this
-	// seam is where both substrates converge (#3914). An unresolved identity
-	// no longer degrades to GET /user in a pod — it makes AuthenticatedLogin
-	// refuse, which leaves a provider whose stage never asks for a login
-	// working exactly as before.
-	opts = append(opts, stageProviderConfiguredLogin(cfg.root, cfg.repo).options()...)
+	// and threaded here (#3343). Best-effort: a missing/unreadable config or
+	// an absent slug leaves the GET /user path in place, which is correct
+	// for PATs and fails with the actionable 403 for undeclared App auth.
+	if login := stageProviderConfiguredLogin(cfg.root, cfg.repo); login != "" {
+		opts = append(opts, providers.WithConfiguredLogin(login))
+	}
 	if recorder := stageProviderMutationRecorder(cfg); recorder != nil {
 		opts = append(opts, providers.WithMutationRecorder(recorder))
 	}
@@ -233,130 +218,20 @@ func stageProviderMutationRecorder(cfg stageProviderConfig) providers.MutationRe
 
 // stageProviderConfiguredLogin resolves the config-declared bot login for the
 // stage's target repository — the repos[] entry matching owner/name whose
-// auth block declares a GitHub App slug (#3343) — on the LOCAL substrate,
-// where the instance config is readable, or from the dispatcher's stamped run
-// identity in a stage pod, where it is not (#3914).
-//
-// It returns a resolution rather than a string because "" is two different
-// answers and conflating them is the bug this exists to fix. See
-// stageProviderLogin.
-//
-// PRECEDENCE: the dispatcher-stamped identity WINS over any config file it
-// could read. In a pod the only config reachable at all is one inside the
-// workspace — content the run itself may have authored — so a stamp that
-// yielded to a file on disk would hand a workflow the bot identity it is
-// specifically not allowed to author. On the local substrate the variable is
-// not stamped (the executor never sets it, and procenv's default-deny
-// allowlist does not carry the name), so this arm simply does not arise and
-// local behavior is the pre-existing config lookup exactly.
-func stageProviderConfiguredLogin(root string, repo providers.RepositoryRef) stageProviderLogin {
-	if repo.Provider != providers.ProviderGitHub {
-		return stageProviderLogin{}
-	}
-	if stamped, ok := os.LookupEnv(dispatcher.ProviderBotLoginEnv); ok {
-		return stageProviderStampedLogin(stamped, repo)
+// auth block declares a GitHub App slug (#3343). Best-effort by design: any
+// load failure returns "" and the provider falls back to GET /user.
+func stageProviderConfiguredLogin(root string, repo providers.RepositoryRef) string {
+	if repo.Provider != providers.ProviderGitHub || root == "" {
+		return ""
 	}
 	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
-	if err == nil {
-		// The config is authoritative here, INCLUDING when it declares no bot
-		// login for this repo: that is the PAT posture, and GET /user is the
-		// right answer for it.
-		return stageProviderLogin{login: cfg.GitHubBotLogin(repo.Owner, repo.Name)}
+	if err != nil {
+		return ""
 	}
-	if strings.TrimSpace(os.Getenv(executor.InstanceRootEnvVar)) == "" {
-		// No instance root and no stamp: this is a stage pod (the same
-		// signal dispatchexec.go's instance-root backstop keys off, and true
-		// in a pod because the dispatcher never stamps that variable) served
-		// by a dispatcher that does not stamp the login yet — version skew,
-		// or a hand-built attempt. Fail the identity CLOSED. Falling through
-		// to GET /user is what #3914 is: correct under a PAT, and under App
-		// auth a request that cannot succeed, failing far away with a forge
-		// error for a platform fault.
-		return stageProviderLogin{refusal: fmt.Sprintf(
-			"this stage is running in a pod (%s is unset) and the dispatcher stamped no %s for %s/%s; the instance config that declares the bot login is not readable here, so the login cannot be resolved (Goobers#3914)",
-			executor.InstanceRootEnvVar, dispatcher.ProviderBotLoginEnv, repo.Owner, repo.Name)}
+	for _, r := range cfg.Repos {
+		if r.Provider == "github" && strings.EqualFold(r.Owner, repo.Owner) && strings.EqualFold(r.Name, repo.Name) {
+			return r.Auth.BotLogin()
+		}
 	}
-	// An instance root IS declared and its config did not load: the
-	// pre-existing best-effort local posture, unchanged. A PAT self-reports,
-	// and undeclared App auth still fails with the actionable 403.
-	return stageProviderLogin{}
+	return ""
 }
-
-// stageProviderLogin is what identity resolution produced for one provider
-// construction, and it has three states because the far side has three cases
-// (#3914):
-//
-//   - login set        — apply providers.WithConfiguredLogin;
-//   - both empty       — no declared login; GET /user is correct (a PAT);
-//   - refusal set      — identity could not be resolved AND the fallback is
-//     known-unsafe, so AuthenticatedLogin must fail closed instead of asking
-//     an endpoint an App installation token cannot call.
-//
-// The refusal is deliberately NOT a construction error: a provider whose stage
-// never consults AuthenticatedLogin is unaffected by an unresolved login and
-// must keep working — "genuinely unconfigured provider" is a supported posture
-// and this must not turn it into a refused stage. The refusal travels INTO the
-// provider and fires only if the login is actually asked for.
-type stageProviderLogin struct {
-	login   string
-	refusal string
-}
-
-// options renders the resolution as GitHub provider options.
-func (r stageProviderLogin) options() []func(*providers.GitHubProvider) {
-	if r.login != "" {
-		return []func(*providers.GitHubProvider){providers.WithConfiguredLogin(r.login)}
-	}
-	if r.refusal != "" {
-		return []func(*providers.GitHubProvider){providers.WithLoginSelfReportRefused(r.refusal)}
-	}
-	return nil
-}
-
-// stageProviderStampedLogin interprets the dispatcher's stamped identity for
-// the repository a provider is being built for.
-//
-// The stamp names ONE repository — the one the run was routed to — so it is
-// applied only to that repository. A stage building a provider for some other
-// repo (an additional repo, a cross-repo read) has no resolved identity for
-// it, and in a pod there is no config to resolve one from, so that fails
-// closed too rather than borrowing the routed repo's login and acting under
-// an identity the operator never declared for it.
-//
-// The routed repository is read from the dispatcher's own GOOBERS_REPO_*
-// variables, which sit in the same control-env category as the stamp itself:
-// a workflow cannot author either, so the binding cannot be bypassed by
-// declaring a repository.
-func stageProviderStampedLogin(stamped string, repo providers.RepositoryRef) stageProviderLogin {
-	routedOwner := os.Getenv(executor.RepoOwnerEnvVar)
-	routedName := os.Getenv(executor.RepoNameEnvVar)
-	if !strings.EqualFold(instance.GitHubBotLoginKey(routedOwner, routedName), instance.GitHubBotLoginKey(repo.Owner, repo.Name)) ||
-		strings.TrimSpace(routedOwner) == "" || strings.TrimSpace(routedName) == "" {
-		return stageProviderLogin{refusal: fmt.Sprintf(
-			"%s was stamped for the routed repository %s/%s, not for %s/%s; this stage has no resolved provider identity for that repository (Goobers#3914)",
-			dispatcher.ProviderBotLoginEnv, routedOwner, routedName, repo.Owner, repo.Name)}
-	}
-	login := strings.TrimSpace(stamped)
-	if login == "" {
-		// Resolved, and nothing declared: the PAT posture. The local
-		// substrate returns "" for exactly the same repository, so the two
-		// substrates agree — which is the parity #3914 asks for, not merely
-		// the App case working.
-		return stageProviderLogin{}
-	}
-	if !githubLoginPattern.MatchString(login) {
-		return stageProviderLogin{refusal: fmt.Sprintf(
-			"%s is malformed (%q is not a GitHub login); refusing to act under an unusable identity rather than falling back to GET /user (Goobers#3914)",
-			dispatcher.ProviderBotLoginEnv, stamped)}
-	}
-	return stageProviderLogin{login: login}
-}
-
-// githubLoginPattern is the shape a GitHub login can have: alphanumerics and
-// hyphens, optionally with the "[bot]" suffix an App's login carries. It is a
-// SANITY bound, not an authorization: the stamp is dispatcher-owned, so this
-// catches a mis-stamped or truncated value (a whole config blob, a value with
-// a newline, an empty "[bot]") before it is compared against comment authors,
-// where a malformed identity matches nothing and every trusted-comment check
-// silently reads as "not mine".
-var githubLoginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$`)

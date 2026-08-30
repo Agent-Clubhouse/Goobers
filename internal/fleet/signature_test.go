@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"testing"
@@ -30,10 +31,16 @@ func TestSignChallengeUsesP256ASN1Base64URL(t *testing.T) {
 	if _, err := base64.RawURLEncoding.DecodeString(signature); err != nil {
 		t.Fatalf("signature is not unpadded base64url: %v", err)
 	}
-	if err := VerifyChallenge(&key.PublicKey, signature, "fleet", "registration", 4, "connection", "nonce"); err != nil {
+	decoded, err := base64.RawURLEncoding.DecodeString(signature)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := VerifyChallenge(&key.PublicKey, signature, "fleet", "registration", 5, "connection", "nonce"); err == nil {
+	digest := sha256.Sum256([]byte(ChallengePayload("fleet", "registration", 4, "connection", "nonce")))
+	if !ecdsa.VerifyASN1(&key.PublicKey, digest[:], decoded) {
+		t.Fatal("signature did not verify")
+	}
+	wrongDigest := sha256.Sum256([]byte(ChallengePayload("fleet", "registration", 5, "connection", "nonce")))
+	if ecdsa.VerifyASN1(&key.PublicKey, wrongDigest[:], decoded) {
 		t.Fatal("signature verified for the wrong generation")
 	}
 }

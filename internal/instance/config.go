@@ -774,63 +774,6 @@ func (a *RepoAuthConfig) BotLogin() string {
 	return strings.TrimSpace(a.Slug) + "[bot]"
 }
 
-// GitHubBotLoginKey is the identity of a github repository for bot-login
-// lookup: owner and name, case-folded, because GitHub itself is
-// case-insensitive about both and a config author's capitalization must not
-// decide whether a stage finds its own login.
-//
-// It exists so the two consumers that resolve the same fact cannot disagree
-// about what "the same repository" means: a stage reading the config directly
-// (the local substrate) and the dispatcher indexing every configured login to
-// stamp one into a stage pod, which has no config to read (#3914).
-func GitHubBotLoginKey(owner, name string) string {
-	return strings.ToLower(strings.TrimSpace(owner)) + "/" + strings.ToLower(strings.TrimSpace(name))
-}
-
-// GitHubBotLogin returns the configured bot login for the github repository
-// owner/name — the App slug plus "[bot]" for a repo whose auth block declares
-// kind github-app with a slug, and "" for every other repo, including one this
-// config does not name at all.
-//
-// "" is a MEANINGFUL answer and not an error: it is the PAT posture, where the
-// credential can self-report through GET /user and no declaration is needed
-// (#3343). Distinguishing it from "nobody resolved this" is the whole of
-// #3914's fail-closed rule, and that distinction is made by the CALLER — here
-// by an unreadable config, in a pod by an unstamped identity variable.
-func (c *Config) GitHubBotLogin(owner, name string) string {
-	if c == nil {
-		return ""
-	}
-	return c.GitHubBotLogins()[GitHubBotLoginKey(owner, name)]
-}
-
-// GitHubBotLogins indexes every configured github repo's declared bot login by
-// GitHubBotLoginKey, omitting the repos that declare none.
-//
-// It is the daemon-side half of #3914: a stage pod has no instance root, so
-// the dispatcher — which does — resolves the login at dispatch and stamps it
-// as run identity. Both halves read THIS index, so the login a pod is handed
-// is the one the local substrate would have computed by construction, not by
-// two lookups that agree until one of them is edited.
-func (c *Config) GitHubBotLogins() map[string]string {
-	if c == nil {
-		return nil
-	}
-	logins := make(map[string]string, len(c.Repos))
-	for _, r := range c.Repos {
-		if r.Provider != "github" {
-			continue
-		}
-		if login := r.Auth.BotLogin(); login != "" {
-			logins[GitHubBotLoginKey(r.Owner, r.Name)] = login
-		}
-	}
-	if len(logins) == 0 {
-		return nil
-	}
-	return logins
-}
-
 // hasGitHubAppFields reports whether any github-app-only field is set, for
 // fail-closed rejection on kinds that must not carry them.
 func (a *RepoAuthConfig) hasGitHubAppFields() bool {

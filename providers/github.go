@@ -52,20 +52,6 @@ type GitHubProvider struct {
 	// the first time claiming ran under App auth (#3343). Bot logins are the
 	// App slug plus "[bot]".
 	configuredLogin string
-	// loginSelfReportRefusal, when set, is the reason AuthenticatedLogin must
-	// refuse INSTEAD of falling back to GET /user — a fail-closed identity
-	// posture for a caller that knows the login should have been declared and
-	// was not resolved (Goobers#3914: a stage pod whose dispatcher stamped no
-	// bot login at all).
-	//
-	// It exists because the GET /user fallback is not a neutral default under
-	// App auth: an installation token cannot call that endpoint, so the
-	// fallback is a request that CANNOT succeed, and it fails far away with
-	// "Resource not accessible by integration" — an error naming the forge for
-	// a fault that is entirely local. Refusing before the request states the
-	// actual cause and, under a PAT, is never reached (a caller only sets this
-	// when identity resolution itself was unavailable).
-	loginSelfReportRefusal string
 	// now and sleep are injectable for deterministic rate-limit tests.
 	now    func() time.Time
 	sleep  func(context.Context, time.Duration) error
@@ -78,22 +64,6 @@ type GitHubProvider struct {
 func WithConfiguredLogin(login string) func(*GitHubProvider) {
 	return func(p *GitHubProvider) {
 		p.configuredLogin = strings.TrimSpace(login)
-	}
-}
-
-// WithLoginSelfReportRefused makes AuthenticatedLogin FAIL rather than fall
-// back to GET /user, carrying reason as the diagnosis (Goobers#3914).
-//
-// For the caller that cannot resolve the provider identity and knows the
-// fallback is not a safe default: a goobers-CLI stage in a pod, where the
-// instance config is unreadable and the dispatcher stamped no login. Under
-// GitHub App auth GET /user is a request that cannot succeed, and a stage that
-// makes it anyway reports a forge permission error for a platform wiring
-// fault. WithConfiguredLogin wins if both are set — a resolved identity is
-// never overridden by a refusal.
-func WithLoginSelfReportRefused(reason string) func(*GitHubProvider) {
-	return func(p *GitHubProvider) {
-		p.loginSelfReportRefusal = strings.TrimSpace(reason)
 	}
 }
 

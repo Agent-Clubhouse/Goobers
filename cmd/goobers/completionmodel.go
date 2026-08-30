@@ -197,8 +197,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
 		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
-		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key (requires --direct)"},
-		{name: "direct", desc: "Dispatch straight to Temporal instead of through the running daemon"},
+		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key"},
 		{name: "live-journal", desc: "Author the run journal live through the daemon's journal plane"},
 	},
 	"engine-queues": {

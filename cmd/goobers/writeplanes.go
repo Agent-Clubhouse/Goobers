@@ -386,28 +386,12 @@ func (s *daemonClaimService) journalRefusal(request httpapi.ClaimRequest, holder
 // plane dispatches through — the same methods the pending-triggers sweep
 // calls, seam-shaped for tests.
 type workflowTriggerer interface {
-	// Every method here is a *WithDispatchContext form, which splits the caller's context in two:
-	// admission is validated against the CALLER's context (so a hung or
-	// abandoned caller cannot hold an admission decision open), while the
-	// dispatched run's own lifecycle hangs off the DAEMON's context.
-	//
-	// #3876 (decision 005 D1). Before the split, every trigger-plane dispatch
-	// ran under the HTTP *request* context. An engine dispatch is
-	// asynchronous — it starts a Temporal workflow, then awaits its result —
-	// so `curl` hanging up, or Go's http.Server cancelling the request
-	// context the instant the handler returns 200, cancelled the await. The
-	// workflow kept running on the far side while this daemon concluded the
-	// run had failed: a divergence between the durable truth and the
-	// journal, produced by nothing more than a client disconnect. The runner
-	// path had the same latent bug, hidden only because its dispatch was
-	// synchronous enough to finish first.
-	//
-	// TriggerPriority* is the output-driven re-tick the sweep dispatches for
-	// a priority request file (rundelegate.go) — the plane's path for a stage
+	Trigger(ctx context.Context, workflow string, now time.Time) (string, error)
+	TriggerExact(ctx context.Context, identity localscheduler.WorkflowIdentity, now time.Time) (string, error)
+	// TriggerPriority is the output-driven re-tick the sweep dispatches for a
+	// priority request file (rundelegate.go) — the plane's path for a stage
 	// pod, which has no scheduler directory to drop that file into.
-	TriggerWithDispatchContext(ctx, dispatchCtx context.Context, workflow string, now time.Time) (string, error)
-	TriggerExactWithDispatchContext(ctx, dispatchCtx context.Context, identity localscheduler.WorkflowIdentity, now time.Time) (string, error)
-	TriggerPriorityWithDispatchContext(ctx, dispatchCtx context.Context, identity localscheduler.WorkflowIdentity, sourceRun string, now time.Time) (string, error)
+	TriggerPriority(ctx context.Context, identity localscheduler.WorkflowIdentity, sourceRun string, now time.Time) (string, error)
 }
 
 // maxTriggerDedupeRecords bounds the trigger plane's delivery-dedupe memory,
@@ -423,11 +407,6 @@ const maxTriggerDedupeRecords = 10000
 type daemonTriggerService struct {
 	sched atomic.Pointer[localscheduler.Scheduler]
 	now   func() time.Time
-	// dispatchCtx is the daemon's lifecycle context, attached alongside the
-	// scheduler. Runs this plane mints live and die with the daemon, not with
-	// the HTTP request that asked for them. nil (never attached) degrades to
-	// the request context, which is the pre-#3876 behaviour.
-	dispatchCtx atomic.Pointer[dispatchContextHolder]
 	// dispatch overrides the scheduler dispatch seam in tests; nil dispatches
 	// through the attached scheduler.
 	dispatch workflowTriggerer
@@ -458,27 +437,6 @@ func (s *daemonTriggerService) AttachScheduler(sched *localscheduler.Scheduler) 
 	if s != nil {
 		s.sched.Store(sched)
 	}
-}
-
-// dispatchContextHolder boxes a context for atomic.Pointer, which cannot hold
-// an interface value.
-type dispatchContextHolder struct{ ctx context.Context }
-
-// AttachDispatchContext gives the plane the daemon's lifecycle context. Call
-// it with the same context the scheduler itself runs under.
-func (s *daemonTriggerService) AttachDispatchContext(ctx context.Context) {
-	if s != nil && ctx != nil {
-		s.dispatchCtx.Store(&dispatchContextHolder{ctx: ctx})
-	}
-}
-
-// lifecycleContext returns the attached daemon context, falling back to the
-// caller's when the plane was never attached.
-func (s *daemonTriggerService) lifecycleContext(requestCtx context.Context) context.Context {
-	if holder := s.dispatchCtx.Load(); holder != nil && holder.ctx != nil {
-		return holder.ctx
-	}
-	return requestCtx
 }
 
 func (s *daemonTriggerService) triggerer() workflowTriggerer {
@@ -532,10 +490,6 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 		}
 	}
 
-	// The request context governs admission; the daemon's lifecycle context
-	// governs the run the admission mints. See workflowTriggerer.
-	dispatchCtx := s.lifecycleContext(ctx)
-
 	var runID string
 	var err error
 	switch {
@@ -550,15 +504,15 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 				"a priority trigger requires the workflow's gaggle", nil)
 			break
 		}
-		runID, err = dispatch.TriggerPriorityWithDispatchContext(ctx, dispatchCtx, localscheduler.WorkflowIdentity{
+		runID, err = dispatch.TriggerPriority(ctx, localscheduler.WorkflowIdentity{
 			Gaggle: request.Gaggle, Workflow: request.Workflow,
 		}, strings.TrimSpace(request.SourceRun), s.now())
 	case request.Gaggle != "":
-		runID, err = dispatch.TriggerExactWithDispatchContext(ctx, dispatchCtx, localscheduler.WorkflowIdentity{
+		runID, err = dispatch.TriggerExact(ctx, localscheduler.WorkflowIdentity{
 			Gaggle: request.Gaggle, Workflow: request.Workflow,
 		}, s.now())
 	default:
-		runID, err = dispatch.TriggerWithDispatchContext(ctx, dispatchCtx, request.Workflow, s.now())
+		runID, err = dispatch.Trigger(ctx, request.Workflow, s.now())
 	}
 	if err != nil {
 		if requestID != "" {

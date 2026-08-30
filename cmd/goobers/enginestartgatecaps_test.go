@@ -17,7 +17,7 @@ import (
 // projection's scoping checkable: engine-start pins the goobers the worker for
 // this gaggle will admit (workerwiring.go's resolveGoobersForGaggle rule), not
 // the daemon's instance-wide gateGooberCaps map — see
-// engineRunGateGooberCapabilities for why the two differ and in which
+// engineStartGateGooberCapabilities for why the two differ and in which
 // direction.
 func gateCapabilityFixture() (*instance.Config, *instance.ConfigSet) {
 	cfg, set, _ := runControlsFixture()
@@ -55,9 +55,9 @@ func gateCapabilityFixture() (*instance.Config, *instance.ConfigSet) {
 // filled this in; engine-start did not.
 func TestEngineStartSpecPinsGateGooberCapabilities(t *testing.T) {
 	cfg, set := gateCapabilityFixture()
-	spec, err := engineRunSpec(engineRunRequestFor(t, cfg, set, "web", "implementation"))
+	spec, err := engineStartSpec(engineStartRequestFor(t, cfg, set, "web", "implementation"))
 	if err != nil {
-		t.Fatalf("engineRunSpec: %v", err)
+		t.Fatalf("engineStartSpec: %v", err)
 	}
 	want := map[string][]string{
 		"reviewer":        {"repo:read", "model:invoke"},
@@ -75,9 +75,9 @@ func TestEngineStartSpecPinsGateGooberCapabilities(t *testing.T) {
 // field the registry drops never reaches run.yaml.
 func TestEngineStartGateGooberCapabilitiesReachRunInput(t *testing.T) {
 	cfg, set := gateCapabilityFixture()
-	spec, err := engineRunSpec(engineRunRequestFor(t, cfg, set, "web", "implementation"))
+	spec, err := engineStartSpec(engineStartRequestFor(t, cfg, set, "web", "implementation"))
 	if err != nil {
-		t.Fatalf("engineRunSpec: %v", err)
+		t.Fatalf("engineStartSpec: %v", err)
 	}
 	reg, _, err := bootstrap.RegisterGaggleWorkflows(set, "web")
 	if err != nil {
@@ -102,9 +102,9 @@ func TestEngineStartGateGooberCapabilitiesReachRunInput(t *testing.T) {
 // empty-but-present one.
 func TestEngineStartGateGooberCapabilitiesEmptyWithoutGrants(t *testing.T) {
 	cfg, set, _ := runControlsFixture()
-	spec, err := engineRunSpec(engineRunRequestFor(t, cfg, set, "web", "implementation"))
+	spec, err := engineStartSpec(engineStartRequestFor(t, cfg, set, "web", "implementation"))
 	if err != nil {
-		t.Fatalf("engineRunSpec: %v", err)
+		t.Fatalf("engineStartSpec: %v", err)
 	}
 	if spec.GateGooberCapabilities != nil {
 		t.Fatalf("StartSpec.GateGooberCapabilities = %v, want nil for an instance declaring no goober capabilities", spec.GateGooberCapabilities)

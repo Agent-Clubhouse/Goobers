@@ -19,7 +19,6 @@ import (
 	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
-	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -477,7 +476,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// The live journal writer (DS4) authors engine-run journals from events
 	// emitted as they happen; the projection reconciler below is thereby the
 	// repair/verify path (DS5), never the authority, for live-authored runs.
-	liveJournals, err := newLiveJournalWriter(l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, blobStore, setup.ProviderQuota)
+	liveJournals, err := newLiveJournalWriter(l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, blobStore)
 	if err != nil {
 		pf(stderr, "error: initialize live journal writer: %v\n", err)
 		return 1
@@ -507,32 +506,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	defer stopEngineProjection()
-	// #3876 (decision 005 D1, piece 6): teach the guards the run-id ->
-	// workflow-id mapping BEFORE anything reattaches, or a scheduled engine
-	// run's describe returns NotFound and the resume scan releases its
-	// concurrency slot underneath a live workflow. A failed scan is a
-	// warning, not a boot failure: it degrades to the pre-#3876 behaviour, in
-	// which direct runs still reattach correctly.
-	engineGuards, openEngineRuns, engineScanErr := attachEngineOpenRunResolver(ctx, engineClient, engineGuards, ownedGaggleSet(setup.Machines))
-	if engineScanErr != nil {
-		pf(stderr, "warning: %v\n", engineScanErr)
-	}
-	for _, runID := range reportOrphanedEngineRuns(l, setup.InstanceLog, openEngineRuns) {
-		pf(stderr, "warning: engine run %s is open on the engine with no local run directory\n", runID)
-	}
-	// #3876 (decision 005 D1): the engine starters the scheduler entries carry
-	// were built before this client and this writer existed. Attach them now,
-	// once, so a lane the selection predicate placed on the engine can
-	// actually dispatch. An unattached runtime refuses the dispatch rather
-	// than silently running remotely-pinned stages on this host.
-	if engineClient != nil {
-		setup.EngineRuntime.Attach(
-			engine.NewTemporalStarter(engineClient.Temporal(), setup.Config.EffectiveEngineConfig().TaskQueue),
-			engineGuards,
-			liveJournals,
-			time.Now,
-		)
-	}
 	printValidationWarnings(stdout, setup.Validation.CLIWarnings())
 	if warning := webhookConfigurationWarning(setup.Definitions, setup.Config); warning != "" {
 		pln(stdout, warning)
@@ -951,9 +924,6 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	interventions.AttachScheduler(sched)
 	triggerPlane.AttachScheduler(sched)
-	// #3876: runs the trigger plane mints outlive the HTTP request that asked
-	// for them. Admission is still validated against the request context.
-	triggerPlane.AttachDispatchContext(ctx)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {
@@ -998,11 +968,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 				if err != nil {
 					return nil, err
 				}
-				prepare, err := buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
-				if err != nil {
-					return nil, err
-				}
-				return prepare.runnerPreparer(), nil
+				return buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
 			},
 			setup.TerminalNotifier,
 			sched.ReleaseRun,
@@ -1438,6 +1404,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}()
 
+	fleetConnectorDone, fleetConnectorStarted, fleetConnectorErr := startDaemonFleetConnector(ctx, root)
+	if fleetConnectorErr != nil {
+		pf(stdout, "warning: Fleet connector unavailable: %v\n", fleetConnectorErr)
+	}
 	if webhookGate.Start() {
 		ready.Store(true)
 	}
@@ -1447,6 +1417,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	if diagnosticsMode {
 		pln(stdout, "diagnostics mode: ON — long-running stages get periodic process samples + lsof + un-truncated output recorded as run artifacts")
+	}
+	if fleetConnectorStarted {
+		pln(stdout, "Fleet connector started")
 	}
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
@@ -1551,6 +1524,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	<-supervisorStopDone
 	if heartbeatDone != nil {
 		<-heartbeatDone
+	}
+	if fleetConnectorStarted {
+		if connectorErr := <-fleetConnectorDone; connectorErr != nil &&
+			!errors.Is(connectorErr, context.Canceled) &&
+			!errors.Is(connectorErr, context.DeadlineExceeded) {
+			pf(stdout, "warning: Fleet connector stopped: %v\n", connectorErr)
+		}
 	}
 
 	if runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {

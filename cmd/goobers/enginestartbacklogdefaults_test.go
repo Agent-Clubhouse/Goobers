@@ -32,9 +32,9 @@ func backlogPartitionFixture() (*instance.Config, *instance.ConfigSet) {
 // instance's goobers:local items.
 func TestEngineStartSpecPinsBacklogQueryDefaults(t *testing.T) {
 	cfg, set := backlogPartitionFixture()
-	spec, err := engineRunSpec(engineRunRequestFor(t, cfg, set, "web", "implementation"))
+	spec, err := engineStartSpec(engineStartRequestFor(t, cfg, set, "web", "implementation"))
 	if err != nil {
-		t.Fatalf("engineRunSpec: %v", err)
+		t.Fatalf("engineStartSpec: %v", err)
 	}
 	if got, want := spec.BacklogQueryAssignedTo, "goobersbot"; got != want {
 		t.Fatalf("StartSpec.BacklogQueryAssignedTo = %q, want %q (the gaggle's self identity wins over the instance's)", got, want)
@@ -51,9 +51,9 @@ func TestEngineStartSpecPinsBacklogQueryDefaults(t *testing.T) {
 // behaviour changes with which one started it.
 func TestEngineStartBacklogQueryDefaultsMatchTheDaemon(t *testing.T) {
 	cfg, set := backlogPartitionFixture()
-	spec, err := engineRunSpec(engineRunRequestFor(t, cfg, set, "web", "implementation"))
+	spec, err := engineStartSpec(engineStartRequestFor(t, cfg, set, "web", "implementation"))
 	if err != nil {
-		t.Fatalf("engineRunSpec: %v", err)
+		t.Fatalf("engineStartSpec: %v", err)
 	}
 	if got, want := spec.BacklogQueryAssignedTo, selfIdentitiesByGaggle(cfg, set)["web"]; got != want {
 		t.Fatalf("StartSpec.BacklogQueryAssignedTo = %q, but the daemon configures the runner with %q", got, want)
@@ -69,9 +69,9 @@ func TestEngineStartBacklogQueryDefaultsMatchTheDaemon(t *testing.T) {
 // reaches the stage.
 func TestEngineStartBacklogQueryDefaultsReachRunInput(t *testing.T) {
 	cfg, set := backlogPartitionFixture()
-	spec, err := engineRunSpec(engineRunRequestFor(t, cfg, set, "web", "implementation"))
+	spec, err := engineStartSpec(engineStartRequestFor(t, cfg, set, "web", "implementation"))
 	if err != nil {
-		t.Fatalf("engineRunSpec: %v", err)
+		t.Fatalf("engineStartSpec: %v", err)
 	}
 	reg, _, err := bootstrap.RegisterGaggleWorkflows(set, "web")
 	if err != nil {
@@ -96,9 +96,9 @@ func TestEngineStartBacklogQueryDefaultsReachRunInput(t *testing.T) {
 // this field existed.
 func TestEngineStartBacklogQueryDefaultsEmptyWithoutConfiguration(t *testing.T) {
 	cfg, set, _ := runControlsFixture()
-	spec, err := engineRunSpec(engineRunRequestFor(t, cfg, set, "web", "implementation"))
+	spec, err := engineStartSpec(engineStartRequestFor(t, cfg, set, "web", "implementation"))
 	if err != nil {
-		t.Fatalf("engineRunSpec: %v", err)
+		t.Fatalf("engineStartSpec: %v", err)
 	}
 	if spec.BacklogQueryAssignedTo != "" || spec.BacklogQueryRequireLabels != "" {
 		t.Fatalf("StartSpec pinned assignedTo=%q requireLabels=%q for an instance declaring neither",
@@ -112,9 +112,9 @@ func TestEngineStartBacklogQueryDefaultsEmptyWithoutConfiguration(t *testing.T) 
 func TestEngineStartBacklogQueryAssignedToFallsBackToTheInstance(t *testing.T) {
 	cfg, set := backlogPartitionFixture()
 	set.Gaggles[0].Spec.SelfIdentity = ""
-	spec, err := engineRunSpec(engineRunRequestFor(t, cfg, set, "web", "implementation"))
+	spec, err := engineStartSpec(engineStartRequestFor(t, cfg, set, "web", "implementation"))
 	if err != nil {
-		t.Fatalf("engineRunSpec: %v", err)
+		t.Fatalf("engineStartSpec: %v", err)
 	}
 	if got, want := spec.BacklogQueryAssignedTo, "instance-wide-bot"; got != want {
 		t.Fatalf("StartSpec.BacklogQueryAssignedTo = %q, want the instance identity %q", got, want)

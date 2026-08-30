@@ -149,31 +149,27 @@ func runPRCommentWatch(args []string, stdout, stderr io.Writer) int {
 	// mutation is an ordinary issues-API label add, so both forges take the
 	// GitHubIssuesWrite credential seam. ADO has no AuthenticatedLogin, so it
 	// cannot distinguish the bot's own comments and takes the error arm.
-	//
-	// Both forge arms build through the shared stage-provider seam rather than
-	// calling a backend constructor directly. This stage resolves the bot login
-	// below and compares every comment author against it, so a provider built
-	// off-seam is one with no declared identity — #3885/#3890's shape exactly,
-	// and in a pod #3914's: under GitHub App auth AuthenticatedLogin fell back
-	// to GET /user, which an installation token cannot call.
 	var provider prCommentWatchProvider
 	switch repo.Provider {
-	case providers.ProviderGitea, providers.ProviderGitHub:
+	case providers.ProviderGitea:
 		token, terr := providerToken(capability.GitHubIssuesWrite)
 		if terr != nil {
 			pf(stderr, "error: %v\n", terr)
 			return 1
 		}
-		built, berr := newProviderForStageSurface[prCommentWatchProvider](root, repo, false,
-			withStageProviderCapability(capability.GitHubIssuesWrite),
-			withStageProviderToken(token),
-			withStageProviderMutations("pr"),
-		)
-		if berr != nil {
-			pf(stderr, "error: %v\n", berr)
+		giteaProvider, gerr := newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+		if gerr != nil {
+			pf(stderr, "error: %v\n", gerr)
 			return 1
 		}
-		provider = built
+		provider = giteaProvider
+	case providers.ProviderGitHub:
+		token, terr := providerToken(capability.GitHubIssuesWrite)
+		if terr != nil {
+			pf(stderr, "error: %v\n", terr)
+			return 1
+		}
+		provider = newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
 	default:
 		pf(stderr, "error: pr-comment-watch does not support repository provider %q\n", repo.Provider)
 		return 1
