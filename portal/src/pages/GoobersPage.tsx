@@ -67,7 +67,7 @@ function GooberRoster({
           <div>
             <h2>No goobers configured</h2>
             <p>No goobers are provisioned in this instance yet. Initialize the instance to begin.</p>
-            <RecoveryCommand command="goobers init --guided <instance>" />
+            <RecoveryCommand command="goobers init --guided" />
           </div>
         </section>
       ) : (

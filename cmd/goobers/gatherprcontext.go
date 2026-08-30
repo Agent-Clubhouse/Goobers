@@ -18,6 +18,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -71,15 +72,10 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -199,7 +195,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	var behindBase func(providers.PullRequestSummary) (bool, error)
 	if !hasPinnedCandidate {
 		nonBlocked, err = stageClaimAvailablePullRequests(
-			root, repo, os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
+			root, repo, os.Getenv(executor.RunIDEnvVar), nonBlocked, time.Now(),
 		)
 		if err != nil {
 			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
@@ -284,7 +280,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 			l := layoutFor(root)
 			signature := remediationNoopSignature{HeadSHA: selected.HeadSHA, DiffDigest: digest}
 			record, operatorReset, err := recordGatherPRContextDigestNoop(
-				l, selected.Number, signature, os.Getenv("GOOBERS_RUN_ID"),
+				l, selected.Number, signature, os.Getenv(executor.RunIDEnvVar),
 				hasAnyLabel(selected.Labels, []string{remediationEscalatedLabel}),
 			)
 			if err != nil {
@@ -533,7 +529,7 @@ func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, st
 	candidates := nonBlocked
 	if !hasPinnedCandidate {
 		nonBlocked, err = stageClaimAvailablePullRequests(
-			root, repo, os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
+			root, repo, os.Getenv(executor.RunIDEnvVar), nonBlocked, time.Now(),
 		)
 		if err != nil {
 			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
@@ -610,7 +606,7 @@ func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, st
 			l := layoutFor(root)
 			signature := remediationNoopSignature{HeadSHA: selected.HeadSHA, DiffDigest: digest}
 			record, operatorReset, err := recordGatherPRContextDigestNoop(
-				l, selected.Number, signature, os.Getenv("GOOBERS_RUN_ID"),
+				l, selected.Number, signature, os.Getenv(executor.RunIDEnvVar),
 				hasAnyLabel(selected.Labels, []string{remediationEscalatedLabel}),
 			)
 			if err != nil {

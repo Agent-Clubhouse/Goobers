@@ -5403,7 +5403,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		// evidence-pointer mechanism (env.ContextPointers), resolved into the
 		// reviewer's workspace like any other evidence pointer.
 		if g.Evaluator == apiv1.EvaluatorAgentic {
-			ptr, derr := r.recordReviewerDiff(ctx, ex, in, g.Name, wt)
+			ptr, derr := r.recordReviewerDiff(ctx, jr, ex, in, g.Name, wt)
 			if derr != nil {
 				err = fmt.Errorf("runner: gate %q: reviewer diff evidence: %w", g.Name, derr)
 				span.Fail(err)
@@ -5669,7 +5669,7 @@ func PriorRepassCause(
 // same content-addressed integrity as any other artifact. Returns (nil, nil)
 // when the gate has no repository worktree or the branch carries no change vs.
 // base (nothing to attach).
-func (r *Runner) recordReviewerDiff(ctx context.Context, ex *executors, in StartInput, gateName string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
+func (r *Runner) recordReviewerDiff(ctx context.Context, jr executionJournal, ex *executors, in StartInput, gateName string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
 	if wt == nil {
 		return nil, nil
 	}
@@ -5688,6 +5688,7 @@ func (r *Runner) recordReviewerDiff(ctx context.Context, ex *executors, in Start
 	// captured before the diff lands in the journal, mirroring the harness's own
 	// artifact scrubbing (internal/harness.Executor.liftArtifactFile). The run's
 	// SecretRegistrar is the RegistryScrubber that also implements journal.Scrubber.
+	source := diff
 	if s, ok := ex.reg.(journal.Scrubber); ok {
 		diff = s.Scrub(diff)
 	}
@@ -5695,11 +5696,42 @@ func (r *Runner) recordReviewerDiff(ctx context.Context, ex *executors, in Start
 	if err != nil {
 		return nil, fmt.Errorf("record reviewer diff artifact: %w", err)
 	}
+	if err := appendReviewerDiffRedaction(jr, gateName, source, diff, ref); err != nil {
+		return nil, err
+	}
 	ptr := apiv1.ArtifactPointer{
 		Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
 		MediaType: ReviewerDiffMediaType, Integrity: ref.Integrity,
 	}
 	return &apiv1.ContextPointer{Name: ReviewerDiffPointerName(gateName), Integrity: ref.Integrity, Artifact: &ptr}, nil
+}
+
+// ReviewerDiffRedactionKind is the runner-annotation kind that records whether
+// a reviewer gate's diff evidence was transformed by the run's scrubber before
+// it reached the agent (#3135). Redaction is necessary but it makes what the
+// reviewer reads differ from what the branch actually contains, so the run
+// journal carries the correlation handle: the digest of the diff as computed
+// from the commits (sourceDigest) alongside the digest of the bytes the
+// reviewer was handed. Equal digests mean the evidence is verbatim; different
+// digests mean a finding about the redacted region must be checked against the
+// branch before it is treated as a defect.
+const ReviewerDiffRedactionKind = "reviewer-diff-redaction"
+
+func appendReviewerDiffRedaction(jr executionJournal, gateName string, source, scrubbed []byte, ref journal.Ref) error {
+	if jr == nil {
+		return nil
+	}
+	return jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation, Gate: gateName,
+		Runner: map[string]any{
+			"kind":         ReviewerDiffRedactionKind,
+			"redacted":     !bytes.Equal(source, scrubbed),
+			"sourceDigest": journal.Digest(source),
+			"sourceBytes":  len(source),
+			"digest":       ref.Digest,
+			"bytes":        len(scrubbed),
+		},
+	})
 }
 
 // startGateSpan opens a gate span under the run's trace, if telemetry is

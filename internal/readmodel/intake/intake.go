@@ -409,6 +409,32 @@ func (s *Store) Count(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// OldestPending reports when the oldest waiting marker was observed.
+//
+// The freshness surface needs the AGE of the backlog, not just its size: one
+// marker waiting for an hour is a projector that has stopped, while a hundred
+// waiting for a second is a projector mid-pass. Reporting false when nothing is
+// pending keeps "no backlog" distinguishable from "backlog observed at the zero
+// time", which would read as infinitely stale.
+func (s *Store) OldestPending(ctx context.Context) (time.Time, bool, error) {
+	var observedAt sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT MIN(observed_at) FROM run_intake`).Scan(&observedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("intake: oldest pending: %w", err)
+	}
+	if !observedAt.Valid {
+		return time.Time{}, false, nil
+	}
+	parsed, err := time.Parse(timeFormat, observedAt.String)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("intake: parse observed_at %q: %w", observedAt.String, err)
+	}
+	return parsed, true, nil
+}
+
 // PathFor returns the intake store's path inside an instance directory.
 func PathFor(instanceDir string) string { return filepath.Join(instanceDir, FileName) }
 

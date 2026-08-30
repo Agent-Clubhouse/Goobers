@@ -253,6 +253,65 @@ func TestPrepareCopilotMCPRejectsWildcardToolBeforeMaterialization(t *testing.T)
 	}
 }
 
+// TestPrepareCopilotMCPRefusesToTraverseAWorkspaceSymlink covers #2413 for
+// the scoped MCP runtime root: it is created in the harness's own process,
+// before the spawned copilot subprocess is sandboxed, under a workspace that
+// may hold repository-controlled content. A symlink planted at .goobers must
+// not redirect the runtime root — and with it the scoped COPILOT_HOME and
+// its mcp-config.json — outside the workspace.
+func TestPrepareCopilotMCPRefusesToTraverseAWorkspaceSymlink(t *testing.T) {
+	workspace := t.TempDir()
+	outsideDir := t.TempDir()
+	if err := os.Symlink(outsideDir, filepath.Join(workspace, ".goobers")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := prepareCopilotMCP(context.Background(), RunRequest{
+		Envelope:   testEnvelope(workspace),
+		Workspace:  workspace,
+		MCPServers: []apiv1.MCPServer{{Name: "context", Command: "context-server"}},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected prepareCopilotMCP to refuse to traverse the symlinked .goobers directory")
+	}
+	if _, statErr := os.Lstat(filepath.Join(outsideDir, "mcp")); !os.IsNotExist(statErr) {
+		t.Fatalf("MCP runtime root was created outside the workspace through the symlink: err=%v", statErr)
+	}
+}
+
+// TestPrepareCopilotMCPKeepsTheWorkspaceSpelling pins that the scoped
+// runtime root — and so the COPILOT_HOME and config path handed to the
+// subprocess — stays under the workspace root the caller passed rather than
+// the canonicalized root safepath resolves through. Where the workspace is
+// reached through a symlink (macOS's /var, a Windows short path), a
+// canonicalized prefix would name a location the caller's sandbox policy
+// never described.
+func TestPrepareCopilotMCPKeepsTheWorkspaceSpelling(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(t.TempDir(), workspace); err != nil {
+		t.Fatal(err)
+	}
+
+	env, err := prepareCopilotMCP(context.Background(), RunRequest{
+		Envelope:   testEnvelope(workspace),
+		Workspace:  workspace,
+		MCPServers: []apiv1.MCPServer{{Name: "context", Command: "context-server"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("prepareCopilotMCP: %v", err)
+	}
+	runtimeRoot := filepath.Join(workspace, filepath.FromSlash(copilotMCPRuntimeSubdir))
+	var home string
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "COPILOT_HOME="); ok {
+			home = value
+		}
+	}
+	if !strings.HasPrefix(home, runtimeRoot+string(filepath.Separator)) {
+		t.Fatalf("COPILOT_HOME = %q, want under %q", home, runtimeRoot)
+	}
+}
+
 func TestCopilotAdapterMCPRequiresMaterializedModelCredential(t *testing.T) {
 	invoked := false
 	adapter := &CopilotAdapter{

@@ -18,17 +18,21 @@ import (
 // requirement (OQ-1) is the build-time generator, and `make docs` regenerates.
 
 // docsRootShort/docsRootLong describe the binary itself for the top-level
-// goobers.1 page and the reference intro. docsRootLong reuses the same footer
-// prose the top-level usage() prints, so the two never disagree.
-const docsRootShort = "tier 1-2 local instance CLI"
+// goobers.1 page and the reference intro.
+const (
+	docsRootShort = "Goobers command-line interface"
+	docsRootLong  = `Path arguments default to the current directory. Exit codes:
+0 = OK, 1 = validation or business error, and 2 = usage or I/O error.
 
-func docsRootLong() string { return strings.TrimSpace(usageFooter) }
+Use ` + "`goobers help all`" + ` for advanced operator commands or
+` + "`goobers help stages`" + ` for runner-invoked workflow internals.`
+)
 
 // renderCLIDocs produces the full set of generated files, keyed by their path
 // relative to the docs/ directory. It is pure — it reads only the command
 // registry — so the drift test and the writer share one source.
 func renderCLIDocs() map[string]string {
-	root := clidocs.Command{Short: docsRootShort, Long: docsRootLong()}
+	root := clidocs.Command{Short: docsRootShort, Long: strings.TrimSpace(docsRootLong)}
 	cmds := collectDocCommands(cliCommands, nil)
 	clidocs.Sort(cmds)
 

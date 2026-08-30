@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -40,15 +41,10 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -186,7 +182,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		if recordTutorLiveVerification {
 			tutorHoldout, err = prepareTutorHoldout(
 				root,
-				os.Getenv("GOOBERS_GAGGLE"),
+				os.Getenv(executor.GaggleEnvVar),
 				runID,
 				providerInput("tutorConfigSource", ""),
 				classification,
@@ -250,7 +246,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// replace this run-keyed file; optional final classifications remove it.
 	if recordTutorLiveVerification {
 		if tutorHoldout == nil {
-			if err := clearTutorHoldoutsForRun(root, os.Getenv("GOOBERS_GAGGLE"), runID); err != nil {
+			if err := clearTutorHoldoutsForRun(root, os.Getenv(executor.GaggleEnvVar), runID); err != nil {
 				pf(stderr, "error: replace Tutor live verification: %v\n", err)
 				return 1
 			}

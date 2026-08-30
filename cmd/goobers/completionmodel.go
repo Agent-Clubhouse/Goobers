@@ -84,9 +84,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"init": {
+		{name: "guided", desc: "Open browser-based setup, including placement choices"},
+		{name: "port", takesArg: true, desc: "With --guided, server port or auto"},
+		{name: "no-open", desc: "With --guided, print the URL without opening a browser"},
+		{name: "workdir", takesArg: true, desc: "With --guided, temporary browser setup state"},
 		{name: "demo", desc: "Seed a credential-free runnable demo workflow"},
 		{name: "insecure", desc: "Allow an unisolated Windows demo"},
-		{name: "guided", desc: "Prompt for repository, credentials, and workflows"},
 		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate}, desc: "Seed a named onboarding template"},
 		{name: "source-tree", takesArg: true, desc: "Seed the template as a checked-in config source"},
 		{name: "json", desc: "Emit the config-source action result as JSON"},
@@ -100,13 +103,6 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"preflight": {
 		{name: "distro", takesArg: true, desc: "Select the WSL distro to check"},
 		{name: "launch-wsl", desc: "Run the trailing Goobers command inside WSL"},
-	},
-	"onboarding stub-sample": {
-		{name: "destination", takesArg: true, desc: "Sample destination"},
-		{name: "work-tracking", takesArg: true, desc: "GitHub owner/repo to seed"},
-		{name: "token-env", takesArg: true, desc: "Issue token environment variable"},
-		{name: "force", desc: "Replace conflicting regular files"},
-		{name: "json", desc: "Emit the versioned action envelope"},
 	},
 	"onboarding stub-agent-instructions": {
 		{name: "source-tree", takesArg: true, desc: "Config source repository root"},
@@ -238,11 +234,6 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "no-open", desc: "Print the URL without opening a browser"},
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
 		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
-	},
-	"getting-started": {
-		{name: "port", takesArg: true, desc: "Server port, or auto"},
-		{name: "no-open", desc: "Print the URL without opening a browser"},
-		{name: "workdir", takesArg: true, desc: "Directory holding the tutorial sample and instance"},
 	},
 	"run": {
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},

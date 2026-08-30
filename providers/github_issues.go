@@ -183,7 +183,7 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 		return nil, err
 	}
 	if id == "" {
-		return nil, fmt.Errorf("issue id is required")
+		return nil, errIssueIDRequired
 	}
 	raw, err := p.allIssueComments(ctx, repo, id)
 	if err != nil {
@@ -413,7 +413,7 @@ func (p *GitHubProvider) ListWorkItemLabelTransitionsForItem(
 		return nil, err
 	}
 	if id == "" {
-		return nil, fmt.Errorf("issue id is required")
+		return nil, errIssueIDRequired
 	}
 	if label == "" {
 		return nil, fmt.Errorf("label is required")
@@ -531,7 +531,7 @@ func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemR
 		return WorkItem{}, err
 	}
 	if req.ID == "" {
-		return WorkItem{}, fmt.Errorf("issue id is required")
+		return WorkItem{}, errIssueIDRequired
 	}
 	if req.Milestone != nil && *req.Milestone <= 0 {
 		return WorkItem{}, fmt.Errorf("milestone number must be positive")
@@ -634,7 +634,7 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 		return ClaimResult{}, err
 	}
 	if req.ID == "" {
-		return ClaimResult{}, fmt.Errorf("issue id is required")
+		return ClaimResult{}, errIssueIDRequired
 	}
 	if req.RunID == "" {
 		return ClaimResult{}, fmt.Errorf("run id is required to claim an item")
@@ -681,7 +681,7 @@ func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWork
 		return WorkItem{}, err
 	}
 	if req.ID == "" {
-		return WorkItem{}, fmt.Errorf("issue id is required")
+		return WorkItem{}, errIssueIDRequired
 	}
 	if req.RunID == "" {
 		return WorkItem{}, fmt.Errorf("run id is required to release an item")
@@ -748,7 +748,7 @@ func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 		return WorkItem{}, err
 	}
 	if id == "" {
-		return WorkItem{}, fmt.Errorf("issue id is required")
+		return WorkItem{}, errIssueIDRequired
 	}
 	if strings.TrimSpace(comment) == "" {
 		return WorkItem{}, fmt.Errorf("reconciliation comment is required")
@@ -910,7 +910,7 @@ func (p *GitHubProvider) CreateWorkItemComment(ctx context.Context, repo Reposit
 		return Comment{}, err
 	}
 	if id == "" {
-		return Comment{}, fmt.Errorf("issue id is required")
+		return Comment{}, errIssueIDRequired
 	}
 	body, err := withAttribution(body, p.attribution, "comment")
 	if err != nil {

@@ -37,6 +37,13 @@ func InputEnvVar(key string) string {
 }
 
 const (
+	// RunIDEnvVar identifies the run executing a goobers CLI stage.
+	RunIDEnvVar = "GOOBERS_RUN_ID"
+	// GaggleEnvVar identifies the gaggle executing a goobers CLI stage.
+	GaggleEnvVar = "GOOBERS_GAGGLE"
+	// WorkflowEnvVar identifies the workflow executing a goobers CLI stage.
+	WorkflowEnvVar = "GOOBERS_WORKFLOW"
+
 	// InstanceRootEnvVar carries the instance root to goobers CLI stages.
 	InstanceRootEnvVar = "GOOBERS_INSTANCE_ROOT"
 	// TaskEnvVar identifies the workflow task executing a goobers CLI stage.
@@ -180,7 +187,7 @@ func buildStageEnv(ctx context.Context, injector *credentials.Injector, declared
 	// (AC5, #1093).
 	env = append(env, "GOTRACEBACK=all")
 	if injectRunContext {
-		env = append(env, "GOOBERS_RUN_ID="+runID, "GOOBERS_GAGGLE="+gaggle, "GOOBERS_WORKFLOW="+workflowID)
+		env = append(env, RunIDEnvVar+"="+runID, GaggleEnvVar+"="+gaggle, WorkflowEnvVar+"="+workflowID)
 		if branchNamespace != "" {
 			env = append(env, BranchNamespaceEnvVar+"="+branchNamespace)
 		}

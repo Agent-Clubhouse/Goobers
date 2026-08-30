@@ -256,15 +256,15 @@ export GOOBERS_INSTANCE="$HOME/goobers/instances/hass-dreo"
 export GOOBERS_CONFIG_SOURCE="$HOME/src/hass-dreo-goobers-config"
 export GOOBERS_TARGET="JeffSteinbok/hass-dreo"
 
-goobers init --guided "$GOOBERS_INSTANCE"
+goobers init --guided
 goobers validate --source-tree "$GOOBERS_CONFIG_SOURCE"
 goobers config materialize "$GOOBERS_INSTANCE"
 goobers validate "$GOOBERS_INSTANCE"
 ```
 
-During guided setup, select or create
-`$GOOBERS_CONFIG_SOURCE` as the config source and enter `$GOOBERS_TARGET` only
-as the target application repository. The managed target checkout then lives
+During the tutorial, select `$GOOBERS_CONFIG_SOURCE` as a custom configuration
+folder and provide the existing local clone of `$GOOBERS_TARGET`. The managed
+target checkout then lives
 under `$GOOBERS_INSTANCE/gaggles/<gaggle>/workcopies/`. The target's existing
 `.github/copilot-instructions.md` and `.claude/` guidance stays in `hass-dreo`
 and is available in those workcopies; instance config and runtime state stay

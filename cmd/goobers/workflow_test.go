@@ -189,7 +189,7 @@ func TestWorkflowUsage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("help code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "goobers workflow show [--dot] <name> [path]") {
+	if !strings.Contains(stdout, "\n  workflow show") {
 		t.Fatalf("help stdout = %q", stdout)
 	}
 }

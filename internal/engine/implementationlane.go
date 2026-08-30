@@ -600,7 +600,7 @@ func collectGateEvidence(
 // reconcile is skipped for a synthesized verdict anyway, so they cannot both
 // be set), and any other escalation — including the empty-diff one — falls
 // back to the budget code, which is what the runner journals there too.
-func applyImplementationLaneOutcome(g apiv1.Gate, gr *gateResult, ev gateEvidence, review GateReviewResult, findingReason string) {
+func applyImplementationLaneOutcome(g apiv1.Gate, gr *gateResult, ev gateEvidence, review GateReviewResult, findingReason string, arbitrate bool) {
 	gr.DiffDigest = review.DiffDigest
 	gr.DuplicateDiff = review.DuplicateDiff
 	gr.CacheHit = ev.CacheHit
@@ -609,7 +609,7 @@ func applyImplementationLaneOutcome(g apiv1.Gate, gr *gateResult, ev gateEvidenc
 		gr.RepassCause = ev.RepassCause
 		reason = gate.ReasonUnchangedRepass
 	}
-	if (review.DuplicateDiff || review.EmptyDiff) && !gr.Escalated {
+	if (review.DuplicateDiff || review.EmptyDiff || arbitrate) && !gr.Escalated {
 		gr.Escalated = true
 		gr.Target = escalationTarget(g)
 	}
@@ -680,6 +680,20 @@ func reconcileGateFindings(
 			reason = gate.ReasonFindingDisproven
 		}
 	}
+	// #3136, the same repeated-finding evidence check the local runner
+	// applies: a needs-changes verdict that only repeats findings the
+	// authoritative diff cannot corroborate routes to arbitration rather than
+	// charging another repass.
+	if verdict.Decision == apiv1.VerdictNeedsChanges {
+		arbitrated, arbitration := gate.ArbitrateRepeatedFindings(*verdict, pointers, bytesFor, g.Name)
+		verdict = &arbitrated
+		lifecycle.Repeated = arbitration.Repeated
+		lifecycle.UnverifiedRepeats = arbitration.Unverified
+		lifecycle.Arbitrate = arbitration.Arbitrate
+		if arbitration.Arbitrate {
+			reason = gate.ReasonFindingUnverifiedRepeat
+		}
+	}
 	return verdict, reason, lifecycle, nil
 }
 
@@ -691,6 +705,12 @@ type findingLifecycle struct {
 	Reopened          []string
 	Disproven         []string
 	DisprovenFindings []apiv1.Finding
+	// Repeated, UnverifiedRepeats, and Arbitrate are the repeated-finding
+	// evidence check's verdict (#3136): Arbitrate forces escalation in place
+	// of another repass.
+	Repeated          []string
+	UnverifiedRepeats []string
+	Arbitrate         bool
 }
 
 // contextNotInspectedRedispatch applies the #3374 ruling to a finished stage:

@@ -772,3 +772,86 @@ func (f *fakeIntake) ackCount() int {
 	defer f.mu.Unlock()
 	return f.acks
 }
+
+// TestProjectFailureResolvesOnceTheRunProjects is #2843's recovery property.
+//
+// The freshness envelope derives "partial" from the projector's open failures,
+// so an open-failure set that never shrinks would pin the portal to a permanent
+// degraded state after one transient bad read — as uninformative as the
+// permanently-healthy envelope the issue was filed about. A gap that repair (or
+// the next pass) closes must stop being reported, while the cumulative counter
+// keeps its "has this ever happened" answer.
+func TestProjectFailureResolvesOnceTheRunProjects(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	watermarks := newFakeIntake()
+	watermarks.observe("run-bad", 1)
+
+	projector := New(store, watermarks, Options{Workers: 1, DrainLimit: 10})
+	stop := projector.Start(ctx)
+	defer stop()
+
+	failing := true
+	projector.prepareForTest = func(_ context.Context, runID string) (Projection, bool, error) {
+		if failing {
+			return Projection{}, false, errors.New("corrupt journal")
+		}
+		return projectionFor(runID, 1), true, nil
+	}
+
+	if _, err := projector.Drain(ctx); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if got := projector.Stats().UnresolvedRuns; got != 1 {
+		t.Fatalf("unresolved runs = %d, want 1; a run that failed to apply is a known gap", got)
+	}
+
+	// The marker survives a failed apply, so the next pass retries it. This is
+	// the same path the repair sweep takes: both commit through UpsertRun.
+	failing = false
+	if _, err := projector.Drain(ctx); err != nil {
+		t.Fatalf("second drain: %v", err)
+	}
+
+	stats := projector.Stats()
+	if stats.UnresolvedRuns != 0 {
+		t.Errorf("unresolved runs = %d after the run projected, want 0; the gap is closed, so "+
+			"the envelope would report partial forever", stats.UnresolvedRuns)
+	}
+	if stats.ProjectFailures != 1 {
+		t.Errorf("project failures = %d, want 1; the cumulative counter must still record "+
+			"that the failure happened", stats.ProjectFailures)
+	}
+}
+
+// TestRemovingARunClosesItsProjectionGap covers the other resolution.
+//
+// A removed run is not expected in the projection at all, so continuing to
+// report it as missing would describe a gap that can never be filled.
+func TestRemovingARunClosesItsProjectionGap(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	watermarks := newFakeIntake()
+	watermarks.observe("run-bad", 1)
+
+	projector := New(store, watermarks, Options{Workers: 1, DrainLimit: 10})
+	stop := projector.Start(ctx)
+	defer stop()
+	projector.prepareForTest = func(_ context.Context, _ string) (Projection, bool, error) {
+		return Projection{}, false, errors.New("corrupt journal")
+	}
+
+	if _, err := projector.Drain(ctx); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if got := projector.Stats().UnresolvedRuns; got != 1 {
+		t.Fatalf("unresolved runs = %d, want 1", got)
+	}
+
+	if err := projector.RemoveRun(ctx, "run-bad"); err != nil {
+		t.Fatalf("remove run: %v", err)
+	}
+	if got := projector.Stats().UnresolvedRuns; got != 0 {
+		t.Errorf("unresolved runs = %d after removal, want 0", got)
+	}
+}

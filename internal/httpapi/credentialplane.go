@@ -135,21 +135,21 @@ func registerCredentialRoute(router *Router, credentials CredentialService, erro
 		}
 		var input CredentialResolveRequest
 		if err := decodeWriteRequest(request, &input); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
 		if strings.TrimSpace(input.RunID) == "" || strings.TrimSpace(input.Stage) == "" {
-			writeError(w, http.StatusBadRequest, "invalid_request", "runId and stage are required")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "runId and stage are required")
 			return
 		}
 		if len(input.Capabilities) > MaxCredentialResolveCapabilities {
-			writeError(w, http.StatusBadRequest, "invalid_request",
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest,
 				fmt.Sprintf("capabilities must name no more than %d entries", MaxCredentialResolveCapabilities))
 			return
 		}
 		for _, capability := range input.Capabilities {
 			if strings.TrimSpace(capability) == "" || len(capability) > MaxCredentialCapabilityBytes {
-				writeError(w, http.StatusBadRequest, "invalid_request",
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest,
 					fmt.Sprintf("capability names must be non-empty and no longer than %d bytes", MaxCredentialCapabilityBytes))
 				return
 			}
