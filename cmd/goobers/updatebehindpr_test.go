@@ -32,8 +32,14 @@ type updateBehindServer struct {
 	failLabelDelete     bool
 	includeUnselected   bool
 	includeEarlierCrown bool
-	unselectedCount     int
-	graphQLCalls        int
+	// includeEarlierCandidate adds PR 54 carrying goobers:needs-remediation:
+	// a genuine second remediation candidate that outranks PR 55 by number in
+	// the same tier, so an untargeted run selects 54 and a run targeted at 55
+	// can only select 55 by honouring its trigger (#3985).
+	includeEarlierCandidate bool
+	earlierMergeable        *bool
+	unselectedCount         int
+	graphQLCalls            int
 }
 
 func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
@@ -70,6 +76,14 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 				"base":   map[string]string{"ref": "main", "sha": "opening-base-sha"},
 				"labels": labelsJSON([]string{blockedOnSiblingLabel}),
 			})
+		}
+		if s.includeEarlierCandidate {
+			prs = append([]map[string]interface{}{{
+				"number": 54, "state": "open", "html_url": "https://github.test/pulls/54",
+				"head":   map[string]string{"ref": "goobers/implementation/run-54", "sha": "earlier-candidate-sha"},
+				"base":   map[string]string{"ref": "main", "sha": "opening-base-sha"},
+				"labels": labelsJSON([]string{needsRemediationLabel}),
+			}}, prs...)
 		}
 		unselectedCount := s.unselectedCount
 		if s.includeUnselected && unselectedCount == 0 {
@@ -128,6 +142,24 @@ func (s *updateBehindServer) start(t *testing.T) *httptest.Server {
 			"merge_base_commit": map[string]string{"sha": mergeBaseSHA},
 			"files":             []interface{}{},
 		})
+	})
+	mux.HandleFunc(prefix+"/compare/"+baseSHA+"...earlier-candidate-sha", func(w http.ResponseWriter, _ *http.Request) {
+		writeFakeJSON(w, map[string]interface{}{
+			"merge_base_commit": map[string]string{"sha": "opening-base-sha"},
+			"files":             []interface{}{},
+		})
+	})
+	mux.HandleFunc(prefix+"/pulls/54", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "want GET", http.StatusMethodNotAllowed)
+			return
+		}
+		mergeable := s.earlierMergeable
+		if mergeable == nil {
+			conflicted := false
+			mergeable = &conflicted
+		}
+		writeFakeJSON(w, map[string]interface{}{"number": 54, "mergeable": mergeable})
 	})
 	mux.HandleFunc(prefix+"/pulls/55/update-branch", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {

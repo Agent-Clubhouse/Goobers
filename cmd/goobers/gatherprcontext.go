@@ -44,8 +44,11 @@ const (
 const gatherPRContextHelp = "Usage: goobers gather-pr-context [path]\n\n" +
 	"Select one open, goober-authored PR labeled goobers:needs-remediation\n" +
 	"or reporting failing CI, falling back to a PR behind its base only when\n" +
-	"neither stronger signal is present. Check out its branch into this\n" +
-	"stage's worktree and load the latest merge-review verdict + PR-thread\n" +
+	"neither stronger signal is present. A run dispatched for one pull\n" +
+	"request (goobers run --pr, or a pull_request webhook delivery) selects\n" +
+	"that PR and no other, and reports no-work naming the reason when it is\n" +
+	"not selectable. Check out its branch into this stage's worktree and\n" +
+	"load the latest merge-review verdict + PR-thread\n" +
 	"comments + whether the base has advanced since this PR branched, writing\n" +
 	"the versioned remediation-brief artifact to the declared result file.\n" +
 	"[path] is the instance root (matching\n" +
@@ -116,6 +119,11 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	base := providerInput("base", providerBaseBranch())
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 
+	// #3985: the pull request this run was dispatched for, when the trigger
+	// named one. Resolved before selection so both the pinned handoff path and
+	// the self-selecting path below are constrained by it.
+	target := remediationTargetFromEnv()
+
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
@@ -124,6 +132,7 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, remediationBriefResultFile)
 	}
+	listed := prs
 	handoffNumber := providerInput("selectedNumber", "")
 	claimedNumber, hasExistingClaim, err := claimedPullRequestNumber(root)
 	if err != nil {
@@ -143,6 +152,16 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 		}
 		claimedNumber = selectedNumber
 		hasPinnedCandidate = true
+	}
+	// #3985: a targeted run may only ever remediate the PR its trigger named.
+	// update-behind-pr restricts its own selection to that PR, so a pinned
+	// handoff or claim naming a different PR means the run's own upstream
+	// state disagrees with the operator's argument — refuse rather than
+	// remediate a pull request nobody asked for.
+	if target.targeted && hasPinnedCandidate && claimedNumber != target.number {
+		pf(stderr, "error: this run targets PR #%d but is pinned to PR #%d; refusing to remediate a pull request the trigger did not name\n",
+			target.number, claimedNumber)
+		return 1
 	}
 	if hasPinnedCandidate {
 		var claimed []providers.PullRequestSummary
@@ -193,13 +212,16 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	// fallback across retries and resumes.
 	candidates := nonBlocked
 	var behindBase func(providers.PullRequestSummary) (bool, error)
+	var refusal string
 	if !hasPinnedCandidate {
+		filtered := nonBlocked
 		nonBlocked, err = stageClaimAvailablePullRequests(
 			root, repo, os.Getenv(executor.RunIDEnvVar), nonBlocked, time.Now(),
 		)
 		if err != nil {
 			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
 		}
+		unclaimed := nonBlocked
 		fetchedBases := make(map[string]bool)
 		behindBase = func(pr providers.PullRequestSummary) (bool, error) {
 			if !fetchedBases[pr.Base] {
@@ -219,6 +241,25 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: determine remediation eligibility: %v\n", err)
 			return 1
 		}
+		// #3985: eligibility and tier ranking ran over the whole open-PR set,
+		// exactly as on a scheduled tick; a targeted run then keeps only the
+		// PR the trigger named, or ends here naming the filter that dropped it.
+		candidates, refusal = target.apply(
+			remediationTargetStage{prs: listed, reason: remediationTargetUnlistedReason(base, headPrefix)},
+			remediationTargetStage{prs: filtered, reason: remediationTargetFilteredReason},
+			remediationTargetStage{prs: unclaimed, reason: remediationTargetClaimedReason},
+			remediationTargetStage{prs: candidates, reason: remediationTargetIneligibleReason},
+		)
+	} else {
+		// The pinned candidate is already this run's target (cross-checked
+		// above), so the only way it can vanish here is a remediation
+		// exclusion — report that rather than the generic no-work reason.
+		candidates, refusal = target.apply(
+			remediationTargetStage{prs: candidates, reason: remediationTargetFilteredReason},
+		)
+	}
+	if refusal != "" {
+		return writeNoWorkResult(stdout, stderr, refusal)
 	}
 	if len(candidates) == 0 {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
@@ -466,6 +507,11 @@ func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, st
 	base := providerInput("base", providerBaseBranch())
 	headPrefix := providerInput("headPrefix", providerBranchNamespace())
 
+	// #3985: `goobers run --pr` targets an ADO lane through the same synthetic
+	// pull_request delivery it uses on GitHub, so the ADO branch honours the
+	// target identically.
+	target := remediationTargetFromEnv()
+
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
@@ -474,6 +520,7 @@ func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, st
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, remediationBriefResultFile)
 	}
+	listed := prs
 	handoffNumber := providerInput("selectedNumber", "")
 	claimedNumber, hasExistingClaim, err := claimedPullRequestNumber(root)
 	if err != nil {
@@ -493,6 +540,11 @@ func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, st
 		}
 		claimedNumber = selectedNumber
 		hasPinnedCandidate = true
+	}
+	if target.targeted && hasPinnedCandidate && claimedNumber != target.number {
+		pf(stderr, "error: this run targets PR #%d but is pinned to PR #%d; refusing to remediate a pull request the trigger did not name\n",
+			target.number, claimedNumber)
+		return 1
 	}
 	if hasPinnedCandidate {
 		var claimed []providers.PullRequestSummary
@@ -527,13 +579,16 @@ func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, st
 	blockedDependents := map[int]int{}
 
 	candidates := nonBlocked
+	var refusal string
 	if !hasPinnedCandidate {
+		filtered := nonBlocked
 		nonBlocked, err = stageClaimAvailablePullRequests(
 			root, repo, os.Getenv(executor.RunIDEnvVar), nonBlocked, time.Now(),
 		)
 		if err != nil {
 			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
 		}
+		unclaimed := nonBlocked
 		// The behind-base fallback tier crowns only a lander with a live parked
 		// dependent, which never materializes on ADO (no sibling election), so
 		// selectRemediationCandidates never invokes this probe — it exists solely
@@ -548,6 +603,19 @@ func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, st
 			pf(stderr, "error: determine remediation eligibility: %v\n", err)
 			return 1
 		}
+		candidates, refusal = target.apply(
+			remediationTargetStage{prs: listed, reason: remediationTargetUnlistedReason(base, headPrefix)},
+			remediationTargetStage{prs: filtered, reason: remediationTargetFilteredReason},
+			remediationTargetStage{prs: unclaimed, reason: remediationTargetClaimedReason},
+			remediationTargetStage{prs: candidates, reason: remediationTargetIneligibleReason},
+		)
+	} else {
+		candidates, refusal = target.apply(
+			remediationTargetStage{prs: candidates, reason: remediationTargetFilteredReason},
+		)
+	}
+	if refusal != "" {
+		return writeNoWorkResult(stdout, stderr, refusal)
 	}
 	if len(candidates) == 0 {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")

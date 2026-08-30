@@ -43,6 +43,17 @@ spec:
   # past) so the two decider/executor cycles don't contend for the same PR
   # mid-read; this instance's open-PR volume is low, so hourly is ample.
   triggers:
+    # #3985: the operator gesture `goobers run --pr <n> pr-remediation` is
+    # delivered as a synthetic pull_request webhook, so the lane must be
+    # subscribed to that event for the target to reach it at all. Safe to
+    # declare only because every remediation selector (update-behind-pr and
+    # gather-pr-context) now restricts itself to the PR the trigger names and
+    # refuses — explicit no-work naming the reason — when that PR is not
+    # selectable. Declaring the trigger without that restriction would make
+    # --pr appear to work while the lane silently remediated whichever PR its
+    # own priority ranking preferred.
+    - type: webhook
+      events: [pull_request]
     # A due tick is sized to the unclaimed PRs that pass update-behind-pr's
     # eligibility policy, then bounded by readiness below.
     - type: schedule

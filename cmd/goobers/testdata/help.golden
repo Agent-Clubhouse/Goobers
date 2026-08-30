@@ -1194,8 +1194,11 @@ Usage: goobers gather-pr-context [path]
 
 Select one open, goober-authored PR labeled goobers:needs-remediation
 or reporting failing CI, falling back to a PR behind its base only when
-neither stronger signal is present. Check out its branch into this
-stage's worktree and load the latest merge-review verdict + PR-thread
+neither stronger signal is present. A run dispatched for one pull
+request (goobers run --pr, or a pull_request webhook delivery) selects
+that PR and no other, and reports no-work naming the reason when it is
+not selectable. Check out its branch into this stage's worktree and
+load the latest merge-review verdict + PR-thread
 comments + whether the base has advanced since this PR branched, writing
 the versioned remediation-brief artifact to the declared result file.
 [path] is the instance root (matching
@@ -2252,8 +2255,12 @@ Usage: goobers update-behind-pr [path]
 
 Update one behind-base PR through GitHub's update-branch API when it
 is mergeable, CI-clean, and carries no substantive findings. Other
-candidates are routed to full remediation. Exit codes: 0 = updated,
-routed, or no-work; 1 = business error; 2 = usage/IO error.
+candidates are routed to full remediation. A run dispatched for one
+pull request (goobers run --pr, or a pull_request webhook delivery)
+selects that PR and no other; when the target is not selectable the
+stage reports no-work naming the reason instead of falling back to
+another PR. Exit codes: 0 = updated, routed, or no-work;
+1 = business error; 2 = usage/IO error.
 
 ### validate
 Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
