@@ -244,3 +244,106 @@ func TestDegradedIsNeverNil(t *testing.T) {
 		t.Error("degraded is nil; it serialises as null and a client reading .length crashes")
 	}
 }
+
+// TestReadStateReportsPartialOnAKnownProjectionGap is #2843's core fix.
+//
+// A run the projector failed to apply is missing from every list served from
+// the projection, and the envelope used to report "complete" regardless —
+// `CompletenessPartial` was defined and never assigned, so the portal showed a
+// silently truncated runs list with a clean bill of health.
+func TestReadStateReportsPartialOnAKnownProjectionGap(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	state, err := store.ReadState(ctx, ReadStateInput{ProjectFailures: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Completeness != CompletenessPartial {
+		t.Errorf("completeness = %q, want %q: runs the projector could not apply are "+
+			"absent from the answer", state.Completeness, CompletenessPartial)
+	}
+	if !slices.Contains(state.Degraded, DegradedProjectFailure) {
+		t.Errorf("degraded = %v, want it to contain %q", state.Degraded, DegradedProjectFailure)
+	}
+	if len(state.Missing) != 1 {
+		t.Fatalf("missing = %+v, want exactly one named partition", state.Missing)
+	}
+	// §7.2: partial without a named partition and an expiry is silent omission
+	// renamed.
+	missing := state.Missing[0]
+	if missing.Name != MissingProjectedRuns || missing.Reason == "" || missing.ExpectedBy.IsZero() {
+		t.Errorf("missing partition = %+v, want a name, a reason and an expiry", missing)
+	}
+}
+
+// TestReadStateStaysCompleteWithoutAKnownGap pins that lag alone is not
+// partiality: a backlog waiting to be projected is stale, not missing, and
+// flagging it partial would make the signal wallpaper.
+func TestReadStateStaysCompleteWithoutAKnownGap(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	state, err := store.ReadState(ctx, ReadStateInput{PendingIntake: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Completeness != CompletenessComplete {
+		t.Errorf("completeness = %q, want %q", state.Completeness, CompletenessComplete)
+	}
+	if len(state.Missing) != 0 {
+		t.Errorf("missing = %+v, want none", state.Missing)
+	}
+}
+
+// TestReadStateLagCoversProjectionLag pins that a projector which has stopped
+// widens the reported bound even when nothing is pending — the drained-intake
+// case that a pending count alone cannot see.
+func TestReadStateLagCoversProjectionLag(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	state, err := store.ReadState(ctx, ReadStateInput{ProjectionLagSeconds: 600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.LagSeconds < 600 {
+		t.Errorf("lagSeconds = %v, want at least the reported projection lag of 600",
+			state.LagSeconds)
+	}
+}
+
+// TestReadStateReturnsToCompleteOnceTheGapCloses is the recovery half of
+// #2843's signal.
+//
+// The gap count is the projector's OPEN failures, so once a retry or the repair
+// sweep projects the run the envelope must go back to reporting a complete
+// answer. A partial that never resolves is the same failure as a complete that
+// never warns: the operator learns nothing from either.
+func TestReadStateReturnsToCompleteOnceTheGapCloses(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	during, err := store.ReadState(ctx, ReadStateInput{ProjectFailures: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if during.Completeness != CompletenessPartial {
+		t.Fatalf("completeness = %q while a run is unprojected, want %q",
+			during.Completeness, CompletenessPartial)
+	}
+
+	after, err := store.ReadState(ctx, ReadStateInput{ProjectFailures: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Completeness != CompletenessComplete {
+		t.Errorf("completeness = %q after the gap closed, want %q", after.Completeness, CompletenessComplete)
+	}
+	if len(after.Missing) != 0 {
+		t.Errorf("missing = %+v after the gap closed, want none", after.Missing)
+	}
+	if slices.Contains(after.Degraded, DegradedProjectFailure) {
+		t.Errorf("degraded = %v after the gap closed, want no %q", after.Degraded, DegradedProjectFailure)
+	}
+}
