@@ -219,8 +219,8 @@ a *state* restriction (any pod can call the API) but survives v1 as a scheduling
 opaque `ETag` (`If-Match` to replace a known value, `If-None-Match: *` to create). This is M5's answer
 and the rest of M2's: the scheduler-state files that sit *beside* `claims.json` — `blocked.json`, the
 backlog scan cursors, the post-merge-reconcile ledger, the sibling-context cache, the backlog-health
-ready-transition ledger — are per-node for exactly the reason the ledger is, and a mode-3 stage
-cannot reach them at all. `internal/stateclient`
+ready-transition ledger, the per-PR pr-remediation no-op record — are per-node for exactly the reason
+the ledger is, and a mode-3 stage cannot reach them at all. `internal/stateclient`
 selects a backend the same way `internal/claimsclient` does: `GOOBERS_STATE_ENDPOINT` +
 `GOOBERS_STATE_TOKEN` + `GOOBERS_GAGGLE` present ⇒ the plane, all three absent ⇒ the file backend, any
 partial combination ⇒ a refusal, never a silent local write (decision 005 R3).
@@ -231,10 +231,15 @@ Three properties make it safe to hand a stage pod:
   backlog re-sweep generation (`backlog-resweep-<sha256>.json`, joined by Goobers#3898 — it was the
   last scheduler-directory file the claiming path opened directly), scan cursors by their
   `backlog-scan-<sha256>.json` shape, the backlog-health ready-transition ledger by its
-  `backlog-health.<gaggle>.<provider>__<repository>__<label>.json` shape (Goobers#3948 — the last
-  file holding a `goobers` subcommand to `StageRequiresInstanceRoot`), and both the client and the
-  daemon enforce it, so a state bearer can never address `claims.json`, `config.yaml`, or anything
-  else in the scheduler directory. Containment does not rest on path sanitation.
+  `backlog-health.<gaggle>.<provider>__<repository>__<label>.json` shape (Goobers#3948), and the
+  pr-remediation no-op record by its `pr-remediation-noop-<sha256>.json` shape (Goobers#3989 — the
+  last file holding `gather-pr-context`, and the last of the three seams that command needed), and
+  both the client and the daemon enforce it, so a state bearer can never address `claims.json`,
+  `config.yaml`, or anything else in the scheduler directory. Containment does not rest on path
+  sanitation. The no-op record is *keyed* rather than the fixed `pr-remediation-noop.json` it used to
+  be: the record is per PR, so one key per (gaggle, PR) keeps one PR's compare-and-swap from
+  contending with every other PR's, and the old aggregate name is deliberately **not** admitted —
+  serving it would hand a state bearer every PR's record in a single read.
 - **The gaggle is an authorization scope, not a storage location.** The files stay instance-scoped
   under `layout.SchedulerDir()`; the path segment decides *who may ask*. A pod principal is contained
   to the gaggle its own `run.yaml` proves it belongs to — verified, like claims/list, by validating
@@ -244,9 +249,12 @@ Three properties make it safe to hand a stage pod:
   route scope alone would let a pod contained to gaggle A name gaggle B's ledger. It is delimited by
   a `.` rather than by the `__` the file name joins on, because a repository or a label may
   legitimately contain `__` and the containment check must never have to guess where the gaggle ends.
-- **The plane takes the same lock the in-process path takes.** `blocked.json` and the scan cursors are
-  served under `claims.lock` (finding 002); the reconcile ledger and sibling cache under their own
-  existing lock files. A runner-driven stage holding the file lock locally and an engine-driven stage
+- **The plane takes the same lock the in-process path takes.** `blocked.json`, the scan cursors and
+  the pr-remediation no-op records are served under `claims.lock` (finding 002); the reconcile ledger
+  and sibling cache under their own existing lock files. The no-op record's claims.lock is load
+  bearing rather than incidental: terminal cleanup folds a no-op into the record *while* holding that
+  lock to read the finished run's PR claim, so any other lock would split the read and the write into
+  two atomicity domains. A runner-driven stage holding the file lock locally and an engine-driven stage
   CAS-ing through the plane serialize against each other rather than racing — which is the whole point
   of putting the route in front of the file instead of beside it. The ready-transition ledger is the
   single deliberate exception, and in the safe direction: it had *no* cross-process lock (one

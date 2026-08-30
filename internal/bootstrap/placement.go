@@ -16,7 +16,10 @@ package bootstrap
 // the local arms, image/deployment hosts through DispatchStage). The daemon's
 // own local execution path still cannot dispatch, so its boot/admission
 // checkpoints (placementRefusals, localscheduler) deliberately keep the
-// self-only substrate until #3482 moves the daemon behind this same seam.
+// self-only substrate until #3482 moves the daemon behind this same seam —
+// but only for the entries that path actually executes: since #3987 an entry
+// the daemon routes to the engine is exempt from the boot refusal, precisely
+// because this function has already placed its every stage here.
 
 import (
 	"fmt"
