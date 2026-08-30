@@ -33,7 +33,7 @@ func TestReconcileLearningFindingsResolvesSuppressesAndReopensByEvidence(t *test
 	verdict, resolution := reconcileLearningFindings(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Findings: []apiv1.Finding{b},
-	}, []apiv1.ContextPointer{first}, root, "review", "sha256:diff-2")
+	}, []apiv1.ContextPointer{first}, ArtifactBytesFromRoot(root), "review", "sha256:diff-2")
 	if verdict.Decision != apiv1.VerdictNeedsChanges ||
 		!slices.Equal(resolution.Resolved, []string{"finding-a"}) ||
 		len(verdict.Findings) != 1 || verdict.Findings[0].ID != "finding-b" {
@@ -44,7 +44,7 @@ func TestReconcileLearningFindingsResolvesSuppressesAndReopensByEvidence(t *test
 	verdict, resolution = reconcileLearningFindings(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Findings: []apiv1.Finding{a},
-	}, []apiv1.ContextPointer{first, second}, root, "review", "sha256:diff-3")
+	}, []apiv1.ContextPointer{first, second}, ArtifactBytesFromRoot(root), "review", "sha256:diff-3")
 	if verdict.Decision != apiv1.VerdictPass || !resolution.AllSuppressed ||
 		!slices.Equal(resolution.Suppressed, []string{"finding-a"}) ||
 		len(verdict.Findings) != 0 {
@@ -55,7 +55,7 @@ func TestReconcileLearningFindingsResolvesSuppressesAndReopensByEvidence(t *test
 	verdict, resolution = reconcileLearningFindings(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Findings: []apiv1.Finding{a},
-	}, []apiv1.ContextPointer{first, second}, root, "review", "sha256:diff-new")
+	}, []apiv1.ContextPointer{first, second}, ArtifactBytesFromRoot(root), "review", "sha256:diff-new")
 	if verdict.Decision != apiv1.VerdictNeedsChanges ||
 		!slices.Equal(resolution.Reopened, []string{"finding-a"}) ||
 		len(verdict.Findings) != 1 ||
@@ -67,7 +67,7 @@ func TestReconcileLearningFindingsResolvesSuppressesAndReopensByEvidence(t *test
 	verdict, resolution = reconcileLearningFindings(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Findings: []apiv1.Finding{a},
-	}, []apiv1.ContextPointer{first, second}, root, "review", "sha256:diff-4")
+	}, []apiv1.ContextPointer{first, second}, ArtifactBytesFromRoot(root), "review", "sha256:diff-4")
 	if verdict.Decision != apiv1.VerdictNeedsChanges ||
 		!slices.Equal(resolution.Reopened, []string{"finding-a"}) ||
 		len(verdict.Findings) != 1 {
