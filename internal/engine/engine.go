@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/backlogdefaults"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -116,6 +117,22 @@ type RunInput struct {
 	// persisted before this field existed — leaves every stage on the legacy
 	// self path, byte for byte.
 	Placements []PinnedPlacement `json:"placements,omitempty"`
+	// BacklogQueryAssignedTo is the instance's self identity for this gaggle
+	// (#1820, COORD-2) and BacklogQueryRequireLabels is the gaggle's
+	// GaggleSpec.RequireLabels default (MIRC-2, #1901), pinned at start by
+	// the starter exactly as the local runner's
+	// Config.BacklogQueryAssignedTo/RequireLabels are configured for its
+	// dispatch (internal/runner/run.go:4413-4414). runTask injects them into
+	// every `goobers backlog-query` stage that does not declare its own,
+	// through internal/backlogdefaults.
+	//
+	// Together they are the MIRC-2 claim partition: without them an
+	// engine-driven backlog-curation run queries the whole shared backlog and
+	// claims the sibling instance's goobers:local items (#3873). Empty —
+	// every gaggle that declares neither, and every input persisted before
+	// these fields existed — is a no-op, byte for byte as before.
+	BacklogQueryAssignedTo    string `json:"backlogQueryAssignedTo,omitempty"`
+	BacklogQueryRequireLabels string `json:"backlogQueryRequireLabels,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {
@@ -523,6 +540,14 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q inputs: %w", t.Name, err)
 	}
+	// The gaggle's claim partition (#3873, MIRC-2), applied where the local
+	// runner applies it: on the projected inputs, BEFORE the inputsFrom
+	// overlay below, so a stage that binds requireLabels/assignedTo from an
+	// upstream output still wins — the same precedence dispatchTask has
+	// (internal/runner/run.go:4413-4414). Pure function of pinned RunInput
+	// data, so it is replay-deterministic; a no-op for a gaggle that
+	// configures neither.
+	inputs = backlogdefaults.Apply(t, inputs, in.BacklogQueryAssignedTo, in.BacklogQueryRequireLabels)
 	limits, err := wf.TaskLimits(machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("project task %q limits: %w", t.Name, err)

@@ -153,6 +153,20 @@ type TriggerRequest struct {
 	Gaggle    string `json:"gaggle,omitempty"`
 	Workflow  string `json:"workflow"`
 	RequestID string `json:"requestId,omitempty"`
+	// SourceRun names the run whose newly-published durable state is the
+	// reason for this trigger. Non-empty makes it a PRIORITY re-tick
+	// (Scheduler.TriggerPriority) rather than an ordinary mint — the plane's
+	// form of apply-verdict's crowned-lander file drop
+	// (writePriorityTriggerRequest), which a stage pod has no scheduler
+	// directory to write. It is an output-driven signal, not a bypass: normal
+	// readiness admission still applies.
+	SourceRun string `json:"sourceRun,omitempty"`
+	// PodScoped and PodRunID are set by the route, never decoded from the
+	// body: the caller is a pod principal, so the trigger must name the
+	// gaggle the caller's run belongs to (the service verifies it) and a
+	// priority re-tick must name the caller's own run as its source.
+	PodScoped bool   `json:"-"`
+	PodRunID  string `json:"-"`
 }
 
 // MaxTriggerRequestIDBytes caps the caller-supplied delivery identity — the
@@ -417,6 +431,34 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 			writeError(w, http.StatusBadRequest, "invalid_request",
 				fmt.Sprintf("requestId must be no longer than %d bytes", MaxTriggerRequestIDBytes))
 			return
+		}
+		// Pod containment (decision 005 ruling R3): a pod token proves "I am
+		// run X's stage pod". That authorizes minting a run in the gaggle X
+		// belongs to — apply-verdict's crowned-lander priority dispatch — and
+		// nothing wider. The gaggle must be named explicitly (an unscoped
+		// trigger would let the daemon's ambiguity resolution pick a workflow
+		// in some other gaggle), the run the priority re-tick is attributed to
+		// must be the caller's own, and the service independently verifies
+		// that the run really does live in that gaggle. Fail closed at every
+		// step.
+		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
+			runID, named := podPrincipalRunID(principal)
+			if !named {
+				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal does not name a run")
+				return
+			}
+			if strings.TrimSpace(input.Gaggle) == "" {
+				writeError(w, http.StatusForbidden, "gaggle_required",
+					"pod principal must name the gaggle its own run belongs to")
+				return
+			}
+			if source := strings.TrimSpace(input.SourceRun); source != "" && source != runID {
+				writeError(w, http.StatusForbidden, "run_mismatch",
+					"pod principal may only request a priority trigger for its own run")
+				return
+			}
+			input.PodScoped = true
+			input.PodRunID = runID
 		}
 		response, err := triggers.Trigger(request.Context(), input)
 		if err != nil {
