@@ -1,16 +1,16 @@
 package engine
 
-// Parity row E2-runresult-nowork — EXPECTED FAILURE.
+// Parity row E2-runresult-nowork — CLOSED by plan item E2, must stay GREEN.
 //
 // Inventory row: "NoWork short-circuit accounting: Result.NoWork = terminal
 // no-work at step 1 (#233), consumed by the scheduler's schedule idle backoff
 // (recordScheduledPollResult)." Runner site:
 // internal/runner/run.go:3606 (res.NoWork = steps == 1);
-// internal/localscheduler/scheduler.go:2304. Engine: partial —
-// engine.RunResult (engine.go:131-141) has no NoWork field at all, so an
+// internal/localscheduler/scheduler.go:2304. Engine: RunResult.NoWork
+// (engine.go) set in taskOutcome's ResultNoWork arm when steps == 1, so an
 // engine-driven backlog-curation run that finds nothing to claim is
-// indistinguishable from one that did real work, and the scheduler never backs
-// off its idle polling.
+// distinguishable from one that did real work and the scheduler backs off its
+// idle polling (nowork_backoff_test.go pins that far side end to end).
 //
 // Invisible to the journal surface: both sides journal
 // run.finished(status=completed) identically. It is only visible in the value
@@ -21,11 +21,11 @@ package engine
 // reporting no-work, which is the production shape: a curation tick whose very
 // first stage finds nothing.
 //
-// Closed by plan item E2: RunResult gains `NoWork bool \`json:"noWork,omitempty"\``,
-// set in taskOutcome's ResultNoWork arm when steps == 1. The harness reads the
-// field by name off the marshalled result (engineRunResultNoWork), so the row
-// flips green with no harness edit — then DELETE its parityExpectedFailures
-// entry.
+// The harness reads the field by name off the marshalled result
+// (engineRunResultNoWork) rather than referencing res.NoWork, which is what let
+// this row be written failing-first; it is left that way deliberately, so the
+// row keeps pinning the WIRE shape the plan specifies — a bool under the
+// "noWork" key, omitted when false — and not merely a Go field name.
 
 import (
 	"testing"
@@ -58,10 +58,12 @@ func buildRunResultNoWorkCase(t *testing.T, c *parityCase) {
 // pass by both sides reporting false.
 //
 // It is the row's PREMISE, not the head of its Check, and that distinction is
-// the whole reason this row is credible: the row is on parityExpectedFailures,
-// so a graded assertion here would be swallowed into the "expected failure,
-// still open" arm — deleting `res.NoWork = steps == 1` from the local runner
-// left this suite green, printing this very sentence as it went.
+// the whole reason this row is credible: while the row was on
+// parityExpectedFailures a graded assertion here would have been swallowed into
+// the "expected failure, still open" arm — deleting `res.NoWork = steps == 1`
+// from the local runner left this suite green, printing this very sentence as
+// it went. The row is closed now, but the premise is what keeps "both sides
+// report false" from ever reading as agreement.
 func premiseRunResultNoWork(obs parityObservation) error {
 	if !obs.Runner.Terminal.NoWork {
 		return errParityPremisef(obs.Case.Row,

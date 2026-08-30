@@ -1,16 +1,17 @@
 package engine
 
-// Parity rows E2-inputsfrom-stage-qualified (EXPECTED FAILURE) and
-// P0-inputsfrom-bare-key (must stay GREEN).
+// Parity rows E2-inputsfrom-stage-qualified (CLOSED by plan item E2) and
+// P0-inputsfrom-bare-key. Both must stay GREEN.
 //
 // Inventory row: "Stage-qualified inputsFrom (#562): `stage.key` resolves
 // against any completed stage's outputs (with its integrity grade) when the DSL
 // version supports it; bare keys resolve against the immediately preceding
 // stage." Runner site: internal/runner/inputsfrom.go:78-112 with
 // workflow.SupportsStageQualifiedInputs (machine.go:90-95). Engine:
-// engine.go:555-561 resolves ONLY against upstreamResult.Outputs, so
-// "<stage>.<key>" is looked up as a literal output key, is not found, and the
-// walk fails closed.
+// internal/engine/inputsfrom.go carries a completed-stage map as workflow
+// state and resolves through the SAME branch order, so "<stage>.<key>" binds
+// against any completed stage and everything else — including a legacy dotted
+// key — still binds bare against the immediately preceding one.
 //
 // The pair is deliberate. The bare-key row is the far-side golden finding 002
 // names for P0 ("the 'bare inputsFrom resolve identically' golden is green on
@@ -18,15 +19,16 @@ package engine
 // named "a.b" produced by the immediately preceding stage — which is precisely
 // what the runner's resolution order is built to preserve. Without it, a port
 // that "fixed" the stage-qualified row by always splitting on the first dot
-// would break every legacy dotted key and this suite would not notice.
+// would break every legacy dotted key and this suite would not notice. That is
+// not hypothetical: it is the one way the E2 port could have landed wrong, and
+// this row is what forbids it.
 //
 // Both fixtures are DSL 2.0 (backlog-curation's own version), which
 // SupportsStageQualifiedInputs admits — the feature is live for every remaining
-// DSL version, so this is not a preview-only shape.
-//
-// Closed by plan item E2: the engine carries a completed-stage output map as
-// workflow state and resolves through the same order the runner uses. When it
-// lands, DELETE the stage-qualified row's parityExpectedFailures entry.
+// DSL version, so this is not a preview-only shape. The DSL GATE itself (a
+// CurrentDSLVersion lane must keep reading a dotted value as a bare key) is
+// pinned by TestStageQualifiedInputsAreDSLGated in inputsfrom_test.go, because
+// it needs a definition the parity fixtures deliberately cannot express.
 
 import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -77,6 +79,7 @@ func init() {
 		// asymmetry is graded by diffParityWalkOutcome rather than declared
 		// here, so the port that lands stage-qualified resolution turns this
 		// row green without also having to unpick a stale fixture expectation.
+		// (It did exactly that; the expectation was never edited.)
 		Premise: premiseInputsFromStageQualified,
 		Check:   checkInputsFromStageQualified,
 	})
@@ -96,9 +99,8 @@ func init() {
 }
 
 // premiseInputsFromStageQualified asserts the runner really does resolve the
-// non-adjacent reference. Ungraded: this row is on parityExpectedFailures, so a
-// runner that lost #562 resolution would otherwise be reported as the known
-// engine gap rather than as the regression it is.
+// non-adjacent reference. Ungraded: without it a runner that lost #562
+// resolution would leave this row green with both sides equally wrong.
 func premiseInputsFromStageQualified(obs parityObservation) error {
 	if err := requireEnvelopeInput(obs.Runner, "consume", "resolved", "4242"); err != nil {
 		return errParityPremisef(obs.Case.Row,
@@ -107,8 +109,9 @@ func premiseInputsFromStageQualified(obs parityObservation) error {
 	return nil
 }
 
-// checkInputsFromStageQualified is the divergence half: the engine resolves only
-// against the immediately preceding stage and fails the walk closed today.
+// checkInputsFromStageQualified is the divergence half: both sides must bind
+// the non-adjacent stage's output, and the walk that once failed closed here
+// ("upstream output %q not found") must now complete.
 func checkInputsFromStageQualified(obs parityObservation) error {
 	if err := requireEnvelopeInput(obs.Engine, "consume", "resolved", "4242"); err != nil {
 		return errParityRow(obs.Case.Row, "%v", err)
