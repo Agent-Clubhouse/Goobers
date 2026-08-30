@@ -100,6 +100,24 @@ const (
 	// carries no run scope to check, so containment is "authenticated pod
 	// principal or refused" rather than a per-run comparison.
 	BlobDigestPath = V1Prefix + "/blobs/{digest}"
+
+	// GaggleStateKeyPath is the scheduler-state plane (decision 005 R3 /
+	// finding 002 "plane clients" §3, plan step C2): ONE small gaggle-scoped
+	// key/value route for the scheduler state that is NOT a claim —
+	// blocked.json's learned-dependency records, the per-scan backlog cursor
+	// (#2067 fairness), the reconcile-post-merge ledger, and the
+	// gather-sibling-context cache. GET reads the value and its ETag; PUT
+	// writes it under an `If-Match` (or `If-None-Match: *`) precondition, so
+	// a read-modify-write split across two round trips is a compare-and-swap
+	// and never a lost update. The daemon serves both halves under the SAME
+	// per-key lock the in-process path takes (blocked.json and the scan
+	// cursor: claims.lock), which is what keeps a runner-driven 2.0 run and
+	// an engine-driven 3.0 run in one atomicity domain rather than two.
+	//
+	// The key namespace is closed (stateclient.ValidKey): a pod principal
+	// cannot address claims.json, the instance config, or anything outside
+	// the four state shapes above.
+	GaggleStateKeyPath = V1Prefix + "/gaggles/{gaggle}/state/{key}"
 )
 
 // RouteID is the stable cross-adapter identity of a versioned route.
@@ -147,6 +165,13 @@ const (
 	// carries exactly one Method.
 	RouteBlobGet RouteID = "blobGet"
 	RouteBlobPut RouteID = "blobPut"
+
+	// RouteGaggleStateGet and RouteGaggleStatePut are the scheduler-state
+	// plane (decision 005 R3 / finding 002 C2): two methods sharing
+	// GaggleStateKeyPath, distinct RouteIDs for the same reason the blob
+	// plane's pair are.
+	RouteGaggleStateGet RouteID = "gaggleStateGet"
+	RouteGaggleStatePut RouteID = "gaggleStatePut"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -296,6 +321,21 @@ var v1Routes = []Route{
 	// RouteJournalEmit accepts for its own inline artifact bytes).
 	{ID: RouteBlobGet, Method: http.MethodGet, Path: BlobDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	{ID: RouteBlobPut, Method: http.MethodPut, Path: BlobDigestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
+	// The scheduler-state plane (decision 005 R3, finding 002 C2) is the
+	// claims plane's sibling: the same machine seam, the same daemon lock,
+	// for the gaggle-scoped scheduler state that is not a claim. GET is
+	// classified with the claims plane's own read (claims/list) rather than
+	// as read-only navigation and pooled with the mutation for one reason:
+	// a caller's read-then-CAS must not have its read shed as read traffic
+	// while its write is admitted, which would spin the CAS loop forever
+	// under shed.
+	// The read half is read-only navigation with a bounded cost, as every
+	// other single-object GET is: it starts nothing, and each value is capped
+	// (MaxStateValueBytes) rather than streamed. The write half is workflow
+	// execution — a compare-and-swap that advances the scheduler's own state.
+	{ID: RouteGaggleStateGet, Method: http.MethodGet, Path: GaggleStateKeyPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleStatePut, Method: http.MethodPut, Path: GaggleStateKeyPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.
