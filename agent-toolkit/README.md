@@ -20,6 +20,7 @@ payload/
         claude.md
         agents.md
       skills/
+        goobers-getting-started/
         goobers-environment-resolver/
         goobers-dsl-author/
         goobers-run-operator/
@@ -72,9 +73,11 @@ instructions. The bundle performs no synchronization or automatic mutation.
 ## Using the bundle
 
 Choose the adapter for the repository's harness and incorporate its text into
-the user-owned instruction file. Every adapter points to the same root
-instruction and canonical Agent Skills bodies; skill content is not duplicated
-per harness.
+the user-owned instruction file. Start a new configuration with
+`goobers-getting-started`; it delegates release resolution and configuration
+authoring to the canonical specialist skills. Every adapter points to the same
+root instruction and canonical Agent Skills bodies; skill content is not
+duplicated per harness.
 
 The environment resolver selects release-matched sources. When no source
 checkout is present, it uses the docs, schemas, and examples in this payload.

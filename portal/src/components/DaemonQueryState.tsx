@@ -45,8 +45,12 @@ export function DaemonErrorState({
   return (
     <section className="daemon-state daemon-state-error" role="alert">
       <div>
-        <h1>{standalone ? "Instance data unavailable" : "Daemon unavailable"}</h1>
-        <p>{error.message} No fixture data has been substituted.</p>
+        <h1>{standalone ? "Couldn't load this instance" : "Couldn't load Goobers data"}</h1>
+        <p>
+          {standalone
+            ? "Goobers couldn't read the local instance data. Reload to try again."
+            : "The portal couldn't load data from the Goobers daemon. Reconnect to try again."}
+        </p>
       </div>
       <button className="reconnect-button" onClick={retry} type="button">
         {standalone ? "Reload" : "Reconnect"}

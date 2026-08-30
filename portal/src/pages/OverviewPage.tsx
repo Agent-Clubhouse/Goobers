@@ -302,9 +302,7 @@ function Overview({
               No configuration is available to the Portal yet. New to Goobers? The guided
               walkthrough builds a working instance step by step.
             </p>
-            <RecoveryCommand command="goobers getting-started" />
-            <p>Or initialize the instance to add its first gaggle and workflow definitions.</p>
-            <RecoveryCommand command="goobers init --guided <instance>" />
+            <RecoveryCommand command="goobers init --guided" />
           </div>
         </section>
       ) : emptyWorkflows ? (
