@@ -37,7 +37,6 @@ type Client struct {
 
 // JoinOptions configures a Join or JoinDiscovered call.
 type JoinOptions struct {
-	URL          string
 	Grant        string
 	InstanceRoot string
 	DisplayName  string
@@ -85,16 +84,6 @@ func (c Client) Enroll(ctx context.Context, endpoint string, request EnrollmentR
 		return EnrollmentResponse{}, fmt.Errorf("fleet: enrollment connection endpoint: %w", err)
 	}
 	return response, nil
-}
-
-// Join discovers the Fleet service at options.URL and enrolls the instance
-// with it, persisting the resulting association to storage.
-func (c Client) Join(ctx context.Context, storage Storage, options JoinOptions) (Association, error) {
-	discovery, err := c.Discover(ctx, options.URL)
-	if err != nil {
-		return Association{}, err
-	}
-	return c.JoinDiscovered(ctx, storage, discovery, options)
 }
 
 // JoinDiscovered enrolls the instance with an already-discovered Fleet
@@ -245,7 +234,7 @@ func (c Client) doJSON(ctx context.Context, method, endpoint string, requestBody
 		return fmt.Errorf("response exceeds %d bytes", maxResponseBytes)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("server returned %s: %s", response.Status, strings.TrimSpace(string(data)))
+		return fmt.Errorf("server returned %s", response.Status)
 	}
 	if err := json.Unmarshal(data, responseBody); err != nil {
 		return fmt.Errorf("decode response: %w", err)

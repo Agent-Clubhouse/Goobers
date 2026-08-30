@@ -183,6 +183,18 @@ list the workflow-DSL features this build supports
 \fBgoobers fix\fR
 mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
 .TP
+\fBgoobers fleet\fR
+associate this instance with a Fleet service
+.TP
+\fBgoobers fleet join\fR
+discover and enroll this instance with a Fleet service
+.TP
+\fBgoobers fleet leave\fR
+remove this instance's Fleet association and protected secrets
+.TP
+\fBgoobers fleet status\fR
+show durable Fleet registration and connection state
+.TP
 \fBgoobers journal\fR
 the one sanctioned edit to the append-only journal
 .TP
@@ -482,6 +494,10 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-features\fR(1),
 \fBgoobers-file-issues\fR(1),
 \fBgoobers-fix\fR(1),
+\fBgoobers-fleet\fR(1),
+\fBgoobers-fleet-join\fR(1),
+\fBgoobers-fleet-leave\fR(1),
+\fBgoobers-fleet-status\fR(1),
 \fBgoobers-gate-removal-guard\fR(1),
 \fBgoobers-gather-ci-failures\fR(1),
 \fBgoobers-gather-implement-context\fR(1),

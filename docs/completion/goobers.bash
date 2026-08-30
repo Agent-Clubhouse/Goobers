@@ -75,6 +75,12 @@ _goobers_completion()
                 test) flags+=" --json" ;;
             esac
             ;;
+        fleet)
+            case "${COMP_WORDS[2]:-}" in
+                join) flags+=" --url --enrollment-token-file --grant-local-admin --no-grant-local-admin" ;;
+                status) flags+=" --json" ;;
+            esac
+            ;;
         up)
             flags+=" --quiet --diagnostics --notify --skip-preflight --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads"
             ;;
@@ -270,6 +276,11 @@ _goobers_completion()
         speech)
             if (( COMP_CWORD == 2 )); then
                 candidates="preflight test"
+            fi
+            ;;
+        fleet)
+            if (( COMP_CWORD == 2 )); then
+                candidates="join status leave"
             fi
             ;;
         service)

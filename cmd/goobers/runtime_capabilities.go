@@ -265,16 +265,16 @@ func init() {
 			withSynopsis(synopsisByID["speech"]).
 			withHelp("preflight and test local speech notifications", speechHelp).
 			withExamples("goobers speech preflight", "goobers speech test"),
-		coreGroupCommand(
+		groupCommand(
 			"fleet",
 			runFleet,
-			coreSubcommand("fleet join", "join", apicontract.ActionConfigTime, runFleetJoin).
+			subcommand("fleet join", "join", apicontract.ActionConfigTime, runFleetJoin).
 				withHelp("discover and enroll this instance with a Fleet service", fleetJoinHelp).
 				withExamples("goobers fleet join --url https://fleet.example", "goobers fleet join --url https://fleet.example --enrollment-token-file ./grant.txt --grant-local-admin"),
-			coreSubcommand("fleet status", "status", apicontract.ActionReadOnlyNavigation, runFleetStatus).
+			subcommand("fleet status", "status", apicontract.ActionReadOnlyNavigation, runFleetStatus).
 				withHelp("show durable Fleet registration and connection state", fleetStatusHelp).
 				withExamples("goobers fleet status", "goobers fleet status --json"),
-			coreSubcommand("fleet leave", "leave", apicontract.ActionMaintenance, runFleetLeave).
+			subcommand("fleet leave", "leave", apicontract.ActionMaintenance, runFleetLeave).
 				withHelp("remove this instance's Fleet association and protected secrets", fleetLeaveHelp).
 				withExamples("goobers fleet leave"),
 		).

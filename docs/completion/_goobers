@@ -104,6 +104,12 @@ _goobers_completion()
                 test) flags+=(--json) ;;
             esac
             ;;
+        fleet)
+            case "${words[3]:-}" in
+                join) flags+=(--url --enrollment-token-file --grant-local-admin --no-grant-local-admin) ;;
+                status) flags+=(--json) ;;
+            esac
+            ;;
         up)
             flags+=(--quiet --diagnostics --notify --skip-preflight --watch-config --drain-timeout --cleanup-spans-only-runs --disable-read-model-reads)
             ;;
@@ -309,6 +315,13 @@ _goobers_completion()
         speech)
             if (( CURRENT == 3 )); then
                 candidates=(preflight test)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        fleet)
+            if (( CURRENT == 3 )); then
+                candidates=(join status leave)
                 _describe -V 'command' candidates
                 return
             fi

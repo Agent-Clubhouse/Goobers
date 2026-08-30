@@ -13,8 +13,6 @@ Usage:
                                 scaffold a goober, workflow, or gaggle
   goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
                                 validate an instance or checked-in config source tree
-  goobers fleet join|status|leave [flags] [path]
-                                associate this instance with a Fleet service
   goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
@@ -65,8 +63,6 @@ Usage:
                                 scaffold a goober, workflow, or gaggle
   goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
                                 validate an instance or checked-in config source tree
-  goobers fleet join|status|leave [flags] [path]
-                                associate this instance with a Fleet service
   goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
@@ -119,8 +115,6 @@ Core commands:
                                 scaffold a goober, workflow, or gaggle
   goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
                                 validate an instance or checked-in config source tree
-  goobers fleet join|status|leave [flags] [path]
-                                associate this instance with a Fleet service
   goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
@@ -165,6 +159,8 @@ Advanced operator commands:
                                 inspect, materialize, or compare instance configuration
   goobers speech preflight|test [flags] [path]
                                 preflight or test local speech notifications
+  goobers fleet join|status|leave [flags] [path]
+                                associate this instance with a Fleet service
   goobers apply [path]          reconcile a live daemon's workflow definitions from its configured source now
   goobers self-update [--policy manual|on-release|on-main] [--branch <name>] [--target <tag>] [--health-ticks <n>] [--health-timeout <duration>] [path]
                                 stage and request a supervised binary update

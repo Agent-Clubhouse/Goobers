@@ -36,13 +36,9 @@ func ParsePrivateKey(der []byte) (*ecdsa.PrivateKey, error) {
 	}
 	key, ok := parsed.(*ecdsa.PrivateKey)
 	if !ok || key.Curve != elliptic.P256() {
-		return nil, errorsNewInvalidKey()
+		return nil, fmt.Errorf("fleet: instance private key is not ECDSA P-256")
 	}
 	return key, nil
-}
-
-func errorsNewInvalidKey() error {
-	return fmt.Errorf("fleet: instance private key is not ECDSA P-256")
 }
 
 // PublicKeySPKI returns the base64-encoded SubjectPublicKeyInfo for key's
@@ -71,18 +67,4 @@ func SignChallenge(key *ecdsa.PrivateKey, fleetID, registrationID string, genera
 		return "", fmt.Errorf("fleet: sign challenge: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(signature), nil
-}
-
-// VerifyChallenge verifies that signature is a valid signature over the
-// connection challenge payload for publicKey.
-func VerifyChallenge(publicKey *ecdsa.PublicKey, signature, fleetID, registrationID string, generation int64, connectionID, nonce string) error {
-	decoded, err := base64.RawURLEncoding.DecodeString(signature)
-	if err != nil {
-		return fmt.Errorf("fleet: decode challenge signature: %w", err)
-	}
-	digest := sha256.Sum256([]byte(ChallengePayload(fleetID, registrationID, generation, connectionID, nonce)))
-	if !ecdsa.VerifyASN1(publicKey, digest[:], decoded) {
-		return fmt.Errorf("fleet: invalid challenge signature")
-	}
-	return nil
 }

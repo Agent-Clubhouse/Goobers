@@ -286,13 +286,3 @@ github.com/goobers/goobers/internal/e2e.matchLine # §5 rule 1 guard's shared pa
 github.com/goobers/goobers/internal/e2e.ScanTextForKubectlExec # S7's transcript half of the §5 rule 1 guard; topology-pending with AssertTriggerAndEscalationViaWriteAPI above (its only intended caller).
 github.com/goobers/goobers/internal/e2e.ScanGoStringLiteralsForKubectlExec # §5 rule 1 guard over this package's own Go source; not wired into any lint/CI entrypoint yet, only its own tests.
 github.com/goobers/goobers/internal/e2e.ReadBundle # Bundle.Encode's round-trip counterpart; no consumer reads a written evidence bundle back yet (a future re-run/comparison feature), only its own tests.
-
-# Fleet connector (#3921) vertical slice: this PR ships discovery, enrollment,
-# and storage now; the WSS hello/heartbeat/reconnect connection loop and its
-# CLI/daemon callers land in a follow-up increment of this same PR series.
-github.com/goobers/goobers/internal/fleet.Client.Join # Convenience wrapper around Discover+JoinDiscovered for a future non-CLI caller (the CLI join path calls JoinDiscovered directly today); exercised by client_test.go.
-github.com/goobers/goobers/internal/fleet.ParsePrivateKey # Round-trip counterpart to MarshalPrivateKey, needed once the WSS connection loop reloads a stored private key to sign challenges; not yet called or tested.
-github.com/goobers/goobers/internal/fleet.errorsNewInvalidKey # ParsePrivateKey's own error helper; unreachable once ParsePrivateKey is, see above.
-github.com/goobers/goobers/internal/fleet.ChallengePayload # Shared payload builder for the WSS hello/challenge handshake, whose connection loop is planned but not yet implemented; exercised by signature_test.go.
-github.com/goobers/goobers/internal/fleet.SignChallenge # Instance side of the WSS hello/challenge handshake above; exercised by signature_test.go.
-github.com/goobers/goobers/internal/fleet.VerifyChallenge # Fleet-service side of the WSS hello/challenge handshake above, retained here so the protocol keys and payload stay symmetric; exercised by signature_test.go.
