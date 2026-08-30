@@ -4,18 +4,16 @@ package fleet
 
 import (
 	"fmt"
-	"os"
 	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
+var knownFolderPath = windows.KnownFolderPath
+
 func platformStorageBaseDir() (string, error) {
-	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-		return localAppData, nil
-	}
-	return os.UserCacheDir()
+	return knownFolderPath(windows.FOLDERID_LocalAppData, windows.KF_FLAG_DEFAULT)
 }
 
 func protect(plaintext []byte) ([]byte, error) {
