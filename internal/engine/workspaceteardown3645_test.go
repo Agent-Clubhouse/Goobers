@@ -151,12 +151,13 @@ func TestTeardownFailureLeavesStageResultIntact(t *testing.T) {
 	}
 
 	// #3845 gave InvokeGoober its (workspaceDelta, workspace) positional
-	// arguments; this test predates that merge and needs neither, so it
-	// passes the no-delta / default-workspace pair the engine passes for an
-	// unbranched, non-continuing stage.
+	// arguments and #3882 added onTimeout; this test predates both and needs
+	// none of them, so it passes the no-delta / default-workspace /
+	// default-timeout-policy triple the engine passes for an unbranched,
+	// non-continuing stage.
 	res, err := activities.InvokeGoober(context.Background(), apiv1.InvocationEnvelope{
 		RunID: "run-5", TaskID: "run-5:implement",
-	}, "", "", "")
+	}, "", "", "", "")
 	if err != nil {
 		t.Fatalf("InvokeGoober = %v, want the stage's own success despite a teardown failure", err)
 	}

@@ -20,9 +20,9 @@ import (
 // repass, escalation override) is deterministic and runs workflow-side,
 // mirroring gate.Evaluator.resolveOutcome/trackRepass exactly. Verdict
 // journaling (runJournal.gateEvaluated) and the #412 verdict ContextPointer
-// are engine-side; the diff-evidence features — identical-diff dedup (#316),
-// empty-diff fast-fail (#415), cross-run verdict cache (#523) — stay with the
-// local runner until the engine has journal-backed diff evidence (#629/#301).
+// are engine-side. The diff-evidence features — identical-diff dedup (#316),
+// empty-diff fast-fail (#415), cross-run verdict cache (#523) — landed with
+// #3882 and are carried on the fields below.
 type gateResult struct {
 	// Gate is the evaluated gate's name.
 	Gate string
@@ -41,6 +41,31 @@ type gateResult struct {
 	RepassTarget string
 	// Escalated is true when Target was overridden by the repass budget.
 	Escalated bool
+	// DiffDigest is the content digest of the subject diff this gate was
+	// shown (#3384). Empty for an automated or human gate, and for an agentic
+	// gate whose workspace could not report one.
+	DiffDigest string
+	// DuplicateDiff records that the subject produced a diff byte-identical to
+	// the one the previous repass produced (#316), so the reviewer was NOT
+	// invoked and the verdict was synthesized.
+	DuplicateDiff bool
+	// CacheHit records that the subject carried a verdict forward and the
+	// reviewer was NOT invoked (#523).
+	CacheHit bool
+	// RepassCause is why the subject stage was re-entered (#3375). Nil on a
+	// first pass.
+	RepassCause *gate.RepassCause
+	// Reason is the synthesized outcome's own explanation, journaled so an
+	// operator can tell an empty-diff fast-fail from a reviewer's fail.
+	Reason string
+	// Finding lifecycle across repasses (#3843): which of the previous
+	// verdict's findings this evaluation resolved, suppressed, reopened, or
+	// affirmatively disproved.
+	ResolvedFindingIDs   []string
+	SuppressedFindingIDs []string
+	ReopenedFindingIDs   []string
+	DisprovenFindingIDs  []string
+	DisprovenFindings    []apiv1.Finding
 }
 
 // The walk (engine.go's walk) carries two per-gate map[string]int counters

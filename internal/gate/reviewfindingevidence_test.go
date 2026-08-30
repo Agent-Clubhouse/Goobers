@@ -183,7 +183,7 @@ func TestReviewerFindingDisprovalRequiresUnambiguousExactSource(t *testing.T) {
 			normalized, allDisproven := disproveReviewerFindings(
 				verdict,
 				[]apiv1.ContextPointer{pointer},
-				run.Dir(),
+				ArtifactBytesFromRoot(run.Dir()),
 				"review",
 			)
 			if allDisproven || normalized.Decision != apiv1.VerdictNeedsChanges || len(normalized.Findings) != 1 {
@@ -215,7 +215,7 @@ func TestReviewerFindingDisprovalPreservesSemanticJSONFinding(t *testing.T) {
 	normalized, allDisproven := disproveReviewerFindings(
 		verdict,
 		[]apiv1.ContextPointer{pointer},
-		run.Dir(),
+		ArtifactBytesFromRoot(run.Dir()),
 		"review",
 	)
 	if allDisproven || normalized.Decision != apiv1.VerdictNeedsChanges || len(normalized.Findings) != 1 {
@@ -254,7 +254,7 @@ func TestReviewerFindingDisprovalIgnoresNonAuthoritativeDiff(t *testing.T) {
 	normalized, allDisproven := disproveReviewerFindings(
 		verdict,
 		[]apiv1.ContextPointer{authoritative, other},
-		run.Dir(),
+		ArtifactBytesFromRoot(run.Dir()),
 		"review",
 	)
 	if allDisproven || normalized.Decision != apiv1.VerdictNeedsChanges || len(normalized.Findings) != 1 {

@@ -555,6 +555,7 @@ func githubGitPushRateLimitError(repo RepositoryRef, output []byte) *RateLimitEr
 		return nil
 	}
 	return &RateLimitError{
+		Provider:  ProviderGitHub,
 		Endpoint:  fmt.Sprintf("git push %s/%s", repo.Owner, repo.Name),
 		Status:    status,
 		Secondary: secondary,

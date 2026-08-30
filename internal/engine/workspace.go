@@ -84,6 +84,32 @@ type DeltaPublisher interface {
 	PublishDelta(ctx context.Context) (WorkspaceDeltaPublication, error)
 }
 
+// DiffReader is the optional READ half a repo-mode Workspace may implement so
+// the engine can see what a stage actually changed without shelling out to git
+// from workflow code (#3882).
+//
+// Two callers need it, and they need it for different reasons. A reviewer gate
+// needs the subject diff to review it at all (#3384) and to decide whether
+// there is anything to review — an empty diff fast-fails and an unchanged diff
+// is a repeat. A finished agentic attempt needs the diff its workspace is
+// about to take to the grave (#3366), which is the only copy of work an agent
+// committed but never pushed.
+//
+// Both are answered by the WORKSPACE rather than by the engine because the
+// engine holds no repository: the activity host provisions a working copy per
+// attempt and tears it down, so the window in which "what changed" is
+// answerable is exactly the workspace's lifetime. A workspace that does not
+// implement this reports no diff, and every behaviour keyed on one degrades to
+// the pre-#3882 engine rather than failing.
+type DiffReader interface {
+	// Diff returns the patch between baseRef and the workspace's current HEAD.
+	// Empty (not an error) when the branch has not moved.
+	Diff(ctx context.Context, baseRef string) ([]byte, error)
+	// Head reports the workspace's current branch and the base ref the diff
+	// above is taken against, for the sidecar that records provenance.
+	Head(ctx context.Context) (branch string, baseRef string, err error)
+}
+
 // WorkspaceProvisioner provisions the fresh, isolated, disposable working copy
 // each stage attempt runs in (ARCHITECTURE.md §5). The engine's activities
 // provision one per attempt and stamp its path into the invocation envelope's
