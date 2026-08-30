@@ -399,10 +399,21 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	// ContextPointers — the only channel through which a stage consumes prior
 	// work (§2.4) — exactly as the local runner's walk does.
 	var pointers []apiv1.ContextPointer
-	// Gate attempts recover interrupted evaluators; repass attempts enforce the
-	// run budget cumulatively by completed target stage.
-	gateAttempts := map[string]int{}
-	repassAttempts := map[string]int{}
+	// The run's repass accounting (gate.RepassBudget, #3930): the gate-keyed
+	// counters that recover interrupted evaluators, and the target-keyed
+	// budgets that bound re-entry — policy and infrastructure kept apart, both
+	// charged by the same shared helper the local runner's evaluator calls.
+	// Ordinary workflow state: every map is read and written by key only, so a
+	// replay reconstructs it from the same deterministic outcome sequence, and
+	// a history recorded before the infrastructure counters existed replays
+	// with their zero values, which is what "no infrastructure repass has been
+	// charged" means.
+	repassBudget := gate.RepassBudget{
+		Attempts:                     map[string]int{},
+		InfrastructureAttempts:       map[string]int{},
+		RepassAttempts:               map[string]int{},
+		InfrastructureRepassAttempts: map[string]int{},
+	}
 	// gateDispatches numbers each placed gate's pod attempts across the whole
 	// run (gatePodAttempt): the surrender-plane key and the pod name for a
 	// reviewer evaluated in a pod. Untouched by the self arm.
@@ -593,13 +604,13 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				gerr    error
 			)
 			if knownOutcome != "" {
-				rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1, 0)
+				rec.gateStarted(ctx, g.Name, repassBudget.Attempts[g.Name]+1, 0)
 				if err := rec.emitPending(ctx); err != nil {
 					return RunResult{}, err
 				}
 				outcome = knownOutcome
 			} else {
-				outcome, verdict, review, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, addendum, ev, lastDiffDigest[g.Name], gateAttempts, gateDispatches, rec)
+				outcome, verdict, review, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, addendum, ev, lastDiffDigest[g.Name], repassBudget.Attempts, gateDispatches, rec)
 			}
 			if gerr != nil {
 				return RunResult{}, gerr
@@ -634,7 +645,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				outcome = string(reconciled.Decision)
 			}
 			_, reentry := upstream[wfTarget(g, outcome)]
-			gr, rerr := resolveGateOutcome(g, outcome, reentry, gateAttempts, repassAttempts, maxRepassesFor(in))
+			gr, rerr := resolveGateOutcome(g, outcome, reentry, &repassBudget, maxRepassesFor(in))
 			if rerr != nil {
 				return RunResult{}, rerr
 			}
@@ -988,7 +999,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 // ActReviewGoober with the arguments it always has (ruling 8, as amended by
 // #3845): that arm is untouched, and the walk's continuity selector already
 // hands both arms the same delta.
-func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, instructionAddendum string, ev gateEvidence, priorDiffDigest string, gateAttempts map[string]int, gateDispatches map[string]int, rec *runJournal) (string, *apiv1.Verdict, GateReviewResult, error) {
+func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, instructionAddendum string, ev gateEvidence, priorDiffDigest string, gatePolicyAttempts map[string]int, gateDispatches map[string]int, rec *runJournal) (string, *apiv1.Verdict, GateReviewResult, error) {
 	limits, err := wf.GateLimits(machine, g)
 	if err != nil {
 		return "", nil, GateReviewResult{}, fmt.Errorf("project gate %q limits: %w", g.Name, err)
@@ -1013,7 +1024,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		}
 		ctx := stageActivityContext(ctx, env.Limits)
 		// An automated gate never dispatches a pod (podAttempt: 0, omitted).
-		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1, 0)
+		rec.gateStarted(ctx, g.Name, gatePolicyAttempts[g.Name]+1, 0)
 		// Pre-evaluation emission: gate.paused + gate.started go live before
 		// the evaluator dispatches, so a run waiting at a gate is visible
 		// waiting at that gate.
@@ -1047,7 +1058,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// here, at the last point before dispatch, so the short-circuit is
 		// visibly one branch away from the dispatch it replaces.
 		if ev.CachedVerdict != nil {
-			rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1, 0)
+			rec.gateStarted(ctx, g.Name, gatePolicyAttempts[g.Name]+1, 0)
 			if err := rec.emitPending(ctx); err != nil {
 				return "", nil, GateReviewResult{}, err
 			}
@@ -1075,7 +1086,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		if remote {
 			podAttempt = gateDispatches[g.Name] + 1
 		}
-		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1, podAttempt)
+		rec.gateStarted(ctx, g.Name, gatePolicyAttempts[g.Name]+1, podAttempt)
 		// Pre-evaluation emission, as on the automated arm above.
 		if err := rec.emitPending(ctx); err != nil {
 			return "", nil, GateReviewResult{}, err

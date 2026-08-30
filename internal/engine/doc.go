@@ -137,6 +137,33 @@
 // those rows; the boundary lives in the inventory and the rows, not in a
 // second implementation.
 //
+// Plan item E11 (#3930) closed the same kind of divergence one layer down, in
+// the repass BUDGET itself. The runner's gate.Evaluator has always kept two
+// budgets — a policy one bounded by MaxRepasses and an infrastructure one
+// bounded by DefaultMaxInfrastructureRepasses — each held per gate AND per
+// branch target, each resetting the other when the outcome class flips. The
+// engine kept one. An infrastructure outcome here was therefore charged to the
+// policy counter, measured against the policy bound, and never cross-reset, so
+// the two drivers escalated the same definition over the same failures at
+// different points: an infra-only gate escalated on the engine's fourth
+// evaluation and the runner's third.
+//
+// The parity harness could not see it because journal.ConformanceView drops the
+// whole Runner annotation namespace, which is where repassAttempt, gateAttempt
+// and repassTarget live — the counters ARE the divergence, and the surface the
+// table diffs by default is blind to them. The E11 rows (parity_row_infra_repass_budget_test.go)
+// therefore read those annotations back off both journals and compare them
+// evaluation by evaluation, in addition to the shared surfaces.
+//
+// The ruling is the same as E10's: the transition is one rule, so it lives once.
+// gate.RepassBudget.Charge is that rule — the four counters, the cross-resets,
+// the class-dependent bound and the escalation verdict — and trackRepass and
+// resolveGateOutcome are now both callers. The engine's copy is workflow-local
+// state rebuilt from the recorded outcome sequence, so a replay re-derives it
+// exactly; histories written before the counters existed rebuild them at their
+// zero values, which is a full infrastructure budget and the policy count the
+// old journal really recorded.
+//
 // Plan item E2 (#3874) closed four of the entries this ledger used to carry:
 // the #415 non-retryable escalation bypass, the retry-decision annotation and
 // its knownOutcome shortcut, RunResult.NoWork, and stage-qualified inputsFrom

@@ -614,10 +614,7 @@ func applyImplementationLaneOutcome(g apiv1.Gate, gr *gateResult, ev gateEvidenc
 		gr.Target = escalationTarget(g)
 	}
 	if gr.Escalated && reason == "" {
-		reason = gate.ReasonRepassBudgetExhausted
-		if gr.Outcome == gate.OutcomeInfra {
-			reason = gate.ReasonInfrastructureBudgetExhausted
-		}
+		reason = gr.Charge.EscalationReason()
 	}
 	gr.Reason = reason
 }

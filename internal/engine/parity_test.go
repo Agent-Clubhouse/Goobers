@@ -304,6 +304,55 @@ const (
 	// so the row is a parity claim about the shared derivation and not only
 	// about the arithmetic.
 	rowLearningEpisodeSendBack parityRow = "E10-learning-episode-send-back"
+
+	// --- E11: the infrastructure repass budget (#3930) ------------------------
+	//
+	// One finding-002 inventory row — "gate repass accounting: the
+	// infrastructure budget is separate from the policy budget, at its own
+	// bound, and both cross-reset" — pinned by four cases, because the
+	// collapse the engine shipped had four independently observable halves and
+	// a fixture that lumped them together would report the first one and hide
+	// the rest.
+	//
+	// The behaviour is internal/gate.RepassBudget's, which both drivers now
+	// charge: infrastructure outcomes take their own per-gate and per-target
+	// counters, bounded by gate.DefaultMaxInfrastructureRepasses (2) rather
+	// than the policy MaxRepasses (3), and an intervening outcome of the other
+	// class returns what the first spent. The engine kept ONE budget at ONE
+	// bound with no reset, so the same definition over the same failures
+	// escalated at a different point on the two runners — decision 005's
+	// cutover risk in its purest form, with nothing failing.
+	//
+	// Every case is shaped like implementation.yaml's `local-gate` (:418-427),
+	// the shipped lane finding 002 R11 schedules second and the one that bites:
+	// a failure-class gate whose infra branch is a SELF SEND-BACK to local-ci
+	// and whose fail branch sends implement back instead. The two targets being
+	// different stages is what makes the per-target reset observable; the infra
+	// branch repeating is what makes the bound observable.
+	//
+	// rowInfraRepassBudgetBound is the bound itself: an infrastructure-ONLY
+	// sequence retries twice and escalates on the third, on both runners. The
+	// engine gave it three.
+	rowInfraRepassBudgetBound parityRow = "E11-infra-repass-budget-bound"
+	// rowInfraRepassBudgetIndependence is the independence and the reset: an
+	// infrastructure sequence, a content failure, then another infrastructure
+	// sequence. Neither budget may consume the other, and the second
+	// infrastructure run must get the FULL retry budget back.
+	rowInfraRepassBudgetIndependence parityRow = "E11-infra-repass-budget-independence"
+	// rowInfraRepassCounterSeparation is the other axis of the same collapse:
+	// the per-GATE evaluation counters (which recover an interrupted evaluator
+	// and number gate.started) are not the per-TARGET budgets (which bound
+	// re-entry). The engine advanced one number for both classes and shared
+	// nothing; the runner keeps two that cross-reset, over target budgets that
+	// two different gates share.
+	rowInfraRepassCounterSeparation parityRow = "E11-infra-repass-counter-separation"
+	// rowInfraRepassBudgetResumed is the durability half: the journal each side
+	// writes must let a RESUMED or REPLAYED run rebuild the same budgets and
+	// reach the same next decision. A driver that charges correctly in memory
+	// but journals a collapsed number hands its own crash-resume a budget that
+	// is already spent — or a fresh one — and the divergence reappears on the
+	// next interruption rather than on the next release.
+	rowInfraRepassBudgetResumed parityRow = "E11-infra-repass-budget-resumed"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
@@ -320,7 +369,9 @@ const (
 // The list is EMPTY again as of plan item E10's ruling (#3929), which closed
 // the E10-learning-episode-forward-branch entry #3917 registered — the only one
 // it has ever carried since E1 (#3873) and E2 (#3874) closed the backlog-query
-// defaulting, NoWork and stage-qualified inputsFrom rows. An empty list is the
+// defaulting, NoWork and stage-qualified inputsFrom rows. E11 (#3930) landed
+// its four rows green in the same change that closed the divergence they pin,
+// which is the state this list wants every row to be in. An empty list is the
 // strongest state this harness can be in — every registered row is green on
 // both runners — and it is not a licence to stop adding rows. A gap the
 // inventory names but no row pins is still a gap; see the drift ledger in
@@ -337,6 +388,10 @@ const (
 // non-degenerate one is what turns it into something a row can see. #3932 was
 // runner-only and unreachable from here at all (R9 refuses parallels), so it is
 // pinned in internal/runner instead.
+
+// doc.go for divergences observed but not yet inventoried, and #3928/#3931/
+// #3932 for defects that are real but are NOT parity divergences, because both
+// runners share them.
 var parityExpectedFailures = map[parityRow]string{}
 
 // --- case registration ------------------------------------------------------
