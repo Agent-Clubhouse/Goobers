@@ -1184,9 +1184,12 @@ func TestEmitHeartbeatsReadsConstantBytesPerTick(t *testing.T) {
 
 // The memory clause is the whole reason #3949 was diagnosable only by hand: a
 // heartbeat carrying scheduler counts alone cannot distinguish a leaking daemon
-// from a memory cgroup filling with page cache from the stages it runs. Assert
-// it is on the line, on both the healthy and the degraded path.
-func TestEmitHeartbeatsCarriesTheMemoryFootprint(t *testing.T) {
+// from a memory cgroup filling with page cache from the stages it runs. The CPU
+// clause answers the question that same incident could not (#3963) — a pod
+// pinned at its CPU quota looks identical to a busy one in every point-in-time
+// metric, and the throttling counters are the only term that separates them.
+// Assert both are on the line, on the healthy and the degraded path alike.
+func TestEmitHeartbeatsCarriesTheResourceFootprint(t *testing.T) {
 	dir := t.TempDir()
 	log, _, err := journal.OpenInstanceLog(dir)
 	if err != nil {
@@ -1229,7 +1232,7 @@ func TestEmitHeartbeatsCarriesTheMemoryFootprint(t *testing.T) {
 			<-done
 
 			output := stdout.String()
-			for _, want := range []string{tc.wantLine, "heap ", "retained ", "goroutine(s)"} {
+			for _, want := range []string{tc.wantLine, "heap ", "retained ", "goroutine(s)", "cpu ", "host", "GOMAXPROCS "} {
 				if !strings.Contains(output, want) {
 					t.Fatalf("heartbeat output = %q, want it to contain %q", output, want)
 				}

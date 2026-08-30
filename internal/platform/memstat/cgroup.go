@@ -1,17 +1,18 @@
 package memstat
 
 import (
-	"bufio"
-	"bytes"
-	"os"
 	"path/filepath"
-	"strconv"
+
+	"github.com/goobers/goobers/internal/platform/cgroupfs"
 )
 
 // defaultCgroupRoot is where both cgroup generations are mounted in a
 // container. Tests read a fake root instead, so this package's parsing is
 // exercised on every platform rather than only where a real cgroup exists.
-const defaultCgroupRoot = "/sys/fs/cgroup"
+// internal/platform/cpustat reads the CPU quota from the same root through the
+// same shared parsers, so the two halves of one incident can never disagree
+// about which cgroup they described.
+const defaultCgroupRoot = cgroupfs.DefaultRoot
 
 // v1UnlimitedFloor is the floor above which a cgroup v1 memory.limit_in_bytes
 // means "unlimited". v1 has no sentinel word: it stores page count × page size,
@@ -41,86 +42,45 @@ func readCgroup(root string) *Cgroup {
 }
 
 func readCgroupV2(dir string) *Cgroup {
-	current, ok := readUint(filepath.Join(dir, "memory.current"))
+	current, ok := cgroupfs.ReadUint(filepath.Join(dir, "memory.current"))
 	if !ok {
 		return nil
 	}
 	cgroup := &Cgroup{Current: current}
-	// v2 writes the literal "max" when unlimited, which readUint rejects —
+	// v2 writes the literal "max" when unlimited, which cgroupfs.ReadUint rejects —
 	// leaving Limit zero, which is exactly what unlimited means here.
-	if limit, ok := readUint(filepath.Join(dir, "memory.max")); ok {
+	if limit, ok := cgroupfs.ReadUint(filepath.Join(dir, "memory.max")); ok {
 		cgroup.Limit = limit
 	}
-	stat := readKeyedFile(filepath.Join(dir, "memory.stat"))
+	stat := cgroupfs.ReadKeyed(filepath.Join(dir, "memory.stat"))
 	cgroup.Anon = stat["anon"]
 	cgroup.File = stat["file"]
 	// memory.events uses the same "<key> <value>" format as memory.stat.
 	// Absent keys read as zero, which is the correct reading for a kernel
 	// that does not export them.
-	events := readKeyedFile(filepath.Join(dir, "memory.events"))
+	events := cgroupfs.ReadKeyed(filepath.Join(dir, "memory.events"))
 	cgroup.AtLimit = events["max"]
 	cgroup.OOMKills = events["oom_kill"]
 	return cgroup
 }
 
 func readCgroupV1(dir string) *Cgroup {
-	current, ok := readUint(filepath.Join(dir, "memory.usage_in_bytes"))
+	current, ok := cgroupfs.ReadUint(filepath.Join(dir, "memory.usage_in_bytes"))
 	if !ok {
 		return nil
 	}
 	cgroup := &Cgroup{Current: current}
-	if limit, ok := readUint(filepath.Join(dir, "memory.limit_in_bytes")); ok && limit < v1UnlimitedFloor {
+	if limit, ok := cgroupfs.ReadUint(filepath.Join(dir, "memory.limit_in_bytes")); ok && limit < v1UnlimitedFloor {
 		cgroup.Limit = limit
 	}
-	stat := readKeyedFile(filepath.Join(dir, "memory.stat"))
+	stat := cgroupfs.ReadKeyed(filepath.Join(dir, "memory.stat"))
 	// v1 names the same two quantities "rss" and "cache". Mapping them onto
 	// Anon and File keeps the reading generation-agnostic for every caller.
 	cgroup.Anon = stat["rss"]
 	cgroup.File = stat["cache"]
 	// v1 has no "max" equivalent, so AtLimit stays zero. It does report
 	// kills, under a different filename and alongside non-numeric lines
-	// readKeyedFile skips.
-	cgroup.OOMKills = readKeyedFile(filepath.Join(dir, "memory.oom_control"))["oom_kill"]
+	// cgroupfs.ReadKeyed skips.
+	cgroup.OOMKills = cgroupfs.ReadKeyed(filepath.Join(dir, "memory.oom_control"))["oom_kill"]
 	return cgroup
-}
-
-// readUint reads a file holding a single decimal integer. A missing file, a
-// non-numeric body ("max"), or a negative value all report not-ok, so a caller
-// never has to distinguish "absent" from "unparseable" — neither yields a
-// number it could report.
-func readUint(path string) (uint64, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0, false
-	}
-	value, err := strconv.ParseUint(string(bytes.TrimSpace(data)), 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return value, true
-}
-
-// readKeyedFile parses the "<key> <value>" line format both cgroup generations
-// use for memory.stat. Unparseable lines are skipped rather than failing the
-// read: memory.stat gains keys across kernel versions, and one unrecognized
-// line must not cost the caller the keys it did understand.
-func readKeyedFile(path string) map[string]uint64 {
-	values := make(map[string]uint64)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return values
-	}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		key, rest, found := bytes.Cut(bytes.TrimSpace(scanner.Bytes()), []byte(" "))
-		if !found {
-			continue
-		}
-		value, err := strconv.ParseUint(string(bytes.TrimSpace(rest)), 10, 64)
-		if err != nil {
-			continue
-		}
-		values[string(key)] = value
-	}
-	return values
 }
