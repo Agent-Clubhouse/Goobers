@@ -52,6 +52,25 @@ type Cgroup struct {
 	// be OOM-killed by an allocation burst that arrives faster than the
 	// kernel can write back and evict, which is exactly the shape of #3949.
 	File uint64
+	// AtLimit counts how many times the cgroup's usage has been driven up
+	// against its limit and reclaim had to run (cgroup v2's `memory.events`
+	// `max`; v1 has no equivalent and leaves it zero).
+	//
+	// It is the leading indicator the other fields cannot give. Current and
+	// File describe one instant, and an instant sampled between bursts looks
+	// calm: on the #3949 pod a 76%-of-limit reading was typical while the
+	// cgroup was in fact hitting its ceiling thousands of times an hour.
+	// This counter is monotonic for the life of the cgroup, so any two
+	// heartbeats bound the pressure in the interval between them.
+	AtLimit uint64
+	// OOMKills counts processes the kernel has killed in this cgroup
+	// (`memory.events` `oom_kill`; v1's `memory.oom_control` `oom_kill`).
+	//
+	// A container that was OOM-killed and restarted comes back with a fresh
+	// cgroup and a zero counter, so this is not a substitute for the pod's
+	// restartCount — it reports kills of *child* processes that did not take
+	// the container's pid 1 down with them, which are otherwise invisible.
+	OOMKills uint64
 }
 
 // runtime metric names. Sampled through runtime/metrics rather than
@@ -134,9 +153,30 @@ func (f Footprint) String() string {
 	} else {
 		b.WriteString("/unlimited")
 	}
-	fmt.Fprintf(&b, " = anon %s + cache %s",
-		FormatBytes(f.Cgroup.Anon), FormatBytes(f.Cgroup.File))
+	b.WriteString(" = " + f.Cgroup.Breakdown())
+	// Printed only when non-zero. A quiet cgroup should not spend heartbeat
+	// width on two zeros, but the moment either moves it must be on the line
+	// that an operator is already reading.
+	if f.Cgroup.AtLimit > 0 {
+		fmt.Fprintf(&b, ", %d at-limit", f.Cgroup.AtLimit)
+	}
+	if f.Cgroup.OOMKills > 0 {
+		fmt.Fprintf(&b, ", %d oom-kill(s)", f.Cgroup.OOMKills)
+	}
 	return b.String()
+}
+
+// Breakdown renders the anon/cache split that distinguishes the two ways a
+// cgroup fills. Anon is what an application leak grows and the kernel cannot
+// reclaim; cache is reclaimable file-backed memory that nonetheless counts in
+// full against the limit. In #3949 the split was the whole diagnosis, so it is
+// worth naming separately from String — the admission gate quotes it in the
+// reason it refuses a run with.
+func (c *Cgroup) Breakdown() string {
+	if c == nil {
+		return ""
+	}
+	return fmt.Sprintf("anon %s + cache %s", FormatBytes(c.Anon), FormatBytes(c.File))
 }
 
 // FormatBytes renders a byte count in binary units, keeping one decimal place

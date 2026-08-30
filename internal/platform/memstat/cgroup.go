@@ -47,7 +47,7 @@ func readCgroupV2(dir string) *Cgroup {
 		return nil
 	}
 	cgroup := &Cgroup{Current: current}
-	// v2 writes the literal "max" when unlimited, which readUint rejects —
+	// v2 writes the literal "max" when unlimited, which cgroupfs.ReadUint rejects —
 	// leaving Limit zero, which is exactly what unlimited means here.
 	if limit, ok := cgroupfs.ReadUint(filepath.Join(dir, "memory.max")); ok {
 		cgroup.Limit = limit
@@ -55,6 +55,12 @@ func readCgroupV2(dir string) *Cgroup {
 	stat := cgroupfs.ReadKeyed(filepath.Join(dir, "memory.stat"))
 	cgroup.Anon = stat["anon"]
 	cgroup.File = stat["file"]
+	// memory.events uses the same "<key> <value>" format as memory.stat.
+	// Absent keys read as zero, which is the correct reading for a kernel
+	// that does not export them.
+	events := cgroupfs.ReadKeyed(filepath.Join(dir, "memory.events"))
+	cgroup.AtLimit = events["max"]
+	cgroup.OOMKills = events["oom_kill"]
 	return cgroup
 }
 
@@ -72,5 +78,9 @@ func readCgroupV1(dir string) *Cgroup {
 	// Anon and File keeps the reading generation-agnostic for every caller.
 	cgroup.Anon = stat["rss"]
 	cgroup.File = stat["cache"]
+	// v1 has no "max" equivalent, so AtLimit stays zero. It does report
+	// kills, under a different filename and alongside non-numeric lines
+	// cgroupfs.ReadKeyed skips.
+	cgroup.OOMKills = cgroupfs.ReadKeyed(filepath.Join(dir, "memory.oom_control"))["oom_kill"]
 	return cgroup
 }
