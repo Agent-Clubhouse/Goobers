@@ -231,3 +231,118 @@ func TestFeedRegistersBeforeReading(t *testing.T) {
 			"fires before the read must not be lost")
 	}
 }
+
+func waiterCount(feed *Feed) int {
+	feed.mu.Lock()
+	defer feed.mu.Unlock()
+	return len(feed.waiters)
+}
+
+// TestFeedDoesNotRetainWaitersOnEveryExit pins that a subscription which leaves
+// without being notified takes its waiter with it.
+//
+// Registration happens before the read, so every exit path that is NOT "woken
+// by Notify" — a query error, rows that were already there, a cancelled
+// context — leaves behind a channel nothing will ever read. Only a later Notify
+// used to clear them, so on a quiet instance the set grew with every
+// connect/disconnect and every page of a catch-up.
+func TestFeedDoesNotRetainWaitersOnEveryExit(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	feed := NewFeed(store)
+	head, err := feed.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("query error", func(t *testing.T) {
+		errFeed := NewFeed(store)
+		readFailed := errors.New("read failed")
+		errFeed.readChanges = func(context.Context, uint64, int) ([]Change, error) {
+			return nil, readFailed
+		}
+		for i := 0; i < 10; i++ {
+			if _, err := errFeed.Since(ctx, head, 10); !errors.Is(err, readFailed) {
+				t.Fatalf("got %v, want %v", err, readFailed)
+			}
+		}
+		if count := waiterCount(errFeed); count != 0 {
+			t.Errorf("%d waiters retained after failed reads, want 0", count)
+		}
+	})
+
+	t.Run("immediate rows", func(t *testing.T) {
+		for i := 0; i < 10; i++ {
+			seedChange(t, store, i)
+		}
+		// A paged catch-up: one Since per page, each returning immediately.
+		cursor := head
+		pages := 0
+		for {
+			page, err := feed.Since(ctx, cursor, 2)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cursor = page.Cursor
+			pages++
+			if pages == 5 {
+				break
+			}
+		}
+		if count := waiterCount(feed); count != 0 {
+			t.Errorf("%d waiters retained after %d immediate pages, want 0", count, pages)
+		}
+	})
+
+	t.Run("cancellation", func(t *testing.T) {
+		quiet := NewFeed(store)
+		at, err := quiet.Head(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 10; i++ {
+			cancelled, cancel := context.WithCancel(ctx)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				if _, err := quiet.Since(cancelled, at, 10); !errors.Is(err, context.Canceled) {
+					t.Errorf("got %v, want context.Canceled", err)
+				}
+			}()
+			// Let the subscription register and block before it goes away.
+			for waiterCount(quiet) == 0 {
+				time.Sleep(time.Millisecond)
+			}
+			cancel()
+			<-done
+		}
+		if count := waiterCount(quiet); count != 0 {
+			t.Errorf("%d waiters retained after repeated cancelled subscriptions, want 0; "+
+				"an SSE client that connects and disconnects on a quiet instance must not "+
+				"grow memory linearly", count)
+		}
+	})
+}
+
+// TestFeedNotifyRacesWithUnregister pins that removing a waiter concurrently
+// with a Notify neither double-closes nor loses the wakeup.
+func TestFeedNotifyRacesWithUnregister(t *testing.T) {
+	feed := NewFeed(nil)
+	for i := 0; i < 200; i++ {
+		waiter, unregister := feed.wait()
+		notified := make(chan struct{})
+		go func() {
+			feed.Notify()
+			close(notified)
+		}()
+		unregister()
+		<-notified
+		select {
+		case <-waiter:
+		default:
+		}
+		if count := waiterCount(feed); count != 0 {
+			t.Fatalf("%d waiters retained after notify/unregister, want 0", count)
+		}
+	}
+}
