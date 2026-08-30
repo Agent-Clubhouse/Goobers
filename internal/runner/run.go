@@ -5710,7 +5710,20 @@ func recordReviewerDiffRedaction(jr executionJournal, gateName string, ref journ
 	if jr == nil || ref.Digest == rawDigest {
 		return nil
 	}
-	if err := jr.Append(journal.Event{
+	if err := jr.Append(ReviewerDiffRedactionEvent(gateName, ref, rawDigest, rawBytes)); err != nil {
+		return fmt.Errorf("journal reviewer diff redaction: %w", err)
+	}
+	return nil
+}
+
+// ReviewerDiffRedactionEvent builds the annotation event both reviewer-diff
+// producers journal: this runner and the review pod (cmd/goobers
+// recordPodReviewerDiff), which computes the same evidence for an agentic gate
+// running in a pod. Exported so the two paths cannot drift in field names or
+// wording — a correlation record only works if it is the same record wherever
+// the gate ran.
+func ReviewerDiffRedactionEvent(gateName string, ref journal.Ref, rawDigest string, rawBytes int) journal.Event {
+	return journal.Event{
 		Type:  journal.EventRunnerAnnotation,
 		Stage: gateName,
 		Name:  ReviewerDiffRedactionAnnotation,
@@ -5725,10 +5738,7 @@ func recordReviewerDiffRedaction(jr executionJournal, gateName string, ref journ
 				"credential values are replaced at the value boundary (" + journal.RedactedToken + "), " +
 				"so a finding about redacted content is about this evidence, not the raw diff",
 		},
-	}); err != nil {
-		return fmt.Errorf("journal reviewer diff redaction: %w", err)
 	}
-	return nil
 }
 
 // startGateSpan opens a gate span under the run's trace, if telemetry is

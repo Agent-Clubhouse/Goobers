@@ -31,6 +31,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/runner"
 )
 
 // reviewerDiffArtifact is the artifact name the diff is journaled under; the
@@ -84,6 +85,10 @@ func recordPodReviewerDiff(ctx context.Context, workspace, runsDir, stage string
 		return nil, nil
 	}
 
+	// The raw diff's address, taken BEFORE the scrub below: it is what the
+	// redaction annotation correlates the reviewer's evidence back to (#3135).
+	rawDigest, rawBytes := journal.Digest(diff), len(diff)
+
 	// Scrub ONCE, here, and hand the recorder a nil scrubber: the bytes staged
 	// for the harness below and the bytes the journal plane stores must be
 	// the SAME bytes the pointer's digest names, and a second scrub between
@@ -99,6 +104,7 @@ func recordPodReviewerDiff(ctx context.Context, workspace, runsDir, stage string
 	if err != nil {
 		return nil, fmt.Errorf("reviewer diff: record artifact: %w", err)
 	}
+	recordPodReviewerDiffRedaction(recorder, stage, ref, rawDigest, rawBytes, stderr)
 	// Stage the bytes where the harness will look. ref.Path is derived by
 	// journal.ArtifactRef from the digest (a fan-out path under artifacts/),
 	// never from input, so this join cannot escape runsDir.
@@ -116,4 +122,32 @@ func recordPodReviewerDiff(ctx context.Context, workspace, runsDir, stage string
 		MediaType: "text/x-diff", Integrity: ref.Integrity,
 	}
 	return &apiv1.ContextPointer{Name: stage + ".diff", Integrity: ref.Integrity, Artifact: &artifact}, nil
+}
+
+// recordPodReviewerDiffRedaction is the pod half of the local runner's
+// recordReviewerDiffRedaction (#3135): when the scrub above transformed the
+// bytes a review gate is about to read, the RUN journal must say so and carry
+// both digests, or a reviewer finding about redacted content cannot be told
+// apart from one about the branch's authoritative raw diff.
+//
+// It goes through the recorder's run-scoped Append — the journal plane's emit
+// route, the pod's analogue of the runner's own executionJournal — rather than
+// through the instance-scoped stageAnnotator seam, so the annotation lands in
+// the SAME log, under the same run and stage, as the one the local runner
+// writes. The event itself is built by runner.ReviewerDiffRedactionEvent so
+// the two paths cannot drift.
+//
+// Best effort with a loud stderr line, the same posture the pod's other
+// journal emits carry: the evidence is already recorded and staged at this
+// point, and a plane round trip that fails must not turn a producible review
+// into a failed stage. A no-op when the evidence is byte-identical to the raw
+// diff, which keeps the annotation's presence meaningful.
+func recordPodReviewerDiffRedaction(recorder podArtifactRecorder, stage string, ref journal.Ref, rawDigest string, rawBytes int, stderr io.Writer) {
+	if ref.Digest == rawDigest {
+		return
+	}
+	pf(stderr, "reviewer diff: redacted before review: raw %s (%d bytes) -> evidence %s (%d bytes)\n", rawDigest, rawBytes, ref.Digest, ref.Size)
+	if err := recorder.Append(runner.ReviewerDiffRedactionEvent(stage, ref, rawDigest, rawBytes)); err != nil {
+		pf(stderr, "reviewer diff: could not journal the redaction annotation: %v\n", err)
+	}
 }
