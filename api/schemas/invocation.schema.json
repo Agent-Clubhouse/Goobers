@@ -32,6 +32,11 @@
       "description": "The gaggle's configured default branch (GaggleSpec.Project.Branch/RepoRef.Branch); empty means the default 'main'. Injected as GOOBERS_BASE_BRANCH (#2087)."
     },
     "goober": { "type": "string", "minLength": 1, "description": "Goober this invocation is for; absent for a deterministic stage or an automated gate. The local runner dispatches from the workflow definition and never needed it on the wire; a Temporal worker has only the envelope, so without it the agentic seam cannot resolve which goober to construct." },
+    "gooberDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Content digest of the goober kit this run was admitted against (run.yaml's gooberDigest); absent for a run started before the pin existed, which resolves the worker's current config tree unchanged. A SELECTOR, not decoration: the worker serves the config tree whose goober digest equals this value or refuses the attempt by name (gate_pin_missing / run_pin_unverifiable) rather than silently substituting its currently-configured goober (#3884)."
+    },
     "goal": { "type": "string", "minLength": 1, "description": "Intended outcome of this stage, copied from its workflow definition." },
     "attempt": { "type": "integer", "minimum": 1, "description": "One-based attempt number for this stage execution." },
     "ownershipBoundary": { "type": "string", "minLength": 1, "description": "Runner-authored boundary identifying the work this invocation owns." },

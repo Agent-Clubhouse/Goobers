@@ -96,6 +96,7 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 		BranchNamespace:     "goobers/",
 		BaseBranch:          "main",
 		Goober:              "implementer",
+		GooberDigest:        "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
 		Goal:                "implement the claimed issue",
 		OwnershipBoundary:   "task:implement",
 		InstructionAddendum: "Preserve the public contract.",
