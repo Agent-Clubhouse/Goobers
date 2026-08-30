@@ -209,6 +209,15 @@ const (
 	// sent a stage back", which would fill forward stages' envelopes with
 	// derived pointers and downgrade stages that were never repassed.
 	rowLearningEpisodeNotInjected parityRow = "E10-learning-episode-not-injected"
+	// rowLearningEpisodeContextFrom is the sub-case #3928 discovered in the
+	// E10 ruling review: the injected pointer must survive the RE-ENTERED
+	// STAGE'S OWN contextFrom selection. Every other E10 fixture declares no
+	// contextFrom, which is the one configuration where the selector cannot
+	// drop anything — while the flagship implementation lane, the lane the
+	// injection exists for, does declare one. Both runners called the same
+	// shared selector, so the divergence was zero and the behaviour was
+	// absent: this row's premise, not its check, is what pins the fix.
+	rowLearningEpisodeContextFrom parityRow = "E10-learning-episode-contextfrom"
 	// rowLearningEpisodeForwardBranch is the sub-case this table DISCOVERED
 	// while pinning the two above: a gate's fail branch that routes ONWARD, to
 	// a stage that has not run, on a retry-classifiable failure. The local

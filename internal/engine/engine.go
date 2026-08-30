@@ -602,6 +602,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			if terminal {
 				return out, nil
 			}
+			var injected *apiv1.ContextPointer
 			if verdictArtifact != nil {
 				// #412: the next dispatch — most commonly a repass back to the
 				// stage that produced the subject this gate just evaluated —
@@ -609,16 +610,25 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				// infer "something needs to change" from git. The local
 				// runner's walk appends the same "<gate>.verdict" pointer on
 				// both its retry route and its advance path.
-				pointers = append(pointers, apiv1.ContextPointer{
+				pointer := apiv1.ContextPointer{
 					Name: g.Name + ".verdict", Integrity: verdictArtifact.Integrity, Artifact: verdictArtifact,
-				})
+				}
+				injected = &pointer
+				pointers = append(pointers, pointer)
 			}
-			// The #3843 learning-episode INJECTION that belongs on this arm —
-			// the episode artifact and the learning.episode[<seq>] pointer the
-			// repass is dispatched with — is deliberately absent: it needs an
-			// in-walk artifact-recording seam and is owned by #3913, which
-			// lands before this lane's cutover. The bounded gap is asserted by
-			// the retry-decision parity row so it cannot widen silently.
+			// #3843: a gate sending a stage BACK commits a learning episode
+			// and hands the repass a pointer to it, so the next attempt argues
+			// with the reviewer's finding instead of rediscovering it. Only on
+			// the retry route — an advancing gate has nothing to teach.
+			if retryRoute && gateSendsBack(gr, next, upstream) {
+				episode, eerr := rec.learningEpisode(ctx, in, g.Name, next, gr, verdict, lastStage, lastResult, injected)
+				if eerr != nil {
+					return RunResult{}, fmt.Errorf("engine: journal learning episode for gate %q: %w", g.Name, eerr)
+				}
+				if episode != nil {
+					pointers = append(pointers, *episode)
+				}
+			}
 			state = next
 			continue
 		}
