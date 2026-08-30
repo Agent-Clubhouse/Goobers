@@ -269,3 +269,94 @@ func TestUsedFractionOnNilCgroup(t *testing.T) {
 		t.Fatalf("UsedFraction = %v (ok=true), want not-ok on a nil cgroup", fraction)
 	}
 }
+
+// The counters below use the values measured on the #3949 pod, where
+// memory.events reported 6198 reclaim-at-limit episodes while a point-in-time
+// reading of memory.current looked unremarkable. That gap is the reason these
+// fields exist, so the fixture keeps it.
+func TestReadCgroupV2CarriesTheAtLimitAndOOMKillCounters(t *testing.T) {
+	root := t.TempDir()
+	writeCgroupFiles(t, root, map[string]string{
+		"memory.current": "8083791872\n",
+		"memory.max":     "10737418240\n",
+		"memory.stat":    "anon 245760000\nfile 7490000000\n",
+		"memory.events":  "low 0\nhigh 0\nmax 6198\noom 12\noom_kill 3\n",
+	})
+
+	cgroup := readCgroup(root)
+	if cgroup == nil {
+		t.Fatal("readCgroup = nil, want a v2 reading")
+	}
+	if cgroup.AtLimit != 6198 {
+		t.Fatalf("AtLimit = %d, want 6198", cgroup.AtLimit)
+	}
+	if cgroup.OOMKills != 3 {
+		t.Fatalf("OOMKills = %d, want 3", cgroup.OOMKills)
+	}
+}
+
+func TestReadCgroupV2WithoutEventsFileReportsZeroCounters(t *testing.T) {
+	root := t.TempDir()
+	writeCgroupFiles(t, root, map[string]string{
+		"memory.current": "1024\n",
+		"memory.max":     "4096\n",
+		"memory.stat":    "anon 512\nfile 512\n",
+	})
+
+	cgroup := readCgroup(root)
+	if cgroup == nil {
+		t.Fatal("readCgroup = nil, want a v2 reading")
+	}
+	if cgroup.AtLimit != 0 || cgroup.OOMKills != 0 {
+		t.Fatalf("at-limit/oom-kills = %d/%d, want 0/0 without memory.events", cgroup.AtLimit, cgroup.OOMKills)
+	}
+}
+
+// v1 has no "max" equivalent, so a v1 reading must still produce the kill
+// count it does export rather than losing both counters together.
+func TestReadCgroupV1ReadsOOMKillsFromOOMControl(t *testing.T) {
+	root := t.TempDir()
+	writeCgroupFiles(t, filepath.Join(root, "memory"), map[string]string{
+		"memory.usage_in_bytes": "2048\n",
+		"memory.limit_in_bytes": "8192\n",
+		"memory.stat":           "rss 1024\ncache 1024\n",
+		"memory.oom_control":    "oom_kill_disable 0\nunder_oom 0\noom_kill 7\n",
+	})
+
+	cgroup := readCgroup(root)
+	if cgroup == nil {
+		t.Fatal("readCgroup = nil, want a v1 reading")
+	}
+	if cgroup.OOMKills != 7 {
+		t.Fatalf("OOMKills = %d, want 7", cgroup.OOMKills)
+	}
+	if cgroup.AtLimit != 0 {
+		t.Fatalf("AtLimit = %d, want 0 (v1 exports no equivalent)", cgroup.AtLimit)
+	}
+}
+
+func TestFootprintStringAppendsPressureCountersOnlyWhenNonZero(t *testing.T) {
+	base := func() Footprint {
+		return Footprint{Cgroup: &Cgroup{Current: 8217665536, Limit: 10737418240, Anon: 610402304, File: 6251020288}}
+	}
+
+	quiet := base().String()
+	if strings.Contains(quiet, "at-limit") || strings.Contains(quiet, "oom-kill") {
+		t.Fatalf("String() = %q, want no pressure clause on a quiet cgroup", quiet)
+	}
+
+	pressured := base()
+	pressured.Cgroup.AtLimit = 6198
+	pressured.Cgroup.OOMKills = 3
+	got := pressured.String()
+	if !strings.Contains(got, "6198 at-limit") || !strings.Contains(got, "3 oom-kill(s)") {
+		t.Fatalf("String() = %q, want both pressure counters", got)
+	}
+}
+
+func TestCgroupBreakdownOnNilCgroup(t *testing.T) {
+	var cgroup *Cgroup
+	if got := cgroup.Breakdown(); got != "" {
+		t.Fatalf("Breakdown() = %q, want empty for a nil cgroup", got)
+	}
+}
