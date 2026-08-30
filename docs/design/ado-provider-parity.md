@@ -185,9 +185,13 @@ of a GitHub handoff channel:
 `apply-verdict` emits the `decision` into its result file, so merge-review's
 `published-verdict` gate routes **away from merge** on any non-pass decision, and the stage
 returns success — a clean run completion rather than the earlier hard-fail. On the pass path
-it publishes the `succeeded` status and emits `decision=pass`. What it must **never** do on
-ADO: submit a native review (`pr.review.submit` is undeclared) or write a PR-number label
-through the work-item API.
+it publishes the `succeeded` status, emits `decision=pass`, and — like the non-pass path —
+posts the SHA-pinned verdict to the PR thread. The status carries only "pass", so the thread
+comment is the only surface that preserves the reviewer's summary, rationale, and
+attribution; `merge-pr` reads it back to build the merge commit (§6.3), and a pass is
+precisely the verdict that merges, so it is precisely the verdict that must be recoverable
+(#2746). What it must **never** do on ADO: submit a native review (`pr.review.submit` is
+undeclared) or write a PR-number label through the work-item API.
 
 ### 6.3 `merge-pr` and `queue-watch` — landing
 
@@ -214,9 +218,18 @@ concrete GitHub provider and stay nil / gated off on ADO. ADO `PollPullRequest` 
 consequences: the label opt-out conjuncts never fire (the ADO merge path carries no PR
 opt-out labels); the advisory-check bypass never applies, so the decision falls through to
 the conservative `CheckState == Passing` gate (correct and safe); and branch cleanup is
-skipped (no head-repository to act on). The merge-commit message on ADO is assembled
-directly from the PR title plus the body's closing references, rather than from a verdict
-comment.
+skipped (no head-repository to act on). `CommentsSince` being empty does **not**, however,
+leave the ADO merge commit unattributed: `merge-pr` recovers the newest trusted pass verdict
+from the PR thread `apply-verdict` posted to (§6.2) and assembles the commit from the
+verdict's summary, rationale, the body's closing references, and a `Reviewed-by` trailer.
+Recovery happens **before** the poll→decide→merge lock, so #719's serialized window gains no
+extra provider round-trip; the recovered verdict feeds only the commit message, never a merge
+conjunct, and is re-pinned to the locked poll's live head before use. Selection is
+newest-first — unlike GitHub, which reconciles one sticky verdict comment in place, ADO posts
+a new thread per `apply-verdict` run, so the oldest trusted verdict is the stale one. A PR
+with no trusted verdict pinned to the live head — including when the threads read fails,
+which warns and degrades rather than blocking an authorized land — still lands with the
+unattributed title + closing-references body (#2746).
 
 ### 6.4 `check-issue-staleness` and `gather-sibling-context`
 
@@ -272,7 +285,9 @@ updated in place via the composite comment id.
 - **Empty poll fields on ADO.** `PollPullRequest` leaves `Labels`, `CommentsSince`,
   `MergeableState`, and `HeadRepository` empty. Each empty field has a deliberate,
   documented consequence (§6.3): opt-out conjuncts inert, advisory bypass inert (conservative
-  gate wins), branch cleanup skipped.
+  gate wins), branch cleanup skipped. Empty `CommentsSince` does **not** cost merge-commit
+  attribution — `merge-pr` recovers the verdict from the PR thread out of band, before the
+  merge lock (§6.3).
 - **advisoryMode misfire.** The ADO run-branch namespace must be present in the gaggle's
   head prefixes, or a goobers-authored ADO PR is misclassified and never merges (§6.1).
 - **Identity strings differ by surface.** The thread/verdict transport uses **displayName**
