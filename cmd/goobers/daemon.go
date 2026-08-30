@@ -781,26 +781,40 @@ func buildSchedulerDefinitions(
 		gagglesByName[set.Gaggles[i].Name] = set.Gaggles[i]
 	}
 
-	// Checkpoint 3 (#2860, dsl-3.0.md §5): solve every workflow against the
-	// declared inventory; an unsatisfiable workflow is marked refused with a
-	// named diagnostic — journaled and refused per-run by the scheduler —
-	// while the daemon and every other workflow keep serving. nil on a
-	// zero-declaration instance (see placementrefusal.go).
-	refusals, err := placementRefusals(cfg, set, goobers, machines)
-	if err != nil {
-		return nil, err
-	}
-	for identity, diagnostic := range refusals {
-		fmt.Fprintf(os.Stderr, "warning: workflow %q (gaggle %q) cannot be placed on the declared runners: inventory and is refused: %s\n",
-			identity.Workflow, identity.Gaggle, diagnostic)
-	}
-
 	// #3876 (decision 005 D1): decide, PER ENTRY, whether this lane dispatches
 	// onto the tier-3 engine. See selectEngineForEntry for the predicate and
 	// why it cannot be a daemon-wide switch.
+	//
+	// Computed BEFORE checkpoint 3 (#3987), because checkpoint 3's answer
+	// depends on it: the boot refusal is a statement about the substrate the
+	// DAEMON executes on, and an engine-selected lane never touches it. The
+	// order is safe and cannot cycle — engineSelections reads cfg, set and the
+	// compiled machines only, and never consults a refusal.
 	selections, err := engineSelections(cfg, set, machines)
 	if err != nil {
 		return nil, err
+	}
+
+	// Checkpoint 3 (#2860, dsl-3.0.md §5): solve every workflow against the
+	// declared inventory; an unsatisfiable RUNNER-DRIVEN workflow is marked
+	// refused with a named diagnostic — journaled and refused per-run by the
+	// scheduler — while the daemon and every other workflow keep serving.
+	// Empty on a zero-declaration instance (see placementrefusal.go).
+	placement, err := placementRefusals(cfg, set, goobers, machines, selections)
+	if err != nil {
+		return nil, err
+	}
+	for _, identity := range sortedWorkflowIdentities(placement.Refusals) {
+		fmt.Fprintf(os.Stderr, "warning: workflow %q (gaggle %q) cannot be placed on the declared runners: inventory and is refused: %s\n",
+			identity.Workflow, identity.Gaggle, placement.Refusals[identity])
+	}
+	// An exempted lane's diagnostic is still reported: it names the runners
+	// the stage can place on, which is what an operator needs if the engine
+	// side of the dispatch later misbehaves. Reported as a note, because
+	// nothing is refused.
+	for _, identity := range sortedWorkflowIdentities(placement.EngineDeferred) {
+		fmt.Fprintf(os.Stderr, "note: workflow %q (gaggle %q) cannot be placed on the daemon's own substrate (%s), but every stage is pinned on the declared inventory and the run dispatches through the engine, so it is not refused\n",
+			identity.Workflow, identity.Gaggle, placement.EngineDeferred[identity])
 	}
 	// The Temporal client and the live journal writer do not exist yet — see
 	// engineRuntime. Every engineStarter shares this holder and up.go attaches
@@ -952,8 +966,10 @@ func buildSchedulerDefinitions(
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
 			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
-			// above found this workflow unplaceable on the declared inventory.
-			PlacementRefusal: refusals[identity],
+			// above found this workflow unplaceable on the declared inventory
+			// AND the entry is runner-driven — an engine-selected entry's
+			// placement is proven against the full inventory instead (#3987).
+			PlacementRefusal: placement.Refusals[identity],
 		})
 		entries[len(entries)-1].GooberDigest = gooberDigests[identity]
 	}
