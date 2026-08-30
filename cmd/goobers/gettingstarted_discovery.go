@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/goobers/goobers/providers"
 )
 
 var guidedDiscoveryCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -135,7 +137,7 @@ func parseGuidedRepositoryIdentity(value string) (guidedRepositoryIdentity, erro
 
 func guidedInspectionFromIdentity(identity guidedRepositoryIdentity) guidedRepositoryInspection {
 	display := identity.owner + "/" + identity.name
-	if identity.provider == "ado" {
+	if identity.provider == string(providers.ProviderADO) {
 		display = identity.owner + "/" + identity.project + "/" + identity.name
 	}
 	return guidedRepositoryInspection{

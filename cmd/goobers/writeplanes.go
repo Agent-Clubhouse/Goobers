@@ -178,7 +178,7 @@ func (s *daemonClaimService) Release(_ context.Context, request httpapi.ClaimReq
 
 func (s *daemonClaimService) releaseAllForRun(request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
 	if (request.Gaggle == "") != (request.Provider == "") {
-		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request",
+		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
 			"gaggle and provider must be given together for a release of every claim the run holds", nil)
 	}
 	var released []httpapi.ClaimEntry
@@ -209,13 +209,13 @@ func (s *daemonClaimService) releaseAllForRun(request httpapi.ClaimRequest) (htt
 // off-daemon backlog-query runs keeps its input.
 func (s *daemonClaimService) List(_ context.Context, request httpapi.ClaimListRequest) (httpapi.ClaimListResponse, error) {
 	if request.RunID == "" {
-		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request", "runId is required", nil)
+		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest, "runId is required", nil)
 	}
 	switch request.Scope {
 	case httpapi.ClaimListScopeRun:
 	case httpapi.ClaimListScopeNamespace:
 		if request.Gaggle == "" || request.Provider == "" {
-			return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request",
+			return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
 				"gaggle and provider are required for a namespace listing", nil)
 		}
 		if request.PodScoped && !s.runBelongsToGaggle(request.Gaggle, request.RunID) {
@@ -227,7 +227,7 @@ func (s *daemonClaimService) List(_ context.Context, request httpapi.ClaimListRe
 				"pod principal may only list the gaggle namespace its own run belongs to", nil)
 		}
 	default:
-		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request", "scope must be run or namespace", nil)
+		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest, "scope must be run or namespace", nil)
 	}
 	inNamespace := func(entry localscheduler.ClaimEntry) bool {
 		if entry.Gaggle == "" && entry.Provider == "" {
@@ -500,7 +500,7 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 		// unscoped priority request has no such identity, so it is refused
 		// rather than resolved against whatever gaggle happens to match.
 		if request.Gaggle == "" {
-			err = httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request",
+			err = httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
 				"a priority trigger requires the workflow's gaggle", nil)
 			break
 		}

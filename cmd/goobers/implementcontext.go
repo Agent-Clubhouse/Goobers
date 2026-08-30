@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/providers"
 )
@@ -136,7 +137,7 @@ func runGatherImplementContext(args []string, stdout, stderr io.Writer) int {
 	// #3366: offer a prior run's stranded (committed but never published)
 	// diff for the same claimed item, if one exists. Best-effort — discovery
 	// failure must never fail context gathering.
-	if runID := os.Getenv("GOOBERS_RUN_ID"); runID != "" {
+	if runID := os.Getenv(executor.RunIDEnvVar); runID != "" {
 		out.PriorUnpushedWork = latestPriorUnpushedWork(
 			root,
 			providerGaggle(),
@@ -248,7 +249,7 @@ func recentImplementationConflicts(root, gaggle string, since time.Time) ([]impl
 	if err != nil {
 		return nil, err
 	}
-	runID := os.Getenv("GOOBERS_RUN_ID")
+	runID := os.Getenv(executor.RunIDEnvVar)
 	touches, err := reader.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{
 		RunID:  runID,
 		Gaggle: gaggle,

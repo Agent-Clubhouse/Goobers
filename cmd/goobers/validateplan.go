@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/decomposition"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
 )
@@ -161,7 +162,7 @@ func readDecompositionInput[T any](root, path, defaultPath, stage, artifactSuffi
 	if err == nil || path != defaultPath || !errors.Is(err, os.ErrNotExist) {
 		return value, err
 	}
-	runID := os.Getenv("GOOBERS_RUN_ID")
+	runID := os.Getenv(executor.RunIDEnvVar)
 	if runID == "" {
 		return value, err
 	}
