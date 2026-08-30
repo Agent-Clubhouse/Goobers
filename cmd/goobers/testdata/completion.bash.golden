@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="version init connect examples scaffold validate up down service dashboard getting-started run signal workflow status stats trace escalations completion help --version -h --help"
+        candidates="version init connect examples scaffold validate fleet up down service dashboard getting-started run signal workflow status stats trace escalations completion help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -73,6 +73,12 @@ _goobers_completion()
             case "${COMP_WORDS[2]:-}" in
                 preflight) flags+=" --json" ;;
                 test) flags+=" --json" ;;
+            esac
+            ;;
+        fleet)
+            case "${COMP_WORDS[2]:-}" in
+                join) flags+=" --url --enrollment-token-file --grant-local-admin --no-grant-local-admin" ;;
+                status) flags+=" --json" ;;
             esac
             ;;
         up)
@@ -270,6 +276,11 @@ _goobers_completion()
         speech)
             if (( COMP_CWORD == 2 )); then
                 candidates="preflight test"
+            fi
+            ;;
+        fleet)
+            if (( COMP_CWORD == 2 )); then
+                candidates="join status leave"
             fi
             ;;
         service)

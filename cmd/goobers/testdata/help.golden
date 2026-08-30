@@ -13,6 +13,8 @@ Usage:
                                 scaffold a goober, workflow, or gaggle
   goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
                                 validate an instance or checked-in config source tree
+  goobers fleet join|status|leave [flags] [path]
+                                associate this instance with a Fleet service
   goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
@@ -63,6 +65,8 @@ Usage:
                                 scaffold a goober, workflow, or gaggle
   goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
                                 validate an instance or checked-in config source tree
+  goobers fleet join|status|leave [flags] [path]
+                                associate this instance with a Fleet service
   goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
@@ -115,6 +119,8 @@ Core commands:
                                 scaffold a goober, workflow, or gaggle
   goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
                                 validate an instance or checked-in config source tree
+  goobers fleet join|status|leave [flags] [path]
+                                associate this instance with a Fleet service
   goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
                                 run the daemon (scheduler + runner + loopback HTTP API)
   goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
@@ -1185,6 +1191,40 @@ silent multi-step rewrite. Never runs automatically; this is always an
 author-run, reviewable change. Exit codes: 0 = migrated (or nothing to
 migrate), 1 = one or more workflows could not be migrated,
 2 = usage/IO error.
+
+### fleet
+Usage: goobers fleet <join|status|leave> [flags] [path]
+
+Associate a local Goobers instance with a Fleet service, inspect its durable
+connection state, or remove the association. Fleet identity and credentials
+are stored outside the instance root so copying an instance does not clone its
+identity.
+
+### fleet join
+Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
+
+Discover and enroll an instance with a Fleet service. By default the one-time
+enrollment grant is read from a protected terminal prompt and never accepted
+as a command-line value. --enrollment-token-file supports automation and is
+accepted only when the file is private to its owner.
+
+When discovery advertises a local administrator principal, interactive use
+offers an explicit instance:read self-grant. Noninteractive use must choose
+--grant-local-admin or --no-grant-local-admin. An empty ACL always requires an
+explicit opt-out or interactive confirmation.
+
+### fleet leave
+Usage: goobers fleet leave [path]
+
+Remove the Fleet association, private key, and bearer credential. A running
+daemon observes the removal and stops reconnecting.
+
+### fleet status
+Usage: goobers fleet status [--json] [path]
+
+Show the durable Fleet registration, connection, heartbeat, ACL version, and
+credential expiry state. Private key and bearer credential material are never
+printed.
 
 ### gate-removal-guard
 Usage: goobers gate-removal-guard [path]

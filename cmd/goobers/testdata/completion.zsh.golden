@@ -18,6 +18,7 @@ _goobers_completion()
             'examples:browse canonical workflow examples embedded in the binary'
             'scaffold:scaffold a goober, workflow, or gaggle'
             'validate:validate an instance or checked-in config source tree'
+            'fleet:associate this instance with a Fleet service'
             'up:run the daemon (scheduler + runner + loopback HTTP API)'
             'down:request a live daemon'\''s graceful drain-shutdown from a separate terminal'
             'service:install and manage the platform-supervised daemon'
@@ -102,6 +103,12 @@ _goobers_completion()
             case "${words[3]:-}" in
                 preflight) flags+=(--json) ;;
                 test) flags+=(--json) ;;
+            esac
+            ;;
+        fleet)
+            case "${words[3]:-}" in
+                join) flags+=(--url --enrollment-token-file --grant-local-admin --no-grant-local-admin) ;;
+                status) flags+=(--json) ;;
             esac
             ;;
         up)
@@ -309,6 +316,13 @@ _goobers_completion()
         speech)
             if (( CURRENT == 3 )); then
                 candidates=(preflight test)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        fleet)
+            if (( CURRENT == 3 )); then
+                candidates=(join status leave)
                 _describe -V 'command' candidates
                 return
             fi

@@ -230,6 +230,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"speech test": {
 		{name: "json", desc: "Emit JSON"},
 	},
+	"fleet join": {
+		{name: "url", takesArg: true, desc: "Fleet service URL"},
+		{name: "enrollment-token-file", takesArg: true, desc: "Private file containing the one-time enrollment grant"},
+		{name: "grant-local-admin", desc: "Grant the discovered local administrator instance:read"},
+		{name: "no-grant-local-admin", desc: "Explicitly enroll with an empty ACL"},
+	},
+	"fleet status": {
+		{name: "json", desc: "Emit JSON"},
+	},
 	"dashboard": {
 		{name: "port", takesArg: true, desc: "Dashboard port, or auto"},
 		{name: "listen", takesArg: true, desc: "Bind address as host:port; non-loopback requires api.auth"},
