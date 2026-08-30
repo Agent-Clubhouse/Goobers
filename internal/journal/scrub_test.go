@@ -217,8 +217,8 @@ func TestPatternNetRedactsBasicAuth(t *testing.T) {
 		header string
 		want   string
 	}{
-		{"Authorization: Basic " + basicAuthCredential, "Authorization: " + Redacted},
-		{"authorization: bAsIc " + basicAuthCredential, "authorization: " + Redacted},
+		{"Authorization: Basic " + basicAuthCredential, "Authorization: Basic " + RedactedToken},
+		{"authorization: bAsIc " + basicAuthCredential, "authorization: bAsIc " + RedactedToken},
 	} {
 		if got := string(scrub.Scrub([]byte(tc.header))); got != tc.want {
 			t.Fatalf("scrubbed Basic authorization header = %q, want %q", got, tc.want)
@@ -259,8 +259,85 @@ func TestBasicAuthNeverLandsInRunJournal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Events: %v", err)
 	}
-	if got := events[len(events)-1].Error.Message; !strings.Contains(got, Redacted) {
+	if got := events[len(events)-1].Error.Message; !strings.Contains(got, RedactedToken) {
 		t.Fatalf("run journal error was not redacted: %q", got)
+	}
+}
+
+// authFixtureToken is a synthetic authorization value with the shape (length,
+// alphabet) of a real bearer token — the kind of fixture a diff under review
+// legitimately contains.
+const authFixtureToken = "abcdefghijklmnopqrstuvwxyz012345"
+
+// TestPatternNetPreservesAuthorizationSyntax is the #3135 regression: evidence
+// handed to a review gate must keep the structure the reviewer reasons about.
+// The credential value is still removed, but the scheme, the quotes, and any
+// variable reference around it survive, so correct code and synthetic fixtures
+// no longer read as malformed headers.
+func TestPatternNetPreservesAuthorizationSyntax(t *testing.T) {
+	scrub := NewPatternScrubber()
+
+	for _, tc := range []struct {
+		name string
+		// evidence is a snippet as it reaches an agentic reviewer: the diff
+		// patch, the reviewer's own verdict rationale, and the repass context
+		// handed back to the implementer all pass through this same net.
+		evidence string
+		want     string
+	}{
+		{
+			name:     "patch",
+			evidence: `+	req.Header.Set("Authorization", "Bearer "+token)`,
+			want:     `+	req.Header.Set("Authorization", "Bearer "+token)`,
+		},
+		{
+			name:     "patch fixture",
+			evidence: `+		if got := r.Header.Get("Authorization"); got != "Bearer "+` + authFixtureToken + ` {`,
+			want:     `+		if got := r.Header.Get("Authorization"); got != "Bearer "+` + authFixtureToken + ` {`,
+		},
+		{
+			name:     "patch fixture literal",
+			evidence: `+	want := "Bearer ` + authFixtureToken + `"`,
+			want:     `+	want := "Bearer ` + RedactedToken + `"`,
+		},
+		{
+			name:     "verdict",
+			evidence: "the header is built as Bearer " + authFixtureToken + " and is well formed",
+			want:     "the header is built as Bearer " + RedactedToken + " and is well formed",
+		},
+		{
+			name:     "repass context",
+			evidence: "reviewer said: replace Basic " + basicAuthCredential + " with a resolver-issued credential",
+			want:     "reviewer said: replace Basic " + RedactedToken + " with a resolver-issued credential",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(scrub.Scrub([]byte(tc.evidence)))
+			if got != tc.want {
+				t.Fatalf("scrubbed evidence = %q, want %q", got, tc.want)
+			}
+			if strings.Contains(got, authFixtureToken) != strings.Contains(tc.want, authFixtureToken) {
+				t.Fatalf("credential value survived scrubbing: %q", got)
+			}
+		})
+	}
+}
+
+// TestPatternNetStillRemovesAuthorizationValues is the negative control for the
+// syntax preservation above: keeping the scheme must not keep the credential.
+func TestPatternNetStillRemovesAuthorizationValues(t *testing.T) {
+	scrub := NewPatternScrubber()
+	for _, evidence := range []string{
+		"Authorization: Bearer " + authFixtureToken,
+		"Authorization: Basic " + basicAuthCredential,
+	} {
+		got := string(scrub.Scrub([]byte(evidence)))
+		if strings.Contains(got, authFixtureToken) || strings.Contains(got, basicAuthCredential) {
+			t.Fatalf("credential value survived scrubbing: %q", got)
+		}
+		if !strings.Contains(got, RedactedToken) {
+			t.Fatalf("expected the value-boundary placeholder: %q", got)
+		}
 	}
 }
 
