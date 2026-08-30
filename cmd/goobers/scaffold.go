@@ -37,11 +37,6 @@ type scaffoldTemplateData struct {
 	Name   string
 	Gaggle string
 	Goober string
-	// ConnectionRef is the sole use only by gaggle.yaml.tmpl: the manifest
-	// connection a freshly scaffolded gaggle's project/backlog should
-	// reference, or "" to omit connectionRef entirely (still a validate-clean
-	// shape — REF004 only fires on a non-empty, undeclared reference).
-	ConnectionRef string
 }
 
 type scaffoldFile struct {

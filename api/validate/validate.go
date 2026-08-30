@@ -198,6 +198,26 @@ const (
 	// earned, and a trusted-claim surface that rewards lying is worse than
 	// no claim at all.
 	RunnerAVExclusionsUnverified WarningCode = "RNR006"
+	// WarningConnectionRefUnhonored (REF012) identifies a gaggle that declares
+	// a connectionRef at any of its project, backlog, or additionalRepos sites
+	// (#3296). connectionRef is a credential SELECTOR in the config, but the
+	// runtime never consults it: credentials are resolved from instance.yaml
+	// repos[] by repository identity, and every credentialed capability a
+	// gaggle's stages hold comes from that gaggle's own repo binding
+	// (internal/credentials.RunnerGrants), with reference repos taking their
+	// own identity-selected read token (AdditionalReadGrants). The named
+	// Connection's secret is never read, so every declaration is inert — a
+	// single site naming a narrow connection is substituted just as silently
+	// as the losing one of a mismatched pair, which is the one prohibited
+	// state for a declared credential selector.
+	//
+	// STRICT-NEUTRAL, like DVL020 and RNR006: the shipped guides, scaffold
+	// templates, and config-examples all declare connectionRef, so promoting
+	// this would turn every existing --strict pipeline red on upgrade for a
+	// platform limitation the author cannot fix in their config. It is a
+	// notice that the runtime does not honor the field, not a defect in the
+	// config that declared it.
+	WarningConnectionRefUnhonored WarningCode = "REF012"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -1012,6 +1032,9 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// a gaggle legitimately binds its repo token per-repo in instance.yaml
 	// rather than through a Manifest Connection.
 	ix.checkGaggleConnections(r)
+	// A declared connectionRef that the runtime cannot honor is surfaced
+	// rather than silently substituted (#3296).
+	ix.checkGaggleConnectionRefHonored(r)
 	// Read-only reference-repo coherence (MGV-10, #1285): an AdditionalRepos
 	// entry must not also be the gaggle's read-write Project.
 	ix.checkGaggleAdditionalRepos(r)
@@ -1756,6 +1779,46 @@ func (ix *index) checkGaggleConnections(r *Report) {
 		for i, repo := range g.Spec.AdditionalRepos {
 			check(repo.ConnectionRef, fmt.Sprintf("spec.additionalRepos[%d].connectionRef", i))
 		}
+	}
+}
+
+// checkGaggleConnectionRefHonored surfaces a declared connectionRef the runtime
+// cannot honor (#3296). connectionRef reads as a credential SELECTOR, but
+// nothing downstream consults it: credentials.RunnerGrants backs every
+// credentialed capability a gaggle's stages hold with that gaggle's own repo
+// binding, selected from instance.yaml repos[] by repository identity, and
+// AdditionalReadGrants does the same per reference repo — the named
+// Connection's own secret is never read. So EVERY non-empty declaration is
+// inert, not just the losing one of a mismatched pair: an author naming a
+// narrow connection at a single site gets whatever credential repository
+// identity selects, which for a credential selector is a silent substitution.
+//
+// One finding per gaggle names every site that declared a connection, so the
+// author sees the whole inert set at once rather than one finding per field.
+func (ix *index) checkGaggleConnectionRefHonored(r *Report) {
+	for name, g := range ix.gaggles {
+		fields := []string{}
+		refs := []string{}
+		declare := func(field, ref string) {
+			if ref == "" {
+				return
+			}
+			fields = append(fields, field)
+			refs = append(refs, strconv.Quote(ref))
+		}
+		declare("spec.project.connectionRef", g.Spec.Project.ConnectionRef)
+		declare("spec.backlog.connectionRef", g.Spec.Backlog.ConnectionRef)
+		for i, repo := range g.Spec.AdditionalRepos {
+			declare(fmt.Sprintf("spec.additionalRepos[%d].connectionRef", i), repo.ConnectionRef)
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		r.add(WarningConnectionRefUnhonored, Warning, ix.gaggleFile[name], "Gaggle", name,
+			"connectionRef is declared at %s (naming %s), but it does not select credentials at runtime: each access is backed by "+
+				"the credential configured for its repository in instance.yaml repos[], so the connection named there has no "+
+				"effect on which token is used",
+			strings.Join(fields, ", "), strings.Join(refs, ", "))
 	}
 }
 

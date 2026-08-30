@@ -479,8 +479,10 @@ Duplicate the first gaggle directory as
        - widget-docs
    ```
 
-4. Keep both gaggles' `project.connectionRef` and `backlog.connectionRef`
-   pointed at those shared connections.
+4. Leave `project.connectionRef` and `backlog.connectionRef` out of both
+   gaggles. The local runner resolves every access's token from `instance.yaml`
+   `repos[]` by repository identity and never consults the field, so a
+   declaration only earns a `REF012` finding (#3296).
 5. Route issues disjointly. Create `area:core` and `area:docs` in the target
    repository:
 

@@ -57,6 +57,12 @@ type RepoRef struct {
 	Branch string `json:"branch,omitempty" yaml:"branch,omitempty"`
 	// ConnectionRef names the connection (and thus credentials) used to reach
 	// this repo. It resolves to a Connection declared in the Manifest.
+	//
+	// It is not a runtime credential selector (#3296): the local runner
+	// resolves each access's credential from instance.yaml repos[] by
+	// repository identity, never from the named connection, so the connection
+	// named here has no effect on which token backs the access — validate
+	// reports REF012 wherever it is declared.
 	// +optional
 	ConnectionRef string `json:"connectionRef,omitempty" yaml:"connectionRef,omitempty"`
 	// Checkout narrows how much of the repository run workspaces materialize
@@ -122,6 +128,12 @@ type BacklogRef struct {
 	// +optional
 	FieldPredicate string `json:"fieldPredicate,omitempty" yaml:"fieldPredicate,omitempty"`
 	// ConnectionRef names the connection (credentials) used to reach the backlog.
+	//
+	// It is not a runtime credential selector (#3296): a gaggle's backlog
+	// capabilities are backed by the same repo-identity-selected credential as
+	// the rest of its stages, so naming a backlog-specific connection here does
+	// not route the backlog through a different credential. validate reports
+	// REF012 wherever it is declared.
 	// +optional
 	ConnectionRef string `json:"connectionRef,omitempty" yaml:"connectionRef,omitempty"`
 }

@@ -133,8 +133,13 @@ spec:
 			got := joinIssues(report)
 
 			if tc.wantNoConnError {
-				if strings.Contains(got, "connectionRef") {
-					t.Fatalf("expected no connectionRef diagnostic, got:\n%s", got)
+				// REF012's own warning (declared-but-unhonored connections) is
+				// covered separately; here only a REF004 resolution ERROR is
+				// out of place.
+				for _, issue := range report.Issues {
+					if issue.Severity == Error && strings.Contains(issue.Message, "connectionRef") {
+						t.Fatalf("expected no connectionRef error, got:\n%s", got)
+					}
 				}
 				return
 			}
@@ -150,6 +155,144 @@ spec:
 			for _, want := range tc.want {
 				if n := strings.Count(got, want); n != 1 {
 					t.Errorf("expected diagnostic %q exactly once, saw %d:\n%s", want, n, got)
+				}
+			}
+		})
+	}
+}
+
+// TestGaggleConnectionRefUnhonoredWarning covers REF012 (#3296): connectionRef
+// reads as a credential selector but the runtime never consults it — every
+// credentialed capability a gaggle's stages hold comes from that gaggle's own
+// repo binding, selected from instance.yaml by repository identity, and the
+// named Connection's own secret is never read. Every declaration is therefore
+// inert and must be surfaced, including the issue's own single-site case; a
+// gaggle that declares no connectionRef at all stays quiet.
+func TestGaggleConnectionRefUnhonoredWarning(t *testing.T) {
+	tests := []struct {
+		name           string
+		projectConnRef string
+		backlogConnRef string
+		additionalRepo string
+		want           []string
+	}{
+		{
+			name:           "a single declaration is not honored either",
+			projectConnRef: "    connectionRef: github-main",
+			backlogConnRef: "",
+			want: []string{
+				`connectionRef is declared at spec.project.connectionRef (naming "github-main"), but it does not select credentials at runtime`,
+			},
+		},
+		{
+			name:           "one connection everywhere is still inert",
+			projectConnRef: "    connectionRef: github-main",
+			backlogConnRef: "    connectionRef: github-main",
+			want: []string{
+				`connectionRef is declared at spec.project.connectionRef, spec.backlog.connectionRef (naming "github-main", "github-main"), but it does not select credentials at runtime`,
+			},
+		},
+		{
+			name:           "no connectionRef anywhere",
+			projectConnRef: "",
+			backlogConnRef: "",
+		},
+		{
+			name:           "backlog names a second connection",
+			projectConnRef: "    connectionRef: github-main",
+			backlogConnRef: "    connectionRef: github-backlog",
+			want: []string{
+				`connectionRef is declared at spec.project.connectionRef, spec.backlog.connectionRef (naming "github-main", "github-backlog"), but it does not select credentials at runtime`,
+			},
+		},
+		{
+			name:           "reference repo declaration is reported with the rest",
+			projectConnRef: "",
+			backlogConnRef: "    connectionRef: github-backlog",
+			additionalRepo: `  additionalRepos:
+    - provider: github
+      owner: acme
+      name: docs
+      connectionRef: github-main`,
+			want: []string{
+				`connectionRef is declared at spec.backlog.connectionRef, spec.additionalRepos[0].connectionRef (naming "github-backlog", "github-main"), but it does not select credentials at runtime`,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config := fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
+kind: Manifest
+metadata:
+  name: foreign
+spec:
+  instance:
+    name: foreign
+    environment: dev
+  connections:
+    - name: github-main
+      type: repo
+      provider: github
+      secretRef:
+        name: github-pat
+    - name: github-backlog
+      type: backlog
+      provider: github
+      secretRef:
+        name: github-pat
+  gaggles:
+    - acme
+---
+apiVersion: goobers.dev/v1alpha1
+kind: Gaggle
+metadata:
+  name: acme
+spec:
+  project:
+    provider: github
+    owner: acme
+    name: app
+%s
+  backlog:
+    provider: github
+    project: acme/app
+%s
+%s
+  isolation:
+    namespace: gaggle-acme
+`, tc.projectConnRef, tc.backlogConnRef, tc.additionalRepo)
+
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "foreign.yaml"), []byte(config), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			report, err := newV(t).ValidateDir(dir)
+			if err != nil {
+				t.Fatalf("ValidateDir: %v", err)
+			}
+			got := joinIssues(report)
+			if report.HasErrors() {
+				t.Fatalf("declared connections resolve, so REF012 must never be an error:\n%s", got)
+			}
+
+			var found []Issue
+			for _, issue := range report.Issues {
+				if issue.Code == WarningConnectionRefUnhonored {
+					found = append(found, issue)
+				}
+			}
+			if len(found) != len(tc.want) {
+				t.Fatalf("REF012 findings = %d, want %d:\n%s", len(found), len(tc.want), got)
+			}
+			for _, issue := range found {
+				if issue.Severity != Warning {
+					t.Errorf("REF012 severity = %v, want Warning", issue.Severity)
+				}
+			}
+			for _, want := range tc.want {
+				if n := strings.Count(got, want); n != 1 {
+					t.Errorf("expected %q exactly once, saw %d:\n%s", want, n, got)
 				}
 			}
 		})

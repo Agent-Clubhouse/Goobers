@@ -87,13 +87,11 @@ spec:
     owner: acme
     name: monorepo
     branch: main
-    connectionRef: github-main
   backlog:
     provider: github
     project: acme/monorepo
     labels:
       - goobers
-    connectionRef: github-backlog
   # Structural PR-lifecycle partition: frontend's runs only ever push, select,
   # review, and merge branches under this prefix.
   branchNamespace: "goobers-frontend/"
@@ -110,6 +108,15 @@ spec:
     requireLabels: "goobers:ready,area:frontend"
 ```
 
+> **`connectionRef` is not a runtime credential selector.** The local runner
+> resolves every access's token from `instance.yaml` `repos[]` by repository
+> identity, never from the named Connection, so declaring one connection for
+> the project and another for the backlog would not route the two accesses
+> through two credentials. `goobers validate` reports `REF012` (#3296)
+> wherever the field is declared, and the shipped configs leave it out
+> for that reason. Scope the token itself in `instance.yaml` when a narrower
+> one is wanted.
+
 Billing's gaggle config is the mirror image — same `project.owner`/`project.name`
 (same repo), different `branchNamespace`, different `requireLabels`:
 
@@ -122,7 +129,6 @@ spec:
     owner: acme
     name: monorepo
     branch: main
-    connectionRef: github-main
   branchNamespace: "goobers-billing/"
 ```
 
