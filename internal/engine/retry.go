@@ -50,7 +50,7 @@ const (
 // envelope because it is a fact about the attempt loop, not the stage's
 // result: a retried attempt's bundle describes a workspace that was thrown
 // away with its pod or worktree, and only the winner's may be carried.
-func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
+func dispatchWithRetry(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -109,6 +109,15 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 			rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
 			if err == nil {
 				res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
+				// Attempt-scoped implementation-lane artifacts (#3882),
+				// committed BEFORE stage.finished exactly where the local
+				// runner's dispatchTask commits them. The ordering is
+				// deliberate on both lanes: the capture protects work against
+				// everything that runs after the attempt, so it must not be
+				// sequenced behind the attempt's own outcome.
+				if aerr := recordAttemptArtifacts(ctx, rec, in, t.Name, int(attempt), class, activityResult); aerr != nil {
+					return apiv1.ResultEnvelope{}, aerr
+				}
 				rec.mutationIssues(ctx, t.Name, int(attempt), class, activityResult.MutationIssues)
 				rec.mutations(ctx, t.Name, int(attempt), class, activityResult.Mutations)
 				rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError)
@@ -257,4 +266,33 @@ func ClassifyDispatchFailure(err error) (journal.AttemptClass, error) {
 func isStartToCloseTimeout(err error) bool {
 	var timeoutErr *temporal.TimeoutError
 	return errors.As(err, &timeoutErr) && timeoutErr.TimeoutType() == enumspb.TIMEOUT_TYPE_START_TO_CLOSE
+}
+
+// recordAttemptArtifacts commits the three attempt-scoped artifacts an
+// activity can report back (#3882): the #724 salvage marker, the #813
+// base-sync conflict detail, and the #3366 unpushed diff with its sidecar.
+//
+// All three are recorded from BYTES the activity returned rather than written
+// by the activity, so the projection stays a pure function of history (#629)
+// and the repair projection can rebuild them from a completed workflow it
+// never observed live.
+func recordAttemptArtifacts(
+	ctx workflow.Context,
+	rec *runJournal,
+	in RunInput,
+	stage string,
+	attempt int,
+	class journal.AttemptClass,
+	result stageActivityResult,
+) error {
+	if err := rec.recordSalvage(ctx, stage, attempt, class, result.SalvageMarker); err != nil {
+		return fmt.Errorf("engine: journal salvage marker for stage %q: %w", stage, err)
+	}
+	if err := rec.recordBaseSyncConflict(ctx, stage, attempt, class, result.BaseSyncConflict); err != nil {
+		return fmt.Errorf("engine: journal base-sync conflict detail for stage %q: %w", stage, err)
+	}
+	if err := rec.recordUnpushedDiff(ctx, in, stage, attempt, class, result.UnpushedDiff); err != nil {
+		return fmt.Errorf("engine: journal unpushed diff for stage %q: %w", stage, err)
+	}
+	return nil
 }

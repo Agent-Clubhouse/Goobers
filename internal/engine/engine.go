@@ -353,6 +353,23 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 	// run (gatePodAttempt): the surrender-plane key and the pod name for a
 	// reviewer evaluated in a pod. Untouched by the self arm.
 	gateDispatches := map[string]int{}
+	// The implementation-lane state ported in #3882, all plain workflow state
+	// so a replay reconstructs it from the same deterministic sequence:
+	//
+	//   lastDiffDigest  the diff each gate last reviewed (#316) — a repass
+	//                   producing the identical digest is answered without
+	//                   invoking the reviewer again.
+	//   addenda         the instruction addendum owed to a stage the run is
+	//                   re-dispatching because its previous result was
+	//                   REJECTED (#3374 uninspected context, #3375
+	//                   uninspected remediation evidence). Keyed by stage
+	//                   and consumed exactly once.
+	//   contextRejected how many times each stage's DEPENDENCY_NOT_MET has
+	//                   been rejected for uninspected context, which bounds
+	//                   the re-dispatch at one.
+	lastDiffDigest := map[string]string{}
+	addenda := map[string]string{}
+	contextRejected := map[string]int{}
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
 	var workspaceBranch string
@@ -395,7 +412,9 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				return RunResult{}, serr
 			}
 			var published deltaPublication
-			res, terr := runTask(ctx, in, m, t, pointers, lastResult, completed, workspaceBranch, selected.Digest, &published, rec)
+			addendum := addenda[t.Name]
+			delete(addenda, t.Name)
+			res, terr := runTask(ctx, in, m, t, pointers, lastResult, completed, workspaceBranch, selected.Digest, addendum, &published, rec)
 			if terr != nil {
 				return RunResult{}, terr
 			}
@@ -423,6 +442,22 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				}
 			}
 			logger.Info("task complete", "task", t.Name, "status", res.Status)
+			// #3374: a stage that claims DEPENDENCY_NOT_MET without having
+			// inspected the context it was handed is re-dispatched ONCE with
+			// the rejection as its instruction addendum, before its blocked
+			// status is allowed to halt the walk. The runner validates in
+			// runTask, before stage.finished is journaled; the engine
+			// validates in the activity (which is where the transcript is)
+			// and routes here, which is where the walk's control flow lives.
+			//
+			// Bounded at one re-dispatch on purpose: the point is to catch an
+			// agent that skipped its inputs, not to argue with one that
+			// inspected them and still concluded it was blocked.
+			if redispatch, addendum := contextNotInspectedRedispatch(t, res, contextRejected); redispatch {
+				addenda[t.Name] = addendum
+				state = t.Name
+				continue
+			}
 			next, out, terminal := taskOutcome(ctx, m, t, res, upstream, steps, rec)
 			if terminal {
 				return out, nil
@@ -450,9 +485,21 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			// evaluator. Only ever set for an automated gate, which is why the
 			// (agentic-only) gate delta above is unaffected.
 			_, knownOutcome, _ := runner.RetryFailureClass(g, lastResult)
+			addendum := addenda[g.Name]
+			delete(addenda, g.Name)
+			// The implementation-lane evidence this gate evaluates on (#3882).
+			// Journaled BEFORE any evaluator is dispatched: the reviewer is
+			// entitled to know why the stage was sent back, and the obligation
+			// that fact creates must be durable whether or not a reviewer ends
+			// up running.
+			ev, everr := collectGateEvidence(ctx, m, g, lastStage, lastResult, pointers, addendum, rec)
+			if everr != nil {
+				return RunResult{}, everr
+			}
 			var (
 				outcome string
 				verdict *apiv1.Verdict
+				review  GateReviewResult
 				gerr    error
 			)
 			if knownOutcome != "" {
@@ -462,26 +509,80 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				}
 				outcome = knownOutcome
 			} else {
-				outcome, verdict, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, gateAttempts, gateDispatches, rec)
+				outcome, verdict, review, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, addendum, ev, lastDiffDigest[g.Name], gateAttempts, gateDispatches, rec)
 			}
 			if gerr != nil {
 				return RunResult{}, gerr
+			}
+			// #3384: the patch the reviewer judged, committed as an artifact
+			// and surfaced as the "<gate>.diff" pointer. These are the same
+			// bytes the activity already placed in the reviewer's envelope, so
+			// the pointer the reviewer read and the blob the journal holds are
+			// one object rather than two that agree.
+			gatePointers := pointers
+			if len(review.Diff) > 0 {
+				diffPointer, derr := rec.recordReviewerDiff(ctx, in.RunID, g.Name, review.Diff)
+				if derr != nil {
+					return RunResult{}, derr
+				}
+				if diffPointer != nil {
+					pointers = append(pointers, *diffPointer)
+					gatePointers = pointers
+				}
+			}
+			// #3843, BEFORE the outcome is resolved: both finding
+			// transitions can turn a needs-changes verdict into a pass, so
+			// reconciling afterwards would route the run on a decision the
+			// findings no longer support.
+			reconciled, findingReason, lifecycle, ferr := reconcileGateFindings(
+				g, verdict, gatePointers, review.DiffDigest, review.DuplicateDiff, review.EmptyDiff, rec)
+			if ferr != nil {
+				return RunResult{}, ferr
+			}
+			if reconciled != nil {
+				verdict = reconciled
+				outcome = string(reconciled.Decision)
 			}
 			_, reentry := upstream[wfTarget(g, outcome)]
 			gr, rerr := resolveGateOutcome(g, outcome, reentry, gateAttempts, repassAttempts, maxRepassesFor(in))
 			if rerr != nil {
 				return RunResult{}, rerr
 			}
+			gr.DiffDigest = review.DiffDigest
+			gr.DuplicateDiff = review.DuplicateDiff
+			gr.CacheHit = ev.CacheHit
+			gr.RepassCause = ev.RepassCause
+			if review.EmptyDiff || review.DuplicateDiff {
+				gr.Reason = review.Summary
+			}
+			if findingReason != "" {
+				gr.Reason = findingReason
+			}
+			gr.ResolvedFindingIDs = lifecycle.Resolved
+			gr.SuppressedFindingIDs = lifecycle.Suppressed
+			gr.ReopenedFindingIDs = lifecycle.Reopened
+			gr.DisprovenFindingIDs = lifecycle.Disproven
+			gr.DisprovenFindings = lifecycle.DisprovenFindings
 			verdictArtifact, jerr := rec.gateEvaluated(ctx, gr, verdict)
 			if jerr != nil {
 				return RunResult{}, jerr
+			}
+			if review.DiffDigest != "" {
+				lastDiffDigest[g.Name] = review.DiffDigest
 			}
 			// The retry-decision annotation (routeRetryDecision parity):
 			// appended straight after gate.evaluated, exactly where the local
 			// runner appends it, so a fail branch re-entering a completed stage
 			// leaves the record priorRepassCause reads back to classify the
 			// repass as infrastructure or content.
-			if class, _, retryable := runner.RetryFailureClassForGateResult(g, lastResult, gr.Outcome); retryDecisionApplies(gr, retryable) {
+			class, _, retryable := runner.RetryFailureClassForGateResult(g, lastResult, gr.Outcome)
+			// retryRoute is the local runner's routeRetryDecision "retry"
+			// return: it gates the annotation AND the learning injection
+			// together, because in the local runner both live inside the same
+			// `if retry` block. A fail branch the class declines re-enters the
+			// stage without either.
+			retryRoute := retryDecisionApplies(gr, retryable)
+			if retryRoute {
 				rec.retryDecision(ctx, gr, lastStage, lastResult, class)
 			}
 			// Gate boundary emission: the verdict (and its artifact) become
@@ -497,6 +598,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			if terminal {
 				return out, nil
 			}
+			var injected *apiv1.ContextPointer
 			if verdictArtifact != nil {
 				// #412: the next dispatch — most commonly a repass back to the
 				// stage that produced the subject this gate just evaluated —
@@ -504,9 +606,24 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				// infer "something needs to change" from git. The local
 				// runner's walk appends the same "<gate>.verdict" pointer on
 				// both its retry route and its advance path.
-				pointers = append(pointers, apiv1.ContextPointer{
+				pointer := apiv1.ContextPointer{
 					Name: g.Name + ".verdict", Integrity: verdictArtifact.Integrity, Artifact: verdictArtifact,
-				})
+				}
+				injected = &pointer
+				pointers = append(pointers, pointer)
+			}
+			// #3843: a gate sending a stage BACK commits a learning episode
+			// and hands the repass a pointer to it, so the next attempt argues
+			// with the reviewer's finding instead of rediscovering it. Only on
+			// the retry route — an advancing gate has nothing to teach.
+			if retryRoute && gateSendsBack(gr, next, upstream) {
+				episode, eerr := rec.learningEpisode(ctx, in, g.Name, next, gr, verdict, lastStage, lastResult, injected)
+				if eerr != nil {
+					return RunResult{}, fmt.Errorf("engine: journal learning episode for gate %q: %w", g.Name, eerr)
+				}
+				if episode != nil {
+					pointers = append(pointers, *episode)
+				}
 			}
 			state = next
 			continue
@@ -608,7 +725,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 	return e.Code, e.Message
 }
 
-func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed completedStages, workspaceBranch string, workspaceDelta string, deltaOut *deltaPublication, rec *runJournal) (apiv1.ResultEnvelope, error) {
+func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed completedStages, workspaceBranch string, workspaceDelta string, instructionAddendum string, deltaOut *deltaPublication, rec *runJournal) (apiv1.ResultEnvelope, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
@@ -636,6 +753,12 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		parent := apiv1.StagePlatformAuthority(env, "result")
 		env.ParentPlatformPolicy = &parent
 	}
+	// The rejection this re-dispatch is carrying (#3374/#3375), set exactly
+	// where the local runner's dispatchTask sets it. It is the ONLY channel
+	// through which a re-dispatched stage learns that its previous answer was
+	// refused and why — without it the agent is handed an identical envelope
+	// and has every reason to return the identical result.
+	env.InstructionAddendum = instructionAddendum
 	// Both admission checks run before dispatch, matching the local runner.
 	// inputsFrom values are graded by the stage that PRODUCED them — the
 	// immediately preceding one for a bare key, the named one for a
@@ -690,7 +813,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// claimed PR's head — must have every later stage checked out THERE.
 		// Without it the pod derived the run branch from workflow+runID and
 		// remediated a branch nobody was reviewing.
-		return dispatchRemoteTask(ctx, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut)
+		return dispatchRemoteTask(ctx, in, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut)
 	}
 	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
 	produced := engineProducedIntegrity(t, env, inputGrades)
@@ -704,11 +827,11 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		// task's own declaration — the same one the continuity selector
 		// decided the delta from — so the worktree the agent is cut and the
 		// commits it is handed can never disagree.
-		return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
+		return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
 			var result stageActivityResult
 			attemptEnv := env
 			attemptEnv.Attempt = int32(attempt)
-			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace()).Get(ctx, &result)
+			err := workflow.ExecuteActivity(ctx, ActInvokeGoober, attemptEnv, workspaceBranch, workspaceDelta, t.EffectiveWorkspace(), t.OnTimeout).Get(ctx, &result)
 			result.Integrity = produced
 			return result, err
 		}, deltaOut)
@@ -732,7 +855,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// taskWorkspaceMode already read it. Pure over the pinned spec, so
 	// replay-deterministic.
 	run.Workspace = t.EffectiveWorkspace()
-	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
 		var result stageActivityResult
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
@@ -756,10 +879,10 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 // ActReviewGoober with the arguments it always has (ruling 8, as amended by
 // #3845): that arm is untouched, and the walk's continuity selector already
 // hands both arms the same delta.
-func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, gateAttempts map[string]int, gateDispatches map[string]int, rec *runJournal) (string, *apiv1.Verdict, error) {
+func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, instructionAddendum string, ev gateEvidence, priorDiffDigest string, gateAttempts map[string]int, gateDispatches map[string]int, rec *runJournal) (string, *apiv1.Verdict, GateReviewResult, error) {
 	limits, err := wf.GateLimits(machine, g)
 	if err != nil {
-		return "", nil, fmt.Errorf("project gate %q limits: %w", g.Name, err)
+		return "", nil, GateReviewResult{}, fmt.Errorf("project gate %q limits: %w", g.Name, err)
 	}
 	switch g.Evaluator {
 	case apiv1.EvaluatorAutomated:
@@ -777,7 +900,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, nil, limits, nil, "")
 		env.Inputs, err = gate.AutomatedInputs(subject)
 		if err != nil {
-			return "", nil, fmt.Errorf("project gate %q inputs: %w", g.Name, err)
+			return "", nil, GateReviewResult{}, fmt.Errorf("project gate %q inputs: %w", g.Name, err)
 		}
 		ctx := stageActivityContext(ctx, env.Limits)
 		// An automated gate never dispatches a pod (podAttempt: 0, omitted).
@@ -786,15 +909,15 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// the evaluator dispatches, so a run waiting at a gate is visible
 		// waiting at that gate.
 		if err := rec.emitPending(ctx); err != nil {
-			return "", nil, err
+			return "", nil, GateReviewResult{}, err
 		}
 		var outcome string
 		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
 			return workflow.ExecuteActivity(ctx, ActEvaluateAutomated, conf, env).Get(ctx, &outcome)
 		}); err != nil {
-			return "", nil, err
+			return "", nil, GateReviewResult{}, err
 		}
-		return outcome, nil, nil
+		return outcome, nil, GateReviewResult{}, nil
 
 	case apiv1.EvaluatorAgentic:
 		// The reviewer runs a real goober subprocess, so — unlike an
@@ -808,6 +931,19 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 			gateCaps = in.GateGooberCapabilities[reviewerGoober]
 		}
 		env := buildInvocation(in, g.Name, "gate: "+g.Name, nil, gateCaps, limits, upstream, reviewerGoober)
+		env.InstructionAddendum = instructionAddendum
+		// #3383: the subject already knows this gate's answer, so the gate
+		// routes on it and the reviewer is never invoked. Resolved by
+		// gateEvidence (which also enforces the suppression rule) and applied
+		// here, at the last point before dispatch, so the short-circuit is
+		// visibly one branch away from the dispatch it replaces.
+		if ev.CachedVerdict != nil {
+			rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1, 0)
+			if err := rec.emitPending(ctx); err != nil {
+				return "", nil, GateReviewResult{}, err
+			}
+			return string(ev.CachedVerdict.Decision), ev.CachedVerdict, GateReviewResult{}, nil
+		}
 		// Mode-3 routing for a gate, read from RunInput exactly as runTask
 		// reads it for a task: a pure function of pinned data, no solve, no
 		// I/O, replay-deterministic. The activity options are the only thing
@@ -833,37 +969,44 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1, podAttempt)
 		// Pre-evaluation emission, as on the automated arm above.
 		if err := rec.emitPending(ctx); err != nil {
-			return "", nil, err
+			return "", nil, GateReviewResult{}, err
 		}
 		// The reviewer inherits its subject's repo state through the
 		// continuity record's nil-repoFrom arm (#3803) and evaluates in the
 		// workspace the gate declares (AgenticGate.Workspace, "" = the
 		// historical writable repo worktree) — both trailing positionals so a
 		// history recorded before them replays (see Activities.ReviewGoober).
-		var verdict apiv1.Verdict
+		// priorDiffDigest and subjectAgentic are trailing positionals for the
+		// replay reason InvokeGoober documents, and they are what let the
+		// activity make the #316/#415 short-circuit decisions where the diff
+		// actually is. A history recorded before they existed replays with
+		// both zero-valued, which disables both short-circuits — precisely the
+		// pre-#3882 behaviour.
+		var review GateReviewResult
 		if err := evaluateWithInfraRetry(ctx, g, rec, func(ctx workflow.Context) error {
 			if remote {
 				surrendered, err := dispatchRemoteGate(ctx, g, env, placement, workspaceBranch, workspaceDelta, gatePodAttempt(gateDispatches, g.Name))
 				if err != nil {
 					return err
 				}
-				verdict = surrendered
+				review = GateReviewResult{Verdict: surrendered, Reviewed: true}
 				return nil
 			}
-			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch, workspaceDelta, g.EffectiveWorkspace()).Get(ctx, &verdict)
+			return workflow.ExecuteActivity(ctx, ActReviewGoober, env, workspaceBranch, workspaceDelta,
+				g.EffectiveWorkspace(), priorDiffDigest, ev.SubjectAgentic).Get(ctx, &review)
 		}); err != nil {
-			return "", nil, err
+			return "", nil, GateReviewResult{}, err
 		}
-
-		return string(verdict.Decision), &verdict, nil
+		verdict := review.Verdict
+		return string(verdict.Decision), &verdict, review, nil
 
 	case apiv1.EvaluatorHuman:
 		var decision string
 		workflow.GetSignalChannel(ctx, HumanGateSignal(g.Name)).Receive(ctx, &decision)
-		return decision, nil, nil
+		return decision, nil, GateReviewResult{}, nil
 
 	default:
-		return "", nil, fmt.Errorf("gate %q has unknown evaluator %q", g.Name, g.Evaluator)
+		return "", nil, GateReviewResult{}, fmt.Errorf("gate %q has unknown evaluator %q", g.Name, g.Evaluator)
 	}
 }
 

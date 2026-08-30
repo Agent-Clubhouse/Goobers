@@ -136,30 +136,53 @@ func appendRemediationEvidenceRequirement(jr executionJournal, stage, gateName s
 	})
 }
 
-type actionableEvidence struct {
+// ActionableEvidence is one required failure-evidence pointer's obligation.
+// Exported alongside RemediationEvidenceRequirements; actionableEvidence stays
+// as the in-package name so every existing reference and every recorded
+// annotation payload are unchanged.
+type ActionableEvidence struct {
 	Pointer    string             `json:"pointer"`
-	Ranges     []receiptLineRange `json:"ranges,omitempty"`
+	Ranges     []ReceiptLineRange `json:"ranges,omitempty"`
 	Signatures []string           `json:"signatures,omitempty"`
 }
+
+type actionableEvidence = ActionableEvidence
 
 func remediationEvidenceRequirements(jr executionJournal, pointers []apiv1.ContextPointer) []actionableEvidence {
 	rd, err := journal.OpenRead(jr.Dir())
 	if err != nil {
 		return nil
 	}
-	requirements := make([]actionableEvidence, 0, len(pointers))
+	return RemediationEvidenceRequirements(pointers, func(ptr apiv1.ArtifactPointer) ([]byte, error) {
+		return rd.ArtifactBytes(journal.Ref{
+			Path: ptr.Path, Digest: ptr.Digest, Size: ptr.Size, Integrity: ptr.Integrity,
+		})
+	})
+}
+
+// RemediationEvidenceRequirements derives, for each required failure-evidence
+// pointer, the check annotations a remediation attempt is obliged to have
+// actually read: the normalized signatures, and the line ranges those
+// signatures occupy in the evidence artifact.
+//
+// This IS the #3375 obligation. The receipt check on the far side compares an
+// attempt's claimed reads against these entries, so it decides whether a
+// remediation gets re-dispatched or escalates the run. Exported for #3882 so
+// the engine derives the identical obligation from the identical bytes rather
+// than a lookalike: two derivations here would mean the two lanes demand
+// different reads of the same failure.
+func RemediationEvidenceRequirements(
+	pointers []apiv1.ContextPointer,
+	resolve gate.ArtifactBytes,
+) []ActionableEvidence {
+	requirements := make([]ActionableEvidence, 0, len(pointers))
 	for _, pointer := range pointers {
-		requirement := actionableEvidence{Pointer: pointer.Name}
-		if pointer.Artifact == nil {
+		requirement := ActionableEvidence{Pointer: pointer.Name}
+		if pointer.Artifact == nil || resolve == nil {
 			requirements = append(requirements, requirement)
 			continue
 		}
-		data, err := rd.ArtifactBytes(journal.Ref{
-			Path:      pointer.Artifact.Path,
-			Digest:    pointer.Artifact.Digest,
-			Size:      pointer.Artifact.Size,
-			Integrity: pointer.Artifact.Integrity,
-		})
+		data, err := resolve(*pointer.Artifact)
 		if err != nil {
 			requirements = append(requirements, requirement)
 			continue
@@ -2183,6 +2206,18 @@ func learningSourceEvent(runDir, gateName, stage string, reviewer bool) (uint64,
 	if err != nil {
 		return 0, 0
 	}
+	return LearningSourceEvent(events, gateName, stage, reviewer)
+}
+
+// LearningSourceEvent is the pure half of the scan above: which journaled event
+// an injected learning episode is ABOUT, and which attempt produced it.
+//
+// The returned seq is not decorative — it names the episode artifact
+// (LearningEpisodeArtifactName) and its context pointer, so it is part of the
+// conformance surface. Exported for #3882 so the engine, whose events live in
+// workflow state rather than on disk, resolves the identical source rather
+// than inventing its own numbering.
+func LearningSourceEvent(events []journal.Event, gateName, stage string, reviewer bool) (uint64, int) {
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
 		if reviewer && event.Type == journal.EventGateEvaluated && event.Gate == gateName {
@@ -3039,10 +3074,15 @@ func (r *Runner) validateDependencyResult(jr executionJournal, stage string, res
 	return RejectDependencyResult(result, r.validateDependencyNotMet(jr, stage, result, invocationPointers))
 }
 
-type receiptLineRange struct {
+// ReceiptLineRange is one inclusive line span of an evidence artifact an
+// attempt is obliged to have read (or claims to have read). Exported with the
+// obligation it belongs to; receiptLineRange remains the in-package name.
+type ReceiptLineRange struct {
 	Start int `json:"start"`
 	End   int `json:"end"`
 }
+
+type receiptLineRange = ReceiptLineRange
 
 func parseReceiptInputInspection(jr executionJournal, stage string, required map[string]string, actionable map[string]actionableEvidence) (bool, map[string]bool, error) {
 	rd, err := journal.OpenRead(jr.Dir())
@@ -5348,6 +5388,27 @@ func priorRepassCause(jr executionJournal, subjectStage string) (*gate.RepassCau
 	if err != nil {
 		return nil, err
 	}
+	return PriorRepassCause(events, subjectStage, reader.ArtifactBytes)
+}
+
+// PriorRepassCause is the pure half: the backward scan over an already-read
+// event log that classifies WHY a stage is being re-entered, given a way to
+// resolve a gate.evaluated event's verdict artifact.
+//
+// Exported and split from the reader above for #3882: the engine holds its
+// journal as workflow state (a JournalProjection whose artifact bytes are
+// inline), not as a directory it can journal.OpenRead, so the only thing the
+// two lanes can share is this function over an event slice. The classification
+// itself — reviewer rationale beats gate outcome, a preceding failed
+// stage.finished beats both, and the infrastructure verdict comes from the
+// retry-decision annotation rather than the attempt class — is normative: it
+// becomes the RepassCause the reviewer sees, so a second implementation of it
+// would let the two lanes hand the same reviewer different histories.
+func PriorRepassCause(
+	events []journal.Event,
+	subjectStage string,
+	artifactBytes func(journal.Ref) ([]byte, error),
+) (*gate.RepassCause, error) {
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
 		if event.Type != journal.EventGateEvaluated || event.Target != subjectStage {
@@ -5355,7 +5416,10 @@ func priorRepassCause(jr executionJournal, subjectStage string) (*gate.RepassCau
 		}
 		cause := &gate.RepassCause{Kind: "gate", Gate: event.Gate, Outcome: event.Verdict}
 		if event.Ref != nil {
-			data, err := reader.ArtifactBytes(*event.Ref)
+			if artifactBytes == nil {
+				return nil, fmt.Errorf("read prior verdict for gate %q: no artifact resolver", event.Gate)
+			}
+			data, err := artifactBytes(*event.Ref)
 			if err != nil {
 				return nil, fmt.Errorf("read prior verdict for gate %q: %w", event.Gate, err)
 			}

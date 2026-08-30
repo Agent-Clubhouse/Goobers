@@ -145,3 +145,15 @@ func ArtifactBytesFromRoot(root string) ArtifactBytes {
 	}
 	return func(a apiv1.ArtifactPointer) ([]byte, error) { return a.Resolve(root) }
 }
+
+// LearningFindingRecords renders a verdict's findings as the journal
+// annotation shape gate.evaluated carries — the machine-readable finding
+// ledger a later repass, a resume, and the learning store all read back.
+//
+// Exported for #3882: the engine journals its own gate.evaluated events
+// (internal/engine/journal.go) rather than going through recordVerdict, so
+// without this the two lanes would render the same findings differently and
+// every downstream reader would have to know which lane wrote the run.
+func LearningFindingRecords(findings []apiv1.Finding) []map[string]any {
+	return learningFindingRecords(findings)
+}
