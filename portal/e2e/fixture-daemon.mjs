@@ -1,6 +1,6 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { extname, join, normalize, resolve } from "node:path";
+import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const port = 4173;
@@ -267,9 +267,11 @@ function serveEvents(response) {
 }
 
 function serveStatic(pathname, response) {
-  const relative = pathname === "/" ? "index.html" : normalize(decodeURIComponent(pathname)).slice(1);
-  const file = resolve(join(distRoot, relative));
-  if (!file.startsWith(`${distRoot}/`) || !existsSync(file) || !statSync(file).isFile()) {
+  const requestPath = pathname === "/" ? "index.html" : normalize(decodeURIComponent(pathname)).slice(1);
+  const file = resolve(join(distRoot, requestPath));
+  const pathFromRoot = relative(distRoot, file);
+  const escapesRoot = pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`) || isAbsolute(pathFromRoot);
+  if (escapesRoot || !existsSync(file) || !statSync(file).isFile()) {
     response.writeHead(404);
     response.end("not found");
     return;
