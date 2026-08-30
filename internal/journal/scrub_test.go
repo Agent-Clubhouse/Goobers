@@ -217,8 +217,8 @@ func TestPatternNetRedactsBasicAuth(t *testing.T) {
 		header string
 		want   string
 	}{
-		{"Authorization: Basic " + basicAuthCredential, "Authorization: " + Redacted},
-		{"authorization: bAsIc " + basicAuthCredential, "authorization: " + Redacted},
+		{"Authorization: Basic " + basicAuthCredential, "Authorization: Basic " + RedactedToken},
+		{"authorization: bAsIc " + basicAuthCredential, "authorization: bAsIc " + RedactedToken},
 	} {
 		if got := string(scrub.Scrub([]byte(tc.header))); got != tc.want {
 			t.Fatalf("scrubbed Basic authorization header = %q, want %q", got, tc.want)
@@ -259,7 +259,7 @@ func TestBasicAuthNeverLandsInRunJournal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Events: %v", err)
 	}
-	if got := events[len(events)-1].Error.Message; !strings.Contains(got, Redacted) {
+	if got := events[len(events)-1].Error.Message; !strings.Contains(got, RedactedToken) {
 		t.Fatalf("run journal error was not redacted: %q", got)
 	}
 }
@@ -284,5 +284,67 @@ func TestRegistryIgnoresTinyValues(t *testing.T) {
 	out := reg.Scrub([]byte("a fabulous absolute cab"))
 	if !bytes.Equal(out, []byte("a fabulous absolute cab")) {
 		t.Fatalf("tiny value corrupted content: %q", out)
+	}
+}
+
+// TestPatternNetPreservesAuthorizationSyntax is the #3135 regression: the
+// pattern net must remove a credential VALUE without eating the authorization
+// scheme, the code around it, or a variable reference. Every case is a shape
+// that reaches an agentic review gate as evidence — a patch hunk, a verdict
+// rationale, and the repass context a gate feeds back to an implementer.
+func TestPatternNetPreservesAuthorizationSyntax(t *testing.T) {
+	scrub := NewPatternScrubber()
+	const fixture = "abc123.def456-ghi789xyz"
+
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "patch: scheme concatenated with a token variable is untouched",
+			in:   `+	req.Header.Set("Authorization", "Bearer "+accessToken)`,
+			want: `+	req.Header.Set("Authorization", "Bearer "+accessToken)`,
+		},
+		{
+			name: "patch: a synthetic fixture is redacted only at the value boundary",
+			in:   `+	const wantHeader = "Bearer ` + fixture + `"`,
+			want: `+	const wantHeader = "Bearer ` + RedactedToken + `"`,
+		},
+		{
+			name: "verdict: rationale keeps the scheme it is reasoning about",
+			in:   "the handler sends Authorization: Bearer " + fixture + " on every retry",
+			want: "the handler sends Authorization: Bearer " + RedactedToken + " on every retry",
+		},
+		{
+			name: "repass context: correction feedback keeps the header syntax",
+			in:   "fix the Basic " + basicAuthCredential + " fallback in the client",
+			want: "fix the Basic " + RedactedToken + " fallback in the client",
+		},
+		{
+			name: "a scheme at end of line does not swallow the next line",
+			in:   "header: Bearer\nrequestIdentifierForTheCall = compute()",
+			want: "header: Bearer\nrequestIdentifierForTheCall = compute()",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := string(scrub.Scrub([]byte(tc.in))); got != tc.want {
+				t.Fatalf("Scrub(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPatternNetStillRedactsBearerValues is the security counterpart to the
+// syntax-preservation regression: preserving the scheme must not preserve the
+// credential.
+func TestPatternNetStillRedactsBearerValues(t *testing.T) {
+	token := "abcdefghijklmnopqrstuvwxyz0123456789"
+	out := NewPatternScrubber().Scrub([]byte("Authorization: Bearer " + token))
+	if bytes.Contains(out, []byte(token)) {
+		t.Fatalf("pattern net left a bearer token at rest: %q", out)
+	}
+	if !bytes.Contains(out, []byte("Bearer "+RedactedToken)) {
+		t.Fatalf("expected the value-boundary placeholder: %q", out)
 	}
 }

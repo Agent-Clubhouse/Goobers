@@ -12,6 +12,16 @@ import (
 // stable so digests over scrubbed bytes are reproducible across runners.
 const Redacted = "[REDACTED]"
 
+// RedactedToken replaces only the credential VALUE inside an authorization
+// expression, leaving the scheme and the surrounding syntax intact (#3135).
+// Swallowing the whole scheme-plus-value span corrupted code evidence: a review
+// gate reading a scrubbed diff saw the authorization scheme itself replaced and
+// reported the header as malformed, contradicting the authoritative raw diff.
+// It is deliberately distinct from Redacted so a reader (human or agent) can
+// tell that a credential value was removed rather than a whole span of secret
+// material.
+const RedactedToken = "<redacted-token>"
+
 // Scrubber removes secret-shaped material from bytes before they are written to
 // (and digested into) the journal. Every event, input snapshot, and artifact
 // passes through the run's Scrubber before hitting disk, so raw secrets never
@@ -139,28 +149,42 @@ func jsonEscapedForms(v []byte) [][]byte {
 // minSecretLen is the shortest value the registry will redact.
 const minSecretLen = 6
 
+// secretPattern is one entry in the pattern net: a regexp and the replacement
+// template applied to each match. A template may reference the match's named
+// groups, which is how an authorization expression keeps its scheme and spacing
+// while only its value is removed (#3135).
+type secretPattern struct {
+	re   *regexp.Regexp
+	repl string
+}
+
 // defaultSecretPatterns matches secret-shaped material that was never registered
 // — a defense-in-depth net for provider tokens that reach the journal without
 // going through the resolver. Patterns are intentionally specific to keep false
 // positives low; the registry is the primary mechanism.
-var defaultSecretPatterns = []*regexp.Regexp{
+var defaultSecretPatterns = []secretPattern{
 	// GitHub tokens: ghp_, gho_, ghu_, ghs_, ghr_, github_pat_.
-	regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`),
-	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{50,}`),
+	{re: regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`), repl: Redacted},
+	{re: regexp.MustCompile(`github_pat_[A-Za-z0-9_]{50,}`), repl: Redacted},
 	// AWS access key id.
-	regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
+	{re: regexp.MustCompile(`AKIA[0-9A-Z]{16}`), repl: Redacted},
 	// Slack tokens.
-	regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`),
+	{re: regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`), repl: Redacted},
 	// PEM private key blocks.
-	regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`),
-	// Bearer/authorization header values with a long opaque token.
-	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+/-]{20,}=*`),
-	regexp.MustCompile(`(?i)basic\s+[A-Za-z0-9+/]{16,}=*`),
+	{re: regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`), repl: Redacted},
+	// Authorization header values with a long opaque token. Only the value is
+	// replaced — the scheme and the separating spacing survive, so a diff, a
+	// verdict rationale, or a repass context handed to an agentic gate still
+	// reads as the code it came from (#3135). The separator is horizontal
+	// whitespace only: `\s` would span a newline and let the net swallow the
+	// first token-shaped word of the following line.
+	{re: regexp.MustCompile(`(?i)(?P<scheme>bearer)(?P<sep>[ \t]+)[A-Za-z0-9._~+/-]{20,}=*`), repl: "${scheme}${sep}" + RedactedToken},
+	{re: regexp.MustCompile(`(?i)(?P<scheme>basic)(?P<sep>[ \t]+)[A-Za-z0-9+/]{16,}=*`), repl: "${scheme}${sep}" + RedactedToken},
 }
 
 // PatternScrubber redacts secret-shaped substrings using a set of regexps.
 type PatternScrubber struct {
-	patterns []*regexp.Regexp
+	patterns []secretPattern
 }
 
 // NewPatternScrubber returns a scrubber using the default secret patterns.
@@ -168,11 +192,14 @@ func NewPatternScrubber() *PatternScrubber {
 	return &PatternScrubber{patterns: defaultSecretPatterns}
 }
 
-// Scrub replaces every pattern match with the Redacted placeholder.
+// Scrub replaces every pattern match with its replacement: the whole match for a
+// provider-token shape, or the credential value alone for an authorization
+// expression, whose scheme and spacing are preserved so code evidence stays
+// readable (#3135).
 func (s *PatternScrubber) Scrub(b []byte) []byte {
 	out := b
-	for _, re := range s.patterns {
-		out = re.ReplaceAll(out, []byte(Redacted))
+	for _, p := range s.patterns {
+		out = p.re.ReplaceAll(out, []byte(p.repl))
 	}
 	return out
 }

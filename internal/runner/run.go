@@ -5386,7 +5386,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		// evidence-pointer mechanism (env.ContextPointers), resolved into the
 		// reviewer's workspace like any other evidence pointer.
 		if g.Evaluator == apiv1.EvaluatorAgentic {
-			ptr, derr := r.recordReviewerDiff(ctx, ex, in, g.Name, wt)
+			ptr, derr := r.recordReviewerDiff(ctx, jr, ex, in, g.Name, wt)
 			if derr != nil {
 				err = fmt.Errorf("runner: gate %q: reviewer diff evidence: %w", g.Name, derr)
 				span.Fail(err)
@@ -5651,8 +5651,11 @@ func PriorRepassCause(
 // by the implementer's model — so the reviewer judges the real change with the
 // same content-addressed integrity as any other artifact. Returns (nil, nil)
 // when the gate has no repository worktree or the branch carries no change vs.
-// base (nothing to attach).
-func (r *Runner) recordReviewerDiff(ctx context.Context, ex *executors, in StartInput, gateName string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
+// base (nothing to attach). When scrubbing transforms the diff on its way into
+// the journal, the transformation is itself journaled
+// (ReviewerDiffRedactionAnnotation) so the evidence the reviewer reads stays
+// correlatable with the branch's authoritative raw diff (#3135).
+func (r *Runner) recordReviewerDiff(ctx context.Context, jr executionJournal, ex *executors, in StartInput, gateName string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
 	if wt == nil {
 		return nil, nil
 	}
@@ -5667,6 +5670,7 @@ func (r *Runner) recordReviewerDiff(ctx context.Context, ex *executors, in Start
 	if len(diff) == 0 {
 		return nil, nil
 	}
+	rawDigest, rawBytes := journal.Digest(diff), len(diff)
 	// Defense-in-depth: scrub any registered secret a stage's commit might have
 	// captured before the diff lands in the journal, mirroring the harness's own
 	// artifact scrubbing (internal/harness.Executor.liftArtifactFile). The run's
@@ -5678,11 +5682,53 @@ func (r *Runner) recordReviewerDiff(ctx context.Context, ex *executors, in Start
 	if err != nil {
 		return nil, fmt.Errorf("record reviewer diff artifact: %w", err)
 	}
+	if err := recordReviewerDiffRedaction(jr, gateName, ref, rawDigest, rawBytes); err != nil {
+		return nil, err
+	}
 	ptr := apiv1.ArtifactPointer{
 		Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
 		MediaType: ReviewerDiffMediaType, Integrity: ref.Integrity,
 	}
 	return &apiv1.ContextPointer{Name: ReviewerDiffPointerName(gateName), Integrity: ref.Integrity, Artifact: &ptr}, nil
+}
+
+// ReviewerDiffRedactionAnnotation is the runner-annotation kind recording that
+// the diff a review gate is about to read is NOT byte-identical to the run
+// branch's own diff, because scrubbing removed credential-shaped material on the
+// way to the journal (#3135). Without it, a reviewer finding about redacted
+// content is impossible to tell apart from a finding about the real code: the
+// annotation carries both digests, so agent-visible evidence can always be
+// correlated back to the authoritative raw diff.
+const ReviewerDiffRedactionAnnotation = "reviewer-diff-redacted"
+
+// recordReviewerDiffRedaction journals the evidence-transformation annotation
+// when the recorded artifact's bytes differ from the raw diff. It compares the
+// ARTIFACT's digest (what the reviewer actually reads) rather than the
+// pre-record scrub alone, so the journal's own scrubber pass is covered too. A
+// no-op when the evidence is byte-identical to the raw diff.
+func recordReviewerDiffRedaction(jr executionJournal, gateName string, ref journal.Ref, rawDigest string, rawBytes int) error {
+	if jr == nil || ref.Digest == rawDigest {
+		return nil
+	}
+	if err := jr.Append(journal.Event{
+		Type:  journal.EventRunnerAnnotation,
+		Stage: gateName,
+		Name:  ReviewerDiffRedactionAnnotation,
+		Runner: map[string]any{
+			"kind":           ReviewerDiffRedactionAnnotation,
+			"gate":           gateName,
+			"rawDigest":      rawDigest,
+			"rawBytes":       rawBytes,
+			"evidenceDigest": ref.Digest,
+			"evidenceBytes":  ref.Size,
+			"detail": "the reviewer diff was redacted before it was supplied to the gate; " +
+				"credential values are replaced at the value boundary (" + journal.RedactedToken + "), " +
+				"so a finding about redacted content is about this evidence, not the raw diff",
+		},
+	}); err != nil {
+		return fmt.Errorf("journal reviewer diff redaction: %w", err)
+	}
+	return nil
 }
 
 // startGateSpan opens a gate span under the run's trace, if telemetry is

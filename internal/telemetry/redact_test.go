@@ -45,7 +45,11 @@ func TestRedactCatchesEachPatternBranch(t *testing.T) {
 			if strings.Contains(got, tc.secret) {
 				t.Fatalf("Redact(%q) = %q, still contains the secret", tc.in, got)
 			}
-			if !strings.Contains(got, RedactedPlaceholder) {
+			// An authorization expression is redacted at the value boundary —
+			// its scheme survives and only the credential becomes
+			// journal.RedactedToken (#3135) — so either marker proves the net
+			// fired.
+			if !strings.Contains(got, RedactedPlaceholder) && !strings.Contains(got, journal.RedactedToken) {
 				t.Fatalf("Redact(%q) = %q, expected the redaction placeholder present", tc.in, got)
 			}
 		})
