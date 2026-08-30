@@ -313,6 +313,27 @@ func TestCrossRunnerTerminalOutcomeParity(t *testing.T) {
 			wantEvals:  0,
 		},
 		{
+			// #2736 parity on a GATE named in contextFrom: an evaluated gate
+			// delivers its verdict as context, so it substantiates the claim
+			// on both runners even when the task sources delivered nothing.
+			name: "no-work with an evaluated gate in contextFrom completes",
+			spec: crSpec("analyze", []apiv1.Task{
+				crTask("analyze", "review"),
+				func() apiv1.Task {
+					task := crTask("verdict", "")
+					task.ContextFrom = []string{"analyze", "review"}
+					return task
+				}(),
+			}, []apiv1.Gate{crGate("review", map[string]string{"pass": "verdict", "fail": wf.TargetAbort})}),
+			results: map[string][]apiv1.ResultEnvelope{
+				"analyze": {{Status: apiv1.ResultSuccess}},
+				"verdict": {{Status: apiv1.ResultNoWork, Summary: "verdict already recorded"}},
+			},
+			wantStatus: StatusCompleted,
+			wantCalls:  map[string]int{"analyze": 1, "verdict": 1},
+			wantEvals:  1,
+		},
+		{
 			name: "tolerated failure advances",
 			spec: crSpec("implement", []apiv1.Task{
 				func() apiv1.Task {

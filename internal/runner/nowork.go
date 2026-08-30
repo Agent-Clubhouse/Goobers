@@ -7,6 +7,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/telemetry"
 )
 
 // NoWorkUnsubstantiatedCode is the terminal cause of a run whose no-work claim
@@ -17,7 +18,9 @@ import (
 // nothing to act on; it is silent data loss when the stage found nothing
 // because the evidence never reached it. The runner already holds, in the
 // journal, what every upstream stage produced, so it looks before accepting.
-const NoWorkUnsubstantiatedCode = "NO_WORK_UNSUBSTANTIATED"
+// Classified in internal/telemetry so the refusal is reportable in operator
+// health numbers instead of counting as an unknown failure.
+const NoWorkUnsubstantiatedCode = telemetry.ErrCodeNoWorkUnsubstantiated
 
 // StageProduction is what one upstream stage delivered to the run before a
 // downstream stage claimed no-work.

@@ -322,6 +322,13 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 	// run (gatePodAttempt): the surrender-plane key and the pod name for a
 	// reviewer evaluated in a pod. Untouched by the self arm.
 	gateDispatches := map[string]int{}
+	// evaluatedGates names every gate that has recorded a verdict on this
+	// walk. A gate named in a downstream stage's contextFrom delivers that
+	// verdict as context, so the #2736 no-work check must count it as
+	// production — the upstream results map holds task results only
+	// (internal/runner's journal read counts an EventGateEvaluated the same
+	// way).
+	evaluatedGates := map[string]bool{}
 	var lastStage string
 	var lastResult apiv1.ResultEnvelope
 	var workspaceBranch string
@@ -384,7 +391,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				}
 			}
 			logger.Info("task complete", "task", t.Name, "status", res.Status)
-			next, out, terminal := taskOutcome(ctx, m, t, res, upstream, steps, rec)
+			next, out, terminal := taskOutcome(ctx, m, t, res, upstream, evaluatedGates, steps, rec)
 			if terminal {
 				return out, nil
 			}
@@ -414,6 +421,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			if jerr != nil {
 				return RunResult{}, jerr
 			}
+			evaluatedGates[g.Name] = true
 			// Gate boundary emission: the verdict (and its artifact) become
 			// live before the walk moves on. Exhausting the emit budget here
 			// fails the run — a gate decision that cannot be journaled must
@@ -456,7 +464,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 // that correctly found nothing must not hand a downstream agentic stage an
 // empty subject). A successful task's Next may itself be a reserved terminal
 // target (@abort/@escalate, #123).
-func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1.ResultEnvelope, upstream map[string]apiv1.ResultEnvelope, steps int, rec *runJournal) (next string, out RunResult, terminal bool) {
+func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1.ResultEnvelope, upstream map[string]apiv1.ResultEnvelope, evaluatedGates map[string]bool, steps int, rec *runJournal) (next string, out RunResult, terminal bool) {
 	switch result.Status {
 	case apiv1.ResultBlocked:
 		rec.blocked(ctx, t.Name, result)
@@ -478,7 +486,7 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 		// evidence. Producers that all journaled nothing mean the evidence
 		// never arrived, and completing on the claim alone would record that
 		// as a healthy empty tick.
-		if barren := runner.BarrenUpstream(declaredUpstreamProduction(t, upstream)); len(barren) > 0 {
+		if barren := runner.BarrenUpstream(declaredUpstreamProduction(t, upstream, evaluatedGates)); len(barren) > 0 {
 			return "", RunResult{
 				Status: StatusFailed, FinalState: t.Name,
 				FailureCode:    runner.NoWorkUnsubstantiatedCode,
@@ -504,17 +512,24 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 // none: like the local runner's noWorkEvidenceGap, only a declared consumer of
 // upstream artifacts is judged on them, since a producer can also deliver
 // through the shared workspace and return an empty envelope.
-func declaredUpstreamProduction(t apiv1.Task, upstream map[string]apiv1.ResultEnvelope) []runner.StageProduction {
+func declaredUpstreamProduction(t apiv1.Task, upstream map[string]apiv1.ResultEnvelope, evaluatedGates map[string]bool) []runner.StageProduction {
 	production := make([]runner.StageProduction, 0, len(t.ContextFrom))
 	for _, source := range t.ContextFrom {
 		if source == t.Name {
 			continue
 		}
+		if evaluatedGates[source] {
+			// An evaluated gate delivers its verdict to this stage as a
+			// "<gate>.verdict" pointer, so it always counts as production —
+			// the local runner counts its EventGateEvaluated identically.
+			production = append(production, runner.StageProduction{Stage: source, Delivered: true})
+			continue
+		}
 		result, ok := upstream[source]
 		if !ok {
-			// A gate verdict, or a producer that never ran on this path: the
-			// walk's upstream map holds task results only, so there is
-			// nothing here to call barren.
+			// A gate that never evaluated on this path, or a producer that
+			// never ran: the walk's upstream map holds task results only, so
+			// there is nothing here to call barren.
 			continue
 		}
 		production = append(production, runner.StageProduction{

@@ -81,6 +81,12 @@ const (
 	// ErrCodeCredentialUnavailable identifies a declared credential whose
 	// configured source cannot currently be materialized.
 	ErrCodeCredentialUnavailable = "credential_unavailable"
+	// ErrCodeNoWorkUnsubstantiated is the runner's refusal of a no-work claim
+	// no upstream stage delivered evidence for (#2736). Spelled here so the
+	// refusal is reportable in operator health numbers instead of landing in
+	// the unknown bucket; internal/runner.NoWorkUnsubstantiatedCode is this
+	// same constant.
+	ErrCodeNoWorkUnsubstantiated = "NO_WORK_UNSUBSTANTIATED"
 )
 
 // Agent-authored item-judgment codes (#3363). Spelled here so the runner's
@@ -113,6 +119,9 @@ var wellKnownErrorCodes = map[string]ErrorClass{
 	ErrCodeGitHubAuth:            ErrorClassProvider,
 	ErrCodeCredentialUnavailable: ErrorClassInfra,
 	ErrCodeIssueNotApplicable:    ErrorClassItemJudgment,
+	// The run's evidence contract, not the work: the claim did not hold up
+	// against what the journal says its upstream produced.
+	ErrCodeNoWorkUnsubstantiated: ErrorClassValidation,
 }
 
 // InfraFault reports whether c names an infrastructure fault — a failure of
