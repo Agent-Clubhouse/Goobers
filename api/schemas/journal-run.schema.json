@@ -7,14 +7,14 @@
   "additionalProperties": false,
   "required": ["schema", "runId", "workflow", "workflowVersion", "gaggle", "trigger", "startedAt"],
   "properties": {
-    "schema": { "const": "goobers.dev/journal/run/v1" },
+    "schema": { "const": "goobers.dev/journal/run/v1", "description": "Version of the run identity document." },
     "runId": {
       "description": "Run identifier — the OpenTelemetry trace id for the run.",
       "type": "string",
       "pattern": "^[0-9a-f]{32}$"
     },
-    "workflow": { "type": "string", "minLength": 1 },
-    "workflowVersion": { "type": "integer", "minimum": 0 },
+    "workflow": { "type": "string", "minLength": 1, "description": "Workflow definition name." },
+    "workflowVersion": { "type": "integer", "minimum": 0, "description": "Pinned workflow definition version." },
     "workflowDigest": {
       "description": "Content digest of the pinned workflow Definition (WF-016 tamper-evident pin).",
       "type": "string",
@@ -25,35 +25,99 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
-    "gaggle": { "type": "string", "minLength": 1 },
+    "continuedFromRunId": {
+      "description": "The terminal source run this continuation was created from.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "sourceTerminalSeq": {
+      "description": "The immutable terminal journal sequence selected from the source run.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "operator": { "type": "string", "minLength": 1, "description": "Operator who requested the continuation." },
+    "requestedTarget": { "type": "string", "minLength": 1, "description": "Workflow state selected for the continuation." },
+    "workspaceBranch": { "type": "string", "minLength": 1, "description": "Existing repository branch reused by this run." },
+    "workspaceBranchSha": { "type": "string", "minLength": 1, "description": "Commit pinned for the reused branch." },
+    "contextPointers": {
+      "type": "array",
+      "description": "Explicit continuation inputs; no ambient source context is copied.",
+      "items": {
+        "type": "object",
+        "description": "One explicitly selected source context pointer made available to the continuation.",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "description": "Artifact or context name from the source run." },
+          "branch": { "type": "integer", "minimum": 0, "description": "Numeric branch identifier from the source run." },
+          "branchName": { "type": "string", "minLength": 1, "description": "Named branch path from the source run." },
+          "runId": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Source run identifier for this context." },
+          "integrity": { "type": "string", "enum": ["trusted", "maintainer", "unapproved", "derived"], "description": "Provenance grade of this context pointer." },
+          "artifact": {
+            "type": "object",
+            "description": "Immutable source artifact referenced by this context pointer.",
+            "additionalProperties": false,
+            "required": ["path", "digest"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1, "description": "Path to the artifact relative to the source run directory." },
+              "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "SHA-256 content digest of the artifact." },
+              "mediaType": { "type": "string", "description": "Optional media type describing the artifact bytes." },
+              "size": { "type": "integer", "minimum": 0, "description": "Artifact length in bytes." },
+              "integrity": { "type": "string", "enum": ["trusted", "maintainer", "unapproved", "derived"], "description": "Provenance grade of the referenced artifact." }
+              }
+            },
+            "external": {
+              "type": "object",
+              "description": "External source reference represented by this context pointer.",
+              "additionalProperties": false,
+              "required": ["kind", "uri"],
+              "properties": {
+                "kind": { "type": "string", "minLength": 1, "description": "Kind of external object reference." },
+                "uri": { "type": "string", "minLength": 1, "description": "Provider URI identifying the external object." },
+                "description": { "type": "string", "description": "Human-readable description of the external reference." }
+              }
+          }
+        }
+      }
+    },
+    "gaggle": { "type": "string", "minLength": 1, "description": "Gaggle that owns the run." },
+    "driver": { "type": "string", "enum": ["engine"], "description": "Component that walks the run's stages: \"engine\" for a run the tier-3 engine drives on Temporal. Omitted for a run the daemon's own in-process runner drives, which is every run written before this field existed." },
     "runControls": {
       "description": "Effective inherited run-control policy pinned when the run started. Omitted only on legacy journals.",
       "type": "object",
       "additionalProperties": false,
       "required": ["maxRepasses", "stalledRunTimeout"],
       "properties": {
-        "maxRepasses": { "type": "integer", "minimum": 1 },
-        "stalledRunTimeout": { "type": "string", "minLength": 1 },
+        "maxRepasses": { "type": "integer", "minimum": 1, "description": "Pinned maximum gate repasses." },
+        "stalledRunTimeout": { "type": "string", "minLength": 1, "description": "Pinned stalled-run timeout." },
         "maxRunDuration": { "type": "string", "minLength": 1, "description": "Resolved maximum total wall-clock age of the run; omitted when disabled." }
       }
     },
     "trigger": {
       "type": "object",
       "additionalProperties": false,
+      "description": "What caused the run to start.",
       "required": ["kind"],
       "properties": {
-        "kind": { "type": "string", "enum": ["manual", "schedule", "signal", "item"] },
-        "ref": { "type": "string" }
+        "kind": { "type": "string", "enum": ["manual", "schedule", "signal", "item"], "description": "Trigger kind." },
+        "ref": { "type": "string", "description": "Trigger-specific reference." }
       }
     },
     "inputs": {
       "type": "array",
+      "description": "Content-digested immutable input snapshots.",
       "items": {
         "type": "object",
         "additionalProperties": false,
+        "description": "One immutable input snapshot.",
         "required": ["name", "ref"],
         "properties": {
-          "name": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1, "description": "Input name." },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Origin of the supplied input content."
+          },
           "integrity": {
             "type": "string",
             "enum": ["trusted", "maintainer", "unapproved", "derived"],
@@ -62,12 +126,13 @@
           "ref": {
             "type": "object",
             "additionalProperties": false,
+            "description": "Content-addressed snapshot reference.",
             "required": ["path", "digest", "size"],
             "properties": {
-              "path": { "type": "string", "minLength": 1 },
-              "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-              "size": { "type": "integer", "minimum": 0 },
-              "mediaType": { "type": "string" },
+              "path": { "type": "string", "minLength": 1, "description": "Journal-relative snapshot path." },
+              "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$", "description": "SHA-256 content digest." },
+              "size": { "type": "integer", "minimum": 0, "description": "Snapshot byte size." },
+              "mediaType": { "type": "string", "description": "Snapshot media type." },
               "integrity": {
                 "type": "string",
                 "enum": ["trusted", "maintainer", "unapproved", "derived"],
@@ -78,6 +143,6 @@
         }
       }
     },
-    "startedAt": { "type": "string", "format": "date-time" }
+    "startedAt": { "type": "string", "format": "date-time", "description": "Time the run was created." }
   }
 }

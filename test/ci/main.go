@@ -59,8 +59,8 @@ type check struct {
 const (
 	// groupChecks is the fast fan-in: formatting, module hygiene, the
 	// no-phone-home guard, vet, command builds, config validation, and the portal
-	// build/test/contract chain — everything except the three heavyweight steps
-	// below.
+	// audit/build/test/contract chain — everything except the three heavyweight
+	// steps below.
 	groupChecks = "checks"
 	// groupLint is golangci-lint (staticcheck/govet/revive/...) on its own runner.
 	groupLint = "lint"
@@ -323,6 +323,10 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		{label: "flake-policy", command: tools.goCommand, args: []string{"run", "./test/flakepolicy"}, group: groupChecks},
 		{label: "design-doc-status", command: tools.goCommand, args: []string{"run", "./test/designstatus"}, group: groupChecks},
 		{label: "markdown-links", command: tools.goCommand, args: []string{"run", "./test/markdownlinks"}, group: groupChecks},
+		// The release image's Go toolchain is an input to a shipped artifact,
+		// and packaging/docker/Dockerfile is the only leg that can drift from
+		// go.mod (ci.yml defers to it via go-version-file). #3452.
+		{label: "go-toolchain", command: tools.goCommand, args: []string{"run", "./test/gotoolchain"}, group: groupChecks},
 	}
 
 	portalPrepared := false
@@ -391,6 +395,16 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		"--",
 		"-race",
 		"-timeout", "30m",
+		// -count=1 disables Go's test-result cache for the merge-tier suite.
+		// Two reasons, both about not reporting work that did not happen.
+		// First, the coverage threshold is now enforced from this run's profile
+		// (unit-macos -> `make cover-gate`), so the run that produces the number
+		// must be a real one. Second, it is the property the deleted
+		// `conformance` job uniquely had; carrying it here is what makes that
+		// deletion a no-op rather than a loosening. It costs nothing in CI,
+		// where the build cache is cold anyway, and it is what stops a restored
+		// warm cache from ever turning "cached PASS" into a green that never ran.
+		"-count=1",
 		"-covermode=atomic",
 		"-coverprofile=coverage.out",
 		"./...",
@@ -420,6 +434,25 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		env:     testEnvironment,
 		group:   groupUnit,
 	}
+	// Deliberately NOT routed through test/hermetic, though every other suite is.
+	//
+	// It was tempting: the unit group sets
+	// GOOBERS_SKIP_SHIPPED_WORKFLOW_CONTRACTS=1, so the shards never run these
+	// contracts, and the whole-tree `make test` pass behind the deleted
+	// `coverage` job was the only place they ran under the restricted PATH.
+	// But that pass only existed from 2026-08-16 (#3152) — before it, nothing in
+	// CI ran these contracts hermetically either, so there is no long-standing
+	// property here to preserve, only a five-day-old side effect of the job this
+	// change removes.
+	//
+	// And it does not work on Windows. hermetic links each allowlisted tool into
+	// a temp directory and points PATH at it; `git.exe` resolves its libexec
+	// helpers relative to its own install layout, so a linked-in-isolation git
+	// dies with "error launching git: The system cannot find the path specified."
+	// Measured on PR #3461: every reference-workflow contract failed at
+	// `git init` on windows-latest while ubuntu and macOS passed. Making these
+	// contracts hermetic therefore needs a fix in the hermetic runner's Windows
+	// tool materialisation first, and belongs in its own change.
 	shippedWorkflowCheck := check{
 		label:   "shipped-workflows",
 		command: tools.goCommand,
@@ -637,6 +670,13 @@ func portalPreparationChecks(tools toolchain) []check {
 			label:        "portal-install",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "ci", "--no-audit", "--no-fund"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		{
+			label:        "portal-audit",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "audit", "--audit-level=low"},
 			windowsBatch: true,
 			group:        groupChecks,
 		},

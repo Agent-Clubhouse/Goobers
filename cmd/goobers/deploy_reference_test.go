@@ -143,6 +143,100 @@ func TestDeployReferenceWorkerProvidesWritableHarnessHome(t *testing.T) {
 	}
 }
 
+// TestDeployReferenceAPIProbes locks the reference api-deployment.yaml's
+// startup/readiness/liveness probe shape (#3806): each MUST target the
+// correct path over HTTPS. internal/httpapi/server.go refuses to serve a
+// non-loopback bind without TLS (SEC-043/#640), so any daemon a kubelet can
+// reach at podIP:port is necessarily HTTPS — an httpGet probe with no
+// scheme (kubelet defaults to HTTP) gets a 400 from Go's TLS listener on
+// every attempt, CrashLooping the pod. Nothing else in this repo's test
+// suite would catch that manifest regressing: deleting the probes entirely
+// still passes `make deploy-validate` (kubeconform + the cross-base
+// assertion), since neither validates probe content.
+func TestDeployReferenceAPIProbes(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/reference/goobers-system/api-deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	containers := deployment.Spec.Template.Spec.Containers
+	if len(containers) != 1 {
+		t.Fatalf("got %d containers, want 1", len(containers))
+	}
+	container := containers[0]
+
+	checkProbe := func(name string, probe *corev1.Probe, wantPath string) {
+		t.Helper()
+		if probe == nil {
+			t.Fatalf("%s: missing", name)
+		}
+		if probe.HTTPGet == nil {
+			t.Fatalf("%s: not an httpGet probe: %+v", name, probe)
+		}
+		if probe.HTTPGet.Path != wantPath {
+			t.Errorf("%s: path = %q, want %q", name, probe.HTTPGet.Path, wantPath)
+		}
+		if probe.HTTPGet.Port.StrVal != "http" && probe.HTTPGet.Port.IntVal != 8080 {
+			t.Errorf("%s: port = %v, want the api container's named/numeric port", name, probe.HTTPGet.Port)
+		}
+		// #3806 mustFix: kubelet defaults httpGet.Scheme to HTTP; the daemon
+		// this probe targets serves HTTPS on the only posture where a
+		// kubelet probe can reach it at all (SEC-043/#640, non-loopback
+		// binds require TLS). A missing/wrong scheme here CrashLoops the
+		// pod against every real deployed instance.
+		if probe.HTTPGet.Scheme != corev1.URISchemeHTTPS {
+			t.Errorf("%s: scheme = %q, want %q — kubelet's HTTP default cannot reach this daemon's TLS listener", name, probe.HTTPGet.Scheme, corev1.URISchemeHTTPS)
+		}
+		if probe.TimeoutSeconds <= 0 {
+			t.Errorf("%s: timeoutSeconds = %d, want an explicit positive value (kubelet's 1s default is tight for a real network+TLS round trip)", name, probe.TimeoutSeconds)
+		}
+	}
+
+	checkProbe("startupProbe", container.StartupProbe, "/readyz")
+	checkProbe("readinessProbe", container.ReadinessProbe, "/readyz")
+	checkProbe("livenessProbe", container.LivenessProbe, "/healthz")
+}
+
+func TestDeployReferenceWorkerInitContainerIsRestrictedCompatible(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/reference/goobers-system/worker-deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+
+	initContainers := deployment.Spec.Template.Spec.InitContainers
+	if len(initContainers) != 1 {
+		t.Fatalf("got %d init containers, want 1", len(initContainers))
+	}
+	seed := initContainers[0]
+	if seed.Name != "seed-instance-root" {
+		t.Fatalf("init container name = %q, want %q", seed.Name, "seed-instance-root")
+	}
+	if seed.SecurityContext == nil {
+		t.Fatal("init container has no security context")
+	}
+	if seed.SecurityContext.AllowPrivilegeEscalation == nil || *seed.SecurityContext.AllowPrivilegeEscalation {
+		t.Error("init container allowPrivilegeEscalation = true, want false")
+	}
+	if seed.SecurityContext.ReadOnlyRootFilesystem == nil || !*seed.SecurityContext.ReadOnlyRootFilesystem {
+		t.Error("init container readOnlyRootFilesystem = false, want true")
+	}
+	if seed.SecurityContext.Capabilities == nil || !slices.Equal(seed.SecurityContext.Capabilities.Drop, []corev1.Capability{"ALL"}) {
+		t.Errorf("init container capabilities.drop = %v, want [ALL]", seed.SecurityContext.Capabilities)
+	}
+	if deployment.Spec.Template.Spec.SecurityContext == nil ||
+		deployment.Spec.Template.Spec.SecurityContext.SeccompProfile == nil ||
+		deployment.Spec.Template.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Error("init container does not inherit a RuntimeDefault seccomp profile")
+	}
+}
+
 func registeredCommandFlagSet(t *testing.T, command string) *flag.FlagSet {
 	t.Helper()
 	registration, ok := commandHelp(command)

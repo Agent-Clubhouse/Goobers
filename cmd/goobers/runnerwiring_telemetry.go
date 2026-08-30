@@ -48,7 +48,18 @@ func buildTelemetryClient(
 		cfg.OTLPEndpoint = otlp.Endpoint
 		cfg.OTLPInsecure = otlp.Insecure
 		cfg.OTLPHeaders = headers
+		if otlp.TLS != nil {
+			cfg.OTLPCAFile = otlp.TLS.CAFile
+			cfg.OTLPServerName = otlp.TLS.ServerName
+			cfg.OTLPCertFile = otlp.TLS.CertFile
+			cfg.OTLPKeyFile = otlp.TLS.KeyFile
+		}
 	}
+	// telemetry.New may return a non-nil *Client alongside an error wrapping
+	// telemetry.ErrOTLPUnavailable (invalid TLS material) — that Client is
+	// still usable for local-only telemetry, so callers must not treat every
+	// non-nil error here as a construction failure. See daemon.go's call
+	// site for the degrade handling.
 	return telemetry.New(ctx, cfg)
 }
 

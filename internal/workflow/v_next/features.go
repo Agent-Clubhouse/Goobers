@@ -426,6 +426,7 @@ const (
 	featureWorkflowTriggers               FeatureID = "workflow.spec.triggers"
 	featureWorkflowReadiness              FeatureID = "workflow.spec.readiness"
 	featureWorkflowRunControls            FeatureID = "workflow.spec.runControls"
+	featureWorkflowDesiredConcurrentRuns  FeatureID = "workflow.spec.readiness.desiredConcurrentRuns"
 	featureWorkflowMaxConcurrentRuns      FeatureID = "workflow.spec.readiness.maxConcurrentRuns"
 	featureWorkflowMaxRunsPerHour         FeatureID = "workflow.spec.readiness.maxRunsPerHour"
 	featureWorkflowMaxRunsPerDay          FeatureID = "workflow.spec.readiness.maxRunsPerDay"
@@ -483,6 +484,7 @@ const (
 	featureTaskMinimumIntegrity           FeatureID = "task.minimumIntegrity"
 	featureTaskContextFrom                FeatureID = "task.contextFrom"
 	featureTaskPolicyActions              FeatureID = "task.policyActions"
+	featureTaskNestedAgentPolicy          FeatureID = "task.nestedAgentPolicy"
 	featureTaskRetry                      FeatureID = "task.retry"
 	featureTaskRetryMaxAttempts           FeatureID = "task.retry.maxAttempts"
 	featureTaskRetryBackoff               FeatureID = "task.retry.backoff"
@@ -496,6 +498,7 @@ const (
 	featureTaskExpectedOutputs            FeatureID = "task.expectedOutputs"
 	featureTaskContinueOnError            FeatureID = "task.continueOnError"
 	featureTaskNext                       FeatureID = "task.next"
+	featureTaskExperiment                 FeatureID = "task.experiment"
 	featureStageShell                     FeatureID = "stage.shell"
 	featureStageCIPoll                    FeatureID = "stage.ci-poll"
 	featureStageExternalTelemetry         FeatureID = "stage.external-telemetry"
@@ -628,6 +631,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureWorkflowTriggers,
 		featureWorkflowReadiness,
 		featureWorkflowRunControls,
+		featureWorkflowDesiredConcurrentRuns,
 		featureWorkflowMaxConcurrentRuns,
 		featureWorkflowMaxRunsPerHour,
 		featureWorkflowMaxRunsPerDay,
@@ -685,6 +689,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTaskMinimumIntegrity,
 		featureTaskContextFrom,
 		featureTaskPolicyActions,
+		featureTaskNestedAgentPolicy,
 		featureTaskRetry,
 		featureTaskRetryMaxAttempts,
 		featureTaskRetryBackoff,
@@ -698,6 +703,7 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureTaskExpectedOutputs,
 		featureTaskContinueOnError,
 		featureTaskNext,
+		featureTaskExperiment,
 		featureStageShell,
 		featureStageCIPoll,
 		featureStageExternalTelemetry,
@@ -912,6 +918,12 @@ type retryFeatureIDs struct {
 	backoff     FeatureID
 }
 
+func addNestedAgentPolicyFeatures(used featureSet, policy *apiv1.NestedAgentPolicy) {
+	if policy != nil {
+		used.add(featureTaskNestedAgentPolicy)
+	}
+}
+
 func addRetryFeatures(used featureSet, retry *apiv1.RetryPolicy, ids retryFeatureIDs) {
 	if retry == nil {
 		return
@@ -965,8 +977,8 @@ func addRunControlFeatures(used featureSet, controls *apiv1.RunControls, ids run
 // providerFeatureIDs parameterizes the per-enum-value provider features per
 // declaration site (project, backlog, additionalRepos), so the sites cannot
 // drift in spelling. Provider enum values select distinct implementations
-// (internal/bootstrap/providers.go switches on them), so each value carries
-// its own FeatureID, following the goober.spec.harness.* precedent.
+// (the provider wiring in cmd/goobers switches on them), so each value
+// carries its own FeatureID, following the goober.spec.harness.* precedent.
 type providerFeatureIDs struct {
 	github FeatureID
 	ado    FeatureID
@@ -1025,6 +1037,9 @@ func FeaturesForWorkflow(def Definition) ([]Feature, error) {
 	)
 	if def.Spec.DisplayName != "" {
 		used.add(featureWorkflowDisplayName)
+	}
+	if def.Spec.Readiness.DesiredConcurrentRuns != 0 {
+		used.add(featureWorkflowDesiredConcurrentRuns)
 	}
 	if def.Spec.Readiness.MaxRunsPerDay != 0 {
 		used.add(featureWorkflowMaxRunsPerDay)
@@ -1325,6 +1340,7 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 	if task.PolicyActions != nil {
 		used.add(featureTaskPolicyActions)
 	}
+	addNestedAgentPolicyFeatures(used, task.NestedAgentPolicy)
 	if task.RequiredCapabilities != nil {
 		used.add(featureTaskRequiredCapabilities)
 	}
@@ -1333,6 +1349,9 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 	}
 	if task.OutboxMirrorPath != "" {
 		used.add(featureTaskOutboxMirrorPath)
+	}
+	if task.Experiment != nil {
+		used.add(featureTaskExperiment)
 	}
 	addRetryFeatures(used, task.Retry, retryFeatureIDs{
 		policy:      featureTaskRetry,

@@ -36,6 +36,16 @@ func renderPromptWithCompletion(req RunRequest, completionInResponse bool) strin
 		b.WriteString("\n\n---\n\n")
 	}
 	fmt.Fprintf(&b, "## Task\n\n%s\n\n", req.Envelope.Goal)
+	if req.ExecutionPolicy != nil {
+		policy, err := json.Marshal(req.ExecutionPolicy)
+		if err != nil {
+			return fmt.Sprintf("nested execution policy could not be rendered: %v", err)
+		}
+		b.WriteString("## Immutable execution policy\n\n")
+		b.WriteString("The following parent-intersected policy is authoritative. Do not delegate, use context, select models, message peers, or access resources outside it.\n\n```json\n")
+		b.Write(policy)
+		b.WriteString("\n```\n\n")
+	}
 
 	if cones := req.Envelope.CheckoutCones[""]; len(cones) > 0 {
 		fmt.Fprintf(&b, "## Workspace\n\n"+
@@ -177,8 +187,9 @@ On a "blocked" status, if you can name specific blocking issue numbers, set outp
 // verdictShapeHint shows finding.severity as an explicit enum: the schema's
 // finding is additionalProperties:false with severity ∈
 // {info,warning,error,critical}, so an unconstrained "severity": "..." let a
-// model guess an out-of-enum value ("Medium") and add extra per-finding fields,
-// failing validation with no journaled explanation (#304, same shape-gap class
-// as #297). A finding carries only severity/message/location — evidence is a
-// separate top-level array of artifact pointers, not per-finding.
-const verdictShapeHint = `{"decision": "pass"|"fail"|"needs-changes", "rationale": "...", "findings": [{"severity": "info"|"warning"|"error"|"critical", "message": "...", "location": "..."}], "summary": "..."}`
+// model guess an out-of-enum value ("Medium") and add unsupported per-finding
+// fields, failing validation with no journaled explanation (#304, same
+// shape-gap class as #297).
+const verdictShapeHint = `{"decision": "pass"|"fail"|"needs-changes", "rationale": "...", "findings": [{"id": "...", "learningSignature": "...", "learningClassification": "instruction"|"skill"|"workflow"|"gate"|"validation"|"code-defect", "evidenceDigest": "sha256:...", "severity": "info"|"warning"|"error"|"critical", "message": "...", "location": "..."}], "summary": "..."}
+
+The learning fields are optional on a finding's first occurrence. On a repass, read any learning.episode context artifacts: preserve id and learningSignature for the same unresolved finding, omit identities that are fixed, and set a different evidenceDigest only when genuinely new evidence reopens a previously resolved identity.`

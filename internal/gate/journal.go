@@ -6,6 +6,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/learning"
 )
 
 // Journal is what Evaluator needs to record a gate verdict. It is satisfied
@@ -49,6 +50,21 @@ func recordEvaluatorRetry(j Journal, gateName string, attempt int, err error) er
 		Runner: map[string]any{
 			"evaluatorAttempt":  attempt,
 			"retryFailureClass": "infra",
+		},
+	})
+}
+
+func recordVerdictValidationRetry(j Journal, gateName string, attempt int, err error) error {
+	if j == nil {
+		return nil
+	}
+	return j.Append(journal.Event{
+		Type:  journal.EventError,
+		Gate:  gateName,
+		Error: &journal.ErrorDetail{Code: "verdict_invalid", Message: err.Error()},
+		Runner: map[string]any{
+			"evaluatorAttempt":  attempt,
+			"retryFailureClass": "policy",
 		},
 	})
 }
@@ -110,6 +126,31 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 	}
 	if r.Reason != "" {
 		runner["reason"] = r.Reason
+	}
+	if r.Verdict != nil && len(r.Verdict.Findings) > 0 {
+		identities := make([]string, 0, len(r.Verdict.Findings))
+		for i := range r.Verdict.Findings {
+			learning.NormalizeFinding(&r.Verdict.Findings[i], r.Gate, diffDigest)
+			identities = append(identities, r.Verdict.Findings[i].ID)
+		}
+		runner["findingIdentities"] = identities
+		runner["learningFindings"] = learningFindingRecords(r.Verdict.Findings)
+		runner["correctionFeedback"] = r.Verdict.Rationale
+	}
+	if len(r.ResolvedFindingIDs) > 0 {
+		runner["resolvedFindingIdentities"] = r.ResolvedFindingIDs
+	}
+	if len(r.SuppressedFindingIDs) > 0 {
+		runner["suppressedFindingIdentities"] = r.SuppressedFindingIDs
+	}
+	if len(r.ReopenedFindingIDs) > 0 {
+		runner["reopenedFindingIdentities"] = r.ReopenedFindingIDs
+	}
+	if len(r.DisprovenFindingIDs) > 0 {
+		runner["disprovenFindingIdentities"] = r.DisprovenFindingIDs
+	}
+	if len(r.DisprovenFindings) > 0 {
+		runner["disprovenLearningFindings"] = learningFindingRecords(r.DisprovenFindings)
 	}
 	ev := journal.Event{
 		Type:      journal.EventGateEvaluated,

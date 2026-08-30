@@ -34,13 +34,6 @@ func NewRegistryWithPreviewFeatures(enabled bool) *Registry {
 	}
 }
 
-// Register appends spec as the next version of the named workflow and returns the
-// new version number (1-based). It validates the definition compiles before
-// accepting it, so a broken definition can never be started.
-func (r *Registry) Register(name string, spec apiv1.WorkflowSpec) (int, error) {
-	return r.RegisterDefinition(wf.Definition{Name: name, Spec: spec})
-}
-
 // RegisterDefinition appends a parsed workflow definition, assigning its
 // registry run-pin version while retaining its independent DSL version.
 // Version assignment, validation, and the append run under one critical
@@ -99,11 +92,6 @@ func (r *Registry) Compile(def wf.Definition) (*wf.Machine, error) {
 	return wf.Compile(def, wf.WithPreviewFeatures(r.allowPreviewFeatures))
 }
 
-// PreviewFeaturesEnabled reports the policy carried by registered definitions.
-func (r *Registry) PreviewFeaturesEnabled() bool {
-	return r.allowPreviewFeatures
-}
-
 // Get returns a specific pinned version of a workflow (1-based).
 func (r *Registry) Get(name string, version int) (wf.Definition, bool) {
 	r.mu.RLock()
@@ -144,6 +132,36 @@ type StartSpec struct {
 	// GateGooberCapabilities maps reviewer goober names to their granted
 	// capabilities; instance policy pinned into the run at start (WF-016).
 	GateGooberCapabilities map[string][]string
+	// LiveJournal pins live journal authorship (DS4) into the run: the
+	// starter sets it when the daemon's journal plane serves this instance.
+	LiveJournal bool
+	// Placements pins each task's resolved execution placement (#3588) —
+	// bootstrap.PinStagePlacements' output for this definition. Nil for
+	// every zero-declaration and local-mode instance, which leaves every
+	// stage on the legacy self path byte for byte.
+	Placements []PinnedPlacement
+	// RunControls is the run's already-resolved run-control policy: the
+	// starter collapses the instance → repo → gaggle → workflow inheritance
+	// (#1671) into one effective block before dispatch, exactly as the
+	// daemon's scheduler entry does, and this pins it for the run.
+	//
+	// The zero value is not "inherit later" — nothing downstream re-reads
+	// the config — it is "no configured layer", which newRunJournal resolves
+	// to the built-in 3-repass / 45m defaults. A starter that has the
+	// instance config must fill this in or every run it dispatches pins the
+	// defaults no matter what the author declared (#3820).
+	RunControls apiv1.RunControls
+	// BacklogQueryAssignedTo is this gaggle's resolved self identity
+	// (instance.EffectiveSelfIdentity) and BacklogQueryRequireLabels its
+	// comma-joined GaggleSpec.RequireLabels — the gaggle defaults
+	// cmd/goobers' selfIdentitiesByGaggle / requireLabelsByGaggle resolve for
+	// the local runner's Config. Pinning them here is what gives an
+	// engine-driven run the same MIRC-2 claim partition the runner has had
+	// since #1901: a starter that leaves them empty dispatches a
+	// backlog-query stage with no partition at all, which on a shared backlog
+	// claims the sibling instance's goobers:local items (#3873).
+	BacklogQueryAssignedTo    string
+	BacklogQueryRequireLabels string
 }
 
 // StartInput resolves the latest version of a workflow and pins it into a
@@ -163,6 +181,15 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 	if !ok {
 		return RunInput{}, fmt.Errorf("workflow %q version %d is not registered", name, version)
 	}
+	// R9 run-start refusal: a definition declaring parallels, a bandit
+	// experiment, a cumulative usage budget or an outbox has no engine walk
+	// implementation, and the walk would otherwise IGNORE the declaration
+	// silently. Refusing here rather than at RegisterDefinition keeps a
+	// gaggle's other lanes startable — see registryrefusal.go for why that
+	// placement is load-bearing.
+	if err := refuseUnsupportedEngineFeatures(name, def.Spec); err != nil {
+		return RunInput{}, err
+	}
 	allowPreviewFeatures := r.allowPreviewFeatures
 	return RunInput{
 		RunID:                  s.RunID,
@@ -178,5 +205,11 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 		TriggerKind:            s.TriggerKind,
 		BranchNamespace:        s.BranchNamespace,
 		GateGooberCapabilities: s.GateGooberCapabilities,
+		LiveJournal:            s.LiveJournal,
+		Placements:             s.Placements,
+		RunControls:            s.RunControls,
+
+		BacklogQueryAssignedTo:    s.BacklogQueryAssignedTo,
+		BacklogQueryRequireLabels: s.BacklogQueryRequireLabels,
 	}, nil
 }

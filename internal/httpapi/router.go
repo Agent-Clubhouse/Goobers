@@ -13,10 +13,13 @@ import (
 	"os"
 	"path"
 	"slices"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readservice"
 )
@@ -109,16 +112,213 @@ func (p Principal) HasRole(required Role) bool {
 	return false
 }
 
+// PodPrincipalIssuer marks a principal authenticated through the pod-to-daemon
+// seam (a per-run bearer minted by the daemon; internal/podauth is the v1
+// implementation). Pod principals hold no instance roles: authorization for
+// them is plane-scoped, not role-ranked.
+const PodPrincipalIssuer = "goobers/pod"
+
+// IsPodPrincipal reports whether principal was authenticated as a stage pod.
+func IsPodPrincipal(principal Principal) bool {
+	return principal.Issuer == PodPrincipalIssuer
+}
+
+// podPlanePath reports whether path is one of the fixed pod routes: claims,
+// trigger ingest, credential resolve, and the cross-run journal plane's three
+// purpose-built questions. Routes with path parameters are matched by their
+// dedicated structural helpers below. Handler-level checks bind each request
+// to the pod's run or gaggle; everything else stays human-only.
+func podPlanePath(path string) bool {
+	switch path {
+	case apicontract.ClaimAcquirePath,
+		apicontract.ClaimRenewPath,
+		apicontract.ClaimReleasePath,
+		apicontract.ClaimSettlePath,
+		apicontract.ClaimListPath,
+		apicontract.TriggerIngestPath,
+		apicontract.CredentialResolvePath,
+		apicontract.JournalRunPhasePath,
+		apicontract.JournalConflictTouchesPath,
+		apicontract.JournalUnpushedWorkPath:
+		return true
+	default:
+		return false
+	}
+}
+
+// gaggleStatePrefix and gaggleStateInfix are GaggleStateKeyPath split around
+// its two wildcards — the literal fragments every scheduler-state request path
+// carries. Derived from the contract constant rather than restated, so the two
+// cannot drift.
+var (
+	gaggleStatePrefix = apicontract.GaggleStateKeyPath[:strings.Index(apicontract.GaggleStateKeyPath, "{gaggle}")]
+	gaggleStateInfix  = "/state/"
+)
+
+// statePlanePath reports whether path is the scheduler-state plane's route
+// (decision 005 R3 / finding 002 C2) — the sixth pod-reachable plane. Matched
+// structurally, like the journal and surrender planes, because the route
+// carries gaggle and key segments; WHICH gaggle the pod may address is
+// enforced by the handler and its service, which can see both the path and the
+// principal. Handler() has already refused non-clean paths, so segment
+// counting is sound.
+func statePlanePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, gaggleStatePrefix)
+	if !ok {
+		return false
+	}
+	gaggle, key, ok := strings.Cut(rest, gaggleStateInfix)
+	if !ok {
+		return false
+	}
+	return gaggle != "" && key != "" && !strings.Contains(gaggle, "/") && !strings.Contains(key, "/")
+}
+
+// runReadPlanePath reports whether path is one of the THREE run-scoped read
+// routes decision 005 ruling R1 (option 1) admits a pod principal to: its own
+// run's events, one of its own run's stages' attempts, and one of its own
+// run's artifacts by digest. Matched structurally because each carries a
+// run-id segment; WHICH run is enforced by the handlers (podRunContained),
+// which can see both the path run id and the principal — the same division
+// the journal-emit and surrender planes use.
+//
+// Deliberately NOT admitted: RunDetailPath (a run summary is a portal view,
+// and no converted reader needs it), RunTranscriptPath (raw agent transcripts
+// — outside the enumerated ruling, so refused), RunsPath (a list of every run
+// on the instance is not a same-run read at all), and RunRevealPath (a local
+// host action). Fail closed: the ruling enumerated three routes, so three is
+// what this admits.
+func runReadPlanePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, apicontract.RunsPath+"/")
+	if !ok {
+		return false
+	}
+	segments := strings.Split(rest, "/")
+	switch len(segments) {
+	case 2:
+		return segments[0] != "" && segments[1] == "events"
+	case 3:
+		return segments[0] != "" && segments[1] == "artifacts" && segments[2] != ""
+	case 4:
+		run, stagesLiteral, stage, attemptsLiteral := segments[0], segments[1], segments[2], segments[3]
+		return run != "" && stagesLiteral == "stages" && stage != "" && attemptsLiteral == "attempts"
+	default:
+		return false
+	}
+}
+
+// journalPlanePath reports whether path is the journal plane's emit route
+// (§8, DS4) — the second pod-reachable plane. Matched structurally because
+// the route carries a run-id segment; Handler() has already refused
+// non-clean paths, so segment counting is sound. Which run the pod may emit
+// into is enforced by the handler, which can see both the path run id and
+// the principal.
+func journalPlanePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, apicontract.RunsPath+"/")
+	if !ok {
+		return false
+	}
+	run, ok := strings.CutSuffix(rest, "/journal/emit")
+	if !ok {
+		return false
+	}
+	return run != "" && !strings.Contains(run, "/")
+}
+
+// blobDigestPrefix is BlobDigestPath with its "{digest}" wildcard trimmed —
+// the literal prefix every blob-plane request path starts with. Derived from
+// the contract constant rather than restated, so the two cannot drift.
+var blobDigestPrefix = strings.TrimSuffix(apicontract.BlobDigestPath, "{digest}")
+
+// blobPlanePath reports whether path is the blob plane's digest route
+// (decision 010/012, §2a) — the fourth pod-reachable plane. Matched
+// structurally, like the journal plane, because the route carries a digest
+// segment rather than a fixed suffix.
+func blobPlanePath(path string) bool {
+	return strings.HasPrefix(path, blobDigestPrefix) && len(path) > len(blobDigestPrefix)
+}
+
+// surrenderPlanePath reports whether path is the surrender plane's PUT route
+// (#3699) — the fifth pod-reachable plane. Matched structurally, like the
+// journal plane, because the route carries run/stage/attempt segments; which
+// run the pod may surrender into is enforced by the handler, exactly as the
+// journal plane enforces it.
+func surrenderPlanePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, apicontract.RunsPath+"/")
+	if !ok {
+		return false
+	}
+	segments := strings.Split(rest, "/")
+	if len(segments) != 6 {
+		return false
+	}
+	run, stagesLiteral, stage, attemptsLiteral, attempt, suffix := segments[0], segments[1], segments[2], segments[3], segments[4], segments[5]
+	if stagesLiteral != "stages" || attemptsLiteral != "attempts" || suffix != "surrender" {
+		return false
+	}
+	return run != "" && stage != "" && attempt != ""
+}
+
+// telemetryPlanePath reports whether path is one of the telemetry read routes
+// a pod principal may GET (decision 005 R4 / finding 002 C3): the stats and
+// errors aggregates, plus the implementation-outcome evidence derived from
+// the same rows. Derived, low-sensitivity data — no raw secret, no other
+// gaggle's configuration — and gaggle containment is enforced by the
+// handlers, which can see the query string and the principal together
+// (registerTelemetryRoutes/podTelemetryGaggle).
+//
+// TelemetryErrorSignaturesPath is deliberately NOT here: the ruling named
+// stats and errors, and the signature aggregate has no consumer on the pod
+// side. Adding it is a ruling amendment, not an oversight to fix silently.
+func telemetryPlanePath(path string) bool {
+	switch path {
+	case apicontract.TelemetryStatsPath,
+		apicontract.TelemetryErrorsPath,
+		apicontract.TelemetryImplementationOutcomesPath:
+		return true
+	default:
+		return false
+	}
+}
+
 // RequireRoles authorizes read requests (GET/HEAD) for principals holding
 // view or stronger and every other method for operate or stronger. Requests
 // without an authenticated principal are denied, so this authorizer must be
 // paired with a real Authenticator — under NullAuthenticator every request
 // stays anonymous and would be refused.
+//
+// Pod principals (PodPrincipalIssuer) bypass the role ladder and are confined
+// to the machine planes required by a stage: claims, triggers, credentials,
+// journal emit/read, blobs, surrender, telemetry, and scheduler state. Their
+// token proves "I am run X's stage pod"; handlers then enforce the relevant
+// run or gaggle boundary. The credential and blob handlers additionally
+// refuse human principals outright.
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
 		if !ok {
 			return errors.New("no authenticated principal")
+		}
+		if IsPodPrincipal(principal) {
+			if (podPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path) || surrenderPlanePath(request.URL.Path)) && request.Method == http.MethodPost {
+				return nil
+			}
+			if blobPlanePath(request.URL.Path) && (request.Method == http.MethodGet || request.Method == http.MethodPut) {
+				return nil
+			}
+			if statePlanePath(request.URL.Path) && (request.Method == http.MethodGet || request.Method == http.MethodPut) {
+				return nil
+			}
+			if telemetryPlanePath(request.URL.Path) && request.Method == http.MethodGet {
+				return nil
+			}
+			// Decision 005 R1 option 1: reads of the pod's own run's journal,
+			// GET only. A pod may never write through a read route, and the
+			// handler still decides WHICH run.
+			if runReadPlanePath(request.URL.Path) && request.Method == http.MethodGet {
+				return nil
+			}
+			return fmt.Errorf("pod principal %q may only call the claims, trigger, credential, journal, blob, surrender, telemetry-read, scheduler-state, and own-run read planes", principal.Subject)
 		}
 		required := RoleView
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
@@ -152,6 +352,20 @@ func PrincipalFromRequest(request *http.Request) (Principal, bool) {
 	}
 	principal, ok := request.Context().Value(principalContextKey{}).(Principal)
 	return principal, ok
+}
+
+// DenyAllAuthenticator refuses every request. It exists so a daemon with NO
+// human API surface can still satisfy the non-loopback authenticator
+// requirement (SEC-043/#640) while serving only its own stage pods, which
+// authenticate ahead of it via podauth. Denying is the correct answer for a
+// human request to such a daemon — the alternative today is to configure an
+// unrelated OIDC issuer purely to unlock pod traffic, which makes the
+// most-restrictive deployment the hardest one to express (Goobers#3701).
+type DenyAllAuthenticator struct{}
+
+// Authenticate always fails closed.
+func (DenyAllAuthenticator) Authenticate(*http.Request) (*Principal, error) {
+	return nil, errors.New("httpapi: this daemon exposes no human API surface; only stage-pod tokens are accepted")
 }
 
 type authorizerFunc func(*http.Request) error
@@ -192,6 +406,16 @@ type handlerConfig struct {
 	interventions       InterventionService
 	interventionContext context.Context
 	runRevealer         func(context.Context, string) error
+	claims              ClaimService
+	triggers            TriggerService
+	escalations         EscalationService
+	journal             JournalService
+	runJournal          RunJournalService
+	credentials         CredentialService
+	blobs               blobstore.Store
+	surrenders          SurrenderService
+	state               StateService
+	podRunGaggle        func(context.Context, string) (string, error)
 }
 
 // HandlerOption configures optional HTTP transport surfaces.
@@ -243,6 +467,22 @@ func WithInterventionContext(ctx context.Context) HandlerOption {
 			return errors.New("http API intervention context is required")
 		}
 		config.interventionContext = ctx
+		return nil
+	}
+}
+
+// WithPodRunGaggle supplies the run-to-gaggle resolution the telemetry read
+// plane contains pod principals with (decision 005 R4 / finding 002 C3). A
+// pod token proves "I am run X's stage pod" and nothing about which gaggle X
+// belongs to; without this seam the handler cannot answer that question, so
+// it refuses every pod telemetry read rather than serving an unscoped one.
+// Wiring it is therefore what OPENS the plane, not what restricts it.
+func WithPodRunGaggle(resolve func(context.Context, string) (string, error)) HandlerOption {
+	return func(config *handlerConfig) error {
+		if resolve == nil {
+			return errors.New("pod run gaggle resolver is required")
+		}
+		config.podRunGaggle = resolve
 		return nil
 	}
 }
@@ -305,42 +545,103 @@ func (r *Router) Handle(routeID apicontract.RouteID, handler http.HandlerFunc) {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
-		principal, err := r.authenticator.Authenticate(request)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "unauthenticated", "request is not authenticated")
-			return
-		}
-		if principal != nil {
-			request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, *principal))
-		}
-		if err := r.authorizer.Authorize(request); err != nil {
-			writeError(w, http.StatusForbidden, "forbidden", "request is not authorized")
-			return
-		}
-		// Admission control (#1926). Applied AFTER auth for the same reason the
-		// budget is — an unauthenticated request must not consume a slot — and
-		// BEFORE the budget, because a refused request should not have started
-		// its budget clock at all.
-		//
-		// Shed at admission rather than accept-and-timeout: queue wait counts
-		// against the budget, so a saturated class that accepts work it cannot
-		// finish burns the caller's whole budget and returns nothing anyway.
-		if release, admitted := r.admission.admit(route.Cost); admitted {
-			defer release()
-		} else {
-			writeAdmissionRefusal(w, route.Cost)
-			return
-		}
-		// Bound the request (#1917). Applied here rather than per handler so a
-		// route cannot be added without one, and applied AFTER auth so an
-		// unauthenticated request is rejected without consuming budget.
-		if budget, bounded := routeBudget(route.ID); bounded {
-			bounded, cancel := withBudget(w, request, budget)
-			defer cancel()
-			request = bounded
-		}
-		handler(w, request)
+		r.serve(route, handler, w, request)
 	})
+}
+
+// HandleByMethod registers several routes that share one literal path,
+// dispatching on request method — needed only where more than one HTTP method
+// addresses the same resource. In the v1 contract that is exactly the blob
+// plane's digest route (RouteBlobGet/RouteBlobPut both carry BlobDigestPath):
+// Handle's model is one path per route, and net/http's ServeMux rejects two
+// bare registrations of an identical pattern, so a shared path needs its own
+// registration path rather than two Handle calls.
+//
+// Every entry's Route (cost class, budget, action class) governs its own
+// request exactly as it would under Handle; a request whose method matches no
+// entry gets the same structured 405 a single-method route returns for the
+// wrong verb, with Allow naming every method actually registered.
+func (r *Router) HandleByMethod(routeIDsByMethod map[string]apicontract.RouteID, handlers map[apicontract.RouteID]http.HandlerFunc) {
+	if len(routeIDsByMethod) == 0 {
+		panic("HandleByMethod requires at least one route")
+	}
+	r.ensureAdmission()
+	byMethod := make(map[string]apicontract.Route, len(routeIDsByMethod))
+	var sharedPath string
+	allowed := make([]string, 0, len(routeIDsByMethod))
+	for method, routeID := range routeIDsByMethod {
+		route, ok := apicontract.V1Route(routeID)
+		if !ok {
+			panic(fmt.Sprintf("unknown API route ID %q", routeID))
+		}
+		if route.Method != method {
+			panic(fmt.Sprintf("route %q is registered under method %q but declares method %q", routeID, method, route.Method))
+		}
+		if handlers[routeID] == nil {
+			panic(fmt.Sprintf("route %q has no handler", routeID))
+		}
+		if sharedPath == "" {
+			sharedPath = route.Path
+		} else if route.Path != sharedPath {
+			panic(fmt.Sprintf("route %q path %q does not match shared path %q", routeID, route.Path, sharedPath))
+		}
+		byMethod[method] = route
+		r.routes = append(r.routes, route)
+		allowed = append(allowed, method)
+	}
+	sort.Strings(allowed)
+	allowHeader := strings.Join(allowed, ", ")
+	r.mux.HandleFunc(sharedPath, func(w http.ResponseWriter, request *http.Request) {
+		route, ok := byMethod[request.Method]
+		if !ok {
+			w.Header().Set("Allow", allowHeader)
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			return
+		}
+		r.serve(route, handlers[route.ID], w, request)
+	})
+}
+
+// serve runs the per-request pipeline shared by every registered route —
+// authenticate, authorize, admit, bound — then calls handler. Factored out of
+// Handle so HandleByMethod's multi-method dispatch reuses it exactly rather
+// than re-implementing auth/admission/budget a second way.
+func (r *Router) serve(route apicontract.Route, handler http.HandlerFunc, w http.ResponseWriter, request *http.Request) {
+	principal, err := r.authenticator.Authenticate(request)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "unauthenticated", "request is not authenticated")
+		return
+	}
+	if principal != nil {
+		request = request.WithContext(context.WithValue(request.Context(), principalContextKey{}, *principal))
+	}
+	if err := r.authorizer.Authorize(request); err != nil {
+		writeError(w, http.StatusForbidden, "forbidden", "request is not authorized")
+		return
+	}
+	// Admission control (#1926). Applied AFTER auth for the same reason the
+	// budget is — an unauthenticated request must not consume a slot — and
+	// BEFORE the budget, because a refused request should not have started
+	// its budget clock at all.
+	//
+	// Shed at admission rather than accept-and-timeout: queue wait counts
+	// against the budget, so a saturated class that accepts work it cannot
+	// finish burns the caller's whole budget and returns nothing anyway.
+	if release, admitted := r.admission.admit(route.Cost); admitted {
+		defer release()
+	} else {
+		writeAdmissionRefusal(w, route.Cost)
+		return
+	}
+	// Bound the request (#1917). Applied here rather than per handler so a
+	// route cannot be added without one, and applied AFTER auth so an
+	// unauthenticated request is rejected without consuming budget.
+	if budget, bounded := routeBudget(route.ID); bounded {
+		bounded, cancel := withBudget(w, request, budget)
+		defer cancel()
+		request = bounded
+	}
+	handler(w, request)
 }
 
 // Handler returns the registered routes with a structured unknown-route
@@ -423,11 +724,17 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		w.Header().Set("Cache-Control", "no-cache")
 		writeJSON(w, http.StatusOK, portalConfig)
 	})
-	registerTelemetryRoutes(router, reader, errorLog)
+	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
+	registerWritePlaneRoutes(router, config, errorLog)
+	registerJournalPlaneRoutes(router, config, errorLog)
+	registerRunJournalPlaneRoutes(router, config, errorLog)
+	registerBlobPlaneRoutes(router, config.blobs, errorLog)
+	registerSurrenderPlaneRoutes(router, config, errorLog)
+	registerStatePlaneRoutes(router, config.state, errorLog)
 }
 
 func registerRunRevealRoute(router *Router, reveal func(context.Context, string) error, errorLog *log.Logger) {
@@ -472,7 +779,11 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		writeJSON(w, http.StatusOK, run)
 	})
 	router.Handle(apicontract.RouteRunEvents, func(w http.ResponseWriter, request *http.Request) {
-		events, err := reader.RunEvents(request.Context(), request.PathValue("run"))
+		run := request.PathValue("run")
+		if !podRunContained(w, request, run, "events") {
+			return
+		}
+		events, err := reader.RunEvents(request.Context(), run)
 		if err != nil {
 			writeReadError(w, errorLog, "read run events", err)
 			return
@@ -480,9 +791,13 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		writeJSON(w, http.StatusOK, events)
 	})
 	router.Handle(apicontract.RouteStageAttempts, func(w http.ResponseWriter, request *http.Request) {
+		run := request.PathValue("run")
+		if !podRunContained(w, request, run, "stage attempts") {
+			return
+		}
 		attempts, err := reader.StageAttempts(
 			request.Context(),
-			request.PathValue("run"),
+			run,
 			request.PathValue("stage"),
 		)
 		if err != nil {
@@ -492,9 +807,13 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		writeJSON(w, http.StatusOK, attempts)
 	})
 	router.Handle(apicontract.RouteRunArtifact, func(w http.ResponseWriter, request *http.Request) {
+		run := request.PathValue("run")
+		if !podRunContained(w, request, run, "artifacts") {
+			return
+		}
 		artifact, err := reader.Artifact(
 			request.Context(),
-			request.PathValue("run"),
+			run,
 			request.PathValue("digest"),
 		)
 		if err != nil {
@@ -559,6 +878,13 @@ func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
 			return readservice.RunListOptions{}, fmt.Errorf("%w: showNoWork must be a boolean", readservice.ErrInvalidArgument)
 		}
 	}
+	orderByActivity := false
+	if value := query.Get("orderByActivity"); value != "" {
+		orderByActivity, err = strconv.ParseBool(value)
+		if err != nil {
+			return readservice.RunListOptions{}, fmt.Errorf("%w: orderByActivity must be a boolean", readservice.ErrInvalidArgument)
+		}
+	}
 	options := readservice.RunListOptions{
 		Gaggle:            query.Get("gaggle"),
 		Workflow:          query.Get("workflow"),
@@ -572,6 +898,7 @@ func runListOptions(request *http.Request) (readservice.RunListOptions, error) {
 		Cursor:            query.Get("cursor"),
 		LatestPerWorkflow: latestPerWorkflow,
 		ShowNoWork:        showNoWork,
+		OrderByActivity:   orderByActivity,
 	}
 	if value := query.Get("limit"); value != "" {
 		limit, err := strconv.Atoi(value)

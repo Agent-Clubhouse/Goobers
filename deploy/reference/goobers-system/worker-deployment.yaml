@@ -33,6 +33,22 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      # PSS restricted evaluates initContainers as well as app containers.
+      # Seed the per-worker instance root without requiring elevated privileges.
+      initContainers:
+        - name: seed-instance-root
+          image: goobers # rewritten by the kustomization images: transformer
+          command: ["sh", "-c"]
+          args:
+            - mkdir -p /var/lib/goobers/config /var/lib/goobers/runs
+          volumeMounts:
+            - name: journal
+              mountPath: /var/lib/goobers
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
       containers:
         - name: worker
           # The shipped image includes the Copilot CLI default agent harness.

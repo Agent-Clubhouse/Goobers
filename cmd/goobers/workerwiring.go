@@ -77,6 +77,11 @@ func newWorkerSeams(root string, store blobstore.Store) (*workerSeams, error) {
 	}, nil
 }
 
+// SharedRegistry exposes the instance-global exact-value secret registry every
+// executor this process builds registers resolved credentials into. It is what
+// the #2931 dispatch canary asserts serialized envelopes against.
+func (w *workerSeams) SharedRegistry() *journal.RegistryScrubber { return w.shared }
+
 // forGaggle builds (once) the runner config for a gaggle, reusing the daemon's
 // own wiring so the worker's executors are configured identically to tier 1 —
 // same credential grants, same env allowlist, same stage timeouts, same
@@ -113,17 +118,24 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateStoredCopilotAuthBoundaries(cfg, set, goobers); err != nil {
+		return nil, fmt.Errorf("worker: credential admission: %w", err)
+	}
 	instructions, err := loadGooberInstructions(l.ConfigDir(), goobers)
 	if err != nil {
 		return nil, fmt.Errorf("worker: load goober instructions: %w", err)
 	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand)
-	if err != nil {
-		return nil, fmt.Errorf("worker: harness preflight: %w", err)
-	}
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
 	if err != nil {
 		return nil, fmt.Errorf("worker: secret stores: %w", err)
+	}
+	modelCredential, err := agentModelCredentialResolver(cfg, stores)
+	if err != nil {
+		return nil, fmt.Errorf("worker: agent:model credential: %w", err)
+	}
+	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, modelCredential)
+	if err != nil {
+		return nil, fmt.Errorf("worker: harness preflight: %w", err)
 	}
 
 	scoped := l.ForGaggle(gaggle)
@@ -218,7 +230,10 @@ func (p *workerWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRe
 	if err != nil {
 		return nil, err
 	}
-	delegate := &workerhost.WorktreeWorkspaces{Manager: g.manager, ScratchDir: p.scratchRoot}
+	// Store is the same --blob-store the worker's artifact recorder writes
+	// through: the RWX volume the daemon's blob plane serves pods from, so a
+	// bundle a pod PUT is what this provisioner GETs (#3803), and vice versa.
+	delegate := &workerhost.WorktreeWorkspaces{Manager: g.manager, ScratchDir: p.scratchRoot, Store: p.seams.store}
 	return delegate.Provision(ctx, req)
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,7 +14,9 @@ import (
 	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/livejournal"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/internal/signals"
 	"github.com/goobers/goobers/internal/version"
@@ -49,7 +52,20 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"  --drain-timeout <dur>      graceful-drain bound after a shutdown signal\n" +
 	"                             (default 30s)\n" +
 	"  --work-root <dir>          root for stage workspaces (default: a\n" +
-	"                             goobers-worker dir under the OS temp dir)\n\n" +
+	"                             goobers-worker dir under the OS temp dir)\n" +
+	"  --daemon-api <url>         daemon write API base URL; wires live journal\n" +
+	"                             emission through the journal plane, with the\n" +
+	"                             per-run bearer from $GOOBERS_POD_TOKEN when\n" +
+	"                             set (default $GOOBERS_DAEMON_API)\n" +
+	"  --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;\n" +
+	"                             wires the dispatcher behind the stage-dispatch\n" +
+	"                             seam and serves the per-(gaggle x runner)\n" +
+	"                             dispatch queues derived from the instance's\n" +
+	"                             runners: inventory. Requires --instance and\n" +
+	"                             --blob-store (the surrender plane rides the\n" +
+	"                             same volume); cluster access uses in-cluster\n" +
+	"                             credentials or the standard kubeconfig rules\n" +
+	"                             (default $GOOBERS_DISPATCH_NAMESPACE)\n\n" +
 	"The worker identity reported to Temporal is versioned\n" +
 	"(goobers-worker/<build>@<host>#<pid>) so visibility alone answers which\n" +
 	"build serves a queue.\n\n" +
@@ -84,6 +100,8 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	workRoot := fs.String("work-root", "", "root directory for stage workspaces")
 	instanceRoot := fs.String("instance", workerEnvOr("GOOBERS_INSTANCE_ROOT", ""), "instance root; wires the real agentic and deterministic executors")
 	blobRoot := fs.String("blob-store", workerEnvOr("GOOBERS_BLOB_STORE", ""), "directory backing the fleet-wide content-addressed artifact store")
+	daemonAPI := fs.String("daemon-api", workerEnvOr("GOOBERS_DAEMON_API", ""), "daemon write API base URL for live journal emission")
+	dispatchNamespace := fs.String("dispatch-namespace", workerEnvOr("GOOBERS_DISPATCH_NAMESPACE", ""), "namespace to create mode-3 stage pods in; enables the dispatcher-backed stage-dispatch seam")
 	fs.Usage = helpUsage(stderr, "worker")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -109,12 +127,20 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 
 	root := *workRoot
 	if root == "" {
-		root = filepath.Join(os.TempDir(), "goobers-worker")
+		root = defaultWorkerRoot(os.TempDir())
 	}
 	engineRuntime, err := workerEngineDeps(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	// #3480: on a Windows host, say once whether the work root and temp the
+	// worker is about to write-then-read are excluded from real-time
+	// scanning. Advisory — the worker starts regardless.
+	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
+		if line := hostAVExclusionAdvisory(context.Background(), "worker", workerAVExclusionDirectories(root, avDeps), avDeps); line != "" {
+			pln(stdout, line)
+		}
 	}
 	defer func() { _ = engineRuntime.Close() }()
 
@@ -128,7 +154,13 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// The fleet's content-addressed store, if one is configured. Without it
 		// a run is only safely served by a SINGLE worker: stage artifacts stay
 		// on the node that produced them, and the first ContextPointer resolved
-		// somewhere else fails closed (#2866).
+		// somewhere else fails closed (#2866). It is constructed HERE, its only
+		// consumer, so an instance-less worker with GOOBERS_BLOB_STORE set (a
+		// fleet-wide env var) does not MkdirAll, emit a store line, or fail
+		// closed on an unwritable path — the mode-1/2 self-only startup shape
+		// stays byte-for-byte unchanged. The --dispatch-namespace path requires
+		// --instance and reads *blobRoot directly (buildStageDispatch), never
+		// this store value.
 		var store blobstore.Store
 		if *blobRoot != "" {
 			dirStore, berr := blobstore.NewDir(*blobRoot)
@@ -146,11 +178,90 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		}
 		engineRuntime.deps.Goober = seams.Agentic()
 		engineRuntime.deps.Det = seams.Deterministic()
+		// The #2931 dispatch canary asserts envelopes against the SAME shared
+		// registry the seams' executors register every resolved credential
+		// with — so a value that leaks into a dispatch payload after being
+		// resolved anywhere in this process refuses the stage instead of
+		// executing with it.
+		engineRuntime.deps.Canary = seams.SharedRegistry()
 		// Replace the uncredentialed provisioner too: workerEngineDeps builds
 		// its worktree manager before any instance is known, so it has no git
 		// auth and cannot clone a private repo.
 		engineRuntime.deps.Workspaces = seams.Workspaces(filepath.Join(root, "scratch"))
 		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)
+	}
+
+	if *daemonAPI != "" {
+		// The remote half of the DS4 emission seam: journal events for a
+		// LiveJournal-pinned run flow to the daemon's journal plane. The
+		// per-run pod bearer (internal/podauth) rides GOOBERS_POD_TOKEN;
+		// empty is the loopback/no-auth posture.
+		// A worker is not a stage pod and holds no run's token, so when the
+		// daemon authenticates (a split deployment: worker pod, daemon pod) a
+		// static GOOBERS_POD_TOKEN is empty and every emit was refused:
+		//   livejournal: emit refused (401 unauthenticated)
+		// It does hold the shared signing key — the same one it uses to mint
+		// the bearer it stamps on stage pods — so it mints per batch, scoped to
+		// the run being emitted for. Env token still wins when present, which
+		// keeps the single-run/pod posture working unchanged.
+		emitter := &livejournal.HTTPEmitter{
+			BaseURL: *daemonAPI,
+			Token:   workerEnvOr("GOOBERS_POD_TOKEN", ""),
+		}
+		if emitter.Token == "" {
+			cfg, cerr := instance.LoadConfig(instance.NewLayout(*instanceRoot).ConfigFile())
+			if cerr == nil {
+				// Same typed-nil care as the dispatcher's minter: a nil
+				// *SignedKey in the interface would make it non-nil and turn
+				// the no-key posture into a nil-pointer call at emit time.
+				if signed, kerr := podTokenMinter(cfg); kerr != nil {
+					pf(stderr, "error: load pod token key for live journal: %v\n", kerr)
+					return 2
+				} else if signed != nil {
+					emitter.Minter = signed
+				}
+			}
+		}
+		engineRuntime.deps.Journal = emitter
+		pf(stdout, "goobers worker: live journal emission via %s\n", *daemonAPI)
+	}
+
+	if *dispatchNamespace != "" {
+		// Mode-3 stage dispatch (#3588): wire the #3513 dispatcher behind the
+		// engine's DispatchStage seam and serve the per-(gaggle ×
+		// runner-type) dispatch queues beside the workflow queue(s). Requires
+		// --instance: the runner inventory is what names the queues and the
+		// eligible runners.
+		if *instanceRoot == "" {
+			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
+			return 2
+		}
+		// The dispatcher's owner identity: this worker's hostname, which
+		// in-cluster is its pod name. It is stamped on every stage pod and is
+		// the scope the orphan sweep below sweeps within, so a sibling
+		// worker's in-flight pods are outside every sweep by construction.
+		owner, oerr := os.Hostname()
+		if oerr != nil {
+			pf(stderr, "error: resolve stage dispatch owner identity: %v\n", oerr)
+			return 1
+		}
+		dispatch, derr := buildStageDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobRoot, owner)
+		if derr != nil {
+			pf(stderr, "error: %v\n", derr)
+			return 1
+		}
+		engineRuntime.deps.Dispatcher = dispatch.Dispatcher
+		engineRuntime.deps.Surrenders = dispatch.Surrenders
+		queues = mergeQueues(queues, dispatch.Queues)
+		pf(stdout, "goobers worker: mode-3 stage dispatch into namespace %s as owner %s; dispatch queues %s\n",
+			*dispatchNamespace, owner, strings.Join(dispatch.Queues, ", "))
+		// Decision 003's worker-hygiene graft, run BEFORE this worker polls
+		// anything: reclaim the stage pods this same owner left behind when it
+		// last stopped, asking the engine about each one. A pod whose attempt
+		// is still executing is adopted (left running, its surrender still
+		// lands); only a settled attempt's pod is disposed. Never fatal — see
+		// sweepWorkerStageOrphans.
+		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, stdout, stderr)
 	}
 
 	host, err := workerhost.New(workerhost.Config{
@@ -207,6 +318,14 @@ func workerEngineDeps(workRoot string) (workerEngineRuntime, error) {
 
 const workerRootOwnerFile = ".goobers-worker-owner"
 
+// The worker's work-root layout, named once so the provisioner
+// (workerEngineDepsForPlatform) and the #3480 antivirus-exclusion
+// enumeration (`goobers doctor --av-exclusions`, the worker's startup
+// advisory) read the same paths.
+func defaultWorkerRoot(tempDir string) string    { return filepath.Join(tempDir, "goobers-worker") }
+func workerWorkcopiesDir(workRoot string) string { return filepath.Join(workRoot, "workcopies") }
+func workerScratchDir(workRoot string) string    { return filepath.Join(workRoot, "scratch") }
+
 func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRuntime, error) {
 	rootClaim, err := claimWorkerRoot(workRoot, owner)
 	if err != nil {
@@ -216,7 +335,7 @@ func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRunt
 	if goos == "windows" {
 		managerOptions = append(managerOptions, worktree.WithDefaultPathLengthLimit(worktree.PathLengthLimit{}))
 	}
-	wtMgr, err := worktree.NewManager(filepath.Join(workRoot, "workcopies"), managerOptions...)
+	wtMgr, err := worktree.NewManager(workerWorkcopiesDir(workRoot), managerOptions...)
 	if err != nil {
 		return workerEngineRuntime{}, errors.Join(err, rootClaim.Release())
 	}
@@ -226,7 +345,7 @@ func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRunt
 			Auto: gate.NewAutomatedEvaluator(),
 			Workspaces: &workerhost.WorktreeWorkspaces{
 				Manager:    wtMgr,
-				ScratchDir: filepath.Join(workRoot, "scratch"),
+				ScratchDir: workerScratchDir(workRoot),
 			},
 			Scrubber: scrubber,
 		},

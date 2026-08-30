@@ -24,6 +24,14 @@ const (
 	// config (a runner's claimed set is static), so it must not be treated as
 	// transient.
 	ReasonMissingCapability = "conditions: missing-capability"
+	// ReasonPlacementUnsatisfiable prefixes the refusal of a workflow the
+	// boot-time constraint solve marked unplaceable on the declared runners:
+	// inventory (dsl-3.0.md §5 checkpoint 3, #2860: the workflow is refused
+	// per-run with a named diagnostic; the daemon and every other workflow
+	// keep serving). Like ReasonMissingCapability it is a stable prefix with
+	// the solver's diagnostic appended, and the refusal is permanent for the
+	// pinned inventory (restart-only, accept-and-pin — decision record D9).
+	ReasonPlacementUnsatisfiable = "conditions: placement-unsatisfiable"
 	// ReasonProviderQuota prefixes a provider-quota skip's Reason (#712).
 	// Unlike the other Reason consts above (fixed strings), Admit appends the
 	// resume time after this prefix — the acceptance criteria's own phrasing
@@ -250,6 +258,29 @@ func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider a
 		if n, known := c.openPRs.OpenPRCount(identity.Gaggle, identity.Workflow); known && n >= int(r.MaxOpenPRs) {
 			return false, ReasonOpenPRCap
 		}
+	}
+
+	// #3439: an instance-config per-workflow budget override of exactly zero
+	// means "stop this workflow from starting" — api/schemas/instance.schema.json
+	// says so for both maps ("Zero stops it from starting"). The overrides below
+	// are applied only when > 0, so a zero override was indistinguishable from
+	// an absent one and fell through to the workflow's own value or the
+	// scheduler default of 10. An operator writing `workflowBudgets: {wf: 0}` to
+	// pause a workflow got ten runs an hour instead: the documented behaviour and
+	// the actual behaviour were opposites, and the config validated clean, so the
+	// only way to discover it was to watch the workflow run.
+	//
+	// Handled here rather than by relaxing the `> 0` guards because zero is not a
+	// budget value in this scheme — it is a stop, and the two maps express it at
+	// different windows. Note this is deliberately NOT the same question as the
+	// workflow's own maxRunsPerHour/maxRunsPerDay fields, whose schema documents
+	// zero as "fall back to the default of 10" and "disables the daily cap"
+	// respectively; those already agree with the code and are left alone (#3360).
+	if override, ok := c.workflowBudgets[identity.Workflow]; ok && override == 0 {
+		return false, ReasonBudget
+	}
+	if override, ok := c.dayBudgets[identity.Workflow]; ok && override == 0 {
+		return false, ReasonDailyBudget
 	}
 
 	maxRunsPerHour := r.MaxRunsPerHour

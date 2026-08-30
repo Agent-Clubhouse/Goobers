@@ -70,6 +70,11 @@ const clientRoutes = {
   telemetryStats: apiRoutes.telemetryStats,
   telemetryErrorSignatures: apiRoutes.telemetryErrorSignatures,
   telemetryErrors: apiRoutes.telemetryErrors,
+  // The telemetry read plane's curation evidence (decision 005 R4 / finding
+  // 002 C3). A stage pod's `backlog-health --feedback` is the only consumer;
+  // the portal has no surface for it yet, but the exhaustiveness check
+  // requires the full contract here as it grows.
+  telemetryImplementationOutcomes: apiRoutes.telemetryImplementationOutcomes,
   events: apiRoutes.events,
   // Tier-2 human-intervention stub routes (HITL-7/#469). No DaemonClient
   // method calls these yet — the real approve/override/rerun UI wiring is
@@ -78,6 +83,49 @@ const clientRoutes = {
   approveStage: apiRoutes.approveStage,
   overrideStage: apiRoutes.overrideStage,
   rerunStage: apiRoutes.rerunStage,
+  // Daemon write planes (#3509): machine seams (claims, trigger ingestion)
+  // plus HITL escalation resolution. The portal calls none of them yet — an
+  // escalation-resolution UI would be the first consumer — but the
+  // exhaustiveness check requires the full contract here as it grows.
+  claimAcquire: apiRoutes.claimAcquire,
+  claimRenew: apiRoutes.claimRenew,
+  claimRelease: apiRoutes.claimRelease,
+  claimSettle: apiRoutes.claimSettle,
+  claimList: apiRoutes.claimList,
+  triggerIngest: apiRoutes.triggerIngest,
+  resolveEscalation: apiRoutes.resolveEscalation,
+  journalEmit: apiRoutes.journalEmit,
+  credentialResolve: apiRoutes.credentialResolve,
+  // The blob plane (decision 010/012, §2a): a mode-3 stage pod's BlobClient
+  // fetches and puts content-addressed artifacts by digest. Pod-only, like
+  // the credential plane — the portal never calls these and never will (the
+  // daemon refuses a human principal outright) — but the exhaustiveness
+  // check requires the full contract here as it grows.
+  blobGet: apiRoutes.blobGet,
+  blobPut: apiRoutes.blobPut,
+  // The surrender plane (#3699): a mode-3 stage pod's dispatch-exec
+  // entrypoint PUTs its terminal result here. Pod-only, like the credential
+  // and blob planes — the portal never calls this and never will — but the
+  // exhaustiveness check requires the full contract here as it grows.
+  stageSurrender: apiRoutes.stageSurrender,
+  // The scheduler-state plane (#3878, decision 005 R3): a mode-3 stage pod
+  // reads and compare-and-swaps its gaggle's scheduler state (blocked.json,
+  // the backlog scan cursors, the reconcile ledger, the sibling-context
+  // cache) here, under the same locks the in-process path takes. Pod-only,
+  // like the credential, blob, and surrender planes — the portal never calls
+  // these — but the exhaustiveness check requires the full contract here as
+  // it grows.
+  gaggleStateGet: apiRoutes.gaggleStateGet,
+  gaggleStatePut: apiRoutes.gaggleStatePut,
+  // The cross-run journal read plane (#3880, decision 005 R1): a mode-3 stage
+  // pod asks the daemon the three questions its own run journal cannot answer
+  // — a prior run's phase, the gaggle's base-sync conflict history, and a
+  // prior run's stranded diff for an item this run holds. Pod-only, like the
+  // credential, blob and surrender planes — the portal never calls these —
+  // but the exhaustiveness check requires the full contract here as it grows.
+  journalRunPhase: apiRoutes.journalRunPhase,
+  journalConflictTouches: apiRoutes.journalConflictTouches,
+  journalUnpushedWork: apiRoutes.journalUnpushedWork,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {
@@ -269,6 +317,7 @@ export class HttpDaemonClient implements DaemonClient {
         cursor: request.cursor,
         latestPerWorkflow: request.latestPerWorkflow ? "true" : undefined,
         showNoWork: request.showNoWork ? "true" : undefined,
+        orderByActivity: request.orderByActivity ? "true" : undefined,
       },
       options,
     );
@@ -392,6 +441,11 @@ export class HttpDaemonClient implements DaemonClient {
         gaggle: request.gaggle,
         since: request.since,
         until: request.until,
+        trendSince: request.trendSince,
+        trendUntil: request.trendUntil,
+        trendBuckets: request.trendBuckets,
+        trendPreviousSince: request.trendPreviousSince,
+        trendPreviousUntil: request.trendPreviousUntil,
       },
       options,
     );

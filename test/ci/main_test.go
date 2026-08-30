@@ -43,7 +43,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	metadata := buildMetadata{version: "v1.2.3", commit: "abcdef0", date: "2026-07-20T12:00:00Z"}
 
-	gotChecks := checks([]string{"config-sync", "goobers", "scheduler"}, tools, metadata, "linux", "")
+	gotChecks := checks([]string{"config-sync", "goobers", "operator"}, tools, metadata, "linux", "")
 	var got []string
 	for _, current := range gotChecks {
 		got = append(got, current.label)
@@ -57,15 +57,17 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"flake-policy",
 		"design-doc-status",
 		"markdown-links",
+		"go-toolchain",
 		"build-config-sync",
 		"portal-install",
+		"portal-audit",
 		"portal-playwright-install",
 		"portal-build",
 		"portal-dist-diff",
 		"portal-dist-untracked",
 		"build-goobers",
 		"validate-configs",
-		"build-scheduler",
+		"build-operator",
 		"shipped-workflows",
 		"schema-description-coverage",
 		"test",
@@ -110,15 +112,20 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 	}
 	wantTestArgs := []string{
 		"run", "./test/hermetic", "--go-command", "custom-go", "--",
-		"-race", "-timeout", "30m", "-covermode=atomic", "-coverprofile=coverage.out", "./...",
+		"-race", "-timeout", "30m", "-count=1", "-covermode=atomic", "-coverprofile=coverage.out", "./...",
 	}
 	if !reflect.DeepEqual(testCheck.args, wantTestArgs) {
 		t.Fatalf("test arguments = %q, want %q", testCheck.args, wantTestArgs)
 	}
 	shippedCheck := checkByLabel(t, gotChecks, "shipped-workflows")
+	// Plain `go test`, NOT routed through test/hermetic: a linked-in-isolation
+	// git.exe cannot find its libexec helpers on Windows (see the comment at the
+	// construction site, and PR #3461 where every contract failed at `git init`
+	// on windows-latest).
+	wantShippedArgs := []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}
 	if shippedCheck.label != "shipped-workflows" ||
-		!reflect.DeepEqual(shippedCheck.args, []string{"test", "-race", "-timeout", "20m", "-count=1", "./test/shippedworkflows"}) {
-		t.Fatalf("shipped workflow check = %#v", shippedCheck)
+		!reflect.DeepEqual(shippedCheck.args, wantShippedArgs) {
+		t.Fatalf("shipped workflow check = %#v, want args %q", shippedCheck, wantShippedArgs)
 	}
 	schemaCoverageCheck := checkByLabel(t, gotChecks, "schema-description-coverage")
 	if schemaCoverageCheck.label != "schema-description-coverage" ||
@@ -142,7 +149,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 	t.Parallel()
 	mergeChecks := checks(
-		[]string{"config-sync", "goobers", "scheduler"},
+		[]string{"config-sync", "goobers", "operator"},
 		toolchain{
 			goCommand:       "go",
 			gofmtCommand:    "gofmt",
@@ -166,7 +173,7 @@ func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 		"vet",
 		"build-config-sync",
 		"build-goobers",
-		"build-scheduler",
+		"build-operator",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("fast check order = %q, want %q", got, want)
@@ -293,7 +300,7 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	t.Parallel()
 	got := checks(
-		[]string{"scheduler"},
+		[]string{"operator"},
 		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm"},
 		buildMetadata{},
 		"linux",
@@ -303,7 +310,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links build-scheduler portal-install portal-playwright-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links go-toolchain build-operator portal-install portal-audit portal-playwright-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -639,7 +646,7 @@ func TestChecksWrapUnitTestWhenTimingOutputIsConfigured(t *testing.T) {
 		if current.label != "test" {
 			continue
 		}
-		want := "run ./test/hermetic --go-command go --timing-job unit --timing-output test-timings/unit-Linux.json -- -race -timeout 30m -covermode=atomic -coverprofile=coverage.out ./..."
+		want := "run ./test/hermetic --go-command go --timing-job unit --timing-output test-timings/unit-Linux.json -- -race -timeout 30m -count=1 -covermode=atomic -coverprofile=coverage.out ./..."
 		if args := strings.Join(current.args, " "); args != want {
 			t.Fatalf("timed test args = %q, want %q", args, want)
 		}
@@ -843,7 +850,7 @@ func mergeGateChecks() []check {
 		npmCommand:      "npm",
 		golangciCommand: "golangci-lint",
 	}
-	return checks([]string{"config-sync", "goobers", "scheduler"}, tools, buildMetadata{}, "linux", "")
+	return checks([]string{"config-sync", "goobers", "operator"}, tools, buildMetadata{}, "linux", "")
 }
 
 // TestEveryMergeCheckHasAGroup guarantees the parallel CI jobs collectively run
@@ -974,6 +981,13 @@ func TestApplyRuntimeTogglesShardsUnitSuite(t *testing.T) {
 	}
 	if !slices.Contains(args, "./...") {
 		t.Errorf("sharded unit args lost the package spec (hermetic expands ./...): %q", joined)
+	}
+	// -count=1 must SURVIVE sharding even though the coverage flags do not. It
+	// is what makes deleting the dedicated `conformance` job a no-op: that job's
+	// only behavioural difference from the shards was running uncached, and the
+	// 32 TestConformance* functions it selected already execute here, unfiltered.
+	if !slices.Contains(args, "-count=1") {
+		t.Errorf("sharded unit args dropped -count=1; the shards must run uncached now that the conformance job is gone: %q", joined)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -14,14 +15,18 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/goobers/goobers/internal/blobstore"
 	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/daemonstate"
+	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/oidcauth"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/platform/proc"
+	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/selfupdate"
@@ -248,6 +253,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	ctx := webhookGate.Context()
 	var ready atomic.Bool
+	// Named subsystem readiness checks (#3806), surfaced on /readyz alongside
+	// the overall Ready gate above. Each flips exactly once, in startup
+	// order, as its own phase below completes; none of them gate anything —
+	// they are purely additive instrumentation describing WHY the daemon
+	// isn't ready yet. `ready` above remains the single source of truth both
+	// /api/v1/health.Ready and /readyz.Ready read, so the two surfaces can
+	// never disagree — by the time `ready` flips true (webhookGate.Start(),
+	// below), every one of these four has already flipped true too, in this
+	// same, sequential, error-returns-early function body.
+	var (
+		configLoaded    atomic.Bool  // instance config + scheduler wiring validated
+		stateOpen       atomic.Bool  // scheduler's run-tracking state reconciled from disk
+		resumeComplete  atomic.Bool  // crash-resume of interrupted runs finished
+		sweepsStarted   atomic.Bool  // initial sweeps ran once and their periodic tickers are live
+		schedulerTicked atomic.Bool  // scheduler's heartbeat ticked at least once (liveness grace)
+		lastTickAtNanos atomic.Int64 // in-memory heartbeat /healthz reads (#3806); unix nanos
+	)
 	stopDaemon := func() {
 		ready.Store(false)
 		webhookGate.Stop()
@@ -293,6 +315,16 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	root := "."
 	if fs.NArg() == 1 {
 		root = fs.Arg(0)
+	}
+
+	// The shipped image runs the daemon as its container's pid 1, which makes
+	// it the kernel's reparent target for every stage descendant that outlives
+	// its parent — and a Go program waits for nothing but its own exec.Cmd
+	// children, so those descendants would stay zombies for the life of the pod
+	// (#3398). Install the missing init half before any stage can start. It is
+	// pid-1-guarded, so a local `goobers up` is untouched and stays silent.
+	if proc.StartOrphanReaper(ctx) {
+		pf(stdout, "startup: running as container init (pid 1); reaping orphaned stage descendants\n")
 	}
 
 	l := instance.NewLayout(root)
@@ -356,11 +388,16 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 
 	var wg sync.WaitGroup
 	var setup *schedulerSetup
+	// DS6 (distributed-state-and-coordination.md §10): the gate keeps every
+	// expired-claim reap — setup's included — a no-op until the renewal set
+	// has been rebuilt from ledger + liveness below.
+	claimRecoveryGate := localscheduler.NewRecoveryGate()
 	setupOptions := []schedulerSetupOption{
 		withDesktopNotifications(notifications, stderr),
 		withStartupProgress(func(message string) {
 			pf(stdout, "startup: %s\n", message)
 		}),
+		withClaimRecoveryGate(claimRecoveryGate),
 	}
 	if *skipPreflight {
 		setup, err = buildSchedulerSetupAllowingInvalidConfig(ctx, l, &wg, setupOptions...)
@@ -373,6 +410,27 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	pf(stdout, "startup: scheduler initialized\n")
+	// #3480: on a Windows host, say once whether the directories this daemon
+	// writes then immediately reads are excluded from real-time scanning.
+	// Advisory — startup continues regardless.
+	//
+	// Printed HERE, not beside the large-repo warning above, because the set
+	// includes each gaggle's own workcopies.root — an override that beats the
+	// instance-wide one and can point at any drive — and setup.Definitions is
+	// the gaggle inventory the daemon itself is about to provision from. Read
+	// off instance.yaml alone, the advisory would have reported an
+	// affirmative all-clear over directories it never enumerated.
+	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
+		if line := hostAVExclusionAdvisory(ctx, "daemon",
+			daemonAVExclusionDirectories(l, setup.Config, setup.Definitions, avDeps), avDeps); line != "" {
+			pln(stdout, line)
+		}
+		if setup.Definitions == nil {
+			pln(stdout, "av-exclusions (advisory, daemon): config directory unavailable; per-gaggle workcopies roots are NOT enumerated above")
+		}
+	}
+	// #3806: instance config validated, definitions/scheduler wiring built.
+	configLoaded.Store(true)
 	defer setup.Shutdown(context.Background())
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -382,7 +440,57 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, setup.Telemetry)
+	// The blob plane (decision 010/012, §2a): a mode-3 stage pod's BlobClient
+	// (internal/dispatcher/blob.go) fetches and puts content-addressed
+	// artifacts by digest over this route instead of a shared filesystem. The
+	// daemon fronts the SAME blobstore.Store type a local worker plugs into
+	// MaterializeContext/StagingArtifacts (cmd/goobers/worker.go's
+	// --blob-store), rooted at its own instance-local directory — wired
+	// unconditionally like the claims and trigger planes, because it is inert
+	// without a caller: a mode-1/2 daemon that never serves a mode-3 stage
+	// never gets a request on these routes, and the blob plane's own
+	// fail-closed pod-principal gate (registerBlobPlaneRoutes) keeps a
+	// loopback null-auth daemon from handing out raw content to any local
+	// caller either — the same posture the credential plane already takes.
+	//
+	// Constructed HERE, above the journal plane, because it is also the
+	// daemon's SPAN SOURCE (#3805): the live journal writer and the DS5
+	// reconciler both adopt an executor-recorded transcript by digest from
+	// this store, and a stage pod PUTs the transcript into it over the same
+	// plane. Its own HTTP service is registered further down, unchanged.
+	blobStore, err := blobstore.NewDir(l.BlobStoreDir())
+	if err != nil {
+		pf(stderr, "error: initialize blob store: %v\n", err)
+		return 1
+	}
+	// The live journal writer (DS4) authors engine-run journals from events
+	// emitted as they happen; the projection reconciler below is thereby the
+	// repair/verify path (DS5), never the authority, for live-authored runs.
+	liveJournals, err := newLiveJournalWriter(l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, blobStore)
+	if err != nil {
+		pf(stderr, "error: initialize live journal writer: %v\n", err)
+		return 1
+	}
+	if liveJournals != nil {
+		defer liveJournals.Close()
+	}
+	// One Temporal client per daemon (decision 003 step 1(e)): the projection
+	// reconciler, the DS6 claim-liveness probe and the engine-driven run
+	// guards each used to dial the frontend themselves. nil on an instance
+	// with no `engine:` configuration, which leaves every consumer below on
+	// its pre-existing no-engine path.
+	engineClient, err := newDaemonEngineClient(setup.Config)
+	if err != nil {
+		pf(stderr, "error: dial engine for daemon Temporal client: %v\n", err)
+		return 1
+	}
+	defer engineClient.Close()
+	engineGuards := engineClient.Guards()
+	// blobStore is the SAME store the writer adopts spans from (#3805): DS5
+	// verifies a live-authored journal against a re-projection, so a source
+	// given to one and not the other turns every adopted span into a false
+	// divergence.
+	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, engineClient, setup.Watermarks, setup.InstanceLog, setup.Telemetry, liveJournals, blobStore)
 	if err != nil {
 		pf(stderr, "error: start engine projection reconciler: %v\n", err)
 		return 1
@@ -417,6 +525,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		// (§13.1's "one read topology" is #1933; this is the concrete instance
 		// of the divergence it exists to remove).
 		ReadModel:      setup.ReadModel,
+		RetentionStats: setup.RetentionStats,
 		WorkItemLookup: statusWorkItemLookup(l.Root, setup.Definitions),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
@@ -469,12 +578,91 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
+	// The write planes (#3509, distributed-state-and-coordination.md §7):
+	// claims over the same ledger + flock the CLI claimants use, triggers
+	// through the same scheduler path the pending-triggers sweep dispatches,
+	// HITL resolution over the intervention machinery. The file seams remain
+	// for local/mode-1 callers.
+	triggerPlane := newDaemonTriggerService().withGaggleContainment(func(gaggle, runID string) bool {
+		return runBelongsToGaggle(l, gaggle, runID)
+	})
+	// The scheduler-state plane (#3878, decision 005 R3 / finding 002 C2):
+	// the gaggle-scoped KV route for the scheduler state that is NOT a claim
+	// — blocked.json, the backlog scan cursors, the reconcile-post-merge
+	// ledger, the sibling-context cache. Served from the SAME files under the
+	// SAME per-key locks the local CLI seams take (claims.lock for
+	// blocked.json and the cursors), so a pod's compare-and-swap and a
+	// runner-driven run's in-process update contend on one lock rather than
+	// racing across two.
+	statePlane, err := newDaemonStateService(l)
+	if err != nil {
+		pf(stderr, "error: initialize scheduler-state plane: %v\n", err)
+		return 1
+	}
+	// The credential plane (#3511, distributed-state-and-coordination.md §11,
+	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
+	// stage start through the same capability-gated machinery the local
+	// runner's executors resolve through. The snapshot is replaced on config
+	// reload (see configreload.go) so a reloaded gaggle's grants apply.
+	//
+	// Wired on every daemon, but RULED fail-closed (PR #3528 finding 2): the
+	// route itself requires an authenticated POD principal unconditionally —
+	// on this file's loopback null-auth posture (no api.auth block, so no
+	// authenticator below) every resolve answers a typed 403 rather than
+	// handing raw secret material to any local caller. Local modes never need
+	// the plane; their resolution stays in-process via buildCredentialEnv.
+	credentialPlane := newDaemonCredentialService(l, setup.Config, setup.SecretStores, setup.SharedRegistry, setup.InstanceLog)
+	credentialPlane.Replace(credentialPlaneDefinitionsFromSet(setup.Definitions))
+	setup.CredentialPlane = credentialPlane
+	// The surrender plane (#3699) rides beside the blob store, under the same
+	// instance-local root — the "<blob-store>/surrender" convention
+	// cmd/goobers/workerdispatch.go's buildStageDispatch already documents
+	// and constructs identically from its own --blob-store flag. When an
+	// operator points a mode-3 `goobers worker --dispatch-namespace` at this
+	// daemon's blob-store volume (the documented --dispatch-namespace
+	// requirement), the two independently-built SurrenderDirs resolve to the
+	// identical path and interoperate: the worker's activity reads what a
+	// stage pod PUT here over HTTP. Wired unconditionally, like the blob
+	// plane above — inert without a caller, and the surrender route's own
+	// pod-principal gate (registerSurrenderPlaneRoutes) refuses everyone
+	// else.
+	surrenderStore, err := dispatcher.NewSurrenderDir(filepath.Join(l.BlobStoreDir(), "surrender"))
+	if err != nil {
+		pf(stderr, "error: initialize surrender plane: %v\n", err)
+		return 1
+	}
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
+		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog)),
+		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
+		httpapi.WithTriggerService(triggerPlane),
+		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
+		httpapi.WithCredentialService(credentialPlane),
+		httpapi.WithBlobService(blobStore),
+		httpapi.WithSurrenderService(surrenderStore),
+		httpapi.WithStateService(statePlane),
 	)
+	if liveJournals != nil {
+		// The journal plane (§8): remote stage pods emit their run's journal
+		// events here; the daemon's own in-process emitters use the writer
+		// directly and never pass through HTTP.
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithJournalService(liveJournals))
+	}
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
+	}
+	// The telemetry read plane's containment (decision 005 R4 / finding 002
+	// C3). Wired unconditionally: without it every pod telemetry read is
+	// refused, so this is what OPENS the plane, and a daemon that serves stage
+	// pods at all can always answer which gaggle one of its own runs is in.
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithPodRunGaggle(podRunGaggleResolver(l)))
+	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
+	// deployments — Goobers#3701), else the daemon-local in-memory registry.
+	podVerifier, perr := buildPodVerifier(setup.Config)
+	if perr != nil {
+		pf(stderr, "error: initialize pod token verifier: %v\n", perr)
+		return 1
 	}
 	if auth := setup.Config.API.Auth; auth != nil && auth.OIDC != nil {
 		authenticator, err := oidcauth.New(oidcauth.Config{
@@ -491,7 +679,30 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
 			return 1
 		}
-		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(authenticator))
+		// Pod-to-daemon authn (#3509 §14 open point, resolved as per-run
+		// minted bearers): chain the pod-token verifier in front of the human
+		// OIDC authenticator. The registry is daemon-local (sound under DS1);
+		// the mode-3 dispatcher mints into it at stage dispatch (#3482).
+		chained, err := podauth.NewAuthenticator(podVerifier, authenticator)
+		if err != nil {
+			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
+			return 1
+		}
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
+		apiAuthorizer = httpapi.RequireRoles()
+	} else if !instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
+		// Non-loopback with no human authenticator configured: serve the pod
+		// plane only, denying every non-pod request. This satisfies SEC-043's
+		// requirement for a REAL authenticator without forcing an operator who
+		// wants no human surface to stand up an OIDC issuer to get one
+		// (Goobers#3701). It never admits an unauthenticated request — the
+		// fallback denies rather than allowing.
+		chained, err := podauth.NewAuthenticator(podVerifier, httpapi.DenyAllAuthenticator{})
+		if err != nil {
+			pf(stderr, "error: initialize HTTP API authenticator: %v\n", err)
+			return 1
+		}
+		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithAuthenticator(chained))
 		apiAuthorizer = httpapi.RequireRoles()
 	}
 	handler, err := httpapi.NewHandler(reads, apiAuthorizer, apiLog, apiHandlerOpts...)
@@ -499,6 +710,31 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
 	}
+	// #3806: /healthz and /readyz are registered OUTSIDE the versioned router
+	// httpapi.NewHandler just built — no authenticate/authorize/admission/
+	// budget — so a kubelet probe reaches them with no credential regardless
+	// of api.auth (including this daemon's own DenyAllAuthenticator fallback
+	// for a non-loopback bind with no human authenticator configured, just
+	// above). Every other path keeps going through the versioned handler
+	// exactly as before; WrapWithProbes forwards authenticatedTransport() and
+	// shutdown() straight through so NewServer's SEC-043 gate below and
+	// apiHandler's own SSE-close lifecycle both keep working unchanged.
+	//
+	// The checks themselves live on daemonProbeState (daemon_probes.go) —
+	// a named type, not two inline closures — so they are directly unit
+	// testable without a real daemon.
+	probes := &daemonProbeState{
+		ready:           &ready,
+		configLoaded:    &configLoaded,
+		stateOpen:       &stateOpen,
+		resumeComplete:  &resumeComplete,
+		sweepsStarted:   &sweepsStarted,
+		schedulerTicked: &schedulerTicked,
+		lastTickAtNanos: &lastTickAtNanos,
+		livenessTimeout: livenessTimeout,
+		now:             time.Now,
+	}
+	handler = httpapi.WrapWithProbes(handler, probes.liveness, probes.readiness)
 	var apiServerOpts []httpapi.ServerOption
 	if tlsConfig := setup.Config.API.TLS; tlsConfig != nil {
 		apiServerOpts = append(apiServerOpts, httpapi.WithTLS(tlsConfig.CertFile, tlsConfig.KeyFile))
@@ -508,6 +744,28 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize HTTP API: %v\n", err)
 		return 1
 	}
+	// Rebuild the claim-renewal set from the LEDGER plus run liveness before
+	// any reap is permitted — DS6's load-bearing ordering
+	// (distributed-state-and-coordination.md §10): this process's in-memory
+	// run tracking is empty right now, but a distributed run dispatched by
+	// the previous daemon process is still executing on the engine, and its
+	// claims must be renewed — not reaped — across the restart. Only a
+	// renewal pass whose ledger write completed opens the gate; a failed pass
+	// leaves it closed and the periodic tick below retries both halves.
+	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, engineClient, setup.RunnerRegistry.RunIDs)
+	if err != nil {
+		pf(stderr, "error: build claim liveness probe: %v\n", err)
+		return 1
+	}
+	defer closeClaimLiveness()
+	if probeErr, renewErr := rebuildClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate); renewErr != nil {
+		if !isJournaledClaimsLockTimeout(renewErr) {
+			pf(stdout, "warning: rebuild claim renewal set: %v\n", renewErr)
+		}
+	} else if probeErr != nil {
+		pf(stdout, "warning: claim liveness probe degraded (renewed fail-live): %v\n", probeErr)
+	}
+
 	// Claim recovery (#131/#793): released once now and periodically thereafter
 	// to recover expired leases and claim cleanup deferred by a terminal
 	// finalizer's bounded lock timeout — before the scheduler starts admitting
@@ -519,7 +777,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// synchronous startup call site below prints; the periodic goroutine
 	// below deliberately does not (see its own comment).
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive)
+		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive, claimRecoveryGate)
 	}
 	startupReleased := append([]localscheduler.ClaimEntry(nil), setup.RecoveredClaims...)
 	newlyReleased, err := recoverExpiredClaims(time.Now())
@@ -618,9 +876,35 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// active-run counts from the very same non-terminal runs the resume scan
 	// is about to act on, so each resumed run's ReleaseReconciled call (below)
 	// has a reserved slot to actually release.
-	sched := newDaemonScheduler(setup, localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
-		return daemonstate.Refresh(lockPath, tickAt)
-	}))
+	// markTickProgress updates the two in-memory values daemonProbeState's
+	// liveness check reads (#3806): purely an atomic store, never disk I/O,
+	// so it stays safe to call frequently — including from inside Tick's
+	// tickMu-held critical section, below — even on this cluster's
+	// documented failure mode of a stalled RWO volume attachment.
+	markTickProgress := func(tickAt time.Time) {
+		lastTickAtNanos.Store(tickAt.UnixNano())
+		// #3806: /healthz's liveness grace ends once the scheduler has ticked
+		// at least once — set regardless of whether the on-disk heartbeat
+		// write below succeeds, since the tick itself (not that write) is
+		// what "has the main loop reached its steady-state loop" means.
+		schedulerTicked.Store(true)
+	}
+	sched := newDaemonScheduler(setup,
+		localscheduler.WithTickHeartbeat(livenessTimeout/2, func(tickAt time.Time) error {
+			err := daemonstate.Refresh(lockPath, tickAt)
+			markTickProgress(tickAt)
+			return err
+		}),
+		// #3806: a single Tick can poll several due, provider-backed
+		// workflows SEQUENTIALLY while holding tickMu (each bounded only by
+		// demandPollTimeout, 45s) — WithTickHeartbeat's refresh above fires
+		// only once Tick returns in full, which for N due polls can leave
+		// the liveness heartbeat looking stale for N*45s even though the
+		// scheduler is busy, not wedged. WithPollHeartbeat marks progress
+		// after EACH such poll instead, bounding staleness to a single
+		// poll's worst case.
+		localscheduler.WithPollHeartbeat(markTickProgress),
+	)
 	sourceReconcileWake := make(chan struct{}, 1)
 	wakeSourceReconcile := func(context.Context) {
 		select {
@@ -629,6 +913,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}
 	interventions.AttachScheduler(sched)
+	triggerPlane.AttachScheduler(sched)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {
@@ -644,6 +929,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// #3806: the scheduler's run-tracking state has been reconciled from the
+	// run directories already on disk.
+	stateOpen.Store(true)
 	stalledRunTimeout, err := setup.RunConditions.StalledRunTimeoutDuration()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -657,9 +945,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	stalledSweepErrors := newSweepErrorReporter(setup.InstanceLog, "stalled_run_sweep_failed")
 	sweepStalled := func(now time.Time) error {
 		return sweepStalledRuns(
+			ctx,
 			l,
 			setup.RunnerRegistry,
 			setup.LegacyRunner,
+			engineGuards,
 			setup.InstanceLog,
 			func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 				// The stalled run's gaggle is only knowable from its runs-tree
@@ -739,7 +1029,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg)
+	resumed, warned, reattached, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, engineGuards, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -747,20 +1037,35 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	for _, runID := range resumed {
 		pf(stdout, "resuming interrupted run %s\n", runID)
 	}
+	// An engine-driven run is NOT resumed: this daemon waits for the engine's
+	// workflow and echoes its outcome. Announced separately so an operator
+	// reading the startup log can tell the two apart at a glance.
+	for _, runID := range reattached {
+		pf(stdout, "re-attaching to engine-driven run %s\n", runID)
+	}
 	// Renew resumed runs' claims immediately rather than waiting up to
 	// claimRecoverInterval for the first periodic tick (#2014): the startup
 	// recovery sweep above already ran BEFORE resume tracked anything, on the
 	// prior process's now possibly-stale leases, so a resumed run's claim
 	// could otherwise sit unrenewed — and so reapable — for most of a sweep
-	// interval right when a restart just made that most likely. Best-effort,
+	// interval right when a restart just made that most likely. The resumed
+	// runs are tracked by the registry now, so the ledger-driven pass covers
+	// exactly them (plus any engine-live holders — idempotent). Best-effort,
 	// same as the periodic sweep: a renewal failure here does not fail daemon
 	// start, since the claim ledger's own reap is what it would fail open to.
-	if _, err := renewLiveClaims(l, resumed, DefaultClaimLease); err != nil && !isJournaledClaimsLockTimeout(err) {
-		pf(stdout, "warning: renew resumed claims: %v\n", err)
+	if len(resumed) > 0 {
+		if _, _, err := renewLiveClaims(ctx, l, claimLiveness, DefaultClaimLease); err != nil && !isJournaledClaimsLockTimeout(err) {
+			pf(stdout, "warning: renew resumed claims: %v\n", err)
+		}
 	}
 	for _, runID := range warned {
 		pf(stdout, "warning: run %s references a workflow no longer in config — skipped; recover with `goobers run abort %s`\n", runID, runID)
 	}
+	// #3806: crash-resume of every interrupted run finished (this is the
+	// startup phase whose duration is unbounded and scales with interrupted-
+	// run count, so a kubelet startupProbe against /readyz must wait this
+	// out with a generous failureThreshold, not a short initialDelay).
+	resumeComplete.Store(true)
 
 	// Sweep once before announcing readiness so requests and responses orphaned
 	// across daemon lifetimes are handled without waiting for the first tick.
@@ -853,17 +1158,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case <-ctx.Done():
 				return
 			case now := <-claimTicker.C:
-				// Renew before reaping (#2014): both run in the same tick, and a
-				// still-tracked run's lease must be pushed back into the future
+				// Renew before reaping (#2014/DS6): both run in the same tick,
+				// and a live run's lease must be pushed back into the future
 				// before recoverExpiredClaims below checks it against now — doing
-				// it in the other order would let a run this process is still
-				// actively driving get reaped on the exact tick its lease was due
-				// to be renewed, on nothing worse than ordinary ticker jitter.
-				_, renewErr := renewLiveClaims(l, setup.RunnerRegistry.RunIDs(), DefaultClaimLease)
+				// it in the other order would let a run that is still live get
+				// reaped on the exact tick its lease was due to be renewed, on
+				// nothing worse than ordinary ticker jitter.
+				// rebuildClaimRenewalSet also self-heals DS6's startup ordering:
+				// if the startup rebuild failed (gate still closed), a completed
+				// pass here IS the rebuild — recovery below is permitted from
+				// here on.
+				probeErr, renewErr := rebuildClaimRenewalSet(ctx, l, claimLiveness, claimRecoveryGate)
 				if isJournaledClaimsLockTimeout(renewErr) {
 					claimRenewErrors.report(nil)
-				} else {
+				} else if renewErr != nil {
 					claimRenewErrors.report(renewErr)
+				} else {
+					claimRenewErrors.report(probeErr)
 				}
 				released, err := recoverExpiredClaims(now)
 				if isJournaledClaimsLockTimeout(err) {
@@ -900,6 +1211,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	telemetryRetentionTicker := time.NewTicker(telemetryRetentionSweepInterval)
 	telemetryRetentionTickerDone := make(chan struct{})
 	telemetryRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "telemetry_retention_sweep_failed")
+	// Stale journal-generation cleanup is diagnostic, not fatal: it gets its
+	// own reporter so a stranded generation is journaled without failing the
+	// retention sweep that otherwise succeeded (#3654).
+	journalGenerationCleanupErrors := newSweepErrorReporter(setup.InstanceLog, "journal_generation_cleanup_failed")
 	go func() {
 		defer close(telemetryRetentionTickerDone)
 		defer telemetryRetentionTicker.Stop()
@@ -910,7 +1225,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case now := <-telemetryRetentionTicker.C:
 				_, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, now)
 				if err == nil {
-					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, now)
+					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, journalGenerationCleanupErrors, now)
 				}
 				telemetryRetentionErrors.report(err)
 			}
@@ -999,6 +1314,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			}
 		}
 	}()
+	// #3806: the initial synchronous trigger/claim-admin/cancel/apply sweeps
+	// above already ran once, and every one of their periodic tickers is now
+	// live.
+	sweepsStarted.Store(true)
 
 	supervisorStop := make(chan error, 1)
 	supervisorStopDone := make(chan struct{})
@@ -1195,7 +1514,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: scheduler stopped: %v\n", runErr)
 	}
 
-	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout)
+	drainResult := drainDaemonRuns(&wg, sched.Wait, setup.RunnerRegistry, *drainTimeout, force, stdout,
+		func(active []trackedRun) []parkedRun { return parkedNonTerminalRuns(l, active) })
 	if !drainResult.forced {
 		pln(stdout, "shutdown complete: all runs drained")
 	} else {
@@ -1225,6 +1545,10 @@ func drainDaemonRuns(
 	timeout time.Duration,
 	force <-chan struct{},
 	stdout io.Writer,
+	// listParked reports non-terminal runs the drain is NOT holding (#3453).
+	// Nil disables the report, which keeps callers that have no layout — and
+	// every existing test — unchanged.
+	listParked func(active []trackedRun) []parkedRun,
 ) daemonDrainResult {
 	done := make(chan struct{})
 	go func() {
@@ -1233,6 +1557,30 @@ func drainDaemonRuns(
 		close(done)
 	}()
 
+	// #3453: a gate-paused run is not held by the drain — Start returns on a
+	// pause, releasing both the WaitGroup and the registry entry — so it is
+	// invisible to ActiveRuns(). Reporting only the held population let the
+	// drain print "no in-flight runs remain" while a non-terminal run sat
+	// there. Naming them does not make the drain wait (since #3426 they are
+	// recovered automatically at next boot via the pinned definition); it
+	// stops "safe to restart" from being something the operator has to infer
+	// from a message that is silent about what it cannot see.
+	reportParked := func(prefix string, active []trackedRun) {
+		if listParked == nil {
+			return
+		}
+		parked := listParked(active)
+		if len(parked) == 0 {
+			return
+		}
+		ids := make([]string, len(parked))
+		for i, run := range parked {
+			ids[i] = run.Workflow + "/" + run.RunID
+		}
+		pf(stdout, "%s: %d run(s) parked at a gate and NOT held by this drain [%s]; "+
+			"they are not waited for and resume at next boot\n",
+			prefix, len(ids), strings.Join(ids, ", "))
+	}
 	printProgress := func(prefix string) {
 		active := runners.ActiveRuns()
 		ids := make([]string, len(active))
@@ -1241,10 +1589,12 @@ func drainDaemonRuns(
 		}
 		if len(ids) == 0 {
 			pf(stdout, "%s: no in-flight runs remain; waiting for scheduler shutdown\n", prefix)
+			reportParked(prefix, active)
 			return
 		}
 		pf(stdout, "%s: %d run(s) remaining [%s]; send SIGINT/SIGTERM again to force shutdown\n",
 			prefix, len(ids), strings.Join(ids, ", "))
+		reportParked(prefix, active)
 	}
 	printProgress("shutting down: draining")
 
@@ -1407,4 +1757,21 @@ func emitHeartbeats(
 			}
 		}
 	}
+}
+
+// buildPodVerifier selects the pod-token verifier. A configured key file gives
+// stateless shared-key tokens, which is what a SPLIT deployment needs: the
+// dispatcher runs inside `goobers worker`, so a token it mints must be
+// verifiable by a different process. Unset keeps the daemon-local in-memory
+// registry, correct whenever daemon and dispatcher share a process.
+func buildPodVerifier(cfg *instance.Config) (podauth.Verifier, error) {
+	path := strings.TrimSpace(cfg.API.PodTokenKeyFile)
+	if path == "" {
+		return podauth.NewRegistry(), nil
+	}
+	key, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read pod token key %s: %w", path, err)
+	}
+	return podauth.NewSignedKey(bytes.TrimSpace(key))
 }

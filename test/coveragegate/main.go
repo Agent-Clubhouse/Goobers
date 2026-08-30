@@ -24,11 +24,90 @@ const (
 
 var profileEntryPattern = regexp.MustCompile(`^(.+):\d+\.\d+,\d+\.\d+\s+\d+\s+\d+$`)
 
+type fsProvider interface {
+	stat(path string) error
+	readFile(path string) ([]byte, error)
+	createTemp(dir, pattern string) (tempFile, error)
+	remove(path string) error
+}
+
+type tempFile interface {
+	write(b []byte) (int, error)
+	close() error
+	name() string
+}
+
+type execProvider interface {
+	generateProfile(profile string, stdout, stderr io.Writer) error
+	functionCoverage(profile string) ([]byte, error)
+}
+
+type osFS struct{}
+
+type osTempFile struct {
+	f *os.File
+}
+
+type osExec struct{}
+
+func (osFS) stat(path string) error {
+	_, err := os.Stat(path)
+	return err
+}
+
+func (osFS) readFile(path string) ([]byte, error) {
+	return os.ReadFile(path)
+}
+
+func (osFS) createTemp(dir, pattern string) (tempFile, error) {
+	f, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return nil, err
+	}
+	return &osTempFile{f: f}, nil
+}
+
+func (osFS) remove(path string) error {
+	return os.Remove(path)
+}
+
+func (tf *osTempFile) write(b []byte) (int, error) {
+	return tf.f.Write(b)
+}
+
+func (tf *osTempFile) close() error {
+	return tf.f.Close()
+}
+
+func (tf *osTempFile) name() string {
+	return tf.f.Name()
+}
+
+func (osExec) generateProfile(profile string, stdout, stderr io.Writer) error {
+	cmd := exec.Command("go", "test", "./...", "-covermode=atomic", "-coverprofile="+profile)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
+func (osExec) functionCoverage(profile string) ([]byte, error) {
+	cmd := exec.Command("go", "tool", "cover", "-func="+profile)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return output, nil
+}
+
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(runWithProviders(os.Args[1:], os.Stdout, os.Stderr, osFS{}, osExec{}))
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithProviders(args, stdout, stderr, osFS{}, osExec{})
+}
+
+func runWithProviders(args []string, stdout, stderr io.Writer, fs fsProvider, exec execProvider) int {
 	thresholdText := envOrDefault("COVERAGE_THRESHOLD", defaultThreshold)
 	if len(args) > 0 && args[0] != "" {
 		thresholdText = args[0]
@@ -47,9 +126,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if _, err := os.Stat(profile); errors.Is(err, os.ErrNotExist) {
+	if err := fs.stat(profile); errors.Is(err, os.ErrNotExist) {
 		pf(stdout, "coverage_gate: %s not found - running tests to generate it...\n", profile)
-		if err := generateProfile(profile, stdout, stderr); err != nil {
+		if err := exec.generateProfile(profile, stdout, stderr); err != nil {
 			pf(stderr, "coverage_gate: generate profile: %v\n", err)
 			return 2
 		}
@@ -58,7 +137,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	raw, err := os.ReadFile(profile)
+	raw, err := fs.readFile(profile)
 	if err != nil {
 		pf(stderr, "coverage_gate: read %s: %v\n", profile, err)
 		return 2
@@ -69,19 +148,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	filteredFile, err := os.CreateTemp("", "coverage-gate-*.out")
+	filteredFile, err := fs.createTemp("", "coverage-gate-*.out")
 	if err != nil {
 		pf(stderr, "coverage_gate: create filtered profile: %v\n", err)
 		return 2
 	}
-	filteredPath := filteredFile.Name()
-	defer func() { _ = os.Remove(filteredPath) }()
-	if _, err := filteredFile.Write(filtered); err != nil {
-		_ = filteredFile.Close()
+	filteredPath := filteredFile.name()
+	defer func() { _ = fs.remove(filteredPath) }()
+	if _, err := filteredFile.write(filtered); err != nil {
+		_ = filteredFile.close()
 		pf(stderr, "coverage_gate: write filtered profile: %v\n", err)
 		return 2
 	}
-	if err := filteredFile.Close(); err != nil {
+	if err := filteredFile.close(); err != nil {
 		pf(stderr, "coverage_gate: close filtered profile: %v\n", err)
 		return 2
 	}
@@ -97,7 +176,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	pln(stdout, "")
 	pln(stdout, "=== coverage by function (after exclusions) ===")
-	report, err := functionCoverage(filteredPath)
+	report, err := exec.functionCoverage(filteredPath)
 	if err != nil {
 		pf(stderr, "coverage_gate: calculate coverage: %v\n", err)
 		return 2
@@ -203,22 +282,6 @@ func parsePercentage(value string) (float64, error) {
 
 func belowThreshold(total, threshold float64) bool {
 	return total < threshold
-}
-
-func generateProfile(profile string, stdout, stderr io.Writer) error {
-	cmd := exec.Command("go", "test", "./...", "-covermode=atomic", "-coverprofile="+profile)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	return cmd.Run()
-}
-
-func functionCoverage(profile string) ([]byte, error) {
-	cmd := exec.Command("go", "tool", "cover", "-func="+profile)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return output, nil
 }
 
 func envOrDefault(name, fallback string) string {

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	vcurrent "github.com/goobers/goobers/internal/workflow/v_current"
+	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
 	vnext "github.com/goobers/goobers/internal/workflow/v_next"
 )
 
@@ -22,7 +22,7 @@ func TestBYOMCPCredentialDoesNotBecomeTaskCapability(t *testing.T) {
 			}},
 		},
 	}
-	for _, version := range []string{vcurrent.DSLVersion, vnext.DSLVersion} {
+	for _, version := range []string{vnext.DSLVersion, v30.DSLVersion} {
 		t.Run(version, func(t *testing.T) {
 			def := Definition{Name: "mcp-byo", Version: 1, DSLVersion: version, Spec: linearSpec()}
 			if _, err := compileAcknowledged(def, WithGoobers(goobers)); err != nil {

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -19,11 +20,14 @@ const (
 	maxTelemetryErrorsPageSize           = 200
 )
 
-func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader, errorLog *log.Logger) {
+func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader, podRunGaggle func(context.Context, string) (string, error), errorLog *log.Logger) {
 	router.Handle(apicontract.RouteTelemetryStats, func(w http.ResponseWriter, request *http.Request) {
 		query, err := parseTelemetryStatsQuery(request.URL.Query())
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+			return
+		}
+		if !containPodTelemetryRead(w, request, podRunGaggle, query.Gaggle, errorLog) {
 			return
 		}
 		result, err := reader.TelemetryStats(request.Context(), query)
@@ -54,6 +58,9 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 			writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
 			return
 		}
+		if !containPodTelemetryRead(w, request, podRunGaggle, query.Gaggle, errorLog) {
+			return
+		}
 		result, err := reader.TelemetryErrors(request.Context(), query)
 		if err != nil {
 			writeTelemetryReadError(w, errorLog, "errors", err)
@@ -61,10 +68,105 @@ func registerTelemetryRoutes(router *Router, reader readservice.TelemetryReader,
 		}
 		writeJSON(w, http.StatusOK, result)
 	})
+
+	router.Handle(apicontract.RouteTelemetryImplementationOutcomes, func(w http.ResponseWriter, request *http.Request) {
+		query, err := parseTelemetryImplementationOutcomesQuery(request.URL.Query())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+			return
+		}
+		if !containPodTelemetryRead(w, request, podRunGaggle, query.Gaggle, errorLog) {
+			return
+		}
+		result, err := reader.TelemetryImplementationOutcomes(request.Context(), query)
+		if err != nil {
+			writeTelemetryReadError(w, errorLog, "implementation outcomes", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+}
+
+// containPodTelemetryRead applies decision 005 R4's containment to the
+// telemetry read routes a pod principal may reach and reports whether the
+// request may proceed. It writes the refusal itself when it returns false.
+//
+// Human principals are untouched: they went through the role ladder in
+// RequireRoles and keep exactly the unscoped access they have always had, so
+// no existing dashboard or CLI query changes shape.
+//
+// For a pod principal every branch fails CLOSED, because each one means the
+// daemon cannot prove the read stays inside the pod's own gaggle:
+//
+//   - no resolver wired: the deployment never opted into the pod telemetry
+//     read (WithPodRunGaggle), so there is nothing to check against;
+//   - no gaggle in the query: an unscoped read is a cross-gaggle read;
+//   - the pod's run has no resolvable gaggle, or resolution fails: unknown
+//     scope is not "any scope";
+//   - resolved gaggle differs from the requested one: the pod is asking about
+//     someone else's backlog.
+//
+// The refusal body names the mismatch class but never the resolved gaggle: a
+// pod that guessed wrong learns that it guessed wrong, not what the right
+// answer was.
+func containPodTelemetryRead(
+	w http.ResponseWriter,
+	request *http.Request,
+	podRunGaggle func(context.Context, string) (string, error),
+	requestedGaggle string,
+	errorLog *log.Logger,
+) bool {
+	principal, authenticated := PrincipalFromRequest(request)
+	if !authenticated || !IsPodPrincipal(principal) {
+		return true
+	}
+	if podRunGaggle == nil {
+		writeError(w, http.StatusForbidden, "telemetry_scope_unavailable",
+			"this daemon cannot scope a pod telemetry read to its gaggle; the read is refused")
+		return false
+	}
+	if strings.TrimSpace(requestedGaggle) == "" {
+		writeError(w, http.StatusForbidden, "gaggle_required",
+			"pod principals must scope a telemetry read to their own gaggle")
+		return false
+	}
+	runID, ok := strings.CutPrefix(principal.Subject, "run:")
+	if !ok || strings.TrimSpace(runID) == "" {
+		writeError(w, http.StatusForbidden, "gaggle_mismatch",
+			"pod principal may only read its own gaggle's telemetry")
+		return false
+	}
+	gaggle, err := podRunGaggle(request.Context(), runID)
+	if err != nil {
+		errorLog.Printf("telemetry read: resolve gaggle for run %q: %v", runID, err)
+		writeError(w, http.StatusForbidden, "gaggle_mismatch",
+			"pod principal may only read its own gaggle's telemetry")
+		return false
+	}
+	if strings.TrimSpace(gaggle) == "" || gaggle != requestedGaggle {
+		writeError(w, http.StatusForbidden, "gaggle_mismatch",
+			"pod principal may only read its own gaggle's telemetry")
+		return false
+	}
+	return true
+}
+
+func parseTelemetryImplementationOutcomesQuery(values url.Values) (readservice.TelemetryImplementationOutcomesRequest, error) {
+	if err := validateQueryValues(values, "gaggle", "since"); err != nil {
+		return readservice.TelemetryImplementationOutcomesRequest{}, err
+	}
+	since, err := parseOptionalTime(values.Get("since"), "since")
+	if err != nil {
+		return readservice.TelemetryImplementationOutcomesRequest{}, err
+	}
+	return readservice.TelemetryImplementationOutcomesRequest{
+		Gaggle: values.Get("gaggle"),
+		Since:  since,
+	}, nil
 }
 
 func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequest, error) {
-	if err := validateQueryValues(values, "workflow", "gaggle", "branch", "model", "harnessVersion", "groupBy", "since", "until"); err != nil {
+	if err := validateQueryValues(values, "workflow", "gaggle", "branch", "model", "harnessVersion", "groupBy", "since", "until", "trendSince", "trendUntil", "trendBuckets", "trendPreviousSince", "trendPreviousUntil"); err != nil {
 		return readservice.TelemetryStatsRequest{}, err
 	}
 	since, err := parseOptionalTime(values.Get("since"), "since")
@@ -77,6 +179,35 @@ func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequ
 	}
 	if !since.IsZero() && !until.IsZero() && since.After(until) {
 		return readservice.TelemetryStatsRequest{}, errors.New("since must not be after until")
+	}
+	trendSince, err := parseOptionalTime(values.Get("trendSince"), "trendSince")
+	if err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
+	trendUntil, err := parseOptionalTime(values.Get("trendUntil"), "trendUntil")
+	if err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
+	trendPreviousSince, err := parseOptionalTime(values.Get("trendPreviousSince"), "trendPreviousSince")
+	if err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
+	trendPreviousUntil, err := parseOptionalTime(values.Get("trendPreviousUntil"), "trendPreviousUntil")
+	if err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
+	if err := validateTelemetryTrendWindow(trendSince, trendUntil, "trend"); err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
+	if err := validateTelemetryTrendWindow(trendPreviousSince, trendPreviousUntil, "trend previous"); err != nil {
+		return readservice.TelemetryStatsRequest{}, err
+	}
+	trendBuckets := 0
+	if values.Has("trendBuckets") {
+		trendBuckets, err = strconv.Atoi(values.Get("trendBuckets"))
+		if err != nil || trendBuckets < 1 || trendBuckets > 100 || trendSince.IsZero() || trendUntil.IsZero() || !trendSince.Before(trendUntil) {
+			return readservice.TelemetryStatsRequest{}, errors.New("trendBuckets requires a valid trendSince/trendUntil range and must be between 1 and 100")
+		}
 	}
 	var branch *int
 	if values.Has("branch") {
@@ -101,7 +232,22 @@ func parseTelemetryStatsQuery(values url.Values) (readservice.TelemetryStatsRequ
 		GroupByHarnessVersion: groupByHarnessVersion,
 		Since:                 since,
 		Until:                 until,
+		TrendSince:            trendSince,
+		TrendUntil:            trendUntil,
+		TrendBuckets:          trendBuckets,
+		TrendPreviousSince:    trendPreviousSince,
+		TrendPreviousUntil:    trendPreviousUntil,
 	}, nil
+}
+
+func validateTelemetryTrendWindow(since, until time.Time, name string) error {
+	if since.IsZero() && until.IsZero() {
+		return nil
+	}
+	if since.IsZero() || until.IsZero() || !since.Before(until) {
+		return fmt.Errorf("%sSince and %sUntil must form an increasing range", name, name)
+	}
+	return nil
 }
 
 func parseTelemetryGroupBy(value string) (branch, model, harnessVersion bool, err error) {

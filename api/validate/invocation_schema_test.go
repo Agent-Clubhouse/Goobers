@@ -72,6 +72,71 @@ func TestInvocationBranchArtifactValidatesAgainstSchema(t *testing.T) {
 	}
 }
 
+func TestNestedInvocationRequiresRunnerAuthorityFields(t *testing.T) {
+	validator, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation := apiv1.InvocationEnvelope{
+		TaskID:            "implement",
+		Attempt:           1,
+		WorkflowID:        "issue-fix",
+		RunID:             "run-1",
+		Gaggle:            "acme-web",
+		Goober:            "coder",
+		Goal:              "implement the fix",
+		OwnershipBoundary: "task:implement",
+		Workspace:         "/workspace",
+		RepoRef:           apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"},
+		Capabilities:      []string{"repo:read"},
+		PolicyActions:     []string{"modify-repository"},
+		Limits:            apiv1.Limits{MaxDurationSeconds: 60},
+		NestedAgentPolicy: &apiv1.NestedAgentPolicy{
+			Version:           apiv1.NestedAgentPolicyVersion,
+			Delegation:        apiv1.DelegationDisabled,
+			PermittedProfiles: []string{"worker"},
+			Context:           apiv1.NestedContextPolicy{Mode: apiv1.ContextFresh},
+			PlatformPolicy: apiv1.PlatformPolicy{
+				Capabilities:       []string{"repo:read"},
+				PolicyActions:      []string{"modify-repository"},
+				Credentials:        []string{"repo:read"},
+				Sandbox:            "workspace",
+				FilesystemRoots:    []string{"workspace"},
+				Cancellation:       "stage-context",
+				CompletionContract: "result",
+			},
+		},
+	}
+	parent := apiv1.StagePlatformAuthority(invocation, "result")
+	invocation.ParentPlatformPolicy = &parent
+	envelope, err := json.Marshal(invocation)
+	if err != nil {
+		t.Fatalf("marshal invocation: %v", err)
+	}
+	if err := validator.ValidateJSON("invocation.schema.json", envelope); err != nil {
+		t.Fatalf("complete nested invocation should validate: %v", err)
+	}
+
+	var value map[string]any
+	if err := json.Unmarshal(envelope, &value); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"attempt", "goober", "ownershipBoundary", "parentPlatformPolicy"} {
+		invalid := make(map[string]any, len(value))
+		for name, entry := range value {
+			invalid[name] = entry
+		}
+		delete(invalid, field)
+		payload, err := json.Marshal(invalid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validator.ValidateJSON("invocation.schema.json", payload); err == nil {
+			t.Fatalf("nested invocation without %s should fail the closed schema", field)
+		}
+	}
+}
+
 // TestInvocationRepoRefKeepsCheckoutOffTheWire locks both halves of the
 // accepted-but-inert checkout posture (B2, #649): an envelope built through
 // RepoRef.EnvelopeRef validates even when the gaggle declares

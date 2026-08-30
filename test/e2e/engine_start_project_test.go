@@ -6,17 +6,32 @@ package e2e
 // supported caller, hermetically (no live Temporal server), so it can run as
 // part of `make ci`.
 //
-// The run is built the same way cmd/goobers/enginestart.go builds one — a
-// Registry-pinned RunInput from a real config-as-code fixture — and its
-// journal is projected the same way cmd/goobers/engineproject.go projects
-// one: engine.ProjectCompletedRunForGaggle against the standard
-// projectionQuerier shape. The only substitution is the Temporal transport:
-// the SDK's in-process test workflow environment stands in for a live
-// server, exactly as test/e2e/integration_test.go's runEnvStarter already
-// does for the engine-start half. temporaltest.ProjectionQuerier (#2903) is
-// the new connective piece: it adapts that same test environment to the
-// query shape the completed-run projection half expects, so both halves run
-// through their real, unmodified production code in one process.
+// The run is loaded and registered the way cmd/goobers/enginestart.go loads
+// and registers one — instance.LoadConfigDir (the same loader
+// `loadConfigDirectory` resolves to), then bootstrap.RegisterGaggleWorkflows,
+// the shared constructor engine-start itself calls, for a Registry-pinned
+// RunInput. Its journal is projected the same way cmd/goobers/
+// engineproject.go projects one: engine.ProjectCompletedRunForGaggle against
+// the standard projectionQuerier shape. The Temporal transport is
+// substituted: the SDK's in-process test workflow environment stands in for a
+// live server for the engine-start half. temporaltest.ProjectionQuerier
+// (#2903) is the connective piece: it adapts that same test environment to
+// the query shape the completed-run projection half expects, so both halves
+// run through their real, unmodified production code in one process.
+//
+// What this test is NOT: the StartSpec below is hand-rolled, not the one the
+// command builds. cmd/goobers/enginestart.go builds its spec in
+// engineStartSpec, which also resolves Placements (#3588), BranchNamespace,
+// LiveJournal and RunControls (#3820); engineStartSpec lives in package main
+// and is unreachable from here, so this run round-trips the built-in
+// run-control defaults (45m / 3 repasses) and no placements whatever the
+// fixture declares. A regression in any of those fields is invisible to this
+// test. They are asserted at their own seams instead:
+// cmd/goobers/enginestartruncontrols_test.go for what the command resolves
+// and pins, and internal/engine/startruncontrols_test.go for a StartSpec's
+// policy reaching run.yaml on disk. Widening this test to cover them means
+// lifting engineStartSpec out of package main — worth doing, but do not read
+// the round trip below as covering it in the meantime.
 
 import (
 	"context"
@@ -27,22 +42,34 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/temporaltest"
 )
 
 func TestEngineStartAndProjectRoundTrip(t *testing.T) {
-	loaded, err := bootstrap.LoadAndRegister("../fixtures/e2e/walking-skeleton", "")
+	set, report, err := instance.LoadConfigDir("../fixtures/e2e/walking-skeleton")
 	if err != nil {
-		t.Fatalf("bootstrap load: %v", err)
+		t.Fatalf("load config dir: %v", err)
 	}
-	gaggle := loaded.Gaggles[0]
-	workflowName := loaded.Workflows[0].Name
+	if report != nil && report.HasErrors() {
+		t.Fatalf("config report has errors: %v", report)
+	}
+	if len(set.Gaggles) == 0 || len(set.Workflows) == 0 {
+		t.Fatalf("expected gaggles + workflows in fixture, got %d gaggles, %d workflows", len(set.Gaggles), len(set.Workflows))
+	}
+	gaggle := set.Gaggles[0]
+	workflowName := set.Workflows[0].Name
 
-	in, err := loaded.Registry.StartInput(workflowName, engine.StartSpec{
+	reg, project, err := bootstrap.RegisterGaggleWorkflows(set, gaggle.Name)
+	if err != nil {
+		t.Fatalf("register gaggle workflows: %v", err)
+	}
+
+	in, err := reg.StartInput(workflowName, engine.StartSpec{
 		RunID:       engine.RunID(gaggle.Name, workflowName, "engine-start-project-roundtrip"),
 		Gaggle:      gaggle.Name,
-		RepoRef:     gaggle.Spec.Project,
+		RepoRef:     project,
 		TriggerKind: "manual",
 	})
 	if err != nil {
@@ -122,9 +149,8 @@ func TestEngineStartAndProjectRoundTrip(t *testing.T) {
 }
 
 // fakeGoober stands in for the external Copilot agent harness (un-CI-able),
-// same role as test/e2e/integration_test.go's fakeHarness but implementing
-// invoke.Goober directly since this test drives engine.Activities without the
-// gooberruntime/telemetry layer that test also exercises.
+// implementing invoke.Goober directly since this test drives
+// engine.Activities without the gooberruntime/telemetry layer.
 type fakeGoober struct{}
 
 func (fakeGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
@@ -138,3 +164,18 @@ func (fakeGoober) Invoke(context.Context, apiv1.InvocationEnvelope) (apiv1.Resul
 func (fakeGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
 	return apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "looks good"}, nil
 }
+
+// tempWorkspaces is the e2e engine.WorkspaceProvisioner — the engine fails
+// closed without one (#621), since the closed invocation schema requires the
+// envelope's workspace field. Temp-dir backed, standing in for the worker
+// host's worktree-backed implementation (#632) at the same cluster boundary.
+type tempWorkspaces struct{ t *testing.T }
+
+func (p tempWorkspaces) Provision(context.Context, engine.WorkspaceRequest) (engine.Workspace, error) {
+	return tempWorkspace{dir: p.t.TempDir()}, nil
+}
+
+type tempWorkspace struct{ dir string }
+
+func (w tempWorkspace) Path() string                 { return w.dir }
+func (w tempWorkspace) Remove(context.Context) error { return nil }

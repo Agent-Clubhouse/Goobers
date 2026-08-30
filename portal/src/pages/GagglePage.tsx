@@ -467,8 +467,14 @@ function WorkflowNode({
           <div>
             <dt>Concurrency</dt>
             <dd>
-              {workflow.concurrency.activeRuns} active /{" "}
-              {workflow.concurrency.maxConcurrentRuns} max
+              {workflow.concurrency.activeRuns} active
+              {workflow.concurrency.desiredRuns !== undefined
+                ? ` / ${workflow.concurrency.desiredRuns} desired`
+                : ""}{" "}
+              / {workflow.concurrency.maxConcurrentRuns} max
+              {workflow.concurrency.admissionBlocked && (
+                <small>Blocked: {workflow.concurrency.blockingCondition}</small>
+              )}
             </dd>
           </div>
           <div>

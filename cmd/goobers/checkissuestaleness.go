@@ -69,7 +69,7 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 	// project from the routed code repo the PR/branch landed in — so its
 	// GetWorkItem read must target the backlog project (backlogRepoRefForStage).
 	issuesRepo := repo
-	prProvider, err := newProviderForStage(root, repo, false,
+	prProvider, err := newMergeReviewProvider(root, repo, false,
 		withStageProviderCapability(capability.GitHubPRWrite),
 		withStageProviderCache(),
 	)
@@ -85,7 +85,7 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 		// capabilities (github:pr:write vs github:issues:write), the same split
 		// gather-issue-context uses, so issue resolution never fails on a
 		// PR-scoped credential and vice versa.
-		issuesProvider, err = newProviderForStage(root, repo, false,
+		issuesProvider, err = newMergeReviewProvider(root, repo, false,
 			withStageProviderCapability(capability.GitHubIssuesWrite),
 			withStageProviderCache(),
 		)

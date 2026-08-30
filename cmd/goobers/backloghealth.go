@@ -8,14 +8,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/providers"
 )
@@ -215,12 +214,17 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	}
 
 	observedAt := time.Now().UTC()
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layoutFor(root).SchedulerDir(), claimLedgerFileName))
+	ledger, err := openStageClaimLedger(layoutFor(root))
 	if err != nil {
 		pf(stderr, "error: inspect ready-pool claims: %v\n", err)
 		return 1
 	}
-	items = unclaimedReadyItems(items, ledger, providerGaggle(), string(backlogRepo.Provider), observedAt)
+	claims, err := ledger.ListNamespace(ctx, providerGaggle(), string(backlogRepo.Provider))
+	if err != nil {
+		pf(stderr, "error: inspect ready-pool claims: %v\n", err)
+		return 1
+	}
+	items = unclaimedReadyItems(items, claims, providerGaggle(), string(backlogRepo.Provider), observedAt)
 	report := measureReadyPool(items, readyLabel, observedAt)
 	report.ReadyTransitions = transitions
 	report.Scan = &scan
@@ -532,29 +536,18 @@ func applyImplementationFeedback(
 		return writeImplementationFeedbackReport(report, stdout, stderr)
 	}
 
-	dbPath := layoutFor(root).TelemetryDB()
-	info, err := os.Stat(dbPath)
+	// The evidence read: the daemon's gaggle-scoped telemetry plane in a stage
+	// pod, the instance's own rollup otherwise (decision 005 R4 / finding 002
+	// C3). No evidence at all — an instance that has never finished an
+	// implementation run — leaves the report empty, exactly as a missing
+	// rollup file did before the plane existed.
+	outcomes, err := stageImplementationOutcomes(ctx, root, earliestReadyAt)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return writeImplementationFeedbackReport(report, stdout, stderr)
-		}
-		pf(stderr, "error: inspect telemetry rollup %s: %v\n", dbPath, err)
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if info.Size() == 0 {
+	if len(outcomes) == 0 {
 		return writeImplementationFeedbackReport(report, stdout, stderr)
-	}
-	db, err := rollup.Open(dbPath)
-	if err != nil {
-		pf(stderr, "error: open telemetry rollup %s: %v\n", dbPath, err)
-		return 1
-	}
-	defer func() { _ = db.Close() }()
-
-	outcomes, err := db.ImplementationOutcomes(ctx, providerGaggle(), earliestReadyAt)
-	if err != nil {
-		pf(stderr, "error: query implementation outcomes: %v\n", err)
-		return 1
 	}
 	mutationAttempted := false
 	for _, item := range items {
@@ -628,15 +621,15 @@ func reCurateImplementationFeedbackItem(
 	if !implementationFeedbackEligibleWithoutReadyAt(current, trustLabel, readyLabel) {
 		return nil, false, nil
 	}
-	transitions, err := backlogHealthItemTransitions(ctx, issueProvider, repo, current, readyLabel)
+	current, eligible, err := resolveImplementationFeedbackReadyAt(
+		ctx, issueProvider, repo, current, readyLabel,
+	)
 	if err != nil {
-		return nil, false, fmt.Errorf("re-read ready-label transitions: %w", err)
+		return nil, false, err
 	}
-	live := []providers.WorkItem{current}
-	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err != nil {
-		return nil, false, fmt.Errorf("resolve current ready cohort: %w", err)
+	if !eligible {
+		return nil, false, nil
 	}
-	current = live[0]
 	count, evidence := consecutiveImplementationFailures(outcomes, itemID, *current.ReadyAt)
 	if count < threshold {
 		return nil, false, nil
@@ -670,6 +663,37 @@ func reCurateImplementationFeedbackItem(
 		ConsecutiveFailures: count,
 		Evidence:            evidence,
 	}, true, nil
+}
+
+func resolveImplementationFeedbackReadyAt(
+	ctx context.Context,
+	issueProvider backlogHealthProvider,
+	repo providers.RepositoryRef,
+	current providers.WorkItem,
+	readyLabel string,
+) (providers.WorkItem, bool, error) {
+	readTransitions := func() ([]providers.WorkItemLabelTransition, error) {
+		return backlogHealthItemTransitions(ctx, issueProvider, repo, current, readyLabel)
+	}
+
+	transitions, err := readTransitions()
+	if err != nil {
+		return providers.WorkItem{}, false, fmt.Errorf("re-read ready-label transitions: %w", err)
+	}
+	live := []providers.WorkItem{current}
+	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err == nil {
+		return live[0], true, nil
+	}
+
+	transitions, err = readTransitions()
+	if err != nil {
+		return providers.WorkItem{}, false, fmt.Errorf("re-read ready-label transitions: %w", err)
+	}
+	live = []providers.WorkItem{current}
+	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err != nil {
+		return providers.WorkItem{}, false, nil
+	}
+	return live[0], true, nil
 }
 
 func implementationFeedbackEligibleWithoutReadyAt(
@@ -876,26 +900,17 @@ func annotateBacklogReadyTimes(
 
 func unclaimedReadyItems(
 	items []providers.WorkItem,
-	ledger *localscheduler.ClaimLedger,
+	claims claimsclient.Listing,
 	gaggle, provider string,
 	observedAt time.Time,
 ) []providers.WorkItem {
-	if ledger == nil {
-		return items
-	}
 	available := items[:0]
 	for _, item := range items {
-		var (
-			entry localscheduler.ClaimEntry
-			ok    bool
-		)
-		if gaggle == "" {
-			entry, ok = ledger.Lookup(item.ID)
-		} else {
-			entry, ok = ledger.LookupScoped(localscheduler.ClaimKey{
-				Gaggle: gaggle, Provider: provider, ExternalID: item.ID,
-			})
+		key := claimsclient.Key{ExternalID: item.ID}
+		if gaggle != "" {
+			key = claimsclient.Key{Gaggle: gaggle, Provider: provider, ExternalID: item.ID}
 		}
+		entry, ok := claims.Lookup(key)
 		if ok && entry.ExpiresAt.After(observedAt) {
 			continue
 		}

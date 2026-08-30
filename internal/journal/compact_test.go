@@ -368,7 +368,7 @@ func TestInstanceLogCompactionBoundsSustainedTickJournal(t *testing.T) {
 	}
 
 	// 10 compactions (500 ticks / 50) advance the generation 10 times;
-	// cleanupStaleInstanceEventsGeneration must keep this bounded rather than
+	// cleanupStaleInstanceEventsGenerations must keep this bounded rather than
 	// accumulating one file per compaction forever.
 	entries, err := os.ReadDir(dir)
 	if err != nil {

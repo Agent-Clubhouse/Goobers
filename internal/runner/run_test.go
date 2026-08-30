@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/remediation"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
@@ -6749,10 +6750,41 @@ func agenticImplementGateMachine(t *testing.T) *workflow.Machine {
 	return m
 }
 
+func agenticImplementNeedsHumanGateMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "acme-web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "implement",
+		Tasks: []apiv1.Task{
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "produce a diff", Next: "review"},
+			{Name: "park-needs-human", Type: apiv1.TaskDeterministic, Inputs: map[string]string{"status": "needs-human"}, Run: &apiv1.DeterministicRun{Command: []string{"issue-close-out"}}, Next: workflow.TargetAbort},
+			{Name: "park-remediation", Type: apiv1.TaskDeterministic, Run: &apiv1.DeterministicRun{Command: []string{"record-remediation"}}, Next: workflow.TargetEscalate},
+		},
+		Gates: []apiv1.Gate{{
+			Name:      "review",
+			Evaluator: apiv1.EvaluatorAgentic,
+			Agentic:   &apiv1.AgenticGate{Goober: "reviewer"},
+			Branches: map[string]string{
+				"pass":                  workflow.TerminalComplete,
+				"needs-changes":         "implement",
+				"fail":                  "park-needs-human",
+				workflow.BranchEscalate: "park-remediation",
+			},
+		}},
+	}
+	m, err := workflow.Compile(workflow.Definition{Name: "agentic-needs-human-fixture", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile agentic needs-human fixture machine: %v", err)
+	}
+	return m
+}
+
 // newAgenticGateRunner mirrors newTestRunnerWithDeterministic but wires a fake
 // agentic reviewer and a GateGooberCapabilities map, for #294's gate-envelope
-// capability sourcing.
-func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, reviewer invoke.Goober, gateCaps map[string][]string) *Runner {
+// capability sourcing. The second return is the runner's runs directory, for
+// tests that inspect the journal a Start writes.
+func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, reviewer invoke.Goober, gateCaps map[string][]string) (*Runner, string) {
 	t.Helper()
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -6779,7 +6811,7 @@ func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, review
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return r
+	return r, filepath.Join(instanceRoot, "runs")
 }
 
 // TestRunnerAgenticGateSourcesGooberCapabilities is #294: an agentic gate
@@ -6805,7 +6837,7 @@ func TestRunnerAgenticGateSourcesGooberCapabilities(t *testing.T) {
 
 	t.Run("sources the reviewer goober's declared capabilities", func(t *testing.T) {
 		reviewer := &capturingReviewer{}
-		r := newAgenticGateRunner(t, byTask, reviewer, map[string][]string{"reviewer": {"agent:model"}})
+		r, runsDir := newAgenticGateRunner(t, byTask, reviewer, map[string][]string{"reviewer": {"agent:model"}})
 		if res := start(t, r); res.Phase != journal.PhaseCompleted {
 			t.Fatalf("phase = %q, want completed", res.Phase)
 		}
@@ -6815,11 +6847,32 @@ func TestRunnerAgenticGateSourcesGooberCapabilities(t *testing.T) {
 		if got := reviewer.gotCaps; len(got) != 1 || got[0] != "agent:model" {
 			t.Fatalf("gate envelope capabilities = %v, want [agent:model]", got)
 		}
+
+		// PR #3528 finding-1 producer half, local tier: Start journals the
+		// map as the trusted gate-goober-capabilities input, readable through
+		// PinnedGateGooberCapabilities — the run's pin, not the
+		// currently-served config, is what post-start consumers (the daemon
+		// credential plane) resolve an agentic gate's reviewer grants from.
+		rd, err := journal.OpenRead(filepath.Join(runsDir, "run-agentic-gate"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := rd.Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pinned, found, err := PinnedGateGooberCapabilities(rd, identity)
+		if err != nil || !found {
+			t.Fatalf("PinnedGateGooberCapabilities = (%v, %t, %v), want the pinned map", pinned, found, err)
+		}
+		if got := pinned["reviewer"]; len(got) != 1 || got[0] != "agent:model" {
+			t.Fatalf("pinned reviewer capabilities = %v, want [agent:model]", got)
+		}
 	})
 
 	t.Run("no mapping means no capabilities (fail-closed)", func(t *testing.T) {
 		reviewer := &capturingReviewer{}
-		r := newAgenticGateRunner(t, byTask, reviewer, nil)
+		r, _ := newAgenticGateRunner(t, byTask, reviewer, nil)
 		_ = start(t, r)
 		if !reviewer.called {
 			t.Fatal("reviewer was never invoked")
@@ -7359,6 +7412,81 @@ func TestRunnerFastFailsEmptyDiffFromAgenticStage(t *testing.T) {
 	if reviewer.called {
 		t.Fatal("reviewer was invoked — an agentic stage's empty diff must fast-fail on review-1 without a reviewer call")
 	}
+}
+
+func TestRunnerEmptyDiffDoesNotDispatchNeedsHumanDisposition(t *testing.T) {
+	coder := &capturingReviewer{}
+	reviewer := &capturingReviewer{}
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	runsDir := filepath.Join(instanceRoot, "runs")
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{rec: rec, byTask: map[string]stubTaskResult{
+				"run-empty-needs-human:park-remediation": {status: apiv1.ResultSuccess},
+			}}, nil
+		},
+		NewAgentic: func(gooberName string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+			if gooberName == "reviewer" {
+				return reviewer, nil
+			}
+			return coder, nil
+		},
+		Worktrees:    wtMgr,
+		RunsDir:      runsDir,
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   "run-empty-needs-human",
+		Machine: agenticImplementNeedsHumanGateMachine(t),
+		Gaggle:  "acme-web",
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseEscalated {
+		t.Fatalf("phase = %q, want escalated remediation", res.Phase)
+	}
+	if reviewer.called {
+		t.Fatal("reviewer was invoked — the empty diff must be rejected before a needs-human disposition")
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, "run-empty-needs-human"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventGateEvaluated && event.Gate == "review" {
+			if event.Target != "park-remediation" || event.Name == "" || event.Ref == nil {
+				t.Fatalf("review gate event = %+v, want remediation target with preserved verdict artifact", event)
+			}
+			verdictBytes, err := rd.ArtifactBytes(*event.Ref)
+			if err != nil {
+				t.Fatalf("read preserved verdict artifact: %v", err)
+			}
+			var verdict apiv1.Verdict
+			if err := json.Unmarshal(verdictBytes, &verdict); err != nil {
+				t.Fatalf("decode preserved verdict artifact: %v", err)
+			}
+			if verdict.Decision != apiv1.VerdictFail || !strings.Contains(verdict.Rationale, "no committed changes") {
+				t.Fatalf("preserved verdict = %+v, want synthesized fail evidence", verdict)
+			}
+			return
+		}
+	}
+	t.Fatal("review gate evaluation was not journaled")
 }
 
 // TestRunnerDeterministicSubjectEmptyDiffStillReviews is #415's collision guard
@@ -7915,6 +8043,97 @@ type remediationEvidenceDeterministic struct {
 	t       *testing.T
 	rec     ArtifactRecorder
 	ciCalls int
+}
+
+type addendumCapturingGoober struct {
+	addendum string
+}
+
+func (g *addendumCapturingGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.addendum = env.InstructionAddendum
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (g *addendumCapturingGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+func remediationAugmentMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "acme-web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start: "detect",
+		Tasks: []apiv1.Task{
+			{
+				Name: "detect", Type: apiv1.TaskDeterministic, Goal: "classify failure",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "implement",
+			},
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "implement fix", Next: workflow.TerminalComplete},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "remediation-augment", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile remediation augment machine: %v", err)
+	}
+	return machine
+}
+
+func TestRunnerAugmentsAgenticStageWithRetrievedRemediationExamples(t *testing.T) {
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	capturingGoober := &addendumCapturingGoober{}
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{
+				rec: rec,
+				byTask: map[string]stubTaskResult{
+					"run-remediation-addendum:detect": {
+						status: apiv1.ResultSuccess, summary: "compiler failure: undefined symbol",
+					},
+				},
+			}, nil
+		},
+		NewAgentic: func(name string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+			if name == "coder" {
+				return capturingGoober, nil
+			}
+			return &fixedVerdictReviewer{verdict: apiv1.Verdict{Decision: apiv1.VerdictPass}}, nil
+		},
+		Automated: gate.NewAutomatedEvaluator(), Worktrees: wtMgr, RunsDir: filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		Remediation: remediation.NewIndex([]remediation.Record{{
+			ID:             "past:implement:2",
+			Stage:          "implement",
+			ErrorClass:     "",
+			FailureExcerpt: "undefined symbol",
+			FixExcerpt:     "add the missing import",
+			DidItHelp:      true,
+			OutcomeKnown:   true,
+			Integrity:      "trusted",
+		}}, nil),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: "run-remediation-addendum", Machine: remediationAugmentMachine(t),
+		Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+	if !strings.Contains(capturingGoober.addendum, "Outcome-verified historical remediation examples") ||
+		!strings.Contains(capturingGoober.addendum, "add the missing import") {
+		t.Fatalf("instruction addendum = %q", capturingGoober.addendum)
+	}
 }
 
 func (d *remediationEvidenceDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
@@ -8479,5 +8698,102 @@ func TestRunnerLegitimateChangedRepassConverges(t *testing.T) {
 				t.Fatalf("review gate event has duplicateDiff=true; want false (content changed legitimately)")
 			}
 		}
+	}
+}
+
+// TestRunnerInvokesExistingFixHandlerOnImplementNoWork proves the runner
+// invokes the ExistingFix handler when implement returns no-work with
+// existingFixCommit set (issue #3236) — preventing a permanent reclaim loop.
+func TestRunnerInvokesExistingFixHandlerOnImplementNoWork(t *testing.T) {
+	machine := taskReservedNextFixtureMachine(t, workflow.TargetAbort)
+	runID := "run-existing-fix"
+	byTask := map[string]stubTaskResult{
+		runID + ":implement": {
+			status:  apiv1.ResultNoWork,
+			summary: "nothing to do",
+			outputs: map[string]interface{}{"existingFixCommit": "abc123def456"},
+		},
+	}
+
+	var handlerCalled bool
+	var handlerOutcome ExistingFixOutcome
+	handler := func(ctx context.Context, o ExistingFixOutcome) error {
+		handlerCalled = true
+		handlerOutcome = o
+		return nil
+	}
+
+	r, _ := newTestRunner(t, byTask, nil)
+	r.cfg.ExistingFix = handler
+
+	item := &apiv1.BacklogItem{ID: "123", Title: "Test issue"}
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Item:    item,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if !handlerCalled {
+		t.Fatalf("ExistingFix handler was not called")
+	}
+	if handlerOutcome.ItemID != "123" {
+		t.Fatalf("handler ItemID = %q, want 123", handlerOutcome.ItemID)
+	}
+	if handlerOutcome.Commit != "abc123def456" {
+		t.Fatalf("handler Commit = %q, want abc123def456", handlerOutcome.Commit)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+}
+
+func TestRunnerResolvesExistingFixItemFromClaimLedger(t *testing.T) {
+	machine := taskReservedNextFixtureMachine(t, workflow.TargetAbort)
+	runID := "run-existing-fix-claimed"
+	byTask := map[string]stubTaskResult{
+		runID + ":implement": {
+			status:  apiv1.ResultNoWork,
+			summary: "nothing to do",
+			outputs: map[string]interface{}{"existingFixCommit": "abc123def456"},
+		},
+	}
+
+	var got ExistingFixOutcome
+	r, _ := newTestRunner(t, byTask, nil)
+	r.cfg.ClaimedItems = func(resolvedRunID string) ([]string, error) {
+		if resolvedRunID != runID {
+			t.Fatalf("ClaimedItems run id = %q, want %q", resolvedRunID, runID)
+		}
+		return []string{"456"}, nil
+	}
+	r.cfg.ExistingFix = func(_ context.Context, o ExistingFixOutcome) error {
+		got = o
+		return nil
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got.ItemID != "456" {
+		t.Fatalf("handler ItemID = %q, want 456", got.ItemID)
+	}
+	if got.Commit != "abc123def456" {
+		t.Fatalf("handler Commit = %q, want abc123def456", got.Commit)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
 	}
 }

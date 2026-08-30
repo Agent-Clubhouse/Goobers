@@ -1,6 +1,12 @@
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // TriggerType differentiates workflow archetypes without splitting the taxonomy:
 // workflows run manually, consume backlog items, or react to a schedule,
@@ -141,6 +147,14 @@ type ReadinessConditions struct {
 	// would wrongly block them on an unrelated open implementation PR.
 	// +optional
 	MaxOpenPRs int32 `json:"maxOpenPRs,omitempty" yaml:"maxOpenPRs,omitempty"`
+	// DesiredConcurrentRuns targets a minimum concurrent occupancy for queue-processing
+	// workflows. When set and less than or equal to MaxConcurrentRuns, the scheduler maintains
+	// refill intent to keep active runs at this level when eligible work is available.
+	// Budget/deadline rejections retain refill intent and retry with backoff. A workflow
+	// remains trigger-driven unless this is explicitly set (#3491).
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	DesiredConcurrentRuns int32 `json:"desiredConcurrentRuns,omitempty" yaml:"desiredConcurrentRuns,omitempty"`
 }
 
 // TaskType is the execution kind of a task: code-driven or goober-executed.
@@ -181,6 +195,11 @@ type Task struct {
 	// type=agentic; must be empty when type=deterministic (TSK-010).
 	// +optional
 	Goober string `json:"goober,omitempty" yaml:"goober,omitempty"`
+	// Experiment routes this task across two or three declared safety arms.
+	// Variants overlay task inputs; selection and outcomes are journaled by the
+	// runner and promotion remains an external approval decision.
+	// +optional
+	Experiment *BanditExperiment `json:"experiment,omitempty" yaml:"experiment,omitempty"`
 	// Run defines the code to execute for a deterministic task. Required when
 	// type=deterministic; must be empty when type=agentic.
 	// +optional
@@ -218,6 +237,10 @@ type Task struct {
 	// set so policy changes cannot silently outrun capability admission.
 	// +optional
 	PolicyActions []string `json:"policyActions,omitempty" yaml:"policyActions,omitempty"`
+	// NestedAgentPolicy controls child-agent delegation and context. It is
+	// admitted before execution; omitted preserves legacy non-nested behavior.
+	// +optional
+	NestedAgentPolicy *NestedAgentPolicy `json:"nestedAgentPolicy,omitempty" yaml:"nestedAgentPolicy,omitempty"`
 	// RequiredCapabilities are the runner (toolchain/platform) capabilities this
 	// stage needs on the runner it executes on — e.g. `dotnet@8`, `xcode`,
 	// `os=windows` (RRQ-1/#1101, docs/design/v1/polyglot-stacks.md §5). Distinct
@@ -320,6 +343,129 @@ type Task struct {
 	// Next is the name of the next state (task or gate). Empty means terminal.
 	// +optional
 	Next string `json:"next,omitempty" yaml:"next,omitempty"`
+	// RunsOn declares where this stage may execute (DSL 3.0, dsl-3.0.md §2):
+	// OS, resource minimums, toolchain capability tags, and required runner
+	// restrictions. Every field is optional — unspecified means no requirement
+	// (explicit-complete semantics, D3). Interpreters before 3.0 refuse the
+	// field; the compiler enforces that, not the shared schema.
+	// +optional
+	RunsOn *RunsOn `json:"runsOn,omitempty" yaml:"runsOn,omitempty"`
+	// RepoFrom names the producer stage(s) whose run-branch state this repo
+	// stage consumes — the declared repo-handoff edge (DSL 3.0, dsl-3.0.md §4).
+	// Scalar or list in YAML; a list means "the run branch head as of the most
+	// recent listed producer that executed". The 3.0 compiler computes the
+	// required coverage as reaching definitions over the stage graph and
+	// rejects an undeclared chain, an uncovered producer, or a dead entry
+	// (WF022).
+	// +optional
+	RepoFrom RepoFrom `json:"repoFrom,omitempty" yaml:"repoFrom,omitempty"`
+	// CommitsRepo declares that this deterministic stage's script/command
+	// commits to the run branch — the explicit producer opt-in of DSL 3.0's
+	// repo-handoff model (dsl-3.0.md §4, delivery decision 002). Agentic
+	// non-readonly stages and the ref-advancing builtins are producers by
+	// classification and never need it; a make/sh stage is a non-producer
+	// unless it sets this. In 3.0 the runtime records the branch head around
+	// every non-producer repo stage and fails closed on an undeclared advance.
+	// +optional
+	CommitsRepo bool `json:"commitsRepo,omitempty" yaml:"commitsRepo,omitempty"`
+}
+
+// BanditArm declares one variant and the gate strength required to evaluate it.
+type BanditArm struct {
+	Name    string            `json:"name" yaml:"name"`
+	Variant map[string]string `json:"variant,omitempty" yaml:"variant,omitempty"`
+	// GateLevel is the required safety strength for the gate evaluating this arm:
+	// automated=1, agentic=2, human=3.
+	GateLevel int `json:"gateLevel" yaml:"gateLevel"`
+}
+
+// BanditExperiment configures bounded exploration and promotion criteria.
+type BanditExperiment struct {
+	Seed              uint64      `json:"seed" yaml:"seed"`
+	Arms              []BanditArm `json:"arms" yaml:"arms"`
+	ExplorationBudget int         `json:"explorationBudget" yaml:"explorationBudget"`
+	MinSamples        int         `json:"minSamples" yaml:"minSamples"`
+	MaxFailureRate    float64     `json:"maxFailureRate" yaml:"maxFailureRate"`
+	MinLift           float64     `json:"minLift" yaml:"minLift"`
+	Confidence        float64     `json:"confidence" yaml:"confidence"`
+	TrainWindow       int         `json:"trainWindow" yaml:"trainWindow"`
+	EvalWindow        int         `json:"evalWindow" yaml:"evalWindow"`
+	DefaultGateLevel  int         `json:"defaultGateLevel" yaml:"defaultGateLevel"`
+}
+
+// RunsOn is a stage's placement requirement block (DSL 3.0, dsl-3.0.md §2 /
+// decision record D2). It is the scheduling surface; credential grants keep
+// the separate `capabilities:` field unchanged.
+type RunsOn struct {
+	// OS is the required operating system — a validated enum, never a free
+	// token (the #659 supersession). Empty means no OS requirement: placement
+	// policy prefers, and will wait bounded for, a Linux-class runner when the
+	// inventory has one.
+	// +kubebuilder:validation:Enum=linux;windows;macOS
+	// +optional
+	OS string `json:"os,omitempty" yaml:"os,omitempty"`
+	// CPU is the minimum CPU as a Kubernetes quantity string (e.g. "2000m").
+	// Minimums become pod resource requests in mode 3; limits come from the
+	// matched runner's ceiling, never from the stage. Advisory on local modes.
+	// +optional
+	CPU string `json:"cpu,omitempty" yaml:"cpu,omitempty"`
+	// Memory is the minimum memory as a Kubernetes quantity string (e.g. "4Gi").
+	// +optional
+	Memory string `json:"memory,omitempty" yaml:"memory,omitempty"`
+	// Disk is the minimum disk as a Kubernetes quantity string (e.g. "20Gi").
+	// +optional
+	Disk string `json:"disk,omitempty" yaml:"disk,omitempty"`
+	// Capabilities is the open toolchain tag set — DSL 2.0's
+	// requiredCapabilities moved, not re-invented (internal/runnercap grammar,
+	// exact set membership, no ranges). os=* tokens are rejected here (CAP004):
+	// the OS field above is the only platform vocabulary in a 3.0 document.
+	// MaxItems bounds CRD CEL validation cost (#3168, dsl-3.0.md open point 7).
+	// +kubebuilder:validation:MaxItems=32
+	// +optional
+	Capabilities []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	// Restrictions are isolation effects the matched runner must ENFORCE,
+	// drawn from the closed v1 effect list (decision record D7): network:none,
+	// network:allowlist, fs:readonly-except-workspace, tmp:ephemeral,
+	// env:default-deny. Unknown tokens are rejected with a suggestion (CAP005).
+	// MaxItems bounds CRD CEL validation cost (#3168, dsl-3.0.md open point 7).
+	// +kubebuilder:validation:MaxItems=8
+	// +optional
+	Restrictions []string `json:"restrictions,omitempty" yaml:"restrictions,omitempty"`
+}
+
+// RepoFrom is a scalar-or-list stage reference list: YAML/JSON may spell one
+// producer as a bare string or several as a list (dsl-3.0.md §4, delivery
+// decision 001 — CI-repass lanes create true fan-in a scalar cannot express).
+// It marshals back to the scalar form when it holds exactly one entry.
+type RepoFrom []string
+
+// UnmarshalJSON accepts either a single string or a list of strings.
+// sigs.k8s.io/yaml routes YAML through JSON, so this covers both encodings.
+func (r *RepoFrom) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var list []string
+		if err := json.Unmarshal(trimmed, &list); err != nil {
+			return err
+		}
+		*r = list
+		return nil
+	}
+	var scalar string
+	if err := json.Unmarshal(trimmed, &scalar); err != nil {
+		return fmt.Errorf("repoFrom must be a stage name or a list of stage names: %w", err)
+	}
+	*r = RepoFrom{scalar}
+	return nil
+}
+
+// MarshalJSON emits the scalar spelling for a single producer and the list
+// spelling otherwise, matching how authors write the field.
+func (r RepoFrom) MarshalJSON() ([]byte, error) {
+	if len(r) == 1 {
+		return json.Marshal(r[0])
+	}
+	return json.Marshal([]string(r))
 }
 
 // RetryPolicy declares how many times, and how far apart, the runner retries a
@@ -434,6 +580,47 @@ func (m WorkspaceMode) IsRepoBacked() bool {
 // branch with the intent that it commit there.
 func (m WorkspaceMode) IsWritableRepo() bool { return m == WorkspaceRepo }
 
+// EffectiveWorkspace resolves the workspace mode a task DECLARES, applying
+// the one precedence Task.Workspace documents: Run.Workspace when set
+// (authoritative for a deterministic task), else Task.Workspace. Empty means
+// the task declared nothing — and what "" provisions is the substrate's
+// reading, not this function's: the local runner and the worker treat it as
+// the historical writable repo worktree, a stage pod checks nothing out.
+//
+// This is the ONE resolution of that precedence. The runner, the engine's
+// continuity record, its pod dispatch and the credential plane all decide
+// something from the declared workspace (which worktree to cut, whether to
+// hand the stage its predecessor's commits, which capability the checkout
+// needs), and the first divergent private copy — reading Run.Workspace alone
+// — silently dropped a predecessor's commits for a task-level `workspace:
+// repo` (#3803 review). A shared method makes that divergence impossible to
+// write rather than something a review has to catch.
+func (t Task) EffectiveWorkspace() WorkspaceMode {
+	return EffectiveWorkspace(t.Workspace, t.Run)
+}
+
+// EffectiveWorkspace is Task.EffectiveWorkspace over the two declarations
+// carried separately, for a caller that holds them apart from the Task (the
+// engine's pod dispatch input carries Run and the task-level Workspace as
+// two fields).
+func EffectiveWorkspace(task WorkspaceMode, run *DeterministicRun) WorkspaceMode {
+	if run != nil && run.Workspace != "" {
+		return run.Workspace
+	}
+	return task
+}
+
+// EffectiveWorkspace resolves the workspace an agentic gate's reviewer
+// declares (AgenticGate.Workspace). Empty for an unset declaration and for a
+// non-agentic gate, which evaluates in no workspace at all; as with
+// Task.EffectiveWorkspace, what "" provisions is the substrate's reading.
+func (g Gate) EffectiveWorkspace() WorkspaceMode {
+	if g.Agentic == nil {
+		return ""
+	}
+	return g.Agentic.Workspace
+}
+
 // EvaluatorKind is the pluggable evaluator a gate uses. A gate has exactly one
 // (GT-003, GT-016).
 type EvaluatorKind string
@@ -451,6 +638,7 @@ const (
 // failing/negative outcome MUST follow a defined branch — never a silent pass
 // (GT-002).
 // +kubebuilder:validation:XValidation:rule="!has(self.maxRepasses) || self.evaluator != 'human'",message="maxRepasses is only valid for automated or agentic gates"
+// +kubebuilder:validation:XValidation:rule="!has(self.runsOn) || self.evaluator == 'agentic'",message="runsOn is only valid for agentic gates"
 type Gate struct {
 	// Name uniquely identifies this state within the workflow.
 	// +kubebuilder:validation:Required
@@ -480,6 +668,29 @@ type Gate struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
+	// RunsOn declares the placement an AGENTIC gate's reviewer requires (DSL
+	// 3.0, dsl-3.0.md §2 "Gates"; Goobernetes-E2E-Core decision 001): the
+	// identical placement block tasks carry, with the identical gaggle-floor
+	// merge and the derived harness:<reviewer goober's harness> tag. Optional
+	// — absent, the reviewer evaluates in the daemon/control plane exactly as
+	// before the field existed. Valid only when evaluator=agentic (automated
+	// and human gates are control-plane by definition, ruling 2), and a
+	// declared block must carry cpu AND memory (ruling 5: the gaggle floor
+	// has no quantities and a review is the most expensive stage class in a
+	// lane, so an inherited envelope would silently under-provision).
+	//
+	// Honoured at execution by the engine (rulings 7–8): a gate pinned to a
+	// non-self runner evaluates in a dispatcher-created pod on that runner's
+	// queue — the reviewer runs in review mode, the pod computes the
+	// reviewer diff itself and surrenders a Verdict the engine re-validates
+	// — and a placement self satisfies pins self and evaluates in-process. A
+	// DAEMON-scheduled run (internal/runner) has no gate dispatch arm yet:
+	// there, a gate placement self cannot satisfy is refused at boot
+	// (workflow.refused) rather than run outside its declared isolation.
+	// Interpreters before 3.0 refuse the field; the compiler enforces that,
+	// not the shared schema.
+	// +optional
+	RunsOn *RunsOn `json:"runsOn,omitempty" yaml:"runsOn,omitempty"`
 }
 
 // AutomatedGate runs a deterministic coded check.

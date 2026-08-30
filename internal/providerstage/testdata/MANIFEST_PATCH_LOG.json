@@ -1,9 +1,25 @@
 {
-  "snapshotSha256": "4fffe1d6101a968d105ede4da63269b02eb8f240f1848d72e455406f4e041dee",
+  "snapshotSha256": "50704e11fb434a0e02f5043bdfcdb4912e6d7d5f359a4b65333ea14b84203bbf",
   "changes": [
     {
       "version": 1,
       "description": "Initial snapshot: the subcommand→capability-requirement table as committed when the drift guard landed. Breaks nothing — this records the live contract as-is; motivated by #2386 (TBH-1) silently narrowing backlog-dedupe/gather-issue-context/gather-pr-context requirements and breaking every shipped config."
+    },
+    {
+      "version": 2,
+      "description": "Require exact separately brokered issue-read capabilities for built-in commands so issue-write grants cannot release GOOBERS_CRED_GITHUB_ISSUES_READ; existing workflows that need issue reads must declare the explicit read capability."
+    },
+    {
+      "version": 3,
+      "description": "Add pr-comment-watch: label open goober PRs carrying unaddressed human comments (github:issues:write via label-issue). Purely additive — a new command with one requirement; no existing command's requirements change, so every shipped config keeps compiling."
+    },
+    {
+      "version": 4,
+      "description": "Add file-issues (#2251, TBH-1 first slice): the nomination workflows' deterministic issue filer. --check requires the exact github:issues:read grant for the dedupe scan; the write path requires github:issues:write. The filer never applies goobers:approved (the SEC-047 trust label is a maintainer's decision), so it declares no github:issues:approve requirement. Purely additive — a new command; no existing command's requirements change, so every shipped config keeps compiling."
+    },
+    {
+      "version": 5,
+      "description": "file-issues (#2251, decision 004): declare github:issues:approve as an OPTIONAL use. The filer applies goobers:approved only to a nomination whose evidence matches a deterministic tool finding (go vet / golangci-lint / go test) byte for byte, and only when the autoApprove=deterministic-only INPUT opts in — the manifest sees only args, so it cannot require the credential on that input; admission requires it through the policy table instead (the input prescribes approve-issue, whose contract requires github:issues:approve). The label add goes through the approve credential alone. Optional is never required, so no shipped config's admission changes."
     }
   ]
 }

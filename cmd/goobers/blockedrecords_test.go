@@ -18,6 +18,7 @@ import (
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -678,9 +679,12 @@ func TestFilterBlockedEligibilityProviderFailureKeepsAffectedItemParked(t *testi
 		}
 	}))
 	t.Cleanup(api.Close)
+	// The 503 is here to make the blocker lookup fail, not to exercise the
+	// retry ladder: spend the transient-retry budget up front so the failure
+	// is immediate instead of costing 1+2+4+8 = 15s of real backoff sleep.
 	provider := providers.NewGitHubProvider("test-token", func(p *providers.GitHubProvider) {
 		p.BaseURL = api.URL
-	})
+	}, providers.WithMaxTransientRetries(0))
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	key509 := blockedRecordKey(repo, "509")
 	key510 := blockedRecordKey(repo, "510")
@@ -728,9 +732,10 @@ func TestFilterBlockedEligibilityProviderFailureKeepsUnresolvedItemParked(t *tes
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(api.Close)
+	// As above: the assertion is on the parked outcome, not on retry timing.
 	provider := providers.NewGitHubProvider("test-token", func(p *providers.GitHubProvider) {
 		p.BaseURL = api.URL
-	})
+	}, providers.WithMaxTransientRetries(0))
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
 	key510 := blockedRecordKey(repo, "510")
 	recs := map[string]blockedRecord{
@@ -1340,15 +1345,20 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 		t.Fatalf("filtered = %v, want only 511 — unresolved record must stay parked without blocking healthy items", filtered)
 	}
 
-	path := filepath.Join(t.TempDir(), blockedRecordsFileName)
+	schedulerDir := t.TempDir()
+	path := filepath.Join(schedulerDir, blockedRecordsFileName)
 	if err := saveBlockedRecords(path, recs); err != nil {
+		t.Fatal(err)
+	}
+	store, err := stateclient.NewFile(stateclient.FileConfig{Dir: schedulerDir})
+	if err != nil {
 		t.Fatal(err)
 	}
 	verifiedSkips := make(map[string]blockedEligibilitySkip, len(skipped))
 	for _, skip := range skipped {
 		verifiedSkips[skip.ItemID] = skip
 	}
-	reconciled, reconciledSkips, err := reconcileBlockedEligibilityLocked(path, repo, append([]providers.WorkItem(nil), candidates...), nil, nil, verifiedSkips)
+	reconciled, reconciledSkips, err := reconcileBlockedEligibilityLocked(t.Context(), store, repo, append([]providers.WorkItem(nil), candidates...), nil, nil, verifiedSkips)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1361,7 +1371,7 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 	if err := saveBlockedRecords(path, map[string]blockedRecord{malformedKey: replacement}); err != nil {
 		t.Fatal(err)
 	}
-	reconciled, reconciledSkips, err = reconcileBlockedEligibilityLocked(path, repo, append([]providers.WorkItem(nil), candidates...), nil, nil, verifiedSkips)
+	reconciled, reconciledSkips, err = reconcileBlockedEligibilityLocked(t.Context(), store, repo, append([]providers.WorkItem(nil), candidates...), nil, nil, verifiedSkips)
 	if err != nil {
 		t.Fatal(err)
 	}

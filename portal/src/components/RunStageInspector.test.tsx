@@ -222,6 +222,54 @@ describe("run stage inspector", () => {
     expect(screen.queryByText(/^model:/)).not.toBeInTheDocument();
   });
 
+  it("shows placement provenance when the attempt's journal recorded it (#3515)", async () => {
+    const client = stubClient([
+      attempt({
+        number: 1,
+        status: "success",
+        placement: {
+          runner: "linux-large",
+          node: "aks-linux-0001",
+          host: "goobers-stage-review-4x2vq",
+          os: "linux",
+          pod: "goobers-stage-review-4x2vq",
+          queuedAt: "2026-08-22T10:00:00Z",
+          podStartedAt: "2026-08-22T10:00:09Z",
+        },
+      }),
+    ]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    expect(await screen.findByText("runner: linux-large")).toBeInTheDocument();
+    expect(screen.getByText("node: aks-linux-0001")).toBeInTheDocument();
+    expect(screen.getByText("pod: goobers-stage-review-4x2vq")).toBeInTheDocument();
+    expect(screen.getByText("queue wait: 9s")).toBeInTheDocument();
+    // The pod's hostname is redundant once a real node is known.
+    expect(screen.queryByText(/^host:/)).not.toBeInTheDocument();
+  });
+
+  it("labels a local attempt's hostname as a host, never as a node (#3515)", async () => {
+    const client = stubClient([
+      attempt({
+        number: 1,
+        status: "success",
+        placement: { runner: "self", host: "build-box-07", os: "darwin" },
+      }),
+    ]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    expect(await screen.findByText("host: build-box-07")).toBeInTheDocument();
+    expect(screen.queryByText(/^node:/)).not.toBeInTheDocument();
+  });
+
+  it("omits the placement row for journals recorded before provenance existed", async () => {
+    const client = stubClient([attempt({ number: 1, status: "success" })]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    await screen.findByText("success");
+    expect(screen.queryByLabelText("Attempt placement")).not.toBeInTheDocument();
+  });
+
   it("only shows attempts started by the selected sequence", async () => {
     const client = stubClient([
       attempt({ number: 1, startedSeq: 1, finishedSeq: 2 }),
@@ -353,8 +401,34 @@ describe("run stage inspector", () => {
     renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "View content" }));
-    expect(await screen.findByText(body)).toBeInTheDocument();
+    const preview = await screen.findByText(body);
+    expect(preview).toBeInTheDocument();
+    expect(preview.className).not.toContain("artifact-content-bounded");
     expect(client.getArtifact).toHaveBeenCalledWith("run-1", "sha256:abc");
+  });
+
+  it("caps an oversized artifact preview with an internal scroll bound (#fix-artifact-windowing)", async () => {
+    const body = "x".repeat(20_001);
+    const bytes = new TextEncoder().encode(body).buffer;
+    const client = stubClient(
+      [
+        attempt({
+          artifacts: [{ name: "big.log", digest: "sha256:big", size: body.length, mediaType: "text/plain" }],
+        }),
+      ],
+      { digest: "sha256:big", mediaType: "text/plain", size: body.length, etag: null, bytes },
+    );
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View content" }));
+    await waitFor(() => {
+      expect(document.querySelector(".artifact-content")).not.toBeNull();
+    });
+    const preview = document.querySelector(".artifact-content") as HTMLElement;
+
+    expect(preview.className).toContain("artifact-content-bounded");
+    expect(window.getComputedStyle(preview).maxHeight).toBe("320px");
+    expect(window.getComputedStyle(preview).overflowY).toBe("auto");
   });
 
   it("keeps an open artifact preview readable across initial, light, and dark themes", async () => {

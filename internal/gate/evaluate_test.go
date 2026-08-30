@@ -416,6 +416,9 @@ func TestEvaluatorSeparatesInfrastructureAndPolicyRepassBudgets(t *testing.T) {
 		exhausted.Attempt != DefaultMaxInfrastructureRepasses+1 {
 		t.Fatalf("exhausted infrastructure evaluation = %+v", exhausted)
 	}
+	if exhausted.Reason != ReasonInfrastructureBudgetExhausted {
+		t.Fatalf("infrastructure escalation reason = %q, want %q", exhausted.Reason, ReasonInfrastructureBudgetExhausted)
+	}
 	if got := ev.RepassAttempts["local-ci"]; got != 0 {
 		t.Fatalf("policy repasses for local-ci = %d, want 0", got)
 	}
@@ -433,6 +436,35 @@ func TestEvaluatorSeparatesInfrastructureAndPolicyRepassBudgets(t *testing.T) {
 	}
 	if restarted.Escalated || restarted.Target != "local-ci" || restarted.Attempt != 1 {
 		t.Fatalf("infrastructure budget after policy remediation = %+v, want fresh retry budget", restarted)
+	}
+}
+
+func TestEvaluatorJournalsPolicyEscalationReason(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "local-gate",
+		Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "status-equals"},
+		Branches: map[string]string{
+			OutcomePass:       "open-pr",
+			OutcomeFail:       "implement",
+			wf.BranchEscalate: "park-escalated",
+		},
+	}
+	run := newTestJournal(t)
+	ev := &Evaluator{
+		Automated:   &fakeAutomated{outcomes: []string{OutcomeFail, OutcomeFail}},
+		MaxRepasses: 1,
+		Journal:     run,
+		IsReentry:   func(target string) bool { return target == "implement" },
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "implement", apiv1.ResultEnvelope{}, "", false); err != nil {
+			t.Fatalf("Evaluate #%d: %v", i+1, err)
+		}
+	}
+	events := readGateEvents(t, run)
+	if len(events) != 2 || events[1].Runner["reason"] != ReasonRepassBudgetExhausted {
+		t.Fatalf("journaled escalation = %+v, want policy reason %q", events, ReasonRepassBudgetExhausted)
 	}
 }
 
@@ -760,6 +792,46 @@ func TestEvaluatorReusesCachedVerdictWithoutReviewerCall(t *testing.T) {
 			t.Fatalf("reviewCalls = %d, want 1 (the live reviewer must run once CachedVerdict is cleared)", rev.reviewCalls)
 		}
 	})
+}
+
+func TestEvaluatorEscalatesCachedInvalidNeedsHumanVerdict(t *testing.T) {
+	g := apiv1.Gate{
+		Name:      "reviewgate",
+		Evaluator: apiv1.EvaluatorAgentic,
+		Branches: map[string]string{
+			string(apiv1.VerdictPass): wf.TerminalComplete,
+			string(apiv1.VerdictFail): "human",
+			wf.BranchEscalate:         "remediation",
+		},
+	}
+	run := newTestJournal(t)
+	cached := &apiv1.Verdict{
+		Decision:    apiv1.VerdictFail,
+		Rationale:   "The approach needs a policy decision.",
+		SourceRunID: "run-original",
+	}
+	ev := &Evaluator{
+		Journal:       run,
+		CachedVerdict: cached,
+		IsNeedsHumanTarget: func(target string) bool {
+			return target == "human"
+		},
+	}
+
+	result, err := ev.Evaluate(context.Background(), g, apiv1.InvocationEnvelope{}, "review", apiv1.ResultEnvelope{}, "", false)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if result.Target != "remediation" || !result.Escalated || !result.CacheHit {
+		t.Fatalf("result = %+v, want escalated cached verdict to remediation", result)
+	}
+	if result.Verdict != cached || result.VerdictArtifact == nil {
+		t.Fatalf("result = %+v, want cached verdict and preserved artifact", result)
+	}
+	events := readGateEvents(t, run)
+	if len(events) != 1 || events[0].Target != "remediation" || !events[0].Escalated {
+		t.Fatalf("gate events = %+v, want one escalated remediation event", events)
+	}
 }
 
 // TestEvaluatorFastFailsEmptyDiffOnReviewOne is issue #415's reviewer sibling:

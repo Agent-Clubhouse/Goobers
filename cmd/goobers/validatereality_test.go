@@ -82,7 +82,9 @@ func TestValidateWarnsOnUnclaimedRunnerCapability(t *testing.T) {
 	for _, want := range []string{
 		`WARNING CAP003 Gaggle/example: requires runner capability "nosuchtoolchain@42"`,
 		"runner.capabilities in instance.yaml does not claim it",
-		"refuse to place every run",
+		// The consequence clause names schedule-time refusal, not a boot
+		// kill: #2936/#2860 made the daemon start regardless.
+		"refuses to place every run of this gaggle at schedule time",
 		`requires runner capability "python@3.12"`,
 		"exact string match",
 	} {
@@ -203,7 +205,7 @@ func TestAppendMaxOpenPRWarnings(t *testing.T) {
 				}},
 			}
 			report := &validate.Report{}
-			warnings := appendStaticRealityWarnings("", "config", &instance.Config{Repos: tc.repos}, set, report)
+			warnings := appendStaticRealityWarnings("", "config", &instance.Config{Repos: tc.repos}, set, nil, report, false)
 			if got := len(warnings); (got == 1) != tc.wantWarning {
 				t.Fatalf("warning count = %d, want warning %t: %#v", got, tc.wantWarning, warnings)
 			}
@@ -223,6 +225,270 @@ func TestAppendMaxOpenPRWarnings(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAppendInstanceRootFinding is decision 003 ruling 3's static half
+// (RNR005): a 3.0 stage whose resolved ELIGIBLE runner set excludes every
+// self entry, but whose command or built-in kind needs the daemon's
+// instance root, warns — always a warning, never promoted, and never firing
+// for a stage self is still eligible for (an empty runsOn, or an unrelated
+// command) regardless of whether runsOn.restrictions is declared. Exercises
+// appendPlacementFindings directly — the same solve RNR001 runs — rather
+// than a second, standalone check that could disagree with it: the mustFix
+// this replaces was exactly that disagreement (a self entry that DECLARES
+// the restriction a stage requires stays eligible, proven by the second
+// case below, which the old restrictions-non-empty check could not tell
+// from the off-self case).
+func TestAppendInstanceRootFinding(t *testing.T) {
+	ledgerTask := apiv1.Task{
+		Name: "query-backlog", Type: apiv1.TaskDeterministic,
+		Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+		RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
+	}
+	tests := []struct {
+		name             string
+		task             apiv1.Task
+		selfRestrictions []string
+		wantWarning      bool
+		wantText         []string
+	}{
+		{
+			name:        "ledger command resolves off self",
+			task:        ledgerTask,
+			wantWarning: true,
+			wantText: []string{
+				`command [goobers backlog-query --claim]`,
+				"cannot resolve to the daemon's own host (self)",
+				"eligible runner set for this stage is [pod]",
+				"refused at dispatch",
+				"instance_root_required",
+			},
+		},
+		{
+			// The mustFix false positive this test suite exists to close:
+			// runsOn.restrictions is non-empty (same task as above), but the
+			// self entry DECLARES the restriction the stage requires, so it
+			// stays in the eligible set and must not warn.
+			name:             "self declares the required restriction: no warning",
+			task:             ledgerTask,
+			selfRestrictions: []string{"network:allowlist"},
+			wantWarning:      false,
+		},
+		{
+			name: "kind resolves off self, warns naming the kind",
+			task: apiv1.Task{
+				Name:   "publish-telemetry",
+				Type:   apiv1.TaskDeterministic,
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "external-telemetry"}},
+				Inputs: map[string]string{"kind": "external-telemetry"},
+				RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
+			},
+			wantWarning: true,
+			wantText:    []string{`inputs.kind="external-telemetry"`},
+		},
+		{
+			// #3881's static ablation: ci-poll used to be the case above.
+			// Now that dispatch-exec runs it in-process in the pod
+			// (cmd/goobers/dispatchcipoll.go), an off-self ci-poll is a
+			// SUPPORTED placement, so warning about it would send an author
+			// to restructure a workflow that is already correct. Paired with
+			// the external-telemetry case, this pins which kinds are in the
+			// refusal and which are not — a blanket removal of the kind arm
+			// would pass this and fail that.
+			name: "ci-poll off self no longer warns: it has a pod-side path",
+			task: apiv1.Task{
+				Name:         "await-ci",
+				Type:         apiv1.TaskDeterministic,
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}},
+				Inputs:       map[string]string{"kind": "ci-poll"},
+				Capabilities: []string{"provider:pr:write"},
+				RunsOn:       &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
+			},
+			wantWarning: false,
+		},
+		{
+			name: "empty runsOn is trivially satisfied by self",
+			task: apiv1.Task{
+				Name:   "query-backlog",
+				Type:   apiv1.TaskDeterministic,
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+				RunsOn: &apiv1.RunsOn{},
+			},
+			wantWarning: false,
+		},
+		{
+			name: "restrictions on a command that does not need the instance root",
+			task: apiv1.Task{
+				Name:   "push-branch",
+				Type:   apiv1.TaskDeterministic,
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "push-branch"}},
+				RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
+			},
+			wantWarning: false,
+		},
+		{
+			name: "restrictions on a read-only backlog-query does not warn",
+			task: apiv1.Task{
+				Name:   "sample-ready-pool",
+				Type:   apiv1.TaskDeterministic,
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--read-only"}},
+				RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
+			},
+			wantWarning: false,
+		},
+		{
+			name: "no runsOn at all does not warn (2.0 shape)",
+			task: apiv1.Task{
+				Name: "query-backlog",
+				Type: apiv1.TaskDeterministic,
+				Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+			},
+			wantWarning: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			selfRestrictions := make([]instance.RunnerRestriction, len(tc.selfRestrictions))
+			for i, r := range tc.selfRestrictions {
+				selfRestrictions[i] = instance.RunnerRestriction(r)
+			}
+			cfg := &instance.Config{
+				Runners: []instance.RunnerEntry{
+					{Name: "self", Host: "self", Restrictions: selfRestrictions},
+					// pod satisfies every known restriction, so a stage's
+					// placement is unsatisfiable-by-everyone (RNR001) only
+					// for reasons unrelated to what these cases test —
+					// isolating RNR005 from RNR001/quantity noise from the
+					// same solve.
+					{Name: "pod", Host: "ghcr.io/example/pod:v1", Restrictions: instance.KnownRunnerRestrictions()},
+				},
+			}
+			set := &instance.ConfigSet{
+				Workflows: []apiv1.Workflow{{
+					ObjectMeta: metav1.ObjectMeta{Name: "backlog-curation"},
+					DSLVersion: "3.0",
+					Spec: apiv1.WorkflowSpec{
+						Gaggle: "example",
+						Start:  tc.task.Name,
+						Tasks:  []apiv1.Task{tc.task},
+					},
+				}},
+			}
+			var got []struct {
+				severity validate.Severity
+				kind     string
+				name     string
+				path     string
+				message  string
+			}
+			add := func(code validate.WarningCode, severity validate.Severity, kind, name, file, path, message string) {
+				if code != validate.RunnerInstanceRootRequired {
+					return // ignore RNR001/RNR004 noise from the same solve
+				}
+				got = append(got, struct {
+					severity validate.Severity
+					kind     string
+					name     string
+					path     string
+					message  string
+				}{severity, kind, name, path, message})
+			}
+			appendPlacementFindings("", "config", cfg, set, nil, false, add)
+			if (len(got) != 0) != tc.wantWarning {
+				t.Fatalf("RNR005 warnings = %#v, want warning %t", got, tc.wantWarning)
+			}
+			if !tc.wantWarning {
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("RNR005 warnings = %#v, want exactly one", got)
+			}
+			w := got[0]
+			if w.severity != validate.Warning {
+				t.Errorf("severity = %q, want %q (RNR005 is never promoted)", w.severity, validate.Warning)
+			}
+			if w.kind != "Workflow" || w.name != "backlog-curation" {
+				t.Errorf("scope = %s/%s, want Workflow/backlog-curation", w.kind, w.name)
+			}
+			if w.path != "/spec/tasks/0/runsOn" {
+				t.Errorf("path = %q, want /spec/tasks/0/runsOn", w.path)
+			}
+			for _, want := range tc.wantText {
+				if !strings.Contains(w.message, want) {
+					t.Errorf("message missing %q: %s", want, w.message)
+				}
+			}
+		})
+	}
+}
+
+// remoteRestrictedInstanceRootV30WorkflowYAML declares runsOn.restrictions
+// on a ledger-touching command (backlog-dedupe, this PR's headline
+// silent-wrong-result case) — end-to-end coverage of RNR005 through the
+// real `goobers validate` seam, not only appendPlacementFindings directly.
+const remoteRestrictedInstanceRootV30WorkflowYAML = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "3.0"
+metadata:
+  name: win-build
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "@every 24h"
+  start: build
+  tasks:
+    - name: build
+      type: deterministic
+      goal: run a ledger-touching stage that only a network:allowlist runner satisfies
+      runsOn:
+        restrictions: [network:allowlist]
+      capabilities: ["github:issues:read"]
+      run:
+        command: ["goobers", "backlog-dedupe"]
+`
+
+// TestValidateWarnsInstanceRootOffSelf is TestAppendInstanceRootFinding's
+// end-to-end counterpart through the actual `goobers validate` CLI seam
+// (the ablation gap a prior review pass found: the leaf-level test alone
+// left the wiring into appendStaticRealityWarnings uncovered).
+func TestValidateWarnsInstanceRootOffSelf(t *testing.T) {
+	root := initDeterministicDemo(t)
+	declareInventory(t, root)
+	declareRemoteRunner(t, root,
+		"  - name: pod\n    host: ghcr.io/example/pod:v1\n    provides:\n      os: linux\n    restrictions: [network:allowlist]\n")
+	writeSecondWorkflow(t, root, remoteRestrictedInstanceRootV30WorkflowYAML)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code = %d, want 0 (RNR005 is always a warning); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"WARNING RNR005 Workflow/win-build",
+		"cannot resolve to the daemon's own host (self)",
+		`command [goobers backlog-dedupe]`,
+		"eligible runner set for this stage is [pod]",
+		"refused at dispatch",
+		"instance_root_required",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("validate stdout missing %q:\n%s", want, stdout)
+		}
+	}
+
+	// Negative: the self runner ALSO declares network:allowlist, so self
+	// stays eligible — RNR005 must not fire even though runsOn.restrictions
+	// is still declared non-empty.
+	replaceInFile(t, filepath.Join(root, "instance.yaml"),
+		"    provides:\n      os: linux\n",
+		"    provides:\n      os: linux\n    restrictions: [network:allowlist]\n")
+	code, stdout, stderr = runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("self-satisfies validate code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "RNR005") {
+		t.Errorf("self declaring the required restriction must not warn RNR005:\n%s", stdout)
 	}
 }
 
@@ -557,5 +823,138 @@ func TestGitHubRealityFetchers(t *testing.T) {
 	provider.BaseURL = failing.URL
 	if _, err := provider.RepositoryLabelNames(context.Background(), repo); err == nil {
 		t.Fatal("expected an error for a non-200 response")
+	}
+}
+
+// TestAppendWindowsAVExclusionWarnings is #3480's declaration half (RNR006):
+// a runners: entry claiming provides.os: windows warns unless it asserts
+// provides.windows.avExclusionsVerified: true; an explicit false is reported
+// in its own words; Linux runners and a runner-less instance never warn.
+func TestAppendWindowsAVExclusionWarnings(t *testing.T) {
+	tests := []struct {
+		name        string
+		runners     []instance.RunnerEntry
+		wantWarning bool
+		wantText    []string
+	}{
+		{
+			name:        "windows runner without the claim block",
+			runners:     []instance.RunnerEntry{{Name: "windows-shell", Host: "ghcr.io/example/win:v1", Provides: instance.RunnerProvides{OS: instance.RunnerOSWindows}}},
+			wantWarning: true,
+			wantText:    []string{`runner "windows-shell"`, "does not declare provides.windows.avExclusionsVerified", "goobers doctor --av-exclusions", "#3480"},
+		},
+		{
+			name: "windows runner declaring false",
+			runners: []instance.RunnerEntry{{Name: "windows-shell", Host: "ghcr.io/example/win:v1", Provides: instance.RunnerProvides{
+				OS: instance.RunnerOSWindows, Windows: &instance.RunnerWindowsClaims{AVExclusionsVerified: false}}}},
+			wantWarning: true,
+			wantText:    []string{"declares provides.windows.avExclusionsVerified: false"},
+		},
+		{
+			name: "windows runner declaring true",
+			runners: []instance.RunnerEntry{{Name: "windows-shell", Host: "ghcr.io/example/win:v1", Provides: instance.RunnerProvides{
+				OS: instance.RunnerOSWindows, Windows: &instance.RunnerWindowsClaims{AVExclusionsVerified: true}}}},
+		},
+		{
+			name:    "linux runner never warns",
+			runners: []instance.RunnerEntry{{Name: "linux-shell", Host: "ghcr.io/example/linux:v1", Provides: instance.RunnerProvides{OS: instance.RunnerOSLinux}}},
+		},
+		{
+			name: "no inventory never warns",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			set := &instance.ConfigSet{}
+			report := &validate.Report{}
+			cfg := &instance.Config{Runners: tc.runners}
+			var got []realityWarning
+			for _, w := range appendStaticRealityWarnings("", "config", cfg, set, nil, report, false) {
+				if w.warning.Code == validate.RunnerAVExclusionsUnverified {
+					got = append(got, w)
+				}
+			}
+			if (len(got) == 1) != tc.wantWarning {
+				t.Fatalf("RNR006 warnings = %#v, want warning %t", got, tc.wantWarning)
+			}
+			if !tc.wantWarning {
+				return
+			}
+			w := got[0]
+			if w.warning.Severity != validate.Warning {
+				t.Errorf("severity = %q, want %q (RNR006 is never promoted)", w.warning.Severity, validate.Warning)
+			}
+			if w.warning.Scope != "Instance/runners[windows-shell]" {
+				t.Errorf("scope = %q", w.warning.Scope)
+			}
+			if w.path != "/runners/0/provides/windows/avExclusionsVerified" {
+				t.Errorf("path = %q", w.path)
+			}
+			for _, want := range tc.wantText {
+				if !strings.Contains(w.warning.Explanation, want) {
+					t.Errorf("warning missing %q: %s", want, w.warning.Explanation)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateWarnsWindowsAVExclusionsUndeclared drives RNR006 through the
+// real `goobers validate` on a scaffolded instance: the warning is printed
+// with the stable code, exit stays 0 (advisory), and declaring the claim
+// silences it.
+func TestValidateWarnsWindowsAVExclusionsUndeclared(t *testing.T) {
+	root := initDeterministicDemo(t)
+	declareInventory(t, root)
+	declareRemoteRunner(t, root,
+		"  - name: windows-shell\n    host: ghcr.io/example/win:v1\n    provides:\n      os: windows\n      shell: true\n")
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code = %d, want 0 (RNR006 is always a warning); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"WARNING RNR006 Instance/runners[windows-shell]",
+		"does not declare provides.windows.avExclusionsVerified",
+		"goobers doctor --av-exclusions",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("validate stdout missing %q:\n%s", want, stdout)
+		}
+	}
+
+	// RNR006 is strict-neutral, like DVL020. A new warning that lands on
+	// configs nobody edited must not turn an existing --strict pipeline red
+	// on upgrade — and because declaring `false` does NOT silence RNR006,
+	// promoting it would leave `true` as the only way to get green, putting
+	// an operator under CI pressure to assert a trusted claim they have not
+	// earned.
+	// Clear the scaffold's unedited template markers first: PLACEHOLDER001
+	// is a finding of its own, and this assertion is about RNR006 alone.
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+	code, stdout, stderr = runArgs(t, "validate", "--strict", root)
+	if code != 0 {
+		t.Fatalf("validate --strict code = %d, want 0 (RNR006 is strict-neutral); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "WARNING RNR006") {
+		t.Errorf("--strict must still PRINT RNR006, only not promote it:\n%s", stdout)
+	}
+
+	replaceInFile(t, filepath.Join(root, "instance.yaml"),
+		"      os: windows\n      shell: true\n",
+		"      os: windows\n      shell: true\n      windows:\n        avExclusionsVerified: true\n")
+	code, stdout, stderr = runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("declared validate code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "RNR006") {
+		t.Errorf("a declared avExclusionsVerified: true must not warn RNR006:\n%s", stdout)
 	}
 }

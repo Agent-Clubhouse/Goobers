@@ -216,6 +216,12 @@ func (r *configReloader) poll(now time.Time) error {
 	}
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
 	r.setup.Interventions.Replace(interventionDefinitions(definitions, r.setup.LegacyRunner))
+	if r.setup.CredentialPlane != nil {
+		// Keep the credential plane's grants in step with the applied config:
+		// a reloaded gaggle's project/reference repos and goober declarations
+		// must govern the next resolve, not the boot-time snapshot.
+		r.setup.CredentialPlane.Replace(credentialPlaneDefinitionsFromSet(definitions.Set))
+	}
 	r.setup.Runner = definitions.Runner
 	r.setup.Runners = definitions.Runners
 	r.setup.Definitions = definitions.Set

@@ -957,7 +957,19 @@ func newFakeCLI(output fixtureCLIOutput) *fakeCLI {
 		dsl := supportmatrix.GetDSL().Versions()
 		if output.DSLMode == "mismatch" {
 			dsl = append([]supportmatrix.Version(nil), dsl...)
-			dsl[0].Level = supportmatrix.LevelUnsupported
+			// Simulate a live binary whose reported DSL surface diverges from
+			// the toolkit's recorded release.json: flip a currently-SUPPORTED
+			// version to unsupported. Flipping dsl[0] no longer works — in
+			// Versions()' ascending order dsl[0] is 1.4, which now ships
+			// unsupported (issue #3507), so re-marking it unsupported is a
+			// no-op that leaves dsl equal to the recorded surface and produces
+			// no mismatch for verifyToolkit to detect.
+			for i := range dsl {
+				if dsl[i].Level == supportmatrix.LevelSupported {
+					dsl[i].Level = supportmatrix.LevelUnsupported
+					break
+				}
+			}
 		}
 		cli.outputs["versions --json"], _ = json.Marshal(versionsOutput{DSLVersions: dsl})
 	}

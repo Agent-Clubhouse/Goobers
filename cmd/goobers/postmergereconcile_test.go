@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +13,40 @@ import (
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
+
+func TestReconcilePostMergeDispatchesOpenPRScanToGitea(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/api/v1/repos/your-org/your-repo/pulls" {
+			t.Errorf("request path = %q, want Gitea pulls endpoint", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "token test-token" {
+			t.Errorf("Authorization = %q, want Gitea token", got)
+			http.Error(w, "wrong token", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte("[]"))
+	}))
+	t.Cleanup(server.Close)
+
+	root := initDemo(t)
+	configureRemediationGitea(t, root, server.URL)
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubPRWrite)), "test-token")
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubIssuesWrite)), "test-token")
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubBranchDelete)), "test-token")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), filepath.Join(t.TempDir(), "reconcile-result.json"))
+
+	code, stdout, stderr := runArgs(t, "reconcile-post-merge", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if requests == 0 {
+		t.Fatal("Gitea received no open-PR scan")
+	}
+}
 
 func postMergeReconcileEnv(t *testing.T, serverURL string) string {
 	t.Helper()
@@ -47,6 +83,7 @@ func TestReconcilePostMergeProcessesLateMerge(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
+
 	if !strings.Contains(stdout, "reconciled 1") {
 		t.Fatalf("stdout = %q, want one reconciled pull request", stdout)
 	}
@@ -384,5 +421,63 @@ func TestReconcilePostMergeRejectsUnboundedBatch(t *testing.T) {
 	code, _, stderr := runArgs(t, "reconcile-post-merge", "--max", "101")
 	if code != 1 || !strings.Contains(stderr, "max must be between 1 and 100") {
 		t.Fatalf("code = %d, stderr = %q, want bounded-batch rejection", code, stderr)
+	}
+}
+
+func TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry(t *testing.T) {
+	var polls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		polls++
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"pullRequestId": 359, "status": "completed", "description": "No work item reference",
+			"repository": map[string]interface{}{
+				"id": "repo-guid", "name": "repo",
+				"project": map[string]string{"id": "project-guid", "name": "project"},
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	root := initDemo(t)
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "contoso", Project: "project", Name: "repo"}
+	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	t.Setenv(executor.CredentialEnvVar(string(capability.ADOPRWrite)), "ado-token")
+	previous := newADOProviderForStage
+	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
+			func(provider *providers.ADOProvider) { provider.BaseURL = server.URL }), nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = previous })
+	if err := recordPostMergeTimeout(root, repo, "359", time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("record queue timeout: %v", err)
+	}
+	// reconcile-post-merge writes its provider-stage result file relative to
+	// the working directory, so this must not run in the package directory.
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "reconcile-post-merge", root)
+	if code != 0 {
+		t.Fatalf("first cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	entry := loadPostMergeReconcileEntry(t, root, repo, "359")
+	if entry.State != postMergeReconcileCompleted || entry.CompletedAt == nil {
+		t.Fatalf("reconcile entry = %+v, want completed", entry)
+	}
+	if entry.Actions.BranchCleanup || entry.Actions.SiblingFanOut ||
+		entry.Actions.ResolvedUnpark || entry.Actions.EscalationUnpark ||
+		entry.Actions.DemotionUnpark {
+		t.Fatalf("reconcile actions = %+v, want GitHub-only actions left uncheckpointed", entry.Actions)
+	}
+	firstPolls := polls
+
+	code, stdout, stderr = runArgs(t, "reconcile-post-merge", root)
+	if code != 0 {
+		t.Fatalf("second cycle: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if polls != firstPolls {
+		t.Fatalf("polls after retry = %d, want unchanged at %d", polls, firstPolls)
 	}
 }

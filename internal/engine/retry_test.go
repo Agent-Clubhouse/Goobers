@@ -328,7 +328,7 @@ func TestAttemptFailureClass(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			class, err := attemptFailureClass(tc.err)
+			class, err := ClassifyDispatchFailure(tc.err)
 			if tc.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "unclassifiable") {
 					t.Fatalf("err = %v, want the unclassifiable fail-closed error", err)
@@ -336,7 +336,7 @@ func TestAttemptFailureClass(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("attemptFailureClass: %v", err)
+				t.Fatalf("ClassifyDispatchFailure: %v", err)
 			}
 			if class != tc.wantClass {
 				t.Fatalf("class = %q, want %q", class, tc.wantClass)
@@ -369,18 +369,20 @@ func TestSideEffectingStageTimeoutRedispatch(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var calls int
+			var attempts []int
 			var ts testsuite.WorkflowTestSuite
 			env := temporaltest.NewWorkflowEnvironment(&ts)
 			env.ExecuteWorkflow(func(ctx workflow.Context) error {
 				task := retrySpec(&apiv1.RetryPolicy{MaxAttempts: 3}).Tasks[0]
 				task.PolicyActions = []string{"external-mutation"}
-				_, err := dispatchWithRetry(ctx, task, &runJournal{}, nil, func(workflow.Context) (stageActivityResult, error) {
+				_, err := dispatchWithRetry(ctx, task, &runJournal{}, nil, func(_ workflow.Context, attempt int) (stageActivityResult, error) {
 					calls++
+					attempts = append(attempts, attempt)
 					if calls == 1 {
 						return stageActivityResult{}, temporal.NewTimeoutError(test.timeoutType, nil)
 					}
 					return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}}, nil
-				})
+				}, nil)
 				return err
 			})
 
@@ -394,6 +396,11 @@ func TestSideEffectingStageTimeoutRedispatch(t *testing.T) {
 			}
 			if calls != test.wantCalls {
 				t.Fatalf("dispatches = %d, want %d", calls, test.wantCalls)
+			}
+			for i, attempt := range attempts {
+				if attempt != i+1 {
+					t.Fatalf("attempt sequence = %v, want 1..%d", attempts, len(attempts))
+				}
 			}
 		})
 	}

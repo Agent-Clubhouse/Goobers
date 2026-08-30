@@ -113,7 +113,10 @@ spec:
   gaggles: [web]
 `)
 	writeFile(t, filepath.Join(dir, "gaggles", "web"), "gaggle.yaml", gaggleYAML("web"))
-	workflow := strings.Replace(workflowYAML("web", "deploy"), "kind: Workflow\n", "kind: Workflow\ndslVersion: \"1.4\"\n", 1)
+	// Pin a NON-default loadable version (3.0, opted-in via the manifest above)
+	// to prove the loader retains the workflow's own dslVersion rather than
+	// normalizing it. 1.4 no longer works here — it is dropped (#3507).
+	workflow := strings.Replace(workflowYAML("web", "deploy"), `dslVersion: "2.0"`, `dslVersion: "3.0"`, 1)
 	writeFile(t, filepath.Join(dir, "gaggles", "web"), "workflow.yaml", workflow)
 
 	l, err := NewLoader("")
@@ -128,8 +131,8 @@ spec:
 	if len(workflows) != 1 {
 		t.Fatalf("rendered workflows = %d, want 1", len(workflows))
 	}
-	if got := workflows[0].(*v1alpha1.Workflow).DSLVersion; got != "1.4" {
-		t.Fatalf("dslVersion = %q, want 1.4", got)
+	if got := workflows[0].(*v1alpha1.Workflow).DSLVersion; got != "3.0" {
+		t.Fatalf("dslVersion = %q, want 3.0", got)
 	}
 }
 
@@ -148,7 +151,7 @@ spec:
   gaggles: [web]
 `)
 	writeFile(t, filepath.Join(dir, "gaggles", "web"), "gaggle.yaml", gaggleYAML("web"))
-	workflow := strings.Replace(workflowYAML("web", "deploy"), "kind: Workflow\n", "kind: Workflow\ndslVersion: \"9.9\"\n", 1)
+	workflow := strings.Replace(workflowYAML("web", "deploy"), `dslVersion: "2.0"`, `dslVersion: "9.9"`, 1)
 	writeFile(t, filepath.Join(dir, "gaggles", "web"), "workflow.yaml", workflow)
 
 	l, err := NewLoader("")
@@ -412,6 +415,7 @@ spec:
 func workflowYAML(gaggle, name string) string {
 	return `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: ` + name + `
 spec:

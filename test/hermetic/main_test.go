@@ -127,6 +127,37 @@ func TestPlatformToolSpecsIncludeRequiredStackTools(t *testing.T) {
 	}
 }
 
+// PowerShell is allowlisted so the cmd/goobers PowerShell quoting tests execute
+// under the hermetic tier, but it must never be mandatory: a machine without it
+// has to keep running the suite, with those tests skipping themselves.
+func TestPlatformToolSpecsAllowPowerShellWithoutRequiringIt(t *testing.T) {
+	for _, tt := range []struct {
+		goos  string
+		tools []string
+	}{
+		{goos: "linux", tools: []string{"pwsh", "powershell"}},
+		{goos: "darwin", tools: []string{"pwsh", "powershell"}},
+		{goos: "windows", tools: []string{"pwsh"}},
+	} {
+		t.Run(tt.goos, func(t *testing.T) {
+			specs := make(map[string]toolSpec)
+			for _, spec := range platformToolSpecs(tt.goos) {
+				specs[spec.name] = spec
+			}
+			for _, name := range tt.tools {
+				spec, listed := specs[name]
+				if !listed {
+					t.Errorf("%s tool %q is not allowlisted", tt.goos, name)
+					continue
+				}
+				if spec.required {
+					t.Errorf("%s tool %q is required, want optional", tt.goos, name)
+				}
+			}
+		})
+	}
+}
+
 func TestHermeticEnvironmentReplacesAmbientToolAndNetworkSettings(t *testing.T) {
 	got := hermeticEnvironment([]string{
 		"HOME=/home/tester",

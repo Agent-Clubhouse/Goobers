@@ -37,13 +37,119 @@ const (
 	TelemetryStatsPath           = V1Prefix + "/telemetry/stats"
 	TelemetryErrorSignaturesPath = V1Prefix + "/telemetry/error-signatures"
 	TelemetryErrorsPath          = V1Prefix + "/telemetry/errors"
-	EventsPath                   = V1Prefix + "/events"
+	// TelemetryImplementationOutcomesPath is the curation-evidence read
+	// (decision 005 R4 / finding 002 C3): the terminal implementation runs
+	// that claimed a backlog item, with the run's last error and gate verdict
+	// retained as bounded evidence. Derived entirely from the rollup rows the
+	// stats and errors routes already project — same low sensitivity, same
+	// gaggle filter — and split out only because `backlog-health --feedback`
+	// needs the run-to-item join neither of those two carries.
+	TelemetryImplementationOutcomesPath = V1Prefix + "/telemetry/implementation-outcomes"
+	EventsPath                          = V1Prefix + "/events"
 
 	// Tier-2 human-intervention mutation routes. The CLI and dashboard use this
 	// same API-first surface, behind the shared access-control seam.
 	RunStageApprovePath  = V1Prefix + "/runs/{run}/stages/{stage}/approve"
 	RunStageOverridePath = V1Prefix + "/runs/{run}/stages/{stage}/override"
 	RunStageRerunPath    = V1Prefix + "/runs/{run}/stages/{stage}/rerun"
+
+	// Write-plane routes (distributed-state-and-coordination.md §7, DS2/DS3):
+	// the claims plane wraps the daemon-owned claim ledger's existing
+	// operations (claim ≙ acquire, renew, release, settle) so ledger-touching
+	// stages in non-daemon pods stop needing GOOBERS_INSTANCE_ROOT; the
+	// trigger plane ingests external triggers through the same
+	// validate/dedupe/mint path the pending-triggers sweep uses; the HITL
+	// plane resolves an escalated run (approve/deny/redirect). Modes 1/2 keep
+	// their file seams — these routes are the non-local path.
+	ClaimAcquirePath = V1Prefix + "/claims/acquire"
+	ClaimRenewPath   = V1Prefix + "/claims/renew"
+	ClaimReleasePath = V1Prefix + "/claims/release"
+	ClaimSettlePath  = V1Prefix + "/claims/settle"
+	// ClaimListPath is the claims plane's read (decision 005 amendment /
+	// finding 002 C1): a pod principal lists the claims its own run holds, or
+	// its gaggle namespace's current holders plus released history, so the
+	// selection filters every ledger-touching CLI stage runs in-process today
+	// (pre-existing claims, dedupe, ready-pool, PR claim-availability,
+	// failure-streak deprioritization) keep their input off the daemon. POST
+	// like its sibling routes: it is served under the same claims lock and
+	// carries a body, not a query string.
+	ClaimListPath            = V1Prefix + "/claims/list"
+	TriggerIngestPath        = V1Prefix + "/triggers"
+	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
+	// RunJournalEmitPath is the journal plane (§8, DS4): batched live journal
+	// events for one run, idempotent per op, sequence assigned at acceptance
+	// by the daemon's single writer. Span adoption by digest rides the same
+	// route as a span-kind op rather than a second endpoint.
+	RunJournalEmitPath = V1Prefix + "/runs/{run}/journal/emit"
+
+	// CredentialResolvePath is the credential plane's resolve endpoint
+	// (distributed-state-and-coordination.md §11, DS9/DS10): a stage pod,
+	// authenticated as its run, receives short-lived credentials scoped to
+	// exactly its stage's declared credential capabilities. Stage pods are the
+	// only intended callers; dispatch payloads carry opaque references only
+	// (#2931), and resolution happens at stage start — never inherited from
+	// dispatch time.
+	CredentialResolvePath = V1Prefix + "/credentials/resolve"
+
+	// RunStageSurrenderPath is the surrender plane's write route (#3699): a
+	// mode-3 stage pod's dispatch-exec entrypoint PUTs its SurrenderedResult
+	// (ResultEnvelope + mutation facts) here before exiting, identity-keyed
+	// by run/stage/attempt rather than content-addressed — the same reason
+	// it cannot ride the blob plane below (dispatcher.SurrenderPlane's own
+	// doc comment). Stage pods are the only intended callers, authenticated
+	// as their own run like the credential and journal planes.
+	RunStageSurrenderPath = V1Prefix + "/runs/{run}/stages/{stage}/attempts/{attempt}/surrender"
+
+	// BlobDigestPath is the blob plane's digest route (decision 010/012, §2a):
+	// a mode-3 stage pod's BlobClient (internal/dispatcher/blob.go,
+	// BlobPathPrefix) fetches and puts content-addressed artifacts by sha256
+	// digest over this route instead of a shared filesystem. Stage pods are
+	// the only intended callers, like the credential plane — the digest itself
+	// carries no run scope to check, so containment is "authenticated pod
+	// principal or refused" rather than a per-run comparison.
+	BlobDigestPath = V1Prefix + "/blobs/{digest}"
+
+	// GaggleStateKeyPath is the scheduler-state plane (decision 005 R3 /
+	// finding 002 "plane clients" §3, plan step C2): ONE small gaggle-scoped
+	// key/value route for the scheduler state that is NOT a claim —
+	// blocked.json's learned-dependency records, the per-scan backlog cursor
+	// (#2067 fairness), the reconcile-post-merge ledger, and the
+	// gather-sibling-context cache. GET reads the value and its ETag; PUT
+	// writes it under an `If-Match` (or `If-None-Match: *`) precondition, so
+	// a read-modify-write split across two round trips is a compare-and-swap
+	// and never a lost update. The daemon serves both halves under the SAME
+	// per-key lock the in-process path takes (blocked.json and the scan
+	// cursor: claims.lock), which is what keeps a runner-driven 2.0 run and
+	// an engine-driven 3.0 run in one atomicity domain rather than two.
+	//
+	// The key namespace is closed (stateclient.ValidKey): a pod principal
+	// cannot address claims.json, the instance config, or anything outside
+	// the four state shapes above.
+	GaggleStateKeyPath = V1Prefix + "/gaggles/{gaggle}/state/{key}"
+
+	// The cross-run journal plane (decision 005 R1 option 1, finding 002 C4).
+	//
+	// A pod principal reads ITS OWN run's journal through the existing
+	// run-scoped read routes above (RunEventsPath / StageAttemptsPath /
+	// RunArtifactPath), contained by the handler to the run its token names.
+	// The reads that legitimately cross runs do NOT get a general cross-run
+	// reader: each is a purpose-built, gaggle-scoped question whose answer the
+	// daemon derives, so what is exposable is decided on the daemon rather
+	// than by whatever a stage chooses to fetch.
+	//
+	// JournalRunPhasePath answers "what phase did run X end in" — the input
+	// backlog-query --claim's terminalFailureStreak walks an item's released
+	// claim history for. Nothing but the phase crosses the boundary.
+	JournalRunPhasePath = V1Prefix + "/journal/run-phase"
+	// JournalConflictTouchesPath answers "which runs recorded base-sync
+	// conflicts, over which files, since T" — gather-implement-context's
+	// hot-file history. File names and run ids only; no artifact bytes.
+	JournalConflictTouchesPath = V1Prefix + "/journal/conflict-touches"
+	// JournalUnpushedWorkPath answers "is there stranded committed-but-never-
+	// published work for the items this run holds" (#3366). The daemon derives
+	// the asking run's items from its own claim ledger rather than trusting
+	// the request, so a pod cannot ask about an item it does not hold.
+	JournalUnpushedWorkPath = V1Prefix + "/journal/unpushed-work"
 )
 
 // RouteID is the stable cross-adapter identity of a versioned route.
@@ -69,11 +175,43 @@ const (
 	RouteTelemetryStats           RouteID = "telemetryStats"
 	RouteTelemetryErrorSignatures RouteID = "telemetryErrorSignatures"
 	RouteTelemetryErrors          RouteID = "telemetryErrors"
-	RouteEvents                   RouteID = "events"
+
+	RouteTelemetryImplementationOutcomes RouteID = "telemetryImplementationOutcomes"
+
+	RouteEvents RouteID = "events"
 
 	RouteApproveStage  RouteID = "approveStage"
 	RouteOverrideStage RouteID = "overrideStage"
 	RouteRerunStage    RouteID = "rerunStage"
+
+	RouteClaimAcquire      RouteID = "claimAcquire"
+	RouteClaimRenew        RouteID = "claimRenew"
+	RouteClaimRelease      RouteID = "claimRelease"
+	RouteClaimSettle       RouteID = "claimSettle"
+	RouteClaimList         RouteID = "claimList"
+	RouteTriggerIngest     RouteID = "triggerIngest"
+	RouteResolveEscalation RouteID = "resolveEscalation"
+	RouteJournalEmit       RouteID = "journalEmit"
+	RouteCredentialResolve RouteID = "credentialResolve"
+	RouteStageSurrender    RouteID = "stageSurrender"
+
+	// RouteBlobGet and RouteBlobPut are the blob plane (decision 010/012):
+	// two methods sharing BlobDigestPath, distinct RouteIDs because a Route
+	// carries exactly one Method.
+	RouteBlobGet RouteID = "blobGet"
+	RouteBlobPut RouteID = "blobPut"
+
+	// RouteGaggleStateGet and RouteGaggleStatePut are the scheduler-state
+	// plane (decision 005 R3 / finding 002 C2): two methods sharing
+	// GaggleStateKeyPath, distinct RouteIDs for the same reason the blob
+	// plane's pair are.
+	RouteGaggleStateGet RouteID = "gaggleStateGet"
+	RouteGaggleStatePut RouteID = "gaggleStatePut"
+
+	// The cross-run journal plane (decision 005 R1, finding 002 C4).
+	RouteJournalRunPhase        RouteID = "journalRunPhase"
+	RouteJournalConflictTouches RouteID = "journalConflictTouches"
+	RouteJournalUnpushedWork    RouteID = "journalUnpushedWork"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -143,6 +281,14 @@ const (
 	// MutationBudget covers approve/override/rerun. Kept at the bounded budget:
 	// a mutation that cannot be accepted in 8s is not going to be accepted.
 	MutationBudget = 8 * time.Second
+	// CredentialResolveBudget covers the credential plane's resolve route. Its
+	// time is an outbound token mint, not a query: a GitHub App installation
+	// token exchange is bounded at 30s (internal/githubapp mintTimeout), and
+	// the budget must contain one cold mint plus margin. The route is called
+	// by stage pods, never by the portal, so the portal's 10s client abort
+	// (cost_test.go clientAbort) does not bound it — the pod-side consumer
+	// owns its own retry-on-infra-budget discipline (DS7/#3361).
+	CredentialResolveBudget = 45 * time.Second
 )
 
 var v1Routes = []Route{
@@ -164,11 +310,85 @@ var v1Routes = []Route{
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteTelemetryImplementationOutcomes, Method: http.MethodGet, Path: TelemetryImplementationOutcomesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: MutationBudget},
+
+	// The claims and trigger planes advance the workflow machinery rather than
+	// intervene in one existing run, so they are workflow-execution actions —
+	// the same class the CLI's `run` carries — and stay outside the
+	// runtime-mutation parity contract (they are machine seams, not operator
+	// capabilities every surface must expose). Escalation resolution is
+	// operator recovery of a terminal run, classified like `run abort`
+	// (maintenance) until the portal grows a first-class escalation surface.
+	{ID: RouteClaimAcquire, Method: http.MethodPost, Path: ClaimAcquirePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteClaimRenew, Method: http.MethodPost, Path: ClaimRenewPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteClaimRelease, Method: http.MethodPost, Path: ClaimReleasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteClaimSettle, Method: http.MethodPost, Path: ClaimSettlePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	// claims/list is a read of the ledger, but it is served under the same
+	// claims lock as the four mutations and pooled with them on purpose: a
+	// claimant's select-then-acquire must not have its select shed as read
+	// traffic while its acquire is admitted.
+	{ID: RouteClaimList, Method: http.MethodPost, Path: ClaimListPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+
+	// The journal plane (§8, DS4) is machinery advancing a run's own record —
+	// a machine seam like the claims plane, not an operator capability, so it
+	// shares the workflow-execution class and stays outside runtime parity.
+	{ID: RouteJournalEmit, Method: http.MethodPost, Path: RunJournalEmitPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
+	// The credential plane (§11, DS9/DS10) is a machine seam like the claims
+	// plane — a stage pod advancing its own execution — so it shares the
+	// workflow-execution action class, but its budget is mint-bound rather
+	// than ledger-bound (see CredentialResolveBudget).
+	{ID: RouteCredentialResolve, Method: http.MethodPost, Path: CredentialResolvePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: CredentialResolveBudget},
+
+	// The surrender plane (#3699) is a machine seam like journal/credential —
+	// a stage pod delivering its own terminal result — so it shares the
+	// workflow-execution action class and the standard mutation budget; the
+	// payload is a single small ResultEnvelope, not a mint or a stream.
+	{ID: RouteStageSurrender, Method: http.MethodPost, Path: RunStageSurrenderPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
+	// The blob plane (decision 010/012, §2a) is the network transport for the
+	// SAME blobstore.Store a local worker plugs into MaterializeContext: GET
+	// is a content-addressed read, classified like RouteRunArtifact (blob
+	// cost, the larger transfer-bound budget); PUT is content-addressed
+	// storage, a machine seam like the claims/credential/journal planes
+	// (workflow-execution, mutation cost, the same MutationBudget ceiling
+	// RouteJournalEmit accepts for its own inline artifact bytes).
+	{ID: RouteBlobGet, Method: http.MethodGet, Path: BlobDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
+	{ID: RouteBlobPut, Method: http.MethodPut, Path: BlobDigestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
+	// The scheduler-state plane (decision 005 R3, finding 002 C2) is the
+	// claims plane's sibling: the same machine seam, the same daemon lock,
+	// for the gaggle-scoped scheduler state that is not a claim. GET is
+	// classified with the claims plane's own read (claims/list) rather than
+	// as read-only navigation and pooled with the mutation for one reason:
+	// a caller's read-then-CAS must not have its read shed as read traffic
+	// while its write is admitted, which would spin the CAS loop forever
+	// under shed.
+	// The read half is read-only navigation with a bounded cost, as every
+	// other single-object GET is: it starts nothing, and each value is capped
+	// (MaxStateValueBytes) rather than streamed. The write half is workflow
+	// execution — a compare-and-swap that advances the scheduler's own state.
+	{ID: RouteGaggleStateGet, Method: http.MethodGet, Path: GaggleStateKeyPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleStatePut, Method: http.MethodPut, Path: GaggleStateKeyPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
+	// The cross-run journal plane (decision 005 R1 option 1, finding 002 C4)
+	// is a machine seam like the claims plane: a stage pod asking the daemon
+	// one derived question about its own gaggle so a CLI stage keeps an input
+	// it used to read off the local filesystem. Workflow-execution and
+	// mutation-classed for exactly the reason claims/list is — these are reads
+	// taken IN FLIGHT by a claimant whose next act depends on the answer, and
+	// shedding them as read traffic would silently change a stage's decision
+	// rather than delay a human's page.
+	{ID: RouteJournalRunPhase, Method: http.MethodPost, Path: JournalRunPhasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalConflictTouches, Method: http.MethodPost, Path: JournalConflictTouchesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalUnpushedWork, Method: http.MethodPost, Path: JournalUnpushedWorkPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.
@@ -261,6 +481,19 @@ func indexRoutes(name string, routes []Route) (map[RouteID]Route, error) {
 			}
 			return nil, fmt.Errorf(
 				"%s route %q uses method %q for a maintenance action",
+				name,
+				route.ID,
+				route.Method,
+			)
+		case ActionWorkflowExecution:
+			// The write planes (§7) made workflow execution an API action:
+			// trigger ingestion and the claims plane start or advance the
+			// machinery over the wire. Still never a read method.
+			if route.Method != http.MethodGet && route.Method != http.MethodHead {
+				break
+			}
+			return nil, fmt.Errorf(
+				"%s route %q uses method %q for a workflow-execution action",
 				name,
 				route.ID,
 				route.Method,

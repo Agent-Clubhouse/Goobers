@@ -412,6 +412,18 @@ func setStalledAttemptContext(ctx context.Context) {
 	}
 }
 
+// newestTimestamped returns the time of the most recent event carrying a
+// non-zero timestamp, or the zero time when none does. Callers treat that zero
+// as "cannot determine", never as "idle forever".
+func newestTimestamped(events []journal.Event) time.Time {
+	for i := len(events) - 1; i >= 0; i-- {
+		if !events[i].Time.IsZero() {
+			return events[i].Time
+		}
+	}
+	return time.Time{}
+}
+
 type stalledCandidate struct {
 	phase        journal.RunPhase
 	lastActivity time.Time
@@ -438,10 +450,39 @@ func inspectStalledCandidate(dir, runID string, now time.Time, timeout time.Dura
 	if len(events) == 0 {
 		return stalledCandidate{}, false, fmt.Errorf("runner: running run %q has no journal events", runID)
 	}
-	if events[len(events)-1].Type == journal.EventGatePaused {
+	// A run parked at a gate is not a stalled run, and the parked verdict must
+	// survive events appended AFTER the pause by someone other than the runner.
+	// A mode-3 stage pod emits into this same journal through the write API's
+	// journal plane (livejournal.Writer.Adopt appends on the runner's own
+	// handle), so a retried emit, a late agent.lifecycle or a pod-executed
+	// gate's artifacts can follow the runner's gate.paused. Testing only the
+	// LAST event read false in exactly that case and escalated a run parked for
+	// a human — see journal.ParkedAtGate, which skips observational events and
+	// stops at the first one that actually moves control flow.
+	if journal.ParkedAtGate(events) {
 		return candidate, false, nil
 	}
-	candidate.lastActivity = events[len(events)-1].Time
+	// Take the newest event that actually carries a TIMESTAMP. An event written
+	// without one says nothing about when activity happened, and reading its
+	// zero Time as "last active at year 1" makes every subsequent comparison
+	// trivially true — the run is then escalated no matter how large the
+	// timeout is, which is the tell that no configuration can fix it.
+	//
+	// MEASURED (#3774): run 8238995d was escalated 11 minutes into a 60-minute
+	// agentic stage. Its newest event was agent.lifecycle, written with
+	// time 0001-01-01T00:00:00Z, so lastActivity was zero and the message read
+	// "no journal progress for 2562047h47m16s" — while four correctly stamped
+	// events sat directly above it. The stamp is missing at the writer, which is
+	// its own defect; this is the reader refusing to draw a conclusion the data
+	// does not support.
+	//
+	// The practical effect: an agentic stage emits agent.lifecycle and then
+	// works silently, so ANY run whose newest event is that one was killed on
+	// the next sweep. Long agentic work could not complete in mode 3 at all.
+	candidate.lastActivity = newestTimestamped(events)
+	if candidate.lastActivity.IsZero() {
+		return candidate, false, nil
+	}
 	if !candidate.lastActivity.Before(now.Add(-timeout)) {
 		return candidate, false, nil
 	}

@@ -41,10 +41,16 @@ const (
 // Temporal RetryPolicy: Temporal's single MaximumAttempts cannot express the
 // split policy/infrastructure budgets, while this loop keeps every history
 // attempt 1:1 with a journal attempt whose class is derivable from the prior
-// attempt's recorded failure type (attemptFailureClass). Each dispatch still
+// attempt's recorded failure type (ClassifyDispatchFailure). Each dispatch still
 // carries an explicit RetryPolicy{MaximumAttempts: 1} (stageActivityOptions)
 // so the unlimited default is structurally unreachable.
-func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context) (stageActivityResult, error)) (apiv1.ResultEnvelope, error) {
+// deltaOut, when non-nil, receives the WINNING attempt's number and whatever
+// workspace delta it published (#3763, #3803), so the walk can append it to
+// the continuity record. It is an out-param rather than part of the returned
+// envelope because it is a fact about the attempt loop, not the stage's
+// result: a retried attempt's bundle describes a workspace that was thrown
+// away with its pod or worktree, and only the winner's may be carried.
+func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, dispatch func(workflow.Context, int) (stageActivityResult, error), deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	policyMaxAttempts := int32(1)
 	var backoff time.Duration
 	if t.Retry != nil {
@@ -73,30 +79,85 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 			policyAttempts++
 		}
 
+		// Projection parity with runTask's attempt journaling: stage.started
+		// and the context manifest are committed before the executor runs
+		// (the local runner's own order — both stamped with the pre-dispatch
+		// time), then emitted live (DS4) so the attempt is visible before it
+		// executes, not minutes after it closes. Lazy run-branch provenance
+		// and the attempt's own outcome event follow the dispatch.
+		mark := rec.mark()
 		startedAt := workflow.Now(ctx)
-		activityResult, err := dispatch(ctx)
-		res := activityResult.ResultEnvelope
-		if temporal.IsCanceledError(err) || ctx.Err() != nil {
-			return apiv1.ResultEnvelope{}, err
-		}
-		// Projection parity with runTask's attempt journaling: stage.started,
-		// the context manifest committed before the executor ran (both stamped
-		// with the pre-dispatch time), lazy run-branch provenance, then the
-		// attempt's own outcome event.
 		rec.stageStarted(startedAt, t.Name, int(attempt), class)
 		if merr := rec.contextManifest(startedAt, t.Name, int(attempt), class, pointers); merr != nil {
 			return apiv1.ResultEnvelope{}, merr
 		}
-		rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
-		if err == nil {
-			res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
-			rec.mutationIssues(ctx, t.Name, int(attempt), class, activityResult.MutationIssues)
-			rec.mutations(ctx, t.Name, int(attempt), class, activityResult.Mutations)
-			rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError)
-			return res, nil
+		var res apiv1.ResultEnvelope
+		var err error
+		emitErr := rec.emitPending(ctx)
+		if emitErr == nil {
+			var activityResult stageActivityResult
+			activityResult, err = dispatch(ctx, int(attempt))
+			res = activityResult.ResultEnvelope
+			if temporal.IsCanceledError(err) || ctx.Err() != nil {
+				return apiv1.ResultEnvelope{}, err
+			}
+			// Placement provenance for THIS attempt, before anything the
+			// attempt's outcome decides (#3875). Journaled for a failed
+			// dispatch too when the dispatch reported one, so the record of
+			// where an attempt ran does not depend on whether it succeeded.
+			rec.placement(ctx, t.Name, int(attempt), class, activityResult)
+			rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
+			if err == nil {
+				res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
+				rec.mutationIssues(ctx, t.Name, int(attempt), class, activityResult.MutationIssues)
+				rec.mutations(ctx, t.Name, int(attempt), class, activityResult.Mutations)
+				rec.stageFinished(ctx, t.Name, int(attempt), class, res, t.ContinueOnError)
+				emitErr = rec.emitPending(ctx)
+				if emitErr == nil {
+					// Only a WINNING attempt's delta is carried forward. A
+					// retried attempt's bundle describes a workspace that was
+					// thrown away with its pod, and building the next stage on
+					// it would resurrect abandoned work.
+					if deltaOut != nil {
+						*deltaOut = deltaPublication{
+							Attempt:   int(attempt),
+							Digest:    activityResult.WorkspaceDelta,
+							Base:      activityResult.WorkspaceDeltaBase,
+							Tip:       activityResult.WorkspaceDeltaTip,
+							Unchanged: activityResult.WorkspaceDeltaUnchanged,
+						}
+					}
+					return res, nil
+				}
+			}
+		}
+		if emitErr != nil {
+			// §8 failure policy: a journal emission that exhausted its bounded
+			// budget fails the attempt as attemptClass infra — never the work
+			// budget (#3361). The attempt's un-journaled ops are rolled back
+			// first (an effect that cannot be journaled did not happen; the
+			// same fail-closed stance the projection takes), so the projection
+			// and the live journal agree the attempt produced only its
+			// infra-classed failure record.
+			rec.rollbackUnemitted(mark)
+			rec.emitFailure(ctx, t.Name, int(attempt), emitErr)
+			lastErr = emitErr
+			infrastructureFailures++
+			nextRetryClass = journal.AttemptInfra
+			if infrastructureFailures >= runner.DefaultMaxInfrastructureAttempts {
+				return apiv1.ResultEnvelope{}, fmt.Errorf(
+					"engine: journal stage %q: %w (attempt %d/%d)",
+					t.Name, lastErr, infrastructureFailures, runner.DefaultMaxInfrastructureAttempts)
+			}
+			if retryDelay := infrastructureRetryDelay(emitErr, backoff, workflow.Now(ctx)); retryDelay > 0 {
+				if serr := workflow.Sleep(ctx, retryDelay); serr != nil {
+					return apiv1.ResultEnvelope{}, serr
+				}
+			}
+			continue
 		}
 		lastErr = err
-		failureClass, cerr := attemptFailureClass(err)
+		failureClass, cerr := ClassifyDispatchFailure(err)
 		if cerr != nil {
 			return apiv1.ResultEnvelope{}, fmt.Errorf("engine: execute stage %q: %w", t.Name, cerr)
 		}
@@ -144,10 +205,20 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 	return backoff
 }
 
-// attemptFailureClass maps one failed dispatch to the journal attempt class
-// its retry would consume, derived purely from the error shape Temporal
+// ClassifyDispatchFailure maps one failed dispatch to the journal attempt
+// class its retry would consume, derived purely from the error shape Temporal
 // records in history — no side-channel state, so the projection (#629) can
-// re-derive the identical classes:
+// re-derive the identical classes.
+//
+// EXPORTED for decision 003 ruling 2: the daemon's runner blocks on a
+// DispatchOne workflow and gets back the SAME error shapes this reads
+// (Temporal surfaces the activity's application error and its timeouts
+// through the workflow's own failure), so it must classify the attempt with
+// this function rather than a second copy. Two copies is how the runner and
+// the engine would start disagreeing about which retries cost the policy
+// budget — the exact drift D15 names.
+//
+// The classes:
 //
 //   - an application error typed FailureTypeInfrastructure is infrastructure;
 //   - any other application error is policy (the local runner's
@@ -161,7 +232,7 @@ func infrastructureRetryDelay(err error, backoff time.Duration, now time.Time) t
 //     declaring policyActions is therefore stopped before retry;
 //   - anything else fails closed as unclassifiable. A projection error, never
 //     a silent default to "infra".
-func attemptFailureClass(err error) (journal.AttemptClass, error) {
+func ClassifyDispatchFailure(err error) (journal.AttemptClass, error) {
 	var timeoutErr *temporal.TimeoutError
 	if errors.As(err, &timeoutErr) {
 		switch timeoutErr.TimeoutType() {

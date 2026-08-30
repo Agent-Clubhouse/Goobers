@@ -29,7 +29,8 @@
     "capabilities": [
       {
         "capability": "github:issues:read",
-        "consequence": "the read-only capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime"
+        "consequence": "the read-only capability-scoped credential is not injected, so backlog duplicate discovery fails at runtime",
+        "exact": true
       }
     ]
   },
@@ -47,6 +48,7 @@
       {
         "capability": "github:issues:read",
         "consequence": "the read-only capability-scoped credential is not injected, so backlog health sampling fails at runtime",
+        "exact": true,
         "unlessFlags": [
           "feedback"
         ]
@@ -65,6 +67,7 @@
       {
         "capability": "github:issues:read",
         "consequence": "the read-only capability-scoped credential is not injected, so read-only backlog queries fail at runtime",
+        "exact": true,
         "anyFlags": [
           "read-only"
         ]
@@ -108,6 +111,32 @@
     ]
   },
   {
+    "command": "file-issues",
+    "resultFile": "filed-nominations.json",
+    "capabilities": [
+      {
+        "capability": "github:issues:read",
+        "consequence": "the read-only capability-scoped credential is not injected, so the nomination dedupe scan fails at runtime",
+        "exact": true,
+        "anyFlags": [
+          "check"
+        ]
+      },
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so nomination issue creation fails at runtime",
+        "unlessFlags": [
+          "check"
+        ]
+      },
+      {
+        "capability": "github:issues:approve",
+        "consequence": "the approve capability-scoped credential is not injected, so every nomination files unapproved at runtime (autoApprove=deterministic-only prescribes approve-issue, which requires it at admission)",
+        "optional": true
+      }
+    ]
+  },
+  {
     "command": "gather-ci-failures",
     "resultFile": "remediation-brief.json",
     "capabilities": [
@@ -137,7 +166,8 @@
       },
       {
         "capability": "github:issues:read",
-        "consequence": "the read-only capability-scoped credential is not injected, so originating issue lookup fails at runtime"
+        "consequence": "the read-only capability-scoped credential is not injected, so originating issue lookup fails at runtime",
+        "exact": true
       }
     ]
   },
@@ -261,6 +291,16 @@
       {
         "capability": "github:pr:write",
         "consequence": "the capability-scoped credential is not injected, so remediation pull-request state checks fail at runtime"
+      }
+    ]
+  },
+  {
+    "command": "pr-comment-watch",
+    "resultFile": "comment-watch-result.json",
+    "capabilities": [
+      {
+        "capability": "github:issues:write",
+        "consequence": "the capability-scoped credential is not injected, so PR comment watching fails at runtime"
       }
     ]
   },
@@ -470,7 +510,8 @@
     "capabilities": [
       {
         "capability": "github:issues:read",
-        "consequence": "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime"
+        "consequence": "the capability-scoped credential is not injected, so the live-parent conflict check fails at runtime",
+        "exact": true
       }
     ]
   }

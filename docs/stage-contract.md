@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha8` (`api/v1alpha1.StageContractVersion`).
+> version: `v1alpha9` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -118,6 +118,16 @@ The runner hands the stage an `InvocationEnvelope`:
   render this map into the invocation prompt as data.
   A parallel join additionally receives `inputs.branchCompleteness`, with one
   terminal status and artifact count per declared branch in declaration order.
+- `nestedAgentPolicy` — optional versioned policy for a mechanically launched
+  child agent. When present, the runner also supplies `attempt`,
+  `ownershipBoundary`, `policyActions`, and a runner-authored
+  `parentPlatformPolicy`. Admission intersects that authority with the stage
+  policy, selected profile/model, and adapter capability. Missing parent
+  authority or an adapter without a policy-enforcing child-launch path fails
+  before any harness process starts. Fresh context drops optional parent item,
+  inputs, addenda, and context pointers; inherited context retains them;
+  explicit context carries only named pointers and selected envelope sections.
+  The immutable child execution policy is delivered in every mode.
 - `item`, `repoRef`, `limits` — the triggering backlog item, target repo, and
   execution bounds. `repoRef` carries repository identity and connection
   fields only: config-side declarations such as `project.checkout` (B2, #649)
@@ -146,6 +156,12 @@ The stage returns a `ResultEnvelope`:
   existing journal span and is diagnostic only; it is not added to
   `artifacts[]` or passed to downstream stages. Legacy results omit it.
 - `outputs` — small declared **scalar** values only.
+  A deterministic bandit assignment may publish the reserved fact
+  `randomizedIntervention=true`,
+  `randomizedInterventionSource=bandit-assignment`, and `arm=control|treatment`.
+  The read model requires all three values before treating an observation as
+  randomized. An `arm` (or generic `randomized`) output by itself remains
+  observational and is never promotion-eligible.
 - `error` — structured failure detail (`code`, `message`, `retryable`); **required
   when `status == failure`**.
 - `summary`, `metrics` — human and telemetry detail. Agentic usage uses
@@ -714,14 +730,14 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 | Status | Runner action |
 |---|---|
 | `success` | advance the state machine to the next stage/gate |
-| `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION`), bypass the `Next` gate's evaluator and route through its optional `escalate` control branch; without one, terminate directly at `@escalate`. Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
+| `failure` | **Non-retryable escalate disposition first (#415):** if `error.retryable == false` **and** `error.code` is a recognized escalate code (`ISSUE_OVER_SCOPE` / `NEEDS_DECOMPOSITION` / `ISSUE_NOT_APPLICABLE`), bypass the `Next` gate's evaluator and route through its optional `escalate` control branch; without one, terminate directly at `@escalate`. The stage's own `summary` posts to the driving item as the disposition's reasoning (#3363). Otherwise: if `Next` is a gate, advance — the gate branches on the failure (the reviewer-gate pattern); if not (a non-gate stage, terminal, or empty `Next`), the run ends `PhaseFailed`. Never run downstream stages on a failed result, never silently complete. |
 | `blocked` | **finish the run `escalated`** (#544/#545) — never a pause. The blocked cause is journaled (`blocked_by_agent`, carrying `error`), the shared escalation notifier preserves that reason on the driving issue, normal terminal cleanup releases the claim/worktrees, and the issue is parked with its ready/claimed markers removed (#539's convention). The park label depends on whether `outputs.blockedBy` named a blocker (#2028): a named, non-cyclic blocker parks `goobers:blocked-on-sibling` (self-healing — see below); an unattributed block, or a detected circular dependency, parks `goobers:needs-human`. If `outputs.blockedBy` names blocking issue numbers, backlog selection also records the block and skips the issue if it is re-promoted before every named blocker closes (#552). |
 | `no-work` | finish the run `completed` without evaluating the task's declared next state |
 
 > **Non-retryable escalate disposition (#415, V0.7 ladder remediation L6 —
 > `docs/design/v07-ladder-remediation.md` §3.4):** a `failure` result carrying
 > `error.retryable == false` **and** a recognized escalate code (`ISSUE_OVER_SCOPE`
-> / `NEEDS_DECOMPOSITION`) bypasses the `Next` gate evaluator and its repass
+> / `NEEDS_DECOMPOSITION` / `ISSUE_NOT_APPLICABLE`) bypasses the `Next` gate evaluator and its repass
 > loop after one attempt. When that gate declares an `escalate` control branch,
 > the runner follows it so the workflow can perform deterministic disposition
 > work before terminating; otherwise it routes straight to `@escalate`
@@ -733,6 +749,31 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > distinct from `Task.Retry` below (which is infra-only). A recognized escalate
 > code with `retryable == true`, or a `failure` with an unrecognized/absent code,
 > follows the ordinary failure route above.
+>
+> **Item judgment vs. work failure (#3363):** `ISSUE_NOT_APPLICABLE` is the
+> disposition for an item whose premise no longer holds — the issue targets
+> files a later change deleted, or asks for work already done. It is a verified
+> conclusion ABOUT THE ITEM, not a failure of the work, so re-running the stage
+> can only re-derive it. Two consequences follow from recognizing it here.
+> First, the refusal is terminal on attempt 1 rather than review-failing an
+> empty diff and burning the repass budget. Second, the stage's own `summary`
+> is the deliverable: the runner posts it to the driving item as the
+> escalation's reasoning, so a correct refusal's citation reaches a human
+> instead of living only in the run journal. Emit the citation in `summary`
+> (the machine-readable code goes in `error.code`, a short restatement in
+> `error.message`). The code classifies as the `item-judgment` error class,
+> which status rollups count separately from work failures (#3364).
+>
+> **Infrastructure faults never charge the work budget (#3361):** a failure of
+> the substrate a stage runs ON — credential materialization, git provisioning,
+> network transport, host/workspace, claims-lock contention — is not evidence
+> about the work. Those failures are marked at their construction site, retried
+> on the runner's bounded INFRASTRUCTURE budget (journaled `attemptClass:
+> infra`, conformance-excluded), and never decrement `Task.Retry`'s attempts.
+> Their terminals carry a typed `infra*` error class, which keeps them out of
+> the failure-streak circuit breaker and out of the success-rate denominator
+> (#3364) — at attempt budgets of 1, the prior classification converted
+> transient infrastructure weather into permanent-looking work failures.
 >
 > **Reviewer sibling (#415):** at an agentic review gate whose subject is an
 > **agentic** stage, a run branch with **no committed change (an empty diff)**
@@ -849,7 +890,7 @@ from the diff alone.
 
 ## Versioning & unknown-field policy
 
-- The contract version is `v1alpha8` (`StageContractVersion`). The Go types retain
+- The contract version is `v1alpha9` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`
   invocation field for bounded scheduler trigger provenance; `v1alpha3` adds the
@@ -862,7 +903,9 @@ from the diff alone.
   input-integrity grades to invocation items, context pointers, and artifact
   pointers, plus the stage's declared minimum; `v1alpha8` adds the optional
   `checkoutCones` invocation field declaring a stage's sparse-checkout cones
-  (project.checkout.sparse, #649).
+  (project.checkout.sparse, #649); `v1alpha9` adds attempt, ownership,
+  policy-action, nested-policy, and runner-authored parent-authority fields for
+  mechanically enforced nested agents.
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a

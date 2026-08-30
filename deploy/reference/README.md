@@ -46,9 +46,12 @@ reference sets no fixed capacity, VM SKU, spot policy, or scale-to-zero default.
 
 ## Conventions
 
-- **`CHANGE-ME`** marks every value the customer must replace (registry, hosts, CIDRs,
-  storage class, identity client ids). Nothing here references a real registry or tenant;
-  documentation CIDRs (`198.51.100.0/24`, `203.0.113.0/24`) stand in for real endpoints.
+- **`CHANGE-ME`** marks every value the customer must replace (registry, hosts,
+  storage class, identity client ids). Nothing here references a real registry or tenant.
+  Stage egress CIDRs are NOT hand-edited here any more: they are rendered per runner
+  class by `goobers netpol-render` from `instance.yaml egress.allowlist` (issue #3568,
+  decision 016 — the rendered output is the only authoritative copy, and the render
+  refuses unfilled documentation-CIDR placeholders instead of shipping stubs).
 - **Image**: containers reference the image name `goobers`; the kustomize `images:`
   transformer in each kustomization rewrites it to your registry. Build the image with
   `make image` (packaging/docker/Dockerfile) and push it to a registry the cluster can
@@ -116,9 +119,12 @@ verifies a target cluster against the same shape-doc requirements these manifest
 ## Stamping a new gaggle
 
 Copy one of `gaggle-namespace/examples/*`, set `namespace:` to the gaggle's namespace
-name and the `goobers.dev/gaggle` label pair, then replace the CHANGE-ME egress CIDRs
-and workload-identity annotation for that gaggle (§3: one namespace and one federated
-identity per gaggle; GAG-012, SEC-001/002).
+name and the `goobers.dev/gaggle` label pair, then replace the CHANGE-ME
+workload-identity annotation for that gaggle (§3: one namespace and one federated
+identity per gaggle; GAG-012, SEC-001/002). Stage egress grants are per runner class:
+render them with `goobers netpol-render --out <dir>` (filled from `instance.yaml
+egress.allowlist`) and apply them alongside the base — the base itself carries only
+the class-independent floor (default-deny-all + allow-dns).
 
 ## Operating notes from a real cluster
 
@@ -243,6 +249,35 @@ Budget for the Windows image: roughly **2.4 GB**, and about **4m30s** for a cold
 pull on a fresh node. If your operator-selected capacity policy scales the Windows
 pool to zero, expect that pull on the first run after it scales up.
 
+### Container init: who reaps orphaned stage descendants
+
+The image is `ENTRYPOINT ["goobers"]` in exec form with no init wrapper, so the
+daemon is **pid 1** of its container. That makes it the kernel's reparent target
+for every stage descendant that outlives its parent — a double-fork, or a
+descendant whose parent `KillTree` reaches first — and a Go program waits for
+nothing but its own `exec.Cmd` children. Nobody else is above it to reap.
+
+The daemon supplies that missing init half itself: at startup it checks
+`os.Getpid() == 1` on Linux and, only then, runs a SIGCHLD-driven loop that
+`wait4`s orphaned descendants (#3398). It logs
+`startup: running as container init (pid 1)` when it does. The loop deliberately
+waits specific pids rather than `wait4(-1)`, so it never consumes a stage's exit
+status out from under the runner. Nothing is needed in the pod spec for the
+reference deployments.
+
+Two arrangements put the daemon somewhere other than pid 1 and switch the loop
+off; give those a reaping init instead:
+
+- Wrapping the entrypoint in a shell (`sh -c "goobers up …"`) — the shell
+  becomes pid 1 and most shells do not reap. Prefer exec form, or `exec goobers`.
+- Sidecar or debug containers sharing a pid namespace
+  (`shareProcessNamespace: true`), where the pause container is pid 1.
+
+The general escape hatch is any minimal init as pid 1 — `tini -g`, the
+`--init` flag for plain `docker run`, or `shareProcessNamespace: true` so the
+pause container reaps. Symptom when nobody does: `Z`-state processes
+accumulating in the pod and worktrees never released.
+
 ### Timezones
 
 Windows containers ship no IANA database. `goobers` embeds Go's copy, so a
@@ -261,6 +296,15 @@ Code state is a separate channel and is **not** shared: every stage attempt gets
 a fresh worktree on the run branch, so what survives between stages is the branch
 in that worker's own git mirror. A stage that hands work to another platform must
 push first (#2861).
+
+The `goobers-system` namespace enforces Pod Security Standards `restricted`.
+PSS evaluates **initContainers** too, so an adopter's per-worker instance-root
+seed must set the same non-root, no-escalation, dropped-capabilities, read-only
+root filesystem, and `RuntimeDefault` seccomp controls as the application
+container. The reference worker includes that restricted-compatible seed.
+These controls are Linux-only: Kubernetes rejects them on Windows pods. Keep
+Linux and Windows workers as separate Deployments, set `spec.os.name: windows`
+for Windows workers, and do not copy the Linux security context into them.
 
 ### Cluster rebuilds
 

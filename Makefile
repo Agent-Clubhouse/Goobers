@@ -66,9 +66,9 @@ help:
 	@echo "Goobers — make targets:"
 	@grep -E '^## [a-z-]+:' $(MAKEFILE_LIST) | sed -E 's/^## ([a-z-]+): /  \1\t/' | expand -t20
 	@echo ""
-	@echo "Note: 'make build' also builds quarantined/superseded binaries (kept"
-	@echo "compiling, not on the V0 path) — operator, scheduler are tier-3 (V2),"
-	@echo "goober-runtime is superseded by the goobers binary. See docs/ARCHITECTURE.md §11."
+	@echo "Note: 'make build' also builds quarantined binaries (kept compiling,"
+	@echo "not on the V0 path) — operator, config-sync are tier-3 (V2). See"
+	@echo "docs/ARCHITECTURE.md §11."
 
 ## tidy: Sync go.mod/go.sum.
 .PHONY: tidy
@@ -119,6 +119,14 @@ test-integration-strict:
 test-envtest:
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
 		$(GO) test -tags=integration -race -timeout $(GO_TEST_TIMEOUT) -covermode=atomic -coverprofile=coverage.out ./...
+
+## envtest-assets: Print the provisioned KUBEBUILDER_ASSETS path (downloads on first use).
+# Single-sources the pinned control-plane version for CI, which exports the path
+# into the integration job's environment rather than running a second whole-tree
+# pass. Prints the path and nothing else so it is safe to capture.
+.PHONY: envtest-assets
+envtest-assets:
+	@$(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path
 
 ## test-e2e: Run the walking-skeleton E2E harness scaffold.
 .PHONY: test-e2e
@@ -220,7 +228,8 @@ deploy-validate:
 	kubectl kustomize deploy/reference/goobers-system | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b | $(KUBECONFORM) -strict -summary
-	@echo "deploy/reference kustomize builds and schemas OK"
+	$(GO) test ./cmd/goobers -run 'TestDeployReference' -count=1
+	@echo "deploy/reference kustomize builds, schemas, and rendered-together cross-base assertion (#3301) OK"
 
 ## validate-configs: Build the validator, strictly check reference-workflows, and check other shipped config trees.
 .PHONY: validate-configs
@@ -269,10 +278,14 @@ schema-description-coverage:
 test: schema-description-coverage
 	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO_TEST_NETWORK_OFF) $(GO) run ./test/hermetic --go-command "$(GO)" -- -race -timeout $(GO_TEST_TIMEOUT) -covermode=atomic -coverprofile=coverage.out ./...
 
-## portal-ci: Install, type-check, build, test, run browser e2e, check dead code, and verify the Go wire contract.
-.PHONY: portal-install portal-typecheck portal-build portal-test portal-playwright-install portal-e2e portal-deadcode portal-contract portal-ci
+## portal-ci: Audit dependencies, install, type-check, build, test, run browser e2e, check dead code, and verify the Go wire contract.
+.PHONY: portal-install portal-audit portal-typecheck portal-build portal-test portal-playwright-install portal-e2e portal-deadcode portal-contract portal-ci
 portal-install:
 	$(NPM) --prefix portal ci --no-audit --no-fund
+
+## portal-audit: Fail when portal dependencies have known vulnerabilities.
+portal-audit: portal-install
+	$(NPM) --prefix portal audit --audit-level=low
 
 ## portal-typecheck: Install and type-check the portal.
 portal-typecheck: portal-install
@@ -301,7 +314,7 @@ portal-contract: portal-install
 	$(NPM) --prefix portal run typecheck
 	$(NPM) --prefix portal run test:contract
 
-portal-ci: portal-build portal-test portal-e2e portal-deadcode portal-contract
+portal-ci: portal-audit portal-build portal-test portal-e2e portal-deadcode portal-contract
 
 ## cover: Show total test coverage.
 .PHONY: cover
@@ -314,6 +327,18 @@ cover: test
 # Excludes generated/cmd-mains/embed from the denominator (see test/coveragegate).
 .PHONY: cover-check
 cover-check: test
+	COVERAGE_PROFILE=coverage.out $(GO) run ./test/coveragegate $(COVERAGE_THRESHOLD)
+
+## cover-gate: Enforce COVERAGE_THRESHOLD against an ALREADY-WRITTEN coverage.out.
+# Same gate as cover-check, minus the `test` prerequisite. CI uses this from the
+# unit-macos job, which runs the whole-tree suite unsharded and therefore already
+# emits a complete profile — so the threshold is enforced without paying for a
+# second full run, and the number stays single-sourced here rather than being
+# duplicated into the workflow. Refuses a missing profile rather than passing
+# vacuously: an absent file must red the gate, never silently skip it.
+.PHONY: cover-gate
+cover-gate:
+	@test -s coverage.out || { echo "cover-gate: coverage.out is missing or empty; the unit suite did not emit a profile" >&2; exit 1; }
 	COVERAGE_PROFILE=coverage.out $(GO) run ./test/coveragegate $(COVERAGE_THRESHOLD)
 
 ## verify-fast: Run the pre-push format, vet, and Go build tier.

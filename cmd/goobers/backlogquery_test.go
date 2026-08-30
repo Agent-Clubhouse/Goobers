@@ -16,8 +16,10 @@ import (
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -61,9 +63,12 @@ func TestBacklogQueryReadOnlyReportsProviderFailure(t *testing.T) {
 
 	previousProvider := newGitHubProvider
 	newGitHubProvider = func(token string, opts ...func(*providers.GitHubProvider)) *providers.GitHubProvider {
+		// The 503 exists to make the list fail, not to exercise the retry
+		// ladder: spending the transient-retry budget keeps the assertion
+		// identical while dropping 1+2+4+8 = 15s of real backoff sleep.
 		return providers.NewGitHubProvider(token, append(opts, func(provider *providers.GitHubProvider) {
 			provider.BaseURL = server.URL
-		})...)
+		}, providers.WithMaxTransientRetries(0))...)
 	}
 	t.Cleanup(func() { newGitHubProvider = previousProvider })
 
@@ -115,26 +120,44 @@ func snapshotDirectoryFiles(t *testing.T, root string) map[string]string {
 	return files
 }
 
+// failNthBacklogClaimLedger wraps the stage's claim ledger and fails the Nth
+// acquire — the fault injection the partial-batch tests drive through the
+// claimledger.go seam. The counter is shared with the session views Locked
+// hands out, so "the Nth claim of this stage" counts across critical
+// sections exactly as it counted across ledger opens.
 type failNthBacklogClaimLedger struct {
-	backlogClaimLedger
-	calls  int
+	claimsclient.Ledger
+	calls  *int
 	failAt int
 }
 
-func (l *failNthBacklogClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.Duration) (bool, string, error) {
-	l.calls++
-	if l.calls == l.failAt {
+func (l *failNthBacklogClaimLedger) ClaimScoped(ctx context.Context, key claimsclient.Key, runID, workflow string, leaseDuration time.Duration) (bool, string, error) {
+	*l.calls++
+	if *l.calls == l.failAt {
 		return false, "", errors.New("injected claim failure")
 	}
-	return l.backlogClaimLedger.Claim(itemID, runID, workflow, leaseDuration)
+	return l.Ledger.ClaimScoped(ctx, key, runID, workflow, leaseDuration)
 }
 
-func (l *failNthBacklogClaimLedger) ClaimScoped(key localscheduler.ClaimKey, runID, workflow string, leaseDuration time.Duration) (bool, string, error) {
-	l.calls++
-	if l.calls == l.failAt {
-		return false, "", errors.New("injected claim failure")
+func (l *failNthBacklogClaimLedger) Locked(ctx context.Context, operation string, fn func(claimsclient.Ledger) error) error {
+	return l.Ledger.Locked(ctx, operation, func(tx claimsclient.Ledger) error {
+		return fn(&failNthBacklogClaimLedger{Ledger: tx, calls: l.calls, failAt: l.failAt})
+	})
+}
+
+// failNthStageClaimLedger swaps the stage claim-ledger seam for one whose
+// Nth acquire fails, for the rest of the test.
+func failNthStageClaimLedger(t *testing.T, failAt int) {
+	t.Helper()
+	originalOpen := openStageClaimLedger
+	openStageClaimLedger = func(l instance.Layout, opts ...localscheduler.LedgerOption) (claimsclient.Ledger, error) {
+		ledger, err := stageClaimLedger(l, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return &failNthBacklogClaimLedger{Ledger: ledger, calls: new(int), failAt: failAt}, nil
 	}
-	return l.backlogClaimLedger.ClaimScoped(key, runID, workflow, leaseDuration)
+	t.Cleanup(func() { openStageClaimLedger = originalOpen })
 }
 
 // providerCmdEnv sets the GOOBERS_* env vars the runner would inject for a
@@ -491,15 +514,7 @@ func TestBacklogQueryPartialBatchFailureReleasesEarlierClaims(t *testing.T) {
 	t.Setenv("GOOBERS_INPUT_MAXITEMS", "2")
 	t.Chdir(t.TempDir())
 
-	originalOpen := openBacklogClaimLedger
-	openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOption) (backlogClaimLedger, error) {
-		ledger, err := localscheduler.OpenClaimLedger(path, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &failNthBacklogClaimLedger{backlogClaimLedger: ledger, failAt: 2}, nil
-	}
-	t.Cleanup(func() { openBacklogClaimLedger = originalOpen })
+	failNthStageClaimLedger(t, 2)
 
 	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
 	if code != 1 || !strings.Contains(stderr, "injected claim failure") {
@@ -537,15 +552,7 @@ func TestBacklogQueryBatchFailurePreservesPreexistingClaim(t *testing.T) {
 		t.Fatalf("seed preexisting claim: ok = %v, err = %v", ok, err)
 	}
 
-	originalOpen := openBacklogClaimLedger
-	openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOption) (backlogClaimLedger, error) {
-		ledger, err := localscheduler.OpenClaimLedger(path, opts...)
-		if err != nil {
-			return nil, err
-		}
-		return &failNthBacklogClaimLedger{backlogClaimLedger: ledger, failAt: 3}, nil
-	}
-	t.Cleanup(func() { openBacklogClaimLedger = originalOpen })
+	failNthStageClaimLedger(t, 3)
 
 	code, _, stderr := runArgs(t, "backlog-query", "--claim", root)
 	if code != 1 || !strings.Contains(stderr, "injected claim failure") {
