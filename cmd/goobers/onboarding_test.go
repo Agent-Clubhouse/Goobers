@@ -173,7 +173,7 @@ func TestOnboardingStubAgentInstructionsDestinationGoldens(t *testing.T) {
 				t.Fatalf("decode result: %v\n%s", err, stdout)
 			}
 			if len(result.Prompts) != 3 ||
-				!strings.Contains(result.Prompts[0], "DSL author") ||
+				!strings.Contains(result.Prompts[0], "Getting Started") ||
 				!strings.Contains(result.Prompts[1], "run operator") ||
 				!strings.Contains(result.Prompts[1], "<instance-path>") ||
 				!strings.Contains(result.Prompts[2], "workflow upgrade") {

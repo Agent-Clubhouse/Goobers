@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -83,9 +82,8 @@ type guidedInitResult struct {
 }
 
 type guidedAgentToolkitSelection struct {
-	Harness              string
-	Destination          string
-	InitializeRepository bool
+	Harness     string
+	Destination string
 }
 
 func runGuidedInit(
@@ -259,24 +257,7 @@ func promptGuidedAgentToolkit(
 	if !ok {
 		return guidedAgentToolkitSelection{}, fmt.Errorf("unsupported agent toolkit harness %q", harness)
 	}
-	initializeRepository := source.Mode == guidedSourceNewLocal
 	state, modified, missing, err := inspectGuidedAgentToolkitState(inspectionRoot, bundle)
-	if source.Mode == guidedSourceExistingLocal && errors.Is(err, agentkit.ErrRepositoryMarkerMissing) {
-		initialize, promptErr := p.ask(
-			"Initialize the selected config source with Git for agent toolkit installation? (yes/no)",
-			"no",
-			validYesNo,
-		)
-		if promptErr != nil {
-			return guidedAgentToolkitSelection{}, promptErr
-		}
-		if !isYes(initialize) {
-			pln(p.out, "Agent toolkit installation skipped; the selected config source remains non-Git and no toolkit files were written.")
-			return guidedAgentToolkitSelection{}, nil
-		}
-		initializeRepository = true
-		state, modified, missing, err = "not-installed", nil, nil, nil
-	}
 	if err != nil {
 		return guidedAgentToolkitSelection{}, err
 	}
@@ -305,9 +286,6 @@ Agent toolkit installation preview:
 	if len(missing) > 0 {
 		pf(p.out, "  missing owned:     %s\n", strings.Join(missing, ", "))
 	}
-	if initializeRepository {
-		pln(p.out, "  repository setup:  initialize the selected config source with Git")
-	}
 	if state != "not-installed" && state != "current" {
 		commands := agentKitMaintenanceCommands(selectedDestination, runtime.GOOS)
 		pf(p.out, "Agent toolkit installation skipped because the existing toolkit is %s; no files were written.\n", state)
@@ -333,9 +311,8 @@ Agent toolkit installation preview:
 		return guidedAgentToolkitSelection{}, nil
 	}
 	return guidedAgentToolkitSelection{
-		Harness:              harness,
-		Destination:          selectedDestination,
-		InitializeRepository: initializeRepository,
+		Harness:     harness,
+		Destination: selectedDestination,
 	}, nil
 }
 
@@ -409,12 +386,6 @@ func installGuidedAgentToolkit(
 	if !sameAbsolutePath(selection.Destination, source.Root) {
 		return fmt.Errorf("agent toolkit destination must be the selected config source %s", absolutePath(source.Root))
 	}
-	if selection.InitializeRepository {
-		command := exec.Command("git", "-C", selection.Destination, "init", "--quiet")
-		if output, err := command.CombinedOutput(); err != nil {
-			return fmt.Errorf("initialize config source repository: %w: %s", err, strings.TrimSpace(string(output)))
-		}
-	}
 	executed, err := executeAgentToolkitInstallAction(selection.Destination, selection.Harness, runtime.GOOS)
 	if err != nil {
 		return err
@@ -438,11 +409,17 @@ func sameAbsolutePath(left, right string) bool {
 }
 
 func promptGuidedSource(p guidedPrompter, instanceRoot string) (guidedSourceSelection, error) {
-	pln(p.out, "Configuration source (desired state; separate from runtime state):")
-	pln(p.out, "  1) new-local        create a new local source tree")
-	pln(p.out, "  2) existing-local   use an existing local source tree")
-	pln(p.out, "  3) github-existing  clone or reuse an existing GitHub config repository")
-	mode, err := p.ask("Config source type", guidedSourceNewLocal, validGuidedSourceMode)
+	pln(p.out, "Where should Goobers keep its configuration files?")
+	pf(
+		p.out,
+		"Learn about configuration and runtime file placement: %s\n",
+		documentationURL("docs/guides/instance-placement.md"),
+	)
+	pln(p.out, "  1) New folder                  create new local configuration files")
+	pln(p.out, "  2) Existing folder             use configuration files already on this machine")
+	pln(p.out, "  3) Existing GitHub repository  clone or reuse a configuration repository")
+	pln(p.out, "Local folders work without Git. Git is recommended for history, backup, and review.")
+	mode, err := p.ask("Configuration location (name or number)", guidedSourceNewLocal, validGuidedSourceMode)
 	if err != nil {
 		return guidedSourceSelection{}, err
 	}
@@ -450,12 +427,15 @@ func promptGuidedSource(p guidedPrompter, instanceRoot string) (guidedSourceSele
 
 	switch mode {
 	case guidedSourceNewLocal:
+		pln(p.out, "")
+		pln(p.out, "Selected: New folder")
+		pln(p.out, "Next, choose where the local configuration files should be created.")
 		defaultPath, err := defaultGuidedSourcePath(instanceRoot)
 		if err != nil {
 			return guidedSourceSelection{}, err
 		}
 		sourceRoot, err := p.ask(
-			"New config source path",
+			"New configuration folder",
 			defaultPath,
 			validNonEmptyPath,
 		)
@@ -465,24 +445,32 @@ func promptGuidedSource(p guidedPrompter, instanceRoot string) (guidedSourceSele
 		if err := instance.CheckGuidedSourceTarget(sourceRoot); err != nil {
 			return guidedSourceSelection{}, err
 		}
+		pln(p.out, "Tip: initialize this folder as a Git repository after setup to preserve configuration history.")
 		return guidedSourceSelection{
 			Mode:       mode,
 			Root:       sourceRoot,
 			ConfigRepo: sourceRoot,
 		}, nil
 	case guidedSourceExistingLocal:
-		sourceRoot, err := p.ask("Existing config source path", "", validNonEmptyPath)
+		pln(p.out, "")
+		pln(p.out, "Selected: Existing folder")
+		pln(p.out, "Next, enter the folder containing instance.yaml.example, manifest.yaml, and gaggles/.")
+		sourceRoot, err := p.ask("Existing configuration folder", "", validNonEmptyPath)
 		if err != nil {
 			return guidedSourceSelection{}, err
 		}
+		pln(p.out, "Tip: if this folder is not already in Git, initialize it after setup for history, backup, and review.")
 		return guidedSourceSelection{
 			Mode:       mode,
 			Root:       sourceRoot,
 			ConfigRepo: sourceRoot,
 		}, nil
 	case guidedSourceExistingGitHub:
+		pln(p.out, "")
+		pln(p.out, "Selected: Existing GitHub repository")
+		pln(p.out, "Next, identify the repository and choose its local checkout folder.")
 		repository, err := p.ask(
-			"Existing GitHub config repository (owner/name or URL)",
+			"GitHub configuration repository (owner/name or URL)",
 			"",
 			validGitHubRepoInput,
 		)
@@ -498,7 +486,7 @@ func promptGuidedSource(p guidedPrompter, instanceRoot string) (guidedSourceSele
 			return guidedSourceSelection{}, err
 		}
 		sourceRoot, err := p.ask(
-			"Local checkout path",
+			"Local checkout folder",
 			defaultPath,
 			validNonEmptyPath,
 		)
@@ -569,12 +557,14 @@ func cloneGuidedSource(
 }
 
 func promptGuidedRemoteCreate(p guidedPrompter, opts instance.GuidedOptions) (*guidedRemoteCreate, error) {
-	create, err := p.ask("Create an empty GitHub repository for this config source? (yes/no)", "no", validYesNo)
+	pln(p.out, "")
+	pln(p.out, "Versioning these configuration files with Git is recommended but optional.")
+	create, err := p.ask("Create an empty GitHub repository for this configuration folder? (yes/no)", "no", validYesNo)
 	if err != nil {
 		return nil, err
 	}
 	if !isYes(create) {
-		pln(p.out, "Keeping the config source local-only; no remote repository will be created.")
+		pln(p.out, "Keeping the configuration files in a local folder; no GitHub repository will be created.")
 		return nil, nil
 	}
 

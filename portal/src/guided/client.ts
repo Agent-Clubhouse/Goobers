@@ -2,9 +2,8 @@
 // `goobers getting-started`.
 //
 // This deliberately lives OUTSIDE src/api/contract.generated.ts: the guided
-// endpoints are dashboard-local process wrappers over the documented CLI
-// actions (onboarding stub-sample, init --template=quickstart, validate
-// --json, run quickstart, status --json), not daemon API contract routes.
+// endpoints are dashboard-local wrappers over the product-owned onboarding
+// actions (including structured guided initialization), not daemon API routes.
 // They exist only while the getting-started command is serving this page,
 // carry no daemon read-model semantics, and must not participate in the
 // generated wire-contract drift checks.
@@ -39,15 +38,61 @@ export interface GuidedConnectedState {
 
 export interface GuidedState {
   version: number;
+  platform: "windows" | "darwin" | "linux" | string;
   workdir: string;
-  samplePath: string;
   instancePath: string;
-  sampleExists: boolean;
+  configPath: string;
+  suggestedStack?: string;
+  suggestedCICommand?: string[];
+  suggestedCapability?: string;
   instanceExists: boolean;
   env: GuidedEnvState;
   job: GuidedJobSummary | null;
   apiReady: boolean;
   connected: GuidedConnectedState;
+}
+
+export interface GuidedRepositoryInspection {
+  provider: "github" | "ado";
+  owner: string;
+  project?: string;
+  name: string;
+  displayName: string;
+  gaggleName: string;
+  localPath?: string;
+  defaultBranch: string;
+  stack?: string;
+  ciCommand?: string[];
+  requiredCapabilities?: string[];
+  pullRequestCI?: boolean;
+  discovery: "deterministic" | "copilot" | "provider-metadata" | "unresolved";
+  evidence?: string[];
+  needsClone: boolean;
+  peerConfigPath?: string;
+  inRepoConfigPath?: string;
+  auth: {
+    kind: "github-cli" | "azure-cli" | string;
+    ready: boolean;
+    identity?: string;
+    remediationCommand?: string;
+  };
+}
+
+export interface GuidedChooseFolderResult {
+  path?: string;
+  canceled: boolean;
+}
+
+export interface GuidedRepositoryReadiness {
+  provider: "github" | "ado";
+  repository: string;
+  selectorLabels: string[];
+  lifecycleLabels: string[];
+  missingLabels: string[];
+  createdLabels?: string[];
+  eligibleCount?: number;
+  starterIssueCreated?: boolean;
+  usesWorkItemTags?: boolean;
 }
 
 /** The shared shape of the envelope-returning actions: the CLI subprocess's
@@ -59,8 +104,7 @@ export interface GuidedEnvelopeResult<E> {
   stderr: string;
 }
 
-/** The shared onboarding action envelope (`goobers onboarding stub-sample
- *  --json`, `goobers connect --json`) — fields we render. */
+/** Fields rendered from structured onboarding action envelopes. */
 export interface OnboardingActionEnvelope {
   action?: string;
   version?: number;
@@ -115,14 +159,39 @@ export interface GuidedProbeResult {
   stderr: string;
 }
 
-export interface StubSampleRequest {
-  workTracking?: string;
-  tokenEnv?: string;
-  force?: boolean;
+export interface InitInstanceRequest {
+  template?: "quickstart" | "starter" | "guided";
+  guided?: GuidedInitOptions;
 }
 
-export interface InitInstanceRequest {
-  template?: "quickstart" | "starter";
+export type GuidedWorkflow =
+  | "implementation"
+  | "backlog-curation"
+  | "work-nomination";
+
+export interface GuidedInitOptions {
+  repo?: string;
+  provider?: "github" | "ado";
+  owner?: string;
+  project?: string;
+  name?: string;
+  localPath?: string;
+  configPath?: string;
+  branch: string;
+  workflows: GuidedWorkflow[];
+  issueScope: "all" | "assigned";
+  assignedTo?: string;
+  pullRequestCI?: boolean;
+  ciCommand?: string[];
+  requiredCapabilities?: string[];
+  harness: "copilot" | "claude-code";
+  repoTokenEnv: string;
+  workTrackingTokenEnv: string;
+  pullRequestTokenEnv?: string;
+  repoPushTokenEnv?: string;
+  optionalModelTokenEnv?: string;
+  githubCLIUser?: string;
+  authKind?: string;
 }
 
 export interface ConnectRequest {
@@ -133,7 +202,12 @@ export interface ConnectRequest {
 }
 
 export interface RunRequest {
-  workflow?: "quickstart" | "default-implement";
+  workflow?:
+    | "quickstart"
+    | "default-implement"
+    | "implementation"
+    | "backlog-curation"
+    | "work-nomination";
 }
 
 export interface ValidateRequest {
@@ -169,8 +243,19 @@ export class GuidedClient {
     return this.request<GuidedState>("/guided/state");
   }
 
-  stubSample(body: StubSampleRequest): Promise<GuidedEnvelopeResult<OnboardingActionEnvelope>> {
-    return this.post("/guided/actions/stub-sample", body);
+  inspectRepository(location: string): Promise<GuidedRepositoryInspection> {
+    return this.post("/guided/actions/inspect-repository", { location });
+  }
+
+  chooseRepositoryFolder(): Promise<GuidedChooseFolderResult> {
+    return this.post("/guided/actions/choose-repository-folder", {});
+  }
+
+  prepareRepository(body: {
+    apply: boolean;
+    createStarterIssue: boolean;
+  }): Promise<GuidedRepositoryReadiness> {
+    return this.post("/guided/actions/prepare-repository", body);
   }
 
   initInstance(body: InitInstanceRequest = {}): Promise<GuidedInitResult> {

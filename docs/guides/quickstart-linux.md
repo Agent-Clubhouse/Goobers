@@ -84,7 +84,7 @@ instance-local config for private, single-operator use. Compare the options in
 the [instance and config placement guide](instance-placement.md).
 
 Use the initialization and configuration steps in the
-[canonical quickstart](quickstart.md#3-init---guided--configure-a-regular-instance).
+[canonical quickstart](quickstart.md#3-configure-a-regular-instance).
 On Linux, if you use a token file, lock its permissions down; Goobers
 fail-closes on a world- or group-readable token file:
 

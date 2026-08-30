@@ -25,18 +25,12 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
-const initHelp = "Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]\n\n" +
+const initHelp = "Usage: goobers init [--demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db\n" +
 	"placeholder. The daemon creates per-gaggle runs/ and workcopies/ under\n" +
-	"gaggles/<gaggle>/ at runtime. Re-running without --guided is safe — existing\n" +
-	"pieces are left untouched. --guided is first-run only and refuses a target\n" +
-	"with instance.yaml or a populated config/ before prompting. It separately\n" +
-	"selects a checked-in config source and target GitHub application repository,\n" +
-	"then validates both. It can optionally preview and install the release-matched\n" +
-	"agent toolkit into that config source after an explicit harness and destination\n" +
-	"choice. The source may be new or existing locally, cloned from GitHub, or\n" +
-	"optionally backed by a newly confirmed GitHub repository.\n" +
+	"gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left\n" +
+	"untouched.\n" +
 	"--template=quickstart seeds the versioned onboarding workflow; it is\n" +
 	"intentionally not production-safe. With --source-tree <path>, it instead\n" +
 	"seeds the checked-in source layout (instance.yaml.example, manifest.yaml,\n" +
@@ -70,11 +64,19 @@ func runInitWithInputForOSAndGitHub(
 	goos string,
 	github guidedGitHubOperations,
 ) int {
+	for _, arg := range args {
+		if arg == "--guided" || strings.HasPrefix(arg, "--guided=") {
+			pf(stderr, "error: `goobers init --guided` has been removed.\n\n")
+			pf(stderr, "Web wizard:\n  goobers getting-started\n\n")
+			pf(stderr, "Agent CLI prompt:\n  \"Use the Goobers Getting Started skill to inspect my repository, derive its default branch, CI command, toolchain, and conventions, and create the smallest validated configuration. Explain each write and ask only when required evidence or behavior cannot be safely derived.\"\n")
+			return 2
+		}
+	}
 	fs := newCLIFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
 	insecure := fs.Bool("insecure", false, "with --demo on a platform without enforced network isolation (Windows), scaffold anyway without it")
-	guided := fs.Bool("guided", false, "prompt for config source, target repository, credentials, and workflows")
+	guided := new(bool)
 	template := fs.String("template", "", "seed a named onboarding template (available: quickstart)")
 	sourceTree := fs.String("source-tree", "", "seed the selected template as a checked-in config source at path")
 	asJSON := fs.Bool("json", false, "emit the config-source action result as JSON")
@@ -89,13 +91,13 @@ func runInitWithInputForOSAndGitHub(
 		}
 	})
 	selectedModes := 0
-	for _, selected := range []bool{*demo, *guided, *template != ""} {
+	for _, selected := range []bool{*demo, *template != ""} {
 		if selected {
 			selectedModes++
 		}
 	}
 	if selectedModes > 1 {
-		pf(stderr, "error: --demo, --guided, and --template cannot be combined\n")
+		pf(stderr, "error: --demo and --template cannot be combined\n")
 		return 2
 	}
 	if *insecure && !*demo {

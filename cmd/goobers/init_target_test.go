@@ -67,22 +67,14 @@ func TestGuidedInitDefaultPathRefusesSourceCheckoutCwd(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("guided init inside a source checkout succeeded; stderr = %q", stderr)
 	}
-	resolved, err := filepath.EvalSymlinks(checkout)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, want := range []string{
-		"guided setup requires an unconfigured target",
-		"unrelated project",
-		"defaulted to the current directory",
-		"goobers init --guided ./my-instance",
+		"`goobers init --guided` has been removed",
+		"goobers getting-started",
+		"Goobers Getting Started skill",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("guided init stderr = %q, missing %q", stderr, want)
 		}
-	}
-	if !strings.Contains(stderr, checkout) && !strings.Contains(stderr, resolved) {
-		t.Fatalf("guided init stderr = %q, missing resolved target path %q", stderr, resolved)
 	}
 	if _, statErr := os.Stat(filepath.Join(checkout, "instance.yaml")); !os.IsNotExist(statErr) {
 		t.Fatalf("refused guided init wrote instance.yaml, stat error = %v", statErr)

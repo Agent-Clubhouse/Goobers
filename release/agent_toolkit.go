@@ -25,6 +25,7 @@ const (
 )
 
 var agentToolkitSkills = []string{
+	"goobers-getting-started",
 	"goobers-environment-resolver",
 	"goobers-dsl-author",
 	"goobers-run-operator",

@@ -27,6 +27,7 @@ import { WorkflowsPage } from "./pages/WorkflowsPage";
 import { instanceWarnings } from "./prototypeFixtures";
 import { activeArea, parseRoute, routeHash, type Route } from "./routing";
 import { scopeIdentity } from "./scope";
+import { GettingStartedShell } from "./shell/GettingStartedShell";
 import { PortalShell } from "./shell/PortalShell";
 import { useTheme } from "./theme";
 
@@ -52,6 +53,10 @@ export function App({
 } = {}) {
   const mode = dashboardMode();
 
+  if (mode === "getting-started") {
+    return <GettingStartedApplication />;
+  }
+
   return (
     <LiveDataProvider client={client} diagnostics={diagnostics}>
       <Portal client={client} mode={mode} warningClient={warningClient} />
@@ -75,6 +80,20 @@ function dashboardMode(): DashboardMode {
   return "daemon";
 }
 
+function GettingStartedApplication() {
+  const { theme, toggleTheme } = useTheme();
+
+  useEffect(() => {
+    document.title = "Getting Started | Goobers";
+  }, []);
+
+  return (
+    <GettingStartedShell theme={theme} toggleTheme={toggleTheme}>
+      <GettingStartedPage />
+    </GettingStartedShell>
+  );
+}
+
 function activeRouteGaggle(route: Route): string | undefined {
   if (route.page === "gaggle") {
     return route.id;
@@ -96,19 +115,7 @@ function Portal({
 }) {
   const standalone = mode !== "daemon";
   const { theme, toggleTheme } = useTheme();
-  // Under `goobers getting-started` an empty hash lands on the guide, not the
-  // overview — the command exists to serve exactly that walkthrough. The hash
-  // is stamped too, so the address bar, later hashchange parses, and the
-  // browser history all agree with the rendered route.
-  const [route, setRoute] = useState<Route>(() => {
-    const hash = window.location.hash;
-    if (mode === "getting-started" && (hash === "" || hash === "#" || hash === "#/")) {
-      const guide: Route = { page: "getting-started" };
-      window.location.hash = routeHash(guide);
-      return guide;
-    }
-    return parseRoute(hash);
-  });
+  const [route, setRoute] = useState<Route>(() => parseRoute());
   const [config, setConfig] = useState<PortalConfig>(defaultPortalConfig);
   const [loading, setLoading] = useState(true);
   const initialRoute = useRef(true);
@@ -230,7 +237,6 @@ function Portal({
         client={client}
         currentScope={currentScope}
         navigate={navigate}
-        showGettingStarted={mode === "getting-started"}
         standalone={standalone}
         theme={theme}
         toggleTheme={toggleTheme}
@@ -242,7 +248,6 @@ function Portal({
             standalone={standalone}
           />
         )}
-        {route.page === "getting-started" && <GettingStartedPage />}
         {route.page === "workflows" && <WorkflowsPage client={client} standalone={standalone} />}
         {route.page === "goobers" && <GoobersPage client={client} standalone={standalone} />}
         {route.page === "gaggle" && (

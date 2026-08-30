@@ -73,7 +73,7 @@ describe("portal foundation", () => {
     expect(screen.queryByText(/The daemon is ready/)).not.toBeInTheDocument();
   });
 
-  it("defaults an empty hash to the guide in getting-started mode", async () => {
+  it("renders a focused application in getting-started mode", async () => {
     const mode = document.createElement("meta");
     mode.name = "goobers-dashboard-mode";
     mode.content = "getting-started";
@@ -82,24 +82,22 @@ describe("portal foundation", () => {
 
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
-    expect(await screen.findByRole("heading", { name: "Getting Started" })).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Getting Started" }),
-    ).toHaveAttribute("aria-current", "page");
+      await screen.findByRole("heading", { name: "Setup is not available from this dashboard" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Getting Started")).toHaveLength(2);
+    expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Overview" })).not.toBeInTheDocument();
   });
 
-  it("keeps #/getting-started deep-linkable in daemon mode without a nav entry", async () => {
+  it("does not expose the getting-started route in daemon mode", async () => {
     window.location.hash = "#/getting-started";
     renderLiveApp();
 
-    // The page renders (deep link stays valid), but with no guided server it
-    // shows the instructional state pointing at the launch command.
-    expect(await screen.findByRole("heading", { name: "Getting Started" })).toBeInTheDocument();
     expect(
-      await screen.findByRole("heading", { name: "The guided experience is not running here" }),
+      await screen.findByRole("heading", { name: "2 runs need attention." }),
     ).toBeInTheDocument();
-    expect(screen.getByText("goobers getting-started")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Getting Started" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Getting Started")).not.toBeInTheDocument();
   });
 
   it("keeps run loading copy local-read aware in standalone mode", async () => {

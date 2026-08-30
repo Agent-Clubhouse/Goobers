@@ -23,34 +23,23 @@ import (
 // dashboard` does, so the dashboard's own startup contract is untouched.
 const dashboardModeGettingStarted dashboardMode = "getting-started"
 
-// gettingStartedSampleDirName and gettingStartedInstanceDirName are the fixed
-// workdir-relative locations of the disposable sample checkout and the tutorial
-// instance. They match the shipped onboarding envelope's nextCommand
-// (`goobers init --template=quickstart ./tutorial-instance`) so the guide's
-// derived paths and the CLI's own printed guidance never disagree.
 const (
-	gettingStartedSampleDirName   = stubSampleRoot
 	gettingStartedInstanceDirName = "tutorial-instance"
+	gettingStartedConfigDirName   = "tutorial-instance-config"
 )
 
 const gettingStartedHelp = "Usage: goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]\n\n" +
-	"Serve and open the portal's guided Getting Started walkthrough: two paths\n" +
-	"from an empty working directory to a first autonomous pull request. The\n" +
-	"recommended path connects a repository you already work in — goobers init,\n" +
-	"goobers connect --json, goobers validate --json --check-harness\n" +
-	"--check-repos, and goobers run default-implement — and ends with a real PR\n" +
-	"against your own backlog. The alternative walks a disposable\n" +
-	"getting-started-task-api sample instead — goobers onboarding stub-sample,\n" +
-	"goobers init --template=quickstart, the same validate call, and goobers run\n" +
-	"quickstart. Every write action the guide offers is a thin wrapper over\n" +
-	"these documented CLI commands; it never scaffolds, connects, or validates\n" +
-	"on its own. The manual steps stay yours, and the guide states each one\n" +
-	"explicitly: exporting your token for the own-repository path, or creating\n" +
-	"the disposable GitHub repository, pushing the sample, and exporting tokens\n" +
-	"for the sample path. Time to First PR is computed locally and reported\n" +
-	"only to you; nothing leaves your machine.\n\n" +
-	"--workdir (default \".\") holds the sample checkout and the tutorial\n" +
-	"instance; no instance root needs to exist yet. The default --port is auto,\n" +
+	"Serve and open the focused multi-page setup tutorial. It inspects an existing\n" +
+	"GitHub or Azure DevOps clone, discovers its identity, default branch, CI and\n" +
+	"toolchain, asks only for configuration placement and desired behavior, creates\n" +
+	"and validates the instance, prepares required repository labels, and optionally\n" +
+	"runs the implementation workflow. Back and Continue navigation stays inside\n" +
+	"the browser, while completed filesystem\n" +
+	"actions remain the source of truth across restarts. Token values never\n" +
+	"reach the browser or configuration files.\n\n" +
+	"--workdir holds tutorial runtime state and defaults beneath the current\n" +
+	"user's local application-data directory; the directory is created when\n" +
+	"needed. The default --port is auto,\n" +
 	"incrementing from %d until a port is available. Blocks until interrupted.\n" +
 	"Exit codes: 0 = clean shutdown, 1 = service or browser failure, 2 =\n" +
 	"usage/IO error.\n"
@@ -66,7 +55,7 @@ func runGettingStartedContext(ctx context.Context, args []string, stdout, stderr
 	flags.SetOutput(stderr)
 	portValue := flags.String("port", "auto", "server port, or \"auto\" to use the first available port from 8081")
 	noOpen := flags.Bool("no-open", false, "print the getting-started URL without opening a browser")
-	workdir := flags.String("workdir", ".", "directory holding the tutorial sample and instance")
+	workdir := flags.String("workdir", defaultGettingStartedWorkdir(), "directory holding tutorial runtime state")
 	flags.Usage = func() { pf(stderr, gettingStartedHelp, defaultDashboardPort) }
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -85,9 +74,8 @@ func runGettingStartedContext(ctx context.Context, args []string, stdout, stderr
 		pf(stderr, "error: resolve --workdir: %v\n", err)
 		return 2
 	}
-	info, err := os.Stat(absWorkdir)
-	if err != nil || !info.IsDir() {
-		pf(stderr, "error: --workdir %s is not an existing directory\n", absWorkdir)
+	if err := os.MkdirAll(absWorkdir, 0o755); err != nil {
+		pf(stderr, "error: create --workdir %s: %v\n", absWorkdir, err)
 		return 2
 	}
 
@@ -97,6 +85,7 @@ func runGettingStartedContext(ctx context.Context, args []string, stdout, stderr
 		pf(stderr, "error: initialize guided server: %v\n", err)
 		return 1
 	}
+
 	assets, err := dashboardAssetFS("")
 	if err != nil {
 		pf(stderr, "error: load portal assets: %v\n", errors.Join(err, guided.close()))
@@ -179,6 +168,14 @@ func stopGettingStarted(server *http.Server, cancelRequests context.CancelFunc, 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return errors.Join(server.Shutdown(ctx), guidedErr)
+}
+
+func defaultGettingStartedWorkdir() string {
+	cache, err := os.UserCacheDir()
+	if err != nil || strings.TrimSpace(cache) == "" {
+		return filepath.Join(".", ".goobers", "getting-started")
+	}
+	return filepath.Join(cache, "Goobers", "getting-started")
 }
 
 // newGettingStartedHandler dispatches exactly like the dashboard's manual

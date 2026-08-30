@@ -8,7 +8,23 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
+	"strings"
 	_ "time/tzdata"
+
+	"github.com/goobers/goobers/internal/version"
+	"golang.org/x/term"
+)
+
+const cliOutputWidth = 78
+
+const (
+	ansiReset       = "\x1b[0m"
+	ansiBoldCyan    = "\x1b[1;36m"
+	ansiBoldGreen   = "\x1b[1;32m"
+	ansiBoldYellow  = "\x1b[1;33m"
+	ansiMagenta     = "\x1b[35m"
+	ansiCyan        = "\x1b[36m"
 )
 
 // runProcessExits is true only for the real CLI entrypoint. In-process callers
@@ -26,6 +42,51 @@ func main() {
 func pf(w io.Writer, format string, a ...interface{}) { _, _ = fmt.Fprintf(w, format, a...) }
 func pln(w io.Writer, s string)                       { _, _ = fmt.Fprintln(w, s) }
 
+func cliColorEnabled(w io.Writer) bool {
+	if _, disabled := os.LookupEnv("NO_COLOR"); disabled {
+		return false
+	}
+	file, ok := w.(interface{ Fd() uintptr })
+	return ok && term.IsTerminal(int(file.Fd()))
+}
+
+func cliStyled(w io.Writer, style, text string) string {
+	if !cliColorEnabled(w) {
+		return text
+	}
+	return style + text + ansiReset
+}
+
+func writeWrapped(w io.Writer, firstIndent, continuationIndent, text string) {
+	for _, line := range wrappedLines(firstIndent, continuationIndent, text) {
+		pln(w, line)
+	}
+}
+
+func wrappedLines(firstIndent, continuationIndent, text string) []string {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{firstIndent}
+	}
+	lines := make([]string, 0, 2)
+	indent := firstIndent
+	line := indent
+	for _, word := range words {
+		addition := word
+		if len(line) > len(indent) {
+			addition = " " + word
+		}
+		if len(line)+len(addition) > cliOutputWidth && len(line) > len(indent) {
+			lines = append(lines, line)
+			indent = continuationIndent
+			line = indent + word
+			continue
+		}
+		line += addition
+	}
+	return append(lines, line)
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		usage(stderr)
@@ -42,9 +103,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 // usage renders the core operator surface. Advanced operator and runner-invoked
 // stage commands remain available through explicit help views.
 func usage(w io.Writer) {
-	pf(w, usageHeader)
+	writeUsageHeader(w)
 	writeSynopses(w, cliCommands, cliTierCore)
-	pf(w, usageFooter)
+	writeUsageFooter(w)
+}
+
+func writeUsageHeader(w io.Writer) {
+	separator := "================================================================"
+	title := fmt.Sprintf("goobers %s", version.Version)
+	pf(
+		w,
+		"%s\n%s\n%s\n\n%s\n%s\n\n%s\n",
+		cliStyled(w, ansiBoldCyan, separator),
+		cliStyled(w, ansiBoldCyan, title),
+		cliStyled(w, ansiBoldCyan, separator),
+		cliStyled(w, ansiBoldGreen, "Usage:"),
+		colorizeCLISyntax(w, "  goobers <COMMAND> [OPTIONS]", true),
+		cliStyled(w, ansiBoldYellow, "Commands:"),
+	)
 }
 
 func usageAll(w io.Writer) {
@@ -62,7 +138,7 @@ func usageStages(w io.Writer) {
 }
 
 func writeSynopsisGroup(w io.Writer, heading string, tier cliCommandTier) {
-	pln(w, heading)
+	pln(w, cliStyled(w, ansiBoldYellow, heading))
 	writeSynopses(w, cliCommands, tier)
 	pln(w, "")
 }
@@ -70,31 +146,129 @@ func writeSynopsisGroup(w io.Writer, heading string, tier cliCommandTier) {
 // writeSynopses walks the registry in declaration order and emits entries from
 // one tier. Commands without a synopsis are skipped.
 func writeSynopses(w io.Writer, commands []cliCommand, tier cliCommandTier) {
-	for _, command := range commands {
-		if command.synopsis != "" && command.tier == tier {
-			pf(w, "%s", command.synopsis)
-		}
-		writeSynopses(w, command.subcommands, tier)
+	entries := collectCommandIndexEntries(commands, tier, nil)
+	sort.Slice(entries, func(i, j int) bool {
+		return strings.ToLower(entries[i].command) < strings.ToLower(entries[j].command)
+	})
+	for _, entry := range entries {
+		writeCommandIndexEntry(w, entry.command, entry.description)
 	}
 }
 
-const usageHeader = `goobers — tier 1-2 local instance CLI
+type commandIndexEntry struct {
+	command     string
+	description string
+}
 
-Usage:
-`
+func collectCommandIndexEntries(commands []cliCommand, tier cliCommandTier, prefix []string) []commandIndexEntry {
+	var entries []commandIndexEntry
+	for _, command := range commands {
+		path := prefix
+		if name := docDisplayName(command); name != "" {
+			path = append(append([]string{}, prefix...), name)
+		}
+		if command.synopsis != "" && command.tier == tier {
+			displayCommand := strings.Join(path, " ")
+			entries = append(entries, commandIndexEntry{
+				command:     displayCommand,
+				description: commandIndexDescription(displayCommand, command.short),
+			})
+		}
+		entries = append(entries, collectCommandIndexEntries(command.subcommands, tier, path)...)
+	}
+	return entries
+}
 
-const usageFooter = `
-path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
-business errors, 2 = usage/IO error. After waiting for a run, run/signal use
-0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
-modes exit 0 before a terminal outcome is known.
+func writeCommandIndexEntry(w io.Writer, command, description string) {
+	const descriptionColumn = 20
+	commandPrefix := "  " + command
+	if strings.TrimSpace(description) == "" {
+		pln(w, "  "+cliStyled(w, ansiMagenta, command))
+		return
+	}
 
-Use ` + "`goobers help all`" + ` for advanced operator commands or
-` + "`goobers help stages`" + ` for runner-invoked workflow internals.
-Quickstart guide: docs/guides/quickstart.md
-DSL entry points: ` + "`goobers schema`" + ` and ` + "`goobers examples`" + `
-Troubleshooting: ` + "`goobers status`" + `, ` + "`goobers trace`" + `, and ` + "`goobers escalations`" + `
-`
+	padding := 1
+	if len(commandPrefix) < descriptionColumn {
+		padding = descriptionColumn - len(commandPrefix)
+	}
+	pf(
+		w,
+		"  %s%s%s\n",
+		cliStyled(w, ansiMagenta, command),
+		strings.Repeat(" ", padding),
+		description,
+	)
+}
+
+var coreCommandIndexDescriptions = map[string]string{
+	"completion":      "Generate shell completion scripts.",
+	"connect":         "Connect an instance to a GitHub repository.",
+	"dashboard":       "Open the local operations portal.",
+	"down":            "Gracefully stop a running daemon.",
+	"escalations":     "List escalated runs.",
+	"examples":        "Browse embedded workflow examples.",
+	"getting-started": "Open the guided Getting Started walkthrough.",
+	"init":            "Create an instance or configuration source.",
+	"run":             "Start a workflow run.",
+	"scaffold":        "Create a goober, workflow, or gaggle.",
+	"service":         "Install and manage the supervised daemon.",
+	"signal":          "Fire an external workflow signal.",
+	"stats":           "Show instance lifetime statistics.",
+	"status":          "Show instance, daemon, run, or agent status.",
+	"trace":           "Inspect a run's journal and transcripts.",
+	"up":              "Start the local daemon.",
+	"validate":        "Validate an instance or configuration source.",
+	"version":         "Show build version information.",
+	"workflow show":   "Show a workflow as a text DAG.",
+}
+
+func commandIndexDescription(command, fallback string) string {
+	if description, ok := coreCommandIndexDescriptions[command]; ok {
+		return description
+	}
+	return fallback
+}
+
+func colorizeCLISyntax(w io.Writer, line string, hasCommand bool) string {
+	if !cliColorEnabled(w) {
+		return line
+	}
+	indentLength := len(line) - len(strings.TrimLeft(line, " "))
+	indent := line[:indentLength]
+	content := line[indentLength:]
+	if !hasCommand {
+		return indent + ansiCyan + content + ansiReset
+	}
+	command, parameters, found := strings.Cut(content, " ")
+	if !found {
+		return indent + ansiMagenta + command + ansiReset
+	}
+	return indent + ansiMagenta + command + ansiReset + " " +
+		ansiCyan + parameters + ansiReset
+}
+
+func writeUsageFooter(w io.Writer) {
+	pln(w, "")
+	pln(w, cliStyled(w, ansiBoldYellow, "Defaults:"))
+	pln(w, "  Path arguments use the current directory when omitted.")
+
+	pln(w, "")
+	pln(w, cliStyled(w, ansiBoldYellow, "Exit codes:"))
+	pln(w, "  0  Success or successful submission")
+	pln(w, "  1  Validation/business failure, failed run, or aborted run")
+	pln(w, "  2  Usage or I/O error")
+	pln(w, "  3  Escalated run or signal")
+	pln(w, "  Submission-only modes return 0 before the final outcome is known.")
+
+	pln(w, "")
+	pln(w, cliStyled(w, ansiBoldYellow, "More help:"))
+	pf(w, "  Advanced commands  %s\n", cliStyled(w, ansiCyan, "goobers help all"))
+	pf(w, "  Workflow internals %s\n", cliStyled(w, ansiCyan, "goobers help stages"))
+	pf(w, "  Command details    %s\n", cliStyled(w, ansiCyan, "goobers help <command>"))
+	pln(w, "  Quickstart         docs/guides/quickstart.md")
+	pf(w, "  DSL                %s, %s\n", cliStyled(w, ansiCyan, "goobers schema"), cliStyled(w, ansiCyan, "goobers examples"))
+	pf(w, "  Troubleshooting    %s, %s, %s\n", cliStyled(w, ansiCyan, "goobers status"), cliStyled(w, ansiCyan, "goobers trace"), cliStyled(w, ansiCyan, "goobers escalations"))
+}
 
 const usageAllHeader = `goobers — complete command reference
 

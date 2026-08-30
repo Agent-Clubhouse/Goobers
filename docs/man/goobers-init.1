@@ -6,19 +6,13 @@ goobers init \- scaffold an instance root
 \fBgoobers init\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
 placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
-gaggles/<gaggle>/ at runtime. Re-running without --guided is safe — existing
-pieces are left untouched. --guided is first-run only and refuses a target
-with instance.yaml or a populated config/ before prompting. It separately
-selects a checked-in config source and target GitHub application repository,
-then validates both. It can optionally preview and install the release-matched
-agent toolkit into that config source after an explicit harness and destination
-choice. The source may be new or existing locally, cloned from GitHub, or
-optionally backed by a newly confirmed GitHub repository.
+gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
+untouched.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
@@ -38,7 +32,6 @@ launch the fully isolated WSL 2 route instead. --insecure requires --demo.
 goobers init
 goobers init --template=quickstart ./tutorial
 goobers init --template=quickstart --source-tree ./tutorial-config --json
-goobers init --guided ./my-instance
 goobers init --demo ./demo
 .fi
 .SH SEE ALSO

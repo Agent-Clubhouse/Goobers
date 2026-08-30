@@ -23,11 +23,26 @@ describe("DaemonErrorState", () => {
     },
   );
 
-  it("still renders the generic unavailable state for non-auth failures", () => {
+  it("renders an actionable retry state for non-auth failures", () => {
     render(<DaemonErrorState error={new DaemonUnavailableError()} retry={vi.fn()} />);
 
-    expect(screen.getByRole("heading", { name: "Daemon unavailable" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Couldn't load Goobers data" })).toBeInTheDocument();
+    expect(
+      screen.getByText("The portal couldn't load data from the Goobers daemon. Reconnect to try again."),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/Authentication required/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Access denied/i)).not.toBeInTheDocument();
+  });
+
+  it("explains how to recover when local instance data cannot be read", () => {
+    render(
+      <DaemonErrorState error={new DaemonUnavailableError()} retry={vi.fn()} standalone />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Couldn't load this instance" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Goobers couldn't read the local instance data. Reload to try again."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
   });
 });

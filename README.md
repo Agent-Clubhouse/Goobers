@@ -228,10 +228,12 @@ the differences relevant to your environment:
 Each release publishes a portable
 [Goobers agent toolkit](agent-toolkit/README.md) for an external coding agent
 working in a config repository. Its canonical Agent Skills cover environment
-resolution, [DSL authoring](skills/goobers-dsl-author/SKILL.md), read-only run
-inspection, and workflow upgrades. Release-matched docs, schemas, examples, and
-thin Copilot, Claude, and `AGENTS.md` adapters let it work without a source
-checkout or running daemon. See the
+resolution, [Getting Started](skills/goobers-getting-started/SKILL.md),
+[DSL authoring](skills/goobers-dsl-author/SKILL.md), read-only run inspection,
+and workflow upgrades. Use Getting Started as the repository-aware entry point;
+it asks only for choices that cannot be derived. Release-matched docs, schemas,
+examples, and thin Copilot, Claude, and `AGENTS.md` adapters let it work without
+a source checkout or running daemon. See the
 [installation and usage guide](docs/guides/dsl-authoring-skill.md).
 
 ## Shell completion

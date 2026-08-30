@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -88,7 +90,11 @@ func TestGettingStartedUsageErrors(t *testing.T) {
 	if code := runGettingStartedContext(context.Background(), []string{"--port=notaport"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("bad port exit code = %d, want 2", code)
 	}
-	if code := runGettingStartedContext(context.Background(), []string{"--workdir", "/definitely/missing/dir"}, io.Discard, io.Discard); code != 2 {
-		t.Fatalf("missing workdir exit code = %d, want 2", code)
+	notDirectory := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notDirectory, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := runGettingStartedContext(context.Background(), []string{"--workdir", notDirectory}, io.Discard, io.Discard); code != 2 {
+		t.Fatalf("file workdir exit code = %d, want 2", code)
 	}
 }

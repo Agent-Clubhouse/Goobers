@@ -235,26 +235,43 @@ for production-oriented review, local CI with bounded implementation repasses,
 explicit escalation paths, and PR CI polling. Add the separate `merge-review`
 workflow only after those safeguards are configured.
 
-## 3. `init --guided` — configure a regular instance
+## 3. Configure a regular instance
+
+The recommended path is the focused browser tutorial:
 
 ```sh
 export PATH="$PWD/bin:$PATH"
-goobers init --guided ./my-instance
+goobers getting-started
 ```
 
-The guided flow uses the same configuration sequence as the release installer.
-It separately selects a checked-in config source and target GitHub application
-repository, prompts for credential references and canonical workflows, and
-validates both the source and materialized instance. Use a fresh instance path;
-a new config source path must also be empty, while an existing source is
-validated and left unchanged. Guided init is first-run only and refuses an
-already initialized target before prompting.
+Provide an existing local Git clone. The tutorial supports GitHub and Azure
+DevOps, discovers repository identity, default branch, CI command, toolchain,
+and existing CLI authentication, then asks only for configuration placement,
+workflow behavior, and agent harness choices that cannot be derived.
+
+The default configuration location is a peer folder beside the application
+repository. You can instead choose a `goobers` folder inside the repository or
+another local path. Mutable instance state remains outside the application
+repository. Track the configuration folder with Git for review and history.
+
+To use an agent instead of the browser, install the release-matched agent
+toolkit and run this prompt from the selected configuration folder:
+
+```text
+Use the Goobers Getting Started skill to inspect target repository <path-or-provider-url>,
+derive its default branch, CI command, toolchain, and conventions, and create the
+smallest validated configuration source here. Explain each write and ask only when
+required evidence or behavior cannot be safely derived.
+```
+
+`goobers init --guided` has been removed. Invoking it prints these migration
+paths without reading stdin or writing files.
 
 A fresh successful initialization records
 `init.completed` in `scheduler/events.jsonl` as the Time to First PR anchor.
 
-After validation, guided mode prints the config-source-to-instance mapping and
-the commands for applying later source edits:
+After validation, setup shows the config-source-to-instance mapping and the
+commands for applying later source edits:
 
 ```text
 After editing the checked-in source, validate and materialize it before startup:
@@ -263,7 +280,8 @@ After editing the checked-in source, validate and materialize it before startup:
   goobers up "<instance-root>"
 ```
 
-It then prints the runnable next commands and developer documentation:
+It also shows runnable next commands, repository-aware customization prompts,
+and developer documentation:
 
 ```text
 Ready to run from <instance-root>:

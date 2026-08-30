@@ -98,7 +98,7 @@ bin/goobers --version
 ## 3. Configure credentials with Keychain
 
 Keep the instance root outside the target repository and follow the
-[canonical initialization and configuration steps](quickstart.md#3-init---guided--configure-a-regular-instance).
+[canonical initialization and configuration steps](quickstart.md#3-configure-a-regular-instance).
 macOS can resolve provider credentials directly from the login Keychain. Add
 one generic-password item per capability:
 

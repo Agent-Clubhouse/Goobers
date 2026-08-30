@@ -2,7 +2,7 @@
 
 <!-- Generated from the command registry (cmd/goobers/runtime_capabilities.go) by `make docs`. Do not edit by hand; edits are overwritten and the CI drift guard will fail. -->
 
-`goobers` is the tier 1-2 local instance CLI. This reference is generated from the CLI command registry, so it always matches the shipped binary.
+`goobers` is the Goobers command-line interface. This reference is generated from the CLI command registry, so it always matches the shipped binary.
 
 ## Core commands
 
@@ -74,7 +74,6 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers netpol-render`](#goobers-netpol-render) | render per-runner-class NetworkPolicy reference manifests from the runners: inventory |
 | [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
 | [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
-| [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
 | [`goobers override`](#goobers-override) | override a nondeterministic gate with a rationale |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
@@ -1623,24 +1622,18 @@ serve and open the guided portal Getting Started walkthrough
 ~~~text
 Usage: goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
 
-Serve and open the portal's guided Getting Started walkthrough: two paths
-from an empty working directory to a first autonomous pull request. The
-recommended path connects a repository you already work in — goobers init,
-goobers connect --json, goobers validate --json --check-harness
---check-repos, and goobers run default-implement — and ends with a real PR
-against your own backlog. The alternative walks a disposable
-getting-started-task-api sample instead — goobers onboarding stub-sample,
-goobers init --template=quickstart, the same validate call, and goobers run
-quickstart. Every write action the guide offers is a thin wrapper over
-these documented CLI commands; it never scaffolds, connects, or validates
-on its own. The manual steps stay yours, and the guide states each one
-explicitly: exporting your token for the own-repository path, or creating
-the disposable GitHub repository, pushing the sample, and exporting tokens
-for the sample path. Time to First PR is computed locally and reported
-only to you; nothing leaves your machine.
+Serve and open the focused multi-page setup tutorial. It inspects an existing
+GitHub or Azure DevOps clone, discovers its identity, default branch, CI and
+toolchain, asks only for configuration placement and desired behavior, creates
+and validates the instance, prepares required repository labels, and optionally
+runs the implementation workflow. Back and Continue navigation stays inside
+the browser, while completed filesystem
+actions remain the source of truth across restarts. Token values never
+reach the browser or configuration files.
 
---workdir (default ".") holds the sample checkout and the tutorial
-instance; no instance root needs to exist yet. The default --port is auto,
+--workdir holds tutorial runtime state and defaults beneath the current
+user's local application-data directory; the directory is created when
+needed. The default --port is auto,
 incrementing from 8081 until a port is available. Blocks until interrupted.
 Exit codes: 0 = clean shutdown, 1 = service or browser failure, 2 =
 usage/IO error.
@@ -1660,8 +1653,8 @@ show command or concept help
 ~~~text
 Usage: goobers help [all|stages|COMMAND|CONCEPT]
 
-Show core command help with no topic, the complete or workflow-stage command
-list with all or stages, a command's full help, or one of these concepts:
+List core commands with no topic, show the complete or workflow-stage command
+list with all or stages, show a command's full help, or explain one of these concepts:
 instance, gaggle, goober, workflow, stage, gate, harness, capability.
 ~~~
 
@@ -1670,19 +1663,13 @@ instance, gaggle, goober, workflow, stage, gate, harness, capability.
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
 placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
-gaggles/<gaggle>/ at runtime. Re-running without --guided is safe — existing
-pieces are left untouched. --guided is first-run only and refuses a target
-with instance.yaml or a populated config/ before prompting. It separately
-selects a checked-in config source and target GitHub application repository,
-then validates both. It can optionally preview and install the release-matched
-agent toolkit into that config source after an explicit harness and destination
-choice. The source may be new or existing locally, cloned from GitHub, or
-optionally backed by a newly confirmed GitHub repository.
+gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
+untouched.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
@@ -1704,7 +1691,6 @@ launch the fully isolated WSL 2 route instead. --insecure requires --demo.
 $ goobers init
 $ goobers init --template=quickstart ./tutorial
 $ goobers init --template=quickstart --source-tree ./tutorial-config --json
-$ goobers init --guided ./my-instance
 $ goobers init --demo ./demo
 ~~~
 
@@ -1998,7 +1984,6 @@ explicitly named.
 
 Commands:
   stub-agent-instructions  install agent assets into a config source
-  stub-sample              materialize the disposable Getting Started target
 
 Run `goobers onboarding <command> -h` for action flags.
 ~~~
@@ -2007,7 +1992,6 @@ Run `goobers onboarding <command> -h` for action flags.
 
 ~~~console
 $ goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json
-$ goobers onboarding stub-sample --destination ./getting-started-task-api --json
 ~~~
 
 ## `goobers onboarding stub-agent-instructions`
@@ -2036,40 +2020,6 @@ drift, or write error, 2 = usage error.
 
 ~~~console
 $ goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json
-~~~
-
-## `goobers onboarding stub-sample`
-
-materialize and optionally seed the disposable Getting Started target
-
-~~~text
-Usage: goobers onboarding stub-sample --destination <path> [--work-tracking <owner/repo>] [--token-env <name>] [--force] [--json]
-
-Materialize the embedded getting-started-task-api sample at an explicitly
-named destination. Existing matching files are skipped. A conflicting file
-fails the complete preflight without changing the destination unless --force
-is set; symbolic links are always refused.
-
-With --work-tracking owner/repo, seed the catalog's missing GitHub labels and
-issues using the token named by --token-env. If the token is unset, report
-the issues pending and complete the local materialization without network
-access. No remote repository is created or pushed.
-
-Flags:
-  --destination <path>      required sample destination
-  --work-tracking <repo>    optional GitHub owner/repo to seed
-  --token-env <name>        issue token environment variable (default GOOBERS_GITHUB_ISSUES_TOKEN)
-  --force                   replace conflicting regular files
-  --json                    emit the versioned action envelope
-
-Exit codes: 0 = materialized, 1 = conflict/provider error, 2 = usage error.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers onboarding stub-sample --destination ./getting-started-task-api --json
-$ goobers onboarding stub-sample --destination ./getting-started-task-api --work-tracking my-org/tutorial
 ~~~
 
 ## `goobers open-pr`

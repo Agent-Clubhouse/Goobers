@@ -1,6 +1,6 @@
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { extname, join, normalize, resolve } from "node:path";
+import { extname, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const port = 4173;
@@ -206,10 +206,18 @@ function serveEvents(response) {
   response.on("close", () => eventStreams.delete(response));
 }
 
-function serveStatic(pathname, response) {
-  const relative = pathname === "/" ? "index.html" : normalize(decodeURIComponent(pathname)).slice(1);
-  const file = resolve(join(distRoot, relative));
-  if (!file.startsWith(`${distRoot}/`) || !existsSync(file) || !statSync(file).isFile()) {
+function serveStatic(pathname, mode, response) {
+  const relativePath =
+    pathname === "/" ? "index.html" : normalize(decodeURIComponent(pathname)).slice(1);
+  const file = resolve(join(distRoot, relativePath));
+  const fromRoot = relative(distRoot, file);
+  if (
+    fromRoot === "" ||
+    fromRoot === ".." ||
+    fromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+    !existsSync(file) ||
+    !statSync(file).isFile()
+  ) {
     response.writeHead(404);
     response.end("not found");
     return;
@@ -217,6 +225,14 @@ function serveStatic(pathname, response) {
   response.writeHead(200, {
     "Content-Type": contentTypes[extname(file)] ?? "application/octet-stream",
   });
+  if (relativePath === "index.html" && mode === "getting-started") {
+    response.end(
+      readFileSync(file, "utf8")
+        .replace('content="daemon"', 'content="getting-started"')
+        .replace("<title>Goobers · local operations</title>", "<title>Getting Started | Goobers</title>"),
+    );
+    return;
+  }
   createReadStream(file).pipe(response);
 }
 
@@ -256,7 +272,7 @@ createServer((request, response) => {
     sendJSON(response, fixture);
     return;
   }
-  serveStatic(url.pathname, response);
+  serveStatic(url.pathname, url.searchParams.get("mode"), response);
 }).listen(port, "127.0.0.1", () => {
   console.log(`Fixture daemon listening on http://127.0.0.1:${port}`);
 });

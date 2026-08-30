@@ -105,31 +105,26 @@ GH_TOKEN="$GOOBERS_GITHUB_TOKEN" gh repo view "$GOOBERS_TARGET"
 ## 3. Initialize the instance
 
 ```sh
-goobers init --guided "$GOOBERS_INSTANCE"
+goobers getting-started
 ```
 
-Choose `new-local`, enter `$GOOBERS_CONFIG_SOURCE`, and then select
-`implementation` and `backlog-curation`. The target application repository
-prompt is separate from the config source prompt: enter `$GOOBERS_TARGET` only
-for the target. Guided setup asks for environment variable names, never token
-values.
+Provide the existing local clone for `$GOOBERS_TARGET`. The tutorial discovers
+GitHub or Azure DevOps identity, default branch, CI command, toolchain, and CLI
+authentication. Choose `$GOOBERS_CONFIG_SOURCE` as a custom configuration
+folder, or use the recommended peer folder suggested beside the target clone.
+The tutorial never asks for token values.
 
-After confirming the config-source-to-target mapping, choose `copilot`,
-`claude`, `generic`, or `skip` for the optional agent toolkit. Guided setup
-reports detected harnesses without selecting one, requires the destination to
-match `$GOOBERS_CONFIG_SOURCE`, and previews the release, ownership boundary,
-instruction file, and current toolkit state before writing. The completion
-output includes starter prompts and explicit `agent-kit check` and
-`agent-kit update` commands. Choosing `skip` leaves the config source fully
-usable without toolkit files.
+For an agent-driven path, use:
 
-The source may instead be an existing local tree or an existing GitHub config
-repository. A GitHub source is cloned to the local checkout path before it is
-validated. For a new local source, setup can optionally create an empty GitHub
-repository after displaying its owner, name, and visibility and asking for a
-second confirmation. Without toolkit installation, setup does not initialize
-Git, commit, or push. Installing the toolkit initializes the new local config
-source as a Git repository, but setup still does not commit or push.
+```text
+Use the Goobers Getting Started skill to inspect <target-path>, create the smallest
+validated configuration at <config-path>, explain each write, and ask only when
+required evidence or behavior cannot be safely derived.
+```
+
+The configuration folder does not have to be a Git repository, but Git is
+recommended for review and history. Initialize and push it to GitHub or Azure
+DevOps after generation when that governance model fits your team.
 
 The checked-in source has this shape:
 

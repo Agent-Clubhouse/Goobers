@@ -31,11 +31,16 @@ const (
 		"[production-oriented configuration examples](config-examples/README.md).\n"
 	quickstartSourceBuild = "## Build the binary\n\n```sh\n" +
 		"go build -o bin/goobers ./cmd/goobers    # or: make build\n```\n\n"
-	quickstartSourceInit = "## 3. `init --guided` — configure a regular instance\n\n" +
+	quickstartSourceInit = "## 3. Configure a regular instance\n\n" +
+		"The recommended path is the focused browser tutorial:\n\n" +
 		"```sh\n" +
 		"export PATH=\"$PWD/bin:$PATH\"\n" +
-		"goobers init --guided ./my-instance\n" +
-		"```\n\n"
+		"goobers getting-started\n" +
+		"```\n\n" +
+		"Provide an existing local Git clone. The tutorial supports GitHub and Azure\n" +
+		"DevOps, discovers repository identity, default branch, CI command, toolchain,\n" +
+		"and existing CLI authentication, then asks only for configuration placement,\n" +
+		"workflow behavior, and agent harness choices that cannot be derived.\n\n"
 	quickstartSourceManualInit = "### Manual/advanced alternative: bare `init`\n\n" +
 		"Use bare init when you intentionally want to scaffold and edit every\n" +
 		"configuration layer yourself:\n\n" +
@@ -59,20 +64,12 @@ const (
 		"`validate` checks `instance.yaml` and every document under `config/` against the\n" +
 		"canonical schemas. Exit codes are `0` for valid configuration, `1` for\n" +
 		"validation errors, and `2` for usage or I/O errors.\n\n"
-	quickstartInstalledInit = "## 3. Create a guided instance\n\n" +
-		"The release installer installs the binary and documentation only; it configures\n" +
-		"nothing unless you opted in with `--guided [instance-path]`\n" +
-		"(default `./goobers-instance`). If you opted in, do not initialize that instance\n" +
-		"again — in the commands below, replace `./my-instance` with that same path,\n" +
-		"quoting it if needed.\n\n" +
-		"If you already followed the bundled README and created `./my-instance`, continue\n" +
-		"with step 4 below. Otherwise, create that guided instance now:\n\n" +
+	quickstartInstalledInit = "## 3. Configure a regular instance\n\n" +
+		"The release installer installs the binary and documentation only. Start the focused tutorial after installation:\n\n" +
 		"```sh\n" +
-		"goobers init --guided ./my-instance\n" +
+		"goobers getting-started\n" +
 		"```\n\n" +
-		"Keep the default workflow selection, or explicitly select `implementation`, so\n" +
-		"the first manual run below uses the workflow the guided setup created. Guided\n" +
-		"setup validates the instance and refuses an already configured target.\n\n"
+		"The legacy installer and `goobers init --guided` options now print migration guidance and make no changes.\n\n"
 	quickstartSourceOnboardingAssets = "Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
 		"against a disposable GitHub repository you control. This path requires a\n" +
 		"GitHub token and an authenticated agent harness. The shipped template's\n" +
@@ -348,20 +345,17 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 							"Linux or macOS with mock providers, no credentials, and no network writes. From\n"+
 							"there, graduate to\n"+
 							"the token-bearing `quickstart@v1` template with\n"+
-							"`%s init --template=quickstart ./tutorial-instance`, then a regular guided\n"+
-							"instance and the\n"+
+							"`%s init --template=quickstart ./tutorial-instance`, then a regular\n"+
+							"instance created through Getting Started and the\n"+
 							"production-oriented definitions under\n"+
 							"[`config-examples/`](onboarding/templates/canonical/README.md).\n\n"+
 							"The [full quickstart](docs/guides/quickstart.md) walks through that progression.\n\n"+
-							"The release installer installs the binary and documentation only; it configures\n"+
-							"nothing unless you opted in with `--guided [instance-path]`\n"+
-							"(default `./goobers-instance`). If you opted in, do not initialize that instance\n"+
-							"again — in the commands below, replace `./my-instance` with that same path,\n"+
-							"quoting it if needed.\n\n"+
+							"The release installer installs the binary and documentation only. Start setup with\n"+
+							"`goobers getting-started` after installation.\n\n"+
 							"If you opened this README directly from an extracted archive instead, replace `%s`\n"+
-							"below with `./goobers` and create the guided instance now:\n\n"+
+							"below with `./goobers`:\n\n"+
 							"```sh\n"+
-							"%s init --guided ./my-instance\n"+
+							"%s getting-started\n"+
 							"%s run %s ./my-instance\n"+
 							"```\n",
 						version,
@@ -414,8 +408,8 @@ func adaptInstalledOnboarding(payloadDir, version string) error {
 					source: quickstartSourceInit,
 					installed: strings.Replace(
 						quickstartInstalledInit,
-						"goobers init",
-						releaseCommand+" init",
+						"goobers getting-started",
+						releaseCommand+" getting-started",
 						1,
 					),
 				},

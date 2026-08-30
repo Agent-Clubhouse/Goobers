@@ -8,24 +8,18 @@ goobers getting-started \- serve and open the guided portal Getting Started walk
 .nf
 Usage: goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
 
-Serve and open the portal's guided Getting Started walkthrough: two paths
-from an empty working directory to a first autonomous pull request. The
-recommended path connects a repository you already work in — goobers init,
-goobers connect --json, goobers validate --json --check-harness
---check-repos, and goobers run default-implement — and ends with a real PR
-against your own backlog. The alternative walks a disposable
-getting-started-task-api sample instead — goobers onboarding stub-sample,
-goobers init --template=quickstart, the same validate call, and goobers run
-quickstart. Every write action the guide offers is a thin wrapper over
-these documented CLI commands; it never scaffolds, connects, or validates
-on its own. The manual steps stay yours, and the guide states each one
-explicitly: exporting your token for the own-repository path, or creating
-the disposable GitHub repository, pushing the sample, and exporting tokens
-for the sample path. Time to First PR is computed locally and reported
-only to you; nothing leaves your machine.
+Serve and open the focused multi-page setup tutorial. It inspects an existing
+GitHub or Azure DevOps clone, discovers its identity, default branch, CI and
+toolchain, asks only for configuration placement and desired behavior, creates
+and validates the instance, prepares required repository labels, and optionally
+runs the implementation workflow. Back and Continue navigation stays inside
+the browser, while completed filesystem
+actions remain the source of truth across restarts. Token values never
+reach the browser or configuration files.
 
---workdir (default ".") holds the sample checkout and the tutorial
-instance; no instance root needs to exist yet. The default --port is auto,
+--workdir holds tutorial runtime state and defaults beneath the current
+user's local application-data directory; the directory is created when
+needed. The default --port is auto,
 incrementing from 8081 until a port is available. Blocks until interrupted.
 Exit codes: 0 = clean shutdown, 1 = service or browser failure, 2 =
 usage/IO error.

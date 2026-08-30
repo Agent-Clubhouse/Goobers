@@ -63,9 +63,13 @@ func GuidedWorkflowNames() []string {
 type GuidedOptions struct {
 	GaggleName           string
 	DisplayName          string
+	RepoProvider         string
 	RepoOwner            string
+	RepoProject          string
 	RepoName             string
 	RepoBranch           string
+	GitHubCLIUser        string
+	RepoAuthKind         string
 	RepoTokenEnv         string
 	WorkTrackingTokenEnv string
 	PullRequestTokenEnv  string
@@ -78,6 +82,9 @@ type GuidedOptions struct {
 	CopilotTokenEnv      string
 	ClaudeTokenEnv       string
 	Workflows            []string
+	IssueScope           string
+	AssignedTo           string
+	PullRequestCI        bool
 	CICommand            []string
 	RequiredCapabilities []string
 }
@@ -436,9 +443,13 @@ func CheckGuidedInitTarget(root string) error {
 func normalizeGuidedOptions(opts GuidedOptions) GuidedOptions {
 	opts.GaggleName = strings.TrimSpace(opts.GaggleName)
 	opts.DisplayName = strings.TrimSpace(opts.DisplayName)
+	opts.RepoProvider = strings.ToLower(strings.TrimSpace(opts.RepoProvider))
 	opts.RepoOwner = strings.TrimSpace(opts.RepoOwner)
+	opts.RepoProject = strings.TrimSpace(opts.RepoProject)
 	opts.RepoName = strings.TrimSpace(opts.RepoName)
 	opts.RepoBranch = strings.TrimSpace(opts.RepoBranch)
+	opts.GitHubCLIUser = strings.TrimSpace(opts.GitHubCLIUser)
+	opts.RepoAuthKind = strings.TrimSpace(opts.RepoAuthKind)
 	opts.RepoTokenEnv = strings.TrimSpace(opts.RepoTokenEnv)
 	opts.WorkTrackingTokenEnv = strings.TrimSpace(opts.WorkTrackingTokenEnv)
 	opts.PullRequestTokenEnv = strings.TrimSpace(opts.PullRequestTokenEnv)
@@ -446,14 +457,25 @@ func normalizeGuidedOptions(opts GuidedOptions) GuidedOptions {
 	opts.CopilotTokenEnv = strings.TrimSpace(opts.CopilotTokenEnv)
 	opts.ClaudeTokenEnv = strings.TrimSpace(opts.ClaudeTokenEnv)
 	opts.Harness = strings.TrimSpace(opts.Harness)
+	opts.IssueScope = strings.ToLower(strings.TrimSpace(opts.IssueScope))
+	opts.AssignedTo = strings.TrimSpace(opts.AssignedTo)
 	if opts.Harness == "" {
 		opts.Harness = string(apiv1.HarnessCopilot)
+	}
+	if opts.RepoProvider == "" {
+		opts.RepoProvider = string(apiv1.ProviderGitHub)
+	}
+	if opts.RepoProvider == string(apiv1.ProviderADO) && opts.RepoAuthKind == "" {
+		opts.RepoAuthKind = ADOAuthAzureCLI
 	}
 	if opts.DisplayName == "" {
 		opts.DisplayName = opts.RepoOwner + "/" + opts.RepoName
 	}
 	if opts.RepoBranch == "" {
 		opts.RepoBranch = "main"
+	}
+	if opts.IssueScope == "" {
+		opts.IssueScope = "all"
 	}
 	return opts
 }
@@ -471,6 +493,21 @@ func validateGuidedOptions(opts GuidedOptions) error {
 	}
 	if !guidedObjectName(opts.GaggleName) {
 		return fmt.Errorf("gaggle name %q must contain lowercase letters, numbers, or hyphens and start and end with a letter or number", opts.GaggleName)
+	}
+	switch opts.RepoProvider {
+	case string(apiv1.ProviderGitHub):
+		if opts.RepoProject != "" {
+			return fmt.Errorf("repository project is only valid for Azure DevOps")
+		}
+	case string(apiv1.ProviderADO):
+		if opts.RepoProject == "" {
+			return fmt.Errorf("Azure DevOps repository project is required")
+		}
+		if opts.RepoAuthKind != ADOAuthAzureCLI && opts.RepoAuthKind != ADOAuthPAT {
+			return fmt.Errorf("Azure DevOps guided setup supports auth kind %q or %q", ADOAuthAzureCLI, ADOAuthPAT)
+		}
+	default:
+		return fmt.Errorf("repository provider must be %q or %q", apiv1.ProviderGitHub, apiv1.ProviderADO)
 	}
 	switch apiv1.Harness(opts.Harness) {
 	case apiv1.HarnessCopilot, apiv1.HarnessClaudeCode:
@@ -490,8 +527,17 @@ func validateGuidedOptions(opts GuidedOptions) error {
 		}
 		seen[name] = true
 	}
+	switch opts.IssueScope {
+	case "all":
+	case "assigned":
+		if opts.AssignedTo == "" {
+			return fmt.Errorf("assigned user is required when implementation is limited to assigned issues")
+		}
+	default:
+		return fmt.Errorf("issue scope must be %q or %q", "all", "assigned")
+	}
 	if seen[GuidedWorkflowImplementation] {
-		if len(opts.CICommand) == 0 {
+		if len(opts.CICommand) == 0 && !opts.PullRequestCI {
 			return fmt.Errorf("local CI command is required when selecting the implementation workflow")
 		}
 		for _, arg := range opts.CICommand {
@@ -499,7 +545,7 @@ func validateGuidedOptions(opts GuidedOptions) error {
 				return fmt.Errorf("local CI command arguments must not be empty")
 			}
 		}
-		if len(opts.RequiredCapabilities) == 0 {
+		if len(opts.RequiredCapabilities) == 0 && !opts.PullRequestCI {
 			return fmt.Errorf("at least one required toolchain capability is required when selecting the implementation workflow")
 		}
 		for i, required := range opts.RequiredCapabilities {
@@ -507,27 +553,39 @@ func validateGuidedOptions(opts GuidedOptions) error {
 				return fmt.Errorf("required toolchain capability %d: %w", i, err)
 			}
 		}
-	} else if len(opts.CICommand) > 0 || len(opts.RequiredCapabilities) > 0 {
+		if opts.PullRequestCI && (len(opts.CICommand) > 0 || len(opts.RequiredCapabilities) > 0) {
+			return fmt.Errorf("pull-request CI cannot also declare a local CI command or required toolchain capability")
+		}
+	} else if len(opts.CICommand) > 0 || len(opts.RequiredCapabilities) > 0 || opts.PullRequestCI {
 		return fmt.Errorf("local CI command and required toolchain capabilities require the implementation workflow")
 	}
 	type guidedTokenEnv struct {
 		label string
 		value string
 	}
-	tokenEnvs := []guidedTokenEnv{
-		{label: "repository token environment variable", value: opts.RepoTokenEnv},
-		{label: "work-tracking token environment variable", value: opts.WorkTrackingTokenEnv},
+	var tokenEnvs []guidedTokenEnv
+	if opts.RepoProvider == string(apiv1.ProviderGitHub) && opts.GitHubCLIUser == "" {
+		tokenEnvs = append(tokenEnvs,
+			guidedTokenEnv{label: "repository token environment variable", value: opts.RepoTokenEnv},
+			guidedTokenEnv{label: "work-tracking token environment variable", value: opts.WorkTrackingTokenEnv},
+		)
+		if seen[GuidedWorkflowImplementation] || seen[GuidedWorkflowBacklogCuration] {
+			tokenEnvs = append(tokenEnvs, guidedTokenEnv{
+				label: "pull-request token environment variable",
+				value: opts.PullRequestTokenEnv,
+			})
+		}
+		if seen[GuidedWorkflowImplementation] {
+			tokenEnvs = append(tokenEnvs, guidedTokenEnv{
+				label: "repository push token environment variable",
+				value: opts.RepoPushTokenEnv,
+			})
+		}
 	}
-	if seen[GuidedWorkflowImplementation] || seen[GuidedWorkflowBacklogCuration] {
+	if opts.RepoProvider == string(apiv1.ProviderADO) && opts.RepoAuthKind == ADOAuthPAT {
 		tokenEnvs = append(tokenEnvs, guidedTokenEnv{
-			label: "pull-request token environment variable",
-			value: opts.PullRequestTokenEnv,
-		})
-	}
-	if seen[GuidedWorkflowImplementation] {
-		tokenEnvs = append(tokenEnvs, guidedTokenEnv{
-			label: "repository push token environment variable",
-			value: opts.RepoPushTokenEnv,
+			label: "Azure DevOps token environment variable",
+			value: opts.RepoTokenEnv,
 		})
 	}
 	if opts.CopilotTokenEnv != "" {
@@ -577,22 +635,26 @@ func ValidGuidedTokenEnvName(value string) bool {
 }
 
 func guidedConfig(opts GuidedOptions) *Config {
-	credentials := []CredentialGrant{{
-		Capability: string(capability.GitHubIssuesWrite),
-		Token:      TokenRef{Env: opts.WorkTrackingTokenEnv},
-	}}
-	if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) ||
-		slices.Contains(opts.Workflows, GuidedWorkflowBacklogCuration) {
+	repoToken := guidedRepositoryToken(opts)
+	var credentials []CredentialGrant
+	if opts.RepoProvider == string(apiv1.ProviderGitHub) {
 		credentials = append(credentials, CredentialGrant{
-			Capability: string(capability.ProviderPRWrite),
-			Token:      TokenRef{Env: opts.PullRequestTokenEnv},
+			Capability: string(capability.GitHubIssuesWrite),
+			Token:      guidedCapabilityToken(opts, opts.WorkTrackingTokenEnv),
 		})
-	}
-	if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) {
-		credentials = append(credentials, CredentialGrant{
-			Capability: string(capability.RepoPush),
-			Token:      TokenRef{Env: opts.RepoPushTokenEnv},
-		})
+		if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) ||
+			slices.Contains(opts.Workflows, GuidedWorkflowBacklogCuration) {
+			credentials = append(credentials, CredentialGrant{
+				Capability: string(capability.ProviderPRWrite),
+				Token:      guidedCapabilityToken(opts, opts.PullRequestTokenEnv),
+			})
+		}
+		if slices.Contains(opts.Workflows, GuidedWorkflowImplementation) {
+			credentials = append(credentials, CredentialGrant{
+				Capability: string(capability.RepoPush),
+				Token:      guidedCapabilityToken(opts, opts.RepoPushTokenEnv),
+			})
+		}
 	}
 	if opts.CopilotTokenEnv != "" {
 		credentials = append(credentials, CredentialGrant{
@@ -606,20 +668,42 @@ func guidedConfig(opts GuidedOptions) *Config {
 			Token:      TokenRef{Env: opts.ClaudeTokenEnv},
 		})
 	}
+	repo := RepoRef{
+		Provider: opts.RepoProvider,
+		Owner:    opts.RepoOwner,
+		Project:  opts.RepoProject,
+		Name:     opts.RepoName,
+		Token:    repoToken,
+	}
+	if opts.RepoProvider == string(apiv1.ProviderADO) {
+		repo.Auth = &RepoAuthConfig{Kind: opts.RepoAuthKind}
+	}
 	cfg := &Config{
-		APIVersion: ConfigAPIVersion,
-		Kind:       ConfigKind,
-		Repos: []RepoRef{{
-			Provider: "github",
-			Owner:    opts.RepoOwner,
-			Name:     opts.RepoName,
-			Token:    TokenRef{Env: opts.RepoTokenEnv},
-		}},
+		APIVersion:    ConfigAPIVersion,
+		Kind:          ConfigKind,
+		Repos:         []RepoRef{repo},
 		Credentials:   credentials,
 		RunConditions: RunConditions{MaxParallelRuns: 1},
 		Runner:        RunnerConfig{Capabilities: append([]string(nil), opts.RequiredCapabilities...)},
 	}
 	return cfg
+}
+
+func guidedRepositoryToken(opts GuidedOptions) TokenRef {
+	if opts.RepoProvider == string(apiv1.ProviderGitHub) && opts.GitHubCLIUser != "" {
+		return TokenRef{GitHubCLI: &GitHubCLIRef{Hostname: "github.com", User: opts.GitHubCLIUser}}
+	}
+	if opts.RepoProvider == string(apiv1.ProviderADO) && opts.RepoAuthKind == ADOAuthAzureCLI {
+		return TokenRef{}
+	}
+	return TokenRef{Env: opts.RepoTokenEnv}
+}
+
+func guidedCapabilityToken(opts GuidedOptions, env string) TokenRef {
+	if opts.GitHubCLIUser != "" {
+		return TokenRef{GitHubCLI: &GitHubCLIRef{Hostname: "github.com", User: opts.GitHubCLIUser}}
+	}
+	return TokenRef{Env: env}
 }
 
 func guidedConfigFiles(opts GuidedOptions) ([]configSeedFile, error) {
@@ -669,6 +753,25 @@ func guidedWorkflowFile(name string, opts GuidedOptions) (configSeedFile, error)
 		return configSeedFile{}, fmt.Errorf("decode canonical workflow %s: %w", name, err)
 	}
 	workflow.Spec.Gaggle = opts.GaggleName
+	if name == GuidedWorkflowImplementation && opts.PullRequestCI {
+		tasks := workflow.Spec.Tasks[:0]
+		for _, task := range workflow.Spec.Tasks {
+			if task.Name == LocalCIStageName {
+				continue
+			}
+			if task.Name == "push-branch" && task.Next == "local-ci" {
+				task.Next = "open-pr"
+			}
+			task.ContextFrom = slices.DeleteFunc(task.ContextFrom, func(source string) bool {
+				return source == LocalCIStageName
+			})
+			tasks = append(tasks, task)
+		}
+		workflow.Spec.Tasks = tasks
+		workflow.Spec.Gates = slices.DeleteFunc(workflow.Spec.Gates, func(gate apiv1.Gate) bool {
+			return gate.Name == "local-gate"
+		})
+	}
 	for i := range workflow.Spec.Tasks {
 		task := &workflow.Spec.Tasks[i]
 		if task.Type == apiv1.TaskAgentic {
@@ -683,6 +786,18 @@ func guidedWorkflowFile(name string, opts GuidedOptions) (configSeedFile, error)
 		if task.Type == apiv1.TaskDeterministic && task.Name == LocalCIStageName && task.Run != nil && len(opts.CICommand) > 0 {
 			task.Run.Command = append([]string(nil), opts.CICommand...)
 			task.Run.Script = ""
+		}
+		if name == GuidedWorkflowImplementation && task.Name == "query-backlog" {
+			if task.Inputs == nil {
+				task.Inputs = map[string]string{}
+			}
+			if opts.IssueScope == "assigned" {
+				task.Inputs["respectAssignee"] = "true"
+				task.Inputs["assignedTo"] = opts.AssignedTo
+			} else {
+				task.Inputs["respectAssignee"] = "false"
+				delete(task.Inputs, "assignedTo")
+			}
 		}
 	}
 	data, err = yaml.Marshal(workflow)
@@ -799,18 +914,19 @@ spec:
   connections:
     - name: %s
       type: repo
-      provider: github
+      provider: %s
       secretRef:
         name: repo-token
     - name: %s
       type: backlog
-      provider: github
+      provider: %s
       secretRef:
         name: backlog-token
   gaggles:
     - %s
 `, yamlScalar(opts.GaggleName+"-instance"), yamlScalar(opts.GaggleName),
-		guidedRepositoryConnectionName, guidedBacklogConnectionName, yamlScalar(opts.GaggleName)))
+		guidedRepositoryConnectionName, yamlScalar(opts.RepoProvider),
+		guidedBacklogConnectionName, yamlScalar(opts.RepoProvider), yamlScalar(opts.GaggleName)))
 }
 
 func guidedGaggle(opts GuidedOptions) []byte {
@@ -835,23 +951,38 @@ metadata:
 spec:
   displayName: %s
   project:
-    provider: github
+    provider: %s
     owner: %s
+%s
     name: %s
     branch: %s
     connectionRef: %s
   backlog:
-    provider: github
+    provider: %s
     project: %s
     labels:
       - goobers
     connectionRef: %s
 %s%s  isolation:
     namespace: %s
-`, yamlScalar(opts.GaggleName), yamlScalar(opts.DisplayName), yamlScalar(opts.RepoOwner),
-		yamlScalar(opts.RepoName), yamlScalar(opts.RepoBranch), guidedRepositoryConnectionName,
-		yamlScalar(opts.RepoOwner+"/"+opts.RepoName), guidedBacklogConnectionName, ciCommand, requiredCapabilities,
+`, yamlScalar(opts.GaggleName), yamlScalar(opts.DisplayName), yamlScalar(opts.RepoProvider), yamlScalar(opts.RepoOwner),
+		guidedProjectYAML(opts), yamlScalar(opts.RepoName), yamlScalar(opts.RepoBranch), guidedRepositoryConnectionName,
+		yamlScalar(opts.RepoProvider), yamlScalar(guidedBacklogProject(opts)), guidedBacklogConnectionName, ciCommand, requiredCapabilities,
 		yamlScalar("gaggle-"+opts.GaggleName)))
+}
+
+func guidedProjectYAML(opts GuidedOptions) string {
+	if opts.RepoProject == "" {
+		return ""
+	}
+	return "    project: " + yamlScalar(opts.RepoProject) + "\n"
+}
+
+func guidedBacklogProject(opts GuidedOptions) string {
+	if opts.RepoProvider == string(apiv1.ProviderADO) {
+		return opts.RepoProject
+	}
+	return opts.RepoOwner + "/" + opts.RepoName
 }
 
 func yamlScalar(value string) string {

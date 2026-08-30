@@ -637,7 +637,9 @@ describe("Insight page", () => {
 
     await user.selectOptions(screen.getByLabelText("Time window"), "24h");
 
-    expect(await screen.findByRole("heading", { name: "Daemon unavailable" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Couldn't load Goobers data" }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Success and failure" })).not.toBeInTheDocument();
   });
 

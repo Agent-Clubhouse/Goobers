@@ -61,16 +61,9 @@ archive's `README.md`, `docs/` tree, and `onboarding/` payload to the versioned
 root with `GOOBERS_DOCS_DIR`), so installing a newer release does not replace
 earlier documentation, templates, or sample. Installation ends there: the
 default run configures nothing and prints the next steps — the credential-free
-demo and guided setup — so the install result never depends on setup choices.
-To chain guided setup in the same run, opt in with
-`--guided [instance-path]` (default `./goobers-instance`): the installer then
-runs the release binary's `goobers init --guided` flow, which separately
-selects a checked-in config source and target application repository, prompts
-for credential references and canonical workflows, and validates both source
-and instance. Use a fresh instance path; a new source path must also be empty,
-while an adopted source is validated and left unchanged. A failed or canceled
-guided setup is reported separately from the successful install and sets the
-script's exit status.
+demo and `goobers getting-started` — so the install result never depends on
+setup choices. The legacy installer `--guided` option exits before download
+with migration guidance and does not configure an instance.
 
 The helper intentionally delegates all config generation and validation to the
 installed binary. The release-pinned README and platform-neutral quickstart

@@ -223,9 +223,11 @@ describe("operational overview", () => {
 
     expect(screen.getByRole("heading", { name: "Connecting to daemon" })).toBeInTheDocument();
     expect(
-      await screen.findByRole("heading", { name: "Daemon unavailable" }),
+      await screen.findByRole("heading", { name: "Couldn't load Goobers data" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/No fixture data has been substituted/)).toBeInTheDocument();
+    expect(
+      screen.getByText("The portal couldn't load data from the Goobers daemon. Reconnect to try again."),
+    ).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     expect(

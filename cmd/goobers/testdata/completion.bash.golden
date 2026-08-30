@@ -21,7 +21,7 @@ _goobers_completion()
             flags+=" --json"
             ;;
         init)
-            flags+=" --demo --insecure --guided --template --source-tree --json"
+            flags+=" --demo --insecure --template --source-tree --json"
             ;;
         connect)
             flags+=" --token-env --seed --replace --json"
@@ -32,7 +32,6 @@ _goobers_completion()
         onboarding)
             case "${COMP_WORDS[2]:-}" in
                 stub-agent-instructions) flags+=" --source-tree --harness --json" ;;
-                stub-sample) flags+=" --destination --work-tracking --token-env --force --json" ;;
             esac
             ;;
         scaffold)
@@ -235,7 +234,7 @@ _goobers_completion()
     case "${command}" in
         onboarding)
             if (( COMP_CWORD == 2 )); then
-                candidates="stub-agent-instructions stub-sample"
+                candidates="stub-agent-instructions"
             fi
             ;;
         examples)

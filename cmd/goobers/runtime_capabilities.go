@@ -115,7 +115,7 @@ func init() {
 		coreCommand("init", apicontract.ActionConfigTime, runInit).
 			withSynopsis(synopsisByID["init"]).
 			withHelp("scaffold an instance root", initHelp).
-			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --template=quickstart --source-tree ./tutorial-config --json", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
+			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --template=quickstart --source-tree ./tutorial-config --json", "goobers init --demo ./demo"),
 		coreCommand("connect", apicontract.ActionConfigTime, runConnect).
 			withSynopsis(synopsisByID["connect"]).
 			withHelp("connect an instance to your own GitHub repository", connectHelp).
@@ -141,18 +141,11 @@ func init() {
 				withExamples(
 					"goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json",
 				),
-			subcommand("onboarding stub-sample", "stub-sample", apicontract.ActionConfigTime, runOnboardingStubSample).
-				withHelp("materialize and optionally seed the disposable Getting Started target", stubSampleHelp).
-				withExamples(
-					"goobers onboarding stub-sample --destination ./getting-started-task-api --json",
-					"goobers onboarding stub-sample --destination ./getting-started-task-api --work-tracking my-org/tutorial",
-				),
 		).
 			withSynopsis(synopsisByID["onboarding"]).
 			withHelp("run non-interactive onboarding actions", onboardingHelp).
 			withExamples(
 				"goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json",
-				"goobers onboarding stub-sample --destination ./getting-started-task-api --json",
 			),
 		coreGroupCommand(
 			"examples",

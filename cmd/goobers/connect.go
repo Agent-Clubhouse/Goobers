@@ -167,7 +167,7 @@ func (r connectADORepo) String() string {
 // looser (dots and underscores are legal).
 var (
 	adoOrganizationPart = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
-	adoNamePart         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+	adoNamePart         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]*$`)
 )
 
 // connectADOIdentity recognizes an Azure DevOps repository in the forms an

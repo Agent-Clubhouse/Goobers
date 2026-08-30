@@ -6,7 +6,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -149,7 +148,7 @@ func TestGuidedInitInstallsAgentToolkitForEachHarness(t *testing.T) {
 				"destination:       " + sourceRoot,
 				"harness:           " + test.harness,
 				"Starter prompts:",
-				"Goobers DSL author skill",
+				"Goobers Getting Started skill",
 				"Goobers run operator skill",
 				"Goobers instance at " + instanceRoot,
 				"Goobers workflow upgrade skill",
@@ -530,105 +529,6 @@ func TestGuidedInitDeclinedRemoteCreateKeepsLocalSource(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(sourceRoot, instance.GuidedSourceInstanceFile)); err != nil {
 		t.Fatalf("local source was not created: %v", err)
-	}
-}
-
-func TestGuidedInitCreatesConfirmedEmptyGitHubRepository(t *testing.T) {
-	t.Setenv("GOOBERS_GITHUB_CONFIG_REPO_TOKEN", "test-token")
-	sourceRoot := filepath.Join(t.TempDir(), "local-config")
-	remote := &fakeGuidedGitHubOperations{}
-	input := strings.NewReader(strings.Join([]string{
-		guidedSourceNewLocal,
-		sourceRoot,
-		"app-org/widget-service",
-		"",
-		"work-nomination",
-		"", // accept the default harness (copilot)
-		"",
-		"",
-		"",
-		"yes",
-		"config-org/fleet-config",
-		"private",
-		"",
-		"yes",
-		"yes",
-	}, "\n") + "\n")
-	var stdout, stderr bytes.Buffer
-	instanceRoot := filepath.Join(t.TempDir(), "instance")
-
-	code := runInitWithInputForOSAndGitHub(
-		[]string{"--guided", instanceRoot},
-		input,
-		&stdout,
-		&stderr,
-		"darwin",
-		remote,
-	)
-	if code != 0 {
-		t.Fatalf("guided init code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-	if len(remote.createCalls) != 1 || remote.createCalls[0] != "config-org/fleet-config private" {
-		t.Fatalf("repository creation calls = %v", remote.createCalls)
-	}
-	for _, want := range []string{
-		"config-repo:  https://github.com/config-org/fleet-config",
-		"instance-root: " + instanceRoot,
-		"target-repo:   https://github.com/app-org/widget-service",
-		"The GitHub config repository is empty; no commit or push was performed",
-		"git -C " + strconv.Quote(sourceRoot) + " init",
-	} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Errorf("stdout lacks %q:\n%s", want, stdout.String())
-		}
-	}
-	if strings.Contains(stdout.String(), "test-token") {
-		t.Fatal("repository-creation token was printed")
-	}
-	if _, err := os.Stat(filepath.Join(sourceRoot, ".git")); !os.IsNotExist(err) {
-		t.Fatalf("guided setup initialized or populated git unexpectedly: %v", err)
-	}
-}
-
-func TestGuidedInitRequiresConfiguredTokenBeforeRemoteCreate(t *testing.T) {
-	t.Setenv("MISSING_CONFIG_REPO_TOKEN", "")
-	sourceRoot := filepath.Join(t.TempDir(), "local-config")
-	remote := &fakeGuidedGitHubOperations{}
-	input := strings.NewReader(strings.Join([]string{
-		guidedSourceNewLocal,
-		sourceRoot,
-		"app-org/widget-service",
-		"",
-		"work-nomination",
-		"", // accept the default harness (copilot)
-		"",
-		"",
-		"",
-		"yes",
-		"config-org/fleet-config",
-		"private",
-		"MISSING_CONFIG_REPO_TOKEN",
-		"yes",
-	}, "\n") + "\n")
-	var stdout, stderr bytes.Buffer
-
-	code := runInitWithInputForOSAndGitHub(
-		[]string{"--guided", filepath.Join(t.TempDir(), "instance")},
-		input,
-		&stdout,
-		&stderr,
-		"darwin",
-		remote,
-	)
-	if code != 2 ||
-		!strings.Contains(stderr.String(), "MISSING_CONFIG_REPO_TOKEN is not set") {
-		t.Fatalf("guided init code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-	if len(remote.createCalls) != 0 {
-		t.Fatalf("repository creation calls = %v", remote.createCalls)
-	}
-	if _, err := os.Stat(sourceRoot); !os.IsNotExist(err) {
-		t.Fatalf("missing remote credential wrote source tree: %v", err)
 	}
 }
 

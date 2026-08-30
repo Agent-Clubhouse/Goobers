@@ -141,7 +141,7 @@ instance-local, an in-repo subtree, or a separate config repository using the
 [instance and config placement guide](instance-placement.md).
 
 Follow the initialization and configuration steps in the
-[canonical quickstart](quickstart.md#3-init---guided--configure-a-regular-instance),
+[canonical quickstart](quickstart.md#3-configure-a-regular-instance),
 using a short root such as `C:\goobers\my-instance`. Never inline a provider
 secret. For an interactive run, reference an environment variable in the
 config and set it before starting Goobers:
