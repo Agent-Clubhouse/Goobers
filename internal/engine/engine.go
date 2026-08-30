@@ -148,6 +148,17 @@ type RunInput struct {
 	// silently. Empty — every input persisted before this field existed —
 	// is unpinned and resolves the worker's current tree exactly as before.
 	GooberDigest string `json:"gooberDigest,omitempty"`
+	// HITL pins the run's human-in-the-loop posture (#3883, decision 005 R8):
+	// whether a resumable terminal is held open for an operator intent
+	// delivered over the goobers.hitl.v1 Temporal update protocol, for how
+	// long, and by whom. See internal/engine/hitl.go.
+	//
+	// Pinned input rather than worker config for the usual reason: the hold is
+	// a workflow timer, and a timer whose duration came from mutable
+	// configuration is a replay-nondeterminism bug. nil — every run started
+	// before the protocol existed, and every lane with no human gate — is a
+	// complete no-op: no hold, no extra journal event, byte-identical history.
+	HITL *HITLPolicy `json:"hitl,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {
@@ -290,6 +301,16 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 	if err != nil {
 		return RunResult{}, err
 	}
+	// The HITL protocol's handlers are registered BEFORE the run does
+	// anything (#3883, decision 005 R8). Registration emits no history event,
+	// so this is invisible to replay of pre-protocol histories; registering
+	// unconditionally means an intent addressed to a run that cannot accept
+	// one is refused with a named reason rather than buffered by Temporal
+	// against a handler that will never exist.
+	hitl := newHITLSession(in, m, rec)
+	if err := hitl.register(ctx); err != nil {
+		return RunResult{}, err
+	}
 	rec.runStarted(ctx)
 	if scheduledAt != nil {
 		rec.triggerFiredAt(*scheduledAt, in)
@@ -302,9 +323,11 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 	// the portal see it mid-flight. Failure to open the live journal fails
 	// the run, the same stance the local runner takes when journal.Create
 	// fails: a run whose product output cannot be authored does not execute.
+	var terminalJournaled bool
 	err = rec.emitPending(ctx)
 	if err == nil {
-		res, err = walk(ctx, in, m, rec)
+		res, err = walk(ctx, in, m, rec, hitl)
+		terminalJournaled = hitl.wroteTerminal
 	}
 	if err != nil {
 		// A walk-level error is the engine's failTerminal (#305): record the
@@ -313,6 +336,7 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		if !temporal.IsCanceledError(err) && ctx.Err() == nil {
 			rec.runFailedCause(ctx, "", "", err.Error())
 			rec.runFinished(ctx, journal.PhaseFailed)
+			hitl.noteTerminal()
 			rec.emitTerminal(ctx)
 			return RunResult{}, err
 		}
@@ -332,12 +356,26 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		// stopped (`goobers run abort`), which is what a cancellation is from
 		// the journal's side; the walk itself is not resumed, so this is the
 		// run's last event either way.
+		//
+		// A cancellation that arrived while a HITL terminal was being held
+		// open (#3883) lands here too, on top of the escalated terminal the
+		// hold already journaled: the run escalated, an operator was given a
+		// window, and the window was cut short. Both facts are true and both
+		// are recorded.
 		abortCtx, disconnect := workflow.NewDisconnectedContext(ctx)
 		defer disconnect()
 		rec.runFailedCause(abortCtx, "", "", runCanceledCause(err))
 		rec.runFinished(abortCtx, journal.PhaseAborted)
+		hitl.noteTerminal()
 		rec.emitTerminal(abortCtx)
 		return RunResult{}, err
+	}
+	if terminalJournaled {
+		// The HITL terminal hook already wrote this outcome's run.finished
+		// (it had to, so the operator holding the window could see the
+		// escalation it was resolving). Writing a second one would double the
+		// run's terminal.
+		return res, nil
 	}
 	if res.Status == StatusFailed {
 		// Mirror finishStageFailure (#710): the stage-attributed run_failed
@@ -349,11 +387,12 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		return RunResult{}, err
 	}
 	rec.runFinished(ctx, phase)
+	hitl.noteTerminal()
 	rec.emitTerminal(ctx)
 	return res, nil
 }
 
-func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (RunResult, error) {
+func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hitl *hitlSession) (RunResult, error) {
 	logger := workflow.GetLogger(ctx)
 	upstream := map[string]apiv1.ResultEnvelope{}
 	// pointers accumulates every completed stage's artifacts as read-only
@@ -405,6 +444,25 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 	state := in.Spec.Start
 	steps := 0
 
+	// settle is the terminal hook (#3883). Every path that would end the walk
+	// routes through it, so the HITL hold has exactly one site and cannot be
+	// bypassed by whichever terminal a run happens to reach. For a run with no
+	// HITL policy — and for every non-resumable terminal — it returns
+	// immediately and the walk ends exactly as it did before.
+	settle := func(out RunResult) (string, bool, error) {
+		plan, resumed, _, err := hitl.settle(ctx, out)
+		if err != nil || !resumed {
+			return "", false, err
+		}
+		if plan.stage != "" && plan.addendum != "" {
+			// The operator's instruction addendum reaches the re-dispatched
+			// stage through the same channel the #3374 re-dispatch uses, so
+			// there is one way a stage learns why it is running again.
+			addenda[plan.stage] = plan.addendum
+		}
+		return plan.state, true, nil
+	}
+
 	for {
 		switch state {
 		case wf.TerminalComplete:
@@ -412,7 +470,16 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 		case wf.TargetAbort:
 			return RunResult{Status: StatusBlocked, Outputs: upstream, Steps: steps}, nil
 		case wf.TargetEscalate:
-			return RunResult{Status: StatusEscalated, Outputs: upstream, Steps: steps}, nil
+			out := RunResult{Status: StatusEscalated, Outputs: upstream, Steps: steps}
+			next, resumed, err := settle(out)
+			if err != nil {
+				return RunResult{}, err
+			}
+			if resumed {
+				state = next
+				continue
+			}
+			return out, nil
 		}
 
 		steps++
@@ -475,6 +542,14 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			}
 			next, out, terminal := taskOutcome(ctx, m, t, res, upstream, steps, rec)
 			if terminal {
+				resumeState, resumed, serr := settle(out)
+				if serr != nil {
+					return RunResult{}, serr
+				}
+				if resumed {
+					state = resumeState
+					continue
+				}
 				return out, nil
 			}
 			state = next
@@ -602,6 +677,14 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			logger.Info("gate evaluated", "gate", g.Name, "outcome", gr.Outcome, "next", gr.Target, "attempt", gr.Attempt, "escalated", gr.Escalated)
 			next, out, terminal := gateTransition(m, gr, lastStage, lastResult, upstream, steps)
 			if terminal {
+				resumeState, resumed, serr := settle(out)
+				if serr != nil {
+					return RunResult{}, serr
+				}
+				if resumed {
+					state = resumeState
+					continue
+				}
 				return out, nil
 			}
 			var injected *apiv1.ContextPointer
