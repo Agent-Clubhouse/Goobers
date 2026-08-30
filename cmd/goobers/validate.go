@@ -1361,7 +1361,7 @@ func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity
 // once here is what closes #238's "catch a signed-out harness at startup, not
 // mid-run" criterion.
 func adapterFor(h apiv1.Harness, envPassthrough []string, harnessCommand map[string][]string, modelCredential func(ctx context.Context) (string, error)) (harness.Adapter, error) {
-	registry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", false, modelCredential)
+	registry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", false, modelCredential, false)
 	if err != nil {
 		return nil, err
 	}

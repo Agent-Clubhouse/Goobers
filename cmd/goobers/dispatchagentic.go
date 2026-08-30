@@ -348,7 +348,13 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	// the ambient environment above, so the preflight's ambient-env-first
 	// lookup already finds it. There's no *instance.Config/StoreResolver in
 	// this pod-context function to build one anyway.
-	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil)
+	// No tmp:ephemeral binding either: in a stage pod the effect is enforced
+	// BY CONSTRUCTION — a fresh, never-reused pod whose /tmp is the
+	// dispatcher's sized emptyDir (internal/dispatcher/podspec.go
+	// stampVolumes). The daemon-side binding exists precisely because runner
+	// `self` has no such pod; layering it here would carve an ephemeral
+	// directory inside an already-ephemeral one.
+	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil, false)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}

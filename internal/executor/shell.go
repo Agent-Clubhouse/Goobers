@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
@@ -202,6 +203,35 @@ type ShellExecutor struct {
 	// behavior — os.CreateTemp("", ...) resolves against os.TempDir(), which
 	// already honors TMPDIR when the process environment sets it.
 	ScratchDir string
+	// EphemeralTmp binds the `tmp:ephemeral` restriction on the SELF runner
+	// (docs/design/goobernetes-restrictions.md §2.4, the modes-1/2 half of the
+	// effect the dispatcher gives a stage pod by construction). When set,
+	// every stage this executor runs gets an attempt-private temp directory
+	// carved out of the daemon's temp root — TMPDIR/TMP/TEMP pointed at it,
+	// every temp-nested build cache (GOCACHE, GOMODCACHE, ...) re-rooted into
+	// it — and that directory is destroyed when the attempt returns, on the
+	// failure path as much as the success path.
+	//
+	// It is a RUNNER property, not a stage requirement: wiring sets it from
+	// the resolved inventory's self entry declaring the effect, and then every
+	// stage placed on self runs under it whether or not it asked
+	// (goobernetes-restrictions.md §5). Off by default, so an instance that
+	// declares no runners — or a self entry that declares no restrictions —
+	// builds a byte-identical stage environment to before this field existed.
+	//
+	// The failure mode is CLOSED. If the private directory cannot be
+	// established the stage fails with a named diagnostic rather than running
+	// against ambient temp, because a restriction that silently degrades is
+	// worse than one that is absent: the solver has already told the operator
+	// this runner enforces it.
+	EphemeralTmp bool
+	// EphemeralTmpRoot overrides the temp root EphemeralTmp carves the
+	// per-attempt directory out of. Empty means the daemon's own temp root
+	// (os.TempDir(), which honors TMPDIR) — deliberately the SAME medium the
+	// stage's temp would otherwise land on, so binding the effect changes the
+	// lifetime of those bytes and not their location. Set by tests, and
+	// available to a deployment that mounts its scratch medium elsewhere.
+	EphemeralTmpRoot string
 }
 
 type builtinErrorReport struct {
@@ -573,6 +603,32 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	telemetryDir := telemetry.PrepareStageTelemetryDir(env.Workspace)
 	if telemetryDir != "" {
 		stageEnv = append(stageEnv, telemetry.StageTelemetryEnv+"="+telemetryDir)
+	}
+
+	// The tmp:ephemeral binding for runner `self`. It is applied LAST, over the
+	// fully assembled environment, because it is an effect on the environment
+	// rather than another contributor to it: whatever TMPDIR or temp-nested
+	// cache the allowlist, the instance passthrough, or the stage's own
+	// run.env produced, the attempt-private area is what the stage actually
+	// gets. The directory is reclaimed by the deferred Reclaim below on every
+	// exit path — success, stage failure, timeout, and the early returns
+	// between here and the exec.
+	//
+	// It deliberately lives OUTSIDE env.Workspace. The workspace is the run's
+	// continuity — the worktree whose delta later stages consume and whose
+	// commits the run publishes — and a build cache materializing inside it
+	// would surface as untracked worktree content. Temp goes to the temp root;
+	// the workspace is not touched by this binding at all.
+	if e.EphemeralTmp {
+		scope, scopeErr := ephemeraltmp.Establish(e.EphemeralTmpRoot)
+		if scopeErr != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: bind tmp:ephemeral for stage %q: %w", env.TaskID, scopeErr)
+		}
+		defer func() { _ = scope.Reclaim() }()
+		stageEnv, err = scope.Apply(stageEnv)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: bind tmp:ephemeral for stage %q: %w", env.TaskID, err)
+		}
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
