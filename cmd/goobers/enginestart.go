@@ -194,6 +194,16 @@ func engineStartSpec(req engineStartRequest) (engine.StartSpec, error) {
 		// reviewer grants at all; the daemon's scheduler entry has always
 		// filled it in (runnerwiring.go) and engine-start did not.
 		GateGooberCapabilities: engineStartGateGooberCapabilities(req.set, req.gaggle),
+		// #3873 (MIRC-2 claim partition): the gaggle's self identity and
+		// RequireLabels default, resolved through the SAME helpers that feed
+		// the daemon's runner Config (daemon.go:1156-1157). The engine walk
+		// injects them into every `goobers backlog-query` stage that does not
+		// declare its own, exactly as dispatchTask does. A dispatch that
+		// leaves them empty hands the stage no partition, and on this
+		// instance's shared backlog that claims the sibling (laptop)
+		// instance's goobers:local items.
+		BacklogQueryAssignedTo:    selfIdentitiesByGaggle(req.cfg, req.set)[req.gaggle],
+		BacklogQueryRequireLabels: requireLabelsByGaggle(req.set)[req.gaggle],
 	}, nil
 }
 
