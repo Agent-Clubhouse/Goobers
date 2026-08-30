@@ -19,6 +19,65 @@ const workflow = {
   definition: { version: 7, digest: "sha256:core" },
   warnings: [],
 };
+const workflowGraph = {
+  name: "implementation",
+  version: 7,
+  digest: "sha256:core",
+  start: "query",
+  nodes: [
+    { id: "query", kind: "deterministic" },
+    { id: "implement", kind: "agentic", owner: "core/implementer" },
+    { id: "review", kind: "gate", evaluator: "agentic" },
+  ],
+  edges: [
+    { source: "query", target: "implement" },
+    { source: "implement", target: "review" },
+    { source: "review", target: "", outcome: "approve", terminal: "complete" },
+    { source: "review", target: "implement", outcome: "needs-changes" },
+    { source: "review", target: "@escalate", outcome: "fail", terminal: "escalate" },
+  ],
+};
+const workflowDetail = {
+  ...workflow,
+  graph: workflowGraph,
+  stages: [
+    {
+      name: "query",
+      kind: "deterministic",
+      goal: "Claim the next approved backlog item.",
+      owner: null,
+      evaluator: "",
+      capabilities: ["github:issues:write"],
+      timeoutSeconds: 120,
+      rawYaml:
+        "name: query\ntype: deterministic\ngoal: Claim the next approved backlog item.\ncapabilities:\n- github:issues:write\ntimeoutSeconds: 120\n",
+    },
+    {
+      name: "implement",
+      kind: "agentic",
+      goal: "Implement the claimed item in an isolated worktree.",
+      owner: { gaggle: "core", name: "implementer" },
+      evaluator: "",
+      capabilities: ["repo:push"],
+      timeoutSeconds: 3600,
+      retry: { maxAttempts: 2, backoffSeconds: 30 },
+      policyActions: ["pr:open"],
+      rawYaml:
+        "name: implement\ntype: agentic\ngoober: implementer\ngoal: Implement the claimed item in an isolated worktree.\ncapabilities:\n- repo:push\npolicyActions:\n- pr:open\nretry:\n  maxAttempts: 2\n  backoffSeconds: 30\ntimeoutSeconds: 3600\n",
+    },
+    {
+      name: "review",
+      kind: "gate",
+      goal: "Review the implementation and select its next target.",
+      owner: { gaggle: "core", name: "implementer" },
+      evaluator: "agentic",
+      capabilities: ["repo:read"],
+      branches: { pass: "", "needs-changes": "implement" },
+      rawYaml:
+        "name: review\nevaluator: agentic\nagentic:\n  goober: implementer\nbranches:\n  pass: \"\"\n  needs-changes: implement\n",
+    },
+  ],
+};
 const run = {
   id: "01JZE2ESMOKERUN",
   workflow: "implementation",
@@ -135,6 +194,7 @@ const responses = new Map([
     },
   ],
   ["/api/v1/gaggles/core/workflows", { items: [workflow], page }],
+  ["/api/v1/gaggles/core/workflows/implementation", workflowDetail],
   [
     "/api/v1/gaggles/core/connections",
     {
