@@ -7,33 +7,52 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type memoryStorage struct {
+	mu     sync.Mutex
 	record Record
 	saved  bool
 }
 
+func (s *memoryStorage) LoadAssociation(string) (Association, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.saved {
+		return Association{}, ErrNotAssociated
+	}
+	return s.record.Association, nil
+}
+
 func (s *memoryStorage) Load(string) (Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.saved {
 		return Record{}, ErrNotAssociated
 	}
 	return s.record, nil
 }
 func (s *memoryStorage) Save(_ string, record Record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.record = record
 	s.saved = true
 	return nil
 }
 func (s *memoryStorage) Update(_ string, update func(*Association) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.saved {
 		return ErrNotAssociated
 	}
 	return update(&s.record.Association)
 }
 func (s *memoryStorage) Delete(string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.saved {
 		return ErrNotAssociated
 	}
@@ -87,8 +106,11 @@ func TestDiscoverAndEnroll(t *testing.T) {
 
 	store := &memoryStorage{}
 	client := Client{HTTP: server.Client(), Now: func() time.Time { return time.Date(2026, 8, 30, 0, 0, 0, 0, time.UTC) }}
-	association, err := client.Join(context.Background(), store, JoinOptions{
-		URL:          server.URL + "/ignored/path",
+	discovery, err := client.Discover(context.Background(), server.URL+"/ignored/path")
+	if err != nil {
+		t.Fatal(err)
+	}
+	association, err := client.JoinDiscovered(context.Background(), store, discovery, JoinOptions{
 		Grant:        "one-time-grant",
 		InstanceRoot: t.TempDir(),
 		DisplayName:  "dev-box",

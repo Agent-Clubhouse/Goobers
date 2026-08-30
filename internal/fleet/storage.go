@@ -12,19 +12,24 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/goobers/goobers/internal/platform/durability"
+	platformlock "github.com/goobers/goobers/internal/platform/lock"
 )
 
 const (
 	associationFileName = "association.json"
 	privateKeyFileName  = "private-key.bin"
 	credentialFileName  = "credential.bin"
+	disabledFileName    = "disabled"
+	lockFileName        = ".lock"
 )
 
 // Storage persists a Fleet association, private key, and credential for an
 // instance, keyed by the instance's root directory.
 type Storage interface {
+	LoadAssociation(instanceRoot string) (Association, error)
 	Load(instanceRoot string) (Record, error)
 	Save(instanceRoot string, record Record) error
 	Update(instanceRoot string, update func(*Association) error) error
@@ -100,32 +105,34 @@ func (s *FileStorage) InstanceDirectory(instanceRoot string) (string, error) {
 	return filepath.Join(s.baseDir, hex.EncodeToString(sum[:])), nil
 }
 
+// LoadAssociation reads only the nonsecret Fleet association metadata for
+// instanceRoot. It does not access or decrypt the private key or credential.
+func (s *FileStorage) LoadAssociation(instanceRoot string) (Association, error) {
+	var association Association
+	err := s.withDirectoryLock(instanceRoot, false, func(dir string) error {
+		var err error
+		association, err = s.loadAssociation(dir)
+		return err
+	})
+	return association, err
+}
+
 // Load reads the Fleet association, private key, and credential for
 // instanceRoot. It returns ErrNotAssociated if no association exists.
 func (s *FileStorage) Load(instanceRoot string) (Record, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.load(instanceRoot)
+	var record Record
+	err := s.withDirectoryLock(instanceRoot, false, func(dir string) error {
+		var err error
+		record, err = s.load(dir)
+		return err
+	})
+	return record, err
 }
 
-func (s *FileStorage) load(instanceRoot string) (Record, error) {
-	dir, err := s.InstanceDirectory(instanceRoot)
+func (s *FileStorage) load(dir string) (Record, error) {
+	association, err := s.loadAssociation(dir)
 	if err != nil {
 		return Record{}, err
-	}
-	metadata, err := os.ReadFile(filepath.Join(dir, associationFileName))
-	if errors.Is(err, fs.ErrNotExist) {
-		return Record{}, ErrNotAssociated
-	}
-	if err != nil {
-		return Record{}, fmt.Errorf("fleet: read association metadata: %w", err)
-	}
-	var association Association
-	if err := json.Unmarshal(metadata, &association); err != nil {
-		return Record{}, fmt.Errorf("fleet: decode association metadata: %w", err)
-	}
-	if association.SchemaVersion != ProtocolVersion {
-		return Record{}, fmt.Errorf("fleet: unsupported association schema version %q", association.SchemaVersion)
 	}
 	keyCiphertext, err := os.ReadFile(filepath.Join(dir, privateKeyFileName))
 	if err != nil {
@@ -150,12 +157,32 @@ func (s *FileStorage) load(instanceRoot string) (Record, error) {
 	}, nil
 }
 
-// Save persists record as the Fleet association, private key, and
-// credential for instanceRoot, overwriting any existing association.
-func (s *FileStorage) Save(instanceRoot string, record Record) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *FileStorage) loadAssociation(dir string) (Association, error) {
+	if _, err := os.Stat(filepath.Join(dir, disabledFileName)); err == nil {
+		return Association{}, ErrNotAssociated
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return Association{}, fmt.Errorf("fleet: inspect association disable marker: %w", err)
+	}
+	metadata, err := os.ReadFile(filepath.Join(dir, associationFileName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return Association{}, ErrNotAssociated
+	}
+	if err != nil {
+		return Association{}, fmt.Errorf("fleet: read association metadata: %w", err)
+	}
+	var association Association
+	if err := json.Unmarshal(metadata, &association); err != nil {
+		return Association{}, fmt.Errorf("fleet: decode association metadata: %w", err)
+	}
+	if association.SchemaVersion != ProtocolVersion {
+		return Association{}, fmt.Errorf("fleet: unsupported association schema version %q", association.SchemaVersion)
+	}
+	return association, nil
+}
 
+// Save persists record as the Fleet association, private key, and credential
+// for instanceRoot. It refuses to overwrite an active association.
+func (s *FileStorage) Save(instanceRoot string, record Record) error {
 	if strings.TrimSpace(record.Credential) == "" {
 		return fmt.Errorf("fleet: credential must not be empty")
 	}
@@ -163,95 +190,155 @@ func (s *FileStorage) Save(instanceRoot string, record Record) error {
 		return fmt.Errorf("fleet: private key must not be empty")
 	}
 	record.Association.SchemaVersion = ProtocolVersion
-	dir, err := s.InstanceDirectory(instanceRoot)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("fleet: create association directory: %w", err)
-	}
-	protectedKey, err := protect(record.PrivateKey)
-	if err != nil {
-		return fmt.Errorf("fleet: protect private key: %w", err)
-	}
-	protectedCredential, err := protect([]byte(record.Credential))
-	if err != nil {
-		return fmt.Errorf("fleet: protect credential: %w", err)
-	}
-	metadata, err := json.MarshalIndent(record.Association, "", "  ")
-	if err != nil {
-		return fmt.Errorf("fleet: encode association metadata: %w", err)
-	}
-	metadata = append(metadata, '\n')
-	for _, file := range []struct {
-		name string
-		data []byte
-	}{
-		{privateKeyFileName, protectedKey},
-		{credentialFileName, protectedCredential},
-		{associationFileName, metadata},
-	} {
-		if err := atomicWrite(filepath.Join(dir, file.name), file.data); err != nil {
-			return err
+	return s.withDirectoryLock(instanceRoot, true, func(dir string) error {
+		disabledPath := filepath.Join(dir, disabledFileName)
+		if _, err := os.Stat(filepath.Join(dir, associationFileName)); err == nil {
+			if _, disabledErr := os.Stat(disabledPath); errors.Is(disabledErr, fs.ErrNotExist) {
+				return fmt.Errorf("fleet: instance is already associated")
+			} else if disabledErr != nil {
+				return fmt.Errorf("fleet: inspect association disable marker: %w", disabledErr)
+			}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("fleet: inspect association metadata: %w", err)
 		}
-	}
-	return nil
+		if err := atomicWrite(disabledPath, nil); err != nil {
+			return fmt.Errorf("fleet: disable association during save: %w", err)
+		}
+		saved := false
+		defer func() {
+			if saved {
+				return
+			}
+			for _, name := range []string{associationFileName, privateKeyFileName, credentialFileName} {
+				_ = os.Remove(filepath.Join(dir, name))
+			}
+		}()
+		protectedKey, err := protect(record.PrivateKey)
+		if err != nil {
+			return fmt.Errorf("fleet: protect private key: %w", err)
+		}
+		protectedCredential, err := protect([]byte(record.Credential))
+		if err != nil {
+			return fmt.Errorf("fleet: protect credential: %w", err)
+		}
+		metadata, err := json.MarshalIndent(record.Association, "", "  ")
+		if err != nil {
+			return fmt.Errorf("fleet: encode association metadata: %w", err)
+		}
+		metadata = append(metadata, '\n')
+		for _, file := range []struct {
+			name string
+			data []byte
+		}{
+			{privateKeyFileName, protectedKey},
+			{credentialFileName, protectedCredential},
+			{associationFileName, metadata},
+		} {
+			if err := atomicWrite(filepath.Join(dir, file.name), file.data); err != nil {
+				return err
+			}
+		}
+		if err := os.Remove(disabledPath); err != nil {
+			return fmt.Errorf("fleet: activate association: %w", err)
+		}
+		if err := durability.SyncDir(dir); err != nil {
+			return fmt.Errorf("fleet: sync activated association directory: %w", err)
+		}
+		saved = true
+		return nil
+	})
 }
 
 // Update loads the Association for instanceRoot, applies update to it, and
 // persists the result. It returns ErrNotAssociated if no association exists.
 func (s *FileStorage) Update(instanceRoot string, update func(*Association) error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	dir, err := s.InstanceDirectory(instanceRoot)
-	if err != nil {
-		return err
-	}
-	path := filepath.Join(dir, associationFileName)
-	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return ErrNotAssociated
-	}
-	if err != nil {
-		return fmt.Errorf("fleet: read association metadata: %w", err)
-	}
-	var association Association
-	if err := json.Unmarshal(data, &association); err != nil {
-		return fmt.Errorf("fleet: decode association metadata: %w", err)
-	}
-	if err := update(&association); err != nil {
-		return err
-	}
-	data, err = json.MarshalIndent(association, "", "  ")
-	if err != nil {
-		return fmt.Errorf("fleet: encode association metadata: %w", err)
-	}
-	return atomicWrite(path, append(data, '\n'))
+	return s.withDirectoryLock(instanceRoot, false, func(dir string) error {
+		if _, err := os.Stat(filepath.Join(dir, disabledFileName)); err == nil {
+			return ErrNotAssociated
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("fleet: inspect association disable marker: %w", err)
+		}
+		path := filepath.Join(dir, associationFileName)
+		data, err := os.ReadFile(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return ErrNotAssociated
+		}
+		if err != nil {
+			return fmt.Errorf("fleet: read association metadata: %w", err)
+		}
+		var association Association
+		if err := json.Unmarshal(data, &association); err != nil {
+			return fmt.Errorf("fleet: decode association metadata: %w", err)
+		}
+		if err := update(&association); err != nil {
+			return err
+		}
+		data, err = json.MarshalIndent(association, "", "  ")
+		if err != nil {
+			return fmt.Errorf("fleet: encode association metadata: %w", err)
+		}
+		return atomicWrite(path, append(data, '\n'))
+	})
 }
 
 // Delete removes the Fleet association, private key, and credential for
 // instanceRoot. It returns ErrNotAssociated if no association exists.
 func (s *FileStorage) Delete(instanceRoot string) error {
+	return s.withDirectoryLock(instanceRoot, false, func(dir string) error {
+		if _, err := os.Stat(filepath.Join(dir, associationFileName)); errors.Is(err, fs.ErrNotExist) {
+			return ErrNotAssociated
+		} else if err != nil {
+			return fmt.Errorf("fleet: inspect association metadata: %w", err)
+		}
+		if err := atomicWrite(filepath.Join(dir, disabledFileName), nil); err != nil {
+			return fmt.Errorf("fleet: disable association: %w", err)
+		}
+		for _, name := range []string{associationFileName, privateKeyFileName, credentialFileName} {
+			if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("fleet: remove %s: %w", name, err)
+			}
+		}
+		if err := durability.SyncDir(dir); err != nil {
+			return fmt.Errorf("fleet: sync removed association: %w", err)
+		}
+		return nil
+	})
+}
+
+func (s *FileStorage) withDirectoryLock(instanceRoot string, create bool, operation func(string) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dir, err := s.InstanceDirectory(instanceRoot)
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(filepath.Join(dir, associationFileName)); errors.Is(err, fs.ErrNotExist) {
+	if create {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("fleet: create association directory: %w", err)
+		}
+	} else if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
 		return ErrNotAssociated
 	} else if err != nil {
-		return fmt.Errorf("fleet: inspect association metadata: %w", err)
+		return fmt.Errorf("fleet: inspect association directory: %w", err)
 	}
-	for _, name := range []string{associationFileName, privateKeyFileName, credentialFileName} {
-		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("fleet: remove %s: %w", name, err)
+	lockPath := filepath.Join(dir, lockFileName)
+	deadline := time.Now().Add(2 * time.Second)
+	var handle *platformlock.Handle
+	for {
+		handle, err = platformlock.TryAcquire(lockPath)
+		if err == nil {
+			break
 		}
+		if !errors.Is(err, platformlock.ErrHeld) || time.Now().After(deadline) {
+			return fmt.Errorf("fleet: acquire association lock: %w", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if err := os.Remove(dir); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("fleet: remove association directory: %w", err)
+	operationErr := operation(dir)
+	if releaseErr := handle.Release(); releaseErr != nil {
+		return errors.Join(operationErr, fmt.Errorf("fleet: release association lock: %w", releaseErr))
 	}
-	return nil
+	return operationErr
 }
 
 func atomicWrite(path string, data []byte) error {

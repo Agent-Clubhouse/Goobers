@@ -1,0 +1,21 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS FLEET STATUS" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers fleet status \- show durable Fleet registration and connection state
+.SH SYNOPSIS
+\fBgoobers fleet status\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers fleet status [--json] [path]
+
+Show the durable Fleet registration, connection, heartbeat, ACL version, and
+credential expiry state. Private key and bearer credential material are never
+printed.
+.fi
+.SH EXAMPLES
+.nf
+goobers fleet status
+goobers fleet status --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

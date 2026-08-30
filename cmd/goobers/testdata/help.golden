@@ -13,7 +13,6 @@ Commands:
   down              Gracefully stop a running daemon.
   escalations       List escalated runs.
   examples          Browse embedded workflow examples.
-  fleet             associate this instance with a Fleet service
   init              Create an instance or configuration source.
   run               Start a workflow run.
   scaffold          Create a goober, workflow, or gaggle.
@@ -60,7 +59,6 @@ Commands:
   down              Gracefully stop a running daemon.
   escalations       List escalated runs.
   examples          Browse embedded workflow examples.
-  fleet             associate this instance with a Fleet service
   init              Create an instance or configuration source.
   run               Start a workflow run.
   scaffold          Create a goober, workflow, or gaggle.
@@ -104,7 +102,6 @@ Core commands:
   down              Gracefully stop a running daemon.
   escalations       List escalated runs.
   examples          Browse embedded workflow examples.
-  fleet             associate this instance with a Fleet service
   init              Create an instance or configuration source.
   run               Start a workflow run.
   scaffold          Create a goober, workflow, or gaggle.
@@ -137,6 +134,7 @@ Advanced operator commands:
   explain           project field facts from an embedded JSON Schema
   features          list the workflow-DSL features this build supports
   fix               mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
+  fleet             associate this instance with a Fleet service
   journal redact    remove a leaked secret from a stored blob (SEC-041)
   lint              lint config via the single authoritative validation engine (alias for validate)
   netpol-render     render per-runner-class NetworkPolicy reference manifests from the runners: inventory

@@ -16,11 +16,22 @@ import (
 )
 
 type fleetMemoryStorage struct {
-	record fleet.Record
-	saved  bool
+	record               fleet.Record
+	saved                bool
+	loadCalls            int
+	loadAssociationCalls int
+}
+
+func (s *fleetMemoryStorage) LoadAssociation(string) (fleet.Association, error) {
+	s.loadAssociationCalls++
+	if !s.saved {
+		return fleet.Association{}, fleet.ErrNotAssociated
+	}
+	return s.record.Association, nil
 }
 
 func (s *fleetMemoryStorage) Load(string) (fleet.Record, error) {
+	s.loadCalls++
 	if !s.saved {
 		return fleet.Record{}, fleet.ErrNotAssociated
 	}
@@ -136,6 +147,23 @@ func TestFleetJoinNoninteractiveRequiresACLChoice(t *testing.T) {
 	}
 }
 
+func TestFleetJoinInteractiveEmptyACLRequiresWarningConfirmation(t *testing.T) {
+	discovery := fleet.Discovery{}
+	var stdout strings.Builder
+	acl, err := selectFleetACL(discovery, false, false, true, strings.NewReader("yes\n"), &stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acl.Grants) != 0 || !strings.Contains(stdout.String(), "empty ACL") {
+		t.Fatalf("acl=%+v stdout=%q", acl, stdout.String())
+	}
+
+	stdout.Reset()
+	if _, err := selectFleetACL(discovery, false, false, true, strings.NewReader("no\n"), &stdout); err == nil {
+		t.Fatal("empty ACL was accepted without confirmation")
+	}
+}
+
 func TestFleetStatusJSONRedactsSecretsAndLeaveDeletes(t *testing.T) {
 	root := t.TempDir()
 	if _, err := instance.Init(root); err != nil {
@@ -176,6 +204,9 @@ func TestFleetStatusJSONRedactsSecretsAndLeaveDeletes(t *testing.T) {
 	}
 	if !status.Associated || status.RegistrationID != "registration-1" {
 		t.Fatalf("status = %+v", status)
+	}
+	if store.loadAssociationCalls != 1 || store.loadCalls != 0 {
+		t.Fatalf("status storage reads: metadata=%d secrets=%d", store.loadAssociationCalls, store.loadCalls)
 	}
 
 	code, stdout, stderr = runArgs(t, "fleet", "leave", root)
