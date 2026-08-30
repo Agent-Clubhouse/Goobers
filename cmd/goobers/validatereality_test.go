@@ -278,14 +278,34 @@ func TestAppendInstanceRootFinding(t *testing.T) {
 		{
 			name: "kind resolves off self, warns naming the kind",
 			task: apiv1.Task{
-				Name:   "await-ci",
+				Name:   "publish-telemetry",
 				Type:   apiv1.TaskDeterministic,
-				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}},
-				Inputs: map[string]string{"kind": "ci-poll"},
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "external-telemetry"}},
+				Inputs: map[string]string{"kind": "external-telemetry"},
 				RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
 			},
 			wantWarning: true,
-			wantText:    []string{`inputs.kind="ci-poll"`},
+			wantText:    []string{`inputs.kind="external-telemetry"`},
+		},
+		{
+			// #3881's static ablation: ci-poll used to be the case above.
+			// Now that dispatch-exec runs it in-process in the pod
+			// (cmd/goobers/dispatchcipoll.go), an off-self ci-poll is a
+			// SUPPORTED placement, so warning about it would send an author
+			// to restructure a workflow that is already correct. Paired with
+			// the external-telemetry case, this pins which kinds are in the
+			// refusal and which are not — a blanket removal of the kind arm
+			// would pass this and fail that.
+			name: "ci-poll off self no longer warns: it has a pod-side path",
+			task: apiv1.Task{
+				Name:         "await-ci",
+				Type:         apiv1.TaskDeterministic,
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}},
+				Inputs:       map[string]string{"kind": "ci-poll"},
+				Capabilities: []string{"provider:pr:write"},
+				RunsOn:       &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
+			},
+			wantWarning: false,
 		},
 		{
 			name: "empty runsOn is trivially satisfied by self",
