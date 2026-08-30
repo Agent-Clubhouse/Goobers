@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -64,6 +65,23 @@ var DefaultTmpfsSizeLimit = resource.MustParse("512Mi")
 type Config struct {
 	// Namespace is the gaggle namespace stage pods are created in.
 	Namespace string
+	// Owner identifies THIS dispatcher process among the workers sharing a
+	// namespace. It is stamped on every pod as LabelOwner and is the scope
+	// SweepOrphans sweeps within, so it must be stable across a restart of
+	// the same worker and distinct between workers. The worker wires its
+	// hostname — in-cluster, its pod name: stable while the pod lives, unique
+	// per replica.
+	//
+	// A rollout gives the replacement worker a NEW pod name, so stage pods
+	// left by the outgoing one fall outside every sweep's scope. That is the
+	// intended trade: the sweep's job is to reclaim ITS OWN interrupted
+	// attempts, and the always-on activeDeadlineSeconds stamp (dispatcher §5)
+	// is what bounds every other leak. Deleting a pod on a guess is the
+	// failure this whole path is built to avoid.
+	//
+	// Empty stamps no owner label and makes SweepOrphans refuse: an ownerless
+	// fleet cannot be swept safely by one of its members.
+	Owner string
 	// EmbeddedCommit is this dispatcher binary's embedded commit sha
 	// (internal/version.Commit at wiring) — the left side of the decision-009
 	// version-skew tag comparison.
@@ -128,6 +146,16 @@ type Config struct {
 	// CapacityInterval overrides DefaultCapacityInterval; zero uses the
 	// default.
 	CapacityInterval time.Duration
+}
+
+// ownerLabel is Owner rendered into label grammar. The stamp and the sweep's
+// selector both go through it, so they cannot disagree about what an owner's
+// pods are labeled with.
+func (c Config) ownerLabel() string {
+	if strings.TrimSpace(c.Owner) == "" {
+		return ""
+	}
+	return sanitizeNameSegment(c.Owner, 63)
 }
 
 func (c Config) tmpfsSizeLimit() resource.Quantity {
@@ -218,10 +246,34 @@ type Attempt struct {
 	CPU    string
 	Memory string
 	Disk   string
+	// OwningWorkflowID is the id of the Temporal workflow execution driving
+	// this attempt — the caller's own execution, stamped on the pod as
+	// AnnotationOwningWorkflowID and describable VERBATIM by the orphan
+	// sweep.
+	//
+	// Distinct from two neighbours it is easy to confuse it with:
+	// Config.Owner / LabelOwner names the dispatcher PROCESS that created the
+	// pod (the sweep's scope), and Workflow above is the goobers workflow
+	// NAME from the DSL. This is a Temporal execution id, and it is the only
+	// field on the attempt that addresses one.
+	//
+	// Empty means the caller did not state a driver. The pod is then stamped
+	// without the annotation and the sweep leaves it alone forever rather
+	// than guessing an id — see stampIdentityAnnotations and podAttempt.
+	OwningWorkflowID string
 	// Restrictions is the stage's effective restriction requirement
 	// (declared ∪ mandates, as solved). It must be a subset of the resolved
 	// runner's enforced set; the dispatcher refuses the mismatch at create.
 	Restrictions []string
+	// RunsOnCapabilities is the stage's effective runsOn.capabilities
+	// requirement (declared ∪ derived ∪ gaggle floor, as solved) — the
+	// RUNNER-capability tags, not the credential Capabilities below. The
+	// dispatcher reads exactly one token from it: runnercap.CapabilityWindowsAdmin,
+	// which decides a Windows pod's container identity (#3619). A stage that
+	// requires it on a runner that does not provide it is refused at create;
+	// a stage that does not require it runs as ContainerUser even on a runner
+	// that provides it.
+	RunsOnCapabilities []string
 	// Timeout is the stage's declared timeout; zero uses
 	// DefaultStageTimeout. activeDeadlineSeconds = Timeout + margin.
 	Timeout time.Duration
@@ -256,6 +308,22 @@ type Attempt struct {
 	// this stage continues from their work instead of from base — the worker
 	// gets this for free from a shared branch ref, a pod does not.
 	WorkspaceDelta string
+	// WorkspaceBranch is the run's rebound workspace branch (#392): empty while
+	// the run is on the branch the pod can derive for itself (namespace +
+	// workflow + run id), and the branch a stage bound with the well-known
+	// `workspaceBranch` output once one has — pr-remediation binds it to the
+	// claimed PR's head, so every later stage works on the PR's branch.
+	//
+	// A pod cannot derive this, which is the whole reason it is carried: the
+	// derivation composes the RUN branch, which is exactly the branch a rebound
+	// run is not on.
+	WorkspaceBranch string
+	// SyncBase asks the in-pod checkout to merge the freshly fetched base into
+	// the branch it landed on, the way the local runner's worktree provisioner
+	// does for a stage declaring run.syncBase (#813). Only meaningful for a
+	// writable repo workspace, and only for a branch that already existed —
+	// a branch created at base is already synced by construction.
+	SyncBase bool
 	// Capabilities is the stage's declared credential capabilities
 	// (apiv1.InvocationEnvelope.Capabilities). The pod resolves them against
 	// the daemon's credential plane at stage START — the dispatch payload
@@ -278,6 +346,15 @@ type Attempt struct {
 	// whole InvocationEnvelope and its goober's resolved execution inputs, which
 	// travel as a claim check (internal/agentickit) rather than on the pod spec.
 	Agentic bool
+	// Review marks an AGENTIC attempt that is a reviewer GATE evaluation
+	// (decision 001 rulings 7–8): the pod drives the goober in the harness's
+	// review mode and surrenders a Verdict instead of a stage result. It
+	// rides the attempt, not the pod spec — the kit writer stamps it as
+	// agentickit.Kit.Mode inside the verified claim check, so a pod learns
+	// which completion contract it owes from the same content-addressed
+	// document that carries its instructions, never from a listable env var.
+	// Meaningless without Agentic; Dispatch refuses the combination.
+	Review bool
 	// Envelope is the invocation an AGENTIC stage executes. Nil for every
 	// deterministic stage, whose inputs are the declared command and its
 	// stamped environment.
@@ -334,6 +411,14 @@ type RunnerSpec struct {
 	// Restrictions are the isolation effects this runner enforces — the
 	// resolved restriction set the runner-class label derives from.
 	Restrictions []string `json:"restrictions,omitempty"`
+	// Capabilities is the runner's provides.capabilities claim set. The
+	// dispatcher consults one token of it — runnercap.CapabilityWindowsAdmin,
+	// the claim that a Windows class may run a stage as
+	// ContainerAdministrator (#3619); everything else is the solver's.
+	// Additive on the pinned-placement wire contract (omitempty): a recorded
+	// history without it decodes to a runner claiming nothing, which is the
+	// fail-closed reading (no admin identity).
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // SpecFromEntry converts a validated inventory entry into the dispatcher's
@@ -356,6 +441,7 @@ func SpecFromEntry(e instance.RunnerEntry) (RunnerSpec, error) {
 		Memory:       e.Provides.Memory,
 		Disk:         e.Provides.Disk,
 		Restrictions: restrictions,
+		Capabilities: append([]string(nil), e.Provides.Capabilities...),
 	}, nil
 }
 
@@ -476,6 +562,14 @@ type Report struct {
 	Local bool
 	// Pod is the created pod's name ("" when Local).
 	Pod string
+	// Image is the image the stage container was created with ("" when Local
+	// or when the attempt failed before a pod was rendered). Read back off
+	// the RENDERED pod rather than off RunnerSpec.Host, because the two
+	// differ for a deployment-templated runner: Host is the Deployment name
+	// and the image comes from its pod template. Decision 009 makes the tag
+	// load-bearing (it IS the skew comparison), so the provenance has to name
+	// the image that actually ran.
+	Image string
 	// Phase is the pod's terminal phase.
 	Phase corev1.PodPhase
 	// SurrenderConfirmed reports whether the disposal gate confirmed output
@@ -554,6 +648,13 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// An agentic stage's kit is published BEFORE the pod exists, and a failure
 	// to publish refuses the attempt rather than creating a pod that would find
 	// no kit and fail with something obscure inside the container.
+	if attempt.Review && !attempt.Agentic {
+		// A review is a completion contract for a goober invocation; a
+		// declared command has no verdict to write. Refused here, before a
+		// pod or a kit exists, rather than surfacing as "surrendered result
+		// carries no verdict" after the stage ran.
+		return Report{}, fmt.Errorf("dispatcher: stage %s of run %s is marked review but not agentic; only a goober invocation can produce a verdict", attempt.Stage, attempt.RunID)
+	}
 	if attempt.Agentic {
 		if d.cfg.KitWriter == nil {
 			return Report{}, fmt.Errorf("dispatcher: agentic stage %s of run %s requires a kit writer; none is configured", attempt.Stage, attempt.RunID)
@@ -583,6 +684,19 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	if err != nil {
 		return report, err
 	}
+	// Stamped from the rendered spec BEFORE the create call, so an IN-PROCESS
+	// caller that inspects the returned report after a create failure still
+	// sees which image was about to run.
+	//
+	// Scope note, because the comment used to over-promise: this does NOT
+	// reach the engine's callers. engine.DispatchStage discards the report on
+	// every error that left surrender unconfirmed, so the only reports whose
+	// Image crosses that activity boundary are settled ones, which by
+	// definition already created their pod (see engine.StagePlacement). The
+	// stamp stays here regardless: it costs nothing, it is the honest ordering
+	// for a direct caller, and it is what a future failure-carrying seam would
+	// read.
+	report.Image = stageContainerImage(pod)
 
 	if err := d.pods.CreatePod(ctx, pod); err != nil {
 		return report, fmt.Errorf("dispatcher: create pod %s/%s: %w", pod.Namespace, pod.Name, err)
@@ -635,6 +749,17 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 			ErrStageFailed, attempt.RunID, attempt.Stage, attempt.Number, pod.Name)
 	}
 	return report, nil
+}
+
+// stageContainerImage reads the stage container's image off a rendered pod.
+func stageContainerImage(pod *corev1.Pod) string {
+	if pod == nil {
+		return ""
+	}
+	if stage := stageContainerIn(pod.Spec.Containers); stage != nil {
+		return stage.Image
+	}
+	return ""
 }
 
 // renderFor renders the fresh pod for the resolved runner's host kind:

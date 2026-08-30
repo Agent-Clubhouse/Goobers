@@ -31,6 +31,7 @@ const (
 	claimLockOperationAPIRenew   = "api.claims.renew"
 	claimLockOperationAPIRelease = "api.claims.release"
 	claimLockOperationAPISettle  = "api.claims.settle"
+	claimLockOperationAPIList    = "api.claims.list"
 )
 
 // claimSettleOutcomes is the closed vocabulary for settle's outcome field.
@@ -164,9 +165,150 @@ func (s *daemonClaimService) Renew(_ context.Context, request httpapi.ClaimReque
 }
 
 // Release gives the item back mid-run. Releasing a claim not held is a
-// no-op, not an error — the ledger's own idempotency contract.
+// no-op, not an error — the ledger's own idempotency contract. With ItemID
+// empty it releases every claim the run holds (narrowed to the namespace
+// when one is given) — the plane's form of releaseClaimsForRun, contained
+// to the caller's own run exactly like the single-item shape.
 func (s *daemonClaimService) Release(_ context.Context, request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
+	if request.ItemID == "" {
+		return s.releaseAllForRun(request)
+	}
 	return s.release(claimLockOperationAPIRelease, request, nil)
+}
+
+func (s *daemonClaimService) releaseAllForRun(request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
+	if (request.Gaggle == "") != (request.Provider == "") {
+		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request",
+			"gaggle and provider must be given together for a release of every claim the run holds", nil)
+	}
+	var released []httpapi.ClaimEntry
+	err := s.withLedger(claimLockOperationAPIRelease, request, func(ledger *localscheduler.ClaimLedger) error {
+		for _, entry := range ledger.ForRunAll(request.RunID) {
+			if request.Gaggle != "" && (entry.Gaggle != request.Gaggle || entry.Provider != request.Provider) {
+				continue
+			}
+			if err := ledger.ReleaseEntry(entry, request.RunID); err != nil {
+				return err
+			}
+			released = append(released, claimEntryWire(entry))
+		}
+		return nil
+	})
+	if err != nil {
+		return httpapi.ClaimResponse{}, err
+	}
+	return httpapi.ClaimResponse{Ok: true, Released: released}, nil
+}
+
+// List reads the ledger for the caller. A namespace listing includes the
+// ledger's legacy unscoped entries beside the namespace's own, because an
+// unresolved item-only claim is exclusive against every scoped claimant
+// (ClaimLedger.claim) — a lister that could not see it would select an item
+// acquire is going to refuse. History is the retained released set for the
+// same namespace, newest first, so the failure-streak deprioritization an
+// off-daemon backlog-query runs keeps its input.
+func (s *daemonClaimService) List(_ context.Context, request httpapi.ClaimListRequest) (httpapi.ClaimListResponse, error) {
+	if request.RunID == "" {
+		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request", "runId is required", nil)
+	}
+	switch request.Scope {
+	case httpapi.ClaimListScopeRun:
+	case httpapi.ClaimListScopeNamespace:
+		if request.Gaggle == "" || request.Provider == "" {
+			return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request",
+				"gaggle and provider are required for a namespace listing", nil)
+		}
+		if request.PodScoped && !s.runBelongsToGaggle(request.Gaggle, request.RunID) {
+			// Containment beyond the run id: a pod may read the namespace its
+			// run was admitted into and no other. The run's journal on this
+			// instance is the authority on which gaggle that is (the same
+			// lookup the credential plane's locateRun makes).
+			return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusForbidden, "gaggle_mismatch",
+				"pod principal may only list the gaggle namespace its own run belongs to", nil)
+		}
+	default:
+		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request", "scope must be run or namespace", nil)
+	}
+	inNamespace := func(entry localscheduler.ClaimEntry) bool {
+		if entry.Gaggle == "" && entry.Provider == "" {
+			return true // legacy unscoped claims are exclusive against every namespace
+		}
+		return entry.Gaggle == request.Gaggle && entry.Provider == request.Provider
+	}
+	var response httpapi.ClaimListResponse
+	err := s.withLedger(claimLockOperationAPIList, httpapi.ClaimRequest{Gaggle: request.Gaggle, RunID: request.RunID}, func(ledger *localscheduler.ClaimLedger) error {
+		var entries, history []localscheduler.ClaimEntry
+		switch request.Scope {
+		case httpapi.ClaimListScopeRun:
+			entries = ledger.ForRunAll(request.RunID)
+			if request.IncludeHistory {
+				history = ledger.HistoryForRun(request.RunID)
+			}
+		case httpapi.ClaimListScopeNamespace:
+			for _, entry := range ledger.Snapshot() {
+				if inNamespace(entry) {
+					entries = append(entries, entry)
+				}
+			}
+			if request.IncludeHistory {
+				for _, entry := range ledger.HistorySnapshot() {
+					if inNamespace(entry) {
+						history = append(history, entry)
+					}
+				}
+			}
+		}
+		response.Entries = claimEntriesWire(entries)
+		response.History = claimEntriesWire(history)
+		return nil
+	})
+	return response, err
+}
+
+// runBelongsToGaggle reports whether runID's journal lives under gaggle's
+// runs directory on this instance. Delegates to the shared containment check
+// (schedulerstate.go), which the scheduler-state plane applies to the same
+// question for the same reason.
+func (s *daemonClaimService) runBelongsToGaggle(gaggle, runID string) bool {
+	return runBelongsToGaggle(s.layout, gaggle, runID)
+}
+
+// plainPathElement reports whether value is safe to join as exactly one path
+// segment: non-empty, no separator of either platform's flavour, no volume
+// name, and not a relative-path element.
+func plainPathElement(value string) bool {
+	if value == "" || value == "." || value == ".." {
+		return false
+	}
+	if strings.ContainsAny(value, `/\`) || filepath.VolumeName(value) != "" {
+		return false
+	}
+	return true
+}
+
+func claimEntryWire(entry localscheduler.ClaimEntry) httpapi.ClaimEntry {
+	return httpapi.ClaimEntry{
+		ItemID:     entry.ItemID,
+		Gaggle:     entry.Gaggle,
+		Provider:   entry.Provider,
+		ExternalID: entry.ExternalID,
+		RunID:      entry.RunID,
+		Workflow:   entry.Workflow,
+		ClaimedAt:  entry.ClaimedAt,
+		ExpiresAt:  entry.ExpiresAt,
+		ReleasedAt: entry.ReleasedAt,
+	}
+}
+
+func claimEntriesWire(entries []localscheduler.ClaimEntry) []httpapi.ClaimEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	wire := make([]httpapi.ClaimEntry, 0, len(entries))
+	for _, entry := range entries {
+		wire = append(wire, claimEntryWire(entry))
+	}
+	return wire
 }
 
 // Settle is the exactly-once terminal release: the run concluded its work on
@@ -246,6 +388,10 @@ func (s *daemonClaimService) journalRefusal(request httpapi.ClaimRequest, holder
 type workflowTriggerer interface {
 	Trigger(ctx context.Context, workflow string, now time.Time) (string, error)
 	TriggerExact(ctx context.Context, identity localscheduler.WorkflowIdentity, now time.Time) (string, error)
+	// TriggerPriority is the output-driven re-tick the sweep dispatches for a
+	// priority request file (rundelegate.go) — the plane's path for a stage
+	// pod, which has no scheduler directory to drop that file into.
+	TriggerPriority(ctx context.Context, identity localscheduler.WorkflowIdentity, sourceRun string, now time.Time) (string, error)
 }
 
 // maxTriggerDedupeRecords bounds the trigger plane's delivery-dedupe memory,
@@ -264,6 +410,11 @@ type daemonTriggerService struct {
 	// dispatch overrides the scheduler dispatch seam in tests; nil dispatches
 	// through the attached scheduler.
 	dispatch workflowTriggerer
+	// contains verifies that a pod caller's run belongs to the gaggle it
+	// named — the trigger plane's half of decision 005 R3's "a pod principal
+	// may POST /triggers for its OWN gaggle". nil is fail-closed: a pod
+	// request is refused rather than admitted unverified.
+	contains func(gaggle, runID string) bool
 
 	mu    sync.Mutex
 	seen  map[string]string // requestId -> minted run id
@@ -272,6 +423,14 @@ type daemonTriggerService struct {
 
 func newDaemonTriggerService() *daemonTriggerService {
 	return &daemonTriggerService{now: time.Now, seen: make(map[string]string)}
+}
+
+// withGaggleContainment attaches the pod-principal containment check. The
+// daemon wires the instance's own run.yaml lookup here, the same authority the
+// claims and scheduler-state planes use.
+func (s *daemonTriggerService) withGaggleContainment(contains func(gaggle, runID string) bool) *daemonTriggerService {
+	s.contains = contains
+	return s
 }
 
 func (s *daemonTriggerService) AttachScheduler(sched *localscheduler.Scheduler) {
@@ -304,6 +463,26 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 			http.StatusServiceUnavailable, "scheduler_unavailable", "run admission is not available", nil,
 		)
 	}
+	// Pod containment (decision 005 R3). The route has already established
+	// that the caller named a gaggle and, for a priority re-tick, its own run;
+	// this is the authority check the route cannot make — does that run
+	// actually live in that gaggle on this instance? A missing verifier is a
+	// refusal, not a pass: the daemon must never admit a pod trigger it could
+	// not contain.
+	if request.PodScoped {
+		if s.contains == nil {
+			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+				http.StatusForbidden, "gaggle_mismatch",
+				"pod-principal triggers are not available from this server", nil,
+			)
+		}
+		if !s.contains(request.Gaggle, request.PodRunID) {
+			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+				http.StatusForbidden, "gaggle_mismatch",
+				"pod principal may only trigger a workflow in the gaggle its own run belongs to", nil,
+			)
+		}
+	}
 	requestID := strings.TrimSpace(request.RequestID)
 	if requestID != "" {
 		if runID, duplicate := s.reserve(requestID); duplicate {
@@ -313,11 +492,26 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 
 	var runID string
 	var err error
-	if request.Gaggle != "" {
+	switch {
+	case strings.TrimSpace(request.SourceRun) != "":
+		// A priority re-tick names an exact workflow by construction: the
+		// source run publishes durable state that changes ONE workflow's
+		// selection order, and TriggerPriority takes that identity. An
+		// unscoped priority request has no such identity, so it is refused
+		// rather than resolved against whatever gaggle happens to match.
+		if request.Gaggle == "" {
+			err = httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request",
+				"a priority trigger requires the workflow's gaggle", nil)
+			break
+		}
+		runID, err = dispatch.TriggerPriority(ctx, localscheduler.WorkflowIdentity{
+			Gaggle: request.Gaggle, Workflow: request.Workflow,
+		}, strings.TrimSpace(request.SourceRun), s.now())
+	case request.Gaggle != "":
 		runID, err = dispatch.TriggerExact(ctx, localscheduler.WorkflowIdentity{
 			Gaggle: request.Gaggle, Workflow: request.Workflow,
 		}, s.now())
-	} else {
+	default:
 		runID, err = dispatch.Trigger(ctx, request.Workflow, s.now())
 	}
 	if err != nil {

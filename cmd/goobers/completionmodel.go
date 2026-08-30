@@ -164,6 +164,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"doctor": {
 		{name: "k8s", desc: "Preflight a Kubernetes cluster"},
 		{name: "repo", desc: "Compare repository forge policy with GitHub"},
+		{name: "av-exclusions", desc: "List the directories Goobers writes then reads and verify antivirus exclusions (advisory)"},
+		{name: "work-root", takesArg: true, desc: "Worker work root to enumerate (--av-exclusions)"},
 		{name: "kubeconfig", takesArg: true, desc: "Kubeconfig path"},
 		{name: "context", takesArg: true, desc: "Kubeconfig context"},
 		{name: "report", takesArg: true, values: []string{"text", "json"}, desc: "Report format"},
@@ -197,6 +199,13 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
 		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key"},
 		{name: "live-journal", desc: "Author the run journal live through the daemon's journal plane"},
+	},
+	"engine-queues": {
+		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
+		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
+		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
+		{name: "timeout", takesArg: true, desc: "Bound on the whole describe"},
+		{name: "json", desc: "Emit JSON"},
 	},
 	"engine-project": {
 		{name: "gaggle", takesArg: true, desc: "Gaggle owning the run"},
@@ -452,6 +461,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"respond-to-findings": {
 		{name: "check", desc: "Validate without publishing responses"},
+	},
+	"file-issues": {
+		{name: "check", desc: "Validate and scan without creating issues"},
 	},
 	"mcp-io": {
 		{name: "config", takesArg: true, desc: "MCP server configuration path"},

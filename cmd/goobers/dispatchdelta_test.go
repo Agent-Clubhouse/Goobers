@@ -88,10 +88,11 @@ func TestWorkspaceDeltaCarriesACommitBetweenTwoWorkspaces(t *testing.T) {
 	runGitT(t, podA, "commit", "-m", "the commit that must survive")
 	want := strings.TrimSpace(runGitOutputT(t, podA, "rev-parse", "HEAD"))
 
-	digest, err := publishWorkspaceDelta(context.Background(), podA, os.Stderr)
+	published, err := publishWorkspaceDelta(context.Background(), podA, os.Stderr)
 	if err != nil {
 		t.Fatalf("publishWorkspaceDelta: %v", err)
 	}
+	digest := published.Digest
 	if digest == "" {
 		t.Fatal("no delta published for a branch that carries a commit — this is the bug, not the fix")
 	}
@@ -133,14 +134,40 @@ func TestWorkspaceDeltaRefusesNonWritableWorkspaces(t *testing.T) {
 	for _, mode := range []apiv1.WorkspaceMode{apiv1.WorkspaceScratch, apiv1.WorkspaceRepoReadOnly, ""} {
 		t.Run(string(mode)+"/none", func(t *testing.T) {
 			t.Setenv(dispatcher.EnvStageWorkspace, string(mode))
-			digest, err := publishWorkspaceDelta(context.Background(), t.TempDir(), os.Stderr)
+			published, err := publishWorkspaceDelta(context.Background(), t.TempDir(), os.Stderr)
+			digest := published.Digest
 			if err != nil {
 				t.Fatalf("publishWorkspaceDelta(%q) = error %v; a non-writable workspace is ordinary, not a failure", mode, err)
 			}
 			if digest != "" {
 				t.Fatalf("publishWorkspaceDelta(%q) = %q, want no delta", mode, digest)
 			}
+			if published.Unchanged {
+				t.Fatalf("publishWorkspaceDelta(%q) claims Unchanged; a non-writable workspace has checked no branch and must claim nothing", mode)
+			}
 		})
+	}
+}
+
+// "Unchanged" is the pod's own finding — a writable repo branch it CHECKED
+// and found carrying nothing beyond base — surrendered explicitly so the
+// engine journals it as a fact rather than inferring it from an absent digest
+// (which is also what a scratch stage, or a stage image predating the field,
+// surrenders).
+func TestWorkspaceDeltaReportsUnchangedForACheckedWritableBranch(t *testing.T) {
+	origin := initBareOrigin(t)
+	endpoint, _ := fakeBlobPlane(t)
+	t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+	t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceRepo))
+	pod := filepath.Join(t.TempDir(), "pod")
+	runGitT(t, filepath.Dir(pod), "clone", "--branch", "main", origin, pod)
+	runGitT(t, pod, "checkout", "-b", "e2e/wf/run-unchanged")
+	published, err := publishWorkspaceDelta(context.Background(), pod, os.Stderr)
+	if err != nil {
+		t.Fatalf("publishWorkspaceDelta: %v", err)
+	}
+	if published.Digest != "" || !published.Unchanged {
+		t.Fatalf("publishWorkspaceDelta on a branch at base = %+v, want Unchanged and no digest", published)
 	}
 }
 
@@ -189,10 +216,11 @@ func publishDeltaFrom(t *testing.T, dir, branch, file, content string) (digest, 
 	runGitT(t, dir, "add", file)
 	runGitT(t, dir, "commit", "-m", "commit "+file)
 	head = strings.TrimSpace(runGitOutputT(t, dir, "rev-parse", "HEAD"))
-	digest, err := publishWorkspaceDelta(context.Background(), dir, os.Stderr)
+	published, err := publishWorkspaceDelta(context.Background(), dir, os.Stderr)
 	if err != nil {
 		t.Fatalf("publishWorkspaceDelta: %v", err)
 	}
+	digest = published.Digest
 	if digest == "" {
 		t.Fatal("no delta published for a branch that carries a commit")
 	}
@@ -422,7 +450,8 @@ func TestWorkspaceDeltaFailsLoudlyWhenTheBranchCannotBeDetermined(t *testing.T) 
 	// for every reason git might refuse the workspace.
 	notARepo := t.TempDir()
 
-	digest, err := publishWorkspaceDelta(context.Background(), notARepo, os.Stderr)
+	published, err := publishWorkspaceDelta(context.Background(), notARepo, os.Stderr)
+	digest := published.Digest
 	if err == nil {
 		t.Fatalf("publishWorkspaceDelta returned digest %q and no error; a writable repo workspace whose branch is undeterminable must fail rather than silently carry nothing", digest)
 	}
@@ -544,6 +573,87 @@ func TestCheckoutRepoWorkspaceAncestryGuardAtTheRealSeam(t *testing.T) {
 		}
 		if got := strings.TrimSpace(runGitOutputT(t, ws, "rev-parse", "HEAD")); got != deltaHead {
 			t.Fatalf("HEAD = %s, want the delta tip %s", got, deltaHead)
+		}
+	})
+}
+
+// #392: when a delta is refused, the message must name the branch the
+// workspace is standing on, and — when the run REBOUND its workspace branch —
+// say so.
+//
+// The reason is diagnostic and specific. The ancestry guard (#3821) names two
+// SHAs, which is the right answer for a run on one branch: the reader compares
+// them against the run branch's history and finds the drift. A pr-remediation
+// run has TWO candidate lines of history — the run branch it was started on
+// and the PR head it rebound onto — and two SHAs that belong to different
+// branches look exactly like two SHAs that diverged on one. The pod is the
+// only place that knows which branch it actually checked out; without the
+// branch in the message a reader spends the investigation hunting a base drift
+// on the run branch that never happened.
+//
+// Both arms are asserted together so the rebind clause cannot pass by being
+// unconditional: an ordinary unrebound run must NOT be told a rebind occurred.
+func TestRefusedDeltaNamesTheCheckedOutAndReboundBranch(t *testing.T) {
+	const branch = "e2e/wf/pr-head-392"
+
+	// diverge builds the shape the guard refuses — a delta and a checkout that
+	// each carry a commit the other does not, off a shared ancestor on the same
+	// branch — and returns applyWorkspaceDelta's refusal.
+	diverge := func(t *testing.T) error {
+		t.Helper()
+		origin := initBareOrigin(t)
+		endpoint, _ := fakeBlobPlane(t)
+		t.Setenv(dispatcher.EnvBlobEndpoint, endpoint)
+		t.Setenv(dispatcher.EnvPodToken, "pod-token")
+		t.Setenv(dispatcher.EnvStageWorkspace, string(apiv1.WorkspaceRepo))
+
+		shared := filepath.Join(t.TempDir(), "shared")
+		runGitT(t, filepath.Dir(shared), "clone", "--branch", "main", origin, shared)
+		publishDeltaFrom(t, shared, branch, "shared.txt", "shared\n")
+		runGitT(t, shared, "push", origin, branch+":"+branch)
+
+		producer := filepath.Join(t.TempDir(), "producer")
+		runGitT(t, filepath.Dir(producer), "clone", "--branch", branch, origin, producer)
+		digest, _ := publishDeltaFrom(t, producer, branch, "producer.txt", "producer\n")
+
+		checkout := filepath.Join(t.TempDir(), "checkout")
+		runGitT(t, filepath.Dir(checkout), "clone", "--branch", branch, origin, checkout)
+		runGitT(t, checkout, "config", "user.name", "c")
+		runGitT(t, checkout, "config", "user.email", "c@example.com")
+		if err := os.WriteFile(filepath.Join(checkout, "checkout.txt"), []byte("checkout\n"), 0o644); err != nil {
+			t.Fatalf("write checkout.txt: %v", err)
+		}
+		runGitT(t, checkout, "add", "checkout.txt")
+		runGitT(t, checkout, "commit", "-m", "diverge from the producer")
+
+		err := applyWorkspaceDelta(context.Background(), checkout, digest, nil, os.Stderr)
+		if err == nil {
+			t.Fatal("applyWorkspaceDelta accepted a diverged digest instead of failing closed")
+		}
+		return err
+	}
+
+	t.Run("a rebound run is told which branch it is on and that it rebound", func(t *testing.T) {
+		t.Setenv(dispatcher.EnvWorkspaceBranch, branch)
+		err := diverge(t)
+		for _, want := range []string{
+			"diverged",
+			`the workspace is on branch "` + branch + `"`,
+			`this run rebound its workspace branch to "` + branch + `"`,
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal %q does not contain %q; a reader of a rebound run cannot tell which line of history the two SHAs belong to", err, want)
+			}
+		}
+	})
+
+	t.Run("an unrebound run is named its branch and nothing more", func(t *testing.T) {
+		err := diverge(t)
+		if !strings.Contains(err.Error(), `the workspace is on branch "`+branch+`"`) {
+			t.Errorf("refusal %q does not name the checked-out branch", err)
+		}
+		if strings.Contains(err.Error(), "rebound its workspace branch") {
+			t.Errorf("refusal %q claims a rebind for a run that never rebound; an unconditional clause sends every reader hunting a rebind that did not happen", err)
 		}
 	})
 }

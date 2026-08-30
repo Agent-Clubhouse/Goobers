@@ -233,11 +233,7 @@ func remediationStageNames() (implementStage, pushStage string) {
 
 func readRemediationResponseInputs(root, runID string, requirePublication bool) (apiv1.Verdict, string, bool, error) {
 	implementStage, pushStage := remediationStageNames()
-	runDir, err := runDirFor(layoutFor(root), runID)
-	if err != nil {
-		return apiv1.Verdict{}, "", false, err
-	}
-	rd, err := journal.OpenRead(runDir)
+	rd, err := stageRunJournal(root, runID)
 	if err != nil {
 		return apiv1.Verdict{}, "", false, err
 	}

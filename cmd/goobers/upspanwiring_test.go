@@ -52,10 +52,10 @@ func TestUpHandsTheDaemonBlobStoreToBothSpanConsumers(t *testing.T) {
 
 	originalProjection := startEngineProjection
 	startEngineProjection = func(ctx context.Context, l instance.Layout, cfg *instance.Config, set *instance.ConfigSet,
-		watermarks *intake.Store, instanceLog *journal.InstanceLog, tel *telemetry.Client,
-		liveJournals *livejournal.Writer, blobs blobstore.Store) (func(), error) {
+		engineClient *daemonEngineClient, watermarks *intake.Store, instanceLog *journal.InstanceLog,
+		tel *telemetry.Client, liveJournals *livejournal.Writer, blobs blobstore.Store) (func(), error) {
 		startedLoop, projectionBlobs = true, blobs
-		return originalProjection(ctx, l, cfg, set, watermarks, instanceLog, tel, liveJournals, blobs)
+		return originalProjection(ctx, l, cfg, set, engineClient, watermarks, instanceLog, tel, liveJournals, blobs)
 	}
 	t.Cleanup(func() { startEngineProjection = originalProjection })
 

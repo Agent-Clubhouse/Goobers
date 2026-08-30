@@ -410,6 +410,25 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	pf(stdout, "startup: scheduler initialized\n")
+	// #3480: on a Windows host, say once whether the directories this daemon
+	// writes then immediately reads are excluded from real-time scanning.
+	// Advisory — startup continues regardless.
+	//
+	// Printed HERE, not beside the large-repo warning above, because the set
+	// includes each gaggle's own workcopies.root — an override that beats the
+	// instance-wide one and can point at any drive — and setup.Definitions is
+	// the gaggle inventory the daemon itself is about to provision from. Read
+	// off instance.yaml alone, the advisory would have reported an
+	// affirmative all-clear over directories it never enumerated.
+	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
+		if line := hostAVExclusionAdvisory(ctx, "daemon",
+			daemonAVExclusionDirectories(l, setup.Config, setup.Definitions, avDeps), avDeps); line != "" {
+			pln(stdout, line)
+		}
+		if setup.Definitions == nil {
+			pln(stdout, "av-exclusions (advisory, daemon): config directory unavailable; per-gaggle workcopies roots are NOT enumerated above")
+		}
+	}
 	// #3806: instance config validated, definitions/scheduler wiring built.
 	configLoaded.Store(true)
 	defer setup.Shutdown(context.Background())
@@ -455,10 +474,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if liveJournals != nil {
 		defer liveJournals.Close()
 	}
-	// The SAME store the writer adopts spans from: DS5 verifies a
-	// live-authored journal against a re-projection, so a source given to one
-	// and not the other turns every adopted span into a false divergence.
-	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, setup.Telemetry, liveJournals, blobStore)
+	// One Temporal client per daemon (decision 003 step 1(e)): the projection
+	// reconciler, the DS6 claim-liveness probe and the engine-driven run
+	// guards each used to dial the frontend themselves. nil on an instance
+	// with no `engine:` configuration, which leaves every consumer below on
+	// its pre-existing no-engine path.
+	engineClient, err := newDaemonEngineClient(setup.Config)
+	if err != nil {
+		pf(stderr, "error: dial engine for daemon Temporal client: %v\n", err)
+		return 1
+	}
+	defer engineClient.Close()
+	engineGuards := engineClient.Guards()
+	// blobStore is the SAME store the writer adopts spans from (#3805): DS5
+	// verifies a live-authored journal against a re-projection, so a source
+	// given to one and not the other turns every adopted span into a false
+	// divergence.
+	stopEngineProjection, err := startEngineProjection(ctx, l, setup.Config, setup.Definitions, engineClient, setup.Watermarks, setup.InstanceLog, setup.Telemetry, liveJournals, blobStore)
 	if err != nil {
 		pf(stderr, "error: start engine projection reconciler: %v\n", err)
 		return 1
@@ -551,7 +583,22 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// through the same scheduler path the pending-triggers sweep dispatches,
 	// HITL resolution over the intervention machinery. The file seams remain
 	// for local/mode-1 callers.
-	triggerPlane := newDaemonTriggerService()
+	triggerPlane := newDaemonTriggerService().withGaggleContainment(func(gaggle, runID string) bool {
+		return runBelongsToGaggle(l, gaggle, runID)
+	})
+	// The scheduler-state plane (#3878, decision 005 R3 / finding 002 C2):
+	// the gaggle-scoped KV route for the scheduler state that is NOT a claim
+	// — blocked.json, the backlog scan cursors, the reconcile-post-merge
+	// ledger, the sibling-context cache. Served from the SAME files under the
+	// SAME per-key locks the local CLI seams take (claims.lock for
+	// blocked.json and the cursors), so a pod's compare-and-swap and a
+	// runner-driven run's in-process update contend on one lock rather than
+	// racing across two.
+	statePlane, err := newDaemonStateService(l)
+	if err != nil {
+		pf(stderr, "error: initialize scheduler-state plane: %v\n", err)
+		return 1
+	}
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
 	// stage start through the same capability-gated machinery the local
@@ -588,11 +635,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
 		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog)),
+		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
 		httpapi.WithTriggerService(triggerPlane),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
 		httpapi.WithCredentialService(credentialPlane),
 		httpapi.WithBlobService(blobStore),
 		httpapi.WithSurrenderService(surrenderStore),
+		httpapi.WithStateService(statePlane),
 	)
 	if liveJournals != nil {
 		// The journal plane (§8): remote stage pods emit their run's journal
@@ -603,6 +652,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
 	}
+	// The telemetry read plane's containment (decision 005 R4 / finding 002
+	// C3). Wired unconditionally: without it every pod telemetry read is
+	// refused, so this is what OPENS the plane, and a daemon that serves stage
+	// pods at all can always answer which gaggle one of its own runs is in.
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithPodRunGaggle(podRunGaggleResolver(l)))
 	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
 	// deployments — Goobers#3701), else the daemon-local in-memory registry.
 	podVerifier, perr := buildPodVerifier(setup.Config)
@@ -698,7 +752,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// claims must be renewed — not reaped — across the restart. Only a
 	// renewal pass whose ledger write completed opens the gate; a failed pass
 	// leaves it closed and the periodic tick below retries both halves.
-	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, setup.RunnerRegistry.RunIDs)
+	claimLiveness, closeClaimLiveness, err := buildClaimLivenessProbe(setup.Config, engineClient, setup.RunnerRegistry.RunIDs)
 	if err != nil {
 		pf(stderr, "error: build claim liveness probe: %v\n", err)
 		return 1
@@ -891,9 +945,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	stalledSweepErrors := newSweepErrorReporter(setup.InstanceLog, "stalled_run_sweep_failed")
 	sweepStalled := func(now time.Time) error {
 		return sweepStalledRuns(
+			ctx,
 			l,
 			setup.RunnerRegistry,
 			setup.LegacyRunner,
+			engineGuards,
 			setup.InstanceLog,
 			func(runLayout instance.Layout) (runner.TerminalPreparer, error) {
 				// The stalled run's gaggle is only knowable from its runs-tree
@@ -973,13 +1029,19 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// recover it with `goobers run abort <run-id>`. Each resumed run also
 	// incrementally ingests into the telemetry rollup once its outcome is
 	// known (issue #127).
-	resumed, warned, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg)
+	resumed, warned, reattached, err := resumeInterruptedRunsWithRunners(ctx, l, setup.Runners, setup.LegacyRunner, setup.RunnerRegistry, engineGuards, setup.Machines, setup.GooberDigests, setup.RepoRefs, setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks, sched.ReleaseReconciled, &wg)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	for _, runID := range resumed {
 		pf(stdout, "resuming interrupted run %s\n", runID)
+	}
+	// An engine-driven run is NOT resumed: this daemon waits for the engine's
+	// workflow and echoes its outcome. Announced separately so an operator
+	// reading the startup log can tell the two apart at a glance.
+	for _, runID := range reattached {
+		pf(stdout, "re-attaching to engine-driven run %s\n", runID)
 	}
 	// Renew resumed runs' claims immediately rather than waiting up to
 	// claimRecoverInterval for the first periodic tick (#2014): the startup
@@ -1149,6 +1211,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	telemetryRetentionTicker := time.NewTicker(telemetryRetentionSweepInterval)
 	telemetryRetentionTickerDone := make(chan struct{})
 	telemetryRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "telemetry_retention_sweep_failed")
+	// Stale journal-generation cleanup is diagnostic, not fatal: it gets its
+	// own reporter so a stranded generation is journaled without failing the
+	// retention sweep that otherwise succeeded (#3654).
+	journalGenerationCleanupErrors := newSweepErrorReporter(setup.InstanceLog, "journal_generation_cleanup_failed")
 	go func() {
 		defer close(telemetryRetentionTickerDone)
 		defer telemetryRetentionTicker.Stop()
@@ -1159,7 +1225,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case now := <-telemetryRetentionTicker.C:
 				_, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, now)
 				if err == nil {
-					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, now)
+					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, journalGenerationCleanupErrors, now)
 				}
 				telemetryRetentionErrors.report(err)
 			}

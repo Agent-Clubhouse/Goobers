@@ -14,25 +14,65 @@ import (
 	"github.com/goobers/goobers/internal/runnersolve"
 )
 
-// StagePlacements returns every task's effective placement requirement, in
-// task order. goobers supplies the referenced goober specs for harness
-// derivation (see DerivedCapabilities). Gates and parallels carry no
-// placement requirement in v1: they execute in the daemon/control plane, not
-// on a placed runner (matching the pre-3.0 admission model, which also read
-// tasks only).
+// StagePlacements returns every placeable stage's effective placement
+// requirement: every task, in task order, then every AGENTIC gate that
+// declares runsOn, in gate order (decision 001 — agentic gates are
+// placeable; the reviewer derives harness:<its goober's harness> and the
+// gaggle floor merges exactly as it does for a task). goobers supplies the
+// referenced goober specs for harness derivation (see DerivedCapabilities /
+// DerivedGateCapabilities).
+//
+// Stages that carry NO requirement and never appear here: an agentic gate
+// without runsOn (it evaluates in the daemon/control plane, byte-identical to
+// before the field existed — decision 001 ruling 8's "unpinned gate"), every
+// automated and human gate (control-plane by definition, ruling 2; runsOn on
+// one is WF023), and every parallel. Emitting a row only for a DECLARED gate
+// is what keeps ruling 5 true by construction — every placed gate carries
+// cpu/memory — and keeps a config that validated clean before this field
+// existed validating clean after it.
+//
+// Consumers key on StageRequirement.Stage (the name), never on position:
+// the run-start pin (bootstrap.PinStagePlacements) looks each row up by name
+// against the task and gate lists, and the validate/boot checkpoints report
+// by name.
 func StagePlacements(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn, goobers map[string]apiv1.GooberSpec) []runnersolve.StageRequirement {
-	requirements := make([]runnersolve.StageRequirement, 0, len(def.Spec.Tasks))
-	for _, task := range def.Spec.Tasks {
-		effective := EffectiveRunsOn(task, gaggleRunsOn)
+	stages := placeableStages(def, goobers)
+	requirements := make([]runnersolve.StageRequirement, 0, len(stages))
+	for _, stage := range stages {
+		effective := EffectiveRunsOn(stage, gaggleRunsOn)
 		requirements = append(requirements, runnersolve.StageRequirement{
-			Stage:        task.Name,
+			Stage:        stage.Name,
 			OS:           effective.OS,
 			CPU:          effective.CPU,
 			Memory:       effective.Memory,
 			Disk:         effective.Disk,
-			Capabilities: EffectiveCapabilities(task, gaggleRunsOn, goobers),
+			Capabilities: EffectiveCapabilities(stage, gaggleRunsOn),
 			Restrictions: effective.Restrictions,
 		})
 	}
 	return requirements
+}
+
+// placeableStages is the ordered list StagePlacements walks: tasks, then the
+// agentic gates that declare runsOn.
+//
+// The gate predicate is the SAME one DerivedGateCapabilities applies
+// (evaluator agentic AND an agentic: block): a gate without its reviewer
+// block derives no harness tag, and emitting a row for it would let the
+// solver place the reviewer on a harness-less runner image. Compile refuses
+// that shape first (gateRunsOnProblems, WF023); this keeps the two
+// predicates from drifting if a caller reaches here with an uncompiled
+// definition — the gate is then unplaced, never placed without a harness.
+func placeableStages(def Definition, goobers map[string]apiv1.GooberSpec) []PlacementStage {
+	stages := make([]PlacementStage, 0, len(def.Spec.Tasks)+len(def.Spec.Gates))
+	for _, task := range def.Spec.Tasks {
+		stages = append(stages, taskPlacementStage(task, goobers))
+	}
+	for _, gate := range def.Spec.Gates {
+		if gate.Evaluator != apiv1.EvaluatorAgentic || gate.Agentic == nil || gate.RunsOn == nil {
+			continue
+		}
+		stages = append(stages, gatePlacementStage(gate, goobers))
+	}
+	return stages
 }
