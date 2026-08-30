@@ -140,11 +140,13 @@ type RunInput struct {
 	// so an engine run's provenance names its kit and the parity harness can
 	// compare the two drivers' run.yaml side by side.
 	//
-	// It is provenance, NOT selection: the worker resolves the kit it
-	// actually runs from its own mounted config, so a kit rolled forward
-	// mid-flight is still observed by an in-flight run. Closing that is
-	// #3884. Empty — every input persisted before this field existed —
-	// projects exactly as before.
+	// It is also the SELECTOR every attempt of this run resolves its kit by
+	// (#3884): buildInvocation copies it onto every InvocationEnvelope, and
+	// the worker serves the attempt from the snapshot whose tree resolves
+	// this digest or refuses the attempt by name. A worker whose config tree
+	// has rolled past the pin no longer substitutes its current instructions
+	// silently. Empty — every input persisted before this field existed —
+	// is unpinned and resolves the worker's current tree exactly as before.
 	GooberDigest string `json:"gooberDigest,omitempty"`
 }
 
@@ -1078,6 +1080,7 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 		BaseBranch:      baseBranch,
 		Goal:            goal,
 		Goober:          goober,
+		GooberDigest:    in.GooberDigest,
 		RepoRef:         in.RepoRef.EnvelopeRef(),
 		Item:            in.Item,
 		ContextPointers: upstream,

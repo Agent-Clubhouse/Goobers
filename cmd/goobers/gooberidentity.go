@@ -151,13 +151,45 @@ func compiledMachinesWithGooberDigestsAndWarnings(
 	harnessCommand map[string][]string,
 	deferModelDiscovery bool,
 ) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
+	return compiledMachinesWithGooberDigests(
+		set, goobers, instructions, envPassthrough, harnessCommand, deferModelDiscovery,
+		func(gaggle string, resolved map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error) {
+			return loadGooberSkillPackages(configDir, gaggle, resolved)
+		},
+	)
+}
+
+// compiledMachinesWithGooberDigests is the digest computation both the daemon
+// and `goobers worker` run, with the ONE input that differs between them
+// injected: where a gaggle's skill packages come from.
+//
+// The daemon reads them from the config directory on disk, because the tree it
+// is compiling is the tree it is serving. The worker reads them from the
+// in-memory config snapshot the digest is being computed FOR (#3884), because
+// its comparison is "does snapshot S resolve the digest this run pinned" — and
+// a snapshot that re-read skill files from disk would answer that question
+// about whatever tree happens to be mounted right now, which is precisely the
+// staleness the pin exists to detect.
+//
+// Everything else is shared on purpose: a second copy of the compile →
+// admit → ComputeGooberDigest sequence is how the worker would start computing
+// digests the daemon never mints, turning every pinned attempt into a refusal.
+func compiledMachinesWithGooberDigests(
+	set *instance.ConfigSet,
+	goobers map[string]apiv1.GooberSpec,
+	instructions map[string]string,
+	envPassthrough []string,
+	harnessCommand map[string][]string,
+	deferModelDiscovery bool,
+	skillPackagesFor func(gaggle string, resolved map[string]apiv1.GooberSpec) (map[string][]workflow.SkillFile, error),
+) (map[localscheduler.WorkflowIdentity]*workflow.Machine, map[localscheduler.WorkflowIdentity]string, map[string]apiv1.GooberSpec, []gooberHarnessWarning, error) {
 	machines, resolvedGoobers, warnings, err := compiledMachinesWithWarnings(set, goobers, envPassthrough, harnessCommand, deferModelDiscovery)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 	gooberDigests := make(map[localscheduler.WorkflowIdentity]string, len(machines))
 	for identity, machine := range machines {
-		skillPackages, err := loadGooberSkillPackages(configDir, identity.Gaggle, resolvedGoobers)
+		skillPackages, err := skillPackagesFor(identity.Gaggle, resolvedGoobers)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}

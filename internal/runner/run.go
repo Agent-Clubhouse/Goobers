@@ -5711,6 +5711,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		BranchNamespace:      r.branchNamespaceFor(in.Gaggle),
 		BaseBranch:           baseBranch,
 		Goal:                 goal,
+		GooberDigest:         in.GooberDigest,
 		Workspace:            workspace.path,
 		RepoRef:              in.RepoRef.EnvelopeRef(),
 		AdditionalWorkspaces: additionalWorkspaces(workspace),
