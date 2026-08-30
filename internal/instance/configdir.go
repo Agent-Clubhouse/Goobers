@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -17,6 +16,7 @@ import (
 	"github.com/goobers/goobers/internal/configsource"
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/yamldoc"
 )
 
 // ErrInvalidConfig is returned by LoadConfigDir when the config directory
@@ -148,21 +148,12 @@ func LoadConfigSourceForComparison(ctx context.Context, source ConfigSource) (*C
 	return set, report, nil
 }
 
-var docSep = regexp.MustCompile(`(?m)^---\s*$`)
-
 // rawDoc is one parsed YAML document with its kind/name.
 type rawDoc struct {
 	kind string
 	name string
 	file string
 	yaml []byte
-}
-
-type docMeta struct {
-	Kind     string `json:"kind"`
-	Metadata struct {
-		Name string `json:"name"`
-	} `json:"metadata"`
 }
 
 // readDocs walks root and returns every YAML document with its kind/name.
@@ -192,18 +183,11 @@ func readDocs(root string) ([]rawDoc, error) {
 		if err != nil {
 			return err
 		}
-		for _, seg := range docSep.Split(string(raw), -1) {
-			if strings.TrimSpace(seg) == "" {
-				continue
-			}
-			var meta docMeta
-			if err := yaml.Unmarshal([]byte(seg), &meta); err != nil || meta.Kind == "" {
-				// Schema validation already reported malformed docs; skip here.
-				continue
-			}
+		parsedDocs := yamldoc.SplitDocuments(raw)
+		for _, pd := range parsedDocs {
 			rel, _ := filepath.Rel(root, path)
 			rel = filepath.ToSlash(rel)
-			docs = append(docs, rawDoc{kind: meta.Kind, name: meta.Metadata.Name, file: rel, yaml: []byte(seg)})
+			docs = append(docs, rawDoc{kind: pd.Meta.Kind, name: pd.Meta.Name, file: rel, yaml: pd.Content})
 		}
 		return nil
 	})
