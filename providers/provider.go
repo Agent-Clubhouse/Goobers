@@ -3,8 +3,14 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+)
+
+var (
+	errIssueIDRequired = errors.New("issue id is required")
+	errPullIDRequired  = errors.New("pull id is required")
 )
 
 // Provider combines repo, backlog, and trigger operations for a backend.

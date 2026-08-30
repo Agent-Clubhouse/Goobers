@@ -826,7 +826,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		return PullRequestPollResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestPollResult{}, fmt.Errorf("pull id is required")
+		return PullRequestPollResult{}, errPullIDRequired
 	}
 	prEndpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
 	if err != nil {
@@ -906,7 +906,7 @@ func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequ
 		return ClosePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return ClosePullRequestResult{}, fmt.Errorf("pull id is required")
+		return ClosePullRequestResult{}, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
 	if err != nil {
@@ -966,7 +966,7 @@ func (p *GitHubProvider) UpdateBranch(ctx context.Context, req UpdateBranchReque
 		return UpdateBranchResult{}, err
 	}
 	if req.PullID == "" {
-		return UpdateBranchResult{}, fmt.Errorf("pull id is required")
+		return UpdateBranchResult{}, errPullIDRequired
 	}
 	if req.ExpectedHeadSHA == "" {
 		return UpdateBranchResult{}, fmt.Errorf("expected head SHA is required")
@@ -1030,7 +1030,7 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 		return MergePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return MergePullRequestResult{}, fmt.Errorf("pull id is required")
+		return MergePullRequestResult{}, errPullIDRequired
 	}
 	if req.MergeMethod != "" && !req.MergeMethod.IsValid() {
 		return MergePullRequestResult{}, fmt.Errorf("unsupported merge method %q", req.MergeMethod)
@@ -1263,7 +1263,7 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 		return EnqueuePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return EnqueuePullRequestResult{}, fmt.Errorf("pull id is required")
+		return EnqueuePullRequestResult{}, errPullIDRequired
 	}
 	number, err := strconv.Atoi(req.PullID)
 	if err != nil {
@@ -1362,7 +1362,7 @@ func (p *GitHubProvider) DequeuePullRequest(ctx context.Context, req DequeuePull
 		return err
 	}
 	if req.PullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	if req.PullRequestNodeID == "" {
 		return fmt.Errorf("pull request node id is required")
@@ -1438,7 +1438,7 @@ func (p *GitHubProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQ
 		return PollMergeQueueEntryResult{}, err
 	}
 	if req.PullID == "" {
-		return PollMergeQueueEntryResult{}, fmt.Errorf("pull id is required")
+		return PollMergeQueueEntryResult{}, errPullIDRequired
 	}
 	number, err := strconv.Atoi(req.PullID)
 	if err != nil {
@@ -1521,7 +1521,7 @@ func (p *GitHubProvider) GetPullRequest(ctx context.Context, repo RepositoryRef,
 		return PullRequestSummary{}, err
 	}
 	if pullID == "" {
-		return PullRequestSummary{}, fmt.Errorf("pull id is required")
+		return PullRequestSummary{}, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID)
 	if err != nil {
@@ -1672,7 +1672,7 @@ func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRe
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "files")
 	if err != nil {
@@ -1795,7 +1795,7 @@ func (p *GitHubProvider) PullRequestMergeable(ctx context.Context, repo Reposito
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID)
 	if err != nil {
@@ -2182,7 +2182,7 @@ func (p *GitHubProvider) RequestReview(ctx context.Context, req ReviewRequest) e
 		return err
 	}
 	if req.PullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "requested_reviewers")
 	if err != nil {
@@ -2211,7 +2211,7 @@ func (p *GitHubProvider) SubmitPullRequestReview(ctx context.Context, req PullRe
 		return PullRequestReviewResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestReviewResult{}, fmt.Errorf("pull id is required")
+		return PullRequestReviewResult{}, errPullIDRequired
 	}
 	if req.CommitSHA == "" {
 		return PullRequestReviewResult{}, fmt.Errorf("commit sha is required")
@@ -2473,7 +2473,7 @@ func (p *GitHubProvider) ListWorkItemChildren(ctx context.Context, repo Reposito
 		return nil, err
 	}
 	if id == "" {
-		return nil, fmt.Errorf("issue id is required")
+		return nil, errIssueIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "sub_issues")
 	if err != nil {
@@ -2575,7 +2575,7 @@ func (p *GitHubProvider) ListWorkItemBlockers(ctx context.Context, repo Reposito
 		return nil, err
 	}
 	if id == "" {
-		return nil, fmt.Errorf("issue id is required")
+		return nil, errIssueIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "dependencies", "blocked_by")
 	if err != nil {
@@ -2604,7 +2604,7 @@ func (p *GitHubProvider) HasOpenWorkItemBlocker(ctx context.Context, repo Reposi
 		return false, err
 	}
 	if id == "" {
-		return false, fmt.Errorf("issue id is required")
+		return false, errIssueIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "dependencies", "blocked_by")
 	if err != nil {

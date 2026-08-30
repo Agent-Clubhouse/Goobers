@@ -427,7 +427,7 @@ func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.Rep
 		organization, projectName, _ = strings.Cut(project.Owner, "/")
 	}
 	for _, repo := range cfg.Repos {
-		if repo.Provider == "ado" && repo.Owner == organization && repo.Project == projectName && repo.Name == project.Name {
+		if repo.Provider == string(providers.ProviderADO) && repo.Owner == organization && repo.Project == projectName && repo.Name == project.Name {
 			return repo, true
 		}
 	}
@@ -448,7 +448,7 @@ func githubRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.
 		return instance.RepoRef{}, false
 	}
 	for _, repo := range cfg.Repos {
-		if repo.Provider == "github" && repo.Owner == project.Owner && repo.Name == project.Name {
+		if repo.Provider == string(providers.ProviderGitHub) && repo.Owner == project.Owner && repo.Name == project.Name {
 			return repo, true
 		}
 	}
@@ -534,7 +534,7 @@ func giteaRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.R
 		return instance.RepoRef{}, false
 	}
 	for _, repo := range cfg.Repos {
-		if repo.Provider == "gitea" && repo.Owner == project.Owner && repo.Name == project.Name {
+		if repo.Provider == string(providers.ProviderGitea) && repo.Owner == project.Owner && repo.Name == project.Name {
 			return repo, true
 		}
 	}

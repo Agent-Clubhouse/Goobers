@@ -31,7 +31,7 @@ const (
 // autoCompleteSetBy fields PollPullRequest's own inline GET already reads.
 func (p *ADOProvider) getPullRequestDetail(ctx context.Context, repo RepositoryRef, pullID string) (adoPullRequestDetail, error) {
 	if pullID == "" {
-		return adoPullRequestDetail{}, fmt.Errorf("pull id is required")
+		return adoPullRequestDetail{}, errPullIDRequired
 	}
 	endpoint, err := p.repoURL(repo, "pullrequests", pullID)
 	if err != nil {
@@ -119,7 +119,7 @@ func (p *ADOProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePullReq
 		return EnqueuePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return EnqueuePullRequestResult{}, fmt.Errorf("pull id is required")
+		return EnqueuePullRequestResult{}, errPullIDRequired
 	}
 	if req.MergeMethod != "" && !req.MergeMethod.IsValid() {
 		return EnqueuePullRequestResult{}, fmt.Errorf("unsupported merge method %q", req.MergeMethod)
@@ -181,7 +181,7 @@ func (p *ADOProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQueu
 		return PollMergeQueueEntryResult{}, err
 	}
 	if req.PullID == "" {
-		return PollMergeQueueEntryResult{}, fmt.Errorf("pull id is required")
+		return PollMergeQueueEntryResult{}, errPullIDRequired
 	}
 	detail, err := p.getPullRequestDetail(ctx, req.Repository, req.PullID)
 	if err != nil {
@@ -251,7 +251,7 @@ func (p *ADOProvider) MergePullRequest(ctx context.Context, req MergePullRequest
 		return MergePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return MergePullRequestResult{}, fmt.Errorf("pull id is required")
+		return MergePullRequestResult{}, errPullIDRequired
 	}
 	if req.MergeMethod != "" && !req.MergeMethod.IsValid() {
 		return MergePullRequestResult{}, fmt.Errorf("unsupported merge method %q", req.MergeMethod)

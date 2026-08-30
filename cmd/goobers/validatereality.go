@@ -937,7 +937,7 @@ func checkRepositoryReality(
 			continue
 		}
 		label := fmt.Sprintf("repos[%d] %s/%s", i, repo.Owner, repo.Name)
-		if repo.Provider != "github" {
+		if repo.Provider != string(providers.ProviderGitHub) {
 			// ADO work-item "labels" are Azure Boards tags with no cheap
 			// project-wide enumeration through the provider seam, and no
 			// other provider reaches this pass today — say so rather than

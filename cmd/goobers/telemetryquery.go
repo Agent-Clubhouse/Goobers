@@ -392,7 +392,7 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	root := providerStageRoot(pathArg)
 	queryGaggle := strings.TrimSpace(*gaggle)
 	if queryGaggle == "" {
-		queryGaggle = strings.TrimSpace(os.Getenv("GOOBERS_GAGGLE"))
+		queryGaggle = strings.TrimSpace(os.Getenv(executor.GaggleEnvVar))
 	}
 	if queryGaggle == "" && strings.TrimSpace(*workflow) != "" {
 		var err error

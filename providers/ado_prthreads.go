@@ -46,7 +46,7 @@ func (p *ADOProvider) PostPullRequestThreadComment(ctx context.Context, repo Rep
 		return Comment{}, err
 	}
 	if pullID == "" {
-		return Comment{}, fmt.Errorf("pull id is required")
+		return Comment{}, errPullIDRequired
 	}
 	endpoint, err := p.repoURL(repo, "pullrequests", pullID, "threads")
 	if err != nil {
@@ -82,7 +82,7 @@ func (p *ADOProvider) ListPullRequestThreadComments(ctx context.Context, repo Re
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	endpoint, err := p.repoURL(repo, "pullrequests", pullID, "threads")
 	if err != nil {
@@ -135,7 +135,7 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 		return err
 	}
 	if pullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	for _, name := range names {
 		if strings.TrimSpace(name) == "" {
@@ -204,7 +204,7 @@ func (p *ADOProvider) RemovePullRequestLabel(ctx context.Context, repo Repositor
 		return err
 	}
 	if pullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("label name is required")
@@ -277,7 +277,7 @@ func (p *ADOProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, pu
 		return PullRequestSummary{}, err
 	}
 	if pullID == "" {
-		return PullRequestSummary{}, fmt.Errorf("pull id is required")
+		return PullRequestSummary{}, errPullIDRequired
 	}
 	poll, err := p.PollPullRequest(ctx, PullRequestPollRequest{Repository: repo, PullID: pullID})
 	if err != nil {
