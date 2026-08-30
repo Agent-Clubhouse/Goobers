@@ -1737,17 +1737,25 @@ func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localschedul
 const memoryHighWaterEnv = "GOOBERS_MEMORY_HIGH_WATER"
 
 // daemonMemoryGate builds the cgroup-aware admission gate, or nil if it is
-// disabled. An unparseable value is not an error: the daemon must still start.
-// NewCgroupMemoryGate clamps an out-of-range fraction to its own default, so a
-// typo degrades to the built-in behaviour instead of refusing every run.
+// disabled. An unparseable value is not an error: the daemon must still start,
+// and it falls back to the built-in threshold rather than to a number that
+// would refuse every run.
+//
+// The value is parsed BEFORE the off-switch is tested, so every spelling of
+// zero ("0", "0.0", "00") disables the gate. String-matching "0" first would
+// send "0.0" down the parse path, where it succeeds as 0 and is then clamped
+// back up to the default — silently enabling the gate for an operator who was
+// trying to turn it off.
 func daemonMemoryGate() localscheduler.MemoryGate {
 	setting := strings.TrimSpace(os.Getenv(memoryHighWaterEnv))
-	if strings.EqualFold(setting, "off") || setting == "0" {
+	if strings.EqualFold(setting, "off") {
 		return nil
 	}
 	highWater, err := strconv.ParseFloat(setting, 64)
 	if setting == "" || err != nil {
 		highWater = 0 // Clamped to the package default.
+	} else if highWater == 0 {
+		return nil
 	}
 	return localscheduler.NewCgroupMemoryGate(highWater)
 }

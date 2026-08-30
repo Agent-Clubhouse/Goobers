@@ -56,11 +56,13 @@ func readCgroupV2(dir string) *Cgroup {
 	cgroup.Anon = stat["anon"]
 	cgroup.File = stat["file"]
 	// memory.events uses the same "<key> <value>" format as memory.stat.
-	// Absent keys read as zero, which is the correct reading for a kernel
-	// that does not export them.
-	events := cgroupfs.ReadKeyed(filepath.Join(dir, "memory.events"))
+	// Whether the FILE was readable is tracked separately from the values it
+	// held: an unreadable file and a genuinely idle cgroup both yield zero,
+	// and the memory gate treats those two readings very differently.
+	events, ok := cgroupfs.ReadKeyedFile(filepath.Join(dir, "memory.events"))
 	cgroup.AtLimit = events["max"]
 	cgroup.OOMKills = events["oom_kill"]
+	cgroup.AtLimitKnown = ok
 	return cgroup
 }
 
@@ -78,9 +80,10 @@ func readCgroupV1(dir string) *Cgroup {
 	// Anon and File keeps the reading generation-agnostic for every caller.
 	cgroup.Anon = stat["rss"]
 	cgroup.File = stat["cache"]
-	// v1 has no "max" equivalent, so AtLimit stays zero. It does report
-	// kills, under a different filename and alongside non-numeric lines
-	// cgroupfs.ReadKeyed skips.
+	// v1 has no "max" equivalent, so AtLimit stays zero and AtLimitKnown
+	// stays false — which is what tells the memory gate it has no pressure
+	// signal here, rather than a calm one. It does report kills, under a
+	// different filename and alongside non-numeric lines ReadKeyed skips.
 	cgroup.OOMKills = cgroupfs.ReadKeyed(filepath.Join(dir, "memory.oom_control"))["oom_kill"]
 	return cgroup
 }

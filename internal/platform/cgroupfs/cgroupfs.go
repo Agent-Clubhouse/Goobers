@@ -52,10 +52,21 @@ func ParseUint(field []byte) (uint64, bool) {
 // read: these files gain keys across kernel versions, and one unrecognized
 // line must not cost the caller the keys it did understand.
 func ReadKeyed(path string) map[string]uint64 {
+	values, _ := ReadKeyedFile(path)
+	return values
+}
+
+// ReadKeyedFile is ReadKeyed with the fact that the file could not be opened
+// at all. Most callers do not need it, because for a stat file an absent key
+// and a zero key mean the same thing. It matters where they do not: memstat's
+// at-limit counter is only exported by cgroup v2, and a caller that treats
+// "this kernel cannot tell you" as "this cgroup is idle" reports an all-clear
+// it never measured. The map is always non-nil.
+func ReadKeyedFile(path string) (map[string]uint64, bool) {
 	values := make(map[string]uint64)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return values
+		return values, false
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
@@ -69,5 +80,5 @@ func ReadKeyed(path string) map[string]uint64 {
 		}
 		values[string(key)] = value
 	}
-	return values
+	return values, true
 }

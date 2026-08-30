@@ -102,6 +102,20 @@ func TestMain(m *testing.M) {
 	}
 	copilotModelLister = testCopilotModelLister{}
 
+	// Keep the daemon suite hermetic against the machine's own memory (#3960).
+	// newDaemonScheduler wires the cgroup-aware admission gate by default, so
+	// without this every test that expects a dispatch would depend on the
+	// runner's cgroup staying below the high-water mark — and this repo's CI
+	// runs on-pod inside exactly the 10Gi cgroup that gate exists to protect,
+	// so those tests would fail precisely when the feature is working. Tests
+	// that exercise the gate itself override this with t.Setenv.
+	if _, set := os.LookupEnv(memoryHighWaterEnv); !set {
+		if err := os.Setenv(memoryHighWaterEnv, "off"); err != nil {
+			fmt.Fprintf(os.Stderr, "set %s: %v\n", memoryHighWaterEnv, err)
+			os.Exit(1)
+		}
+	}
+
 	// Deterministic stages substitute os.Executable for a bare "goobers"
 	// command. Let subprocesses launched that way exercise the real CLI
 	// dispatcher instead of handing stage arguments to testing's flag parser.
