@@ -356,6 +356,37 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	"reconcile-branches": true,
 }
 
+// stageKindsWithPodExecution names the built-in deterministic stage KINDS
+// that HAVE a pod-side execution path, so a stage declaring one is not
+// refused by StageRequiresInstanceRoot's kind arm.
+//
+// AN ALLOWLIST, NOT A DENYLIST, and that direction is the point: an
+// unrecognized kind — a newer engine dispatching a kind this binary has never
+// heard of — falls through to `true` and is refused, rather than being
+// dispatched into a pod whose dispatch-exec has no branch for it and would
+// silently run the stage's PLACEHOLDER command instead (implementation.yaml's
+// ["goobers","ci-poll"] exits nonzero; a future kind's placeholder might exit
+// 0 and surrender an empty success). Adding a kind here is therefore a
+// deliberate act taken together with the in-pod branch that runs it.
+//
+//   - KindShell is the ordinary shell-command case (kind == "" means the
+//     same); it has always run in a pod.
+//   - KindCIPoll runs in-process inside dispatch-exec (decision 005 C5,
+//     #3881): cmd/goobers/dispatchcipoll.go builds a CIPollExecutor with
+//     provider:pr:write resolved through the credential plane, exactly as
+//     every other pod stage resolves its declared capabilities. It needs no
+//     ledger, no merge lock and no on-disk journal — only a provider token —
+//     which is why it is the one kind that could leave this refusal.
+//
+// KindExternalTelemetry is deliberately ABSENT and stays refused: its
+// executor is built from the instance's connector configuration
+// (buildExternalTelemetryExecutor, cmd/goobers/runnerwiring_executors.go),
+// which lives under the instance config directory a pod does not have.
+var stageKindsWithPodExecution = map[string]bool{
+	KindShell:  true,
+	KindCIPoll: true,
+}
+
 // StageRequiresInstanceRootCode names, in a stage's failure ErrorInfo.Code,
 // a refusal driven by StageRequiresInstanceRoot — shared by the engine's
 // dispatchRemoteTask (refuses before a pod is ever created) and the
@@ -367,15 +398,15 @@ const StageRequiresInstanceRootCode = "instance_root_required"
 
 // StageRequiresInstanceRoot reports whether a stage cannot execute in a pod
 // today because it needs the daemon's instance root: either its resolved
-// stage KIND is a built-in with no pod-side execution path (ci-poll,
-// external-telemetry — in-process Go executors selected by
-// Task.Inputs["kind"], see dispatch.go; kind == "" or KindShell is the
-// ordinary shell-command case and is never refused here), or its command is
-// a goobers CLI subcommand that reads/writes the file claim ledger, a merge
-// lock, or an on-disk run journal — none of which a stage pod has (decision
-// 003 ruling 3; production-lanes-3.0 stillBroken #2).
+// stage KIND is a built-in with no pod-side execution path
+// (external-telemetry, or any kind this binary does not recognize — see
+// stageKindsWithPodExecution; kind == "", KindShell and KindCIPoll all run in
+// a pod and are never refused here), or its command is a goobers CLI
+// subcommand that reads/writes the file claim ledger, a merge lock, or an
+// on-disk run journal — none of which a stage pod has (decision 003 ruling 3;
+// production-lanes-3.0 stillBroken #2).
 //
-// DELIBERATELY one data-driven list (a package-level map plus two
+// DELIBERATELY one data-driven list (two package-level maps plus two
 // flag-gated cases), not a switch spread across call sites: decision 003's
 // later runner branch (step 6) consumes this exact function so the two
 // dispatch paths — the engine's dispatchRemoteTask and the runner's — can
@@ -384,7 +415,7 @@ const StageRequiresInstanceRootCode = "instance_root_required"
 // kind is the stage's resolved Task.Inputs["kind"]; pass "" for an ordinary
 // shell-command stage.
 func StageRequiresInstanceRoot(cmd []string, kind string) bool {
-	if kind != "" && kind != KindShell {
+	if kind != "" && !stageKindsWithPodExecution[kind] {
 		return true
 	}
 	if !StageInvokesGoobersCLI(cmd) || len(cmd) < 2 {

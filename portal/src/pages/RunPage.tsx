@@ -22,6 +22,7 @@ import {
   formatDuration,
   formatElapsed,
   formatTimestamp,
+  isFailureJournalEvent,
   isMajorJournalEvent,
   isInspectableEvidenceEvent,
   eventStage,
@@ -692,12 +693,14 @@ function EventLedger({
               run.id,
             );
             const major = isMajorJournalEvent(event);
+            const failed = isFailureJournalEvent(event);
             return (
               <li
                 className={[
                   "ledger-item",
                   major ? "ledger-item-major" : "ledger-item-supporting",
                   selected ? "ledger-item-active" : "",
+                  failed ? "ledger-item-failure" : "",
                 ]
                   .filter(Boolean)
                   .join(" ")}
@@ -706,7 +709,7 @@ function EventLedger({
               >
                 <button
                   aria-current={selected ? "true" : undefined}
-                  aria-label={`Select sequence ${event.seq}: ${eventStage(event)}. ${heading}. ${summary}`}
+                  aria-label={`Select sequence ${event.seq}: ${eventStage(event)}. ${heading}. ${summary}${failed ? " Failed." : ""}`}
                   className="run-ledger-button"
                   onClick={() => onSelect(event, true)}
                   onKeyDown={(keyboardEvent) => handleRowKeyDown(keyboardEvent, index)}
@@ -732,6 +735,12 @@ function EventLedger({
                     <strong>{heading}</strong>
                     <span>{summary}</span>
                     <span className="ledger-category">{ledgerCategoryLabel(event)}</span>
+                    {failed && (
+                      <span className="ledger-severity">
+                        <Icon name="alert" size={9} />
+                        Failed
+                      </span>
+                    )}
                     {!event.knownSchema && (
                       <span className="ledger-unknown">Unsupported schema {event.schema}</span>
                     )}

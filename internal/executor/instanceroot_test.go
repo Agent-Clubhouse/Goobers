@@ -5,8 +5,9 @@ import "testing"
 // TestStageRequiresInstanceRoot is decision 003 ruling 3's table test over
 // the one exported refusal list: every command the production-lanes-3.0
 // inventory names as ledger-touching, journal-reading, or telemetry-rollup-
-// reading, plus the two non-shell built-in kinds, must be refused; every
-// read-only or unrelated command must not.
+// reading, plus every built-in kind WITHOUT a pod-side execution path, must
+// be refused; every read-only or unrelated command — and, since #3881, the
+// ci-poll kind that now has one — must not.
 func TestStageRequiresInstanceRoot(t *testing.T) {
 	cases := []struct {
 		name string
@@ -14,11 +15,27 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		kind string
 		want bool
 	}{
-		// --- kind-based refusals: Run.Kind != shell ---
-		{name: "ci-poll kind", cmd: []string{"goobers", "ci-poll"}, kind: "ci-poll", want: true},
+		// --- kind-based refusals: an unrecognized kind has no pod-side path ---
+		// ci-poll LEFT this list (decision 005 C5, #3881): dispatch-exec runs
+		// executor.CIPollExecutor in-process in the pod
+		// (cmd/goobers/dispatchcipoll.go) with provider:pr:write resolved from
+		// the credential plane, so the kind no longer needs the daemon's
+		// instance root. external-telemetry stays: its executor is built from
+		// the instance's connector configuration, which lives under a config
+		// directory a stage pod does not have.
+		{name: "ci-poll kind runs in a pod", cmd: []string{"goobers", "ci-poll"}, kind: "ci-poll", want: false},
 		{name: "external-telemetry kind", cmd: []string{"goobers", "external-telemetry"}, kind: "external-telemetry", want: true},
+		// The allowlist direction, stated as a test: a kind this binary has
+		// never heard of (a newer engine dispatching to an older pod image) is
+		// refused rather than dispatched into a pod that would silently run the
+		// stage's placeholder command instead of the kind.
+		{name: "an unrecognized kind is refused", cmd: []string{"goobers", "some-future-kind"}, kind: "some-future-kind", want: true},
 		{name: "explicit shell kind falls through to command", cmd: []string{"goobers", "push-branch"}, kind: "shell", want: false},
 		{name: "empty kind falls through to command", cmd: []string{"make", "ci"}, kind: "", want: false},
+		// Kind admission does not launder the COMMAND check: a ci-poll kind
+		// declared over a ledger-touching command is still refused, so the
+		// allowlist cannot become a way to smuggle one past the list below.
+		{name: "ci-poll kind over a ledger command is still refused", cmd: []string{"goobers", "merge-pr"}, kind: "ci-poll", want: true},
 
 		// --- STILL REFUSED: a direct instance-root file no plane serves ---
 		// Each of these names the specific file in shell.go's map comment.

@@ -1173,20 +1173,33 @@ func buildRuntimeRunner(
 		return finalizeTerminalRunWithClaimMarkers(l, instanceLog, manager, runID, claimMarkerRepo, releaseClaimMarker)
 	}
 	runnerCfg.RateLimited = buildRateLimitedHandler(providerQuota)
-	if terminalNotifier != nil {
-		circuitBreaker := runnerCfg.NotifyTerminal
-		runnerCfg.NotifyTerminal = func(runID string, phase journal.RunPhase, finalState string) error {
-			if circuitBreaker != nil {
-				_ = circuitBreaker(runID, phase, finalState)
-			}
-			return terminalNotifier(runID, phase, finalState)
-		}
-	}
+	runnerCfg.NotifyTerminal = composeTerminalNotifier(runnerCfg.NotifyTerminal, terminalNotifier)
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, nil, err
 	}
 	return rn, manager, nil
+}
+
+// composeTerminalNotifier chains the instance circuit breaker ahead of the
+// terminal notifier and joins both errors instead of discarding the breaker's
+// (#3646). A failed park — the streak update or the goobers:ready →
+// goobers:needs-human swap — is exactly the failure the run journal has to
+// record as terminal_notification_failed, so it must reach the runner rather
+// than being swallowed at this wiring boundary. Both hooks always run: a
+// breaker failure must not suppress the terminal notification.
+func composeTerminalNotifier(circuitBreaker, terminalNotifier runner.TerminalNotifier) runner.TerminalNotifier {
+	if circuitBreaker == nil {
+		return terminalNotifier
+	}
+	if terminalNotifier == nil {
+		return circuitBreaker
+	}
+	return func(runID string, phase journal.RunPhase, finalState string) error {
+		breakerErr := circuitBreaker(runID, phase, finalState)
+		notifyErr := terminalNotifier(runID, phase, finalState)
+		return errors.Join(breakerErr, notifyErr)
+	}
 }
 
 func configuredGaggleNames(set *instance.ConfigSet) []string {

@@ -143,6 +143,36 @@ const (
 	// (#562)" (plan item E2): "<stage>.<key>" resolves against ANY completed
 	// stage's outputs on a DSL version that supports it.
 	rowInputsFromStageQualified parityRow = "E2-inputsfrom-stage-qualified"
+	// rowNonRetryableEscalation is inventory row "#415 non-retryable
+	// escalation bypass" (plan item E2): a failure with retryable=false and a
+	// recognized escalate code routes to the Next gate's ESCALATE CONTROL
+	// BRANCH without evaluating the gate.
+	rowNonRetryableEscalation parityRow = "E2-nonretryable-escalation"
+	// rowNonRetryableEscalationDefault is the same inventory row's default
+	// arm: with no escalate control branch on the Next gate, the same failure
+	// ends the run at @escalate rather than entering the repass loop.
+	rowNonRetryableEscalationDefault parityRow = "E2-nonretryable-escalation-default"
+	// rowRetryableFailureStillGated is the NEGATIVE half of the same row: a
+	// RETRYABLE failure carrying the very same escalate code must still route
+	// into the Next gate. It is what forbids a port that escalates on the code
+	// alone.
+	rowRetryableFailureStillGated parityRow = "E2-retryable-failure-still-gated"
+	// rowUnrecognizedFailureStillGated is the other negative half: a
+	// NON-retryable failure carrying a code the escalate set does not name
+	// must also still route into the Next gate. It forbids a port keyed on
+	// error.retryable alone.
+	rowUnrecognizedFailureStillGated parityRow = "E2-unrecognized-failure-still-gated"
+	// rowRetryDecisionAnnotation is inventory row "retry-decision annotation"
+	// (plan item E2): a fail branch re-entering a completed stage leaves the
+	// runner.annotation priorRepassCause reads back (E6).
+	rowRetryDecisionAnnotation parityRow = "E2-retry-decision-annotation"
+	// rowRetryDecisionNotOnPass is the negative half of the annotation row: a
+	// PASSING gate, and an escalated repass, write no retry decision.
+	rowRetryDecisionNotOnPass parityRow = "E2-retry-decision-not-on-pass"
+	// rowPlacementProvenance is inventory row "runner.placement provenance"
+	// (plan item E3, #3875): every stage attempt journals where it physically
+	// executed, on both runners, once the deployment has declared placement.
+	rowPlacementProvenance parityRow = "E3-placement-provenance"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
@@ -155,13 +185,13 @@ const (
 //
 // Do not add an entry to silence a regression. An entry is only legitimate for
 // a row the parity inventory names as a known, planned gap.
-var parityExpectedFailures = map[parityRow]string{
-	rowRunResultNoWork: "engine.RunResult has no NoWork field (engine.go:131-141); the local runner sets " +
-		"Result.NoWork = steps == 1 (run.go:3606) and localscheduler's idle backoff reads it. Closed by plan item E2.",
-	rowInputsFromStageQualified: "engine runTask resolves inputsFrom only against the immediately preceding task's " +
-		"Outputs (engine.go:555-561); the local runner resolves \"<stage>.<key>\" against any completed stage " +
-		"(internal/runner/inputsfrom.go:78-89) when workflow.SupportsStageQualifiedInputs holds. Closed by plan item E2.",
-}
+// The list is EMPTY as of plan item E2: E1 closed the backlog-query defaulting
+// row (#3873) and E2 closed the NoWork and stage-qualified inputsFrom rows
+// (#3874). An empty list is the strongest state this harness can be in — every
+// registered row is now green on both runners — and it is not a licence to stop
+// adding rows. A gap the inventory names but no row pins is still a gap; see
+// the drift ledger in doc.go for divergences observed but not yet inventoried.
+var parityExpectedFailures = map[parityRow]string{}
 
 // --- case registration ------------------------------------------------------
 

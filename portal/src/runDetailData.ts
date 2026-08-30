@@ -477,6 +477,22 @@ export function isMajorJournalEvent(event: RunEvent): boolean {
   );
 }
 
+// isFailureJournalEvent flags the events an operator scanning the ledger
+// needs to notice first: an explicit error record, a stage attempt that
+// failed or was blocked, or a phase/escalation marker. Reuses the same
+// status/type vocabulary runFailure and keyMomentKind already read off
+// RunEvent, so "what counts as a failure" stays defined in one place.
+export function isFailureJournalEvent(event: RunEvent): boolean {
+  return (
+    event.type === "error" ||
+    event.status === "failure" ||
+    event.status === "blocked" ||
+    event.status === "failed" ||
+    event.status === "escalated" ||
+    event.escalated === true
+  );
+}
+
 export function evidenceDecision(
   events: RunEvent[],
   evidence: RunEvent,

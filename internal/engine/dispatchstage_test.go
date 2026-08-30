@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/providers"
 )
 
 // fakeStageDispatcher is a scripted StageDispatcher: it records every
@@ -672,20 +673,27 @@ func TestModeThreeDispatchesTheClaimingBacklogQuery(t *testing.T) {
 	}
 }
 
-// The kind-based half of the same refusal: a placed `inputs.kind: ci-poll`
-// stage has no pod-side execution path at all (no CLI subcommand backs it —
-// dispatch.go's TaskExecutor routes it in-process only) and must be refused
-// exactly like a ledger command, never dispatched to find out.
+// The kind-based half of the same refusal: a placed
+// `inputs.kind: external-telemetry` stage has no pod-side execution path at
+// all (no CLI subcommand backs it, and its executor is constructed from the
+// instance's connector configuration, which a pod has no config directory to
+// read) and must be refused exactly like a ledger command, never dispatched
+// to find out.
+//
+// ci-poll was this test's subject until #3881 and deliberately is not any
+// more: it now HAS a pod-side path (cmd/goobers/dispatchcipoll.go), and
+// TestModeThreeDispatchesCIPollToAPod below is the ablation that pins the
+// removal. external-telemetry keeps the kind arm of the refusal honest.
 func TestModeThreeRefusesInstanceRootKindBeforeDispatch(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
 		Start:    "await-ci",
 		Tasks: []apiv1.Task{
-			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "await CI",
-				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}, Workspace: apiv1.WorkspaceScratch},
-				Inputs:       map[string]string{"kind": "ci-poll"},
-				Capabilities: []string{"provider:pr:write"}},
+			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "publish telemetry",
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "external-telemetry"}, Workspace: apiv1.WorkspaceScratch},
+				Inputs:       map[string]string{"kind": "external-telemetry"},
+				Capabilities: []string{"telemetry:read"}},
 		},
 	}
 	in := runInput("mode-three-instance-root-kind", spec)
@@ -709,11 +717,70 @@ func TestModeThreeRefusesInstanceRootKindBeforeDispatch(t *testing.T) {
 	if result.FailureCode != executor.StageRequiresInstanceRootCode {
 		t.Fatalf("failure code = %q, want %q", result.FailureCode, executor.StageRequiresInstanceRootCode)
 	}
-	if !strings.Contains(result.FailureMessage, "ci-poll") {
+	if !strings.Contains(result.FailureMessage, "external-telemetry") {
 		t.Fatalf("failure message = %q, want it to name the refused kind", result.FailureMessage)
 	}
 	if fake.calls.Load() != 0 {
-		t.Fatal("a kind=ci-poll stage must never reach the dispatcher")
+		t.Fatal("a kind=external-telemetry stage must never reach the dispatcher")
+	}
+}
+
+// TestModeThreeDispatchesCIPollToAPod is #3881's engine-side ablation and
+// the exact inverse of the test above: the SHIPPED ci-poll shape — the
+// implementation lane's await-ci stage, `command: [goobers, ci-poll]` with
+// `inputs.kind: ci-poll` and `capabilities: [provider:pr:write]` — placed on
+// a remote queue must now reach the dispatcher and be executed in the pod,
+// not refused before one is created.
+//
+// This is the whole point of decision 005 step C5: ci-poll was the last
+// gate-shaped stage in the implementation lane that pinned the run to the
+// daemon's own host, so with it dispatchable the lane can be placed entirely
+// off-self. If StageRequiresInstanceRoot ever re-adds ci-poll, this fails
+// while the refusal test above still passes, which is what makes the pair
+// meaningful.
+func TestModeThreeDispatchesCIPollToAPod(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "await-ci",
+		Tasks: []apiv1.Task{
+			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "await CI",
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}, Workspace: apiv1.WorkspaceScratch},
+				Inputs:       map[string]string{"kind": "ci-poll", "prNumber": "42"},
+				Capabilities: []string{"provider:pr:write"}},
+		},
+	}
+	in := runInput("mode-three-ci-poll-dispatches", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "await-ci", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "await-ci", 1, dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Outputs: map[string]interface{}{executor.OutputCIStatus: string(providers.CheckStatePassing), executor.OutputPRNumber: "42"},
+	}})
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var result RunResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.FailureCode == executor.StageRequiresInstanceRootCode {
+		t.Fatalf("ci-poll was refused before dispatch (%q: %s) — #3881 gives it an in-pod path", result.FailureCode, result.FailureMessage)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, want %q (failure: %s %s)", result.Status, StatusCompleted, result.FailureCode, result.FailureMessage)
+	}
+	if fake.calls.Load() != 1 {
+		t.Fatalf("dispatcher calls = %d, want 1 — a placed ci-poll stage must be dispatched to a pod", fake.calls.Load())
 	}
 }
 
@@ -731,7 +798,7 @@ func TestModeThreeRefusesInstanceRootKindBeforeDispatch(t *testing.T) {
 // with no pod-side path at run time. dispatchRemoteTask must read the
 // resolved value out of env.Inputs (which runTask overlays from inputsFrom
 // before routing), not the task's static Inputs alone — otherwise a
-// dynamically-resolved ci-poll/external-telemetry kind sails past this
+// dynamically-resolved external-telemetry kind sails past this
 // guard, a pod is created, and only the pod-entrypoint backstop catches it.
 func TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
@@ -754,7 +821,7 @@ func TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch(t *testing.T) {
 	}}
 	det := &capturingDeterministic{result: apiv1.ResultEnvelope{
 		Status:  apiv1.ResultSuccess,
-		Outputs: map[string]interface{}{"resolvedKind": "ci-poll"},
+		Outputs: map[string]interface{}{"resolvedKind": "external-telemetry"},
 	}}
 	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
 
@@ -772,11 +839,11 @@ func TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch(t *testing.T) {
 	if result.FailureCode != executor.StageRequiresInstanceRootCode {
 		t.Fatalf("failure code = %q, want %q (a kind resolved dynamically via inputsFrom must be refused exactly like a statically-declared one)", result.FailureCode, executor.StageRequiresInstanceRootCode)
 	}
-	if !strings.Contains(result.FailureMessage, "ci-poll") {
+	if !strings.Contains(result.FailureMessage, "external-telemetry") {
 		t.Fatalf("failure message = %q, want it to name the dynamically-resolved kind", result.FailureMessage)
 	}
 	if fake.calls.Load() != 0 {
-		t.Fatal("a dynamically-resolved kind=ci-poll stage must never reach the dispatcher")
+		t.Fatal("a dynamically-resolved kind=external-telemetry stage must never reach the dispatcher")
 	}
 }
 
