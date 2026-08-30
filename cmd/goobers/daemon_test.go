@@ -1597,3 +1597,52 @@ func pollUntilRunTerminal(t *testing.T, runDir string, cancel context.CancelFunc
 		<-stopped
 	}
 }
+
+func TestDaemonMemoryGateHonoursItsEnvironmentOverride(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setting string
+		wantNil bool
+	}{
+		"unset uses the default":      {setting: "", wantNil: false},
+		"explicit fraction":           {setting: "0.75", wantNil: false},
+		"off disables the gate":       {setting: "off", wantNil: true},
+		"OFF is case-insensitive":     {setting: "OFF", wantNil: true},
+		"zero disables the gate":      {setting: "0", wantNil: true},
+		"surrounding space tolerated": {setting: "  off  ", wantNil: true},
+		// A typo must not stop the daemon booting, and must not refuse every
+		// run either — it falls back to the built-in threshold.
+		"unparseable falls back": {setting: "nine tenths", wantNil: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(memoryHighWaterEnv, tc.setting)
+			gate := daemonMemoryGate()
+			if tc.wantNil && gate != nil {
+				t.Fatalf("daemonMemoryGate() = %v, want nil for %q", gate, tc.setting)
+			}
+			if !tc.wantNil && gate == nil {
+				t.Fatalf("daemonMemoryGate() = nil, want a gate for %q", tc.setting)
+			}
+		})
+	}
+}
+
+// The default gate must be constructible and callable wherever the daemon
+// boots. This asserts the invariant rather than the verdict: whether a
+// container is above its high-water mark depends on the machine, but a
+// refusal must always carry the measurement that justified it.
+// localscheduler's own tests cover the threshold arithmetic against fixed
+// readings.
+func TestDaemonMemoryGateIsSafeToConsultAnywhere(t *testing.T) {
+	t.Setenv(memoryHighWaterEnv, "")
+	gate := daemonMemoryGate()
+	if gate == nil {
+		t.Fatal("daemonMemoryGate() = nil, want a gate by default")
+	}
+	pressured, detail := gate.UnderPressure()
+	if !pressured && detail != "" {
+		t.Fatalf("detail = %q, want empty when admitting", detail)
+	}
+	if pressured && detail == "" {
+		t.Fatal("a refusal carried no measurement to justify it")
+	}
+}

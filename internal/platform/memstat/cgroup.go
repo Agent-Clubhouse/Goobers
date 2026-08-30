@@ -54,6 +54,12 @@ func readCgroupV2(dir string) *Cgroup {
 	stat := readKeyedFile(filepath.Join(dir, "memory.stat"))
 	cgroup.Anon = stat["anon"]
 	cgroup.File = stat["file"]
+	// memory.events uses the same "<key> <value>" format as memory.stat.
+	// Absent keys read as zero, which is the correct reading for a kernel
+	// that does not export them.
+	events := readKeyedFile(filepath.Join(dir, "memory.events"))
+	cgroup.AtLimit = events["max"]
+	cgroup.OOMKills = events["oom_kill"]
 	return cgroup
 }
 
@@ -71,6 +77,10 @@ func readCgroupV1(dir string) *Cgroup {
 	// Anon and File keeps the reading generation-agnostic for every caller.
 	cgroup.Anon = stat["rss"]
 	cgroup.File = stat["cache"]
+	// v1 has no "max" equivalent, so AtLimit stays zero. It does report
+	// kills, under a different filename and alongside non-numeric lines
+	// readKeyedFile skips.
+	cgroup.OOMKills = readKeyedFile(filepath.Join(dir, "memory.oom_control"))["oom_kill"]
 	return cgroup
 }
 
