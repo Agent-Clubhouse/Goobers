@@ -80,11 +80,33 @@ Every field is optional, including the whole block (D3). Semantics per field:
 - **`capabilities`** — the open toolchain tag set, exact-string set membership against the
   matched runner's `provides.capabilities`, unchanged grammar
   (`internal/runnercap/runnercap.go` tokenPattern). Not a place for `os=*` tokens: CAP004
-  rejects them (D12).
+  rejects them (D12). Exactly one token is product-interpreted — **`privilege=windows-admin`**
+  (#3619, `runnercap.CapabilityWindowsAdmin`): the stage needs the Windows container's
+  administrator identity. It is a claim about what the substrate *offers*, not an isolation
+  effect, so it is a capability and the closed restriction list is unchanged. Rules: legal only
+  when the stage's effective `os` is `windows` (declared on the stage or by the gaggle floor —
+  refused, never defaulted, anywhere else); places only on a runner whose
+  `provides.capabilities` claims it (ordinary exact-match solve); the dispatcher stamps
+  `windowsOptions.runAsUserName: ContainerAdministrator` on that pod and only that pod. Every
+  other Windows stage pod is stamped `ContainerUser` explicitly — a class that *provides* the
+  privilege still runs a stage that did not *require* it as `ContainerUser`, and a stage that
+  requires it on a class that lacks it is refused at dispatch. Spelled with `=` because the
+  colon namespace is reserved for derived tags an author cannot declare. **On a 2.0 document
+  the token is refused outright** — in a task's `requiredCapabilities` and in the gaggle-level
+  set — by the router, the same arm that refuses `runsOn` there: `requiredCapabilities` has no
+  OS and no coherence rule, so the frozen interpreter must never match it (PO-D0). The
+  refusal is asserted at compile and again on the solver input (`StagePlacements`), so
+  validate's checkpoint solve and the run-start pin cannot reach `ContainerAdministrator`
+  through the 2.0 surface either. Every other token stays an opaque tag on 2.0.
 - **`restrictions`** — a stage may *require* a restricted runner (PO-D7: v1 closed list
   `network:none`, `network:allowlist`, `fs:readonly-except-workspace`, `tmp:ephemeral`,
   `env:default-deny`). Unknown token = error with suggestion (CAP005, the CAP002 idiom).
   Effects, never mechanisms. The enforcement design is the restrictions companion doc.
+  **OS-conditional (restrictions doc D4, #3619):** a stage whose effective `os` is `windows`
+  may require only `tmp:ephemeral` and `env:default-deny` — the effects Windows can bind;
+  `network:none`, `network:allowlist` and `fs:readonly-except-workspace` on a Windows-placed
+  stage are refused at validate (CAP005), on a Windows runner entry at instance load, and at
+  pod render, all through one predicate (`runnercap.DeclarableOnWindows`).
 
 **Gaggle level.** `gaggle.spec.requiredCapabilities` migrates to a gaggle-level `runsOn`
 carrying `os`, `capabilities`, and `restrictions` only (no quantities). It merges into
@@ -115,6 +137,64 @@ at all and lose nothing:
 Derived requirements merge with declared ones by union; a declaration can add to a derived
 set but never subtract from it. Credentials remain strictly capability-gated: nothing is
 materialized without a declared credential capability, derived or not.
+
+**Gates (Goobernetes-E2E-Core decision 001, #3798).** Placement is a *stage* property, and
+an agentic gate is a stage: `gates[].runsOn` carries the identical block a task carries —
+`os`, `cpu`/`memory`/`disk`, `capabilities`, `restrictions` — with the identical gaggle-floor
+merge, and the reviewer derives `harness:<its goober's harness>` by the same rule an agentic
+task does. Three rules are gate-specific:
+
+- **Only agentic gates are placeable.** An automated gate is a pure function over its inputs
+  and a human gate pauses for a portal decision; both evaluate in the daemon/control plane by
+  definition, so `runsOn` on either is a compile error (WF023), never a silently ignored block.
+- **A placed gate declares `cpu` and `memory`.** The gaggle floor deliberately carries no
+  quantities, and an agentic review is the most expensive stage class in a lane; inheriting the
+  floor's capabilities with no envelope would be a silent under-provision. A gate `runsOn`
+  without both is a compile error (WF023), not a default — default-to-self was rejected because
+  it makes "did my gate place?" invisible in the yaml.
+- **An agentic gate without `runsOn` is unplaced.** It contributes no solver row, receives no
+  pin, and evaluates in the control plane byte-for-byte as before the field existed; `goobers
+  fix --to 3.0` never invents one. A placed gate inherits its subject's repo state (no
+  `repoFrom` on gates in this ruling — a #3767 follow-up if a branching shape ever needs it),
+  and there is no `goober.spec.runsOn`: a goober is shared by tasks and gates across
+  workflows, so inheriting placement from it would make one goober place differently
+  depending on who names it.
+
+The solver input (`v30.StagePlacements`) lists every task in task order, then every placed
+agentic gate in gate order; every consumer keys on the stage *name* (the run-start pin,
+`bootstrap.PinStagePlacements`, looks each row up against the task and gate lists and never
+by position — a gate is never ledger-touching). Parallels remain control-plane. The frozen
+2.0 interpreter refuses `gates[].runsOn` through the router, exactly as it refuses the task
+field.
+
+**The engine honours a gate placement** (decision 001 rulings 7–8). `engine.evaluateGate`
+reads the gate's pin exactly as `runTask` reads a task's: a gate pinned to a non-self runner
+dispatches `ActDispatchStage` on its pinned per-(gaggle × runner-type) queue with
+`Review=true` (`dispatchRemoteGate`), and the reviewer evaluates in a dispatcher-created
+pod on that runner — the pod's agentic kit carries `mode: review`, the pod checks the
+repository out in the gate's declared workspace (`agentic.workspace`, default `repo`) with
+the subject's workspace delta applied, computes the reviewer diff **itself** (`git diff
+<base>...HEAD`, journaled as `<gate>/reviewer-diff.patch` and handed to the reviewer as the
+`<gate>.diff` pointer — the #301 "runner-produced, never model-reported" property on the pod
+path), drives the goober in the harness's review mode, and surrenders a `verdict`. The
+engine re-validates what comes back — an empty decision or a verdict the shared verdict
+schema rejects fails the attempt closed, a surrendered workspace delta is refused (a
+reviewer never publishes) — and then journals `gate.evaluated`, the verdict artifact and
+the `<gate>.verdict` pointer exactly as the in-process arm does. A pod that could not start
+(credential, checkout, context, image) is retried on a fresh pod under the gate's evaluator
+retry bound; a harness or verdict failure fails the run, as `ReviewGoober` does. The
+reviewer pod mints `agent:model` from the run's pinned gate-goober map and its checkout
+credential through the same implicit checkout capability tasks use — no second credential
+path.
+
+A gate placement **self satisfies pins self** (`LedgerTouching=false`) and evaluates
+in-process exactly as ruling 8's unpinned arm, with the arguments it always had. A
+**daemon-scheduled** run still drives through `internal/runner`, which has no gate dispatch
+arm and will not get one: decision 005 makes the engine walk the single driver for every
+trigger kind, so a scheduled run reaches this arm when the scheduler's `Starter` delegates
+to the engine registry. Until then, checkpoint 3 (§5) refuses a gate placement self cannot
+satisfy exactly as for a task (`workflow.refused`, `ReasonPlacementUnsatisfiable`) —
+deliberately, because the daemon cannot honour the declared restrictions in-process either.
 
 ---
 
@@ -149,7 +229,13 @@ runners:
       memory: 8Gi
       disk: 60Gi
       capabilities: [dotnet@8]
-    # no restrictions: Windows runners are un-restrictable in v1 (restrictions doc D4)
+    restrictions: [tmp:ephemeral]   # Windows may declare only tmp:ephemeral / env:default-deny (restrictions doc D4)
+  - name: win-admin
+    host: ghcr.io/example/win-runner:v0.7.0
+    provides:
+      os: windows
+      capabilities: [dotnet@8, privilege=windows-admin]   # stages REQUIRING it run as ContainerAdministrator (#3619)
+    restrictions: [tmp:ephemeral]
 engine:
   hostPort: temporal.goobers-system:7233       # optional connection config, unchanged
 ```
@@ -165,7 +251,10 @@ engine:
   connection config exactly as shipped (`internal/instance/config.go:88-92`).
 - **`provides`** quantities are ceilings (→ limits); `provides.capabilities` is the claim
   set matched exactly. **Claims are trusted in v1** (D10): a false claim degrades to a
-  runtime error with a named diagnostic, never a silent misroute.
+  runtime error with a named diagnostic, never a silent misroute. One claim is
+  product-interpreted and load-validated: `privilege=windows-admin` (#3619) is accepted only on
+  a `provides.os: windows` entry — it names the `ContainerAdministrator` identity the
+  dispatcher stamps for a stage that requires it — and is refused on any other OS.
 - **`provides.shell`/`provides.harnesses`** are how a non-self runner satisfies the
   derived requirements above (#3513): trusted claims (D10) in the same sense as
   `provides.capabilities`, but a separate, closed, typed surface — the derived
@@ -313,9 +402,18 @@ blocks (`api/validate/validate.go:39-209`; severity strictly error|warning; the
 | RNR002 | Error | Runner has a non-self `host` but the instance declares no `engine:` |
 | RNR003 | Error iff `runners:` declared; else Warning | A stage quantity minimum exceeds every runner's declared ceiling |
 | RNR004 | Warning (always) | Local mode: resource minimums advisory — the `self` ceiling cannot cover a stage minimum |
+| RNR005 | Warning (always) | A 3.0 stage's resolved eligible runner set excludes every self entry, but its command or built-in kind needs the daemon's instance root (decision 003 ruling 3) |
+| RNR006 | Warning (always), **strict-neutral** | A `runners:` entry declares `provides.os: windows` without `provides.windows.avExclusionsVerified: true` — whether the directories Goobers writes then reads on it are excluded from real-time antivirus scanning is undeclared or declared false (#3480; advisory, trusted like every `provides:` claim — DI-11; `goobers doctor --av-exclusions` produces the answer). Excluded from `--strict`'s promotion alongside DVL020, against DI-10's general rule for config-shape findings: it lands on configs nobody edited, and since declaring `false` does not silence it, promotion would leave `true` as the only way to get green — CI pressure to assert an unearned trusted claim |
 | CAP004 | Error | An `os=*` token appears anywhere in a 3.0 document (D12) |
-| CAP005 | Error | Unknown restriction token, with did-you-mean suggestion |
+| CAP005 | Error | Unknown restriction token, with did-you-mean suggestion; or a restriction a `windows`-placed stage cannot require (`network:none`, `network:allowlist`, `fs:readonly-except-workspace` — restrictions doc D4, #3619) |
 | WF022 | Error | Undeclared repo-handoff chain (§4) |
+| WF023 | Error | `runsOn` on a non-agentic gate, an agentic gate `runsOn` without `cpu` and `memory`, or one without an `agentic:` block naming its reviewer (§2 Gates, decision 001) |
+| WF024 | retired | Was "gate placement declared but not honoured" while decision 001's engine half was unlanded; the engine honours gate placement now (§2 Gates) and the code is not reused |
+
+The structural `runsOn` problems (invalid os enum, malformed quantity, gaggle-vs-stage OS
+conflict) report under WF010 like the other admission findings; so does the
+`privilege=windows-admin` coherence rule (#3619) — a stage or floor requiring the token whose
+effective `os` is not `windows`.
 
 CAP003 keeps its shipped meaning for 2.0 documents on inventory-less instances (frozen
 interpreter, frozen severity). `instance.yaml`'s own untyped fail-first errors

@@ -21,7 +21,9 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // dispatchexec.go is the mode-3 in-pod stage runtime (#3699): the process a
@@ -80,7 +82,21 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	}
 
 	client := &dispatcher.SurrenderPutClient{BaseURL: daemonAPI, Token: podToken}
-	envelope := runDeclaredStage(ctx, stdout, stderr)
+
+	// #3480: a Windows stage pod says once, in its OWN log, whether the
+	// workspace, temp and profile it is about to write-then-read are
+	// excluded from real-time scanning — the far-side evidence for the
+	// advisory, readable with `kubectl logs` after the fact. Printed before
+	// the stage so it precedes any git error the race would otherwise
+	// surface as. Advisory: bounded by avexclusion.StagePodQueryTimeout (the
+	// pod pays this probe on every stage attempt, so its bound is tighter
+	// than the daemon's), never fails the stage, silent off Windows.
+	if line := stagePodAVExclusionAdvisory(ctx, realStagePodAVExclusionDeps(), os.Getwd, os.Getenv); line != "" {
+		pf(stderr, "dispatch-exec: %s\n", line)
+	}
+
+	outcome := runStage(ctx, stdout, stderr)
+	envelope := outcome.Result
 
 	// Carry whatever this stage committed to the next one (#3763). This pod is
 	// about to be disposed, so a commit that does not leave here does not exist
@@ -93,8 +109,13 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// A publish failure converts the stage to a FAILURE. The commits exist and
 	// nothing else will carry them, so surrendering success here would strand
 	// exactly the diff this mechanism protects — the silent shape #3763 is about.
-	var delta string
-	if envelope.Status == apiv1.ResultSuccess {
+	//
+	// NEVER for a review (decision 001 ruling 7): a reviewer returns a verdict
+	// and must not commit — the self arm's ReviewGoober publishes nothing —
+	// so a review pod's writable checkout is not bundled, and the engine
+	// refuses a review surrender that carries a delta anyway.
+	var delta publishedWorkspaceDelta
+	if envelope.Status == apiv1.ResultSuccess && outcome.Verdict == nil {
 		published, derr := publishWorkspaceDelta(ctx, ".", stderr)
 		if derr != nil {
 			pf(stderr, "dispatch-exec: %v\n", derr)
@@ -107,7 +128,11 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 			delta = published
 		}
 	}
-	data, err := json.Marshal(dispatcher.SurrenderedResult{Result: envelope, WorkspaceDelta: delta})
+	data, err := json.Marshal(dispatcher.SurrenderedResult{
+		Result: envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
+		WorkspaceDeltaUnchanged: delta.Unchanged,
+		Verdict:                 outcome.Verdict,
+	})
 	if err != nil {
 		pf(stderr, "dispatch-exec: marshal surrendered result: %v\n", err)
 		return 1
@@ -122,18 +147,42 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// stageOutcome is what one pod stage produced and owes the surrender plane:
+// its ResultEnvelope and, for an agentic stage dispatched in review mode
+// (agentickit.ModeReview), the reviewer's Verdict. Verdict is nil for every
+// deterministic stage and every invoke-mode agentic stage.
+type stageOutcome struct {
+	Result  apiv1.ResultEnvelope
+	Verdict *apiv1.Verdict
+}
+
+// runStage executes whatever this pod was dispatched to run. An AGENTIC stage
+// has no declared command: it executes by invoking a goober through its
+// harness, using the kit the dispatcher published. The kit digest is what
+// distinguishes the two, and it is stamped only for agentic attempts.
+func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
+	if strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest)) != "" {
+		return runAgenticStage(ctx, stdout, stderr)
+	}
+	return stageOutcome{Result: runDeclaredStage(ctx, stdout, stderr)}
+}
+
 // runDeclaredStage builds and runs the pinned Command/Script, and always
 // returns a ResultEnvelope — success, failure, or an infra-shaped failure
 // for a malformed declaration — never an error, because the caller's only
 // job past this point is to surrender whatever envelope comes back.
 func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.ResultEnvelope {
-	// An AGENTIC stage has no declared command: it executes by invoking a
-	// goober through its harness, using the kit the dispatcher published. The
-	// kit digest is what distinguishes the two, and it is stamped only for
-	// agentic attempts.
-	if strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest)) != "" {
-		return runAgenticStage(ctx, stdout, stderr)
-	}
+	// THE INVARIANT THAT MAKES THE REST OF THIS FUNCTION SAFE, stated because
+	// it is currently enforced by an ABSENCE and an absence is invisible to the
+	// next change: only the agentic branch (runStage) materializes this stage's
+	// ContextPointers (dispatchcontext.go). A deterministic stage does not need
+	// it because internal/executor never resolves them — `grep -rn
+	// ContextPointers internal/executor/ internal/dispatcher/` returns nothing,
+	// so a declared command's inputs reach it as env and argv, not as journal
+	// paths. IF A DETERMINISTIC KIND EVER STARTS CONSUMING ContextPointers, it
+	// inherits #3823's half-B bug exactly — an unresolvable pointer against a
+	// staging root nothing filled — and the fix is to call materializePodContext
+	// here too, against the root that consumer reads.
 
 	run := apiv1.DeterministicRun{Script: os.Getenv(dispatcher.EnvStageScript)}
 	if encoded := os.Getenv(dispatcher.EnvStageCommand); encoded != "" {
@@ -146,6 +195,26 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		return failureEnvelope("stage_declaration_invalid", err.Error())
 	}
 	defer cleanup()
+
+	// Decision 003 ruling 3, pod-entrypoint backstop: the engine's
+	// dispatchRemoteTask already refuses a stage that needs the daemon's
+	// instance root before ever creating a pod (a ledger-touching or
+	// journal-reading goobers CLI command, or a built-in stage kind with no
+	// pod-side execution path). This re-asserts the identical refusal HERE,
+	// at the one point in the tree where every substrate skew — an older
+	// engine image dispatching to a newer worker, a hand-built attempt —
+	// would actually surface, rather than trusting that the workflow-side
+	// check happened. Gated on GOOBERS_INSTANCE_ROOT being unset (always
+	// true in a pod today, since the dispatcher never stamps it) rather than
+	// "this is a pod": once a plane client lands and a pod gets a scoped
+	// root, this stops firing on its own, no dispatchexec.go change needed.
+	if executor.StageRequiresInstanceRoot(argv, os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) &&
+		strings.TrimSpace(os.Getenv(executor.InstanceRootEnvVar)) == "" {
+		return failureEnvelope(executor.StageRequiresInstanceRootCode, fmt.Sprintf(
+			"stage command %v requires the daemon's instance root (%s is unset in this pod); this should have been refused before dispatch",
+			argv, executor.InstanceRootEnvVar,
+		))
+	}
 
 	timeout := dispatcher.DefaultStageTimeout
 	if declared, err := time.ParseDuration(os.Getenv(dispatcher.EnvStageTimeout)); err == nil && declared > 0 {
@@ -183,6 +252,26 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		return failureEnvelope("credential_resolve_failed", checkoutErr.Error())
 	}
 	if err := checkoutRepoWorkspace(ctx, ".", stderr, append(append([]dispatcher.MintedCredential{}, creds...), checkoutCreds...)); err != nil {
+		// A genuine syncBase base-merge conflict is classified exactly as the
+		// self arms classify it (#813, internal/engine/activities.go's
+		// RunDeterministic and internal/runner/run.go): a business failure
+		// `failure-class` routes into remediation, not a dispatch error that
+		// burns the implementation repass budget re-deriving the same
+		// rejected diff. Checked BEFORE the generic fail-closed branch below,
+		// which would otherwise swallow it as workspace_provision_failed/
+		// non-retryable and misroute the run regardless of placement.
+		var conflict *worktree.BaseSyncConflictError
+		if errors.As(err, &conflict) {
+			return apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
+				Error: &apiv1.ErrorInfo{
+					Code:      runner.BaseSyncConflictErrorCode,
+					Message:   err.Error(),
+					Retryable: true,
+				},
+			}
+		}
 		// Fail closed and NAME the workspace: a stage whose repo never arrived
 		// would otherwise run against an empty directory and fail somewhere far
 		// away — a missing Makefile, a missing test file — with an error that
@@ -676,8 +765,14 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 		names = append(names, name)
 	}
 	sort.Strings(names) // deterministic op order; the daemon assigns sequence
+	// nil when this pod has no blob endpoint (the pre-blob-plane deployment
+	// shape); one client for the whole batch.
+	blobs := podBlobClient()
+	putCtx, cancelPut := stageBlobWriteThroughContext(ctx, blobs)
+	defer cancelPut()
 	ops := make([]livejournal.Op, 0, len(names))
 	pointers := make([]apiv1.ArtifactPointer, 0, len(names))
+	var putFailures []string
 	for _, name := range names {
 		data := streams[name]
 		if len(data) == 0 {
@@ -696,6 +791,9 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 				MediaType: "text/plain",
 				Integrity: apiv1.IntegrityDerived,
 			})
+			if putErr := putStageArtifactBlob(putCtx, stderr, blobs, name, ref.Digest, data); putErr != nil {
+				putFailures = append(putFailures, fmt.Sprintf("%s (%s, %d bytes): %v", name, ref.Digest, len(data), putErr))
+			}
 		}
 		ops = append(ops, livejournal.Op{
 			Kind: livejournal.OpArtifact,
@@ -712,6 +810,40 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 			},
 		})
 	}
+	// A DROPPED WRITE-THROUGH MUST LEAVE A DURABLE RECORD, on the producing
+	// stage, in the plane that is still up.
+	//
+	// Without this the only signal is the stderr line above, and that stream is
+	// the POD PROCESS's own — not the captured stderr.log artifact, which is
+	// the stage command's — so it reaches no journal and dies with the pod at
+	// disposal. The operator's first symptom would then be a DIFFERENT stage on
+	// a DIFFERENT pod refusing with errContextBlobMissing and naming a digest
+	// whose producer is already gone. Half B's fail-closed makes that a hard
+	// stop rather than a degraded run, which is exactly why the evidence has to
+	// outlive the pod that has it.
+	//
+	// It rides the journal plane precisely BECAUSE the blob plane is the thing
+	// that just failed; the two are different endpoints, and the journal one
+	// must be up regardless or the stage cannot surrender at all. Emitted as an
+	// artifact rather than a stage failure: the stage's own result is still
+	// authoritative (the write-through is best-effort by design), and this is a
+	// measurement of the data plane, not a business outcome.
+	if len(putFailures) > 0 {
+		sort.Strings(putFailures)
+		body := "stage " + stage + " attempt " + strconv.Itoa(attempt) +
+			": the blob plane did not accept these artifacts, so a downstream stage that needs them will refuse with \"upstream context artifact is not in the blob plane\"\n" +
+			strings.Join(putFailures, "\n") + "\n"
+		ops = append(ops, livejournal.Op{
+			Kind: livejournal.OpArtifact,
+			Key:  stage + "/" + blobWriteThroughFailureArtifact,
+			Artifact: &livejournal.ArtifactOp{
+				Stage:   stage,
+				Attempt: attempt,
+				Name:    stage + "/" + blobWriteThroughFailureArtifact,
+				Data:    []byte(body),
+			},
+		})
+	}
 	if len(ops) == 0 {
 		return nil
 	}
@@ -724,4 +856,89 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 		_, _ = fmt.Fprintf(stderr, "dispatch-exec: record stage artifacts: %v\n", err)
 	}
 	return pointers
+}
+
+// putStageArtifactBlob write-throughs ONE pod-produced artifact to the blob
+// plane under the digest its pointer was derived from (#3823, half A).
+//
+// This is the pod's half of the distributed data plane's WRITE side, and until
+// it existed there was no such half. A pod-produced artifact reached the run
+// through the journal plane alone (the OpArtifact above), which stores it in the
+// daemon's journal — not in the blob store. The fleet's FETCH side
+// (workerhost.MaterializeContext) reads the blob store by digest, so an artifact
+// a pod produced was unreachable to every later stage that ran anywhere else:
+// the pointer named a digest the store had never been told about. A
+// worker-executed stage has had this write-through since the beginning
+// (internal/workerhost/artifacts.go StagingArtifacts.record, which Puts to the
+// same store), so this closes an asymmetry rather than inventing a mechanism.
+//
+// Same digest, same bytes, by construction: the caller hands in the exact slice
+// journal.ArtifactRef derived the ref from (already scrubbed), so what the
+// pointer names and what the store holds cannot diverge.
+//
+// BEST EFFORT, matching the journal emit beside it: the stage has already
+// produced its result, and a blob plane that is down must not convert a
+// completed stage into a failure. The failure it does cause is on the READ side
+// — a later stage that needs this artifact fails closed with a named error
+// (materializePodContext) rather than running without it — which is the right
+// place for it, because that stage is the one that actually needs the bytes.
+func putStageArtifactBlob(ctx context.Context, stderr io.Writer, blobs *dispatcher.BlobClient, name, digest string, data []byte) error {
+	if blobs == nil || digest == "" || len(data) == 0 {
+		return nil
+	}
+	if err := blobs.Put(ctx, digest, data); err != nil {
+		_, _ = fmt.Fprintf(stderr, "dispatch-exec: publish artifact %s (%s, %d bytes) to the blob plane: %v\n", name, digest, len(data), err)
+		return err
+	}
+	return nil
+}
+
+// blobWriteThroughFailureArtifact is the name recordStageArtifacts journals a
+// dropped write-through under. Named as a constant because it is the string an
+// operator greps for and the string the test asserts on.
+const blobWriteThroughFailureArtifact = "blob-write-through.errors"
+
+// blobWriteThroughBudget bounds the WHOLE batch of blob PUTs a single
+// recordStageArtifacts call makes.
+//
+// ONE BUDGET FOR THE BATCH, not one per artifact, because the per-artifact
+// default is dispatcher.BlobClient's 60s (internal/dispatcher/blob.go) and the
+// batch is not bounded to two: on the agentic path every span routes through
+// RecordSpanWithSchema -> RecordArtifact -> recordStageArtifacts. Serial 60s
+// stalls after the stage has already finished are how a pod that has done its
+// work fails to surrender for minutes and gets reclaimed by the disposal gate
+// as an infrastructure fault. A REFUSING endpoint is instant (connection
+// refused); a DROPPING one — the NetworkPolicy shape this change's own evidence
+// plan tells operators to look for — is what needs the ceiling. Generous for
+// the payload (stream artifacts are capped at 32 KiB by boundedCapture, and a
+// span transcript by DefaultMaxTranscriptBytes) and far below anything that
+// would look like a hung pod.
+//
+// A var, not a const, so the CEILING ITSELF is testable in bounded time (#3805):
+// a hanging plane is the one failure mode this budget exists for, and a test
+// that had to wait the real 15s to observe it would never be written.
+var blobWriteThroughBudget = 15 * time.Second
+
+// stageBlobWriteThroughContext returns the context the write-through PUTs run
+// under, and it is DELIBERATELY NOT THE STAGE'S.
+//
+// The caller's ctx is the pod process's signal context (runDispatchExec ->
+// signals.SetupSignalContext). On SIGTERM — pod deletion, eviction, node drain,
+// the disposal gate — that context is already cancelled, so every Put would
+// fail instantly with "context canceled" while the derived pointers still ride
+// the surrendered envelope: the pointer names a digest the blob store was never
+// told about, which is verbatim the half-A defect this change exists to remove.
+// The surrender PUT two frames up already takes this position for the same
+// reason ("the stage's own timeout must not also truncate the PUT that reports
+// its outcome"), and the agentic path is already immune because
+// podArtifactRecorder.RecordArtifact passes context.Background().
+//
+// context.WithoutCancel keeps the caller's values while dropping its
+// cancellation, so a deadline of our own is the only thing that can stop these
+// PUTs.
+func stageBlobWriteThroughContext(ctx context.Context, blobs *dispatcher.BlobClient) (context.Context, context.CancelFunc) {
+	if blobs == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), blobWriteThroughBudget)
 }

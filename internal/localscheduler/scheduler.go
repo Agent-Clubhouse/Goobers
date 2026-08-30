@@ -209,6 +209,17 @@ type Scheduler struct {
 	afterTick         func(context.Context)
 	heartbeatInterval time.Duration
 	refreshHeartbeat  func(time.Time) error
+	// onPollProgress, if set, is called after every individual
+	// provider-backed demand poll Tick issues while holding tickMu (#3806) —
+	// not just once when Tick itself returns. A tick with several due
+	// polls, each bounded only by demandPollTimeout (45s), can otherwise
+	// leave refreshHeartbeat's once-per-Run staleness window open for
+	// several minutes: long enough for a liveness probe reading that
+	// heartbeat to kill a busy-but-healthy daemon mid-tick. Unlike
+	// refreshHeartbeat, this callback MUST be cheap and non-blocking — it
+	// is called from inside the tickMu-held critical section once per poll,
+	// so it must never itself touch disk or a provider.
+	onPollProgress    func(time.Time)
 	writeTriggerState func(string, map[WorkflowIdentity]time.Time) error
 	// stateOwner is the M5 generation/ownership guard for the shared state
 	// files this scheduler rewrites (stateguard.go): a second daemon against
@@ -329,6 +340,20 @@ func WithTickHeartbeat(interval time.Duration, refresh func(time.Time) error) Op
 	return func(s *Scheduler) {
 		s.heartbeatInterval = interval
 		s.refreshHeartbeat = refresh
+	}
+}
+
+// WithPollHeartbeat registers a callback fired after every individual
+// provider-backed demand poll Tick issues, in addition to (not instead of)
+// WithTickHeartbeat's once-per-Run refresh (#3806). mark must be cheap and
+// non-blocking: it runs inside Tick's tickMu-held critical section, once per
+// due poll, specifically so an in-memory liveness signal can stay fresh
+// across a tick with several slow (up to demandPollTimeout) polls — a
+// once-per-Run refresh alone cannot bound that window. nil (the default)
+// installs no callback.
+func WithPollHeartbeat(mark func(time.Time)) Option {
+	return func(s *Scheduler) {
+		s.onPollProgress = mark
 	}
 }
 
@@ -1458,10 +1483,12 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 			if decision.Allowed > 0 {
 				pollCtx := WithProviderPollBudget(ctx, decision)
 				s.applyDemandCount(poll, s.pollDemand(pollCtx, entry, poll))
+				s.markPollProgress()
 				continue
 			}
 			if guarded, ok := poll.counter.(ProviderQuotaGuardedBacklogCounter); ok && guarded.ProviderQuotaGuarded() {
 				s.applyDemandCount(poll, s.pollDemand(ctx, entry, poll))
+				s.markPollProgress()
 				continue
 			}
 			s.applyDemandCount(poll, 0)
@@ -1639,6 +1666,16 @@ func (s *Scheduler) persistScheduleDemand(identity WorkflowIdentity, outstanding
 		},
 	})
 	return false
+}
+
+// markPollProgress fires the optional WithPollHeartbeat callback after a
+// provider-backed poll completes. Called from inside Tick's tickMu-held
+// section (#3806), so onPollProgress itself must be cheap/non-blocking —
+// see its doc comment on the Scheduler struct.
+func (s *Scheduler) markPollProgress() {
+	if s.onPollProgress != nil {
+		s.onPollProgress(s.now())
+	}
 }
 
 func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll demandPoll) int {

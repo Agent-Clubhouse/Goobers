@@ -181,11 +181,20 @@ scheme, or has never compacted, needs no migration.
 A reader that resolved a path before a compaction advances the pointer keeps
 reading that exact file, undisturbed, forever — Windows has nothing to object
 to, since nobody ever touches that path again. Stale generations are cleaned
-up opportunistically: each compaction removes the generation two behind the
-one it just created (`cleanupStaleInstanceEventsGeneration`), keeping at most
-the current and immediately-previous generation on disk — enough for a reader
-that resolved the pointer moments before it advanced to still find what it
-expected. A caller outside this package that needs the current file's own
+up after the pointer advances: each compaction sweeps *every* generation
+present on disk that is older than the one behind current
+(`cleanupStaleInstanceEventsGenerations`), keeping at most the current and
+immediately-previous generation — enough for a reader that resolved the
+pointer moments before it advanced to still find what it expected. Sweeping
+the whole directory, rather than only the single generation that just fell
+out of the window, means a transient removal failure (sharing violation,
+permission denied) no longer strands that generation forever: the next
+compaction comes back for it. Removal failures are reported on
+`InstanceEventsCompaction.StaleGenerationCleanupErr` (alongside
+`StaleGenerationsRemoved`) instead of being swallowed, and are deliberately
+not fatal — the compaction that recorded new data still succeeds, since a
+stranded generation only wastes disk. A caller outside this package that
+needs the current file's own
 path (e.g. a freshness/dead-man-switch health check reading its mtime) uses
 the exported `InstanceEventsPath`, never a hardcoded `events.jsonl` join.
 

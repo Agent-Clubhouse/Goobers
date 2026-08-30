@@ -183,8 +183,18 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				WorkflowVersion: in.Version,
 				WorkflowDigest:  m.Digest(),
 				Gaggle:          in.Gaggle,
-				RunControls:     &runControls,
-				Trigger:         journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
+				// Every run this workflow journals is, by construction, driven
+				// by the engine. The daemon reads it back from run.yaml to
+				// keep its resume scan, stall sweep and operator paths off a
+				// run it does not own (decision 003, Phase-0 hygiene). It is
+				// pinned here — in the workflow, as deterministic state —
+				// rather than stamped by the projection writer, so the live
+				// journal plane's OpenHeader carries it from the very first
+				// emit and a run is never briefly indistinguishable from a
+				// runner-driven one.
+				Driver:      journal.DriverEngine,
+				RunControls: &runControls,
+				Trigger:     journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
 			},
 			Item:                   in.Item,
 			Graph:                  graph,
@@ -418,13 +428,27 @@ func (r *runJournal) gatePaused(ctx workflow.Context, gate string) {
 	r.append(ctx, journal.Event{Type: journal.EventGatePaused, Gate: gate})
 }
 
-// gateStarted mirrors internal/gate's recordStart durable pre-dispatch marker.
-func (r *runJournal) gateStarted(ctx workflow.Context, gate string, repassAttempt int) {
-	r.append(ctx, journal.Event{
+// gateStarted mirrors internal/gate's recordStart durable pre-dispatch
+// marker. podAttempt is the pod dispatch this marker precedes — the gate's
+// gateDispatches ordinal (gatePodAttempt; see gates.go for the two counters'
+// full contract) that the dispatch arm's evaluateWithInfraRetry call is about
+// to claim — and 0 for the self arm, which never dispatches a pod. Passed 0
+// rather than the eventual attempt count on an infra retry: this marker is
+// journaled once, before the retry loop starts, so it can only attribute the
+// FIRST pod attempt an evaluation will try; a retry's own later attempt
+// number is visible on the surrendered result and the pod it names, not
+// re-journaled here. The key is omitted from Runner rather than journaled as
+// 0, so a self-arm gate.started reads exactly as it always has.
+func (r *runJournal) gateStarted(ctx workflow.Context, gate string, repassAttempt, podAttempt int) {
+	ev := journal.Event{
 		Type:   journal.EventGateStarted,
 		Gate:   gate,
 		Runner: map[string]any{"repassAttempt": repassAttempt},
-	})
+	}
+	if podAttempt > 0 {
+		ev.Runner["podAttempt"] = podAttempt
+	}
+	r.append(ctx, ev)
 }
 
 // evaluatorRetry mirrors internal/gate's recordEvaluatorRetry (#765).
@@ -499,6 +523,18 @@ func (r *runJournal) runFailedCause(ctx workflow.Context, stage, code, message s
 		Type: journal.EventError, Stage: stage,
 		Error: &journal.ErrorDetail{Code: "run_failed", Message: journaled},
 	})
+}
+
+// runCanceledCause is the run_failed cause text for a cancelled run. The
+// cancellation error itself is Temporal vocabulary ("canceled"), so the cause
+// names the event in the run's own terms and keeps the underlying error for
+// the operator who has to tell an external `temporal workflow cancel` apart
+// from the daemon's stall sweep.
+func runCanceledCause(err error) string {
+	if err == nil {
+		return "run canceled on the engine"
+	}
+	return "run canceled on the engine: " + err.Error()
 }
 
 // runFinished closes the projection with the terminal phase, mapped to the

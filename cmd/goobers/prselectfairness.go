@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/localscheduler"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/providers"
 )
@@ -110,21 +110,29 @@ func observePRSelectEligibility(
 ) (prSelectEligibilityObservation, error) {
 	l := layoutFor(root)
 	path := filepath.Join(l.SchedulerDir(), prSelectFairnessFileName)
+	ledger, err := openStageClaimLedger(l)
+	if err != nil {
+		return prSelectEligibilityObservation{}, fmt.Errorf("open claim ledger: %w", err)
+	}
 	var observation prSelectEligibilityObservation
-	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), "pr-select.fairness-observe", func() error {
+	err = ledger.Locked(claimContext(), "pr-select.fairness-observe", func(tx claimsclient.Ledger) error {
 		state, err := readPRSelectFairnessFile(path)
 		if err != nil {
 			return err
 		}
-		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
-		if err != nil {
-			return fmt.Errorf("open claim ledger: %w", err)
-		}
 		scope := prSelectFairnessScope(repo)
 		gaggle := providerGaggle()
 		currentRunID := os.Getenv("GOOBERS_RUN_ID")
+		claims, err := pullRequestClaimListing(tx, gaggle, repo.Provider)
+		if err != nil {
+			return err
+		}
+		held, err := tx.ForRunAll(claimContext(), currentRunID)
+		if err != nil {
+			return fmt.Errorf("read this run's claims: %w", err)
+		}
 		observation.CurrentRunHasLiveClaim = currentRunHasLivePullRequestClaim(
-			ledger, gaggle, repo.Provider, currentRunID, now,
+			held, gaggle, repo.Provider, currentRunID, now,
 		)
 		observedNumbers := make(map[int]bool, len(observed))
 		for _, pr := range observed {
@@ -149,7 +157,7 @@ func observePRSelectEligibility(
 		observation.EligibleSince = make(map[int]time.Time, len(eligible))
 		for _, pr := range eligible {
 			claimed, ownedByCurrentRun := pullRequestClaimStatus(
-				ledger, gaggle, repo.Provider, pr.Number, currentRunID, now,
+				claims, gaggle, repo.Provider, pr.Number, currentRunID, now,
 			)
 			if claimed {
 				if ownedByCurrentRun {
@@ -179,8 +187,30 @@ func observePRSelectEligibility(
 	return observation, err
 }
 
+// pullRequestClaimListing is the one namespace read the PR claim-status
+// filters consult: the gaggle's own repository-provider namespace (its
+// legacy unscoped entries included, which the ledger holds exclusive against
+// every scoped claimant), or the legacy namespace alone when the stage runs
+// ungaggled. provider must be the claiming PR's own repository provider
+// (#3649) — a hardcoded provider would silently narrow the listing to a
+// different provider's namespace and hide another provider's live claims.
+func pullRequestClaimListing(ledger claimsclient.Ledger, gaggle string, provider providers.ProviderKind) (claimsclient.Listing, error) {
+	providerNamespace := ""
+	if gaggle != "" {
+		providerNamespace = string(provider)
+	}
+	claims, err := ledger.ListNamespace(claimContext(), gaggle, providerNamespace)
+	if err != nil {
+		return claimsclient.Listing{}, fmt.Errorf("read PR claims: %w", err)
+	}
+	return claims, nil
+}
+
+// currentRunHasLivePullRequestClaim reports whether held — the current
+// run's claims (Ledger.ForRunAll) — carries a live PR lease in gaggle's
+// namespace.
 func currentRunHasLivePullRequestClaim(
-	ledger *localscheduler.ClaimLedger,
+	held []claimsclient.Entry,
 	gaggle string,
 	provider providers.ProviderKind,
 	currentRunID string,
@@ -189,7 +219,7 @@ func currentRunHasLivePullRequestClaim(
 	if currentRunID == "" {
 		return false
 	}
-	for _, entry := range ledger.ForRunAll(currentRunID) {
+	for _, entry := range held {
 		if !entry.ExpiresAt.After(now) || !strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
 			continue
 		}
@@ -201,7 +231,7 @@ func currentRunHasLivePullRequestClaim(
 }
 
 func pullRequestClaimStatus(
-	ledger *localscheduler.ClaimLedger,
+	claims claimsclient.Listing,
 	gaggle string,
 	provider providers.ProviderKind,
 	number int,
@@ -209,20 +239,16 @@ func pullRequestClaimStatus(
 	now time.Time,
 ) (claimed, ownedByCurrentRun bool) {
 	var (
-		entry localscheduler.ClaimEntry
+		entry claimsclient.Entry
 		ok    bool
 	)
 	if gaggle == "" {
-		entry, ok = ledger.Lookup(pullRequestClaimKey(number))
+		entry, ok = claims.Lookup(claimsclient.Key{ExternalID: pullRequestClaimKey(number)})
 	} else {
-		if legacy, held := ledger.Lookup(pullRequestClaimKey(number)); held && legacy.ExpiresAt.After(now) {
+		if legacy, held := claims.Lookup(claimsclient.Key{ExternalID: pullRequestClaimKey(number)}); held && legacy.ExpiresAt.After(now) {
 			return true, false
 		}
-		entry, ok = ledger.LookupScoped(localscheduler.ClaimKey{
-			Gaggle:     gaggle,
-			Provider:   string(provider),
-			ExternalID: pullRequestClaimKey(number),
-		})
+		entry, ok = claims.Lookup(pullRequestClaimLedgerKey(gaggle, provider, number))
 	}
 	if !ok || !entry.ExpiresAt.After(now) {
 		return false, false

@@ -508,6 +508,19 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 			http.StatusInternalServerError, "run_identity_mismatch", "run identity does not match its runtime scope", nil,
 		)
 	}
+	// Every intervention this service performs — approve, override, rerun,
+	// deny — either calls Runner.Resume/ResumeFromTerminal or appends to the
+	// run's journal directly. All four are wrong for a run the engine drives:
+	// the runner resolved below has never executed a stage of it, and its
+	// journal has a live writer on the other side of a Temporal workflow.
+	// Refusing here, at the one place every entry point resolves through,
+	// keeps the answer from depending on which verb the operator reached for.
+	if identity.EngineDriven() {
+		return resolvedInterventionRun{}, interventionConflict(
+			"run_engine_driven",
+			engineDrivenRefusal(identity.RunID, "an operator intervention").Error(),
+		)
+	}
 	key := localscheduler.WorkflowIdentity{Gaggle: identity.Gaggle, Workflow: identity.Workflow}
 	machine := definitions.machines[key]
 	if machine == nil {

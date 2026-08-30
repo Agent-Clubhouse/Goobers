@@ -198,8 +198,8 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	candidates := nonBlocked
 	var behindBase func(providers.PullRequestSummary) (bool, error)
 	if !hasPinnedCandidate {
-		nonBlocked, err = filterClaimAvailablePullRequests(
-			layoutFor(root).SchedulerDir(), providerGaggle(), repo.Provider, os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
+		nonBlocked, err = stageClaimAvailablePullRequests(
+			root, repo, os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
 		)
 		if err != nil {
 			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
@@ -532,8 +532,8 @@ func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, st
 
 	candidates := nonBlocked
 	if !hasPinnedCandidate {
-		nonBlocked, err = filterClaimAvailablePullRequests(
-			layoutFor(root).SchedulerDir(), providerGaggle(), repo.Provider, os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
+		nonBlocked, err = stageClaimAvailablePullRequests(
+			root, repo, os.Getenv("GOOBERS_RUN_ID"), nonBlocked, time.Now(),
 		)
 		if err != nil {
 			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)

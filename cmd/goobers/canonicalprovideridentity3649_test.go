@@ -67,10 +67,22 @@ func TestPullRequestClaimIsScopedToRepositoryProvider(t *testing.T) {
 	}
 
 	now := time.Now()
-	if claimedPR, _ := pullRequestClaimStatus(ledger, "goobers", providers.ProviderADO, 77, "ado-run", now); !claimedPR {
+	claimsLedger, err := fileClaimLedger(layoutFor(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adoClaims, err := pullRequestClaimListing(claimsLedger, "goobers", providers.ProviderADO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimedPR, _ := pullRequestClaimStatus(adoClaims, "goobers", providers.ProviderADO, 77, "ado-run", now); !claimedPR {
 		t.Fatal("ADO claim on PR #77 is invisible to the claim reader that must honor it")
 	}
-	if _, owned := pullRequestClaimStatus(ledger, "goobers", providers.ProviderGitHub, 77, "ado-run", now); owned {
+	githubClaims, err := pullRequestClaimListing(claimsLedger, "goobers", providers.ProviderGitHub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, owned := pullRequestClaimStatus(githubClaims, "goobers", providers.ProviderGitHub, 77, "ado-run", now); owned {
 		t.Fatal("GitHub PR #77 claim is attributed to the ADO run")
 	}
 }

@@ -2,8 +2,10 @@ package schemas
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -200,6 +202,8 @@ runners:
     host: win-runner-pool
     provides:
       os: windows
+      windows:
+        avExclusionsVerified: true
 engine:
   hostPort: temporal.goobers-system:7233
 `},
@@ -239,6 +243,20 @@ sandbox:
   agentic: enforced
 workcopies:
   partialClone: true
+`},
+		{"telemetry otlp tls trusted collector (#3804)", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+telemetry:
+  enabled: true
+  otlp:
+    endpoint: goobers-collector.goobers-system.svc.cluster.local:4317
+    tls:
+      caFile: /etc/goobers/otlp-ca.crt
+      serverName: goobers-collector.goobers-system.svc.cluster.local
+      certFile: /etc/goobers/otlp-client.crt
+      keyFile: /etc/goobers/otlp-client.key
 `},
 	}
 	for _, test := range tests {
@@ -285,6 +303,36 @@ repos: []
 engine:
   hostPort: temporal.internal
 `, "hostPort"},
+		{"windows claim block without its one claim", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+schemaVersion: 2
+repos: []
+runners:
+  - name: win
+    host: win-runner-pool
+    provides:
+      os: windows
+      windows: {}
+engine:
+  hostPort: temporal.goobers-system:7233
+`, "avExclusionsVerified"},
+		{"windows claim block with a misspelled claim", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+schemaVersion: 2
+repos: []
+runners:
+  - name: win
+    host: win-runner-pool
+    provides:
+      os: windows
+      windows:
+        avExclusionsVerified: true
+        defenderExcluded: true
+engine:
+  hostPort: temporal.goobers-system:7233
+`, "defenderExcluded"},
 		{"ado repo without project", `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance
@@ -441,6 +489,25 @@ runners:
     host: self
     restrictions: [network:proxy]
 `, "enum"},
+		{"otlp insecure true against a non-loopback endpoint (#3804 if/then)", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+telemetry:
+  otlp:
+    endpoint: goobers-collector.goobers-system:4317
+    insecure: true
+`, "pattern"},
+		{"otlp tls block with an unknown property", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+telemetry:
+  otlp:
+    endpoint: collector.example.com:4317
+    tls:
+      trustAll: true
+`, "additionalProperties"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -453,6 +520,79 @@ runners:
 			}
 		})
 	}
+}
+
+// TestInstanceSchemaOTLPInsecureLoopbackShapes is the belt-and-braces half of
+// #3804: goobers validate (internal/instance.OTLPConfig.Validate,
+// TestLoadConfigRejectsInsecureNonLoopbackOTLP) is the actual enforcement,
+// but the published schema now encodes the same insecure -> loopback rule
+// via if/then so an editor or `goobers schema instance` catches the mistake
+// before a load ever runs. This pins that every shape the Go validator
+// accepts for insecure:true is also accepted here, and the shape it always
+// rejected is rejected here too.
+func TestInstanceSchemaOTLPInsecureLoopbackShapes(t *testing.T) {
+	schema := compileInstanceSchema(t)
+
+	accepted := []string{
+		"http://127.0.0.1:4317",
+		"127.0.0.1:4317",
+		"http://localhost:4317",
+		"localhost:4317",
+		"http://LOCALHOST:4317",
+		// Bracketed IPv6 loopback spellings net.IP.IsLoopback() (and so
+		// isLoopbackHost) accepts but the earlier ::1-only alternative did
+		// not: the schema's if/then is belt-and-braces documentation of the
+		// Go rule, not a second enforcement boundary, so it must not be
+		// stricter than the validator it is describing.
+		"[0:0:0:0:0:0:0:1]:4317",
+		"http://[0:0:0:0:0:0:0:1]:4317",
+		"[::ffff:127.0.0.1]:4317",
+	}
+	for _, endpoint := range accepted {
+		t.Run("accepts "+endpoint, func(t *testing.T) {
+			// Double-quoted: some endpoints (bracketed IPv6) start with "["
+			// or contain ":", which YAML would otherwise parse as a flow
+			// sequence/mapping indicator rather than plain scalar text.
+			document := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\ntelemetry:\n  otlp:\n    endpoint: \"" + endpoint + "\"\n    insecure: true\n"
+			if err := validateInstanceYAML(t, schema, document); err != nil {
+				t.Fatalf("loopback insecure endpoint %q was rejected: %v", endpoint, err)
+			}
+		})
+	}
+
+	rejected := []string{
+		"http://goobers-collector.goobers-system:4317",
+		"goobers-collector.goobers-system:4317",
+		"http://collector.example.com:4317",
+	}
+	for _, endpoint := range rejected {
+		t.Run("rejects "+endpoint, func(t *testing.T) {
+			// Double-quoted: some endpoints (bracketed IPv6) start with "["
+			// or contain ":", which YAML would otherwise parse as a flow
+			// sequence/mapping indicator rather than plain scalar text.
+			document := "apiVersion: goobers.dev/v1alpha1\nkind: Instance\nrepos: []\ntelemetry:\n  otlp:\n    endpoint: \"" + endpoint + "\"\n    insecure: true\n"
+			if err := validateInstanceYAML(t, schema, document); err == nil {
+				t.Fatalf("non-loopback insecure endpoint %q was accepted", endpoint)
+			}
+		})
+	}
+
+	// insecure absent (or false) leaves the endpoint unconstrained by this
+	// rule — a remote TLS endpoint with no insecure key is the documented
+	// default shape and must not trip the loopback pattern.
+	t.Run("insecure absent leaves remote endpoint unconstrained", func(t *testing.T) {
+		document := `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos: []
+telemetry:
+  otlp:
+    endpoint: collector.example.com:4317
+`
+		if err := validateInstanceYAML(t, schema, document); err != nil {
+			t.Fatalf("remote TLS endpoint with insecure absent was rejected: %v", err)
+		}
+	})
 }
 
 // The cold-start walkthroughs read instance.yaml guidance out of scattered
@@ -478,6 +618,65 @@ func TestInstanceSchemaDescriptionsCarryTheColdStartTraps(t *testing.T) {
 	} {
 		if !strings.Contains(document, want) {
 			t.Errorf("instance schema no longer documents %q", want)
+		}
+	}
+}
+
+// TestSchemaPatternsAreECMA262Portable guards against a Go-only regex
+// construct silently breaking every non-Go consumer of these schemas. JSON
+// Schema 2020-12 §6.4 mandates the ECMA-262 regex dialect for "pattern",
+// which has no inline-flag group ((?i), (?s), (?i:...), and friends) — that
+// syntax compiles only under Go's RE2 (via santhosh-tekuri/jsonschema in
+// this test suite), so a pattern using it would pass every test here while
+// making ajv, Python's jsonschema/check-jsonschema, and the VS Code YAML
+// extension reject the WHOLE schema document — not just the rule that used
+// it (#3804 review: instance.schema.json:833 shipped exactly this once).
+func TestSchemaPatternsAreECMA262Portable(t *testing.T) {
+	// Matches an inline-flag group: (?i), (?is), (?i:...), etc. Deliberately
+	// does NOT match the ECMA-262-legal constructs that also start "(?" —
+	// non-capturing (?:, lookahead (?=/(?!, lookbehind (?<=/(?<!, and named
+	// groups (?<name> — those are all followed by ":", "=", "!", or "<",
+	// while an inline-flag group is always followed by a bare regex-flag
+	// letter (i, s, m, U, ...).
+	inlineFlagGroup := regexp.MustCompile(`\(\?[A-Za-z]`)
+	for _, file := range Files() {
+		raw, err := FS.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		var doc any
+		if err := yaml.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("decode %s: %v", file, err)
+		}
+		walkSchemaPatterns(doc, "$", func(path, pattern string) {
+			if inlineFlagGroup.MatchString(pattern) {
+				t.Errorf("%s: pattern %q at %s uses a Go-only inline-flag group — "+
+					"not valid ECMA-262 (the dialect JSON Schema 2020-12 mandates) and "+
+					"will not compile in ajv/python jsonschema/etc; spell case-"+
+					"insensitivity out as character classes instead, e.g. [Hh][Tt][Tt][Pp]",
+					file, pattern, path)
+			}
+		})
+	}
+}
+
+// walkSchemaPatterns recursively visits every string value found under a
+// "pattern" object key anywhere in a decoded JSON Schema document.
+func walkSchemaPatterns(node any, path string, fn func(path, pattern string)) {
+	switch v := node.(type) {
+	case map[string]any:
+		for key, val := range v {
+			childPath := path + "." + key
+			if key == "pattern" {
+				if s, ok := val.(string); ok {
+					fn(childPath, s)
+				}
+			}
+			walkSchemaPatterns(val, childPath, fn)
+		}
+	case []any:
+		for i, val := range v {
+			walkSchemaPatterns(val, fmt.Sprintf("%s[%d]", path, i), fn)
 		}
 	}
 }

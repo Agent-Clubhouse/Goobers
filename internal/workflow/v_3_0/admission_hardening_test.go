@@ -362,11 +362,11 @@ func TestOSUnspecifiedMeansNoRequirement(t *testing.T) {
 	if _, err := compileAcknowledged(def); err != nil {
 		t.Fatalf("os-unspecified stage must compile: %v", err)
 	}
-	effective := EffectiveRunsOn(def.Spec.Tasks[0], nil)
+	effective := EffectiveRunsOn(taskPlacementStage(def.Spec.Tasks[0], nil), nil)
 	if effective.OS != "" {
 		t.Fatalf("effective OS = %q, want empty (unspecified = no requirement)", effective.OS)
 	}
-	for _, tag := range EffectiveCapabilities(def.Spec.Tasks[0], nil, nil) {
+	for _, tag := range EffectiveCapabilities(taskPlacementStage(def.Spec.Tasks[0], nil), nil) {
 		if strings.HasPrefix(tag, "os") {
 			t.Fatalf("effective capabilities carry OS tag %q; unspecified must stay unspecified", tag)
 		}
@@ -419,7 +419,7 @@ func TestDerivedCapabilities(t *testing.T) {
 func TestEffectiveCapabilitiesUnionNeverSubtracts(t *testing.T) {
 	goobers := map[string]apiv1.GooberSpec{"coder": {Gaggle: "web", Harness: apiv1.HarnessCopilot}}
 	task := implementTask("implement", &apiv1.RunsOn{Capabilities: []string{"go@1.26"}})
-	got := EffectiveCapabilities(task, &apiv1.GaggleRunsOn{Capabilities: []string{"make", "go@1.26"}}, goobers)
+	got := EffectiveCapabilities(taskPlacementStage(task, goobers), &apiv1.GaggleRunsOn{Capabilities: []string{"make", "go@1.26"}})
 	want := []string{"go@1.26", "harness:copilot", "make"}
 	if len(got) != len(want) {
 		t.Fatalf("effective capabilities = %v, want %v", got, want)

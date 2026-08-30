@@ -10,15 +10,21 @@ package workflow
 // therefore byte-identical admission — before and after the 3.0 release.
 
 import (
+	"fmt"
+	"strings"
+
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
 	"github.com/goobers/goobers/internal/runnersolve"
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
 )
 
-// StagePlacements returns each task's effective placement requirement for
-// def's DSL version — the solver input every admission checkpoint shares.
-// gaggle is the workflow's own gaggle spec (its runsOn floor for 3.0
+// StagePlacements returns each placeable stage's effective placement
+// requirement for def's DSL version — the solver input every admission
+// checkpoint shares: tasks in task order and, on a 3.0 document, the agentic
+// gates that declare runsOn after them (decision 001). Rows are keyed by
+// StageRequirement.Stage; consumers must never assume a row's position names
+// a task. gaggle is the workflow's own gaggle spec (its runsOn floor for 3.0
 // documents, its requiredCapabilities for earlier ones); goobers supplies
 // referenced goober specs for 3.0 harness derivation.
 func StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[string]apiv1.GooberSpec) ([]runnersolve.StageRequirement, error) {
@@ -26,21 +32,34 @@ func StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[string
 	if err != nil {
 		return nil, err
 	}
-	return interp.stagePlacements(def, gaggle, goobers), nil
+	return interp.stagePlacements(def, gaggle, goobers)
 }
 
 // v30StagePlacements adapts the 3.0 interpreter's builder to the router
 // signature.
-func v30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[string]apiv1.GooberSpec) []runnersolve.StageRequirement {
-	return v30.StagePlacements(def, gaggle.RunsOn, goobers)
+func v30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, goobers map[string]apiv1.GooberSpec) ([]runnersolve.StageRequirement, error) {
+	return v30.StagePlacements(def, gaggle.RunsOn, goobers), nil
 }
 
 // preV30StagePlacements is the arm for every interpreter before 3.0: the only
 // placement surface those versions have is requiredCapabilities (task-level
 // plus the gaggle floor), matched as an exact tag set — no OS, no quantities,
-// no restrictions, no derivation. It lives here in the router, like
-// preV30SurfaceProblems, so the frozen packages stay untouched.
-func preV30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, _ map[string]apiv1.GooberSpec) []runnersolve.StageRequirement {
+// no restrictions, no derivation, and no gate rows (a 2.0 gate cannot carry
+// runsOn, so every 2.0 gate stays in the control plane). It lives here in
+// the router, like preV30SurfaceProblems, so the frozen packages stay
+// untouched.
+//
+// The one token the product interprets — privilege=windows-admin (#3619) —
+// is refused rather than matched: it would otherwise pin a 2.0 task to an
+// admin-providing class and render ContainerAdministrator with no OS and no
+// coherence rule (preV30WindowsAdminProblems). Compile refuses the same
+// document first; this arm re-asserts it on the solver input because
+// validate's checkpoint solve and the run-start pin read StagePlacements
+// directly.
+func preV30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, _ map[string]apiv1.GooberSpec) ([]runnersolve.StageRequirement, error) {
+	if problems := preV30WindowsAdminProblems(def, gaggle.RequiredCapabilities); len(problems) > 0 {
+		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	}
 	requirements := make([]runnersolve.StageRequirement, 0, len(def.Spec.Tasks))
 	for _, task := range def.Spec.Tasks {
 		var capabilities []string
@@ -55,7 +74,7 @@ func preV30StagePlacements(def Definition, gaggle apiv1.GaggleSpec, _ map[string
 			Capabilities: capabilities,
 		})
 	}
-	return requirements
+	return requirements, nil
 }
 
 func containsToken(values []string, want string) bool {

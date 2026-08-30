@@ -24,7 +24,15 @@ func TestEmittedBytesMatchSchema(t *testing.T) {
 
 	_, scrub := DefaultScrubber()
 	root := t.TempDir()
-	run, err := Create(root, testIdentity(), map[string][]byte{
+	// Driver is set deliberately: run.yaml's schema declares
+	// additionalProperties:false, so a field the Go identity serializes and
+	// the schema does not declare fails EVERY tier-3 run's contract — and this
+	// test is the only thing in CI that reads the real on-disk run.yaml back
+	// through the shipped validator. A fixture that leaves Driver zero would
+	// leave the primary engine path uncovered.
+	identity := testIdentity()
+	identity.Driver = DriverEngine
+	run, err := Create(root, identity, map[string][]byte{
 		"issue.md": []byte("issue body"),
 	}, WithScrubber(scrub), WithClock(fixedClock()))
 	if err != nil {

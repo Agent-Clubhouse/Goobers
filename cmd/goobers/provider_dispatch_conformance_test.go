@@ -26,6 +26,7 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 	"apply-verdict":            {test: TestRunApplyVerdictADOPassPublishesStatusAndDecisionPass},
 	"backlog-assignment":       {test: TestBacklogAssignmentDispatchesFromCommand},
 	"backlog-dedupe":           {test: TestBacklogDedupeCommandDispatchesToADO},
+	"file-issues":              {test: TestFileIssuesRefusesNonGitHubProviders},
 	"backlog-health":           {test: TestBacklogHealthCommandRunsWithADO},
 	"backlog-query":            {test: TestBacklogQueryDispatchesFromCommand},
 	"check-issue-staleness":    {test: TestCheckIssueStalenessADONoPinIsNeverStaleWithoutMutation},

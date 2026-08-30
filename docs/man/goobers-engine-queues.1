@@ -1,0 +1,40 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS ENGINE QUEUES" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers engine-queues \- report which workers poll this instance's engine and dispatch task queues (experimental)
+.SH SYNOPSIS
+\fBgoobers engine-queues\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers engine-queues [flags] [path]
+
+Report which workers poll this instance's engine task queues (experimental).
+The queue set is derived, not typed: the engine's workflow queue plus every
+goobers-dispatch.<gaggle>.<runner> queue the runners: inventory and the
+declared gaggles imply — the same derivation `goobers worker
+--dispatch-namespace` serves. Each queue is described for both task types
+(workflow and activity) and every poller's Temporal identity is printed.
+
+This is the evidence for the queue-ownership check: goobers-worker must poll
+the workflow queue and every dispatch queue, and goobers-api must poll none
+of them — the daemon dispatches as a Temporal client and is never a pod
+creator.
+
+Flags:
+  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort)
+  --temporal-namespace <ns>  Temporal namespace (default engine.namespace)
+  --task-queue <queue>       workflow queue to describe (default
+                             engine.taskQueue)
+  --timeout <duration>       bound on the whole describe (default 30s)
+  --json                     emit the report as JSON
+
+Exit codes: 0 = described, 1 = describe/connection failure, 2 = usage/config
+error.
+.fi
+.SH EXAMPLES
+.nf
+goobers engine-queues
+goobers engine-queues --json
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

@@ -43,6 +43,34 @@ type gateResult struct {
 	Escalated bool
 }
 
+// The walk (engine.go's walk) carries two per-gate map[string]int counters
+// through evaluateGate, and they are easy to mistake for each other because
+// both are keyed by gate name and both feed a "…Attempt" number into
+// gate.started/gate.evaluated. They count two different things:
+//
+//   - gateAttempts is the gate's consecutive non-pass EVALUATION count —
+//     resolveGateOutcome's ledger, advanced (or reset to 0 on a pass) only
+//     AFTER an evaluator outcome comes back. It exists to recover an
+//     interrupted evaluator on replay and to charge the repass budget
+//     (repassAttempts, per re-entered target). It is incremented exactly
+//     once per gate.evaluated and is meaningful for every gate: automated,
+//     self-placed agentic, and pod-dispatched agentic alike.
+//
+//   - gateDispatches (dispatchstage.go's gatePodAttempt) numbers a placed
+//     agentic gate's POD dispatches — advanced BEFORE each dispatch, once
+//     per pod attempt, including infra retries within a single evaluation
+//     that never produced an outcome at all. It is the surrender-plane key
+//     and the pod name (D1: one attempt, one pod), so it has to be unique
+//     per (run, gate) across retries a gateAttempts-keyed number cannot
+//     distinguish — a retried evaluation reuses the SAME gateAttempts value
+//     until one finally resolves. Untouched by the self arm, which never
+//     creates a pod.
+//
+// gate.started journals repassAttempt (gateAttempts[gate]+1, read before
+// either counter moves) always, and podAttempt (gateDispatches[gate]+1,
+// likewise read without mutating) only for a gate about to dispatch to a
+// pod — see runJournal.gateStarted.
+//
 // maxRepassesFor resolves the inherited run budget, retaining the legacy
 // RunInput.MaxRepasses fallback for persisted inputs created before RunControls.
 func maxRepassesFor(in RunInput) int {
@@ -118,7 +146,7 @@ func evaluateWithInfraRetry(ctx workflow.Context, g apiv1.Gate, rec *runJournal,
 		if temporal.IsCanceledError(err) || ctx.Err() != nil {
 			return err
 		}
-		class, cerr := attemptFailureClass(err)
+		class, cerr := ClassifyDispatchFailure(err)
 		if cerr != nil {
 			return cerr
 		}

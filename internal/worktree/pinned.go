@@ -488,10 +488,10 @@ func (m *Manager) preparePinned(ctx context.Context, key string, opts PinnedOpti
 			return nil, fmt.Errorf("worktree: fully clean pinned workspace: %w", err)
 		}
 	}
-	if err := runGit(ctx, pinDir, "config", "user.name", botGitUserName); err != nil {
+	if err := runGit(ctx, pinDir, "config", "user.name", BotGitUserName); err != nil {
 		return nil, err
 	}
-	if err := runGit(ctx, pinDir, "config", "user.email", botGitUserEmail); err != nil {
+	if err := runGit(ctx, pinDir, "config", "user.email", BotGitUserEmail); err != nil {
 		return nil, err
 	}
 	if err := ensureScratchExcluded(ctx, pinDir); err != nil {

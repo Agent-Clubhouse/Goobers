@@ -666,3 +666,174 @@ func TestDaemonZeroDeclarationKeepsLegacyBehavior(t *testing.T) {
 		}
 	}
 }
+
+// placedGateV30WorkflowYAML is a 3.0 workflow whose only placement
+// requirement sits on an AGENTIC GATE (decision 001): the reviewer requires
+// windows, which the declared linux self runner cannot satisfy.
+const placedGateV30WorkflowYAML = `apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: "3.0"
+metadata:
+  name: win-build
+spec:
+  gaggle: example
+  triggers:
+    - type: schedule
+      schedule: "@every 24h"
+  start: build
+  tasks:
+    - name: build
+      type: deterministic
+      goal: run a no-op build
+      run:
+        command: ["true"]
+      next: review
+  gates:
+    - name: review
+      evaluator: agentic
+      agentic:
+        goober: reviewer
+      runsOn:
+        os: windows
+        cpu: 1000m
+        memory: 2Gi
+      branches:
+        pass: ""
+        fail: "@abort"
+        needs-changes: build
+`
+
+// writeReviewerGoober adds the reviewer goober the placed gate names to the
+// deterministic demo (which drops the starter's agentic goober).
+func writeReviewerGoober(t *testing.T, root string) {
+	t.Helper()
+	dir := filepath.Join(root, "config", "gaggles", "example", "goobers", "reviewer")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const goober = `apiVersion: goobers.dev/v1alpha1
+kind: Goober
+metadata:
+  name: reviewer
+spec:
+  gaggle: example
+  role: reviewer
+  instructions: instructions.md
+  harness: copilot
+  capabilities: [agent:model]
+`
+	if err := os.WriteFile(filepath.Join(dir, "goober.yaml"), []byte(goober), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "instructions.md"), []byte("# reviewer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestValidatePlacementCoversPlacedGate: checkpoint 1 solves a placed agentic
+// gate's requirement exactly as a task's (decision 001): RNR001 at error
+// severity on the declared inventory, attributed to the gate's own runsOn
+// block; the satisfiable variant is clean.
+func TestValidatePlacementCoversPlacedGate(t *testing.T) {
+	root := initDeterministicDemo(t)
+	declareInventory(t, root)
+	writeReviewerGoober(t, root)
+	writeSecondWorkflow(t, root, placedGateV30WorkflowYAML)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("validate code = %d, want 1 (the gate cannot place on the declared inventory); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"ERROR RNR001 Workflow/win-build",
+		`stage "review" requires os "windows"`,
+		"capabilities [harness:copilot]",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("validate stdout missing %q:\n%s", want, stdout)
+		}
+	}
+	// The finding is attributed to the GATE's own runsOn block (the JSON
+	// pointer rides the --json rendering only).
+	code, stdout, stderr = runArgs(t, "validate", "--json", root)
+	if code != 1 {
+		t.Fatalf("validate --json code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "/spec/gates/0/runsOn") {
+		t.Errorf("validate --json must attribute the finding to the gate's runsOn block:\n%s", stdout)
+	}
+
+	satisfiable := strings.Replace(placedGateV30WorkflowYAML, "os: windows", "os: linux", 1)
+	writeSecondWorkflow(t, root, satisfiable)
+	code, stdout, stderr = runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("satisfiable validate code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "RNR001") || strings.Contains(stdout, "WF023") {
+		t.Errorf("satisfiable placed gate must produce no placement finding:\n%s", stdout)
+	}
+	// The WF024 "not yet honoured" warning retired with decision 001's
+	// engine/pod half: a placed gate is honoured at execution now.
+	if strings.Contains(stdout, "WF024") {
+		t.Errorf("a placed gate must not carry the retired WF024 warning:\n%s", stdout)
+	}
+}
+
+// TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses pins the documented
+// consequence (dsl-3.0.md §2 Gates) of declaring a gate placement the daemon's
+// own substrate cannot satisfy: checkpoint 1 is clean (the declared remote
+// runner satisfies it), and checkpoint 3 marks the workflow refused exactly
+// as it would for a task — deliberately, because a DAEMON-scheduled run
+// still drives through internal/runner, whose gate arm has no dispatch seam
+// and will not get one (decision 005: the engine walk becomes the single
+// driver for every trigger kind, so a scheduled run reaches evaluateGate's
+// dispatch arm once the scheduler's Starter delegates to the engine
+// registry; engine-start runs already do). Until then the daemon can
+// neither dispatch the reviewer nor honour its declared placement
+// in-process, and refusing is the only arm that never runs the reviewer
+// outside its declared isolation.
+func TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses(t *testing.T) {
+	root := initDeterministicDemo(t)
+	declareInventory(t, root)
+	declareRemoteRunner(t, root, "  - name: ci\n    host: ghcr.io/example/ci:v1\n    provides:\n      os: windows\n      harnesses: [copilot]\n")
+	writeReviewerGoober(t, root)
+	writeSecondWorkflow(t, root, placedGateV30WorkflowYAML)
+
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 0 {
+		t.Fatalf("validate code = %d, want 0 (the declared remote runner satisfies the gate); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "RNR001") || strings.Contains(stdout, "WF024") {
+		t.Errorf("checkpoint 1 must not flag a remote-satisfiable gate (and WF024 is retired):\n%s", stdout)
+	}
+
+	var wg sync.WaitGroup
+	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
+	if err != nil {
+		t.Fatalf("boot must never kill (#2860): %v", err)
+	}
+	defer setup.Shutdown(context.Background())
+	var refused *localscheduler.WorkflowEntry
+	for i := range setup.Entries {
+		if setup.Entries[i].Workflow == "win-build" {
+			refused = &setup.Entries[i]
+		}
+	}
+	if refused == nil {
+		t.Fatalf("win-build missing from entries: %+v", setup.Entries)
+	}
+	for _, want := range []string{
+		`stage "review" placeable only on runner(s) [ci (host: ghcr.io/example/ci:v1)]`,
+		"distributed dispatch arrives with #3513",
+	} {
+		if !strings.Contains(refused.PlacementRefusal, want) {
+			t.Errorf("gate refusal diagnostic missing %q: %s", want, refused.PlacementRefusal)
+		}
+	}
+	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
+	_, err = sched.Trigger(context.Background(), "win-build", time.Now())
+	var rejected *localscheduler.TriggerRejectedError
+	if !errors.As(err, &rejected) || !strings.HasPrefix(rejected.Reason, localscheduler.ReasonPlacementUnsatisfiable) {
+		t.Fatalf("a run of a workflow whose gate placement self cannot satisfy must be refused with %s, got %v", localscheduler.ReasonPlacementUnsatisfiable, err)
+	}
+}

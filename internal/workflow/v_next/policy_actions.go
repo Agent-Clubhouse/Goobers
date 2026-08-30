@@ -70,6 +70,7 @@ var commandPolicyActions = map[string][]string{
 	"apply-verdict":          {"publish-review", "route-provider-verdict", "close-pr"},
 	"backlog-assignment":     {"update-issue"},
 	"check-issue-staleness":  {"route-verdict"},
+	"file-issues":            {"create-issue", "label-issue", "comment-on-issue"},
 	"gather-sibling-context": {"flag-scope-drift", "route-verdict"},
 	"issue-close-out":        {"update-issue"},
 	"merge-pr":               {"merge-pr", "delete-branch"},
@@ -106,13 +107,34 @@ var commandArgumentPolicyActions = map[string]map[string][]string{
 	},
 }
 
+// readOnlyCommandArguments names, per command, the boolean flag that turns
+// the command into a read-only pass prescribing no policy action. Every
+// command listed here must make that flag win over every other flag it
+// defines (a `--check` that still writes would be a policy hole), and
+// booleanCommandArgument parses only that one flag: any other flag beside it
+// fails the parse and the command is treated as a write.
 var readOnlyCommandArguments = map[string]string{
+	"file-issues":         "check",
 	"respond-to-findings": "check",
 }
 
 var commandArgumentPolicyActionInputs = map[string]map[string]string{
 	"reconcile-branches": {
 		"delete": "deleteBranches",
+	},
+}
+
+// commandInputPolicyActions names, per command and input, the policy actions
+// an input VALUE prescribes — for inputs whose vocabulary is a mode rather
+// than a flag the command defines. file-issues' autoApprove is
+// never|deterministic-only and only the latter prescribes approve-issue
+// (decision 004: the filer applies goobers:approved only to a nomination
+// matching a deterministic tool finding, through github:issues:approve). An
+// inputsFrom binding for the input is dynamic and prescribes every action
+// the input can enable, failing closed like the argument-input table above.
+var commandInputPolicyActions = map[string]map[string]map[string][]string{
+	"file-issues": {
+		"autoApprove": {"deterministic-only": {"approve-issue"}},
 	},
 }
 
@@ -274,6 +296,7 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 		}
 	}
 	actions := append([]string(nil), commandPolicyActions[command]...)
+	actions = append(actions, prescribedInputPolicyActions(task, command)...)
 	argumentActions := commandArgumentPolicyActions[command]
 	if task.Run == nil || len(argumentActions) == 0 {
 		return actions
@@ -323,6 +346,40 @@ func prescribedCommandPolicyActions(task apiv1.Task) []string {
 	}
 	if command == "backlog-query" && enabled["claim"] && isCurationBacklogClaim(task) {
 		actions = append(actions, "close-issue")
+	}
+	return actions
+}
+
+// prescribedInputPolicyActions resolves commandInputPolicyActions for a
+// task: a literal input prescribes the actions its value names; a dynamic
+// (inputsFrom) input prescribes every action the input can name, since its
+// value is unknown at admission and the table fails closed.
+func prescribedInputPolicyActions(task apiv1.Task, command string) []string {
+	byInput := commandInputPolicyActions[command]
+	if len(byInput) == 0 {
+		return nil
+	}
+	inputs := make([]string, 0, len(byInput))
+	for name := range byInput {
+		inputs = append(inputs, name)
+	}
+	sort.Strings(inputs)
+	var actions []string
+	for _, name := range inputs {
+		if _, dynamic := task.InputsFrom[name]; dynamic {
+			values := make([]string, 0, len(byInput[name]))
+			for value := range byInput[name] {
+				values = append(values, value)
+			}
+			sort.Strings(values)
+			for _, value := range values {
+				actions = append(actions, byInput[name][value]...)
+			}
+			continue
+		}
+		if raw, ok := task.Inputs[name]; ok {
+			actions = append(actions, byInput[name][strings.TrimSpace(raw)]...)
+		}
 	}
 	return actions
 }
