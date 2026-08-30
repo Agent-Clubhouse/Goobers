@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -95,22 +96,86 @@ func advanceInstanceEventsPointer(dir string, nextGen int) error {
 	return WriteFileAtomic(filepath.Join(dir, fileEventsPointer), []byte(strconv.Itoa(nextGen)), 0o644)
 }
 
-// cleanupStaleInstanceEventsGeneration best-effort removes the generation two
-// behind currentGen, once currentGen has advanced enough for one to exist.
+// parseInstanceEventsGeneration recovers the generation number from an
+// instance journal filename, reporting ok=false for anything that is not a
+// generation file (the pointer file, locks, unrelated names). Only the exact
+// canonical spelling instanceEventsFilename produces is accepted, so a
+// look-alike name is never mistaken for a reclaimable generation.
+func parseInstanceEventsGeneration(name string) (int, bool) {
+	if name == fileEvents {
+		return 0, true
+	}
+	rest, ok := strings.CutPrefix(name, fileEvents+".gen-")
+	if !ok {
+		return 0, false
+	}
+	gen, err := strconv.Atoi(rest)
+	if err != nil || gen <= 0 || instanceEventsFilename(gen) != name {
+		return 0, false
+	}
+	return gen, true
+}
+
+// staleInstanceEventsGenerations lists, in ascending order, the generation
+// numbers actually present in dir that are older than currentGen-1.
+func staleInstanceEventsGenerations(dir string, currentGen int) ([]int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("journal: list instance log generations in %s: %w", dir, err)
+	}
+	var stale []int
+	for _, entry := range entries {
+		gen, ok := parseInstanceEventsGeneration(entry.Name())
+		if !ok || gen > currentGen-2 {
+			continue
+		}
+		stale = append(stale, gen)
+	}
+	sort.Ints(stale)
+	return stale, nil
+}
+
+// cleanupStaleInstanceEventsGenerations removes EVERY generation older than
+// currentGen-1 that is still on disk, returning how many it reclaimed.
 // Keeping the immediately-previous generation (currentGen-1) alongside
 // current covers a reader that resolved the pointer a moment before this
 // compaction advanced it: that reader might still be about to open what was,
 // at the moment it read the pointer, current. No plausible reader holds a
 // handle across two full compaction cycles, so anything older is safe to
-// remove. Deletion is opportunistic, not required for correctness — the
-// pointer file is the only thing readers and writers trust — so a removal
-// failure (already gone, permission denied, whatever) is swallowed rather
-// than surfaced: a compaction that recorded new data must not fail over
-// tidying up the old file.
-func cleanupStaleInstanceEventsGeneration(dir string, currentGen int) {
-	staleGen := currentGen - 2
-	if staleGen < 0 {
-		return
+// remove.
+//
+// Sweeping the whole directory rather than only currentGen-2 matters because
+// a single failed removal used to strand that generation forever: the next
+// compaction looked one generation further along and never came back for it.
+// Removal failures are aggregated and returned so the caller can surface an
+// actionable diagnostic, but they are deliberately NOT fatal to compaction —
+// the pointer file is the only thing readers and writers trust, so a
+// compaction that recorded new data must still be reported as successful.
+func cleanupStaleInstanceEventsGenerations(dir string, currentGen int) (int, error) {
+	if currentGen < 2 {
+		return 0, nil // no generation has fallen out of the keep window yet
 	}
-	_ = os.Remove(filepath.Join(dir, instanceEventsFilename(staleGen)))
+	stale, err := staleInstanceEventsGenerations(dir, currentGen)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	var failures []string
+	for _, gen := range stale {
+		name := instanceEventsFilename(gen)
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			failures = append(failures, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+		removed++
+	}
+	if len(failures) > 0 {
+		return removed, fmt.Errorf(
+			"journal: could not remove %d stale instance log generation(s) in %s (compaction itself succeeded; delete them manually or check for a process holding them open): %s",
+			len(failures), dir, strings.Join(failures, "; "))
+	}
+	return removed, nil
 }
