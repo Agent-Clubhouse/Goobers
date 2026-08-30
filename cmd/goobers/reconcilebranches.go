@@ -578,8 +578,8 @@ func appendBranchReconcileEvent(log *journal.InstanceLog, branch providers.Branc
 }
 
 func isProviderRateLimit(err error) bool {
-	var rateLimit *providers.RateLimitError
-	return errors.As(err, &rateLimit)
+	_, ok := providers.AsRateLimitError(err)
+	return ok
 }
 
 func writeBranchReconcileResult(report branchReconcileReport, dryRun bool, limit int, minimumAge time.Duration) error {

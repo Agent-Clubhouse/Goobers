@@ -44,7 +44,8 @@ import (
 //     retries against the new value.
 //
 // CONTAINMENT IS FAIL-CLOSED, twice over. The key namespace is closed
-// (stateclient.ValidKey): the four state shapes and nothing else, so a
+// (stateclient.ValidKey): the handful of known state shapes and nothing else,
+// so a
 // state-plane bearer can never be turned into a read or a write of
 // claims.json, the instance config, or any other file that happens to live in
 // the scheduler directory. And a pod principal may address ONLY the gaggle its

@@ -375,7 +375,7 @@ func TestSideEffectingStageTimeoutRedispatch(t *testing.T) {
 			env.ExecuteWorkflow(func(ctx workflow.Context) error {
 				task := retrySpec(&apiv1.RetryPolicy{MaxAttempts: 3}).Tasks[0]
 				task.PolicyActions = []string{"external-mutation"}
-				_, err := dispatchWithRetry(ctx, task, &runJournal{}, nil, func(_ workflow.Context, attempt int) (stageActivityResult, error) {
+				_, err := dispatchWithRetry(ctx, RunInput{}, task, &runJournal{}, nil, func(_ workflow.Context, attempt int) (stageActivityResult, error) {
 					calls++
 					attempts = append(attempts, attempt)
 					if calls == 1 {

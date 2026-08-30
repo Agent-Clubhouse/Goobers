@@ -173,6 +173,21 @@ const (
 	// (plan item E3, #3875): every stage attempt journals where it physically
 	// executed, on both runners, once the deployment has declared placement.
 	rowPlacementProvenance parityRow = "E3-placement-provenance"
+	// rowCachedVerdictShortCircuit is inventory row "cached verdict reuse"
+	// (plan item E4, #523): a gate whose subject hands forward a
+	// digest-matched prior verdict routes on it WITHOUT dispatching a
+	// reviewer.
+	rowCachedVerdictShortCircuit parityRow = "E4-cached-verdict-short-circuit"
+	// rowEmptyDiffFastFail is inventory row "#415 empty-diff fast-fail" (plan
+	// item E5): an agentic stage that committed nothing fails its gate without
+	// a reviewer, because an empty patch offers nothing to evaluate and a
+	// repass can only reproduce it.
+	rowEmptyDiffFastFail parityRow = "E5-empty-diff-fast-fail"
+	// rowEmptyDiffDeterministicSubject is the SCOPE half of the same row, and
+	// must stay GREEN in both directions: the identical empty diff over a
+	// DETERMINISTIC subject is still reviewed. It is what forbids a port that
+	// fast-fails on emptiness alone.
+	rowEmptyDiffDeterministicSubject parityRow = "E5-empty-diff-deterministic-subject"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
@@ -219,6 +234,22 @@ type parityCase struct {
 	// Script is the per-stage scripted behaviour (scriptedExec, shared with
 	// the conformance harness).
 	Script map[string][]scriptedCall
+	// Verdicts scripts the AGENTIC REVIEWER per gate name (#3882). A gate
+	// absent from this map is one the row asserts is never dispatched: the
+	// scripted reviewer fails loudly if it is reached, so an over-eager port
+	// cannot pass by producing the right outcome through an extra model call.
+	Verdicts map[string][]apiv1.Verdict
+	// EngineWorkspaceDiffs scripts what the ENGINE side's workspace reports
+	// from DiffReader, keyed by stage.
+	//
+	// It is engine-side only, and deliberately so. The local runner reads a
+	// real git worktree, so its diff is whatever the fixture's scripted stages
+	// actually left behind — which, since scriptedExec never writes files, is
+	// nothing. A row comparing diff-derived behaviour therefore scripts the
+	// engine to report the SAME nothing, and what is being compared is the two
+	// lanes' DECISIONS given the same observation. Scripting a non-empty diff
+	// here would compare a real observation against a fictional one.
+	EngineWorkspaceDiffs map[string][]byte
 	// RunControls is the run's already-resolved run-control policy, threaded
 	// through the SAME seam production uses on each side: runner.StartInput's
 	// RunControls field and engine.StartSpec's, which Registry.StartInputVersion
@@ -566,6 +597,13 @@ func newRecordingExec(script map[string][]scriptedCall) *recordingExec {
 	return &recordingExec{inner: newScriptedExec(script)}
 }
 
+// newRecordingExecForCase wires both scripted seams from the row.
+func newRecordingExecForCase(c parityCase) *recordingExec {
+	exec := newRecordingExec(c.Script)
+	exec.inner.verdicts = c.Verdicts
+	return exec
+}
+
 func (r *recordingExec) record(env apiv1.InvocationEnvelope) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -582,7 +620,12 @@ func (r *recordingExec) Invoke(ctx context.Context, env apiv1.InvocationEnvelope
 	return r.inner.Invoke(ctx, env)
 }
 
+// Review records the reviewer's envelope alongside the stage envelopes, so a
+// row can assert on what the REVIEWER was handed — the "<gate>.diff" pointer
+// (#3384) is only observable here — and, by its absence, that no reviewer ran
+// at all.
 func (r *recordingExec) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	r.record(env)
 	return r.inner.Review(ctx, env)
 }
 
@@ -625,7 +668,9 @@ func (b *boundRecordingExec) Invoke(ctx context.Context, env apiv1.InvocationEnv
 }
 
 func (b *boundRecordingExec) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	return b.owner.inner.Review(ctx, b.stamp(env))
+	env = b.stamp(env)
+	b.owner.record(env)
+	return b.owner.inner.Review(ctx, env)
 }
 
 func (r *recordingExec) projected() []parityEnvelope {
@@ -671,7 +716,7 @@ var parityBranchNamespace = providers.NormalizeBranchNamespace("")
 // runParityRunnerSide walks the fixture through the real local runner.
 func runParityRunnerSide(t *testing.T, c parityCase, runID string) paritySide {
 	t.Helper()
-	exec := newRecordingExec(c.Script)
+	exec := newRecordingExecForCase(c)
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
 	if err != nil {
@@ -776,16 +821,20 @@ func parityEngineRunInput(t *testing.T, c parityCase, runID string) RunInput {
 
 func runParityEngineSide(t *testing.T, c parityCase, runID string) paritySide {
 	t.Helper()
-	exec := newRecordingExec(c.Script)
+	exec := newRecordingExecForCase(c)
 	in := parityEngineRunInput(t, c, runID)
 	var ts testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&ts)
 	env.SetStartTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	workspaces := testWorkspaces(t)
+	for stage, diff := range c.EngineWorkspaceDiffs {
+		workspaces.scriptDiff(stage, diff)
+	}
 	env.RegisterActivity(&Activities{
 		Goober:     exec,
 		Det:        exec,
 		Auto:       gate.NewAutomatedEvaluator(),
-		Workspaces: testWorkspaces(t),
+		Workspaces: workspaces,
 	})
 	env.ExecuteWorkflow(Run, in)
 	workflowErr := env.GetWorkflowError()

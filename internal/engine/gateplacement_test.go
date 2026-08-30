@@ -726,8 +726,8 @@ func TestPlacedGateRefusesAnEmptyVerdictFromTheActivity(t *testing.T) {
 // gate. Registered by method name, exactly as the worker registers Activities.
 type skewedDispatchHost struct{ real *Activities }
 
-func (h *skewedDispatchHost) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch, workspaceDelta string, workspace apiv1.WorkspaceMode) (stageActivityResult, error) {
-	return h.real.InvokeGoober(ctx, env, workspaceBranch, workspaceDelta, workspace)
+func (h *skewedDispatchHost) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (stageActivityResult, error) {
+	return h.real.InvokeGoober(ctx, env, workspaceBranch, workspaceDelta, workspace, onTimeout)
 }
 
 func (h *skewedDispatchHost) DispatchStage(context.Context, DispatchStageInput) (stageActivityResult, error) {

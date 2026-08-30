@@ -387,22 +387,14 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			// of issuing needs-changes and burning repass cycles that can only
 			// re-observe the same empty diff. Mirrors the identical-diff guard
 			// below: both spare the repass budget a degenerate reviewer call.
-			outcome = string(apiv1.VerdictFail)
-			verdict = &apiv1.Verdict{
-				Decision:  apiv1.VerdictFail,
-				Rationale: "runner: the implement stage produced no committed changes — failing without review, since an empty diff offers nothing to evaluate and a repass can only reproduce it",
-			}
+			synthesized := EmptyDiffVerdict()
+			outcome = string(synthesized.Decision)
+			verdict = &synthesized
 		} else if diffDigest != "" && e.LastDiffDigest != nil && e.LastDiffDigest[g.Name] == diffDigest {
 			duplicateDiff = true
-			outcome = string(apiv1.VerdictNeedsChanges)
-			rationale := fmt.Sprintf("runner: this repass produced no change (digest %s)", diffDigest)
-			if e.RepassCause != nil {
-				rationale = e.RepassCause.String() + "; the implementer produced no change in response"
-			}
-			verdict = &apiv1.Verdict{
-				Decision:  apiv1.VerdictNeedsChanges,
-				Rationale: rationale,
-			}
+			synthesized := DuplicateDiffVerdict(diffDigest, e.RepassCause)
+			outcome = string(synthesized.Decision)
+			verdict = &synthesized
 		} else {
 			var v apiv1.Verdict
 			invalidNeedsHuman, err := e.evaluateReviewerWithRetry(ctx, g.Name, policy, env.Limits.MaxDurationSeconds, &env, subjectStage, subject, g, &v)
@@ -425,7 +417,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	// from the prior episode were corrected.
 	if verdict != nil && !duplicateDiff && !emptyDiff {
 		normalized, resolution := reconcileLearningFindings(
-			*verdict, env.ContextPointers, journalDir(e.Journal), g.Name, diffDigest,
+			*verdict, env.ContextPointers, ArtifactBytesFromRoot(journalDir(e.Journal)), g.Name, diffDigest,
 		)
 		verdict = &normalized
 		learningResolution = resolution
@@ -437,7 +429,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	if outcome == string(apiv1.VerdictNeedsChanges) && verdict != nil {
 		beforeFindings := append([]apiv1.Finding(nil), verdict.Findings...)
 		before := findingIDs(beforeFindings)
-		normalized, allDisproven := disproveReviewerFindings(*verdict, env.ContextPointers, journalDir(e.Journal), g.Name)
+		normalized, allDisproven := disproveReviewerFindings(*verdict, env.ContextPointers, ArtifactBytesFromRoot(journalDir(e.Journal)), g.Name)
 		verdict = &normalized
 		outcome = string(normalized.Decision)
 		learningResolution.Disproven = removedFindingIDs(before, normalized.Findings)
