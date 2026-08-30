@@ -367,9 +367,12 @@ func producedIntegrity(
 // fail loudly; it would silently hand a stage the wrong input.
 //
 // The exported surface is deliberately the minimum the engine's walk needs:
-// build the map, record/forget a stage, resolve a value, grade it, and phrase
-// the miss. Everything else here — branch fan-in, the parallel-branch refs —
-// stays runner-private because the engine has no counterpart for it.
+// build the map, apply the record-or-forget rule to a finished task, resolve a
+// value, grade it, and phrase the miss. Note that record and forget are NOT
+// exported individually — only the rule that chooses between them is, so the
+// two runners cannot disagree about which results become addressable.
+// Everything else here — branch fan-in, the parallel-branch refs — stays
+// runner-private because the engine has no counterpart for it.
 
 // StageOutputs is every completed stage's Outputs keyed by stage name, the
 // state stage-qualified resolution reads. It is an alias rather than a defined
@@ -379,29 +382,20 @@ type StageOutputs = stageOutputs
 // NewStageOutputs builds an empty completed-stage map.
 func NewStageOutputs() StageOutputs { return stageOutputs{} }
 
-// Record copies a finished stage's outputs under its name, with the provenance
-// grade of the content that produced them. The copy matters: a walk keeps
-// handing the same ResultEnvelope onward, and a shared map would let a later
-// mutation rewrite an earlier stage's recorded outputs.
-func (s stageOutputs) Record(stage string, outputs map[string]any, grade apiv1.Integrity) {
-	s.record(stage, outputs, grade)
-}
-
-// Forget discards a stage's outputs. This is what a TOLERATED failure must do:
-// downstream stages must not consume partial results, and a qualified reference
-// to the forgotten stage falls through to bare-key resolution.
-func (s stageOutputs) Forget(stage string) { s.clear(stage) }
-
-// IntegrityOf returns the provenance recorded for a completed stage. An unknown
-// stage returns the zero grade, which fails admission closed.
-func (s stageOutputs) IntegrityOf(stage string) apiv1.Integrity { return s.integrityOf(stage) }
-
 // RecordCompleted applies the record-or-forget rule a finished task owes the
 // map: a tolerated failure (ContinueOnError) is FORGOTTEN, anything else is
-// recorded. Shared because "which results become addressable" is the same
-// question as "what does <stage>.<key> resolve to", and answering it
-// differently on the two runners is the divergence this whole export exists to
-// prevent.
+// recorded under the stage's name with the provenance grade of the content that
+// produced it. Recording copies the outputs — a walk keeps handing the same
+// ResultEnvelope onward, and a shared map would let a later mutation rewrite an
+// earlier stage's recorded outputs.
+//
+// Forgetting is what a tolerated failure must do: downstream stages must not
+// consume partial results, and a qualified reference to the forgotten stage
+// falls through to bare-key resolution.
+//
+// Shared because "which results become addressable" is the same question as
+// "what does <stage>.<key> resolve to", and answering it differently on the two
+// runners is the divergence this whole export exists to prevent.
 func (s stageOutputs) RecordCompleted(t apiv1.Task, result apiv1.ResultEnvelope) {
 	if result.Status == apiv1.ResultFailure && t.ContinueOnError {
 		s.clear(t.Name)

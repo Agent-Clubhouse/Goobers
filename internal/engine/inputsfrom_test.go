@@ -20,6 +20,18 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
+// recordStage is the walk's own record path, spelled for a test that only cares
+// about the outputs and the grade. It goes through recordCompletedStage rather
+// than reaching into the shared map directly so these tests exercise the seam
+// the walk actually uses.
+func recordStage(completed completedStages, stage string, outputs map[string]interface{}, grade apiv1.Integrity) {
+	recordCompletedStage(completed, apiv1.Task{Name: stage}, apiv1.ResultEnvelope{
+		Status:    apiv1.ResultSuccess,
+		Outputs:   outputs,
+		Integrity: grade,
+	})
+}
+
 // Under a DSL version that predates #562, a dotted value is ALWAYS a bare key —
 // even when its prefix names a stage that ran and emitted that very key.
 //
@@ -36,7 +48,7 @@ func TestStageQualifiedInputsAreDSLGated(t *testing.T) {
 	// "selectedNumber". A legacy definition must bind the literal.
 	upstream := apiv1.ResultEnvelope{Outputs: map[string]interface{}{"pr-select.selectedNumber": "literal"}}
 	completed := newCompletedStages()
-	completed.Record("pr-select", map[string]interface{}{"selectedNumber": 42}, apiv1.IntegrityTrusted)
+	recordStage(completed, "pr-select", map[string]interface{}{"selectedNumber": 42}, apiv1.IntegrityTrusted)
 
 	got, ok := resolveInputsFrom("pr-select.selectedNumber", upstream, completed, false)
 	if !ok {
@@ -60,7 +72,7 @@ func TestStageQualifiedInputsAreDSLGated(t *testing.T) {
 func TestQualifiedReferenceFallsThroughToBareKey(t *testing.T) {
 	upstream := apiv1.ResultEnvelope{Outputs: map[string]interface{}{"metrics.p99": "legacy"}}
 	completed := newCompletedStages()
-	completed.Record("build", map[string]interface{}{"sha": "abc"}, apiv1.IntegrityTrusted)
+	recordStage(completed, "build", map[string]interface{}{"sha": "abc"}, apiv1.IntegrityTrusted)
 
 	got, ok := resolveInputsFrom("metrics.p99", upstream, completed, true)
 	if !ok || got != "legacy" {
@@ -78,8 +90,8 @@ func TestQualifiedReferenceFallsThroughToBareKey(t *testing.T) {
 // not a visible one, so it is pinned directly.
 func TestQualifiedInputsGradeTheProducingStage(t *testing.T) {
 	completed := newCompletedStages()
-	completed.Record("scrape", map[string]interface{}{"body": "<html>"}, apiv1.IntegrityUnapproved)
-	completed.Record("verify", map[string]interface{}{"ok": true}, apiv1.IntegrityTrusted)
+	recordStage(completed, "scrape", map[string]interface{}{"body": "<html>"}, apiv1.IntegrityUnapproved)
+	recordStage(completed, "verify", map[string]interface{}{"ok": true}, apiv1.IntegrityTrusted)
 	// The immediately preceding stage is the TRUSTED one; a naive port would
 	// grade every input by it.
 	upstream := apiv1.ResultEnvelope{Integrity: apiv1.IntegrityTrusted, Outputs: map[string]interface{}{"ok": true}}
@@ -137,7 +149,7 @@ func TestToleratedFailureIsForgotten(t *testing.T) {
 // lanes' operators already know.
 func TestInputsFromErrorNamesTheRightMiss(t *testing.T) {
 	completed := newCompletedStages()
-	completed.Record("build", map[string]interface{}{"sha": "abc", "artifact": "x.tar"}, apiv1.IntegrityTrusted)
+	recordStage(completed, "build", map[string]interface{}{"sha": "abc", "artifact": "x.tar"}, apiv1.IntegrityTrusted)
 
 	qualified := inputsFromError("deploy", "digest", "build.digest", completed, true).Error()
 	for _, want := range []string{`stage "build" produced no output "digest"`, "artifact, sha"} {
@@ -171,7 +183,7 @@ func TestInputsFromErrorNamesTheRightMiss(t *testing.T) {
 func TestRecordedStageOutputsAreCopied(t *testing.T) {
 	live := map[string]interface{}{"sha": "abc"}
 	completed := newCompletedStages()
-	completed.Record("build", live, apiv1.IntegrityTrusted)
+	recordStage(completed, "build", live, apiv1.IntegrityTrusted)
 	live["sha"] = "mutated"
 
 	got, ok := resolveInputsFrom("build.sha", apiv1.ResultEnvelope{}, completed, true)
