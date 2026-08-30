@@ -72,6 +72,18 @@ spec:
           # stage fails closed on an integrity fault. Point it at a
           # ReadWriteMany volume (see the blobs volume below) or omit it and
           # accept single-worker runs.
+          #
+          # --config-reload-interval is how often the worker re-reads
+          # --instance's config/ tree and rebuilds the gaggle, credential, and
+          # agentic-kit seams whose config changed (#3884). It defaults to 10s
+          # and is left implicit here. Set it to 0 only to deliberately freeze
+          # a worker on its boot-time tree. NOTE the reload only sees content
+          # that actually changes underneath the mount: a config/ directory
+          # seeded once by an initContainer copy into an emptyDir never
+          # changes, for the same reason a subPath ConfigMap mount never does
+          # (../README.md, "subPath ConfigMap mounts never receive updates").
+          # Here the tree lives on the journal PVC, so whatever writes it is
+          # what the worker converges on.
           args:
             - "worker"
             - "--task-queue"

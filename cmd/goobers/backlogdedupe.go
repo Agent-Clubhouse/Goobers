@@ -6,13 +6,11 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -118,12 +116,16 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layoutFor(root).SchedulerDir(), claimLedgerFileName))
+	ledger, err := openStageClaimLedger(layoutFor(root))
 	if err != nil {
 		pf(stderr, "error: open claim ledger: %v\n", err)
 		return 1
 	}
-	entries := ledger.ForRunAll(runID)
+	entries, err := ledger.ForRunAll(claimContext(), runID)
+	if err != nil {
+		pf(stderr, "error: read this run's claims: %v\n", err)
+		return 1
+	}
 	claimedIDs := make([]string, 0, len(entries))
 	claimed := make(map[string]bool, len(entries))
 	for _, entry := range entries {

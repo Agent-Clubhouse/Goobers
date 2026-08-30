@@ -27,6 +27,7 @@ import (
 
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/oidcauth"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/signals"
@@ -852,5 +853,34 @@ func runDirectoryRevealer(layout instance.Layout) func(context.Context, string) 
 			return err
 		}
 		return launchRunDirectory(ctx, dir)
+	}
+}
+
+// podRunGaggleResolver answers "which gaggle does run X belong to?" from the
+// run's own journal header — the daemon-side half of the telemetry read
+// plane's containment (decision 005 R4 / finding 002 C3). A pod token proves
+// only which run its bearer is; this is what turns that into a gaggle the
+// daemon can compare a requested scope against.
+//
+// run.yaml is the right source: it is written once at run creation and never
+// rewritten, so the answer cannot drift mid-run the way a projection or a
+// live config lookup could. An unknown run, an unreadable header, or a header
+// naming no gaggle all surface as an error or an empty string, and the
+// handler refuses on either — unknown scope is not "any scope".
+func podRunGaggleResolver(layout instance.Layout) func(context.Context, string) (string, error) {
+	return func(_ context.Context, runID string) (string, error) {
+		dir, err := layout.FindRunDir(runID)
+		if err != nil {
+			return "", err
+		}
+		reader, err := journal.OpenReadOnly(dir)
+		if err != nil {
+			return "", err
+		}
+		identity, err := reader.Identity()
+		if err != nil {
+			return "", err
+		}
+		return identity.Gaggle, nil
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
@@ -138,17 +139,24 @@ func TestRunDeclaredStageRefusesLedgerCommandWithoutInstanceRoot(t *testing.T) {
 	}
 }
 
-// The kind-based half of the same backstop: inputs.kind=ci-poll has no
-// pod-side execution path regardless of GOOBERS_INSTANCE_ROOT, and the
-// dispatcher stamps a declared input as GOOBERS_INPUT_<KEY> exactly as the
-// local executor does (buildStageEnv), so GOOBERS_INPUT_KIND is what a real
-// ci-poll pod would actually carry.
+// The kind-based half of the same backstop: inputs.kind=external-telemetry
+// has no pod-side execution path regardless of GOOBERS_INSTANCE_ROOT (its
+// executor is built from the instance's connector configuration, which lives
+// under a config directory a pod does not have), and the dispatcher stamps a
+// declared input as GOOBERS_INPUT_<KEY> exactly as the local executor does
+// (buildStageEnv), so GOOBERS_INPUT_KIND is what a real external-telemetry
+// pod would actually carry.
+//
+// ci-poll used to be this test's subject and deliberately is not any more:
+// #3881 gave it an in-pod path (dispatchcipoll.go), and
+// TestRunDeclaredStageNoLongerRefusesCIPoll is the ablation that pins the
+// removal.
 func TestRunDeclaredStageRefusesKindWithoutInstanceRoot(t *testing.T) {
-	t.Setenv(dispatcher.EnvStageCommand, `["goobers","ci-poll"]`)
+	t.Setenv(dispatcher.EnvStageCommand, `["goobers","external-telemetry"]`)
 	t.Setenv(dispatcher.EnvStageScript, "")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
-	t.Setenv("GOOBERS_INPUT_KIND", "ci-poll")
+	t.Setenv("GOOBERS_INPUT_KIND", "external-telemetry")
 
 	result := runDeclaredStage(context.Background(), io.Discard, io.Discard)
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "instance_root_required" {
@@ -1025,5 +1033,58 @@ func TestEnvDefaultDenyFailsClosedOnAnUnparseableAllowlist(t *testing.T) {
 		if name, _, _ := strings.Cut(kv, "="); name == "IMAGE_AMBIENT_VAR" {
 			t.Fatal("a malformed allowlist must fall back to procenv's base, not to os.Environ()")
 		}
+	}
+}
+
+// A genuine syncBase base-merge conflict on the pod substrate must classify
+// exactly as it does on the self arms (#813, internal/engine/activities.go's
+// RunDeterministic and internal/runner/run.go): base_sync_conflict and
+// Retryable, so failure-class routes the run into remediation rather than
+// burning an implementation repass re-deriving the identical rejected diff
+// purely because the stage happened to be pod- rather than worker-placed.
+func TestDispatchExecClassifiesSyncBaseConflictAsRetryableInfra(t *testing.T) {
+	const prBranch = "goobers/impl/remediation-364"
+	work := t.TempDir()
+	gitCommand(t, work, "init", "--quiet", "-b", "main", work)
+	writeFile(t, work, "conflict.txt", "original\n")
+	gitCommand(t, work, "add", "conflict.txt")
+	gitCommand(t, work, "commit", "--quiet", "-m", "seed")
+	gitCommand(t, work, "checkout", "--quiet", "-b", prBranch)
+	writeFile(t, work, "conflict.txt", "the PR's version\n")
+	gitCommand(t, work, "commit", "--quiet", "-am", "PR edit")
+	gitCommand(t, work, "checkout", "--quiet", "main")
+	writeFile(t, work, "conflict.txt", "base's version\n")
+	gitCommand(t, work, "commit", "--quiet", "-am", "base edit")
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	gitCommand(t, work, "clone", "--quiet", "--bare", work, bare)
+
+	prev := checkoutCloneURL
+	t.Cleanup(func() { checkoutCloneURL = prev })
+	stageCheckoutEnv(t, bare, string(apiv1.WorkspaceRepo))
+	t.Setenv(dispatcher.EnvWorkspaceBranch, prBranch)
+	t.Setenv(dispatcher.EnvStageSyncBase, "true")
+	t.Setenv(dispatcher.EnvStageCommand, `["true"]`)
+	t.Setenv(dispatcher.EnvStageTimeout, "10s")
+	t.Setenv(dispatcher.EnvDaemonAPI, "")
+
+	ws := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(ws); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	got := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	if got.Status != apiv1.ResultFailure {
+		t.Fatalf("status = %q, want failure", got.Status)
+	}
+	if got.Error == nil || got.Error.Code != runner.BaseSyncConflictErrorCode {
+		t.Fatalf("error = %+v, want code %q (the self arms' classification, so failure-class routes to remediation instead of an implementation repass)", got.Error, runner.BaseSyncConflictErrorCode)
+	}
+	if !got.Error.Retryable {
+		t.Fatal("a base_sync_conflict must be Retryable, matching internal/engine/activities.go's RunDeterministic and internal/runner/run.go — failure-class's isRecognizedInfrastructureFailure never matches this code, so Retryable is the only thing that routes it OutcomeInfra")
 	}
 }

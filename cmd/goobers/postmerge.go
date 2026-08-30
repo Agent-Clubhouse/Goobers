@@ -258,8 +258,8 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 	var pollErr error
 	var postMergeErrs []error
 	alreadyCompleted := false
-	err = withPostMergeReconcileLock(root, func(ledgerPath string) error {
-		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+	err = withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
+		ledger, err := session.read()
 		if err != nil {
 			return err
 		}
@@ -276,7 +276,7 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 			return nil
 		}
 		if completePostMergeReconciliation(&ledger, repo, pullNumber) {
-			return writePostMergeReconcileLedger(ledgerPath, ledger)
+			return session.write(ledger)
 		}
 		return nil
 	})
@@ -342,8 +342,8 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 	var pollErr error
 	var postMergeErrs []error
 	alreadyCompleted := false
-	err = withPostMergeReconcileLock(root, func(ledgerPath string) error {
-		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+	err = withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
+		ledger, err := session.read()
 		if err != nil {
 			return err
 		}
@@ -361,7 +361,7 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 			return nil
 		}
 		if completePostMergeReconciliation(&ledger, repo, pullNumber) {
-			return writePostMergeReconcileLedger(ledgerPath, ledger)
+			return session.write(ledger)
 		}
 		return nil
 	})
@@ -694,7 +694,7 @@ func fanOutNeedsRemediation(ctx context.Context, provider remediationProvider, r
 	// instead of re-fetching. A cold/corrupt/absent cache (any other
 	// workflow, or a standalone invocation) degrades to nil here, which
 	// triageSibling treats as an unconditional cache miss — never a failure.
-	cached := loadSiblingCache(layoutFor(root).SchedulerDir(), stderr)
+	cached := loadSiblingCache(layoutFor(root), stderr)
 
 	var handoffAuthor string
 	var handoffAuthorErr error

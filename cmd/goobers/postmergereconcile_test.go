@@ -57,7 +57,7 @@ func postMergeReconcileEnv(t *testing.T, serverURL string) string {
 }
 
 func postMergeTestRepo() providers.RepositoryRef {
-	return providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	return providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
 }
 
 func loadPostMergeReconcileEntry(t *testing.T, root string, repo providers.RepositoryRef, pullNumber string) postMergeReconcileEntry {

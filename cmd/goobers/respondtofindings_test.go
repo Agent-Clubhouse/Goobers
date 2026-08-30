@@ -105,7 +105,7 @@ func respondToFindingsFixtureForVerdict(t *testing.T, verdict *apiv1.Verdict, re
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	resultFile := filepath.Join(t.TempDir(), remediationResponseArtifactName)
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
-	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: prNumber}}, runID, "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: prNumber}}, runID, "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed PR claim: %v", err)
 	}
 	seedRemediationResponseRunState(t, root, runID, verdict, responses, &published)
@@ -229,7 +229,7 @@ func TestRespondToFindingsDispatchesToGitea(t *testing.T) {
 	t.Setenv(executor.RepoNameEnvVar, "your-repo")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", token)
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(t.TempDir(), remediationResponseArtifactName))
-	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: prNumber}}, runID, "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: prNumber}}, runID, "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed PR claim: %v", err)
 	}
 	seedRemediationResponseRun(t, root, runID, apiv1.Verdict{}, "", true)

@@ -1079,11 +1079,11 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 	// third PhaseFailed producer. FailureStage stays empty: a resume-time
 	// digest check isn't attributable to one stage.
 	res := Result{Phase: journal.PhaseFailed, FailureCode: code, FailureMessage: boundFailureMessage(msg)}
-	r.notifyTerminal(runID, journal.PhaseFailed, "")
+	notifyErr := r.notifyTerminal(jr, runID, journal.PhaseFailed, "")
 	if err := r.FinalizeTerminal(runID, journal.PhaseFailed); err != nil {
 		return res, fmt.Errorf("runner: %s (additionally failed to finalize terminal refusal: %w)", msg, err)
 	}
-	return res, nil
+	return res, notifyErr
 }
 
 // lastFinishedSubject reconstructs the (stage, ResultEnvelope) pair a live

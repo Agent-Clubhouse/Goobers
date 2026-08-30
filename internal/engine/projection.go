@@ -48,6 +48,13 @@ var projectableEventTypes = map[journal.EventType]bool{
 	// one side emits files a live_journal_divergence on every mode-3 run),
 	// projectable, and excluded from conformance by the runner.* namespace.
 	journal.EventRunnerWorkspaceDelta: true,
+	// The retry-decision annotation (#415/E6) is the third of the same shape:
+	// emitted by the engine's walk on the live path and therefore by this
+	// projection too, excluded from conformance by the runner.* namespace,
+	// and read back by priorRepassCause. Omitting it would fail-closed every
+	// history containing a gate fail branch — the implementation lane's
+	// entire repass loop.
+	journal.EventRunnerAnnotation: true,
 }
 
 // spanUnavailableErrorCode marks the EventError a projection appends in place

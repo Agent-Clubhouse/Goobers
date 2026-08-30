@@ -308,6 +308,22 @@ type Attempt struct {
 	// this stage continues from their work instead of from base — the worker
 	// gets this for free from a shared branch ref, a pod does not.
 	WorkspaceDelta string
+	// WorkspaceBranch is the run's rebound workspace branch (#392): empty while
+	// the run is on the branch the pod can derive for itself (namespace +
+	// workflow + run id), and the branch a stage bound with the well-known
+	// `workspaceBranch` output once one has — pr-remediation binds it to the
+	// claimed PR's head, so every later stage works on the PR's branch.
+	//
+	// A pod cannot derive this, which is the whole reason it is carried: the
+	// derivation composes the RUN branch, which is exactly the branch a rebound
+	// run is not on.
+	WorkspaceBranch string
+	// SyncBase asks the in-pod checkout to merge the freshly fetched base into
+	// the branch it landed on, the way the local runner's worktree provisioner
+	// does for a stage declaring run.syncBase (#813). Only meaningful for a
+	// writable repo workspace, and only for a branch that already existed —
+	// a branch created at base is already synced by construction.
+	SyncBase bool
 	// Capabilities is the stage's declared credential capabilities
 	// (apiv1.InvocationEnvelope.Capabilities). The pod resolves them against
 	// the daemon's credential plane at stage START — the dispatch payload
@@ -330,6 +346,15 @@ type Attempt struct {
 	// whole InvocationEnvelope and its goober's resolved execution inputs, which
 	// travel as a claim check (internal/agentickit) rather than on the pod spec.
 	Agentic bool
+	// Review marks an AGENTIC attempt that is a reviewer GATE evaluation
+	// (decision 001 rulings 7–8): the pod drives the goober in the harness's
+	// review mode and surrenders a Verdict instead of a stage result. It
+	// rides the attempt, not the pod spec — the kit writer stamps it as
+	// agentickit.Kit.Mode inside the verified claim check, so a pod learns
+	// which completion contract it owes from the same content-addressed
+	// document that carries its instructions, never from a listable env var.
+	// Meaningless without Agentic; Dispatch refuses the combination.
+	Review bool
 	// Envelope is the invocation an AGENTIC stage executes. Nil for every
 	// deterministic stage, whose inputs are the declared command and its
 	// stamped environment.
@@ -623,6 +648,13 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 	// An agentic stage's kit is published BEFORE the pod exists, and a failure
 	// to publish refuses the attempt rather than creating a pod that would find
 	// no kit and fail with something obscure inside the container.
+	if attempt.Review && !attempt.Agentic {
+		// A review is a completion contract for a goober invocation; a
+		// declared command has no verdict to write. Refused here, before a
+		// pod or a kit exists, rather than surfacing as "surrendered result
+		// carries no verdict" after the stage ran.
+		return Report{}, fmt.Errorf("dispatcher: stage %s of run %s is marked review but not agentic; only a goober invocation can produce a verdict", attempt.Stage, attempt.RunID)
+	}
 	if attempt.Agentic {
 		if d.cfg.KitWriter == nil {
 			return Report{}, fmt.Errorf("dispatcher: agentic stage %s of run %s requires a kit writer; none is configured", attempt.Stage, attempt.RunID)

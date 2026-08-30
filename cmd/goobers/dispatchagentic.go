@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -28,18 +29,41 @@ import (
 // applied, and the divergence would show up as a differently-behaved agent
 // rather than as an error.
 
-// runAgenticStage executes an agentic stage inside a pod and returns the
-// envelope to surrender.
-func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) apiv1.ResultEnvelope {
+// runAgenticStage executes an agentic stage inside a pod and returns what it
+// owes the surrender plane: the envelope for an invocation, the envelope plus
+// the Verdict for a review (agentickit.ModeReview — decision 001 rulings 7–8).
+func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 	digest := strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest))
 	if digest == "" {
-		return failureEnvelope("agentic_kit_missing", "no agentic kit digest was stamped on this pod")
+		// These first two refusals precede the kit, so they precede
+		// kit.IsReview() and the fail closure below: the pod cannot know
+		// whether it was dispatched as a review, and so cannot stamp the
+		// review-only Retryable class. The ENGINE knows (input.Review) and
+		// classifies both codes as infrastructure faults on its side
+		// (engine.reviewActivityResult, #3888).
+		return stageOutcome{Result: failureEnvelope(dispatcher.CodeAgenticKitMissing, "no agentic kit digest was stamped on this pod")}
 	}
 	kit, err := fetchAgenticKit(ctx, digest)
 	if err != nil {
 		// Fail closed and name the kit. A stage that proceeded without its kit
 		// would run with no instructions at all.
-		return failureEnvelope("agentic_kit_unavailable", err.Error())
+		return stageOutcome{Result: failureEnvelope(dispatcher.CodeAgenticKitUnavailable, err.Error())}
+	}
+	// fail shapes every refusal past this point. For a REVIEW the class
+	// matters in a way it does not for an invocation: a task's surrendered
+	// failure is a business outcome the workflow branches on, but a gate has
+	// no branch for "the pod could not start", so the engine reads
+	// Retryable as the pod's own infra/policy classification and retries a
+	// substrate fault on a fresh pod under the gate's evaluator retry bound
+	// (engine.reviewActivityResult). A verdict failure stays policy-classed
+	// and fails the run; a harness failure carries the harness's own class
+	// (see the review arm below), as the self arm's ReviewGoober does.
+	fail := func(code string, err error) stageOutcome {
+		envelope := failureEnvelope(code, err.Error())
+		if kit.IsReview() && reviewSubstrateFailure(code) {
+			envelope.Error.Retryable = substrateRetryable(err)
+		}
+		return stageOutcome{Result: envelope}
 	}
 
 	// An agentic stage needs its workspace PROVISIONED and STAMPED, exactly as
@@ -53,11 +77,11 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Result
 	// it, and resolving twice would mint two credentials for one stage.
 	minted, err := resolveStageCredentials(ctx)
 	if err != nil {
-		return failureEnvelope("credential_resolve_failed", err.Error())
+		return fail("credential_resolve_failed", err)
 	}
 	workspace, err := os.Getwd()
 	if err != nil {
-		return failureEnvelope("workspace_provision_failed", fmt.Sprintf("resolve workspace: %v", err))
+		return fail("workspace_provision_failed", fmt.Errorf("resolve workspace: %w", err))
 	}
 	// The checkout may use a credential the AGENT never receives (#3770): it
 	// provisions the working tree and is excluded from buildPodAgenticExecutor
@@ -65,10 +89,10 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Result
 	// stage actually declared.
 	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
 	if checkoutErr != nil {
-		return failureEnvelope("credential_resolve_failed", checkoutErr.Error())
+		return fail("credential_resolve_failed", checkoutErr)
 	}
 	if err := checkoutRepoWorkspace(ctx, workspace, stderr, append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...)); err != nil {
-		return failureEnvelope("workspace_provision_failed", err.Error())
+		return fail("workspace_provision_failed", err)
 	}
 	// The stamp the harness actually reads.
 	kit.Envelope.Workspace = workspace
@@ -80,26 +104,115 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Result
 	// alone knows about cannot be filled from out here.
 	runsDir, err := os.MkdirTemp("", "goobers-agentic-runs-*")
 	if err != nil {
-		return failureEnvelope("workspace_provision_failed", fmt.Sprintf("create runs dir: %v", err))
+		return fail("workspace_provision_failed", fmt.Errorf("create runs dir: %w", err))
 	}
 
 	// Fetch this stage's upstream artifacts BEFORE the harness looks for them.
 	// See dispatchcontext.go: without this every artifact-backed pointer fails
 	// to resolve, because a pod's staging root starts empty.
 	if err := materializePodContext(ctx, runsDir, kit.Envelope, stderr); err != nil {
-		return failureEnvelope("context_materialize_failed", err.Error())
+		return fail("context_materialize_failed", err)
+	}
+
+	if kit.IsReview() {
+		// The reviewer's diff evidence (#301 parity on the pod path; decision
+		// 001 ruling 7): computed HERE, by this binary, from the checkout the
+		// delta was just applied to — never reported by a model — and handed
+		// to the reviewer as the "<gate>.diff" context pointer exactly as the
+		// local runner's recordReviewerDiff does. It has to run AFTER the
+		// checkout (so the diff sees the subject stage's commits) and BEFORE
+		// the harness resolves the envelope's pointers, and it fails closed:
+		// a reviewer judging without the evidence it was promised produces a
+		// confident verdict about the wrong change.
+		//
+		// The checkout credential is registered with the diff's scrubber even
+		// though the AGENT never sees it: a commit could have captured it, and
+		// the diff is journaled.
+		pointer, derr := recordPodReviewerDiff(ctx, workspace, runsDir, os.Getenv(dispatcher.EnvStage),
+			append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...), stderr)
+		if derr != nil {
+			return fail("reviewer_diff_failed", derr)
+		}
+		if pointer != nil {
+			kit.Envelope.ContextPointers = append(kit.Envelope.ContextPointers, *pointer)
+		}
 	}
 
 	exec, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
 	if err != nil {
-		return failureEnvelope("agentic_executor_unavailable", err.Error())
+		return fail("agentic_executor_unavailable", err)
+	}
+
+	if kit.IsReview() {
+		// The SAME executor and the SAME constructor as an invocation — only
+		// the completion contract differs: harness.Executor.Review drives
+		// ModeReview and validates the verdict against the shared schema.
+		// The surrendered Result carries a bare success: the verdict IS the
+		// outcome, and the engine routes on it after its own re-validation.
+		verdict, err := exec.Review(ctx, kit.Envelope)
+		if err != nil {
+			// The harness's own class survives the surrender plane only as
+			// Retryable, so it is committed HERE, where the marker is still
+			// visible: harness.Executor.Review marks a session that ended
+			// without a completion (ErrNoCompletion) as an
+			// invoke.InfrastructureFailure, and the self arm's ReviewGoober
+			// hands exactly that class to classifySeamError, so the gate's
+			// evaluator retry bound covers it there. A pod that dropped the
+			// class would fail the run where the worker would retry. A
+			// verdict the schema refused, or a harness that would not run,
+			// carries no marker and stays the review's own outcome.
+			outcome := fail("agentic_review_failed", err)
+			outcome.Result.Error.Retryable = invoke.IsInfrastructureFailure(err)
+			return outcome
+		}
+		return stageOutcome{
+			Result:  apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "reviewer verdict surrendered"},
+			Verdict: &verdict,
+		}
 	}
 
 	result, err := exec.Invoke(ctx, kit.Envelope)
 	if err != nil {
-		return failureEnvelope("agentic_invocation_failed", err.Error())
+		return fail("agentic_invocation_failed", err)
 	}
-	return result
+	return stageOutcome{Result: result}
+}
+
+// reviewSubstrateFailure names the pod-side refusals that are faults of the
+// SUBSTRATE — the credential plane, the checkout, the blob plane, the runner
+// image — rather than of the review itself. A review that fails here never
+// reached its harness, so a fresh pod may well succeed; the engine reads the
+// Retryable marking this drives and retries under the gate's evaluator
+// retry bound. Everything else (a harness that would not run, a verdict
+// the schema refused, the diff evidence failing) is the review's own
+// outcome and fails the run.
+func reviewSubstrateFailure(code string) bool {
+	switch code {
+	case "credential_resolve_failed", "workspace_provision_failed", "context_materialize_failed", "agentic_executor_unavailable":
+		return true
+	}
+	return false
+}
+
+// substrateRetryable narrows reviewSubstrateFailure's Retryable stamp to what
+// the failure actually is, rather than marking every substrate code
+// unconditionally retryable. A *dispatcher.CredentialResolveRefusal is the
+// credential plane's own judgement on THIS request (403
+// capability_undeclared, 409 gate_pin_missing, and the like) — deterministic,
+// so a fresh pod asks the plane the same question and gets the same refusal,
+// and spending a retry on it is pointless: Retryable is false. Everything
+// else this function sees — a dial error or a 5xx the plane never got to
+// answer, a checkout or context-materialize fault that never asked the plane
+// anything, a pod-local harness-construction fault (agentic_executor_
+// unavailable's own errors never wrap a plane response at all) — is
+// transport- or infra-shaped, exactly what a fresh pod's retry exists to
+// ride out, so it keeps the historical Retryable=true.
+func substrateRetryable(err error) bool {
+	var refusal *dispatcher.CredentialResolveRefusal
+	if errors.As(err, &refusal) {
+		return !refusal.Deterministic()
+	}
+	return true
 }
 
 // fetchAgenticKit reads the kit from the blob plane and verifies it against the
@@ -430,6 +543,20 @@ func (r podArtifactRecorder) RecordArtifactBoundedWithIntegrity(name string, dat
 		scrubbed = scrubbed[:maxBytes]
 	}
 	return r.RecordArtifact(name, scrubbed)
+}
+
+// RecordArtifactWithIntegrity satisfies the integrity recorder
+// internal/executor asserts on at RUN time (executor's
+// integrityArtifactRecorder). CIPollExecutor's failing-CI arm requires it to
+// record ci-checks.json, and the assertion is a plain type switch that
+// returns "CI failure evidence integrity recorder is unavailable" when it
+// misses — so without this method a pod ci-poll would fail on exactly the
+// runs the evidence exists for (#3881), while a passing poll on the same pod
+// succeeded. The provenance grade is not carried through the journal plane
+// today (nor is it by RecordArtifactBoundedWithIntegrity above), so it is
+// accepted and dropped rather than silently changing the artifact's bytes.
+func (r podArtifactRecorder) RecordArtifactWithIntegrity(name string, data []byte, _ apiv1.Integrity) (journal.Ref, error) {
+	return r.RecordArtifact(name, data)
 }
 
 // Dir satisfies the interface{ Dir() string } the executor asserts for its

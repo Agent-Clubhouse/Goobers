@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // scriptedDeterministic fails with each scripted error in order, then
@@ -191,25 +194,86 @@ func TestMixedInfraAndPolicyBudgets(t *testing.T) {
 }
 
 // TestTransientWorkspaceProvisioningIsInfrastructure mirrors #572: a
-// transient worktree-provision failure marked at the invoke seam flows
-// through the bounded infrastructure budget without the executor ever
-// running, and a second provision succeeds.
+// transient worktree-provision failure reaches the activity boundary as an
+// infrastructure-class error rather than being mistaken for a stage failure.
 func TestTransientWorkspaceProvisioningIsInfrastructure(t *testing.T) {
-	workspaces := testWorkspaces(t)
-	workspaces.provisionErrs = []error{invoke.InfrastructureFailure(errors.New("clone: 503 Service Unavailable"))}
-	det := &scriptedDeterministic{}
-	var ts testsuite.WorkflowTestSuite
-	env := temporaltest.NewWorkflowEnvironment(&ts)
-	env.RegisterActivity(&Activities{Det: det, Workspaces: workspaces})
-	env.ExecuteWorkflow(Run, runInput("workspace-flaky", retrySpec(nil)))
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatalf("workflow error: %v", err)
+	gitDir := t.TempDir()
+	// Write both a POSIX shell shim and a Windows .cmd shim with the same
+	// base name: exec.LookPath resolves "git" via PATHEXT on Windows, where
+	// the extensionless POSIX script alone is never found (it would fall
+	// through to the real git binary elsewhere on PATH and issue an
+	// unintended network operation instead of exercising this branch).
+	gitPath := filepath.Join(gitDir, "git")
+	if err := os.WriteFile(gitPath, []byte("#!/bin/sh\nprintf '%s\\n' \"fatal: The requested URL returned error: 503\" >&2\nexit 128\n"), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
 	}
-	if got := det.callCount(); got != 1 {
-		t.Fatalf("executor dispatches = %d, want 1 (the provisioning failure never reached the executor)", got)
+	gitCmdPath := filepath.Join(gitDir, "git.cmd")
+	if err := os.WriteFile(gitCmdPath, []byte("@echo off\r\necho fatal: The requested URL returned error: 503 1>&2\r\nexit /b 128\r\n"), 0o755); err != nil {
+		t.Fatalf("write git.cmd shim: %v", err)
 	}
-	if got := len(workspaces.provisioned()); got != 1 {
-		t.Fatalf("successful provisions = %d, want 1", got)
+	t.Setenv("PATH", gitDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	manager, err := worktree.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	provisioner := managerProvisioner{manager: manager}
+	activity := &Activities{
+		Det:        &scriptedDeterministic{},
+		Workspaces: provisioner,
+	}
+	_, err = activity.RunDeterministic(context.Background(), apiv1.InvocationEnvelope{
+		RunID:  "workspace-flaky",
+		TaskID: "workspace-flaky:implement",
+	}, apiv1.DeterministicRun{Command: []string{"true"}}, "", "")
+	if err == nil {
+		t.Fatal("RunDeterministic unexpectedly succeeded")
+	}
+	class, classifyErr := ClassifyDispatchFailure(err)
+	if classifyErr != nil {
+		t.Fatalf("attemptFailureClass: %v", classifyErr)
+	}
+	if class != journal.AttemptInfra {
+		t.Fatalf("attempt class = %q, want %q", class, journal.AttemptInfra)
+	}
+}
+
+type managerProvisioner struct {
+	manager *worktree.Manager
+}
+
+func (p managerProvisioner) Provision(ctx context.Context, req WorkspaceRequest) (Workspace, error) {
+	wt, err := p.manager.Create(ctx, worktree.CreateOptions{
+		RepoURL: "https://example.test/repo.git",
+		RunID:   req.RunID,
+		BaseRef: "main",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return managerWorkspace{worktree: wt}, nil
+}
+
+type managerWorkspace struct {
+	worktree *worktree.Worktree
+}
+
+func (w managerWorkspace) Path() string {
+	return w.worktree.Path
+}
+
+func (w managerWorkspace) Remove(ctx context.Context) error {
+	return w.worktree.Remove(ctx, worktree.RemoveOptions{})
+}
+
+func TestClassifySeamErrorPreservesInfrastructureAttemptClass(t *testing.T) {
+	err := classifySeamError(invoke.InfrastructureFailure(errors.New("transient workspace failure")))
+	class, classifyErr := ClassifyDispatchFailure(err)
+	if classifyErr != nil {
+		t.Fatalf("attemptFailureClass: %v", classifyErr)
+	}
+	if class != journal.AttemptInfra {
+		t.Fatalf("attempt class = %q, want %q", class, journal.AttemptInfra)
 	}
 }
 

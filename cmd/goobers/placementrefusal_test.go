@@ -320,7 +320,7 @@ func TestDaemonStartsWithOneUnsatisfiableWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the daemon must start with an unsatisfiable workflow in config (boot never kills, #2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	var refused, healthy *localscheduler.WorkflowEntry
 	for i := range setup.Entries {
@@ -401,7 +401,7 @@ func TestRemoteOnlyStageValidatesButBootRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot must never kill (#2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	var refused *localscheduler.WorkflowEntry
 	for i := range setup.Entries {
 		if setup.Entries[i].Workflow == "win-build" {
@@ -482,7 +482,7 @@ func TestRemoteOnlyCapabilityRefusalSurfacesInStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot must never kill (#2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	localscheduler.New(setup.Entries, setup.InstanceLog)
 
 	events, err := journal.ReadInstanceLog(setup.InstanceLog.Dir())
@@ -649,7 +649,7 @@ func TestDaemonZeroDeclarationKeepsLegacyBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a zero-declaration instance must start with an unclaimed capability: %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	for _, entry := range setup.Entries {
 		if entry.PlacementRefusal != "" {
 			t.Fatalf("zero-declaration entries must never carry a boot refusal, got %q on %q", entry.PlacementRefusal, entry.Workflow)
@@ -772,21 +772,26 @@ func TestValidatePlacementCoversPlacedGate(t *testing.T) {
 	if strings.Contains(stdout, "RNR001") || strings.Contains(stdout, "WF023") {
 		t.Errorf("satisfiable placed gate must produce no placement finding:\n%s", stdout)
 	}
-	// Valid, but not yet honoured at execution (decision 001 rulings 7–8):
-	// the satisfiable placement still carries the WF024 warning.
-	if !strings.Contains(stdout, "WARNING WF024 ") || !strings.Contains(stdout, `Workflow/win-build: gate "review" declares runsOn`) || !strings.Contains(stdout, "no execution path honours a gate placement yet") {
-		t.Errorf("a placed gate must carry the WF024 not-yet-honoured warning:\n%s", stdout)
+	// The WF024 "not yet honoured" warning retired with decision 001's
+	// engine/pod half: a placed gate is honoured at execution now.
+	if strings.Contains(stdout, "WF024") {
+		t.Errorf("a placed gate must not carry the retired WF024 warning:\n%s", stdout)
 	}
 }
 
 // TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses pins the documented
 // consequence (dsl-3.0.md §2 Gates) of declaring a gate placement the daemon's
-// own substrate cannot satisfy while the engine half is unlanded: checkpoint 1
-// is clean (the declared remote runner satisfies it; WF024 warns), and
-// checkpoint 3 marks the workflow refused exactly as it would for a task —
-// deliberately, because the daemon can neither dispatch the reviewer nor
-// honour its declared placement in-process, and refusing is the only arm
-// that never runs the reviewer outside its declared isolation.
+// own substrate cannot satisfy: checkpoint 1 is clean (the declared remote
+// runner satisfies it), and checkpoint 3 marks the workflow refused exactly
+// as it would for a task — deliberately, because a DAEMON-scheduled run
+// still drives through internal/runner, whose gate arm has no dispatch seam
+// and will not get one (decision 005: the engine walk becomes the single
+// driver for every trigger kind, so a scheduled run reaches evaluateGate's
+// dispatch arm once the scheduler's Starter delegates to the engine
+// registry; engine-start runs already do). Until then the daemon can
+// neither dispatch the reviewer nor honour its declared placement
+// in-process, and refusing is the only arm that never runs the reviewer
+// outside its declared isolation.
 func TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses(t *testing.T) {
 	root := initDeterministicDemo(t)
 	declareInventory(t, root)
@@ -798,11 +803,8 @@ func TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("validate code = %d, want 0 (the declared remote runner satisfies the gate); stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if strings.Contains(stdout, "RNR001") {
-		t.Errorf("checkpoint 1 must not flag a remote-satisfiable gate:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "WARNING WF024 ") || !strings.Contains(stdout, `Workflow/win-build: gate "review" declares runsOn`) {
-		t.Errorf("checkpoint 1 must warn that the gate placement is not honoured yet:\n%s", stdout)
+	if strings.Contains(stdout, "RNR001") || strings.Contains(stdout, "WF024") {
+		t.Errorf("checkpoint 1 must not flag a remote-satisfiable gate (and WF024 is retired):\n%s", stdout)
 	}
 
 	var wg sync.WaitGroup
@@ -810,7 +812,7 @@ func TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot must never kill (#2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	var refused *localscheduler.WorkflowEntry
 	for i := range setup.Entries {
 		if setup.Entries[i].Workflow == "win-build" {

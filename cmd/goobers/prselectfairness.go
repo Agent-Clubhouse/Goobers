@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/localscheduler"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/providers"
 )
@@ -110,21 +110,29 @@ func observePRSelectEligibility(
 ) (prSelectEligibilityObservation, error) {
 	l := layoutFor(root)
 	path := filepath.Join(l.SchedulerDir(), prSelectFairnessFileName)
+	ledger, err := openStageClaimLedger(l)
+	if err != nil {
+		return prSelectEligibilityObservation{}, fmt.Errorf("open claim ledger: %w", err)
+	}
 	var observation prSelectEligibilityObservation
-	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), "pr-select.fairness-observe", func() error {
+	err = ledger.Locked(claimContext(), "pr-select.fairness-observe", func(tx claimsclient.Ledger) error {
 		state, err := readPRSelectFairnessFile(path)
 		if err != nil {
 			return err
 		}
-		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
-		if err != nil {
-			return fmt.Errorf("open claim ledger: %w", err)
-		}
 		scope := prSelectFairnessScope(repo)
 		gaggle := providerGaggle()
 		currentRunID := os.Getenv("GOOBERS_RUN_ID")
+		claims, err := pullRequestClaimListing(tx, gaggle, repo.Provider)
+		if err != nil {
+			return err
+		}
+		held, err := tx.ForRunAll(claimContext(), currentRunID)
+		if err != nil {
+			return fmt.Errorf("read this run's claims: %w", err)
+		}
 		observation.CurrentRunHasLiveClaim = currentRunHasLivePullRequestClaim(
-			ledger, gaggle, currentRunID, now,
+			held, gaggle, repo.Provider, currentRunID, now,
 		)
 		observedNumbers := make(map[int]bool, len(observed))
 		for _, pr := range observed {
@@ -149,7 +157,7 @@ func observePRSelectEligibility(
 		observation.EligibleSince = make(map[int]time.Time, len(eligible))
 		for _, pr := range eligible {
 			claimed, ownedByCurrentRun := pullRequestClaimStatus(
-				ledger, gaggle, pr.Number, currentRunID, now,
+				claims, gaggle, repo.Provider, pr.Number, currentRunID, now,
 			)
 			if claimed {
 				if ownedByCurrentRun {
@@ -179,20 +187,85 @@ func observePRSelectEligibility(
 	return observation, err
 }
 
+// pullRequestClaimListing is the one namespace read the PR claim-status
+// filters consult: the gaggle's own repository-provider namespace (its
+// legacy unscoped entries included, which the ledger holds exclusive against
+// every scoped claimant), or the legacy namespace alone when the stage runs
+// ungaggled. provider must be the claiming PR's own repository provider
+// (#3649) — a hardcoded provider would silently narrow the listing to a
+// different provider's namespace and hide another provider's live claims.
+//
+// For a non-GitHub provider this ALSO reads the gaggle's github namespace
+// (#3649 follow-up): every build before this change wrote every
+// gaggle-scoped PR claim — ADO and Gitea repositories included — under a
+// hardcoded ProviderGitHub key. A claim leased by one of those builds still
+// lives under that key until it naturally expires, so a purely
+// provider-scoped read would make it invisible and let the first
+// post-upgrade selection claim and process the same PR concurrently.
+// Entries already covered by the primary read (the gaggle's own legacy
+// unscoped claims) are excluded from this second read to avoid double
+// counting them.
+func pullRequestClaimListing(ledger claimsclient.Ledger, gaggle string, provider providers.ProviderKind) (claimsclient.Listing, error) {
+	providerNamespace := ""
+	if gaggle != "" {
+		providerNamespace = string(provider)
+	}
+	claims, err := ledger.ListNamespace(claimContext(), gaggle, providerNamespace)
+	if err != nil {
+		return claimsclient.Listing{}, fmt.Errorf("read PR claims: %w", err)
+	}
+	if gaggle != "" && provider != providers.ProviderGitHub {
+		legacy, err := ledger.ListNamespace(claimContext(), gaggle, string(providers.ProviderGitHub))
+		if err != nil {
+			return claimsclient.Listing{}, fmt.Errorf("read legacy github-scoped PR claims: %w", err)
+		}
+		for _, entry := range legacy.Entries {
+			if entry.Gaggle == gaggle && entry.Provider == string(providers.ProviderGitHub) {
+				claims.Entries = append(claims.Entries, entry)
+			}
+		}
+		for _, entry := range legacy.History {
+			if entry.Gaggle == gaggle && entry.Provider == string(providers.ProviderGitHub) {
+				claims.History = append(claims.History, entry)
+			}
+		}
+	}
+	return claims, nil
+}
+
+// currentRunHasLivePullRequestClaim reports whether held — the current
+// run's claims (Ledger.ForRunAll) — carries a live PR lease in gaggle's
+// namespace. For a non-GitHub provider this also recognizes a lease held
+// under the legacy hardcoded-github namespace (#3649 follow-up): ForRunAll
+// already returns every claim the run holds regardless of provider scope, so
+// a pre-migration ADO/Gitea claim is present here — it just needs the same
+// legacy-namespace fallback pullRequestClaimStatus applies, or a run that
+// leased a PR before this build's rollout would stop recognizing it as its
+// own.
 func currentRunHasLivePullRequestClaim(
-	ledger *localscheduler.ClaimLedger,
+	held []claimsclient.Entry,
 	gaggle string,
+	provider providers.ProviderKind,
 	currentRunID string,
 	now time.Time,
 ) bool {
 	if currentRunID == "" {
 		return false
 	}
-	for _, entry := range ledger.ForRunAll(currentRunID) {
+	for _, entry := range held {
 		if !entry.ExpiresAt.After(now) || !strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
 			continue
 		}
-		if entry.Gaggle == "" || (entry.Gaggle == gaggle && entry.Provider == string(providers.ProviderGitHub)) {
+		if entry.Gaggle == "" {
+			return true
+		}
+		if entry.Gaggle != gaggle {
+			continue
+		}
+		if entry.Provider == string(provider) {
+			return true
+		}
+		if provider != providers.ProviderGitHub && entry.Provider == string(providers.ProviderGitHub) {
 			return true
 		}
 	}
@@ -200,27 +273,35 @@ func currentRunHasLivePullRequestClaim(
 }
 
 func pullRequestClaimStatus(
-	ledger *localscheduler.ClaimLedger,
+	claims claimsclient.Listing,
 	gaggle string,
+	provider providers.ProviderKind,
 	number int,
 	currentRunID string,
 	now time.Time,
 ) (claimed, ownedByCurrentRun bool) {
 	var (
-		entry localscheduler.ClaimEntry
+		entry claimsclient.Entry
 		ok    bool
 	)
 	if gaggle == "" {
-		entry, ok = ledger.Lookup(pullRequestClaimKey(number))
+		entry, ok = claims.Lookup(claimsclient.Key{ExternalID: pullRequestClaimKey(number)})
 	} else {
-		if legacy, held := ledger.Lookup(pullRequestClaimKey(number)); held && legacy.ExpiresAt.After(now) {
+		if legacy, held := claims.Lookup(claimsclient.Key{ExternalID: pullRequestClaimKey(number)}); held && legacy.ExpiresAt.After(now) {
 			return true, false
 		}
-		entry, ok = ledger.LookupScoped(localscheduler.ClaimKey{
-			Gaggle:     gaggle,
-			Provider:   string(providers.ProviderGitHub),
-			ExternalID: pullRequestClaimKey(number),
-		})
+		entry, ok = claims.Lookup(pullRequestClaimLedgerKey(gaggle, provider, number))
+		if !ok && provider != providers.ProviderGitHub {
+			// Pre-#3649 builds wrote every gaggle-scoped PR claim under a
+			// hardcoded ProviderGitHub key regardless of the repository's
+			// real provider. A non-GitHub claim leased before the upgrade
+			// still lives under that key until it naturally expires — fall
+			// back to it here (pullRequestClaimListing already fetched it
+			// into claims) so it stays visible instead of letting the first
+			// post-upgrade selection claim and process the same PR
+			// concurrently.
+			entry, ok = claims.Lookup(pullRequestClaimLedgerKey(gaggle, providers.ProviderGitHub, number))
+		}
 	}
 	if !ok || !entry.ExpiresAt.After(now) {
 		return false, false

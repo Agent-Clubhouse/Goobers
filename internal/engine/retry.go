@@ -101,6 +101,11 @@ func dispatchWithRetry(ctx workflow.Context, t apiv1.Task, rec *runJournal, poin
 			if temporal.IsCanceledError(err) || ctx.Err() != nil {
 				return apiv1.ResultEnvelope{}, err
 			}
+			// Placement provenance for THIS attempt, before anything the
+			// attempt's outcome decides (#3875). Journaled for a failed
+			// dispatch too when the dispatch reported one, so the record of
+			// where an attempt ran does not depend on whether it succeeded.
+			rec.placement(ctx, t.Name, int(attempt), class, activityResult)
 			rec.recordDeferredRunBranch(ctx, err, res, len(activityResult.Mutations) > 0)
 			if err == nil {
 				res.Artifacts = normalizeArtifactIntegrity(t.Type, res.Artifacts)
