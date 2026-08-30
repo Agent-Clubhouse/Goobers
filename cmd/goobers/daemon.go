@@ -1295,8 +1295,18 @@ func (s *schedulerSetup) Shutdown(ctx context.Context) error {
 	return s.shutdownErr
 }
 
+// testInjectedShutdownStepErr is a test-only seam (#3851): when set, an
+// extra shutdown step returning this error is appended so command-level
+// tests can exercise a real Shutdown failure end-to-end — through `run` and
+// `signal`'s full instance/scheduler setup — without contriving a genuine
+// telemetry-flush or store-close failure. Nil in production.
+var testInjectedShutdownStepErr error
+
 func (s *schedulerSetup) shutdownSteps(ctx context.Context) []shutdownStep {
 	var steps []shutdownStep
+	if testInjectedShutdownStepErr != nil {
+		steps = append(steps, shutdownStep{"test-injected failure", func() error { return testInjectedShutdownStepErr }})
+	}
 	if s.Telemetry != nil {
 		steps = append(steps, shutdownStep{"telemetry client", func() error { return s.Telemetry.Shutdown(ctx) }})
 	}

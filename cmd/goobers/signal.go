@@ -37,7 +37,7 @@ const signalHelp = "Usage: goobers signal <name> [path]\n\n" +
 // (#169, once the daemon has a write-capable API surface) is the planned
 // future caller of Scheduler.Signal; this CLI path has no opinion on
 // delivery mechanism and works standalone in the meantime.
-func runSignal(args []string, stdout, stderr io.Writer) int {
+func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 	fs := newCLIFlagSet("signal", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "signal")
@@ -96,12 +96,17 @@ func runSignal(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer func() {
-		// #3651: surface a lost final flush or close rather than exiting as if
+		// #3851: surface a lost final flush or close rather than exiting as if
 		// the signal command shut down cleanly. The signal itself is already
-		// committed at this point, so the diagnostic is reported without
-		// changing the command's exit code.
+		// committed at this point, but the issue requires not reporting clean
+		// completion after losing final persisted state, so a shutdown
+		// failure here downgrades an otherwise-successful result to failure;
+		// it never masks a run-outcome exit code that is already non-zero.
 		if err := setup.Shutdown(context.Background()); err != nil {
 			pf(stderr, "error: shut down scheduler services: %v\n", err)
+			if result == 0 {
+				result = 1
+			}
 		}
 	}()
 	if err := claimRecovery.finish(ctx, l, setup, stderr); err != nil {
