@@ -95,9 +95,15 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 		pf(stderr, "dispatch-exec: %s\n", line)
 	}
 
-	outcome := runStage(ctx, stdout, stderr)
+	// Stage liveness for the daemon's stall sweep (#3875). Started immediately
+	// before the stage and stopped immediately after it, on every path — the
+	// heartbeat must cover exactly the window in which there is something alive
+	// to report on, and no longer. Stop() waits for the goroutine, so nothing
+	// is still emitting when the surrender PUT below runs.
+	stageCtx, heartbeat := startPodStageHeartbeat(ctx, stderr)
+	outcome := runStage(stageCtx, stdout, stderr)
+	heartbeat.Stop()
 	envelope := outcome.Result
-
 	// Carry whatever this stage committed to the next one (#3763). This pod is
 	// about to be disposed, so a commit that does not leave here does not exist
 	// downstream — on the worker the shared branch ref does this for free.
@@ -327,8 +333,13 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	cmd.Env = append(append(stageEnvironment(), credEnv...), extraEnv...)
 	capturedStdout := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
 	capturedStderr := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
-	cmd.Stdout = io.MultiWriter(stdout, capturedStdout)
-	cmd.Stderr = io.MultiWriter(stderr, capturedStderr)
+	// The third writer is the stage-heartbeat progress signal (#3875): output
+	// is what "this stage is alive" means for a declared command, exactly as it
+	// does for internal/executor/shell.go's capturingWriter on a self runner. A
+	// no-op when no heartbeat is running.
+	progress := podStageProgress(ctx)
+	cmd.Stdout = io.MultiWriter(stdout, capturedStdout, progress)
+	cmd.Stderr = io.MultiWriter(stderr, capturedStderr, progress)
 
 	// proc.Start + a tree-kill on timeout (not exec.CommandContext, whose
 	// context-cancel path only reaches the direct child): the declared
