@@ -79,6 +79,25 @@ type InvocationEnvelope struct {
 	// the envelope, so without this the agentic seam cannot know WHICH goober
 	// to construct: invoke.Goober.Invoke(ctx, env) is the whole signature.
 	Goober string `json:"goober,omitempty"`
+	// GooberDigest is the content digest of the goober kit this run was
+	// admitted against (workflow.ComputeGooberDigest over the participating
+	// goobers' resolved specs, instruction bodies and skill packages), pinned
+	// at run start and carried unchanged on every attempt of every stage.
+	//
+	// It is a SELECTOR, not decoration (#3884). The local runner resolves its
+	// kit in the same process that recorded the digest, so it cannot drift;
+	// a Temporal worker resolves the kit from its OWN config tree, which
+	// reloads independently, so without this field on the wire attempt N+1 of
+	// a run could silently execute different instructions than attempt N —
+	// the I-51 staleness class, one layer up. The worker matches this value
+	// against the digest its snapshot resolves for (Gaggle, WorkflowID) and
+	// refuses the attempt when it cannot serve it, rather than substituting
+	// whatever it currently has.
+	//
+	// Empty means unpinned: every envelope built before this field existed,
+	// and every run started without a digest. Unpinned attempts resolve the
+	// worker's current tree exactly as before, byte for byte.
+	GooberDigest string `json:"gooberDigest,omitempty"`
 	// Goal is the stage's goal statement.
 	Goal string `json:"goal"`
 	// OwnershipBoundary is the work this invocation owns and may mutate.

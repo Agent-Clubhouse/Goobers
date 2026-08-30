@@ -558,6 +558,33 @@
           "minLength": 1,
           "pattern": "^\\S+$",
           "description": "Task queue used for engine workflows and activities. Defaults to `goobers-engine`; GOOBERS_TASK_QUEUE overrides this value."
+        },
+        "hitl": {
+          "description": "Human-in-the-loop posture for engine-driven runs (goobers.hitl.v1). Opt-in: when omitted or disabled, an engine run settles at its terminal exactly as it did before the protocol existed and operator interventions on it are refused. When enabled, a resumable terminal is journaled and then held open for the window below so an operator can resolve, rerun, or resume it — which also keeps the run's Temporal workflow, and therefore its scheduler concurrency slot, occupied for that long.",
+          "$ref": "#/$defs/engineHITL"
+        }
+      }
+    },
+    "engineHITL": {
+      "description": "Operator-hold settings for engine-driven runs. The posture is pinned into each run at start, so a change here affects new runs only.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Holds a resumable terminal (escalated or failed) open for an operator instead of settling immediately."
+        },
+        "window": {
+          "description": "How long a resumable terminal is held open for an operator. Defaults to 24h. An expired hold leaves the terminal standing, unchanged.",
+          "$ref": "#/$defs/duration",
+          "examples": ["4h"]
+        },
+        "actors": {
+          "description": "Closed set of operator identities the WORKFLOW will accept an intent from, enforced inside the workflow rather than only at the daemon's API edge. Omitted or empty means any actor the daemon's own authorization already admitted.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "examples": [["ops@example.com"]]
         }
       }
     },
