@@ -27,6 +27,15 @@ describe("Go daemon wire contract", () => {
       "telemetryStats",
       "telemetryErrorSignatures",
       "telemetryErrors",
+      "configSources",
+      "configDocuments",
+      "configDocumentRequest",
+      "configDocument",
+      "configPreviewRequest",
+      "configPreview",
+      "configWriteRequest",
+      "configWriteOutcome",
+      "configAuthoringError",
       "eventInvalidation",
       "errorEnvelope",
     ]);
@@ -38,6 +47,19 @@ describe("Go daemon wire contract", () => {
       category: "transition",
       replayChapter: true,
     });
+    expect(checkedFixtures.configSources.items.map(({ kind }) => kind)).toEqual([
+      "local",
+      "git",
+      "provider",
+    ]);
+    expect(checkedFixtures.configPreviewRequest.changeSet.changes).toHaveLength(2);
+    expect(checkedFixtures.configWriteOutcome).toMatchObject({
+      strategy: "review",
+      review: { id: "review:42" },
+    });
+    expect(checkedFixtures.configAuthoringError.error.code).toBe(
+      "config_stale_revision",
+    );
     expect(checkedUpdateEvent.data.models).toEqual(["instance", "run", "workflow"]);
     expect(checkedErrorEnvelope.error.code).toBe("not_found");
   });
