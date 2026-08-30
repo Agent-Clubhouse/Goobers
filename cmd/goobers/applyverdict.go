@@ -647,7 +647,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// bridge (they return before reaching here); this gate is reached on ADO
 		// only for a PASS.
 		if adoProvider, ok := provider.(*providers.ADOProvider); ok && verdict.Decision == apiv1.VerdictPass {
-			return publishADOPassVerdict(ctx, adoProvider, repo, selectedNumber, current, resultFile, stdout, stderr)
+			return publishADOPassVerdict(ctx, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
 		}
 		pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
 		return 1
@@ -1500,18 +1500,33 @@ func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (
 // surface report-pr-status publishes) that an ADO status-check branch policy can
 // gate on. It emits decision=pass into the result file so merge-review's
 // published-verdict gate advances to merge-pr. See the ADO merge epic (#2061).
+//
+// The verdict is ALSO posted to the PR thread, SHA-pinned to the reviewed
+// head/base exactly as publishADONonPassVerdict pins its own (#2746). The
+// status carries only "pass" — no reviewer attribution, no rationale — so
+// without the thread comment a pass leaves nothing behind for merge-pr to build
+// the merge commit's audit trail from, and the ADO land would keep degrading to
+// a bare title + "Closes #N". A pass is precisely the verdict that merges, so
+// it is precisely the verdict that must be recoverable.
+type adoPassVerdictPublisher interface {
+	providers.PullRequestStatusPublisher
+	PostPullRequestThreadComment(ctx context.Context, repo providers.RepositoryRef, pullID, body string) (providers.Comment, error)
+}
+
 func publishADOPassVerdict(
 	ctx context.Context,
-	provider providers.PullRequestStatusPublisher,
+	provider adoPassVerdictPublisher,
 	repo providers.RepositoryRef,
 	selectedNumber int,
 	current providers.PullRequestSummary,
+	verdict apiv1.Verdict,
 	resultFile string,
 	stdout, stderr io.Writer,
 ) int {
+	pullID := strconv.Itoa(selectedNumber)
 	if _, err := provider.PublishPullRequestStatus(ctx, providers.PullRequestStatusRequest{
 		Repository:  repo,
-		PullID:      strconv.Itoa(selectedNumber),
+		PullID:      pullID,
 		Genre:       "goobers",
 		Name:        "validation",
 		State:       providers.CheckStatePassing,
@@ -1519,7 +1534,12 @@ func publishADOPassVerdict(
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("publish pass verdict status for PR #%d", selectedNumber), err, resultFile)
 	}
-	pf(stdout, "approved PR #%d at %s via goobers/validation PR status\n", selectedNumber, current.HeadSHA)
+	verdict.HeadSHA = current.HeadSHA
+	verdict.BaseSHA = current.BaseSHA
+	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderVerdictComment(verdict)); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("post pass verdict thread comment to PR #%d", selectedNumber), err, resultFile)
+	}
+	pf(stdout, "approved PR #%d at %s via goobers/validation PR status and PR thread\n", selectedNumber, current.HeadSHA)
 	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(apiv1.VerdictPass), "", stderr)
 }
 

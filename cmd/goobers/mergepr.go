@@ -192,6 +192,32 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
+	// #2746: on ADO the merge-review verdict rides on a PR THREAD comment (ADO
+	// PollPullRequest populates no CommentsSince), so recover it HERE — before
+	// the poll->decide->merge lock below — and hand it forward to the commit
+	// message assembly. Doing the round-trip outside the lock is what keeps
+	// #719's serialized window free of the extra provider call that would
+	// reopen the head-move race; nothing about the merge DECISION depends on
+	// what is recovered (every conjunct is still re-checked in-lock against the
+	// live poll), it only supplies the reviewer attribution and rationale the
+	// merge commit records, and it is re-pinned to the locked poll's own head
+	// before any of it is used. A PR with no recoverable pass verdict on its
+	// thread still lands with the title + closing refs, exactly as before.
+	var adoVerdict *apiv1.Verdict
+	adoVerdictAuthor := ""
+	if isADO && strings.TrimSpace(commitMessage) == "" {
+		threadProvider, ok := stageProvider.(adoThreadVerdictProvider)
+		if !ok {
+			pf(stderr, "error: repository provider %q does not support pull request thread comments\n", repo.Provider)
+			return 1
+		}
+		var err error
+		adoVerdict, adoVerdictAuthor, err = recoverADOThreadVerdict(ctx, threadProvider, repo, pullNumber)
+		if err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("recover merge-review verdict from pr #%s thread", pullNumber), err, resultFile)
+		}
+	}
+
 	// #719: with merge-review's readiness allowing several concurrent runs
 	// to review DIFFERENT PRs at once (distinct-PR concurrency is already
 	// claim-ledger-safe, per pr-select), only ONE PR may be inside the
@@ -334,16 +360,16 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 			switch {
 			case isADO:
 				// THE single hard blocker (merge-wiring-plan §1a/§2/§8): ADO
-				// PollPullRequest returns an empty CommentsSince (there is no
-				// merge-review sticky-verdict comment surface on ADO), so
+				// PollPullRequest returns an empty CommentsSince (the merge-review
+				// verdict rides on a PR thread instead), so
 				// structuredMergeCommitMessage's pinnedPassVerdict lookup ALWAYS
 				// fails on ADO — a clean pass with a green Build policy would set
 				// commitErr and hard-return 1 below, never landing. Build the
-				// commit directly from the PR's own title + closing refs (the same
-				// non-verdict assembly structuredMergeCommitMessage does at
-				// mergepr.go:443-453), bypassing the verdict comment. verdictAuthor
-				// is not required on ADO (no comment to attribute).
-				commitTitle, mergeCommitMessage, commitErr = adoMergeCommitMessage(poll)
+				// commit from the PR's own title + closing refs plus the verdict
+				// recovered from the thread BEFORE this lock (#2746), so the land
+				// carries the same reviewer attribution and rationale the GitHub
+				// assembly records without a second in-lock provider round-trip.
+				commitTitle, mergeCommitMessage, commitErr = adoMergeCommitMessage(poll, adoVerdict, adoVerdictAuthor)
 				if commitErr != nil {
 					return nil
 				}
@@ -530,26 +556,81 @@ func structuredMergeCommitMessage(poll providers.PullRequestPollResult, verdictA
 	return title, strings.Join(parts, "\n\n"), nil
 }
 
+// adoThreadVerdictProvider is the Azure DevOps surface merge-pr reads the
+// merge-review verdict back from: the PR-thread comment list (the ADO analog of
+// GitHub's PR comments, which PollPullRequest exposes as CommentsSince) and the
+// authenticated identity the comment is trusted against.
+type adoThreadVerdictProvider interface {
+	ListPullRequestThreadComments(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]providers.Comment, error)
+	AuthenticatedLogin(ctx context.Context) (string, error)
+}
+
+// recoverADOThreadVerdict reads the trusted merge-review verdict apply-verdict
+// posted to pullID's thread and returns it together with the author it was
+// trusted against — the reviewer the merge commit attributes. It is called
+// OUTSIDE the poll->decide->merge lock (#2746): the recovered verdict feeds only
+// the commit message, never a merge conjunct, so this round-trip must not join
+// the serialized window #719 exists to keep free of extra provider calls.
+//
+// A thread carrying no trusted verdict, or one whose verdict is not a pass, is a
+// normal outcome (an older PR reviewed before apply-verdict posted pass verdicts
+// to the thread), reported as a nil verdict rather than an error: the land then
+// falls back to the title + closing refs it always used.
+func recoverADOThreadVerdict(ctx context.Context, provider adoThreadVerdictProvider, repo providers.RepositoryRef, pullID string) (*apiv1.Verdict, string, error) {
+	author, err := provider.AuthenticatedLogin(ctx)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve merge-review verdict author: %w", err)
+	}
+	comments, err := provider.ListPullRequestThreadComments(ctx, repo, pullID)
+	if err != nil {
+		return nil, "", err
+	}
+	verdict := gatherPRVerdict(comments, author)
+	if verdict == nil || verdict.Decision != apiv1.VerdictPass {
+		return nil, author, nil
+	}
+	return verdict, author, nil
+}
+
 // adoMergeCommitMessage builds the land's commit title and body for an Azure
-// DevOps pull request directly from the PR's own fields, bypassing the
-// merge-review sticky-comment verdict lookup structuredMergeCommitMessage
-// depends on. ADO PollPullRequest returns an empty CommentsSince (ADO has no
-// merge-review sticky-verdict comment surface — merge-wiring-plan §2), so the
-// verdict-rationale assembly is unavailable there; the title and "Closes #N"
-// closing refs are exactly the non-verdict parts the GitHub assembly already
-// produces (mergepr.go:443-453). This is the fix for the single hard blocker:
-// without it, structuredMergeCommitMessage always errors on ADO and a clean
-// green-Build-policy pass hard-fails the stage instead of landing
-// (merge-wiring-plan §1a/§8). Errors only on the same empty-title condition the
-// GitHub assembly rejects, so an ADO PR with no title is still a business error.
-func adoMergeCommitMessage(poll providers.PullRequestPollResult) (string, string, error) {
+// DevOps pull request. ADO PollPullRequest returns an empty CommentsSince (the
+// verdict rides on a PR thread, not a PR comment — merge-wiring-plan §2), so
+// structuredMergeCommitMessage's in-poll verdict lookup is unavailable there;
+// without this assembly a clean green-Build-policy pass hard-fails the stage
+// instead of landing (merge-wiring-plan §1a/§8).
+//
+// verdict is the pass verdict recoverADOThreadVerdict recovered before the merge
+// lock, verdictAuthor the reviewer it was trusted against, and both are optional
+// (#2746): when a verdict pinned to poll's LIVE head is present, its summary,
+// rationale, and reviewer attribution join the body so the ADO merge commit
+// records the same audit trail the GitHub assembly does; otherwise the body is
+// the title + "Closes #N" closing refs alone, the prior behavior. Only the head
+// is re-pinned here — a base that advanced disjointly since the review does not
+// void the verdict (#718's delta-aware rule, enforced as a merge conjunct above)
+// and so must not silently drop the attribution either. Errors only on the same
+// empty-title condition the GitHub assembly rejects.
+func adoMergeCommitMessage(poll providers.PullRequestPollResult, verdict *apiv1.Verdict, verdictAuthor string) (string, string, error) {
 	title := strings.TrimSpace(poll.Title)
 	if title == "" {
 		return "", "", fmt.Errorf("pull request title is empty")
 	}
 	var parts []string
+	attributed := verdict != nil && verdict.HeadSHA != "" && verdict.HeadSHA == poll.HeadSHA
+	if attributed {
+		summary := strings.TrimSpace(verdict.Summary)
+		rationale := strings.TrimSpace(verdict.Rationale)
+		if summary != "" {
+			parts = append(parts, summary)
+		}
+		if rationale != "" && rationale != summary {
+			parts = append(parts, rationale)
+		}
+	}
 	for _, issue := range closingIssueNumbers(poll.Body) {
 		parts = append(parts, "Closes #"+issue)
+	}
+	if attributed && strings.TrimSpace(verdictAuthor) != "" {
+		parts = append(parts, "Reviewed-by: "+strings.TrimSpace(verdictAuthor))
 	}
 	return title, strings.Join(parts, "\n\n"), nil
 }

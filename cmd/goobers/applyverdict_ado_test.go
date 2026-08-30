@@ -71,19 +71,28 @@ func TestCloseMootPullRequestDispatchesToADO(t *testing.T) {
 
 // TestPublishADOPassVerdictPublishesValidationStatus proves the ADO PASS
 // transport directly: the verdict rides on a native goobers/validation PR
-// status (the surface an ADO status-check branch policy gates on) and the stage
-// emits decision=pass so merge-review's published-verdict gate advances. It must
+// status (the surface an ADO status-check branch policy gates on) and — so the
+// merge commit merge-pr later builds keeps its reviewer attribution and
+// rationale (#2746) — on a SHA-pinned PR thread comment, and the stage emits
+// decision=pass so merge-review's published-verdict gate advances. It must
 // never fall back to the GitHub UpdateWorkItem(ID: PR#) label write.
 func TestPublishADOPassVerdictPublishesValidationStatus(t *testing.T) {
 	var (
 		statusMethod string
 		statusBody   map[string]interface{}
+		threadMethod string
+		threadBody   map[string]interface{}
 	)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/statuses", func(w http.ResponseWriter, r *http.Request) {
 		statusMethod = r.Method
 		_ = json.NewDecoder(r.Body).Decode(&statusBody)
 		_, _ = w.Write([]byte(`{"id":7}`))
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/threads", func(w http.ResponseWriter, r *http.Request) {
+		threadMethod = r.Method
+		_ = json.NewDecoder(r.Body).Decode(&threadBody)
+		_, _ = w.Write([]byte(`{"id":11,"comments":[{"id":1,"content":"posted","commentType":"text"}]}`))
 	})
 	// A PR-as-work-item write would land here (numeric PR id into wit/workitems);
 	// it must never be reached on ADO.
@@ -104,6 +113,11 @@ func TestPublishADOPassVerdictPublishesValidationStatus(t *testing.T) {
 		providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"},
 		359,
 		providers.PullRequestSummary{Number: 359, HeadSHA: "head-sha", BaseSHA: "base-sha"},
+		apiv1.Verdict{
+			Decision:  apiv1.VerdictPass,
+			Summary:   "Clean parity fix.",
+			Rationale: "Every conjunct is re-checked in-lock.",
+		},
 		resultFile,
 		&stdout,
 		&stderr,
@@ -121,10 +135,36 @@ func TestPublishADOPassVerdictPublishesValidationStatus(t *testing.T) {
 	if statusBody["state"] != "succeeded" {
 		t.Fatalf("status state = %v, want succeeded", statusBody["state"])
 	}
+	if threadMethod != http.MethodPost {
+		t.Fatalf("thread method = %q, want POST (the pass verdict must reach the PR thread)", threadMethod)
+	}
+	comments, _ := threadBody["comments"].([]interface{})
+	if len(comments) != 1 {
+		t.Fatalf("thread body = %+v, want one comment", threadBody)
+	}
+	content, _ := comments[0].(map[string]interface{})["content"].(string)
+	posted := parsePostedVerdictComment(t, content)
+	if posted.Decision != apiv1.VerdictPass || posted.Rationale != "Every conjunct is re-checked in-lock." {
+		t.Fatalf("posted verdict = %+v, want the pass decision and rationale", posted)
+	}
+	if posted.HeadSHA != "head-sha" || posted.BaseSHA != "base-sha" {
+		t.Fatalf("posted verdict = %+v, want SHA-pinned to the reviewed head/base", posted)
+	}
 	result := readVerdictResult(t, resultFile)
 	if result["decision"] != "pass" {
 		t.Fatalf("result = %+v, want decision=pass", result)
 	}
+}
+
+// parsePostedVerdictComment recovers the machine-readable verdict payload from a
+// rendered merge-review verdict comment.
+func parsePostedVerdictComment(t *testing.T, body string) apiv1.Verdict {
+	t.Helper()
+	verdict, ok := parseVerdictComment(body)
+	if !ok {
+		t.Fatalf("verdict comment = %q, want a parsable verdict-json payload", body)
+	}
+	return verdict
 }
 
 // TestRunApplyVerdictADOPassPublishesStatusAndDecisionPass drives the whole
@@ -226,6 +266,12 @@ func adoMergeReviewMux(t *testing.T, repo providers.RepositoryRef, prNumber int,
 		}
 		*posted = true
 		_, _ = w.Write([]byte(`{"id":7}`))
+	})
+	mux.HandleFunc(prBase+"/"+strconv.Itoa(prNumber)+"/threads", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(t, w, map[string]interface{}{
+			"id":       11,
+			"comments": []interface{}{map[string]interface{}{"id": 1, "content": "", "commentType": "text"}},
+		})
 	})
 	return mux
 }
