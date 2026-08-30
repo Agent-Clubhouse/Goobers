@@ -9,8 +9,8 @@ package engine
 //
 //   - NON-DETERMINISM. The port adds three maps to the walk (lastDiffDigest,
 //     addenda, contextRejected) and one derived-from-history helper
-//     (projectedEvents, which the remediation-evidence obligation reads).
-//     Reading a Go map by key is
+//     (projectedEvents, which the learning-episode injection and the
+//     remediation-evidence obligation both read). Reading a Go map by key is
 //     deterministic; ranging one is not. An edit that starts ranging any of
 //     them — to build a message, to grade evidence — reorders the walk's
 //     commands on replay and wedges every in-flight run.
@@ -180,6 +180,28 @@ func e4Fixtures() []e4Fixture {
 				},
 			},
 		},
+		{
+			// E7: the learning-episode injection, which reads the PROJECTION
+			// (projectedEvents) to build the episode and appends a context
+			// pointer for it. It is reached only through the retry route — a
+			// status-equals gate over a failing deterministic stage — which is
+			// exactly where the local runner injects.
+			name:      "learning episode injection on the retry route",
+			exercises: requireAnnotationKind(runner.LearningEpisodeInjectedKind),
+			spec: fixtureSpec("build",
+				[]apiv1.Task{detTask("build", "check"), detTask("park", wf.TargetAbort)},
+				[]apiv1.Gate{statusGate("check", map[string]string{
+					"pass": wf.TerminalComplete, "fail": "build", "escalate": "park",
+				})},
+			),
+			script: map[string][]scriptedCall{
+				"build": {
+					fail("nonzero_exit", "the build failed"),
+					fail("nonzero_exit", "the build failed again"),
+					fail("nonzero_exit", "and again"),
+				},
+			},
+		},
 	}
 }
 
@@ -298,8 +320,8 @@ func e4Walk(t *testing.T, runID string, fx e4Fixture) ([]journal.Event, RunResul
 //
 // The ports this covers are the ones holding MAP state across a repass
 // (lastDiffDigest, addenda, contextRejected) and the ones deriving their
-// payload from the projection (the remediation-evidence obligation).
-// Both are deterministic today; this is what says so on the first
+// payload from the projection (the learning episode, the remediation-evidence
+// obligation). Both are deterministic today; this is what says so on the first
 // edit that stops being true, rather than on a production replay.
 func TestE4FixturesAreDeterministic(t *testing.T) {
 	for _, fx := range e4Fixtures() {
