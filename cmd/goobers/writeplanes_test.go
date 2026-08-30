@@ -286,15 +286,15 @@ func (s *stubTriggerer) mint() (string, error) {
 	return fmt.Sprintf("run-%d", s.mints), nil
 }
 
-func (s *stubTriggerer) Trigger(context.Context, string, time.Time) (string, error) {
+func (s *stubTriggerer) TriggerWithDispatchContext(_, _ context.Context, _ string, _ time.Time) (string, error) {
 	return s.mint()
 }
 
-func (s *stubTriggerer) TriggerExact(context.Context, localscheduler.WorkflowIdentity, time.Time) (string, error) {
+func (s *stubTriggerer) TriggerExactWithDispatchContext(_, _ context.Context, _ localscheduler.WorkflowIdentity, _ time.Time) (string, error) {
 	return s.mint()
 }
 
-func (s *stubTriggerer) TriggerPriority(context.Context, localscheduler.WorkflowIdentity, string, time.Time) (string, error) {
+func (s *stubTriggerer) TriggerPriorityWithDispatchContext(_, _ context.Context, _ localscheduler.WorkflowIdentity, _ string, _ time.Time) (string, error) {
 	return s.mint()
 }
 
@@ -318,15 +318,15 @@ func (b *barrierTriggerer) mint() (string, error) {
 	return fmt.Sprintf("run-%d", n), nil
 }
 
-func (b *barrierTriggerer) Trigger(context.Context, string, time.Time) (string, error) {
+func (b *barrierTriggerer) TriggerWithDispatchContext(_, _ context.Context, _ string, _ time.Time) (string, error) {
 	return b.mint()
 }
 
-func (b *barrierTriggerer) TriggerExact(context.Context, localscheduler.WorkflowIdentity, time.Time) (string, error) {
+func (b *barrierTriggerer) TriggerExactWithDispatchContext(_, _ context.Context, _ localscheduler.WorkflowIdentity, _ time.Time) (string, error) {
 	return b.mint()
 }
 
-func (b *barrierTriggerer) TriggerPriority(context.Context, localscheduler.WorkflowIdentity, string, time.Time) (string, error) {
+func (b *barrierTriggerer) TriggerPriorityWithDispatchContext(_, _ context.Context, _ localscheduler.WorkflowIdentity, _ string, _ time.Time) (string, error) {
 	return b.mint()
 }
 

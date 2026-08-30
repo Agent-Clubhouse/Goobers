@@ -8,8 +8,23 @@ goobers engine-start \- dispatch one run onto the tier-3 engine via Temporal (ex
 .nf
 Usage: goobers engine-start [flags] <workflow> [path]
 
-Dispatch one run onto the tier-3 engine (experimental). The run id is
-derived from gaggle, workflow, and --dedupe-key.
+Dispatch one run onto the tier-3 engine (experimental).
+
+When a `goobers up` daemon holds this instance's lock the dispatch is
+DELEGATED to it: the daemon admits the run through the scheduler (so it
+takes a concurrency slot, records an instance-log run.started, reserves
+the run journal and fires the terminal hooks on completion) and starts
+the workflow through its own engine starter. The run id is the
+scheduler's, and --dedupe-key is refused, because the daemon mints a
+fresh run id per admission.
+
+--direct bypasses the daemon and starts the workflow straight on
+Temporal with REJECT_DUPLICATE, deriving the run id from gaggle,
+workflow and --dedupe-key. That is the only mode in which --dedupe-key
+means anything: a direct start's run id IS its dedupe unit, whereas a
+delegated dispatch dedupes DELIVERIES (by request id) and not work.
+A direct start takes no scheduler slot and fires no terminal hooks.
+--direct is implied when no daemon is running.
 
 --live-journal pins live journal authorship into the run: workers emit
 journal events through the daemon's journal plane as they happen, so the
