@@ -1038,6 +1038,11 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		}()
 		ctx, span := r.startRunSpan(ctx, in)
 		defer span.End()
+		ctx = providers.WithAttributionContext(ctx, providers.Attribution{
+			Schema: 1, Goobers: true,
+			Gaggle: in.Gaggle, Workflow: in.Machine.Def.Name,
+			Goober: "runner", Run: in.RunID,
+		})
 		setStalledAttemptContext(ctx)
 
 		// #735: verify the run's declared runtime toolchains are actually present
@@ -2644,6 +2649,7 @@ func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID 
 		return nil
 	}
 	seq := jr.Seq()
+	ctx = withRunnerAttributionTask(ctx, gr.Gate)
 	for _, itemID := range itemIDs {
 		if err := r.cfg.Escalation.NotifyEscalated(ctx, providerRepositoryRef(repoRef), itemID, runID, seq, gr, reason); err != nil {
 			if aerr := jr.Append(journal.Event{
@@ -2740,6 +2746,7 @@ func (r *Runner) notifyStageEscalation(ctx context.Context, jr *journal.Run, run
 		return nil
 	}
 	seq := jr.Seq()
+	ctx = withRunnerAttributionTask(ctx, stage)
 	for _, itemID := range itemIDs {
 		if err := r.cfg.Escalation.NotifyStageEscalated(ctx, providerRepositoryRef(repoRef), itemID, runID, seq, stage, reason); err != nil {
 			if aerr := jr.Append(journal.Event{
@@ -2755,6 +2762,16 @@ func (r *Runner) notifyStageEscalation(ctx context.Context, jr *journal.Run, run
 		}
 	}
 	return nil
+}
+
+func withRunnerAttributionTask(ctx context.Context, task string) context.Context {
+	attribution, ok := providers.AttributionFromContext(ctx)
+	if !ok {
+		return ctx
+	}
+	attribution.Task = task
+	attribution.Goober = "runner"
+	return providers.WithAttributionContext(ctx, attribution)
 }
 
 // notifyRateLimited invokes the configured RateLimited handler (#712). A

@@ -43,6 +43,31 @@ type escalationCommenter struct {
 	needsHumanAssignee string
 }
 
+func (c *escalationCommenter) configureAttribution(ctx context.Context, provider any) error {
+	configurer, ok := provider.(providers.AttributionConfigurer)
+	if !ok {
+		return nil
+	}
+	attribution, ok := providers.AttributionFromContext(ctx)
+	if !ok {
+		return fmt.Errorf("refusing daemon-authored provider write without run attribution")
+	}
+	if attribution.Instance == "" && strings.TrimSpace(c.layout.Root) != "" {
+		attribution.Instance = filepath.Base(filepath.Clean(c.layout.Root))
+	}
+	if attribution.Gaggle == "" {
+		attribution.Gaggle = c.layout.Gaggle()
+	}
+	if attribution.Task == "" {
+		attribution.Task = "runner"
+	}
+	if attribution.Goober == "" {
+		attribution.Goober = "runner"
+	}
+	configurer.SetAttribution(attribution)
+	return nil
+}
+
 func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	// PR remediation uses pr/<number> as its internal claim key; provider work
 	// item endpoints use the shared bare issue/PR number.
@@ -52,6 +77,9 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 		provider, err := newADOProviderForStage(c.layout.Root, req.Repository)
 		if err != nil {
 			return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", req.Repository.Owner, req.Repository.Name, err)
+		}
+		if err := c.configureAttribution(ctx, provider); err != nil {
+			return providers.WorkItem{}, err
 		}
 		req.Repository = backlogRepoRefForGaggle(c.layout, req.Repository)
 		return provider.UpdateWorkItem(ctx, req)
@@ -73,6 +101,9 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 		if err != nil {
 			return providers.WorkItem{}, fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
 		}
+		if err := c.configureAttribution(ctx, provider); err != nil {
+			return providers.WorkItem{}, err
+		}
 		return provider.UpdateWorkItem(ctx, req)
 	}
 	ref := req.Repository.Owner + "/" + req.Repository.Name
@@ -81,7 +112,11 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
 	}
 	c.reg.Register([]byte(token))
-	return newEscalationPoster(token).UpdateWorkItem(ctx, req)
+	provider := newEscalationPoster(token)
+	if err := c.configureAttribution(ctx, provider); err != nil {
+		return providers.WorkItem{}, err
+	}
+	return provider.UpdateWorkItem(ctx, req)
 }
 
 func (c *escalationCommenter) ListComments(ctx context.Context, repository providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
@@ -106,7 +141,8 @@ func (c *escalationCommenter) ListComments(ctx context.Context, repository provi
 		}
 		return provider.ListComments(ctx, repository, itemID)
 	}
-	return newEscalationPoster(token).ListComments(ctx, repository, itemID)
+	provider := newEscalationPoster(token)
+	return provider.ListComments(ctx, repository, itemID)
 }
 
 func (c *escalationCommenter) UpdateComment(ctx context.Context, repository providers.RepositoryRef, commentID, body string) error {
@@ -124,9 +160,16 @@ func (c *escalationCommenter) UpdateComment(ctx context.Context, repository prov
 		if err != nil {
 			return fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
 		}
+		if err := c.configureAttribution(ctx, provider); err != nil {
+			return err
+		}
 		return provider.UpdateComment(ctx, repository, commentID, body)
 	}
-	return newEscalationPoster(token).UpdateComment(ctx, repository, commentID, body)
+	provider := newEscalationPoster(token)
+	if err := c.configureAttribution(ctx, provider); err != nil {
+		return err
+	}
+	return provider.UpdateComment(ctx, repository, commentID, body)
 }
 
 // buildEscalationNotifier wires the gate.EscalationNotifier (#20) at the
@@ -200,6 +243,7 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 	}
 
 	return func(ctx context.Context, o runner.BlockedOutcome) error {
+		ctx = withDaemonAttributionTask(ctx, o.Stage)
 		itemIDs := []string{o.ItemID}
 		if o.ItemID == "" {
 			ids, err := claimedItemIDsForRun(l, o.RunID)
@@ -334,6 +378,7 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 	}
 
 	return func(ctx context.Context, o runner.FailedOutcome) error {
+		ctx = withDaemonAttributionTask(ctx, o.Stage)
 		// #3361/#3364: an infra-fault terminal (credential materialization, git,
 		// network, lock contention) is weather, not evidence about the item —
 		// it must not accumulate failure-streak strikes that eventually park
@@ -463,12 +508,13 @@ func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolv
 		if phase == journal.PhaseCompleted || phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
+			attributedCtx, _ := attributionContextForRun(ctx, l, runID, finalState)
 			runURL, _ := failureRunURL(l, cfg, runID)
 			if phase == journal.PhaseCompleted {
-				if err := resetCircuitBreaker(ctx, poster, l, repoRef, runID, runURL); err != nil {
+				if err := resetCircuitBreaker(attributedCtx, poster, l, repoRef, runID, runURL); err != nil {
 					errs = append(errs, fmt.Errorf("reset circuit breaker for run %q: %w", runID, err))
 				}
-			} else if err := applyCircuitBreaker(ctx, poster, l, repoRef, runID, finalState, runURL); err != nil {
+			} else if err := applyCircuitBreaker(attributedCtx, poster, l, repoRef, runID, finalState, runURL); err != nil {
 				errs = append(errs, fmt.Errorf("apply circuit breaker for run %q: %w", runID, err))
 			}
 		}
@@ -479,6 +525,32 @@ func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolv
 		}
 		return errors.Join(errs...)
 	}
+}
+
+func withDaemonAttributionTask(ctx context.Context, task string) context.Context {
+	attribution, ok := providers.AttributionFromContext(ctx)
+	if !ok {
+		return ctx
+	}
+	attribution.Task = task
+	attribution.Goober = "runner"
+	return providers.WithAttributionContext(ctx, attribution)
+}
+
+func attributionContextForRun(ctx context.Context, l instance.Layout, runID, task string) (context.Context, error) {
+	reader, err := journal.OpenReadOnly(filepath.Join(l.RunsDir(), runID))
+	if err != nil {
+		return ctx, err
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		return ctx, err
+	}
+	return providers.WithAttributionContext(ctx, providers.Attribution{
+		Schema: 1, Goobers: true,
+		Gaggle: identity.Gaggle, Workflow: identity.Workflow,
+		Task: task, Goober: "runner", Run: runID,
+	}), nil
 }
 
 func failureRunURL(l instance.Layout, cfg *instance.Config, runID string) (string, error) {

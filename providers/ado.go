@@ -29,6 +29,7 @@ type ADOProvider struct {
 	Username     string
 	Client       HTTPClient
 	Runner       CommandRunner
+	attribution  Attribution
 
 	credentialSource ADOCredentialSource
 	secretRegistrar  SecretRegistrar

@@ -39,6 +39,10 @@ func InputEnvVar(key string) string {
 const (
 	// InstanceRootEnvVar carries the instance root to goobers CLI stages.
 	InstanceRootEnvVar = "GOOBERS_INSTANCE_ROOT"
+	// TaskEnvVar identifies the workflow task executing a goobers CLI stage.
+	TaskEnvVar = "GOOBERS_TASK"
+	// GooberEnvVar identifies the persona responsible for the task.
+	GooberEnvVar = "GOOBERS_GOOBER"
 
 	// GoobersBinEnvVar carries the running daemon's executable path to agentic
 	// harnesses that need to invoke a goobers CLI subcommand.

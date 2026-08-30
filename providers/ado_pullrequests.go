@@ -295,6 +295,11 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"status": "abandoned"}, &out); err != nil {
 		return ClosePullRequestResult{}, err
 	}
+	if req.Comment != "" {
+		if _, err := p.postAttributedPullRequestThreadComment(ctx, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
+			return ClosePullRequestResult{}, err
+		}
+	}
 	number := out.PullRequestID
 	if number == 0 {
 		number, _ = strconv.Atoi(req.PullID)

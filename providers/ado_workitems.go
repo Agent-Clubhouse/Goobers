@@ -273,6 +273,11 @@ func (p *ADOProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRequ
 		itemType = "Issue"
 	}
 	itemBody := withRunIDFooter(req.Body, req.RunID)
+	var err error
+	itemBody, err = withAttribution(itemBody, p.attribution, "issue-create")
+	if err != nil {
+		return WorkItem{}, err
+	}
 	if req.RunID != "" {
 		existing, found, err := p.findRunItem(ctx, req.Repository, req.RunID)
 		if err != nil {
@@ -443,6 +448,10 @@ func (p *ADOProvider) CreateWorkItemComment(ctx context.Context, repo Repository
 	if err := validateADOWorkItemID(id); err != nil {
 		return Comment{}, err
 	}
+	body, err := withAttribution(body, p.attribution, "comment")
+	if err != nil {
+		return Comment{}, err
+	}
 	endpoint, err := p.workURLVersion(project, "7.1-preview.4", "workItems", id, "comments")
 	if err != nil {
 		return Comment{}, err
@@ -572,7 +581,7 @@ func (p *ADOProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReques
 
 	// Stake ours, then re-read to settle a race deterministically by comment
 	// order — the same protocol the GitHub provider uses.
-	if err := p.postWorkItemComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID)); err != nil {
+	if err := p.postAttributedWorkItemComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim"); err != nil {
 		return ClaimResult{}, err
 	}
 	winner, claimed, err = p.adoClaimWinner(ctx, req.Repository, req.ID)
@@ -726,7 +735,7 @@ func (p *ADOProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkIte
 	if claimed {
 		// The breadcrumb lands first so a successful release never leaves a later
 		// claimer stuck behind the previous owner's durable marker.
-		if err := p.postWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+		if err := p.postAttributedWorkItemComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
 			return WorkItem{}, err
 		}
 	}
@@ -1131,7 +1140,27 @@ func adoTagPatch(tags []string) adoPatchOperation {
 }
 
 func (p *ADOProvider) postWorkItemComment(ctx context.Context, repo RepositoryRef, id, text string) error {
-	_, err := p.CreateWorkItemComment(ctx, repo, id, text)
+	return p.postAttributedWorkItemComment(ctx, repo, id, text, "comment")
+}
+
+func (p *ADOProvider) postAttributedWorkItemComment(ctx context.Context, repo RepositoryRef, id, text, action string) error {
+	text, err := withAttribution(text, p.attribution, action)
+	if err != nil {
+		return err
+	}
+	project := p.project(repo)
+	if err := p.requireWorkItemScope(project); err != nil {
+		return err
+	}
+	if err := validateADOWorkItemID(id); err != nil {
+		return err
+	}
+	endpoint, err := p.workURLVersion(project, "7.1-preview.4", "workItems", id, "comments")
+	if err != nil {
+		return err
+	}
+	var comment adoComment
+	err = p.do(ctx, http.MethodPost, endpoint, map[string]string{"text": text}, &comment)
 	return err
 }
 

@@ -313,6 +313,10 @@ func (p *GiteaProvider) UpdateComment(ctx context.Context, repo RepositoryRef, c
 	if commentID == "" {
 		return fmt.Errorf("comment id is required")
 	}
+	body, err := withAttribution(body, p.attribution, "comment-update")
+	if err != nil {
+		return err
+	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
 	if err != nil {
 		return err
@@ -350,6 +354,10 @@ func (p *GiteaProvider) CreateWorkItemComment(ctx context.Context, repo Reposito
 	if id == "" {
 		return Comment{}, fmt.Errorf("issue id is required")
 	}
+	body, err := withAttribution(body, p.attribution, "comment")
+	if err != nil {
+		return Comment{}, err
+	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
 	if err != nil {
 		return Comment{}, err
@@ -374,6 +382,11 @@ func (p *GiteaProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemRe
 		return WorkItem{}, err
 	}
 	itemBody := withRunIDFooter(req.Body, req.RunID)
+	var err error
+	itemBody, err = withAttribution(itemBody, p.attribution, "issue-create")
+	if err != nil {
+		return WorkItem{}, err
+	}
 	if req.RunID != "" {
 		if existing, found, err := p.findRunItem(ctx, req.Repository, req.RunID); err != nil {
 			return WorkItem{}, err
@@ -631,7 +644,7 @@ func (p *GiteaProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequ
 		return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner)
 	}
 
-	if err := p.postComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID)); err != nil {
+	if err := p.postAttributedComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim"); err != nil {
 		return ClaimResult{}, err
 	}
 	winner, ok, err := p.claimWinner(ctx, req.Repository, req.ID)
@@ -683,7 +696,7 @@ func (p *GiteaProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkI
 	releasedRunID := req.RunID
 	if claimed {
 		releasedRunID = winner
-		if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+		if err := p.postAttributedComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
 			return WorkItem{}, err
 		}
 	}
@@ -1078,8 +1091,19 @@ func (p *GiteaProvider) resolveExistingLabelIDs(ctx context.Context, repo Reposi
 }
 
 func (p *GiteaProvider) postComment(ctx context.Context, repo RepositoryRef, id, body string) error {
-	_, err := p.CreateWorkItemComment(ctx, repo, id, body)
-	return err
+	return p.postAttributedComment(ctx, repo, id, body, "comment")
+}
+
+func (p *GiteaProvider) postAttributedComment(ctx context.Context, repo RepositoryRef, id, body, action string) error {
+	body, err := withAttribution(body, p.attribution, action)
+	if err != nil {
+		return err
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
+	if err != nil {
+		return err
+	}
+	return p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, nil)
 }
 
 // --- Gitea issue/comment/timeline decode structs and mappers ---

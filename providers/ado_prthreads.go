@@ -42,11 +42,19 @@ const adoPRThreadCommentType = "text"
 // AuthenticatedLogin returns so a trusted-author filter recognizes a thread we
 // posted.
 func (p *ADOProvider) PostPullRequestThreadComment(ctx context.Context, repo RepositoryRef, pullID, body string) (Comment, error) {
+	return p.postAttributedPullRequestThreadComment(ctx, repo, pullID, body, "pull-request-comment")
+}
+
+func (p *ADOProvider) postAttributedPullRequestThreadComment(ctx context.Context, repo RepositoryRef, pullID, body, action string) (Comment, error) {
 	if err := requireRepo(repo); err != nil {
 		return Comment{}, err
 	}
 	if pullID == "" {
 		return Comment{}, fmt.Errorf("pull id is required")
+	}
+	body, err := withAttribution(body, p.attribution, action)
+	if err != nil {
+		return Comment{}, err
 	}
 	endpoint, err := p.repoURL(repo, "pullrequests", pullID, "threads")
 	if err != nil {
@@ -114,6 +122,10 @@ func (p *ADOProvider) UpdatePullRequestThreadComment(ctx context.Context, repo R
 		return err
 	}
 	pullID, threadID, cID, err := parseADOThreadCommentID(commentID)
+	if err != nil {
+		return err
+	}
+	body, err = withAttribution(body, p.attribution, "pull-request-comment-update")
 	if err != nil {
 		return err
 	}

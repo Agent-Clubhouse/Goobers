@@ -325,18 +325,22 @@ func (p *GitHubProvider) ReplyPullRequestReviewThread(ctx context.Context, req P
 	if err != nil || number < 1 || req.CommentID < 1 || strings.TrimSpace(req.Body) == "" {
 		return PullRequestInlineComment{}, fmt.Errorf("pull id, comment id, and reply body are required")
 	}
+	replyBody, err := withAttribution(req.Body, p.attribution, "review-thread-reply")
+	if err != nil {
+		return PullRequestInlineComment{}, err
+	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "comments", strconv.FormatInt(req.CommentID, 10), "replies")
 	if err != nil {
 		return PullRequestInlineComment{}, err
 	}
 	var created githubInlineReviewComment
-	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": req.Body}, &created); err != nil {
+	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": replyBody}, &created); err != nil {
 		return PullRequestInlineComment{}, err
 	}
 	p.recordExternalRef(ctx, ExternalRef{
 		Provider: ProviderGitHub, Ref: issueRef(req.Repository, req.PullID),
 		URL: created.HTMLURL, Operation: "review-thread-reply",
-		Fields: map[string]FieldDigest{"body": {After: digestString(req.Body)}},
+		Fields: map[string]FieldDigest{"body": {After: digestString(replyBody)}},
 	})
 	return PullRequestInlineComment{ID: created.ID, Body: created.Body, InReplyTo: created.InReplyTo}, nil
 }

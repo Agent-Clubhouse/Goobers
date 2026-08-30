@@ -565,6 +565,17 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
 	stageEnv = append(stageEnv, commandEnv...)
+	if injectRunContext {
+		task := strings.TrimPrefix(env.TaskID, env.RunID+":")
+		if task == "" {
+			task = env.TaskID
+		}
+		goober := env.Goober
+		if goober == "" {
+			goober = "deterministic"
+		}
+		stageEnv = append(stageEnv, TaskEnvVar+"="+task, GooberEnvVar+"="+goober)
+	}
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
 	}
