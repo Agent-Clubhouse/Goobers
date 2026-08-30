@@ -191,6 +191,47 @@ func TestDiscoverRejectsRemotePlaintextInitialURLBeforeRequest(t *testing.T) {
 	}
 }
 
+func TestDiscoverAllowsPlaintextLoopbackInitialURLs(t *testing.T) {
+	for _, host := range []string{"localhost", "127.0.0.1", "[::1]"} {
+		t.Run(host, func(t *testing.T) {
+			discovery := Discovery{
+				FleetID:                        "fleet-1",
+				CanonicalURI:                   "https://fleet.example",
+				ProtocolVersions:               []string{ProtocolVersion},
+				EnrollmentEndpoint:             "https://fleet.example/api/fleet/v1/enrollments:redeem",
+				ConnectionEndpoint:             "wss://fleet.example/api/fleet/v1/connections",
+				SupportedAuthenticationMethods: []string{"enrollment-grant"},
+			}
+			data, err := json.Marshal(discovery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := Client{HTTP: staticHTTPDoer{response: data}}
+			if _, err := client.Discover(context.Background(), "http://"+host+":8080"); err != nil {
+				t.Fatalf("Discover loopback URL: %v", err)
+			}
+		})
+	}
+}
+
+func TestDiscoveryAllowsPlaintextLoopbackURIs(t *testing.T) {
+	for _, host := range []string{"localhost", "127.0.0.1", "[::1]"} {
+		t.Run(host, func(t *testing.T) {
+			discovery := Discovery{
+				FleetID:                        "fleet-1",
+				CanonicalURI:                   "http://" + host + ":8080",
+				ProtocolVersions:               []string{ProtocolVersion},
+				EnrollmentEndpoint:             "http://" + host + ":8080/api/fleet/v1/enrollments:redeem",
+				ConnectionEndpoint:             "ws://" + host + ":8080/api/fleet/v1/connections",
+				SupportedAuthenticationMethods: []string{"enrollment-grant"},
+			}
+			if err := validateDiscovery(discovery); err != nil {
+				t.Fatalf("validateDiscovery loopback URIs: %v", err)
+			}
+		})
+	}
+}
+
 func TestDiscoveryRejectsRemotePlaintextURIs(t *testing.T) {
 	base := Discovery{
 		FleetID:                        "fleet-1",
@@ -214,6 +255,31 @@ func TestDiscoveryRejectsRemotePlaintextURIs(t *testing.T) {
 			test.mutate(&discovery)
 			if err := validateDiscovery(discovery); err == nil {
 				t.Fatalf("validateDiscovery accepted remote plaintext %s", test.name)
+			}
+		})
+	}
+}
+
+func TestEnrollmentAllowsPlaintextLoopbackReturnedURIs(t *testing.T) {
+	for _, host := range []string{"localhost", "127.0.0.1", "[::1]"} {
+		t.Run(host, func(t *testing.T) {
+			response := EnrollmentResponse{
+				FleetID:                "fleet-1",
+				RegistrationID:         "registration-1",
+				RegistrationGeneration: 1,
+				CanonicalURI:           "http://" + host + ":8080",
+				ConnectionEndpoint:     "ws://" + host + ":8080/api/fleet/v1/connections",
+				Credential:             "credential",
+				CredentialExpiresAt:    time.Now().Add(time.Hour),
+				ProtocolVersion:        ProtocolVersion,
+			}
+			data, err := json.Marshal(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := Client{HTTP: staticHTTPDoer{response: data}}
+			if _, err := client.Enroll(context.Background(), "https://fleet.example/redeem", EnrollmentRequest{}); err != nil {
+				t.Fatalf("Enroll loopback response: %v", err)
 			}
 		})
 	}
@@ -259,6 +325,19 @@ type rejectingHTTPDoer struct {
 func (d rejectingHTTPDoer) Do(*http.Request) (*http.Response, error) {
 	d.t.Fatal("HTTP request should not be attempted")
 	return nil, errors.New("unreachable")
+}
+
+type staticHTTPDoer struct {
+	response []byte
+}
+
+func (d staticHTTPDoer) Do(*http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Body:       io.NopCloser(strings.NewReader(string(d.response))),
+		Header:     make(http.Header),
+	}, nil
 }
 
 func serverURL(r *http.Request) string {

@@ -217,7 +217,11 @@ func TestFleetStatusJSONRedactsSecretsAndLeaveDeletes(t *testing.T) {
 	if status.Connected || !status.Stale || status.ConnectionState != "stale" || status.HeartbeatSeconds != 10 {
 		t.Fatalf("stale connection status = %+v", status)
 	}
-	if store.loadAssociationCalls != 1 || store.loadCalls != 0 {
+	code, stdout, stderr = runArgs(t, "fleet", "status", root)
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "connection: stale") {
+		t.Fatalf("text status code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if store.loadAssociationCalls != 2 || store.loadCalls != 0 {
 		t.Fatalf("status storage reads: metadata=%d secrets=%d", store.loadAssociationCalls, store.loadCalls)
 	}
 
