@@ -134,9 +134,12 @@ type ReadStateInput struct {
 	OldestPendingAt      time.Time
 	IntakeWriteFailures  int
 	ProjectionLagSeconds float64
-	// ProjectFailures counts runs the projector tried and failed to apply. Each
-	// one is a KNOWN gap in the projection, which is what makes the response
-	// partial rather than merely lagging.
+	// ProjectFailures counts runs the projector tried and failed to apply and
+	// has NOT projected since. Each one is a KNOWN gap in the projection, which
+	// is what makes the response partial rather than merely lagging. It must be
+	// the open set rather than a lifetime total: a gap the repair sweep has
+	// closed is no longer a gap, and a signal that never clears stops carrying
+	// information.
 	ProjectFailures int
 }
 
@@ -204,6 +207,12 @@ func (s *Store) ReadState(ctx context.Context, input ReadStateInput) (ReadState,
 	// failed to apply, and runs whose watermark was never recorded, are absent
 	// from every list until repair rediscovers them. Reporting "complete" here
 	// is what let a silently truncated runs list look healthy.
+	//
+	// Both terms are open counts, so this clears itself: once the failing runs
+	// project and the watermark writes succeed, completeness returns to
+	// "complete". IntakeWriteFailures currently has no producer in readservice —
+	// it is carried for callers that track watermark write errors themselves, so
+	// in the daemon today the gap is the projector's open failures alone.
 	if gap := input.ProjectFailures + input.IntakeWriteFailures; gap > 0 {
 		out.Completeness = CompletenessPartial
 		out.Missing = append(out.Missing, MissingPartition{

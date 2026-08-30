@@ -312,3 +312,38 @@ func TestReadStateLagCoversProjectionLag(t *testing.T) {
 			state.LagSeconds)
 	}
 }
+
+// TestReadStateReturnsToCompleteOnceTheGapCloses is the recovery half of
+// #2843's signal.
+//
+// The gap count is the projector's OPEN failures, so once a retry or the repair
+// sweep projects the run the envelope must go back to reporting a complete
+// answer. A partial that never resolves is the same failure as a complete that
+// never warns: the operator learns nothing from either.
+func TestReadStateReturnsToCompleteOnceTheGapCloses(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	during, err := store.ReadState(ctx, ReadStateInput{ProjectFailures: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if during.Completeness != CompletenessPartial {
+		t.Fatalf("completeness = %q while a run is unprojected, want %q",
+			during.Completeness, CompletenessPartial)
+	}
+
+	after, err := store.ReadState(ctx, ReadStateInput{ProjectFailures: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Completeness != CompletenessComplete {
+		t.Errorf("completeness = %q after the gap closed, want %q", after.Completeness, CompletenessComplete)
+	}
+	if len(after.Missing) != 0 {
+		t.Errorf("missing = %+v after the gap closed, want none", after.Missing)
+	}
+	if slices.Contains(after.Degraded, DegradedProjectFailure) {
+		t.Errorf("degraded = %v after the gap closed, want no %q", after.Degraded, DegradedProjectFailure)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/readmodel/projector"
 	"github.com/goobers/goobers/internal/readmodel/repair"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 var newRepairSweeper = repair.New
@@ -99,4 +100,37 @@ func startProjector(
 		stopSweep()
 		stop()
 	}, retention.Stats, p.Stats
+}
+
+// attachFreshnessSignals gives the read service the daemon-only sources behind
+// the readState envelope's gap and lag fields (#2843).
+//
+// A function rather than inline wiring in runUpContextWithForce because the bug
+// this closes was precisely that AttachIntakeDepth existed and nothing on the
+// real startup path called it: a helper is something a test can call, so the
+// regression has a guard rather than only a definition.
+//
+// Both sources are optional. The daemon runs with no projector when the intake
+// store cannot be opened, and the envelope must still answer — it reports fewer
+// signals, not a failure.
+func attachFreshnessSignals(reads *readservice.Local, setup *schedulerSetup) {
+	if reads == nil || setup == nil {
+		return
+	}
+	if setup.Watermarks != nil {
+		reads.AttachIntakeDepth(setup.Watermarks)
+	}
+	if setup.ProjectorStats == nil {
+		return
+	}
+	reads.AttachProjectionHealth(func() readservice.ProjectionHealth {
+		stats := setup.ProjectorStats()
+		return readservice.ProjectionHealth{
+			// The OPEN gap, not the lifetime count: a run the repair sweep has
+			// since projected is no longer missing, and reporting it would leave
+			// the envelope permanently partial after one transient failure.
+			ApplyFailures: stats.UnresolvedRuns,
+			LastDrainAt:   stats.LastDrainAt,
+		}
+	})
 }

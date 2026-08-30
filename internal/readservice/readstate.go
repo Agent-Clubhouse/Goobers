@@ -62,8 +62,10 @@ type intakeAge interface {
 // not import the package that writes the projection (§3.1) — the same reason
 // intakeDepth is an interface.
 type ProjectionHealth struct {
-	// ApplyFailures counts runs the projector could not apply. Each one is a
-	// known gap in the projection.
+	// ApplyFailures counts runs the projector could not apply and has not
+	// projected since. Each one is a known, still-open gap in the projection;
+	// runs a retry or the repair sweep has since applied are excluded, so the
+	// envelope recovers instead of staying partial forever.
 	ApplyFailures int
 	// LastDrainAt is when the projector last completed an intake pass. Zero
 	// means it has not completed one since start.

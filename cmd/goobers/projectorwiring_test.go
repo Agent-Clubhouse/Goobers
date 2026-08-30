@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/readmodel/projector"
 	"github.com/goobers/goobers/internal/readmodel/repair"
+	"github.com/goobers/goobers/internal/readservice"
 )
 
 func TestStartProjectorRoutesRepairWritesThroughCommitLoop(t *testing.T) {
@@ -152,5 +156,99 @@ func TestStartProjectorExposesStats(t *testing.T) {
 	if stats().LastDrainAt.IsZero() {
 		t.Error("lastDrainAt is zero after the restart pass; projection lag would " +
 			"read as unknown on a projector that has in fact drained")
+	}
+}
+
+// TestAttachFreshnessSignalsReachesTheEnvelope guards the daemon-path wiring
+// itself (#2843).
+//
+// The bug was not a missing capability: AttachIntakeDepth existed and was
+// exercised by tests, but nothing on the real startup path called it, so
+// pendingIntake was permanently zero in production. Testing the accessor alone
+// would leave exactly that hole open, so this asserts the whole chain — setup
+// counters through the helper runUpContextWithForce calls, out to a served
+// response's readState.
+func TestAttachFreshnessSignalsReachesTheEnvelope(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	store, err := readmodel.Open(layout.ReadDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	watermarks, err := intake.Open(layout.IntakeDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = watermarks.Close() }()
+
+	definitions, _, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads, err := readservice.NewLocal(readservice.LocalSources{
+		Layout:      layout,
+		ReadModel:   store,
+		Definitions: definitions,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attachFreshnessSignals(reads, &schedulerSetup{
+		Watermarks: watermarks,
+		ProjectorStats: func() projector.Stats {
+			// A lifetime failure that has since been repaired plus one still
+			// open: only the open one is a gap the operator can act on.
+			return projector.Stats{ProjectFailures: 4, UnresolvedRuns: 1, LastDrainAt: time.Now()}
+		},
+	})
+
+	list, err := reads.ListRuns(context.Background(), readservice.RunListOptions{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list.ReadState == nil {
+		t.Fatal("the response carries no readState; the freshness envelope is missing entirely")
+	}
+	if list.ReadState.Completeness != readmodel.CompletenessPartial {
+		t.Errorf("completeness = %q, want %q: an unprojected run is missing from this list",
+			list.ReadState.Completeness, readmodel.CompletenessPartial)
+	}
+	if !slices.Contains(list.ReadState.Degraded, readmodel.DegradedProjectFailure) {
+		t.Errorf("degraded = %v, want it to contain %q",
+			list.ReadState.Degraded, readmodel.DegradedProjectFailure)
+	}
+	for _, missing := range list.ReadState.Missing {
+		// The lifetime counter must not leak into the operator-facing number:
+		// reporting 4 when 3 have been repaired overstates a resolved gap.
+		if strings.Contains(missing.Reason, "4 run(s)") {
+			t.Errorf("missing reason %q reports the cumulative failure count rather than "+
+				"the open gap", missing.Reason)
+		}
+	}
+}
+
+// TestAttachFreshnessSignalsToleratesAProjectorlessSetup pins that the daemon
+// still starts when the intake store could not be opened: the envelope reports
+// fewer signals, it does not fail.
+func TestAttachFreshnessSignalsToleratesAProjectorlessSetup(t *testing.T) {
+	root := initDemo(t)
+	layout := instance.NewLayout(root)
+	definitions, _, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads, err := readservice.NewLocal(readservice.LocalSources{
+		Layout:      layout,
+		Definitions: definitions,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachFreshnessSignals(reads, &schedulerSetup{})
+	attachFreshnessSignals(nil, nil)
+	if _, err := reads.ListRuns(context.Background(), readservice.RunListOptions{Limit: 1}); err != nil {
+		t.Errorf("listing runs after attaching nothing: %v", err)
 	}
 }
