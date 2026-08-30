@@ -16,6 +16,55 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
+// seedRemediationNoopState records one no-op attempt for key directly, standing
+// in for a prior run's write. It uses the LOCK-FREE file store deliberately:
+// the pre-#3989 updateRemediationNoopState took no lock of its own either (its
+// callers held claims.lock), so a seeded fixture behaves identically and a test
+// that deliberately holds claims.lock can still inspect the state.
+func seedRemediationNoopState(
+	t *testing.T,
+	l instance.Layout,
+	key string,
+	signature remediationNoopSignature,
+	runID string,
+) {
+	t.Helper()
+	store, err := heldStateStore(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := updateRemediationNoopState(stateContext(), store, key, signature, runID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// remediationNoopStateRecord reads key's record without taking claims.lock.
+func remediationNoopStateRecord(t *testing.T, l instance.Layout, key string) remediationNoopRecord {
+	t.Helper()
+	store, err := heldStateStore(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := readRemediationNoopRecord(stateContext(), store, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record
+}
+
+// clearSeededRemediationNoopState forgets key's record without taking
+// claims.lock.
+func clearSeededRemediationNoopState(t *testing.T, l instance.Layout, key string) {
+	t.Helper()
+	store, err := heldStateStore(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clearRemediationNoopState(stateContext(), store, key); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRecordPRRemediationNoopCountsDistinctRuns(t *testing.T) {
 	root := initDemo(t)
 	l := layoutFor(root)
@@ -50,11 +99,7 @@ func TestRecordPRRemediationNoopCountsDistinctRuns(t *testing.T) {
 	if err := recordPRRemediationNoop(l, runID); err != nil {
 		t.Fatal(err)
 	}
-	state, err := readRemediationNoopState(l.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := state.Records[remediationNoopKey("", 77)]
+	record := remediationNoopStateRecord(t, l, remediationNoopKey("", 77))
 	if record.Attempts != 1 || record.LastRunID != runID || record.HeadSHA != "head-a" || record.Causes != "substantive" {
 		t.Fatalf("record = %+v, want one idempotently recorded no-op", record)
 	}
@@ -66,9 +111,7 @@ func TestRecordPRRemediationNoopSuccessThenNoWorkClearsGuard(t *testing.T) {
 	const runID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	key := remediationNoopKey("", 77)
 	signature := remediationNoopSignature{HeadSHA: "head-a", Causes: "substantive"}
-	if err := updateRemediationNoopState(l.SchedulerDir(), key, signature, "prior-run"); err != nil {
-		t.Fatal(err)
-	}
+	seedRemediationNoopState(t, l, key, signature, "prior-run")
 	jr, err := journal.Create(l.RunsDir(), journal.RunIdentity{
 		RunID: runID, Workflow: "pr-remediation", Gaggle: "goobers",
 	}, nil)
@@ -92,12 +135,8 @@ func TestRecordPRRemediationNoopSuccessThenNoWorkClearsGuard(t *testing.T) {
 	if err := recordPRRemediationNoop(l, runID); err != nil {
 		t.Fatal(err)
 	}
-	state, err := readRemediationNoopState(l.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := state.Records[key]; ok {
-		t.Fatalf("record = %+v, want successful implementation attempt to clear guard", state.Records[key])
+	if record := remediationNoopStateRecord(t, l, key); !record.empty() {
+		t.Fatalf("record = %+v, want successful implementation attempt to clear guard", record)
 	}
 }
 
@@ -150,12 +189,8 @@ func TestTerminalPRRemediationNoopLockTimeoutDefersRecordingToRecovery(t *testin
 	if err := finalizeTerminalRun(l, nil, manager, runID); err != nil {
 		t.Fatalf("terminal timeout should defer cleanup: %v", err)
 	}
-	state, err := readRemediationNoopState(l.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(state.Records) != 0 {
-		t.Fatalf("records while claims lock held = %+v, want deferred update", state.Records)
+	if record := remediationNoopStateRecord(t, l, remediationNoopKey("", 77)); !record.empty() {
+		t.Fatalf("record while claims lock held = %+v, want deferred update", record)
 	}
 	if err := holder.Release(); err != nil {
 		t.Fatal(err)
@@ -173,11 +208,7 @@ func TestTerminalPRRemediationNoopLockTimeoutDefersRecordingToRecovery(t *testin
 	if len(released) != 1 || released[0].RunID != runID {
 		t.Fatalf("recovery released %+v, want terminal remediation claim", released)
 	}
-	state, err = readRemediationNoopState(l.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	record := state.Records[remediationNoopKey("", 77)]
+	record := remediationNoopStateRecord(t, l, remediationNoopKey("", 77))
 	if record.Attempts != 1 || record.LastRunID != runID {
 		t.Fatalf("recovered no-op record = %+v, want one attempt for %s", record, runID)
 	}
@@ -195,12 +226,8 @@ func TestRemediationNoopAttemptsResetsOnHeadOrCauseChange(t *testing.T) {
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
 	key := remediationNoopKey("goobers", 77)
 	first := remediationNoopSignature{HeadSHA: "head-a", Causes: "substantive"}
-	if err := updateRemediationNoopState(l.SchedulerDir(), key, first, "run-1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := updateRemediationNoopState(l.SchedulerDir(), key, first, "run-2"); err != nil {
-		t.Fatal(err)
-	}
+	seedRemediationNoopState(t, l, key, first, "run-1")
+	seedRemediationNoopState(t, l, key, first, "run-2")
 	if record, err := remediationNoopRecordForSignature(l, 77, first); err != nil || record.Attempts != 2 {
 		t.Fatalf("unchanged record = %+v, err = %v; want 2 attempts", record, err)
 	}
@@ -209,19 +236,13 @@ func TestRemediationNoopAttemptsResetsOnHeadOrCauseChange(t *testing.T) {
 	if record, err := remediationNoopRecordForSignature(l, 77, changedHead); err != nil || record.Attempts != 0 {
 		t.Fatalf("changed-head record = %+v, err = %v; want reset", record, err)
 	}
-	if err := updateRemediationNoopState(l.SchedulerDir(), key, changedHead, "run-3"); err != nil {
-		t.Fatal(err)
-	}
+	seedRemediationNoopState(t, l, key, changedHead, "run-3")
 	changedCause := remediationNoopSignature{HeadSHA: "head-b", Causes: "failing-ci"}
 	if record, err := remediationNoopRecordForSignature(l, 77, changedCause); err != nil || record.Attempts != 0 {
 		t.Fatalf("changed-cause record = %+v, err = %v; want reset", record, err)
 	}
-	if err := updateRemediationNoopState(l.SchedulerDir(), key, changedCause, "run-4"); err != nil {
-		t.Fatal(err)
-	}
-	if err := clearRemediationNoopState(l.SchedulerDir(), key); err != nil {
-		t.Fatal(err)
-	}
+	seedRemediationNoopState(t, l, key, changedCause, "run-4")
+	clearSeededRemediationNoopState(t, l, key)
 	if record, err := remediationNoopRecordForSignature(l, 77, changedCause); err != nil || record.Attempts != 0 {
 		t.Fatalf("post-progress record = %+v, err = %v; want reset", record, err)
 	}
@@ -252,12 +273,8 @@ func TestGatherPRContextDigestNoopIsIdempotentAndHonorsOperatorReset(t *testing.
 	if err != nil || !reset || record.Attempts != 0 {
 		t.Fatalf("operator reset record = %+v, reset = %v, err = %v; want cleared guard", record, reset, err)
 	}
-	state, err := readRemediationNoopState(l.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := state.Records[key]; ok {
-		t.Fatalf("record = %+v, want operator-cleared guard removed", state.Records[key])
+	if record := remediationNoopStateRecord(t, l, key); !record.empty() {
+		t.Fatalf("record = %+v, want operator-cleared guard removed", record)
 	}
 }
 
@@ -271,12 +288,8 @@ func TestRemediationCheckpointParksRepeatedNoopSignature(t *testing.T) {
 	root := remediationCheckpointEnv(t, server.URL, false)
 	signature := remediationNoopSignature{HeadSHA: headSHA, Causes: "substantive"}
 	key := remediationNoopKey("", 77)
-	if err := updateRemediationNoopState(layoutFor(root).SchedulerDir(), key, signature, "run-1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := updateRemediationNoopState(layoutFor(root).SchedulerDir(), key, signature, "run-2"); err != nil {
-		t.Fatal(err)
-	}
+	seedRemediationNoopState(t, layoutFor(root), key, signature, "run-1")
+	seedRemediationNoopState(t, layoutFor(root), key, signature, "run-2")
 
 	code, stdout, stderr := runArgs(t, "remediation-checkpoint", root)
 	if code != 0 {
@@ -333,12 +346,8 @@ func TestRemediationCheckpointResetsNoopGuardWhenHeadChangesBeforePublication(t 
 	root := remediationCheckpointEnv(t, server.URL, false)
 	key := remediationNoopKey("", 77)
 	signature := remediationNoopSignature{HeadSHA: initialHeadSHA, Causes: "substantive"}
-	if err := updateRemediationNoopState(layoutFor(root).SchedulerDir(), key, signature, "run-1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := updateRemediationNoopState(layoutFor(root).SchedulerDir(), key, signature, "run-2"); err != nil {
-		t.Fatal(err)
-	}
+	seedRemediationNoopState(t, layoutFor(root), key, signature, "run-1")
+	seedRemediationNoopState(t, layoutFor(root), key, signature, "run-2")
 
 	code, stdout, stderr := runArgs(t, "remediation-checkpoint", root)
 	if code != 0 {
@@ -353,11 +362,7 @@ func TestRemediationCheckpointResetsNoopGuardWhenHeadChangesBeforePublication(t 
 	if !ok || state.Escalated || state.HeadSHA != advancedHeadSHA {
 		t.Fatalf("checkpoint state = %+v, ok = %v, want ordinary checkpoint for advanced head %s", state, ok, advancedHeadSHA)
 	}
-	noOpState, err := readRemediationNoopState(layoutFor(root).SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := noOpState.Records[key]; ok {
-		t.Fatalf("no-op record = %+v, want stale head attempts cleared", noOpState.Records[key])
+	if record := remediationNoopStateRecord(t, layoutFor(root), key); !record.empty() {
+		t.Fatalf("no-op record = %+v, want stale head attempts cleared", record)
 	}
 }

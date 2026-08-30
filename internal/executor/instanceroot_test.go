@@ -45,7 +45,6 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		{name: "pr-select (SchedulerDir/pr-select-fairness.json)", cmd: []string{"goobers", "pr-select"}, want: true},
 		{name: "issue-close-out (journal.OpenRead over FindRunDir)", cmd: []string{"goobers", "issue-close-out"}, want: true},
 		{name: "telemetry-query (layout.TelemetryDB)", cmd: []string{"goobers", "telemetry-query", "--window", "24h"}, want: true},
-		{name: "gather-pr-context (SchedulerDir/pr-remediation-noop.json)", cmd: []string{"goobers", "gather-pr-context"}, want: true},
 		{name: "select-source (instance log + direct claim ledger)", cmd: []string{"goobers", "select-source"}, want: true},
 		{name: "publish-batch (SchedulerDir/decomposition-target-locks)", cmd: []string{"goobers", "publish-batch"}, want: true},
 		{name: "publish-batch with an unrelated --claim-shaped flag", cmd: []string{"goobers", "publish-batch", "--claim"}, want: true},
@@ -73,6 +72,16 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		{name: "post-merge (scheduler-state plane)", cmd: []string{"goobers", "post-merge"}, want: false},
 		{name: "validate-plan (journal read plane)", cmd: []string{"goobers", "validate-plan"}, want: false},
 		{name: "gate-removal-guard (journal read plane)", cmd: []string{"goobers", "gate-removal-guard"}, want: false},
+		// gather-pr-context is Goobers#3989's subject, and the only entry that
+		// needed THREE seams at once: its remediation no-op record is a keyed
+		// scheduler-state key, its PR-claim resolution is the claims plane, and
+		// its terminal-run journal read is the C4 stageRunJournal seam. A
+		// regression here silently fails the no-op guard OPEN in a pod, which
+		// loops the lane on the same PR — correctness, not cost.
+		{name: "gather-pr-context (state + claims + journal planes)", cmd: []string{"goobers", "gather-pr-context"}, want: false},
+		// remediation-checkpoint shares that guard and was never on the list;
+		// it is pinned here so the pair cannot drift apart.
+		{name: "remediation-checkpoint (shares the no-op guard)", cmd: []string{"goobers", "remediation-checkpoint"}, want: false},
 
 		// --- flag-gated commands ---
 		// backlog-query is Goobers#3898's subject: its scan cursor and

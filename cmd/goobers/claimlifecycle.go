@@ -170,7 +170,8 @@ func recoverClaims(
 				if _, alreadyRecorded := recorded[entry.RunID]; alreadyRecorded {
 					continue
 				}
-				if err := recordPRRemediationNoopLocked(l, ledger, entry.RunID, update); err != nil {
+				if err := recordPRRemediationNoopLocked(
+					context.Background(), l, ledger.ForRunAll(entry.RunID), entry.RunID, update); err != nil {
 					return err
 				}
 				recorded[entry.RunID] = struct{}{}

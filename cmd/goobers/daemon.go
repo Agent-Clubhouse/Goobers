@@ -264,6 +264,14 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err != nil {
 		return nil, err
 	}
+	// Goobers#3989: fold the pre-keyed aggregate pr-remediation-noop.json into
+	// the per-PR scheduler-state keys before anything can read one. The record
+	// is a loop breaker, so losing it across the upgrade would spend a full
+	// agentic remediation cycle per currently-suppressed PR proving again that
+	// there is nothing to do.
+	if err := migrateLegacyRemediationNoopState(l); err != nil {
+		return nil, err
+	}
 	claimProviders := claimProvidersByGaggle(set)
 
 	// telemetry.enabled defaults to true; instance.yaml can opt out (issue
