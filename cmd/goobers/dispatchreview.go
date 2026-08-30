@@ -21,6 +21,7 @@ package main
 // containing the commit a pod-side implement stage made.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -92,6 +93,7 @@ func recordPodReviewerDiff(ctx context.Context, workspace, runsDir, stage string
 	for _, c := range creds {
 		registry.Register([]byte(c.Value))
 	}
+	source := diff
 	diff = scrubber.Scrub(diff)
 
 	recorder := podArtifactRecorder{stderr: stderr, dir: runsDir}
@@ -109,7 +111,12 @@ func recordPodReviewerDiff(ctx context.Context, workspace, runsDir, stage string
 	if err := os.WriteFile(dest, diff, 0o644); err != nil {
 		return nil, fmt.Errorf("reviewer diff: stage evidence for the harness: %w", err)
 	}
-	pf(stderr, "reviewer diff: recorded %s/%s (%s, %d bytes) from %s...HEAD\n", stage, reviewerDiffArtifact, ref.Digest, len(diff), baseRef)
+	// Record whether the evidence was transformed on its way to the agent, and
+	// the digest of the pre-scrub bytes, so a reviewer finding about a redacted
+	// region can be correlated with the authoritative diff of the commits
+	// (#3135) instead of read as a defect in the branch.
+	pf(stderr, "reviewer diff: recorded %s/%s (%s, %d bytes) from %s...HEAD; redacted=%t source=%s\n",
+		stage, reviewerDiffArtifact, ref.Digest, len(diff), baseRef, !bytes.Equal(source, diff), journal.Digest(source))
 
 	artifact := apiv1.ArtifactPointer{
 		Path: ref.Path, Digest: ref.Digest, Size: ref.Size,

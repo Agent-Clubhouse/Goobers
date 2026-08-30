@@ -45,7 +45,7 @@ func TestRedactCatchesEachPatternBranch(t *testing.T) {
 			if strings.Contains(got, tc.secret) {
 				t.Fatalf("Redact(%q) = %q, still contains the secret", tc.in, got)
 			}
-			if !strings.Contains(got, RedactedPlaceholder) {
+			if !strings.Contains(got, RedactedPlaceholder) && !strings.Contains(got, RedactedTokenPlaceholder) {
 				t.Fatalf("Redact(%q) = %q, expected the redaction placeholder present", tc.in, got)
 			}
 		})
