@@ -188,6 +188,35 @@ const (
 	// DETERMINISTIC subject is still reviewed. It is what forbids a port that
 	// fast-fails on emptiness alone.
 	rowEmptyDiffDeterministicSubject parityRow = "E5-empty-diff-deterministic-subject"
+	// rowLearningEpisodeInjection is inventory row "learning-episode injection
+	// on the generic gate retry arm" (plan item E10, #3913): a repassing gate
+	// records the episode artifact, threads the derived learning.episode[<seq>]
+	// pointer into the re-entered stage, writes the learning.episode.injected
+	// annotation, and downgrades the repassed stage's produced integrity.
+	//
+	// The behaviour was ported by #3882/#3915. It had no inventory row of its
+	// own at the time — which is why the retry-decision rows next door once
+	// carried a documented surface exclusion rather than an expected-failure
+	// entry: that map joins on inventory row id, and inventing one would have
+	// corrupted the join key. E10 is that assigned id, and this row is where
+	// the behaviour is pinned in its own right rather than as a side condition
+	// of a row about something else.
+	rowLearningEpisodeInjection parityRow = "E10-learning-episode-injection"
+	// rowLearningEpisodeNotInjected is the NEGATIVE half of the same row: a
+	// gate whose fail branch routes ONWARD, to a stage that has not run, is not
+	// a repass — there is nothing to correct and no attempt to feed. It is what
+	// forbids an injection keyed on "the gate failed" rather than on "the gate
+	// sent a stage back", which would fill forward stages' envelopes with
+	// derived pointers and downgrade stages that were never repassed.
+	rowLearningEpisodeNotInjected parityRow = "E10-learning-episode-not-injected"
+	// rowLearningEpisodeForwardBranch is the sub-case this table DISCOVERED
+	// while pinning the two above: a gate's fail branch that routes ONWARD, to
+	// a stage that has not run, on a retry-classifiable failure. The local
+	// runner injects there (routeRetryDecision does not ask whether the target
+	// already completed); the engine's port does (gateSendsBack). Which side is
+	// right is a ruling, so the row states the divergence and carries an
+	// expected-failure entry rather than resolving it.
+	rowLearningEpisodeForwardBranch parityRow = "E10-learning-episode-forward-branch"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
@@ -206,7 +235,15 @@ const (
 // registered row is now green on both runners — and it is not a licence to stop
 // adding rows. A gap the inventory names but no row pins is still a gap; see
 // the drift ledger in doc.go for divergences observed but not yet inventoried.
-var parityExpectedFailures = map[parityRow]string{}
+var parityExpectedFailures = map[parityRow]string{
+	rowLearningEpisodeForwardBranch: "E10/#3913: a gate fail branch that routes ONWARD (to a stage that has " +
+		"not run) on a retry-classifiable failure injects a learning episode on the local runner and not on " +
+		"the engine. internal/runner's routeRetryDecision guard asks only retryable/non-pass/non-escalated/" +
+		"real-target, so the runner hands a correction to a stage that never failed, naming nextAttempt = " +
+		"sourceAttempt+1 for an attempt that is 1; the engine's port (gateSendsBack, #3882) additionally " +
+		"requires the target to be an already-completed stage. Closing it needs a RULING on which behaviour " +
+		"is intended — port gateSendsBack's condition into internal/runner, or drop it from the engine — " +
+		"and the loser is a behaviour change on a live lane, not a parity fix. Tracked on #3913."}
 
 // --- case registration ------------------------------------------------------
 
