@@ -14,6 +14,10 @@
 | [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
+| [`goobers fleet`](#goobers-fleet) | associate this instance with a Fleet service |
+| [`goobers fleet join`](#goobers-fleet-join) | discover and enroll this instance with a Fleet service |
+| [`goobers fleet leave`](#goobers-fleet-leave) | remove this instance's Fleet association and protected secrets |
+| [`goobers fleet status`](#goobers-fleet-status) | show durable Fleet registration and connection state |
 | [`goobers getting-started`](#goobers-getting-started) | serve and open the guided portal Getting Started walkthrough |
 | [`goobers help`](#goobers-help) | show command or concept help |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
@@ -1573,6 +1577,88 @@ migrate), 1 = one or more workflows could not be migrated,
 ~~~console
 $ goobers fix --to 2.0
 $ goobers fix --to 2.0 --write ./instance
+~~~
+
+## `goobers fleet`
+
+associate this instance with a Fleet service
+
+~~~text
+Usage: goobers fleet <join|status|leave> [flags] [path]
+
+Associate a local Goobers instance with a Fleet service, inspect its durable
+connection state, or remove the association. Fleet identity and credentials
+are stored outside the instance root so copying an instance does not clone its
+identity.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fleet join --url https://fleet.example
+$ goobers fleet status
+$ goobers fleet leave
+~~~
+
+## `goobers fleet join`
+
+discover and enroll this instance with a Fleet service
+
+~~~text
+Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
+
+Discover and enroll an instance with a Fleet service. By default the one-time
+enrollment grant is read from a protected terminal prompt and never accepted
+as a command-line value. --enrollment-token-file supports automation and is
+accepted only when the file is private to its owner.
+
+When discovery advertises a local administrator principal, interactive use
+offers an explicit instance:read self-grant. Noninteractive use must choose
+--grant-local-admin or --no-grant-local-admin. An empty ACL always requires an
+explicit opt-out or interactive confirmation.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fleet join --url https://fleet.example
+$ goobers fleet join --url https://fleet.example --enrollment-token-file ./grant.txt --grant-local-admin
+~~~
+
+## `goobers fleet leave`
+
+remove this instance's Fleet association and protected secrets
+
+~~~text
+Usage: goobers fleet leave [path]
+
+Remove the Fleet association, private key, and bearer credential. A running
+daemon observes the removal and stops reconnecting.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fleet leave
+~~~
+
+## `goobers fleet status`
+
+show durable Fleet registration and connection state
+
+~~~text
+Usage: goobers fleet status [--json] [path]
+
+Show the durable Fleet registration, connection, heartbeat, ACL version, and
+credential expiry state. Private key and bearer credential material are never
+printed.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fleet status
+$ goobers fleet status --json
 ~~~
 
 ## `goobers gate-removal-guard`

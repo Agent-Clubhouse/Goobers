@@ -1,0 +1,23 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS FLEET" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers fleet \- associate this instance with a Fleet service
+.SH SYNOPSIS
+\fBgoobers fleet\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers fleet <join|status|leave> [flags] [path]
+
+Associate a local Goobers instance with a Fleet service, inspect its durable
+connection state, or remove the association. Fleet identity and credentials
+are stored outside the instance root so copying an instance does not clone its
+identity.
+.fi
+.SH EXAMPLES
+.nf
+goobers fleet join --url https://fleet.example
+goobers fleet status
+goobers fleet leave
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)

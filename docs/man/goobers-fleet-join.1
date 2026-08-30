@@ -1,0 +1,27 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS FLEET JOIN" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers fleet join \- discover and enroll this instance with a Fleet service
+.SH SYNOPSIS
+\fBgoobers fleet join\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
+
+Discover and enroll an instance with a Fleet service. By default the one-time
+enrollment grant is read from a protected terminal prompt and never accepted
+as a command-line value. --enrollment-token-file supports automation and is
+accepted only when the file is private to its owner.
+
+When discovery advertises a local administrator principal, interactive use
+offers an explicit instance:read self-grant. Noninteractive use must choose
+--grant-local-admin or --no-grant-local-admin. An empty ACL always requires an
+explicit opt-out or interactive confirmation.
+.fi
+.SH EXAMPLES
+.nf
+goobers fleet join --url https://fleet.example
+goobers fleet join --url https://fleet.example --enrollment-token-file ./grant.txt --grant-local-admin
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
