@@ -142,6 +142,51 @@ func TestCompiledRegexCacheIsBounded(t *testing.T) {
 	}
 }
 
+func TestCompiledRegexCacheUsesHitsAndLRUOrder(t *testing.T) {
+	regexCacheMutex.Lock()
+	oldCache := regexCache
+	oldOrder := regexCacheOrder
+	regexCache = make(map[string]*regexp.Regexp, maxRegexCacheEntries)
+	regexCacheOrder = nil
+	regexCacheMutex.Unlock()
+	t.Cleanup(func() {
+		regexCacheMutex.Lock()
+		regexCache = oldCache
+		regexCacheOrder = oldOrder
+		regexCacheMutex.Unlock()
+	})
+
+	patternA := "^alpha$"
+	patternB := "^beta$"
+	firstA, err := getCompiledRegex(patternA)
+	if err != nil {
+		t.Fatalf("compile pattern A: %v", err)
+	}
+	if _, err := getCompiledRegex(patternB); err != nil {
+		t.Fatalf("compile pattern B: %v", err)
+	}
+	secondA, err := getCompiledRegex(patternA)
+	if err != nil {
+		t.Fatalf("get cached pattern A again: %v", err)
+	}
+	if secondA != firstA {
+		t.Fatal("cached pattern A did not return the same regexp pointer on hit")
+	}
+
+	for i := 0; i < maxRegexCacheEntries-1; i++ {
+		_, err := getCompiledRegex(fmt.Sprintf("^branch-%d$", i+10))
+		if err != nil {
+			t.Fatalf("compile transient pattern %d: %v", i+10, err)
+		}
+	}
+	if _, ok := regexCache[patternB]; ok {
+		t.Fatalf("oldest cache entry %q should have been evicted by LRU ordering", patternB)
+	}
+	if got := regexCache[patternA]; got != secondA {
+		t.Fatalf("pattern A should remain cached and reused after eviction; got %p, want %p", got, secondA)
+	}
+}
+
 func TestFailureClass(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
