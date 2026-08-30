@@ -49,6 +49,13 @@ Flags:
                              disables reload and freezes the worker on
                              its boot-time tree (default 10s; requires
                              --instance)
+  --config-history-depth <n>
+                             how many superseded config trees to retain
+                             so an in-flight run pinned to one is still
+                             served the goober kit it was admitted
+                             against across a reload; 0 disables
+                             retention and refuses every superseded pin
+                             (default 3; requires --instance)
   --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;
                              wires the dispatcher behind the stage-dispatch
                              seam and serves the per-(gaggle x runner)
@@ -69,6 +76,15 @@ and agentic-kit seams whose config changed, so a definitions edit reaches
 the NEXT stage this worker serves without a pod restart. An attempt
 already running keeps the kit it was handed. A reload that does not parse
 is logged and rejected; the last-known-good tree stays in force.
+
+An agentic stage is served the goober kit its run pinned at start
+(run.yaml's gooberDigest), resolved against the current config tree or
+one of the --config-history-depth superseded trees still retained. A pin
+no retained tree satisfies is REFUSED by name (gate_pin_missing), loudly
+and retriably, naming the expected digest: the worker never substitutes
+its currently-configured goober for the one the run was admitted
+against. Such an attempt recovers by itself once a reload brings the
+pinned tree into force.
 
 Exit codes: 0 = clean drain, 1 = startup/connection error, 2 = usage error,
 3 = drain timeout expired with in-flight work abandoned.

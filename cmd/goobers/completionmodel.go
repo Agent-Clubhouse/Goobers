@@ -219,6 +219,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "daemon-api", takesArg: true, desc: "Daemon write API base URL for live journal emission"},
 		{name: "dispatch-namespace", takesArg: true, desc: "Namespace for mode-3 stage pods; wires the dispatcher seam"},
 		{name: "config-reload-interval", takesArg: true, desc: "How often to re-read the instance config tree and rebuild changed gaggle seams (0 disables)"},
+		{name: "config-history-depth", takesArg: true, desc: "How many superseded config trees to retain so an in-flight run pinned to one is still served its own goober kit (0 disables)"},
 		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},

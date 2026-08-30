@@ -1279,6 +1279,38 @@ type EngineConfig struct {
 	HostPort  string `json:"hostPort,omitempty" yaml:"hostPort,omitempty"`
 	Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
 	TaskQueue string `json:"taskQueue,omitempty" yaml:"taskQueue,omitempty"`
+	// HITL opts an instance's engine-driven runs into the human-in-the-loop
+	// protocol (#3883). Nil or disabled leaves every engine run settling at
+	// its terminal exactly as it did before, which is the rollback posture.
+	HITL *EngineHITLConfig `json:"hitl,omitempty" yaml:"hitl,omitempty"`
+}
+
+// EngineHITLConfig is the instance's posture on holding an engine-driven run's
+// terminal open for an operator (#3883, decision 005 R8).
+//
+// It is OPT-IN, and deliberately so. When it is on, a run that escalates
+// journals its terminal and then keeps its Temporal workflow OPEN for the
+// window below, waiting for an operator intent. The journal, the projection
+// and the portal see an escalated run exactly as they did before — the
+// terminal is written BEFORE the hold, not after it — but the scheduler's
+// concurrency slot for that lane stays occupied until the operator answers or
+// the window expires. On a lane with a small MaxConcurrentRuns, a day-long
+// default window applied without the operator asking for it would starve the
+// lane. So the default is off, and an instance turning it on chooses the
+// window it can afford.
+type EngineHITLConfig struct {
+	// Enabled turns the protocol on for this instance's engine-driven runs.
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Window is how long a resumable terminal is held open for an operator,
+	// as a Go duration ("4h"). Empty uses the engine's 24h default.
+	Window string `json:"window,omitempty" yaml:"window,omitempty"`
+	// Actors, when non-empty, is the closed set of operator identities the
+	// WORKFLOW will accept an intent from. It is enforced inside the workflow
+	// rather than only at the daemon's API edge, so a compromised or
+	// misconfigured daemon cannot resolve a run it was never entitled to
+	// resolve. Empty means any actor the daemon's own authorization already
+	// admitted.
+	Actors []string `json:"actors,omitempty" yaml:"actors,omitempty"`
 }
 
 // RunConditions are instance-level run conditions (§7): max parallel runs and
@@ -1643,6 +1675,16 @@ func (c *Config) EffectiveEngineConfig() EngineConfig {
 	}
 }
 
+// EngineHITLEnabled reports whether this instance opted its engine-driven runs
+// into the #3883 operator-hold protocol.
+func (c *Config) EngineHITLEnabled() bool {
+	if c == nil {
+		return false
+	}
+	hitl := c.EffectiveEngineConfig().HITL
+	return hitl != nil && hitl.Enabled
+}
+
 // EngineProjectionEnabled reports whether instance YAML or a host/address
 // environment override configured a Temporal connection for the daemon.
 func (c *Config) EngineProjectionEnabled() bool {
@@ -1667,7 +1709,43 @@ func (c EngineConfig) Validate() error {
 	if strings.TrimSpace(c.TaskQueue) != c.TaskQueue || c.TaskQueue == "" {
 		return fmt.Errorf("taskQueue must be non-empty without leading or trailing whitespace")
 	}
+	if c.HITL != nil {
+		if err := c.HITL.Validate(); err != nil {
+			return fmt.Errorf("hitl: %w", err)
+		}
+	}
 	return nil
+}
+
+// Validate checks the operator-hold window. An unparsable or non-positive
+// window is refused at load rather than silently falling back to the 24h
+// default: an operator who wrote "4hr" meant to bound the hold, and a daemon
+// that quietly held for a day instead would be holding a lane's concurrency
+// slot they never agreed to give up.
+func (c EngineHITLConfig) Validate() error {
+	if strings.TrimSpace(c.Window) == "" {
+		return nil
+	}
+	window, err := time.ParseDuration(strings.TrimSpace(c.Window))
+	if err != nil {
+		return fmt.Errorf("window %q is not a duration: %w", c.Window, err)
+	}
+	if window <= 0 {
+		return fmt.Errorf("window must be positive, got %s", c.Window)
+	}
+	return nil
+}
+
+// HITLWindow is the configured operator-hold window, or zero when the instance
+// left it to the engine's default. Validate has already refused anything
+// unparsable, so a parse failure here degrades to the default rather than
+// failing a run start.
+func (c EngineHITLConfig) HITLWindow() time.Duration {
+	window, err := time.ParseDuration(strings.TrimSpace(c.Window))
+	if err != nil || window <= 0 {
+		return 0
+	}
+	return window
 }
 
 // Enabled reports whether collector push is configured.

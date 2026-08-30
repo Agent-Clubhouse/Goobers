@@ -477,11 +477,16 @@ func parityCases() []parityCase {
 //     and Integrity grade are what a stage's admission and evidence depend
 //     on, and both are compared (ContextPointers below).
 type parityEnvelope struct {
-	Stage             string
-	RunID             string
-	WorkflowID        string
-	Goal              string
-	Goober            string
+	Stage      string
+	RunID      string
+	WorkflowID string
+	Goal       string
+	Goober     string
+	// GooberDigest is the kit the run was admitted against, and since #3884
+	// the value the worker SELECTS its kit by. Both drivers stamp it from the
+	// run's pin, so a side that dropped it — or minted its own — would be
+	// dispatching against a kit the other side never agreed to.
+	GooberDigest      string
 	Gaggle            string
 	BranchNamespace   string
 	BaseBranch        string
@@ -544,11 +549,11 @@ var parityEnvelopeExcludedFields = map[string]string{
 // identical-looking envelopes differ" — so the two must stay in lockstep;
 // TestParityEnvelopeStringPrintsEveryComparedField enforces that.
 func (e parityEnvelope) String() string {
-	return fmt.Sprintf("stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s ownership=%s "+
+	return fmt.Sprintf("stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s gooberDigest=%s ownership=%s "+
 		"branchNamespace=%q baseBranch=%q triggerRef=%q minIntegrity=%q addendum=%q "+
 		"inputs=[%s] caps=[%s] policy=[%s] pointers=[%s] item=%q "+
 		"repoRef=%s additionalWorkspaces=[%s] checkoutCones=%s limits=%s parentPlatformPolicy=%s nestedAgentPolicy=%s",
-		e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.OwnershipBoundary,
+		e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.GooberDigest, e.OwnershipBoundary,
 		e.BranchNamespace, e.BaseBranch, e.TriggerRef, e.MinimumIntegrity, e.InstructionAddendum,
 		e.Inputs, e.Capabilities, e.PolicyActions, e.ContextPointers, e.Item,
 		e.RepoRef, e.AdditionalWorkspaces, e.CheckoutCones, e.Limits,
@@ -568,6 +573,7 @@ func projectParityEnvelope(env apiv1.InvocationEnvelope) parityEnvelope {
 		WorkflowID:           env.WorkflowID,
 		Goal:                 env.Goal,
 		Goober:               env.Goober,
+		GooberDigest:         env.GooberDigest,
 		Gaggle:               env.Gaggle,
 		BranchNamespace:      env.BranchNamespace,
 		BaseBranch:           env.BaseBranch,
@@ -1411,7 +1417,8 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Every field set to a value that appears nowhere else in the rendering.
 	full := parityEnvelope{
 		Stage: "s-stage", RunID: "s-runid", WorkflowID: "s-workflow", Goal: "s-goal", Goober: "s-goober",
-		Gaggle: "s-gaggle", BranchNamespace: "s-namespace", BaseBranch: "s-base",
+		GooberDigest: "s-gooberdigest",
+		Gaggle:       "s-gaggle", BranchNamespace: "s-namespace", BaseBranch: "s-base",
 		TriggerRef: "s-trigger", OwnershipBoundary: "s-ownership",
 		MinimumIntegrity:    apiv1.Integrity("s-integrity"),
 		InstructionAddendum: "s-addendum",
@@ -1422,7 +1429,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	}
 	rendered := full.String()
 	for _, sentinel := range []string{
-		"s-stage", "s-runid", "s-workflow", "s-goal", "s-goober", "s-gaggle", "s-namespace", "s-base",
+		"s-stage", "s-runid", "s-workflow", "s-goal", "s-goober", "s-gooberdigest", "s-gaggle", "s-namespace", "s-base",
 		"s-trigger", "s-ownership", "s-integrity", "s-addendum", "s-inputs", "s-caps", "s-policy",
 		"s-pointers", "s-item", "s-reporef", "s-additional", "s-cones", "s-limits",
 		"s-parentpolicy", "s-nestedpolicy",
@@ -1434,7 +1441,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Guard the other direction: a newly added field must be added to String.
 	// reflect.NumField is the tripwire — bump the count deliberately, together
 	// with the sentinel list above.
-	if got, want := reflect.TypeOf(full).NumField(), 23; got != want {
+	if got, want := reflect.TypeOf(full).NumField(), 24; got != want {
 		t.Fatalf("parityEnvelope now has %d fields, this test knows %d — add the new field to String() and to the sentinel list", got, want)
 	}
 }
