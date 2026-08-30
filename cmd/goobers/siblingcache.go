@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
-	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -21,7 +21,7 @@ import (
 // merge-review runs' gather stages each run as their own OS process against
 // the same instance root.
 const (
-	siblingCacheFileName     = "sibling-context-cache.json"
+	siblingCacheFileName     = stateclient.KeySiblingContextCache
 	siblingCacheLockFileName = "sibling-context-cache.lock"
 )
 
@@ -52,28 +52,16 @@ type siblingCacheFile struct {
 	Entries map[string]siblingCacheEntry `json:"entries"`
 }
 
-// loadSiblingCache reads the cache under the cross-process lock. It never
-// fails the stage: a missing file is the normal first-run outcome, and an
+// loadSiblingCache reads the cache through the scheduler-state seam. It never
+// fails the stage: a missing key is the normal first-run outcome, and an
 // unreadable/corrupt one degrades to an empty cache (a full fresh gather)
 // with a warning — the cache is an optimization, never a correctness input.
-func loadSiblingCache(schedulerDir string, stderr io.Writer) map[string]siblingCacheEntry {
-	path := filepath.Join(schedulerDir, siblingCacheFileName)
-	var entries map[string]siblingCacheEntry
-	err := withSiblingCacheLock(schedulerDir, func() error {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		var f siblingCacheFile
-		if err := json.Unmarshal(data, &f); err != nil {
-			return err
-		}
-		entries = f.Entries
-		return nil
-	})
+//
+// Since #3878 this reaches the daemon's copy over the scheduler-state plane
+// when the stage runs in a pod, so a gather in a pod hits the memo a previous
+// gather populated instead of starting from an empty pod-local file every run.
+func loadSiblingCache(l instance.Layout, stderr io.Writer) map[string]siblingCacheEntry {
+	entries, err := readSiblingCache(l)
 	if err != nil {
 		pf(stderr, "warning: sibling-context cache unreadable, gathering fresh: %v\n", err)
 		return nil
@@ -81,43 +69,61 @@ func loadSiblingCache(schedulerDir string, stderr io.Writer) map[string]siblingC
 	return entries
 }
 
-// saveSiblingCache writes entries back under the cross-process lock, via
-// temp-file-plus-rename so a concurrent load never sees a torn write. Errors
-// are the caller's to report-and-continue: failing to persist the memo must
-// not fail a gather that already succeeded.
-func saveSiblingCache(schedulerDir string, entries map[string]siblingCacheEntry) error {
-	path := filepath.Join(schedulerDir, siblingCacheFileName)
+func readSiblingCache(l instance.Layout) (map[string]siblingCacheEntry, error) {
+	store, err := openSiblingCacheStore(l)
+	if err != nil {
+		return nil, err
+	}
+	value, err := store.Get(stateContext(), stateclient.KeySiblingContextCache)
+	if err != nil {
+		return nil, err
+	}
+	return decodeSiblingCache(value)
+}
+
+func decodeSiblingCache(value stateclient.Value) (map[string]siblingCacheEntry, error) {
+	if !value.Exists() {
+		return nil, nil
+	}
+	var f siblingCacheFile
+	if err := json.Unmarshal(value.Data, &f); err != nil {
+		return nil, err
+	}
+	return f.Entries, nil
+}
+
+// saveSiblingCache writes entries back through the scheduler-state seam.
+// Errors are the caller's to report-and-continue: failing to persist the memo
+// must not fail a gather that already succeeded.
+//
+// The write is unconditional rather than a compare-and-swap merge: the memo is
+// pruned to the currently-open sibling set on every save, so the last writer's
+// view is the correct one and a "lost" concurrent update costs at most one
+// re-gather. Correctness never depends on it.
+func saveSiblingCache(l instance.Layout, entries map[string]siblingCacheEntry) error {
+	store, err := openSiblingCacheStore(l)
+	if err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(siblingCacheFile{Entries: entries}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal sibling-context cache: %w", err)
 	}
-	return withSiblingCacheLock(schedulerDir, func() error {
-		tmp, err := os.CreateTemp(schedulerDir, siblingCacheFileName+".tmp-*")
-		if err != nil {
-			return err
-		}
-		tmpName := tmp.Name()
-		if _, err := tmp.Write(data); err != nil {
-			_ = tmp.Close()
-			_ = os.Remove(tmpName)
-			return err
-		}
-		if err := tmp.Close(); err != nil {
-			_ = os.Remove(tmpName)
-			return err
-		}
-		return durability.ReplaceFile(tmpName, path)
-	})
+	return store.Update(stateContext(), stateclient.KeySiblingContextCache, stateLockOperationSiblingUpdate,
+		func(stateclient.Value) ([]byte, bool, error) {
+			return data, true, nil
+		})
 }
 
-// withSiblingCacheLock serializes cache reads/writes across concurrent
-// gather processes, reusing withFileLock's blocking-flock discipline (and
-// claims.json's rationale: each stage dispatch is its own OS process, so an
-// in-process mutex cannot arbitrate). Creates schedulerDir if a standalone/
-// manual invocation runs against a root that was never scaffolded.
-func withSiblingCacheLock(schedulerDir string, fn func() error) error {
-	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
-		return err
+// openSiblingCacheStore builds the sibling-cache store, creating the scheduler
+// directory for a standalone/manual invocation against a root that was never
+// scaffolded. A stage pod creates nothing: the plane owns the daemon's
+// scheduler directory.
+func openSiblingCacheStore(l instance.Layout) (stateclient.Store, error) {
+	if !statePlaneSelected() {
+		if err := os.MkdirAll(l.SchedulerDir(), 0o755); err != nil {
+			return nil, err
+		}
 	}
-	return withFileLock(filepath.Join(schedulerDir, siblingCacheLockFileName), fn)
+	return openStageStateStore(l)
 }
