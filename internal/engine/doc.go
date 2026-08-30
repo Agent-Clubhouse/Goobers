@@ -36,6 +36,15 @@
 //   - taskOutcome does not honor the #415 non-retryable escalation bypass
 //     (ISSUE_OVER_SCOPE / NEEDS_DECOMPOSITION route straight to escalation on
 //     the local runner, bypassing the Next gate).
+//   - Learning-episode injection (#3874, newly observed by the parity harness
+//     and not yet an entry in the finding-002 inventory): on the SAME gate-retry
+//     arm that writes the retry decision, the local runner also records a
+//     learning/episode-<gate>-<seq>.json artifact and threads a
+//     learning.episode[<seq>] context pointer into the re-entered stage
+//     (recordLearningInjection). The engine does neither, so a repassed stage is
+//     re-invoked here without the correction feedback its local counterpart
+//     receives. It is bounded and named by the parity rows that walk a fail
+//     branch (parity_row_retry_decision_test.go), never silently tolerated.
 //   - Cumulative agentic usage budgets (limits.maxTokens / maxCostUSD) are not
 //     enforced here — the local runner fails closed via enforceStageBudget.
 //     Moot until the agentic executor seam is wired (stages needing it fail
@@ -44,6 +53,14 @@
 //     attempts (#2873). The context-manifest artifact is still journaled even
 //     when provisioning failed; the gate-evaluator has no per-attempt deadline;
 //     and InputsFrom failures produce no stage-attributed events.
+//
+// Plan item E2 (#3874) closed four of the entries this ledger used to carry:
+// the #415 non-retryable escalation bypass, the retry-decision annotation and
+// its knownOutcome shortcut, RunResult.NoWork, and stage-qualified inputsFrom
+// resolution. Each is now pinned by a row of the runner-vs-engine parity table
+// (internal/engine/parity_row_*_test.go) rather than by prose here, which is
+// the point of that table: a closed divergence that is only asserted in a
+// comment reopens silently.
 //
 // The #629 remnant closed the provider-mutation ref.touched gap and moved result
 // and verdict scrubbing to the activity boundary, before Temporal records the
