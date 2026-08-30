@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -51,16 +52,41 @@ var (
 	_ mergeProvider = (*providers.GiteaProvider)(nil)
 )
 
-// mergeStageProviderWithRecorder is mergeStageProvider with an explicit journal
-// mutation recorder. The post-merge branch delete must record kind="branch",
-// not kind="pr": the run journal's mutation facts are how an operator tells a
-// merge from the branch cleanup that followed it, and collapsing both onto the
-// PR recorder loses that distinction.
+// mergeStageProviderWithRecorder builds post-merge-reconcile's merge/unpark
+// forge client through the shared merge-review/stage provider seam, with an
+// explicit journal mutation recorder. The post-merge branch delete must record
+// kind="branch", not kind="pr": the run journal's mutation facts are how an
+// operator tells a merge from the branch cleanup that followed it, and
+// collapsing both onto the PR recorder loses that distinction — which is why
+// the recorder is passed in rather than derived from a kind here.
+//
+// It used to hand-roll its arms, and its GitHub arm called
+// newCachedGitHubProvider directly. That skipped newGitHubProviderForStage and
+// therefore skipped providers.WithConfiguredLogin, so under GitHub App auth the
+// provider had no declared identity and AuthenticatedLogin — which
+// post-merge-reconcile reaches through reconcileOpenPullRequestParks' sibling
+// unpark checks — fell back to GET /user. Installation tokens cannot call that
+// endpoint, so reconciliation died with "Resource not accessible by
+// integration" and silently stopped unparking (#3890). #3885/#3886 fixed
+// apply-verdict's identical constructor but missed this sibling; routing both
+// through the seam is what keeps them from drifting apart again.
+//
+// Per-arm behavior is preserved exactly: the GitHub arm stays conditional-GET
+// cached, the Gitea arm keeps its recorder and stays uncached, and both keep
+// using the caller's own capability token. ADO now reaches the registered ADO
+// factory instead of the old `default:` arm, which silently handed an ADO repo
+// a GitHub provider; post-merge-reconcile routes ADO to its own command before
+// this constructor, so no live path changes.
 func mergeStageProviderWithRecorder(root string, repo providers.RepositoryRef, token string, recorder providers.MutationRecorder) (mergeProvider, error) {
-	switch repo.Provider {
-	case providers.ProviderGitea:
-		return newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(recorder))
-	default:
-		return newCachedGitHubProvider(root, token, providers.WithMutationRecorder(recorder)), nil
+	opts := []stageProviderOption{
+		withStageProviderCapability(capability.GitHubPRWrite),
+		withStageProviderToken(token),
+		withStageProviderMutationRecorder(recorder),
 	}
+	if repo.Provider == providers.ProviderGitHub {
+		// The conditional-GET read cache is a GitHub HTTPClient decorator
+		// (apireadcache.go); the Gitea arm has never been cached.
+		opts = append(opts, withStageProviderCache())
+	}
+	return newMergeReviewProviderAs[mergeProvider](root, repo, false, opts...)
 }

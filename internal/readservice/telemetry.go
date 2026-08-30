@@ -31,6 +31,39 @@ type TelemetryReader interface {
 	TelemetryStats(context.Context, TelemetryStatsRequest) (TelemetryStatsResult, error)
 	TelemetryErrorSignatures(context.Context, TelemetryErrorSignaturesRequest) (TelemetryErrorSignaturesResult, error)
 	TelemetryErrors(context.Context, TelemetryErrorsRequest) (TelemetryErrorsPage, error)
+	TelemetryImplementationOutcomes(context.Context, TelemetryImplementationOutcomesRequest) (TelemetryImplementationOutcomesResult, error)
+}
+
+// TelemetryImplementationOutcomesRequest selects the terminal implementation
+// runs that claimed a backlog item. Gaggle is the containment key the pod
+// read is scoped by (decision 005 R4); Since bounds the window to the
+// caller's earliest interesting ready-at, so the projection never returns the
+// whole of history.
+type TelemetryImplementationOutcomesRequest struct {
+	Gaggle string
+	Since  time.Time
+}
+
+// TelemetryImplementationOutcomesResult is the projected evidence set.
+type TelemetryImplementationOutcomesResult struct {
+	Items []TelemetryImplementationOutcome `json:"items"`
+}
+
+// TelemetryImplementationOutcome is one terminal implementation run and the
+// backlog item it claimed. Field-for-field the rollup's own projection: the
+// wire shape is restated here rather than aliased so the read contract does
+// not become a re-export of the rollup schema.
+type TelemetryImplementationOutcome struct {
+	RunID        string    `json:"runId"`
+	ItemID       string    `json:"itemId"`
+	Status       string    `json:"status"`
+	StartedAt    time.Time `json:"startedAt"`
+	FinishedAt   time.Time `json:"finishedAt"`
+	Stage        string    `json:"stage,omitempty"`
+	ErrorCode    string    `json:"errorCode,omitempty"`
+	ErrorMessage string    `json:"errorMessage,omitempty"`
+	Gate         string    `json:"gate,omitempty"`
+	Verdict      string    `json:"verdict,omitempty"`
 }
 
 // TelemetryStatsRequest filters workflow/stage aggregates and selects optional
@@ -363,6 +396,7 @@ type telemetryStore interface {
 	TrendStats(context.Context, rollup.TrendRequest) ([]rollup.TrendResult, error)
 	TopErrorSignatures(context.Context, rollup.StatsRequest, int) ([]rollup.ErrorSignature, error)
 	Errors(context.Context, rollup.ErrorsRequest) ([]rollup.ErrorEvent, error)
+	ImplementationOutcomes(context.Context, string, time.Time) ([]rollup.ImplementationOutcome, error)
 }
 
 // Telemetry projects the telemetry rollup into the shared read contract.
@@ -700,6 +734,41 @@ func validateOptionalTrendWindow(since, until time.Time, name string) error {
 		return fmt.Errorf("%w: invalid %s window", ErrInvalidTelemetryRequest, name)
 	}
 	return nil
+}
+
+// TelemetryImplementationOutcomes returns the terminal implementation runs
+// that claimed a backlog item, newest-window-first as the rollup orders them.
+// A gaggle is not required here — the CLI's local read has always been
+// allowed to run ungaggled — because the pod containment that decision 005 R4
+// authorizes lives at the HTTP boundary, where the caller's identity is
+// visible; this projection stays a pure filter.
+func (s *Telemetry) TelemetryImplementationOutcomes(ctx context.Context, req TelemetryImplementationOutcomesRequest) (TelemetryImplementationOutcomesResult, error) {
+	if err := ctx.Err(); err != nil {
+		return TelemetryImplementationOutcomesResult{}, err
+	}
+	outcomes, err := s.store.ImplementationOutcomes(ctx, req.Gaggle, req.Since)
+	if err != nil {
+		return TelemetryImplementationOutcomesResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return TelemetryImplementationOutcomesResult{}, err
+	}
+	result := TelemetryImplementationOutcomesResult{Items: make([]TelemetryImplementationOutcome, 0, len(outcomes))}
+	for _, outcome := range outcomes {
+		result.Items = append(result.Items, TelemetryImplementationOutcome{
+			RunID:        outcome.RunID,
+			ItemID:       outcome.ItemID,
+			Status:       outcome.Status,
+			StartedAt:    outcome.StartedAt,
+			FinishedAt:   outcome.FinishedAt,
+			Stage:        outcome.Stage,
+			ErrorCode:    outcome.ErrorCode,
+			ErrorMessage: outcome.ErrorMessage,
+			Gate:         outcome.Gate,
+			Verdict:      outcome.Verdict,
+		})
+	}
+	return result, nil
 }
 
 // TelemetryErrorSignatures returns recurring failure reasons in frequency order.
@@ -1133,6 +1202,15 @@ func (s *Local) TelemetryErrors(ctx context.Context, req TelemetryErrorsRequest)
 		return TelemetryErrorsPage{}, ErrTelemetryUnavailable
 	}
 	return s.telemetry.TelemetryErrors(ctx, req)
+}
+
+// TelemetryImplementationOutcomes implements TelemetryReader for the daemon's
+// full local service.
+func (s *Local) TelemetryImplementationOutcomes(ctx context.Context, req TelemetryImplementationOutcomesRequest) (TelemetryImplementationOutcomesResult, error) {
+	if s.telemetry == nil {
+		return TelemetryImplementationOutcomesResult{}, ErrTelemetryUnavailable
+	}
+	return s.telemetry.TelemetryImplementationOutcomes(ctx, req)
 }
 
 func validateWindow(since, until time.Time) error {

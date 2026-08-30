@@ -41,13 +41,25 @@ import (
 // recorded activity results — deterministic under replay (architecture D8).
 
 // continuityEntry is one publication: the winning attempt of Stage put a
-// bundle carrying Base..Tip in the blob plane under Digest.
+// bundle carrying Base..Tip in the blob plane under Digest, produced on
+// workspace Branch.
+//
+// Branch is the run's workspace-branch binding AS IT STOOD when the producing
+// stage ran (#392): "" for a run that never rebinds — every 2.0 lane and every
+// 3.0 lane but pr-remediation — and the rebound branch (a PR head) for every
+// stage after the rebinding one. It is part of the KEY, not decoration: a
+// bundle is a thin git bundle of base..tip, so it is only meaningful on the
+// branch whose history contains its prerequisite. Handing a run-branch delta
+// to a stage checked out on a PR head is not a near miss; git refuses the
+// fetch, and where it would not (a shared prerequisite), applying it would
+// reset the PR head onto commits from a different line of work.
 type continuityEntry struct {
 	Stage   string
 	Attempt int
 	Digest  string
 	Base    string
 	Tip     string
+	Branch  string
 }
 
 // deltaPublication is what one stage dispatch reports back to the walk: the
@@ -70,7 +82,9 @@ type deltaPublication struct {
 // stage its repoFrom does not declare. The run fails closed.
 const RepoHandoffUndeclaredErrorCode = "repo_handoff_undeclared"
 
-// selectDelta picks the continuity entry stage continues from.
+// selectDelta picks the continuity entry stage continues from, among the
+// entries produced on the workspace branch the consumer will itself be
+// checked out on (branch — "" for a run that never rebinds).
 //
 //   - repoFrom declared (DSL 3.0): the most recent entry whose producer is
 //     in repoFrom ∪ {stage} — a stage's own prior attempts are continuity,
@@ -83,7 +97,24 @@ const RepoHandoffUndeclaredErrorCode = "repo_handoff_undeclared"
 //     last entry, byte-identical to the pre-record behaviour.
 //
 // An empty record selects nothing on both arms.
-func selectDelta(record []continuityEntry, stage string, repoFrom []string) (continuityEntry, error) {
+//
+// THE BRANCH FILTER RUNS FIRST, and it is a filter rather than a refusal
+// (#392). pr-remediation rebinds the run's workspace branch to the claimed
+// PR's head part-way through the lane: stages before the rebind committed on
+// the run branch, stages after it are cut on the PR head. A pre-rebind entry
+// is therefore not a handoff this consumer declined to declare — it is work
+// on a different branch, which this consumer was never continuing from on any
+// substrate (the worker's mirror gives the post-rebind stage a worktree on the
+// PR head, carrying no pre-rebind run-branch commit). Filtering before the
+// WF022 arm keeps the refusal aimed at what it is for — an undeclared producer
+// on THIS branch — instead of firing on a producer the rebind already made
+// irrelevant.
+//
+// Zero-declaration invariance: a run that never rebinds has "" on every entry
+// and on every consumer, so the filter keeps the whole record and the two arms
+// below decide exactly as they did before this parameter existed.
+func selectDelta(record []continuityEntry, stage string, repoFrom []string, branch string) (continuityEntry, error) {
+	record = entriesOnBranch(record, branch)
 	if len(record) == 0 {
 		return continuityEntry{}, nil
 	}
@@ -110,6 +141,31 @@ func selectDelta(record []continuityEntry, stage string, repoFrom []string) (con
 	return latest, nil
 }
 
+// entriesOnBranch keeps the entries produced on branch, preserving order.
+//
+// It allocates nothing and returns the record itself when every entry already
+// matches, which is every run that never rebinds — the shape the invariance
+// guard cares about.
+func entriesOnBranch(record []continuityEntry, branch string) []continuityEntry {
+	matching := true
+	for i := range record {
+		if record[i].Branch != branch {
+			matching = false
+			break
+		}
+	}
+	if matching {
+		return record
+	}
+	kept := make([]continuityEntry, 0, len(record))
+	for _, e := range record {
+		if e.Branch == branch {
+			kept = append(kept, e)
+		}
+	}
+	return kept
+}
+
 // taskConsumesDelta reports whether a task's workspace, on the arm it will
 // execute on, is one the continuity record feeds. Scratch and repo-readonly
 // never receive a delta on either arm (a read-only stage reads the pinned
@@ -133,11 +189,11 @@ func taskConsumesDelta(t apiv1.Task, remote bool) bool {
 // selection so events.jsonl names the producer a consumer built on, and
 // journaling the refusal (RepoHandoffUndeclaredErrorCode) before failing the
 // run closed.
-func selectTaskDelta(ctx workflow.Context, t apiv1.Task, remote bool, record []continuityEntry, rec *runJournal) (continuityEntry, error) {
+func selectTaskDelta(ctx workflow.Context, t apiv1.Task, remote bool, record []continuityEntry, branch string, rec *runJournal) (continuityEntry, error) {
 	if !taskConsumesDelta(t, remote) {
 		return continuityEntry{}, nil
 	}
-	selected, err := selectDelta(record, t.Name, []string(t.RepoFrom))
+	selected, err := selectDelta(record, t.Name, []string(t.RepoFrom), branch)
 	if err != nil {
 		rec.repoHandoffRefused(ctx, t.Name, err)
 		return continuityEntry{}, err
@@ -145,7 +201,7 @@ func selectTaskDelta(ctx workflow.Context, t apiv1.Task, remote bool, record []c
 	if selected.Digest != "" {
 		rec.workspaceDelta(ctx, t.Name, "", 0, journal.WorkspaceDelta{
 			Action: journal.WorkspaceDeltaSelected, Producer: selected.Stage, ProducerAttempt: selected.Attempt,
-			Digest: selected.Digest, BaseSHA: selected.Base, TipSHA: selected.Tip,
+			Digest: selected.Digest, BaseSHA: selected.Base, TipSHA: selected.Tip, Branch: selected.Branch,
 		})
 	}
 	return selected, nil
@@ -155,15 +211,15 @@ func selectTaskDelta(ctx workflow.Context, t apiv1.Task, remote bool, record []c
 // inherits its subject's repo state (decision 001 on gates, ruling 4), so it
 // is handed the last entry whenever its reviewer evaluates in a writable repo
 // workspace.
-func selectGateDelta(ctx workflow.Context, g apiv1.Gate, record []continuityEntry, rec *runJournal) continuityEntry {
+func selectGateDelta(ctx workflow.Context, g apiv1.Gate, record []continuityEntry, branch string, rec *runJournal) continuityEntry {
 	if g.Evaluator != apiv1.EvaluatorAgentic || !writableWorkspace(g.EffectiveWorkspace()) {
 		return continuityEntry{}
 	}
-	selected, _ := selectDelta(record, g.Name, nil)
+	selected, _ := selectDelta(record, g.Name, nil, branch)
 	if selected.Digest != "" {
 		rec.workspaceDelta(ctx, "", g.Name, 0, journal.WorkspaceDelta{
 			Action: journal.WorkspaceDeltaSelected, Producer: selected.Stage, ProducerAttempt: selected.Attempt,
-			Digest: selected.Digest, BaseSHA: selected.Base, TipSHA: selected.Tip,
+			Digest: selected.Digest, BaseSHA: selected.Base, TipSHA: selected.Tip, Branch: selected.Branch,
 		})
 	}
 	return selected
@@ -172,16 +228,20 @@ func selectGateDelta(ctx workflow.Context, g apiv1.Gate, record []continuityEntr
 // recordPublication appends a stage's publication to the record and journals
 // it; a writable stage that reported its branch unchanged is journaled as
 // such, so the absence of an entry is a recorded fact rather than a silence.
-func recordPublication(ctx workflow.Context, t apiv1.Task, pub deltaPublication, record []continuityEntry, rec *runJournal) []continuityEntry {
+// branch is the run's workspace-branch binding as it stood while t ran — the
+// walk rebinds only AFTER the stage returns, so the value threaded into the
+// dispatch is the one the workspace was cut on, and recording any later
+// reading would mis-key the entry.
+func recordPublication(ctx workflow.Context, t apiv1.Task, pub deltaPublication, record []continuityEntry, branch string, rec *runJournal) []continuityEntry {
 	if pub.Digest != "" {
 		rec.workspaceDelta(ctx, t.Name, "", pub.Attempt, journal.WorkspaceDelta{
 			Action: journal.WorkspaceDeltaPublished, Producer: t.Name, ProducerAttempt: pub.Attempt,
-			Digest: pub.Digest, BaseSHA: pub.Base, TipSHA: pub.Tip,
+			Digest: pub.Digest, BaseSHA: pub.Base, TipSHA: pub.Tip, Branch: branch,
 		})
-		return append(record, continuityEntry{Stage: t.Name, Attempt: pub.Attempt, Digest: pub.Digest, Base: pub.Base, Tip: pub.Tip})
+		return append(record, continuityEntry{Stage: t.Name, Attempt: pub.Attempt, Digest: pub.Digest, Base: pub.Base, Tip: pub.Tip, Branch: branch})
 	}
 	if pub.Unchanged {
-		rec.workspaceDelta(ctx, t.Name, "", pub.Attempt, journal.WorkspaceDelta{Action: journal.WorkspaceDeltaUnchanged, Producer: t.Name, ProducerAttempt: pub.Attempt})
+		rec.workspaceDelta(ctx, t.Name, "", pub.Attempt, journal.WorkspaceDelta{Action: journal.WorkspaceDeltaUnchanged, Producer: t.Name, ProducerAttempt: pub.Attempt, Branch: branch})
 	}
 	return record
 }

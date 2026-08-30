@@ -18,9 +18,16 @@ type stageProviderConfig struct {
 	token        string
 	cached       bool
 	mutationKind string
-	openPR       bool
-	noRetries    bool
-	observeToken func(string)
+	// mutationRecorder is an explicitly supplied journal mutation recorder.
+	// It wins over mutationKind, which is the common case's shorthand for
+	// "record through the sidecar under this kind": a caller that already
+	// holds a recorder (post-merge reconcile, whose branch cleanup records
+	// kind="branch" separately from the merge's kind="pr") hands it over
+	// intact rather than being forced to re-derive one from a kind string.
+	mutationRecorder providers.MutationRecorder
+	openPR           bool
+	noRetries        bool
+	observeToken     func(string)
 }
 
 type stageProviderOption func(*stageProviderConfig)
@@ -46,6 +53,15 @@ func withStageProviderCache() stageProviderOption {
 func withStageProviderMutations(kind string) stageProviderOption {
 	return func(cfg *stageProviderConfig) {
 		cfg.mutationKind = kind
+	}
+}
+
+// withStageProviderMutationRecorder threads a caller-owned mutation recorder
+// through the seam, for stages that build their recorder themselves rather
+// than naming a sidecar kind.
+func withStageProviderMutationRecorder(recorder providers.MutationRecorder) stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.mutationRecorder = recorder
 	}
 }
 
@@ -150,8 +166,8 @@ func newGitHubProviderForStage(cfg stageProviderConfig) (providers.Provider, err
 	if login := stageProviderConfiguredLogin(cfg.root, cfg.repo); login != "" {
 		opts = append(opts, providers.WithConfiguredLogin(login))
 	}
-	if !cfg.readOnly && cfg.mutationKind != "" {
-		opts = append(opts, providers.WithMutationRecorder(sidecarMutationRecorder{kind: cfg.mutationKind}))
+	if recorder := stageProviderMutationRecorder(cfg); recorder != nil {
+		opts = append(opts, providers.WithMutationRecorder(recorder))
 	}
 	if cfg.noRetries {
 		opts = append(opts, providers.WithMaxRateLimitRetries(0), providers.WithMaxTransientRetries(0))
@@ -175,10 +191,29 @@ func newRegisteredGiteaProviderForStage(cfg stageProviderConfig) (providers.Prov
 		return nil, err
 	}
 	var opts []func(*providers.GiteaProvider)
-	if !cfg.readOnly && cfg.mutationKind != "" {
-		opts = append(opts, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: cfg.mutationKind}))
+	if recorder := stageProviderMutationRecorder(cfg); recorder != nil {
+		opts = append(opts, providers.WithGiteaMutationRecorder(recorder))
 	}
 	return newGiteaProviderForStage(cfg.root, cfg.repo, token, opts...)
+}
+
+// stageProviderMutationRecorder resolves the recorder a stage records its
+// external refs through, identically for every backend: an explicitly
+// supplied recorder first, then the sidecar recorder for a declared kind,
+// then none. A read-only stage records nothing — it makes no mutations to
+// record — which is the pre-existing rule for the kind shorthand and is kept
+// for the explicit recorder so the two cannot disagree.
+func stageProviderMutationRecorder(cfg stageProviderConfig) providers.MutationRecorder {
+	if cfg.readOnly {
+		return nil
+	}
+	if cfg.mutationRecorder != nil {
+		return cfg.mutationRecorder
+	}
+	if cfg.mutationKind != "" {
+		return sidecarMutationRecorder{kind: cfg.mutationKind}
+	}
+	return nil
 }
 
 // stageProviderConfiguredLogin resolves the config-declared bot login for the

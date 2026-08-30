@@ -87,6 +87,26 @@ type DispatchStageInput struct {
 	// WorkspaceDelta is the blob digest of what earlier stages of this run
 	// committed (#3763), for this pod to continue from.
 	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
+	// WorkspaceBranch is the run's CURRENT workspace-branch binding (#392):
+	// empty while the run is on its derived run branch, and the rebound branch
+	// once a stage has published the well-known `workspaceBranch` output —
+	// pr-remediation's gather-pr-context binds it to the claimed PR's head, and
+	// every stage after it (rebase-pr, remediation-checkpoint, implement,
+	// local-ci, push-remediated) operates on the PR branch rather than the run
+	// branch.
+	//
+	// It is threaded HERE rather than derived in the pod because the pod cannot
+	// derive it: providers.BranchNameIn composes the run branch out of
+	// workflow + runID, which is precisely the branch a rebound run is NOT on.
+	// Before this field a pod stage in pr-remediation checked out
+	// goobers/pr-remediation/<runid>, found none of the PR's commits, and
+	// remediated a branch nobody was reviewing — while the same stage on the
+	// self runner was correct, because the local runner has threaded this
+	// binding since #392.
+	//
+	// omitempty, and the JSON name is new: an existing recorded history carries
+	// no such key and decodes to "" — the pre-#392 behaviour byte for byte.
+	WorkspaceBranch string `json:"workspaceBranch,omitempty"`
 	// Review marks an agentic reviewer GATE evaluation (decision 001 rulings
 	// 7–8): the pod drives the gate's reviewer goober in review mode and
 	// surrenders a Verdict, which DispatchStage re-validates and returns as
@@ -160,10 +180,21 @@ func gatePodAttempt(gateDispatches map[string]int, gate string) int {
 // arm); DispatchStage withholds it from a read-only mode as it does for
 // tasks.
 //
+// workspaceBranch is the run's rebound branch (#392), threaded here for the
+// same reason dispatchRemoteTask carries it: a reviewer gate placed in a pod
+// during pr-remediation must read the claimed PR's head, not the derived run
+// branch a pod would otherwise compose, or it reviews a tree nobody proposed.
+// It is handed to DispatchStage unconditionally, exactly as the self arm
+// passes workspaceBranch to ActReviewGoober unconditionally — DispatchStage's
+// own writable-repo gate (workspace.IsWritableRepo(), dispatchstage.go) is
+// what keeps it off a repo-readonly gate's attempt, the same gate a task's
+// WorkspaceBranch already goes through, so the two arms cannot disagree about
+// when the branch is safe to hand the pod.
+//
 // #3844's instance-root refusal list is command-keyed and a gate declares
 // no command, so there is nothing of it to apply here; the pod entrypoint's
 // backstop still stands for anything a reviewer's harness might spawn.
-func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceDelta string, podAttempt int) (apiv1.Verdict, error) {
+func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.InvocationEnvelope, placement PinnedPlacement, workspaceBranch, workspaceDelta string, podAttempt int) (apiv1.Verdict, error) {
 	workspace := g.EffectiveWorkspace()
 	if workspace == "" {
 		workspace = apiv1.WorkspaceRepo
@@ -180,6 +211,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 		Placement:        placement,
 		Workspace:        workspace,
 		WorkspaceDelta:   workspaceDelta,
+		WorkspaceBranch:  workspaceBranch,
 		Review:           true,
 		OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 	}).Get(ctx, &result); err != nil {
@@ -222,7 +254,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 //
 // STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
 // so a stage declaring a workspace other than scratch is still refused.
-func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceDelta string, deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
+func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	// An AGENTIC stage cannot execute in a stage pod: the pod entrypoint runs a
 	// declared command or script (dispatchexec), and invoking a goober through
 	// its harness has no pod-side path at all — the local arm reaches it via
@@ -293,6 +325,7 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 			Run:              t.Run,
 			Workspace:        t.Workspace,
 			WorkspaceDelta:   workspaceDelta,
+			WorkspaceBranch:  workspaceBranch,
 			OwningWorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 		}).Get(ctx, &result)
 		result.Integrity = produced
@@ -507,6 +540,21 @@ func (a *Activities) DispatchStage(ctx context.Context, input DispatchStageInput
 	// pinned base at worst.
 	if workspace.IsWritableRepo() {
 		attempt.WorkspaceDelta = input.WorkspaceDelta
+		// The rebound branch and the base sync are stamped on exactly the same
+		// arm as the delta, and for one reason: they all describe what happens
+		// to a WRITABLE run branch. A repo-readonly stage is detached at the
+		// pinned base on every substrate — the local runner ignores a rebound
+		// branch for it (createStageWorkspace's read-only arm passes Branch:
+		// "") — so stamping either here would be the pod quietly reading
+		// something the self runner does not.
+		attempt.WorkspaceBranch = strings.TrimSpace(input.WorkspaceBranch)
+		// SyncBase is already pinned inside input.Run (apiv1.DeterministicRun,
+		// #813) and travels with it; it is lifted onto the attempt because the
+		// pod spec is where the in-pod checkout reads its provisioning
+		// instructions, and Run is not stamped there in full. An agentic stage
+		// carries no DeterministicRun and therefore never syncs base, matching
+		// the local runner (dispatchTask reads t.Run.SyncBase).
+		attempt.SyncBase = input.Run != nil && input.Run.SyncBase
 	}
 	// A repo workspace has to be CLONED, and cloning a private repository needs
 	// a credential. The pod used to take that from the stage's declared
