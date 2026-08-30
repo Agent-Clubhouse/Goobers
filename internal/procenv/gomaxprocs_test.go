@@ -146,5 +146,7 @@ func TestGOMAXPROCSHelperProcess(t *testing.T) {
 	if os.Getenv(helperEnvVar) != "1" {
 		t.Skip("child half of TestDerivedGOMAXPROCSReachesTheChildProcessRuntime")
 	}
-	os.Stdout.WriteString(helperMarker + strconv.Itoa(runtime.GOMAXPROCS(0)) + "\n")
+	if _, err := os.Stdout.WriteString(helperMarker + strconv.Itoa(runtime.GOMAXPROCS(0)) + "\n"); err != nil {
+		t.Fatal(err)
+	}
 }
