@@ -1,6 +1,7 @@
 package engine
 
-// Parity row E1-backlog-query-claim-partition — EXPECTED FAILURE until E1 lands.
+// Parity row E1-backlog-query-claim-partition — CLOSED by plan item E1
+// (#3873); must stay GREEN.
 //
 // This is the CONSEQUENCE half of rowBacklogQueryDefaults (#3873). That row
 // compares the two envelopes and says "the engine is missing an input". This
@@ -31,8 +32,11 @@ package engine
 // evaluating the predicate against the sibling's item says whether the
 // partition holds.
 //
-// Closed by plan item E1 together with rowBacklogQueryDefaults. When it lands,
-// DELETE this row's entry from parityExpectedFailures.
+// Closed by plan item E1 together with rowBacklogQueryDefaults: the engine
+// pins RunInput.BacklogQueryAssignedTo/RequireLabels at start and runTask
+// applies internal/backlogdefaults.Apply. Ablating either — the pin in
+// Registry.StartInputVersion or the Apply call in runTask — turns this row red
+// with "would CLAIM the sibling instance's item".
 
 import (
 	"encoding/json"
