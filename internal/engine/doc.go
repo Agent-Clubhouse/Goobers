@@ -51,6 +51,17 @@
 // detail, and the #3366 unpushed-diff capture. Each is now pinned by a row of
 // the parity table for the same reason E2's are.
 //
+// One boundary note, because it was gotten wrong twice: the learning-episode
+// PRODUCER on the generic retry arm (learningEpisode here, recordLearningInjection
+// in the runner) is lane-agnostic, not implementation-lane, and was filed as
+// E10 (#3913). It landed here with E4-E9 ahead of that split; #3913 therefore
+// kept the halves the behaviour did not carry — the E10 parity rows, the
+// dedicated replay proof that the digest a REPLAY re-derives is the digest the
+// original walk produced, and the shared-helper suite — rather than a second
+// copy of the behaviour. Removing the producer to "restore" the boundary breaks
+// those rows; the boundary lives in the inventory and the rows, not in a
+// second implementation.
+//
 // Plan item E2 (#3874) closed four of the entries this ledger used to carry:
 // the #415 non-retryable escalation bypass, the retry-decision annotation and
 // its knownOutcome shortcut, RunResult.NoWork, and stage-qualified inputsFrom
