@@ -160,6 +160,13 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner stri
 		// runner class enforcing env:default-deny keeps the vars an operator
 		// declared for it instead of losing them by substrate (#3725/#736).
 		EnvPassthrough: cfg.Runner.EnvPassthrough,
+		// The configured bot logins, resolved HERE because this process can
+		// read the instance config and a stage pod cannot (#3914). Deleting
+		// this line leaves every helper-level test green and silently returns
+		// every pod stage to GET /user — which a GitHub App installation token
+		// cannot call — so it is pinned by
+		// TestBuildStageDispatchThreadsTheConfiguredBotLoginToTheStagePod.
+		BotLogins: cfg.GitHubBotLogins(),
 	}, dispatcher.NewKubernetesPodAPI(client), nil, dispatcher.PlaneSurrenderGate{Plane: surrenders}, nil)
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
