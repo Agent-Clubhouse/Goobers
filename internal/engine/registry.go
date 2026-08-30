@@ -170,6 +170,15 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 	if !ok {
 		return RunInput{}, fmt.Errorf("workflow %q version %d is not registered", name, version)
 	}
+	// R9 run-start refusal: a definition declaring parallels, a bandit
+	// experiment, a cumulative usage budget or an outbox has no engine walk
+	// implementation, and the walk would otherwise IGNORE the declaration
+	// silently. Refusing here rather than at RegisterDefinition keeps a
+	// gaggle's other lanes startable — see registryrefusal.go for why that
+	// placement is load-bearing.
+	if err := refuseUnsupportedEngineFeatures(name, def.Spec); err != nil {
+		return RunInput{}, err
+	}
 	allowPreviewFeatures := r.allowPreviewFeatures
 	return RunInput{
 		RunID:                  s.RunID,

@@ -12,6 +12,7 @@ import (
 	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
@@ -53,12 +54,12 @@ func TestDeprioritizeRepeatedFailuresPreservesEventualClaimability(t *testing.T)
 	}
 
 	items := []providers.WorkItem{{ID: "1"}, {ID: "2"}}
-	got := deprioritizeRepeatedFailures(layout, claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}, items, now, backlogQueryEnv{}, "deprioritize-run", "implementation")
+	got := deprioritizeRepeatedFailures(layout, journalclient.NewFileCrossRun(layout), claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}, items, now, backlogQueryEnv{}, "deprioritize-run", "implementation")
 	if got[0].ID != "2" || got[1].ID != "1" {
 		t.Fatalf("order = %v, want healthy item before repeated failure", []string{got[0].ID, got[1].ID})
 	}
 
-	onlyFailed := deprioritizeRepeatedFailures(layout, claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}, []providers.WorkItem{{ID: "1"}}, now, backlogQueryEnv{}, "deprioritize-run", "implementation")
+	onlyFailed := deprioritizeRepeatedFailures(layout, journalclient.NewFileCrossRun(layout), claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}, []providers.WorkItem{{ID: "1"}}, now, backlogQueryEnv{}, "deprioritize-run", "implementation")
 	if len(onlyFailed) != 1 || onlyFailed[0].ID != "1" {
 		t.Fatalf("deprioritized item = %v, want it retained as claimable", onlyFailed)
 	}
@@ -161,13 +162,13 @@ func TestTerminalFailureStreakResetsAtSuccessAndWindow(t *testing.T) {
 	seedRun("recent-failure", journal.PhaseFailed, base.Add(-time.Minute))
 	seedRun("successful-attempt", journal.PhaseCompleted, base)
 	now = base
-	if got, degradedAt := terminalFailureStreak(layout, ledger.HistoryForItem("1"), now); got != 0 || degradedAt != "" {
+	if got, degradedAt := terminalFailureStreak(journalclient.NewFileCrossRun(layout), ledger.HistoryForItem("1"), now); got != 0 || degradedAt != "" {
 		t.Fatalf("streak after successful attempt = (%d, %q), want (0, \"\")", got, degradedAt)
 	}
 
 	seedRun("old-failure", journal.PhaseFailed, base.Add(-backlogFailureWindow-time.Minute))
 	now = base
-	if got, degradedAt := terminalFailureStreak(layout, ledger.HistoryForItem("1"), now); got != 0 || degradedAt != "" {
+	if got, degradedAt := terminalFailureStreak(journalclient.NewFileCrossRun(layout), ledger.HistoryForItem("1"), now); got != 0 || degradedAt != "" {
 		t.Fatalf("streak after out-of-window failure = (%d, %q), want (0, \"\")", got, degradedAt)
 	}
 }
@@ -205,7 +206,7 @@ func TestTerminalFailureStreakDegradesLoudlyOnUnreadablePhase(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	streak, degradedAt := terminalFailureStreak(layout, ledger.HistoryForItem("1"), now)
+	streak, degradedAt := terminalFailureStreak(journalclient.NewFileCrossRun(layout), ledger.HistoryForItem("1"), now)
 	if streak != 0 {
 		t.Fatalf("streak = %d, want 0 (the unreadable entry must not count as a failure)", streak)
 	}
@@ -214,7 +215,7 @@ func TestTerminalFailureStreakDegradesLoudlyOnUnreadablePhase(t *testing.T) {
 	}
 
 	items := []providers.WorkItem{{ID: "1"}, {ID: "2"}}
-	deprioritizeRepeatedFailures(layout, claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}, items, now, backlogQueryEnv{stderr: io.Discard}, "watching-run", "implementation")
+	deprioritizeRepeatedFailures(layout, journalclient.NewFileCrossRun(layout), claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}, items, now, backlogQueryEnv{stderr: io.Discard}, "watching-run", "implementation")
 
 	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
 	if err != nil {
