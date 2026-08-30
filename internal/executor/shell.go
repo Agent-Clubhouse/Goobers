@@ -264,37 +264,38 @@ func StageRequiresInstanceConfig(command []string) bool {
 
 // stageCommandsRequiringInstanceRoot are goobers CLI subcommands that
 // UNCONDITIONALLY read or write state that lives only under the daemon's
-// instance root — the file claim ledger, a merge lock, the post-merge
-// reconcile ledger, an on-disk run journal, or the telemetry rollup
-// (decision 003 ruling 3; production-lanes-3.0 stillBroken #2). A stage pod
-// stamps no GOOBERS_INSTANCE_ROOT (internal/dispatcher/podspec.go), so
+// instance root — a file this process opens by path, under a lock this
+// process takes, that no plane serves. A stage pod stamps no
+// GOOBERS_INSTANCE_ROOT (internal/dispatcher/podspec.go), so
 // providerStageRoot() falls back to "." and these commands would silently
 // operate on an empty, pod-local root instead of failing — the exact
-// "silent-wrong-result" class this refusal turns loud. None of them can be
-// removed from this list yet — see the note below on what each one is still
-// waiting for.
+// "silent-wrong-result" class this refusal turns loud.
 //
-// #3880 / decision 005 R1 landed the READ half of the journal seam: a pod
-// principal may GET its own run's events, artifacts and stage attempts, and
-// three purpose-built gaggle-scoped routes answer the cross-run questions
-// (internal/journalclient, internal/httpapi/journalreadplane.go). Every
-// journal-reading command in this list now goes through that seam rather than
-// journal.OpenRead. They stay refused ANYWAY, deliberately, because the seam
-// selects the plane from GOOBERS_JOURNAL_ENDPOINT/GOOBERS_JOURNAL_TOKEN and
-// the dispatcher does not stamp either yet (internal/dispatcher/podspec.go).
-// Removing a command here before that stamping exists would trade a loud
-// refusal for a fail-closed error inside the pod — better than the silent
-// wrong answer, but strictly worse than the refusal. The removals belong with
-// the dispatcher-env change, and only for commands whose OTHER instance-root
-// needs (a claim ledger, a merge lock, the sibling cache) are also served by
-// then.
+// THE LIST SHRANK WITH Goobers#3897/#3898. Four plane clients were already
+// landed (claims C1, scheduler-state C2, telemetry C3, journal-read C4) but
+// every one of them selects its backend from environment the dispatcher did
+// not stamp, so a mode-3 stage silently took the local-file branch and the
+// refusals had to stay. #3897 stamps the complete eight-variable set
+// (endpoint + bearer for all four planes, alongside GOOBERS_RUN_ID and
+// GOOBERS_GAGGLE) into every goobers-CLI stage pod, and #3898 moved the
+// claiming path's last two local dependencies — the instance-log annotation
+// write and the backlog re-sweep state file — onto the journal emit plane and
+// the scheduler-state key namespace respectively.
+//
+// The removals were made ONE COMMAND AT A TIME against a per-command audit:
+// a command was removed only when EVERY stateful access it makes, followed
+// transitively from its entry function, reaches a plane seam
+// (openStageClaimLedger, openStageStateStore/openHeldStageStateStore,
+// stageRunJournal/stageCrossRunJournal, openStageAnnotator,
+// stageImplementationOutcomes), a provider API call, or a workspace-relative
+// file. Anything still holding a path under the instance root is BELOW, with
+// the specific file named — because trading a loud refusal for a silent wrong
+// answer is strictly worse than the refusal.
 //
 // backlog-query and backlog-health are deliberately NOT here: only specific
-// FLAGS make them provider-only rather than ledger/journal-touching (for
-// backlog-query only --read-only is; every other mode, including bare,
-// reaches the scan lock — see the case below), so StageRequiresInstanceRoot
-// matches them by name below instead of folding them into this
-// unconditional set.
+// FLAGS make them provider-only rather than ledger/journal-touching, so
+// StageRequiresInstanceRoot matches them by name below instead of folding
+// them into this unconditional set.
 //
 // Scope: this matches on the COMMAND VECTOR (cmd[0]=="goobers", cmd[1]=the
 // subcommand), the same shape both dispatchRemoteTask and the pod-entrypoint
@@ -302,44 +303,70 @@ func StageRequiresInstanceConfig(command []string) bool {
 // declared with run.script instead of run.command is out of scope on both
 // sides today — DeterministicCommand's argv for a script is the shell
 // wrapper, never the goobers invocation inside it — matching the
-// pre-existing, narrower StageRequiresInstanceConfig's scope; closing it is
-// step 6's, not this list's.
+// pre-existing, narrower StageRequiresInstanceConfig's scope.
 //
-// DERIVED, and re-derivable: per command, grep its handler for
-// SchedulerDir()/claimLedgerFileName/mergeLockFileName (a ledger or lock) or
-// journal.OpenRead / stageRunJournal / stageCrossRunJournal (a run-journal
-// read) — cmd/goobers/{prclaim,
-// prremediationlifecycle,prselect,updatebehindpr,mergepr,
-// postmergereconcile,applyverdict,respondtofindings,implementcontext,
-// issuecloseout,telemetryquery,backlogdedupe,gatherprcontext,
-// gathercifailures,gatherissuecontext,prsiblingcontext,
-// resolvereviewthreads,selectsource,publishbatch,postmerge,
-// reconcilebranches,validateplan,gateremovalguard}.go. Re-run that grep
-// against every registered stageCommand() (cmd/goobers/runtime_capabilities.go)
-// before trusting this list is still complete.
+// DERIVED, and re-derivable: per command, follow its handler transitively and
+// grep for SchedulerDir()/journal.OpenInstanceLog/journal.OpenRead/
+// withClaimLock/withFileLock/localscheduler.OpenClaimLedger/TelemetryDB()/
+// RunsDir()/FindRunDir/instance.LoadConfig that is NOT behind a plane seam or
+// a plane predicate (statePlaneSelected/claimsPlaneSelected/
+// journalPlaneSelected). Re-run that walk against every registered
+// stageCommand() (cmd/goobers/runtime_capabilities.go) before trusting this
+// list is still complete.
 var stageCommandsRequiringInstanceRoot = map[string]bool{
-	"pr-claim":                 true, // always acquires, checks, or releases a claim-ledger lease, with or without --release (prremediationlifecycle.go)
-	"pr-select":                true, // leases the selected PR in the claim ledger before choosing it (prselect.go)
-	"update-behind-pr":         true, // selects/leases the PR via the claim ledger before its API update
-	"merge-pr":                 true, // instance-wide flock in SchedulerDir around poll->decide->merge (issue #719)
-	"reconcile-post-merge":     true, // reads/writes the post-merge reconcile ledger in SchedulerDir
-	"apply-verdict":            true, // reads the review gate's verdict from its own run journal (#3880 seam: waiting only on dispatcher journal-endpoint stamping)
-	"respond-to-findings":      true, // reads implement's outputs from its own run journal, plain or --check ("validate-finding-responses" in the workflow DSL) (#3880 seam: same)
-	"gather-implement-context": true, // reads OTHER runs' journals (#3880 cross-run seam: same)
-	"issue-close-out":          true, // unconditionally releases the claim-ledger lease on every terminal status
-	"telemetry-query":          true, // reads the instance telemetry rollup under the instance root (also refused separately for its instance CONFIG read via StageRequiresInstanceConfig)
-	"backlog-dedupe":           true, // opens the claim ledger and lists this run's claimed IDs (backlogdedupe.go) — a missing ledger file in a pod resolves to a FRESH EMPTY ledger, not an error, so this is the silent-wrong-result class this list exists to close
-	"gather-pr-context":        true, // filters claim-available PRs via the claim ledger in SchedulerDir before candidate selection (gatherprcontext.go)
-	"gather-ci-failures":       true, // reads the current run's journal (gathercifailures.go) (#3880 seam: waiting only on dispatcher stamping)
-	"gather-issue-context":     true, // reads the current run's journal (gatherissuecontext.go) (#3880 seam: same)
-	"gather-sibling-context":   true, // reads the sibling cache under SchedulerDir (prsiblingcontext.go) — NOT a journal read at all; finding 002 C2's scheduler-state concern, not C4's
-	"resolve-review-threads":   true, // reads the current run's journal (resolvereviewthreads.go) (#3880 seam: waiting only on dispatcher stamping)
-	"select-source":            true, // opens the instance log and the claim ledger under SchedulerDir to lease/select the parent (selectsource.go)
-	"publish-batch":            true, // locks under SchedulerDir/decomposition-target-locks and releases the parent claim via the instance log (publishbatch.go)
-	"post-merge":               true, // reads the sibling cache under SchedulerDir (postmerge.go)
-	"reconcile-branches":       true, // opens the instance log under SchedulerDir (reconcilebranches.go)
-	"validate-plan":            true, // reads the current run's journal for the selection artifact (validateplan.go) (#3880 seam: waiting only on dispatcher stamping)
-	"gate-removal-guard":       true, // reads the analyze stage's finding from the run journal (gateremovalguard.go) (#3880 seam: same)
+	// pr-select's FAIRNESS LEASE: cmd/goobers/prselectfairness.go reads
+	// SchedulerDir()/pr-select-fairness.json directly (:85, :112) and
+	// rewrites it under withClaimLock on SchedulerDir()/claims.lock (:260).
+	// That file is not one of stateclient.ValidKey's shapes, so the
+	// scheduler-state plane cannot serve it; admitting it to the namespace is
+	// the removal's prerequisite.
+	"pr-select": true,
+	// issue-close-out reads run journals through journal.OpenRead directly
+	// (issuecloseout.go:96, :168, :241) over a run directory it finds with
+	// instance.Layout.FindRunDir — bypassing the stageRunJournal seam
+	// entirely, so the journal plane does not serve it. Its claim RELEASE is
+	// already plane-served; only these three reads hold it here.
+	"issue-close-out": true,
+	// telemetry-query opens the daemon's telemetry ROLLUP database directly
+	// (telemetryquery.go:412 l.TelemetryDB()). The telemetry plane is a write
+	// and gaggle-scoped-evidence surface, not a rollup-query one, and
+	// decision 005 R4 keeps this command refused deliberately. It is also the
+	// only entry in stageCommandsRequiringInstanceConfig.
+	"telemetry-query": true,
+	// gather-pr-context's REMEDIATION NO-OP GUARD: remediationnoopguard.go
+	// takes withClaimLock on SchedulerDir()/claims.lock (:174) and
+	// reads/writes SchedulerDir()/pr-remediation-noop.json (:175, :188), and
+	// reaches localscheduler.OpenClaimLedger plus journal.OpenRead over a
+	// FindRunDir path (:65-79). None of that is in a plane's namespace.
+	"gather-pr-context": true,
+	// select-source opens the instance log (selectsource.go:99), walks the
+	// instance's runs tree through readservice.NewOfflineRuns (:89), and
+	// leases the parent with withClaimLock + localscheduler.OpenClaimLedger
+	// directly (:219-224, :240-243) rather than through the claims seam.
+	"select-source": true,
+	// publish-batch leases decomposition targets with a FileTargetLeaser over
+	// SchedulerDir()/decomposition-target-locks (publishbatch.go:116), opens
+	// the instance log (:145), and shares select-source's direct parent
+	// release (:154). The target-lock directory has no plane at all.
+	"publish-batch": true,
+	// backlog-health is refused in EVERY mode, and NOT for the ledger reason
+	// any more: its claim read and its implementation-outcome evidence read
+	// both reach the daemon through the claims and telemetry planes now. What
+	// holds it here is the READY-TRANSITION LEDGER — the resumable
+	// label-transition scan cursor at instance.Layout.BacklogHealthCursorPath
+	// (written by cmd/goobers/backloghealth.go
+	// resumedBacklogHealthTransitions). It is a per-gaggle/provider/repository
+	// /label file under the instance root, not one of stateclient.ValidKey's
+	// shapes, and losing it in a pod would not merely degrade: an absent
+	// cursor silently reruns a bounded FULL scan and can defer the ready-pool
+	// snapshot, which the telemetry rollup reads as a starvation signal.
+	// Removed once that ledger is admitted to the scheduler-state namespace.
+	"backlog-health": true,
+	// reconcile-branches opens the instance log (reconcilebranches.go:155)
+	// and reads OTHER runs' journals by walking layout.RunsDir() with
+	// journal.OpenRead (:166, :452) — a cross-run walk the journal plane's
+	// three purpose-built gaggle-scoped questions do not answer.
+	"reconcile-branches": true,
 }
 
 // stageKindsWithPodExecution names the built-in deterministic stage KINDS
@@ -392,8 +419,8 @@ const StageRequiresInstanceRootCode = "instance_root_required"
 // on-disk run journal — none of which a stage pod has (decision 003 ruling 3;
 // production-lanes-3.0 stillBroken #2).
 //
-// DELIBERATELY one data-driven list (two package-level maps plus two
-// flag-gated cases), not a switch spread across call sites: decision 003's
+// DELIBERATELY one data-driven list (two package-level maps), not a switch
+// spread across call sites: decision 003's
 // later runner branch (step 6) consumes this exact function so the two
 // dispatch paths — the engine's dispatchRemoteTask and the runner's — can
 // never silently diverge on which stages are refused.
@@ -407,49 +434,7 @@ func StageRequiresInstanceRoot(cmd []string, kind string) bool {
 	if !StageInvokesGoobersCLI(cmd) || len(cmd) < 2 {
 		return false
 	}
-	switch cmd[1] {
-	case "backlog-query":
-		// Every mode except --read-only reaches scanBacklogEligibility
-		// (cmd/goobers/backlogquery.go), which reads the persisted scan
-		// cursor under SchedulerDir()/claimLockFileName before ever looking
-		// at --claim/--release/--reconcile — including the bare and
-		// --debug-alone shapes. Only --read-only takes the separate
-		// runReadOnlyBacklogQuery path (a zero cursor, no lock).
-		return !commandDeclaresAnyFlag(cmd[2:], "read-only")
-	case "backlog-health":
-		// Every mode: --feedback reads the instance telemetry rollup and
-		// run/error evidence and takes a per-item claim reservation; the bare
-		// ready-pool snapshot opens the claim ledger too (backloghealth.go's
-		// unclaimedReadyItems), and a missing claims.json in a pod resolves to
-		// a fresh EMPTY ledger, so every ready item would be reported
-		// unclaimed and the stage would succeed — the silent-wrong-result
-		// class this list exists to close (finding 002, the critic's
-		// bare-backlog-health row). Removed deliberately, with a test, once
-		// the stage's ledger read reaches the daemon through the claims plane.
-		return true
-	default:
-		return stageCommandsRequiringInstanceRoot[cmd[1]]
-	}
-}
-
-// commandDeclaresAnyFlag reports whether args declares any of names as a
-// flag, in either Go flag package form (-name, --name, -name=value,
-// --name=value). Used only to discriminate backlog-query/backlog-health's
-// ledger/journal-touching modes from their read-only ones — every other
-// command in stageCommandsRequiringInstanceRoot is unconditional.
-func commandDeclaresAnyFlag(args []string, names ...string) bool {
-	for _, arg := range args {
-		trimmed := strings.TrimPrefix(strings.TrimPrefix(arg, "--"), "-")
-		if eq := strings.IndexByte(trimmed, '='); eq >= 0 {
-			trimmed = trimmed[:eq]
-		}
-		for _, name := range names {
-			if trimmed == name {
-				return true
-			}
-		}
-	}
-	return false
+	return stageCommandsRequiringInstanceRoot[cmd[1]]
 }
 
 // StageInvokesProviderBuiltin narrows transient stderr classification to the

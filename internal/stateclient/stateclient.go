@@ -117,9 +117,28 @@ const (
 // differently-cased digest) is admitted.
 var scanCursorKeyPattern = regexp.MustCompile(`^backlog-scan-[0-9a-f]{64}\.json$`)
 
+// resweepStateKeyPattern matches the per-scan-shape backlog RE-SWEEP state,
+// backlog-resweep-<sha256 of the re-sweep's shape key>.json, pinned to the
+// same 64-lowercase-hex digest for the same reason.
+//
+// It joins the namespace because it is the LAST scheduler-directory file the
+// claiming path read and wrote directly (Goobers#3898): with the annotations
+// on the journal plane and the claims on the claims plane, this one file was
+// all that still held `backlog-query --claim` to StageRequiresInstanceRoot.
+// Its generation counter also makes it a natural compare-and-swap value —
+// exactly what the plane's Update serves under claims.lock — so a pod-executed
+// re-sweep and a daemon-driven one serialize instead of each advancing a
+// private copy.
+var resweepStateKeyPattern = regexp.MustCompile(`^backlog-resweep-[0-9a-f]{64}\.json$`)
+
 // ScanCursorKey names the scan cursor for a scan-key digest.
 func ScanCursorKey(digest string) string {
 	return "backlog-scan-" + digest + ".json"
+}
+
+// ResweepStateKey names the backlog re-sweep state for a shape digest.
+func ResweepStateKey(digest string) string {
+	return "backlog-resweep-" + digest + ".json"
 }
 
 // ValidKey reports whether key is one of the closed scheduler-state keys.
@@ -128,7 +147,7 @@ func ValidKey(key string) bool {
 	case KeyBlockedRecords, KeyPostMergeReconcileLedger, KeySiblingContextCache:
 		return true
 	}
-	return scanCursorKeyPattern.MatchString(key)
+	return scanCursorKeyPattern.MatchString(key) || resweepStateKeyPattern.MatchString(key)
 }
 
 // Value is one scheduler-state read: the bytes and the ETag that addresses

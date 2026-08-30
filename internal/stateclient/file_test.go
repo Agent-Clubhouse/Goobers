@@ -20,7 +20,7 @@ func testFileStore(t *testing.T, dir string) *File {
 }
 
 // TestValidKeyIsAClosedNamespace is the containment guarantee the whole plane
-// rests on: a state bearer can only ever address these four shapes, so it can
+// rests on: a state bearer can only ever address these five shapes, so it can
 // never be turned into a read or a write of claims.json, the instance config,
 // or anything else that shares the scheduler directory.
 func TestValidKeyIsAClosedNamespace(t *testing.T) {
@@ -30,6 +30,9 @@ func TestValidKeyIsAClosedNamespace(t *testing.T) {
 		KeyPostMergeReconcileLedger,
 		KeySiblingContextCache,
 		ScanCursorKey(digest),
+		// Goobers#3898: the backlog re-sweep generation, the last scheduler
+		// file the claiming path held open directly.
+		ResweepStateKey(digest),
 	} {
 		if !ValidKey(key) {
 			t.Fatalf("ValidKey(%q) = false, want the closed namespace to admit it", key)
@@ -50,6 +53,12 @@ func TestValidKeyIsAClosedNamespace(t *testing.T) {
 		"backlog-scan-" + digest[:63] + ".json",
 		"backlog-scan-" + digest + "x.json",
 		"backlog-scan-" + digest + ".json.tmp",
+		"backlog-resweep-.json",
+		"backlog-resweep-" + strings.ToUpper(digest) + ".json",
+		"backlog-resweep-" + digest[:63] + ".json",
+		"backlog-resweep-" + digest + "x.json",
+		"backlog-resweep-" + digest + ".json.tmp",
+		"backlog-resweep-" + digest + ".json/../claims.json",
 		"sub/blocked.json",
 	} {
 		if ValidKey(key) {
