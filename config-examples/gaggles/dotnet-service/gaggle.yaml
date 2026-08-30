@@ -15,13 +15,11 @@ spec:
     owner: acme
     name: dotnet-service
     branch: main
-    connectionRef: github-main
   backlog:
     provider: github
     project: acme/dotnet-service
     labels:
       - goobers
-    connectionRef: github-backlog
   isolation:
     namespace: gaggle-dotnet-service
     identityRef: dotnet-service-identity

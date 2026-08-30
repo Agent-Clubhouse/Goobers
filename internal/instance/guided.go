@@ -950,18 +950,16 @@ spec:
 %s
     name: %s
     branch: %s
-    connectionRef: %s
   backlog:
     provider: %s
     project: %s
     labels:
       - goobers
-    connectionRef: %s
 %s%s  isolation:
     namespace: %s
 `, yamlScalar(opts.GaggleName), yamlScalar(opts.DisplayName), yamlScalar(opts.RepoProvider), yamlScalar(opts.RepoOwner),
-		guidedProjectYAML(opts), yamlScalar(opts.RepoName), yamlScalar(opts.RepoBranch), guidedRepositoryConnectionName,
-		yamlScalar(opts.RepoProvider), yamlScalar(guidedBacklogProject(opts)), guidedBacklogConnectionName, ciCommand, requiredCapabilities,
+		guidedProjectYAML(opts), yamlScalar(opts.RepoName), yamlScalar(opts.RepoBranch),
+		yamlScalar(opts.RepoProvider), yamlScalar(guidedBacklogProject(opts)), ciCommand, requiredCapabilities,
 		yamlScalar("gaggle-"+opts.GaggleName)))
 }
 

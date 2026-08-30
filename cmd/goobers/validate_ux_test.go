@@ -978,18 +978,17 @@ func appendToFile(t *testing.T, path, content string) {
 }
 
 // TestValidateStrictDoesNotPromoteUnhonoredConnectionRef covers REF012's
-// strict-neutrality (#3296). The warning says the platform does not honor a
-// second declared connection — the author cannot fix that by editing their
-// config, and the shipped guides teach exactly the flagged shape — so
-// promoting it under --strict would turn existing green pipelines red on
-// upgrade. It must still print.
+// strict-neutrality (#3296). The finding says the local runtime honors no
+// connectionRef at all — an author who needs the field for a cloud-tier
+// deployment cannot silence it by editing their config — so promoting it
+// under --strict would turn an existing green pipeline red on upgrade. It
+// must still print.
 func TestValidateStrictDoesNotPromoteUnhonoredConnectionRef(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "instance")
 	if _, err := instance.InitQuickstart(root); err != nil {
 		t.Fatal(err)
 	}
 	instancePath := filepath.Join(root, "instance.yaml")
-	manifestPath := filepath.Join(root, "config", "manifest.yaml")
 	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
 	replaceInFile(t, instancePath, "your-org", "acme")
 	replaceInFile(t, instancePath, "your-repo", "widgets")
@@ -997,16 +996,10 @@ func TestValidateStrictDoesNotPromoteUnhonoredConnectionRef(t *testing.T) {
 		replaceInFile(t, gagglePath, "your-org", "acme")
 		replaceInFile(t, gagglePath, "your-repo", "widgets")
 	}
-	replaceInFile(t, manifestPath, `  gaggles:`, `    - name: backlog-token
-      type: backlog
-      provider: github
-      secretRef:
-        name: backlog-token
-  gaggles:`)
-	replaceInFile(t, gagglePath, `    project: acme/widgets`, `    project: acme/widgets
-    connectionRef: backlog-token`)
-	replaceInFile(t, gagglePath, `    connectionRef: repo-token
-  isolation:`, `  isolation:`)
+	// The scaffolded gaggle no longer declares a connection, so the author's
+	// declaration is added here — REF012 is about what an author writes.
+	replaceInFile(t, gagglePath, "    branch: main", `    branch: main
+    connectionRef: repo-token`)
 
 	code, stdout, stderr := runArgs(t, "validate", "--strict", root)
 	if code != 0 {

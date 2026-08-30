@@ -34,10 +34,6 @@ func TestScaffoldGaggleCreatesEmptyGaggle(t *testing.T) {
 	for _, want := range []string{
 		`name: "billing"`,
 		`namespace: "gaggle-billing"`,
-		// The starter manifest declares exactly one Connection ("repo-token"),
-		// so a freshly scaffolded gaggle should reuse it rather than leaving
-		// connectionRef unset.
-		`connectionRef: "repo-token"`,
 	} {
 		if !strings.Contains(string(content), want) {
 			t.Fatalf("gaggle.yaml missing %q:\n%s", want, content)
@@ -72,12 +68,13 @@ func TestScaffoldGaggleCreatesEmptyGaggle(t *testing.T) {
 	}
 }
 
-// TestScaffoldGaggleNewOmitsConnectionRefWhenAmbiguous covers the case a
-// literal "repo-token" default would get wrong: a manifest with zero or
-// multiple connections. REF004 (api/validate/validate.go) treats an empty
-// connectionRef as valid ("left alone"), so the scaffolder must leave it
-// empty rather than guess and produce a REF004 error.
-func TestScaffoldGaggleNewOmitsConnectionRefWhenAmbiguous(t *testing.T) {
+// TestScaffoldGaggleNewOmitsConnectionRef pins that a scaffolded gaggle never
+// declares a connectionRef, whatever the manifest declares. The local runtime
+// resolves every access's credential from instance.yaml repos[] by repository
+// identity and never consults the field (#3296), so seeding one would hand a
+// brand-new gaggle a REF012 finding — and an empty connectionRef is valid to
+// REF004 ("left alone").
+func TestScaffoldGaggleNewOmitsConnectionRef(t *testing.T) {
 	root := initDemo(t)
 	manifestPath := filepath.Join(root, "config", "manifest.yaml")
 	replaceInFile(t, manifestPath, "        name: repo-token\n", "        name: repo-token\n"+
@@ -97,7 +94,7 @@ func TestScaffoldGaggleNewOmitsConnectionRefWhenAmbiguous(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(content), "connectionRef") {
-		t.Fatalf("gaggle.yaml guessed a connectionRef with 2 declared connections:\n%s", content)
+		t.Fatalf("gaggle.yaml seeded a connectionRef the runtime cannot honor:\n%s", content)
 	}
 
 	// Still validate-clean: an empty connectionRef is not a REF004 finding.
@@ -201,7 +198,6 @@ func TestScaffoldGaggleRenameRewritesIdentity(t *testing.T) {
 		"namespace: gaggle-ledger",
 		// unrelated fields survive verbatim
 		"owner: your-org",
-		"connectionRef: repo-token",
 		"The project codebase this gaggle works on",
 	} {
 		if !strings.Contains(string(gaggleYAML), want) {

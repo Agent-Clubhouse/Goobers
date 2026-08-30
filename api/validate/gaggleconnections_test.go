@@ -164,11 +164,10 @@ spec:
 // TestGaggleConnectionRefUnhonoredWarning covers REF012 (#3296): connectionRef
 // reads as a credential selector but the runtime never consults it — every
 // credentialed capability a gaggle's stages hold comes from that gaggle's own
-// repo binding, selected from instance.yaml by repository identity. A gaggle
-// that names two DIFFERENT connections is therefore asking for two credentials
-// and gets one, so the losing declaration must be surfaced instead of silently
-// substituted. A gaggle whose sites all name ONE connection has nothing to
-// substitute and stays quiet.
+// repo binding, selected from instance.yaml by repository identity, and the
+// named Connection's own secret is never read. Every declaration is therefore
+// inert and must be surfaced, including the issue's own single-site case; a
+// gaggle that declares no connectionRef at all stays quiet.
 func TestGaggleConnectionRefUnhonoredWarning(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -178,9 +177,20 @@ func TestGaggleConnectionRefUnhonoredWarning(t *testing.T) {
 		want           []string
 	}{
 		{
-			name:           "one connection everywhere is honored",
+			name:           "a single declaration is not honored either",
+			projectConnRef: "    connectionRef: github-main",
+			backlogConnRef: "",
+			want: []string{
+				`connectionRef is declared at spec.project.connectionRef (naming "github-main"), but it does not select credentials at runtime`,
+			},
+		},
+		{
+			name:           "one connection everywhere is still inert",
 			projectConnRef: "    connectionRef: github-main",
 			backlogConnRef: "    connectionRef: github-main",
+			want: []string{
+				`connectionRef is declared at spec.project.connectionRef, spec.backlog.connectionRef (naming "github-main", "github-main"), but it does not select credentials at runtime`,
+			},
 		},
 		{
 			name:           "no connectionRef anywhere",
@@ -192,11 +202,11 @@ func TestGaggleConnectionRefUnhonoredWarning(t *testing.T) {
 			projectConnRef: "    connectionRef: github-main",
 			backlogConnRef: "    connectionRef: github-backlog",
 			want: []string{
-				`spec.backlog.connectionRef names connection "github-backlog", but this gaggle already selects connection "github-main"`,
+				`connectionRef is declared at spec.project.connectionRef, spec.backlog.connectionRef (naming "github-main", "github-backlog"), but it does not select credentials at runtime`,
 			},
 		},
 		{
-			name:           "reference repo names a second connection, project declares none",
+			name:           "reference repo declaration is reported with the rest",
 			projectConnRef: "",
 			backlogConnRef: "    connectionRef: github-backlog",
 			additionalRepo: `  additionalRepos:
@@ -205,7 +215,7 @@ func TestGaggleConnectionRefUnhonoredWarning(t *testing.T) {
       name: docs
       connectionRef: github-main`,
 			want: []string{
-				`spec.additionalRepos[0].connectionRef names connection "github-main", but this gaggle already selects connection "github-backlog"`,
+				`connectionRef is declared at spec.backlog.connectionRef, spec.additionalRepos[0].connectionRef (naming "github-backlog", "github-main"), but it does not select credentials at runtime`,
 			},
 		},
 	}
