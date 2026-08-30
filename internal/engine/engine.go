@@ -715,7 +715,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			// #3843: a gate sending a stage BACK commits a learning episode
 			// and hands the repass a pointer to it, so the next attempt argues
 			// with the reviewer's finding instead of rediscovering it. Only on
-			// the retry route — an advancing gate has nothing to teach.
+			// a true re-entry — an advancing gate has nothing to teach.
 			//
 			// #3929: "sending BACK" is the gate result's own repass attempt,
 			// the number resolveGateOutcome already charged to this target's
@@ -724,7 +724,19 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			// used to ask `upstream[next] != nil` here (gateSendsBack), which
 			// was equal to gr.Attempt >= 1 by construction at this call site
 			// and so could drift from it without any test noticing.
-			if retryRoute && runner.LearningEpisodeAppliesToRepass(gr.Attempt) {
+			//
+			// The injection is deliberately NOT conditioned on retryRoute.
+			// That flag carries the retry CLASSIFIER's answer — automated
+			// status-equals over nonzero_exit/base_sync_conflict, or `infra` —
+			// which is a different question from whether a stage is being
+			// asked to do its work again. An agentic reviewer resolving
+			// needs-changes back into implement is the canonical repass and
+			// the classifier declines it, so gating on retryRoute starved the
+			// main lane's reviewer→implement loop of exactly the correction
+			// internal/gate.reconcileLearningFindings exists to read back.
+			// The retry-decision annotation above stays on retryRoute: only
+			// the episode is widened.
+			if runner.LearningEpisodeAppliesToBranch(learningEpisodeBranchFor(gr)) {
 				episode, eerr := rec.learningEpisode(ctx, in, g.Name, next, gr, verdict, lastStage, lastResult, injected)
 				if eerr != nil {
 					return RunResult{}, fmt.Errorf("engine: journal learning episode for gate %q: %w", g.Name, eerr)
