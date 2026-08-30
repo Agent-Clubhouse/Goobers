@@ -563,20 +563,28 @@ func TestSelfAndAbsentPlacementsKeepLocalArms(t *testing.T) {
 	}
 }
 
-// Decision 003 ruling 3: a placed ledger-touching goobers-CLI stage —
-// backlog-query --claim, the shape every production backlog-curation lane
-// leads with — is refused BEFORE dispatch. The refusal carries the named
-// code in the run's failure (stage.finished's ErrorInfo.Code, surfaced here
-// as RunResult.FailureCode), and the dispatcher is never consulted: no
-// activity is executed, so no pod is ever created.
+// Decision 003 ruling 3: a placed goobers-CLI stage that still holds a file
+// under the daemon's instance root is refused BEFORE dispatch. The exemplar
+// is select-source, which opens the instance log and leases its parent with a
+// direct claim-ledger open rather than through the claims plane
+// (cmd/goobers/selectsource.go). The refusal carries the named code in the
+// run's failure (stage.finished's ErrorInfo.Code, surfaced here as
+// RunResult.FailureCode), and the dispatcher is never consulted: no activity
+// is executed, so no pod is ever created.
+//
+// This test used to lead with `backlog-query --claim`. That command is now
+// DISPATCHABLE — Goobers#3897 stamps the plane endpoints and bearers and
+// #3898 moved its annotation write and re-sweep state onto planes — and the
+// test immediately below pins that, so the two together cover both directions
+// of the same decision.
 func TestModeThreeRefusesInstanceRootStageBeforeDispatch(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
 		Start:    "query-backlog",
 		Tasks: []apiv1.Task{
-			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "claim a backlog item",
-				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}, Workspace: apiv1.WorkspaceScratch},
+			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "select the decomposition parent",
+				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "select-source"}, Workspace: apiv1.WorkspaceScratch},
 				Capabilities:  []string{"github:issues:write"},
 				PolicyActions: []string{"claim-backlog-items"}},
 		},
@@ -607,11 +615,60 @@ func TestModeThreeRefusesInstanceRootStageBeforeDispatch(t *testing.T) {
 	if result.FailureCode != executor.StageRequiresInstanceRootCode {
 		t.Fatalf("failure code = %q, want %q", result.FailureCode, executor.StageRequiresInstanceRootCode)
 	}
-	if !strings.Contains(result.FailureMessage, "backlog-query") {
+	if !strings.Contains(result.FailureMessage, "select-source") {
 		t.Fatalf("failure message = %q, want it to name the refused command", result.FailureMessage)
 	}
 	if fake.calls.Load() != 0 {
 		t.Fatal("the dispatcher must never be called for a stage refused before dispatch — no pod may be created")
+	}
+}
+
+// The inverse, and the acceptance shape for Goobers#3898: `backlog-query
+// --claim` — the command every production backlog-curation lane leads with,
+// and the one decision 003 ruling 3 refused for two years — now REACHES the
+// dispatcher.
+//
+// Asserted at this level rather than only over the refusal list because the
+// list is one input to a decision made in dispatchRemoteTask; a regression
+// that reintroduced the refusal anywhere on that path would leave the
+// executor-level table green and still leave every curation lane pinned to
+// the daemon host.
+func TestModeThreeDispatchesTheClaimingBacklogQuery(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "query-backlog",
+		Tasks: []apiv1.Task{
+			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "claim a backlog item",
+				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities:  []string{"github:issues:write"},
+				PolicyActions: []string{"claim-backlog-items"}},
+		},
+	}
+	in := runInput("mode-three-backlog-query", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "query-backlog", Queue: dispatcher.QueueName("web", "linux-toolchain"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	fake := &fakeStageDispatcher{report: dispatcher.Report{
+		Runner: "linux-toolchain", Phase: corev1.PodSucceeded, SurrenderConfirmed: true,
+	}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	surrenders := surrenderStore(t)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		// A surrender-fetch failure here still proves the point — the
+		// dispatcher was reached — but assert the call count explicitly
+		// below rather than relying on the error text.
+		if fake.calls.Load() == 0 {
+			t.Fatalf("workflow error with the dispatcher never called: %v", err)
+		}
+	}
+	if fake.calls.Load() == 0 {
+		t.Fatal("backlog-query --claim must now reach the dispatcher: its claims, scheduler-state and journal-emit needs are all plane-served (Goobers#3897/#3898)")
 	}
 }
 

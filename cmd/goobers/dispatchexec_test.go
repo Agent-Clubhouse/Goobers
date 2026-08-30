@@ -125,7 +125,7 @@ func TestRunDeclaredStageMalformedCommandJSONIsAFailureEnvelope(t *testing.T) {
 // supposed to have refused this before a pod existed) is refused HERE too,
 // before any credential resolution or checkout is attempted.
 func TestRunDeclaredStageRefusesLedgerCommandWithoutInstanceRoot(t *testing.T) {
-	t.Setenv(dispatcher.EnvStageCommand, `["goobers","backlog-query","--claim"]`)
+	t.Setenv(dispatcher.EnvStageCommand, `["goobers","select-source"]`)
 	t.Setenv(dispatcher.EnvStageScript, "")
 	t.Setenv(dispatcher.EnvStageTimeout, "10s")
 	t.Setenv("GOOBERS_INSTANCE_ROOT", "")
@@ -134,7 +134,7 @@ func TestRunDeclaredStageRefusesLedgerCommandWithoutInstanceRoot(t *testing.T) {
 	if result.Status != apiv1.ResultFailure || result.Error == nil || result.Error.Code != "instance_root_required" {
 		t.Fatalf("result = %+v, want an instance_root_required failure", result)
 	}
-	if !strings.Contains(result.Error.Message, "backlog-query") {
+	if !strings.Contains(result.Error.Message, "select-source") {
 		t.Fatalf("error message = %q, want it to name the refused command", result.Error.Message)
 	}
 }
@@ -467,26 +467,34 @@ func TestStageEnvironmentCLIStageKeepsIdentityNotAuthority(t *testing.T) {
 	}
 }
 
-// The two halves must remain a PARTITION of the old single list. A name that
-// falls out of both is a variable that silently stops being stripped for every
-// stage — the failure this split could plausibly introduce.
-func TestDispatcherControlEnvIsExactlyItsTwoHalves(t *testing.T) {
+// The three categories must remain a PARTITION of the control plane. A name
+// that falls out of all of them is a variable that silently stops being
+// stripped for every stage — the failure this split could plausibly
+// introduce — and a name in two of them is a category boundary that has
+// stopped meaning anything.
+func TestDispatcherControlEnvIsExactlyItsThreeCategories(t *testing.T) {
 	union := map[string]bool{}
-	for _, n := range dispatcher.DispatcherPrivilegedEnv {
-		union[n] = true
-	}
-	for _, n := range dispatcher.DispatcherRunIdentityEnv {
-		if union[n] {
-			t.Fatalf("%q is in BOTH halves; the split must be a partition", n)
+	for _, category := range []struct {
+		name  string
+		names []string
+	}{
+		{"privileged", dispatcher.DispatcherPrivilegedEnv},
+		{"run identity", dispatcher.DispatcherRunIdentityEnv},
+		{"machine plane", dispatcher.DispatcherPlaneEnv},
+	} {
+		for _, n := range category.names {
+			if union[n] {
+				t.Fatalf("%q is in MORE THAN ONE category (seen again in %s); the split must be a partition", n, category.name)
+			}
+			union[n] = true
 		}
-		union[n] = true
 	}
 	if len(union) != len(dispatcher.DispatcherControlEnv) {
-		t.Fatalf("halves cover %d names, control plane has %d", len(union), len(dispatcher.DispatcherControlEnv))
+		t.Fatalf("categories cover %d names, control plane has %d", len(union), len(dispatcher.DispatcherControlEnv))
 	}
 	for _, n := range dispatcher.DispatcherControlEnv {
 		if !union[n] {
-			t.Fatalf("%q is in neither half: it would stop being stripped", n)
+			t.Fatalf("%q is in no category: it would stop being stripped", n)
 		}
 	}
 	// The one that matters most, asserted by name rather than by construction.
@@ -496,6 +504,27 @@ func TestDispatcherControlEnvIsExactlyItsTwoHalves(t *testing.T) {
 	}
 	if !privileged[dispatcher.EnvPodToken] {
 		t.Fatal("EnvPodToken must be privileged: it authorizes surrendering this run's results")
+	}
+	// And the one #3897 turns on: the plane BEARERS are not privileged —
+	// a goobers-CLI stage is exactly the party that must read them — but they
+	// must also not have been filed as run identity, whose documented
+	// justification is that knowing it grants nothing.
+	for _, n := range dispatcher.DispatcherPlaneEnv {
+		if privileged[n] {
+			t.Fatalf("%q is privileged, so a goobers-CLI stage would be stripped of it and silently take the local-file branch", n)
+		}
+	}
+	identity := map[string]bool{}
+	for _, n := range dispatcher.DispatcherRunIdentityEnv {
+		identity[n] = true
+	}
+	for _, bearer := range []string{
+		dispatcher.EnvClaimsToken, dispatcher.EnvStateToken,
+		dispatcher.EnvJournalToken, dispatcher.EnvTelemetryToken,
+	} {
+		if identity[bearer] {
+			t.Fatalf("%q is a BEARER filed as run identity; that category's rule is that knowing it grants nothing", bearer)
+		}
 	}
 }
 
@@ -1080,4 +1109,131 @@ func TestDispatchExecClassifiesSyncBaseConflictAsRetryableInfra(t *testing.T) {
 	if !got.Error.Retryable {
 		t.Fatal("a base_sync_conflict must be Retryable, matching internal/engine/activities.go's RunDeterministic and internal/runner/run.go — failure-class's isRecognizedInfrastructureFailure never matches this code, so Retryable is the only thing that routes it OutcomeInfra")
 	}
+}
+
+// --- the plane environment through the in-pod strip (Goobers#3897) --------
+
+// A goobers-CLI stage subprocess KEEPS its plane environment. Losing it is
+// the silent failure the whole issue is about: every plane client selects its
+// backend from os.Getenv, so a stripped GOOBERS_CLAIMS_ENDPOINT does not fail
+// — it takes the local-file branch against a scratch volume nothing reads,
+// and a claim that never reached the daemon reports success.
+func TestCLIStageKeepsItsPlaneEnvironment(t *testing.T) {
+	t.Setenv(dispatcher.EnvStageIsCLI, "true")
+	t.Setenv(dispatcher.EnvStageEnvDefaultDeny, "")
+	stamped := map[string]string{
+		dispatcher.EnvClaimsEndpoint:    "http://daemon:7777",
+		dispatcher.EnvClaimsToken:       "goobers-pod.claims",
+		dispatcher.EnvStateEndpoint:     "http://daemon:7777",
+		dispatcher.EnvStateToken:        "goobers-pod.state",
+		dispatcher.EnvJournalEndpoint:   "http://daemon:7777",
+		dispatcher.EnvJournalToken:      "goobers-pod.journal",
+		dispatcher.EnvTelemetryEndpoint: "http://daemon:7777",
+		dispatcher.EnvTelemetryToken:    "goobers-pod.telemetry",
+		dispatcher.EnvRunID:             "run-1",
+		dispatcher.EnvGaggle:            "alpha",
+	}
+	for name, value := range stamped {
+		t.Setenv(name, value)
+	}
+	// The privileged half is present in the pod and must not survive.
+	t.Setenv(dispatcher.EnvPodToken, "goobers-pod.surrender")
+	t.Setenv(dispatcher.EnvDaemonAPI, "http://daemon:7777")
+
+	got := envMap(stageEnvironment())
+	for name, want := range stamped {
+		if got[name] != want {
+			t.Errorf("%s = %q, want %q; a CLI stage that loses this takes the local-file branch silently", name, got[name], want)
+		}
+	}
+	for _, name := range dispatcher.DispatcherPrivilegedEnv {
+		if _, present := got[name]; present {
+			t.Errorf("%s survived into a CLI stage subprocess", name)
+		}
+	}
+}
+
+// Every OTHER stage loses the whole control plane, plane bearers included: a
+// workflow-authored shell stage has no business holding a bearer for the
+// claims ledger.
+func TestOrdinaryStageLosesThePlaneEnvironment(t *testing.T) {
+	t.Setenv(dispatcher.EnvStageIsCLI, "")
+	t.Setenv(dispatcher.EnvStageEnvDefaultDeny, "")
+	for _, name := range dispatcher.DispatcherControlEnv {
+		t.Setenv(name, "present")
+	}
+	t.Setenv("STAGE_DECLARED_VAR", "kept")
+
+	got := envMap(stageEnvironment())
+	for _, name := range dispatcher.DispatcherControlEnv {
+		if _, present := got[name]; present {
+			t.Errorf("%s survived into an ordinary stage subprocess", name)
+		}
+	}
+	if got["STAGE_DECLARED_VAR"] != "kept" {
+		t.Error("the strip removed a stage's own declared variable")
+	}
+}
+
+// The env:default-deny rebuild must not be a way back in. The allowlist
+// re-admits by NAME and runs BEFORE the control strip, so a class enforcing
+// default-deny is exactly where a re-admitted pod token would be easiest to
+// miss — and exactly where a CLI stage's plane variables must still survive.
+func TestEnvDefaultDenyRebuildKeepsPlaneEnvAndStillDropsThePodToken(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		cli       string
+		wantPlane bool
+	}{
+		{"goobers-CLI stage", "true", true},
+		{"ordinary stage", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, name := range dispatcher.DispatcherControlEnv {
+				t.Setenv(name, "present")
+			}
+			allow, err := json.Marshal(append([]string{"STAGE_DECLARED_VAR"}, dispatcher.DispatcherControlEnv...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Set last, and deliberately: these three ARE control variables
+			// themselves (the dispatcher's own signals to the wrapper), so
+			// the blanket loop above would otherwise clobber the very inputs
+			// that decide which strip runs.
+			//
+			// The hostile case: the allowlist names the ENTIRE control plane.
+			t.Setenv(dispatcher.EnvStageEnvDefaultDeny, "true")
+			t.Setenv(dispatcher.EnvStageEnvAllow, string(allow))
+			t.Setenv(dispatcher.EnvStageIsCLI, tc.cli)
+			t.Setenv("STAGE_DECLARED_VAR", "kept")
+
+			got := envMap(stageEnvironment())
+			for _, name := range dispatcher.DispatcherPrivilegedEnv {
+				if _, present := got[name]; present {
+					t.Errorf("%s was re-admitted through the env:default-deny allowlist", name)
+				}
+			}
+			for _, name := range dispatcher.DispatcherPlaneEnv {
+				_, present := got[name]
+				if present != tc.wantPlane {
+					t.Errorf("%s present = %t, want %t", name, present, tc.wantPlane)
+				}
+			}
+			if got["STAGE_DECLARED_VAR"] != "kept" {
+				t.Error("the allowlist dropped a stage's own declared variable")
+			}
+		})
+	}
+}
+
+func envMap(env []string) map[string]string {
+	got := make(map[string]string, len(env))
+	for _, kv := range env {
+		name, value, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		got[name] = value
+	}
+	return got
 }

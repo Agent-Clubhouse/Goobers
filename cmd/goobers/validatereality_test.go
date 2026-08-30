@@ -241,9 +241,13 @@ func TestAppendMaxOpenPRWarnings(t *testing.T) {
 // case below, which the old restrictions-non-empty check could not tell
 // from the off-self case).
 func TestAppendInstanceRootFinding(t *testing.T) {
+	// select-source, not backlog-query: the latter became dispatchable with
+	// Goobers#3897/#3898 (its claims, scheduler-state and journal-emit needs
+	// are all plane-served now), and this finding only fires for a command
+	// that STILL holds a file under the instance root.
 	ledgerTask := apiv1.Task{
-		Name: "query-backlog", Type: apiv1.TaskDeterministic,
-		Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+		Name: "select-parent", Type: apiv1.TaskDeterministic,
+		Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "select-source"}},
 		RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
 	}
 	tests := []struct {
@@ -258,7 +262,7 @@ func TestAppendInstanceRootFinding(t *testing.T) {
 			task:        ledgerTask,
 			wantWarning: true,
 			wantText: []string{
-				`command [goobers backlog-query --claim]`,
+				`command [goobers select-source]`,
 				"cannot resolve to the daemon's own host (self)",
 				"eligible runner set for this stage is [pod]",
 				"refused at dispatch",
@@ -290,10 +294,23 @@ func TestAppendInstanceRootFinding(t *testing.T) {
 		{
 			name: "empty runsOn is trivially satisfied by self",
 			task: apiv1.Task{
+				Name:   "select-parent",
+				Type:   apiv1.TaskDeterministic,
+				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "select-source"}},
+				RunsOn: &apiv1.RunsOn{},
+			},
+			wantWarning: false,
+		},
+		{
+			// The direction Goobers#3897/#3898 changed: a CLAIMING
+			// backlog-query is now plane-served end to end, so restricting it
+			// off self is no longer a finding at all.
+			name: "restrictions on a claiming backlog-query no longer warn",
+			task: apiv1.Task{
 				Name:   "query-backlog",
 				Type:   apiv1.TaskDeterministic,
 				Run:    &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
-				RunsOn: &apiv1.RunsOn{},
+				RunsOn: &apiv1.RunsOn{Restrictions: []string{"network:allowlist"}},
 			},
 			wantWarning: false,
 		},
@@ -320,9 +337,9 @@ func TestAppendInstanceRootFinding(t *testing.T) {
 		{
 			name: "no runsOn at all does not warn (2.0 shape)",
 			task: apiv1.Task{
-				Name: "query-backlog",
+				Name: "select-parent",
 				Type: apiv1.TaskDeterministic,
-				Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}},
+				Run:  &apiv1.DeterministicRun{Command: []string{"goobers", "select-source"}},
 			},
 			wantWarning: false,
 		},
@@ -404,7 +421,7 @@ func TestAppendInstanceRootFinding(t *testing.T) {
 }
 
 // remoteRestrictedInstanceRootV30WorkflowYAML declares runsOn.restrictions
-// on a ledger-touching command (backlog-dedupe, this PR's headline
+// on a ledger-touching command (select-source, this PR's headline
 // silent-wrong-result case) — end-to-end coverage of RNR005 through the
 // real `goobers validate` seam, not only appendPlacementFindings directly.
 const remoteRestrictedInstanceRootV30WorkflowYAML = `apiVersion: goobers.dev/v1alpha1
@@ -424,9 +441,9 @@ spec:
       goal: run a ledger-touching stage that only a network:allowlist runner satisfies
       runsOn:
         restrictions: [network:allowlist]
-      capabilities: ["github:issues:read"]
+      capabilities: ["github:issues:read", "github:issues:write"]
       run:
-        command: ["goobers", "backlog-dedupe"]
+        command: ["goobers", "select-source"]
 `
 
 // TestValidateWarnsInstanceRootOffSelf is TestAppendInstanceRootFinding's
@@ -447,7 +464,7 @@ func TestValidateWarnsInstanceRootOffSelf(t *testing.T) {
 	for _, want := range []string{
 		"WARNING RNR005 Workflow/win-build",
 		"cannot resolve to the daemon's own host (self)",
-		`command [goobers backlog-dedupe]`,
+		`command [goobers select-source]`,
 		"eligible runner set for this stage is [pod]",
 		"refused at dispatch",
 		"instance_root_required",

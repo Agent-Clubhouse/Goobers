@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -489,7 +488,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		return code
 	}
 	eligible := scan.eligible
-	lockPath, cursorKey := scan.lockPath, scan.cursorKey
+	cursorKey := scan.cursorKey
 	scanCursor, nextScanCursor := scan.cursor, scan.nextCursor
 	observedRecords, remainingRecords := scan.observedRecords, scan.remainingRecords
 	verifiedSkips, observedSkips := scan.verifiedSkips, scan.observedSkips
@@ -506,7 +505,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		selectionPriority: selectionPriority,
 		observedAt:        observedAt,
 		openIssues:        openIssues,
-		lockPath:          lockPath,
+		state:             scan.state,
 	})
 	if code != 0 {
 		return code
@@ -568,7 +567,6 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		prProvider:             prProvider,
 		maxItems:               maxItems,
 		persistResweepState:    persistResweepState,
-		lockPath:               lockPath,
 		state:                  scan.state,
 		heldState:              heldState,
 		cursorKey:              cursorKey,
@@ -655,13 +653,13 @@ func terminalFailureStreak(phases journalclient.CrossRun, history []localschedul
 // never turn a working claim cycle into a failed one, so it is warned to
 // stderr and swallowed rather than propagated.
 func journalFailureStreakDegraded(layout instance.Layout, stderr io.Writer, runID, workflow string, degraded []string) {
-	instanceLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	annotations, err := openStageAnnotator(layout)
 	if err != nil {
-		pf(stderr, "warning: journal failure-streak degradation: open instance log: %v\n", err)
+		pf(stderr, "warning: journal failure-streak degradation: open annotator: %v\n", err)
 		return
 	}
-	defer func() { _ = instanceLog.Close() }()
-	if err := instanceLog.Append(journal.Event{
+	defer func() { _ = annotations.Close() }()
+	if err := annotations.Append(journal.Event{
 		Type:     journal.EventRunnerAnnotation,
 		Workflow: workflow,
 		RunID:    runID,
@@ -681,8 +679,7 @@ type backlogClaimOptions struct {
 	forwardEligibleCount   int
 	prProvider             *providers.GitHubProvider
 	maxItems               int
-	persistResweepState    func() error
-	lockPath               string
+	persistResweepState    func(context.Context) error
 	state                  stateclient.Store
 	heldState              stateclient.Store
 	cursorKey              string
@@ -735,7 +732,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
-		if err := persistResweepState(); err != nil {
+		if err := persistResweepState(ctx); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
@@ -760,13 +757,28 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 		leaseDuration = d
 	}
 
-	instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	// The claiming path's annotations now travel through the seam, not
+	// through a *journal.InstanceLog this process opened (Goobers#3898): in a
+	// stage pod the plane backend emits them to the daemon, and no local file
+	// is touched at all.
+	annotations, err := openStageAnnotator(l)
 	if err != nil {
-		pf(stderr, "error: open instance log: %v\n", err)
+		pf(stderr, "error: open annotator: %v\n", err)
 		return 1
 	}
-	defer func() { _ = instanceLog.Close() }()
-	ledger, err := openStageClaimLedger(l, localscheduler.WithInstanceLog(instanceLog))
+	defer func() { _ = annotations.Close() }()
+	// The LEDGER's own transition journal is a separate question with its own
+	// established answer: nil on the plane, because the daemon's ledger
+	// journals plane-driven transitions itself. claimLedgerJournal is that
+	// rule; opening a second instance log here would reintroduce exactly the
+	// instance-root dependency the seam above removes.
+	claimJournal, closeClaimJournal, err := claimLedgerJournal(l)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	defer closeClaimJournal()
+	ledger, err := openStageClaimLedger(l, withClaimJournal(claimJournal)...)
 	if err != nil {
 		pf(stderr, "error: open claim ledger: %v\n", err)
 		return 1
@@ -774,7 +786,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 
 	session := backlogClaimSession{
 		env:              env,
-		instanceLog:      instanceLog,
+		annotations:      annotations,
 		ledger:           ledger,
 		heldState:        opts.heldState,
 		eligible:         eligible,
@@ -812,7 +824,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
-		if err := persistResweepState(); err != nil {
+		if err := persistResweepState(ctx); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
@@ -821,7 +833,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			// This cycle's only candidate(s) were all blocked — distinct from a
 			// genuinely empty backlog (#1907). See blockedOnlyCompletionAnnotation.
 			reason = fmt.Sprintf("no eligible item to claim (%d blocked candidate(s) skipped this cycle)", len(observedSkips))
-			if jerr := instanceLog.Append(journal.Event{
+			if jerr := annotations.Append(journal.Event{
 				Type:     journal.EventRunnerAnnotation,
 				Workflow: workflow,
 				RunID:    runID,
@@ -846,13 +858,13 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 			return 1
 		}
 		if malformedReadyItems > 0 {
-			if err := persistResweepState(); err != nil {
+			if err := persistResweepState(ctx); err != nil {
 				pf(stderr, "error: %v\n", err)
 				return 1
 			}
 			return writeNoWorkResult(stdout, stderr, "no well-formed eligible item could be claimed")
 		}
-		if err := persistResweepState(); err != nil {
+		if err := persistResweepState(ctx); err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
@@ -879,7 +891,7 @@ type claimedBacklogResultOptions struct {
 	stalenessPolicy     backlogStalenessPolicy
 	observedAt          time.Time
 	curationModeByID    map[string]string
-	persistResweepState func() error
+	persistResweepState func(context.Context) error
 }
 
 func writeClaimedBacklogResult(
@@ -922,7 +934,7 @@ func writeClaimedBacklogResult(
 		pf(env.stderr, "error: write %s: %v\n", resultFile, err)
 		return 1
 	}
-	if err := opts.persistResweepState(); err != nil {
+	if err := opts.persistResweepState(ctx); err != nil {
 		pf(env.stderr, "error: %v\n", err)
 		return 1
 	}
@@ -995,8 +1007,11 @@ func reorderContestedBacklogItems(
 }
 
 type backlogClaimSession struct {
-	env         backlogQueryEnv
-	instanceLog *journal.InstanceLog
+	env backlogQueryEnv
+	// annotations is the instance-annotation seam (stageannotations.go): the
+	// daemon's instance log on a type-1/type-2 instance, the run-scoped
+	// journal emit plane in a stage pod.
+	annotations stageAnnotator
 	// ledger is the claim-ledger seam (claimledger.go): the instance's file
 	// under claims.lock on a self runner, the daemon's claims plane in a pod.
 	ledger claimsclient.Ledger
@@ -1136,7 +1151,7 @@ func (session *backlogClaimSession) journalBlockedSkips() error {
 		if skip.VerificationPending {
 			runner["verificationPending"] = true
 		}
-		if err := session.instanceLog.Append(journal.Event{
+		if err := session.annotations.Append(journal.Event{
 			Type:     journal.EventRunnerAnnotation,
 			Workflow: session.workflow,
 			RunID:    session.runID,
@@ -1257,42 +1272,50 @@ type backlogResweepOptions struct {
 	selectionPriority []string
 	observedAt        time.Time
 	openIssues        map[string]bool
-	lockPath          string
+	// state is the scheduler-state store the re-sweep generation counter is
+	// compare-and-swapped in: the plane in a stage pod, the instance's own
+	// claims.lock-guarded scheduler directory otherwise.
+	state stateclient.Store
 }
 
 type backlogResweepResult struct {
-	eligible  []providers.WorkItem
-	readOnly  []providers.WorkItem
-	modeByID  map[string]string
-	state     backlogResweepState
-	lockPath  string
-	statePath string
-	observed  uint64
-	dirty     bool
+	eligible []providers.WorkItem
+	readOnly []providers.WorkItem
+	modeByID map[string]string
+	state    backlogResweepState
+	// state_ is the scheduler-state store the re-sweep state lives in — the
+	// plane in a stage pod, the instance's own scheduler directory otherwise.
+	// It replaces the lockPath/statePath pair this struct carried while the
+	// state was a file this process opened (Goobers#3898).
+	state_   stateclient.Store
+	stateKey string
+	observed uint64
+	dirty    bool
 }
 
-func (result backlogResweepResult) persist() error {
+func (result backlogResweepResult) persist(ctx context.Context) error {
 	if !result.dirty {
 		return nil
 	}
 	return advanceBacklogResweepState(
-		result.lockPath,
-		result.statePath,
+		ctx,
+		result.state_,
+		result.stateKey,
 		result.observed,
 		result.state,
 	)
 }
 
 func runBacklogResweep(ctx context.Context, env backlogQueryEnv, opts backlogResweepOptions) (backlogResweepResult, int) {
-	result := backlogResweepResult{eligible: opts.eligible, lockPath: opts.lockPath}
+	result := backlogResweepResult{eligible: opts.eligible, state_: opts.state}
 	if !opts.enabled || len(result.eligible) >= opts.maxItems {
 		return result, 0
 	}
-	result.statePath = backlogResweepStatePath(
-		env.layout.SchedulerDir(), env.repo, providerGaggle(), opts.trustLabel, opts.policy.readyLabel,
+	result.stateKey = backlogResweepStateKey(
+		env.repo, providerGaggle(), opts.trustLabel, opts.policy.readyLabel,
 	)
 	var err error
-	result.state, err = readBacklogResweepState(opts.lockPath, result.statePath)
+	result.state, err = readBacklogResweepState(ctx, opts.state, result.stateKey)
 	if err != nil {
 		pf(env.stderr, "error: read backlog re-sweep state: %v\n", err)
 		return result, 1
@@ -1635,14 +1658,12 @@ type backlogScanOptions struct {
 
 type backlogEligibilityScan struct {
 	eligible []providers.WorkItem
-	lockPath string
 	// state is the scheduler-state store this scan reads and writes
 	// blocked.json and its scan cursor through: the instance's own files under
 	// claims.lock locally, the daemon's copy over the scheduler-state plane in
 	// a stage pod (#3878).
 	state            stateclient.Store
 	cursorKey        string
-	cursorPath       string
 	cursor           backlogScanCursor
 	nextCursor       backlogScanCursor
 	observedRecords  map[string]blockedRecord
@@ -1659,12 +1680,15 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 	if opts.respectAssignee && opts.assignedTo != "" {
 		queryAssignee = opts.assignedTo
 	}
-	result.lockPath = filepath.Join(env.layout.SchedulerDir(), claimLockFileName)
+	// No lock path and no cursor path: every stateful read and write this
+	// scan makes now goes through the scheduler-state store below, which is
+	// the plane in a stage pod and the instance's own claims.lock-guarded
+	// scheduler directory otherwise (Goobers#3898). Naming either path here
+	// would reintroduce the instance-root dependency by construction.
 	result.cursorKey = backlogScanCursorKey(
 		env.backlogRepo, opts.trustLabel, opts.labelExpression, opts.fieldExpression,
 		opts.requireLabels, opts.excludeLabels, queryAssignee,
 	)
-	result.cursorPath = filepath.Join(env.layout.SchedulerDir(), result.cursorKey)
 	store, err := openStageStateStore(env.layout)
 	if err != nil {
 		pf(env.stderr, "error: open scheduler state: %v\n", err)

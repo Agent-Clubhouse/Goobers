@@ -71,6 +71,18 @@ type Principal struct {
 	// Roles are the instance-scoped roles granted to this principal by
 	// configuration. Empty means authenticated but authorized for nothing.
 	Roles []Role
+	// Scopes narrow a POD principal to a subset of the pod-reachable planes
+	// (podauth.KnownScopes). Empty means the unscoped pod token, which reaches
+	// every pod plane — the posture GOOBERS_POD_TOKEN has always had, and the
+	// one __dispatch-exec needs to surrender, resolve credentials and move
+	// blobs.
+	//
+	// A stage SUBPROCESS never holds that token. The dispatcher mints it one
+	// scoped bearer per plane (Goobers#3897), so a claims bearer presented to
+	// the surrender route is refused HERE, by the authorizer, before any
+	// handler's run containment runs. Ignored for human principals, whose
+	// authorization is the role ladder.
+	Scopes []string
 }
 
 // Role is an instance-scoped authorization level (#644). Roles are ordered:
@@ -123,26 +135,67 @@ func IsPodPrincipal(principal Principal) bool {
 	return principal.Issuer == PodPrincipalIssuer
 }
 
+// Pod plane scopes, restated from internal/podauth rather than imported:
+// podauth depends on this package (it implements Authenticator), so importing
+// it back would be a cycle. Pinned against the originals by
+// TestPodPlaneScopesMatchPodauth so the restatement cannot drift — the same
+// discipline internal/dispatcher applies to the executor's env names.
+const (
+	ScopeClaims     = "claims"
+	ScopeState      = "state"
+	ScopeJournal    = "journal"
+	ScopeTelemetry  = "telemetry"
+	ScopeSurrender  = "surrender"
+	ScopeBlob       = "blob"
+	ScopeCredential = "credential"
+)
+
+// HasScope reports whether a pod principal may reach the plane named by
+// scope. A principal carrying NO scopes is the unscoped pod token and reaches
+// every plane; one carrying scopes reaches exactly those.
+//
+// Fail closed on the empty argument: a call site that cannot name its plane
+// has not decided what it is authorizing.
+func (p Principal) HasScope(scope string) bool {
+	if scope == "" {
+		return false
+	}
+	if len(p.Scopes) == 0 {
+		return true
+	}
+	return slices.Contains(p.Scopes, scope)
+}
+
 // podPlanePath reports whether path is one of the fixed pod routes: claims,
 // trigger ingest, credential resolve, and the cross-run journal plane's three
 // purpose-built questions. Routes with path parameters are matched by their
 // dedicated structural helpers below. Handler-level checks bind each request
 // to the pod's run or gaggle; everything else stays human-only.
-func podPlanePath(path string) bool {
+//
+// scope names the least-privilege bearer a pod must present for the route
+// (Goobers#3897); ok is false for a path that is not a fixed pod route.
+func podPlanePath(path string) (scope string, ok bool) {
 	switch path {
 	case apicontract.ClaimAcquirePath,
 		apicontract.ClaimRenewPath,
 		apicontract.ClaimReleasePath,
 		apicontract.ClaimSettlePath,
-		apicontract.ClaimListPath,
-		apicontract.TriggerIngestPath,
-		apicontract.CredentialResolvePath,
-		apicontract.JournalRunPhasePath,
+		apicontract.ClaimListPath:
+		return ScopeClaims, true
+	case apicontract.TriggerIngestPath:
+		// The trigger plane rides the state bearer: the only pod-side caller
+		// is apply-verdict's crowned-lander dispatch, which reaches it
+		// through stateclient's own transport and therefore holds exactly
+		// the bearer stateclient was handed.
+		return ScopeState, true
+	case apicontract.CredentialResolvePath:
+		return ScopeCredential, true
+	case apicontract.JournalRunPhasePath,
 		apicontract.JournalConflictTouchesPath,
 		apicontract.JournalUnpushedWorkPath:
-		return true
+		return ScopeJournal, true
 	default:
-		return false
+		return "", false
 	}
 }
 
@@ -293,6 +346,14 @@ func telemetryPlanePath(path string) bool {
 // token proves "I am run X's stage pod"; handlers then enforce the relevant
 // run or gaggle boundary. The credential and blob handlers additionally
 // refuse human principals outright.
+//
+// Since Goobers#3897 the token ALSO proves which planes it may reach. The
+// unscoped pod token (GOOBERS_POD_TOKEN, held by __dispatch-exec itself)
+// reaches all of them; the per-plane bearers the dispatcher stamps into a
+// goobers-CLI stage's environment reach exactly one each. That is what makes
+// a stage subprocess unable to surrender its own result even though it holds
+// a bearer for the same run — route confinement, checked here, not a naming
+// convention.
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
@@ -300,25 +361,14 @@ func RequireRoles() Authorizer {
 			return errors.New("no authenticated principal")
 		}
 		if IsPodPrincipal(principal) {
-			if (podPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path) || surrenderPlanePath(request.URL.Path)) && request.Method == http.MethodPost {
-				return nil
+			scope, admitted := podRouteScope(request)
+			if !admitted {
+				return fmt.Errorf("pod principal %q may only call the claims, trigger, credential, journal, blob, surrender, telemetry-read, scheduler-state, and own-run read planes", principal.Subject)
 			}
-			if blobPlanePath(request.URL.Path) && (request.Method == http.MethodGet || request.Method == http.MethodPut) {
-				return nil
+			if !principal.HasScope(scope) {
+				return fmt.Errorf("pod principal %q presents a bearer scoped to %v, which does not admit the %s plane", principal.Subject, principal.Scopes, scope)
 			}
-			if statePlanePath(request.URL.Path) && (request.Method == http.MethodGet || request.Method == http.MethodPut) {
-				return nil
-			}
-			if telemetryPlanePath(request.URL.Path) && request.Method == http.MethodGet {
-				return nil
-			}
-			// Decision 005 R1 option 1: reads of the pod's own run's journal,
-			// GET only. A pod may never write through a read route, and the
-			// handler still decides WHICH run.
-			if runReadPlanePath(request.URL.Path) && request.Method == http.MethodGet {
-				return nil
-			}
-			return fmt.Errorf("pod principal %q may only call the claims, trigger, credential, journal, blob, surrender, telemetry-read, scheduler-state, and own-run read planes", principal.Subject)
+			return nil
 		}
 		required := RoleView
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
@@ -329,6 +379,42 @@ func RequireRoles() Authorizer {
 		}
 		return nil
 	})
+}
+
+// podRouteScope resolves a request to the pod plane it addresses and the
+// scope a bearer must carry for it. admitted=false means the route is not
+// pod-reachable at all (or not by this method), which fails closed above.
+//
+// One function rather than a chain of inline conditions so the route->scope
+// mapping is enumerable in one place: a new pod plane that forgets its scope
+// does not compile.
+func podRouteScope(request *http.Request) (scope string, admitted bool) {
+	path, method := request.URL.Path, request.Method
+	if scope, ok := podPlanePath(path); ok && method == http.MethodPost {
+		return scope, true
+	}
+	if journalPlanePath(path) && method == http.MethodPost {
+		return ScopeJournal, true
+	}
+	if surrenderPlanePath(path) && method == http.MethodPost {
+		return ScopeSurrender, true
+	}
+	if blobPlanePath(path) && (method == http.MethodGet || method == http.MethodPut) {
+		return ScopeBlob, true
+	}
+	if statePlanePath(path) && (method == http.MethodGet || method == http.MethodPut) {
+		return ScopeState, true
+	}
+	if telemetryPlanePath(path) && method == http.MethodGet {
+		return ScopeTelemetry, true
+	}
+	// Decision 005 R1 option 1: reads of the pod's own run's journal, GET
+	// only. A pod may never write through a read route, and the handler still
+	// decides WHICH run.
+	if runReadPlanePath(path) && method == http.MethodGet {
+		return ScopeJournal, true
+	}
+	return "", false
 }
 
 // Authenticator establishes the caller identity before authorization.
