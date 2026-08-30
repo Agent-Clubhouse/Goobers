@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel/intake"
@@ -134,6 +135,29 @@ func (e *daemonEngineClient) Guards() *engineRunGuards {
 		return nil
 	}
 	return &engineRunGuards{client: e.client}
+}
+
+// HITLDeliverer returns the #3883 operator-intent deliverer over the shared
+// client, or nil when no engine is configured — in which case the daemon's
+// intervention surface keeps the #3847 engine-driven refusal.
+//
+// It takes the guards' workflow-id resolver rather than owning one: a
+// scheduled engine run's workflow id is not its run id, and an operator intent
+// addressed to the run id would be delivered to a workflow that does not
+// exist. Passing the guards in makes the two surfaces share one boot-time scan
+// and one answer to "which workflow is this run?".
+func (e *daemonEngineClient) HITLDeliverer(guards *engineRunGuards) *engine.HITLDeliverer {
+	if e == nil || e.client == nil {
+		return nil
+	}
+	deliverer, err := engine.NewHITLDeliverer(e.client)
+	if err != nil {
+		return nil
+	}
+	if guards == nil || guards.resolveWorkflowID == nil {
+		return deliverer
+	}
+	return deliverer.WithWorkflowIDResolver(guards.resolveWorkflowID)
 }
 
 // Close releases the shared client.

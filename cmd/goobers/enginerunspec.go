@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bootstrap"
@@ -135,7 +136,33 @@ func engineRunSpec(req engineRunRequest) (engine.StartSpec, error) {
 		// #3876: kit provenance, so an engine run's run.yaml names the same
 		// digest gooberDigestStarter stamps on a runner-driven one.
 		GooberDigest: req.gooberDigest,
+		// #3883 (decision 005 R8): the instance's operator-hold posture,
+		// pinned at start. Nil on every instance that did not opt in, which
+		// is the rollback posture and the pre-protocol behaviour exactly.
+		HITL: engineHITLPolicy(req.cfg),
 	}, nil
+}
+
+// engineHITLPolicy translates the instance's engine.hitl block into the
+// workflow-pinned policy.
+//
+// It returns nil — not a disabled policy — when the instance did not opt in,
+// because nil is what every history recorded before #3883 carries. A run
+// input that serializes `"hitl":{"enabled":false}` instead of omitting the
+// field would still replay identically today, but it would put a value in the
+// pinned snapshot that a future protocol version could read differently.
+// Omitting it keeps "did not opt in" and "predates the protocol" the same
+// fact, which is what makes the rollback total.
+func engineHITLPolicy(cfg *instance.Config) *engine.HITLPolicy {
+	if !cfg.EngineHITLEnabled() {
+		return nil
+	}
+	hitl := cfg.EffectiveEngineConfig().HITL
+	policy := &engine.HITLPolicy{Enabled: true, Actors: hitl.Actors}
+	if window := hitl.HITLWindow(); window > 0 {
+		policy.WaitSeconds = int(window / time.Second)
+	}
+	return policy
 }
 
 // engineRunGateGooberCapabilities maps each goober a gaggle's stages may

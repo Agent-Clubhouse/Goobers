@@ -615,6 +615,16 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
+	// #3883 (decision 005 R8): give the intervention surface a second
+	// destination. Runner-driven runs keep the in-process path untouched;
+	// engine-driven ones, which every verb refused outright since #3847, are
+	// now answered by the workflow that owns them over the versioned HITL
+	// protocol. Attached after the open-run scan so a SCHEDULED engine run —
+	// whose workflow id is not its run id — is addressable; a daemon with no
+	// engine client attaches nothing and keeps the refusal verbatim.
+	if deliverer := engineClient.HITLDeliverer(engineGuards); deliverer != nil {
+		interventions.AttachHITLDeliverer(deliverer)
+	}
 	// The write planes (#3509, distributed-state-and-coordination.md §7):
 	// claims over the same ledger + flock the CLI claimants use, triggers
 	// through the same scheduler path the pending-triggers sweep dispatches,

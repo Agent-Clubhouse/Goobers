@@ -106,3 +106,28 @@ journal event lands" is closed from both sides:
 The gaggle filter on that scan is fail-closed: a daemon that has not said which gaggles it
 owns is told about no runs at all, so sibling instances sharing one Temporal namespace never
 reattach to each other's work.
+
+## Operator interventions: the `goobers.hitl.v1` protocol (#3883)
+
+Approve, override, rerun-stage and deny reach an engine-driven run over a versioned Temporal
+**workflow Update**, not through the in-process runner. The daemon translates the same HTTP
+intervention request into an `engine.HITLIntent`, delivers it with
+`WaitForStage: WorkflowUpdateStageCompleted`, and reports success only once the workflow has
+durably accepted and acted on it. Runner-driven runs are untouched by this path; a daemon with no
+engine client keeps the #3847 `run_engine_driven` refusal.
+
+The protocol, its phase/refusal matrix, its idempotency and terminal-generation rules, and its
+rollback story are specified in
+[`docs/design/human-in-the-loop.md` §4a](../design/human-in-the-loop.md).
+
+**Named parity drift.** An engine run numbers a stage's *dispatch* attempts per-dispatch starting at
+1 (`dispatchWithRetry`); a runner run numbers them cumulatively across the run. The
+parity-observable record is identical — an operator rerun writes `stage.rerun.requested` with the
+same cumulative `attempt` and `attemptClass: human` the runner writes — but the attempt number
+observed *inside* a re-dispatched stage differs. Threading a cumulative attempt base through the
+dispatch path is out of #3883's scope and is tracked separately.
+
+**It is opt-in.** `engine.hitl.enabled` defaults to false. While a hold is open the run's Temporal
+workflow stays open and its scheduler concurrency slot stays occupied, so an instance turning it on
+also chooses the window it can afford (`engine.hitl.window`, 24h by default). The run's *journal*
+is unaffected either way: the terminal is written before the hold, not after it.

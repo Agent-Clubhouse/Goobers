@@ -62,6 +62,11 @@ type scriptedExec struct {
 	// extra model call.
 	verdicts    map[string][]apiv1.Verdict
 	reviewCalls map[string]int
+	// addenda records the instruction addendum each stage's LAST dispatch
+	// carried. It is what lets the #3883 HITL tests prove that an operator's
+	// rerun addendum actually reached the re-dispatched stage's envelope
+	// rather than merely being journaled.
+	addenda map[string]string
 }
 
 func newScriptedExec(script map[string][]scriptedCall) *scriptedExec {
@@ -93,7 +98,17 @@ func (s *scriptedExec) Run(_ context.Context, env apiv1.InvocationEnvelope, _ ap
 }
 
 func (s *scriptedExec) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	s.recordAddendum(env)
 	return s.next(env.TaskID)
+}
+
+func (s *scriptedExec) recordAddendum(env apiv1.InvocationEnvelope) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.addenda == nil {
+		s.addenda = map[string]string{}
+	}
+	s.addenda[env.TaskID[strings.Index(env.TaskID, ":")+1:]] = env.InstructionAddendum
 }
 
 // Review answers from the scripted verdicts, keyed by gate name. The last
