@@ -159,77 +159,6 @@ func cachedVerdictFor(subject apiv1.ResultEnvelope, instructionAddendum string) 
 	return runner.CachedVerdictFromOutputs(subject.Outputs)
 }
 
-// learningEpisode is the #3843 cross-repass learning injection: when a gate
-// sends a stage back, the walk commits an episode artifact describing WHAT the
-// reviewer objected to and hands the repass a pointer to it, so the next
-// attempt argues with the finding instead of rediscovering it. Inventory row:
-// learning episode never injected (also the engine drift-ledger entry this
-// change closes).
-//
-// Structurally identical to internal/runner.recordLearningInjection: the same
-// shared builder produces the bytes, the same annotation shape is journaled,
-// and the same "learning.episode[<seq>]" pointer name is handed to the repass.
-// The only difference is where the source event comes from.
-func (r *runJournal) learningEpisode(
-	ctx workflow.Context,
-	in RunInput,
-	gateName, target string,
-	gr gateResult,
-	verdict *apiv1.Verdict,
-	sourceStage string,
-	sourceResult apiv1.ResultEnvelope,
-	verdictPointer *apiv1.ContextPointer,
-) (*apiv1.ContextPointer, error) {
-	events, _, err := projectedEvents(r.proj)
-	if err != nil {
-		return nil, err
-	}
-	sourceSeq, sourceAttempt := runner.LearningSourceEvent(events, gateName, sourceStage, verdict != nil)
-	if sourceAttempt == 0 {
-		sourceAttempt = gr.Attempt
-	}
-	episode := runner.BuildLearningEpisode(runner.LearningEpisodeInput{
-		RunID:          in.RunID,
-		Workflow:       in.WorkflowName,
-		WorkflowDigest: r.proj.Identity.WorkflowDigest,
-		Gate:           gateName,
-		Stage:          sourceStage,
-		SourceSeq:      sourceSeq,
-		SourceAttempt:  sourceAttempt,
-		Verdict:        verdict,
-		SourceResult:   sourceResult,
-		VerdictPointer: verdictPointer,
-	})
-	data, err := json.Marshal(episode)
-	if err != nil {
-		return nil, fmt.Errorf("engine: encode learning episode for gate %q: %w", gateName, err)
-	}
-	ref, err := journal.ArtifactRef(data)
-	if err != nil {
-		return nil, fmt.Errorf("engine: address learning episode for gate %q: %w", gateName, err)
-	}
-	at := workflow.Now(ctx)
-	name := runner.LearningEpisodeArtifactName(gateName, sourceSeq)
-	r.artifactAt(at, JournalArtifactOp{Name: name, Data: data, Integrity: apiv1.IntegrityDerived})
-	r.appendAt(at, journal.Event{
-		Type:      journal.EventRunnerAnnotation,
-		Stage:     target,
-		Attempt:   episode.SourceAttempt + 1,
-		Name:      name,
-		Ref:       &ref,
-		Integrity: apiv1.IntegrityDerived,
-		Runner:    runner.LearningEpisodeAnnotation(episode, target, ref.Path, ref.Digest),
-	})
-	return &apiv1.ContextPointer{
-		Name:      runner.LearningEpisodePointerName(sourceSeq),
-		Integrity: apiv1.IntegrityDerived,
-		Artifact: &apiv1.ArtifactPointer{
-			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
-			MediaType: "application/json", Integrity: apiv1.IntegrityDerived,
-		},
-	}, nil
-}
-
 // stageArtifact commits one stage-attempt-scoped artifact the walk was told
 // about by an activity (a salvage marker, a base-sync conflict detail, a
 // captured unpushed diff) and hands back the pointer for it.
@@ -626,17 +555,6 @@ type findingLifecycle struct {
 	Reopened          []string
 	Disproven         []string
 	DisprovenFindings []apiv1.Finding
-}
-
-// gateSendsBack reports whether this gate's branch re-enters a stage the run
-// has already completed — the retry route, and the only one a learning episode
-// belongs on. An advancing gate has produced no lesson to carry.
-func gateSendsBack(gr gateResult, next string, upstream map[string]apiv1.ResultEnvelope) bool {
-	if next == "" || gr.Escalated {
-		return false
-	}
-	_, completed := upstream[next]
-	return completed
 }
 
 // contextNotInspectedRedispatch applies the #3374 ruling to a finished stage:
