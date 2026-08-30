@@ -50,8 +50,8 @@ describe("operational overview", () => {
     // The guided walkthrough leads as the recommended newcomer path, with the
     // manual init command kept alongside it.
     expect(screen.getByText(/The guided walkthrough builds a working instance/)).toBeInTheDocument();
-    expect(screen.getByText("goobers getting-started")).toBeInTheDocument();
-    expect(screen.getByText("goobers init --guided <instance>")).toBeInTheDocument();
+    expect(screen.getByText("goobers init --guided")).toBeInTheDocument();
+    expect(screen.getByText("goobers init --guided")).toBeInTheDocument();
     expect(screen.getByText("Daemon ready")).toBeInTheDocument();
     expect(screen.queryByText("Static fixture data")).not.toBeInTheDocument();
   });
@@ -223,9 +223,11 @@ describe("operational overview", () => {
 
     expect(screen.getByRole("heading", { name: "Connecting to daemon" })).toBeInTheDocument();
     expect(
-      await screen.findByRole("heading", { name: "Daemon unavailable" }),
+      await screen.findByRole("heading", { name: "Couldn't load Goobers data" }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/No fixture data has been substituted/)).toBeInTheDocument();
+    expect(
+      screen.getByText("The portal couldn't load data from the Goobers daemon. Reconnect to try again."),
+    ).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     expect(
@@ -339,7 +341,7 @@ describe("workflow and gaggle inventory", () => {
     expect(
       await screen.findByRole("heading", { name: "No gaggles configured" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("goobers init --guided <instance>")).toBeInTheDocument();
+    expect(screen.getByText("goobers init --guided")).toBeInTheDocument();
   });
 
   it("distinguishes a configured gaggle with no workflows", async () => {

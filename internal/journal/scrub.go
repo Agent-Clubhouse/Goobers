@@ -12,6 +12,17 @@ import (
 // stable so digests over scrubbed bytes are reproducible across runners.
 const Redacted = "[REDACTED]"
 
+// RedactedToken is the placeholder that replaces ONLY the credential value of a
+// match whose surrounding syntax must survive — today, an authorization
+// expression's scheme (#3135). Scrubbed diffs, verdicts, and repass context are
+// the evidence agentic review gates reason about, so collapsing
+// `Authorization: Bearer <value>` to a single marker made correct code and
+// synthetic fixtures read as malformed headers. Redacting at the value boundary
+// removes the credential while leaving the scheme, quotes, and variable
+// references intact. Like Redacted it is stable, so digests over scrubbed bytes
+// stay reproducible across runners.
+const RedactedToken = "<redacted-token>"
+
 // Scrubber removes secret-shaped material from bytes before they are written to
 // (and digested into) the journal. Every event, input snapshot, and artifact
 // passes through the run's Scrubber before hitting disk, so raw secrets never
@@ -139,28 +150,40 @@ func jsonEscapedForms(v []byte) [][]byte {
 // minSecretLen is the shortest value the registry will redact.
 const minSecretLen = 6
 
+// secretPattern pairs a secret-shaped pattern with the replacement template
+// applied to each match. A template may reference capture groups (`${1}`) so a
+// match is redacted at the value boundary only, keeping the structure a reader
+// needs — an authorization scheme, a quote, a variable reference — while the
+// credential itself is removed.
+type secretPattern struct {
+	re          *regexp.Regexp
+	replacement string
+}
+
 // defaultSecretPatterns matches secret-shaped material that was never registered
 // — a defense-in-depth net for provider tokens that reach the journal without
 // going through the resolver. Patterns are intentionally specific to keep false
 // positives low; the registry is the primary mechanism.
-var defaultSecretPatterns = []*regexp.Regexp{
+var defaultSecretPatterns = []secretPattern{
 	// GitHub tokens: ghp_, gho_, ghu_, ghs_, ghr_, github_pat_.
-	regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`),
-	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{50,}`),
+	{regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`), Redacted},
+	{regexp.MustCompile(`github_pat_[A-Za-z0-9_]{50,}`), Redacted},
 	// AWS access key id.
-	regexp.MustCompile(`AKIA[0-9A-Z]{16}`),
+	{regexp.MustCompile(`AKIA[0-9A-Z]{16}`), Redacted},
 	// Slack tokens.
-	regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`),
+	{regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`), Redacted},
 	// PEM private key blocks.
-	regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`),
-	// Bearer/authorization header values with a long opaque token.
-	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+/-]{20,}=*`),
-	regexp.MustCompile(`(?i)basic\s+[A-Za-z0-9+/]{16,}=*`),
+	{regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`), Redacted},
+	// Bearer/authorization header values with a long opaque token. The scheme
+	// is captured and restored: only the value is a credential, and a reviewer
+	// judging a diff must still be able to see that the header is well formed.
+	{regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/-]{20,}=*`), "${1}" + RedactedToken},
+	{regexp.MustCompile(`(?i)(basic\s+)[A-Za-z0-9+/]{16,}=*`), "${1}" + RedactedToken},
 }
 
 // PatternScrubber redacts secret-shaped substrings using a set of regexps.
 type PatternScrubber struct {
-	patterns []*regexp.Regexp
+	patterns []secretPattern
 }
 
 // NewPatternScrubber returns a scrubber using the default secret patterns.
@@ -168,11 +191,13 @@ func NewPatternScrubber() *PatternScrubber {
 	return &PatternScrubber{patterns: defaultSecretPatterns}
 }
 
-// Scrub replaces every pattern match with the Redacted placeholder.
+// Scrub replaces every pattern match with its placeholder: the whole match for a
+// value-shaped pattern, and the value alone (scheme preserved) for an
+// authorization expression.
 func (s *PatternScrubber) Scrub(b []byte) []byte {
 	out := b
-	for _, re := range s.patterns {
-		out = re.ReplaceAll(out, []byte(Redacted))
+	for _, p := range s.patterns {
+		out = p.re.ReplaceAll(out, []byte(p.replacement))
 	}
 	return out
 }

@@ -53,6 +53,6 @@ describe("goobers roster page", () => {
     render(<App client={new FixtureDaemonClient(emptyDaemonFixtures())} />);
 
     expect(await screen.findByRole("heading", { name: "No goobers configured" })).toBeInTheDocument();
-    expect(screen.getByText("goobers init --guided <instance>")).toBeInTheDocument();
+    expect(screen.getByText("goobers init --guided")).toBeInTheDocument();
   });
 });

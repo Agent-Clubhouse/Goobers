@@ -551,7 +551,7 @@ func TestJournalSpanExporterRedactsSecrets(t *testing.T) {
 						t.Fatalf("credential leaked into event attribute %q: %q", k, v)
 					}
 				}
-				if ev.Name == "provider.basic_request" && k == "authorization" && v == RedactedPlaceholder {
+				if ev.Name == "provider.basic_request" && k == "authorization" && strings.Contains(v, RedactedTokenPlaceholder) {
 					basicAuthRedacted = true
 				}
 			}

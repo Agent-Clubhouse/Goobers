@@ -55,7 +55,7 @@
     "path": "\u003csource-tree\u003e",
     "nextCommand": "goobers agent-kit check '\u003csource-tree\u003e'",
     "prompts": [
-      "Use the Goobers DSL author skill to create or modify a workflow from this plain-English goal: \u003cdescribe the workflow\u003e.",
+      "Use the Goobers Getting Started skill to inspect target repository \u003ctarget-path-or-provider-url\u003e, derive its default branch, CI command, toolchain, and conventions, and create the smallest validated configuration source here. Explain each write and ask only when required evidence or behavior cannot be safely derived.",
       "Use the Goobers run operator skill to summarize recent runs, issues, and pull requests for the Goobers instance at \u003cinstance-path\u003e.",
       "Use the Goobers workflow upgrade skill to assess this config source for upgrade to the installed Goobers release."
     ],

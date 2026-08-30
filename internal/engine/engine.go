@@ -649,12 +649,14 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			if rerr != nil {
 				return RunResult{}, rerr
 			}
-			applyImplementationLaneOutcome(g, &gr, ev, review, findingReason)
+			applyImplementationLaneOutcome(g, &gr, ev, review, findingReason, lifecycle.Arbitrate)
 			gr.ResolvedFindingIDs = lifecycle.Resolved
 			gr.SuppressedFindingIDs = lifecycle.Suppressed
 			gr.ReopenedFindingIDs = lifecycle.Reopened
 			gr.DisprovenFindingIDs = lifecycle.Disproven
 			gr.DisprovenFindings = lifecycle.DisprovenFindings
+			gr.RepeatedFindingIDs = lifecycle.Repeated
+			gr.UnverifiedRepeatFindingIDs = lifecycle.UnverifiedRepeats
 			verdictArtifact, jerr := rec.gateEvaluated(ctx, gr, verdict)
 			if jerr != nil {
 				return RunResult{}, jerr

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/providers"
@@ -122,7 +123,7 @@ func observePRSelectEligibility(
 		}
 		scope := prSelectFairnessScope(repo)
 		gaggle := providerGaggle()
-		currentRunID := os.Getenv("GOOBERS_RUN_ID")
+		currentRunID := os.Getenv(executor.RunIDEnvVar)
 		claims, err := pullRequestClaimListing(tx, gaggle, repo.Provider)
 		if err != nil {
 			return err

@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/decomposition"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/journalclient"
 )
@@ -50,15 +51,10 @@ func runValidatePlan(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	plan, err := readDecompositionInput[decomposition.Plan](root, providerInput("planFile", "plan.json"), "plan.json", "design-slices", "/plan.json")
 	if err != nil {
@@ -161,7 +157,7 @@ func readDecompositionInput[T any](root, path, defaultPath, stage, artifactSuffi
 	if err == nil || path != defaultPath || !errors.Is(err, os.ErrNotExist) {
 		return value, err
 	}
-	runID := os.Getenv("GOOBERS_RUN_ID")
+	runID := os.Getenv(executor.RunIDEnvVar)
 	if runID == "" {
 		return value, err
 	}

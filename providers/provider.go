@@ -3,9 +3,35 @@ package providers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
+
+var (
+	errIssueIDRequired = errors.New("issue id is required")
+	errPullIDRequired  = errors.New("pull id is required")
+)
+
+func validateCommitRequest(req CommitRequest) error {
+	if req.Branch == "" {
+		return errors.New("branch is required")
+	}
+	if req.Message == "" {
+		return errors.New("message is required")
+	}
+	if len(req.Files) == 0 {
+		return errors.New("at least one file is required")
+	}
+	return nil
+}
+
+func validateCommitFile(file CommitFile) error {
+	if file.Path == "" {
+		return errors.New("file path is required")
+	}
+	return nil
+}
 
 // Provider combines repo, backlog, and trigger operations for a backend.
 type Provider interface {

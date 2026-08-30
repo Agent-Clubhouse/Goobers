@@ -77,17 +77,17 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 		}
 		run := request.PathValue("run")
 		if !apiv1.ValidRunID(run) {
-			writeError(w, http.StatusBadRequest, "invalid_request", "run id is not a safe path segment")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "run id is not a safe path segment")
 			return
 		}
 		stage := request.PathValue("stage")
 		if !apiv1.ValidRunID(stage) {
-			writeError(w, http.StatusBadRequest, "invalid_request", "stage name is not a safe path segment")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "stage name is not a safe path segment")
 			return
 		}
 		attempt, err := strconv.Atoi(request.PathValue("attempt"))
 		if err != nil || attempt < 1 {
-			writeError(w, http.StatusBadRequest, "invalid_request", "attempt must be a positive integer")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "attempt must be a positive integer")
 			return
 		}
 		// Per-run containment: a pod token proves "I am run X's stage pod",
@@ -102,20 +102,20 @@ func registerSurrenderPlaneRoutes(router *Router, config handlerConfig, errorLog
 		defer func() { _ = request.Body.Close() }()
 		body, err := io.ReadAll(io.LimitReader(request.Body, maxSurrenderBody+1))
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", "request body could not be read")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "request body could not be read")
 			return
 		}
 		if int64(len(body)) > maxSurrenderBody {
-			writeError(w, http.StatusRequestEntityTooLarge, "invalid_request", "surrendered result body exceeds the size limit")
+			writeError(w, http.StatusRequestEntityTooLarge, CodeInvalidRequest, "surrendered result body exceeds the size limit")
 			return
 		}
 		var shape surrenderedResultShape
 		if err := json.Unmarshal(body, &shape); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON request body")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "invalid JSON request body")
 			return
 		}
 		if shape.Result.Status == "" {
-			writeError(w, http.StatusBadRequest, "invalid_request", "surrendered result carries no status")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "surrendered result carries no status")
 			return
 		}
 		if err := plane.Put(request.Context(), run, stage, attempt, body); err != nil {

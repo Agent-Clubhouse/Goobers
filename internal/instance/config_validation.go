@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/procenv"
@@ -254,7 +255,7 @@ func (c *Config) validateGitHubCLIIdentityRefs() error {
 		return nil
 	}
 	for i, repo := range c.Repos {
-		if repo.Provider != "github" || repo.Token.GitHubCLI == nil {
+		if repo.Provider != string(apiv1.ProviderGitHub) || repo.Token.GitHubCLI == nil {
 			continue
 		}
 		if !strings.EqualFold(repo.Token.GitHubCLI.User, c.SelfIdentity) {
@@ -517,7 +518,7 @@ func (c *Config) validateDaemonIdentityOwnerCoverage() error {
 	var owners []string
 	for i := range c.Repos {
 		repo := &c.Repos[i]
-		if repo.Provider != "github" || repo.Owner == "" {
+		if repo.Provider != string(apiv1.ProviderGitHub) || repo.Owner == "" {
 			continue
 		}
 		if !seen[repo.Owner] {
@@ -572,7 +573,7 @@ func (c *Config) validateDaemonIdentitySameAppInstallations() error {
 	}
 	for i := range c.Repos {
 		repo := &c.Repos[i]
-		if repo.Provider != "github" || repo.Auth == nil || repo.Auth.Kind != GitHubAuthApp {
+		if repo.Provider != string(apiv1.ProviderGitHub) || repo.Auth == nil || repo.Auth.Kind != GitHubAuthApp {
 			continue
 		}
 		if repo.Auth.AppID != c.DaemonIdentity.AppID {

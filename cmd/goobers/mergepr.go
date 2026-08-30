@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/mergepolicy"
 	"github.com/goobers/goobers/providers"
 )
@@ -93,15 +94,10 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -192,6 +188,23 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
+	// #2746: ADO PollPullRequest never populates CommentsSince, so the in-lock
+	// poll carries no verdict and the merge commit used to degrade to title +
+	// "Closes #N" — losing the reviewer attribution and rationale the
+	// GitHub/Gitea path records. Recover the verdict apply-verdict posted to the
+	// PR thread HERE, BEFORE the merge lock: fetching it inside the lock would
+	// add a provider round-trip to the poll->decide->merge window and reopen the
+	// head-move race #719 closes. Recovering early is safe because the verdict
+	// is SHA-pinned — adoMergeCommitMessage only uses it when the pin still
+	// equals the LOCKED poll's live head/base, so a head that moved between this
+	// read and the lock simply falls back to the non-verdict assembly (the same
+	// pin check pinnedPassVerdict applies on GitHub). A provider failure here is
+	// never fatal: the audit metadata degrades, the merge conjuncts do not.
+	var adoVerdict *adoRecoveredVerdict
+	if isADO && strings.TrimSpace(commitMessage) == "" {
+		adoVerdict = recoverADOPassVerdict(ctx, stageProvider, repo, pullNumber, stderr)
+	}
+
 	// #719: with merge-review's readiness allowing several concurrent runs
 	// to review DIFFERENT PRs at once (distinct-PR concurrency is already
 	// claim-ledger-safe, per pr-select), only ONE PR may be inside the
@@ -219,8 +232,8 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 	mergeLock := claimsclient.MergeLock{
 		Key:      claimsclient.MergeLockKey(providerGaggle(), string(repo.Provider), repo.Owner, repo.Name),
-		RunID:    os.Getenv("GOOBERS_RUN_ID"),
-		Workflow: os.Getenv("GOOBERS_WORKFLOW"),
+		RunID:    os.Getenv(executor.RunIDEnvVar),
+		Workflow: os.Getenv(executor.WorkflowEnvVar),
 	}
 
 	var poll providers.PullRequestPollResult
@@ -333,17 +346,17 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		if strings.TrimSpace(mergeCommitMessage) == "" {
 			switch {
 			case isADO:
-				// THE single hard blocker (merge-wiring-plan §1a/§2/§8): ADO
-				// PollPullRequest returns an empty CommentsSince (there is no
+				// ADO PollPullRequest returns an empty CommentsSince (there is no
 				// merge-review sticky-verdict comment surface on ADO), so
 				// structuredMergeCommitMessage's pinnedPassVerdict lookup ALWAYS
 				// fails on ADO — a clean pass with a green Build policy would set
-				// commitErr and hard-return 1 below, never landing. Build the
-				// commit directly from the PR's own title + closing refs (the same
-				// non-verdict assembly structuredMergeCommitMessage does at
-				// mergepr.go:443-453), bypassing the verdict comment. verdictAuthor
-				// is not required on ADO (no comment to attribute).
-				commitTitle, mergeCommitMessage, commitErr = adoMergeCommitMessage(poll)
+				// commitErr and hard-return 1 below, never landing. Build the commit
+				// from the PR's own title + closing refs, enriched with the verdict
+				// recovered from the PR thread before the lock when its SHA-pin
+				// still matches this poll's live head/base (#2746). verdictAuthor is
+				// not required on ADO — the recovery resolves the trusted author
+				// itself.
+				commitTitle, mergeCommitMessage, commitErr = adoMergeCommitMessage(poll, adoVerdict)
 				if commitErr != nil {
 					return nil
 				}
@@ -530,28 +543,122 @@ func structuredMergeCommitMessage(poll providers.PullRequestPollResult, verdictA
 	return title, strings.Join(parts, "\n\n"), nil
 }
 
+// adoRecoveredVerdict is the pass verdict merge-pr recovered from an Azure
+// DevOps pull request's threads, together with the trusted author it was
+// verified against — the reviewer attribution the merge commit records.
+type adoRecoveredVerdict struct {
+	Verdict apiv1.Verdict
+	Author  string
+}
+
+// adoThreadVerdictReader is the ADO read surface the pre-lock verdict recovery
+// needs: the authenticated identity to trust a thread against, and the PR's
+// thread comments (the ADO analog of GitHub's PR comments — apply-verdict posts
+// the verdict there, ListComments would address work-item comments instead).
+type adoThreadVerdictReader interface {
+	AuthenticatedLogin(ctx context.Context) (string, error)
+	ListPullRequestThreadComments(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]providers.Comment, error)
+}
+
+// recoverADOPassVerdict reads the latest trusted merge-review pass verdict
+// apply-verdict posted to the ADO pull request's threads (#2746). It is called
+// BEFORE the merge lock is taken, so it never adds a round-trip to the
+// poll->decide->merge window (#719); adoMergeCommitMessage re-validates the
+// verdict's SHA-pin against the locked poll before using it.
+//
+// It returns nil — never an error — when no such verdict exists or the provider
+// call fails: the recovered verdict enriches the merge commit's audit trail, so
+// losing it degrades to the PR's own title + closing refs rather than blocking
+// an otherwise-mergeable pull request.
+func recoverADOPassVerdict(
+	ctx context.Context,
+	provider providers.Provider,
+	repo providers.RepositoryRef,
+	pullID string,
+	stderr io.Writer,
+) *adoRecoveredVerdict {
+	reader, ok := provider.(adoThreadVerdictReader)
+	if !ok {
+		return nil
+	}
+	author, err := reader.AuthenticatedLogin(ctx)
+	if err != nil {
+		pf(stderr, "warning: resolve merge-review verdict author for pr #%s: %v\n", pullID, err)
+		return nil
+	}
+	comments, err := reader.ListPullRequestThreadComments(ctx, repo, pullID)
+	if err != nil {
+		pf(stderr, "warning: list thread comments on pr #%s: %v\n", pullID, err)
+		return nil
+	}
+	var recovered *adoRecoveredVerdict
+	for _, comment := range comments {
+		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, author) {
+			continue
+		}
+		candidate, ok := parseVerdictComment(comment.Body)
+		if !ok || candidate.Decision != apiv1.VerdictPass {
+			continue
+		}
+		// Comments arrive oldest first, so the last trusted pass wins — the
+		// verdict from the most recent review of this pull request.
+		recovered = &adoRecoveredVerdict{Verdict: candidate, Author: author}
+	}
+	return recovered
+}
+
 // adoMergeCommitMessage builds the land's commit title and body for an Azure
-// DevOps pull request directly from the PR's own fields, bypassing the
-// merge-review sticky-comment verdict lookup structuredMergeCommitMessage
-// depends on. ADO PollPullRequest returns an empty CommentsSince (ADO has no
-// merge-review sticky-verdict comment surface — merge-wiring-plan §2), so the
-// verdict-rationale assembly is unavailable there; the title and "Closes #N"
-// closing refs are exactly the non-verdict parts the GitHub assembly already
-// produces (mergepr.go:443-453). This is the fix for the single hard blocker:
-// without it, structuredMergeCommitMessage always errors on ADO and a clean
-// green-Build-policy pass hard-fails the stage instead of landing
-// (merge-wiring-plan §1a/§8). Errors only on the same empty-title condition the
-// GitHub assembly rejects, so an ADO PR with no title is still a business error.
-func adoMergeCommitMessage(poll providers.PullRequestPollResult) (string, string, error) {
+// DevOps pull request. ADO PollPullRequest returns an empty CommentsSince (ADO
+// has no merge-review sticky-verdict comment surface — merge-wiring-plan §2), so
+// structuredMergeCommitMessage's in-poll verdict lookup always fails there;
+// without this bypass a clean green-Build-policy pass hard-fails the stage
+// instead of landing (merge-wiring-plan §1a/§8).
+//
+// recovered is the pass verdict merge-pr read from the PR's threads before
+// taking the merge lock (#2746), or nil when there was none. It contributes the
+// reviewer's summary, rationale, and attribution — the audit trail the
+// GitHub/Gitea commit body carries — but ONLY while its SHA-pin still equals
+// this LOCKED poll's live head/base, exactly the pin pinnedPassVerdict enforces
+// on GitHub: a verdict computed against a state the PR has since moved past
+// must not be recorded as the reason this commit landed. A stale, absent, or
+// unrecoverable verdict falls back to the PR's own title + "Closes #N" closing
+// refs, so the merge still lands. Errors only on the same empty-title condition
+// the GitHub assembly rejects.
+func adoMergeCommitMessage(poll providers.PullRequestPollResult, recovered *adoRecoveredVerdict) (string, string, error) {
 	title := strings.TrimSpace(poll.Title)
 	if title == "" {
 		return "", "", fmt.Errorf("pull request title is empty")
 	}
 	var parts []string
+	attribution := ""
+	if recovered != nil && adoVerdictPinMatches(recovered.Verdict, poll) {
+		summary := strings.TrimSpace(recovered.Verdict.Summary)
+		rationale := strings.TrimSpace(recovered.Verdict.Rationale)
+		if summary != "" {
+			parts = append(parts, summary)
+		}
+		if rationale != "" && rationale != summary {
+			parts = append(parts, rationale)
+		}
+		if author := strings.TrimSpace(recovered.Author); author != "" {
+			attribution = "Reviewed-by: " + author
+		}
+	}
 	for _, issue := range closingIssueNumbers(poll.Body) {
 		parts = append(parts, "Closes #"+issue)
 	}
+	if attribution != "" {
+		parts = append(parts, attribution)
+	}
 	return title, strings.Join(parts, "\n\n"), nil
+}
+
+// adoVerdictPinMatches reports whether a recovered ADO verdict is pinned to the
+// pull request's current head AND base — the same staleness test
+// pinnedPassVerdict applies to the GitHub sticky comment.
+func adoVerdictPinMatches(verdict apiv1.Verdict, poll providers.PullRequestPollResult) bool {
+	return verdict.HeadSHA != "" && verdict.HeadSHA == poll.HeadSHA &&
+		verdict.BaseSHA != "" && verdict.BaseSHA == poll.BaseSHA
 }
 
 type mergeBranchCleanup struct {

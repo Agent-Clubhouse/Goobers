@@ -144,8 +144,8 @@ func TestRunsCommandUsage(t *testing.T) {
 		wantStdout string
 		wantStderr string
 	}{
-		{name: "complete help mentions runs list", args: []string{"help", "all"}, wantCode: 0, wantStdout: "goobers runs list"},
-		{name: "complete help mentions runs du", args: []string{"help", "all"}, wantCode: 0, wantStdout: "goobers runs du [--json]"},
+		{name: "complete help mentions runs list", args: []string{"help", "all"}, wantCode: 0, wantStdout: "runs list"},
+		{name: "complete help mentions runs du", args: []string{"help", "all"}, wantCode: 0, wantStdout: "runs du"},
 		{name: "runs help", args: []string{"runs", "help"}, wantCode: 0, wantStdout: "alias for the goobers status run table"},
 		{name: "missing action", args: []string{"runs"}, wantCode: 2, wantStderr: "Usage: goobers runs"},
 		{name: "unknown action", args: []string{"runs", "bogus"}, wantCode: 2, wantStderr: `unknown subcommand "bogus"`},

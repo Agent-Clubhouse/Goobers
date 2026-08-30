@@ -17,24 +17,25 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
 
-// The guided endpoints are thin process wrappers over the documented CLI
-// actions (docs/design/v1/cli-surface-and-manpages.md §5): every write action
-// execs this same binary with the same argv a shell user would type, and the
-// portal renders the parsed result. Nothing here copies templates, seeds
-// provider items, or invents a portal-only result shape.
+// The guided endpoints expose the same product-owned onboarding operations as
+// the CLI. Command-shaped actions execute this binary with an allowlisted argv;
+// guided instance creation applies instance.GuidedOptions directly so the web
+// wizard can submit structured choices without simulating terminal input.
 
 const (
-	guidedStateVersion    = 1
+	guidedStateVersion    = 2
 	guidedMaxBodyBytes    = 1 << 20
 	guidedOutputRingLines = 500
 	guidedRunIDMarker     = "created run "
@@ -53,8 +54,8 @@ var (
 
 type guidedServer struct {
 	workdir      string
-	samplePath   string
 	instancePath string
+	configPath   string
 	executable   string
 	errorLog     *log.Logger
 
@@ -64,15 +65,15 @@ type guidedServer struct {
 	apiClose func() error
 }
 
-func newGuidedServer(workdir string, errorLog *log.Logger) (*guidedServer, error) {
+func newGuidedServer(workdir, instancePath string, errorLog *log.Logger) (*guidedServer, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve own executable: %w", err)
 	}
 	return &guidedServer{
 		workdir:      workdir,
-		samplePath:   filepath.Join(workdir, gettingStartedSampleDirName),
-		instancePath: filepath.Join(workdir, gettingStartedInstanceDirName),
+		instancePath: instancePath,
+		configPath:   instancePath + "-config",
 		executable:   executable,
 		errorLog:     errorLog,
 	}, nil
@@ -150,10 +151,14 @@ func (s *guidedServer) serveGuided(w http.ResponseWriter, r *http.Request) {
 		s.handleState(w, r)
 	case r.URL.Path == "/guided/status":
 		s.handleStatus(w, r)
-	case r.URL.Path == "/guided/actions/stub-sample":
-		s.handleStubSample(w, r)
 	case r.URL.Path == "/guided/actions/init-instance":
 		s.handleInitInstance(w, r)
+	case r.URL.Path == "/guided/actions/inspect-repository":
+		s.handleInspectRepository(w, r)
+	case r.URL.Path == "/guided/actions/choose-repository-folder":
+		s.handleChooseRepositoryFolder(w, r)
+	case r.URL.Path == "/guided/actions/prepare-repository":
+		s.handlePrepareRepository(w, r)
 	case r.URL.Path == "/guided/actions/connect":
 		s.handleConnect(w, r)
 	case r.URL.Path == "/guided/actions/validate":
@@ -205,16 +210,19 @@ type guidedJobDetail struct {
 }
 
 type guidedStateBody struct {
-	Version        int                  `json:"version"`
-	Workdir        string               `json:"workdir"`
-	SamplePath     string               `json:"samplePath"`
-	InstancePath   string               `json:"instancePath"`
-	SampleExists   bool                 `json:"sampleExists"`
-	InstanceExists bool                 `json:"instanceExists"`
-	Env            guidedEnvState       `json:"env"`
-	Job            *guidedJobSummary    `json:"job"`
-	APIReady       bool                 `json:"apiReady"`
-	Connected      guidedConnectedState `json:"connected"`
+	Version             int                  `json:"version"`
+	Platform            string               `json:"platform"`
+	Workdir             string               `json:"workdir"`
+	InstancePath        string               `json:"instancePath"`
+	ConfigPath          string               `json:"configPath"`
+	SuggestedStack      string               `json:"suggestedStack,omitempty"`
+	SuggestedCICommand  []string             `json:"suggestedCICommand,omitempty"`
+	SuggestedCapability string               `json:"suggestedCapability,omitempty"`
+	InstanceExists      bool                 `json:"instanceExists"`
+	Env                 guidedEnvState       `json:"env"`
+	Job                 *guidedJobSummary    `json:"job"`
+	APIReady            bool                 `json:"apiReady"`
+	Connected           guidedConnectedState `json:"connected"`
 }
 
 // guidedConnectedState reports the repository the tutorial instance is
@@ -240,10 +248,6 @@ func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
 	if !requireGuidedMethod(w, r, http.MethodGet) {
 		return
 	}
-	sampleExists := false
-	if info, err := os.Stat(s.samplePath); err == nil && info.IsDir() {
-		sampleExists = true
-	}
 	instanceExists := false
 	if _, err := os.Stat(instance.NewLayout(s.instancePath).ConfigFile()); err == nil {
 		instanceExists = true
@@ -261,13 +265,17 @@ func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
 	apiReady := s.api != nil
 	s.mu.Unlock()
 	tokenEnv := s.recordedTokenEnv()
+	suggestedStack, suggestedCICommand, suggestedCapability := detectCICommandDefault(s.workdir)
 	writeGuidedJSON(w, http.StatusOK, guidedStateBody{
-		Version:        guidedStateVersion,
-		Workdir:        s.workdir,
-		SamplePath:     s.samplePath,
-		InstancePath:   s.instancePath,
-		SampleExists:   sampleExists,
-		InstanceExists: instanceExists,
+		Version:             guidedStateVersion,
+		Platform:            runtime.GOOS,
+		Workdir:             s.workdir,
+		InstancePath:        s.instancePath,
+		ConfigPath:          s.configPath,
+		SuggestedStack:      suggestedStack,
+		SuggestedCICommand:  suggestedCICommand,
+		SuggestedCapability: suggestedCapability,
+		InstanceExists:      instanceExists,
 		Env: guidedEnvState{
 			// Presence only — the values themselves never cross this API.
 			TokenEnv:                 tokenEnv,
@@ -295,35 +303,333 @@ func (s *guidedServer) recordedTokenEnv() string {
 	return connectDefaultTokenEnv
 }
 
-type guidedStubSampleRequest struct {
-	WorkTracking string `json:"workTracking"`
-	TokenEnv     string `json:"tokenEnv"`
-	Force        bool   `json:"force"`
-}
-
-func (s *guidedServer) handleStubSample(w http.ResponseWriter, r *http.Request) {
-	if !requireGuidedMethod(w, r, http.MethodPost) {
-		return
+func (s *guidedServer) requiredRunTokenEnv() (string, bool) {
+	configFile := instance.NewLayout(s.instancePath).ConfigFile()
+	cfg, err := instance.LoadConfig(configFile)
+	if err != nil {
+		return s.recordedTokenEnv(), true
 	}
-	var input guidedStubSampleRequest
-	if !decodeGuidedBody(w, r, &input) {
-		return
+	for _, repo := range cfg.Repos {
+		if repo.Owner == connectPlaceholderOwner && repo.Name == connectPlaceholderName {
+			continue
+		}
+		if repo.Provider == string(apiv1.ProviderADO) {
+			if repo.Auth != nil && repo.Auth.Kind != instance.ADOAuthPAT {
+				return "", false
+			}
+			return repo.Token.Env, repo.Token.Env != ""
+		}
+		if repo.GitHubAppAuth() || repo.Token.GitHubCLI != nil {
+			return "", false
+		}
+		if repo.Token.Env != "" {
+			return repo.Token.Env, true
+		}
 	}
-	argv := []string{"onboarding", "stub-sample", "--destination", s.samplePath, "--json"}
-	if input.WorkTracking != "" {
-		argv = append(argv, "--work-tracking", input.WorkTracking)
-	}
-	if input.TokenEnv != "" {
-		argv = append(argv, "--token-env", input.TokenEnv)
-	}
-	if input.Force {
-		argv = append(argv, "--force")
-	}
-	s.respondEnvelope(w, r, argv)
+	return s.recordedTokenEnv(), true
 }
 
 type guidedInitInstanceRequest struct {
-	Template string `json:"template"`
+	Template string                  `json:"template"`
+	Guided   *guidedInitOptionsInput `json:"guided,omitempty"`
+}
+
+type guidedInitOptionsInput struct {
+	Provider              string   `json:"provider,omitempty"`
+	Owner                 string   `json:"owner,omitempty"`
+	Project               string   `json:"project,omitempty"`
+	Name                  string   `json:"name,omitempty"`
+	LocalPath             string   `json:"localPath,omitempty"`
+	ConfigPath            string   `json:"configPath,omitempty"`
+	Repo                  string   `json:"repo"`
+	Branch                string   `json:"branch"`
+	Workflows             []string `json:"workflows"`
+	IssueScope            string   `json:"issueScope"`
+	AssignedTo            string   `json:"assignedTo,omitempty"`
+	PullRequestCI         bool     `json:"pullRequestCI,omitempty"`
+	CICommand             []string `json:"ciCommand,omitempty"`
+	RequiredCapabilities  []string `json:"requiredCapabilities,omitempty"`
+	Harness               string   `json:"harness"`
+	RepoTokenEnv          string   `json:"repoTokenEnv"`
+	WorkTrackingTokenEnv  string   `json:"workTrackingTokenEnv"`
+	PullRequestTokenEnv   string   `json:"pullRequestTokenEnv,omitempty"`
+	RepoPushTokenEnv      string   `json:"repoPushTokenEnv,omitempty"`
+	OptionalModelTokenEnv string   `json:"optionalModelTokenEnv,omitempty"`
+	GitHubCLIUser         string   `json:"githubCLIUser,omitempty"`
+	AuthKind              string   `json:"authKind,omitempty"`
+}
+
+type guidedInspectRepositoryRequest struct {
+	Location string `json:"location"`
+}
+
+type guidedChooseFolderResponse struct {
+	Path     string `json:"path,omitempty"`
+	Canceled bool   `json:"canceled"`
+}
+
+type guidedPrepareRepositoryRequest struct {
+	Apply              bool `json:"apply"`
+	CreateStarterIssue bool `json:"createStarterIssue"`
+}
+
+type guidedRepositoryReadiness struct {
+	Provider            string   `json:"provider"`
+	Repository          string   `json:"repository"`
+	SelectorLabels      []string `json:"selectorLabels"`
+	LifecycleLabels     []string `json:"lifecycleLabels"`
+	MissingLabels       []string `json:"missingLabels"`
+	CreatedLabels       []string `json:"createdLabels,omitempty"`
+	EligibleCount       *int     `json:"eligibleCount,omitempty"`
+	StarterIssueCreated bool     `json:"starterIssueCreated,omitempty"`
+	UsesWorkItemTags    bool     `json:"usesWorkItemTags,omitempty"`
+}
+
+var guidedChooseRepositoryFolder = chooseGuidedRepositoryFolder
+
+func (s *guidedServer) handleChooseRepositoryFolder(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodPost) {
+		return
+	}
+	path, canceled, err := guidedChooseRepositoryFolder(r.Context())
+	if err != nil {
+		writeGuidedJSON(w, http.StatusInternalServerError, guidedErrorBody{
+			Code:    "repository_folder_picker_failed",
+			Message: err.Error(),
+		})
+		return
+	}
+	writeGuidedJSON(w, http.StatusOK, guidedChooseFolderResponse{
+		Path:     path,
+		Canceled: canceled,
+	})
+}
+
+func (s *guidedServer) handlePrepareRepository(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodPost) {
+		return
+	}
+	var input guidedPrepareRepositoryRequest
+	if !decodeGuidedBody(w, r, &input) {
+		return
+	}
+	layout := instance.NewLayout(s.instancePath)
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
+			Code:    "guided_config_unavailable",
+			Message: fmt.Sprintf("load generated configuration: %v (report: %+v)", err, report),
+		})
+		return
+	}
+	if len(set.Gaggles) == 0 {
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
+			Code:    "guided_gaggle_unavailable",
+			Message: "the generated configuration does not contain a gaggle",
+		})
+		return
+	}
+	gaggle := set.Gaggles[0]
+	selectors, applied, _ := connectDerivedLabels(set, gaggle.Spec.Project.Owner, gaggle.Spec.Project.Name)
+	response := guidedRepositoryReadiness{
+		Provider:        string(gaggle.Spec.Project.Provider),
+		Repository:      guidedRepositoryDisplayName(string(gaggle.Spec.Project.Provider), gaggle.Spec.Project.Owner, gaggle.Spec.Project.Project, gaggle.Spec.Project.Name),
+		SelectorLabels:  selectors,
+		LifecycleLabels: applied,
+		MissingLabels:   []string{},
+	}
+	if gaggle.Spec.Project.Provider == apiv1.ProviderADO {
+		response.UsesWorkItemTags = true
+		writeGuidedJSON(w, http.StatusOK, response)
+		return
+	}
+
+	token, err := guidedGitHubToken(r.Context())
+	if err != nil {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code:    "github_credentials_unavailable",
+			Message: err.Error(),
+		})
+		return
+	}
+	provider := providers.NewGitHubProvider(token)
+	repository := providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    gaggle.Spec.Project.Owner,
+		Name:     gaggle.Spec.Project.Name,
+	}
+	catalog := connectSeedCatalog(selectors, applied)
+	assignedTo := guidedImplementationAssignee(set)
+	if len(catalog.Issues) > 0 {
+		catalog.Issues[0].Assignee = assignedTo
+	}
+	existing, err := provider.RepositoryLabelNames(r.Context(), repository)
+	if err != nil {
+		writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
+			Code:    "repository_labels_unavailable",
+			Message: err.Error(),
+		})
+		return
+	}
+	response.MissingLabels = missingGuidedLabels(catalog.Labels, existing)
+	reality, err := checkGuidedRepoSelectorReality(r.Context(), provider, repository, selectors, assignedTo)
+	if err != nil {
+		writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
+			Code:    "repository_issues_unavailable",
+			Message: err.Error(),
+		})
+		return
+	}
+	eligible := reality.Matching
+	response.EligibleCount = &eligible
+	if input.Apply {
+		result := onboardingActionResult{Created: []string{}, Skipped: []string{}}
+		if input.CreateStarterIssue && eligible == 0 {
+			if err := seedOnboardingIssuesAs(r.Context(), provider, repository, catalog, connectAction, &result); err != nil {
+				writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
+					Code:    "repository_preparation_failed",
+					Message: err.Error(),
+				})
+				return
+			}
+		} else {
+			labels, err := provider.EnsureWorkItemLabels(r.Context(), repository, catalog.Labels)
+			if err != nil {
+				writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
+					Code:    "repository_preparation_failed",
+					Message: err.Error(),
+				})
+				return
+			}
+			for _, name := range labels.Created {
+				result.Created = append(result.Created, "label:"+name)
+			}
+		}
+		for _, item := range result.Created {
+			switch {
+			case strings.HasPrefix(item, "label:"):
+				response.CreatedLabels = append(response.CreatedLabels, strings.TrimPrefix(item, "label:"))
+			case strings.HasPrefix(item, "issue:"):
+				response.StarterIssueCreated = true
+			}
+		}
+		existing, err = provider.RepositoryLabelNames(r.Context(), repository)
+		if err != nil {
+			writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
+				Code:    "repository_labels_unavailable",
+				Message: err.Error(),
+			})
+			return
+		}
+		response.MissingLabels = missingGuidedLabels(catalog.Labels, existing)
+		reality, err = checkGuidedRepoSelectorReality(r.Context(), provider, repository, selectors, assignedTo)
+		if err != nil {
+			writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
+				Code:    "repository_issues_unavailable",
+				Message: err.Error(),
+			})
+			return
+		}
+		eligible = reality.Matching
+		response.EligibleCount = &eligible
+	}
+	writeGuidedJSON(w, http.StatusOK, response)
+}
+
+func guidedGitHubToken(ctx context.Context) (string, error) {
+	for _, name := range []string{
+		defaultWorkTrackingTokenEnv,
+		connectDefaultTokenEnv,
+		"GOOBERS_GITHUB_TOKEN",
+	} {
+		if token := strings.TrimSpace(os.Getenv(name)); token != "" {
+			return token, nil
+		}
+	}
+	token, err := runGuidedDiscovery(ctx, "gh", "auth", "token", "--hostname", "github.com")
+	if err != nil || strings.TrimSpace(token) == "" {
+		return "", errors.New("GitHub authentication is required to inspect and create repository labels; run `gh auth login` and restart setup")
+	}
+	return strings.TrimSpace(token), nil
+}
+
+func missingGuidedLabels(required []providers.WorkItemLabel, existing []string) []string {
+	have := make(map[string]bool, len(existing))
+	for _, name := range existing {
+		have[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	var missing []string
+	for _, label := range required {
+		if !have[strings.ToLower(strings.TrimSpace(label.Name))] {
+			missing = append(missing, label.Name)
+		}
+	}
+	return missing
+}
+
+func guidedImplementationAssignee(set *instance.ConfigSet) string {
+	for _, workflow := range set.Workflows {
+		if workflow.Name != instance.GuidedWorkflowImplementation {
+			continue
+		}
+		for _, task := range workflow.Spec.Tasks {
+			if task.Name == "query-backlog" && task.Inputs["respectAssignee"] == "true" {
+				return strings.TrimSpace(task.Inputs["assignedTo"])
+			}
+		}
+	}
+	return ""
+}
+
+func checkGuidedRepoSelectorReality(
+	ctx context.Context,
+	lister repoWorkItemLister,
+	repository providers.RepositoryRef,
+	selectors []string,
+	assignedTo string,
+) (repoSelectorReality, error) {
+	if assignedTo == "" {
+		return checkRepoSelectorReality(ctx, lister, repository, selectors)
+	}
+	items, err := lister.ListWorkItems(ctx, providers.ListWorkItemsRequest{
+		Repository: repository,
+		State:      "open",
+		Assignee:   assignedTo,
+		Limit:      repoSelectorRealitySample,
+	})
+	if err != nil {
+		return repoSelectorReality{}, err
+	}
+	reality := repoSelectorReality{
+		Selectors: normalizeRepoSelectors(selectors),
+		Open:      len(items),
+		Sampled:   len(items) >= repoSelectorRealitySample,
+	}
+	for _, item := range items {
+		if repoItemMatchesSelectors(item, reality.Selectors) {
+			reality.Matching++
+		}
+	}
+	return reality, nil
+}
+
+func (s *guidedServer) handleInspectRepository(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodPost) {
+		return
+	}
+	var input guidedInspectRepositoryRequest
+	if !decodeGuidedBody(w, r, &input) {
+		return
+	}
+	inspection, err := inspectGuidedRepository(r.Context(), input.Location)
+	if err != nil {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code:    "repository_inspection_failed",
+			Message: err.Error(),
+		})
+		return
+	}
+	writeGuidedJSON(w, http.StatusOK, inspection)
 }
 
 func (s *guidedServer) handleInitInstance(w http.ResponseWriter, r *http.Request) {
@@ -332,6 +638,10 @@ func (s *guidedServer) handleInitInstance(w http.ResponseWriter, r *http.Request
 	}
 	var input guidedInitInstanceRequest
 	if !decodeGuidedBody(w, r, &input) {
+		return
+	}
+	if input.Template == "guided" {
+		s.handleGuidedInitInstance(w, r, input.Guided)
 		return
 	}
 	// Allowlisted template chooser: "quickstart" (the tutorial default) execs
@@ -360,6 +670,146 @@ func (s *guidedServer) handleInitInstance(w http.ResponseWriter, r *http.Request
 		Stdout:   result.stdout,
 		Stderr:   result.stderr,
 	})
+}
+
+func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.Request, input *guidedInitOptionsInput) {
+	if input == nil {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code:    "missing_guided_options",
+			Message: "guided setup options are required",
+		})
+		return
+	}
+	provider := strings.ToLower(strings.TrimSpace(input.Provider))
+	repoOwner := strings.TrimSpace(input.Owner)
+	repoProject := strings.TrimSpace(input.Project)
+	repoName := strings.TrimSpace(input.Name)
+	if provider == "" || repoOwner == "" || repoName == "" {
+		identity, err := parseGuidedRepositoryIdentity(input.Repo)
+		if err != nil {
+			writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+				Code:    "invalid_repo",
+				Message: err.Error(),
+			})
+			return
+		}
+		provider = identity.provider
+		repoOwner = identity.owner
+		repoProject = identity.project
+		repoName = identity.name
+	}
+	assignedTo := strings.TrimSpace(input.AssignedTo)
+	if strings.EqualFold(strings.TrimSpace(input.IssueScope), "assigned") && assignedTo == "" {
+		auth := discoverGuidedAuth(r.Context(), guidedRepositoryIdentity{
+			provider: provider,
+			owner:    repoOwner,
+			project:  repoProject,
+			name:     repoName,
+		})
+		if !auth.Ready || strings.TrimSpace(auth.Identity) == "" {
+			writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+				Code:    "assigned_identity_unavailable",
+				Message: "could not resolve the authenticated repository identity; sign in to the provider CLI and inspect the repository again",
+			})
+			return
+		}
+		assignedTo = strings.TrimSpace(auth.Identity)
+	}
+	opts := instance.GuidedOptions{
+		GaggleName:           guidedGaggleName(repoName),
+		DisplayName:          guidedRepositoryDisplayName(provider, repoOwner, repoProject, repoName),
+		RepoProvider:         provider,
+		RepoOwner:            repoOwner,
+		RepoProject:          repoProject,
+		RepoName:             repoName,
+		RepoBranch:           input.Branch,
+		GitHubCLIUser:        input.GitHubCLIUser,
+		RepoAuthKind:         input.AuthKind,
+		RepoTokenEnv:         input.RepoTokenEnv,
+		WorkTrackingTokenEnv: input.WorkTrackingTokenEnv,
+		PullRequestTokenEnv:  input.PullRequestTokenEnv,
+		RepoPushTokenEnv:     input.RepoPushTokenEnv,
+		Harness:              input.Harness,
+		Workflows:            append([]string(nil), input.Workflows...),
+		IssueScope:           input.IssueScope,
+		AssignedTo:           assignedTo,
+		PullRequestCI:        input.PullRequestCI,
+		CICommand:            append([]string(nil), input.CICommand...),
+		RequiredCapabilities: append([]string(nil), input.RequiredCapabilities...),
+	}
+	if input.Harness == "claude-code" {
+		opts.ClaudeTokenEnv = input.OptionalModelTokenEnv
+	} else {
+		opts.CopilotTokenEnv = input.OptionalModelTokenEnv
+	}
+	configPath := strings.TrimSpace(input.ConfigPath)
+	if configPath == "" {
+		configPath = s.configPath
+	}
+	configPath, err := filepath.Abs(configPath)
+	if err != nil {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code:    "invalid_config_path",
+			Message: fmt.Sprintf("resolve configuration path: %v", err),
+		})
+		return
+	}
+	if err := instance.CheckGuidedSourceInstancePaths(s.instancePath, configPath); err != nil {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code:    "invalid_config_path",
+			Message: err.Error(),
+		})
+		return
+	}
+	if err := instance.CheckGuidedSourceTarget(configPath); err != nil {
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
+			Code:    "config_source_conflict",
+			Message: err.Error(),
+		})
+		return
+	}
+	if _, err := instance.SeedGuidedConfigSource(configPath, opts); err != nil {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code:    "invalid_guided_options",
+			Message: err.Error(),
+		})
+		return
+	}
+	cfg, err := instance.LoadGuidedSourceConfig(configPath)
+	if err != nil {
+		writeGuidedJSON(w, http.StatusInternalServerError, guidedErrorBody{
+			Code:    "load_guided_source_failed",
+			Message: err.Error(),
+		})
+		return
+	}
+	result, err := instance.InitGuidedFromSource(s.instancePath, configPath, cfg)
+	if err != nil {
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
+			Code:    "guided_init_failed",
+			Message: err.Error(),
+		})
+		return
+	}
+	s.mu.Lock()
+	s.configPath = configPath
+	s.mu.Unlock()
+	writeGuidedJSON(w, http.StatusOK, guidedInitBody{
+		ExitCode: 0,
+		Stdout: fmt.Sprintf(
+			"Created %s with %d workflow module(s) from %s.",
+			result.Root,
+			len(input.Workflows),
+			configPath,
+		),
+	})
+}
+
+func guidedRepositoryDisplayName(provider, owner, project, name string) string {
+	if provider == string(providers.ProviderADO) {
+		return owner + "/" + project + "/" + name
+	}
+	return owner + "/" + name
 }
 
 type guidedConnectRequest struct {
@@ -544,17 +994,20 @@ func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
 	if !decodeGuidedBody(w, r, &input) {
 		return
 	}
-	// Allowlisted workflow chooser: the two workflows the shipped templates
-	// materialize. Anything else is a 400, never an argv.
+	// Allowlisted workflow chooser: the tutorial templates plus the canonical
+	// modules created by guided setup. Anything else is a 400, never an argv.
 	workflow := input.Workflow
 	switch workflow {
 	case "":
 		workflow = "quickstart"
-	case "quickstart", "default-implement":
+	case "quickstart", "default-implement",
+		instance.GuidedWorkflowImplementation,
+		instance.GuidedWorkflowBacklogCuration,
+		instance.GuidedWorkflowWorkNomination:
 	default:
 		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
 			Code:    "invalid_workflow",
-			Message: "workflow must be \"quickstart\" or \"default-implement\"",
+			Message: "workflow is not available from guided setup",
 		})
 		return
 	}
@@ -565,12 +1018,12 @@ func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
 	// inside the CLI (or worse, dispatch and let the workflow's own git-auth
 	// step fail unhelpfully) into one actionable error at the point the
 	// server actually knows the credential is missing.
-	tokenEnv := s.recordedTokenEnv()
-	if os.Getenv(tokenEnv) == "" {
+	tokenEnv, tokenRequired := s.requiredRunTokenEnv()
+	if tokenRequired && os.Getenv(tokenEnv) == "" {
 		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
 			Code: "token_env_unset",
 			Message: fmt.Sprintf(
-				"%s is not set in the getting-started server's own process — export it in the shell that runs \"goobers getting-started\" and restart the server; a later export in a different shell cannot reach an already-running process",
+				"%s is not set in the guided-init server's own process — export it in the shell that runs \"goobers init --guided\" and restart the server; a later export in a different shell cannot reach an already-running process",
 				tokenEnv,
 			),
 		})
