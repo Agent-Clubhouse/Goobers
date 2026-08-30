@@ -583,7 +583,22 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// through the same scheduler path the pending-triggers sweep dispatches,
 	// HITL resolution over the intervention machinery. The file seams remain
 	// for local/mode-1 callers.
-	triggerPlane := newDaemonTriggerService()
+	triggerPlane := newDaemonTriggerService().withGaggleContainment(func(gaggle, runID string) bool {
+		return runBelongsToGaggle(l, gaggle, runID)
+	})
+	// The scheduler-state plane (#3878, decision 005 R3 / finding 002 C2):
+	// the gaggle-scoped KV route for the scheduler state that is NOT a claim
+	// — blocked.json, the backlog scan cursors, the reconcile-post-merge
+	// ledger, the sibling-context cache. Served from the SAME files under the
+	// SAME per-key locks the local CLI seams take (claims.lock for
+	// blocked.json and the cursors), so a pod's compare-and-swap and a
+	// runner-driven run's in-process update contend on one lock rather than
+	// racing across two.
+	statePlane, err := newDaemonStateService(l)
+	if err != nil {
+		pf(stderr, "error: initialize scheduler-state plane: %v\n", err)
+		return 1
+	}
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
 	// stage start through the same capability-gated machinery the local
@@ -620,11 +635,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
 		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog)),
+		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
 		httpapi.WithTriggerService(triggerPlane),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
 		httpapi.WithCredentialService(credentialPlane),
 		httpapi.WithBlobService(blobStore),
 		httpapi.WithSurrenderService(surrenderStore),
+		httpapi.WithStateService(statePlane),
 	)
 	if liveJournals != nil {
 		// The journal plane (§8): remote stage pods emit their run's journal
@@ -1194,6 +1211,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	telemetryRetentionTicker := time.NewTicker(telemetryRetentionSweepInterval)
 	telemetryRetentionTickerDone := make(chan struct{})
 	telemetryRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "telemetry_retention_sweep_failed")
+	// Stale journal-generation cleanup is diagnostic, not fatal: it gets its
+	// own reporter so a stranded generation is journaled without failing the
+	// retention sweep that otherwise succeeded (#3654).
+	journalGenerationCleanupErrors := newSweepErrorReporter(setup.InstanceLog, "journal_generation_cleanup_failed")
 	go func() {
 		defer close(telemetryRetentionTickerDone)
 		defer telemetryRetentionTicker.Stop()
@@ -1204,7 +1225,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case now := <-telemetryRetentionTicker.C:
 				_, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, now)
 				if err == nil {
-					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, now)
+					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, journalGenerationCleanupErrors, now)
 				}
 				telemetryRetentionErrors.report(err)
 			}

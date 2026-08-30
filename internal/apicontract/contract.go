@@ -108,6 +108,48 @@ const (
 	// carries no run scope to check, so containment is "authenticated pod
 	// principal or refused" rather than a per-run comparison.
 	BlobDigestPath = V1Prefix + "/blobs/{digest}"
+
+	// GaggleStateKeyPath is the scheduler-state plane (decision 005 R3 /
+	// finding 002 "plane clients" §3, plan step C2): ONE small gaggle-scoped
+	// key/value route for the scheduler state that is NOT a claim —
+	// blocked.json's learned-dependency records, the per-scan backlog cursor
+	// (#2067 fairness), the reconcile-post-merge ledger, and the
+	// gather-sibling-context cache. GET reads the value and its ETag; PUT
+	// writes it under an `If-Match` (or `If-None-Match: *`) precondition, so
+	// a read-modify-write split across two round trips is a compare-and-swap
+	// and never a lost update. The daemon serves both halves under the SAME
+	// per-key lock the in-process path takes (blocked.json and the scan
+	// cursor: claims.lock), which is what keeps a runner-driven 2.0 run and
+	// an engine-driven 3.0 run in one atomicity domain rather than two.
+	//
+	// The key namespace is closed (stateclient.ValidKey): a pod principal
+	// cannot address claims.json, the instance config, or anything outside
+	// the four state shapes above.
+	GaggleStateKeyPath = V1Prefix + "/gaggles/{gaggle}/state/{key}"
+
+	// The cross-run journal plane (decision 005 R1 option 1, finding 002 C4).
+	//
+	// A pod principal reads ITS OWN run's journal through the existing
+	// run-scoped read routes above (RunEventsPath / StageAttemptsPath /
+	// RunArtifactPath), contained by the handler to the run its token names.
+	// The reads that legitimately cross runs do NOT get a general cross-run
+	// reader: each is a purpose-built, gaggle-scoped question whose answer the
+	// daemon derives, so what is exposable is decided on the daemon rather
+	// than by whatever a stage chooses to fetch.
+	//
+	// JournalRunPhasePath answers "what phase did run X end in" — the input
+	// backlog-query --claim's terminalFailureStreak walks an item's released
+	// claim history for. Nothing but the phase crosses the boundary.
+	JournalRunPhasePath = V1Prefix + "/journal/run-phase"
+	// JournalConflictTouchesPath answers "which runs recorded base-sync
+	// conflicts, over which files, since T" — gather-implement-context's
+	// hot-file history. File names and run ids only; no artifact bytes.
+	JournalConflictTouchesPath = V1Prefix + "/journal/conflict-touches"
+	// JournalUnpushedWorkPath answers "is there stranded committed-but-never-
+	// published work for the items this run holds" (#3366). The daemon derives
+	// the asking run's items from its own claim ledger rather than trusting
+	// the request, so a pod cannot ask about an item it does not hold.
+	JournalUnpushedWorkPath = V1Prefix + "/journal/unpushed-work"
 )
 
 // RouteID is the stable cross-adapter identity of a versioned route.
@@ -158,6 +200,18 @@ const (
 	// carries exactly one Method.
 	RouteBlobGet RouteID = "blobGet"
 	RouteBlobPut RouteID = "blobPut"
+
+	// RouteGaggleStateGet and RouteGaggleStatePut are the scheduler-state
+	// plane (decision 005 R3 / finding 002 C2): two methods sharing
+	// GaggleStateKeyPath, distinct RouteIDs for the same reason the blob
+	// plane's pair are.
+	RouteGaggleStateGet RouteID = "gaggleStateGet"
+	RouteGaggleStatePut RouteID = "gaggleStatePut"
+
+	// The cross-run journal plane (decision 005 R1, finding 002 C4).
+	RouteJournalRunPhase        RouteID = "journalRunPhase"
+	RouteJournalConflictTouches RouteID = "journalConflictTouches"
+	RouteJournalUnpushedWork    RouteID = "journalUnpushedWork"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -308,6 +362,33 @@ var v1Routes = []Route{
 	// RouteJournalEmit accepts for its own inline artifact bytes).
 	{ID: RouteBlobGet, Method: http.MethodGet, Path: BlobDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	{ID: RouteBlobPut, Method: http.MethodPut, Path: BlobDigestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
+	// The scheduler-state plane (decision 005 R3, finding 002 C2) is the
+	// claims plane's sibling: the same machine seam, the same daemon lock,
+	// for the gaggle-scoped scheduler state that is not a claim. GET is
+	// classified with the claims plane's own read (claims/list) rather than
+	// as read-only navigation and pooled with the mutation for one reason:
+	// a caller's read-then-CAS must not have its read shed as read traffic
+	// while its write is admitted, which would spin the CAS loop forever
+	// under shed.
+	// The read half is read-only navigation with a bounded cost, as every
+	// other single-object GET is: it starts nothing, and each value is capped
+	// (MaxStateValueBytes) rather than streamed. The write half is workflow
+	// execution — a compare-and-swap that advances the scheduler's own state.
+	{ID: RouteGaggleStateGet, Method: http.MethodGet, Path: GaggleStateKeyPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleStatePut, Method: http.MethodPut, Path: GaggleStateKeyPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
+	// The cross-run journal plane (decision 005 R1 option 1, finding 002 C4)
+	// is a machine seam like the claims plane: a stage pod asking the daemon
+	// one derived question about its own gaggle so a CLI stage keeps an input
+	// it used to read off the local filesystem. Workflow-execution and
+	// mutation-classed for exactly the reason claims/list is — these are reads
+	// taken IN FLIGHT by a claimant whose next act depends on the answer, and
+	// shedding them as read traffic would silently change a stage's decision
+	// rather than delay a human's page.
+	{ID: RouteJournalRunPhase, Method: http.MethodPost, Path: JournalRunPhasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalConflictTouches, Method: http.MethodPost, Path: JournalConflictTouchesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalUnpushedWork, Method: http.MethodPost, Path: JournalUnpushedWorkPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.

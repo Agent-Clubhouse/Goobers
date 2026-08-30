@@ -30,6 +30,7 @@ const (
 )
 
 type backlogMetadataCorrection struct {
+	addLabels           []string
 	removeLabels        []string
 	reasons             []string
 	checkClaim          bool
@@ -76,23 +77,30 @@ func reconcileBacklogMetadata(
 	}
 
 	observedAt := now()
+	blockedRecords, err := snapshotBlockedRecords(l)
+	if err != nil {
+		return 0, fmt.Errorf("snapshot learned block ledger: %w", err)
+	}
 	botLogin := ""
 	reconciled := 0
 	inspected := make([]inspectedBacklogItem, 0, len(items))
 	for _, item := range items {
-		if !hasReconciledMetadataLabel(item) {
+		// #1911: an item the ledger still records as blocked is inspected even
+		// when it carries no reconciled marker — that is exactly the drifted
+		// state where the label was cleared while the learned block holds.
+		if !hasReconciledMetadataLabel(item) && len(recordedLedgerBlockers(blockedRecords, repo, item.ID)) == 0 {
 			continue
 		}
 		current, err := provider.GetWorkItem(ctx, repo, item.ID)
 		if err != nil {
 			return reconciled, fmt.Errorf("refresh issue #%s: %w", item.ID, err)
 		}
-		correction, login, err := inspectBacklogMetadata(ctx, provider, repo, current, botLogin, observedAt, stalenessPolicy)
+		correction, login, err := inspectBacklogMetadata(ctx, provider, repo, current, botLogin, observedAt, stalenessPolicy, blockedRecords)
 		if err != nil {
 			return reconciled, fmt.Errorf("inspect issue #%s: %w", item.ID, err)
 		}
 		botLogin = login
-		if !correction.checkClaim && len(correction.removeLabels) == 0 {
+		if !correction.checkClaim && len(correction.removeLabels) == 0 && len(correction.addLabels) == 0 {
 			continue
 		}
 		inspected = append(inspected, inspectedBacklogItem{item: current, correction: correction})
@@ -124,7 +132,8 @@ func reconcileBacklogMetadata(
 			}
 		}
 		correction.removeLabels = uniqueSortedLabels(correction.removeLabels)
-		if len(correction.removeLabels) == 0 && !correction.closeTrackingParent {
+		correction.addLabels = uniqueSortedLabels(correction.addLabels)
+		if len(correction.removeLabels) == 0 && len(correction.addLabels) == 0 && !correction.closeTrackingParent {
 			continue
 		}
 		comment := reconciliationComment(correction.reasons)
@@ -134,10 +143,13 @@ func reconcileBacklogMetadata(
 		}
 		var correctionErr error
 		if correction.orphanedClaim {
-			if correction.closeTrackingParent {
+			// ReconcileOrphanedWorkItemClaim only removes labels, so any
+			// close or label addition rides the edit that precedes it.
+			if correction.closeTrackingParent || len(correction.addLabels) > 0 {
 				_, correctionErr = provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 					Repository: repo,
 					ID:         current.ID,
+					AddLabels:  correction.addLabels,
 					State:      state,
 				})
 			}
@@ -154,6 +166,7 @@ func reconcileBacklogMetadata(
 			_, correctionErr = provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
 				Repository:   repo,
 				ID:           current.ID,
+				AddLabels:    correction.addLabels,
 				RemoveLabels: correction.removeLabels,
 				State:        state,
 				Comment:      comment,
@@ -323,6 +336,7 @@ func inspectBacklogMetadata(
 	botLogin string,
 	now time.Time,
 	stalenessPolicy backlogStalenessPolicy,
+	recs map[string]blockedRecord,
 ) (backlogMetadataCorrection, string, error) {
 	correction := backlogMetadataCorrection{}
 	validTracking := false
@@ -346,7 +360,18 @@ func inspectBacklogMetadata(
 			correction.reasons = append(correction.reasons, trackingCompleteReason)
 		}
 	}
-	if !validTracking && item.HasLabel(providers.LabelReady) && itemHasParkLabel(item) {
+	// #1911: the ledger is the machine-readable block record and the label is
+	// the operator-facing mirror of it; they must not disagree. A marker
+	// cleared while the recorded blockers are still open is restored here.
+	driftedBlockers, err := driftedBlockedOnSiblingBlockers(ctx, provider, repo, item, recs)
+	if err != nil {
+		return correction, botLogin, fmt.Errorf("inspect recorded blockers: %w", err)
+	}
+	if len(driftedBlockers) > 0 {
+		correction.addLabels = append(correction.addLabels, blockedOnSiblingLabel)
+		correction.reasons = append(correction.reasons, blockedOnSiblingRestoredReason(driftedBlockers))
+	}
+	if !validTracking && item.HasLabel(providers.LabelReady) && (itemHasParkLabel(item) || len(driftedBlockers) > 0) {
 		correction.removeLabels = append(correction.removeLabels, providers.LabelReady)
 		correction.reasons = append(correction.reasons,
 			"removed `goobers:ready` because it cannot coexist with a park disposition "+
@@ -357,7 +382,7 @@ func inspectBacklogMetadata(
 	// and fires only on a bot PR merging. Clearing it here is fail-closed by
 	// design: see staleBlockedOnSiblingMarker.
 	if item.HasLabel(blockedOnSiblingLabel) {
-		resolved, err := staleBlockedOnSiblingMarker(ctx, provider, repo, item)
+		resolved, err := staleBlockedOnSiblingMarker(ctx, provider, repo, item, recs)
 		if err != nil {
 			return correction, botLogin, fmt.Errorf("inspect blocked-on-sibling blockers: %w", err)
 		}

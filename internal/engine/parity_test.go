@@ -119,6 +119,17 @@ const (
 	// defaulting" (plan item E1): gaggle RequireLabels + self-identity
 	// assignedTo injected into every goobers backlog-query stage.
 	rowBacklogQueryDefaults parityRow = "E1-backlog-query-defaults"
+	// rowBacklogQueryClaimPartition is the CONSEQUENCE half of the same
+	// inventory row (plan item E1): the inputs the stage was handed, compiled
+	// into the label filter backlog-query itself compiles, must reject the
+	// SIBLING instance's goobers:local item. Input equality is what the port
+	// changes; an unclaimable sibling item is what the partition means.
+	rowBacklogQueryClaimPartition parityRow = "E1-backlog-query-claim-partition"
+	// rowBacklogQueryDeclaredInputsWin is the OVER-APPLICATION half of the
+	// same inventory row, and must stay GREEN in both directions: a stage that
+	// declares its own requireLabels/assignedTo keeps them, before and after
+	// the port. It is the row that says a blanket stamp is not a fix.
+	rowBacklogQueryDeclaredInputsWin parityRow = "E1-backlog-query-declared-inputs-win"
 	// rowRunResultNoWork is inventory row "NoWork short-circuit accounting"
 	// (plan item E2): Result.NoWork is true only for a terminal no-work at
 	// step 1, and the scheduler's idle backoff reads it.
@@ -145,8 +156,6 @@ const (
 // Do not add an entry to silence a regression. An entry is only legitimate for
 // a row the parity inventory names as a known, planned gap.
 var parityExpectedFailures = map[parityRow]string{
-	rowBacklogQueryDefaults: "engine RunInput has no BacklogQueryAssignedTo/RequireLabels; " +
-		"internal/runner/run.go:4413-4414 applies them in dispatchTask and the engine's runTask has no counterpart. Closed by plan item E1.",
 	rowRunResultNoWork: "engine.RunResult has no NoWork field (engine.go:131-141); the local runner sets " +
 		"Result.NoWork = steps == 1 (run.go:3606) and localscheduler's idle backoff reads it. Closed by plan item E2.",
 	rowInputsFromStageQualified: "engine runTask resolves inputsFrom only against the immediately preceding task's " +
@@ -188,9 +197,11 @@ type parityCase struct {
 	// fields, and a harness that pins policy through them proves nothing about
 	// the path a production run takes.
 	RunControls apiv1.RunControls
-	// BacklogQueryAssignedTo / BacklogQueryRequireLabels are the local
-	// runner's gaggle-identity defaults. The engine has no counterpart yet —
-	// that absence IS rowBacklogQueryDefaults.
+	// BacklogQueryAssignedTo / BacklogQueryRequireLabels are the gaggle's
+	// claim-partition defaults (MIRC-2), threaded through the seam each side
+	// takes in production: runner.Config for the local runner, and
+	// engine.StartSpec — pinned into RunInput by Registry.StartInputVersion —
+	// for the engine (#3873, plan item E1).
 	BacklogQueryAssignedTo    string
 	BacklogQueryRequireLabels string
 	// UsesRepo marks a fixture whose stages take a repo workspace, so the
@@ -718,12 +729,14 @@ func parityEngineRunInput(t *testing.T, c parityCase, runID string) RunInput {
 		t.Fatalf("register fixture for row %s: %v", c.Row, err)
 	}
 	in, err := reg.StartInputVersion(parityWorkflowName, version, StartSpec{
-		RunID:           runID,
-		Gaggle:          c.Spec.Gaggle,
-		RepoRef:         parityRepoRef,
-		TriggerKind:     string(journal.TriggerManual),
-		BranchNamespace: parityBranchNamespace,
-		RunControls:     c.RunControls,
+		RunID:                     runID,
+		Gaggle:                    c.Spec.Gaggle,
+		RepoRef:                   parityRepoRef,
+		TriggerKind:               string(journal.TriggerManual),
+		BranchNamespace:           parityBranchNamespace,
+		RunControls:               c.RunControls,
+		BacklogQueryAssignedTo:    c.BacklogQueryAssignedTo,
+		BacklogQueryRequireLabels: c.BacklogQueryRequireLabels,
 	})
 	if err != nil {
 		t.Fatalf("pin start input for row %s: %v", c.Row, err)

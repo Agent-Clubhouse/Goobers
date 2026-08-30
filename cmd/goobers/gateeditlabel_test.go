@@ -113,7 +113,10 @@ func TestGateEditClassificationFromJournal(t *testing.T) {
 		t.Fatalf("close journal: %v", err)
 	}
 
-	kind, subject := gateEditClassificationFromJournal(root, runID)
+	kind, subject, err := gateEditClassificationFromJournal(root, runID)
+	if err != nil {
+		t.Fatalf("gateEditClassificationFromJournal: %v", err)
+	}
 	if kind != "removed" || subject != "local-ci-gate" {
 		t.Fatalf("kind, subject = %q, %q; want removed, local-ci-gate", kind, subject)
 	}
@@ -121,7 +124,10 @@ func TestGateEditClassificationFromJournal(t *testing.T) {
 
 func TestGateEditClassificationFromJournalMissingRunIsEmpty(t *testing.T) {
 	root := initDemo(t)
-	kind, subject := gateEditClassificationFromJournal(root, "no-such-run")
+	kind, subject, err := gateEditClassificationFromJournal(root, "no-such-run")
+	if err != nil {
+		t.Fatalf("a run with no journal on this host is not an error, got: %v", err)
+	}
 	if kind != "" || subject != "" {
 		t.Fatalf("kind, subject = %q, %q; want empty for a nonexistent run", kind, subject)
 	}

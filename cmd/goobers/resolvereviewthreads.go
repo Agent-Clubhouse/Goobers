@@ -186,11 +186,7 @@ func readReviewThreadResolutionInputs(root, runID string) (apiv1.RemediationBrie
 	if err != nil {
 		return apiv1.RemediationBrief{}, "", "", false, err
 	}
-	runDir, err := runDirFor(layoutFor(root), runID)
-	if err != nil {
-		return apiv1.RemediationBrief{}, "", "", false, err
-	}
-	rd, err := journal.OpenRead(runDir)
+	rd, err := stageRunJournal(root, runID)
 	if err != nil {
 		return apiv1.RemediationBrief{}, "", "", false, err
 	}

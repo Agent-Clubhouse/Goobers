@@ -92,6 +92,12 @@ func runTelemetryCompactAt(args []string, stdout, stderr io.Writer, now time.Tim
 	}
 	pf(stdout, "%s scheduler journal: %d record(s) dropped (%s -> %s)\n",
 		verb, journalResult.Dropped, formatByteSize(journalResult.BeforeBytes), formatByteSize(journalResult.AfterBytes))
+	if journalResult.StaleGenerationsRemoved > 0 {
+		pf(stdout, "reclaimed %d stale journal generation file(s)\n", journalResult.StaleGenerationsRemoved)
+	}
+	if journalResult.StaleGenerationCleanupErr != nil {
+		pf(stderr, "warning: %v\n", journalResult.StaleGenerationCleanupErr)
+	}
 
 	// 2. Rollup scheduler rows + VACUUM — deletes never shrink the file on their
 	//    own, so the aged scheduler_events/scheduler_errors rows must be pruned

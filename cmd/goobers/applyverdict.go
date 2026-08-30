@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -459,12 +458,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	l := layoutFor(root)
-	runsDir, err := runsDirForRun(l, runID)
-	if err != nil {
-		pf(stderr, "error: locate run journal: %v\n", err)
-		return 1
-	}
-	verdict, err := readLatestGateVerdict(runsDir, runID, *gateName)
+	verdict, err := readLatestGateVerdict(root, runID, *gateName)
 	if err != nil {
 		pf(stderr, "error: read %s verdict from journal: %v\n", *gateName, err)
 		return 1
@@ -887,7 +881,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if label == blockedOnSiblingLabel {
 		// #952: publish the blocker record first so the re-tick's selector can
 		// rank the elected predecessor from durable state.
-		if _, err := writePriorityTriggerRequest(l.SchedulerDir(), providerGaggle(), workflowName, runID); err != nil {
+		if _, err := dispatchPriorityTrigger(ctx, l, providerGaggle(), workflowName, runID); err != nil {
 			pf(stderr, "error: queue crowned-lander priority dispatch: %v\n", err)
 			return 1
 		}
@@ -1687,8 +1681,12 @@ func writeApplyVerdictResultWithReasonAndPriorityDispatch(path string, selectedN
 // artifact of the LAST gate.evaluated event named gateName (last, not
 // first, in case a repass re-evaluated it) — nil, nil if no such event
 // exists yet.
-func readLatestGateVerdict(runsDir, runID, gateName string) (*apiv1.Verdict, error) {
-	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+//
+// Reads through the stage journal seam (stagejournal.go), so the same code
+// serves a daemon-side run directory and a stage pod's run-scoped read route
+// (decision 005 R1 / #3880).
+func readLatestGateVerdict(root, runID, gateName string) (*apiv1.Verdict, error) {
+	rd, err := stageRunJournal(root, runID)
 	if err != nil {
 		return nil, err
 	}
