@@ -262,6 +262,13 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	// read-only-root deployment may not have mounted anything writable at.
 	deterministicScratchDir := filepath.Join(l.WorkcopiesDir(), "scratch")
 
+	// #2971: compare a failing local-ci stage against the target branch's own
+	// health before attributing it to the run. nil unless the instance opted in.
+	baselineHealth, err := buildBaselineHealth(l, cfg, wtMgr)
+	if err != nil {
+		return runner.Config{}, nil, err
+	}
+
 	rc := runner.Config{
 		RunControls: cfg.RunConditions.RunControls(),
 		NewDeterministic: func(rec runner.ArtifactRecorder, reg runner.SecretRegistrar) (invoke.Deterministic, error) {
@@ -304,6 +311,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		AdditionalRepos:        additionalRepos,
 		GateGooberCapabilities: gateGooberCaps,
 		AgentProvenance:        agentProvenance,
+		BaselineHealth:         baselineHealth,
 		// Wire the escalation notifier (#312) so a repass-budget escalation
 		// actually comments on the driving issue; nil for a repo-less instance.
 		Escalation: buildEscalationNotifier(l, cfg, resolver, sharedReg),

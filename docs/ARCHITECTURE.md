@@ -281,6 +281,23 @@ Contract rules:
   gate. They are intentionally not inherited run controls: they classify and
   repeat one stage attempt, whereas repass and stall budgets bound orchestration
   across stage attempts.
+- **Base-health awareness (opt-in):** when `instance.yaml` sets
+  `baselineHealth.enabled`, a failing `local-ci` stage is compared against the
+  target branch itself before it is attributed to the run. The runner measures
+  the identical command on a disposable checkout at the pinned base SHA, caches
+  that measurement per base commit (so the second and every later affected run
+  pays nothing), and classifies an identical failure as a
+  `shared-baseline-failure` rather than a defect each branch introduced. Such a
+  run fails with the recognized non-retryable `SHARED_BASELINE_FAILURE`
+  disposition and parks against one durable shared blocker instead of spending a
+  repass that can only re-derive an empty diff; it becomes eligible again once
+  the base advances or the baseline goes green. Every classification — including
+  "the branch introduced it" and "the baseline could not be measured" — is
+  journaled as a `baseline.classification` runner annotation, and a baseline
+  that cannot be measured never changes routing. `baselineHealth.sharedRepairLane`
+  is the explicit opt-in that lets an affected branch carry the shared repair
+  instead of parking; it is off by default so an unrelated fix is never added to
+  a feature branch behind its author's back.
 
 ## 6. Instance anatomy (local runner)
 
