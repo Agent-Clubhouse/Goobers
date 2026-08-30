@@ -121,6 +121,34 @@ describe("gaggle partial run-phase failures (#3658)", () => {
     expect(within(active).getByText(/01JZ441DAEMONAPI/)).toBeInTheDocument();
   });
 
+  it("does not fall back to the previously viewed gaggle's runs when a phase query fails", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const real = client.listRuns.bind(client);
+    vi.spyOn(client, "listRuns").mockImplementation(async (request, options) => {
+      if (request?.gaggle === "tools" && request.phase === "completed") {
+        throw new Error("The daemon request timed out after 10000ms.");
+      }
+      return real(request, options);
+    });
+    window.location.hash = "#/gaggle/core";
+
+    render(<App client={client} />);
+
+    const recent = await screen.findByRole("region", { name: "Core product recent outcomes" });
+    expect(within(recent).getByText(/01JZ455ESCALATE/)).toBeInTheDocument();
+
+    const sidebarGaggles = await screen.findByRole("navigation", { name: "Gaggles" });
+    await userEvent.click(
+      within(sidebarGaggles).getByRole("link", { name: "Open gaggle Developer tools" }),
+    );
+
+    expect(await screen.findByRole("heading", { name: "Developer tools" })).toBeInTheDocument();
+    const warning = await screen.findByRole("alert");
+    expect(warning).toHaveTextContent(/Run activity for the completed phase could not be read/);
+    const toolsRecent = screen.getByRole("region", { name: "Developer tools recent outcomes" });
+    expect(within(toolsRecent).queryByText(/01JZ455ESCALATE/)).not.toBeInTheDocument();
+  });
+
   it("shows no incomplete-data warning when every phase reads successfully", async () => {
     window.location.hash = "#/gaggle/core";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);

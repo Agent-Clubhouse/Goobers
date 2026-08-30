@@ -883,7 +883,6 @@ async function loadGaggleActivity(
     client.listRuns({ gaggle: gaggleName, phase, limit }, { signal });
   // Mirrors loadOverviewRunGroups' per-phase settling (#1709): one slow phase
   // must not blank the other groups on this gaggle's page.
-  const phases = OVERVIEW_RUN_PHASES;
   const settled = await Promise.allSettled([
     byPhase("running", GAGGLE_ACTIVE_RUN_LIMIT),
     byPhase("escalated", GAGGLE_RECENT_OUTCOME_LIMIT),
@@ -895,11 +894,16 @@ async function loadGaggleActivity(
   if (firstError && settled.every((result) => result.status === "rejected")) {
     throw settledError(firstError) ?? new Error("Unable to read runs.");
   }
-  const previousRuns = previous ? [...previous.active, ...previous.recent] : [];
+  // The caller's prior activity can belong to a different gaggle — this hook's
+  // ref survives navigation between gaggle pages — so the fallback must be
+  // restricted to this gaggle or it renders another gaggle's runs here (#3658).
+  const previousRuns = previous
+    ? [...previous.active, ...previous.recent].filter((run) => run.gaggle === gaggleName)
+    : [];
   const [running, escalated, failed, completed, aborted] = settled.map((result, index) =>
-    resolvePhaseRuns(result, phases[index], previousRuns),
+    resolvePhaseRuns(result, OVERVIEW_RUN_PHASES[index], previousRuns),
   );
-  const incomplete = incompletePhases(settled, phases);
+  const incomplete = incompletePhases(settled, OVERVIEW_RUN_PHASES);
   return {
     active: sortRuns(running),
     recent: sortRuns([...escalated, ...failed, ...completed, ...aborted]).slice(
@@ -913,7 +917,8 @@ async function loadGaggleActivity(
 /**
  * A phase whose query failed falls back to the runs the caller already had for
  * that phase: dropping them silently is what let the UI claim an instance had
- * no active or failed runs when the phase was merely unreadable (#3658).
+ * no active or failed runs when the phase was merely unreadable (#3658). The
+ * preserved runs can be phase-stale, which the incomplete-data warning covers.
  */
 function resolvePhaseRuns(
   result: PromiseSettledResult<{ runs: RunSummary[] }>,
