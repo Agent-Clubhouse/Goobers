@@ -131,6 +131,33 @@ type DispatchStageResult struct {
 	// already recorded, so a provenance block there would say nothing. Nil
 	// also, and unavoidably, for a refused placement — see StagePlacement.
 	Placement *StagePlacement `json:"placement,omitempty"`
+	// SelfPlacement is where this attempt ran when it ran IN-PROCESS on the
+	// worker (InvokeGoober, RunDeterministic) — the self arm's answer to the
+	// question Placement answers for the pod arm (#3875, plan item E3).
+	//
+	// It is a SECOND field rather than a second producer of Placement because
+	// the two blocks are different facts with different completeness
+	// contracts: *StagePlacement is the dispatcher's report of a settled pod
+	// attempt and every one of its five fields is populated (see its doc),
+	// while this is what one process can observe about itself — GOOS, host,
+	// and whatever the deployment declared through GOOBERS_RUNNER_* — with no
+	// pod, no image, and no queue wait, ever. Folding the self arm into
+	// Placement would make "non-nil means all five" false and put a
+	// partially-populated block behind a doc comment that says it is
+	// unreachable.
+	//
+	// The payload type is journal.Placement itself, not a local mirror: the
+	// local runner journals the identical struct from runner.SelfPlacement,
+	// and the parity harness diffs the two events. Nil for every pod arm, and
+	// nil for a deployment that has declared no placement at all
+	// (runner.PlacementDeclaredInEnvironment — §11 item 1 zero-declaration
+	// invariance).
+	//
+	// WIRE CONTRACT, and additive/omitempty for the reason the whole struct
+	// documents: a history recorded before this field existed decodes with a
+	// nil SelfPlacement, so replaying it journals no placement event and
+	// re-projects byte-identically to what it projected before.
+	SelfPlacement *journal.Placement `json:"selfPlacement,omitempty"`
 	// Verdict is the reviewer's decision when the attempt was an agentic
 	// reviewer GATE dispatched to a pod (DispatchStageInput.Review; decision
 	// 001 rulings 7–8) — what ReviewGoober returns for the self arm, carried
@@ -472,6 +499,7 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if err := publishWorkspaceDelta(ctx, ws, workspace, &result); err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
+	result.SelfPlacement = selfStagePlacement()
 	return a.scrubStageActivityResult(result)
 }
 
@@ -543,6 +571,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 						Retryable: true,
 					},
 				},
+				SelfPlacement: selfStagePlacement(),
 			})
 		}
 		return stageActivityResult{}, classifySeamError(err)
@@ -557,7 +586,32 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 	if err := publishWorkspaceDelta(ctx, ws, run.Workspace, &result); err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
+	result.SelfPlacement = selfStagePlacement()
 	return a.scrubStageActivityResult(result)
+}
+
+// selfStagePlacement is the in-process arms' placement provenance (#3875): what
+// the WORKER executing this activity knows about its own substrate, in the
+// journal.Placement shape the local runner already journals for a self attempt.
+//
+// Computed HERE, in the activity, and never in the workflow. workflow code may
+// not read os.Hostname or the environment — a value that is not in history is
+// not replayable, and the plan's own constraint for this step is that recorded
+// histories replay unchanged. Coming back on the activity result means the fact
+// IS in history: the workflow journals a value it was told, and a replay
+// journals the identical one. (workflow.SideEffect would also be replay-safe
+// for NEW runs and would break every history recorded before it, by adding a
+// marker command the old history has no record of.)
+//
+// nil under zero-declaration invariance, and nil is what the workflow treats as
+// "journal nothing" — so an install that declares no placement keeps producing
+// the journals it produced before this existed, on both paths.
+func selfStagePlacement() *journal.Placement {
+	if !runner.PlacementDeclaredInEnvironment() {
+		return nil
+	}
+	placement := runner.SelfPlacement()
+	return &placement
 }
 
 // publishWorkspaceDelta is the self arm's PUBLISH half (#3803): after a stage

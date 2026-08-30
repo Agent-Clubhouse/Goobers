@@ -169,6 +169,10 @@ const (
 	// rowRetryDecisionNotOnPass is the negative half of the annotation row: a
 	// PASSING gate, and an escalated repass, write no retry decision.
 	rowRetryDecisionNotOnPass parityRow = "E2-retry-decision-not-on-pass"
+	// rowPlacementProvenance is inventory row "runner.placement provenance"
+	// (plan item E3, #3875): every stage attempt journals where it physically
+	// executed, on both runners, once the deployment has declared placement.
+	rowPlacementProvenance parityRow = "E3-placement-provenance"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
