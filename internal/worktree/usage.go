@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/goobers/goobers/internal/mcpio"
 )
 
 // UsageOperation identifies the lifecycle boundary that produced a disk-usage
@@ -235,16 +237,11 @@ func apparentDiskUsage(root string) (int64, error) {
 	}
 
 	var total int64
-	err = filepath.WalkDir(root, func(_ string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if os.IsNotExist(walkErr) {
-				return nil
-			}
-			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
+	opts := mcpio.DefaultWalkFilesOptions()
+	opts.SkipHiddenDirs = false // Include hidden files in disk usage
+	opts.SkipSymlinkEntries = false // Include symlinks
+	
+	err = mcpio.WalkFiles(root, func(_ string, entry fs.DirEntry) error {
 		info, err := entry.Info()
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -254,6 +251,10 @@ func apparentDiskUsage(root string) (int64, error) {
 		}
 		total += info.Size()
 		return nil
-	})
-	return total, err
+	}, opts)
+	
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
 }

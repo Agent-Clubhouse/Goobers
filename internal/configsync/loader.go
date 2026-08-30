@@ -30,6 +30,7 @@ import (
 	"github.com/goobers/goobers/internal/configsource"
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
+	"github.com/goobers/goobers/internal/mcpio"
 )
 
 // DefaultNamespace is the control-plane namespace rendered CRs are placed in;
@@ -235,30 +236,27 @@ type docMeta struct {
 // readDocs walks root and returns every YAML document with its kind/name.
 func readDocs(root string) ([]rawDoc, error) {
 	var docs []rawDoc
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if path != root && strings.HasPrefix(d.Name(), ".") {
-				return filepath.SkipDir
-			}
-			if configtree.IsGaggleSkillsDir(root, path) {
-				return filepath.SkipDir
-			}
-			if gooberassets.IsSourceDir(path) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+
+	// Custom skip predicate for special directories
+	skipPredicate := func(path string, entry fs.DirEntry) bool {
+		return configtree.IsGaggleSkillsDir(root, path) || gooberassets.IsSourceDir(path)
+	}
+
+	opts := mcpio.DefaultWalkFilesOptions()
+	opts.SkipDirPredicate = skipPredicate
+
+	err := mcpio.WalkFiles(root, func(path string, entry fs.DirEntry) error {
+		// Only process YAML files
 		ext := strings.ToLower(filepath.Ext(path))
 		if ext != ".yaml" && ext != ".yml" {
 			return nil
 		}
+
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
+
 		for _, seg := range docSep.Split(string(raw), -1) {
 			if strings.TrimSpace(seg) == "" {
 				continue
@@ -273,7 +271,8 @@ func readDocs(root string) ([]rawDoc, error) {
 			})
 		}
 		return nil
-	})
+	}, opts)
+
 	if err != nil {
 		return nil, fmt.Errorf("walk %s: %w", root, err)
 	}
