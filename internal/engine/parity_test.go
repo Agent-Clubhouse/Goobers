@@ -256,6 +256,28 @@ const (
 	// ruling, and the reason this row is shaped like production rather than
 	// like a fixture.
 	rowLearningEpisodeInfraForwardBranch parityRow = "E10-learning-episode-infra-forward-branch"
+	// rowLearningEpisodeAgenticRepass is the sub-case #3942 discovered after
+	// #3938 landed the #3929 ruling: the ruling names the predicate ("is the
+	// branch a true repass?") but both drivers evaluated it INSIDE the
+	// retry-decision arm, so the injection also required the retry CLASSIFIER
+	// to accept the failure — an automated status-equals gate over
+	// nonzero_exit/base_sync_conflict, or any gate resolving infra.
+	//
+	// An AGENTIC reviewer resolving needs-changes back into its implementer is
+	// the canonical true repass of the whole system and satisfies none of
+	// those: the evaluator is not automated, and the outcome is the verdict
+	// decision rather than infra. Both drivers therefore declined it, IN
+	// AGREEMENT, which is exactly why no existing row went red — the
+	// divergence was against the ruling, not between the runners. The two
+	// shipped lanes that do implementation work (implementation.yaml's
+	// `review` -> `implement`, pr-remediation.yaml's `review` ->
+	// `guard-before-implement`) were the ones starved.
+	//
+	// Every other E10 row walks a DETERMINISTIC failure through an AUTOMATED
+	// gate, which is the one shape where the classifier's answer and the
+	// ruling's answer coincide. This row is the shape where they do not, and
+	// it is the row that would have caught it.
+	rowLearningEpisodeAgenticRepass parityRow = "E10-learning-episode-agentic-repass"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
