@@ -1203,12 +1203,26 @@ type resumeRetryAccounting struct {
 // that can drift (the #624 shared-constant pattern).
 const BaseSyncConflictErrorCode = "base_sync_conflict"
 
+// RetryDecisionKind and RetryFailureClassKey are the runner.annotation shape
+// routeRetryDecision writes when a gate's fail branch re-enters an
+// already-completed stage, and priorRepassCause reads back to tell an
+// infrastructure repass from a content one. Exported for the same reason
+// BaseSyncConflictErrorCode is (the #624 shared-constant pattern): the Temporal
+// engine writes the identical annotation on its own gate repass route, and a
+// string copy on that side would drift silently — the reader keys on the exact
+// kind and class key, so a divergence is invisible until an infra repass is
+// misclassified as content.
+const (
+	RetryDecisionKind    = "stage.retry.decision"
+	RetryFailureClassKey = "retryFailureClass"
+)
+
 const (
 	interruptedAttemptErrorCode = "interrupted"
 	interruptedAttemptMarkerKey = "interruptedAttempt"
-	retryFailureClassKey        = "retryFailureClass"
+	retryFailureClassKey        = RetryFailureClassKey
 	infraCommittedWorkKey       = "infraFailedAttemptCommittedWork"
-	retryDecisionKind           = "stage.retry.decision"
+	retryDecisionKind           = RetryDecisionKind
 	toleratedFailureErrorCode   = "stage_failure_tolerated"
 	baseSyncConflictErrorCode   = BaseSyncConflictErrorCode
 )
@@ -3697,11 +3711,11 @@ func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.Run
 		return Result{}, errors.Join(pinnedOutcomeErr, prepareErr, fmt.Errorf("runner: journal run.finished: %w", err))
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
-	r.notifyTerminal(runID, phase, finalState)
+	notifyErr := r.notifyTerminal(jr, runID, phase, finalState)
 	if err := r.FinalizeTerminal(runID, phase); err != nil {
-		return res, errors.Join(pinnedOutcomeErr, prepareErr, err)
+		return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr, err)
 	}
-	return res, errors.Join(pinnedOutcomeErr, prepareErr)
+	return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr)
 }
 
 func (r *Runner) recordPinnedOutcome(runID string, phase journal.RunPhase, jr *journal.Run) error {
@@ -3729,10 +3743,27 @@ func (r *Runner) recordPinnedOutcome(runID string, phase journal.RunPhase, jr *j
 	})
 }
 
-func (r *Runner) notifyTerminal(runID string, phase journal.RunPhase, finalState string) {
-	if r.cfg.NotifyTerminal != nil {
-		_ = r.cfg.NotifyTerminal(runID, phase, finalState)
+// notifyTerminal invokes the configured TerminalNotifier. A notifier failure —
+// e.g. the instance circuit breaker failing to apply goobers:needs-human — is
+// journaled (terminal_notification_failed) and swallowed rather than discarded
+// (#3646): the run must still reach its terminal phase, but the failed
+// protection has to leave durable, actionable evidence. Only a journal-write
+// failure is returned (a journal that cannot be written is fatal, §2.6).
+func (r *Runner) notifyTerminal(jr *journal.Run, runID string, phase journal.RunPhase, finalState string) error {
+	if r.cfg.NotifyTerminal == nil {
+		return nil
 	}
+	err := r.cfg.NotifyTerminal(runID, phase, finalState)
+	if err == nil {
+		return nil
+	}
+	if aerr := jr.Append(journal.Event{
+		Type:  journal.EventError,
+		Error: &journal.ErrorDetail{Code: "terminal_notification_failed", Message: err.Error()},
+	}); aerr != nil {
+		return fmt.Errorf("runner: journal terminal-notification failure for run %q: %w", runID, aerr)
+	}
+	return nil
 }
 
 func (r *Runner) prepareTerminal(runID string, phase journal.RunPhase, jr *journal.Run) error {
@@ -4254,6 +4285,22 @@ func retryFailureClassForGateResult(g apiv1.Gate, result apiv1.ResultEnvelope, o
 		return journal.AttemptInfra, "", true
 	}
 	return class, knownOutcome, retryable
+}
+
+// RetryFailureClass exports retryFailureClass for the Temporal engine, which
+// applies the identical known-outcome shortcut and retry-decision classification
+// on its own gate arm. Shared rather than mirrored (the #624 shared-constant
+// pattern) because the recognized code set (nonzero_exit / base_sync_conflict)
+// and the status-equals default are runner-owned policy: a copy would decide to
+// dispatch a checker on one runner and skip it on the other.
+func RetryFailureClass(g apiv1.Gate, result apiv1.ResultEnvelope) (journal.AttemptClass, string, bool) {
+	return retryFailureClass(g, result)
+}
+
+// RetryFailureClassForGateResult exports retryFailureClassForGateResult, which
+// folds an infrastructure gate outcome into the same classification.
+func RetryFailureClassForGateResult(g apiv1.Gate, result apiv1.ResultEnvelope, outcome string) (journal.AttemptClass, string, bool) {
+	return retryFailureClassForGateResult(g, result, outcome)
 }
 
 func routeRetryDecision(jr executionJournal, result gate.Result, stage string, subject apiv1.ResultEnvelope, class journal.AttemptClass, retryable bool) (string, bool, error) {
@@ -4784,6 +4831,33 @@ type unpushedDiffMetadata struct {
 	Diff      apiv1.ArtifactPointer `json:"diff"`
 }
 
+// unpushedDiffCaptureTimeout bounds the post-attempt diff capture (#3644).
+// The capture deliberately outlives its attempt's cancellation, so it needs a
+// bound of its own: `git diff base...HEAD` on a blobless partial clone is a
+// promisor fetch, and a stalled remote or credential helper would otherwise
+// hold terminalization and workspace teardown open indefinitely. Generous
+// enough that a healthy capture (including a legitimate blob hydration over a
+// slow link) always finishes inside it. A var, not a const, only so tests can
+// shorten it.
+var unpushedDiffCaptureTimeout = 2 * time.Minute
+
+// unpushedDiffCaptureFailure turns a capture failure into the message
+// journaled under unpushed_diff_record_failed. A bound overrun is reported as
+// what it is — the capture, not the run's work, was abandoned — and names the
+// branch that still carries the commits, so a human recovering the stranded
+// work knows exactly where to look (git's own error for a killed process,
+// "signal: killed", says none of that).
+func unpushedDiffCaptureFailure(ctx context.Context, cause error, branch string) error {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) && !errors.Is(cause, context.DeadlineExceeded) {
+		return cause
+	}
+	return fmt.Errorf(
+		"unpushed-diff capture exceeded its %s bound (a partial clone's diff can hydrate blobs from the remote — check remote and credential-helper reachability); "+
+			"branch %q retains the committed work for recovery: %w",
+		unpushedDiffCaptureTimeout, branch, cause,
+	)
+}
+
 // recordUnpushedDiff persists the run branch's cumulative committed diff vs.
 // base as a stage artifact plus a discovery sidecar (#3366). Called after
 // every agentic attempt, success or failure: the run branch is shared across
@@ -4804,12 +4878,23 @@ func (r *Runner) recordUnpushedDiff(ctx context.Context, jr executionJournal, ex
 	// Deliberately cancellation-immune: a stalled-run watchdog cancelling the
 	// attempt mid-dispatch is itself one of #3366's trigger classes (infra
 	// restart mid-run), and that is precisely when the diff most needs
-	// capturing. The git reads here are local and bounded.
-	ctx = context.WithoutCancel(ctx)
+	// capturing. Cancellation-immune is not unbounded, though (#3644): on a
+	// blobless partial clone these git reads can hydrate missing blobs from
+	// the remote, so an unreachable remote or a wedged credential helper would
+	// otherwise pin terminalization and workspace teardown open forever. Bound
+	// the capture instead — the branch still holds the work, so abandoning a
+	// capture that overruns costs recoverability of one artifact, never the
+	// run's liveness.
+	captureCtx, cancelCapture := context.WithTimeout(context.WithoutCancel(ctx), unpushedDiffCaptureTimeout)
+	defer cancelCapture()
+	ctx = captureCtx
 	journalFailure := func(cause error) {
 		_ = jr.Append(journal.Event{
 			Type: journal.EventError, Stage: t.Name, Attempt: attempt, AttemptClass: class,
-			Error: &journal.ErrorDetail{Code: "unpushed_diff_record_failed", Message: cause.Error()},
+			Error: &journal.ErrorDetail{
+				Code:    "unpushed_diff_record_failed",
+				Message: unpushedDiffCaptureFailure(captureCtx, cause, workspace.worktree.Branch).Error(),
+			},
 		})
 	}
 	// Cheap local guard before Diff: on a blobless mirror Diff is a remote
@@ -5043,6 +5128,16 @@ var escalateErrorCodes = map[string]bool{
 // PhaseFailed). nil in → false (no error detail, nothing to route on).
 func isNonRetryableEscalation(e *apiv1.ErrorInfo) bool {
 	return e != nil && !e.Retryable && escalateErrorCodes[e.Code]
+}
+
+// IsNonRetryableEscalation exports isNonRetryableEscalation for the Temporal
+// engine's own #415 route (the #624 shared-constant pattern). escalateErrorCodes
+// is runner-owned POLICY, not a schema enum, so a copied code set on the engine
+// side would drift the moment a new disposition is recognized here — and the
+// symptom would be an item silently re-entering the reviewer→implement loop on
+// one runner and escalating on the other.
+func IsNonRetryableEscalation(e *apiv1.ErrorInfo) bool {
+	return isNonRetryableEscalation(e)
 }
 
 // taskEscalationTarget lets a workflow intercept a non-retryable task

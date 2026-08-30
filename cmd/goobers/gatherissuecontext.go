@@ -150,11 +150,7 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 }
 
 func readLatestRemediationBrief(root, runID string) (apiv1.RemediationBrief, error) {
-	runDir, err := runDirFor(layoutFor(root), runID)
-	if err != nil {
-		return apiv1.RemediationBrief{}, err
-	}
-	rd, err := journal.OpenRead(runDir)
+	rd, err := stageRunJournal(root, runID)
 	if err != nil {
 		return apiv1.RemediationBrief{}, err
 	}

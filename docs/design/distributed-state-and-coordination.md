@@ -190,8 +190,8 @@ Field evidence filed upstream: #2854, #2860, #2861, #2862, #2863, #2864, #2865.
 
 | # | Decision | Why |
 |---|---|---|
-| DS1 | **One daemon, one instance root, daemon = control plane.** Claims, provider quota, open-PR caps, fairness, and admission stay in the single daemon pod on RWO storage; no second replica in v1 | D5. #2053's fenced-lease work is the price of a second replica and stays deferred with recorded rationale; "two replicas against one instance root is a refused state" (#2053) remains enforced |
-| DS2 | **The daemon write API is the only instance-state path for mode 3.** v1 surface: claim/release for ledger-touching stages, external trigger ingestion, HITL escalation resolution, live journal ingestion, stage-credential issuance | D5. Removes kubectl-exec-only operation; one API, one auth story, one place M2/M3/M4 converge instead of three coordinators |
+| DS1 | **One daemon, one instance root, daemon = control plane.** Claims, provider quota, open-PR caps, fairness, and admission stay in the single daemon pod on RWO storage; no second replica in v1. The daemon is the single writer of `claims.json` and of the scheduler-state files beside it. Ledger-touching stages mutate them only through the claims/state planes (`internal/claimsclient`'s HTTP backend, selected by `GOOBERS_CLAIMS_ENDPOINT` + a claims bearer); the file-locked in-process path remains the daemon's own and the type-1/type-2 same-host path. Item **selection** (which candidates to try, in what order) belongs to the stage; **admission** (whether a lease is granted) belongs to the plane, and acquire's refusal is the only arbiter of contention (decision 005 R2) | D5. #2053's fenced-lease work is the price of a second replica and stays deferred with recorded rationale; "two replicas against one instance root is a refused state" (#2053) remains enforced |
+| DS2 | **The daemon write API is the only instance-state path for mode 3.** v1 surface: claim/release for ledger-touching stages, external trigger ingestion, HITL escalation resolution, live journal ingestion, stage-credential issuance. Its read counterpart is narrower by construction: a stage pod may GET only *derived, low-sensitivity* telemetry rollups — stats, error counts, and implementation outcomes (`internal/telemetryclient`, selected by `GOOBERS_TELEMETRY_ENDPOINT` + a pod bearer) — always filtered to the gaggle the daemon itself resolves from the caller's own `run.yaml`, never the gaggle the caller claims (decision 005 R4). Raw error signatures and every external-telemetry connector stay off the plane; `telemetry-query` remains refused at dispatch | D5. Removes kubectl-exec-only operation; one API, one auth story, one place M2/M3/M4 converge instead of three coordinators |
 | DS3 | **API contract first, store second.** Claim/release semantics (lease, epoch, exactly-once settle) are the API contract; `claims.json` may remain the v1 store behind it | The store is swappable behind a contract; the contract is not swappable behind a store. Migrating the file to SQLite/Postgres later is invisible to every caller |
 | DS4 | **Live journal service: activities emit journal events as they happen; the daemon's single writer owns sequence allocation; every emit carries an idempotency key** | D0/D5: the journal is the *product output* and must not be an after-image of an implementation detail. Decoupling it from Temporal history keeps Temporal revisitable (D0) and makes runs live — stall detection (`StalledRunTimeout`), SSE, and the portal work mid-run, which D5 makes a v1 functional requirement |
 | DS5 | **History projection is demoted to repair.** `ProjectRun` and the reconciler are retained as a backfill/repair path (deterministic re-projection, #629) and as the conformance cross-check, never the primary author | Deleting it would discard the only independent reconstruction of a run; keeping it primary would keep the product output hostage to Temporal history (contradicts D0) |
@@ -204,7 +204,7 @@ Field evidence filed upstream: #2854, #2860, #2861, #2862, #2863, #2864, #2865.
 ## 7. The daemon write API
 
 One versioned surface, extending the existing `/api/v1` contract (`internal/apicontract/contract.go:20-47`
-— routes there already carry cost classes and budgets; the write routes join that discipline). Five
+— routes there already carry cost classes and budgets; the write routes join that discipline). Six
 planes:
 
 **Claims plane** — `claim`, `renew`, `release`, `settle`. The ledger-touching deterministic stages
@@ -214,6 +214,35 @@ API's contract; arbitration happens where the ledger lives. The CLI's bolted-on 
 (`withClaimLock`, `cmd/goobers/providercmd.go:644`; `pending-claims` file delegation) is subsumed on
 this path. D9's solver rule — ledger-touching stages never place on Windows — becomes unnecessary as
 a *state* restriction (any pod can call the API) but survives v1 as a scheduling default.
+
+**Scheduler-state plane** — `GET`/`PUT /api/v1/gaggles/{gaggle}/state/{key}`, compare-and-swap on an
+opaque `ETag` (`If-Match` to replace a known value, `If-None-Match: *` to create). This is M5's answer
+and the rest of M2's: the scheduler-state files that sit *beside* `claims.json` — `blocked.json`, the
+backlog scan cursors, the post-merge-reconcile ledger, the sibling-context cache — are per-node for
+exactly the reason the ledger is, and a mode-3 stage cannot reach them at all. `internal/stateclient`
+selects a backend the same way `internal/claimsclient` does: `GOOBERS_STATE_ENDPOINT` +
+`GOOBERS_STATE_TOKEN` + `GOOBERS_GAGGLE` present ⇒ the plane, all three absent ⇒ the file backend, any
+partial combination ⇒ a refusal, never a silent local write (decision 005 R3).
+
+Three properties make it safe to hand a stage pod:
+
+- **The key namespace is closed.** `stateclient.ValidKey` admits exactly the four names above (scan
+  cursors by their `backlog-scan-<sha256>.json` shape) and both the client and the daemon enforce it,
+  so a state bearer can never address `claims.json`, `config.yaml`, or anything else in the scheduler
+  directory. Containment does not rest on path sanitation.
+- **The gaggle is an authorization scope, not a storage location.** The files stay instance-scoped
+  under `layout.SchedulerDir()`; the path segment decides *who may ask*. A pod principal is contained
+  to the gaggle its own `run.yaml` proves it belongs to — verified, like claims/list, by validating
+  both segments before joining them and refusing anything that is not one plain path element.
+- **The plane takes the same lock the in-process path takes.** `blocked.json` and the scan cursors are
+  served under `claims.lock` (finding 002); the reconcile ledger and sibling cache under their own
+  existing lock files. A runner-driven stage holding the file lock locally and an engine-driven stage
+  CAS-ing through the plane serialize against each other rather than racing — which is the whole point
+  of putting the route in front of the file instead of beside it.
+
+Priority triggers (apply-verdict's crowned-lander dispatch) ride the trigger plane rather than the file
+drop, under the same containment: a pod principal may post a trigger only for its own gaggle and only
+naming its own run as the source.
 
 **Journal plane** — `emit` (batched events), `adopt-span` (by digest). See §8.
 

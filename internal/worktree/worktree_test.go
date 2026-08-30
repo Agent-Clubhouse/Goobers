@@ -974,12 +974,12 @@ func TestManager_Create_SetsLocalBotIdentity(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	gotName := strings.TrimSpace(runTestGit(t, wt.Path, "config", "user.name"))
-	if gotName != botGitUserName {
-		t.Fatalf("user.name = %q, want %q", gotName, botGitUserName)
+	if gotName != BotGitUserName {
+		t.Fatalf("user.name = %q, want %q", gotName, BotGitUserName)
 	}
 	gotEmail := strings.TrimSpace(runTestGit(t, wt.Path, "config", "user.email"))
-	if gotEmail != botGitUserEmail {
-		t.Fatalf("user.email = %q, want %q", gotEmail, botGitUserEmail)
+	if gotEmail != BotGitUserEmail {
+		t.Fatalf("user.email = %q, want %q", gotEmail, BotGitUserEmail)
 	}
 
 	// Prove it's actually usable: a commit succeeds with no ambient identity.

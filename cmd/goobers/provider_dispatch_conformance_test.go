@@ -26,6 +26,7 @@ var providerDispatchCoverage = map[string]providerDispatchEvidence{
 	"apply-verdict":            {test: TestRunApplyVerdictADOPassPublishesStatusAndDecisionPass},
 	"backlog-assignment":       {test: TestBacklogAssignmentDispatchesFromCommand},
 	"backlog-dedupe":           {test: TestBacklogDedupeCommandDispatchesToADO},
+	"file-issues":              {test: TestFileIssuesRefusesNonGitHubProviders},
 	"backlog-health":           {test: TestBacklogHealthCommandRunsWithADO},
 	"backlog-query":            {test: TestBacklogQueryDispatchesFromCommand},
 	"check-issue-staleness":    {test: TestCheckIssueStalenessADONoPinIsNeverStaleWithoutMutation},
@@ -145,7 +146,7 @@ func TestPRClaimDispatchesFromCommand(t *testing.T) {
 		root := initDemo(t)
 		t.Setenv("GOOBERS_RUN_ID", runID)
 		t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
-		if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
+		if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
 			t.Fatalf("seed PR claim: %v", err)
 		}
 		return root

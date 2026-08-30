@@ -85,3 +85,28 @@ func placementDeclared(runnersDeclared bool, environ []string) bool {
 func (r *Runner) recordsPlacement() bool {
 	return placementDeclared(r.cfg.RunnersDeclared, os.Environ())
 }
+
+// SelfPlacement is selfPlacement, exported for the ENGINE's in-process stage
+// arms (#3875, decision 005 / finding 002 plan item E3).
+//
+// Exported rather than reimplemented because per-attempt placement provenance
+// is one event shape with one producer of its payload: the engine walk is
+// becoming the single driver for every trigger kind, and a second copy of
+// "what does this process know about its substrate" is exactly how the
+// runner's and the engine's runner.placement events would start describing the
+// same host differently. The parity harness compares the two side by side, so
+// the copy would be caught — the point of sharing is that it can never be
+// written.
+func SelfPlacement() journal.Placement { return selfPlacement() }
+
+// PlacementDeclaredInEnvironment is placementDeclared for a process that
+// carries no runners inventory of its own — the goobers-worker executing an
+// engine stage in-process.
+//
+// It is the SAME zero-declaration-invariance gate the local runner applies
+// (goobernetes-architecture.md §11 item 1): an untouched single-host install
+// that declares no runners and sets no GOOBERS_RUNNER_* identity must keep
+// producing byte-identical journals, on the engine path as much as on the
+// runner's. A worker holds no instance.yaml runners: block, so the
+// environment family is the whole of its declaration.
+func PlacementDeclaredInEnvironment() bool { return placementDeclared(false, os.Environ()) }

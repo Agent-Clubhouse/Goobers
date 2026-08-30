@@ -1601,7 +1601,19 @@ func summarizeRunForStage(
 		event := record.Event
 		if event.Seq > lastSeq {
 			lastSeq = event.Seq
-			lastActivityAt = event.Time
+			// Seq is structural (journal.MonotonicSeq) and always advances on
+			// the newest event regardless of its Time, but lastActivityAt only
+			// advances when that event actually carries one: an unstamped
+			// event (#3774 — a pod-side writer defect, now fixed at the
+			// source but still possible from an older journal) must not
+			// clobber a real, previously-observed lastActivityAt with the
+			// zero time, which is exactly the value runIsStale treats as
+			// undeterminable rather than as fresh activity. Mirrors
+			// readmodel.ProjectRun's identical guard so GetRun and ListRuns
+			// agree on this field for the same run.
+			if !event.Time.IsZero() {
+				lastActivityAt = event.Time
+			}
 		}
 		if !event.KnownSchema() {
 			continue
@@ -2449,6 +2461,21 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	}
 	if metadata, ok := artifacts.bySeq[event.Seq]; ok {
 		projected.Artifact = &metadata
+	} else if event.Ref != nil {
+		// An event that is not itself an artifact.recorded but REFERENCES one
+		// — gate.evaluated naming its verdict is the load-bearing case — still
+		// has to say which artifact, or a consumer of the projection cannot
+		// reach the content the event is about (#3880: apply-verdict and
+		// elect-lander read exactly this ref over the run-scoped read route).
+		//
+		// Resolved through the index rather than copied from the event, so it
+		// keeps both of the projection's properties: no journal-relative path
+		// crosses the boundary, and a redacted artifact resolves to the
+		// replacement digest rather than one that no longer exists.
+		if metadata, ok := artifacts.byDigest[artifacts.currentDigest(event.Ref.Digest)]; ok {
+			resolved := metadata.metadata
+			projected.Artifact = &resolved
+		}
 	}
 	projected.Name = event.Name
 	projected.ExternalRef = event.ExternalRef
@@ -3016,7 +3043,15 @@ func runIsStale(run RunSummary, observedAt, lastTickAt time.Time, timeout time.D
 		return false
 	}
 	if run.LastActivityAt.IsZero() {
-		return true
+		// A zero LastActivityAt is undeterminable, not stale (#3774,
+		// consistent with #3775/#3776's rule for the run-stalled watchdog):
+		// it means no timestamped event has been observed yet, not that
+		// activity stopped timeout ago. Reporting Stale here for a run that
+		// may have real, recent, merely-unstamped activity (the #3774 writer
+		// defect this projector's LastActivity now guards against
+		// separately) would show the portal's badge disagreeing with the
+		// watchdog that no longer fires on the same zero.
+		return false
 	}
 	return observedAt.Sub(run.LastActivityAt) > timeout
 }

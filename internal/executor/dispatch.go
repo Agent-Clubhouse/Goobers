@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/boundedwait"
@@ -144,7 +145,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 		return result, nil
 	}
 	if providers.IsTransientError(err) {
-		return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure(transientPollCode(err), err))
+		return apiv1.ResultEnvelope{}, invoke.InfrastructureFailure(StageFailure(CIPollFailureCode(err), err))
 	}
 	var providerErr *ciPollProviderError
 	if errors.As(err, &providerErr) {
@@ -152,7 +153,7 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 			Status:  apiv1.ResultFailure,
 			Summary: "ci-poll provider request failed",
 			Error: &apiv1.ErrorInfo{
-				Code:    "poll_provider_error",
+				Code:    CIPollProviderErrorCode,
 				Message: err.Error(),
 			},
 		}, nil
@@ -160,15 +161,58 @@ func (e *ciPollKindExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelo
 	return result, err
 }
 
-// transientPollCode names a retryable ci-poll failure so the runner journals
-// its own cause. A rate-limited poll and a flaky 5xx are the same "retry
-// later" decision but different operator problems, and both used to reach the
-// journal as the generic executor_error.
-func transientPollCode(err error) string {
+// CIPollProviderErrorCode is the ci-poll failure code for a provider request
+// that failed for a reason other than an exhausted quota — a terminal 4xx, a
+// malformed response, or an exhausted transient-retry budget. Exported
+// because the POD path (cmd/goobers/dispatchcipoll.go) must name a ci-poll
+// failure exactly as the in-process path does; a second spelling on the pod
+// side is a stage that journals under a different code depending on where it
+// ran, which is the divergence class the parity work exists to close.
+const CIPollProviderErrorCode = "poll_provider_error"
+
+// OutputRateLimitReset is the ResultEnvelope.Outputs key carrying, as an
+// RFC3339 timestamp, when the provider says its quota window rolls over. It
+// is read by internal/runner's outputRateLimitReset (which drives
+// Config.RateLimited -> ProviderQuotaState.RecordExhausted, #712) and by
+// shell.go's rate-limit-aware infrastructure backoff.
+//
+// IT IS THE WHOLE MECHANISM BY WHICH A POD-EXECUTED ci-poll REPORTS QUOTA.
+// On a self runner the ci-poll provider is constructed WITH a
+// providers.QuotaObserver (cmd/goobers/runnerwiring_executors.go's
+// buildCIPollExecutor), so the daemon's ProviderQuotaState is consulted
+// BEFORE each request and updated from every response header. A pod has no
+// such observer — the quota state lives in the daemon process — so the only
+// channel left is the surrendered result, and it is a report AFTER the fact.
+// See cmd/goobers/dispatchcipoll.go for the named, accepted degradation this
+// implies (decision 005 C5 / finding 002).
+const OutputRateLimitReset = "rateLimitReset"
+
+// CIPollFailureCode names a ci-poll provider failure so every consumer — the
+// runner's journal, the pod's surrendered envelope, and the daemon's
+// RateLimited observer — reads the SAME code for the same cause. A
+// rate-limited poll and a flaky 5xx are the same "retry later" decision but
+// different operator problems, and both used to reach the journal as the
+// generic executor_error.
+func CIPollFailureCode(err error) string {
 	if _, ok := providers.AsRateLimitError(err); ok {
 		return providers.ErrorCodeRateLimited
 	}
-	return "poll_provider_error"
+	return CIPollProviderErrorCode
+}
+
+// CIPollRateLimitReset returns the provider's quota reset time when err is a
+// rate-limit rejection that carries one, formatted as the RFC3339 string
+// OutputRateLimitReset takes. A rate limit with no reset header yields
+// ("", false): the consumers all treat a missing reset as "nothing
+// actionable" (internal/runner's taskOutcome skips notifyRateLimited
+// entirely), so an empty or zero-valued key would be strictly worse than an
+// absent one.
+func CIPollRateLimitReset(err error) (string, bool) {
+	var rateLimited *providers.RateLimitError
+	if !errors.As(err, &rateLimited) || rateLimited.Reset.IsZero() {
+		return "", false
+	}
+	return rateLimited.Reset.UTC().Format(time.RFC3339), true
 }
 
 func containsString(values []string, want string) bool {

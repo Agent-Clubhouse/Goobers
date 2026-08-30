@@ -29,20 +29,16 @@ func releaseClaimsForRunWithDefaultTimeout(l instance.Layout, log *journal.Insta
 	})
 }
 
+// releaseClaimsForRunLocked runs inside the caller's held claims lock, so it
+// takes the lock-free file ledger (heldClaimLedger) — the daemon is the
+// writer here, never a plane client.
 func releaseClaimsForRunLocked(l instance.Layout, log *journal.InstanceLog, runID string) error {
-	ledger, err := localscheduler.OpenClaimLedger(
-		filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-		localscheduler.WithInstanceLog(log),
-	)
+	ledger, err := heldClaimLedger(l, localscheduler.WithInstanceLog(log))
 	if err != nil {
 		return fmt.Errorf("open claim ledger: %w", err)
 	}
-	for _, entry := range ledger.ForRunAll(runID) {
-		if err := ledger.ReleaseEntry(entry, runID); err != nil {
-			return fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
-		}
-	}
-	return nil
+	_, err = ledger.ReleaseAllForRun(claimContext(), runID)
+	return err
 }
 
 // renewLiveClaims re-acquires every LEDGER claim whose holding run is live

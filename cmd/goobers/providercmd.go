@@ -81,6 +81,7 @@ const (
 	claimLockOperationPRCount              = "pr-claim.count"
 	claimLockOperationRunLookup            = "run-claims.lookup"
 	claimLockOperationBlockedUpdate        = "blocked-records.update"
+	claimLockOperationCircuitBreakerOutbox = "circuit-breaker-outbox.update"
 	claimLockOperationRecovery             = "claim-recovery"
 	claimLockOperationRenewal              = "claim-renewal"
 	claimLockOperationRunRelease           = "run-claims.release"

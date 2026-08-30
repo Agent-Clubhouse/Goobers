@@ -1061,15 +1061,15 @@ func TestRemediationCandidatesFillClaimCapacity(t *testing.T) {
 
 	root := initDemo(t)
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
-	first, err := claimPullRequestInOrder(root, candidates, "run-1", "pr-remediation", time.Hour)
+	first, err := claimPullRequestInOrder(root, prClaimTestRepo(), candidates, "run-1", "pr-remediation", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := claimPullRequestInOrder(root, candidates, "run-2", "pr-remediation", time.Hour)
+	second, err := claimPullRequestInOrder(root, prClaimTestRepo(), candidates, "run-2", "pr-remediation", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	third, err := claimPullRequestInOrder(root, candidates, "run-3", "pr-remediation", time.Hour)
+	third, err := claimPullRequestInOrder(root, prClaimTestRepo(), candidates, "run-3", "pr-remediation", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1257,7 +1257,7 @@ func TestGatherPRContextPreservesClaimedConflictedBehindPR(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
-	if _, err := claimPullRequestInOrder(instanceRoot, []providers.PullRequestSummary{{Number: 59}}, runID, "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(instanceRoot, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 59}}, runID, "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("claim PR: %v", err)
 	}
 	t.Chdir(wt.Path)

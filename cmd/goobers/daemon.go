@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -21,7 +22,6 @@ import (
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/readservice"
-	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -111,6 +111,15 @@ type schedulerSetup struct {
 	// never nil — an instance with no declared stores gets a registry that
 	// fails every store ref closed.
 	SecretStores *secretstore.Registry
+
+	// shutdownOnce/shutdownErr make Shutdown idempotent: `up` closes the setup
+	// explicitly so a flush or close failure can fail the command, while the
+	// early-return defer stays in place as a safety net. Whichever runs first
+	// owns the close; the other observes the same result — including a
+	// memoized deadline error, which a later caller sees even if the step that
+	// blew the grace period finished afterwards.
+	shutdownOnce sync.Once
+	shutdownErr  error
 }
 
 type schedulerDefinitions struct {
@@ -274,6 +283,12 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	var stopProjector func()
 	var retentionStats func() readmodel.RetentionStats
 	var instanceLog *journal.InstanceLog
+	// telemetryOTLPDegradeErr holds a non-nil buildTelemetryClient error that
+	// wraps telemetry.ErrOTLPUnavailable (invalid OTLP TLS material). It is
+	// logged once instanceLog opens below, not returned as a setup failure:
+	// a CA path typo degrades to local-only telemetry rather than failing
+	// daemon start (#3804) — the daemon's job is not observability.
+	var telemetryOTLPDegradeErr error
 	defer func() {
 		if err == nil {
 			return
@@ -314,7 +329,18 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		}
 		tel, err = buildTelemetryClient(ctx, l, sharedScrubber, sharedReg, otlpConfig, secretStores)
 		if err != nil {
-			return nil, err
+			if !errors.Is(err, telemetry.ErrOTLPUnavailable) {
+				return nil, err
+			}
+			// tel is still a valid, usable client (local-only — see
+			// ErrOTLPUnavailable's doc); warn now on stderr — the daemon has
+			// no instance log open yet, and `kubectl logs` is the only place
+			// an operator watching a rollout will see this — then park the
+			// cause to also log loudly once instanceLog opens, matching the
+			// other non-fatal degrades in this function.
+			fmt.Fprintf(os.Stderr, "warning: otlp telemetry unavailable, continuing local-only: %v\n", err)
+			telemetryOTLPDegradeErr = err
+			err = nil
 		}
 		rollupDB, err = rollup.Open(l.TelemetryDB())
 		if err != nil {
@@ -405,6 +431,9 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	instanceLog, _, err = journal.OpenInstanceLog(l.SchedulerDir(), journal.WithScrubber(sharedScrubber))
 	if err != nil {
 		return nil, fmt.Errorf("open instance log: %w", err)
+	}
+	if telemetryOTLPDegradeErr != nil {
+		logIngestFailure(instanceLog, "", "telemetry_otlp_unavailable", telemetryOTLPDegradeErr)
 	}
 	if err := journalLegacyRuntimeMigration(l, instanceLog, runtimeMigration); err != nil {
 		return nil, fmt.Errorf("journal legacy runtime migration: %w", err)
@@ -817,15 +846,9 @@ func buildSchedulerDefinitions(
 		// runner preflight-verifies the probeable toolchains among them on the
 		// host before any stage runs (#735).
 		requiredCaps := instance.WorkflowRequiredCapabilities(gagglesByName[wf.Spec.Gaggle], *wf)
-		instanceControls := cfg.RunConditions.RunControls()
-		if repo, ok := configuredRepoForProject(cfg, repoRefs[identity]); ok {
-			instanceControls = repo.EffectiveRunControls(instanceControls)
-		}
-		controls, err := runcontrol.Resolve(
-			instanceControls,
-			gagglesByName[wf.Spec.Gaggle].Spec.RunControls,
-			wf.Spec.RunControls,
-		)
+		// Shared with `goobers engine-start` so the two starters cannot pin
+		// different budgets for the same workflow (#3820).
+		controls, err := resolveWorkflowRunControls(cfg, repoRefs[identity], gagglesByName[wf.Spec.Gaggle], *wf)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q run controls: %w", wf.Name, err)
 		}
@@ -1160,20 +1183,33 @@ func buildRuntimeRunner(
 		return finalizeTerminalRunWithClaimMarkers(l, instanceLog, manager, runID, claimMarkerRepo, releaseClaimMarker)
 	}
 	runnerCfg.RateLimited = buildRateLimitedHandler(providerQuota)
-	if terminalNotifier != nil {
-		circuitBreaker := runnerCfg.NotifyTerminal
-		runnerCfg.NotifyTerminal = func(runID string, phase journal.RunPhase, finalState string) error {
-			if circuitBreaker != nil {
-				_ = circuitBreaker(runID, phase, finalState)
-			}
-			return terminalNotifier(runID, phase, finalState)
-		}
-	}
+	runnerCfg.NotifyTerminal = composeTerminalNotifier(runnerCfg.NotifyTerminal, terminalNotifier)
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
 		return nil, nil, err
 	}
 	return rn, manager, nil
+}
+
+// composeTerminalNotifier chains the instance circuit breaker ahead of the
+// terminal notifier and joins both errors instead of discarding the breaker's
+// (#3646). A failed park — the streak update or the goobers:ready →
+// goobers:needs-human swap — is exactly the failure the run journal has to
+// record as terminal_notification_failed, so it must reach the runner rather
+// than being swallowed at this wiring boundary. Both hooks always run: a
+// breaker failure must not suppress the terminal notification.
+func composeTerminalNotifier(circuitBreaker, terminalNotifier runner.TerminalNotifier) runner.TerminalNotifier {
+	if circuitBreaker == nil {
+		return terminalNotifier
+	}
+	if terminalNotifier == nil {
+		return circuitBreaker
+	}
+	return func(runID string, phase journal.RunPhase, finalState string) error {
+		breakerErr := circuitBreaker(runID, phase, finalState)
+		notifyErr := terminalNotifier(runID, phase, finalState)
+		return errors.Join(breakerErr, notifyErr)
+	}
 }
 
 func configuredGaggleNames(set *instance.ConfigSet) []string {
@@ -1220,48 +1256,126 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 			if err := s.Telemetry.Flush(ctx); err != nil {
 				logIngestFailure(s.InstanceLog, "", "telemetry_flush_scheduler_failed", err)
 			}
-			s.ingestSchedulerLog()
+			_ = s.ingestSchedulerLog(context.Background())
 		}))
 	}
 	return opts
 }
 
-func (s *schedulerSetup) ingestSchedulerLog() {
+func (s *schedulerSetup) ingestSchedulerLog(ctx context.Context) error {
 	if s.RollupDB == nil || s.InstanceLog == nil {
-		return
+		return nil
 	}
-	if err := s.RollupDB.IngestSchedulerLog(context.Background(), s.InstanceLog.Dir()); err != nil {
+	if err := s.RollupDB.IngestSchedulerLog(ctx, s.InstanceLog.Dir()); err != nil {
 		logIngestFailure(s.InstanceLog, "", "telemetry_ingest_scheduler_log_failed", err)
+		return err
 	}
+	return nil
+}
+
+// schedulerShutdownGrace bounds a setup shutdown that was handed an unbounded
+// context (#3651). Telemetry export and the sqlite closes below can all block;
+// without a deadline a daemon stop hangs forever instead of reporting which
+// step is stuck.
+var schedulerShutdownGrace = 30 * time.Second
+
+// shutdownStep is one named close/flush in a setup shutdown. The name is what
+// makes a timeout actionable: it says which resource was still closing.
+type shutdownStep struct {
+	name string
+	run  func() error
 }
 
 // Shutdown flushes/closes the telemetry client, ingests any final scheduler
-// spans, and closes the rollup db. It is nil-safe so a caller can defer it
-// unconditionally regardless of whether instance.yaml enabled telemetry
-// (issue #129).
-func (s *schedulerSetup) Shutdown(ctx context.Context) {
+// spans, and closes the rollup db, read model, watermarks, and instance log.
+// It is nil-safe so a caller can defer it unconditionally regardless of
+// whether instance.yaml enabled telemetry (issue #129), it is bounded so a
+// wedged flush cannot hang the process, and it joins every step's error so a
+// caller never reports a clean shutdown after losing final persisted state
+// (#3651). It runs at most once; later calls return the first call's result.
+func (s *schedulerSetup) Shutdown(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, schedulerShutdownGrace)
+		defer cancel()
+	}
+	s.shutdownOnce.Do(func() {
+		s.shutdownErr = runShutdownSteps(ctx, s.shutdownSteps(ctx))
+	})
+	return s.shutdownErr
+}
+
+// testInjectedShutdownStepErr is a test-only seam (#3851): when set, an
+// extra shutdown step returning this error is appended so command-level
+// tests can exercise a real Shutdown failure end-to-end — through `run` and
+// `signal`'s full instance/scheduler setup — without contriving a genuine
+// telemetry-flush or store-close failure. Nil in production.
+var testInjectedShutdownStepErr error
+
+func (s *schedulerSetup) shutdownSteps(ctx context.Context) []shutdownStep {
+	var steps []shutdownStep
+	if testInjectedShutdownStepErr != nil {
+		steps = append(steps, shutdownStep{"test-injected failure", func() error { return testInjectedShutdownStepErr }})
+	}
 	if s.Telemetry != nil {
-		_ = s.Telemetry.Shutdown(ctx)
+		steps = append(steps, shutdownStep{"telemetry client", func() error { return s.Telemetry.Shutdown(ctx) }})
 	}
 	if s.RollupDB != nil {
-		s.ingestSchedulerLog()
-		_ = s.RollupDB.Close()
+		steps = append(steps,
+			shutdownStep{"scheduler telemetry ingest", func() error { return s.ingestSchedulerLog(ctx) }},
+			shutdownStep{"telemetry rollup database", s.RollupDB.Close},
+		)
 	}
 	// The projector stops BEFORE its store closes. Its commit loop holds the
 	// only writable handle, so closing read.db underneath a commit in flight
 	// would fail that projection — and the failure would look like corruption
 	// rather than shutdown. Stop is synchronous: it waits for the loop to drain.
 	if s.StopProjector != nil {
-		s.StopProjector()
+		steps = append(steps, shutdownStep{"read model projector", func() error { s.StopProjector(); return nil }})
 	}
 	if s.ReadModel != nil {
-		_ = s.ReadModel.Close()
+		steps = append(steps, shutdownStep{"read model store", s.ReadModel.Close})
 	}
 	if s.Watermarks != nil {
-		_ = s.Watermarks.Close()
+		steps = append(steps, shutdownStep{"source watermark store", s.Watermarks.Close})
 	}
 	if s.InstanceLog != nil {
-		_ = s.InstanceLog.Close()
+		steps = append(steps, shutdownStep{"instance log", s.InstanceLog.Close})
+	}
+	return steps
+}
+
+// runShutdownSteps runs steps in order on a goroutine so ctx can bound the
+// whole sequence. On timeout the in-flight step keeps running — a close cannot
+// be cancelled — but the caller is freed and told which step wedged rather
+// than blocking on it forever.
+func runShutdownSteps(ctx context.Context, steps []shutdownStep) error {
+	var pending atomic.Value
+	pending.Store("")
+	done := make(chan error, 1)
+	go func() {
+		var errs []error
+		for _, step := range steps {
+			pending.Store(step.name)
+			if err := step.run(); err != nil {
+				errs = append(errs, fmt.Errorf("shut down %s: %w", step.name, err))
+			}
+		}
+		pending.Store("")
+		done <- errors.Join(errs...)
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		stuck, _ := pending.Load().(string)
+		if stuck == "" {
+			stuck = "unknown step"
+		}
+		return fmt.Errorf("shutdown timed out while closing %s: %w", stuck, ctx.Err())
 	}
 }
 
@@ -1353,11 +1467,19 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 // trackedStarter.Start — the batched span exporter must write spans.jsonl to
 // disk before ingest reads it.
 //
+// A run whose run.yaml names a driver other than this process's runner
+// (journal.RunIdentity.EngineDriven) is never resumed: it is re-attached
+// instead — the scan journals a run.recovery annotation with action
+// "reattached" and hands the run to reattachEngineRun, which waits on the
+// engine's workflow. See enginerunguards.go for why "resume it anyway" is a
+// duplicate-driver bug rather than a redundant safety net.
+//
 // resumeInterruptedRuns errors when the scan itself cannot proceed or when
 // terminal-run cleanup fails; claim cleanup fails closed rather than silently
 // leaving a known terminal owner in the ledger.
 func resumeInterruptedRuns(ctx context.Context, l instance.Layout, rn *runner.Runner, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
-	return resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, watermarks, release, wg)
+	resumed, warned, _, err = resumeInterruptedRunsWithRunners(ctx, l, nil, rn, nil, nil, machines, gooberDigests, repoRefs, log, tel, rollupDB, watermarks, release, wg)
+	return resumed, warned, err
 }
 
 func interruptedRunMachine(id journal.RunIdentity, current *workflow.Machine) (*workflow.Machine, string) {
@@ -1367,10 +1489,10 @@ func interruptedRunMachine(id journal.RunIdentity, current *workflow.Machine) (*
 	return current, "current-config"
 }
 
-func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, err error) {
+func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, runners map[string]*runner.Runner, fallback *runner.Runner, runnerRegistry *daemonRunnerRegistry, guards *engineRunGuards, machines map[localscheduler.WorkflowIdentity]*workflow.Machine, gooberDigests map[localscheduler.WorkflowIdentity]string, repoRefs map[localscheduler.WorkflowIdentity]apiv1.RepoRef, log *journal.InstanceLog, tel *telemetry.Client, rollupDB *rollup.DB, watermarks *intake.Store, release func(runID, workflow string), wg *sync.WaitGroup) (resumed []string, warned []string, reattached []string, err error) {
 	runDirs, err := l.RunDirs()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	for _, runsDir := range runDirs {
 		entries, exists, err := readDirectory(runsDir)
@@ -1378,7 +1500,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			continue
 		}
 		if err != nil {
-			return resumed, warned, fmt.Errorf("read runs directory: %w", err)
+			return resumed, warned, reattached, fmt.Errorf("read runs directory: %w", err)
 		}
 		for _, e := range entries {
 			if !e.IsDir() {
@@ -1390,7 +1512,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 				if errors.Is(err, journal.ErrNotRunDirectory) {
 					continue
 				}
-				return resumed, warned, fmt.Errorf("open run journal %q: %w", e.Name(), err)
+				return resumed, warned, reattached, fmt.Errorf("open run journal %q: %w", e.Name(), err)
 			}
 			id, err := rd.Identity()
 			if err != nil {
@@ -1424,7 +1546,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 						}
 					}
 					if finalizeErr != nil {
-						return resumed, warned, fmt.Errorf("finalize terminal run %q: %w", id.RunID, finalizeErr)
+						return resumed, warned, reattached, fmt.Errorf("finalize terminal run %q: %w", id.RunID, finalizeErr)
 					}
 					// #2190: a run that resumed here and was already terminal
 					// took a different path than a normal terminal run's
@@ -1435,6 +1557,44 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 					release(id.RunID, id.Workflow)
 					continue // terminal: nothing to resume
 				}
+			}
+
+			// Engine-driven runs are re-attached, never resumed. Every WF-016
+			// check Runner.Resume applies passes on an engine-authored
+			// journal — the pinned definition, digest and inputs are all
+			// there — so without this branch a goobers-api restart during an
+			// engine run walks it a SECOND time in-process while the worker
+			// keeps walking it on Temporal: two drivers, two open-pr /
+			// push-branch / merge-pr attempts, one journal. The daemon's job
+			// here is not to drive the run but to stop pretending it can.
+			if id.EngineDriven() {
+				reattached = append(reattached, id.RunID)
+				if log != nil {
+					if err := log.Append(journal.Event{
+						Type: journal.EventRunnerAnnotation, Gaggle: id.Gaggle, Workflow: id.Workflow, RunID: id.RunID,
+						Runner: map[string]any{
+							"kind":   journal.RunnerAnnotationRunRecovery,
+							"reason": "daemon_restart",
+							"action": journal.RecoveryActionReattached,
+							"driver": string(id.Driver),
+						},
+					}); err != nil {
+						return resumed, warned, reattached, fmt.Errorf("journal engine re-attachment for run %q: %w", id.RunID, err)
+					}
+				}
+				// Deliberately outside wg and outside the runner registry: see
+				// reattachEngineRun. Waiting for another process's run would
+				// hold this daemon's SIGTERM drain open for that run's whole
+				// duration, and hard-stopping it is not even meaningful.
+				go reattachEngineRun(ctx, guards, id, engineReattachDeps{
+					layout:     runLayout,
+					log:        log,
+					telemetry:  tel,
+					rollupDB:   rollupDB,
+					watermarks: watermarks,
+					release:    release,
+				})
+				continue
 			}
 
 			identity := localscheduler.WorkflowIdentity{Gaggle: id.Gaggle, Workflow: id.Workflow}
@@ -1476,7 +1636,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 						"workflowDefinitionSource": machineSource,
 					},
 				}); err != nil {
-					return resumed, warned, fmt.Errorf("journal recovery for run %q: %w", id.RunID, err)
+					return resumed, warned, reattached, fmt.Errorf("journal recovery for run %q: %w", id.RunID, err)
 				}
 			}
 			wg.Add(1)
@@ -1518,7 +1678,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 			}(id.RunID, id.Gaggle, id.Workflow, gooberDigest, rn, runLayout, untrack)
 		}
 	}
-	return resumed, warned, nil
+	return resumed, warned, reattached, nil
 }
 
 // buildReadModelIfNeeded performs the first-start or migration-triggered build
