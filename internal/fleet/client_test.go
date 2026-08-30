@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -150,6 +151,114 @@ func TestDiscoveryRejectsWrongEndpoints(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "enrollments:redeem") {
 		t.Fatalf("Discover error = %v", err)
 	}
+}
+
+func TestTransportURIAllowsPlaintextOnlyForLoopback(t *testing.T) {
+	tests := []struct {
+		name   string
+		raw    string
+		secure string
+		plain  string
+		ok     bool
+	}{
+		{name: "localhost HTTP", raw: "http://localhost:8080", secure: "https", plain: "http", ok: true},
+		{name: "IPv4 loopback HTTP", raw: "http://127.0.0.1:8080", secure: "https", plain: "http", ok: true},
+		{name: "IPv6 loopback HTTP", raw: "http://[::1]:8080", secure: "https", plain: "http", ok: true},
+		{name: "remote HTTPS", raw: "https://fleet.example", secure: "https", plain: "http", ok: true},
+		{name: "remote HTTP", raw: "http://fleet.example", secure: "https", plain: "http", ok: false},
+		{name: "localhost WS", raw: "ws://localhost:8080/api/fleet/v1/connections", secure: "wss", plain: "ws", ok: true},
+		{name: "IPv4 loopback WS", raw: "ws://127.0.0.1:8080/api/fleet/v1/connections", secure: "wss", plain: "ws", ok: true},
+		{name: "IPv6 loopback WS", raw: "ws://[::1]:8080/api/fleet/v1/connections", secure: "wss", plain: "ws", ok: true},
+		{name: "remote WSS", raw: "wss://fleet.example/api/fleet/v1/connections", secure: "wss", plain: "ws", ok: true},
+		{name: "remote WS", raw: "ws://fleet.example/api/fleet/v1/connections", secure: "wss", plain: "ws", ok: false},
+		{name: "localhost lookalike", raw: "http://localhost.example", secure: "https", plain: "http", ok: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := validateTransportURI(test.raw, test.secure, test.plain, "")
+			if (err == nil) != test.ok {
+				t.Fatalf("validateTransportURI(%q) error = %v, ok = %v", test.raw, err, test.ok)
+			}
+		})
+	}
+}
+
+func TestDiscoverRejectsRemotePlaintextInitialURLBeforeRequest(t *testing.T) {
+	client := Client{HTTP: rejectingHTTPDoer{t: t}}
+	_, err := client.Discover(context.Background(), "http://fleet.example")
+	if err == nil || !strings.Contains(err.Error(), "only for localhost") {
+		t.Fatalf("Discover error = %v", err)
+	}
+}
+
+func TestDiscoveryRejectsRemotePlaintextURIs(t *testing.T) {
+	base := Discovery{
+		FleetID:                        "fleet-1",
+		CanonicalURI:                   "https://fleet.example",
+		ProtocolVersions:               []string{ProtocolVersion},
+		EnrollmentEndpoint:             "https://fleet.example/api/fleet/v1/enrollments:redeem",
+		ConnectionEndpoint:             "wss://fleet.example/api/fleet/v1/connections",
+		SupportedAuthenticationMethods: []string{"enrollment-grant"},
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Discovery)
+	}{
+		{name: "canonical URI", mutate: func(d *Discovery) { d.CanonicalURI = "http://fleet.example" }},
+		{name: "enrollment endpoint", mutate: func(d *Discovery) { d.EnrollmentEndpoint = "http://fleet.example/api/fleet/v1/enrollments:redeem" }},
+		{name: "connection endpoint", mutate: func(d *Discovery) { d.ConnectionEndpoint = "ws://fleet.example/api/fleet/v1/connections" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			discovery := base
+			test.mutate(&discovery)
+			if err := validateDiscovery(discovery); err == nil {
+				t.Fatalf("validateDiscovery accepted remote plaintext %s", test.name)
+			}
+		})
+	}
+}
+
+func TestEnrollmentRejectsRemotePlaintextReturnedURIs(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*EnrollmentResponse)
+	}{
+		{name: "canonical URI", mutate: func(r *EnrollmentResponse) { r.CanonicalURI = "http://fleet.example" }},
+		{name: "connection endpoint", mutate: func(r *EnrollmentResponse) { r.ConnectionEndpoint = "ws://fleet.example/api/fleet/v1/connections" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				response := EnrollmentResponse{
+					FleetID:                "fleet-1",
+					RegistrationID:         "registration-1",
+					RegistrationGeneration: 1,
+					CanonicalURI:           "https://fleet.example",
+					ConnectionEndpoint:     "wss://fleet.example/api/fleet/v1/connections",
+					Credential:             "credential",
+					CredentialExpiresAt:    time.Now().Add(time.Hour),
+					ProtocolVersion:        ProtocolVersion,
+				}
+				test.mutate(&response)
+				_ = json.NewEncoder(w).Encode(response)
+			}))
+			defer server.Close()
+			_, err := (Client{HTTP: server.Client()}).Enroll(context.Background(), server.URL, EnrollmentRequest{})
+			if err == nil {
+				t.Fatalf("Enroll accepted remote plaintext %s", test.name)
+			}
+		})
+	}
+}
+
+type rejectingHTTPDoer struct {
+	t *testing.T
+}
+
+func (d rejectingHTTPDoer) Do(*http.Request) (*http.Response, error) {
+	d.t.Fatal("HTTP request should not be attempted")
+	return nil, errors.New("unreachable")
 }
 
 func serverURL(r *http.Request) string {

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"path"
 	"slices"
@@ -46,9 +47,9 @@ type JoinOptions struct {
 // Discover fetches and validates the Fleet service's well-known discovery
 // document at fleetURL.
 func (c Client) Discover(ctx context.Context, fleetURL string) (Discovery, error) {
-	base, err := url.Parse(strings.TrimSpace(fleetURL))
-	if err != nil || !base.IsAbs() || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
-		return Discovery{}, fmt.Errorf("fleet: URL must be an absolute http or https URL")
+	base, err := validateTransportURI(fleetURL, "https", "http", "")
+	if err != nil {
+		return Discovery{}, fmt.Errorf("fleet: URL: %w", err)
 	}
 	discoveryURL := *base
 	discoveryURL.Path = path.Join("/", ".well-known", "goobers-fleet")
@@ -80,7 +81,10 @@ func (c Client) Enroll(ctx context.Context, endpoint string, request EnrollmentR
 		response.Credential == "" || response.CredentialExpiresAt.IsZero() {
 		return EnrollmentResponse{}, fmt.Errorf("fleet: enrollment response is incomplete")
 	}
-	if err := validateEndpoint(response.ConnectionEndpoint, []string{"ws", "wss"}, "/api/fleet/v1/connections"); err != nil {
+	if _, err := validateTransportURI(response.CanonicalURI, "https", "http", ""); err != nil {
+		return EnrollmentResponse{}, fmt.Errorf("fleet: enrollment canonical URI: %w", err)
+	}
+	if _, err := validateTransportURI(response.ConnectionEndpoint, "wss", "ws", "/api/fleet/v1/connections"); err != nil {
 		return EnrollmentResponse{}, fmt.Errorf("fleet: enrollment connection endpoint: %w", err)
 	}
 	return response, nil
@@ -172,14 +176,14 @@ func validateDiscovery(discovery Discovery) error {
 	if !slices.Contains(discovery.SupportedAuthenticationMethods, "enrollment-grant") {
 		return fmt.Errorf("fleet: discovery does not support enrollment-grant authentication")
 	}
-	if err := validateEndpoint(discovery.EnrollmentEndpoint, []string{"http", "https"}, "/api/fleet/v1/enrollments:redeem"); err != nil {
+	if _, err := validateTransportURI(discovery.CanonicalURI, "https", "http", ""); err != nil {
+		return fmt.Errorf("fleet: canonical URI: %w", err)
+	}
+	if _, err := validateTransportURI(discovery.EnrollmentEndpoint, "https", "http", "/api/fleet/v1/enrollments:redeem"); err != nil {
 		return fmt.Errorf("fleet: enrollment endpoint: %w", err)
 	}
-	if err := validateEndpoint(discovery.ConnectionEndpoint, []string{"ws", "wss"}, "/api/fleet/v1/connections"); err != nil {
+	if _, err := validateTransportURI(discovery.ConnectionEndpoint, "wss", "ws", "/api/fleet/v1/connections"); err != nil {
 		return fmt.Errorf("fleet: connection endpoint: %w", err)
-	}
-	if canonical, err := url.Parse(discovery.CanonicalURI); err != nil || !canonical.IsAbs() || canonical.Host == "" {
-		return fmt.Errorf("fleet: canonical URI must be absolute")
 	}
 	if principal := discovery.LocalAdministratorPrincipal; principal != nil {
 		if principal.Kind != "user" || principal.Issuer == "" || principal.Subject == "" {
@@ -189,15 +193,34 @@ func validateDiscovery(discovery Discovery) error {
 	return nil
 }
 
-func validateEndpoint(raw string, schemes []string, suffix string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || !parsed.IsAbs() || parsed.Host == "" || !slices.Contains(schemes, parsed.Scheme) {
-		return fmt.Errorf("must be an absolute %s URI", strings.Join(schemes, "/"))
+func validateTransportURI(raw, secureScheme, loopbackScheme, suffix string) (*url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" {
+		return nil, fmt.Errorf("must be an absolute %s URI", secureScheme)
 	}
-	if !strings.HasSuffix(strings.TrimSuffix(parsed.Path, "/"), suffix) {
-		return fmt.Errorf("must end with %s", suffix)
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != secureScheme && scheme != loopbackScheme {
+		return nil, fmt.Errorf("must use %s, or %s only for a loopback host", secureScheme, loopbackScheme)
 	}
-	return nil
+	if parsed.User != nil {
+		return nil, fmt.Errorf("must not include user information")
+	}
+	if scheme == loopbackScheme && !isLoopbackHost(parsed.Hostname()) {
+		return nil, fmt.Errorf("%s is allowed only for localhost or a loopback IP address", loopbackScheme)
+	}
+	if suffix != "" && !strings.HasSuffix(strings.TrimSuffix(parsed.Path, "/"), suffix) {
+		return nil, fmt.Errorf("must end with %s", suffix)
+	}
+	return parsed, nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "localhost" {
+		return true
+	}
+	address, err := netip.ParseAddr(host)
+	return err == nil && address.IsLoopback()
 }
 
 func (c Client) doJSON(ctx context.Context, method, endpoint string, requestBody any, responseBody any) error {
