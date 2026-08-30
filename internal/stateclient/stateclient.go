@@ -9,8 +9,9 @@
 // generation, the reconcile-post-merge ledger, the gather-sibling-context
 // cache, the backlog-health ready-transition ledger
 // (backlog-health/<gaggle>__<provider>__<repository>__<label>.json,
-// Goobers#3948), and the per-PR pr-remediation no-op record
-// (pr-remediation-noop-<hash>.json, Goobers#3989). Each lives as one JSON
+// Goobers#3948), the per-PR pr-remediation no-op record
+// (pr-remediation-noop-<hash>.json, Goobers#3989), and pr-select's fairness
+// lease (pr-select-fairness.json, Goobers#3988). Each lives as one JSON
 // file in the instance's scheduler directory today, read and written
 // in-process by the CLI when it shares a host with the daemon (type-1/type-2)
 // and by the daemon's own scheduler. A stage POD has neither the file nor the
@@ -21,9 +22,10 @@
 //   - File: the instance's own file under the key's own cross-process lock —
 //     byte for byte the discipline cmd/goobers used before this package
 //     existed. The lock is injected by the caller, so nothing about how the
-//     daemon serializes changes: blocked.json and the scan cursor keep
-//     claims.lock, the post-merge ledger keeps post-merge-reconcile.lock, the
-//     sibling cache keeps sibling-context-cache.lock, and the ready-transition
+//     daemon serializes changes: blocked.json, the scan cursor and the
+//     pr-select fairness lease keep claims.lock, the post-merge ledger keeps
+//     post-merge-reconcile.lock, the sibling cache keeps
+//     sibling-context-cache.lock, and the ready-transition
 //     ledger — which had no lock at all, because until the plane existed it
 //     had a single in-process writer — gets its own, since a compare-and-swap
 //     served over the plane is atomic only if the daemon serializes the
@@ -118,6 +120,26 @@ const (
 	// KeySiblingContextCache is gather-sibling-context's per-sibling memo
 	// (#523).
 	KeySiblingContextCache = "sibling-context-cache.json"
+	// KeyPRSelectFairness is pr-select's FAIRNESS LEASE (#1336,
+	// Goobers#3988): the first-eligible timestamp per candidate PR that the
+	// aging boost and the one-hour starvation guard are computed from.
+	//
+	// It is load-bearing, not a cache, and that is why it joins the namespace
+	// rather than being tolerated as a miss in a pod. A pod is never stamped
+	// GOOBERS_INSTANCE_ROOT, so an absent file reads as a FRESH lease on every
+	// run: every candidate's wait resets to zero, the aging boost never
+	// accumulates, the starvation guard never fires, and a single PR can
+	// monopolise the one pr-select slot indefinitely — silently, because a
+	// fresh lease is indistinguishable from a legitimately new one. That is
+	// the silent-wrong-result class executor.StageRequiresInstanceRoot exists
+	// to make loud, so the lease is admitted here instead.
+	//
+	// Guarded by claims.lock in-process — the same lock pr-select's own claim
+	// transaction takes, because the lease is observed and rewritten INSIDE
+	// that transaction (observePRSelectEligibility) so a candidate's wait and
+	// the claim that ends it move as one. The plane serves it under that same
+	// lock.
+	KeyPRSelectFairness = "pr-select-fairness.json"
 )
 
 // scanCursorKeyPattern matches the per-scan backlog cursor,
@@ -298,7 +320,7 @@ func PRRemediationNoopKey(digest string) string {
 // ValidKey reports whether key is one of the closed scheduler-state keys.
 func ValidKey(key string) bool {
 	switch key {
-	case KeyBlockedRecords, KeyPostMergeReconcileLedger, KeySiblingContextCache:
+	case KeyBlockedRecords, KeyPostMergeReconcileLedger, KeySiblingContextCache, KeyPRSelectFairness:
 		return true
 	}
 	return scanCursorKeyPattern.MatchString(key) ||

@@ -29,6 +29,10 @@ func TestValidKeyIsAClosedNamespace(t *testing.T) {
 		KeyBlockedRecords,
 		KeyPostMergeReconcileLedger,
 		KeySiblingContextCache,
+		// Goobers#3988: pr-select's fairness lease, the last scheduler file
+		// holding `pr-select` — and with it merge-review — to the daemon's
+		// instance root.
+		KeyPRSelectFairness,
 		ScanCursorKey(digest),
 		// Goobers#3898: the backlog re-sweep generation, the last scheduler
 		// file the claiming path held open directly.
@@ -101,6 +105,22 @@ func TestValidKeyIsAClosedNamespace(t *testing.T) {
 		"backlog-health/g.a__b__c.json",
 		"backlog-health-g.a__b__c.json",
 		"Backlog-health.g.a__b__c.json",
+		// The fairness lease's near misses: one fixed key admits exactly one
+		// spelling, so nothing beside it in the scheduler directory (and no
+		// traversal out of it) may borrow the admission.
+		"pr-select-fairness",
+		"pr-select-fairness.json.tmp",
+		"pr-select-fairness.json.bak",
+		"PR-Select-Fairness.json",
+		"pr-select-fairness.JSON",
+		".pr-select-fairness.json",
+		" pr-select-fairness.json",
+		"pr-select-fairness.json ",
+		"./pr-select-fairness.json",
+		"sub/pr-select-fairness.json",
+		"../pr-select-fairness.json",
+		"pr-select-fairness.json/../claims.json",
+		"pr-select-fairness.json%2f..%2fclaims.json",
 	} {
 		if ValidKey(key) {
 			t.Fatalf("ValidKey(%q) = true, want it refused", key)
@@ -128,6 +148,7 @@ func TestBacklogHealthCursorKeyResolvesIntoItsOwnSubdirectory(t *testing.T) {
 		KeyBlockedRecords,
 		KeyPostMergeReconcileLedger,
 		KeySiblingContextCache,
+		KeyPRSelectFairness,
 		ScanCursorKey(strings.Repeat("ab", 32)),
 		ResweepStateKey(strings.Repeat("ab", 32)),
 		PRRemediationNoopKey(strings.Repeat("ab", 32)),
