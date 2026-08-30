@@ -806,7 +806,7 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 }
 
 func guidedRepositoryDisplayName(provider, owner, project, name string) string {
-	if provider == "ado" {
+	if provider == string(providers.ProviderADO) {
 		return owner + "/" + project + "/" + name
 	}
 	return owner + "/" + name

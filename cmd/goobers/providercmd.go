@@ -297,8 +297,8 @@ func providerCommandContext() (context.Context, context.CancelFunc) {
 // a real run's claims) or an empty workflow (which would make
 // providers.BranchName(workflow, runID) produce a malformed branch name).
 func providerRunContext() (runID, workflow string, err error) {
-	runID = os.Getenv("GOOBERS_RUN_ID")
-	workflow = os.Getenv("GOOBERS_WORKFLOW")
+	runID = os.Getenv(executor.RunIDEnvVar)
+	workflow = os.Getenv(executor.WorkflowEnvVar)
 	if runID == "" {
 		return "", "", fmt.Errorf("GOOBERS_RUN_ID is not set — this subcommand must run as a workflow stage")
 	}
@@ -309,7 +309,7 @@ func providerRunContext() (runID, workflow string, err error) {
 }
 
 func providerGaggle() string {
-	return os.Getenv("GOOBERS_GAGGLE")
+	return os.Getenv(executor.GaggleEnvVar)
 }
 
 // Typed error codes a provider-chain subcommand's declared result file
@@ -653,8 +653,8 @@ func withClaimLockThreshold(lockPath, operation string, slowThreshold time.Durat
 	}
 	return withClaimLockBounds(lockPath, operation, timeout, slowThreshold, claimLockEventContext{
 		Gaggle:   providerGaggle(),
-		Workflow: os.Getenv("GOOBERS_WORKFLOW"),
-		RunID:    os.Getenv("GOOBERS_RUN_ID"),
+		Workflow: os.Getenv(executor.WorkflowEnvVar),
+		RunID:    os.Getenv(executor.RunIDEnvVar),
 	}, fn)
 }
 

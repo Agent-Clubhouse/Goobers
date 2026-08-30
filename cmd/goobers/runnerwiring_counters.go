@@ -90,7 +90,7 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 			// the first repo's PRs.
 			repo = instance.RepoRef{Owner: project.Owner, Name: project.Name, Provider: string(project.Provider)}
 		}
-		if repo.Provider == "ado" {
+		if repo.Provider == string(providers.ProviderADO) {
 			// The cap counts GitHub PR heads; an ADO-projected gaggle has no
 			// list to poll, so its count stays "unknown" (Admit fails open).
 			continue

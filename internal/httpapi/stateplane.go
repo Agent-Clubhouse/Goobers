@@ -144,7 +144,7 @@ func stateRequestScope(w http.ResponseWriter, request *http.Request) (StateGetRe
 	gaggle := request.PathValue("gaggle")
 	key := request.PathValue("key")
 	if strings.TrimSpace(gaggle) == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "gaggle is required")
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "gaggle is required")
 		return StateGetRequest{}, false
 	}
 	if !stateclient.ValidKey(key) {
@@ -233,7 +233,7 @@ func statePutHandler(state StateService, errorLog *log.Logger) http.HandlerFunc 
 					fmt.Sprintf("scheduler-state value exceeds %d bytes", MaxStateValueBytes))
 				return
 			}
-			writeError(w, http.StatusBadRequest, "invalid_request", "scheduler-state body could not be read")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "scheduler-state body could not be read")
 			return
 		}
 		value, err := state.PutState(request.Context(), StatePutRequest{
@@ -262,12 +262,12 @@ func statePrecondition(w http.ResponseWriter, request *http.Request) (string, bo
 			"scheduler-state writes require If-Match: \"<etag>\" or If-None-Match: *")
 		return "", false
 	case ifMatch != "" && ifNoneMatch != "":
-		writeError(w, http.StatusBadRequest, "invalid_request",
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest,
 			"send either If-Match or If-None-Match, not both")
 		return "", false
 	case ifNoneMatch != "":
 		if ifNoneMatch != stateclient.IfNoneMatchAny {
-			writeError(w, http.StatusBadRequest, "invalid_request",
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest,
 				"If-None-Match must be *")
 			return "", false
 		}
@@ -278,7 +278,7 @@ func statePrecondition(w http.ResponseWriter, request *http.Request) (string, bo
 	// meaning for a single-version key. Both fail closed.
 	etag := strings.Trim(ifMatch, `"`)
 	if ifMatch == stateclient.IfNoneMatchAny || strings.ContainsAny(etag, `",`) || etag == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request",
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest,
 			"If-Match must be a single quoted entity tag")
 		return "", false
 	}

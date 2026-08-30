@@ -652,7 +652,7 @@ func (p *GiteaProvider) RequestReview(ctx context.Context, req ReviewRequest) er
 		return err
 	}
 	if req.PullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "requested_reviewers")
 	if err != nil {
@@ -684,7 +684,7 @@ func (p *GiteaProvider) PollPullRequest(ctx context.Context, req PullRequestPoll
 		return PullRequestPollResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestPollResult{}, fmt.Errorf("pull id is required")
+		return PullRequestPollResult{}, errPullIDRequired
 	}
 	pr, err := p.getPull(ctx, req.Repository, req.PullID)
 	if err != nil {
@@ -765,7 +765,7 @@ func (p *GiteaProvider) PullRequestMergeable(ctx context.Context, repo Repositor
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	pr, err := p.getPull(ctx, repo, pullID)
 	if err != nil {
@@ -912,7 +912,7 @@ func (p *GiteaProvider) ClosePullRequest(ctx context.Context, req ClosePullReque
 		return ClosePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return ClosePullRequestResult{}, fmt.Errorf("pull id is required")
+		return ClosePullRequestResult{}, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
 	if err != nil {
@@ -963,7 +963,7 @@ func (p *GiteaProvider) MergePullRequest(ctx context.Context, req MergePullReque
 		return MergePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return MergePullRequestResult{}, fmt.Errorf("pull id is required")
+		return MergePullRequestResult{}, errPullIDRequired
 	}
 	if req.MergeMethod != "" && !req.MergeMethod.IsValid() {
 		return MergePullRequestResult{}, fmt.Errorf("unsupported merge method %q", req.MergeMethod)
@@ -1096,7 +1096,7 @@ func (p *GiteaProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, 
 		return PullRequestSummary{}, err
 	}
 	if pullID == "" {
-		return PullRequestSummary{}, fmt.Errorf("pull id is required")
+		return PullRequestSummary{}, errPullIDRequired
 	}
 	pr, err := p.getPull(ctx, repo, pullID)
 	if err != nil {
@@ -1294,7 +1294,7 @@ func (p *GiteaProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "files")
 	if err != nil {
@@ -1454,7 +1454,7 @@ func (p *GiteaProvider) SubmitPullRequestReview(ctx context.Context, req PullReq
 		return PullRequestReviewResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestReviewResult{}, fmt.Errorf("pull id is required")
+		return PullRequestReviewResult{}, errPullIDRequired
 	}
 	if req.CommitSHA == "" {
 		return PullRequestReviewResult{}, fmt.Errorf("commit sha is required")
@@ -1519,7 +1519,7 @@ func (p *GiteaProvider) UpdateBranch(ctx context.Context, req UpdateBranchReques
 		return UpdateBranchResult{}, err
 	}
 	if req.PullID == "" {
-		return UpdateBranchResult{}, fmt.Errorf("pull id is required")
+		return UpdateBranchResult{}, errPullIDRequired
 	}
 	if req.ExpectedHeadSHA == "" {
 		return UpdateBranchResult{}, fmt.Errorf("expected head SHA is required")
@@ -1568,7 +1568,7 @@ func (p *GiteaProvider) PublishPullRequestStatus(ctx context.Context, req PullRe
 		return PullRequestStatusResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestStatusResult{}, fmt.Errorf("pull id is required")
+		return PullRequestStatusResult{}, errPullIDRequired
 	}
 	if req.Name == "" {
 		return PullRequestStatusResult{}, fmt.Errorf("status name is required")

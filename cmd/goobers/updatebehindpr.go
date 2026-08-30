@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -92,7 +93,7 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "filter remediation candidates", err, "update-behind-result.json")
 	}
 	prs, err = stageClaimAvailablePullRequests(
-		root, repo, os.Getenv("GOOBERS_RUN_ID"), prs, time.Now(),
+		root, repo, os.Getenv(executor.RunIDEnvVar), prs, time.Now(),
 	)
 	if err != nil {
 		return failProviderStage(stderr, "filter claimed remediation candidates", err, "update-behind-result.json")
