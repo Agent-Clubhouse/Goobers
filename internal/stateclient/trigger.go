@@ -58,6 +58,7 @@ type PriorityTriggerer interface {
 type triggerRequest struct {
 	Gaggle    string `json:"gaggle,omitempty"`
 	Workflow  string `json:"workflow"`
+	RequestID string `json:"requestId,omitempty"`
 	SourceRun string `json:"sourceRun,omitempty"`
 }
 
@@ -71,10 +72,15 @@ func (h *HTTP) PriorityTrigger(ctx context.Context, workflow, sourceRun string) 
 	if workflow == "" || sourceRun == "" {
 		return "", fmt.Errorf("stateclient: priority trigger requires a workflow and a source run")
 	}
+	// A retried activity must redeliver the same trigger rather than mint a
+	// second run after an ambiguous transport failure.
+	requestID := "priority-" + ETagFor([]byte(h.cfg.Gaggle+"\x00"+workflow+"\x00"+sourceRun))
 	// The gaggle is the client's own, never the caller's to choose: the daemon
 	// refuses a gaggle the caller's run does not belong to, and sending
 	// anything else would only turn a working re-tick into a 403.
-	body, err := json.Marshal(triggerRequest{Gaggle: h.cfg.Gaggle, Workflow: workflow, SourceRun: sourceRun})
+	body, err := json.Marshal(triggerRequest{
+		Gaggle: h.cfg.Gaggle, Workflow: workflow, RequestID: requestID, SourceRun: sourceRun,
+	})
 	if err != nil {
 		return "", fmt.Errorf("stateclient: encode trigger: %w", err)
 	}

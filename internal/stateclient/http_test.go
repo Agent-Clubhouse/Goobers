@@ -1,6 +1,7 @@
 package stateclient
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -314,7 +315,7 @@ func TestHTTPStoreRefusesAValueWithoutAnETag(t *testing.T) {
 // TestHTTPPriorityTriggerPostsForItsOwnGaggle covers R3's second half from the
 // client side: the gaggle is the client's own, never the caller's to choose.
 func TestHTTPPriorityTriggerPostsForItsOwnGaggle(t *testing.T) {
-	var body string
+	var bodies []string
 	var auth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/v1/triggers" || request.Method != http.MethodPost {
@@ -323,25 +324,37 @@ func TestHTTPPriorityTriggerPostsForItsOwnGaggle(t *testing.T) {
 		}
 		auth = request.Header.Get("Authorization")
 		raw, _ := io.ReadAll(request.Body)
-		body = string(raw)
+		bodies = append(bodies, string(raw))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"runId":"run-9"}`))
 	}))
 	t.Cleanup(server.Close)
 	store := planeClient(t, server)
 
-	runID, err := store.PriorityTrigger(t.Context(), "merge-review", "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runID != "run-9" {
-		t.Fatalf("runID = %q", runID)
+	for range 2 {
+		runID, err := store.PriorityTrigger(t.Context(), "merge-review", "run-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runID != "run-9" {
+			t.Fatalf("runID = %q", runID)
+		}
 	}
 	if auth != "Bearer state-token" {
 		t.Fatalf("authorization = %q, want the same bearer the state route uses", auth)
 	}
-	if !strings.Contains(body, `"gaggle":"goobers"`) || !strings.Contains(body, `"sourceRun":"run-1"`) {
-		t.Fatalf("body = %s", body)
+	if len(bodies) != 2 || bodies[0] != bodies[1] {
+		t.Fatalf("retry bodies = %q, want one stable delivery identity", bodies)
+	}
+	var request triggerRequest
+	if err := json.Unmarshal([]byte(bodies[0]), &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Gaggle != "goobers" || request.Workflow != "merge-review" || request.SourceRun != "run-1" {
+		t.Fatalf("request = %+v", request)
+	}
+	if !strings.HasPrefix(request.RequestID, "priority-") || len(request.RequestID) != len("priority-")+64 {
+		t.Fatalf("requestId = %q, want a bounded content-derived delivery identity", request.RequestID)
 	}
 
 	if _, err := store.PriorityTrigger(t.Context(), "", "run-1"); err == nil {
