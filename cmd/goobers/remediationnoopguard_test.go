@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,9 +14,21 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/platform/lock"
+	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
+
+// readRemediationNoopRecord is one PR's record over a store. Production reads
+// the record only inside updateRemediationNoopRecord's read-modify-write, so
+// this plain read exists for assertions.
+func readRemediationNoopRecord(ctx context.Context, store stateclient.Store, key string) (remediationNoopRecord, error) {
+	value, err := store.Get(ctx, remediationNoopStateKey(key))
+	if err != nil {
+		return remediationNoopRecord{}, fmt.Errorf("read remediation no-op state: %w", err)
+	}
+	return decodeRemediationNoopRecord(value, key)
+}
 
 // seedRemediationNoopState records one no-op attempt for key directly, standing
 // in for a prior run's write. It uses the LOCK-FREE file store deliberately:

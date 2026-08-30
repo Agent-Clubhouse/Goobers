@@ -175,15 +175,6 @@ func encodeRemediationNoopRecord(key string, record remediationNoopRecord) ([]by
 	})
 }
 
-// readRemediationNoopRecord is one PR's record over a store.
-func readRemediationNoopRecord(ctx context.Context, store stateclient.Store, key string) (remediationNoopRecord, error) {
-	value, err := store.Get(ctx, remediationNoopStateKey(key))
-	if err != nil {
-		return remediationNoopRecord{}, fmt.Errorf("read remediation no-op state: %w", err)
-	}
-	return decodeRemediationNoopRecord(value, key)
-}
-
 // updateRemediationNoopRecord is the record's read-modify-write: one lock
 // acquisition on the file backend, one compare-and-swap on the plane. fn
 // returns write=false to leave the key untouched, and MUST be safe to run more
