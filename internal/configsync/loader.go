@@ -263,14 +263,6 @@ func readDocs(root string) ([]rawDoc, error) {
 	return docs, nil
 }
 
-type docMeta struct {
-	Kind       string `json:"kind"`
-	DSLVersion string `json:"dslVersion"`
-	Metadata   struct {
-		Name string `json:"name"`
-	} `json:"metadata"`
-}
-
 // assemble parses docs into typed CRs and reduces them to the manifest's desired
 // state (only manifest-listed gaggles and the goobers/workflows bound to them).
 func (l *Loader) assemble(docs []rawDoc) (*RenderSet, error) {

@@ -79,4 +79,3 @@ func extractMetadata(segment []byte) Metadata {
 		DSLVersion: meta.DSLVersion,
 	}
 }
-
