@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/goobers/goobers/internal/pathutil"
 )
 
 // This file defines artifact passing for the stage contract: the ArtifactPointer
@@ -256,17 +258,13 @@ func ResolveContainedPath(root, rel string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resolved, err := filepath.EvalSymlinks(full)
+	resolved, err := pathutil.ResolveWithSymlinks(root, full, rel)
 	if err != nil {
+		// Map generic symlink escape error to ErrSymlinkEscape for public API
+		if strings.Contains(err.Error(), "symlink escape") {
+			return "", fmt.Errorf("%w: %s", ErrSymlinkEscape, strings.TrimPrefix(err.Error(), "symlink escape: "))
+		}
 		return "", err
-	}
-	resolvedRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", fmt.Errorf("resolve root %q: %w", root, err)
-	}
-	relBack, err := filepath.Rel(resolvedRoot, resolved)
-	if err != nil || relBack == ".." || strings.HasPrefix(relBack, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%w: %q resolves to %q", ErrSymlinkEscape, rel, resolved)
 	}
 	return resolved, nil
 }
@@ -294,27 +292,17 @@ func ValidRunID(id string) bool {
 // is empty the path is validated for containment without being made absolute
 // (used by structural Validate, which does not touch the filesystem).
 func containedPath(root, rel string) (string, error) {
-	if rel == "" {
-		return "", fmt.Errorf("%w: empty path", ErrPathEscape)
+	full, err := pathutil.IsLexicallyContained(root, rel)
+	if err != nil {
+		// Map generic error messages to ErrPathEscape for public API
+		if strings.Contains(err.Error(), "path escapes root") {
+			return "", fmt.Errorf("%w: %s", ErrPathEscape, strings.TrimPrefix(err.Error(), "path escapes root: "))
+		}
+		return "", err
 	}
-	if rootedOrVolumeBound(rel) {
-		return "", fmt.Errorf("%w: %q is absolute or volume-bound", ErrPathEscape, rel)
-	}
-	clean := filepath.Clean(rel)
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%w: %q", ErrPathEscape, rel)
-	}
-	if root == "" {
-		return clean, nil
-	}
-	return filepath.Join(root, clean), nil
+	return full, nil
 }
 
 func rootedOrVolumeBound(path string) bool {
-	return filepath.IsAbs(path) ||
-		filepath.VolumeName(path) != "" ||
-		strings.HasPrefix(path, "/") ||
-		strings.HasPrefix(path, `\`) ||
-		(len(path) >= 2 && path[1] == ':' &&
-			((path[0] >= 'a' && path[0] <= 'z') || (path[0] >= 'A' && path[0] <= 'Z')))
+	return pathutil.IsRootedOrVolumeBound(path)
 }
