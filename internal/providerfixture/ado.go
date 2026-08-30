@@ -51,7 +51,7 @@ func RefreshADO(ctx context.Context, cfg ADORefreshConfig) (Fixture, error) {
 	}
 	fixture := Fixture{
 		SchemaVersion: SchemaVersion,
-		Provider:      "ado",
+		Provider:      string(providers.ProviderADO),
 		Repository: Repository{
 			Owner: normalizedADOOrganization,
 			Name:  normalizedADOProject,

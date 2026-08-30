@@ -236,7 +236,7 @@ func TestRunAndSignalHelpDocumentsTerminalExitCodes(t *testing.T) {
 	}
 
 	_, stdout, _ := runArgs(t, "help")
-	if !strings.Contains(stdout, "3 = escalated") {
+	if !strings.Contains(stdout, "3  Escalated run or signal") {
 		t.Fatalf("top-level help does not document escalation exit code: %q", stdout)
 	}
 }

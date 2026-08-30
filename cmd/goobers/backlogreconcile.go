@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -241,7 +242,7 @@ func reserveBacklogClaimReconciliation(
 	now func() time.Time,
 ) (*backlogReconcileReservation, bool, error) {
 	gaggle := providerGaggle()
-	ownerRunID := os.Getenv("GOOBERS_RUN_ID")
+	ownerRunID := os.Getenv(executor.RunIDEnvVar)
 	if ownerRunID == "" {
 		ownerRunID = "standalone"
 	}

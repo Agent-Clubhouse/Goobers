@@ -38,6 +38,31 @@ uses another address, set the proxy target when starting the portal:
 GOOBERS_DAEMON_URL=http://127.0.0.1:9090 npm --prefix portal run dev
 ```
 
+### Getting Started UI development
+
+Do not rebuild and restart the embedded portal after every React, CSS, or image
+change. Keep the Go backend running in one PowerShell terminal:
+
+```powershell
+go run .\cmd\goobers init --guided --port=8081 --no-open
+```
+
+Start the dedicated Vite mode in another terminal:
+
+```powershell
+npm --prefix portal run dev:getting-started
+```
+
+Open `http://127.0.0.1:5173/`. Vite stamps the page as
+`getting-started`, proxies `/guided/*` to `http://127.0.0.1:8081`, and
+hot-reloads frontend changes. Set `GOOBERS_GUIDED_URL` before starting Vite if
+the backend uses another address.
+
+Restart the Go process only after changing Go handlers or other backend code.
+When the UI is ready for final validation, run `npm --prefix portal run build`
+once and restart `goobers init --guided` so the process serves the newly
+embedded `cmd/goobers/portal-dist` assets.
+
 The portal CI gate is reproduced locally with:
 
 ```bash

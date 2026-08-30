@@ -385,7 +385,7 @@ func adoRepoForOrigin(cfg *instance.Config, remote string) (instance.RepoRef, bo
 	normalized := strings.TrimSuffix(strings.TrimRight(remote, "/"), ".git")
 	for i := range cfg.Repos {
 		repo := cfg.Repos[i]
-		if repo.Provider != "ado" {
+		if repo.Provider != string(providers.ProviderADO) {
 			continue
 		}
 		expected := fmt.Sprintf("https://dev.azure.com/%s/%s/_git/%s",

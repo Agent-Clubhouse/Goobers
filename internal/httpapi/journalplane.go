@@ -58,12 +58,12 @@ func registerJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *
 		}
 		var input livejournal.EmitRequest
 		if err := decodeWriteRequestBounded(request, &input, maxJournalEmitBody); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
 		run := request.PathValue("run")
 		if !apiv1.ValidRunID(run) {
-			writeError(w, http.StatusBadRequest, "invalid_request", "run id is not a safe path segment")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "run id is not a safe path segment")
 			return
 		}
 		if input.RunID != "" && input.RunID != run {
@@ -72,7 +72,7 @@ func registerJournalPlaneRoutes(router *Router, config handlerConfig, errorLog *
 		}
 		input.RunID = run
 		if len(input.Ops) == 0 {
-			writeError(w, http.StatusBadRequest, "invalid_request", "ops are required")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "ops are required")
 			return
 		}
 		// Per-run containment: a pod token proves "I am run X's stage pod",

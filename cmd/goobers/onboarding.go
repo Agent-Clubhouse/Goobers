@@ -42,8 +42,7 @@ const onboardingHelp = "Usage: goobers onboarding <command> [flags]\n\n" +
 	"prompt, write secrets, create a remote, or touch a repository that was not\n" +
 	"explicitly named.\n\n" +
 	"Commands:\n" +
-	"  stub-agent-instructions  install agent assets into a config source\n" +
-	"  stub-sample              materialize the disposable Getting Started target\n\n" +
+	"  stub-agent-instructions  install agent assets into a config source\n\n" +
 	"Run `goobers onboarding <command> -h` for action flags.\n"
 
 const stubAgentInstructionsHelp = "Usage: goobers onboarding stub-agent-instructions --source-tree <path> [--harness <name>] [--json]\n\n" +
@@ -58,23 +57,6 @@ const stubAgentInstructionsHelp = "Usage: goobers onboarding stub-agent-instruct
 	"  --json                emit the versioned config-source action envelope\n\n" +
 	"Exit codes: 0 = installed or already current, 1 = unsafe target, collision,\n" +
 	"drift, or write error, 2 = usage error.\n"
-
-const stubSampleHelp = "Usage: goobers onboarding stub-sample --destination <path> [--work-tracking <owner/repo>] [--token-env <name>] [--force] [--json]\n\n" +
-	"Materialize the embedded getting-started-task-api sample at an explicitly\n" +
-	"named destination. Existing matching files are skipped. A conflicting file\n" +
-	"fails the complete preflight without changing the destination unless --force\n" +
-	"is set; symbolic links are always refused.\n\n" +
-	"With --work-tracking owner/repo, seed the catalog's missing GitHub labels and\n" +
-	"issues using the token named by --token-env. If the token is unset, report\n" +
-	"the issues pending and complete the local materialization without network\n" +
-	"access. No remote repository is created or pushed.\n\n" +
-	"Flags:\n" +
-	"  --destination <path>      required sample destination\n" +
-	"  --work-tracking <repo>    optional GitHub owner/repo to seed\n" +
-	"  --token-env <name>        issue token environment variable (default " + defaultWorkTrackingTokenEnv + ")\n" +
-	"  --force                   replace conflicting regular files\n" +
-	"  --json                    emit the versioned action envelope\n\n" +
-	"Exit codes: 0 = materialized, 1 = conflict/provider error, 2 = usage error.\n"
 
 type onboardingActionResult struct {
 	Action      string   `json:"action"`
@@ -137,10 +119,11 @@ type onboardingSeedSample struct {
 }
 
 type onboardingSeedIssue struct {
-	ID     string   `json:"id"`
-	Title  string   `json:"title"`
-	Body   string   `json:"body"`
-	Labels []string `json:"labels"`
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Body     string   `json:"body"`
+	Labels   []string `json:"labels"`
+	Assignee string   `json:"assignee,omitempty"`
 }
 
 type onboardingSampleFile struct {
@@ -281,77 +264,6 @@ func executeAgentToolkitInstallAction(
 		result.Skipped = append(result.Skipped, installed.InstructionPath)
 	}
 	return agentToolkitInstallActionResult{Action: result, Install: installed}, nil
-}
-
-func runOnboardingStubSample(args []string, stdout, stderr io.Writer) int {
-	flags := newCLIFlagSet("onboarding stub-sample", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	destination := flags.String("destination", "", "sample destination")
-	workTracking := flags.String("work-tracking", "", "GitHub owner/repo to seed")
-	tokenEnv := flags.String("token-env", defaultWorkTrackingTokenEnv, "issue token environment variable")
-	force := flags.Bool("force", false, "replace conflicting regular files")
-	jsonOutput := flags.Bool("json", false, "emit the versioned action envelope")
-	flags.Usage = helpUsage(stderr, "onboarding stub-sample")
-	if err := flags.Parse(args); err != nil {
-		return 2
-	}
-	if flags.NArg() != 0 || strings.TrimSpace(*destination) == "" {
-		flags.Usage()
-		return 2
-	}
-	if !instance.ValidGuidedTokenEnvName(*tokenEnv) {
-		pf(stderr, "error: --token-env must name a valid environment variable\n")
-		return 2
-	}
-
-	var repository *providers.RepositoryRef
-	if strings.TrimSpace(*workTracking) != "" {
-		owner, name, err := parseGitHubRepo(*workTracking)
-		if err != nil {
-			pf(stderr, "error: --work-tracking: %v\n", err)
-			return 2
-		}
-		repository = &providers.RepositoryRef{
-			Provider: providers.ProviderGitHub,
-			Owner:    owner,
-			Name:     name,
-		}
-	}
-
-	files, catalog, err := loadOnboardingSample()
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	result, err := materializeOnboardingSample(*destination, files, *force)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-
-	switch {
-	case repository == nil:
-		appendPendingSeedIssues(&result, catalog, "work-tracking target not supplied")
-	case os.Getenv(*tokenEnv) == "":
-		appendPendingSeedIssues(&result, catalog, "credentials unavailable")
-	default:
-		ctx, cancel := context.WithTimeout(context.Background(), stubSampleProviderTimeout)
-		defer cancel()
-		if err := seedOnboardingIssues(ctx, newOnboardingIssueSeeder(os.Getenv(*tokenEnv)), *repository, catalog, &result); err != nil {
-			pf(stderr, "error: seed %s/%s: %v\n", repository.Owner, repository.Name, err)
-			return 1
-		}
-	}
-
-	if *jsonOutput {
-		if err := encodeSchemaJSON(stdout, schemas.OnboardingAction, result); err != nil {
-			pf(stderr, "error: encode action result: %v\n", err)
-			return 1
-		}
-		return 0
-	}
-	printOnboardingActionResult(stdout, result)
-	return 0
 }
 
 func loadOnboardingSample() ([]onboardingSampleFile, onboardingSeedCatalog, error) {
@@ -765,6 +677,7 @@ func appendPendingSeedIssues(result *onboardingActionResult, catalog onboardingS
 	}
 }
 
+//nolint:unused // Retained for fixture-level tests after removing the public stub-sample command.
 func seedOnboardingIssues(
 	ctx context.Context,
 	seeder onboardingIssueSeeder,
@@ -823,6 +736,7 @@ func seedOnboardingIssuesAs(
 			Title:      issue.Title,
 			Body:       issue.Body,
 			Labels:     append([]string(nil), issue.Labels...),
+			Assignee:   issue.Assignee,
 			RunID:      runID,
 		}); err != nil {
 			return fmt.Errorf("create issue %q: %w", issue.ID, err)
@@ -848,6 +762,7 @@ func printOnboardingActionResult(stdout io.Writer, result onboardingActionResult
 	for _, item := range result.Created {
 		pf(stdout, "  created  %s\n", item)
 	}
+
 	for _, item := range result.Skipped {
 		if strings.Contains(item, "(pending:") {
 			pf(stdout, "  pending  %s\n", item)
@@ -856,4 +771,74 @@ func printOnboardingActionResult(stdout io.Writer, result onboardingActionResult
 		}
 	}
 	pf(stdout, "next: %s\n", result.NextCommand)
+}
+
+//nolint:unused // Retained for fixture-level tests after removing the public stub-sample command.
+func runOnboardingStubSample(args []string, stdout, stderr io.Writer) int {
+	flags := newCLIFlagSet("onboarding stub-sample", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	destination := flags.String("destination", "", "sample destination")
+	workTracking := flags.String("work-tracking", "", "GitHub owner/repo to seed")
+	tokenEnv := flags.String("token-env", defaultWorkTrackingTokenEnv, "issue token environment variable")
+	force := flags.Bool("force", false, "replace conflicting regular files")
+	jsonOutput := flags.Bool("json", false, "emit the versioned action envelope")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 || strings.TrimSpace(*destination) == "" {
+		return 2
+	}
+	if !instance.ValidGuidedTokenEnvName(*tokenEnv) {
+		pf(stderr, "error: --token-env must name a valid environment variable\n")
+		return 2
+	}
+
+	var repository *providers.RepositoryRef
+	if strings.TrimSpace(*workTracking) != "" {
+		owner, name, err := parseGitHubRepo(*workTracking)
+		if err != nil {
+			pf(stderr, "error: --work-tracking: %v\n", err)
+			return 2
+		}
+		repository = &providers.RepositoryRef{
+			Provider: providers.ProviderGitHub,
+			Owner:    owner,
+			Name:     name,
+		}
+	}
+
+	files, catalog, err := loadOnboardingSample()
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	result, err := materializeOnboardingSample(*destination, files, *force)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+
+	switch {
+	case repository == nil:
+		appendPendingSeedIssues(&result, catalog, "work-tracking target not supplied")
+	case os.Getenv(*tokenEnv) == "":
+		appendPendingSeedIssues(&result, catalog, "credentials unavailable")
+	default:
+		ctx, cancel := context.WithTimeout(context.Background(), stubSampleProviderTimeout)
+		defer cancel()
+		if err := seedOnboardingIssues(ctx, newOnboardingIssueSeeder(os.Getenv(*tokenEnv)), *repository, catalog, &result); err != nil {
+			pf(stderr, "error: seed %s/%s: %v\n", repository.Owner, repository.Name, err)
+			return 1
+		}
+	}
+
+	if *jsonOutput {
+		if err := encodeSchemaJSON(stdout, schemas.OnboardingAction, result); err != nil {
+			pf(stderr, "error: encode action result: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	printOnboardingActionResult(stdout, result)
+	return 0
 }
