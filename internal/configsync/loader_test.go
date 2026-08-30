@@ -206,6 +206,28 @@ func TestLoad_IgnoresAssetDefinitions(t *testing.T) {
 	}
 }
 
+func TestReadDocsDoesNotSkipAfterAssetNamedFile(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "gaggles", "web", "goobers", "worker")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "assets"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "z-goober.yaml"), []byte("kind: Goober\nmetadata: {name: after-assets}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	docs, err := readDocs(root)
+	if err != nil {
+		t.Fatalf("readDocs: %v", err)
+	}
+	if len(docs) != 1 || docs[0].name != "after-assets" {
+		t.Fatalf("docs = %+v, want the definition after the assets-named file", docs)
+	}
+}
+
 func TestLoad_IgnoresSkillPackageDefinitions(t *testing.T) {
 	root := t.TempDir()
 	if err := os.CopyFS(root, os.DirFS(validConfigRepo)); err != nil {

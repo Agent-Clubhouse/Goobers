@@ -36,6 +36,7 @@ import (
 	"github.com/goobers/goobers/internal/supportmatrix"
 	"github.com/goobers/goobers/internal/workcopyroot"
 	wf "github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/yamldoc"
 )
 
 // Severity ranks an issue.
@@ -630,32 +631,12 @@ func (v *Validator) ValidateEnvelope(name string, jsonBytes []byte) error {
 	return v.ValidateJSON(file, jsonBytes)
 }
 
-var (
-	docSep          = regexp.MustCompile(`(?m)^---\s*$`)
-	yamlLinePattern = regexp.MustCompile(`\bline ([0-9]+)\b`)
-)
+var yamlLinePattern = regexp.MustCompile(`\bline ([0-9]+)\b`)
 
-type yamlDocument struct {
-	content    string
-	lineOffset int
-}
+type yamlDocument = yamldoc.Document
 
 func splitYAMLDocuments(raw string) []yamlDocument {
-	separators := docSep.FindAllStringIndex(raw, -1)
-	documents := make([]yamlDocument, 0, len(separators)+1)
-	start, lineOffset := 0, 0
-	for _, separator := range separators {
-		documents = append(documents, yamlDocument{
-			content:    raw[start:separator[0]],
-			lineOffset: lineOffset,
-		})
-		lineOffset += strings.Count(raw[start:separator[1]], "\n")
-		start = separator[1]
-	}
-	return append(documents, yamlDocument{
-		content:    raw[start:],
-		lineOffset: lineOffset,
-	})
+	return yamldoc.Split(raw)
 }
 
 func yamlErrorLine(message string, lineOffset int) int {
@@ -711,10 +692,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() && path != root && strings.HasPrefix(d.Name(), ".") {
-			return filepath.SkipDir
-		}
-		if d.IsDir() && configtree.IsGaggleSkillsDir(root, path) {
+		if d.IsDir() && configtree.SkipDir(root, path) {
 			return filepath.SkipDir
 		}
 		if gooberassets.IsSourceDir(path) {
@@ -742,14 +720,14 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 		rel, _ := filepath.Rel(root, path)
 		rel = filepath.ToSlash(rel)
 		for _, document := range splitYAMLDocuments(string(raw)) {
-			if strings.TrimSpace(document.content) == "" {
+			if strings.TrimSpace(document.Content) == "" {
 				continue
 			}
-			jb, err := yaml.YAMLToJSON([]byte(document.content))
+			jb, err := yaml.YAMLToJSON([]byte(document.Content))
 			if err != nil {
 				parseFailureCount++
 				r.addLocated(errorInvalidYAML, Error, rel,
-					yamlErrorLine(err.Error(), document.lineOffset), 1,
+					yamlErrorLine(err.Error(), document.LineOffset), 1,
 					"", "", invalidYAMLMessagePrefix+"%s", err)
 				continue
 			}
@@ -761,7 +739,7 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			docs = append(docs, loadedDoc{
 				file: rel, dir: filepath.Dir(path), kind: tm.Kind, name: tm.Metadata.Name,
 				dslVersion: tm.DSLVersion, json: jb,
-				node: parseYAMLNode(document.content), lineOffset: document.lineOffset,
+				node: parseYAMLNode(document.Content), lineOffset: document.LineOffset,
 			})
 		}
 		return nil
