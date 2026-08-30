@@ -108,6 +108,14 @@ type Result struct {
 	// DisprovenFindings retain the complete finding-level contract so a
 	// same-evaluation deterministic disproval projects as false-finding.
 	DisprovenFindings []apiv1.Finding
+	// RepeatedFindingIDs were already active in the latest prior episode for
+	// this gate, so they recurred across a repass rather than being raised
+	// for the first time (issue #3136).
+	RepeatedFindingIDs []string
+	// UnverifiedRepeatFindingIDs are the RepeatedFindingIDs the latest
+	// authoritative diff does not corroborate: it contains no line, and no
+	// file, at the location the finding names.
+	UnverifiedRepeatFindingIDs []string
 }
 
 // RepassCause is the machine-readable upstream reason for a repass.
@@ -438,8 +446,24 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			outcomeReason = ReasonFindingDisproven
 		}
 	}
+	// #3136: a needs-changes verdict that only repeats findings the diff
+	// cannot corroborate buys nothing from another implementer session, so it
+	// goes to arbitration rather than charging the repass budget again.
+	forcedEscalation := emptyDiff
+	if outcome == string(apiv1.VerdictNeedsChanges) && verdict != nil && !duplicateDiff {
+		normalized, arbitration := arbitrateRepeatedFindings(
+			*verdict, env.ContextPointers, ArtifactBytesFromRoot(journalDir(e.Journal)), g.Name,
+		)
+		verdict = &normalized
+		learningResolution.Repeated = arbitration.Repeated
+		learningResolution.UnverifiedRepeats = arbitration.Unverified
+		if arbitration.Arbitrate {
+			forcedEscalation = true
+			outcomeReason = ReasonFindingUnverifiedRepeat
+		}
+	}
 
-	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit, outcomeReason, learningResolution)
+	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, forcedEscalation, cacheHit, outcomeReason, learningResolution)
 }
 
 // EvaluateHuman applies an explicit human decision to a human gate. The
@@ -539,7 +563,8 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 		DuplicateDiff: duplicateDiff, RepassCause: repassCause, Reason: reason, CacheHit: cacheHit, Verdict: verdict,
 		ResolvedFindingIDs: resolution.Resolved, SuppressedFindingIDs: resolution.Suppressed,
 		ReopenedFindingIDs: resolution.Reopened, DisprovenFindingIDs: resolution.Disproven,
-		DisprovenFindings: resolution.DisprovenFindings,
+		DisprovenFindings:  resolution.DisprovenFindings,
+		RepeatedFindingIDs: resolution.Repeated, UnverifiedRepeatFindingIDs: resolution.UnverifiedRepeats,
 	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
