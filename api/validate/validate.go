@@ -198,6 +198,27 @@ const (
 	// earned, and a trusted-claim surface that rewards lying is worse than
 	// no claim at all.
 	RunnerAVExclusionsUnverified WarningCode = "RNR006"
+	// WarningConnectionRefUnhonored (REF012) identifies a gaggle that declares
+	// more than one DISTINCT connectionRef across its project, backlog, and
+	// additionalRepos sites (#3296). connectionRef is a credential SELECTOR in
+	// the config, but the runtime never consults it: credentials are resolved
+	// from instance.yaml repos[] by repository identity, and every credentialed
+	// capability a gaggle's stages hold comes from that gaggle's own repo
+	// binding (internal/credentials.RunnerGrants), with reference repos taking
+	// their own identity-selected read token (AdditionalReadGrants). So a
+	// gaggle that names two different connections cannot get two different
+	// credentials, and the declaration that loses is substituted — silently,
+	// with green validation, which is the one prohibited state for a declared
+	// credential selector. A gaggle whose sites all name ONE connection is not
+	// flagged: there is no second credential for the platform to substitute.
+	//
+	// STRICT-NEUTRAL, like DVL020 and RNR006: the shipped guides and
+	// config-examples teach exactly the flagged shape (a project connection
+	// plus a separate backlog connection), so promoting this would turn every
+	// existing --strict pipeline red on upgrade for a platform limitation the
+	// author cannot fix in their config. It is a notice that the platform does
+	// not honor the distinction, not a defect in the config that declared it.
+	WarningConnectionRefUnhonored WarningCode = "REF012"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -1012,6 +1033,9 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// a gaggle legitimately binds its repo token per-repo in instance.yaml
 	// rather than through a Manifest Connection.
 	ix.checkGaggleConnections(r)
+	// A declared connectionRef that the runtime cannot honor is surfaced
+	// rather than silently substituted (#3296).
+	ix.checkGaggleConnectionRefHonored(r)
 	// Read-only reference-repo coherence (MGV-10, #1285): an AdditionalRepos
 	// entry must not also be the gaggle's read-write Project.
 	ix.checkGaggleAdditionalRepos(r)
@@ -1755,6 +1779,57 @@ func (ix *index) checkGaggleConnections(r *Report) {
 		check(g.Spec.Backlog.ConnectionRef, "spec.backlog.connectionRef")
 		for i, repo := range g.Spec.AdditionalRepos {
 			check(repo.ConnectionRef, fmt.Sprintf("spec.additionalRepos[%d].connectionRef", i))
+		}
+	}
+}
+
+// checkGaggleConnectionRefHonored surfaces a declared connectionRef the runtime
+// cannot honor (#3296). connectionRef reads as a credential selector, but
+// nothing downstream consults it: credentials.RunnerGrants backs every
+// credentialed capability a gaggle's stages hold with that gaggle's OWN repo
+// binding, selected from instance.yaml repos[] by repository identity, and
+// AdditionalReadGrants does the same per reference repo. A gaggle whose sites
+// all name ONE connection therefore gets what it declared — there is no second
+// credential to substitute. A gaggle that names two DIFFERENT connections is
+// asking for two different credentials and gets one, with the losing site
+// silently backed by a credential its author did not name, which for a
+// credential selector is a security-relevant substitution.
+//
+// The baseline is the project's connectionRef (the one the runtime effectively
+// uses for the gaggle's capability grants), falling back to the first non-empty
+// declaration in site order when the project declares none. Every other site
+// whose non-empty ref differs from the baseline is reported once, at its own
+// field, so the message names exactly which declaration is inert.
+func (ix *index) checkGaggleConnectionRefHonored(r *Report) {
+	for name, g := range ix.gaggles {
+		type site struct{ field, ref string }
+		sites := []site{
+			{"spec.project.connectionRef", g.Spec.Project.ConnectionRef},
+			{"spec.backlog.connectionRef", g.Spec.Backlog.ConnectionRef},
+		}
+		for i, repo := range g.Spec.AdditionalRepos {
+			sites = append(sites, site{fmt.Sprintf("spec.additionalRepos[%d].connectionRef", i), repo.ConnectionRef})
+		}
+
+		baseline := ""
+		for _, s := range sites {
+			if s.ref != "" {
+				baseline = s.ref
+				break
+			}
+		}
+		if baseline == "" {
+			continue
+		}
+		for _, s := range sites {
+			if s.ref == "" || s.ref == baseline {
+				continue
+			}
+			r.add(WarningConnectionRefUnhonored, Warning, ix.gaggleFile[name], "Gaggle", name,
+				"%s names connection %q, but this gaggle already selects connection %q and connectionRef does not select credentials at runtime: "+
+					"each access is backed by the credential configured for its repository in instance.yaml repos[], so the two connections you declared "+
+					"resolve to one credential and %q is not honored",
+				s.field, s.ref, baseline, s.ref)
 		}
 	}
 }

@@ -93,6 +93,13 @@ spec:
                       description: |-
                         ConnectionRef names the connection (and thus credentials) used to reach
                         this repo. It resolves to a Connection declared in the Manifest.
+
+                        It is not a runtime credential selector (#3296): the local runner
+                        resolves each access's credential from instance.yaml repos[] by
+                        repository identity, never from the named connection. Declaring two
+                        different connections across a gaggle's sites therefore does not
+                        produce two different credentials — validate reports REF012 for the
+                        declaration that is not honored.
                       type: string
                     name:
                       description: Name of the repository.
@@ -131,8 +138,14 @@ spec:
                       omitted for github/ado.
                     type: string
                   connectionRef:
-                    description: ConnectionRef names the connection (credentials)
-                      used to reach the backlog.
+                    description: |-
+                      ConnectionRef names the connection (credentials) used to reach the backlog.
+
+                      It is not a runtime credential selector (#3296): a gaggle's backlog
+                      capabilities are backed by the same repo-identity-selected credential as
+                      the rest of its stages, so naming a backlog-specific connection here does
+                      not route the backlog through a different credential. validate reports
+                      REF012 when it differs from the gaggle's other declarations.
                     type: string
                   fieldPredicate:
                     description: |-
@@ -263,6 +276,13 @@ spec:
                     description: |-
                       ConnectionRef names the connection (and thus credentials) used to reach
                       this repo. It resolves to a Connection declared in the Manifest.
+
+                      It is not a runtime credential selector (#3296): the local runner
+                      resolves each access's credential from instance.yaml repos[] by
+                      repository identity, never from the named connection. Declaring two
+                      different connections across a gaggle's sites therefore does not
+                      produce two different credentials — validate reports REF012 for the
+                      declaration that is not honored.
                     type: string
                   name:
                     description: Name of the repository.
@@ -472,6 +492,13 @@ spec:
                           description: |-
                             ConnectionRef names the connection (and thus credentials) used to reach
                             this repo. It resolves to a Connection declared in the Manifest.
+
+                            It is not a runtime credential selector (#3296): the local runner
+                            resolves each access's credential from instance.yaml repos[] by
+                            repository identity, never from the named connection. Declaring two
+                            different connections across a gaggle's sites therefore does not
+                            produce two different credentials — validate reports REF012 for the
+                            declaration that is not honored.
                           type: string
                         name:
                           description: Name of the repository.

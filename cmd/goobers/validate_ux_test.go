@@ -976,3 +976,43 @@ func appendToFile(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+// TestValidateStrictDoesNotPromoteUnhonoredConnectionRef covers REF012's
+// strict-neutrality (#3296). The warning says the platform does not honor a
+// second declared connection — the author cannot fix that by editing their
+// config, and the shipped guides teach exactly the flagged shape — so
+// promoting it under --strict would turn existing green pipelines red on
+// upgrade. It must still print.
+func TestValidateStrictDoesNotPromoteUnhonoredConnectionRef(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.InitQuickstart(root); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	manifestPath := filepath.Join(root, "config", "manifest.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+	replaceInFile(t, manifestPath, `  gaggles:`, `    - name: backlog-token
+      type: backlog
+      provider: github
+      secretRef:
+        name: backlog-token
+  gaggles:`)
+	replaceInFile(t, gagglePath, `    project: acme/widgets`, `    project: acme/widgets
+    connectionRef: backlog-token`)
+	replaceInFile(t, gagglePath, `    connectionRef: repo-token
+  isolation:`, `  isolation:`)
+
+	code, stdout, stderr := runArgs(t, "validate", "--strict", root)
+	if code != 0 {
+		t.Fatalf("validate --strict code=%d, stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "REF012") {
+		t.Fatalf("strict validate did not report the unhonored connectionRef:\n%s", stdout)
+	}
+}
