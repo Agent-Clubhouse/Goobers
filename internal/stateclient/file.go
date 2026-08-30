@@ -16,10 +16,13 @@ type FileConfig struct {
 	// Dir is the instance scheduler directory the state files live in — the
 	// SAME directory the daemon's own scheduler reads and writes, so a
 	// plane-served write and an in-process write land on one file rather than
-	// two copies. The route's gaggle is a containment scope, not a second
-	// storage namespace: these files are instance-wide today and stay so, or
-	// the far-side evidence (a pod-executed backlog-query advancing the
-	// cursor the daemon reads) could not hold.
+	// two copies. Each key resolves under it through KeyRelativePath, which is
+	// the key's own name for all but the backlog-health cursor (whose prefix
+	// resolves to the backlog-health/ subdirectory the ledger has always lived
+	// in). The route's gaggle is a containment scope, not a second storage
+	// namespace: these files are instance-wide today and stay so, or the
+	// far-side evidence (a pod-executed backlog-query advancing the cursor the
+	// daemon reads) could not hold.
 	Dir string
 	// Lock scopes one critical section for key, labelled operation. Supplied
 	// by the caller so the key's EXISTING lock discipline is preserved
@@ -49,12 +52,13 @@ func NewFile(cfg FileConfig) (*File, error) {
 
 // path resolves key to its file. checkKey has already refused everything
 // outside the closed namespace, so the join cannot escape Dir — the guard runs
-// BEFORE the join for exactly that reason.
+// BEFORE the join for exactly that reason, inside KeyRelativePath.
 func (f *File) path(key string) (string, error) {
-	if err := checkKey(key); err != nil {
+	relative, err := KeyRelativePath(key)
+	if err != nil {
 		return "", err
 	}
-	return filepath.Join(f.cfg.Dir, key), nil
+	return filepath.Join(f.cfg.Dir, relative), nil
 }
 
 func (f *File) locked(key, operation string, fn func() error) error {

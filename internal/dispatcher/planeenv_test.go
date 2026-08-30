@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/stateclient"
@@ -161,6 +162,50 @@ func TestRenderedCLIStagePodCarriesEveryPlanePair(t *testing.T) {
 		if plane.alsoRequiresGa && env[EnvGaggle] != attempt.Gaggle {
 			t.Errorf("%s plane also selects on %s, which is %q", plane.plane, EnvGaggle, env[EnvGaggle])
 		}
+	}
+}
+
+// TestRenderedBacklogHealthPodCarriesTheStatePlane is #3948's rendered-env
+// proof, for both of the command lines the backlog-curation workflow pins.
+//
+// backlog-health was refused for pod execution until its ready-transition
+// ledger was admitted to the scheduler-state plane, so the guarantee that
+// replaces the refusal has to be asserted on the thing the guard was
+// protecting: the pod the dispatcher actually renders for these two commands
+// carries the state endpoint, the state bearer, and the gaggle the route
+// scopes to — the complete set stateclient.Select requires before it will
+// serve the ledger from the daemon rather than from a container-local file.
+func TestRenderedBacklogHealthPodCarriesTheStatePlane(t *testing.T) {
+	for _, command := range [][]string{
+		{"goobers", "backlog-health"},
+		{"goobers", "backlog-health", "--feedback"},
+	} {
+		t.Run(strings.Join(command, " "), func(t *testing.T) {
+			if !executor.StageInvokesGoobersCLI(command) {
+				t.Fatal("the dispatcher does not see this as a goobers-CLI stage, so it would stamp no plane env at all")
+			}
+			if executor.StageRequiresInstanceRoot(command, "") {
+				t.Fatal("the command is still refused for pod execution; #3948 lifts this")
+			}
+
+			cfg := testConfig()
+			attempt := cliAttempt()
+			attempt.Command = command
+			pod, err := RenderPod(cfg, attempt, linuxRunner())
+			if err != nil {
+				t.Fatalf("RenderPod: %v", err)
+			}
+			env := podEnvMap(pod)
+			if got := env[StateEndpointEnv]; got != cfg.WriteAPIBase {
+				t.Errorf("%s = %q, want the daemon write API %q", StateEndpointEnv, got, cfg.WriteAPIBase)
+			}
+			if got, want := env[StateTokenEnv], attempt.PlaneTokens.State; got != want {
+				t.Errorf("%s = %q, want %q", StateTokenEnv, got, want)
+			}
+			if got := env[EnvGaggle]; got != attempt.Gaggle {
+				t.Errorf("%s = %q, want %q — the ledger key's gaggle and the route's scope are the same value", EnvGaggle, got, attempt.Gaggle)
+			}
+		})
 	}
 }
 
