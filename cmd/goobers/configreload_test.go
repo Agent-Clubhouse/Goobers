@@ -839,7 +839,7 @@ func TestBuildSchedulerSetupRejectsConfigChangedDuringStartup(t *testing.T) {
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(context.Background(), layout, &wg)
 	if setup != nil {
-		setup.Shutdown(context.Background())
+		_ = setup.Shutdown(context.Background())
 	}
 	if err == nil || !strings.Contains(err.Error(), "config directory changed during daemon setup") {
 		t.Fatalf("buildSchedulerSetup error = %v, want changed-during-setup refusal", err)

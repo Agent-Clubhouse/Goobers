@@ -57,6 +57,13 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"                             emission through the journal plane, with the\n" +
 	"                             per-run bearer from $GOOBERS_POD_TOKEN when\n" +
 	"                             set (default $GOOBERS_DAEMON_API)\n" +
+	"  --config-reload-interval <dur>\n" +
+	"                             how often to re-read the instance config\n" +
+	"                             tree and rebuild the gaggle seams whose\n" +
+	"                             config changed, without a restart; 0\n" +
+	"                             disables reload and freezes the worker on\n" +
+	"                             its boot-time tree (default 10s; requires\n" +
+	"                             --instance)\n" +
 	"  --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;\n" +
 	"                             wires the dispatcher behind the stage-dispatch\n" +
 	"                             seam and serves the per-(gaggle x runner)\n" +
@@ -69,6 +76,12 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"The worker identity reported to Temporal is versioned\n" +
 	"(goobers-worker/<build>@<host>#<pid>) so visibility alone answers which\n" +
 	"build serves a queue.\n\n" +
+	"With --instance, the worker re-reads its config tree on\n" +
+	"--config-reload-interval and atomically replaces the gaggle, credential,\n" +
+	"and agentic-kit seams whose config changed, so a definitions edit reaches\n" +
+	"the NEXT stage this worker serves without a pod restart. An attempt\n" +
+	"already running keeps the kit it was handed. A reload that does not parse\n" +
+	"is logged and rejected; the last-known-good tree stays in force.\n\n" +
 	"Exit codes: 0 = clean drain, 1 = startup/connection error, 2 = usage error,\n" +
 	"3 = drain timeout expired with in-flight work abandoned.\n"
 
@@ -102,6 +115,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	blobRoot := fs.String("blob-store", workerEnvOr("GOOBERS_BLOB_STORE", ""), "directory backing the fleet-wide content-addressed artifact store")
 	daemonAPI := fs.String("daemon-api", workerEnvOr("GOOBERS_DAEMON_API", ""), "daemon write API base URL for live journal emission")
 	dispatchNamespace := fs.String("dispatch-namespace", workerEnvOr("GOOBERS_DISPATCH_NAMESPACE", ""), "namespace to create mode-3 stage pods in; enables the dispatcher-backed stage-dispatch seam")
+	configReloadInterval := fs.Duration("config-reload-interval", workerConfigReloadInterval, "how often to re-read the instance config tree and rebuild changed gaggle seams; 0 disables reload")
 	fs.Usage = helpUsage(stderr, "worker")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -189,6 +203,18 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// auth and cannot clone a private repo.
 		engineRuntime.deps.Workspaces = seams.Workspaces(filepath.Join(root, "scratch"))
 		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)
+
+		// #3884: the worker's config tree is otherwise frozen at pod start for
+		// as long as the pod lives, while the daemon syncs its own tree live —
+		// the divergence that cost a run's worktree checkout in Infra LEDGER
+		// I-51. Watching keeps the two convergent without a restart.
+		if *configReloadInterval > 0 {
+			watcher := startWorkerConfigWatcher(context.Background(), seams, *configReloadInterval)
+			defer watcher.Stop()
+			pf(stdout, "goobers worker: config reload every %s from %s\n", *configReloadInterval, *instanceRoot)
+		} else {
+			pf(stdout, "goobers worker: config reload disabled; seams stay pinned to the boot-time config tree\n")
+		}
 	}
 
 	if *daemonAPI != "" {

@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -268,20 +266,11 @@ func (s *daemonClaimService) List(_ context.Context, request httpapi.ClaimListRe
 }
 
 // runBelongsToGaggle reports whether runID's journal lives under gaggle's
-// runs directory on this instance — the run.yaml the daemon's live writer
-// creates at the run's first emit, which every pod plane call follows.
-//
-// Both segments are validated before they are joined into a path: this is a
-// containment check whose only inputs are a pod's request body, so a gaggle
-// that is not a single plain path element (".", "..", anything carrying a
-// separator) is refused outright rather than resolved. Fail closed — an
-// unverifiable gaggle is not a gaggle the run belongs to.
+// runs directory on this instance. Delegates to the shared containment check
+// (schedulerstate.go), which the scheduler-state plane applies to the same
+// question for the same reason.
 func (s *daemonClaimService) runBelongsToGaggle(gaggle, runID string) bool {
-	if !apiv1.ValidRunID(runID) || !plainPathElement(gaggle) {
-		return false
-	}
-	_, err := os.Stat(filepath.Join(s.layout.ForGaggle(gaggle).RunsDir(), runID, "run.yaml"))
-	return err == nil
+	return runBelongsToGaggle(s.layout, gaggle, runID)
 }
 
 // plainPathElement reports whether value is safe to join as exactly one path
@@ -399,6 +388,10 @@ func (s *daemonClaimService) journalRefusal(request httpapi.ClaimRequest, holder
 type workflowTriggerer interface {
 	Trigger(ctx context.Context, workflow string, now time.Time) (string, error)
 	TriggerExact(ctx context.Context, identity localscheduler.WorkflowIdentity, now time.Time) (string, error)
+	// TriggerPriority is the output-driven re-tick the sweep dispatches for a
+	// priority request file (rundelegate.go) — the plane's path for a stage
+	// pod, which has no scheduler directory to drop that file into.
+	TriggerPriority(ctx context.Context, identity localscheduler.WorkflowIdentity, sourceRun string, now time.Time) (string, error)
 }
 
 // maxTriggerDedupeRecords bounds the trigger plane's delivery-dedupe memory,
@@ -417,6 +410,11 @@ type daemonTriggerService struct {
 	// dispatch overrides the scheduler dispatch seam in tests; nil dispatches
 	// through the attached scheduler.
 	dispatch workflowTriggerer
+	// contains verifies that a pod caller's run belongs to the gaggle it
+	// named — the trigger plane's half of decision 005 R3's "a pod principal
+	// may POST /triggers for its OWN gaggle". nil is fail-closed: a pod
+	// request is refused rather than admitted unverified.
+	contains func(gaggle, runID string) bool
 
 	mu    sync.Mutex
 	seen  map[string]string // requestId -> minted run id
@@ -425,6 +423,14 @@ type daemonTriggerService struct {
 
 func newDaemonTriggerService() *daemonTriggerService {
 	return &daemonTriggerService{now: time.Now, seen: make(map[string]string)}
+}
+
+// withGaggleContainment attaches the pod-principal containment check. The
+// daemon wires the instance's own run.yaml lookup here, the same authority the
+// claims and scheduler-state planes use.
+func (s *daemonTriggerService) withGaggleContainment(contains func(gaggle, runID string) bool) *daemonTriggerService {
+	s.contains = contains
+	return s
 }
 
 func (s *daemonTriggerService) AttachScheduler(sched *localscheduler.Scheduler) {
@@ -457,6 +463,26 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 			http.StatusServiceUnavailable, "scheduler_unavailable", "run admission is not available", nil,
 		)
 	}
+	// Pod containment (decision 005 R3). The route has already established
+	// that the caller named a gaggle and, for a priority re-tick, its own run;
+	// this is the authority check the route cannot make — does that run
+	// actually live in that gaggle on this instance? A missing verifier is a
+	// refusal, not a pass: the daemon must never admit a pod trigger it could
+	// not contain.
+	if request.PodScoped {
+		if s.contains == nil {
+			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+				http.StatusForbidden, "gaggle_mismatch",
+				"pod-principal triggers are not available from this server", nil,
+			)
+		}
+		if !s.contains(request.Gaggle, request.PodRunID) {
+			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+				http.StatusForbidden, "gaggle_mismatch",
+				"pod principal may only trigger a workflow in the gaggle its own run belongs to", nil,
+			)
+		}
+	}
 	requestID := strings.TrimSpace(request.RequestID)
 	if requestID != "" {
 		if runID, duplicate := s.reserve(requestID); duplicate {
@@ -466,11 +492,26 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 
 	var runID string
 	var err error
-	if request.Gaggle != "" {
+	switch {
+	case strings.TrimSpace(request.SourceRun) != "":
+		// A priority re-tick names an exact workflow by construction: the
+		// source run publishes durable state that changes ONE workflow's
+		// selection order, and TriggerPriority takes that identity. An
+		// unscoped priority request has no such identity, so it is refused
+		// rather than resolved against whatever gaggle happens to match.
+		if request.Gaggle == "" {
+			err = httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request",
+				"a priority trigger requires the workflow's gaggle", nil)
+			break
+		}
+		runID, err = dispatch.TriggerPriority(ctx, localscheduler.WorkflowIdentity{
+			Gaggle: request.Gaggle, Workflow: request.Workflow,
+		}, strings.TrimSpace(request.SourceRun), s.now())
+	case request.Gaggle != "":
 		runID, err = dispatch.TriggerExact(ctx, localscheduler.WorkflowIdentity{
 			Gaggle: request.Gaggle, Workflow: request.Workflow,
 		}, s.now())
-	} else {
+	default:
 		runID, err = dispatch.Trigger(ctx, request.Workflow, s.now())
 	}
 	if err != nil {

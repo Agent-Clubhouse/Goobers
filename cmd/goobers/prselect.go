@@ -312,7 +312,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 
-	claimed, err := claimEligiblePullRequestInOrder(root, eligible)
+	claimed, err := claimEligiblePullRequestInOrder(root, repo, eligible)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
 		return 1
@@ -548,7 +548,7 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 
-	claimed, err := claimEligiblePullRequestInOrder(root, eligible)
+	claimed, err := claimEligiblePullRequestInOrder(root, repo, eligible)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
 		return 1

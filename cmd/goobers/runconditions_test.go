@@ -37,7 +37,7 @@ func TestBuildSchedulerSetupCarriesInstanceRunConditions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	if setup.RunConditions.MaxParallelRuns != 3 {
 		t.Fatalf("RunConditions.MaxParallelRuns = %d, want 3", setup.RunConditions.MaxParallelRuns)

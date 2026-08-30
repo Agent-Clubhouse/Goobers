@@ -294,6 +294,10 @@ func (s *stubTriggerer) TriggerExact(context.Context, localscheduler.WorkflowIde
 	return s.mint()
 }
 
+func (s *stubTriggerer) TriggerPriority(context.Context, localscheduler.WorkflowIdentity, string, time.Time) (string, error) {
+	return s.mint()
+}
+
 // barrierTriggerer blocks the FIRST mint inside the dispatch seam until
 // released, so a test can deliver a duplicate while the winning delivery's
 // mint is deterministically still in flight. Later mints pass straight
@@ -319,6 +323,10 @@ func (b *barrierTriggerer) Trigger(context.Context, string, time.Time) (string, 
 }
 
 func (b *barrierTriggerer) TriggerExact(context.Context, localscheduler.WorkflowIdentity, time.Time) (string, error) {
+	return b.mint()
+}
+
+func (b *barrierTriggerer) TriggerPriority(context.Context, localscheduler.WorkflowIdentity, string, time.Time) (string, error) {
 	return b.mint()
 }
 

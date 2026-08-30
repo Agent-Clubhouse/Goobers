@@ -320,7 +320,7 @@ func TestDaemonStartsWithOneUnsatisfiableWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the daemon must start with an unsatisfiable workflow in config (boot never kills, #2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	var refused, healthy *localscheduler.WorkflowEntry
 	for i := range setup.Entries {
@@ -401,7 +401,7 @@ func TestRemoteOnlyStageValidatesButBootRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot must never kill (#2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	var refused *localscheduler.WorkflowEntry
 	for i := range setup.Entries {
 		if setup.Entries[i].Workflow == "win-build" {
@@ -482,7 +482,7 @@ func TestRemoteOnlyCapabilityRefusalSurfacesInStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot must never kill (#2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	localscheduler.New(setup.Entries, setup.InstanceLog)
 
 	events, err := journal.ReadInstanceLog(setup.InstanceLog.Dir())
@@ -649,7 +649,7 @@ func TestDaemonZeroDeclarationKeepsLegacyBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a zero-declaration instance must start with an unclaimed capability: %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	for _, entry := range setup.Entries {
 		if entry.PlacementRefusal != "" {
 			t.Fatalf("zero-declaration entries must never carry a boot refusal, got %q on %q", entry.PlacementRefusal, entry.Workflow)
@@ -812,7 +812,7 @@ func TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot must never kill (#2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	var refused *localscheduler.WorkflowEntry
 	for i := range setup.Entries {
 		if setup.Entries[i].Workflow == "win-build" {
