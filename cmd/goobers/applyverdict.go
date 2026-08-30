@@ -714,7 +714,6 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// keeps downstream consumers from rediscovering the reviewer's classification
 	// miss; a verdict with any real defect still routes to remediation.
 	overlappingSiblings := parseOverlappingSiblings(providerInput("overlappingSiblings", ""))
-	posted.OverlapCluster = len(overlappingSiblings) > 0
 	effective := posted
 	effective.Findings = withOverlapBackstop(posted.Findings, overlappingSiblings)
 	posted.Findings = effective.Findings
@@ -726,6 +725,28 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// the parked-record). A gather failure fails the stage explicitly rather
 	// than silently deriving a different winner.
 	policyInput := providerInput("electionPolicy", defaultElectionPolicy)
+
+	// #2741: which siblings this PR serializes against is its own selectable
+	// surface, orthogonal to the ordering policy above. "election" (default)
+	// serializes only over the deterministic overlap set the election machinery
+	// supplies; "ordering" also serializes over the reviewer's named cross-PR
+	// blockers, so a workflow that omits elect-lander/elect-gate still gets a
+	// deterministic lander instead of a permanent needs-changes loop.
+	serializationInput := providerInput("siblingSerialization", defaultSiblingSerialization)
+	serialization, knownSerialization := resolveSiblingSerialization(serializationInput)
+	if !knownSerialization {
+		pf(stderr, "warning: unknown sibling-serialization strategy %q — falling back to %q\n", serializationInput, serialization)
+	}
+	serializedCluster := serializationCluster(serialization, effective.Findings, overlappingSiblings, selectedNumber)
+
+	// The published cluster evidence MUST describe the SAME cluster the
+	// election below resolves over, or a published `pass` could carry
+	// Elected:true with OverlapCluster:false and falsify the invariant
+	// merge-pr's #1071 conjunct reads. Deriving it from the serialized cluster
+	// keeps that conjunct fail-closed under every strategy, including an
+	// "ordering" cluster with no deterministic overlap set at all.
+	posted.OverlapCluster = len(serializedCluster) > 0
+
 	clusterBlockers := electionClusterBlockers(effective.Findings, overlappingSiblings)
 	clusterPolicy, resolvedPolicyName, perr := resolveElectionPolicyForCluster(
 		ctx, prProvider, repo, policyInput, selectedNumber, clusterBlockers, prs)
@@ -737,7 +758,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// sibling will defer to it. Publish that zero-winner state as a distinct
 	// human escalation instead of silently splitting the cluster between
 	// blocked-on-sibling and needs-remediation.
-	if reason := noLanderEscalationReason(posted.Decision, effective.Findings, selectedNumber, overlappingSiblings, clusterPolicy, demoted, resolvedPolicyName); reason != "" {
+	if reason := noLanderEscalationReason(posted.Decision, effective.Findings, selectedNumber, serializedCluster, clusterPolicy, demoted, resolvedPolicyName); reason != "" {
 		posted.Decision = apiv1.VerdictFail
 		posted.Rationale = reason
 	}
@@ -748,7 +769,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// GitHub's native merge queue must never be a second, uncoordinated
 	// merge authority that crowns a cluster member on its own. See
 	// resolveElectionOutcome.
-	if elected, rationale := resolveElectionOutcome(selectedNumber, posted.Decision, effective.Findings, posted.Rationale, overlappingSiblings, demoted, clusterPolicy, resolvedPolicyName); rationale != "" {
+	if elected, rationale := resolveElectionOutcome(selectedNumber, posted.Decision, effective.Findings, posted.Rationale, serializedCluster, demoted, clusterPolicy, resolvedPolicyName); rationale != "" {
 		posted.Elected = elected
 		posted.Rationale = rationale
 		if elected {

@@ -51,6 +51,12 @@ type FindingResolution struct {
 	// AllSuppressed reports that every finding on a needs-changes verdict was
 	// a suppressed re-raise, so the verdict was converted to pass.
 	AllSuppressed bool
+	// Repeated and UnverifiedRepeats carry the repeated-finding evidence
+	// check's bookkeeping (#3136): identities that recurred from the latest
+	// prior episode, and the subset of those the authoritative diff does not
+	// corroborate.
+	Repeated          []string
+	UnverifiedRepeats []string
 }
 
 // findingResolution is the in-package spelling of FindingResolution. An alias,
@@ -115,6 +121,20 @@ func DisproveReviewerFindings(
 	gateName string,
 ) (apiv1.Verdict, bool) {
 	return disproveReviewerFindings(verdict, pointers, resolve, gateName)
+}
+
+// ArbitrateRepeatedFindings checks a needs-changes verdict's findings against
+// the previous episode's identities and the authoritative diff, and reports
+// whether another repass still has new evidence to act on or the verdict must
+// route to arbitration instead (#3136). Exported alongside the other
+// finding-lifecycle rules and for the same parity reason. resolve may be nil.
+func ArbitrateRepeatedFindings(
+	verdict apiv1.Verdict,
+	pointers []apiv1.ContextPointer,
+	resolve ArtifactBytes,
+	gateName string,
+) (apiv1.Verdict, RepeatedFindingArbitration) {
+	return arbitrateRepeatedFindings(verdict, pointers, resolve, gateName)
 }
 
 // FindingIDs lists the non-empty identities of a finding set, in order.

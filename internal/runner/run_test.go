@@ -6994,6 +6994,37 @@ func TestRunnerAgenticGateAttachesReviewerDiffEvidence(t *testing.T) {
 	if diffPtr.Artifact == nil || diffPtr.Artifact.Digest == "" {
 		t.Fatalf("diff evidence pointer has no digested artifact: %+v", diffPtr)
 	}
+
+	// #3135: the run journal records whether the evidence handed to the agent
+	// was transformed on the way, and the digest of the pre-scrub bytes, so a
+	// finding about a redacted region can be correlated with the authoritative
+	// diff of the commits.
+	rd, err := journal.OpenRead(filepath.Join(instanceRoot, "runs", "run-diff-evidence"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var redaction map[string]any
+	for _, e := range events {
+		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == ReviewerDiffRedactionKind {
+			redaction = e.Runner
+		}
+	}
+	if redaction == nil {
+		t.Fatal("no reviewer-diff redaction annotation was journaled")
+	}
+	if got := redaction["digest"]; got != diffPtr.Artifact.Digest {
+		t.Fatalf("annotation digest = %v, want the evidence digest %q", got, diffPtr.Artifact.Digest)
+	}
+	if redaction["redacted"] != false {
+		t.Fatalf("a diff with no secret material was reported as redacted: %+v", redaction)
+	}
+	if got := redaction["sourceDigest"]; got != diffPtr.Artifact.Digest {
+		t.Fatalf("unredacted evidence must carry the source digest %q, got %v", diffPtr.Artifact.Digest, got)
+	}
 }
 
 // alwaysNeedsChangesReviewer always requests changes and counts how many

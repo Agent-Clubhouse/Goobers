@@ -173,6 +173,13 @@ Rules:
   resolver-issued credentials) plus pattern-based scanning for secret-shaped
   material — and scrubbing happens **before digesting**, so digests commit to the
   scrubbed bytes. Misses are remediated via `goobers journal redact` (above).
+  A redaction removes the credential **value**, not the syntax around it: an
+  authorization expression keeps its scheme and its value alone becomes
+  `<redacted-token>`, because scrubbed diffs are the evidence agentic review
+  gates reason about and a whole-match marker made correct code read as
+  malformed. Reviewer diff evidence is journaled with whether it was
+  transformed and the digest of the pre-scrub bytes, so a finding about a
+  redacted region can be correlated with the authoritative diff.
 - The journal is **human-readable first** (`cat`, `jq`, `grep` are legitimate debug
   tools at tier 1) and machine-projectable second (telemetry rollups, portal).
 - **Instance-level events have a journal too:** scheduler decisions (trigger fired,
