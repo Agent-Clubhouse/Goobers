@@ -126,6 +126,30 @@ const (
 	// cannot address claims.json, the instance config, or anything outside
 	// the four state shapes above.
 	GaggleStateKeyPath = V1Prefix + "/gaggles/{gaggle}/state/{key}"
+
+	// The cross-run journal plane (decision 005 R1 option 1, finding 002 C4).
+	//
+	// A pod principal reads ITS OWN run's journal through the existing
+	// run-scoped read routes above (RunEventsPath / StageAttemptsPath /
+	// RunArtifactPath), contained by the handler to the run its token names.
+	// The reads that legitimately cross runs do NOT get a general cross-run
+	// reader: each is a purpose-built, gaggle-scoped question whose answer the
+	// daemon derives, so what is exposable is decided on the daemon rather
+	// than by whatever a stage chooses to fetch.
+	//
+	// JournalRunPhasePath answers "what phase did run X end in" — the input
+	// backlog-query --claim's terminalFailureStreak walks an item's released
+	// claim history for. Nothing but the phase crosses the boundary.
+	JournalRunPhasePath = V1Prefix + "/journal/run-phase"
+	// JournalConflictTouchesPath answers "which runs recorded base-sync
+	// conflicts, over which files, since T" — gather-implement-context's
+	// hot-file history. File names and run ids only; no artifact bytes.
+	JournalConflictTouchesPath = V1Prefix + "/journal/conflict-touches"
+	// JournalUnpushedWorkPath answers "is there stranded committed-but-never-
+	// published work for the items this run holds" (#3366). The daemon derives
+	// the asking run's items from its own claim ledger rather than trusting
+	// the request, so a pod cannot ask about an item it does not hold.
+	JournalUnpushedWorkPath = V1Prefix + "/journal/unpushed-work"
 )
 
 // RouteID is the stable cross-adapter identity of a versioned route.
@@ -183,6 +207,11 @@ const (
 	// plane's pair are.
 	RouteGaggleStateGet RouteID = "gaggleStateGet"
 	RouteGaggleStatePut RouteID = "gaggleStatePut"
+
+	// The cross-run journal plane (decision 005 R1, finding 002 C4).
+	RouteJournalRunPhase        RouteID = "journalRunPhase"
+	RouteJournalConflictTouches RouteID = "journalConflictTouches"
+	RouteJournalUnpushedWork    RouteID = "journalUnpushedWork"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -348,6 +377,18 @@ var v1Routes = []Route{
 	// execution — a compare-and-swap that advances the scheduler's own state.
 	{ID: RouteGaggleStateGet, Method: http.MethodGet, Path: GaggleStateKeyPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
 	{ID: RouteGaggleStatePut, Method: http.MethodPut, Path: GaggleStateKeyPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
+	// The cross-run journal plane (decision 005 R1 option 1, finding 002 C4)
+	// is a machine seam like the claims plane: a stage pod asking the daemon
+	// one derived question about its own gaggle so a CLI stage keeps an input
+	// it used to read off the local filesystem. Workflow-execution and
+	// mutation-classed for exactly the reason claims/list is — these are reads
+	// taken IN FLIGHT by a claimant whose next act depends on the answer, and
+	// shedding them as read traffic would silently change a stage's decision
+	// rather than delay a human's page.
+	{ID: RouteJournalRunPhase, Method: http.MethodPost, Path: JournalRunPhasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalConflictTouches, Method: http.MethodPost, Path: JournalConflictTouchesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalUnpushedWork, Method: http.MethodPost, Path: JournalUnpushedWorkPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.

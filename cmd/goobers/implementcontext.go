@@ -1,20 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
-	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -231,124 +230,52 @@ type implementationConflictArtifact struct {
 	ConflictingFiles []string `json:"conflictingFiles"`
 }
 
+// recentImplementationConflicts returns, per prior run in the gaggle, the
+// files that run's base-sync conflict artifact named since the cutoff.
+//
+// Cross-run by nature, so it goes through the cross-run journal seam
+// (stagejournal.go): the same walk over the instance's run directories when
+// the stage has one, and the daemon's gaggle-scoped conflict-touches route
+// when it does not (decision 005 R1 / #3880). The route answers with run ids
+// and file paths only — none of the prior runs' other journal content crosses
+// the boundary.
+//
+// Failure is fatal to the caller, deliberately: the hot-file map is what makes
+// the implementer avoid a known-contended file, and an empty map from a failed
+// read is indistinguishable from "nothing is contended".
 func recentImplementationConflicts(root, gaggle string, since time.Time) ([]implementationConflictTouch, error) {
-	layout := layoutFor(root)
-	if gaggle != "" {
-		layout = layout.ForGaggle(gaggle)
-	}
-	runDirs, err := layout.RunDirs()
+	reader, err := stageCrossRunJournal(root, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	byRun := make(map[string]map[string]struct{})
-	for _, runsDir := range runDirs {
-		entries, err := os.ReadDir(runsDir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("read runs directory %s: %w", runsDir, err)
-		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			reader, err := journal.OpenRead(filepath.Join(runsDir, entry.Name()))
-			if err != nil {
-				continue
-			}
-			events, err := reader.Events()
-			if err != nil {
-				return nil, err
-			}
-			for _, event := range events {
-				if !event.KnownSchema() ||
-					event.Type != journal.EventArtifactRecorded ||
-					event.Ref == nil ||
-					event.Time.Before(since) ||
-					!strings.HasSuffix(event.Name, "/base-sync-conflict.json") {
-					continue
-				}
-				data, err := reader.ArtifactBytes(*event.Ref)
-				if err != nil {
-					return nil, err
-				}
-				var artifact implementationConflictArtifact
-				if err := json.Unmarshal(data, &artifact); err != nil {
-					return nil, fmt.Errorf("decode conflict artifact for run %s: %w", entry.Name(), err)
-				}
-				if artifact.Code != "base_sync_conflict" || len(artifact.ConflictingFiles) == 0 {
-					continue
-				}
-				files := byRun[entry.Name()]
-				if files == nil {
-					files = make(map[string]struct{})
-					byRun[entry.Name()] = files
-				}
-				for _, path := range artifact.ConflictingFiles {
-					if path != "" {
-						files[path] = struct{}{}
-					}
-				}
-			}
-		}
+	runID := os.Getenv("GOOBERS_RUN_ID")
+	touches, err := reader.ConflictTouches(context.Background(), journalclient.ConflictTouchRequest{
+		RunID:  runID,
+		Gaggle: gaggle,
+		Since:  since,
+	})
+	if err != nil {
+		return nil, err
 	}
-	runIDs := make([]string, 0, len(byRun))
-	for runID := range byRun {
-		runIDs = append(runIDs, runID)
-	}
-	sort.Strings(runIDs)
-	conflicts := make([]implementationConflictTouch, 0, len(runIDs))
-	for _, runID := range runIDs {
-		files := make([]string, 0, len(byRun[runID]))
-		for path := range byRun[runID] {
-			files = append(files, path)
-		}
-		sort.Strings(files)
-		conflicts = append(conflicts, implementationConflictTouch{runID: runID, files: files})
+	conflicts := make([]implementationConflictTouch, 0, len(touches))
+	for _, touch := range touches {
+		conflicts = append(conflicts, implementationConflictTouch{runID: touch.RunID, files: touch.Files})
 	}
 	return conflicts, nil
 }
 
 // --- prior unpushed work discovery (#3366) --------------------------------
 
-// unpushedDiffMetaArtifactSuffix / unpushedDiffSchemaPrefix mirror
-// internal/runner's unpushed-diff artifact contract (recordUnpushedDiff):
-// the runner persists a run branch's committed-but-never-published diff plus
-// this discovery sidecar the moment an implement attempt ends, and this
-// command reads them back for the next run on the same item. Mirrored rather
-// than imported, the same tradeoff mutationsSidecarFile already accepts.
-const (
-	unpushedDiffMetaArtifactSuffix = "/unpushed-diff.json"
-	unpushedDiffSchemaPrefix       = "goobers.dev/unpushed-diff/"
-	// maxPriorUnpushedDiffInlineBytes bounds the diff carried inline in the
-	// implementation context, keeping the context artifact itself bounded.
-	// The full diff always remains addressable in the prior run's journal by
-	// the digest this section names.
-	maxPriorUnpushedDiffInlineBytes = 200_000
-)
-
-// unpushedDiffArtifact mirrors internal/runner's unpushedDiffMetadata JSON.
-// It carries no timestamp by design: the sidecar's bytes are digest-compared
-// by journal conformance, so the recording time lives on the artifact.recorded
-// event that names it (journal.Event.Time), which is what this file orders
-// candidates by.
-type unpushedDiffArtifact struct {
-	Schema    string   `json:"schema"`
-	RunID     string   `json:"runId"`
-	Stage     string   `json:"stage"`
-	Attempt   int      `json:"attempt"`
-	ItemIDs   []string `json:"itemIds"`
-	Branch    string   `json:"branch"`
-	BaseRef   string   `json:"baseRef"`
-	DiffBytes int      `json:"diffBytes"`
-	Diff      struct {
-		Path   string `json:"path"`
-		Digest string `json:"digest"`
-		Size   int64  `json:"size"`
-	} `json:"diff"`
-}
+// maxPriorUnpushedDiffInlineBytes bounds the diff carried inline in the
+// implementation context, keeping the context artifact itself bounded. The
+// full diff always remains addressable in the prior run's journal by the
+// digest this section names.
+//
+// The artifact contract this discovery reads (internal/runner's
+// recordUnpushedDiff sidecar) now lives with the discovery itself, in
+// internal/journalclient — the same code answers it on this host and inside
+// the daemon, so the two can no longer drift.
+const maxPriorUnpushedDiffInlineBytes = journalclient.DefaultMaxInlineDiffBytes
 
 // priorUnpushedWork is the implementation-context section describing a prior
 // run's stranded diff (#3366).
@@ -376,147 +303,67 @@ const priorUnpushedWorkNote = "A previous run on this same backlog item committe
 // latestPriorUnpushedWork returns the newest committed-but-never-published
 // diff a previous run recorded for one of the items THIS run currently
 // claims, or nil when there is none. Best-effort throughout: any failure
-// (ledger unreadable, a corrupt journal) warns and degrades to nil rather
-// than failing context gathering — the section is advisory, not load-bearing.
+// (ledger unreadable, a corrupt journal, a refused plane read) warns LOUDLY
+// and degrades to nil rather than failing context gathering — the section is
+// advisory, not load-bearing, but its absence must never be silent, because
+// "no prior work exists" and "we could not find out" produce the same empty
+// section and only one of them is true.
 //
-// A prior run is excluded when its journal shows the work was published after
-// the diff was recorded (a ref.touched branch push or PR mutation): published
-// work is not stranded, its branch/PR is the durable copy.
+// The discovery itself runs through the cross-run journal seam
+// (stagejournal.go). On the plane the daemon derives the asking run's claimed
+// items from its own ledger and ignores anything this caller sends, so a pod
+// can only ever learn about work stranded on an item it actually holds
+// (decision 005 R1 / #3880).
 func latestPriorUnpushedWork(root, gaggle, currentRunID string, since time.Time, stderr io.Writer) *priorUnpushedWork {
-	itemIDs, err := claimedItemIDsForRun(layoutFor(root), currentRunID)
+	reader, err := stageCrossRunJournal(root, func(msg string) {
+		pf(stderr, "warning: prior unpushed work discovery: %s\n", msg)
+	})
 	if err != nil {
-		pf(stderr, "warning: prior unpushed work discovery: %v\n", err)
+		pf(stderr, "warning: prior unpushed work discovery unavailable: %v\n", err)
 		return nil
 	}
-	if len(itemIDs) == 0 {
-		return nil
+	request := journalclient.UnpushedWorkRequest{
+		RunID:              currentRunID,
+		Gaggle:             gaggle,
+		Since:              since,
+		MaxInlineDiffBytes: maxPriorUnpushedDiffInlineBytes,
 	}
-	layout := layoutFor(root)
-	if gaggle != "" {
-		layout = layout.ForGaggle(gaggle)
-	}
-	runDirs, err := layout.RunDirs()
-	if err != nil {
-		pf(stderr, "warning: prior unpushed work discovery: %v\n", err)
-		return nil
-	}
-	var best *priorUnpushedWork
-	for _, runsDir := range runDirs {
-		entries, err := os.ReadDir(runsDir)
+	// The item set is the caller's to supply only on the same-host path, where
+	// this process can read the ledger directly. On the plane the daemon is
+	// the authority and this list is ignored, so it is not even computed.
+	if _, isFile := reader.(*journalclient.FileCrossRun); isFile {
+		itemIDs, err := claimedItemIDsForRun(layoutFor(root), currentRunID)
 		if err != nil {
-			if !os.IsNotExist(err) {
-				pf(stderr, "warning: prior unpushed work discovery: read %s: %v\n", runsDir, err)
-			}
-			continue
+			pf(stderr, "warning: prior unpushed work discovery: %v\n", err)
+			return nil
 		}
-		for _, entry := range entries {
-			if !entry.IsDir() || entry.Name() == currentRunID {
-				continue
-			}
-			candidate := priorUnpushedWorkFromRun(filepath.Join(runsDir, entry.Name()), itemIDs, since, stderr)
-			if candidate == nil {
-				continue
-			}
-			if best == nil || candidate.RecordedAt.After(best.RecordedAt) {
-				best = candidate
-			}
+		if len(itemIDs) == 0 {
+			return nil
 		}
+		request.ItemIDs = itemIDs
 	}
-	return best
-}
-
-// priorUnpushedWorkFromRun inspects one run journal for a stranded diff
-// matching itemIDs; nil when the run has none, published its work, or cannot
-// be read.
-func priorUnpushedWorkFromRun(runDir string, itemIDs []string, since time.Time, stderr io.Writer) *priorUnpushedWork {
-	reader, err := journal.OpenRead(runDir)
+	work, err := reader.UnpushedWork(context.Background(), request)
 	if err != nil {
-		return nil // not a run journal (partial/foreign directory) — skip silently
-	}
-	events, err := reader.Events()
-	if err != nil {
-		pf(stderr, "warning: prior unpushed work discovery: read events of %s: %v\n", runDir, err)
+		pf(stderr, "warning: prior unpushed work discovery: %v\n", err)
 		return nil
 	}
-	// Events are journal-ordered, so a single pass answers both questions:
-	// which unpushed-diff sidecar is newest, and whether anything published
-	// the branch AFTER it. Ordering matters — a run that pushed, then
-	// remediated and died mid-cycle has publication events that predate its
-	// newest stranded diff, and that diff is genuinely still unpublished.
-	var meta *journal.Event
-	publishedAfterDiff := false
-	for i := range events {
-		event := events[i]
-		if !event.KnownSchema() {
-			continue
-		}
-		switch event.Type {
-		case journal.EventRefTouched:
-			if event.ExternalRef != nil &&
-				(event.ExternalRef.Kind == "branch" || event.ExternalRef.Kind == "pr") &&
-				meta != nil {
-				publishedAfterDiff = true
-			}
-		case journal.EventArtifactRecorded:
-			if event.Ref != nil &&
-				strings.HasSuffix(event.Name, unpushedDiffMetaArtifactSuffix) &&
-				!event.Time.Before(since) {
-				meta = &events[i]
-				publishedAfterDiff = false
-			}
-		}
-	}
-	if publishedAfterDiff || meta == nil {
+	if work == nil {
 		return nil
 	}
-	data, err := reader.ArtifactBytes(*meta.Ref)
-	if err != nil {
-		pf(stderr, "warning: prior unpushed work discovery: read %s of %s: %v\n", meta.Name, runDir, err)
-		return nil
+	return &priorUnpushedWork{
+		RunID:         work.RunID,
+		Stage:         work.Stage,
+		Attempt:       work.Attempt,
+		RecordedAt:    work.RecordedAt,
+		Branch:        work.Branch,
+		BaseRef:       work.BaseRef,
+		ItemIDs:       work.ItemIDs,
+		DiffBytes:     work.DiffBytes,
+		DiffDigest:    work.DiffDigest,
+		Diff:          work.Diff,
+		DiffTruncated: work.DiffTruncated,
+		Note:          priorUnpushedWorkNote,
 	}
-	var artifact unpushedDiffArtifact
-	if err := json.Unmarshal(data, &artifact); err != nil || !strings.HasPrefix(artifact.Schema, unpushedDiffSchemaPrefix) {
-		return nil
-	}
-	if !itemIDsIntersect(itemIDs, artifact.ItemIDs) {
-		return nil
-	}
-	work := &priorUnpushedWork{
-		RunID:   artifact.RunID,
-		Stage:   artifact.Stage,
-		Attempt: artifact.Attempt,
-		// From the journal event, not the sidecar bytes: see
-		// unpushedDiffArtifact.
-		RecordedAt: meta.Time,
-		Branch:     artifact.Branch,
-		BaseRef:    artifact.BaseRef,
-		ItemIDs:    artifact.ItemIDs,
-		DiffBytes:  artifact.DiffBytes,
-		DiffDigest: artifact.Diff.Digest,
-		Note:       priorUnpushedWorkNote,
-	}
-	diff, err := reader.ArtifactByDigest(artifact.Diff.Digest)
-	if err != nil {
-		pf(stderr, "warning: prior unpushed work discovery: read diff %s of %s: %v\n", artifact.Diff.Digest, runDir, err)
-		return work // still discoverable by digest even without the inline copy
-	}
-	if len(diff) > maxPriorUnpushedDiffInlineBytes {
-		diff = diff[:maxPriorUnpushedDiffInlineBytes]
-		work.DiffTruncated = true
-	}
-	work.Diff = string(diff)
-	return work
-}
-
-func itemIDsIntersect(a, b []string) bool {
-	for _, x := range a {
-		for _, y := range b {
-			if x == y {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 type implementationFileEvidence struct {

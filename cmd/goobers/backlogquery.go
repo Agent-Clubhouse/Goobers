@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/stateclient"
@@ -90,15 +91,21 @@ const (
 
 // terminalFailureStreakDegradedAnnotation marks a cycle where the
 // consecutive-terminal-failure count for one or more items could not be
-// fully computed: terminalFailureStreak's phase lookup (layout.FindRunDir +
-// journal.OpenRead) is a direct on-disk read of a PRIOR run's journal, not a
-// claims-plane call, because no plane route answers "what phase did run X
-// end in" yet (finding 002 C3/C4). On the file seam this only fails for a
-// genuinely reaped/missing run directory; on a stage pod with no local
-// instance root it fails for every entry, so the streak silently degrades
-// toward 0 and repeated-failure deprioritization silently stops working.
-// This annotation is the loud alternative: it survives until the read route
-// lands and this direct FindRunDir/OpenRead pair is deleted in its favor.
+// fully computed.
+//
+// The streak's two inputs are now both plane-answerable (finding 002 C3/C4):
+// the released claim history comes from claims/list with history (C1), and
+// the prior run's phase comes from the gaggle-scoped run-phase route this
+// command reaches through stageCrossRunJournal (#3880 / decision 005 R1). A
+// stage pod therefore computes the SAME streak the daemon would, rather than
+// silently degrading toward 0 because it has no instance root — which is the
+// bug this annotation was created to make visible.
+//
+// The annotation stays, because the shortfall it names is still possible for
+// honest reasons: a reaped run directory, a run outside the asking run's
+// gaggle, a shed or failed plane read. In all of those the count is a floor
+// rather than the truth, and a floor that quietly deprioritizes nothing is
+// exactly the silent policy change this must not become.
 const terminalFailureStreakDegradedAnnotation = "backlog.failure-streak-degraded"
 
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
@@ -524,7 +531,17 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 			pf(stderr, "error: read claim ledger: %v\n", err)
 			return 1
 		}
-		eligible = deprioritizeRepeatedFailures(env.layout, listing, eligible, observedAt, env, runID, workflow)
+		// The phase half of the streak input. Failure to even SELECT a
+		// backend (an endpoint with no token, say) is fatal: a claim cycle
+		// that cannot compute failure streaks would silently stop
+		// deprioritizing repeatedly-failing work, which is a policy change,
+		// not a degradation.
+		phases, err := stageCrossRunJournal(env.root, nil)
+		if err != nil {
+			pf(stderr, "error: open cross-run journal reader for failure-streak input: %v\n", err)
+			return 1
+		}
+		eligible = deprioritizeRepeatedFailures(env.layout, phases, listing, eligible, observedAt, env, runID, workflow)
 	}
 
 	// The claim transaction's blocked-record reconcile runs INSIDE the claims
@@ -574,6 +591,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 
 func deprioritizeRepeatedFailures(
 	layout instance.Layout,
+	phases journalclient.CrossRun,
 	claims claimsclient.Listing,
 	items []providers.WorkItem,
 	now time.Time,
@@ -587,7 +605,7 @@ func deprioritizeRepeatedFailures(
 	deprioritized := make([]providers.WorkItem, 0, len(items))
 	var degraded []string
 	for _, item := range items {
-		streak, degradedAt := terminalFailureStreak(layout, claims.HistoryForItem(item.ID), now)
+		streak, degradedAt := terminalFailureStreak(phases, claims.HistoryForItem(item.ID), now)
 		if degradedAt != "" {
 			degraded = append(degraded, item.ID+"@"+degradedAt)
 		}
@@ -610,22 +628,16 @@ func deprioritizeRepeatedFailures(
 // that run — the caller's signal to fire
 // terminalFailureStreakDegradedAnnotation rather than let the shortfall pass
 // unremarked.
-func terminalFailureStreak(layout instance.Layout, history []localscheduler.ClaimEntry, now time.Time) (streak int, degradedRunID string) {
+func terminalFailureStreak(phases journalclient.CrossRun, history []localscheduler.ClaimEntry, now time.Time) (streak int, degradedRunID string) {
 	for _, entry := range history {
 		endedAt := entry.ReleasedAt
 		if endedAt == nil || now.Sub(*endedAt) > backlogFailureWindow || now.Before(*endedAt) {
 			return streak, ""
 		}
-		runDir, err := layout.FindRunDir(entry.RunID)
+		phase, err := phases.RunPhase(context.Background(), entry.RunID)
 		if err != nil {
-			return streak, entry.RunID
-		}
-		reader, err := journal.OpenRead(runDir)
-		if err != nil {
-			return streak, entry.RunID
-		}
-		phase, err := reader.PhaseBounded(context.Background())
-		if err != nil {
+			// Stop AND report. Continuing past an unreadable run would count a
+			// streak across a gap whose phase might not be a failure at all.
 			return streak, entry.RunID
 		}
 		if phase != journal.PhaseFailed {

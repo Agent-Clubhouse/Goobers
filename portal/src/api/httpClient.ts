@@ -117,6 +117,15 @@ const clientRoutes = {
   // it grows.
   gaggleStateGet: apiRoutes.gaggleStateGet,
   gaggleStatePut: apiRoutes.gaggleStatePut,
+  // The cross-run journal read plane (#3880, decision 005 R1): a mode-3 stage
+  // pod asks the daemon the three questions its own run journal cannot answer
+  // — a prior run's phase, the gaggle's base-sync conflict history, and a
+  // prior run's stranded diff for an item this run holds. Pod-only, like the
+  // credential, blob and surrender planes — the portal never calls these —
+  // but the exhaustiveness check requires the full contract here as it grows.
+  journalRunPhase: apiRoutes.journalRunPhase,
+  journalConflictTouches: apiRoutes.journalConflictTouches,
+  journalUnpushedWork: apiRoutes.journalUnpushedWork,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {

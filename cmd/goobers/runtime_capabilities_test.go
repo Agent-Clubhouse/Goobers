@@ -82,6 +82,11 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true,
 		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "blobPut": true,
 		"stageSurrender": true, "gaggleStatePut": true,
+		// The cross-run journal read plane (#3880): POSTs because each carries
+		// a request body naming the asking run, the gaggle and the window, and
+		// machine-seam-in-flight because a stage pod calls them mid-run to
+		// decide what to do next — the same class as claims/list.
+		"journalRunPhase": true, "journalConflictTouches": true, "journalUnpushedWork": true,
 	}
 	for _, action := range apiActions {
 		if runtimeMutationRoutes[action.ID] {
