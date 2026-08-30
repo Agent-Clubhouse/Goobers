@@ -237,6 +237,48 @@ ConfigMap, wait past the resync/reload interval, and confirm the running process
 (or the mounted file's content — `kubectl exec … -- cat <path>`) actually
 changed. The manifest that broke reload here read exactly like a working one.
 
+### The worker reloads its own config tree
+
+`goobers worker --instance <root>` re-reads `<root>/config` every
+`--config-reload-interval` (default 10s, `0` disables) and atomically replaces
+the gaggle, credential, and agentic-kit seams whose config changed, so a
+definitions edit reaches the **next** stage that worker serves without a pod
+restart (#3884). It is the same content-digest reload the daemon runs
+(`configDirectoryDigest`), including the read-validate-reread stability check
+that keeps a half-written tree from ever becoming the tree in force.
+
+The properties worth knowing when operating it:
+
+- **An in-flight attempt keeps the kit it was handed.** Seams are replaced by
+  publishing a new immutable snapshot, never by mutating a live one, so a
+  reload landing mid-stage cannot change that stage's instructions or
+  credentials underneath it. Attempt *N+1* gets the new tree.
+- **Only the gaggles whose inputs changed are rebuilt.** An untouched gaggle's
+  seams are carried across the reload by pointer — no repeated harness
+  preflight, no re-resolved credentials.
+- **A tree that does not parse is rejected, loudly, and changes nothing.** The
+  worker logs the named failure once (and again only if the failure changes),
+  keeps serving its last-known-good tree, and applies the repair when it lands.
+  It never silently falls back to a partially-loaded tree.
+
+This closes the product-side half of Infra LEDGER **I-51**, where a worker sat
+one Workflows revision behind the daemon for 32 minutes and every stage it
+served resolved credentials against the stale gaggle. What it does **not** do is
+make bytes appear under a mount that never updates: a `config/` directory
+copied once into an `emptyDir` by an initContainer is frozen for the life of the
+pod, and the reloader will poll it forever finding nothing — exactly the
+`subPath` trap above, in a different costume. Give the worker a config tree that
+actually changes (a whole-ConfigMap or projected volume, a synced PVC, a sidecar
+that writes into the mounted directory), then verify by execution: edit the
+tree, wait past the interval, and confirm the worker logged
+`worker config reload: applied config tree sha256:…`.
+
+Reload is also *not* a pin. Without a per-run goober digest recorded at start
+(the daemon-side half tracked in #3876/D1), a reload landing between two
+attempts of the same run can still hand attempt *N+1* a different curator than
+attempt *N*, with nothing in `run.yaml` to show it. Reload removes the stale
+window; the pin is what would make a mismatch detectable.
+
 ### Images
 
 The default image carries the Copilot CLI agent harness. Its home is mounted from
