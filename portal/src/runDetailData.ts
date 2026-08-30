@@ -56,7 +56,7 @@ interface JournalVisitState {
 }
 
 export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuery {
-  const { cache, freshness, subscribe } = useLiveData();
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
   const cacheKey = dataCacheKey("run-detail", runId);
   const [state, setState] = useState<QueryState<RunDetailSnapshot>>(() => {
     const cached = cache.get<RunDetailSnapshot>(cacheKey);
@@ -85,7 +85,11 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
           request.current = undefined;
         }
         cache.set(cacheKey, data, dependencies, cacheRevision);
-        setState({ status: "ready", data });
+        // The stream can drop while this request is in flight; the freshness
+        // effect below only fires on a freshness change, so publishing an
+        // unconditional "ready" here would leave the page claiming live data
+        // until the next transition (#3657).
+        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
         return true;
       },
       (error: unknown) => {
@@ -105,7 +109,7 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
         return false;
       },
     );
-  }, [cache, cacheKey, client, runId]);
+  }, [cache, cacheKey, client, isFresh, runId]);
 
   useEffect(() => {
     const cached = cache.get<RunDetailSnapshot>(cacheKey);
@@ -115,7 +119,9 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
       (_models, reason) => {
         const current = reason === "initial" ? cache.get<RunDetailSnapshot>(cacheKey) : undefined;
         if (current) {
-          setState({ status: "ready", data: current });
+          setState(
+            isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
+          );
           return true;
         }
         return refresh();
@@ -127,7 +133,7 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
       request.current?.abort();
       request.current = undefined;
     };
-  }, [cache, cacheKey, refresh, subscribe]);
+  }, [cache, cacheKey, isFresh, refresh, subscribe]);
 
   // Freshness downgrade (#1714).
   //
