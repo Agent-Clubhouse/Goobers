@@ -501,10 +501,10 @@ func validateGuidedOptions(opts GuidedOptions) error {
 		}
 	case string(apiv1.ProviderADO):
 		if opts.RepoProject == "" {
-			return fmt.Errorf("Azure DevOps repository project is required")
+			return fmt.Errorf("azure DevOps repository project is required")
 		}
 		if opts.RepoAuthKind != ADOAuthAzureCLI && opts.RepoAuthKind != ADOAuthPAT {
-			return fmt.Errorf("Azure DevOps guided setup supports auth kind %q or %q", ADOAuthAzureCLI, ADOAuthPAT)
+			return fmt.Errorf("azure DevOps guided setup supports auth kind %q or %q", ADOAuthAzureCLI, ADOAuthPAT)
 		}
 	default:
 		return fmt.Errorf("repository provider must be %q or %q", apiv1.ProviderGitHub, apiv1.ProviderADO)

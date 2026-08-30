@@ -195,8 +195,11 @@ test("configures a repository through the multi-page guided wizard", async ({ pa
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Set up your first gaggle" })).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
-
+  await expect(page.getByRole("heading", { name: "Choose which ready issues Goobers may implement" })).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Configure the agent runtime" })).toBeVisible();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Review and create the instance" })).toBeVisible();
 
   await page.getByRole("button", { name: "Create Goobers instance" }).click();
   await expect(page.getByText(/Created C:\\work\\tutorial-instance/)).toBeVisible();

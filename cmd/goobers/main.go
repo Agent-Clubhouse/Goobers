@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+
 	_ "time/tzdata"
 
 	"github.com/goobers/goobers/internal/version"

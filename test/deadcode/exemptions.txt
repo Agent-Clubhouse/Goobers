@@ -9,6 +9,7 @@ github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory r
 github.com/goobers/goobers/internal/configdiff.OperationalFields # Documented operational-tuning allowlist, exercised directly by TestOperationalFields (#2044 audit: was vaguely "audit and tooling consumers" with no named consumer).
 github.com/goobers/goobers/internal/credentials.NewResolverWithSources # Dynamic-source resolver constructor (#686) retained as public API, exercised by credential resolver tests.
 github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper, exercised by assets_test.go's hidden-directory case (#2044 audit).
+github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration.
 github.com/goobers/goobers/internal/missioncontrol.EvaluateMetric # Versioned mission-control metric contract entry point retained for workflow consumers (#1449).
 github.com/goobers/goobers/internal/missioncontrol.Build # Versioned mission-control artifact builder retained for workflow consumers (#1449).
 github.com/goobers/goobers/internal/missioncontrol.aggregate # Mission-control aggregation helper reachable through the retained artifact builder (#1449).
@@ -90,7 +91,6 @@ github.com/goobers/goobers/internal/workflow/v_3_0.CheckGaggleFeatureSupport # 3
 github.com/goobers/goobers/internal/workflow/v_3_0.LookupFeature # 3.0-interpreter feature lookup retained as part of the independently versioned interpreter API (#3505).
 github.com/goobers/goobers/internal/workflow/v_3_0.newFeatureRegistryAgainstReleased # 3.0-interpreter feature-registry evolution guard exercised by the release-baseline tests (#3505, mirrors the v_next entry).
 github.com/goobers/goobers/internal/workflow/v_3_0.validateFeatureRegistryEvolution # 3.0-interpreter feature-registry evolution validator exercised by the release-baseline tests (#3505, mirrors the v_next entry).
-github.com/goobers/goobers/cmd/goobers.promptGuidedOptions # Guided target-input prompt seam retained for focused parser and credential-reference tests.
 github.com/goobers/goobers/cmd/goobers.reconcileMergeReviewStatusComment # Merge-review reconciliation seam retained for command tests.
 github.com/goobers/goobers/cmd/goobers.refreshBlockedEligibility # Blocked-record refresh seam retained for command tests.
 github.com/goobers/goobers/cmd/goobers.resumeInterruptedRuns # Crash-recovery seam retained for daemon tests.
