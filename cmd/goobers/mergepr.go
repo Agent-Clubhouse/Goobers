@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/mergepolicy"
 	"github.com/goobers/goobers/providers"
 )
@@ -93,15 +94,10 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -219,8 +215,8 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 	mergeLock := claimsclient.MergeLock{
 		Key:      claimsclient.MergeLockKey(providerGaggle(), string(repo.Provider), repo.Owner, repo.Name),
-		RunID:    os.Getenv("GOOBERS_RUN_ID"),
-		Workflow: os.Getenv("GOOBERS_WORKFLOW"),
+		RunID:    os.Getenv(executor.RunIDEnvVar),
+		Workflow: os.Getenv(executor.WorkflowEnvVar),
 	}
 
 	var poll providers.PullRequestPollResult

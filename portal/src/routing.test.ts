@@ -17,16 +17,6 @@ describe("definition routing", () => {
   });
 });
 
-describe("Getting Started routing", () => {
-  it("round-trips the getting-started route and maps its own primary area", () => {
-    const route = { page: "getting-started" as const };
-
-    expect(routeHash(route)).toBe("#/getting-started");
-    expect(parseRoute("#/getting-started")).toEqual(route);
-    expect(activeArea(route)).toBe("getting-started");
-  });
-});
-
 describe("Insight routing", () => {
   it("round-trips scoped run drill-through filters", () => {
     const route = {

@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // starterFS embeds the valid configuration templates that init can seed into a
@@ -212,7 +214,7 @@ func defaultConfig() *Config {
 		Kind:       ConfigKind,
 		Repos: []RepoRef{
 			{
-				Provider: "github",
+				Provider: string(apiv1.ProviderGitHub),
 				Owner:    "your-org",
 				Name:     "your-repo",
 				Token:    TokenRef{Env: "GOOBERS_GITHUB_TOKEN"},
