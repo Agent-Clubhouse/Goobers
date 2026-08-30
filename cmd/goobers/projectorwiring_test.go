@@ -182,9 +182,9 @@ func TestAttachFreshnessSignalsReachesTheEnvelope(t *testing.T) {
 	}
 	defer func() { _ = watermarks.Close() }()
 
-	definitions, _, err := instance.LoadConfigDir(layout.ConfigDir())
+	definitions, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("load fixture config: %v (report: %+v)", err, report)
 	}
 	reads, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      layout,
@@ -235,9 +235,9 @@ func TestAttachFreshnessSignalsReachesTheEnvelope(t *testing.T) {
 func TestAttachFreshnessSignalsToleratesAProjectorlessSetup(t *testing.T) {
 	root := initDemo(t)
 	layout := instance.NewLayout(root)
-	definitions, _, err := instance.LoadConfigDir(layout.ConfigDir())
+	definitions, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("load fixture config: %v (report: %+v)", err, report)
 	}
 	reads, err := readservice.NewLocal(readservice.LocalSources{
 		Layout:      layout,
