@@ -22,6 +22,8 @@ const (
 	credentialFileName  = "credential.bin"
 )
 
+// Storage persists a Fleet association, private key, and credential for an
+// instance, keyed by the instance's root directory.
 type Storage interface {
 	Load(instanceRoot string) (Record, error)
 	Save(instanceRoot string, record Record) error
@@ -29,11 +31,16 @@ type Storage interface {
 	Delete(instanceRoot string) error
 }
 
+// FileStorage is a Storage implementation that persists Fleet association
+// state to files outside the instance root, keyed by a canonicalized hash of
+// the instance root path.
 type FileStorage struct {
 	baseDir string
 	mu      sync.Mutex
 }
 
+// NewFileStorage creates a FileStorage rooted at baseDir. If baseDir is
+// empty, a platform-appropriate default user storage directory is used.
 func NewFileStorage(baseDir string) (*FileStorage, error) {
 	if strings.TrimSpace(baseDir) == "" {
 		var err error
@@ -63,6 +70,8 @@ func defaultStorageBaseDir() (string, error) {
 	return filepath.Join(base, "goobers", "fleet", "instances"), nil
 }
 
+// CanonicalInstanceRoot resolves instanceRoot to an absolute, symlink-free,
+// platform-normalized path suitable for use as a Storage key.
 func CanonicalInstanceRoot(instanceRoot string) (string, error) {
 	absolute, err := filepath.Abs(instanceRoot)
 	if err != nil {
@@ -80,6 +89,8 @@ func CanonicalInstanceRoot(instanceRoot string) (string, error) {
 	return absolute, nil
 }
 
+// InstanceDirectory returns the directory under s.baseDir that holds the
+// Fleet association state for instanceRoot.
 func (s *FileStorage) InstanceDirectory(instanceRoot string) (string, error) {
 	canonical, err := CanonicalInstanceRoot(instanceRoot)
 	if err != nil {
@@ -89,6 +100,8 @@ func (s *FileStorage) InstanceDirectory(instanceRoot string) (string, error) {
 	return filepath.Join(s.baseDir, hex.EncodeToString(sum[:])), nil
 }
 
+// Load reads the Fleet association, private key, and credential for
+// instanceRoot. It returns ErrNotAssociated if no association exists.
 func (s *FileStorage) Load(instanceRoot string) (Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -137,6 +150,8 @@ func (s *FileStorage) load(instanceRoot string) (Record, error) {
 	}, nil
 }
 
+// Save persists record as the Fleet association, private key, and
+// credential for instanceRoot, overwriting any existing association.
 func (s *FileStorage) Save(instanceRoot string, record Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -183,6 +198,8 @@ func (s *FileStorage) Save(instanceRoot string, record Record) error {
 	return nil
 }
 
+// Update loads the Association for instanceRoot, applies update to it, and
+// persists the result. It returns ErrNotAssociated if no association exists.
 func (s *FileStorage) Update(instanceRoot string, update func(*Association) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -212,6 +229,8 @@ func (s *FileStorage) Update(instanceRoot string, update func(*Association) erro
 	return atomicWrite(path, append(data, '\n'))
 }
 
+// Delete removes the Fleet association, private key, and credential for
+// instanceRoot. It returns ErrNotAssociated if no association exists.
 func (s *FileStorage) Delete(instanceRoot string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
