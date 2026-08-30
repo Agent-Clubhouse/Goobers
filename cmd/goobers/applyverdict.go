@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -459,12 +458,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	l := layoutFor(root)
-	runsDir, err := runsDirForRun(l, runID)
-	if err != nil {
-		pf(stderr, "error: locate run journal: %v\n", err)
-		return 1
-	}
-	verdict, err := readLatestGateVerdict(runsDir, runID, *gateName)
+	verdict, err := readLatestGateVerdict(root, runID, *gateName)
 	if err != nil {
 		pf(stderr, "error: read %s verdict from journal: %v\n", *gateName, err)
 		return 1
@@ -1464,25 +1458,37 @@ func currentPullRequest(ctx context.Context, provider providers.Provider, repo p
 	}, nil
 }
 
+// newApplyVerdictProviderForRepo builds apply-verdict's forge client through the
+// shared merge-review/stage provider seam.
+//
+// It used to hand-roll each arm, and its GitHub arm called
+// newCachedGitHubProvider directly. That skipped newGitHubProviderForStage and
+// therefore skipped providers.WithConfiguredLogin, so under GitHub App auth the
+// provider had no declared identity and AuthenticatedLogin — which apply-verdict
+// calls to reconcile its own trusted verdict/status comments — fell back to
+// GET /user. Installation tokens cannot call that endpoint, so every
+// merge-review run died with "Resource not accessible by integration" and the
+// scheduler opened its per-workflow auth circuit (#3885). #3343/#3344 fixed the
+// shared seam but missed this constructor; routing through the seam is what
+// keeps the two from drifting apart again.
+//
+// Per-arm options reproduce the previous behavior exactly: the GitHub arm stays
+// conditional-GET cached with no mutation recorder, the Gitea arm keeps its
+// kind="pr" recorder and is uncached, and the ADO arm resolves its own
+// credential inside newADOProviderForStage (no capability token is minted for
+// it here, same as before).
 func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (providers.Provider, error) {
+	opts := []stageProviderOption{withStageProviderCapability(capability.ProviderPRWrite)}
 	switch repo.Provider {
 	case providers.ProviderADO:
-		return newADOProviderForStage(root, repo)
 	case providers.ProviderGitea:
-		token, err := providerToken(capability.ProviderPRWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "pr"}))
+		opts = append(opts, withStageProviderMutations("pr"))
 	case providers.ProviderGitHub:
-		token, err := providerToken(capability.ProviderPRWrite)
-		if err != nil {
-			return nil, err
-		}
-		return newCachedGitHubProvider(root, token), nil
+		opts = append(opts, withStageProviderCache())
 	default:
 		return nil, fmt.Errorf("apply-verdict does not support repository provider %q", repo.Provider)
 	}
+	return newMergeReviewProvider(root, repo, false, opts...)
 }
 
 // publishADOPassVerdict publishes a PASS merge-review verdict on Azure DevOps.
@@ -1675,8 +1681,12 @@ func writeApplyVerdictResultWithReasonAndPriorityDispatch(path string, selectedN
 // artifact of the LAST gate.evaluated event named gateName (last, not
 // first, in case a repass re-evaluated it) — nil, nil if no such event
 // exists yet.
-func readLatestGateVerdict(runsDir, runID, gateName string) (*apiv1.Verdict, error) {
-	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+//
+// Reads through the stage journal seam (stagejournal.go), so the same code
+// serves a daemon-side run directory and a stage pod's run-scoped read route
+// (decision 005 R1 / #3880).
+func readLatestGateVerdict(root, runID, gateName string) (*apiv1.Verdict, error) {
+	rd, err := stageRunJournal(root, runID)
 	if err != nil {
 		return nil, err
 	}

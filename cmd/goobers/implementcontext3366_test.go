@@ -1,8 +1,8 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/localscheduler"
 )
 
@@ -145,21 +146,35 @@ func TestGatherImplementContextOffersPriorUnpushedDiff(t *testing.T) {
 func TestPriorUnpushedWorkFromRunRespectsPublicationOrder(t *testing.T) {
 	root := initDemo(t)
 	now := time.Now().UTC()
-	const gaggle = "acme-web"
-	runsDir := layoutFor(root).ForGaggle(gaggle).RunsDir()
+	// One gaggle per case so each assertion sees exactly one candidate run:
+	// the discovery walks a whole gaggle, and this test is about the
+	// per-run ordering decision inside it.
+	ask := func(t *testing.T, gaggle string) *journalclient.UnpushedWork {
+		t.Helper()
+		work, err := journalclient.NewFileCrossRun(layoutFor(root)).UnpushedWork(
+			context.Background(),
+			journalclient.UnpushedWorkRequest{
+				RunID:   "asking-run",
+				Gaggle:  gaggle,
+				Since:   now.Add(-24 * time.Hour),
+				ItemIDs: []string{"42"},
+			})
+		if err != nil {
+			t.Fatalf("UnpushedWork(%s): %v", gaggle, err)
+		}
+		return work
+	}
 
 	// Publication BEFORE the diff: still stranded, must be offered.
-	seedOrderedRun(t, runsDir, "push-then-strand", now, true, false)
-	if got := priorUnpushedWorkFromRun(filepath.Join(runsDir, "push-then-strand"),
-		[]string{"42"}, now.Add(-24*time.Hour), io.Discard); got == nil {
+	seedOrderedRun(t, layoutFor(root).ForGaggle("acme-web").RunsDir(), "push-then-strand", now, true, false)
+	if got := ask(t, "acme-web"); got == nil {
 		t.Fatal("a diff recorded AFTER the branch was pushed is still unpublished — it must be offered")
 	}
 
 	// Publication AFTER the diff: published, must be excluded.
-	seedOrderedRun(t, runsDir, "strand-then-push", now, false, true)
-	if got := priorUnpushedWorkFromRun(filepath.Join(runsDir, "strand-then-push"),
-		[]string{"42"}, now.Add(-24*time.Hour), io.Discard); got != nil {
-		t.Fatalf("priorUnpushedWorkFromRun = %+v, want nil — the work was published after the diff", got)
+	seedOrderedRun(t, layoutFor(root).ForGaggle("acme-api").RunsDir(), "strand-then-push", now, false, true)
+	if got := ask(t, "acme-api"); got != nil {
+		t.Fatalf("UnpushedWork = %+v, want nil — the work was published after the diff", got)
 	}
 }
 

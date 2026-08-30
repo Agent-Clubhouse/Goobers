@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 	yamlv3 "gopkg.in/yaml.v3"
@@ -172,6 +173,31 @@ const (
 	// running silently wrong), so this is advance notice at author time,
 	// not a second gate.
 	RunnerInstanceRootRequired WarningCode = "RNR005"
+	// RunnerAVExclusionsUnverified (RNR006) identifies a runners: entry
+	// declaring provides.os: windows that does not assert
+	// provides.windows.avExclusionsVerified: true — the operator has not
+	// said whether the directories Goobers writes then immediately reads on
+	// that runner are excluded from real-time antivirus scanning (#3480).
+	// Always a WARNING and only ever advisory: the claim is trusted, not
+	// verified (DI-11), an organisation-wide AV policy is the operator's to
+	// set, and the failure it guards against is a flake that surfaces as an
+	// unrelated git "Permission denied" (#3161–#3164), not a wrong result.
+	// `goobers doctor --av-exclusions` on the runner's host or image
+	// produces the answer to declare.
+	//
+	// STRICT-NEUTRAL, like DVL020 and unlike every other config-shape
+	// finding (DI-10's general rule): `goobers validate --strict` does not
+	// promote it. Two reasons, both specific to this code. First, it is a
+	// new warning that lands on configs nobody edited, so promoting it
+	// would turn every existing --strict pipeline with a Windows runner red
+	// on upgrade — the same "a nudge must not break a green pipeline"
+	// property DVL020 was carved out for. Second, and decisive: declaring
+	// `avExclusionsVerified: false` does NOT silence it, so the only way to
+	// get green under --strict is to declare `true`. That would put an
+	// operator under CI pressure to assert a trusted claim they have not
+	// earned, and a trusted-claim surface that rewards lying is worse than
+	// no claim at all.
+	RunnerAVExclusionsUnverified WarningCode = "RNR006"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -182,18 +208,9 @@ const (
 	// in-progress work; the stage is unwinnable by construction regardless of
 	// typical-case duration (#3377).
 	WarningSubprocessTimeout WarningCode = "WF021"
-	// WarningGatePlacementUnhonoured (WF024) identifies an agentic gate that
-	// declares runsOn (decision 001) while the engine/pod half of that
-	// decision (rulings 7–8) is unlanded: the block is validated, solved
-	// (RNR001/RNR003) and pinned by name, but engine.evaluateGate has no
-	// placement arm, so the reviewer still evaluates in the daemon/control
-	// plane with that host's OS, network and envelope. The start seams fail
-	// closed rather than run the reviewer outside its declared isolation — a
-	// placement self cannot satisfy is refused (checkpoint 3 for
-	// daemon-scheduled runs, bootstrap.PinStagePlacements for engine-start)
-	// — and this warning is how the author learns that before starting a
-	// run. Informational: the config is valid. Retires with the engine half.
-	WarningGatePlacementUnhonoured WarningCode = "WF024"
+	// WF024 was the "gate placement not yet honoured" warning that stood
+	// between the DSL half of decision 001 (#3848) and its engine/pod half
+	// (rulings 7–8). It retired with that half and the code is not reused.
 )
 
 const (
@@ -516,9 +533,23 @@ func (r *Report) addFeatureDiagnostics(file, gaggle, kind, name string, diagnost
 }
 
 // Validator holds compiled schemas, reusable across many validations.
+//
+// A Validator is safe for concurrent use by multiple goroutines (#3887).
+// Callers share one process-wide — the engine's verdict validator is a
+// sync.OnceValues singleton read by every concurrent placed-gate review, and
+// the harness, agentkit and configsync builders each keep one for the life of
+// their component — so the lazy compile below cannot be left unsynchronized:
+// jsonschema.Compiler mutates its own resource maps while compiling, and the
+// cache is a plain map, so two cold-cache validations at once raced and could
+// fatal the worker with "concurrent map writes" or panic inside the compiler.
 type Validator struct {
 	compiler *jsonschema.Compiler
-	cache    map[string]*jsonschema.Schema
+	// mu guards compiler and cache. It is held across Compile (and only
+	// Compile): compiled *jsonschema.Schema values are immutable once
+	// returned, so Validate runs lock-free and the lock is paid once per
+	// schema file, not once per validation.
+	mu    sync.Mutex
+	cache map[string]*jsonschema.Schema
 }
 
 // New builds a Validator with all embedded schemas registered so cross-schema
@@ -539,6 +570,8 @@ func New() (*Validator, error) {
 }
 
 func (v *Validator) schema(file string) (*jsonschema.Schema, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	if s, ok := v.cache[file]; ok {
 		return s, nil
 	}
@@ -1943,12 +1976,6 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// non-agentic gate, or an agentic gate runsOn without cpu and memory.
 	for _, msg := range wf.CheckGateRunsOn(def) {
 		r.add(errorGateRunsOn, Error, file, "Workflow", w.Name, "%s", msg)
-	}
-	// WF024: a declared gate placement is not yet honoured at execution
-	// (decision 001 rulings 7–8 unlanded). Warning, not error — the config is
-	// valid and the start seams refuse the unsatisfiable case themselves.
-	for _, msg := range wf.CheckGatePlacementWarnings(def) {
-		r.addWarning(WarningGatePlacementUnhonoured, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckRepoHandoffs(def) {
 		r.add(errorRepoHandoff, Error, file, "Workflow", w.Name, "%s", msg)

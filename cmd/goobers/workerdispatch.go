@@ -27,11 +27,17 @@ import (
 )
 
 // stageDispatch is what buildStageDispatch wires: the dispatcher seam, the
-// surrender plane, and the dispatch queues this worker must serve.
+// surrender plane, the dispatch queues this worker must serve, and the same
+// dispatcher typed for the boot-time orphan sweep.
 type stageDispatch struct {
 	Dispatcher engine.StageDispatcher
 	Surrenders dispatcher.SurrenderPlane
 	Queues     []string
+	// Sweeper is the SAME *dispatcher.Dispatcher as Dispatcher, named through
+	// the narrow sweep interface. Two fields rather than a type assertion so
+	// the wiring says out loud that the sweep reclaims pods created by THIS
+	// dispatcher — which is exactly what its owner scope enforces.
+	Sweeper stageOrphanSweeper
 }
 
 // dispatchKubeClient builds the typed clientset for pod creation: in-cluster
@@ -65,9 +71,16 @@ var newStageDispatcher = dispatcher.New
 // <blobRoot>/surrender (identity-keyed, so it cannot ride the digest-verified
 // store — see dispatcher/surrender.go), which keeps one operator-provided
 // volume backing both planes.
-func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot string) (stageDispatch, error) {
+// owner is this worker's dispatcher identity (its hostname; in-cluster, its
+// pod name): stamped on every pod it creates and the scope its orphan sweep
+// sweeps within. See dispatcher.Config.Owner for why it must be stable across
+// a restart and distinct between workers.
+func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner string) (stageDispatch, error) {
 	if blobRoot == "" {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: a surrender plane is required — pass --blob-store")
+	}
+	if strings.TrimSpace(owner) == "" {
+		return stageDispatch{}, fmt.Errorf("stage dispatch: a dispatcher owner identity is required — without it a stage pod carries no owner label and no worker can reclaim it")
 	}
 	l := instance.NewLayout(instanceRoot)
 	cfg, err := instance.LoadConfig(l.ConfigFile())
@@ -137,6 +150,7 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot string) (st
 		// stages explicitly instead of creating a pod that would find no kit.
 		KitWriter:       agenticKitWriterFor(instanceRoot, os.Getenv("GOOBERS_BLOB_ENDPOINT"), signed),
 		Namespace:       namespace,
+		Owner:           owner,
 		EmbeddedCommit:  build.Commit,
 		EmbeddedVersion: build.Version,
 		BlobEndpoint:    os.Getenv("GOOBERS_BLOB_ENDPOINT"),
@@ -150,7 +164,7 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot string) (st
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
 	}
-	return stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues}, nil
+	return stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d}, nil
 }
 
 // mergeQueues appends every dispatch queue not already served, preserving

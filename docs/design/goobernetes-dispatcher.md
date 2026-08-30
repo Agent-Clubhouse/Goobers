@@ -173,10 +173,37 @@ kubelet pulls via the AcrPull identity, dispatcher only names the image).
   **`activeDeadlineSeconds` as the always-on backstop** (every stage pod carries one, derived
   from the stage timeout + a margin, so a dispatcher crash between create and the stage's own
   completion cannot leak the pod past its deadline) **plus a label + reconcile sweep** (the
-  dispatcher labels every pod it creates with the run/attempt identity and, on restart,
-  reconciles: any labeled pod whose run is terminal or unknown is deleted). No ownerReference.
+  dispatcher labels every pod it creates with the run/attempt identity and its own owner
+  identity and, on restart, reconciles the pods carrying ITS owner label). No ownerReference.
   This is a per-attempt-leak-bounded design, not a zero-leak one — acceptable for v1 since
   activeDeadlineSeconds caps the leak window.
+
+  **The sweep's direction was reversed by decision 003** (graft: "owner label on
+  dispatcher-created pods; `SweepOrphans` wired on the WORKER only, with a RunStates over
+  Temporal Describe; the daemon never sweeps"). This section previously read "any labeled pod
+  whose run is terminal or unknown is deleted" — fail-closed toward *deletion*. That is the
+  hazard the record cites when it rejects the in-process-dispatcher option: with two drivers
+  in the tree the sweep would delete pods belonging to live engine-start attempts, and a pod
+  deleted mid-stage destroys in-flight work (invisibly, for a mutating stage like open-pr or
+  merge-pr). The rule is now the other way round: a pod is disposed only when the sweep
+  POSITIVELY establishes that no workflow is executing its attempt (Completed, Failed, or no
+  such execution); a Running attempt is ADOPTED, and an unreachable engine, an unaddressable
+  pod or any other uncertainty leaves the pod to `activeDeadlineSeconds`. Leaving a settled
+  pod costs one stage timeout of capacity; deleting a live one cannot be undone.
+
+  **The attempt's driver is stamped, never composed.** Each stage pod carries
+  `goobers.dev/owning-workflow-id`: the id of the Temporal workflow execution whose activity
+  created it, stamped by that workflow at dispatch (`workflow.GetInfo(ctx)`) and described
+  verbatim by the sweep. It is the only identity the sweep asks about. Composing one from the
+  pod's run and stage instead — `<run>/<stage>/<attempt>` for a `DispatchOne` driver, `<run>`
+  for the engine's own walk — is correct for a directly started run and *wrong for a scheduled
+  one*: `ClaimScheduled` starts the run's child workflow as `<claimID>-run` and `RunScheduled`
+  then rewrites the run's RunID to `RunID(claimID)`, a sha256 prefix no describe can find (see
+  `internal/engine/liveness.go`, which inverts the same mapping for claim liveness). Both
+  composed ids then answer "no such workflow", which this sweep reads as *settled* — so it
+  would delete the pod of a live scheduled stage, confidently and invisibly. On a delete path
+  a lossy address is worse than none, which is also why a pod carrying no
+  `goobers.dev/owning-workflow-id` is never disposed at all.
 
 ## 6. The version-skew check (decision 009 — tag comparison, publish-verified)
 
