@@ -364,12 +364,20 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	// decision 005 R4 keeps this command refused deliberately. It is also the
 	// only entry in stageCommandsRequiringInstanceConfig.
 	"telemetry-query": true,
-	// gather-pr-context's REMEDIATION NO-OP GUARD: remediationnoopguard.go
-	// takes withClaimLock on SchedulerDir()/claims.lock (:174) and
-	// reads/writes SchedulerDir()/pr-remediation-noop.json (:175, :188), and
-	// reaches localscheduler.OpenClaimLedger plus journal.OpenRead over a
-	// FindRunDir path (:65-79). None of that is in a plane's namespace.
-	"gather-pr-context": true,
+	// gather-pr-context is NOT here any more (Goobers#3989). Its REMEDIATION
+	// NO-OP GUARD — the record that stops the lane re-attempting a PR whose
+	// previous attempt already concluded there was nothing to do — held it
+	// three separate ways, and all three are now plane seams
+	// (remediationnoopguard.go): the record is a keyed scheduler-state key
+	// (stateclient.PRRemediationNoopKey, one per gaggle+PR) reached through
+	// openStageStateStore, its claim resolution goes through the claims seam
+	// (stageClaimLedgerForRun/Locked) instead of localscheduler.OpenClaimLedger,
+	// and the terminal run's journal is read through stageRunJournal instead of
+	// journal.OpenRead over a FindRunDir path. claims.lock mutual exclusion is
+	// preserved: every no-op key falls through schedulerStateLock's default
+	// arm, which is claims.lock, and the daemon serves a pod's compare-and-swap
+	// under that same lock. remediation-checkpoint, which shares the guard,
+	// clears with it.
 	// select-source opens the instance log (selectsource.go:99), walks the
 	// instance's runs tree through readservice.NewOfflineRuns (:89), and
 	// leases the parent with withClaimLock + localscheduler.OpenClaimLedger
