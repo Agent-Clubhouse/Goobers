@@ -302,7 +302,3 @@ func containedPath(root, rel string) (string, error) {
 	}
 	return full, nil
 }
-
-func rootedOrVolumeBound(path string) bool {
-	return pathutil.IsRootedOrVolumeBound(path)
-}

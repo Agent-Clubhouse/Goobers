@@ -1,3 +1,10 @@
+// Package pathutil provides shared, filesystem-agnostic helpers for
+// validating that a relative path stays contained within a root: rejecting
+// absolute or volume-bound paths, detecting ".." lexical escapes, and
+// resolving symlinks to catch escapes that only appear after the filesystem
+// follows a link. These checks back the containment guarantees used by
+// api/v1alpha1 (journal paths), the config boundary, and mcpio's rooted-path
+// resolution, so the same rules aren't reimplemented per caller.
 package pathutil
 
 import (
