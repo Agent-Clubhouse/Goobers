@@ -70,6 +70,11 @@ const clientRoutes = {
   telemetryStats: apiRoutes.telemetryStats,
   telemetryErrorSignatures: apiRoutes.telemetryErrorSignatures,
   telemetryErrors: apiRoutes.telemetryErrors,
+  // The telemetry read plane's curation evidence (decision 005 R4 / finding
+  // 002 C3). A stage pod's `backlog-health --feedback` is the only consumer;
+  // the portal has no surface for it yet, but the exhaustiveness check
+  // requires the full contract here as it grows.
+  telemetryImplementationOutcomes: apiRoutes.telemetryImplementationOutcomes,
   events: apiRoutes.events,
   // Tier-2 human-intervention stub routes (HITL-7/#469). No DaemonClient
   // method calls these yet — the real approve/override/rerun UI wiring is
