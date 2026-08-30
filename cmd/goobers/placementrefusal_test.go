@@ -812,7 +812,7 @@ func TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot must never kill (#2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	var refused *localscheduler.WorkflowEntry
 	for i := range setup.Entries {
 		if setup.Entries[i].Workflow == "win-build" {

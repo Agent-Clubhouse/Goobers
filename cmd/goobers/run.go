@@ -303,7 +303,7 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		releaseOnReturn = false
 		cleanup := func() {
 			sched.Wait()
-			shutdownSetup()
+			_ = shutdownSetup()
 			release()
 		}
 		pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
