@@ -14,6 +14,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
@@ -88,6 +90,50 @@ const (
 	EnvWorkflow = "GOOBERS_WORKFLOW"
 	EnvStage    = "GOOBERS_STAGE"
 	EnvAttempt  = "GOOBERS_ATTEMPT"
+	// ProviderBotLoginEnv carries the login the stage's forge credential
+	// authenticates AS for the routed repository — the instance config's
+	// declared GitHub App bot login, resolved DAEMON-SIDE at dispatch, where
+	// the instance config is readable (Goobers#3914).
+	//
+	// It exists because a stage pod has no instance root, so the CLI's own
+	// resolution (stageProviderConfiguredLogin) always returned "" there and
+	// providers.WithConfiguredLogin was never applied. Under GitHub App auth
+	// that is #3885's failure exactly: an installation token cannot call
+	// GET /user, so every stage that consults AuthenticatedLogin in a pod —
+	// claim markers, verdicts, handoffs, unparks — fell back to an endpoint
+	// that answers "Resource not accessible by integration".
+	//
+	// RUN IDENTITY, not authority: it names WHO this run acts as, and knowing
+	// a bot login grants nothing (the credential is still the pod's own
+	// capability-scoped token). It is in DispatcherRunIdentityEnv for the
+	// consequences that category carries and that this variable needs:
+	//
+	//   - a goobers-CLI stage KEEPS it (it is the party that builds providers),
+	//     every other stage is stripped of it;
+	//   - a workflow may not author it — refuseControlEnvOverrides refuses a
+	//     declared `env:` naming it AND a value dereferencing $(it);
+	//   - GOOBERS_INPUT_ prefixing keeps an input from colliding with it, and
+	//     the operator passthrough carries names, never values;
+	//   - it survives env:default-deny's in-pod rebuild by name.
+	//
+	// STAMPED FOR EVERY CLI STAGE, empty value included, which is the third
+	// spoof door and the reason the stamp is not conditional on having found
+	// a login: in a pod these arrive as ordinary container variables, so a
+	// runner IMAGE exporting GOOBERS_PROVIDER_BOT_LOGIN would otherwise be
+	// inherited verbatim by the one stage class that keeps the name. A value
+	// the dispatcher always stamps is a value the image cannot supply.
+	//
+	// Its three states are three different facts, and #3914 is the story of
+	// two of them having been one:
+	//
+	//   - ABSENT: nobody resolved this. In a pod that is version skew or a
+	//     hand-built attempt, and the CLI fails the provider's login
+	//     self-report CLOSED rather than falling back to GET /user.
+	//   - PRESENT AND EMPTY: resolved, and the repo declares no bot login —
+	//     the PAT posture, where GET /user is the correct answer and the
+	//     local substrate would have said "" too.
+	//   - PRESENT AND SET: the login, applied as providers.WithConfiguredLogin.
+	ProviderBotLoginEnv = "GOOBERS_PROVIDER_BOT_LOGIN"
 	// EnvBlobEndpoint is the network blob endpoint URL the pod fetches/puts
 	// artifact digests against (decision 010) — present on EVERY runner
 	// class, restricted included (§2a: it is the class's own data path).
@@ -287,7 +333,7 @@ var DispatcherPrivilegedEnv = []string{
 // exempting — a stage running the project's own `make ci` must not see them, or
 // a self-hosting project's tests are perturbed by the live run.
 var DispatcherRunIdentityEnv = append([]string{
-	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt,
+	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, ProviderBotLoginEnv,
 }, runContextEnv...)
 
 // DispatcherPlaneEnv is the THIRD category, and it exists because neither of
@@ -1056,6 +1102,13 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	}
 	if attempt.CLIStage {
 		env = append(env, corev1.EnvVar{Name: EnvStageIsCLI, Value: "true"})
+		// The routed repository's configured bot login, resolved here because
+		// the pod has no instance config to resolve it from (#3914). Stamped
+		// for EVERY CLI stage, empty value included: see ProviderBotLoginEnv
+		// for why the stamp is unconditional (a runner image cannot then
+		// supply the name) and why an empty value and an absent one are two
+		// different facts on the far side.
+		env = append(env, corev1.EnvVar{Name: ProviderBotLoginEnv, Value: providerBotLogin(cfg, attempt)})
 	}
 	if ws := strings.TrimSpace(attempt.Workspace); ws != "" {
 		env = append(env, corev1.EnvVar{Name: EnvStageWorkspace, Value: ws})
@@ -1090,6 +1143,37 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		)
 	}
 	return env
+}
+
+// providerBotLogin resolves the bot login for the repository this attempt was
+// ROUTED to — the same lookup the CLI performs against the instance config on
+// the local substrate (instance.Config.GitHubBotLogin), against the index the
+// worker built from that same config (Config.BotLogins).
+//
+// The routed repository is read from the attempt's own RunContext, which is
+// dispatcher-built from the invocation envelope: a workflow cannot author it,
+// and it is the same map stageEnv stamps GOOBERS_REPO_* from, so the login and
+// the repository it belongs to can never describe two different repositories.
+//
+// "" for everything that is not a github repository, for a github repository
+// that declares no App bot login, and for an attempt with no routed repo at
+// all. All three are the PAT posture on the far side — GET /user answers, and
+// the local substrate would have returned "" for them too. The fail-closed
+// case is not here: it is the ABSENCE of the stamp, which only version skew or
+// a hand-built attempt can produce.
+func providerBotLogin(cfg Config, attempt Attempt) string {
+	if len(cfg.BotLogins) == 0 {
+		return ""
+	}
+	if attempt.RunContext[executorRepoProviderEnv] != string(apiv1.ProviderGitHub) {
+		return ""
+	}
+	owner := attempt.RunContext[executorRepoOwnerEnv]
+	name := attempt.RunContext[executorRepoNameEnv]
+	if strings.TrimSpace(owner) == "" || strings.TrimSpace(name) == "" {
+		return ""
+	}
+	return cfg.BotLogins[instance.GitHubBotLoginKey(owner, name)]
 }
 
 // planeEnv is the MACHINE PLANE stamp (Goobers#3897): the endpoint/bearer
