@@ -2476,7 +2476,7 @@ func TestBuildSchedulerSetupMigratesLiveLegacyClaimForRemovedWorkflow(t *testing
 	if err != nil {
 		t.Fatalf("buildSchedulerSetup: %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
 	if err != nil {
@@ -2518,7 +2518,7 @@ func TestBuildSchedulerSetupJournalsLegacyRuntimeMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSchedulerSetup: %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
 	if err != nil {

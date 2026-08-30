@@ -124,7 +124,7 @@ _goobers_completion()
             flags+=(--gaggle --temporal-hostport --temporal-namespace)
             ;;
         worker)
-            flags+=(--instance --blob-store --daemon-api --dispatch-namespace --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
+            flags+=(--instance --blob-store --daemon-api --dispatch-namespace --config-reload-interval --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root)
             ;;
         dashboard)
             flags+=(--port --listen --no-open --dev-assets --wait-for-daemon)

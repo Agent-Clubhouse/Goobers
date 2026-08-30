@@ -33,11 +33,9 @@
 // closing them is follow-on work, not a reason to weaken the conformance
 // surface to make a fixture pass:
 //
-//   - Transient worktree-provision failures (worktree.IsTransientProvisionError)
-//     are not reclassified to invoke.InfrastructureFailure on this path
-//     (workerhost.WorktreeWorkspaces.Provision → classifySeamError), so a clone/
-//     fetch flake burns the policy budget instead of the infra budget the local
-//     runner (#572) gives it.
+//   - taskOutcome does not honor the #415 non-retryable escalation bypass
+//     (ISSUE_OVER_SCOPE / NEEDS_DECOMPOSITION route straight to escalation on
+//     the local runner, bypassing the Next gate).
 //   - Learning-episode injection (#3874, newly observed by the parity harness
 //     and not yet an entry in the finding-002 inventory): on the SAME gate-retry
 //     arm that writes the retry decision, the local runner also records a
@@ -51,9 +49,10 @@
 //     enforced here — the local runner fails closed via enforceStageBudget.
 //     Moot until the agentic executor seam is wired (stages needing it fail
 //     closed today), but it must land with that wiring.
-//   - The context-manifest artifact is journaled even when workspace
-//     provisioning failed; the gate-evaluator has no per-attempt deadline; and
-//     InputsFrom failures produce no stage-attributed events.
+//   - Transient worktree provisioning failures are classified as infrastructure
+//     attempts (#2873). The context-manifest artifact is still journaled even
+//     when provisioning failed; the gate-evaluator has no per-attempt deadline;
+//     and InputsFrom failures produce no stage-attributed events.
 //
 // Plan item E2 (#3874) closed four of the entries this ledger used to carry:
 // the #415 non-retryable escalation bypass, the retry-decision annotation and

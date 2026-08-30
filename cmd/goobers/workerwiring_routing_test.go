@@ -71,8 +71,11 @@ func TestEngineDispatchRoutesQueueAndGooberIdentityThroughWorkerSeams(t *testing
 	seams := &workerSeams{
 		scrubber: scrub,
 		shared:   shared,
-		byGaggle: map[string]*gaggleSeams{
-			"web": {
+	}
+	seams.snapshot.Store(&workerConfigSnapshot{
+		digest: "sha256:routing-fixture",
+		gaggles: map[string]*builtGaggleSeams{
+			"web": {seams: &gaggleSeams{
 				cfg: runner.Config{
 					NewAgentic: func(name string, _ runner.ArtifactRecorder, _ runner.SecretRegistrar) (invoke.Goober, error) {
 						return &routingCaptureGoober{
@@ -87,9 +90,9 @@ func TestEngineDispatchRoutesQueueAndGooberIdentityThroughWorkerSeams(t *testing
 					},
 				},
 				runsDir: t.TempDir(),
-			},
+			}},
 		},
-	}
+	})
 
 	var ts testsuite.WorkflowTestSuite
 	env := temporaltest.NewWorkflowEnvironment(&ts)
