@@ -89,14 +89,14 @@ func planeContract() []struct {
 // whole issue is about.
 func TestPlaneEnvNamesMatchTheClients(t *testing.T) {
 	for _, want := range []struct{ dispatcher, client, who string }{
-		{EnvClaimsEndpoint, claimsclient.EnvEndpoint, "claimsclient endpoint"},
-		{EnvClaimsToken, claimsclient.EnvToken, "claimsclient bearer"},
-		{EnvStateEndpoint, stateclient.EnvEndpoint, "stateclient endpoint"},
-		{EnvStateToken, stateclient.EnvToken, "stateclient bearer"},
-		{EnvJournalEndpoint, journalclient.EnvEndpoint, "journalclient endpoint"},
-		{EnvJournalToken, journalclient.EnvToken, "journalclient bearer"},
-		{EnvTelemetryEndpoint, telemetryclient.EnvEndpoint, "telemetryclient endpoint"},
-		{EnvTelemetryToken, telemetryclient.EnvToken, "telemetryclient bearer"},
+		{ClaimsEndpointEnv, claimsclient.EnvEndpoint, "claimsclient endpoint"},
+		{ClaimsTokenEnv, claimsclient.EnvToken, "claimsclient bearer"},
+		{StateEndpointEnv, stateclient.EnvEndpoint, "stateclient endpoint"},
+		{StateTokenEnv, stateclient.EnvToken, "stateclient bearer"},
+		{JournalEndpointEnv, journalclient.EnvEndpoint, "journalclient endpoint"},
+		{JournalTokenEnv, journalclient.EnvToken, "journalclient bearer"},
+		{TelemetryEndpointEnv, telemetryclient.EnvEndpoint, "telemetryclient endpoint"},
+		{TelemetryTokenEnv, telemetryclient.EnvToken, "telemetryclient bearer"},
 	} {
 		if want.dispatcher != want.client {
 			t.Errorf("%s: dispatcher stamps %q, the client selects on %q", want.who, want.dispatcher, want.client)
@@ -177,7 +177,7 @@ func TestPlaneBearersAreDistinctAndNeverThePodToken(t *testing.T) {
 	env := podEnvMap(pod)
 
 	seen := map[string]string{}
-	for _, name := range []string{EnvClaimsToken, EnvStateToken, EnvJournalToken, EnvTelemetryToken, EnvPodToken} {
+	for _, name := range []string{ClaimsTokenEnv, StateTokenEnv, JournalTokenEnv, TelemetryTokenEnv, EnvPodToken} {
 		value := env[name]
 		if value == "" {
 			t.Fatalf("%s is empty in a rendered CLI stage pod", name)
@@ -263,7 +263,7 @@ func TestWorkflowEnvCannotOverrideAControlVariable(t *testing.T) {
 // variables declared earlier in the same container, which is precisely where
 // the control plane sits.
 func TestWorkflowEnvCannotDereferenceAControlVariable(t *testing.T) {
-	for _, name := range []string{EnvPodToken, EnvClaimsToken, EnvStateToken, EnvJournalToken, EnvTelemetryToken, EnvDaemonAPI} {
+	for _, name := range []string{EnvPodToken, ClaimsTokenEnv, StateTokenEnv, JournalTokenEnv, TelemetryTokenEnv, EnvDaemonAPI} {
 		t.Run(name, func(t *testing.T) {
 			attempt := cliAttempt()
 			attempt.Env = map[string]string{"EXFIL": "prefix-$(" + name + ")-suffix"}
@@ -305,8 +305,8 @@ func TestInputEnvVarCannotCollideWithControlEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderPod: %v", err)
 	}
-	if got := podEnvMap(pod)[EnvClaimsEndpoint]; got != testConfig().WriteAPIBase {
-		t.Fatalf("%s = %q after a hostile input name; inputs must not reach the control plane", EnvClaimsEndpoint, got)
+	if got := podEnvMap(pod)[ClaimsEndpointEnv]; got != testConfig().WriteAPIBase {
+		t.Fatalf("%s = %q after a hostile input name; inputs must not reach the control plane", ClaimsEndpointEnv, got)
 	}
 }
 

@@ -526,8 +526,8 @@ func TestDispatcherControlEnvIsExactlyItsThreeCategories(t *testing.T) {
 		identity[n] = true
 	}
 	for _, bearer := range []string{
-		dispatcher.EnvClaimsToken, dispatcher.EnvStateToken,
-		dispatcher.EnvJournalToken, dispatcher.EnvTelemetryToken,
+		dispatcher.ClaimsTokenEnv, dispatcher.StateTokenEnv,
+		dispatcher.JournalTokenEnv, dispatcher.TelemetryTokenEnv,
 	} {
 		if identity[bearer] {
 			t.Fatalf("%q is a BEARER filed as run identity; that category's rule is that knowing it grants nothing", bearer)
@@ -1129,14 +1129,14 @@ func TestCLIStageKeepsItsPlaneEnvironment(t *testing.T) {
 	t.Setenv(dispatcher.EnvStageIsCLI, "true")
 	t.Setenv(dispatcher.EnvStageEnvDefaultDeny, "")
 	stamped := map[string]string{
-		dispatcher.EnvClaimsEndpoint:    "http://daemon:7777",
-		dispatcher.EnvClaimsToken:       "goobers-pod.claims",
-		dispatcher.EnvStateEndpoint:     "http://daemon:7777",
-		dispatcher.EnvStateToken:        "goobers-pod.state",
-		dispatcher.EnvJournalEndpoint:   "http://daemon:7777",
-		dispatcher.EnvJournalToken:      "goobers-pod.journal",
-		dispatcher.EnvTelemetryEndpoint: "http://daemon:7777",
-		dispatcher.EnvTelemetryToken:    "goobers-pod.telemetry",
+		dispatcher.ClaimsEndpointEnv:    "http://daemon:7777",
+		dispatcher.ClaimsTokenEnv:       "goobers-pod.claims",
+		dispatcher.StateEndpointEnv:     "http://daemon:7777",
+		dispatcher.StateTokenEnv:        "goobers-pod.state",
+		dispatcher.JournalEndpointEnv:   "http://daemon:7777",
+		dispatcher.JournalTokenEnv:      "goobers-pod.journal",
+		dispatcher.TelemetryEndpointEnv: "http://daemon:7777",
+		dispatcher.TelemetryTokenEnv:    "goobers-pod.telemetry",
 		dispatcher.EnvRunID:             "run-1",
 		dispatcher.EnvGaggle:            "alpha",
 	}

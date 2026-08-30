@@ -218,26 +218,35 @@ const (
 // separation that matters is the bearers, which are four distinct, run-bound,
 // single-plane tokens (podauth scopes). A stage holding the claims bearer
 // cannot read the journal with it, and none of the four can surrender.
+//
+// These eight carry the Env SUFFIX rather than this file's usual Env prefix.
+// That is deliberate: test/nophonehome's SEC-048 guard flags any identifier
+// containing both "telemetry" and "endpoint" that is assigned a static
+// string, and exempts identifiers ending in "env" precisely because such a
+// name holds an environment VARIABLE NAME and not a destination. The suffix
+// is the repository's existing way of saying "this is a variable name, not a
+// URL", so the block follows it uniformly rather than for the one constant
+// that would otherwise trip the guard.
 const (
-	// EnvClaimsEndpoint / EnvClaimsToken select internal/claimsclient's HTTP
+	// ClaimsEndpointEnv / ClaimsTokenEnv select internal/claimsclient's HTTP
 	// backend. Requires GOOBERS_RUN_ID, which DispatcherRunIdentityEnv
 	// already carries.
-	EnvClaimsEndpoint = "GOOBERS_CLAIMS_ENDPOINT"
-	EnvClaimsToken    = "GOOBERS_CLAIMS_TOKEN"
-	// EnvStateEndpoint / EnvStateToken select internal/stateclient's HTTP
+	ClaimsEndpointEnv = "GOOBERS_CLAIMS_ENDPOINT"
+	ClaimsTokenEnv    = "GOOBERS_CLAIMS_TOKEN"
+	// StateEndpointEnv / StateTokenEnv select internal/stateclient's HTTP
 	// backend (and the priority-trigger route that rides it). Requires
 	// GOOBERS_GAGGLE.
-	EnvStateEndpoint = "GOOBERS_STATE_ENDPOINT"
-	EnvStateToken    = "GOOBERS_STATE_TOKEN"
-	// EnvJournalEndpoint / EnvJournalToken select internal/journalclient's
+	StateEndpointEnv = "GOOBERS_STATE_ENDPOINT"
+	StateTokenEnv    = "GOOBERS_STATE_TOKEN"
+	// JournalEndpointEnv / JournalTokenEnv select internal/journalclient's
 	// HTTP backend and the instance-annotation emit seam (Goobers#3898).
 	// Requires GOOBERS_RUN_ID; GOOBERS_GAGGLE for the cross-run questions.
-	EnvJournalEndpoint = "GOOBERS_JOURNAL_ENDPOINT"
-	EnvJournalToken    = "GOOBERS_JOURNAL_TOKEN"
-	// EnvTelemetryEndpoint / EnvTelemetryToken select
+	JournalEndpointEnv = "GOOBERS_JOURNAL_ENDPOINT"
+	JournalTokenEnv    = "GOOBERS_JOURNAL_TOKEN"
+	// TelemetryEndpointEnv / TelemetryTokenEnv select
 	// internal/telemetryclient's HTTP backend. Requires GOOBERS_GAGGLE.
-	EnvTelemetryEndpoint = "GOOBERS_TELEMETRY_ENDPOINT"
-	EnvTelemetryToken    = "GOOBERS_TELEMETRY_TOKEN"
+	TelemetryEndpointEnv = "GOOBERS_TELEMETRY_ENDPOINT"
+	TelemetryTokenEnv    = "GOOBERS_TELEMETRY_TOKEN"
 )
 
 // DispatcherControlEnv is the set of variables the DISPATCHER stamps for its
@@ -309,10 +318,10 @@ var DispatcherRunIdentityEnv = append([]string{
 // working stage into a refused one rather than a silent local write — correct,
 // but a self-inflicted outage. See stampsPlaneEnv.
 var DispatcherPlaneEnv = []string{
-	EnvClaimsEndpoint, EnvClaimsToken,
-	EnvStateEndpoint, EnvStateToken,
-	EnvJournalEndpoint, EnvJournalToken,
-	EnvTelemetryEndpoint, EnvTelemetryToken,
+	ClaimsEndpointEnv, ClaimsTokenEnv,
+	StateEndpointEnv, StateTokenEnv,
+	JournalEndpointEnv, JournalTokenEnv,
+	TelemetryEndpointEnv, TelemetryTokenEnv,
 }
 
 // runContextEnv are the run-identity variables the DISPATCHER stamps from the
@@ -1111,14 +1120,14 @@ func planeEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 	}
 	base := cfg.WriteAPIBase
 	return []corev1.EnvVar{
-		{Name: EnvClaimsEndpoint, Value: base},
-		{Name: EnvClaimsToken, Value: attempt.PlaneTokens.Claims},
-		{Name: EnvStateEndpoint, Value: base},
-		{Name: EnvStateToken, Value: attempt.PlaneTokens.State},
-		{Name: EnvJournalEndpoint, Value: base},
-		{Name: EnvJournalToken, Value: attempt.PlaneTokens.Journal},
-		{Name: EnvTelemetryEndpoint, Value: base},
-		{Name: EnvTelemetryToken, Value: attempt.PlaneTokens.Telemetry},
+		{Name: ClaimsEndpointEnv, Value: base},
+		{Name: ClaimsTokenEnv, Value: attempt.PlaneTokens.Claims},
+		{Name: StateEndpointEnv, Value: base},
+		{Name: StateTokenEnv, Value: attempt.PlaneTokens.State},
+		{Name: JournalEndpointEnv, Value: base},
+		{Name: JournalTokenEnv, Value: attempt.PlaneTokens.Journal},
+		{Name: TelemetryEndpointEnv, Value: base},
+		{Name: TelemetryTokenEnv, Value: attempt.PlaneTokens.Telemetry},
 	}
 }
 

@@ -87,8 +87,9 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		{name: "backlog-query bare", cmd: []string{"goobers", "backlog-query"}, want: false},
 		{name: "backlog-query --debug alone", cmd: []string{"goobers", "backlog-query", "--debug"}, want: false},
 		{name: "backlog-query --read-only", cmd: []string{"goobers", "backlog-query", "--read-only"}, want: false},
-		// backlog-health stays refused in EVERY mode, and for a reason that
-		// survived both issues: its resumable ready-transition ledger
+		// backlog-health stays refused in EVERY form — it is unconditional in
+		// the map now, not flag-gated — for a reason that survived both
+		// issues: its resumable ready-transition ledger
 		// (layout.BacklogHealthCursorPath) is not a scheduler-state key.
 		{name: "backlog-health --feedback", cmd: []string{"goobers", "backlog-health", "--feedback"}, want: true},
 		{name: "backlog-health bare", cmd: []string{"goobers", "backlog-health"}, want: true},
@@ -104,31 +105,6 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := StageRequiresInstanceRoot(tc.cmd, tc.kind); got != tc.want {
 				t.Fatalf("StageRequiresInstanceRoot(%v, %q) = %v, want %v", tc.cmd, tc.kind, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestCommandDeclaresAnyFlag exercises the flag-form matching
-// StageRequiresInstanceRoot relies on for backlog-query/backlog-health: both
-// single- and double-dash spellings, and the "=value" form.
-func TestCommandDeclaresAnyFlag(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-		want bool
-	}{
-		{name: "double dash", args: []string{"--claim"}, want: true},
-		{name: "single dash", args: []string{"-claim"}, want: true},
-		{name: "equals form", args: []string{"--claim=true"}, want: true},
-		{name: "among other flags", args: []string{"--debug", "--claim"}, want: true},
-		{name: "no match", args: []string{"--debug", "--read-only"}, want: false},
-		{name: "empty", args: nil, want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := commandDeclaresAnyFlag(tc.args, "claim", "release", "reconcile"); got != tc.want {
-				t.Fatalf("commandDeclaresAnyFlag(%v, claim/release/reconcile) = %v, want %v", tc.args, got, tc.want)
 			}
 		})
 	}

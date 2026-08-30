@@ -349,6 +349,19 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	// the instance log (:145), and shares select-source's direct parent
 	// release (:154). The target-lock directory has no plane at all.
 	"publish-batch": true,
+	// backlog-health is refused in EVERY mode, and NOT for the ledger reason
+	// any more: its claim read and its implementation-outcome evidence read
+	// both reach the daemon through the claims and telemetry planes now. What
+	// holds it here is the READY-TRANSITION LEDGER — the resumable
+	// label-transition scan cursor at instance.Layout.BacklogHealthCursorPath
+	// (written by cmd/goobers/backloghealth.go
+	// resumedBacklogHealthTransitions). It is a per-gaggle/provider/repository
+	// /label file under the instance root, not one of stateclient.ValidKey's
+	// shapes, and losing it in a pod would not merely degrade: an absent
+	// cursor silently reruns a bounded FULL scan and can defer the ready-pool
+	// snapshot, which the telemetry rollup reads as a starvation signal.
+	// Removed once that ledger is admitted to the scheduler-state namespace.
+	"backlog-health": true,
 	// reconcile-branches opens the instance log (reconcilebranches.go:155)
 	// and reads OTHER runs' journals by walking layout.RunsDir() with
 	// journal.OpenRead (:166, :452) — a cross-run walk the journal plane's
@@ -406,8 +419,8 @@ const StageRequiresInstanceRootCode = "instance_root_required"
 // on-disk run journal — none of which a stage pod has (decision 003 ruling 3;
 // production-lanes-3.0 stillBroken #2).
 //
-// DELIBERATELY one data-driven list (two package-level maps plus two
-// flag-gated cases), not a switch spread across call sites: decision 003's
+// DELIBERATELY one data-driven list (two package-level maps), not a switch
+// spread across call sites: decision 003's
 // later runner branch (step 6) consumes this exact function so the two
 // dispatch paths — the engine's dispatchRemoteTask and the runner's — can
 // never silently diverge on which stages are refused.
@@ -421,44 +434,7 @@ func StageRequiresInstanceRoot(cmd []string, kind string) bool {
 	if !StageInvokesGoobersCLI(cmd) || len(cmd) < 2 {
 		return false
 	}
-	switch cmd[1] {
-	case "backlog-health":
-		// Every mode, and NOT for the ledger reason any more: its claim read
-		// and its implementation-outcome evidence read both reach the daemon
-		// through the claims and telemetry planes now. What holds it here is
-		// the READY-TRANSITION LEDGER — the resumable label-transition scan
-		// cursor at instance.Layout.BacklogHealthCursorPath (written by
-		// cmd/goobers/backloghealth.go resumedBacklogHealthTransitions). It is
-		// a per-gaggle/provider/repository/label file under the instance root,
-		// not one of stateclient.ValidKey's shapes, and losing it in a pod
-		// would not merely degrade: an absent cursor silently reruns a bounded
-		// FULL scan and can defer the ready-pool snapshot, which the telemetry
-		// rollup reads as a starvation signal. Removed once that ledger is
-		// admitted to the scheduler-state namespace.
-		return true
-	default:
-		return stageCommandsRequiringInstanceRoot[cmd[1]]
-	}
-}
-
-// commandDeclaresAnyFlag reports whether args declares any of names as a
-// flag, in either Go flag package form (-name, --name, -name=value,
-// --name=value). Used only to discriminate backlog-query/backlog-health's
-// ledger/journal-touching modes from their read-only ones — every other
-// command in stageCommandsRequiringInstanceRoot is unconditional.
-func commandDeclaresAnyFlag(args []string, names ...string) bool {
-	for _, arg := range args {
-		trimmed := strings.TrimPrefix(strings.TrimPrefix(arg, "--"), "-")
-		if eq := strings.IndexByte(trimmed, '='); eq >= 0 {
-			trimmed = trimmed[:eq]
-		}
-		for _, name := range names {
-			if trimmed == name {
-				return true
-			}
-		}
-	}
-	return false
+	return stageCommandsRequiringInstanceRoot[cmd[1]]
 }
 
 // StageInvokesProviderBuiltin narrows transient stderr classification to the
