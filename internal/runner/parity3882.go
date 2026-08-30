@@ -303,6 +303,51 @@ func LearningEpisodePointerName(sourceSeq uint64) string {
 	return fmt.Sprintf("learning.episode[%d]", sourceSeq)
 }
 
+// LearningEpisodeAppliesToRepass is the #3929 ruling, spelled once for both
+// drivers: a learning episode is injected IF AND ONLY IF the branch is a true
+// repass, and a branch is a true repass exactly when the gate result's repass
+// attempt is at least 1.
+//
+// The caller has already established that the branch is a retry decision at
+// all — retryable, non-pass, non-escalated, and targeting a real stage rather
+// than a reserved terminal (internal/runner.routeRetryDecision's guard, and
+// internal/engine.retryDecisionApplies). This is the SECOND question, and only
+// this one: is the stage being re-entered, or entered for the first time?
+//
+// # Why the repass attempt, and not a re-derived "has the target completed?"
+//
+// repassAttempt is not a proxy for the answer, it IS the answer, already
+// computed and already charged. internal/gate's trackRepass returns 0 outright
+// unless IsReentry(target) holds — wired to visitedStages on both the
+// sequential and the parallel walk — and otherwise returns the target's
+// position in the repass budget it just charged. internal/engine's
+// resolveGateOutcome does the same from `upstream[wfTarget(g, outcome)]`. Both
+// then journal the number on the retry-decision annotation, where
+// E2-retry-decision-annotation already asserts the two sides agree on it.
+//
+// So the predicate is EVIDENCED rather than re-derived, and that distinction
+// is the point of sharing it. The engine previously asked the question a
+// second way (gateSendsBack: is the target present in the upstream map?),
+// which was equivalent by construction at its one call site and therefore
+// silently able to stop being equivalent. Charging a repass budget is the act
+// that means "this stage is being asked to do its work again"; a correction
+// belongs exactly where that happened.
+//
+// # What a forward branch is instead
+//
+// A fail branch that routes ONWARD, to a stage that has not run, is a
+// disposition: the park-*/release-* stages every lane uses to record, escalate
+// or hand off. Such a stage has not done anything that could need correcting,
+// and pr-remediation's park-infrastructure-failure says so in its own
+// escalation text ("no implementation defect was established") while the
+// injected episode would assert the opposite, under a content-addressed
+// signature that gate.readEpisodeHistory correlates across runs. It would also
+// downgrade a first-run stage's produced integrity to derived — admission
+// control — for a correction it is not receiving.
+func LearningEpisodeAppliesToRepass(repassAttempt int) bool {
+	return repassAttempt >= 1
+}
+
 // LearningEpisodeInjectedKind is the runner.annotation kind recording an
 // injection.
 const LearningEpisodeInjectedKind = "learning.episode.injected"
