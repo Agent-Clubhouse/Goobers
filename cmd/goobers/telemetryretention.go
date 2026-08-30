@@ -52,11 +52,18 @@ func pruneConfiguredTelemetryRetention(
 	return pruneTelemetryRetention(layout, config, db, now, false)
 }
 
+// compactSchedulerRetention bounds the scheduler journal and rollup rows. A
+// stale-generation cleanup failure is reported through cleanupErrors (a nil
+// reporter simply drops it) rather than returned: the compaction itself
+// recorded new data and succeeded, so failing the whole sweep over disk a
+// later compaction will reclaim anyway would be wrong — but on the daemon's
+// unattended path this is the only chance to make the failure observable.
 func compactSchedulerRetention(
 	ctx context.Context,
 	config instance.TelemetryRetentionConfig,
 	db *rollup.DB,
 	instanceLog *journal.InstanceLog,
+	cleanupErrors *sweepErrorReporter,
 	now time.Time,
 ) error {
 	window, err := config.WindowDuration()
@@ -66,13 +73,33 @@ func compactSchedulerRetention(
 	cutoff := now.Add(-window)
 	budgetCutoff := now.Add(-24 * time.Hour)
 
+	reportCleanup := func(result journal.InstanceEventsCompaction) {
+		if cleanupErrors == nil {
+			return
+		}
+		cleanupErrors.report(result.StaleGenerationCleanupErr)
+	}
+
 	if db != nil && instanceLog != nil {
+		var compaction journal.InstanceEventsCompaction
+		compacted := false
 		err := db.MaintainSchedulerRetention(ctx, instanceLog.Dir(), cutoff, func() error {
-			_, err := instanceLog.Compact(cutoff, budgetCutoff)
-			return err
+			result, err := instanceLog.Compact(cutoff, budgetCutoff)
+			if err != nil {
+				return err
+			}
+			compaction = result
+			compacted = true
+			return nil
 		})
 		if err != nil {
 			return err
+		}
+		// Only a compaction that actually ran carries a verdict about stale
+		// generations. Reporting the zero value when the closure never fired
+		// would clear a real consecutive-failure streak with no evidence.
+		if compacted {
+			reportCleanup(compaction)
 		}
 		return nil
 	}
@@ -82,9 +109,11 @@ func compactSchedulerRetention(
 		}
 	}
 	if instanceLog != nil {
-		if _, err := instanceLog.Compact(cutoff, budgetCutoff); err != nil {
+		result, err := instanceLog.Compact(cutoff, budgetCutoff)
+		if err != nil {
 			return fmt.Errorf("compact scheduler journal: %w", err)
 		}
+		reportCleanup(result)
 	}
 	return nil
 }

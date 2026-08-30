@@ -151,6 +151,17 @@ type StartSpec struct {
 	// instance config must fill this in or every run it dispatches pins the
 	// defaults no matter what the author declared (#3820).
 	RunControls apiv1.RunControls
+	// BacklogQueryAssignedTo is this gaggle's resolved self identity
+	// (instance.EffectiveSelfIdentity) and BacklogQueryRequireLabels its
+	// comma-joined GaggleSpec.RequireLabels — the gaggle defaults
+	// cmd/goobers' selfIdentitiesByGaggle / requireLabelsByGaggle resolve for
+	// the local runner's Config. Pinning them here is what gives an
+	// engine-driven run the same MIRC-2 claim partition the runner has had
+	// since #1901: a starter that leaves them empty dispatches a
+	// backlog-query stage with no partition at all, which on a shared backlog
+	// claims the sibling instance's goobers:local items (#3873).
+	BacklogQueryAssignedTo    string
+	BacklogQueryRequireLabels string
 }
 
 // StartInput resolves the latest version of a workflow and pins it into a
@@ -197,5 +208,8 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 		LiveJournal:            s.LiveJournal,
 		Placements:             s.Placements,
 		RunControls:            s.RunControls,
+
+		BacklogQueryAssignedTo:    s.BacklogQueryAssignedTo,
+		BacklogQueryRequireLabels: s.BacklogQueryRequireLabels,
 	}, nil
 }

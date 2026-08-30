@@ -15,6 +15,14 @@ type InstanceEventsCompaction struct {
 	AfterBytes  int64
 	Kept        int
 	Dropped     int
+	// StaleGenerationsRemoved counts obsolete generation files reclaimed
+	// after the pointer advanced (see instancegen.go).
+	StaleGenerationsRemoved int
+	// StaleGenerationCleanupErr is non-nil when one or more obsolete
+	// generation files could not be removed. The compaction itself still
+	// succeeded — this is a diagnostic for the caller to surface, not a
+	// failure, since stranded generations only waste disk.
+	StaleGenerationCleanupErr error
 }
 
 // CompactInstanceEvents rewrites the instance journal at dir, keeping complete
@@ -85,7 +93,7 @@ func CompactInstanceEvents(dir string, keepAfter, keepRunStartsAfter time.Time, 
 	if newInfo, statErr := os.Stat(nextPath); statErr == nil {
 		result.AfterBytes = newInfo.Size()
 	}
-	cleanupStaleInstanceEventsGeneration(dir, nextGen)
+	result.StaleGenerationsRemoved, result.StaleGenerationCleanupErr = cleanupStaleInstanceEventsGenerations(dir, nextGen)
 	return result, nil
 }
 
@@ -211,6 +219,6 @@ func (l *InstanceLog) Compact(keepAfter, keepRunStartsAfter time.Time) (Instance
 	if err := l.reopenFile(nextPath); err != nil {
 		return InstanceEventsCompaction{}, err
 	}
-	cleanupStaleInstanceEventsGeneration(l.dir, nextGen)
+	result.StaleGenerationsRemoved, result.StaleGenerationCleanupErr = cleanupStaleInstanceEventsGenerations(l.dir, nextGen)
 	return result, nil
 }
