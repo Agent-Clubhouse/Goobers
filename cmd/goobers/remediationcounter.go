@@ -56,7 +56,7 @@ func (c *remediationDemandCounter) EligibleCount(ctx context.Context) (int, erro
 	if err != nil {
 		return 0, fmt.Errorf("open claim ledger: %w", err)
 	}
-	prs, err = filterClaimAvailablePullRequests(ledger, c.gaggle, "", prs, now)
+	prs, err = filterClaimAvailablePullRequests(ledger, c.gaggle, c.repo.Provider, "", prs, now)
 	if err != nil {
 		return 0, err
 	}
@@ -78,6 +78,7 @@ func (c *remediationDemandCounter) ProviderQuotaGuarded() bool {
 // stage's own ledger seam (the plane in a pod, the instance file otherwise).
 func stageClaimAvailablePullRequests(
 	root string,
+	repo providers.RepositoryRef,
 	currentRunID string,
 	candidates []providers.PullRequestSummary,
 	now time.Time,
@@ -86,24 +87,25 @@ func stageClaimAvailablePullRequests(
 	if err != nil {
 		return nil, fmt.Errorf("open claim ledger: %w", err)
 	}
-	return filterClaimAvailablePullRequests(ledger, providerGaggle(), currentRunID, candidates, now)
+	return filterClaimAvailablePullRequests(ledger, providerGaggle(), repo.Provider, currentRunID, candidates, now)
 }
 
 func filterClaimAvailablePullRequests(
 	ledger claimsclient.Ledger,
 	gaggle string,
+	provider providers.ProviderKind,
 	currentRunID string,
 	candidates []providers.PullRequestSummary,
 	now time.Time,
 ) ([]providers.PullRequestSummary, error) {
 	available := make([]providers.PullRequestSummary, 0, len(candidates))
 	err := ledger.Locked(claimContext(), claimLockOperationPRCount, func(tx claimsclient.Ledger) error {
-		claims, err := pullRequestClaimListing(tx, gaggle)
+		claims, err := pullRequestClaimListing(tx, gaggle, provider)
 		if err != nil {
 			return err
 		}
 		for _, candidate := range candidates {
-			claimed, ownedByCurrentRun := pullRequestClaimStatus(claims, gaggle, candidate.Number, currentRunID, now)
+			claimed, ownedByCurrentRun := pullRequestClaimStatus(claims, gaggle, provider, candidate.Number, currentRunID, now)
 			if !claimed || ownedByCurrentRun {
 				available = append(available, candidate)
 			}

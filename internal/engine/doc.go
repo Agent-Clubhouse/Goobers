@@ -33,20 +33,6 @@
 // closing them is follow-on work, not a reason to weaken the conformance
 // surface to make a fixture pass:
 //
-//   - Transient worktree-provision failures (worktree.IsTransientProvisionError)
-//     are not reclassified to invoke.InfrastructureFailure on this path
-//     (workerhost.WorktreeWorkspaces.Provision → classifySeamError), so a clone/
-//     fetch flake burns the policy budget instead of the infra budget the local
-//     runner (#572) gives it.
-//   - Learning-episode injection (#3874, newly observed by the parity harness
-//     and not yet an entry in the finding-002 inventory): on the SAME gate-retry
-//     arm that writes the retry decision, the local runner also records a
-//     learning/episode-<gate>-<seq>.json artifact and threads a
-//     learning.episode[<seq>] context pointer into the re-entered stage
-//     (recordLearningInjection). The engine does neither, so a repassed stage is
-//     re-invoked here without the correction feedback its local counterpart
-//     receives. It is bounded and named by the parity rows that walk a fail
-//     branch (parity_row_retry_decision_test.go), never silently tolerated.
 //   - Cumulative agentic usage budgets (limits.maxTokens / maxCostUSD) are not
 //     enforced here — the local runner fails closed via enforceStageBudget.
 //     Moot until the agentic executor seam is wired (stages needing it fail
@@ -54,6 +40,16 @@
 //   - The context-manifest artifact is journaled even when workspace
 //     provisioning failed; the gate-evaluator has no per-attempt deadline; and
 //     InputsFrom failures produce no stage-attributed events.
+//
+// Plan item E4-E9 (#3882) closed the implementation-lane entries this ledger
+// used to carry — the transient worktree-provision reclassification and the
+// learning-episode injection gap the parity harness itself surfaced — along
+// with the seven finding-002 inventory rows beside them: the cached verdict,
+// the reviewer diff artifact with its dedup and empty-diff fast-fails, the
+// repass cause and remediation-evidence obligation, the onTimeout salvage
+// marker, the CONTEXT_NOT_INSPECTED re-dispatch, the base-sync conflict
+// detail, and the #3366 unpushed-diff capture. Each is now pinned by a row of
+// the parity table for the same reason E2's are.
 //
 // Plan item E2 (#3874) closed four of the entries this ledger used to carry:
 // the #415 non-retryable escalation bypass, the retry-decision annotation and

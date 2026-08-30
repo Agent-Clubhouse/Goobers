@@ -78,6 +78,16 @@ func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instan
 	if opt := engineRateLimitOption(providerQuota); opt != nil {
 		opts = append(opts, opt)
 	}
+	if instanceLog != nil {
+		// The destination of a pod's OpInstanceAnnotation (Goobers#3898): the
+		// scheduler's cross-run narration belongs in THIS file, on the
+		// daemon's volume, and a stage pod has no legal path to it. The pod
+		// emits over the run-scoped journal plane and the daemon appends here,
+		// with the event's RunID restamped from the request so the run
+		// containment the route enforces cannot be sidestepped by what the
+		// caller put in the payload.
+		opts = append(opts, livejournal.WithInstanceLog(instanceLog))
+	}
 	return livejournal.NewWriter(func(gaggle string) (string, bool) {
 		dir, ok := runsDirs[gaggle]
 		return dir, ok

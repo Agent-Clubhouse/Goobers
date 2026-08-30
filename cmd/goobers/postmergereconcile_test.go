@@ -57,7 +57,7 @@ func postMergeReconcileEnv(t *testing.T, serverURL string) string {
 }
 
 func postMergeTestRepo() providers.RepositoryRef {
-	return providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	return providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
 }
 
 func loadPostMergeReconcileEntry(t *testing.T, root string, repo providers.RepositoryRef, pullNumber string) postMergeReconcileEntry {
@@ -479,5 +479,82 @@ func TestReconcilePostMergeADOCompletesLedgerAndDoesNotRetry(t *testing.T) {
 	}
 	if polls != firstPolls {
 		t.Fatalf("polls after retry = %d, want unchanged at %d", polls, firstPolls)
+	}
+}
+
+// TestReconcilePostMergeADOReturnsCloseOutFailure proves an ADO close-out
+// failure is a stage failure, not a silently successful sweep: the entry stays
+// pending with no close-out checkpoint, the batch reports a typed retryable
+// provider error, and a later cycle retries the work item.
+func TestReconcilePostMergeADOReturnsCloseOutFailure(t *testing.T) {
+	var workItemCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/wit/workitems/") {
+			workItemCalls++
+			http.Error(w, "work item id is not valid", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"pullRequestId": 359, "status": "completed", "description": "Fixes #42",
+			"repository": map[string]interface{}{
+				"id": "repo-guid", "name": "repo",
+				"project": map[string]string{"id": "project-guid", "name": "project"},
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	root := initDemo(t)
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "contoso", Project: "project", Name: "repo"}
+	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	t.Setenv(executor.CredentialEnvVar(string(capability.ADOPRWrite)), "ado-token")
+	resultFile := filepath.Join(t.TempDir(), "reconcile-result.json")
+	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
+	previous := newADOProviderForStage
+	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		return providers.NewADOProvider(routed.Owner, routed.Project, "token",
+			func(provider *providers.ADOProvider) { provider.BaseURL = server.URL }), nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = previous })
+	if err := recordPostMergeTimeout(root, repo, "359", time.Now().Add(-time.Minute)); err != nil {
+		t.Fatalf("record queue timeout: %v", err)
+	}
+
+	code, stdout, stderr := runArgs(t, "reconcile-post-merge", root)
+	if code != 1 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q, want close-out failure", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "pr #359") || !strings.Contains(stderr, "close work item #42") {
+		t.Fatalf("stderr = %q, want the failing pull request and work item named", stderr)
+	}
+	if !strings.Contains(stdout, "still pending 1") {
+		t.Fatalf("stdout = %q, want the sweep counts with the entry still pending", stdout)
+	}
+	result := readProviderStageResult(t, resultFile)
+	if msg, _ := result[executor.OutputErrorMessage].(string); !strings.Contains(msg, "close work item #42") {
+		t.Fatalf("errorMessage = %q, want the failed close-out named in the typed result", msg)
+	}
+
+	entry := loadPostMergeReconcileEntry(t, root, repo, "359")
+	if entry.State != postMergeReconcilePending || entry.CompletedAt != nil {
+		t.Fatalf("reconcile entry = %+v, want pending and uncompleted", entry)
+	}
+	if entry.LastCheckedAt == nil {
+		t.Fatalf("reconcile entry = %+v, want the poll checkpoint persisted", entry)
+	}
+	if entry.Actions.ClosedIssueNumbers["42"] {
+		t.Fatalf("reconcile actions = %+v, want no close-out checkpoint for a failed close", entry.Actions)
+	}
+
+	firstCalls := workItemCalls
+	code, _, stderr = runArgs(t, "reconcile-post-merge", root)
+	if code != 1 {
+		t.Fatalf("second cycle: code = %d, stderr = %q, want the failure repeated", code, stderr)
+	}
+	if workItemCalls <= firstCalls {
+		t.Fatalf("work item calls = %d, want a retry beyond the first cycle's %d", workItemCalls, firstCalls)
 	}
 }

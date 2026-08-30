@@ -168,6 +168,74 @@ func TestWaitForRunTerminalRejectsFutureJournalSchema(t *testing.T) {
 	}
 }
 
+// TestWaitForRunTerminalToleratesSlowButProgressingRun pins that the #827
+// tripwire bounds IDLE time, not total elapsed time: a run whose stages crawl
+// under load — but which keeps appending journal events — must be waited out,
+// not failed. Bounding total elapsed time false-failed
+// TestDemoTourRunsOfflineThroughDaemon on a saturated make-ci box while its
+// nested run was demonstrably advancing stage by stage.
+func TestWaitForRunTerminalToleratesSlowButProgressingRun(t *testing.T) {
+	oldPoll := runPollInterval
+	prev := runTerminalWaitTimeout
+	runPollInterval = 5 * time.Millisecond
+	runTerminalWaitTimeout = 2 * time.Second
+	t.Cleanup(func() {
+		runPollInterval = oldPoll
+		runTerminalWaitTimeout = prev
+	})
+
+	runsDir := instance.NewLayout(t.TempDir()).RunsDir()
+	const runID = "slow-but-progressing"
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: runID, Workflow: "fixture", WorkflowVersion: 1, Gaggle: "example",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual}, StartedAt: time.Now(),
+	}, nil)
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	defer func() { _ = run.Close() }()
+
+	done := make(chan struct{})
+	var phase journal.RunPhase
+	var waitErr error
+	go func() {
+		phase, waitErr = waitForRunTerminal(context.Background(), runsDir, runID)
+		close(done)
+	}()
+
+	// Stages that each finish well inside the idle bound, run for longer than
+	// the idle bound in total: elapsed time alone would have failed this wait,
+	// idle time must not. The per-stage gap is a small fraction of the bound so
+	// scheduler jitter under `-race` cannot turn a healthy run into a red test.
+	const stageGap = 150 * time.Millisecond
+	started := time.Now()
+	for stage := 0; time.Since(started) < runTerminalWaitTimeout+stageGap; stage++ {
+		time.Sleep(stageGap)
+		if err := run.Append(journal.Event{
+			Type: journal.EventStageFinished, Stage: "slow", Attempt: stage + 1, Status: "success",
+		}); err != nil {
+			t.Fatalf("append slow stage progress: %v", err)
+		}
+		select {
+		case <-done:
+			t.Fatalf("wait gave up on a progressing run after %d stages: (%s, %v)", stage+1, phase, waitErr)
+		default:
+		}
+	}
+	if err := run.Append(journal.Event{Type: journal.EventRunFinished, Status: string(journal.PhaseCompleted)}); err != nil {
+		t.Fatalf("finish run: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("wait did not return after the run became terminal")
+	}
+	if waitErr != nil || phase != journal.PhaseCompleted {
+		t.Fatalf("wait = (%s, %v), want completed with no error", phase, waitErr)
+	}
+}
+
 func TestRunWaitReporterRateLimitsHeartbeats(t *testing.T) {
 	oldHeartbeat := runWaitHeartbeatInterval
 	runWaitHeartbeatInterval = 30 * time.Second

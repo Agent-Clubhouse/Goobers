@@ -20,11 +20,11 @@ func journalDir(j Journal) string {
 	return ""
 }
 
-func disproveReviewerFindings(verdict apiv1.Verdict, pointers []apiv1.ContextPointer, root, gateName string) (apiv1.Verdict, bool) {
-	if len(verdict.Findings) == 0 || root == "" {
+func disproveReviewerFindings(verdict apiv1.Verdict, pointers []apiv1.ContextPointer, resolve ArtifactBytes, gateName string) (apiv1.Verdict, bool) {
+	if len(verdict.Findings) == 0 || resolve == nil {
 		return verdict, false
 	}
-	source := reviewerPatchSource(pointers, root, gateName)
+	source := reviewerPatchSource(pointers, resolve, gateName)
 	if len(source) == 0 {
 		return verdict, false
 	}
@@ -111,13 +111,13 @@ func singleRawString(line string) (string, bool) {
 
 type patchSource map[string]map[int]string
 
-func reviewerPatchSource(pointers []apiv1.ContextPointer, root, gateName string) patchSource {
+func reviewerPatchSource(pointers []apiv1.ContextPointer, resolve ArtifactBytes, gateName string) patchSource {
 	combined := make(patchSource)
 	for _, pointer := range pointers {
 		if pointer.Name != gateName+".diff" || pointer.Artifact == nil || !isDiffPointer(pointer) {
 			continue
 		}
-		data, err := pointer.Artifact.Resolve(root)
+		data, err := resolve(*pointer.Artifact)
 		if err != nil {
 			continue
 		}

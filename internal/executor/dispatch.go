@@ -194,8 +194,7 @@ const OutputRateLimitReset = "rateLimitReset"
 // different operator problems, and both used to reach the journal as the
 // generic executor_error.
 func CIPollFailureCode(err error) string {
-	var rateLimited *providers.RateLimitError
-	if errors.As(err, &rateLimited) {
+	if _, ok := providers.AsRateLimitError(err); ok {
 		return providers.ErrorCodeRateLimited
 	}
 	return CIPollProviderErrorCode

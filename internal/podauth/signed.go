@@ -65,8 +65,17 @@ func (s *SignedKey) WithClock(now func() time.Time) *SignedKey {
 }
 
 // Mint issues a signed bearer authenticating runID's stage pods until ttl
-// elapses (DefaultTokenTTL when zero, capped at MaxSignedTokenTTL).
+// elapses (DefaultTokenTTL when zero, capped at MaxSignedTokenTTL). The token
+// is UNSCOPED — every pod plane — which is what the pod's own runtime needs;
+// MintScoped is the least-privilege form handed to a stage subprocess.
 func (s *SignedKey) Mint(runID string, ttl time.Duration) (string, error) {
+	return s.MintScoped(runID, ttl)
+}
+
+// MintScoped issues a signed bearer confined to scopes (see KnownScopes). The
+// scopes are inside the signed payload, so a holder cannot widen them: editing
+// the segment invalidates the MAC.
+func (s *SignedKey) MintScoped(runID string, ttl time.Duration, scopes ...string) (string, error) {
 	if strings.TrimSpace(runID) == "" {
 		return "", errors.New("podauth: run ID is required")
 	}
@@ -85,35 +94,39 @@ func (s *SignedKey) Mint(runID string, ttl time.Duration) (string, error) {
 	if ttl > MaxSignedTokenTTL {
 		return "", fmt.Errorf("podauth: signed token TTL %s exceeds the %s ceiling; signed tokens cannot be revoked", ttl, MaxSignedTokenTTL)
 	}
+	checked, err := checkScopes(scopes)
+	if err != nil {
+		return "", err
+	}
 	exp := s.now().Add(ttl).UTC().Unix()
-	payload := signedPayload(runID, exp)
+	payload := signedPayload(runID, checked, exp)
 	return tokenPrefix + payload + "." + s.sign(payload), nil
 }
 
-// verifySigned resolves a presented signed token to its run ID.
-func (s *SignedKey) verifySigned(token string) (string, error) {
+// verifySigned resolves a presented signed token to its run ID and scopes.
+func (s *SignedKey) verifySigned(token string) (string, []string, error) {
 	rest, ok := strings.CutPrefix(token, tokenPrefix)
 	if !ok {
-		return "", ErrMalformedToken
+		return "", nil, ErrMalformedToken
 	}
 	idx := strings.LastIndex(rest, ".")
 	if idx <= 0 || idx == len(rest)-1 {
-		return "", ErrMalformedToken
+		return "", nil, ErrMalformedToken
 	}
 	payload, mac := rest[:idx], rest[idx+1:]
 	// Constant-time compare: a byte-wise early return here leaks how much of a
 	// forged MAC was correct.
 	if subtle.ConstantTimeCompare([]byte(mac), []byte(s.sign(payload))) != 1 {
-		return "", ErrUnknownToken
+		return "", nil, ErrUnknownToken
 	}
-	runID, exp, err := parseSignedPayload(payload)
+	runID, scopes, exp, err := parseSignedPayload(payload)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if !time.Unix(exp, 0).After(s.now()) {
-		return "", ErrUnknownToken
+		return "", nil, ErrUnknownToken
 	}
-	return runID, nil
+	return runID, scopes, nil
 }
 
 func (s *SignedKey) sign(payload string) string {
@@ -122,22 +135,56 @@ func (s *SignedKey) sign(payload string) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func signedPayload(runID string, exp int64) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(runID)) + "." + strconv.FormatInt(exp, 10)
+// signedPayload encodes the token's claims. Two shapes, and the two-segment
+// one is load-bearing rather than legacy tidiness: an UNSCOPED token keeps the
+// exact `b64(runID).exp` encoding it had before scopes existed, so a peer
+// process still running the previous build verifies a pod token minted by this
+// one. A scoped token adds a third segment; an old verifier refuses it, which
+// is the correct direction to fail — an old daemon does not know how to
+// confine the bearer, so it must not accept it at all.
+func signedPayload(runID string, scopes []string, exp int64) string {
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(runID))
+	if len(scopes) == 0 {
+		return encoded + "." + strconv.FormatInt(exp, 10)
+	}
+	return encoded + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(strings.Join(scopes, ","))) + "." +
+		strconv.FormatInt(exp, 10)
 }
 
-func parseSignedPayload(payload string) (string, int64, error) {
-	encoded, expText, ok := strings.Cut(payload, ".")
-	if !ok {
-		return "", 0, ErrMalformedToken
+func parseSignedPayload(payload string) (string, []string, int64, error) {
+	segments := strings.Split(payload, ".")
+	if len(segments) != 2 && len(segments) != 3 {
+		return "", nil, 0, ErrMalformedToken
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	raw, err := base64.RawURLEncoding.DecodeString(segments[0])
 	if err != nil {
-		return "", 0, ErrMalformedToken
+		return "", nil, 0, ErrMalformedToken
 	}
-	exp, err := strconv.ParseInt(expText, 10, 64)
+	var scopes []string
+	if len(segments) == 3 {
+		rawScopes, serr := base64.RawURLEncoding.DecodeString(segments[1])
+		if serr != nil {
+			return "", nil, 0, ErrMalformedToken
+		}
+		scopes, serr = checkScopes(strings.Split(string(rawScopes), ","))
+		if serr != nil {
+			// A signed token naming a scope this build does not know is
+			// refused, not silently narrowed to the ones it does: the
+			// alternative admits a bearer under an authority nobody in this
+			// process can reason about.
+			return "", nil, 0, ErrMalformedToken
+		}
+		if len(scopes) == 0 {
+			// An explicitly empty scope segment would verify as the UNSCOPED
+			// pod token — a widening, from a segment the signer bothered to
+			// emit. Refuse it.
+			return "", nil, 0, ErrMalformedToken
+		}
+	}
+	exp, err := strconv.ParseInt(segments[len(segments)-1], 10, 64)
 	if err != nil {
-		return "", 0, ErrMalformedToken
+		return "", nil, 0, ErrMalformedToken
 	}
-	return string(raw), exp, nil
+	return string(raw), scopes, exp, nil
 }

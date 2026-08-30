@@ -46,6 +46,26 @@ const (
 	OpAppend   = "append"
 	OpArtifact = "artifact"
 	OpSpan     = "span"
+	// OpInstanceAnnotation records a runner annotation in the DAEMON'S
+	// INSTANCE LOG rather than the run journal (Goobers#3898).
+	//
+	// It is the one op whose destination is not the run's own journal, and it
+	// exists because the scheduler's own narration — "this backlog item was
+	// eligible but blocked", "this item's failure streak degraded it" — is
+	// instance-scoped by nature: it is read by an operator asking what the
+	// scheduler DID across runs, not by anyone replaying one run's history.
+	// It has always been written to the instance log, and a mode-3 stage pod
+	// has no legal path to that file: the daemon's volume is not mounted, and
+	// mounting it would hand a workflow-authored stage write access to every
+	// run's scheduling record.
+	//
+	// So the pod emits it here, over the same run-scoped journal plane it
+	// already presents a bearer for, and the DAEMON writes the file. The run
+	// containment is what makes that safe: the route admits only a principal
+	// for {run}, and the writer stamps the event's RunID from the request
+	// rather than trusting the caller's — a pod cannot annotate for a run it
+	// is not.
+	OpInstanceAnnotation = "instance-annotation"
 )
 
 // EmitKeyRunnerField is the Runner-map field an applied op's idempotency key
@@ -66,6 +86,12 @@ const SpanUnavailableErrorCode = "span_unavailable"
 // succeed; genuinely new work for a closed journal is refused, never
 // appended after the terminal event.
 var ErrTerminal = errors.New("livejournal: run journal is terminal")
+
+// ErrNoInstanceLog is returned for an OpInstanceAnnotation on a writer built
+// without WithInstanceLog. Fail closed, deliberately: the alternative is a
+// scheduler annotation that a pod believes it delivered and that no operator
+// will ever read.
+var ErrNoInstanceLog = errors.New("livejournal: no instance log configured for instance annotations")
 
 // ErrUnknownRun reports an emit for a run the writer has never opened whose
 // batch carries no Open header — nothing to create the journal from.
@@ -224,6 +250,25 @@ func WithScrubber(s journal.Scrubber) Option {
 	return func(w *Writer) { w.scrubber = s }
 }
 
+// InstanceAppender is the daemon's instance log, narrowed to the single
+// method OpInstanceAnnotation needs (*journal.InstanceLog satisfies it).
+//
+// Declared as an interface rather than taking the concrete type so this
+// package keeps depending on journal for its EVENT vocabulary only, and so a
+// test can assert what was written without a scheduler directory.
+type InstanceAppender interface {
+	Append(journal.Event) error
+}
+
+// WithInstanceLog gives the writer the daemon's instance log, enabling
+// OpInstanceAnnotation. Without it that op kind is REFUSED, not dropped: a
+// scheduler annotation that vanished because the daemon was assembled without
+// this option would be exactly the silent partial-plane failure #3898 is
+// about, only moved from the pod to the daemon.
+func WithInstanceLog(log InstanceAppender) Option {
+	return func(w *Writer) { w.instanceLog = log }
+}
+
 // WithClock overrides the wall clock used for idle accounting (tests).
 func WithClock(now func() time.Time) Option {
 	return func(w *Writer) { w.now = now }
@@ -246,6 +291,10 @@ type Writer struct {
 	eventObserver func(runID string, ev journal.Event)
 	scrubber      journal.Scrubber
 	now           func() time.Time
+	// instanceLog is the daemon's instance log, the destination of
+	// OpInstanceAnnotation. Nil in every non-daemon assembly of this writer,
+	// which makes that op kind refuse rather than silently no-op.
+	instanceLog InstanceAppender
 
 	mu sync.Mutex
 	// open holds the journals the writer currently has open for appending,
@@ -980,7 +1029,10 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 }
 
 // applyOp applies one op under the run's lock. Returns whether the op was
-// appended (false = deduplicated).
+// appended (false = deduplicated). runID is the EMIT REQUEST's run — already
+// checked against the caller's principal by the route — and is the identity
+// an instance annotation is stamped with, never one the op carries. It is
+// also the run the event observer is notified for.
 func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op) (bool, error) {
 	if _, applied := run.keys[op.Key]; applied {
 		return false, nil
@@ -1093,6 +1145,46 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 		if _, err := run.jr.RecordSpanAnnotated(s.Stage, s.Name, s.DataSchema, data, map[string]any{EmitKeyRunnerField: op.Key}); err != nil {
 			return false, err
 		}
+		run.keys[op.Key] = run.jr.Seq()
+		return true, nil
+	case OpInstanceAnnotation:
+		if op.Event == nil {
+			return false, errors.New("instance annotation op carries no event")
+		}
+		if w.instanceLog == nil {
+			return false, ErrNoInstanceLog
+		}
+		ev := *op.Event
+		// FOREIGN-RUN REFUSAL, writer half. The route already refuses a
+		// principal whose subject is not this run, but the RunID the caller
+		// put INSIDE the event is a second, independent channel: a pod
+		// legitimately emitting for its own run could otherwise write an
+		// instance-log entry attributed to any run it names, and the instance
+		// log is the cross-run record an operator reads. Overwriting rather
+		// than validating is deliberate — there is exactly one correct value
+		// and the writer knows it, so there is no reason to make the caller
+		// get it right.
+		ev.RunID = runID
+		if ev.Type == "" {
+			ev.Type = journal.EventRunnerAnnotation
+		}
+		if ev.Time.IsZero() {
+			ev.Time = op.Time
+		}
+		if ev.Time.IsZero() {
+			ev.Time = w.now()
+		}
+		ev.Runner = withEmitKey(ev.Runner, op.Key)
+		if err := w.instanceLog.Append(ev); err != nil {
+			return false, err
+		}
+		// Marked applied at the run journal's CURRENT sequence: nothing was
+		// appended to it, and the value is only ever compared for presence.
+		// Dedup therefore holds for as long as the run stays open in memory —
+		// deriveDedupState rebuilds from run-journal events, which these are
+		// not, so a rehydrated run re-applies a replayed annotation. Accepted:
+		// the instance log is an append-only narration, and a duplicated
+		// scheduler annotation is noise, not a correctness failure.
 		run.keys[op.Key] = run.jr.Seq()
 		return true, nil
 	default:

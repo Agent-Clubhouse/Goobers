@@ -55,6 +55,8 @@ const exemptions = [
 
 const testOnlyExports = {
   "src/api/errors.ts": ["UnsupportedApiVersionError", "UnsupportedSchemaVersionError"],
+  "src/api/contract.generated.ts": ["configAuthoringErrorCodes", "configAuthoringRoutes"],
+  "src/api/types.ts": ["CONFIG_AUTHORING_SCHEMA_VERSION"],
   "src/api/queryFamily.ts": ["emptyStats", "positionOf", "comparePosition"],
   "src/api/surfaceActions.ts": ["uiSurfaceActions"],
   "src/attentionCollapse.ts": [

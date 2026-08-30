@@ -9,15 +9,6 @@ import (
 	"github.com/goobers/goobers/internal/learning"
 )
 
-type findingResolution struct {
-	Resolved          []string
-	Suppressed        []string
-	Reopened          []string
-	Disproven         []string
-	DisprovenFindings []apiv1.Finding
-	AllSuppressed     bool
-}
-
 type episodeHistory struct {
 	latestSeq    uint64
 	active       map[string]apiv1.Finding
@@ -30,9 +21,10 @@ type episodeHistory struct {
 func reconcileLearningFindings(
 	verdict apiv1.Verdict,
 	pointers []apiv1.ContextPointer,
-	root, gateName, diffDigest string,
+	resolve ArtifactBytes,
+	gateName, diffDigest string,
 ) (apiv1.Verdict, findingResolution) {
-	history := readEpisodeHistory(pointers, root, gateName)
+	history := readEpisodeHistory(pointers, resolve, gateName)
 	originalCount := len(verdict.Findings)
 	remaining := make([]apiv1.Finding, 0, originalCount)
 	current := map[string]bool{}
@@ -98,7 +90,7 @@ func reconcileLearningFindings(
 	return verdict, resolution
 }
 
-func readEpisodeHistory(pointers []apiv1.ContextPointer, root, gateName string) episodeHistory {
+func readEpisodeHistory(pointers []apiv1.ContextPointer, resolve ArtifactBytes, gateName string) episodeHistory {
 	history := episodeHistory{
 		active:       map[string]apiv1.Finding{},
 		known:        map[string]apiv1.Finding{},
@@ -106,7 +98,7 @@ func readEpisodeHistory(pointers []apiv1.ContextPointer, root, gateName string) 
 		evidenceByID: map[string]map[string]bool{},
 		resolved:     map[string]bool{},
 	}
-	if root == "" {
+	if resolve == nil {
 		return history
 	}
 	var episodes []learning.Episode
@@ -114,7 +106,7 @@ func readEpisodeHistory(pointers []apiv1.ContextPointer, root, gateName string) 
 		if !strings.HasPrefix(pointer.Name, "learning.episode") || pointer.Artifact == nil {
 			continue
 		}
-		data, err := pointer.Artifact.Resolve(root)
+		data, err := resolve(*pointer.Artifact)
 		if err != nil {
 			continue
 		}

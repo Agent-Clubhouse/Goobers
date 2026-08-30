@@ -10,7 +10,9 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
@@ -598,13 +600,53 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 		Type: journal.EventGateEvaluated,
 		Gate: gr.Gate, Verdict: gr.Outcome, Target: gr.Target, Escalated: gr.Escalated,
 		Runner: map[string]any{
-			"repassAttempt": gr.Attempt,
-			"gateAttempt":   gr.GateAttempt,
-			"escalated":     gr.Escalated,
+			"repassAttempt":   gr.Attempt,
+			"gateAttempt":     gr.GateAttempt,
+			"escalated":       gr.Escalated,
+			"duplicateDiff":   gr.DuplicateDiff,
+			"verdictCacheHit": gr.CacheHit,
 		},
 	}
 	if gr.RepassTarget != "" {
 		ev.Runner["repassTarget"] = gr.RepassTarget
+	}
+	// The implementation-lane annotations (#3882), keyed exactly as
+	// internal/gate's recordVerdict keys them: this event is the only place a
+	// consumer can learn that a gate resolved WITHOUT invoking a reviewer, and
+	// which of the previous verdict's findings this one settled.
+	if gr.DiffDigest != "" {
+		ev.Runner["diffDigest"] = gr.DiffDigest
+	}
+	if gr.RepassCause != nil {
+		ev.Runner["repassCause"] = gr.RepassCause
+	}
+	if gr.Reason != "" {
+		ev.Runner["reason"] = gr.Reason
+	}
+	if verdict != nil && len(verdict.Findings) > 0 {
+		identities := make([]string, 0, len(verdict.Findings))
+		for i := range verdict.Findings {
+			learning.NormalizeFinding(&verdict.Findings[i], gr.Gate, gr.DiffDigest)
+			identities = append(identities, verdict.Findings[i].ID)
+		}
+		ev.Runner["findingIdentities"] = identities
+		ev.Runner["learningFindings"] = gate.LearningFindingRecords(verdict.Findings)
+		ev.Runner["correctionFeedback"] = verdict.Rationale
+	}
+	if len(gr.ResolvedFindingIDs) > 0 {
+		ev.Runner["resolvedFindingIdentities"] = gr.ResolvedFindingIDs
+	}
+	if len(gr.SuppressedFindingIDs) > 0 {
+		ev.Runner["suppressedFindingIdentities"] = gr.SuppressedFindingIDs
+	}
+	if len(gr.ReopenedFindingIDs) > 0 {
+		ev.Runner["reopenedFindingIdentities"] = gr.ReopenedFindingIDs
+	}
+	if len(gr.DisprovenFindingIDs) > 0 {
+		ev.Runner["disprovenFindingIdentities"] = gr.DisprovenFindingIDs
+	}
+	if len(gr.DisprovenFindings) > 0 {
+		ev.Runner["disprovenLearningFindings"] = gate.LearningFindingRecords(gr.DisprovenFindings)
 	}
 	var artifact *apiv1.ArtifactPointer
 	if verdict != nil {

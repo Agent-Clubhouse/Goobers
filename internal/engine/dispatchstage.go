@@ -254,7 +254,7 @@ func dispatchRemoteGate(ctx workflow.Context, g apiv1.Gate, env apiv1.Invocation
 //
 // STILL OPEN, and the only remaining refusal below: no pod-side repo checkout,
 // so a stage declaring a workspace other than scratch is still refused.
-func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
+func dispatchRemoteTask(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, env apiv1.InvocationEnvelope, placement PinnedPlacement, produced apiv1.Integrity, workspaceBranch, workspaceDelta string, deltaOut *deltaPublication) (apiv1.ResultEnvelope, error) {
 	// An AGENTIC stage cannot execute in a stage pod: the pod entrypoint runs a
 	// declared command or script (dispatchexec), and invoking a goober through
 	// its harness has no pod-side path at all — the local arm reaches it via
@@ -309,10 +309,10 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		// miss a dynamically-resolved external-telemetry kind and let
 		// a pod be created for it.
 		if kind := resolvedKindInput(env); executor.StageRequiresInstanceRoot(t.Run.Command, kind) {
-			return dispatchInstanceRootRefusal(ctx, t, rec, env.ContextPointers, deltaOut, instanceRootRefusalReason(t.Name, t.Run.Command, kind))
+			return dispatchInstanceRootRefusal(ctx, in, t, rec, env.ContextPointers, deltaOut, instanceRootRefusalReason(t.Name, t.Run.Command, kind))
 		}
 	}
-	return dispatchWithRetry(ctx, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
+	return dispatchWithRetry(ctx, in, t, rec, env.ContextPointers, func(ctx workflow.Context, attempt int) (stageActivityResult, error) {
 		var result stageActivityResult
 		attemptEnv := env
 		attemptEnv.Attempt = int32(attempt)
@@ -379,8 +379,8 @@ func instanceRootRefusalReason(taskName string, command []string, kind string) s
 // stage does: a refused stage never ran, so it has no commits to hand on, and
 // the walk's continuity record must see an empty digest rather than inherit the
 // previous stage's by omission.
-func dispatchInstanceRootRefusal(ctx workflow.Context, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *deltaPublication, reason string) (apiv1.ResultEnvelope, error) {
-	return dispatchWithRetry(ctx, t, rec, pointers, func(workflow.Context, int) (stageActivityResult, error) {
+func dispatchInstanceRootRefusal(ctx workflow.Context, in RunInput, t apiv1.Task, rec *runJournal, pointers []apiv1.ContextPointer, deltaOut *deltaPublication, reason string) (apiv1.ResultEnvelope, error) {
+	return dispatchWithRetry(ctx, in, t, rec, pointers, func(workflow.Context, int) (stageActivityResult, error) {
 		return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{
 			Status:  apiv1.ResultFailure,
 			Summary: "stage requires the daemon's instance root; refused before a pod was created",

@@ -54,6 +54,14 @@ type scriptedExec struct {
 	mu     sync.Mutex
 	script map[string][]scriptedCall
 	calls  map[string]int
+	// verdicts scripts the AGENTIC REVIEWER seam per gate name, added for
+	// #3882's parity rows. Absent means the reviewer is not supposed to run,
+	// and Review says so with an error rather than a zero verdict — which is
+	// what turns "the port dispatched a reviewer it should have
+	// short-circuited" into a loud failure on both lanes instead of a silent
+	// extra model call.
+	verdicts    map[string][]apiv1.Verdict
+	reviewCalls map[string]int
 }
 
 func newScriptedExec(script map[string][]scriptedCall) *scriptedExec {
@@ -88,8 +96,28 @@ func (s *scriptedExec) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (
 	return s.next(env.TaskID)
 }
 
-func (s *scriptedExec) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	return apiv1.Verdict{}, errors.New("conformance fixtures use automated gates; agentic review is a local-runner-only surface until #629's diff evidence lands")
+// Review answers from the scripted verdicts, keyed by gate name. The last
+// scripted verdict for a gate repeats.
+func (s *scriptedExec) Review(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	gate := env.TaskID[strings.Index(env.TaskID, ":")+1:]
+	script := s.verdicts[gate]
+	if len(script) == 0 {
+		return apiv1.Verdict{}, fmt.Errorf(
+			"scriptedExec: gate %q dispatched a reviewer, but this fixture scripts none — "+
+				"either the fixture is meant to short-circuit the reviewer and no longer does, "+
+				"or it needs a scripted verdict", gate)
+	}
+	if s.reviewCalls == nil {
+		s.reviewCalls = map[string]int{}
+	}
+	n := s.reviewCalls[gate]
+	s.reviewCalls[gate] = n + 1
+	if n >= len(script) {
+		n = len(script) - 1
+	}
+	return script[n], nil
 }
 
 // flakyAutomated wraps a real automated evaluator, failing the first

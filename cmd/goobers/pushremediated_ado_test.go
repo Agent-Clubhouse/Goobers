@@ -229,7 +229,7 @@ func pushRemediatedADOFixture(t *testing.T, recordHeadSHA bool) (root string, st
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
 	t.Chdir(wt.Path)
 
-	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, "run-392-ado", "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(root, repo, []providers.PullRequestSummary{{Number: 77}}, "run-392-ado", "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed PR claim: %v", err)
 	}
 	return root, st, wt.Path, headSHA

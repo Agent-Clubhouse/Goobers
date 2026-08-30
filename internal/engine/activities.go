@@ -17,6 +17,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/runner"
@@ -79,6 +80,18 @@ type Activities struct {
 	// it. Nil disables the canary (the local runner path, which never
 	// serializes an envelope off-process).
 	Canary journal.Scrubber
+	// Spans reads back a harness transcript an executor already committed to
+	// content-addressed storage, by digest. Required only for the #3374
+	// context-inspection check (InvokeGoober): a stage claiming
+	// DEPENDENCY_NOT_MET is held to having actually READ the context it was
+	// handed, and its transcript is the only record of whether it did.
+	//
+	// A nil seam FAILS OPEN — the claim is accepted unvalidated — which is
+	// the deliberate choice for a check whose whole purpose is to catch an
+	// agent skipping its inputs. Failing closed would turn a worker with no
+	// blob store into one that rejects every legitimate blocked result, and
+	// a run that cannot verify a claim is in no position to refuse it.
+	Spans SpanSource
 	// Dispatcher is the mode-3 substrate seam (#3588, dispatchstage.go):
 	// *dispatcher.Dispatcher in production, a fake in tests. Required only by
 	// DispatchStage; a run with no pinned non-self placement never reaches
@@ -170,6 +183,39 @@ type DispatchStageResult struct {
 	// verdict (a non-empty Decision, the verdict schema): a non-nil Verdict
 	// here is one the engine may route on.
 	Verdict *apiv1.Verdict `json:"verdict,omitempty"`
+	// SalvageMarker is the #724 salvage evidence for an agentic attempt whose
+	// session timed out with committed work in the tree: the marker bytes the
+	// walk commits as "<stage>/salvage-on-timeout.json". Carried on the result
+	// rather than written here because the projection commits only bytes that
+	// are in history (#629) — an artifact the activity wrote to disk could not
+	// be re-derived by a replay or rebuilt by the repair projection.
+	//
+	// Additive and omitempty: a history recorded before this field existed
+	// decodes with nil and journals nothing, exactly as it did.
+	SalvageMarker []byte `json:"salvageMarker,omitempty"`
+	// BaseSyncConflict is the #813 conflict detail — the code, message,
+	// branch, base ref and CONFLICTING FILES — for a deterministic stage whose
+	// base synchronization conflicted. Carried for the same reason
+	// SalvageMarker is. Nil for every other outcome.
+	BaseSyncConflict []byte `json:"baseSyncConflict,omitempty"`
+	// UnpushedDiff is the #3366 capture: the patch an agentic attempt left
+	// uncommitted-to-the-remote in its workspace, taken before that workspace
+	// is torn down. Nil when the branch did not move, when the workspace
+	// cannot report a diff, or for a non-repo stage.
+	UnpushedDiff *UnpushedDiffCapture `json:"unpushedDiff,omitempty"`
+}
+
+// UnpushedDiffCapture is what an attempt's workspace was holding when it
+// finished: the patch itself plus the branch and base ref it was taken
+// against. The walk turns it into the "<stage>/unpushed-diff.patch" artifact
+// and its metadata sidecar (#3366).
+//
+// A WIRE CONTRACT recorded in ActivityTaskCompleted events, like the struct
+// that carries it.
+type UnpushedDiffCapture struct {
+	Diff    []byte `json:"diff,omitempty"`
+	Branch  string `json:"branch,omitempty"`
+	BaseRef string `json:"baseRef,omitempty"`
 }
 
 // StagePlacement is the substrate provenance of one pod-executed stage
@@ -317,6 +363,19 @@ func classifySeamError(err error) error {
 		}
 		return temporal.NewApplicationErrorWithOptions(err.Error(), FailureTypeInfrastructure, options)
 	}
+	// A TRANSIENT worktree-provision failure (#3882, the engine drift-ledger
+	// entry this closes): a lock contended by a concurrent worktree operation,
+	// a fetch that lost its connection, a transiently-unavailable remote. The
+	// local runner already reclassifies these as infrastructure so the attempt
+	// retries instead of burning a repass on the AGENT for something the agent
+	// never touched; the engine classified every provision failure as a stage
+	// failure, which charged the run's own budget for the worker's disk.
+	//
+	// Checked after the invoke marker, not before: an executor that has
+	// already declared its own failure class owns that answer.
+	if worktree.IsTransientProvisionError(err) {
+		return temporal.NewApplicationError(err.Error(), FailureTypeInfrastructure)
+	}
 	return temporal.NewApplicationError(err.Error(), FailureTypeStage)
 }
 
@@ -351,6 +410,9 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 		WorkspaceDelta:  workspaceDelta,
 	})
 	if err != nil {
+		if worktree.IsTransientProvisionError(err) {
+			return nil, invoke.InfrastructureFailure(fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err))
+		}
 		return nil, fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err)
 	}
 	if ws == nil || ws.Path() == "" {
@@ -476,7 +538,7 @@ func (a *Activities) refuseLeakedEnvelope(env apiv1.InvocationEnvelope) error {
 // recorded with the two-argument shape replays under this code
 // (TestContinuityPreChangeHistoryReplays). A struct in the second position
 // would fail to decode those payloads.
-func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode) (stageActivityResult, error) {
+func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, onTimeout string) (stageActivityResult, error) {
 	if a.Goober == nil {
 		return stageActivityResult{}, classifySeamError(ErrNotConfigured)
 	}
@@ -493,14 +555,106 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 	defer removeWorkspace(ctx, env.TaskID, ws)
 	res, err := a.Goober.Invoke(ctx, env)
 	if err != nil {
+		// #724 salvage: an agentic session that ran out of wall clock has not
+		// necessarily done nothing. If the task declared onTimeout: salvage
+		// and the agent left COMMITTED work behind, the run keeps that work
+		// and lets the downstream verification stage judge it, rather than
+		// throwing away a real implementation because the harness ran long.
+		//
+		// The decision has to be made here, in the process holding the
+		// workspace: the diff is only observable for the workspace's lifetime,
+		// and the deferred teardown above is about to end it.
+		if salvaged, marker, ok := a.salvageOnTimeout(ctx, ws, env, workspace, onTimeout, err); ok {
+			result := stageActivityResult{ResultEnvelope: salvaged, SalvageMarker: marker}
+			if perr := publishWorkspaceDelta(ctx, ws, workspace, &result); perr != nil {
+				return stageActivityResult{}, classifySeamError(perr)
+			}
+			result.SelfPlacement = selfStagePlacement()
+			return a.scrubStageActivityResult(result)
+		}
 		return stageActivityResult{}, classifySeamError(err)
 	}
+	// #3374: a stage may not claim DEPENDENCY_NOT_MET without having inspected
+	// the context pointers it was handed. Validated HERE rather than in the
+	// workflow because the evidence is the harness transcript, which lives in
+	// the blob plane an activity can read and workflow code cannot. The walk
+	// routes on the rejection (contextNotInspectedRedispatch); this only
+	// decides whether there is one.
+	res = a.validateDependencyResult(ctx, env, res)
 	result := stageActivityResult{ResultEnvelope: res}
+	// #3366: capture what the workspace is about to take to the grave. Taken
+	// BEFORE publishWorkspaceDelta so a stage that failed — the case where the
+	// capture actually matters, since a success publishes a bundle the next
+	// stage continues from — still leaves its work in the journal.
+	result.UnpushedDiff = captureUnpushedDiff(ctx, ws, workspace, env)
 	if err := publishWorkspaceDelta(ctx, ws, workspace, &result); err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
 	result.SelfPlacement = selfStagePlacement()
 	return a.scrubStageActivityResult(result)
+}
+
+// salvageOnTimeout implements the #724 ruling for the engine's self arm: a
+// timed-out agentic attempt on a task declaring onTimeout: salvage, whose
+// workspace holds a non-empty committed diff, SUCCEEDS with the salvage marker
+// rather than failing.
+//
+// Every one of those conditions is load-bearing. Only a timeout salvages (a
+// crashed harness proves nothing about the tree); only a declared salvage
+// policy salvages (the default remains fail, because most timed-out stages
+// really have produced nothing usable); and only a non-empty diff salvages,
+// which is what keeps this from turning "the agent did nothing for an hour"
+// into a green stage. The verifying stage downstream is what judges the
+// salvaged work — the marker exists so an operator can see that is what
+// happened.
+func (a *Activities) salvageOnTimeout(
+	ctx context.Context,
+	ws Workspace,
+	env apiv1.InvocationEnvelope,
+	workspace apiv1.WorkspaceMode,
+	onTimeout string,
+	cause error,
+) (apiv1.ResultEnvelope, []byte, bool) {
+	if onTimeout != apiv1.TaskOnTimeoutSalvage || !invoke.IsTimeout(cause) {
+		return apiv1.ResultEnvelope{}, nil, false
+	}
+	capture := captureUnpushedDiff(ctx, ws, workspace, env)
+	if capture == nil || len(capture.Diff) == 0 {
+		return apiv1.ResultEnvelope{}, nil, false
+	}
+	marker, err := runner.SalvageOnTimeoutMarker(len(capture.Diff), cause.Error())
+	if err != nil {
+		return apiv1.ResultEnvelope{}, nil, false
+	}
+	return runner.SalvagedResult(), marker, true
+}
+
+// captureUnpushedDiff asks a writable repo workspace for the patch it is
+// holding. Best-effort by construction: a workspace that cannot report a diff
+// (scratch, read-only, a test fake, any provisioner predating DiffReader)
+// reports none, and every caller treats none as "nothing to record" rather
+// than as a failure. Capturing work is strictly additive to a stage's outcome
+// and must never be able to change it.
+func captureUnpushedDiff(ctx context.Context, ws Workspace, mode apiv1.WorkspaceMode, env apiv1.InvocationEnvelope) *UnpushedDiffCapture {
+	if !writableWorkspace(mode) {
+		return nil
+	}
+	reader, ok := ws.(DiffReader)
+	if !ok {
+		return nil
+	}
+	branch, baseRef, err := reader.Head(ctx)
+	if err != nil {
+		return nil
+	}
+	if baseRef == "" {
+		baseRef = env.BaseBranch
+	}
+	diff, err := reader.Diff(ctx, baseRef)
+	if err != nil || len(diff) == 0 {
+		return nil
+	}
+	return &UnpushedDiffCapture{Diff: diff, Branch: branch, BaseRef: baseRef}
 }
 
 // ReviewGoober executes an agentic reviewer gate. Like the local runner, the
@@ -511,26 +665,134 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 // never publishes: it returns a Verdict, not a stage result, and must not
 // commit. Both new arguments are trailing positionals for the replay reason
 // InvokeGoober documents.
-func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode) (apiv1.Verdict, error) {
+func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvelope, workspaceBranch string, workspaceDelta string, workspace apiv1.WorkspaceMode, priorDiffDigest string, subjectAgentic bool) (GateReviewResult, error) {
 	if a.Goober == nil {
-		return apiv1.Verdict{}, classifySeamError(ErrNotConfigured)
+		return GateReviewResult{}, classifySeamError(ErrNotConfigured)
 	}
 	if err := a.refuseLeakedEnvelope(env); err != nil {
-		return apiv1.Verdict{}, err
+		return GateReviewResult{}, err
 	}
 	if workspace == "" {
 		workspace = apiv1.WorkspaceRepo
 	}
 	ws, err := a.provisionWorkspace(ctx, &env, workspace, false, workspaceBranch, workspaceDelta)
 	if err != nil {
-		return apiv1.Verdict{}, classifySeamError(err)
+		return GateReviewResult{}, classifySeamError(err)
 	}
 	defer removeWorkspace(ctx, env.TaskID, ws)
+
+	// The subject diff (#3384), read from the workspace this reviewer was
+	// already given rather than from a second one. It is both the evidence the
+	// reviewer judges and — through the two short-circuits below — the reason
+	// a reviewer sometimes must not be asked at all.
+	out := captureGateDiff(ctx, ws, workspace, env)
+	if a.Canary != nil && len(out.Diff) > 0 {
+		// Defence in depth, as in the local runner's recordReviewerDiff: a
+		// commit that captured a registered credential must not carry it into
+		// the journal on its way to the reviewer.
+		out.Diff = a.Canary.Scrub(out.Diff)
+	}
+	if len(out.Diff) > 0 {
+		ref, err := journal.ArtifactRef(out.Diff)
+		if err != nil {
+			return GateReviewResult{}, classifySeamError(fmt.Errorf("address reviewer diff for gate %q: %w", env.TaskID, err))
+		}
+		out.DiffDigest = ref.Digest
+		// The workflow records the artifact from these same bytes, so the
+		// pointer handed to the reviewer here and the one the journal commits
+		// address one blob by construction, not by agreement.
+		env.ContextPointers = append(env.ContextPointers, apiv1.ContextPointer{
+			Name:      runner.ReviewerDiffPointerName(gateNameFromTaskID(env)),
+			Integrity: apiv1.IntegrityDerived,
+			Artifact: &apiv1.ArtifactPointer{
+				Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+				MediaType: runner.ReviewerDiffMediaType, Integrity: apiv1.IntegrityDerived,
+			},
+		})
+	}
+	// The two short-circuits, placed exactly where internal/gate's Evaluate
+	// places them: after the diff is known and BEFORE the reviewer is called.
+	// A synthesized verdict here is the whole point — the negative assertion
+	// the parity rows make is that a.Goober.Review is never reached.
+	if out.Observed && len(out.Diff) == 0 && subjectAgentic {
+		// #415: an agentic stage asked to change something changed nothing.
+		// No reviewer can turn that into a pass. Scoped to an agentic subject
+		// because a DETERMINISTIC one legitimately produces no diff.
+		verdict := gate.EmptyDiffVerdict()
+		out.Verdict = verdict
+		out.EmptyDiff = true
+		return out, nil
+	}
+	if out.DiffDigest != "" && priorDiffDigest != "" && out.DiffDigest == priorDiffDigest {
+		// #316: the stage was sent back and produced a byte-identical tree, so
+		// the reviewer could only repeat its previous verdict. Resolving here
+		// is what stops a non-convergent loop from spending the whole repass
+		// budget on reviewer calls with a foregone conclusion.
+		verdict := gate.DuplicateDiffVerdict(out.DiffDigest, nil)
+		out.Verdict = verdict
+		out.DuplicateDiff = true
+		return out, nil
+	}
 	verdict, err := a.Goober.Review(ctx, env)
 	if err != nil {
-		return apiv1.Verdict{}, classifySeamError(err)
+		return GateReviewResult{}, classifySeamError(err)
 	}
-	return a.scrubVerdict(verdict)
+	scrubbed, err := a.scrubVerdict(verdict)
+	if err != nil {
+		return GateReviewResult{}, err
+	}
+	out.Verdict = scrubbed
+	out.Reviewed = true
+	return out, nil
+}
+
+// GateReviewResult is what an agentic gate evaluation produced: the verdict
+// plus the diff evidence it was reached from.
+//
+// apiv1.Verdict is EMBEDDED so the JSON stays flat, which is what keeps this
+// change replay-safe: a history recorded when this activity returned a bare
+// apiv1.Verdict decodes into the embedded field with every added field at its
+// zero value, and the workflow then behaves exactly as it did — no diff
+// artifact, no digest, no short-circuit.
+type GateReviewResult struct {
+	apiv1.Verdict
+	// Diff is the subject patch, recorded by the workflow as the reviewer-diff
+	// artifact. Empty when the branch has not moved or the workspace cannot
+	// report one.
+	Diff []byte `json:"diff,omitempty"`
+	// DiffDigest addresses Diff. Empty exactly when Diff is.
+	DiffDigest string `json:"diffDigest,omitempty"`
+	// Observed distinguishes "the branch has not moved" (Observed, empty Diff)
+	// from "this workspace cannot tell us" (not Observed). Only the first may
+	// fast-fail a gate.
+	Observed bool `json:"observed,omitempty"`
+	// EmptyDiff / DuplicateDiff record which short-circuit synthesized the
+	// verdict. Reviewed is their complement: true only when the reviewer goober
+	// actually ran, which is what the negative parity rows assert on.
+	EmptyDiff     bool `json:"emptyDiff,omitempty"`
+	DuplicateDiff bool `json:"duplicateDiff,omitempty"`
+	Reviewed      bool `json:"reviewed,omitempty"`
+}
+
+// gateNameFromTaskID recovers the state name from an envelope's TaskID, which
+// the walk composes as "<runID>:<state>".
+func gateNameFromTaskID(env apiv1.InvocationEnvelope) string {
+	return strings.TrimPrefix(env.TaskID, env.RunID+":")
+}
+
+// captureGateDiff reads the patch a gate's workspace is holding, in the
+// GateReviewResult shape its caller returns.
+func captureGateDiff(ctx context.Context, ws Workspace, mode apiv1.WorkspaceMode, env apiv1.InvocationEnvelope) GateReviewResult {
+	capture := captureUnpushedDiff(ctx, ws, mode, env)
+	if capture == nil {
+		if _, ok := ws.(DiffReader); !ok || !writableWorkspace(mode) {
+			return GateReviewResult{}
+		}
+		// A DiffReader that reported nothing HAS observed the branch: the
+		// distinction is what licenses the empty-diff fast-fail.
+		return GateReviewResult{Observed: true}
+	}
+	return GateReviewResult{Diff: capture.Diff, Observed: true}
 }
 
 // RunDeterministic executes a deterministic task in the workspace mode
@@ -558,20 +820,36 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 			// Mirror the local runner's dispatchTask (#813): a genuine base
 			// merge conflict is a business failure the definition routes (a
 			// status-equals gate dispatching remediation), never a dispatch
-			// error burning the retry budget. The conflict-detail artifact
-			// stays a local-runner surface for now — the projection (#629)
-			// commits workflow-derived bytes only.
+			// error burning the retry budget.
+			//
+			// The conflict DETAIL rides back on the result (#3882) so the walk
+			// can commit it as the same "<stage>/base-sync-conflict.json"
+			// artifact the local runner records. Without it the remediation
+			// stage the gate dispatches is told only that a merge conflicted,
+			// never which files conflicted — which is the entire actionable
+			// content of the failure.
+			detail, derr := json.Marshal(runner.BaseSyncConflictDetail{
+				Code:             runner.BaseSyncConflictErrorCode,
+				Message:          err.Error(),
+				Branch:           conflict.Branch,
+				BaseRef:          conflict.BaseRef,
+				ConflictingFiles: conflict.ConflictingFiles,
+			})
+			if derr != nil {
+				return stageActivityResult{}, classifySeamError(fmt.Errorf("encode base-sync conflict detail for stage %q: %w", env.TaskID, derr))
+			}
 			return a.scrubStageActivityResult(stageActivityResult{
 				ResultEnvelope: apiv1.ResultEnvelope{
 					Status:  apiv1.ResultFailure,
-					Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
+					Summary: runner.BaseSyncConflictSummary,
 					Error: &apiv1.ErrorInfo{
 						Code:      runner.BaseSyncConflictErrorCode,
 						Message:   err.Error(),
 						Retryable: true,
 					},
 				},
-				SelfPlacement: selfStagePlacement(),
+				BaseSyncConflict: detail,
+				SelfPlacement:    selfStagePlacement(),
 			})
 		}
 		return stageActivityResult{}, classifySeamError(err)
@@ -731,4 +1009,30 @@ func (a *Activities) EvaluateAutomated(ctx context.Context, gate apiv1.Automated
 		return "", classifySeamError(err)
 	}
 	return outcome, nil
+}
+
+// validateDependencyResult applies the #3374 context-inspection check to a
+// stage result that claims DEPENDENCY_NOT_MET, converting an unsubstantiated
+// claim into the CONTEXT_NOT_INSPECTED rejection the walk re-dispatches on.
+//
+// The verdict is runner.ValidateDependencyNotMetTranscript, unchanged and
+// unduplicated: only the transcript RESOLUTION differs between the lanes (a
+// run directory locally, the worker's span store here), and that is all this
+// method does.
+func (a *Activities) validateDependencyResult(ctx context.Context, env apiv1.InvocationEnvelope, result apiv1.ResultEnvelope) apiv1.ResultEnvelope {
+	if !runner.AppliesDependencyValidation(result, env.ContextPointers) {
+		return result
+	}
+	// Fail open with no span source or no transcript pointer: see the Spans
+	// field's contract. A claim this activity cannot check is a claim it must
+	// not reject.
+	if a.Spans == nil || result.Transcript == nil {
+		return result
+	}
+	transcript, err := a.Spans.Get(ctx, result.Transcript.Digest)
+	if err != nil {
+		return result
+	}
+	return runner.RejectDependencyResult(result,
+		runner.ValidateDependencyNotMetTranscript(transcript, env.ContextPointers, result))
 }
