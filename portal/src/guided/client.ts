@@ -218,7 +218,7 @@ export interface ValidateRequest {
 /** A non-2xx /guided/ response, carrying the server's {code, message} body when
  *  one was parseable. A missing route (running under the plain dashboard or
  *  daemon portal) surfaces as status 404. */
-export class GuidedRequestError extends Error {
+class GuidedRequestError extends Error {
   readonly status: number;
   readonly code: string;
 

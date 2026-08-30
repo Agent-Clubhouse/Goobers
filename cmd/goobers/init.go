@@ -384,11 +384,6 @@ type guidedPrompter struct {
 	out    io.Writer
 }
 
-func promptGuidedOptions(stdin io.Reader, stdout io.Writer) (instance.GuidedOptions, error) {
-	p := guidedPrompter{reader: bufio.NewReader(stdin), out: stdout}
-	return promptGuidedOptionsWithPrompter(p)
-}
-
 func promptGuidedOptionsWithPrompter(p guidedPrompter) (instance.GuidedOptions, error) {
 	stdout := p.out
 	repoText, err := p.ask("Main GitHub repository (owner/name or URL)", "", validGitHubRepoInput)

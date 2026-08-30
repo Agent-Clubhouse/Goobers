@@ -1000,7 +1000,10 @@ func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
 	switch workflow {
 	case "":
 		workflow = "quickstart"
-	case "quickstart", "default-implement", "implementation", "backlog-curation", "work-nomination":
+	case "quickstart", "default-implement",
+		instance.GuidedWorkflowImplementation,
+		instance.GuidedWorkflowBacklogCuration,
+		instance.GuidedWorkflowWorkNomination:
 	default:
 		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
 			Code:    "invalid_workflow",

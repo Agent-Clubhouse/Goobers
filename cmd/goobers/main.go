@@ -16,15 +16,13 @@ import (
 	"golang.org/x/term"
 )
 
-const cliOutputWidth = 78
-
 const (
-	ansiReset       = "\x1b[0m"
-	ansiBoldCyan    = "\x1b[1;36m"
-	ansiBoldGreen   = "\x1b[1;32m"
-	ansiBoldYellow  = "\x1b[1;33m"
-	ansiMagenta     = "\x1b[35m"
-	ansiCyan        = "\x1b[36m"
+	ansiReset      = "\x1b[0m"
+	ansiBoldCyan   = "\x1b[1;36m"
+	ansiBoldGreen  = "\x1b[1;32m"
+	ansiBoldYellow = "\x1b[1;33m"
+	ansiMagenta    = "\x1b[35m"
+	ansiCyan       = "\x1b[36m"
 )
 
 // runProcessExits is true only for the real CLI entrypoint. In-process callers
@@ -55,36 +53,6 @@ func cliStyled(w io.Writer, style, text string) string {
 		return text
 	}
 	return style + text + ansiReset
-}
-
-func writeWrapped(w io.Writer, firstIndent, continuationIndent, text string) {
-	for _, line := range wrappedLines(firstIndent, continuationIndent, text) {
-		pln(w, line)
-	}
-}
-
-func wrappedLines(firstIndent, continuationIndent, text string) []string {
-	words := strings.Fields(text)
-	if len(words) == 0 {
-		return []string{firstIndent}
-	}
-	lines := make([]string, 0, 2)
-	indent := firstIndent
-	line := indent
-	for _, word := range words {
-		addition := word
-		if len(line) > len(indent) {
-			addition = " " + word
-		}
-		if len(line)+len(addition) > cliOutputWidth && len(line) > len(indent) {
-			lines = append(lines, line)
-			indent = continuationIndent
-			line = indent + word
-			continue
-		}
-		line += addition
-	}
-	return append(lines, line)
 }
 
 func run(args []string, stdout, stderr io.Writer) int {

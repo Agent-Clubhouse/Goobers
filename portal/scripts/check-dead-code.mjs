@@ -110,6 +110,52 @@ for (const [file, symbols] of Object.entries(testOnlyExports)) {
   }
 }
 
+const canonicalMascotExports = {
+  "src/site-mascot/src/mascot/core/director.js": ["scroll", "enter", "event"],
+  "src/site-mascot/src/mascot/core/stage-look.js": ["CANON_LIGHTS"],
+  "src/site-mascot/src/mascot/core/procedural-rig.js": ["ProceduralRig"],
+  "src/site-mascot/demo/src/cast.js": [
+    "NAMES",
+    "DEFAULT_GLYPH",
+    "DEFAULT_COLOR",
+    "CANON",
+  ],
+  "src/site-mascot/demo/src/canon-export-budget.js": [
+    "EXPECTED_MORPH_TARGETS",
+    "MAX_TRIANGLES",
+    "MAX_BYTES",
+    "countTriangles",
+    "validateRig",
+  ],
+  "src/site-mascot/demo/src/goober-model.js": [
+    "skinMaterial",
+    "deriveShades",
+    "BODY_DEPTH",
+    "BODY_EDGE",
+    "crossDepth",
+    "bodyRadiusAt",
+    "bodyGeometry",
+    "conformToBody",
+  ],
+  "src/site-mascot/demo/src/spatial.js": [
+    "PERSONAL_RADIUS",
+    "CONTACT_DIST",
+    "separationOffsets",
+    "applySeparation",
+  ],
+};
+
+for (const [file, symbols] of Object.entries(canonicalMascotExports)) {
+  for (const symbol of symbols) {
+    exemptions.push({
+      type: "exports",
+      file,
+      symbol,
+      reason: "Retained to keep the vendored canonical Goobers-Site mascot runtime API intact.",
+    });
+  }
+}
+
 const portalRoot = fileURLToPath(new URL("../", import.meta.url));
 const knip = fileURLToPath(new URL("../node_modules/knip/bin/knip.js", import.meta.url));
 const result = spawnSync(

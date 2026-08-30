@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -11,12 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
-
-	"github.com/goobers/goobers/internal/runnercap"
 )
-
-const guidedDiscoveryTimeout = 2 * time.Minute
 
 var guidedDiscoveryCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, name, args...)
@@ -48,13 +42,6 @@ type guidedAuthState struct {
 	Ready              bool   `json:"ready"`
 	Identity           string `json:"identity,omitempty"`
 	RemediationCommand string `json:"remediationCommand,omitempty"`
-}
-
-type guidedAgentCIResult struct {
-	Stack                string   `json:"stack"`
-	CICommand            []string `json:"ciCommand"`
-	RequiredCapabilities []string `json:"requiredCapabilities"`
-	Evidence             []string `json:"evidence"`
 }
 
 func inspectGuidedRepository(ctx context.Context, input string) (guidedRepositoryInspection, error) {
@@ -264,55 +251,6 @@ func discoverGuidedAuth(ctx context.Context, identity guidedRepositoryIdentity) 
 	default:
 		return guidedAuthState{}
 	}
-}
-
-func discoverCIWithCopilot(ctx context.Context, root string) (guidedAgentCIResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, guidedDiscoveryTimeout)
-	defer cancel()
-	prompt := `Inspect this repository read-only and determine its authoritative local CI command and required toolchain capability. Do not modify files or execute project commands. Use repository guidance, CI workflow files, task-runner files, language manifests, and lockfiles as evidence. Return only one JSON object with this shape: {"stack":"human label","ciCommand":["executable","arg"],"requiredCapabilities":["capability"],"evidence":["relative path: reason"]}. If no defensible command exists, use an empty ciCommand and explain why in evidence.`
-	output, err := runGuidedDiscovery(
-		ctx,
-		"copilot",
-		"-C",
-		root,
-		"-p",
-		prompt,
-		"--allow-all-tools",
-		"--available-tools=view,grep,glob",
-		"--no-ask-user",
-		"--no-custom-instructions",
-		"--no-color",
-		"--silent",
-	)
-	if err != nil {
-		return guidedAgentCIResult{}, fmt.Errorf("automatic CI inspection needs Copilot CLI authentication: %w", err)
-	}
-	var result guidedAgentCIResult
-	if err := json.Unmarshal(extractGuidedJSONObject(output), &result); err != nil {
-		return guidedAgentCIResult{}, fmt.Errorf("parse Copilot CI inspection: %w", err)
-	}
-	if len(result.CICommand) == 0 {
-		return guidedAgentCIResult{}, errors.New("Copilot could not identify an authoritative local CI command")
-	}
-	if len(result.RequiredCapabilities) == 0 {
-		return guidedAgentCIResult{}, errors.New("Copilot did not identify a required toolchain capability")
-	}
-	for i, required := range result.RequiredCapabilities {
-		if err := runnercap.ValidateToken(required); err != nil {
-			return guidedAgentCIResult{}, fmt.Errorf("Copilot returned invalid required capability %d: %w", i, err)
-		}
-	}
-	return result, nil
-}
-
-func extractGuidedJSONObject(value string) []byte {
-	value = strings.TrimSpace(value)
-	if start := strings.IndexByte(value, '{'); start >= 0 {
-		if end := strings.LastIndexByte(value, '}'); end >= start {
-			return []byte(value[start : end+1])
-		}
-	}
-	return []byte(value)
 }
 
 func runGuidedDiscovery(ctx context.Context, name string, args ...string) (string, error) {

@@ -85,7 +85,7 @@ describe("portal foundation", () => {
     expect(
       await screen.findByRole("heading", { name: "Setup is not available from this dashboard" }),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("Getting Started")).toHaveLength(2);
+    expect(screen.getAllByText("Getting Started")).toHaveLength(1);
     expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Overview" })).not.toBeInTheDocument();
   });

@@ -14,7 +14,7 @@ import (
 	"github.com/goobers/goobers/test/testsupport/testdep"
 )
 
-func TestIntegrationInstallScriptVerifiesInstallsAndOptsIntoGuidedInit(t *testing.T) {
+func TestIntegrationInstallScriptVerifiesInstallAndPointsToGettingStarted(t *testing.T) {
 	testdep.Require(t, "sh")
 
 	root := t.TempDir()
@@ -117,7 +117,6 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 
 	installDir := filepath.Join(root, "bin")
 	dataDir := filepath.Join(root, "data")
-	instancePath := filepath.Join(root, "instance with space")
 	curlCalls := filepath.Join(root, "curl-calls")
 	goobersCalls := filepath.Join(root, "goobers-calls")
 	for _, version := range []string{"main", "v1.2", "v1.2.3-rc1", "v01.2.3"} {
@@ -128,7 +127,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		}
 	}
 
-	cmd := exec.Command("sh", scriptPath, "v1.2.3", "--guided", instancePath)
+	cmd := exec.Command("sh", scriptPath, "v1.2.3")
 	cmd.Env = append(os.Environ(),
 		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"FIXTURE_DIR="+fixtures,
@@ -137,12 +136,13 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		"GOOBERS_INSTALL_DIR="+installDir,
 		"XDG_DATA_HOME="+dataDir,
 	)
-	guidedOutput, err := cmd.CombinedOutput()
+	installOutput, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("installer: %v\n%s", err, guidedOutput)
+		t.Fatalf("installer: %v\n%s", err, installOutput)
 	}
-	if !strings.Contains(string(guidedOutput), "Guided setup completed for "+instancePath) {
-		t.Errorf("opt-in guided output lacks completion report:\n%s", guidedOutput)
+	if !strings.Contains(string(installOutput), "Set up your repository:") ||
+		!strings.Contains(string(installOutput), "getting-started") {
+		t.Errorf("installer output lacks Getting Started guidance:\n%s", installOutput)
 	}
 
 	installed, err := os.ReadFile(filepath.Join(installDir, "goobers"))
@@ -179,18 +179,15 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		"installed README onboarding",
 		string(installedReadme),
 		"The release installer installs the binary and documentation only",
-		"opted in with `--guided [instance-path]`",
-		"default `./goobers-instance`",
-		"replace `./my-instance` below with that same path",
-		"quoting it if needed",
+		"goobers getting-started",
 		"directly from an extracted archive instead",
-		"goobers init --guided ./my-instance",
+		"goobers-v1.2.3 getting-started",
 	)
 	calls, err := os.ReadFile(goobersCalls)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"goobers --version", "goobers-v1.2.3 init --guided " + instancePath} {
+	for _, want := range []string{"goobers --version"} {
 		if !strings.Contains(string(calls), want) {
 			t.Errorf("binary calls lack %q:\n%s", want, calls)
 		}
@@ -206,31 +203,6 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		if !strings.Contains(string(downloads), want) {
 			t.Errorf("downloads lack %q:\n%s", want, downloads)
 		}
-	}
-
-	defaultInstallDir := filepath.Join(root, "default-bin")
-	defaultDataDir := filepath.Join(root, "default-data")
-	defaultCurlCalls := filepath.Join(root, "default-curl-calls")
-	defaultGoobersCalls := filepath.Join(root, "default-goobers-calls")
-	cmd = exec.Command("sh", scriptPath, "v1.2.3", "--guided")
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(),
-		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"FIXTURE_DIR="+fixtures,
-		"CURL_CALLS="+defaultCurlCalls,
-		"GOOBERS_CALLS="+defaultGoobersCalls,
-		"GOOBERS_INSTALL_DIR="+defaultInstallDir,
-		"XDG_DATA_HOME="+defaultDataDir,
-	)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("installer with default instance path: %v\n%s", err, output)
-	}
-	defaultCalls, err := os.ReadFile(defaultGoobersCalls)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(defaultCalls), "goobers-v1.2.3 init --guided ./goobers-instance") {
-		t.Errorf("default-path binary calls:\n%s", defaultCalls)
 	}
 
 	// Install-only is the default: no init invocation, next steps printed.
@@ -266,10 +238,11 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		"Next steps",
 		"init --demo ./demo-instance",
 		"run demo ./demo-instance",
-		"init --guided ./my-instance",
+		"getting-started",
 	)
 
-	// A bare positional path without --guided is rejected before any download.
+	// A bare positional path is rejected before any download.
+	instancePath := filepath.Join(root, "instance with space")
 	cmd = exec.Command("sh", scriptPath, "v1.2.3", instancePath)
 	cmd.Env = append(os.Environ(),
 		"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -280,7 +253,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		"XDG_DATA_HOME="+filepath.Join(root, "rejected-data"),
 	)
 	if output, err := cmd.CombinedOutput(); err == nil ||
-		!strings.Contains(string(output), "guided setup is opt-in") {
+		!strings.Contains(string(output), "unexpected argument") {
 		t.Fatalf("bare instance path result = %v, output = %s", err, output)
 	}
 
