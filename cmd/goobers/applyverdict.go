@@ -667,7 +667,6 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// keeps downstream consumers from rediscovering the reviewer's classification
 	// miss; a verdict with any real defect still routes to remediation.
 	overlappingSiblings := parseOverlappingSiblings(providerInput("overlappingSiblings", ""))
-	posted.OverlapCluster = len(overlappingSiblings) > 0
 	effective := posted
 	effective.Findings = withOverlapBackstop(posted.Findings, overlappingSiblings)
 	posted.Findings = effective.Findings
@@ -692,6 +691,14 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "warning: unknown sibling-serialization strategy %q — falling back to %q\n", serializationInput, serialization)
 	}
 	serializedCluster := serializationCluster(serialization, effective.Findings, overlappingSiblings, selectedNumber)
+
+	// The published cluster evidence MUST describe the SAME cluster the
+	// election below resolves over, or a published `pass` could carry
+	// Elected:true with OverlapCluster:false and falsify the invariant
+	// merge-pr's #1071 conjunct reads. Deriving it from the serialized cluster
+	// keeps that conjunct fail-closed under every strategy, including an
+	// "ordering" cluster with no deterministic overlap set at all.
+	posted.OverlapCluster = len(serializedCluster) > 0
 
 	clusterBlockers := electionClusterBlockers(effective.Findings, overlappingSiblings)
 	clusterPolicy, resolvedPolicyName, perr := resolveElectionPolicyForCluster(

@@ -180,7 +180,10 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   inheriting a permanent `needs-changes` loop with no ordering mechanism at
   all. An unknown strategy name falls back to `election` with a logged warning,
   never a pipeline failure, and `elect-lander` and `apply-verdict` MUST be
-  configured with the **same** strategy.
+  configured with the **same** strategy. The published `overlapCluster`/
+  `elected` evidence MUST describe the cluster the configured strategy
+  yielded, so merge-pr's election conjunct (PRL-021/#1071) stays fail-closed
+  for an `ordering` cluster that has no deterministic overlap set at all.
 - **PRL-023 (MUST, Shipped):** Election means "those siblings stop counting as
   blockers", **not** a separate merge authority: the crowned lander's verdict
   is resolved into a **derived, published `pass`** (rationale stating the

@@ -481,15 +481,17 @@ type Verdict struct {
 	// always still names the run a human or `goobers trace` would need to
 	// inspect to see the real reviewer reasoning behind it.
 	SourceRunID string `json:"sourceRunId,omitempty"`
-	// OverlapCluster records whether this PR shared a deterministic file
-	// overlap with at least one other open PR (#989/#990) at the moment this
-	// verdict was published — PR-altitude only, always false for an in-run
-	// gate Verdict. See Elected.
+	// OverlapCluster records whether this PR had at least one other open PR
+	// in its sibling-serialization cluster (#989/#990) at the moment this
+	// verdict was published — the deterministic file-overlap set under the
+	// default `election` strategy, and that set unioned with the reviewer's
+	// named cross-PR blockers under `ordering` (#2741). PR-altitude only,
+	// always false for an in-run gate Verdict. See Elected.
 	OverlapCluster bool `json:"overlapCluster,omitempty"`
 	// Elected records whether this PR was the single-lander election's
-	// deterministic winner (PRL-021) for its overlap cluster at the moment
-	// this verdict was published — always false when OverlapCluster is
-	// false. A published `pass` with OverlapCluster true and Elected false
+	// deterministic winner (PRL-021) for that same serialization cluster at
+	// the moment this verdict was published — always false when OverlapCluster
+	// is false. A published `pass` with OverlapCluster true and Elected false
 	// is not a landing authority: merge-pr's election conjunct (#1071)
 	// refuses to land it, so GitHub's native merge queue can never crown a
 	// cluster member on its own.
