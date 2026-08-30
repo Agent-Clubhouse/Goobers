@@ -813,7 +813,7 @@ func TestRunRejectsStoredCopilotAuthShadowingBeforeRunAdmission(t *testing.T) {
 
 func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil)
+	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -882,7 +882,7 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 // allowlist (#1471), goobers-io (#2774), and declared mcpServers (#1492)
 // each did for weeks before their own follow-up issue was filed.
 func TestBuildHarnessRegistryAdaptersAreConformanceCovered(t *testing.T) {
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil)
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -938,7 +938,7 @@ func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 		// claude-code intentionally omitted: it must keep its default launcher.
 	}
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "", false, nil)
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -4810,4 +4810,100 @@ func TestRequireLabelsByGaggle(t *testing.T) {
 	if !maps.Equal(got, want) {
 		t.Fatalf("requireLabelsByGaggle = %#v, want %#v", got, want)
 	}
+}
+
+// TestBuildDeterministicExecutorBindsSelfRunnerEphemeralTmp is the
+// composition-level regression test for #3962. Before this, an instance whose
+// self entry declared `restrictions: [tmp:ephemeral]` satisfied the solver
+// (internal/runnersolve) and then bound NOTHING: on-pod stages inherited the
+// daemon's own TMPDIR and its image-configured GOCACHE, so every `go build`
+// grew a cache that outlived the run inside the long-lived API pod's cgroup —
+// the accumulation half of the OOMKill analyzed in #3949. The wiring now
+// carries the declaration onto the shell executor, which this proves
+// end-to-end with a stub stage that echoes the temp and cache it was handed.
+func TestBuildDeterministicExecutorBindsSelfRunnerEphemeralTmp(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub script exercises Unix shell semantics")
+	}
+	tempRoot := t.TempDir()
+	daemonCache := filepath.Join(tempRoot, "gocache")
+	t.Setenv("TMPDIR", tempRoot)
+	t.Setenv("GOCACHE", daemonCache)
+
+	stub := filepath.Join(t.TempDir(), "goobers")
+	script := "#!/bin/sh\nprintf '%s\\n%s' \"$TMPDIR\" \"$GOCACHE\"\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(t *testing.T, cfg *instance.Config) (string, string) {
+		t.Helper()
+		resolver, err := credentials.NewResolver(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := runnerWiringArtifactRecorder{}
+		got, err := buildDeterministicExecutor(deterministicExecutorInput{
+			Config:           cfg,
+			Resolver:         resolver,
+			SharedRegistry:   journal.NewRegistryScrubber(),
+			InstanceRoot:     t.TempDir(),
+			SelfBin:          stub,
+			ArtifactRecorder: rec,
+			SecretRegistrar:  journal.NewRegistryScrubber(),
+		})
+		if err != nil {
+			t.Fatalf("buildDeterministicExecutor: %v", err)
+		}
+		result, err := got.Run(context.Background(), apiv1.InvocationEnvelope{TaskID: "task-1", Workspace: t.TempDir()},
+			apiv1.DeterministicRun{Command: []string{"goobers", "some-subcommand"}})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if result.Status != apiv1.ResultSuccess {
+			t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+		}
+		observed := strings.SplitN(string(rec["task-1/stdout.log"]), "\n", 2)
+		if len(observed) != 2 {
+			t.Fatalf("stage did not report both TMPDIR and GOCACHE: %q", rec["task-1/stdout.log"])
+		}
+		return observed[0], observed[1]
+	}
+
+	t.Run("declared", func(t *testing.T) {
+		cfg := &instance.Config{Runners: []instance.RunnerEntry{{
+			Name:         instance.RunnerHostSelfName,
+			Host:         instance.RunnerHostSelfName,
+			Restrictions: []instance.RunnerRestriction{instance.RunnerRestrictionTmpEphemeral},
+		}}}
+		tmpdir, gocache := run(t, cfg)
+
+		if tmpdir == tempRoot {
+			t.Fatalf("the stage ran with the daemon's own temp root %q — tmp:ephemeral bound nothing", tmpdir)
+		}
+		if filepath.Dir(tmpdir) != tempRoot {
+			t.Fatalf("TMPDIR = %q, want an attempt-private directory carved out of %q", tmpdir, tempRoot)
+		}
+		if gocache != filepath.Join(tmpdir, "gocache") {
+			t.Fatalf("GOCACHE = %q, want the temp-nested build cache re-rooted into the attempt's temp %q", gocache, tmpdir)
+		}
+		if _, err := os.Stat(tmpdir); !os.IsNotExist(err) {
+			t.Fatalf("the attempt's temp %q outlived the run (stat err %v) — nothing was reclaimed", tmpdir, err)
+		}
+		if _, err := os.Stat(daemonCache); !os.IsNotExist(err) {
+			t.Fatalf("the stage wrote the daemon's shared cache %q; that is exactly the accumulation #3949 traced", daemonCache)
+		}
+	})
+
+	// Zero-declaration invariance: an instance that never mentions the
+	// restriction gets the environment it has always had, byte for byte.
+	t.Run("not declared", func(t *testing.T) {
+		tmpdir, gocache := run(t, &instance.Config{})
+		if tmpdir != tempRoot {
+			t.Fatalf("TMPDIR = %q, want the ambient %q unchanged for an instance that declares nothing", tmpdir, tempRoot)
+		}
+		if gocache != daemonCache {
+			t.Fatalf("GOCACHE = %q, want the ambient %q unchanged for an instance that declares nothing", gocache, daemonCache)
+		}
+	})
 }

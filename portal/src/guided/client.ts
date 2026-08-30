@@ -1,5 +1,5 @@
 // Typed fetch client for the /guided/* endpoints served by
-// `goobers getting-started`.
+// `goobers init --guided`.
 //
 // This deliberately lives OUTSIDE src/api/contract.generated.ts: the guided
 // endpoints are dashboard-local wrappers over the product-owned onboarding

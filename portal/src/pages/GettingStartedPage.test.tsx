@@ -95,10 +95,10 @@ describe("GettingStartedPage", () => {
     expect(
       await screen.findByRole("heading", { name: "Setup is not available from this dashboard" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("goobers getting-started")).toBeInTheDocument();
+    expect(screen.getByText("goobers init --guided")).toBeInTheDocument();
   });
 
-  it("uses fixed eleven-step progress", async () => {
+  it("uses fixed ten-step progress", async () => {
     const user = userEvent.setup();
     render(
       <GettingStartedPage
@@ -108,7 +108,7 @@ describe("GettingStartedPage", () => {
 
     expect(await screen.findByRole("heading", { name: "Welcome to Goobers" })).toBeInTheDocument();
     const progress = screen.getByRole("progressbar");
-    expect(progress).toHaveAttribute("aria-valuemax", "11");
+    expect(progress).toHaveAttribute("aria-valuemax", "10");
     expect(progress).toHaveAttribute("aria-valuenow", "1");
 
     await continueWizard(user);
@@ -152,6 +152,9 @@ describe("GettingStartedPage", () => {
     await continueWizard(user);
     expect(screen.getByRole("heading", { name: "Set up your first gaggle" })).toBeInTheDocument();
     expect(screen.getByText("gaggles/widgets/")).toBeInTheDocument();
+    expect(
+      screen.getByText(/production-oriented canonical modules/i),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("checkbox", { name: /Work nomination/ }));
     await continueWizard(user);
     expect(
@@ -221,11 +224,10 @@ describe("GettingStartedPage", () => {
     expect(screen.getByText("GitHub CLI authentication is ready as octocat.")).toBeInTheDocument();
   });
 
-  it("runs checks and the first implementation workflow on separate pages", async () => {
+  it("ends after checks with commands for operating the instance", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem("goobers-wizard-path", JSON.stringify("own-repo"));
     window.sessionStorage.setItem("goobers-wizard-page", JSON.stringify(8));
-    const runBodies: unknown[] = [];
     render(
       <GettingStartedPage
         client={clientWith({
@@ -239,20 +241,6 @@ describe("GettingStartedPage", () => {
               stderr: "",
             },
           }),
-          "/guided/actions/run": (init) => {
-            runBodies.push(parseBody(init));
-            return { body: { jobId: "job-1" } };
-          },
-          "/guided/jobs/job-1": () => ({
-            body: {
-              id: "job-1",
-              kind: "run",
-              done: true,
-              exitCode: 0,
-              runId: "01JZWIZARD",
-              output: ["stage query-backlog started", "stage open-pr finished"],
-            },
-          }),
         })}
       />,
     );
@@ -261,8 +249,9 @@ describe("GettingStartedPage", () => {
     await user.click(screen.getByRole("button", { name: "Run checks" }));
     await screen.findByText(/All configuration, harness, and repository checks passed/);
     await continueWizard(user);
-    await user.click(screen.getByRole("button", { name: "Start run" }));
-    expect(await screen.findByText("Run 01JZWIZARD")).toBeInTheDocument();
-    expect(runBodies).toEqual([{ workflow: "implementation" }]);
+    expect(screen.getByRole("heading", { name: "Goobers is ready" })).toBeInTheDocument();
+    expect(screen.getByText(/goobers up/)).toBeInTheDocument();
+    expect(screen.getByText(/goobers run implementation/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start run" })).not.toBeInTheDocument();
   });
 });

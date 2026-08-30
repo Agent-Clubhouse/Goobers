@@ -33,6 +33,14 @@ func TestValidKeyIsAClosedNamespace(t *testing.T) {
 		// Goobers#3898: the backlog re-sweep generation, the last scheduler
 		// file the claiming path held open directly.
 		ResweepStateKey(digest),
+		// Goobers#3948: the backlog-health ready-transition ledger, the only
+		// key that resolves into a subdirectory and the only one that carries
+		// its gaggle in its name.
+		BacklogHealthCursorKey("goobers", "github__your-org_your-repo__goobers_ready.json"),
+		BacklogHealthCursorKey("_", "github__your-org_your__repo__goobers_ready.json"),
+		// A coordinate may legitimately carry "__" of its own (a repository
+		// or a label), which is exactly why the gaggle is not one of them.
+		BacklogHealthCursorKey("goobers", "github__o_r__needs__triage.json"),
 	} {
 		if !ValidKey(key) {
 			t.Fatalf("ValidKey(%q) = false, want the closed namespace to admit it", key)
@@ -60,9 +68,99 @@ func TestValidKeyIsAClosedNamespace(t *testing.T) {
 		"backlog-resweep-" + digest + ".json.tmp",
 		"backlog-resweep-" + digest + ".json/../claims.json",
 		"sub/blocked.json",
+		// The backlog-health cursor's shape, probed for every way a key could
+		// acquire a second path element, a traversal, or a wire escape.
+		"backlog-health.",
+		"backlog-health.json",
+		"backlog-health.g.json",
+		"backlog-health.g.a__b.json",
+		"backlog-health.g.a__b__c.json.tmp",
+		"backlog-health.g.a__b__c",
+		"backlog-health.g.a__b__.json",
+		"backlog-health..a__b__c.json",
+		"backlog-health.g.a__b__c.json/../claims.json",
+		"backlog-health.g.a__b__..%2f..%2fclaims.json",
+		"backlog-health./..__..__claims.json",
+		"backlog-health.g.a__b__c.d.json",
+		"backlog-health.g.a__b__c/d.json",
+		"backlog-health.g.a__b__c\\d.json",
+		"backlog-health.g.a__b__c d.json",
+		"backlog-health/g.a__b__c.json",
+		"backlog-health-g.a__b__c.json",
+		"Backlog-health.g.a__b__c.json",
 	} {
 		if ValidKey(key) {
 			t.Fatalf("ValidKey(%q) = true, want it refused", key)
+		}
+	}
+}
+
+// TestBacklogHealthCursorKeyResolvesIntoItsOwnSubdirectory is the one place a
+// scheduler-state key becomes more than a file name (Goobers#3948). The ledger
+// has always lived in <schedulerDir>/backlog-health/, and it has to STAY
+// there — a pod-executed cycle and a daemon-driven one advancing two different
+// paths is exactly the split the plane exists to prevent — so the prefix
+// resolves to that directory and nothing else does.
+func TestBacklogHealthCursorKeyResolvesIntoItsOwnSubdirectory(t *testing.T) {
+	scope := "github__your-org_your-repo__goobers_ready.json"
+	relative, err := KeyRelativePath(BacklogHealthCursorKey("goobers", scope))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(BacklogHealthCursorDirName, "goobers__"+scope); relative != want {
+		t.Fatalf("KeyRelativePath = %q, want %q", relative, want)
+	}
+	// Every other key is its own file name, directly in the scheduler dir.
+	for _, key := range []string{
+		KeyBlockedRecords,
+		KeyPostMergeReconcileLedger,
+		KeySiblingContextCache,
+		ScanCursorKey(strings.Repeat("ab", 32)),
+		ResweepStateKey(strings.Repeat("ab", 32)),
+	} {
+		relative, err := KeyRelativePath(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if relative != key {
+			t.Fatalf("KeyRelativePath(%q) = %q, want the key itself", key, relative)
+		}
+	}
+	// A key outside the namespace never reaches a path join at all.
+	if _, err := KeyRelativePath("../claims.json"); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("KeyRelativePath of a foreign key err = %v, want ErrInvalidKey", err)
+	}
+}
+
+// TestBacklogHealthCursorKeyIsContainedToItsOwnGaggle is the containment the
+// rest of the namespace does not need. Every other key is gaggle-agnostic, so
+// the route's own gaggle segment is the whole of its scope; this one carries
+// the gaggle IN the key, so a pod contained to gaggle A could otherwise name
+// gaggle B's ledger and be served it under A's scope.
+func TestBacklogHealthCursorKeyIsContainedToItsOwnGaggle(t *testing.T) {
+	scope := "github__your-org_your-repo__goobers_ready.json"
+	own := BacklogHealthCursorKey("goobers", scope)
+	if !BacklogHealthCursorKeyContained(own, "goobers") {
+		t.Fatal("a cursor key was refused to its own gaggle")
+	}
+	for _, gaggle := range []string{"other", "goober", "goobers2", "", "goobers.github", "goobers__x"} {
+		if BacklogHealthCursorKeyContained(own, gaggle) {
+			t.Fatalf("gaggle %q was admitted to another gaggle's ready-transition ledger", gaggle)
+		}
+	}
+	// A prefix match alone is not containment: "goobers" must not open
+	// "goobers-staging"'s ledger, and a gaggle whose sanitized name contains
+	// the "__" the file name joins on must not be reachable by its head.
+	for _, other := range []string{"goobers-staging", "goobers__x", "goobers_"} {
+		if BacklogHealthCursorKeyContained(BacklogHealthCursorKey(other, scope), "goobers") {
+			t.Fatalf("gaggle %q's ledger was admitted to \"goobers\"", other)
+		}
+	}
+	// Keys that carry no gaggle are contained by the route's own scope and
+	// pass through unchanged.
+	for _, key := range []string{KeyBlockedRecords, ScanCursorKey(strings.Repeat("ab", 32))} {
+		if !BacklogHealthCursorKeyContained(key, "goobers") {
+			t.Fatalf("gaggle-agnostic key %q was refused", key)
 		}
 	}
 }

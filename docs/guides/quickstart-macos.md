@@ -1,9 +1,17 @@
 # macOS quickstart (tier 1, local)
 
-Use this page for macOS host prerequisites, installation, credentials,
-isolation, and supervision differences only. Follow the platform-neutral
-[`quickstart.md`](quickstart.md) for the single ordered first-run path and CLI
-walkthrough.
+**Start here on macOS.** Complete sections 1 and 2 to install prerequisites and
+the verified `goobers` release. Then choose one route:
+
+- return to the platform-neutral [quickstart tutorial](quickstart.md) for
+  disposable learning; or
+- continue with section 3 and
+  [Onboard an arbitrary repository](arbitrary-repo-onboarding.md) to configure
+  a real instance, using `goobers init --guided` if you want the
+  browser wizard.
+
+The remaining sections contain macOS-specific Keychain, isolation, and service
+guidance. They supplement rather than duplicate either route.
 
 Goobers publishes native macOS release archives for both Apple silicon
 (`darwin/arm64`) and Intel (`darwin/amd64`). The installer detects the current
@@ -97,8 +105,8 @@ bin/goobers --version
 
 ## 3. Configure credentials with Keychain
 
-Keep the instance root outside the target repository and follow the
-[canonical initialization and configuration steps](quickstart.md#3-configure-a-regular-instance).
+Keep the instance root outside the target repository and follow
+[Onboard an arbitrary repository](arbitrary-repo-onboarding.md).
 macOS can resolve provider credentials directly from the login Keychain. Add
 one generic-password item per capability:
 

@@ -59,24 +59,3 @@ func TestInitDefaultPathRefusesSourceCheckoutCwd(t *testing.T) {
 		}
 	}
 }
-
-func TestGuidedInitDefaultPathRefusesSourceCheckoutCwd(t *testing.T) {
-	checkout := seedSourceCheckoutCwd(t)
-
-	code, _, stderr := runArgs(t, "init", "--guided")
-	if code == 0 {
-		t.Fatalf("guided init inside a source checkout succeeded; stderr = %q", stderr)
-	}
-	for _, want := range []string{
-		"`goobers init --guided` has been removed",
-		"goobers getting-started",
-		"Goobers Getting Started skill",
-	} {
-		if !strings.Contains(stderr, want) {
-			t.Fatalf("guided init stderr = %q, missing %q", stderr, want)
-		}
-	}
-	if _, statErr := os.Stat(filepath.Join(checkout, "instance.yaml")); !os.IsNotExist(statErr) {
-		t.Fatalf("refused guided init wrote instance.yaml, stat error = %v", statErr)
-	}
-}

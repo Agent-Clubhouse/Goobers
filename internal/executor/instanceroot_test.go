@@ -87,12 +87,11 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		{name: "backlog-query bare", cmd: []string{"goobers", "backlog-query"}, want: false},
 		{name: "backlog-query --debug alone", cmd: []string{"goobers", "backlog-query", "--debug"}, want: false},
 		{name: "backlog-query --read-only", cmd: []string{"goobers", "backlog-query", "--read-only"}, want: false},
-		// backlog-health stays refused in EVERY form — it is unconditional in
-		// the map now, not flag-gated — for a reason that survived both
-		// issues: its resumable ready-transition ledger
-		// (layout.BacklogHealthCursorPath) is not a scheduler-state key.
-		{name: "backlog-health --feedback", cmd: []string{"goobers", "backlog-health", "--feedback"}, want: true},
-		{name: "backlog-health bare", cmd: []string{"goobers", "backlog-health"}, want: true},
+		// backlog-health joined them at Goobers#3948: its ready-transition
+		// ledger (layout.BacklogHealthCursorPath) is a scheduler-state key
+		// now, so neither mode holds it to the instance root any more.
+		{name: "backlog-health --feedback", cmd: []string{"goobers", "backlog-health", "--feedback"}, want: false},
+		{name: "backlog-health bare", cmd: []string{"goobers", "backlog-health"}, want: false},
 
 		// --- unrelated / provider-only commands stay dispatchable ---
 		{name: "push-branch", cmd: []string{"goobers", "push-branch"}, want: false},

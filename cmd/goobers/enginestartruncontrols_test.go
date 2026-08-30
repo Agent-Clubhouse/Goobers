@@ -91,13 +91,13 @@ func runControlsWorkflow(name, task string, controls *apiv1.RunControls) apiv1.W
 	}
 }
 
-// engineStartRequestFor builds the request `goobers engine-start` builds for
+// engineRunRequestFor builds the request `goobers engine-start` builds for
 // this workflow, through the real registration path: RegisterGaggleWorkflows
 // then reg.Latest, exactly as runEngineStart does. Going through the registry
 // rather than hand-picking set.Workflows[i] matters — the definition the
 // registry hands back is what the run's graph, placements and run controls
 // must all be sourced from.
-func engineStartRequestFor(t *testing.T, cfg *instance.Config, set *instance.ConfigSet, gaggle, workflowName string) engineStartRequest {
+func engineRunRequestFor(t *testing.T, cfg *instance.Config, set *instance.ConfigSet, gaggle, workflowName string) engineRunRequest {
 	t.Helper()
 	reg, project, err := bootstrap.RegisterGaggleWorkflows(set, gaggle)
 	if err != nil {
@@ -107,7 +107,7 @@ func engineStartRequestFor(t *testing.T, cfg *instance.Config, set *instance.Con
 	if !ok {
 		t.Fatalf("workflow %q is not registered", workflowName)
 	}
-	return engineStartRequest{
+	return engineRunRequest{
 		cfg:       cfg,
 		set:       set,
 		gaggle:    gaggle,
@@ -172,9 +172,9 @@ func TestEngineStartSpecPinsResolvedRunControls(t *testing.T) {
 			cfg, set, _ := runControlsFixture()
 			tc.declare(set)
 
-			spec, err := engineStartSpec(engineStartRequestFor(t, cfg, set, "web", "implementation"))
+			spec, err := engineRunSpec(engineRunRequestFor(t, cfg, set, "web", "implementation"))
 			if err != nil {
-				t.Fatalf("engineStartSpec: %v", err)
+				t.Fatalf("engineRunSpec: %v", err)
 			}
 
 			if got := spec.RunControls.MaxRepasses; got != tc.want.MaxRepasses {
@@ -248,7 +248,7 @@ func TestSchedulerDefinitionsPinResolvedRunControls(t *testing.T) {
 	if entry == nil {
 		t.Fatalf("no scheduler entry for web/implementation in %d entries", len(definitions.Entries))
 	}
-	starter, ok := entry.Starter.(*trackedStarter)
+	starter, ok := unwrapStarter(entry.Starter).(*trackedStarter)
 	if !ok {
 		t.Fatalf("scheduler entry Starter = %T, want *trackedStarter", entry.Starter)
 	}
@@ -292,9 +292,9 @@ func TestEngineStartRunControlsMatchDaemonResolution(t *testing.T) {
 	}
 	want := daemonControls.Overrides()
 
-	spec, err := engineStartSpec(engineStartRequestFor(t, cfg, set, "web", "implementation"))
+	spec, err := engineRunSpec(engineRunRequestFor(t, cfg, set, "web", "implementation"))
 	if err != nil {
-		t.Fatalf("engineStartSpec: %v", err)
+		t.Fatalf("engineRunSpec: %v", err)
 	}
 
 	if spec.RunControls != want {
@@ -314,15 +314,15 @@ func TestEngineStartRunControlsFollowRegisteredVersion(t *testing.T) {
 		"implementation", "implement-v2", &apiv1.RunControls{StalledRunTimeout: "99h"},
 	))
 
-	req := engineStartRequestFor(t, cfg, set, "web", "implementation")
+	req := engineRunRequestFor(t, cfg, set, "web", "implementation")
 	if req.def.Version != 2 || req.def.Spec.Start != "implement-v2" {
 		t.Fatalf("registry returned version %d start %q, want the second declaration (v2, implement-v2)",
 			req.def.Version, req.def.Spec.Start)
 	}
 
-	spec, err := engineStartSpec(req)
+	spec, err := engineRunSpec(req)
 	if err != nil {
-		t.Fatalf("engineStartSpec: %v", err)
+		t.Fatalf("engineRunSpec: %v", err)
 	}
 	if got := spec.RunControls.StalledRunTimeout; got != "99h0m0s" {
 		t.Errorf("pinned stalledRunTimeout = %q, want 99h0m0s from the registered definition; "+
@@ -337,14 +337,14 @@ func TestEngineStartRunControlsFollowRegisteredVersion(t *testing.T) {
 // about, so an unresolvable workflow must error rather than pin 45m/3.
 func TestEngineStartRunControlsRejectsUndeclaredWorkflow(t *testing.T) {
 	cfg, set, project := runControlsFixture()
-	req := engineStartRequest{
+	req := engineRunRequest{
 		cfg:     cfg,
 		set:     set,
 		gaggle:  "web",
 		project: project,
 		def:     workflow.Definition{Name: "not-declared"},
 	}
-	if _, err := engineStartRunControls(req); err == nil {
+	if _, err := engineRunControls(req); err == nil {
 		t.Fatal("resolving controls for an undeclared workflow succeeded; want an error")
 	}
 }
@@ -356,14 +356,14 @@ func TestEngineStartRunControlsRejectsUndeclaredWorkflow(t *testing.T) {
 func TestEngineStartRunControlsPropagateInvalidDuration(t *testing.T) {
 	cfg, set, project := runControlsFixture()
 	set.Workflows[0].Spec.RunControls = &apiv1.RunControls{StalledRunTimeout: "ninety minutes"}
-	req := engineStartRequest{
+	req := engineRunRequest{
 		cfg:     cfg,
 		set:     set,
 		gaggle:  "web",
 		project: project,
 		def:     workflow.Definition{Name: "implementation", Spec: set.Workflows[0].Spec},
 	}
-	if _, err := engineStartRunControls(req); err == nil {
+	if _, err := engineRunControls(req); err == nil {
 		t.Fatal("invalid workflow stalledRunTimeout was accepted; want a dispatch-time error")
 	}
 }

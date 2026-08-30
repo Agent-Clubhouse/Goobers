@@ -72,6 +72,19 @@ func retryDecisionApplies(gr gateResult, retryable bool) bool {
 	return true
 }
 
+// learningEpisodeBranchFor adapts the engine's gate verdict to the canonical
+// learning-injection predicate's input (runner.LearningEpisodeAppliesToBranch).
+//
+// Like retryDecisionApplies above, the SHAPE of the question is ported here
+// while the POLICY stays runner-owned: which branches are correctable
+// re-entries is one ruling (#3929, extended for agentic outcomes), and a
+// second copy of it on this side is a second thing to drift.
+func learningEpisodeBranchFor(gr gateResult) runner.LearningEpisodeBranch {
+	return runner.LearningEpisodeBranch{
+		Outcome: gr.Outcome, Escalated: gr.Escalated, Target: gr.Target, Attempt: gr.Attempt,
+	}
+}
+
 // retryDecision appends the runner.annotation the local runner writes when a
 // fail branch re-enters a completed stage (routeRetryDecision). It carries the
 // failure CLASS (policy vs infrastructure), the subject stage's own failure

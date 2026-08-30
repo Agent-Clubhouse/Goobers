@@ -218,8 +218,9 @@ a *state* restriction (any pod can call the API) but survives v1 as a scheduling
 **Scheduler-state plane** — `GET`/`PUT /api/v1/gaggles/{gaggle}/state/{key}`, compare-and-swap on an
 opaque `ETag` (`If-Match` to replace a known value, `If-None-Match: *` to create). This is M5's answer
 and the rest of M2's: the scheduler-state files that sit *beside* `claims.json` — `blocked.json`, the
-backlog scan cursors, the post-merge-reconcile ledger, the sibling-context cache — are per-node for
-exactly the reason the ledger is, and a mode-3 stage cannot reach them at all. `internal/stateclient`
+backlog scan cursors, the post-merge-reconcile ledger, the sibling-context cache, the backlog-health
+ready-transition ledger — are per-node for exactly the reason the ledger is, and a mode-3 stage
+cannot reach them at all. `internal/stateclient`
 selects a backend the same way `internal/claimsclient` does: `GOOBERS_STATE_ENDPOINT` +
 `GOOBERS_STATE_TOKEN` + `GOOBERS_GAGGLE` present ⇒ the plane, all three absent ⇒ the file backend, any
 partial combination ⇒ a refusal, never a silent local write (decision 005 R3).
@@ -229,18 +230,38 @@ Three properties make it safe to hand a stage pod:
 - **The key namespace is closed.** `stateclient.ValidKey` admits exactly the names above, plus the
   backlog re-sweep generation (`backlog-resweep-<sha256>.json`, joined by Goobers#3898 — it was the
   last scheduler-directory file the claiming path opened directly), scan cursors by their
-  `backlog-scan-<sha256>.json` shape, and both the client and the daemon enforce it,
-  so a state bearer can never address `claims.json`, `config.yaml`, or anything else in the scheduler
-  directory. Containment does not rest on path sanitation.
+  `backlog-scan-<sha256>.json` shape, the backlog-health ready-transition ledger by its
+  `backlog-health.<gaggle>.<provider>__<repository>__<label>.json` shape (Goobers#3948 — the last
+  file holding a `goobers` subcommand to `StageRequiresInstanceRoot`), and both the client and the
+  daemon enforce it, so a state bearer can never address `claims.json`, `config.yaml`, or anything
+  else in the scheduler directory. Containment does not rest on path sanitation.
 - **The gaggle is an authorization scope, not a storage location.** The files stay instance-scoped
   under `layout.SchedulerDir()`; the path segment decides *who may ask*. A pod principal is contained
   to the gaggle its own `run.yaml` proves it belongs to — verified, like claims/list, by validating
-  both segments before joining them and refusing anything that is not one plain path element.
+  both segments before joining them and refusing anything that is not one plain path element. The
+  ready-transition ledger is the one key that also carries a gaggle *inside* it (its file has always
+  been named per gaggle), so the daemon additionally requires that gaggle to be the caller's own —
+  route scope alone would let a pod contained to gaggle A name gaggle B's ledger. It is delimited by
+  a `.` rather than by the `__` the file name joins on, because a repository or a label may
+  legitimately contain `__` and the containment check must never have to guess where the gaggle ends.
 - **The plane takes the same lock the in-process path takes.** `blocked.json` and the scan cursors are
   served under `claims.lock` (finding 002); the reconcile ledger and sibling cache under their own
   existing lock files. A runner-driven stage holding the file lock locally and an engine-driven stage
   CAS-ing through the plane serialize against each other rather than racing — which is the whole point
-  of putting the route in front of the file instead of beside it.
+  of putting the route in front of the file instead of beside it. The ready-transition ledger is the
+  single deliberate exception, and in the safe direction: it had *no* cross-process lock (one
+  in-process writer plus an atomic rename), it needs one now that the compare and the swap are two
+  round trips, and it gets its own `backlog-health-cursor.lock` rather than the default `claims.lock`
+  — a persist that follows a hundreds-of-pages provider walk must not contend with every claim,
+  release and blocked-record update, which share none of its state.
+
+One key resolves into a *subdirectory*: the ready-transition ledger has always lived at
+`<schedulerDir>/backlog-health/<gaggle>__<provider>__<repository>__<label>.json` and must stay there,
+or a pod-executed cycle and a daemon-driven one would advance two different ledgers. Its key spells
+that directory as a `.`-separated prefix rather than a `/`: a slash would be percent-escaped onto the
+wire, decoded back into a second path segment, and refused by the route's structural pod-scope match
+with a 403 that reads like a containment failure. `stateclient.KeyRelativePath` is the only place a
+key becomes more than one path element.
 
 Priority triggers (apply-verdict's crowned-lander dispatch) ride the trigger plane rather than the file
 drop, under the same containment: a pod principal may post a trigger only for its own gaggle and only
@@ -411,6 +432,21 @@ test. Result: a daemon restart of any duration shorter than the lease (30 min de
 `DefaultClaimLease`) is invisible to a live run's claims, and even a longer outage cannot reap a
 claim while the reaper itself is down; only a restarted daemon that sees a *closed or vanished*
 workflow lets the lease lapse.
+
+**"Maps to an open workflow" is an inverse, not an identity (decision 005 D2).** A directly started
+run executes under `WorkflowID == RunID`, so the mapping is free. A `RunScheduled` run does not: its
+`RunID` is rewritten to a hash of the schedule claim id, and the work executes under the claim
+workflow or its `-run` child. `WorkflowLiveness` therefore keeps *one* bounded, TTL-cached open-
+workflow enumeration (`internal/engine/liveness.go`) that yields both a liveness set and the exact
+`RunID -> WorkflowID` inverse, and every consumer — renewal, boot reattach (`OpenRuns`), the guards'
+`await`/`cancel`, and `goobers run cancel/abort` — reads that same scan. Consumers describe the run's
+own id first and consult the inverse only on `NotFound`, so the common case never costs a visibility
+page. The scan's bounds (10s cache TTL, 100-execution pages, 10-page cap) are the DS6 budget: hitting
+the cap, failing the scan, or resolving ambiguously is reported as *unknown*, never as *settled*, so
+a reconciled slot is never freed under a live workflow. Independently, an engine-enabled daemon
+asserts at boot that no Temporal `Schedule` reconciliation is configured — the embedded scheduler
+stays the trigger source and delegates to the engine, which is what keeps the rewritten shape rare
+and the scan budget honest.
 
 **Outage window (DS7).** With one daemon pod on RWO storage, pod loss means, until Kubernetes
 reschedules onto the volume: no new run admission, no claim/release, no trigger or HITL ingestion, no

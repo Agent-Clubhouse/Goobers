@@ -410,7 +410,7 @@ jobs:
           goobers --version | grep --fixed-strings "$TAG"
           grep --fixed-strings "# Goobers ${TAG} documentation" smoke/docs/RELEASE.md
           grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
-          grep --fixed-strings "goobers-${TAG} init --guided ./my-instance" smoke/docs/guides/quickstart.md
+          grep --fixed-strings "goobers-${TAG} init --guided" smoke/docs/guides/quickstart.md
           grep --fixed-strings "goobers-${TAG} run implementation ./my-instance" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "go build -o bin/goobers" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "bin/goobers init" smoke/docs/guides/quickstart.md
@@ -423,10 +423,9 @@ jobs:
           mkdir onboarding-asset
           unzip -q "dist/goobers-onboarding_${TAG}.zip" -d onboarding-asset
           diff --recursive smoke/onboarding onboarding-asset
-          goobers init --guided smoke/quickstart-instance \
-            < cmd/goobers/testdata/guided-init-release.answers
+          goobers init --template=quickstart smoke/quickstart-instance
           goobers validate smoke/quickstart-instance
-          test -f smoke/quickstart-instance/config/gaggles/goobers/workflows/implementation.yaml
+          test -f smoke/quickstart-instance/config/gaggles/example/workflows/quickstart.yaml
           test -f smoke/quickstart-config/instance.yaml.example
           test -f smoke/quickstart-config/manifest.yaml
           test -f smoke/quickstart-config/gaggles/goobers/workflows/implementation.yaml

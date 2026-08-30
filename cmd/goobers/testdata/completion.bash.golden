@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="version init connect examples scaffold validate up down service dashboard getting-started run signal workflow status stats trace escalations completion help --version -h --help"
+        candidates="version init connect examples scaffold validate up down service dashboard run signal workflow status stats trace escalations completion help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -21,7 +21,7 @@ _goobers_completion()
             flags+=" --json"
             ;;
         init)
-            flags+=" --demo --insecure --template --source-tree --json"
+            flags+=" --guided --port --no-open --workdir --demo --insecure --template --source-tree --json"
             ;;
         connect)
             flags+=" --token-env --seed --replace --json"
@@ -86,7 +86,7 @@ _goobers_completion()
             esac
             ;;
         engine-start)
-            flags+=" --gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key --live-journal"
+            flags+=" --gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key --direct --live-journal"
             ;;
         engine-queues)
             flags+=" --temporal-hostport --temporal-namespace --task-queue --timeout --json"
@@ -95,13 +95,10 @@ _goobers_completion()
             flags+=" --gaggle --temporal-hostport --temporal-namespace"
             ;;
         worker)
-            flags+=" --instance --blob-store --daemon-api --dispatch-namespace --config-reload-interval --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
+            flags+=" --instance --blob-store --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
         dashboard)
             flags+=" --port --listen --no-open --dev-assets --wait-for-daemon"
-            ;;
-        getting-started)
-            flags+=" --port --no-open --workdir"
             ;;
         run)
             flags+=" --gaggle --pr --no-wait"

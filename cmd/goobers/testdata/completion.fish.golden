@@ -16,7 +16,7 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version init connect examples scaffold validate up down service dashboard getting-started run signal workflow status stats trace escalations completion help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version init connect examples scaffold validate up down service dashboard run signal workflow status stats trace escalations completion help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 
@@ -47,6 +47,10 @@ complete -c goobers -n '__fish_seen_subcommand_from help; and test (count (comma
 
 complete -c goobers -n '__fish_seen_subcommand_from version' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from versions' -l json -d 'Emit JSON'
+complete -c goobers -n '__fish_seen_subcommand_from init' -l guided -d 'Open browser-based setup, including placement choices'
+complete -c goobers -n '__fish_seen_subcommand_from init' -l port -r -d 'With --guided, server port or auto'
+complete -c goobers -n '__fish_seen_subcommand_from init' -l no-open -d 'With --guided, print the URL without opening a browser'
+complete -c goobers -n '__fish_seen_subcommand_from init' -l workdir -r -d 'With --guided, temporary browser setup state'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l demo -d 'Seed a credential-free runnable demo workflow'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l insecure -d 'Allow an unisolated Windows demo'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l template -r -a 'quickstart' -d 'Seed a named onboarding template'
@@ -122,7 +126,8 @@ complete -c goobers -n '__fish_seen_subcommand_from engine-start' -l gaggle -r -
 complete -c goobers -n '__fish_seen_subcommand_from engine-start' -l temporal-hostport -r -d 'Temporal frontend host and port'
 complete -c goobers -n '__fish_seen_subcommand_from engine-start' -l temporal-namespace -r -d 'Temporal namespace'
 complete -c goobers -n '__fish_seen_subcommand_from engine-start' -l task-queue -r -d 'Workflow task queue'
-complete -c goobers -n '__fish_seen_subcommand_from engine-start' -l dedupe-key -r -d 'Run identity deduplication key'
+complete -c goobers -n '__fish_seen_subcommand_from engine-start' -l dedupe-key -r -d 'Run identity deduplication key (requires --direct)'
+complete -c goobers -n '__fish_seen_subcommand_from engine-start' -l direct -d 'Dispatch straight to Temporal instead of through the running daemon'
 complete -c goobers -n '__fish_seen_subcommand_from engine-start' -l live-journal -d 'Author the run journal live through the daemon\'s journal plane'
 complete -c goobers -n '__fish_seen_subcommand_from engine-queues' -l temporal-hostport -r -d 'Temporal frontend host and port'
 complete -c goobers -n '__fish_seen_subcommand_from engine-queues' -l temporal-namespace -r -d 'Temporal namespace'
@@ -137,6 +142,7 @@ complete -c goobers -n '__fish_seen_subcommand_from worker' -l blob-store -r -d 
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l daemon-api -r -d 'Daemon write API base URL for live journal emission'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l dispatch-namespace -r -d 'Namespace for mode-3 stage pods; wires the dispatcher seam'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l config-reload-interval -r -d 'How often to re-read the instance config tree and rebuild changed gaggle seams (0 disables)'
+complete -c goobers -n '__fish_seen_subcommand_from worker' -l config-history-depth -r -d 'How many superseded config trees to retain so an in-flight run pinned to one is still served its own goober kit (0 disables)'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l task-queue -r -d 'Task queue to serve (repeatable)'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l temporal-hostport -r -d 'Temporal frontend host and port'
 complete -c goobers -n '__fish_seen_subcommand_from worker' -l temporal-namespace -r -d 'Temporal namespace'
@@ -147,9 +153,6 @@ complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l listen -r -d '
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l no-open -d 'Print the URL without opening a browser'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l dev-assets -r -d 'Serve a local portal build'
 complete -c goobers -n '__fish_seen_subcommand_from dashboard' -l wait-for-daemon -d 'Wait up to 30s for a concurrently starting daemon'
-complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l port -r -d 'Server port, or auto'
-complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l no-open -d 'Print the URL without opening a browser'
-complete -c goobers -n '__fish_seen_subcommand_from getting-started' -l workdir -r -d 'Directory holding the tutorial sample and instance'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l gaggle -r -d 'Trigger the workflow in this gaggle'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l pr -r -d 'Target an exact pull request for merge-review'
 complete -c goobers -n '__fish_seen_subcommand_from run' -l no-wait -d 'Return after the run is dispatched'

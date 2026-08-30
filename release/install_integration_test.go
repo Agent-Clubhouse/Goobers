@@ -39,9 +39,9 @@ func TestIntegrationInstallScriptVerifiesInstallAndPointsToGettingStarted(t *tes
 	releaseDocs := map[string][]byte{
 		"README.md": []byte("# Goobers v1.2.3\n\n" +
 			"The release installer installs the binary and documentation only. Start setup " +
-			"with `goobers getting-started` after installation.\n\n" +
+			"with `goobers init --guided` after installation.\n\n" +
 			"If you opened this README directly from an extracted archive instead:\n\n" +
-			"```sh\ngoobers-v1.2.3 getting-started\n```\n"),
+			"```sh\ngoobers-v1.2.3 init --guided\n```\n"),
 		"docs/RELEASE.md":           []byte("# Goobers v1.2.3 documentation\n"),
 		"docs/guides/quickstart.md": []byte("# Quickstart v1.2.3\n"),
 		"onboarding/manifest.json":  []byte("{\"release\":{\"version\":\"v1.2.3\"}}\n"),
@@ -136,7 +136,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		t.Fatalf("installer: %v\n%s", err, installOutput)
 	}
 	if !strings.Contains(string(installOutput), "Set up your repository:") ||
-		!strings.Contains(string(installOutput), "getting-started") {
+		!strings.Contains(string(installOutput), "init --guided") {
 		t.Errorf("installer output lacks Getting Started guidance:\n%s", installOutput)
 	}
 
@@ -174,9 +174,9 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		"installed README onboarding",
 		string(installedReadme),
 		"The release installer installs the binary and documentation only",
-		"goobers getting-started",
+		"goobers init --guided",
 		"directly from an extracted archive instead",
-		"goobers-v1.2.3 getting-started",
+		"goobers-v1.2.3 init --guided",
 	)
 	calls, err := os.ReadFile(goobersCalls)
 	if err != nil {
@@ -233,7 +233,7 @@ cp "$FIXTURE_DIR/${url##*/}" "$output"
 		"Next steps",
 		"init --demo ./demo-instance",
 		"run demo ./demo-instance",
-		"getting-started",
+		"init --guided",
 	)
 
 	// A bare positional path is rejected before any download.

@@ -133,6 +133,32 @@ type RunInput struct {
 	// these fields existed — is a no-op, byte for byte as before.
 	BacklogQueryAssignedTo    string `json:"backlogQueryAssignedTo,omitempty"`
 	BacklogQueryRequireLabels string `json:"backlogQueryRequireLabels,omitempty"`
+	// GooberDigest is the content digest of the goober kit this run's stages
+	// are meant to execute, pinned at start exactly as the local scheduler
+	// stamps it onto a runner-driven StartRequest
+	// (localscheduler.gooberDigestStarter). It lands in the run.yaml identity
+	// so an engine run's provenance names its kit and the parity harness can
+	// compare the two drivers' run.yaml side by side.
+	//
+	// It is also the SELECTOR every attempt of this run resolves its kit by
+	// (#3884): buildInvocation copies it onto every InvocationEnvelope, and
+	// the worker serves the attempt from the snapshot whose tree resolves
+	// this digest or refuses the attempt by name. A worker whose config tree
+	// has rolled past the pin no longer substitutes its current instructions
+	// silently. Empty — every input persisted before this field existed —
+	// is unpinned and resolves the worker's current tree exactly as before.
+	GooberDigest string `json:"gooberDigest,omitempty"`
+	// HITL pins the run's human-in-the-loop posture (#3883, decision 005 R8):
+	// whether a resumable terminal is held open for an operator intent
+	// delivered over the goobers.hitl.v1 Temporal update protocol, for how
+	// long, and by whom. See internal/engine/hitl.go.
+	//
+	// Pinned input rather than worker config for the usual reason: the hold is
+	// a workflow timer, and a timer whose duration came from mutable
+	// configuration is a replay-nondeterminism bug. nil — every run started
+	// before the protocol existed, and every lane with no human gate — is a
+	// complete no-op: no hold, no extra journal event, byte-identical history.
+	HITL *HITLPolicy `json:"hitl,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {
@@ -267,12 +293,22 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		return RunResult{}, err
 	}
 	for _, g := range in.Spec.Gates {
-		if g.Evaluator == apiv1.EvaluatorHuman {
-			return RunResult{}, fmt.Errorf("%s: gate %q", temporalHumanGateUnsupported, g.Name)
+		if err := refuseHumanGate(g); err != nil {
+			return RunResult{}, err
 		}
 	}
 	rec, err := newRunJournal(ctx, in, m)
 	if err != nil {
+		return RunResult{}, err
+	}
+	// The HITL protocol's handlers are registered BEFORE the run does
+	// anything (#3883, decision 005 R8). Registration emits no history event,
+	// so this is invisible to replay of pre-protocol histories; registering
+	// unconditionally means an intent addressed to a run that cannot accept
+	// one is refused with a named reason rather than buffered by Temporal
+	// against a handler that will never exist.
+	hitl := newHITLSession(in, m, rec)
+	if err := hitl.register(ctx); err != nil {
 		return RunResult{}, err
 	}
 	rec.runStarted(ctx)
@@ -287,9 +323,11 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 	// the portal see it mid-flight. Failure to open the live journal fails
 	// the run, the same stance the local runner takes when journal.Create
 	// fails: a run whose product output cannot be authored does not execute.
+	var terminalJournaled bool
 	err = rec.emitPending(ctx)
 	if err == nil {
-		res, err = walk(ctx, in, m, rec)
+		res, err = walk(ctx, in, m, rec, hitl)
+		terminalJournaled = hitl.wroteTerminal
 	}
 	if err != nil {
 		// A walk-level error is the engine's failTerminal (#305): record the
@@ -298,6 +336,7 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		if !temporal.IsCanceledError(err) && ctx.Err() == nil {
 			rec.runFailedCause(ctx, "", "", err.Error())
 			rec.runFinished(ctx, journal.PhaseFailed)
+			hitl.noteTerminal()
 			rec.emitTerminal(ctx)
 			return RunResult{}, err
 		}
@@ -317,12 +356,26 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		// stopped (`goobers run abort`), which is what a cancellation is from
 		// the journal's side; the walk itself is not resumed, so this is the
 		// run's last event either way.
+		//
+		// A cancellation that arrived while a HITL terminal was being held
+		// open (#3883) lands here too, on top of the escalated terminal the
+		// hold already journaled: the run escalated, an operator was given a
+		// window, and the window was cut short. Both facts are true and both
+		// are recorded.
 		abortCtx, disconnect := workflow.NewDisconnectedContext(ctx)
 		defer disconnect()
 		rec.runFailedCause(abortCtx, "", "", runCanceledCause(err))
 		rec.runFinished(abortCtx, journal.PhaseAborted)
+		hitl.noteTerminal()
 		rec.emitTerminal(abortCtx)
 		return RunResult{}, err
+	}
+	if terminalJournaled {
+		// The HITL terminal hook already wrote this outcome's run.finished
+		// (it had to, so the operator holding the window could see the
+		// escalation it was resolving). Writing a second one would double the
+		// run's terminal.
+		return res, nil
 	}
 	if res.Status == StatusFailed {
 		// Mirror finishStageFailure (#710): the stage-attributed run_failed
@@ -334,21 +387,33 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		return RunResult{}, err
 	}
 	rec.runFinished(ctx, phase)
+	hitl.noteTerminal()
 	rec.emitTerminal(ctx)
 	return res, nil
 }
 
-func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (RunResult, error) {
+func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hitl *hitlSession) (RunResult, error) {
 	logger := workflow.GetLogger(ctx)
 	upstream := map[string]apiv1.ResultEnvelope{}
 	// pointers accumulates every completed stage's artifacts as read-only
 	// ContextPointers — the only channel through which a stage consumes prior
 	// work (§2.4) — exactly as the local runner's walk does.
 	var pointers []apiv1.ContextPointer
-	// Gate attempts recover interrupted evaluators; repass attempts enforce the
-	// run budget cumulatively by completed target stage.
-	gateAttempts := map[string]int{}
-	repassAttempts := map[string]int{}
+	// The run's repass accounting (gate.RepassBudget, #3930): the gate-keyed
+	// counters that recover interrupted evaluators, and the target-keyed
+	// budgets that bound re-entry — policy and infrastructure kept apart, both
+	// charged by the same shared helper the local runner's evaluator calls.
+	// Ordinary workflow state: every map is read and written by key only, so a
+	// replay reconstructs it from the same deterministic outcome sequence, and
+	// a history recorded before the infrastructure counters existed replays
+	// with their zero values, which is what "no infrastructure repass has been
+	// charged" means.
+	repassBudget := gate.RepassBudget{
+		Attempts:                     map[string]int{},
+		InfrastructureAttempts:       map[string]int{},
+		RepassAttempts:               map[string]int{},
+		InfrastructureRepassAttempts: map[string]int{},
+	}
 	// gateDispatches numbers each placed gate's pod attempts across the whole
 	// run (gatePodAttempt): the surrender-plane key and the pod name for a
 	// reviewer evaluated in a pod. Untouched by the self arm.
@@ -390,6 +455,25 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 	state := in.Spec.Start
 	steps := 0
 
+	// settle is the terminal hook (#3883). Every path that would end the walk
+	// routes through it, so the HITL hold has exactly one site and cannot be
+	// bypassed by whichever terminal a run happens to reach. For a run with no
+	// HITL policy — and for every non-resumable terminal — it returns
+	// immediately and the walk ends exactly as it did before.
+	settle := func(out RunResult) (string, bool, error) {
+		plan, resumed, _, err := hitl.settle(ctx, out)
+		if err != nil || !resumed {
+			return "", false, err
+		}
+		if plan.stage != "" && plan.addendum != "" {
+			// The operator's instruction addendum reaches the re-dispatched
+			// stage through the same channel the #3374 re-dispatch uses, so
+			// there is one way a stage learns why it is running again.
+			addenda[plan.stage] = plan.addendum
+		}
+		return plan.state, true, nil
+	}
+
 	for {
 		switch state {
 		case wf.TerminalComplete:
@@ -397,7 +481,16 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 		case wf.TargetAbort:
 			return RunResult{Status: StatusBlocked, Outputs: upstream, Steps: steps}, nil
 		case wf.TargetEscalate:
-			return RunResult{Status: StatusEscalated, Outputs: upstream, Steps: steps}, nil
+			out := RunResult{Status: StatusEscalated, Outputs: upstream, Steps: steps}
+			next, resumed, err := settle(out)
+			if err != nil {
+				return RunResult{}, err
+			}
+			if resumed {
+				state = next
+				continue
+			}
+			return out, nil
 		}
 
 		steps++
@@ -460,6 +553,14 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			}
 			next, out, terminal := taskOutcome(ctx, m, t, res, upstream, steps, rec)
 			if terminal {
+				resumeState, resumed, serr := settle(out)
+				if serr != nil {
+					return RunResult{}, serr
+				}
+				if resumed {
+					state = resumeState
+					continue
+				}
 				return out, nil
 			}
 			state = next
@@ -503,13 +604,13 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				gerr    error
 			)
 			if knownOutcome != "" {
-				rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1, 0)
+				rec.gateStarted(ctx, g.Name, repassBudget.Attempts[g.Name]+1, 0)
 				if err := rec.emitPending(ctx); err != nil {
 					return RunResult{}, err
 				}
 				outcome = knownOutcome
 			} else {
-				outcome, verdict, review, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, addendum, ev, lastDiffDigest[g.Name], gateAttempts, gateDispatches, rec)
+				outcome, verdict, review, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, addendum, ev, lastDiffDigest[g.Name], repassBudget.Attempts, gateDispatches, rec)
 			}
 			if gerr != nil {
 				return RunResult{}, gerr
@@ -544,7 +645,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				outcome = string(reconciled.Decision)
 			}
 			_, reentry := upstream[wfTarget(g, outcome)]
-			gr, rerr := resolveGateOutcome(g, outcome, reentry, gateAttempts, repassAttempts, maxRepassesFor(in))
+			gr, rerr := resolveGateOutcome(g, outcome, reentry, &repassBudget, maxRepassesFor(in))
 			if rerr != nil {
 				return RunResult{}, rerr
 			}
@@ -587,6 +688,14 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			logger.Info("gate evaluated", "gate", g.Name, "outcome", gr.Outcome, "next", gr.Target, "attempt", gr.Attempt, "escalated", gr.Escalated)
 			next, out, terminal := gateTransition(m, gr, lastStage, lastResult, upstream, steps)
 			if terminal {
+				resumeState, resumed, serr := settle(out)
+				if serr != nil {
+					return RunResult{}, serr
+				}
+				if resumed {
+					state = resumeState
+					continue
+				}
 				return out, nil
 			}
 			var injected *apiv1.ContextPointer
@@ -606,8 +715,28 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			// #3843: a gate sending a stage BACK commits a learning episode
 			// and hands the repass a pointer to it, so the next attempt argues
 			// with the reviewer's finding instead of rediscovering it. Only on
-			// the retry route — an advancing gate has nothing to teach.
-			if retryRoute && gateSendsBack(gr, next, upstream) {
+			// a true re-entry — an advancing gate has nothing to teach.
+			//
+			// #3929: "sending BACK" is the gate result's own repass attempt,
+			// the number resolveGateOutcome already charged to this target's
+			// budget and rec.retryDecision already journaled — not a second,
+			// independently re-derived reading of the upstream map. The engine
+			// used to ask `upstream[next] != nil` here (gateSendsBack), which
+			// was equal to gr.Attempt >= 1 by construction at this call site
+			// and so could drift from it without any test noticing.
+			//
+			// The injection is deliberately NOT conditioned on retryRoute.
+			// That flag carries the retry CLASSIFIER's answer — automated
+			// status-equals over nonzero_exit/base_sync_conflict, or `infra` —
+			// which is a different question from whether a stage is being
+			// asked to do its work again. An agentic reviewer resolving
+			// needs-changes back into implement is the canonical repass and
+			// the classifier declines it, so gating on retryRoute starved the
+			// main lane's reviewer→implement loop of exactly the correction
+			// internal/gate.reconcileLearningFindings exists to read back.
+			// The retry-decision annotation above stays on retryRoute: only
+			// the episode is widened.
+			if runner.LearningEpisodeAppliesToBranch(learningEpisodeBranchFor(gr)) {
 				episode, eerr := rec.learningEpisode(ctx, in, g.Name, next, gr, verdict, lastStage, lastResult, injected)
 				if eerr != nil {
 					return RunResult{}, fmt.Errorf("engine: journal learning episode for gate %q: %w", g.Name, eerr)
@@ -870,7 +999,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 // ActReviewGoober with the arguments it always has (ruling 8, as amended by
 // #3845): that arm is untouched, and the walk's continuity selector already
 // hands both arms the same delta.
-func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, instructionAddendum string, ev gateEvidence, priorDiffDigest string, gateAttempts map[string]int, gateDispatches map[string]int, rec *runJournal) (string, *apiv1.Verdict, GateReviewResult, error) {
+func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in RunInput, subject apiv1.ResultEnvelope, upstream []apiv1.ContextPointer, workspaceBranch string, workspaceDelta string, instructionAddendum string, ev gateEvidence, priorDiffDigest string, gatePolicyAttempts map[string]int, gateDispatches map[string]int, rec *runJournal) (string, *apiv1.Verdict, GateReviewResult, error) {
 	limits, err := wf.GateLimits(machine, g)
 	if err != nil {
 		return "", nil, GateReviewResult{}, fmt.Errorf("project gate %q limits: %w", g.Name, err)
@@ -895,7 +1024,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		}
 		ctx := stageActivityContext(ctx, env.Limits)
 		// An automated gate never dispatches a pod (podAttempt: 0, omitted).
-		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1, 0)
+		rec.gateStarted(ctx, g.Name, gatePolicyAttempts[g.Name]+1, 0)
 		// Pre-evaluation emission: gate.paused + gate.started go live before
 		// the evaluator dispatches, so a run waiting at a gate is visible
 		// waiting at that gate.
@@ -929,7 +1058,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		// here, at the last point before dispatch, so the short-circuit is
 		// visibly one branch away from the dispatch it replaces.
 		if ev.CachedVerdict != nil {
-			rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1, 0)
+			rec.gateStarted(ctx, g.Name, gatePolicyAttempts[g.Name]+1, 0)
 			if err := rec.emitPending(ctx); err != nil {
 				return "", nil, GateReviewResult{}, err
 			}
@@ -957,7 +1086,7 @@ func evaluateGate(ctx workflow.Context, machine *wf.Machine, g apiv1.Gate, in Ru
 		if remote {
 			podAttempt = gateDispatches[g.Name] + 1
 		}
-		rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1, podAttempt)
+		rec.gateStarted(ctx, g.Name, gatePolicyAttempts[g.Name]+1, podAttempt)
 		// Pre-evaluation emission, as on the automated arm above.
 		if err := rec.emitPending(ctx); err != nil {
 			return "", nil, GateReviewResult{}, err
@@ -1065,6 +1194,7 @@ func buildInvocation(in RunInput, stateName, goal string, taskInputs map[string]
 		BaseBranch:      baseBranch,
 		Goal:            goal,
 		Goober:          goober,
+		GooberDigest:    in.GooberDigest,
 		RepoRef:         in.RepoRef.EnvelopeRef(),
 		Item:            in.Item,
 		ContextPointers: upstream,

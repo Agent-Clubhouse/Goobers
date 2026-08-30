@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestGettingStartedNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
+func TestGuidedInitBrowserNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 	workdir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -26,14 +26,14 @@ func TestGettingStartedNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 	defer func() { launchDashboardBrowser = originalLauncher }()
 
 	go func() {
-		done <- runGettingStartedContext(ctx, []string{"--no-open", "--workdir", workdir}, started, io.Discard)
+		done <- runGuidedInitBrowserContext(ctx, []string{"--no-open", "--workdir", workdir}, started, io.Discard)
 	}()
 
 	var address string
 	select {
 	case address = <-started.url:
 	case code := <-done:
-		t.Fatalf("getting-started exited before startup: code = %d", code)
+		t.Fatalf("guided init exited before startup: code = %d", code)
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for getting-started URL")
 	}
@@ -41,7 +41,7 @@ func TestGettingStartedNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 		t.Fatal("--no-open launched a browser")
 	}
 	if !strings.HasSuffix(address, "/#/getting-started") || !strings.HasPrefix(address, "http://127.0.0.1:") {
-		t.Fatalf("getting-started URL = %q", address)
+		t.Fatalf("guided init URL = %q", address)
 	}
 
 	base := strings.TrimSuffix(address, "#/getting-started")
@@ -76,25 +76,25 @@ func TestGettingStartedNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 	select {
 	case code := <-done:
 		if code != 0 {
-			t.Fatalf("getting-started exit code = %d", code)
+			t.Fatalf("guided init exit code = %d", code)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("getting-started did not stop after cancellation")
+		t.Fatal("guided init did not stop after cancellation")
 	}
 }
 
-func TestGettingStartedUsageErrors(t *testing.T) {
-	if code := runGettingStartedContext(context.Background(), []string{"extra-arg"}, io.Discard, io.Discard); code != 2 {
+func TestGuidedInitBrowserUsageErrors(t *testing.T) {
+	if code := runGuidedInitBrowserContext(context.Background(), []string{"unexpected-path"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("positional arg exit code = %d, want 2", code)
 	}
-	if code := runGettingStartedContext(context.Background(), []string{"--port=notaport"}, io.Discard, io.Discard); code != 2 {
+	if code := runGuidedInitBrowserContext(context.Background(), []string{"--port=notaport"}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("bad port exit code = %d, want 2", code)
 	}
 	notDirectory := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(notDirectory, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code := runGettingStartedContext(context.Background(), []string{"--workdir", notDirectory}, io.Discard, io.Discard); code != 2 {
+	if code := runGuidedInitBrowserContext(context.Background(), []string{"--workdir", notDirectory}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("file workdir exit code = %d, want 2", code)
 	}
 }

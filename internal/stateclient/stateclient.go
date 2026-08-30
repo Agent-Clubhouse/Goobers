@@ -5,11 +5,14 @@
 //
 // Scheduler state is the daemon-owned state that is NOT a claim: the
 // learned-dependency block records (blocked.json), the per-scan backlog
-// cursor (backlog-scan-<hash>.json, #2067 fairness), the reconcile-post-merge
-// ledger, and the gather-sibling-context cache. Each lives as one JSON file in
-// the instance's scheduler directory today, read and written in-process by the
-// CLI when it shares a host with the daemon (type-1/type-2) and by the
-// daemon's own scheduler. A stage POD has neither the file nor the lock.
+// cursor (backlog-scan-<hash>.json, #2067 fairness), the backlog re-sweep
+// generation, the reconcile-post-merge ledger, the gather-sibling-context
+// cache, and the backlog-health ready-transition ledger
+// (backlog-health/<gaggle>__<provider>__<repository>__<label>.json,
+// Goobers#3948). Each lives as one JSON file in the instance's scheduler
+// directory today, read and written in-process by the CLI when it shares a
+// host with the daemon (type-1/type-2) and by the daemon's own scheduler. A
+// stage POD has neither the file nor the lock.
 //
 // The two backends:
 //
@@ -18,7 +21,11 @@
 //     existed. The lock is injected by the caller, so nothing about how the
 //     daemon serializes changes: blocked.json and the scan cursor keep
 //     claims.lock, the post-merge ledger keeps post-merge-reconcile.lock, the
-//     sibling cache keeps sibling-context-cache.lock.
+//     sibling cache keeps sibling-context-cache.lock, and the ready-transition
+//     ledger — which had no lock at all, because until the plane existed it
+//     had a single in-process writer — gets its own, since a compare-and-swap
+//     served over the plane is atomic only if the daemon serializes the
+//     compare against the swap.
 //   - HTTP: the daemon's scheduler-state plane
 //     (GET/PUT /api/v1/gaggles/{gaggle}/state/{key}), selected when
 //     GOOBERS_STATE_ENDPOINT and a state bearer are present in the stage's
@@ -45,6 +52,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -131,6 +139,114 @@ var scanCursorKeyPattern = regexp.MustCompile(`^backlog-scan-[0-9a-f]{64}\.json$
 // private copy.
 var resweepStateKeyPattern = regexp.MustCompile(`^backlog-resweep-[0-9a-f]{64}\.json$`)
 
+// The backlog-health READY-TRANSITION cursor (Goobers#3948), the one key in
+// this namespace that does not live directly in the scheduler directory and
+// the one whose name is not a digest.
+//
+// It is scheduler state by every test this package's doc comment applies:
+// daemon-owned, not a claim, one JSON file under the instance's scheduler
+// directory, read and written in-process by the CLI when it shares a host with
+// the daemon. It was simply left behind when C2 landed, and it was the last
+// thing holding `backlog-health` — BOTH modes — to
+// executor.StageRequiresInstanceRoot.
+//
+// TWO shape differences from the rest of the namespace, both deliberate:
+//
+//   - It resolves into a SUBDIRECTORY. The file is
+//     <schedulerDir>/backlog-health/<gaggle>__<provider>__<repository>__<label>.json
+//     and it must STAY there — a pod-executed cycle and a daemon-driven one
+//     advancing two different paths is precisely the split this plane exists
+//     to prevent. The key therefore carries the subdirectory as a "." -
+//     separated prefix rather than a "/": a slash in the key would be
+//     percent-escaped onto the wire, decoded back into a second path segment,
+//     and refused by the router's structural pod-scope match (which requires
+//     the key to be ONE segment) — a 403 that reads like a containment failure
+//     rather than the encoding accident it is. KeyRelativePath is what turns
+//     the prefix back into the directory, and it is the ONLY place a key
+//     becomes more than one path element.
+//   - It carries the GAGGLE. Every other key in this namespace is
+//     gaggle-agnostic, so the route's gaggle segment is the whole of its
+//     containment. Here it is not: a pod contained to gaggle A could otherwise
+//     name gaggle B's cursor in the key and the route would serve it under A's
+//     scope. So the key keeps the gaggle in its own "."-delimited position
+//     instead of leaving it as the first of the file name's four "__"-joined
+//     coordinates — "__" cannot decide where the gaggle ends (a repository or
+//     a label may legitimately contain one, and "goobers__x__github__..."
+//     would otherwise be readable by a pod scoped to plain "goobers") whereas
+//     "." can, because instance.SchedulerNameSegment maps "." to "_" and no
+//     sanitized coordinate can contain one. See
+//     BacklogHealthCursorKeyContained, which the daemon applies alongside the
+//     run-belongs-to-gaggle check.
+const (
+	// BacklogHealthCursorKeyPrefix opens every ready-transition cursor key.
+	BacklogHealthCursorKeyPrefix = "backlog-health."
+	// BacklogHealthCursorDirName is the scheduler-directory subdirectory the
+	// prefix resolves to. Pinned against instance.BacklogHealthDirName by
+	// cmd/goobers's parity test rather than imported, so this package stays
+	// free of the instance layout.
+	BacklogHealthCursorDirName = "backlog-health"
+	// backlogHealthCursorGaggleSep delimits the gaggle from the rest of the
+	// scan's coordinates. Unambiguous by construction: see above.
+	backlogHealthCursorGaggleSep = "."
+)
+
+// backlogHealthCursorKeyPattern pins a cursor key to the prefix, the gaggle,
+// and exactly the shape instance.BacklogHealthCursorScope produces: three
+// "__"-joined coordinates over a closed character class that contains no path
+// separator, no "." and no percent — so the key cannot spell a traversal,
+// cannot acquire a second path segment on the wire, and cannot name a file
+// outside BacklogHealthCursorDirName. Fail closed: a coordinate the sanitizer
+// would have reduced to something outside this class is refused, never
+// resolved.
+var backlogHealthCursorKeyPattern = regexp.MustCompile(
+	`^backlog-health\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:__[A-Za-z0-9_-]+){2}\.json$`)
+
+// BacklogHealthCursorKey names the ready-transition cursor for one scan.
+// gaggleSegment is the gaggle reduced by instance.SchedulerNameSegment and
+// scope is instance.BacklogHealthCursorScope's output for the scan's other
+// three coordinates; joined, they are exactly the file name
+// instance.BacklogHealthCursorName produces. Deriving the key from the SAME
+// sanitizer the path builder uses, rather than reducing the coordinates a
+// second time here, is what makes it impossible for the key and the path to
+// disagree about which file they mean.
+func BacklogHealthCursorKey(gaggleSegment, scope string) string {
+	return BacklogHealthCursorKeyPrefix + gaggleSegment + backlogHealthCursorGaggleSep + scope
+}
+
+// BacklogHealthCursorKeyContained reports whether key is addressable by a
+// caller scoped to gaggleSegment (the caller's gaggle reduced by
+// instance.SchedulerNameSegment). Keys that carry no gaggle are contained by
+// the route's own scope and are admitted here unchanged; a cursor key is
+// admitted only when its gaggle is exactly the caller's own.
+func BacklogHealthCursorKeyContained(key, gaggleSegment string) bool {
+	if !strings.HasPrefix(key, BacklogHealthCursorKeyPrefix) {
+		return true
+	}
+	if gaggleSegment == "" || strings.Contains(gaggleSegment, backlogHealthCursorGaggleSep) {
+		return false
+	}
+	return strings.HasPrefix(key, BacklogHealthCursorKey(gaggleSegment, ""))
+}
+
+// KeyRelativePath resolves a scheduler-state key to its path RELATIVE to the
+// scheduler directory. Every key but the backlog-health cursor is its own file
+// name; the cursor's prefix becomes its subdirectory and its gaggle rejoins
+// the rest of the coordinates. checkKey runs first, so nothing outside the
+// closed namespace ever reaches a path join.
+func KeyRelativePath(key string) (string, error) {
+	if err := checkKey(key); err != nil {
+		return "", err
+	}
+	rest, ok := strings.CutPrefix(key, BacklogHealthCursorKeyPrefix)
+	if !ok {
+		return key, nil
+	}
+	// checkKey admitted it, so the separator is present and both sides are
+	// single, traversal-free path components.
+	gaggleSegment, scope, _ := strings.Cut(rest, backlogHealthCursorGaggleSep)
+	return filepath.Join(BacklogHealthCursorDirName, gaggleSegment+"__"+scope), nil
+}
+
 // ScanCursorKey names the scan cursor for a scan-key digest.
 func ScanCursorKey(digest string) string {
 	return "backlog-scan-" + digest + ".json"
@@ -147,7 +263,9 @@ func ValidKey(key string) bool {
 	case KeyBlockedRecords, KeyPostMergeReconcileLedger, KeySiblingContextCache:
 		return true
 	}
-	return scanCursorKeyPattern.MatchString(key) || resweepStateKeyPattern.MatchString(key)
+	return scanCursorKeyPattern.MatchString(key) ||
+		resweepStateKeyPattern.MatchString(key) ||
+		backlogHealthCursorKeyPattern.MatchString(key)
 }
 
 // Value is one scheduler-state read: the bytes and the ETag that addresses

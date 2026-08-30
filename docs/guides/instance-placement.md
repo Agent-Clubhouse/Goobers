@@ -256,7 +256,7 @@ export GOOBERS_INSTANCE="$HOME/goobers/instances/hass-dreo"
 export GOOBERS_CONFIG_SOURCE="$HOME/src/hass-dreo-goobers-config"
 export GOOBERS_TARGET="JeffSteinbok/hass-dreo"
 
-goobers getting-started
+goobers init --guided
 goobers validate --source-tree "$GOOBERS_CONFIG_SOURCE"
 goobers config materialize "$GOOBERS_INSTANCE"
 goobers validate "$GOOBERS_INSTANCE"

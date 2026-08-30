@@ -188,6 +188,171 @@ const (
 	// DETERMINISTIC subject is still reviewed. It is what forbids a port that
 	// fast-fails on emptiness alone.
 	rowEmptyDiffDeterministicSubject parityRow = "E5-empty-diff-deterministic-subject"
+	// rowLearningEpisodeInjection is inventory row "learning-episode injection
+	// on the generic gate retry arm" (plan item E10, #3913): a repassing gate
+	// records the episode artifact, threads the derived learning.episode[<seq>]
+	// pointer into the re-entered stage, writes the learning.episode.injected
+	// annotation, and downgrades the repassed stage's produced integrity.
+	//
+	// The behaviour was ported by #3882/#3915. It had no inventory row of its
+	// own at the time — which is why the retry-decision rows next door once
+	// carried a documented surface exclusion rather than an expected-failure
+	// entry: that map joins on inventory row id, and inventing one would have
+	// corrupted the join key. E10 is that assigned id, and this row is where
+	// the behaviour is pinned in its own right rather than as a side condition
+	// of a row about something else.
+	rowLearningEpisodeInjection parityRow = "E10-learning-episode-injection"
+	// rowLearningEpisodeNotInjected is the NEGATIVE half of the same row: a
+	// gate whose fail branch routes ONWARD, to a stage that has not run, is not
+	// a repass — there is nothing to correct and no attempt to feed. It is what
+	// forbids an injection keyed on "the gate failed" rather than on "the gate
+	// sent a stage back", which would fill forward stages' envelopes with
+	// derived pointers and downgrade stages that were never repassed.
+	rowLearningEpisodeNotInjected parityRow = "E10-learning-episode-not-injected"
+	// rowLearningEpisodeContextFrom is the sub-case #3928 discovered in the
+	// E10 ruling review: the injected pointer must survive the RE-ENTERED
+	// STAGE'S OWN contextFrom selection. Every other E10 fixture declares no
+	// contextFrom, which is the one configuration where the selector cannot
+	// drop anything — while the flagship implementation lane, the lane the
+	// injection exists for, does declare one. Both runners called the same
+	// shared selector, so the divergence was zero and the behaviour was
+	// absent: this row's premise, not its check, is what pins the fix.
+	rowLearningEpisodeContextFrom parityRow = "E10-learning-episode-contextfrom"
+	// rowLearningEpisodeForwardBranch is the sub-case this table DISCOVERED
+	// while pinning the two above: a gate's fail branch that routes ONWARD, to
+	// a stage that has not run, on a RETRY-CLASSIFIABLE failure. It is the one
+	// place the two sides disagreed — the local runner injected there
+	// (routeRetryDecision asks only retryable/non-pass/non-escalated/
+	// real-target), the engine did not — and it was registered as a documented
+	// expected failure because resolving it was a ruling, not a patch.
+	//
+	// #3929 took that ruling: an episode is injected IFF the branch is a true
+	// repass, using the gate result's own repassAttempt. So the row is now the
+	// POSITIVE statement of the ruling rather than a report of a divergence —
+	// neither side injects, and the expected-failure entry is gone with it.
+	//
+	// It is deliberately distinct from rowLearningEpisodeNotInjected, which
+	// also routes onward: there the retry classifier DECLINES the failure, so
+	// there is no retry arm at all and the row would stay green under either
+	// side of the ruling. Here the classifier ACCEPTS it, the retry decision is
+	// really taken and really annotated, and only the injection is withheld.
+	// That is the distinction the ruling is about.
+	rowLearningEpisodeForwardBranch parityRow = "E10-learning-episode-forward-branch"
+	// rowLearningEpisodeInfraForwardBranch is the same ruling on the arm that
+	// actually carries it in production, and on the failure class the synthetic
+	// row cannot reach.
+	//
+	// The synthetic forward-branch row above walks a status-equals gate over a
+	// nonzero_exit failure — journal.AttemptPolicy. The only shipped branch the
+	// ruling CHANGES is pr-remediation's `local-gate` (failure-class evaluator,
+	// `infra: park-infrastructure-failure`), which is retryable by the OTHER
+	// route through retryFailureClassForGateResult: not because the failure
+	// code is recognized, but because the gate resolved gate.OutcomeInfra. That
+	// is journal.AttemptInfra, a different class down a different branch of the
+	// classifier, and no other row in this table produces it.
+	//
+	// The target is a parking stage whose own escalation text says "no
+	// implementation defect was established" — the concrete case for the
+	// ruling, and the reason this row is shaped like production rather than
+	// like a fixture.
+	rowLearningEpisodeInfraForwardBranch parityRow = "E10-learning-episode-infra-forward-branch"
+	// rowLearningEpisodeAgenticRepass is the sub-case #3942 discovered after
+	// #3938 landed the #3929 ruling: the ruling names the predicate ("is the
+	// branch a true repass?") but both drivers evaluated it INSIDE the
+	// retry-decision arm, so the injection also required the retry CLASSIFIER
+	// to accept the failure — an automated status-equals gate over
+	// nonzero_exit/base_sync_conflict, or any gate resolving infra.
+	//
+	// An AGENTIC reviewer resolving needs-changes back into its implementer is
+	// the canonical true repass of the whole system and satisfies none of
+	// those: the evaluator is not automated, and the outcome is the verdict
+	// decision rather than infra. Both drivers therefore declined it, IN
+	// AGREEMENT, which is exactly why no existing row went red — the
+	// divergence was against the ruling, not between the runners. The two
+	// shipped lanes that do implementation work (implementation.yaml's
+	// `review` -> `implement`, pr-remediation.yaml's `review` ->
+	// `guard-before-implement`) were the ones starved.
+	//
+	// Every other E10 row walks a DETERMINISTIC failure through an AUTOMATED
+	// gate, which is the one shape where the classifier's answer and the
+	// ruling's answer coincide. This row is the shape where they do not, and
+	// it is the row that would have caught it.
+	rowLearningEpisodeAgenticRepass parityRow = "E10-learning-episode-agentic-repass"
+
+	// rowLearningEpisodeSendBack is the sub-case #3931 closed: a NONTRIVIAL
+	// send-back, where the stage the gate sends work back to is not the stage
+	// that produced the failure.
+	//
+	// Every other E10 fixture is trivial — implement fails, review sends work
+	// back to implement — and on a trivial send-back the subject and the target
+	// are the same stage, so "the subject's attempt plus one" and "the target's
+	// next attempt" are the same number and a derivation off the wrong stage is
+	// invisible. That degeneracy is the reason the defect survived three rows
+	// and a ruling.
+	//
+	// It is also not the shape production runs. implementation.yaml's
+	// `local-gate: fail -> implement` grades a `local-ci` subject;
+	// `ci-gate: fail -> remediate-ci` grades `ci-poll`; pr-remediation's
+	// `finding-responses-gate: fail -> guard-before-implement` grades
+	// `validate-finding-responses`. In each the subject runs once per cycle
+	// while the target accumulates re-entries, so the two numbers diverge on
+	// the second cycle and stay diverged.
+	//
+	// This row walks two cycles of exactly that shape, so the second episode is
+	// addressed to a target attempt the subject's counter cannot name. Both
+	// sides derive it from the target's own history through the shared builder,
+	// so the row is a parity claim about the shared derivation and not only
+	// about the arithmetic.
+	rowLearningEpisodeSendBack parityRow = "E10-learning-episode-send-back"
+
+	// --- E11: the infrastructure repass budget (#3930) ------------------------
+	//
+	// One finding-002 inventory row — "gate repass accounting: the
+	// infrastructure budget is separate from the policy budget, at its own
+	// bound, and both cross-reset" — pinned by four cases, because the
+	// collapse the engine shipped had four independently observable halves and
+	// a fixture that lumped them together would report the first one and hide
+	// the rest.
+	//
+	// The behaviour is internal/gate.RepassBudget's, which both drivers now
+	// charge: infrastructure outcomes take their own per-gate and per-target
+	// counters, bounded by gate.DefaultMaxInfrastructureRepasses (2) rather
+	// than the policy MaxRepasses (3), and an intervening outcome of the other
+	// class returns what the first spent. The engine kept ONE budget at ONE
+	// bound with no reset, so the same definition over the same failures
+	// escalated at a different point on the two runners — decision 005's
+	// cutover risk in its purest form, with nothing failing.
+	//
+	// Every case is shaped like implementation.yaml's `local-gate` (:418-427),
+	// the shipped lane finding 002 R11 schedules second and the one that bites:
+	// a failure-class gate whose infra branch is a SELF SEND-BACK to local-ci
+	// and whose fail branch sends implement back instead. The two targets being
+	// different stages is what makes the per-target reset observable; the infra
+	// branch repeating is what makes the bound observable.
+	//
+	// rowInfraRepassBudgetBound is the bound itself: an infrastructure-ONLY
+	// sequence retries twice and escalates on the third, on both runners. The
+	// engine gave it three.
+	rowInfraRepassBudgetBound parityRow = "E11-infra-repass-budget-bound"
+	// rowInfraRepassBudgetIndependence is the independence and the reset: an
+	// infrastructure sequence, a content failure, then another infrastructure
+	// sequence. Neither budget may consume the other, and the second
+	// infrastructure run must get the FULL retry budget back.
+	rowInfraRepassBudgetIndependence parityRow = "E11-infra-repass-budget-independence"
+	// rowInfraRepassCounterSeparation is the other axis of the same collapse:
+	// the per-GATE evaluation counters (which recover an interrupted evaluator
+	// and number gate.started) are not the per-TARGET budgets (which bound
+	// re-entry). The engine advanced one number for both classes and shared
+	// nothing; the runner keeps two that cross-reset, over target budgets that
+	// two different gates share.
+	rowInfraRepassCounterSeparation parityRow = "E11-infra-repass-counter-separation"
+	// rowInfraRepassBudgetResumed is the durability half: the journal each side
+	// writes must let a RESUMED or REPLAYED run rebuild the same budgets and
+	// reach the same next decision. A driver that charges correctly in memory
+	// but journals a collapsed number hands its own crash-resume a budget that
+	// is already spent — or a fresh one — and the divergence reappears on the
+	// next interruption rather than on the next release.
+	rowInfraRepassBudgetResumed parityRow = "E11-infra-repass-budget-resumed"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
@@ -200,12 +365,33 @@ const (
 //
 // Do not add an entry to silence a regression. An entry is only legitimate for
 // a row the parity inventory names as a known, planned gap.
-// The list is EMPTY as of plan item E2: E1 closed the backlog-query defaulting
-// row (#3873) and E2 closed the NoWork and stage-qualified inputsFrom rows
-// (#3874). An empty list is the strongest state this harness can be in — every
-// registered row is now green on both runners — and it is not a licence to stop
-// adding rows. A gap the inventory names but no row pins is still a gap; see
-// the drift ledger in doc.go for divergences observed but not yet inventoried.
+//
+// The list is EMPTY again as of plan item E10's ruling (#3929), which closed
+// the E10-learning-episode-forward-branch entry #3917 registered — the only one
+// it has ever carried since E1 (#3873) and E2 (#3874) closed the backlog-query
+// defaulting, NoWork and stage-qualified inputsFrom rows. E11 (#3930) landed
+// its four rows green in the same change that closed the divergence they pin,
+// which is the state this list wants every row to be in. An empty list is the
+// strongest state this harness can be in — every registered row is green on
+// both runners — and it is not a licence to stop adding rows. A gap the
+// inventory names but no row pins is still a gap; see the drift ledger in
+// doc.go for divergences observed but not yet inventoried, and #3928/#3930 for
+// defects that are real but are NOT parity divergences, because both runners
+// share them.
+//
+// #3931 and #3932 were two more of that shape and are now closed. #3931 — both
+// drivers derived an episode's nextAttempt from the failing stage rather than
+// from the stage being re-entered — was invisible to this table until
+// rowLearningEpisodeSendBack, because every earlier E10 fixture was a TRIVIAL
+// send-back where the two derivations coincide. That is the failure mode worth
+// naming: a shared defect hides behind a degenerate fixture, and adding the
+// non-degenerate one is what turns it into something a row can see. #3932 was
+// runner-only and unreachable from here at all (R9 refuses parallels), so it is
+// pinned in internal/runner instead.
+
+// doc.go for divergences observed but not yet inventoried, and #3928/#3931/
+// #3932 for defects that are real but are NOT parity divergences, because both
+// runners share them.
 var parityExpectedFailures = map[parityRow]string{}
 
 // --- case registration ------------------------------------------------------
@@ -354,11 +540,16 @@ func parityCases() []parityCase {
 //     and Integrity grade are what a stage's admission and evidence depend
 //     on, and both are compared (ContextPointers below).
 type parityEnvelope struct {
-	Stage             string
-	RunID             string
-	WorkflowID        string
-	Goal              string
-	Goober            string
+	Stage      string
+	RunID      string
+	WorkflowID string
+	Goal       string
+	Goober     string
+	// GooberDigest is the kit the run was admitted against, and since #3884
+	// the value the worker SELECTS its kit by. Both drivers stamp it from the
+	// run's pin, so a side that dropped it — or minted its own — would be
+	// dispatching against a kit the other side never agreed to.
+	GooberDigest      string
 	Gaggle            string
 	BranchNamespace   string
 	BaseBranch        string
@@ -421,11 +612,11 @@ var parityEnvelopeExcludedFields = map[string]string{
 // identical-looking envelopes differ" — so the two must stay in lockstep;
 // TestParityEnvelopeStringPrintsEveryComparedField enforces that.
 func (e parityEnvelope) String() string {
-	return fmt.Sprintf("stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s ownership=%s "+
+	return fmt.Sprintf("stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s gooberDigest=%s ownership=%s "+
 		"branchNamespace=%q baseBranch=%q triggerRef=%q minIntegrity=%q addendum=%q "+
 		"inputs=[%s] caps=[%s] policy=[%s] pointers=[%s] item=%q "+
 		"repoRef=%s additionalWorkspaces=[%s] checkoutCones=%s limits=%s parentPlatformPolicy=%s nestedAgentPolicy=%s",
-		e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.OwnershipBoundary,
+		e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.GooberDigest, e.OwnershipBoundary,
 		e.BranchNamespace, e.BaseBranch, e.TriggerRef, e.MinimumIntegrity, e.InstructionAddendum,
 		e.Inputs, e.Capabilities, e.PolicyActions, e.ContextPointers, e.Item,
 		e.RepoRef, e.AdditionalWorkspaces, e.CheckoutCones, e.Limits,
@@ -445,6 +636,7 @@ func projectParityEnvelope(env apiv1.InvocationEnvelope) parityEnvelope {
 		WorkflowID:           env.WorkflowID,
 		Goal:                 env.Goal,
 		Goober:               env.Goober,
+		GooberDigest:         env.GooberDigest,
 		Gaggle:               env.Gaggle,
 		BranchNamespace:      env.BranchNamespace,
 		BaseBranch:           env.BaseBranch,
@@ -1288,7 +1480,8 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Every field set to a value that appears nowhere else in the rendering.
 	full := parityEnvelope{
 		Stage: "s-stage", RunID: "s-runid", WorkflowID: "s-workflow", Goal: "s-goal", Goober: "s-goober",
-		Gaggle: "s-gaggle", BranchNamespace: "s-namespace", BaseBranch: "s-base",
+		GooberDigest: "s-gooberdigest",
+		Gaggle:       "s-gaggle", BranchNamespace: "s-namespace", BaseBranch: "s-base",
 		TriggerRef: "s-trigger", OwnershipBoundary: "s-ownership",
 		MinimumIntegrity:    apiv1.Integrity("s-integrity"),
 		InstructionAddendum: "s-addendum",
@@ -1299,7 +1492,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	}
 	rendered := full.String()
 	for _, sentinel := range []string{
-		"s-stage", "s-runid", "s-workflow", "s-goal", "s-goober", "s-gaggle", "s-namespace", "s-base",
+		"s-stage", "s-runid", "s-workflow", "s-goal", "s-goober", "s-gooberdigest", "s-gaggle", "s-namespace", "s-base",
 		"s-trigger", "s-ownership", "s-integrity", "s-addendum", "s-inputs", "s-caps", "s-policy",
 		"s-pointers", "s-item", "s-reporef", "s-additional", "s-cones", "s-limits",
 		"s-parentpolicy", "s-nestedpolicy",
@@ -1311,7 +1504,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Guard the other direction: a newly added field must be added to String.
 	// reflect.NumField is the tripwire — bump the count deliberately, together
 	// with the sentinel list above.
-	if got, want := reflect.TypeOf(full).NumField(), 23; got != want {
+	if got, want := reflect.TypeOf(full).NumField(), 24; got != want {
 		t.Fatalf("parityEnvelope now has %d fields, this test knows %d — add the new field to String() and to the sentinel list", got, want)
 	}
 }

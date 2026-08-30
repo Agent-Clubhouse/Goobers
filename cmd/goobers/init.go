@@ -25,12 +25,14 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
-const initHelp = "Usage: goobers init [--demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]\n\n" +
+const initHelp = "Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db\n" +
 	"placeholder. The daemon creates per-gaggle runs/ and workcopies/ under\n" +
 	"gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left\n" +
 	"untouched.\n" +
+	"--guided opens the browser-based setup for a real repository and instance.\n" +
+	"It prepares and validates configuration but does not run a workflow.\n" +
 	"--template=quickstart seeds the versioned onboarding workflow; it is\n" +
 	"intentionally not production-safe. With --source-tree <path>, it instead\n" +
 	"seeds the checked-in source layout (instance.yaml.example, manifest.yaml,\n" +
@@ -64,19 +66,14 @@ func runInitWithInputForOSAndGitHub(
 	goos string,
 	github guidedGitHubOperations,
 ) int {
-	for _, arg := range args {
-		if arg == "--guided" || strings.HasPrefix(arg, "--guided=") {
-			pf(stderr, "error: `goobers init --guided` has been removed.\n\n")
-			pf(stderr, "Web wizard:\n  goobers getting-started\n\n")
-			pf(stderr, "Agent CLI prompt:\n  \"Use the Goobers Getting Started skill to inspect my repository, derive its default branch, CI command, toolchain, and conventions, and create the smallest validated configuration. Explain each write and ask only when required evidence or behavior cannot be safely derived.\"\n")
-			return 2
-		}
-	}
 	fs := newCLIFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
 	insecure := fs.Bool("insecure", false, "with --demo on a platform without enforced network isolation (Windows), scaffold anyway without it")
-	guided := new(bool)
+	guided := fs.Bool("guided", false, "open browser-based setup for a real repository")
+	guidedPort := fs.String("port", "auto", "with --guided, server port or auto")
+	guidedNoOpen := fs.Bool("no-open", false, "with --guided, print the URL without opening a browser")
+	guidedWorkdir := fs.String("workdir", defaultGettingStartedWorkdir(), "with --guided, temporary browser setup state")
 	template := fs.String("template", "", "seed a named onboarding template (available: quickstart)")
 	sourceTree := fs.String("source-tree", "", "seed the selected template as a checked-in config source at path")
 	asJSON := fs.Bool("json", false, "emit the config-source action result as JSON")
@@ -91,13 +88,13 @@ func runInitWithInputForOSAndGitHub(
 		}
 	})
 	selectedModes := 0
-	for _, selected := range []bool{*demo, *template != ""} {
+	for _, selected := range []bool{*guided, *demo, *template != ""} {
 		if selected {
 			selectedModes++
 		}
 	}
 	if selectedModes > 1 {
-		pf(stderr, "error: --demo and --template cannot be combined\n")
+		pf(stderr, "error: --guided, --demo, and --template cannot be combined\n")
 		return 2
 	}
 	if *insecure && !*demo {
@@ -124,6 +121,10 @@ func runInitWithInputForOSAndGitHub(
 		pf(stderr, "error: --source-tree supplies the destination; do not also pass [path]\n")
 		return 2
 	}
+	if *guided && fs.NArg() != 0 {
+		pf(stderr, "error: --guided does not accept a path; choose configuration and instance placement in the browser\n")
+		return 2
+	}
 	if fs.NArg() > 1 {
 		fs.Usage()
 		return 2
@@ -141,20 +142,17 @@ func runInitWithInputForOSAndGitHub(
 		root = fs.Arg(0)
 	}
 	if *guided {
-		if err := instance.CheckGuidedInitTarget(root); err != nil {
-			pf(stderr, "error: %v\n", err)
-			printDefaultedTargetNote(stderr, err, fs.NArg())
-			return 2
+		browserArgs := []string{"--port=" + *guidedPort, "--workdir", *guidedWorkdir}
+		if *guidedNoOpen {
+			browserArgs = append(browserArgs, "--no-open")
 		}
+		return runGuidedInitBrowser(browserArgs, stdout, stderr)
 	}
 
 	var res *instance.InitResult
-	var guidedResult guidedInitResult
 	var err error
 	errCode := 2
-	if *guided {
-		res, guidedResult, errCode, err = runGuidedInit(root, stdin, stdout, stderr, github)
-	} else if *template == instance.QuickstartTemplate {
+	if *template == instance.QuickstartTemplate {
 		res, err = instance.InitQuickstart(root)
 	} else if *demo {
 		res, err = instance.InitDemo(root)
@@ -176,11 +174,7 @@ func runInitWithInputForOSAndGitHub(
 		if demoUnisolated {
 			pln(stdout, demoInsecureWarning)
 		}
-		if *guided {
-			if code := finishGuidedInit(root, abs, guidedResult, stdout, stderr); code != 0 {
-				return code
-			}
-		} else if code := finishInitValidation(root, stdout, stderr); code != 0 {
+		if code := finishInitValidation(root, stdout, stderr); code != 0 {
 			return code
 		}
 		if err := ensureInitCompleted(root); err != nil {
@@ -210,11 +204,7 @@ func runInitWithInputForOSAndGitHub(
 		}
 		pf(stdout, demoTourBanner, abs)
 	}
-	if *guided {
-		if code := finishGuidedInit(root, abs, guidedResult, stdout, stderr); code != 0 {
-			return code
-		}
-	} else if code := finishInitValidation(root, stdout, stderr); code != 0 {
+	if code := finishInitValidation(root, stdout, stderr); code != 0 {
 		return code
 	}
 	if err := ensureInitCompleted(root); err != nil {

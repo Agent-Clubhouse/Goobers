@@ -317,13 +317,6 @@ func init() {
 			withSynopsis(synopsisByID["dashboard"]).
 			withHelp("serve and open the local operations portal", fmt.Sprintf(dashboardHelp, defaultDashboardPort)).
 			withExamples("goobers dashboard", "goobers dashboard --port=auto --no-open"),
-		// Read-only-navigation like dashboard: the server itself only navigates —
-		// every guided write action is a user-invoked CLI subprocess that carries
-		// its own action class.
-		coreCommand("getting-started", apicontract.ActionReadOnlyNavigation, runGettingStarted).
-			withSynopsis(synopsisByID["getting-started"]).
-			withHelp("serve and open the guided portal Getting Started walkthrough", fmt.Sprintf(gettingStartedHelp, defaultDashboardPort)).
-			withExamples("goobers getting-started", "goobers getting-started --no-open --workdir ~/goobers-tutorial"),
 		coreCommandWithSubcommands(
 			"run",
 			apicontract.ActionWorkflowExecution,

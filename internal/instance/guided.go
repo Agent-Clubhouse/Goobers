@@ -419,9 +419,9 @@ func CheckGuidedInitTarget(root string) error {
 		}) {
 			abs := absPath(root)
 			quoted := strconv.Quote(abs)
-			return targetConflictf("guided setup requires an unconfigured target: %s already exists in %s, but its instance journal has no %s marker; this may be an incomplete guided setup. To replace it, delete %s and rerun `goobers init --guided %s`. To recover the existing setup, run `goobers validate %s` and then `goobers config materialize %s`", ConfigFileName, abs, journal.EventInitCompleted, quoted, quoted, quoted, quoted)
+			return targetConflictf("guided setup requires an unconfigured target: %s already exists in %s, but its instance journal has no %s marker; this may be an incomplete setup. To replace it, delete %s and choose that empty location in `goobers init --guided`. To recover the existing setup, run `goobers validate %s` and then `goobers config materialize %s`", ConfigFileName, abs, journal.EventInitCompleted, quoted, quoted, quoted)
 		}
-		return targetConflictf("guided setup requires an unconfigured target: %s already exists in %s; choose an empty path, e.g. `goobers init --guided ./my-instance`", ConfigFileName, absPath(root))
+		return targetConflictf("guided setup requires an unconfigured target: %s already exists in %s; choose an empty instance location in `goobers init --guided`", ConfigFileName, absPath(root))
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect %s: %w", ConfigFileName, err)
 	}
@@ -435,7 +435,7 @@ func CheckGuidedInitTarget(root string) error {
 		if hasManifest, probeErr := configDirHasManifest(layout.ConfigDir()); probeErr == nil && !hasManifest {
 			detail = ", and none is Goobers config (no `kind: Manifest` document) — the target looks like an unrelated project, for example a Goobers source checkout whose config/ holds CRD manifests"
 		}
-		return targetConflictf("guided setup requires an unconfigured target: %s in %s already contains files%s; choose an empty path, e.g. `goobers init --guided ./my-instance`", ConfigDirName, absPath(root), detail)
+		return targetConflictf("guided setup requires an unconfigured target: %s in %s already contains files%s; choose an empty configuration location in `goobers init --guided`", ConfigDirName, absPath(root), detail)
 	}
 	return nil
 }

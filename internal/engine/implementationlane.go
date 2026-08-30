@@ -159,6 +159,62 @@ func cachedVerdictFor(subject apiv1.ResultEnvelope, instructionAddendum string) 
 	return runner.CachedVerdictFromOutputs(subject.Outputs)
 }
 
+// learningEpisodeTargetAttemptChange / learningEpisodeTargetAttempt are the
+// Temporal workflow-versioning change id and version for #3931, the only
+// change to the learning episode's BYTES since the producer landed.
+//
+// The change is small and the reason it needs a version is not. NextAttempt is
+// serialized into the episode, so it is inside the content digest the injected
+// pointer carries and inside the bytes the artifact commits. An unversioned
+// switch would make a worker replaying a pre-change history commit a different
+// artifact than the one that history recorded — the run's own journal
+// disagreeing with itself about the correction a stage was dispatched with.
+// GetVersion pins the derivation to the history that recorded it:
+// DefaultVersion re-derives SourceAttempt+1, version 1 addresses the target's
+// own next attempt.
+//
+// What the change does NOT move is learning.EpisodeID. That address is computed
+// over SourceRunID, SourceSeq and the sorted finding identities only
+// (internal/learning.EpisodeID), so the join key every cross-run consumer
+// correlates on is stable across the migration and no recorded episode becomes
+// unfindable. The blast radius is the artifact digest, and the version guard
+// bounds it to runs that start after the change.
+//
+// The marker is written on the injection path only, which is where it belongs:
+// a run that never takes a repass arm records nothing and is unaffected.
+const (
+	learningEpisodeTargetAttemptChange = "learning-episode-target-attempt"
+	learningEpisodeTargetAttempt       = 1
+)
+
+// learningEpisodeTargetAttemptFor is the versioned half of the #3931 seam,
+// split out from the walk so both branches are reachable without a workflow
+// context — the walk itself cannot be unit-tested for a version it will not
+// take.
+//
+// The target's next attempt is inside the episode's BYTES, so it is inside the
+// artifact's content address and inside the digest the injected pointer
+// carries. A worker running this code replays histories recorded before it,
+// and a replay that re-derived different bytes for the same walk would commit
+// a different artifact than the one that history says it committed — the
+// pointer a repass was dispatched with no longer reproducible from its own
+// run. That divergence is SILENT: Temporal's determinism checker compares the
+// command sequence, and recording an artifact is an in-walk projection op
+// rather than a command, so nothing would fail. It would simply stop being
+// true that replaying a run reproduces it.
+//
+// Hence a version rather than a switch. A history recorded before the change
+// carries no marker for it, GetVersion answers DefaultVersion on replay, and 0
+// selects BuildLearningEpisode's pre-#3931 fallback — SourceAttempt+1, the
+// arithmetic that history was written with. New runs record the marker and
+// address the correction to the target's own next attempt.
+func learningEpisodeTargetAttemptFor(version workflow.Version, addressing runner.LearningEpisodeAddressing) int {
+	if version < learningEpisodeTargetAttempt {
+		return 0
+	}
+	return addressing.TargetNextAttempt
+}
+
 // learningEpisode is the #3843 cross-repass learning injection: when a gate
 // sends a stage back, the walk commits an episode artifact describing WHAT the
 // reviewer objected to and hands the repass a pointer to it, so the next
@@ -184,21 +240,29 @@ func (r *runJournal) learningEpisode(
 	if err != nil {
 		return nil, err
 	}
-	sourceSeq, sourceAttempt := runner.LearningSourceEvent(events, gateName, sourceStage, verdict != nil)
+	addressing := runner.ResolveLearningEpisodeAddressing(events, gateName, sourceStage, target, verdict != nil)
+	sourceAttempt := addressing.SourceAttempt
 	if sourceAttempt == 0 {
 		sourceAttempt = gr.Attempt
 	}
+	// #3931 MIGRATION SEAM.
+	targetNextAttempt := learningEpisodeTargetAttemptFor(
+		workflow.GetVersion(ctx, learningEpisodeTargetAttemptChange,
+			workflow.DefaultVersion, learningEpisodeTargetAttempt),
+		addressing,
+	)
 	episode := runner.BuildLearningEpisode(runner.LearningEpisodeInput{
-		RunID:          in.RunID,
-		Workflow:       in.WorkflowName,
-		WorkflowDigest: r.proj.Identity.WorkflowDigest,
-		Gate:           gateName,
-		Stage:          sourceStage,
-		SourceSeq:      sourceSeq,
-		SourceAttempt:  sourceAttempt,
-		Verdict:        verdict,
-		SourceResult:   sourceResult,
-		VerdictPointer: verdictPointer,
+		RunID:             in.RunID,
+		Workflow:          in.WorkflowName,
+		WorkflowDigest:    r.proj.Identity.WorkflowDigest,
+		Gate:              gateName,
+		Stage:             sourceStage,
+		SourceSeq:         addressing.SourceSeq,
+		SourceAttempt:     sourceAttempt,
+		TargetNextAttempt: targetNextAttempt,
+		Verdict:           verdict,
+		SourceResult:      sourceResult,
+		VerdictPointer:    verdictPointer,
 	})
 	data, err := json.Marshal(episode)
 	if err != nil {
@@ -209,19 +273,23 @@ func (r *runJournal) learningEpisode(
 		return nil, fmt.Errorf("engine: address learning episode for gate %q: %w", gateName, err)
 	}
 	at := workflow.Now(ctx)
-	name := runner.LearningEpisodeArtifactName(gateName, sourceSeq)
+	name := runner.LearningEpisodeArtifactName(gateName, addressing.SourceSeq)
 	r.artifactAt(at, JournalArtifactOp{Name: name, Data: data, Integrity: apiv1.IntegrityDerived})
 	r.appendAt(at, journal.Event{
-		Type:      journal.EventRunnerAnnotation,
+		Type: journal.EventRunnerAnnotation,
+		// #3931: Stage is the TARGET and so is Attempt — the attempt of the
+		// stage being re-entered, which is what a stage-scoped event's Attempt
+		// means. Read off the episode so the annotation and the bytes cannot
+		// disagree, and so the versioned derivation above governs both.
 		Stage:     target,
-		Attempt:   episode.SourceAttempt + 1,
+		Attempt:   episode.NextAttempt,
 		Name:      name,
 		Ref:       &ref,
 		Integrity: apiv1.IntegrityDerived,
 		Runner:    runner.LearningEpisodeAnnotation(episode, target, ref.Path, ref.Digest),
 	})
 	return &apiv1.ContextPointer{
-		Name:      runner.LearningEpisodePointerName(sourceSeq),
+		Name:      runner.LearningEpisodePointerName(addressing.SourceSeq),
 		Integrity: apiv1.IntegrityDerived,
 		Artifact: &apiv1.ArtifactPointer{
 			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
@@ -546,10 +614,7 @@ func applyImplementationLaneOutcome(g apiv1.Gate, gr *gateResult, ev gateEvidenc
 		gr.Target = escalationTarget(g)
 	}
 	if gr.Escalated && reason == "" {
-		reason = gate.ReasonRepassBudgetExhausted
-		if gr.Outcome == gate.OutcomeInfra {
-			reason = gate.ReasonInfrastructureBudgetExhausted
-		}
+		reason = gr.Charge.EscalationReason()
 	}
 	gr.Reason = reason
 }
@@ -626,17 +691,6 @@ type findingLifecycle struct {
 	Reopened          []string
 	Disproven         []string
 	DisprovenFindings []apiv1.Finding
-}
-
-// gateSendsBack reports whether this gate's branch re-enters a stage the run
-// has already completed — the retry route, and the only one a learning episode
-// belongs on. An advancing gate has produced no lesson to carry.
-func gateSendsBack(gr gateResult, next string, upstream map[string]apiv1.ResultEnvelope) bool {
-	if next == "" || gr.Escalated {
-		return false
-	}
-	_, completed := upstream[next]
-	return completed
 }
 
 // contextNotInspectedRedispatch applies the #3374 ruling to a finished stage:

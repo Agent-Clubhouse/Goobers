@@ -103,13 +103,33 @@ dispatcher enforces it by construction. On a Windows pod the dispatcher binds it
 rather than by construction: a sized `emptyDir` mounted at the profile temp path
 (`C:\Users\ContainerUser\AppData\Local\Temp`) with `TMP`/`TEMP` pointed at it
 (internal/dispatcher/podspec.go stampVolumes) — declarable on Windows runners, the #3619
-correction to D4. Modes 1/2: per-stage TMPDIR under the stage
-workspace (procenv already pins TMPDIR into the allowlisted env); deletion rides stage
-cleanup. It is v1-declarable on `self` runners because the binding is pure daemon-side
-behavior, no OS mechanism needed.
+correction to D4.
 
-**Failure modes.** Idiom (a) only (a runner kind that cannot provide it simply cannot
-declare it; there is no runtime discovery step to fail).
+Modes 1/2: bound daemon-side, per stage attempt, by `internal/ephemeraltmp` (#3962). The
+executor carves an attempt-private directory out of the daemon's own temp root, points
+`TMPDIR` (or `TMP`/`TEMP` on Windows) at it, re-roots any *build cache* that was
+configured **inside** that temp root — `GOCACHE`, `GOMODCACHE`, `npm_config_cache`, and
+peers, the closed `RelocatedVars` list — into the attempt's directory, and deletes exactly
+that directory when the attempt returns, success or failure. It is v1-declarable on `self`
+runners because the binding is pure daemon-side behavior, no OS mechanism needed; the
+composition root reads the effect off the inventory's `self` entry once, so an instance
+with no `runners:` block binds nothing and its stage environments stay byte-identical
+(zero-declaration invariance, ARCHITECTURE §11 item 1).
+
+Two deliberate scoping choices. **Temp lives beside the workspace, not inside it**: the
+local workspace is long-lived by design (pinned-workspace mode, ARCHITECTURE §5), so
+nesting temp under it would either defeat reclaim or make reclaim delete workspace state.
+Reclaim therefore touches only the directory it created, and never another attempt's.
+**Only temp-nested caches move**: re-rooting keys on containment, so a pod whose image
+sets `GOCACHE=/tmp/gocache` gets exactly what a fresh pod's `emptyDir` would give it, while
+an install whose caches live under `$HOME` is untouched. Toolchain install roots
+(`DOTNET_ROOT`, `JAVA_HOME`, `RUSTUP_HOME`, `GOPATH`, …) are excluded on purpose:
+re-rooting an installed SDK points the stage at an empty directory.
+
+**Failure modes.** Idiom (a) — a runner kind that cannot provide it simply cannot declare
+it — plus, on modes 1/2, a fail-closed bind: if the attempt-private directory cannot be
+created the stage is refused rather than run against shared temp, because a silent PASS on
+unenforced substrate is the failure family D4 exists to prevent.
 
 ### 2.5 `env:default-deny`
 
@@ -191,7 +211,7 @@ requiring it simply cannot match such a runner, and apply says so.
 | `network:none` | **Enforced** — deny-all NetworkPolicy class, probe-verified (D12). In-pod userns is unavailable under restricted PSS (D8) and is not used | Not declarable (D11 epic) — refused at load / validate / render (#3619) | **Enforced**, deterministic stages — userns / Seatbelt, `ProbeNoNetwork` preflight (internal/executor/network.go) | Marker-only: #2034 de-isolation with journaled `unsupported-windows` marker; retired by D11. Not declarable on a `runners:` entry that declares `provides.os: windows` (#3619); an os-less `self` entry on a Windows daemon host is not caught by that load-time check (the loader keys on the declared OS — the `HostOS()` substitution is runtime-only, `internal/instance/placement.go`) and keeps the marker-only behaviour until D11 |
 | `network:allowlist` | **Enforced** — CIDR NetworkPolicy per class (D5), probe-verified | Not declarable — refused at load / validate / render (#3619) | Not declarable — no local mechanism (bwrap keeps host network; Seatbelt agentic profile allows network) | Not declarable |
 | `fs:readonly-except-workspace` | **Enforced** — dispatcher-stamped `securityContext` + mounts | Not declarable — k8s silently ignores `readOnlyRootFilesystem` on Windows pods (fails open); refused at load / validate / render (#3619) | **Enforced**, agentic stages — internal/sandbox (bwrap/Seatbelt), smoke-run preflight (internal/sandbox/native_linux.go:19-42) | Not declarable — `sandbox.New` is `ErrUnsupported` |
-| `tmp:ephemeral` | **Enforced by construction** — fresh pod + emptyDir | **Enforced and declarable** — dispatcher-bound sized emptyDir at the profile temp path + `TMP`/`TEMP` (#3619 correction of D4; the live `windows-shell` class declares it) | Declarable — daemon-side TMPDIR scoping | Declarable — same daemon-side binding |
+| `tmp:ephemeral` | **Enforced by construction** — fresh pod + emptyDir | **Enforced and declarable** — dispatcher-bound sized emptyDir at the profile temp path + `TMP`/`TEMP` (#3619 correction of D4; the live `windows-shell` class declares it) | **Enforced when declared** — daemon-side attempt-private temp + temp-nested cache re-rooting, reclaimed per attempt (#3962) | **Enforced when declared** — same daemon-side binding |
 | `env:default-deny` | **Enforced when declared, and when daemon AND runner image both carry #3725** — dispatcher-stamped signal + in-pod procenv rebuild; credentials and executor extras are appended *after* the filter, never through it. Version skew fails open (§2.5) | Enforced when declared, same binding and same skew condition | Enforced (procenv, unconditional) | Enforced (procenv, unconditional) |
 
 Reading the matrix: **v1 full enforcement is Linux pods only** (decision record D7). The
@@ -449,9 +469,11 @@ Deliberately open — none reopens a decided question:
   match also needs gaggle/goober selectors, and what a mandate means on an inventory
   (e.g. macOS-only local) where no runner can ever satisfy it — permanent apply error
   vs. inventory-aware warning.
-- **`tmp:ephemeral` vs. pinned-workspace mode** (ARCHITECTURE §5): the local
+- ~~**`tmp:ephemeral` vs. pinned-workspace mode** (ARCHITECTURE §5): the local
   pinned-workspace lease is node-local persistent state; define whether it is simply
-  incompatible with the restriction or scoped out of "tmp".
+  incompatible with the restriction or scoped out of "tmp".~~ **Settled (#3962):** scoped
+  out. The binding owns temp and temp-nested caches only; the pinned workspace is never
+  read, moved, or reclaimed by it, so workspace continuity and the restriction compose.
 - **`env:default-deny` mandate strictness**: refuse all `envPassthrough` on covered
   runners, or permit an operator-side intersection allowlist.
 - **Windows epic sequencing**: LPAC vs. job objects vs. Windows NetworkPolicy fidelity —

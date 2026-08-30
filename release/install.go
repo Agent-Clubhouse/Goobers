@@ -58,7 +58,7 @@ done
 if [ "$#" -gt 0 ]; then
 	case "$1" in
 		--guided)
-			printf 'install: --guided has been removed; install Goobers, then run "goobers getting-started"\n' >&2
+			printf 'install: installer --guided has been removed; install Goobers, then run "goobers init --guided"\n' >&2
 			exit 2
 			;;
 		*)
@@ -167,7 +167,7 @@ case ":${PATH:-}:" in
 esac
 printf '\nNext steps (see %s/docs/guides/quickstart.md):\n' "$docs_dir"
 printf '  Credential-free tour:   %s init --demo ./demo-instance && %s run demo ./demo-instance\n' "$binary" "$binary"
-printf '  Set up your repository: %s getting-started\n' "$binary"
+printf '  Set up your repository: %s init --guided\n' "$binary"
 `
 
 func writeInstallScript(outDir string) (string, error) {

@@ -56,6 +56,24 @@ describe("workflow topology graph", () => {
     );
   });
 
+  it("renders a fitted non-interactive preview without viewer controls", async () => {
+    render(<WorkflowTopologyGraph graph={cyclicGraph} preview />);
+
+    const viewport = screen.getByRole("group", {
+      name: "implementation execution graph",
+    });
+    expect(viewport).toHaveAttribute("data-preview", "true");
+    expect(viewport).toHaveAttribute("data-responsive-layout", "fit");
+    expect(viewport).not.toHaveAttribute("tabindex");
+    expect(screen.queryByRole("group", { name: "Graph view controls" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Graph legend")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /configured$/i })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("img", { name: /configured$/i })).toHaveLength(
+      cyclicGraph.nodes.length,
+    );
+    await waitFor(() => expect(viewport).not.toHaveAttribute("data-zoom", "1.000"));
+  });
+
   it("exposes node semantics, branch labels, terminals, and an equivalent topology list", () => {
     render(<Harness graph={cyclicGraph} />);
 

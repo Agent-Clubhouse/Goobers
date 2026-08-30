@@ -7,7 +7,9 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/learning"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // This file is the SHARED half of decision 005's implementation-lane parity
@@ -303,6 +305,143 @@ func LearningEpisodePointerName(sourceSeq uint64) string {
 	return fmt.Sprintf("learning.episode[%d]", sourceSeq)
 }
 
+// LearningEpisodeAppliesToRepass is the #3929 ruling, spelled once for both
+// drivers: a learning episode is injected IF AND ONLY IF the branch is a true
+// repass, and a branch is a true repass exactly when the gate result's repass
+// attempt is at least 1.
+//
+// The caller — LearningEpisodeAppliesToBranch, which is what both drivers
+// actually call — has already established the branch SHAPE: non-pass,
+// non-escalated, and targeting a real stage rather than a reserved terminal.
+// This is the SECOND question, and only this one: is the stage being
+// re-entered, or entered for the first time?
+//
+// Note what is deliberately NOT among the caller's preconditions any more:
+// `retryable`. #3929 was taken while both injection sites sat inside the
+// retry-decision arm, so the ruling was read as applying only to failures the
+// retry CLASSIFIER accepts. #3942 separated the two — a reviewer's
+// needs-changes is a true repass that the classifier declines — and this
+// predicate is unchanged by that, because the attempt is the attempt however
+// the branch was classified.
+//
+// # Why the repass attempt, and not a re-derived "has the target completed?"
+//
+// repassAttempt is not a proxy for the answer, it IS the answer, already
+// computed and already charged. internal/gate's trackRepass returns 0 outright
+// unless IsReentry(target) holds — wired to visitedStages on both the
+// sequential and the parallel walk — and otherwise returns the target's
+// position in the repass budget it just charged. internal/engine's
+// resolveGateOutcome does the same from `upstream[wfTarget(g, outcome)]`. Both
+// then journal the number on the retry-decision annotation, where
+// E2-retry-decision-annotation already asserts the two sides agree on it.
+//
+// So the predicate is EVIDENCED rather than re-derived, and that distinction
+// is the point of sharing it. The engine previously asked the question a
+// second way (gateSendsBack: is the target present in the upstream map?),
+// which was equivalent by construction at its one call site and therefore
+// silently able to stop being equivalent. Charging a repass budget is the act
+// that means "this stage is being asked to do its work again"; a correction
+// belongs exactly where that happened.
+//
+// # What a forward branch is instead
+//
+// A fail branch that routes ONWARD, to a stage that has not run, is a
+// disposition: the park-*/release-* stages every lane uses to record, escalate
+// or hand off. Such a stage has not done anything that could need correcting,
+// and pr-remediation's park-infrastructure-failure says so in its own
+// escalation text ("no implementation defect was established") while the
+// injected episode would assert the opposite, under a content-addressed
+// signature that gate.readEpisodeHistory correlates across runs. It would also
+// downgrade a first-run stage's produced integrity to derived — admission
+// control — for a correction it is not receiving.
+func LearningEpisodeAppliesToRepass(repassAttempt int) bool {
+	return repassAttempt >= 1
+}
+
+// LearningEpisodeBranch is the resolved gate branch the injection predicate
+// reads: exactly the four fields of a gate verdict that decide whether the
+// branch is a correctable re-entry, and nothing else.
+//
+// It is a struct rather than the driver's own result type because the two
+// drivers hold that verdict in different types — internal/gate.Result on the
+// local runner, internal/engine.gateResult on the Temporal engine — and
+// internal/engine imports internal/runner, never the other way round.
+type LearningEpisodeBranch struct {
+	// Outcome is the gate's resolved outcome: "pass"/"fail"/"infra" for an
+	// automated check, or the reviewer's verdict decision for an agentic gate.
+	Outcome string
+	// Escalated reports that the gate exhausted a budget or force-escalated,
+	// in which case the branch is a disposition rather than a correction.
+	Escalated bool
+	// Target is the resolved branch target.
+	Target string
+	// Attempt is the repass attempt internal/gate.trackRepass (local runner)
+	// or internal/engine.resolveGateOutcome charged to Target.
+	Attempt int
+}
+
+// LearningEpisodeAppliesToBranch is the CANONICAL injection predicate, spelled
+// once for both drivers: a learning episode is injected if and only if the
+// resolved branch is a correctable re-entry — a non-pass, non-escalated branch
+// whose target is a real stage rather than a reserved terminal, and which the
+// gate has charged a repass attempt of at least 1.
+//
+// # Why this exists separately from the retry decision
+//
+// #3929 ruled that "true repass" is the whole predicate, and hoisted
+// LearningEpisodeAppliesToRepass so both drivers would answer it the same way.
+// What it left in place was the condition WRAPPING that call on both sides:
+// the injection sat inside the retry-decision arm, so it also required
+// `retryable` — internal/runner.retryFailureClassForGateResult, which is true
+// only for an automated `status-equals` gate failing on
+// `nonzero_exit`/`base_sync_conflict`, or for ANY gate resolving `infra`.
+//
+// That is a CLASSIFICATION question ("is this failure's outcome knowable
+// without dispatching the checker, and is it policy or infrastructure?"), and
+// it answers a different question from the one the injection asks ("is a stage
+// being asked to do its work again, with something to learn from?"). An
+// AGENTIC reviewer gate resolving `needs-changes` back into `implement` is the
+// canonical true repass of the whole system, and the classifier declines it:
+// the evaluator is not `automated`, the outcome is not `infra`, so `retryable`
+// was false and the episode was never built. The main implementation lane's
+// reviewer→implement loop — reference-workflows/.../implementation.yaml's
+// `review` gate, and pr-remediation.yaml's — therefore never received the
+// correction that internal/gate.reconcileLearningFindings exists to read back,
+// while the deterministic `nonzero_exit` lanes did.
+//
+// # What it deliberately does NOT do
+//
+// It does not change ROUTING, and it does not change CLASSIFICATION. The
+// retry-decision annotation, the repass budget, `routeRetryDecision`'s return
+// and the failure class that annotation carries are all untouched: a branch
+// the classifier declines still re-enters its stage through the ordinary
+// advance path, and still carries no retry-decision annotation. Only the
+// episode is widened, and only onto branches that were already re-entries.
+//
+// The reserved-terminal and non-pass/non-escalated guards are retained
+// verbatim from internal/runner.routeRetryDecision so that an ONWARD or
+// TERMINAL branch remains excluded: a stage that has not run has produced
+// nothing to correct (#3929), and a disposition branch would have a
+// content-addressed correction asserted against work it never did.
+func LearningEpisodeAppliesToBranch(b LearningEpisodeBranch) bool {
+	if b.Outcome == gate.OutcomePass || b.Escalated {
+		return false
+	}
+	switch b.Target {
+	case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
+		return false
+	}
+	return LearningEpisodeAppliesToRepass(b.Attempt)
+}
+
+// LearningEpisodeBranchFor adapts the local runner's gate verdict to the
+// canonical predicate's input.
+func LearningEpisodeBranchFor(r gate.Result) LearningEpisodeBranch {
+	return LearningEpisodeBranch{
+		Outcome: r.Outcome, Escalated: r.Escalated, Target: r.Target, Attempt: r.Attempt,
+	}
+}
+
 // LearningEpisodeInjectedKind is the runner.annotation kind recording an
 // injection.
 const LearningEpisodeInjectedKind = "learning.episode.injected"
@@ -325,6 +464,27 @@ type LearningEpisodeInput struct {
 	SourceSeq uint64
 	// SourceAttempt is that event's attempt number; 0 falls back to 1.
 	SourceAttempt int
+	// TargetNextAttempt is the attempt number the stage being RE-ENTERED is
+	// about to take, derived from the TARGET's own entry history rather than
+	// from the subject's (#3931).
+	//
+	// The two are only the same number on a trivial send-back, where the fail
+	// branch re-enters the stage that produced the subject. Every nontrivial
+	// send-back in a shipped lane — implementation.yaml's
+	// `local-gate: fail -> implement` over a `local-ci` subject,
+	// `ci-gate: fail -> remediate-ci` over `ci-poll`, pr-remediation's
+	// `finding-responses-gate: fail -> guard-before-implement` over
+	// `validate-finding-responses` — has a subject that runs once per cycle
+	// and a target several re-entries in, so subject+1 addressed the
+	// correction to a re-entry of the target that either had not happened yet
+	// or had already happened with different content.
+	//
+	// 0 means "the target has no entry history to read", which is the
+	// forward-branch shape LearningEpisodeAppliesToRepass already refuses, and
+	// the shape a bare unit fixture has. It falls back to SourceAttempt+1, the
+	// pre-#3931 derivation, so the degenerate case is unchanged — and so a
+	// Temporal history recorded before the change replays to its own bytes.
+	TargetNextAttempt int
 	// Verdict is the reviewer's verdict when the repass came from a reviewer
 	// gate, nil for a stage-failure repass.
 	Verdict *apiv1.Verdict
@@ -348,6 +508,15 @@ func BuildLearningEpisode(in LearningEpisodeInput) learning.Episode {
 	if sourceAttempt == 0 {
 		sourceAttempt = 1
 	}
+	// #3931: the two numbers mean two different things. SourceAttempt says
+	// WHICH failure the episode is about — the subject's own attempt, which is
+	// what makes the episode identify its cause. NextAttempt says WHO the
+	// correction is addressed to — the target's next attempt, because the
+	// episode's contract is "on attempt N of this stage, do this differently".
+	nextAttempt := in.TargetNextAttempt
+	if nextAttempt <= 0 {
+		nextAttempt = sourceAttempt + 1
+	}
 	findings := learningFindingsForRepass(in.Gate, in.Stage, in.Verdict, in.SourceResult)
 	evidence := learningEvidence(in.VerdictPointer, in.Verdict, in.SourceResult)
 	classification := apiv1.LearningValidation
@@ -369,7 +538,7 @@ func BuildLearningEpisode(in LearningEpisodeInput) learning.Episode {
 		Stage:              in.Stage,
 		Gate:               in.Gate,
 		SourceAttempt:      sourceAttempt,
-		NextAttempt:        sourceAttempt + 1,
+		NextAttempt:        nextAttempt,
 		WorkflowDigest:     in.WorkflowDigest,
 		GooberDigest:       in.GooberDigest,
 		EffectiveVersion:   learning.EffectiveVersion(in.WorkflowDigest, in.GooberDigest),
@@ -386,9 +555,125 @@ func BuildLearningEpisode(in LearningEpisodeInput) learning.Episode {
 	return episode
 }
 
+// LearningEpisodeAddressing is the attempt arithmetic an injected learning
+// episode is addressed by, resolved from a run's journaled events.
+//
+// It is one value rather than three returns because the three are resolved by
+// a single backwards scan and only make sense together: the source event, the
+// attempt that produced it, and the attempt the repass target is about to
+// take. Splitting them is what let #3931 happen — the builder had the subject's
+// number and used it for both questions.
+type LearningEpisodeAddressing struct {
+	// SourceSeq is the journal sequence of the event the episode corrects.
+	//
+	// It is not decorative: it names the episode artifact
+	// (LearningEpisodeArtifactName) and its context pointer
+	// (LearningEpisodePointerName), so it is part of the conformance surface.
+	SourceSeq uint64
+	// SourceAttempt is that event's own attempt number. 0 means the scan found
+	// no source event; BuildLearningEpisode falls back to 1.
+	SourceAttempt int
+	// TargetNextAttempt is the attempt number the stage being RE-ENTERED is
+	// about to take: the number of times it has already been entered in this
+	// branch, plus one. 0 means the target has never been entered, which is
+	// the forward-branch shape LearningEpisodeAppliesToRepass refuses.
+	TargetNextAttempt int
+}
+
+// ResolveLearningEpisodeAddressing resolves which journaled event an injected
+// learning episode is ABOUT, which attempt produced it, and which attempt of
+// the TARGET the correction is addressed to.
+//
+// Exported for #3882 so the engine, whose events live in workflow state rather
+// than on disk, resolves the identical addressing rather than inventing its
+// own numbering — and, since #3931, so that the target-side arithmetic cannot
+// be derived twice either.
+//
+// The target scan is scoped to the SOURCE event's branch. A repass happens in
+// the branch the failure happened in, and two sibling parallel branches may
+// walk stages of the same name at different attempt counts; counting across
+// them would address the correction to an attempt of somebody else's stage.
+func ResolveLearningEpisodeAddressing(
+	events []journal.Event, gateName, sourceStage, target string, reviewer bool,
+) LearningEpisodeAddressing {
+	out := LearningEpisodeAddressing{}
+	branch := 0
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if reviewer && event.Type == journal.EventGateEvaluated && event.Gate == gateName {
+			attempt, _ := runnerInt(event.Runner["repassAttempt"])
+			out.SourceSeq, out.SourceAttempt, branch = event.Seq, attempt, event.Branch
+			break
+		}
+		if !reviewer && event.Type == journal.EventStageFinished && event.Stage == sourceStage {
+			out.SourceSeq, out.SourceAttempt, branch = event.Seq, event.Attempt, event.Branch
+			break
+		}
+	}
+	out.TargetNextAttempt = learningTargetNextAttempt(events, target, branch)
+	return out
+}
+
+// learningTargetNextAttempt is the target half of the addressing: the number
+// of times the target stage has already been ENTERED in branch, plus one.
+//
+// Entries, not stage.Attempt values. journal.Event.Attempt on a stage.* event
+// is the attempt number WITHIN one entry — the Task.Retry policy loop — and a
+// gate sending a stage back starts a fresh entry at attempt 1 (stepTask seeds
+// startAttempt = 1 on every repass). So the target's own stage.finished
+// attempts are 1, 1, 1 no matter how many times it has been repassed, and the
+// number a correction has to be addressed by is which RE-ENTRY it feeds. That
+// is the same counter internal/gate's trackRepass charges to
+// RepassAttempts[target], derived here from the target's own history rather
+// than taken from the gate result, so it stays correct for a target re-entered
+// by something other than this gate.
+//
+// An entry is a stage.started whose attempt does not continue the previous
+// one: attempts 1,2,3 are one entry with two policy retries, and a following
+// attempt 1 opens the second. A resumed entry (startAttempt = interrupted + 1)
+// continues rather than opens, and its attempt-1 start is already in the
+// journal from before the interruption.
+//
+// Only stage.started counts. The runner.annotation events an injection itself
+// writes are attributed to the target at the attempt they FEED, so counting
+// them would make each injection advance the number the next one reads — the
+// episode addressing its own successor rather than the dispatch it feeds.
+func learningTargetNextAttempt(events []journal.Event, target string, branch int) int {
+	if target == "" {
+		return 0
+	}
+	entries, previous := 0, 0
+	for _, event := range events {
+		if event.Type != journal.EventStageStarted || event.Branch != branch || event.Stage != target {
+			continue
+		}
+		attempt := event.Attempt
+		if attempt == 0 {
+			attempt = 1
+		}
+		if attempt <= previous || previous == 0 {
+			entries++
+		}
+		previous = attempt
+	}
+	if entries == 0 {
+		return 0
+	}
+	return entries + 1
+}
+
 // LearningEpisodeAnnotation is the runner.annotation payload recorded beside
 // an injected episode, spelled once so both runners' operator surfaces read
 // the same keys.
+//
+// sourceStage is here because of #3931. The annotation is attributed to the
+// TARGET — it is the correction the target's next entry will be dispatched
+// with — so the event's own Stage and Attempt now name the target on a
+// nontrivial send-back rather than the failing stage. Without sourceStage the
+// payload would say which failure the episode is about only indirectly,
+// through the signature, and `goobers trace` would have to resolve the
+// artifact to answer "what failed". sourceSeq addresses the corrected EVENT;
+// sourceStage names it.
 func LearningEpisodeAnnotation(episode learning.Episode, target, artifactPath, artifactDigest string) map[string]any {
 	identities := make([]string, 0, len(episode.Findings))
 	for _, finding := range episode.Findings {
@@ -401,6 +686,7 @@ func LearningEpisodeAnnotation(episode learning.Episode, target, artifactPath, a
 		"sourceSeq":          episode.SourceSeq,
 		"gate":               episode.Gate,
 		"target":             target,
+		"sourceStage":        episode.Stage,
 		"sourceAttempt":      episode.SourceAttempt,
 		"nextAttempt":        episode.NextAttempt,
 		"signature":          episode.Signature,

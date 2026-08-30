@@ -44,7 +44,7 @@ Do not rebuild and restart the embedded portal after every React, CSS, or image
 change. Keep the Go backend running in one PowerShell terminal:
 
 ```powershell
-go run .\cmd\goobers getting-started --port=8081 --no-open
+go run .\cmd\goobers init --guided --port=8081 --no-open
 ```
 
 Start the dedicated Vite mode in another terminal:
@@ -60,7 +60,7 @@ the backend uses another address.
 
 Restart the Go process only after changing Go handlers or other backend code.
 When the UI is ready for final validation, run `npm --prefix portal run build`
-once and restart `goobers getting-started` so the process serves the newly
+once and restart `goobers init --guided` so the process serves the newly
 embedded `cmd/goobers/portal-dist` assets.
 
 The portal CI gate is reproduced locally with:

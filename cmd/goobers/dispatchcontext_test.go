@@ -73,7 +73,7 @@ func buildPodAgenticExecutorForTest(t *testing.T, runsDir string, act func(conte
 		t.Fatal(err)
 	}
 	previous := podHarnessRegistry
-	podHarnessRegistry = func(map[string]string, []string, map[string][]string, string, string, bool, func(context.Context) (string, error)) (*harness.Registry, error) {
+	podHarnessRegistry = func(map[string]string, []string, map[string][]string, string, string, bool, func(context.Context) (string, error), bool) (*harness.Registry, error) {
 		return registry, nil
 	}
 	t.Cleanup(func() { podHarnessRegistry = previous })

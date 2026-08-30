@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/goobers/goobers/internal/bootstrap"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel/intake"
@@ -136,6 +137,29 @@ func (e *daemonEngineClient) Guards() *engineRunGuards {
 	return &engineRunGuards{client: e.client}
 }
 
+// HITLDeliverer returns the #3883 operator-intent deliverer over the shared
+// client, or nil when no engine is configured — in which case the daemon's
+// intervention surface keeps the #3847 engine-driven refusal.
+//
+// It takes the guards' workflow-id resolver rather than owning one: a
+// scheduled engine run's workflow id is not its run id, and an operator intent
+// addressed to the run id would be delivered to a workflow that does not
+// exist. Passing the guards in makes the two surfaces share one boot-time scan
+// and one answer to "which workflow is this run?".
+func (e *daemonEngineClient) HITLDeliverer(guards *engineRunGuards) *engine.HITLDeliverer {
+	if e == nil || e.client == nil {
+		return nil
+	}
+	deliverer, err := engine.NewHITLDeliverer(e.client)
+	if err != nil {
+		return nil
+	}
+	if guards == nil || guards.resolveWorkflowID == nil {
+		return deliverer
+	}
+	return deliverer.WithWorkflowIDResolver(guards.resolveWorkflowID)
+}
+
 // Close releases the shared client.
 func (e *daemonEngineClient) Close() {
 	if e == nil || e.client == nil {
@@ -147,6 +171,78 @@ func (e *daemonEngineClient) Close() {
 // engineRunGuards is the daemon-side control surface over engine-driven runs.
 type engineRunGuards struct {
 	client engineWorkflowClient
+	// resolveWorkflowID maps a Goobers run id to the Temporal workflow id it
+	// actually executes under, for the case where the two differ.
+	//
+	// A DIRECT engine run's workflow id IS its run id, so every guard here
+	// addresses it by run id alone and never calls this at all — that fast
+	// path is the common case after #3876 and stays free. A SCHEDULED engine
+	// run's is not: internal/engine's RunScheduled hashes the claim workflow's
+	// id into the run id, so describing the run id yields NotFound and the
+	// daemon concludes "no workflow is addressable as this run" for a run that
+	// is very much executing. Before #3876 that was a named, accepted gap
+	// (decision 003's engine_run_unresolvable); it is not survivable once real
+	// triggers put scheduled runs on the engine, because NotFound is treated
+	// as SETTLED and settlement releases the scheduler's concurrency slot
+	// underneath a live workflow.
+	//
+	// It is a func, populated at boot from engine.WorkflowLiveness's cached
+	// open-workflow scan, because the mapping only exists on the far side.
+	// nil (no engine, or a scan that could not be started) leaves the
+	// pre-#3876 behaviour exactly in place. Its errors are load-bearing:
+	// engine.ErrRunNotOpen is DEFINITE (nothing is driving the run), anything
+	// else — an enumeration that failed, engine.ErrAmbiguousRunID — is
+	// UNKNOWN and must not be read as settlement.
+	resolveWorkflowID func(ctx context.Context, runID string) (string, error)
+}
+
+// withWorkflowIDResolver returns guards that consult resolve when a describe
+// (or a cancel) comes back NotFound. Returns g unchanged when either is nil.
+func (g *engineRunGuards) withWorkflowIDResolver(resolve func(ctx context.Context, runID string) (string, error)) *engineRunGuards {
+	if g == nil || resolve == nil {
+		return g
+	}
+	next := *g
+	next.resolveWorkflowID = resolve
+	return &next
+}
+
+// errEngineRunUnresolvable is what a guard reports when NOTHING open on the
+// engine is addressable as a run id — the definite half of a NotFound. It is
+// distinct from a resolution that merely failed, because only this one means
+// the run is over.
+var errEngineRunUnresolvable = errors.New("no open engine workflow is addressable as this run")
+
+// resolveEngineWorkflowID answers which workflow id to retry a NotFound
+// against, or why the daemon still cannot say.
+//
+// Three outcomes, and every caller must keep them apart:
+//
+//   - (id, nil): the run executes as id. Retry against it.
+//   - ("", errEngineRunUnresolvable): DEFINITE — nothing on the engine is
+//     driving this run. Settling it is correct.
+//   - ("", anything else): UNKNOWN. Hold the slot, report, retry next tick.
+//
+// With no resolver the answer is the pre-#3876 one: unresolvable. That is
+// what a type-1 daemon, or a daemon whose boot scan never ran, has always
+// concluded from a NotFound, and it stays correct for every direct run.
+func (g *engineRunGuards) resolveEngineWorkflowID(ctx context.Context, runID string) (string, error) {
+	if g == nil || g.resolveWorkflowID == nil {
+		return "", errEngineRunUnresolvable
+	}
+	workflowID, err := g.resolveWorkflowID(ctx, runID)
+	switch {
+	case errors.Is(err, engine.ErrRunNotOpen):
+		return "", errEngineRunUnresolvable
+	case err != nil:
+		return "", fmt.Errorf("resolve engine run %s to a workflow id: %w", runID, err)
+	case workflowID == "" || workflowID == runID:
+		// The inverse answered with the id we already described. Nothing new
+		// to try, so the NotFound stands.
+		return "", errEngineRunUnresolvable
+	default:
+		return workflowID, nil
+	}
 }
 
 // errNoEngineClient is what every guard reports when it is asked to act on an
@@ -190,22 +286,61 @@ type engineRunAttachment struct {
 // closes. Get on an already-closed workflow returns immediately, so one call
 // covers both "still running" and "finished while we were down".
 func (g *engineRunGuards) await(ctx context.Context, runID string) engineRunAttachment {
+	return g.awaitInto(ctx, runID, nil)
+}
+
+// awaitInto is await with the workflow's return value decoded into out.
+//
+// The resume scan does not care what a run RETURNED — it only needs to know
+// the run is over so it can release the slot and echo a terminal. The engine
+// starter (decision 005 D1) needs the engine.RunResult itself: the phase it
+// reports to the scheduler, the NoWork flag that drives idle backoff, and the
+// per-stage outcome envelopes the terminal-hook frame keys on all come from
+// there. Same wait, same settlement rules, one optional out parameter, so the
+// two callers cannot end up with two different notions of "settled".
+func (g *engineRunGuards) awaitInto(ctx context.Context, runID string, out any) engineRunAttachment {
 	if g == nil || g.client == nil {
 		return engineRunAttachment{Err: fmt.Errorf("re-attach to engine run %s: %w", runID, errNoEngineClient)}
 	}
-	desc, err := g.describe(ctx, runID)
+	// The run's OWN id first: TemporalStarter.Start uses WorkflowID == RunID,
+	// so for every direct run this describe answers and the open-workflow
+	// inverse is never consulted, never paged, never billed.
+	workflowID := runID
+	desc, err := g.describe(ctx, workflowID)
 	if err != nil {
 		var notFound *serviceerror.NotFound
-		if errors.As(err, &notFound) {
-			// No workflow under this run id. Settled: nothing on the engine is
-			// addressable as this run, so no describe will ever answer
-			// differently and holding the slot forever would turn one
-			// unresolvable run into a permanent concurrency outage for its
-			// workflow. See reattachEngineRun for the scheduled-run caveat
-			// this leaves open.
-			return engineRunAttachment{Settled: true}
+		if !errors.As(err, &notFound) {
+			return engineRunAttachment{Err: fmt.Errorf("describe engine run %s: %w", runID, err)}
 		}
-		return engineRunAttachment{Err: fmt.Errorf("describe engine run %s: %w", runID, err)}
+		// No workflow under this run id. Before concluding anything, ask the
+		// open-workflow inverse: a SCHEDULED run's workflow id is not its run
+		// id (#3877), and NotFound is the normal answer for one that is
+		// executing perfectly well.
+		resolved, resolveErr := g.resolveEngineWorkflowID(ctx, runID)
+		switch {
+		case errors.Is(resolveErr, errEngineRunUnresolvable):
+			// Settled: nothing on the engine is addressable as this run, so
+			// no describe will ever answer differently and holding the slot
+			// forever would turn one unresolvable run into a permanent
+			// concurrency outage for its workflow.
+			return engineRunAttachment{Settled: true}
+		case resolveErr != nil:
+			// UNKNOWN, not settled: an enumeration that failed, or a run id
+			// two workflows claim. Either way the daemon has not established
+			// that this run is over, and releasing its slot on a maybe is the
+			// duplicate-driver hazard reached from the recovery path.
+			return engineRunAttachment{Err: resolveErr}
+		}
+		workflowID = resolved
+		if desc, err = g.describe(ctx, workflowID); err != nil {
+			if errors.As(err, &notFound) {
+				// The scan named a workflow that has since closed and been
+				// swept from visibility. That IS settlement: it ran, and it
+				// is no longer running.
+				return engineRunAttachment{Settled: true}
+			}
+			return engineRunAttachment{Err: fmt.Errorf("describe engine run %s as workflow %s: %w", runID, workflowID, err)}
+		}
 	}
 	attachment := engineRunAttachment{Found: true, Status: desc.GetWorkflowExecutionInfo().GetStatus()}
 	// A workflow already closed at describe time is settled by the describe
@@ -215,7 +350,7 @@ func (g *engineRunGuards) await(ctx context.Context, runID string) engineRunAtta
 	// an engine run legitimately outlives the daemon that started it, and a
 	// premature timeout here would put the daemon right back into "I do not
 	// know how this run ended".
-	if err := g.client.GetWorkflow(ctx, runID, "").Get(ctx, nil); err != nil {
+	if err := g.client.GetWorkflow(ctx, workflowID, "").Get(ctx, out); err != nil {
 		attachment.Err = err
 		// A failed, cancelled, terminated or timed-out workflow reports its
 		// own outcome through this error — that IS the answer, and the run is
@@ -230,12 +365,12 @@ func (g *engineRunGuards) await(ctx context.Context, runID string) engineRunAtta
 // describe runs one bounded DescribeWorkflowExecution, retrying anything that
 // is not NotFound within engineDescribeRetryBudget. NotFound and context
 // cancellation return immediately: neither gets better by waiting.
-func (g *engineRunGuards) describe(ctx context.Context, runID string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
+func (g *engineRunGuards) describe(ctx context.Context, workflowID string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
 	deadline := time.Now().Add(engineDescribeRetryBudget)
 	backoff := engineDescribeRetryInitial
 	for {
 		describeCtx, cancel := context.WithTimeout(ctx, engineDescribeTimeout)
-		desc, err := g.client.DescribeWorkflowExecution(describeCtx, runID, "")
+		desc, err := g.client.DescribeWorkflowExecution(describeCtx, workflowID, "")
 		cancel()
 		if err == nil {
 			return desc, nil
@@ -267,20 +402,55 @@ func engineOutcomeError(err error) bool {
 }
 
 // cancel asks the engine to cancel an engine-driven run's workflow. It is the
-// stall sweep's replacement for terminalizing the journal file: writing a
-// terminal event into a journal whose workflow is still executing leaves the
-// engine driving a run the daemon believes is over, which is the same
-// two-drivers hazard from the other end.
+// stall sweep's replacement for terminalizing the journal file — and, since
+// #3877, what `goobers run cancel`/`run abort` route to for an engine-driven
+// run instead of refusing. Writing a terminal event into a journal whose
+// workflow is still executing leaves the engine driving a run the daemon
+// believes is over, which is the same two-drivers hazard from the other end.
 func (g *engineRunGuards) cancel(ctx context.Context, runID string) error {
+	_, err := g.cancelResolved(ctx, runID)
+	return err
+}
+
+// cancelResolved is cancel, reporting WHICH Temporal workflow it cancelled.
+// The operator paths print it: for a scheduled run the workflow id is the
+// only handle an operator has to go confirm the cancellation in Temporal, and
+// it is precisely the id they could not have derived themselves.
+//
+// A NotFound cancel is resolved through the open-workflow inverse exactly as
+// a NotFound describe is, and for the same reason: a scheduled run's RunID is
+// a hash of its claim workflow's id, so cancelling by run id addresses
+// nothing. An unresolvable run is reported (wrapping
+// errEngineRunUnresolvable) rather than being downgraded to success — a
+// cancel that cancelled nothing must never read as one that landed.
+func (g *engineRunGuards) cancelResolved(ctx context.Context, runID string) (string, error) {
 	if g == nil || g.client == nil {
-		return fmt.Errorf("cancel engine run %s: %w", runID, errNoEngineClient)
+		return "", fmt.Errorf("cancel engine run %s: %w", runID, errNoEngineClient)
 	}
+	err := g.cancelWorkflow(ctx, runID)
+	if err == nil {
+		return runID, nil
+	}
+	var notFound *serviceerror.NotFound
+	if !errors.As(err, &notFound) {
+		return "", fmt.Errorf("cancel engine run %s: %w", runID, err)
+	}
+	workflowID, resolveErr := g.resolveEngineWorkflowID(ctx, runID)
+	if resolveErr != nil {
+		return "", fmt.Errorf("cancel engine run %s: %w", runID, resolveErr)
+	}
+	if err := g.cancelWorkflow(ctx, workflowID); err != nil {
+		return "", fmt.Errorf("cancel engine run %s as workflow %s: %w", runID, workflowID, err)
+	}
+	return workflowID, nil
+}
+
+// cancelWorkflow runs one bounded CancelWorkflow. The stall sweep runs on the
+// daemon's periodic ticker and must return.
+func (g *engineRunGuards) cancelWorkflow(ctx context.Context, workflowID string) error {
 	cancelCtx, cancel := context.WithTimeout(ctx, engineCancelTimeout)
 	defer cancel()
-	if err := g.client.CancelWorkflow(cancelCtx, runID, ""); err != nil {
-		return fmt.Errorf("cancel engine run %s: %w", runID, err)
-	}
-	return nil
+	return g.client.CancelWorkflow(cancelCtx, workflowID, "")
 }
 
 // engineReattachDeps is the daemon state one re-attachment needs after the
@@ -327,13 +497,14 @@ func reattachEngineRun(ctx context.Context, guards *engineRunGuards, id journal.
 	//
 	// The unresolvable case (`!Found`) IS settled and does release: no
 	// workflow is addressable under this run id, so nothing on the engine can
-	// be driving it — with the known exception of a SCHEDULED engine run,
-	// whose RunID is a hash of its claim workflow's id (internal/engine's
-	// RunScheduled) and therefore never describes. Resolving that mapping the
-	// way the DS6 liveness probe does (engine.WorkflowLiveness's open-workflow
-	// inverse) is the named follow-up; until then a scheduled engine run is
-	// guarded against a second in-process driver — the resume scan still
-	// refuses to walk it — but not re-attachable.
+	// be driving it. The scheduled-run exception this comment used to name —
+	// a run whose RunID is a hash of its claim workflow's id and therefore
+	// never describes — is closed as of #3876/#3877: a NotFound describe is
+	// resolved through engine.WorkflowLiveness's open-workflow inverse before
+	// it may settle anything, so a scheduled engine run that is still open is
+	// found and waited on rather than released. A resolution that could not
+	// complete (visibility down, or an ambiguous run id) is UNKNOWN and lands
+	// in the `!Settled` arm below, holding the slot.
 	if attachment.Settled {
 		if deps.release != nil {
 			deps.release(id.RunID, id.Workflow)
@@ -429,19 +600,26 @@ func engineRunSettledOnDisk(reader *journal.Reader) bool {
 	return isTerminalPhase(phase)
 }
 
-// engineDrivenRefusal is the named error every operator path returns for a
-// run the engine drives. The message names the driver and the reason rather
-// than the mechanism that failed, because the operator's next question is
-// always "then how do I stop it".
+// engineDrivenRefusal is the named error the HITL intervention path returns
+// for a run the engine drives. The message names the driver and the reason
+// rather than the mechanism that failed, because the operator's next question
+// is always "then how do I stop it".
+//
+// `run cancel`/`run abort` no longer return this: as of #3877 they route to
+// CancelWorkflow instead of refusing. An intervention still does, and must —
+// approving or overriding a gate is not "stop the run", it is a WRITE into a
+// journal whose only writer is the engine's workflow, and there is no
+// equivalent engine-side operation to route it to.
 //
 // It deliberately does NOT assert that the run's workflow is still executing:
-// the daemon's operator paths have no Temporal client to check with, and for a
+// the intervention service has no Temporal client to check with, and for a
 // run whose workflow has vanished that claim would be false. What is true in
 // every case is that the engine, not this process, is the journal's writer —
-// so the remedy is stated as the workflow, plus the sweep that reaches it.
+// so the remedy is stated as the workflow, plus the commands that reach it.
 func engineDrivenRefusal(runID, action string) error {
 	return fmt.Errorf(
 		"run %s is engine-driven (run.yaml driver: %s): %s would edit a journal whose only writer is the "+
-			"engine's workflow; cancel that workflow (or let the daemon's stalled-run sweep cancel it) instead",
-		runID, journal.DriverEngine, action)
+			"engine's workflow; cancel that workflow with `goobers run cancel %s` (or let the daemon's stalled-run "+
+			"sweep cancel it) instead",
+		runID, journal.DriverEngine, action, runID)
 }

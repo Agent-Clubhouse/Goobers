@@ -6,14 +6,22 @@ the same local instance with more gaggles and repositories. It is the
 repository-neutral version of the
 [self-hosting runbook](../../reference-workflows/README.md).
 
-Complete the [canonical first-run quickstart](quickstart.md) before using this
-production-oriented guide. The steps here are the repository-onboarding deltas
-for replacing its disposable target with an adopter-owned repository.
+The [quickstart](quickstart.md) is an optional disposable tutorial; it is not a
+prerequisite for this production-oriented path. Use this guide when the target
+is an existing repository whose real branch, CI, review, and credential
+conventions must remain authoritative.
 
 The guide uses the complete
 [`config-examples/`](../../config-examples/) definitions as a starting point,
 then removes workflows that are not needed for the first acceptance cycle.
 Finish the single-repository path before adding another gaggle.
+
+`goobers init --guided` follows the same convention: it loads the canonical
+work-nomination, backlog-curation, and implementation modules from
+`config-examples/gaggles/acme-web`, then adapts repository identity, branch,
+issue scope, harness, CI command, and required capabilities from the choices
+and evidence collected by the wizard. It does not reuse the deliberately
+simplified `quickstart@v1` tutorial workflow.
 
 This guide uses the recommended outside layout: a separate config source and
 instance root, neither inside the target repository. Before choosing paths, see
@@ -105,7 +113,7 @@ GH_TOKEN="$GOOBERS_GITHUB_TOKEN" gh repo view "$GOOBERS_TARGET"
 ## 3. Initialize the instance
 
 ```sh
-goobers getting-started
+goobers init --guided
 ```
 
 Provide the existing local clone for `$GOOBERS_TARGET`. The tutorial discovers

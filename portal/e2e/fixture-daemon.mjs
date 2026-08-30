@@ -1,6 +1,6 @@
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
-import { extname, join, normalize, relative, resolve } from "node:path";
+import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const port = 4173;
@@ -18,6 +18,65 @@ const workflow = {
   stageCount: 3,
   definition: { version: 7, digest: "sha256:core" },
   warnings: [],
+};
+const workflowGraph = {
+  name: "implementation",
+  version: 7,
+  digest: "sha256:core",
+  start: "query",
+  nodes: [
+    { id: "query", kind: "deterministic" },
+    { id: "implement", kind: "agentic", owner: "core/implementer" },
+    { id: "review", kind: "gate", evaluator: "agentic" },
+  ],
+  edges: [
+    { source: "query", target: "implement" },
+    { source: "implement", target: "review" },
+    { source: "review", target: "", outcome: "approve", terminal: "complete" },
+    { source: "review", target: "implement", outcome: "needs-changes" },
+    { source: "review", target: "@escalate", outcome: "fail", terminal: "escalate" },
+  ],
+};
+const workflowDetail = {
+  ...workflow,
+  graph: workflowGraph,
+  stages: [
+    {
+      name: "query",
+      kind: "deterministic",
+      goal: "Claim the next approved backlog item.",
+      owner: null,
+      evaluator: "",
+      capabilities: ["github:issues:write"],
+      timeoutSeconds: 120,
+      rawYaml:
+        "name: query\ntype: deterministic\ngoal: Claim the next approved backlog item.\ncapabilities:\n- github:issues:write\ntimeoutSeconds: 120\n",
+    },
+    {
+      name: "implement",
+      kind: "agentic",
+      goal: "Implement the claimed item in an isolated worktree.",
+      owner: { gaggle: "core", name: "implementer" },
+      evaluator: "",
+      capabilities: ["repo:push"],
+      timeoutSeconds: 3600,
+      retry: { maxAttempts: 2, backoffSeconds: 30 },
+      policyActions: ["pr:open"],
+      rawYaml:
+        "name: implement\ntype: agentic\ngoober: implementer\ngoal: Implement the claimed item in an isolated worktree.\ncapabilities:\n- repo:push\npolicyActions:\n- pr:open\nretry:\n  maxAttempts: 2\n  backoffSeconds: 30\ntimeoutSeconds: 3600\n",
+    },
+    {
+      name: "review",
+      kind: "gate",
+      goal: "Review the implementation and select its next target.",
+      owner: { gaggle: "core", name: "implementer" },
+      evaluator: "agentic",
+      capabilities: ["repo:read"],
+      branches: { pass: "", "needs-changes": "implement" },
+      rawYaml:
+        "name: review\nevaluator: agentic\nagentic:\n  goober: implementer\nbranches:\n  pass: \"\"\n  needs-changes: implement\n",
+    },
+  ],
 };
 const run = {
   id: "01JZE2ESMOKERUN",
@@ -135,6 +194,7 @@ const responses = new Map([
     },
   ],
   ["/api/v1/gaggles/core/workflows", { items: [workflow], page }],
+  ["/api/v1/gaggles/core/workflows/implementation", workflowDetail],
   [
     "/api/v1/gaggles/core/connections",
     {
@@ -207,17 +267,12 @@ function serveEvents(response) {
 }
 
 function serveStatic(pathname, mode, response) {
-  const relativePath =
+  const requestPath =
     pathname === "/" ? "index.html" : normalize(decodeURIComponent(pathname)).slice(1);
-  const file = resolve(join(distRoot, relativePath));
-  const fromRoot = relative(distRoot, file);
-  if (
-    fromRoot === "" ||
-    fromRoot === ".." ||
-    fromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
-    !existsSync(file) ||
-    !statSync(file).isFile()
-  ) {
+  const file = resolve(join(distRoot, requestPath));
+  const pathFromRoot = relative(distRoot, file);
+  const escapesRoot = pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`) || isAbsolute(pathFromRoot);
+  if (escapesRoot || !existsSync(file) || !statSync(file).isFile()) {
     response.writeHead(404);
     response.end("not found");
     return;
@@ -225,7 +280,7 @@ function serveStatic(pathname, mode, response) {
   response.writeHead(200, {
     "Content-Type": contentTypes[extname(file)] ?? "application/octet-stream",
   });
-  if (relativePath === "index.html" && mode === "getting-started") {
+  if (requestPath === "index.html" && mode === "getting-started") {
     response.end(
       readFileSync(file, "utf8")
         .replace('content="daemon"', 'content="getting-started"')

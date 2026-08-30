@@ -84,6 +84,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"init": {
+		{name: "guided", desc: "Open browser-based setup, including placement choices"},
+		{name: "port", takesArg: true, desc: "With --guided, server port or auto"},
+		{name: "no-open", desc: "With --guided, print the URL without opening a browser"},
+		{name: "workdir", takesArg: true, desc: "With --guided, temporary browser setup state"},
 		{name: "demo", desc: "Seed a credential-free runnable demo workflow"},
 		{name: "insecure", desc: "Allow an unisolated Windows demo"},
 		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate}, desc: "Seed a named onboarding template"},
@@ -189,7 +193,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
 		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
-		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key"},
+		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key (requires --direct)"},
+		{name: "direct", desc: "Dispatch straight to Temporal instead of through the running daemon"},
 		{name: "live-journal", desc: "Author the run journal live through the daemon's journal plane"},
 	},
 	"engine-queues": {
@@ -210,6 +215,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "daemon-api", takesArg: true, desc: "Daemon write API base URL for live journal emission"},
 		{name: "dispatch-namespace", takesArg: true, desc: "Namespace for mode-3 stage pods; wires the dispatcher seam"},
 		{name: "config-reload-interval", takesArg: true, desc: "How often to re-read the instance config tree and rebuild changed gaggle seams (0 disables)"},
+		{name: "config-history-depth", takesArg: true, desc: "How many superseded config trees to retain so an in-flight run pinned to one is still served its own goober kit (0 disables)"},
 		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
@@ -228,11 +234,6 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "no-open", desc: "Print the URL without opening a browser"},
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
 		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
-	},
-	"getting-started": {
-		{name: "port", takesArg: true, desc: "Server port, or auto"},
-		{name: "no-open", desc: "Print the URL without opening a browser"},
-		{name: "workdir", takesArg: true, desc: "Directory holding the tutorial sample and instance"},
 	},
 	"run": {
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},

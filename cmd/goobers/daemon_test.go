@@ -1182,6 +1182,65 @@ func TestEmitHeartbeatsReadsConstantBytesPerTick(t *testing.T) {
 	}
 }
 
+// The memory clause is the whole reason #3949 was diagnosable only by hand: a
+// heartbeat carrying scheduler counts alone cannot distinguish a leaking daemon
+// from a memory cgroup filling with page cache from the stages it runs. The CPU
+// clause answers the question that same incident could not (#3963) — a pod
+// pinned at its CPU quota looks identical to a busy one in every point-in-time
+// metric, and the throttling counters are the only term that separates them.
+// Assert both are on the line, on the healthy and the degraded path alike.
+func TestEmitHeartbeatsCarriesTheResourceFootprint(t *testing.T) {
+	dir := t.TempDir()
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	if err := log.Append(journal.Event{Type: journal.EventTriggerFired, Workflow: "w"}); err != nil {
+		t.Fatal(err)
+	}
+	tail, err := journal.OpenInstanceLogTail(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		dir      string
+		tail     *journal.InstanceLogTail
+		wantLine string
+	}{
+		{name: "activity available", dir: dir, tail: tail, wantLine: "trigger(s) fired"},
+		// A nil tail makes emitHeartbeats reopen the instance log; pointing it
+		// at a directory that has none drives the degraded branch.
+		{name: "activity unavailable", dir: filepath.Join(t.TempDir(), "absent"), wantLine: "scheduler activity unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			stdout := newDaemonOutput()
+			done := make(chan struct{})
+			go emitHeartbeats(ctx, stdout, tc.dir, 1, tc.tail, nil, 10*time.Millisecond, done)
+
+			select {
+			case <-stdout.heartbeat:
+			case <-time.After(2 * time.Second):
+				cancel()
+				<-done
+				t.Fatal("heartbeat was not emitted")
+			}
+			cancel()
+			<-done
+
+			output := stdout.String()
+			for _, want := range []string{tc.wantLine, "heap ", "retained ", "goroutine(s)", "cpu ", "host", "GOMAXPROCS "} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("heartbeat output = %q, want it to contain %q", output, want)
+				}
+			}
+		})
+	}
+}
+
 func TestUpHeartbeatIsDefaultOnAndQuietSuppressesIt(t *testing.T) {
 	previous := heartbeatInterval
 	heartbeatInterval = 20 * time.Millisecond
@@ -1539,5 +1598,79 @@ func pollUntilRunTerminal(t *testing.T, runDir string, cancel context.CancelFunc
 	return func() {
 		close(done)
 		<-stopped
+	}
+}
+
+func TestDaemonMemoryGateHonoursItsEnvironmentOverride(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setting string
+		wantNil bool
+	}{
+		"unset uses the default":      {setting: "", wantNil: false},
+		"explicit fraction":           {setting: "0.75", wantNil: false},
+		"off disables the gate":       {setting: "off", wantNil: true},
+		"OFF is case-insensitive":     {setting: "OFF", wantNil: true},
+		"zero disables the gate":      {setting: "0", wantNil: true},
+		"surrounding space tolerated": {setting: "  off  ", wantNil: true},
+		// A typo must not stop the daemon booting, and must not refuse every
+		// run either — it falls back to the built-in threshold.
+		"unparseable falls back": {setting: "nine tenths", wantNil: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(memoryHighWaterEnv, tc.setting)
+			gate := daemonMemoryGate()
+			if tc.wantNil && gate != nil {
+				t.Fatalf("daemonMemoryGate() = %v, want nil for %q", gate, tc.setting)
+			}
+			if !tc.wantNil && gate == nil {
+				t.Fatalf("daemonMemoryGate() = nil, want a gate for %q", tc.setting)
+			}
+		})
+	}
+}
+
+// The default gate must be constructible and callable wherever the daemon
+// boots. This asserts the invariant rather than the verdict: whether a
+// container is above its high-water mark depends on the machine, but a
+// refusal must always carry the measurement that justified it.
+// localscheduler's own tests cover the threshold arithmetic against fixed
+// readings.
+func TestDaemonMemoryGateIsSafeToConsultAnywhere(t *testing.T) {
+	t.Setenv(memoryHighWaterEnv, "")
+	gate := daemonMemoryGate()
+	if gate == nil {
+		t.Fatal("daemonMemoryGate() = nil, want a gate by default")
+	}
+	// The first consultation can only baseline the at-limit counter, so it
+	// must admit no matter how full this machine's cgroup is. Asserting that
+	// pins the design: a single reading is never grounds for a refusal.
+	if pressured, _ := gate.UnderPressure(); pressured {
+		t.Fatal("the first consultation refused; one reading cannot establish memory pressure")
+	}
+	// Consult again past the sample TTL so a refusal is reachable, and hold
+	// the invariant across both readings.
+	time.Sleep(1100 * time.Millisecond)
+	for i := range 2 {
+		pressured, detail := gate.UnderPressure()
+		if !pressured && detail != "" {
+			t.Fatalf("reading %d: detail = %q, want empty when admitting", i, detail)
+		}
+		if pressured && detail == "" {
+			t.Fatalf("reading %d: a refusal carried no measurement to justify it", i)
+		}
+	}
+}
+
+// Every spelling of zero must disable the gate. "0.0" parses successfully as
+// zero, and a naive implementation clamps that back up to the default —
+// enabling the gate for an operator who was trying to turn it off.
+func TestDaemonMemoryGateTreatsEverySpellingOfZeroAsOff(t *testing.T) {
+	for _, setting := range []string{"0", "0.0", "0.00", "00", "off", "OFF", " 0.0 "} {
+		t.Run(setting, func(t *testing.T) {
+			t.Setenv(memoryHighWaterEnv, setting)
+			if gate := daemonMemoryGate(); gate != nil {
+				t.Fatalf("daemonMemoryGate() = %v, want nil for %q", gate, setting)
+			}
+		})
 	}
 }

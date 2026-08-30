@@ -14,7 +14,6 @@
 | [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
-| [`goobers getting-started`](#goobers-getting-started) | serve and open the guided portal Getting Started walkthrough |
 | [`goobers help`](#goobers-help) | show command or concept help |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
@@ -1309,8 +1308,23 @@ dispatch one run onto the tier-3 engine via Temporal (experimental)
 ~~~text
 Usage: goobers engine-start [flags] <workflow> [path]
 
-Dispatch one run onto the tier-3 engine (experimental). The run id is
-derived from gaggle, workflow, and --dedupe-key.
+Dispatch one run onto the tier-3 engine (experimental).
+
+When a `goobers up` daemon holds this instance's lock the dispatch is
+DELEGATED to it: the daemon admits the run through the scheduler (so it
+takes a concurrency slot, records an instance-log run.started, reserves
+the run journal and fires the terminal hooks on completion) and starts
+the workflow through its own engine starter. The run id is the
+scheduler's, and --dedupe-key is refused, because the daemon mints a
+fresh run id per admission.
+
+--direct bypasses the daemon and starts the workflow straight on
+Temporal with REJECT_DUPLICATE, deriving the run id from gaggle,
+workflow and --dedupe-key. That is the only mode in which --dedupe-key
+means anything: a direct start's run id IS its dedupe unit, whereas a
+delegated dispatch dedupes DELIVERIES (by request id) and not work.
+A direct start takes no scheduler slot and fires no terminal hooks.
+--direct is implied when no daemon is running.
 
 --live-journal pins live journal authorship into the run: workers emit
 journal events through the daemon's journal plane as they happen, so the
@@ -1733,37 +1747,6 @@ lookup, always forcing a fresh review. Exit codes: 0 = context gathered
 $ goobers gather-sibling-context
 ~~~
 
-## `goobers getting-started`
-
-serve and open the guided portal Getting Started walkthrough
-
-~~~text
-Usage: goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
-
-Serve and open the focused multi-page setup tutorial. It inspects an existing
-GitHub or Azure DevOps clone, discovers its identity, default branch, CI and
-toolchain, asks only for configuration placement and desired behavior, creates
-and validates the instance, prepares required repository labels, and optionally
-runs the implementation workflow. Back and Continue navigation stays inside
-the browser, while completed filesystem
-actions remain the source of truth across restarts. Token values never
-reach the browser or configuration files.
-
---workdir holds tutorial runtime state and defaults beneath the current
-user's local application-data directory; the directory is created when
-needed. The default --port is auto,
-incrementing from 8081 until a port is available. Blocks until interrupted.
-Exit codes: 0 = clean shutdown, 1 = service or browser failure, 2 =
-usage/IO error.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers getting-started
-$ goobers getting-started --no-open --workdir ~/goobers-tutorial
-~~~
-
 ## `goobers help`
 
 show command or concept help
@@ -1781,13 +1764,15 @@ instance, gaggle, goober, workflow, stage, gate, harness, capability.
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
 placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
 gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
 untouched.
+--guided opens the browser-based setup for a real repository and instance.
+It prepares and validates configuration but does not run a workflow.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
@@ -2701,7 +2686,9 @@ Usage: goobers run abort <run-id> [path]
 
 Mark a stuck non-terminal run aborted by appending a terminal
 run.finished(status=aborted) event to its own journal (default path
-"."). Exit codes: 0 = aborted, 1 = business error (run already terminal),
+"."). An ENGINE-DRIVEN run is cancelled on the engine instead — its
+journal is never edited here, and the engine writes its terminal event.
+Exit codes: 0 = aborted, 1 = business error (run already terminal),
 2 = usage/IO error (unknown run).
 ~~~
 
@@ -2722,10 +2709,12 @@ Ask the live `goobers up` daemon to stop a run it is actively executing
 (default path "."): it cancels the active stage, tears down the run
 worktree, releases the backlog claim so the item can be re-queued, and
 records terminal phase aborted — without stopping the daemon or editing a
-journal behind its back. Use `run abort` instead when no daemon is running
-(that path finalizes a stuck run's journal directly). Exit codes: 0 =
-cancelled, 1 = business error (already terminal, not currently running, or
-no daemon to cancel it), 2 = usage/IO error (unknown run).
+journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine
+(CancelWorkflow) instead, with no live daemon required. Use `run abort`
+instead when no daemon is running (that path finalizes a stuck run's
+journal directly). Exit codes: 0 = cancelled, 1 = business error
+(already terminal, not currently running, or no daemon to cancel it),
+2 = usage/IO error (unknown run).
 ~~~
 
 **Examples**
@@ -3723,6 +3712,13 @@ Flags:
                              disables reload and freezes the worker on
                              its boot-time tree (default 10s; requires
                              --instance)
+  --config-history-depth <n>
+                             how many superseded config trees to retain
+                             so an in-flight run pinned to one is still
+                             served the goober kit it was admitted
+                             against across a reload; 0 disables
+                             retention and refuses every superseded pin
+                             (default 3; requires --instance)
   --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;
                              wires the dispatcher behind the stage-dispatch
                              seam and serves the per-(gaggle x runner)
@@ -3743,6 +3739,15 @@ and agentic-kit seams whose config changed, so a definitions edit reaches
 the NEXT stage this worker serves without a pod restart. An attempt
 already running keeps the kit it was handed. A reload that does not parse
 is logged and rejected; the last-known-good tree stays in force.
+
+An agentic stage is served the goober kit its run pinned at start
+(run.yaml's gooberDigest), resolved against the current config tree or
+one of the --config-history-depth superseded trees still retained. A pin
+no retained tree satisfies is REFUSED by name (gate_pin_missing), loudly
+and retriably, naming the expected digest: the worker never substitutes
+its currently-configured goober for the one the run was admitted
+against. Such an attempt recovers by itself once a reload brings the
+pinned tree into force.
 
 Exit codes: 0 = clean drain, 1 = startup/connection error, 2 = usage error,
 3 = drain timeout expired with in-flight work abandoned.

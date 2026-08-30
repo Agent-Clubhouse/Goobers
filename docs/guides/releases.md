@@ -86,7 +86,7 @@ archive's `README.md`, `docs/` tree, and `onboarding/` payload to the versioned
 root with `GOOBERS_DOCS_DIR`), so installing a newer release does not replace
 earlier documentation, templates, or sample. Installation ends there: the
 default run configures nothing and prints the next steps — the credential-free
-demo and `goobers getting-started` — so the install result never depends on
+demo and `goobers init --guided` — so the install result never depends on
 setup choices. The legacy installer `--guided` option exits before download
 with migration guidance and does not configure an instance.
 

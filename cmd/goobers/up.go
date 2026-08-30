@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,12 +20,15 @@ import (
 	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/oidcauth"
+	"github.com/goobers/goobers/internal/platform/cpustat"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/platform/memstat"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
@@ -476,7 +480,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// The live journal writer (DS4) authors engine-run journals from events
 	// emitted as they happen; the projection reconciler below is thereby the
 	// repair/verify path (DS5), never the authority, for live-authored runs.
-	liveJournals, err := newLiveJournalWriter(l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, blobStore)
+	liveJournals, err := newLiveJournalWriter(l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, blobStore, setup.ProviderQuota)
 	if err != nil {
 		pf(stderr, "error: initialize live journal writer: %v\n", err)
 		return 1
@@ -496,6 +500,19 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	defer engineClient.Close()
 	engineGuards := engineClient.Guards()
+	// #3877 (decision 005 D2): decision 005's "Temporal Schedules are never
+	// the trigger source" invariant, asserted before anything starts a run.
+	// A Schedule fire rewrites the run's id, which would make the bounded
+	// open-workflow inverse the NORMAL path for every re-attach and cancel
+	// rather than the exceptional one. A check that could not complete is a
+	// warning; a schedule that is actually there refuses the boot.
+	if scheduleErr, mayStart := checkEngineScheduleInvariant(ctx, engineClient, setup.InstanceLog); scheduleErr != nil {
+		if !mayStart {
+			pf(stderr, "error: %v\n", scheduleErr)
+			return 1
+		}
+		pf(stderr, "warning: %v\n", scheduleErr)
+	}
 	// blobStore is the SAME store the writer adopts spans from (#3805): DS5
 	// verifies a live-authored journal against a re-projection, so a source
 	// given to one and not the other turns every adopted span into a false
@@ -506,6 +523,32 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	defer stopEngineProjection()
+	// #3876 (decision 005 D1, piece 6): teach the guards the run-id ->
+	// workflow-id mapping BEFORE anything reattaches, or a scheduled engine
+	// run's describe returns NotFound and the resume scan releases its
+	// concurrency slot underneath a live workflow. A failed scan is a
+	// warning, not a boot failure: it degrades to the pre-#3876 behaviour, in
+	// which direct runs still reattach correctly.
+	engineGuards, openEngineRuns, engineScanErr := attachEngineOpenRunResolver(ctx, engineClient, engineGuards, ownedGaggleSet(setup.Machines))
+	if engineScanErr != nil {
+		pf(stderr, "warning: %v\n", engineScanErr)
+	}
+	for _, runID := range reportOrphanedEngineRuns(l, setup.InstanceLog, openEngineRuns) {
+		pf(stderr, "warning: engine run %s is open on the engine with no local run directory\n", runID)
+	}
+	// #3876 (decision 005 D1): the engine starters the scheduler entries carry
+	// were built before this client and this writer existed. Attach them now,
+	// once, so a lane the selection predicate placed on the engine can
+	// actually dispatch. An unattached runtime refuses the dispatch rather
+	// than silently running remotely-pinned stages on this host.
+	if engineClient != nil {
+		setup.EngineRuntime.Attach(
+			engine.NewTemporalStarter(engineClient.Temporal(), setup.Config.EffectiveEngineConfig().TaskQueue),
+			engineGuards,
+			liveJournals,
+			time.Now,
+		)
+	}
 	printValidationWarnings(stdout, setup.Validation.CLIWarnings())
 	if warning := webhookConfigurationWarning(setup.Definitions, setup.Config); warning != "" {
 		pln(stdout, warning)
@@ -588,6 +631,16 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
+	// #3883 (decision 005 R8): give the intervention surface a second
+	// destination. Runner-driven runs keep the in-process path untouched;
+	// engine-driven ones, which every verb refused outright since #3847, are
+	// now answered by the workflow that owns them over the versioned HITL
+	// protocol. Attached after the open-run scan so a SCHEDULED engine run —
+	// whose workflow id is not its run id — is addressable; a daemon with no
+	// engine client attaches nothing and keeps the refusal verbatim.
+	if deliverer := engineClient.HITLDeliverer(engineGuards); deliverer != nil {
+		interventions.AttachHITLDeliverer(deliverer)
+	}
 	// The write planes (#3509, distributed-state-and-coordination.md §7):
 	// claims over the same ledger + flock the CLI claimants use, triggers
 	// through the same scheduler path the pending-triggers sweep dispatches,
@@ -924,6 +977,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	interventions.AttachScheduler(sched)
 	triggerPlane.AttachScheduler(sched)
+	// #3876: runs the trigger plane mints outlive the HTTP request that asked
+	// for them. Admission is still validated against the request context.
+	triggerPlane.AttachDispatchContext(ctx)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {
@@ -968,7 +1024,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 				if err != nil {
 					return nil, err
 				}
-				return buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
+				prepare, err := buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
+				if err != nil {
+					return nil, err
+				}
+				return prepare.runnerPreparer(), nil
 			},
 			setup.TerminalNotifier,
 			sched.ReleaseRun,
@@ -1657,8 +1717,47 @@ func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localschedul
 	if setup.OpenPRRefresher != nil {
 		options = append(options, localscheduler.WithOpenPRCounter(setup.OpenPRRefresher))
 	}
+	if gate := daemonMemoryGate(); gate != nil {
+		options = append(options, localscheduler.WithMemoryGate(gate))
+	}
 	options = append(options, additionalOptions...)
 	return localscheduler.New(setup.Entries, setup.InstanceLog, options...)
+}
+
+// memoryHighWaterEnv names the environment variable that tunes the
+// cgroup-aware admission gate (#3949). It is an environment variable rather
+// than an instance.yaml field because it describes the container the daemon
+// was given, not the instance's workflows: the same instance config is
+// deployed to pods with different memory limits, and the operator who sets the
+// limit is the one who knows the right threshold for it.
+//
+// Unset uses the built-in default. "off" (or "0") disables the gate entirely,
+// which is the escape hatch for an operator who would rather take the OOM kill
+// than the backpressure.
+const memoryHighWaterEnv = "GOOBERS_MEMORY_HIGH_WATER"
+
+// daemonMemoryGate builds the cgroup-aware admission gate, or nil if it is
+// disabled. An unparseable value is not an error: the daemon must still start,
+// and it falls back to the built-in threshold rather than to a number that
+// would refuse every run.
+//
+// The value is parsed BEFORE the off-switch is tested, so every spelling of
+// zero ("0", "0.0", "00") disables the gate. String-matching "0" first would
+// send "0.0" down the parse path, where it succeeds as 0 and is then clamped
+// back up to the default — silently enabling the gate for an operator who was
+// trying to turn it off.
+func daemonMemoryGate() localscheduler.MemoryGate {
+	setting := strings.TrimSpace(os.Getenv(memoryHighWaterEnv))
+	if strings.EqualFold(setting, "off") {
+		return nil
+	}
+	highWater, err := strconv.ParseFloat(setting, 64)
+	if setting == "" || err != nil {
+		highWater = 0 // Clamped to the package default.
+	} else if highWater == 0 {
+		return nil
+	}
+	return localscheduler.NewCgroupMemoryGate(highWater)
 }
 
 func publishDaemonAPIAddress(path, address string) error {
@@ -1732,6 +1831,24 @@ func summarizeHeartbeat(events []journal.Event, afterSeq uint64) (heartbeatActiv
 	return activity, lastSeq
 }
 
+// emitHeartbeats prints a periodic liveness line carrying scheduler activity
+// since startup and the daemon's current memory and CPU footprint.
+//
+// Neither resource clause is decoration. Without the memory one the
+// operator-facing log cannot distinguish a leaking daemon from a pod whose
+// memory cgroup is filling with page cache produced by the stages it runs — in
+// #3949 the 47 minutes of heartbeats preceding an OOMKill were indistinguishable
+// from healthy ones, and the kill was misread as a daemon leak while the
+// daemon's own anonymous memory sat flat at 62 MiB.
+//
+// The CPU one answers the question that incident could not (#3963): a container
+// pinned at its CPU quota is indistinguishable from a busy one in every
+// point-in-time metric, and only nr_throttled separates "doing work" from
+// "being stopped". The same pod was losing 79.5% of its CFS periods to
+// throttling, visible nowhere but a shell inside it.
+//
+// Both reads are cheap (no stop-the-world, a few small file reads) and neither
+// can fail, so it costs the heartbeat nothing to always carry them.
 func emitHeartbeats(
 	ctx context.Context,
 	stdout io.Writer,
@@ -1760,15 +1877,19 @@ func emitHeartbeats(
 				events, err = tail.Events()
 				if err == nil {
 					activity, _ := summarizeHeartbeat(events, 0)
-					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped\n",
-						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped)
+					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped; %s; %s\n",
+						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped, memstat.Read(), cpustat.Read())
 					continue
 				}
 				_ = tail.Close()
 				tail = nil
 			}
 			if err != nil {
-				pf(stdout, "[%s] alive — scheduler activity unavailable: %v\n", now.Format("15:04:05"), err)
+				// Both resource clauses ride the degraded line too. A daemon
+				// that has lost its journal tail is exactly when an operator
+				// most needs to know whether it is also about to be OOM-killed,
+				// or merely too throttled to make progress.
+				pf(stdout, "[%s] alive — scheduler activity unavailable: %v; %s; %s\n", now.Format("15:04:05"), err, memstat.Read(), cpustat.Read())
 				continue
 			}
 		}

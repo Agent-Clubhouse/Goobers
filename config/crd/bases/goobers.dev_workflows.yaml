@@ -567,6 +567,9 @@ spec:
                         ContextFrom limits this task's context pointers to artifacts and verdicts
                         produced by the named tasks or gates. Empty preserves the historical
                         behavior of receiving every accumulated pointer.
+                        System-generated pointers have no producing task or gate and are outside
+                        the filter: an injected learning.episode[<seq>] correction survives it
+                        unconditionally (see SelectContextPointers and ContextPointerClass).
                         Duplicate entries are rejected by api/validate (CTX001) rather than by a
                         CRD uniqueness marker, which Kubernetes refuses to install.
                       items:

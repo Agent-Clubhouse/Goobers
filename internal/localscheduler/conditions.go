@@ -15,6 +15,13 @@ const (
 	ReasonBudget              = "conditions: budget"
 	ReasonDailyBudget         = "conditions: daily-budget"
 	ReasonOpenPRCap           = "conditions: open-pr-cap"
+	// ReasonMemoryPressure prefixes the refusal of a new run because the
+	// daemon's own memory cgroup is near its limit (#3949). Like
+	// ReasonProviderQuota it is a stable, grep-able prefix with the
+	// measurement appended, so the journal records not just that a run was
+	// held back but what the cgroup looked like when it was. The condition is
+	// transient: it clears on its own as runs finish and the kernel reclaims.
+	ReasonMemoryPressure = "conditions: memory-pressure"
 	// ReasonMissingCapability prefixes a schedule-time capability-match skip's
 	// Reason (RRQ-1/#1101). Like ReasonProviderQuota it is a stable, grep-able
 	// prefix, not a fixed string: dispatch appends the missing capability names
@@ -109,6 +116,11 @@ type Conditions struct {
 	// contract. Read under c.mu in Admit; its own Exhausted is a cheap
 	// in-memory read with its own lock — no network call ever runs under c.mu.
 	providerQuota ProviderQuotaGate
+	// memory backs the cgroup-aware admission gate (#3949): nil means no gate
+	// is wired, so it is never enforced (fail-open), like openPRs and
+	// providerQuota above. Read under c.mu in Admit; its UnderPressure is a
+	// cached in-memory read with its own lock — no file read per admission.
+	memory MemoryGate
 }
 
 // NewConditions returns an empty Conditions tracker.
@@ -141,6 +153,14 @@ func (c *Conditions) SetOpenPRCounter(counter OpenPRCounter) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.openPRs = counter
+}
+
+// SetMemoryGate wires the cgroup-aware admission gate (#3949). Call once at
+// setup, before Admit is first used. Nil (the default) leaves it unenforced.
+func (c *Conditions) SetMemoryGate(gate MemoryGate) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.memory = gate
 }
 
 // SetProviderQuota wires the gate that backs the provider-quota circuit
@@ -327,6 +347,24 @@ func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider a
 	// so a pool refusal means this workflow was otherwise dispatchable.
 	if c.instanceMaxParallel > 0 && c.totalActive >= c.instanceMaxParallel {
 		return false, ReasonInstanceMaxParallel
+	}
+	// Last, and only for new starts: the container-wide memory check (#3949).
+	// It runs after the configured caps because it is not policy — it is the
+	// physical resource every admitted run shares. Refusing here means the
+	// operator's own limits would have allowed this run and the machine would
+	// not. Deliberately not applied in ReserveContinuation: an already-started
+	// run holds checkpoints and disk, and refusing to resume it strands that
+	// work without freeing the memory an in-flight run has already charged.
+	// Shedding *new* load while letting existing runs drain is what actually
+	// lowers the ceiling.
+	if c.memory != nil {
+		if pressured, detail := c.memory.UnderPressure(); pressured {
+			reason := ReasonMemoryPressure
+			if detail != "" {
+				reason += ": " + detail
+			}
+			return false, reason
+		}
 	}
 	c.starts[identity] = append(starts, now)
 

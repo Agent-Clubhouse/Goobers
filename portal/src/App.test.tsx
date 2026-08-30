@@ -39,7 +39,7 @@ describe("portal foundation", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Daemon ready")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeInTheDocument();
-    // The walkthrough nav entry belongs to `goobers getting-started` only.
+    // The walkthrough nav entry belongs to `goobers init --guided` only.
     expect(screen.queryByRole("button", { name: "Getting Started" })).not.toBeInTheDocument();
   });
 
@@ -69,7 +69,7 @@ describe("portal foundation", () => {
         "No configuration is available to the Portal yet. Initialize the instance to begin.",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText("goobers init --guided <instance>")).toBeInTheDocument();
+    expect(screen.getByText("goobers init --guided")).toBeInTheDocument();
     expect(screen.queryByText(/The daemon is ready/)).not.toBeInTheDocument();
   });
 

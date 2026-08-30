@@ -3,39 +3,12 @@ package main
 import (
 	"bytes"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestGuidedInitReturnsMigrationWithoutReadingInputOrWritingFiles(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "instance")
-	input := &failingGuidedInput{}
-	var stdout, stderr bytes.Buffer
-
-	code := runInitWithInput([]string{"--guided", root}, input, &stdout, &stderr)
-	if code != 2 {
-		t.Fatalf("guided init code = %d, want 2", code)
-	}
-	if stdout.Len() != 0 {
-		t.Fatalf("guided init stdout = %q, want empty", stdout.String())
-	}
-	for _, want := range []string{
-		"`goobers init --guided` has been removed",
-		"goobers getting-started",
-		"Goobers Getting Started skill",
-	} {
-		if !strings.Contains(stderr.String(), want) {
-			t.Fatalf("guided init stderr = %q, missing %q", stderr.String(), want)
-		}
-	}
-	if _, err := os.Stat(root); !os.IsNotExist(err) {
-		t.Fatalf("guided init wrote target path: %v", err)
-	}
-}
-
-func TestGuidedInitMigrationWinsOverOtherModes(t *testing.T) {
+func TestGuidedInitRejectsOtherInitModes(t *testing.T) {
 	var stderr bytes.Buffer
 	code := runInitWithInput(
 		[]string{"--guided", "--demo", filepath.Join(t.TempDir(), "instance")},
@@ -43,13 +16,38 @@ func TestGuidedInitMigrationWinsOverOtherModes(t *testing.T) {
 		io.Discard,
 		&stderr,
 	)
-	if code != 2 || !strings.Contains(stderr.String(), "has been removed") {
-		t.Fatalf("guided migration = code %d stderr %q", code, stderr.String())
+	if code != 2 {
+		t.Fatalf("guided init code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "--guided, --demo, and --template cannot be combined") {
+		t.Fatalf("guided init stderr = %q", stderr.String())
 	}
 }
 
-type failingGuidedInput struct{}
+func TestGuidedInitHelpDescribesBrowserSetup(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := runInitWithInput([]string{"--help"}, strings.NewReader(""), io.Discard, &stderr); code != 2 {
+		t.Fatalf("help code = %d", code)
+	}
+	for _, want := range []string{"--guided", "browser-based setup", "does not run a workflow"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("init help = %q, missing %q", stderr.String(), want)
+		}
+	}
+}
 
-func (*failingGuidedInput) Read([]byte) (int, error) {
-	return 0, io.ErrUnexpectedEOF
+func TestGuidedInitRejectsPath(t *testing.T) {
+	var stderr bytes.Buffer
+	code := runInitWithInput(
+		[]string{"--guided", filepath.Join(t.TempDir(), "instance")},
+		strings.NewReader(""),
+		io.Discard,
+		&stderr,
+	)
+	if code != 2 {
+		t.Fatalf("guided init path code = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "--guided does not accept a path") {
+		t.Fatalf("guided init path stderr = %q", stderr.String())
+	}
 }

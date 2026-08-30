@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/learning"
@@ -152,6 +153,30 @@ type runJournal struct {
 // caller records runStarted (and, for a non-deferred trigger, the run-branch
 // provenance) once the definition has compiled.
 func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJournal, error) {
+	rec, err := newRunJournalRecorder(in, m)
+	if err != nil {
+		return nil, err
+	}
+	if err := workflow.SetQueryHandler(ctx, JournalQuery, func() (JournalProjection, error) {
+		return rec.proj, nil
+	}); err != nil {
+		return nil, fmt.Errorf("engine: register journal query: %w", err)
+	}
+	return rec, nil
+}
+
+// newRunJournalRecorder builds the recorder without touching workflow.Context.
+//
+// Split out of newRunJournal so the identity and input snapshots have exactly
+// one construction site. The daemon's engine starter reserves a run's journal
+// BEFORE Temporal is asked to start the workflow (decision 005 D1's
+// start-to-first-emit window), and the header it writes must be the same
+// bytes the workflow's own first emit would have written — a live journal
+// absorbs the later duplicate run.started and keeps the FIRST header as
+// run.yaml, so any drift between the two construction sites would become a
+// permanently wrong run.yaml on exactly the runs the reservation exists to
+// protect. One function, two callers, no drift.
+func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 	graph, err := json.Marshal(m.Graph())
 	if err != nil {
 		return nil, fmt.Errorf("engine: marshal pinned workflow graph: %w", err)
@@ -197,6 +222,9 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				Driver:      journal.DriverEngine,
 				RunControls: &runControls,
 				Trigger:     journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
+				// #3876: pinned kit provenance, matching what
+				// gooberDigestStarter stamps on a runner-driven run.
+				GooberDigest: in.GooberDigest,
 			},
 			Item:                   in.Item,
 			Graph:                  graph,
@@ -213,11 +241,6 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				in.WorkflowName, in.RunID,
 			),
 		},
-	}
-	if err := workflow.SetQueryHandler(ctx, JournalQuery, func() (JournalProjection, error) {
-		return rec.proj, nil
-	}); err != nil {
-		return nil, fmt.Errorf("engine: register journal query: %w", err)
 	}
 	return rec, nil
 }
@@ -436,18 +459,51 @@ func (r *runJournal) stageFinished(ctx workflow.Context, stage string, attempt i
 			Name: stage + ".transcript", Ref: journalRefFrom(*result.Transcript),
 		})
 	}
+	r.append(ctx, stageFinishedEvent(stage, attempt, class, result, continueOnError))
+}
+
+// stageFinishedEvent builds the stage.finished event, including the
+// tolerated-failure output discard. Split out from stageFinished so the
+// discard's exact shape is testable without a workflow environment.
+func stageFinishedEvent(stage string, attempt int, class journal.AttemptClass, result apiv1.ResultEnvelope, continueOnError bool) journal.Event {
 	outputs := result.Outputs
+	var runnerFacts map[string]any
 	if result.Status == apiv1.ResultFailure && continueOnError {
 		outputs = nil
+		// The output discard mirrors the local runner exactly and must stay.
+		// But a rate-limit reset is not a stage OUTPUT in any meaningful
+		// sense — it is a scheduler fact about the provider, and the local
+		// runner acts on it (notifyRateLimited) BEFORE it reaches the
+		// continueOnError arm, precisely so a tolerated failure still parks
+		// the provider window. An engine run's only channel to this daemon's
+		// ProviderQuotaState is the journal, so the fact is carried on the
+		// event's Runner map: not conformance-normative (journal.ConformanceView
+		// does not project Runner), so the two drivers' journals still match,
+		// while the daemon's live observer can still see it.
+		if reset, ok := rateLimitResetFact(result); ok {
+			runnerFacts = map[string]any{executor.OutputRateLimitReset: reset}
+		}
 	}
-	r.append(ctx, journal.Event{
+	return journal.Event{
 		Type: journal.EventStageFinished, Stage: stage, Attempt: attempt, AttemptClass: class,
 		Status: string(result.Status), Error: resultErrorDetail(result),
 		Outputs: outputs, Artifacts: journalRefsFrom(result.Artifacts),
+		Runner: runnerFacts,
 		// Mirrors the local runner's stage.finished: the produced provenance is
 		// normative, so it must appear identically in both journals (TBH-4).
 		Integrity: result.Integrity,
-	})
+	}
+}
+
+// rateLimitResetFact recovers a rate-limited failure's reset instant from the
+// result's declared outputs, as the raw value the stage wrote so the daemon's
+// observer applies the one shared parse to it.
+func rateLimitResetFact(result apiv1.ResultEnvelope) (any, bool) {
+	if result.Error == nil || result.Error.Code != providers.ErrorCodeRateLimited {
+		return nil, false
+	}
+	reset, ok := result.Outputs[executor.OutputRateLimitReset]
+	return reset, ok
 }
 
 // toleratedFailure mirrors journalToleratedFailure: the error event that keeps

@@ -28,6 +28,27 @@ places `goobers` in `$HOME/.local/bin`. See
 [Release installation and verification](docs/guides/releases.md) for
 prerequisites, install-directory overrides, and the Windows path.
 
+## Learn Goobers or configure an instance
+
+To **learn how Goobers works**, follow the
+[quickstart tutorial](docs/guides/quickstart.md). It starts with an offline,
+credential-free workflow and then uses a disposable repository for one
+issue-to-PR run. The tutorial is intentionally separate from configuring a
+real application.
+
+To **configure a real instance**, choose one of these paths:
+
+- Run `goobers init --guided` for the browser wizard. It teaches
+  the core concepts while inspecting your repository, adapting the canonical
+  workflows, preparing required repository metadata, and validating the
+  resulting instance. It does not execute a workflow.
+- Read [Onboard an arbitrary repository](docs/guides/arbitrary-repo-onboarding.md)
+  and perform the same setup manually.
+- Ask your coding agent to read that guide and the release-matched
+  [Getting Started skill](skills/goobers-getting-started/SKILL.md), inspect your
+  repository, explain each proposed write, and create the validated
+  configuration for you.
+
 ## Predictable workflows around nondeterministic workers
 
 A Goobers workflow is YAML that declares triggers, stages, gates, transitions,
@@ -122,15 +143,10 @@ opaque agent session.
 
 ## Try it locally
 
-Follow the [canonical quickstart](docs/guides/quickstart.md) for the ordered
-first-run path: a credential-free local demo, a disposable GitHub-backed run,
-and then a regular instance using the
-[production-oriented configuration examples](config-examples/README.md).
-
-Prefer a guided walkthrough over typing CLI commands yourself? `goobers
-getting-started` serves a portal-hosted alternative covering the same
-first-run-against-your-own-repository ground — see
-[the CLI reference](docs/cli/README.md#goobers-getting-started).
+Follow the [quickstart tutorial](docs/guides/quickstart.md) for disposable
+learning. To configure a real repository instead, run
+`goobers init --guided` or follow
+[Onboard an arbitrary repository](docs/guides/arbitrary-repo-onboarding.md).
 
 For deeper context, read the
 [historical product vision snapshot (v0.3, July 2026)](docs/VISION.md),

@@ -65,15 +65,15 @@ type guidedServer struct {
 	apiClose func() error
 }
 
-func newGuidedServer(workdir string, errorLog *log.Logger) (*guidedServer, error) {
+func newGuidedServer(workdir, instancePath string, errorLog *log.Logger) (*guidedServer, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve own executable: %w", err)
 	}
 	return &guidedServer{
 		workdir:      workdir,
-		instancePath: filepath.Join(workdir, gettingStartedInstanceDirName),
-		configPath:   filepath.Join(workdir, gettingStartedConfigDirName),
+		instancePath: instancePath,
+		configPath:   instancePath + "-config",
 		executable:   executable,
 		errorLog:     errorLog,
 	}, nil
@@ -1023,7 +1023,7 @@ func (s *guidedServer) handleRun(w http.ResponseWriter, r *http.Request) {
 		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
 			Code: "token_env_unset",
 			Message: fmt.Sprintf(
-				"%s is not set in the getting-started server's own process — export it in the shell that runs \"goobers getting-started\" and restart the server; a later export in a different shell cannot reach an already-running process",
+				"%s is not set in the guided-init server's own process — export it in the shell that runs \"goobers init --guided\" and restart the server; a later export in a different shell cannot reach an already-running process",
 				tokenEnv,
 			),
 		})

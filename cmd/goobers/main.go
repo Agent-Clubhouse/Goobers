@@ -176,7 +176,6 @@ var coreCommandIndexDescriptions = map[string]string{
 	"down":            "Gracefully stop a running daemon.",
 	"escalations":     "List escalated runs.",
 	"examples":        "Browse embedded workflow examples.",
-	"getting-started": "Open the guided Getting Started walkthrough.",
 	"init":            "Create an instance or configuration source.",
 	"run":             "Start a workflow run.",
 	"scaffold":        "Create a goober, workflow, or gaggle.",

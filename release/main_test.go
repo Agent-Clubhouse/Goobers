@@ -147,11 +147,11 @@ func TestRunEndToEnd(t *testing.T) {
 		"goobers-v1.2.3 --version",
 		"Linux or macOS with mock providers",
 		"The release installer installs the binary and documentation only",
-		"goobers getting-started",
+		"goobers init --guided",
 		"directly from an extracted archive instead",
 		"replace `goobers-v1.2.3`\nbelow with `./goobers`",
 		"goobers-v1.2.3 init --template=quickstart ./tutorial-instance",
-		"goobers-v1.2.3 getting-started",
+		"goobers-v1.2.3 init --guided",
 		"goobers-v1.2.3 run " + instance.GuidedWorkflowImplementation + " ./my-instance",
 		"[`config-examples/`](onboarding/templates/canonical/README.md)",
 	} {
@@ -167,18 +167,15 @@ func TestRunEndToEnd(t *testing.T) {
 	if strings.Contains(string(readme), "installer configured `./my-instance`") {
 		t.Errorf("README.md claims the installer initialized the direct-archive example path:\n%s", readme)
 	}
-	if strings.Contains(string(readme), "init --guided") {
-		t.Errorf("README.md retains removed guided init command:\n%s", readme)
-	}
 	assertSubstringsInOrder(
 		t,
 		"bundled README onboarding",
 		string(readme),
 		"goobers-v1.2.3 --version",
 		"The release installer installs the binary and documentation only",
-		"goobers getting-started",
+		"goobers init --guided",
 		"directly from an extracted archive instead",
-		"goobers-v1.2.3 getting-started",
+		"goobers-v1.2.3 init --guided",
 		"goobers-v1.2.3 run "+instance.GuidedWorkflowImplementation+" ./my-instance",
 	)
 
@@ -201,7 +198,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"[`config-examples` reference layout](../../onboarding/templates/canonical/README.md)",
 		"[`implementation` workflow](../../onboarding/templates/canonical/gaggles/acme-web/workflows/implementation.yaml)",
 		"installs the binary and documentation only",
-		"goobers-v1.2.3 getting-started",
+		"goobers-v1.2.3 init --guided",
 		"goobers-v1.2.3 init --template=quickstart ./tutorial-instance",
 		"goobers-v1.2.3 run quickstart ./tutorial-instance",
 		"goobers-v1.2.3 dashboard ./tutorial-instance",
@@ -232,7 +229,7 @@ func TestRunEndToEnd(t *testing.T) {
 		"goobers-v1.2.3 --version",
 		"goobers-v1.2.3 init --demo ./demo-instance",
 		"goobers-v1.2.3 onboarding stub-sample",
-		"goobers-v1.2.3 getting-started",
+		"goobers-v1.2.3 init --guided",
 		"goobers validate --source-tree \"<config-source>\"",
 		"goobers-v1.2.3 run "+instance.GuidedWorkflowImplementation+" ./my-instance",
 	)
@@ -245,7 +242,8 @@ func TestRunEndToEnd(t *testing.T) {
 		"## 1. Install runtime prerequisites",
 		"source-only Linux validation harness is not included in release archives",
 		"## 2. Confirm the installed binary",
-		"[canonical quickstart](quickstart.md#3-configure-a-regular-instance)",
+		"[Onboard an arbitrary repository](arbitrary-repo-onboarding.md)",
+		"goobers init --guided",
 		"every tool used by your configured workflows",
 		"bundled [Daemon supervision]",
 	} {

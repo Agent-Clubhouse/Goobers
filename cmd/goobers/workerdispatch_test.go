@@ -33,13 +33,13 @@ func TestMergeQueues(t *testing.T) {
 // plane, or no loadable instance, refuses with the cause named.
 func TestBuildStageDispatchFailsClosed(t *testing.T) {
 	t.Run("missing instance", func(t *testing.T) {
-		_, err := buildStageDispatch(t.TempDir(), "gaggle-web", "", t.TempDir(), "goobers-worker-0")
+		_, err := buildStageDispatch(t.TempDir(), "gaggle-web", "", t.TempDir(), "goobers-worker-0", nil)
 		if err == nil || !strings.Contains(err.Error(), "instance config") {
 			t.Fatalf("error = %v, want the instance-load refusal", err)
 		}
 	})
 	t.Run("missing surrender plane", func(t *testing.T) {
-		_, err := buildStageDispatch(t.TempDir(), "gaggle-web", "", "", "goobers-worker-0")
+		_, err := buildStageDispatch(t.TempDir(), "gaggle-web", "", "", "goobers-worker-0", nil)
 		if err == nil || !strings.Contains(err.Error(), "surrender plane") {
 			t.Fatalf("error = %v, want the surrender-plane requirement named", err)
 		}
@@ -97,7 +97,7 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 	}
 	t.Cleanup(func() { newStageDispatcher = previousNew })
 
-	if _, err := buildStageDispatch(root, "gaggle-example", "", t.TempDir(), "goobers-worker-0"); err != nil {
+	if _, err := buildStageDispatch(root, "gaggle-example", "", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root)); err != nil {
 		t.Fatalf("buildStageDispatch: %v", err)
 	}
 	if !slices.Contains(built.EnvPassthrough, "OPERATOR_DECLARED_VAR") {
@@ -129,5 +129,87 @@ func TestBuildStageDispatchThreadsInstanceEnvPassthroughToTheStagePod(t *testing
 	}
 	if !slices.Contains(allow, "OPERATOR_DECLARED_VAR") {
 		t.Fatalf("%s = %v, missing the operator's declared passthrough", dispatcher.EnvStageEnvAllow, allow)
+	}
+}
+
+// The #3914 wiring, in exactly the same shape and for exactly the same
+// reason: the bot login can only be resolved where the instance config is
+// readable — HERE, in the worker — and podspec_test sets Config.BotLogins
+// directly, so it proves the STAMP honours the field and proves nothing about
+// who fills it. Deleting the one line that fills it leaves every other test in
+// the tree green and the far side dead: stages in a pod silently lose their
+// declared identity and regress to GET /user, which a GitHub App installation
+// token cannot call.
+//
+// Asserted the whole way through: instance config -> built Config -> the
+// value actually stamped on a rendered goobers-CLI stage pod.
+func TestBuildStageDispatchThreadsTheConfiguredBotLoginToTheStagePod(t *testing.T) {
+	root := initDemo(t)
+	repo := declareGitHubAppAuth(t, root, "goobersbot")
+	layout := instance.NewLayout(root)
+	cfg, err := instance.LoadConfig(layout.ConfigFile())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.Engine = &instance.EngineConfig{
+		HostPort: "127.0.0.1:7233", Namespace: "default", TaskQueue: "goobers-engine",
+	}
+	cfg.Runners = append(cfg.Runners, instance.RunnerEntry{
+		Name: "linux-cli",
+		Host: "ghcr.io/goobers/goobers-base:0123456789abcdef0123456789abcdef01234567",
+		Provides: instance.RunnerProvides{
+			OS: "linux", CPU: "2000m", Memory: "4Gi", Disk: "20Gi", Shell: true,
+		},
+	})
+	if err := instance.WriteConfig(layout.ConfigFile(), cfg); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+
+	previousClient := dispatchKubeClient
+	dispatchKubeClient = func() (kubernetes.Interface, error) { return fake.NewClientset(), nil }
+	t.Cleanup(func() { dispatchKubeClient = previousClient })
+
+	var built dispatcher.Config
+	previousNew := newStageDispatcher
+	newStageDispatcher = func(c dispatcher.Config, pods dispatcher.PodAPI, journal dispatcher.JournalRelay, gate dispatcher.SurrenderGate, capacity dispatcher.CapacityProber) (*dispatcher.Dispatcher, error) {
+		built = c
+		return previousNew(c, pods, journal, gate, capacity)
+	}
+	t.Cleanup(func() { newStageDispatcher = previousNew })
+
+	if _, err := buildStageDispatch(root, "gaggle-example", "", t.TempDir(), "goobers-worker-0", workerReloadSeams(t, root)); err != nil {
+		t.Fatalf("buildStageDispatch: %v", err)
+	}
+	if got := built.BotLogins[instance.GitHubBotLoginKey(repo.Owner, repo.Name)]; got != "goobersbot[bot]" {
+		t.Fatalf("dispatcher.Config.BotLogins[%s/%s] = %q, want %q — without it no stage pod can resolve its own identity (#3914)",
+			repo.Owner, repo.Name, got, "goobersbot[bot]")
+	}
+
+	pod, renderErr := dispatcher.RenderPod(built, dispatcher.Attempt{
+		RunID: "run-3914", Gaggle: "example", Workflow: "implementation", Stage: "apply-verdict", Number: 1,
+		CLIStage: true,
+		RunContext: map[string]string{
+			"GOOBERS_REPO_PROVIDER": "github",
+			"GOOBERS_REPO_OWNER":    repo.Owner,
+			"GOOBERS_REPO_NAME":     repo.Name,
+		},
+	}, dispatcher.RunnerSpec{
+		Name:     "linux-cli",
+		OS:       "linux",
+		HostKind: instance.RunnerHostImage,
+		Host:     "ghcr.io/goobers/goobers-base:0123456789abcdef0123456789abcdef01234567",
+	})
+	if renderErr != nil {
+		t.Fatalf("RenderPod: %v", renderErr)
+	}
+	var stamped string
+	var present bool
+	for _, e := range pod.Spec.Containers[0].Env {
+		if e.Name == dispatcher.ProviderBotLoginEnv {
+			stamped, present = e.Value, true
+		}
+	}
+	if !present || stamped != "goobersbot[bot]" {
+		t.Fatalf("%s on the rendered pod = %q (present=%v), want %q", dispatcher.ProviderBotLoginEnv, stamped, present, "goobersbot[bot]")
 	}
 }

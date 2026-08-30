@@ -1,9 +1,17 @@
 # Linux quickstart (tier 1, local)
 
-Use this page for Linux host prerequisites, isolation, credentials, and
-supervision differences only. Follow the platform-neutral
-[`quickstart.md`](quickstart.md) for the single ordered first-run path and CLI
-walkthrough.
+**Start here on Linux.** Complete sections 1 and 2 to install the required host
+tools and build or install `goobers`. Then choose one route:
+
+- return to the platform-neutral [quickstart tutorial](quickstart.md) for
+  disposable learning; or
+- continue with section 3 and
+  [Onboard an arbitrary repository](arbitrary-repo-onboarding.md) to configure
+  a real instance, using `goobers init --guided` if you want the
+  browser wizard.
+
+The remaining sections contain Linux-specific credential, live-run, and
+systemd guidance. They supplement rather than duplicate either route.
 
 Linux is a first-class node platform: the control plane has **no macOS coupling**
 (no launchd/keychain/fsevents/hardcoded paths in Go source), and the daemon plus
@@ -83,8 +91,8 @@ definitions, use an in-repo subtree or separate config repository; reserve
 instance-local config for private, single-operator use. Compare the options in
 the [instance and config placement guide](instance-placement.md).
 
-Use the initialization and configuration steps in the
-[canonical quickstart](quickstart.md#3-configure-a-regular-instance).
+Use the initialization and configuration steps in
+[Onboard an arbitrary repository](arbitrary-repo-onboarding.md).
 On Linux, if you use a token file, lock its permissions down; Goobers
 fail-closes on a world- or group-readable token file:
 

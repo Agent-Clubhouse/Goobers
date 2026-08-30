@@ -66,7 +66,7 @@ export function App({
 
 // The index's goobers-dashboard-mode marker: "daemon" (default), "standalone"
 // (`goobers dashboard` with no daemon), or "getting-started" (`goobers
-// getting-started`). Getting-started serves the same standalone read-only
+// init --guided`). Getting-started serves the same standalone read-only
 // /api/ once the tutorial instance exists, so its chrome reads as standalone.
 type DashboardMode = "daemon" | "standalone" | "getting-started";
 

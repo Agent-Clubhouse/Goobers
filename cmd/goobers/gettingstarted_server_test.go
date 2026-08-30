@@ -26,8 +26,8 @@ func newTestGuidedServer(t *testing.T, workdir string) *guidedServer {
 	t.Helper()
 	return &guidedServer{
 		workdir:      workdir,
-		instancePath: filepath.Join(workdir, gettingStartedInstanceDirName),
-		configPath:   filepath.Join(workdir, gettingStartedConfigDirName),
+		instancePath: filepath.Join(workdir, "tutorial-instance"),
+		configPath:   filepath.Join(workdir, "tutorial-instance-config"),
 		executable:   "goobers-under-test",
 		errorLog:     log.New(io.Discard, "", 0),
 	}

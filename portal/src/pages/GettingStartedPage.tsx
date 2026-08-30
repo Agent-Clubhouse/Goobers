@@ -6,7 +6,6 @@ import {
   type DiagnosticsEnvelope,
   type GuidedInitOptions,
   type GuidedInitResult,
-  type GuidedJobDetail,
   type GuidedRepositoryInspection,
   type GuidedRepositoryReadiness,
   type GuidedState,
@@ -15,13 +14,12 @@ import {
 
 const defaultClient = new GuidedClient();
 const statePollIntervalMs = 5_000;
-const jobPollIntervalMs = 2_000;
 type RepositorySource = "local" | "remote";
 type QueryState =
   | { status: "loading" }
   | { status: "unavailable" }
   | { status: "ready"; state: GuidedState };
-type BusyAction = "browse" | "inspect" | "init" | "prepare" | "validate" | "run" | null;
+type BusyAction = "browse" | "inspect" | "init" | "prepare" | "validate" | null;
 type WizardPageId =
   | "welcome"
   | "repository"
@@ -32,7 +30,6 @@ type WizardPageId =
   | "review"
   | "repository-setup"
   | "validate"
-  | "run"
   | "complete";
 
 interface WizardPage {
@@ -41,7 +38,7 @@ interface WizardPage {
   step: number;
 }
 
-const wizardStepCount = 11;
+const wizardStepCount = 10;
 
 const workflowChoices: Array<{
   id: GuidedWorkflow;
@@ -72,15 +69,6 @@ const workflowChoices: Array<{
     image: "/workflow-implementation.png",
   },
 ];
-
-const implementationStages = [
-  "query-backlog",
-  "implement",
-  "review",
-  "local-ci",
-  "push-branch",
-  "open-pr",
-] as const;
 
 export function GettingStartedPage({ client = defaultClient }: { client?: GuidedClient } = {}) {
   const [query, setQuery] = useState<QueryState>({ status: "loading" });
@@ -152,8 +140,6 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     envelope: DiagnosticsEnvelope | null;
     stderr: string;
   } | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [job, setJob] = useState<GuidedJobDetail | null>(null);
 
   const refreshState = useCallback(async () => {
     try {
@@ -222,33 +208,6 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     }
   }, [configPlacement, inspection, setConfigPath]);
 
-  useEffect(() => {
-    const activeJob = jobId ?? state?.job?.id ?? null;
-    if (!activeJob || job?.done) {
-      return;
-    }
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const detail = await client.getJob(activeJob);
-        if (!cancelled) {
-          setJob(detail);
-          if (detail.done) {
-            void refreshState();
-          }
-        }
-      } catch {
-        // The state poll remains authoritative if the local process restarted.
-      }
-    };
-    void poll();
-    const timer = setInterval(() => void poll(), jobPollIntervalMs);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [client, jobId, job?.done, refreshState, state?.job?.id]);
-
   const pages = useMemo<WizardPage[]>(
     () => [
       { id: "welcome", label: "Welcome", step: 1 },
@@ -260,8 +219,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       { id: "review", label: "Review", step: 7 },
       { id: "repository-setup", label: "Repository setup", step: 8 },
       { id: "validate", label: "Checks", step: 9 },
-      { id: "run", label: "First run", step: 10 },
-      { id: "complete", label: "Complete", step: 11 },
+      { id: "complete", label: "Complete", step: 10 },
     ],
     [],
   );
@@ -299,7 +257,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               Open the setup wizard from a terminal. The command starts Goobers locally and
               opens this wizard in your browser.
             </p>
-            <RecoveryCommand command="goobers getting-started" />
+            <RecoveryCommand command="goobers init --guided" />
           </div>
         </section>
       </>
@@ -313,7 +271,6 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   const currentPage = pages[Math.min(pageIndex, pages.length - 1)];
   const instanceReady = state.instanceExists || initResult?.exitCode === 0;
   const validationPassed = validateResult?.exitCode === 0;
-  const runSucceeded = job?.done === true && job.exitCode === 0;
   const repositoryReady =
     inspection !== null && !inspection.needsClone && inspection.auth.ready;
   const ciCommand = splitCommand(ciCommandText);
@@ -446,16 +403,6 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       setRepositoryReadiness,
     );
 
-  const startRun = () =>
-    void runAction(
-      "run",
-      () => client.startRun({ workflow: "implementation" }),
-      ({ jobId: nextJobId }) => {
-        setJob(null);
-        setJobId(nextJobId);
-      },
-    );
-
   const canContinue = (() => {
     switch (currentPage.id) {
       case "welcome":
@@ -476,8 +423,6 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         return repositoryPrepared;
       case "validate":
         return validationPassed;
-      case "run":
-        return runSucceeded;
       case "complete":
         return true;
     }
@@ -495,10 +440,14 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               Let&apos;s build an AI workforce for your repository.
             </p>
             <p>
-              This tutorial inspects how your repository works, creates a reviewable Goobers
-              configuration, checks that it can run safely, and shows you how to customize
-              it afterward.
+              Guided init inspects how your repository works, creates a reviewable Goobers
+              configuration, and checks that it can run safely. It will not start a workflow
+              or change application code.
             </p>
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md"
+              label="Learn how gaggles, goobers, workflows, and desired state fit together"
+            />
             <a
               className="guided-intro-link"
               href="https://goobers.dev/"
@@ -715,6 +664,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               and <code>gaggles/</code>. Mutable runtime state stays in a separate local
               instance folder.
             </p>
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/instance-placement.md"
+              label="Compare configuration and runtime placement options"
+            />
             <div aria-label="Configuration location" className="guided-choice-grid" role="group">
               <ChoiceCard
                 checked={configPlacement === "peer"}
@@ -748,6 +701,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               Track this folder with Git for change history. For a separate folder, run{" "}
               <code>git init</code> there and push it to GitHub or Azure DevOps when ready.
             </p>
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/tree/main/config-examples/gaggles/acme-web"
+              label="Review the canonical workflow modules"
+            />
           </WizardPage>
         );
       case "workflows":
@@ -759,6 +716,11 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               <code>gaggles/{inspection?.gaggleName || "<repository>"}/</code>. Choose the
               workflows it should start with; you can customize them later with the
               Goobers authoring skills.
+            </p>
+            <p className="guided-note">
+              These are production-oriented canonical modules adapted from{" "}
+              <code>config-examples/gaggles/acme-web</code>. They are intentionally more
+              complete than the disposable <code>quickstart@v1</code> tutorial workflow.
             </p>
             <div className="guided-module-grid">
               {workflowChoices.map((choice) => (
@@ -832,6 +794,14 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       case "runtime":
         return (
           <WizardPage title="Configure the agent runtime">
+            <p>
+              A harness runs agentic stages, while deterministic stages and gates keep
+              control of repository effects, retries, and escalation.
+            </p>
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/goober.md"
+              label="Learn how goobers, harnesses, capabilities, and instructions work"
+            />
             <fieldset className="guided-radio-group">
               <legend>Agent harness</legend>
               <label data-selected={harness === "copilot"}>
@@ -1038,32 +1008,6 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             {validateResult && <ValidationResult result={validateResult} />}
           </WizardPage>
         );
-      case "run":
-        return (
-          <WizardPage title="Run the first workflow">
-            <p>
-              This run picks up one of the eligible ready issues confirmed in the previous
-              step, implements it, reviews it, runs local CI, and opens a pull request.
-            </p>
-            <RecoveryCommand
-              command={`goobers run implementation ${state.instancePath}`}
-            />
-            <button
-              className="reconnect-button"
-              disabled={busy !== null || (job !== null && !job.done)}
-              onClick={startRun}
-              type="button"
-            >
-              {job && !job.done ? "Running…" : runSucceeded ? "Run completed" : "Start run"}
-            </button>
-            {job && (
-              <RunResult
-                job={job}
-                stages={implementationStages}
-              />
-            )}
-          </WizardPage>
-        );
       case "complete":
         const customizationPrompts = [
           `Use the goobers-dsl-author skill to review the generated workflows for ${repo.trim() || "my repository"} and tailor them to the repository's actual contribution and CI conventions.`,
@@ -1073,9 +1017,20 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         return (
           <WizardPage title="Goobers is ready">
             <p>
-              The instance is configured and the first implementation run completed. Open
-              the Runs page to inspect the journal and resulting pull request.
+              The configuration source and runtime instance are prepared and validated.
+              Review the generated definitions before starting the daemon or running a
+              workflow.
             </p>
+            <h3>Next commands</h3>
+            <RecoveryCommand command={`goobers validate --source-tree "${configPath.trim()}"`} />
+            <RecoveryCommand command={`goobers config materialize "${state.instancePath}"`} />
+            <RecoveryCommand command={`goobers up "${state.instancePath}"`} />
+            <RecoveryCommand command={`goobers run implementation "${state.instancePath}"`} />
+            <RecoveryCommand command={`goobers dashboard "${state.instancePath}"`} />
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md"
+              label="Read the real-repository onboarding and operating guide"
+            />
             <h3>Customize it with an agent</h3>
             <p>
               Copy one of these prompts into GitHub Copilot CLI or Claude Code from your
@@ -1086,7 +1041,6 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                 <code key={prompt}>{prompt}</code>
               ))}
             </div>
-            <RecoveryCommand command={`goobers dashboard ${state.instancePath}`} />
           </WizardPage>
         );
     }
@@ -1183,6 +1137,14 @@ function WizardPage({
   );
 }
 
+function DocumentationLink({ href, label }: { href: string; label: string }) {
+  return (
+    <a className="guided-intro-link" href={href} rel="noreferrer" target="_blank">
+      {label}
+    </a>
+  );
+}
+
 function ChoiceCard({
   checked,
   description,
@@ -1273,58 +1235,6 @@ function ValidationResult({
       )}
     </div>
   );
-}
-
-function RunResult({
-  job,
-  stages,
-}: {
-  job: GuidedJobDetail;
-  stages: readonly string[];
-}) {
-  const states = runStageStates(job.output, stages);
-  return (
-    <div className="guided-result">
-      {job.runId && <strong>Run {job.runId}</strong>}
-      <div aria-label="Run stage progress" className="guided-stage-row">
-        {stages.map((stage) => (
-          <span
-            className={`guided-stage guided-stage-${states[stage]}`}
-            data-state={states[stage]}
-            key={stage}
-          >
-            {stage}
-          </span>
-        ))}
-      </div>
-      {job.done && job.exitCode === 0 && (
-        <p className="guided-success">The workflow completed successfully.</p>
-      )}
-      {job.done && job.exitCode !== 0 && (
-        <p className="guided-field-error">The workflow exited with code {job.exitCode}.</p>
-      )}
-    </div>
-  );
-}
-
-function runStageStates(
-  output: string[],
-  stages: readonly string[],
-): Record<string, "pending" | "running" | "done"> {
-  const result: Record<string, "pending" | "running" | "done"> = Object.fromEntries(
-    stages.map((stage) => [stage, "pending"]),
-  );
-  for (const line of output) {
-    for (const stage of stages) {
-      if (line.includes(`stage ${stage} started`)) {
-        result[stage] = "running";
-      }
-      if (line.includes(`stage ${stage} finished`)) {
-        result[stage] = "done";
-      }
-    }
-  }
-  return result;
 }
 
 function splitCommand(value: string): string[] {
