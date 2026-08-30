@@ -172,6 +172,11 @@ func engineFallbackReason(selfPinned, unpinnedGates []string) string {
 // unplaceable stage, and that refusal is already surfaced per-run by
 // PlacementRefusal (checkpoint 3). Here it means only "this lane does not go
 // to the engine", with the diagnostic carried into the fallback annotation.
+//
+// This pass runs BEFORE placementRefusals (#3987), because checkpoint 3's
+// answer depends on this one: the boot refusal speaks for the daemon's own
+// self-only substrate, which an engine-selected lane never touches. Nothing
+// here reads a refusal, so the dependency is one-way and cannot cycle.
 func engineSelections(
 	cfg *instance.Config,
 	set *instance.ConfigSet,

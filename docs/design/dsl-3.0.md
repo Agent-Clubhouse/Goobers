@@ -192,9 +192,11 @@ in-process exactly as ruling 8's unpinned arm, with the arguments it always had.
 **daemon-scheduled** run still drives through `internal/runner`, which has no gate dispatch
 arm and will not get one: decision 005 makes the engine walk the single driver for every
 trigger kind, so a scheduled run reaches this arm when the scheduler's `Starter` delegates
-to the engine registry. Until then, checkpoint 3 (§5) refuses a gate placement self cannot
-satisfy exactly as for a task (`workflow.refused`, `ReasonPlacementUnsatisfiable`) —
-deliberately, because the daemon cannot honour the declared restrictions in-process either.
+to the engine registry — which, since Goobers#3876, it does per entry. On an entry the
+engine drives, the gate's declared placement is honoured by the dispatch arm above. On a
+**runner-driven** entry, checkpoint 3 (§5) refuses a gate placement self cannot satisfy
+exactly as for a task (`workflow.refused`, `ReasonPlacementUnsatisfiable`) — deliberately,
+because the daemon cannot honour the declared restrictions in-process either.
 
 ---
 
@@ -388,6 +390,16 @@ implementation from the naive one (delivery decisions 001/002).
 3. **Boot never kills the daemon** — #2860's decided-but-unimplemented ruling ("refusing
    one run is proportionate; refusing to start is not") is implemented as part of this
    work: an unsatisfiable workflow is a refused run with a diagnostic, not a dead instance.
+   The boot solve judges the substrate that will actually execute the lane, so it is
+   scoped to **runner-driven** entries (Goobers#3987): it solves against the daemon's
+   self-only substrate (`runnersolve.SolveExecutable`), and an entry the per-entry engine
+   selection (Goobers#3876) routes to the engine is exempt, because
+   `bootstrap.PinStagePlacements` has already placed every one of its stages on the full
+   declared inventory with none landing on self. The exemption is granted only against a
+   proven engine selection and fails closed everywhere else — engine disabled, any
+   self-pinned stage, an unpinnable stage, or no selection computed — so a lane that
+   declares `runsOn` is never green-lit merely for declaring it. The self-only diagnostic
+   is still reported for an exempt lane; it is simply not enforced.
 
 The apply-time solver and the dispatch-time check must be one shared implementation (the
 CAP003/scheduler mirror lesson: divergence = configs that validate but never schedule).
