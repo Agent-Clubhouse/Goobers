@@ -194,6 +194,17 @@ func observePRSelectEligibility(
 // ungaggled. provider must be the claiming PR's own repository provider
 // (#3649) — a hardcoded provider would silently narrow the listing to a
 // different provider's namespace and hide another provider's live claims.
+//
+// For a non-GitHub provider this ALSO reads the gaggle's github namespace
+// (#3649 follow-up): every build before this change wrote every
+// gaggle-scoped PR claim — ADO and Gitea repositories included — under a
+// hardcoded ProviderGitHub key. A claim leased by one of those builds still
+// lives under that key until it naturally expires, so a purely
+// provider-scoped read would make it invisible and let the first
+// post-upgrade selection claim and process the same PR concurrently.
+// Entries already covered by the primary read (the gaggle's own legacy
+// unscoped claims) are excluded from this second read to avoid double
+// counting them.
 func pullRequestClaimListing(ledger claimsclient.Ledger, gaggle string, provider providers.ProviderKind) (claimsclient.Listing, error) {
 	providerNamespace := ""
 	if gaggle != "" {
@@ -203,12 +214,34 @@ func pullRequestClaimListing(ledger claimsclient.Ledger, gaggle string, provider
 	if err != nil {
 		return claimsclient.Listing{}, fmt.Errorf("read PR claims: %w", err)
 	}
+	if gaggle != "" && provider != providers.ProviderGitHub {
+		legacy, err := ledger.ListNamespace(claimContext(), gaggle, string(providers.ProviderGitHub))
+		if err != nil {
+			return claimsclient.Listing{}, fmt.Errorf("read legacy github-scoped PR claims: %w", err)
+		}
+		for _, entry := range legacy.Entries {
+			if entry.Gaggle == gaggle && entry.Provider == string(providers.ProviderGitHub) {
+				claims.Entries = append(claims.Entries, entry)
+			}
+		}
+		for _, entry := range legacy.History {
+			if entry.Gaggle == gaggle && entry.Provider == string(providers.ProviderGitHub) {
+				claims.History = append(claims.History, entry)
+			}
+		}
+	}
 	return claims, nil
 }
 
 // currentRunHasLivePullRequestClaim reports whether held — the current
 // run's claims (Ledger.ForRunAll) — carries a live PR lease in gaggle's
-// namespace.
+// namespace. For a non-GitHub provider this also recognizes a lease held
+// under the legacy hardcoded-github namespace (#3649 follow-up): ForRunAll
+// already returns every claim the run holds regardless of provider scope, so
+// a pre-migration ADO/Gitea claim is present here — it just needs the same
+// legacy-namespace fallback pullRequestClaimStatus applies, or a run that
+// leased a PR before this build's rollout would stop recognizing it as its
+// own.
 func currentRunHasLivePullRequestClaim(
 	held []claimsclient.Entry,
 	gaggle string,
@@ -223,7 +256,16 @@ func currentRunHasLivePullRequestClaim(
 		if !entry.ExpiresAt.After(now) || !strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
 			continue
 		}
-		if entry.Gaggle == "" || (entry.Gaggle == gaggle && entry.Provider == string(provider)) {
+		if entry.Gaggle == "" {
+			return true
+		}
+		if entry.Gaggle != gaggle {
+			continue
+		}
+		if entry.Provider == string(provider) {
+			return true
+		}
+		if provider != providers.ProviderGitHub && entry.Provider == string(providers.ProviderGitHub) {
 			return true
 		}
 	}
@@ -249,6 +291,17 @@ func pullRequestClaimStatus(
 			return true, false
 		}
 		entry, ok = claims.Lookup(pullRequestClaimLedgerKey(gaggle, provider, number))
+		if !ok && provider != providers.ProviderGitHub {
+			// Pre-#3649 builds wrote every gaggle-scoped PR claim under a
+			// hardcoded ProviderGitHub key regardless of the repository's
+			// real provider. A non-GitHub claim leased before the upgrade
+			// still lives under that key until it naturally expires — fall
+			// back to it here (pullRequestClaimListing already fetched it
+			// into claims) so it stays visible instead of letting the first
+			// post-upgrade selection claim and process the same PR
+			// concurrently.
+			entry, ok = claims.Lookup(pullRequestClaimLedgerKey(gaggle, providers.ProviderGitHub, number))
+		}
 	}
 	if !ok || !entry.ExpiresAt.After(now) {
 		return false, false

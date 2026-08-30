@@ -87,6 +87,89 @@ func TestPullRequestClaimIsScopedToRepositoryProvider(t *testing.T) {
 	}
 }
 
+// TestPullRequestClaimStatusRecognizesLegacyGitHubScopedClaimForNonGitHubProvider
+// is the merge-review regression for #3649's rollout: every build before
+// that change wrote EVERY gaggle-scoped PR claim under a hardcoded
+// ProviderGitHub key, regardless of the repository's real provider. A claim
+// an ADO or Gitea run leased under that legacy key must stay visible to the
+// new provider-scoped reader until it naturally expires — otherwise the
+// first post-upgrade selection cannot see it and claims the same PR again,
+// letting two runs process it concurrently.
+func TestPullRequestClaimStatusRecognizesLegacyGitHubScopedClaimForNonGitHubProvider(t *testing.T) {
+	root := initDemo(t)
+	t.Setenv("GOOBERS_GAGGLE", "goobers")
+	schedulerDir := layoutFor(root).SchedulerDir()
+	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed the claim the way a pre-#3649 build wrote it: hardcoded github
+	// namespace even though PR #77 here belongs to an ADO repository.
+	rawLedger, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := rawLedger.ClaimScoped(localscheduler.ClaimKey{
+		Gaggle:     "goobers",
+		Provider:   string(providers.ProviderGitHub),
+		ExternalID: pullRequestClaimKey(77),
+	}, "legacy-run", "pr-remediation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed legacy github-scoped claim: ok=%t err=%v", ok, err)
+	}
+
+	ledger, err := fileClaimLedger(layoutFor(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+
+	claims, err := pullRequestClaimListing(ledger, "goobers", providers.ProviderADO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ownedByCurrentRun := pullRequestClaimStatus(claims, "goobers", providers.ProviderADO, 77, "new-run", now)
+	if !claimed {
+		t.Fatal("legacy github-scoped claim on an ADO PR is invisible to the provider-scoped reader")
+	}
+	if ownedByCurrentRun {
+		t.Fatal("legacy claim held by a different run was attributed to the new run")
+	}
+
+	available, err := filterClaimAvailablePullRequests(
+		ledger, "goobers", providers.ProviderADO, "new-run",
+		[]providers.PullRequestSummary{{Number: 77}}, now,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(available) != 0 {
+		t.Fatalf("available = %+v, want PR #77 excluded — it is still held by the legacy claim", available)
+	}
+
+	// The run that actually holds the legacy claim must still recognize it
+	// as its own: currentRunHasLivePullRequestClaim reads ForRunAll's
+	// unfiltered result, so it needs the same legacy-namespace fallback.
+	held, err := ledger.ForRunAll(claimContext(), "legacy-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !currentRunHasLivePullRequestClaim(held, "goobers", providers.ProviderADO, "legacy-run", now) {
+		t.Fatal("legacy-run's own legacy github-scoped claim on an ADO PR was not recognized as its own live claim")
+	}
+
+	// Once the legacy claim expires, the same PR must become claimable again
+	// under the new provider-scoped key — the fallback must not pin it
+	// forever.
+	expired := now.Add(2 * time.Hour)
+	expiredClaims, err := pullRequestClaimListing(ledger, "goobers", providers.ProviderADO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimedAfterExpiry, _ := pullRequestClaimStatus(expiredClaims, "goobers", providers.ProviderADO, 77, "new-run", expired); claimedAfterExpiry {
+		t.Fatal("expired legacy claim is still reported as live")
+	}
+}
+
 // TestPullRequestClaimRejectsMissingProviderIdentity keeps the failure at the
 // earliest reliable boundary: without a provider a scoped claim cannot be
 // namespaced, so the claim is refused with an actionable diagnostic rather
