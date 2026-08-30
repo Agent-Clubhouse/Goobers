@@ -4586,7 +4586,7 @@ a.telemetry-error-row:hover {
   font-weight: 650;
 }
 
-.ledger-item-causal button {
+.ledger-item-failure button {
   box-shadow: inset 3px 0 0 var(--danger);
 }
 
@@ -5151,6 +5151,22 @@ a.telemetry-error-row:hover {
 
 .ledger-copy .selected-event-label {
   color: var(--accent-ink);
+}
+
+.ledger-severity {
+  align-items: center;
+  color: var(--danger);
+  display: inline-flex;
+  font-size: 7px !important;
+  font-weight: 760;
+  gap: 3px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ledger-severity .icon {
+  height: 9px;
+  width: 9px;
 }
 
 .run-inspector {
