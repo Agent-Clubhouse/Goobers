@@ -40,15 +40,21 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
+
 	temporalworker "go.temporal.io/sdk/worker"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
@@ -144,24 +150,56 @@ func TestEngineLearningEpisodeNamesTheCorrectedEvent(t *testing.T) {
 // BuildLearningEpisode surfaces here as a digest diff rather than as a
 // nondeterminism panic in production.
 func TestEngineLearningEpisodeIsDeterministic(t *testing.T) {
-	for _, fixture := range []struct {
-		name string
-		id   string
-		spec apiv1.WorkflowSpec
-	}{
-		{name: "no contextFrom", id: "e10-det", spec: parityLearningEpisodeSpec()},
-		{name: "implementation-lane contextFrom", id: "e10-det-contextfrom",
-			spec: parityLearningEpisodeContextFromSpec()},
-	} {
+	for _, fixture := range learningEpisodeFixtures() {
 		t.Run(fixture.name, func(t *testing.T) {
-			assertLearningEpisodeIsDeterministic(t, fixture.id, fixture.spec)
+			assertLearningEpisodeIsDeterministic(t, fixture)
 		})
 	}
 }
 
-func assertLearningEpisodeIsDeterministic(t *testing.T, id string, spec apiv1.WorkflowSpec) {
+// learningEpisodeFixtures is the shared table the determinism and replay tests
+// both walk. The send-back entry is #3931's: it is the only one whose episodes
+// are addressed to an attempt the SUBJECT's counter cannot name, so it is the
+// only one where a target-derived nextAttempt can be shown to replay stably.
+func learningEpisodeFixtures() []learningEpisodeFixture {
+	return []learningEpisodeFixture{
+		{name: "no contextFrom", id: "e10-det", spec: parityLearningEpisodeSpec(),
+			script: learningEpisodeScript(), episodes: 1},
+		{name: "implementation-lane contextFrom", id: "e10-det-contextfrom",
+			spec: parityLearningEpisodeContextFromSpec(), script: learningEpisodeScript(), episodes: 1},
+		{name: "nontrivial send-back", id: "e10-det-send-back",
+			spec: parityLearningEpisodeSendBackSpec(), script: learningEpisodeSendBackScript(), episodes: 2},
+	}
+}
+
+type learningEpisodeFixture struct {
+	name     string
+	id       string
+	spec     apiv1.WorkflowSpec
+	script   map[string][]scriptedCall
+	episodes int
+}
+
+// learningEpisodeSendBackScript drives parityLearningEpisodeSendBackSpec
+// through BOTH of its send-backs, which is what makes implement's entry count
+// overtake local-ci's attempt.
+func learningEpisodeSendBackScript() map[string][]scriptedCall {
+	return map[string][]scriptedCall{
+		"implement": {
+			fail("nonzero_exit", "3 tests failed"),
+			succeed(map[string]interface{}{"tests": "green"}),
+			succeed(map[string]interface{}{"tests": "green"}),
+		},
+		"local-ci": {
+			fail("nonzero_exit", "local ci is red"),
+			succeed(map[string]interface{}{"ci": "green"}),
+		},
+	}
+}
+
+func assertLearningEpisodeIsDeterministic(t *testing.T, fixture learningEpisodeFixture) {
 	t.Helper()
-	script := learningEpisodeScript()
+	id, spec, script := fixture.id, fixture.spec, fixture.script
 	first, _, firstErr := shortcutRunWithID(t, id, spec, script)
 	second, _, secondErr := shortcutRunWithID(t, id, spec, script)
 	if (firstErr == nil) != (secondErr == nil) {
@@ -172,9 +210,9 @@ func assertLearningEpisodeIsDeterministic(t *testing.T, id string, spec apiv1.Wo
 	}
 	firstEpisodes := learningEpisodes(paritySide{Name: "first", Events: first})
 	secondEpisodes := learningEpisodes(paritySide{Name: "second", Events: second})
-	if len(firstEpisodes) != 1 {
-		t.Fatalf("first walk injected %d learning episode(s), want exactly 1:\n%s",
-			len(firstEpisodes), formatEventSeqs(first))
+	if len(firstEpisodes) != fixture.episodes {
+		t.Fatalf("first walk injected %d learning episode(s), want exactly %d:\n%s",
+			len(firstEpisodes), fixture.episodes, formatEventSeqs(first))
 	}
 	if err := diffLearningEpisodes("second walk", secondEpisodes, firstEpisodes); err != nil {
 		t.Fatalf("learning episodes differ between two identical walks: %v", err)
@@ -225,17 +263,10 @@ func TestEngineLearningEpisodeHistoryReplays(t *testing.T) {
 	// implement dispatch the previous run's trailing success — no failure, no
 	// retry arm, no injection, and a fixture that silently stopped testing
 	// anything.
-	for _, fixture := range []struct {
-		name string
-		id   string
-		spec apiv1.WorkflowSpec
-	}{
-		{name: "no contextFrom", id: "e10-replay", spec: parityLearningEpisodeSpec()},
-		{name: "implementation-lane contextFrom", id: "e10-replay-contextfrom",
-			spec: parityLearningEpisodeContextFromSpec()},
-	} {
+	for _, fixture := range learningEpisodeFixtures() {
+		fixture.id = strings.Replace(fixture.id, "e10-det", "e10-replay", 1)
 		t.Run(fixture.name, func(t *testing.T) {
-			exec := newScriptedExec(learningEpisodeScript())
+			exec := newScriptedExec(fixture.script)
 			w := temporalworker.New(temporalClient, fixture.id, temporalworker.Options{})
 			RegisterWith(w, &Activities{
 				Goober:     exec,
@@ -247,7 +278,7 @@ func TestEngineLearningEpisodeHistoryReplays(t *testing.T) {
 				t.Fatalf("start Temporal worker: %v", err)
 			}
 			t.Cleanup(w.Stop)
-			replayLearningEpisodeHistory(ctx, t, temporalClient, fixture.id, fixture.id, fixture.spec)
+			replayLearningEpisodeHistory(ctx, t, temporalClient, fixture.id, fixture.id, fixture)
 		})
 	}
 }
@@ -258,10 +289,10 @@ func TestEngineLearningEpisodeHistoryReplays(t *testing.T) {
 // walk produced.
 func replayLearningEpisodeHistory(
 	ctx context.Context, t *testing.T, temporalClient client.Client,
-	taskQueue, id string, spec apiv1.WorkflowSpec,
+	taskQueue, id string, fixture learningEpisodeFixture,
 ) {
 	t.Helper()
-	in := runInput(id, spec)
+	in := runInput(id, fixture.spec)
 	in.RunID = id
 	in.TriggerKind = string(journal.TriggerManual)
 	run, err := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
@@ -280,9 +311,9 @@ func replayLearningEpisodeHistory(
 	// it from history, so this is already one round trip through replay.
 	recorded := mustQueryProjection(ctx, t, temporalClient, run.GetID())
 	episodes := projectionEpisodes(t, recorded)
-	if len(episodes) != 1 {
-		t.Fatalf("engine run injected %d learning episode(s), want exactly 1 — the fail branch must re-enter "+
-			"implement and fire the retry arm once", len(episodes))
+	if len(episodes) != fixture.episodes {
+		t.Fatalf("engine run injected %d learning episode(s), want exactly %d — the fail branch(es) must "+
+			"re-enter implement and fire the retry arm", len(episodes), fixture.episodes)
 	}
 
 	iter := temporalClient.GetWorkflowHistory(ctx, run.GetID(), run.GetRunID(), false,
@@ -315,8 +346,10 @@ func replayLearningEpisodeHistory(
 				i, episodes[i], replayed[i])
 		}
 	}
-	t.Logf("replayed learning episode: artifact=%s digest=%s pointer=%s id=%s",
-		episodes[0].Name, episodes[0].Digest, episodes[0].Pointer, episodes[0].EpisodeID)
+	for i, episode := range episodes {
+		t.Logf("replayed learning episode %d: artifact=%s digest=%s pointer=%s id=%s nextAttempt=%d",
+			i+1, episode.Name, episode.Digest, episode.Pointer, episode.EpisodeID, episode.NextAttempt)
+	}
 }
 
 // projectionDigest is the in-walk-derived identity of one injected episode, in
@@ -326,6 +359,11 @@ type projectionDigest struct {
 	Digest    string
 	Pointer   string
 	EpisodeID string
+	// NextAttempt is #3931's number. It is inside the digest already, so it is
+	// not adding coverage so much as making a replay failure legible: a worker
+	// that re-derived the attempt from the wrong stage reports a digest diff
+	// and, beside it, the two attempt numbers that explain it.
+	NextAttempt int
 }
 
 // projectionEpisodes reads the injected episodes straight off a JournalProjection
@@ -354,6 +392,7 @@ func projectionEpisodes(t *testing.T, proj JournalProjection) []projectionDigest
 		ev := proj.Ops[i+1].Event
 		entry.EpisodeID = annotationString(ev.Runner, "episodeId")
 		entry.Pointer = runner.LearningEpisodePointerName(uint64(annotationInt(ev.Runner, "sourceSeq")))
+		entry.NextAttempt = annotationInt(ev.Runner, "nextAttempt")
 		out = append(out, entry)
 	}
 	return out
@@ -369,6 +408,248 @@ func mustQueryProjection(ctx context.Context, t *testing.T, c client.Client, wor
 		t.Fatalf("query journal projection: %v", err)
 	}
 	return proj
+}
+
+// The migration guard for #3931, asserted against a real recorded history.
+//
+// #3931 changed the episode's BYTES: nextAttempt is serialized into the
+// episode, so it is inside the artifact's content digest and inside the digest
+// the injected pointer carries. A worker that replayed a pre-change history
+// with the post-change derivation would re-derive a different artifact than the
+// one that history recorded, which is a run's journal disagreeing with itself
+// about the correction a stage was dispatched with.
+//
+// The seam is workflow.GetVersion(learningEpisodeTargetAttemptChange), taken on
+// the injection path only. This test proves the two halves that make it real:
+//
+//  1. the marker is actually RECORDED — a MarkerRecorded history event carrying
+//     the change id — so a future worker replaying this history is pinned to
+//     version 1 and cannot silently adopt a third derivation;
+//  2. a history recorded WITHOUT the marker (the pre-change shape) still
+//     replays, taking the DefaultVersion branch, which passes
+//     TargetNextAttempt 0 and falls back to the pre-change SourceAttempt+1.
+//
+// The second half is stated in internal/runner by
+// TestBuildLearningEpisodeFallsBackToThePreChangeDerivation, which pins the
+// fallback to the exact pre-change arithmetic; what is asserted here is that
+// the engine reaches it, by replaying a history whose marker has been stripped.
+func TestEngineLearningEpisodeVersionMarkerIsRecorded(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	server, err := temporaltest.StartDevServer(ctx, t, testsuite.DevServerOptions{
+		LogLevel: "error",
+		Stdout:   io.Discard,
+		Stderr:   io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("start Temporal dev server: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := server.Stop(); err != nil {
+			t.Errorf("stop Temporal dev server: %v", err)
+		}
+	})
+	temporalClient := server.Client()
+
+	const id = "e10-version-marker"
+	exec := newScriptedExec(learningEpisodeSendBackScript())
+	w := temporalworker.New(temporalClient, id, temporalworker.Options{})
+	RegisterWith(w, &Activities{
+		Goober:     exec,
+		Det:        exec,
+		Auto:       gate.NewAutomatedEvaluator(),
+		Workspaces: testWorkspaces(t),
+	})
+	if err := w.Start(); err != nil {
+		t.Fatalf("start Temporal worker: %v", err)
+	}
+	t.Cleanup(w.Stop)
+
+	in := runInput(id, parityLearningEpisodeSendBackSpec())
+	in.RunID = id
+	in.TriggerKind = string(journal.TriggerManual)
+	run, err := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID: id, TaskQueue: id,
+	}, Run, in)
+	if err != nil {
+		t.Fatalf("execute workflow: %v", err)
+	}
+	var result RunResult
+	if err := run.Get(ctx, &result); err != nil {
+		t.Fatalf("workflow result: %v", err)
+	}
+
+	history := &historypb.History{}
+	iter := temporalClient.GetWorkflowHistory(ctx, run.GetID(), run.GetRunID(), false,
+		enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	for iter.HasNext() {
+		event, err := iter.Next()
+		if err != nil {
+			t.Fatalf("read workflow history: %v", err)
+		}
+		history.Events = append(history.Events, event)
+	}
+
+	markers := 0
+	for _, event := range history.Events {
+		attrs := event.GetMarkerRecordedEventAttributes()
+		if attrs == nil || attrs.MarkerName != temporalVersionMarkerName {
+			continue
+		}
+		if strings.Contains(marshalMarkerDetails(attrs.Details), learningEpisodeTargetAttemptChange) {
+			markers++
+		}
+	}
+	if markers == 0 {
+		t.Fatalf("no %s marker for change id %q in a history that injected learning episodes.\n"+
+			"Without the marker a worker replaying this history is not pinned to version %d, and a "+
+			"future third derivation of the target attempt would re-derive different episode bytes "+
+			"than the ones this run recorded",
+			temporalVersionMarkerName, learningEpisodeTargetAttemptChange, learningEpisodeTargetAttempt)
+	}
+	t.Logf("recorded %d %s marker(s) for change id %q (version %d)",
+		markers, temporalVersionMarkerName, learningEpisodeTargetAttemptChange, learningEpisodeTargetAttempt)
+
+	// (1) The recorded history replays as itself.
+	replayer := temporalworker.NewWorkflowReplayer()
+	replayer.RegisterWorkflow(Run)
+	if err := replayer.ReplayWorkflowHistory(nil, history); err != nil {
+		t.Fatalf("replay a versioned learning-episode history: %v", err)
+	}
+
+}
+
+// The compatibility half of the migration claim, on a history recorded by a
+// build that PREDATES #3931: testdata/learning-episode-prechange-history.json,
+// recorded against a dev server with the target-attempt derivation reverted, so
+// it carries no marker for learning-episode-target-attempt and its episodes
+// were built with the old SourceAttempt+1 arithmetic.
+//
+// What this proves is that an in-flight run at deploy time CONTINUES. #3931
+// moves a value the walk derives, and moving a derived value is exactly the
+// kind of change that can alter the command sequence downstream of it — a
+// different pointer set reaching a dispatch, a different routing decision, a
+// different activity. The replayer is what says it did not.
+//
+// What it deliberately does NOT prove is that the bytes are the same. Recording
+// an artifact is an in-walk projection op, not a Temporal command, so a walk
+// that re-derived a DIFFERENT episode digest on replay would still replay
+// clean. That claim is the version guard's, and it is pinned separately and
+// exactly: learningEpisodeTargetAttemptFor's two branches
+// (TestLearningEpisodeTargetAttemptIsVersioned), the fallback arithmetic
+// itself (internal/runner's TestBuildLearningEpisodeFallsBackToThePreChangeDerivation),
+// and the marker's presence in new histories
+// (TestEngineLearningEpisodeVersionMarkerIsRecorded). Splitting the claims is
+// the point: a single test asserting all three would be green for the wrong
+// reason.
+//
+// The fixture is the nontrivial send-back, the only shape where the two
+// derivations disagree at all: on a trivial send-back subject+1 and the
+// target's next attempt are the same number, so a fixture built from one would
+// be compatible under either branch and measure nothing.
+func TestEngineLearningEpisodePreChangeHistoryReplays(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "learning-episode-prechange-history.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := &historypb.History{}
+	if err := protojson.Unmarshal(data, history); err != nil {
+		t.Fatalf("decode recorded history: %v", err)
+	}
+
+	// The fixture must really be the pre-change shape. A fixture accidentally
+	// re-recorded against this build would carry the marker, take the version-1
+	// branch on replay, and grade green while testing nothing.
+	for _, event := range history.Events {
+		attrs := event.GetMarkerRecordedEventAttributes()
+		if attrs == nil || attrs.MarkerName != temporalVersionMarkerName {
+			continue
+		}
+		if strings.Contains(marshalMarkerDetails(attrs.Details), learningEpisodeTargetAttemptChange) {
+			t.Fatalf("the pre-change fixture carries a %q version marker; it was recorded against a "+
+				"build that already had #3931 and cannot demonstrate the DefaultVersion branch",
+				learningEpisodeTargetAttemptChange)
+		}
+	}
+	// And it must really be a learning-episode history, or the marker check
+	// above is satisfied by a history that never reaches the seam at all.
+	if !historySchedules(history, "EvaluateAutomated") {
+		t.Fatal("the pre-change fixture scheduled no gate evaluation; it cannot have taken a retry arm")
+	}
+
+	replayer := temporalworker.NewWorkflowReplayer()
+	replayer.RegisterWorkflow(Run)
+	if err := replayer.ReplayWorkflowHistory(nil, history); err != nil {
+		t.Fatalf("a PRE-#3931 history does not replay under the target-attempt code: %v\n"+
+			"workflow.GetVersion(%q) must answer DefaultVersion for a history that carries no marker "+
+			"for it, so the walk re-derives SourceAttempt+1 and commits the artifacts the run "+
+			"originally recorded", err, learningEpisodeTargetAttemptChange)
+	}
+}
+
+// The #3931 version guard's two branches, stated directly.
+//
+// This is the test the pre-change replay CANNOT be: replaying proves the
+// command sequence survived, and the thing the guard actually protects is a
+// value that never becomes a command. Both branches are asserted here, against
+// an addressing whose two derivations disagree — which is the only kind that
+// can detect a guard wired to the wrong side.
+func TestLearningEpisodeTargetAttemptIsVersioned(t *testing.T) {
+	// A nontrivial send-back: the subject is on its first attempt while the
+	// target is about to take its third. The two derivations disagree, which
+	// is what makes each branch identifiable.
+	addressing := runner.LearningEpisodeAddressing{SourceSeq: 19, SourceAttempt: 1, TargetNextAttempt: 3}
+
+	if got := learningEpisodeTargetAttemptFor(workflow.DefaultVersion, addressing); got != 0 {
+		t.Fatalf("DefaultVersion selected targetNextAttempt %d, want 0 — 0 is what makes "+
+			"BuildLearningEpisode fall back to SourceAttempt+1, the arithmetic a pre-#3931 history was "+
+			"recorded with; anything else makes a replayed run commit different episode bytes than the "+
+			"ones its own history says it committed", got)
+	}
+	if got := learningEpisodeTargetAttemptFor(learningEpisodeTargetAttempt, addressing); got != 3 {
+		t.Fatalf("version %d selected targetNextAttempt %d, want the target's own next attempt (3)",
+			learningEpisodeTargetAttempt, got)
+	}
+
+	// The guard must be a floor, not an equality: a later change id adds a
+	// higher version, and the target-attempt derivation stays selected.
+	if got := learningEpisodeTargetAttemptFor(learningEpisodeTargetAttempt+1, addressing); got != 3 {
+		t.Fatalf("a FUTURE version selected targetNextAttempt %d, want 3 — the guard is a floor; an "+
+			"equality check would silently revert this derivation the next time the change id gains a "+
+			"version", got)
+	}
+}
+
+// historySchedules reports whether a recorded history scheduled an activity of
+// the given type.
+func historySchedules(history *historypb.History, activityType string) bool {
+	for _, event := range history.Events {
+		if attrs := event.GetActivityTaskScheduledEventAttributes(); attrs != nil &&
+			attrs.ActivityType.GetName() == activityType {
+			return true
+		}
+	}
+	return false
+}
+
+// temporalVersionMarkerName is the SDK's marker name for workflow.GetVersion.
+// It is unexported inside the SDK (internal_command_state_machine.go), so it is
+// restated here; the test fails loudly if it ever stops matching, because zero
+// markers is a hard failure rather than a skip.
+const temporalVersionMarkerName = "Version"
+
+// marshalMarkerDetails renders a marker's details payloads as text so a change
+// id can be found in them without depending on the SDK's internal encoding of
+// the version marker.
+func marshalMarkerDetails(details map[string]*commonpb.Payloads) string {
+	var sb strings.Builder
+	for key, payloads := range details {
+		sb.WriteString(key)
+		for _, payload := range payloads.GetPayloads() {
+			sb.Write(payload.GetData())
+		}
+	}
+	return sb.String()
 }
 
 // The local runner's retry arm has a SECOND route for the injected pointer:

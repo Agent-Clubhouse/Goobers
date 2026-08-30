@@ -168,10 +168,11 @@ func TestForwardBranchKeepsItsRetryDecisionWithoutAnEpisode(t *testing.T) {
 //   - that the forward stage inside the branch ran and the join was reached;
 //   - that no episode was injected and no episode pointer reached the join.
 //
-// Note the separate defect #3932: the CONCURRENT walker (maxConcurrentBranches
-// > 1) takes runBranch's own retry arm, which never injected an episode at all.
-// That is filed, not fixed here; this fixture deliberately leaves the bound
-// unset so it exercises the sequential path stepGate actually owns.
+// The bound is deliberately left unset, so this fixture exercises the
+// sequential path stepGate owns. Its concurrent counterpart is #3932's
+// TestConcurrentForwardBranchInjectsNothing in learningconcurrentbranch_test.go:
+// both arms now share one producer (recordGateRetryInjection), so the ruling is
+// stated once and tested on both walkers rather than only on this one.
 func TestParallelForwardBranchLeavesBranchAccountingIntact(t *testing.T) {
 	const runID = "run-parallel-forward-branch"
 	joinEnv := make(chan apiv1.InvocationEnvelope, 1)
@@ -276,9 +277,9 @@ func TestParallelForwardBranchLeavesBranchAccountingIntact(t *testing.T) {
 	}
 
 	// The join must not be handed a correction either: a branch-scoped pointer
-	// that is never created cannot leak, but pinning it here is what makes the
-	// #3932 split ("the concurrent walker injects nothing") readable as a
-	// separate defect rather than as this one.
+	// that is never created cannot leak, but pinning it here is what keeps the
+	// two claims separable — "no episode was injected" and "no episode
+	// escaped the branch" fail in different places.
 	var env apiv1.InvocationEnvelope
 	select {
 	case env = <-joinEnv:

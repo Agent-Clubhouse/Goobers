@@ -49,19 +49,28 @@ package engine
 //
 // # Parallels
 //
-// internal/runner's retry arm has a second route for the pointer:
-// parallel.recordCurrentPointer, which scopes it to the active branch instead
-// of the run-level pointer set. There is deliberately no engine counterpart and
-// no parity row for it — spec.parallels is REFUSED at run start on the engine
+// internal/runner's retry arm has TWO further routes for the pointer, both
+// branch-scoped: parallel.recordCurrentPointer, taken when stepGate runs inside
+// a sequentially-executed branch, and runBranch's own accumulator, taken when
+// maxConcurrentBranches > 1. There is deliberately no engine counterpart and no
+// parity row for either — spec.parallels is REFUSED at run start on the engine
 // (registryrefusal.go, ruling R9), so the engine walk can never reach a retry
 // arm inside a branch — and a parity row is impossible for the same reason:
 // the engine side of such a fixture never starts. The claim is pinned as an
 // executable one instead, by TestLearningEpisodeParallelRouteIsRunnerOnly in
 // learningepisode_test.go, which exercises the runner's branch-scoped route and
 // asserts the engine's refusal beside it. If parallels ever start walking on
-// the engine, that test goes red and the branch-scoped route must be ported
-// with it. Note the separately filed #3932: the CONCURRENT walker's own retry
-// arm injects no episode at all, so lifting R9 needs that fixed first.
+// the engine, that test goes red and the branch-scoped routes must be ported
+// with it.
+//
+// #3932 closed the divergence BETWEEN those two runner routes. runBranch used
+// to carry a hand-copied half of the arm — the verdict pointer and not the
+// learning episode — so maxConcurrentBranches, a scheduling bound, decided
+// whether a repass received its correction. Both walkers now share one producer
+// (runner.recordGateRetryInjection), and the equivalence is pinned by
+// TestConcurrentAndSequentialBranchesInjectTheSameCorrection. That removes the
+// prerequisite this note used to record for lifting R9: there is now one arm to
+// port rather than two that disagree.
 //
 // # The forward-branch ruling (#3929)
 //
@@ -203,6 +212,156 @@ func init() {
 		Premise: premiseLearningEpisodeForwardBranch,
 		Check:   checkLearningEpisodeForwardBranch,
 	})
+
+	// The NONTRIVIAL send-back (#3931). Everything above sends work back to
+	// the stage that produced the failure, where the subject's attempt and the
+	// target's next attempt are the same number and a derivation off the wrong
+	// stage cannot be seen. This one separates them.
+	registerParityRow(parityCase{
+		Row:        rowLearningEpisodeSendBack,
+		Name:       "a send-back to a stage OTHER than the failing one addresses the target's own next attempt on both runners",
+		DSLVersion: "2.0",
+		Spec:       parityLearningEpisodeSendBackSpec(),
+		Script: map[string][]scriptedCall{
+			"implement": {
+				fail("nonzero_exit", "3 tests failed"),
+				succeed(map[string]interface{}{"tests": "green"}),
+				succeed(map[string]interface{}{"tests": "green"}),
+			},
+			"local-ci": {
+				fail("nonzero_exit", "local ci is red"),
+				succeed(map[string]interface{}{"ci": "green"}),
+			},
+		},
+		Premise: premiseLearningEpisodeSendBack,
+		Check:   checkLearningEpisodeSendBack,
+	})
+}
+
+// parityLearningEpisodeSendBackSpec is the shipped implementation lane's
+// skeleton: two gates whose fail branches BOTH re-enter implement, the second
+// of them over a different subject.
+//
+//	implement -> review     {pass: local-ci,   fail: implement}
+//	local-ci  -> local-gate {pass: @complete,  fail: implement}
+//
+// Scripted so both send-backs are taken, the walk is:
+//
+//	implement#1 fails    -> review fails     -> implement   (subject implement@1)
+//	implement#2 succeeds -> review passes
+//	local-ci#1  fails    -> local-gate fails -> implement   (subject local-ci@1)
+//	implement#3 succeeds -> review passes    -> local-ci#2 succeeds -> complete
+//
+// The first send-back is trivial and pins that #3931 did not move the
+// degenerate case. The second is the row's point: local-ci runs once per cycle
+// so its attempt is 1, while implement is about to take its THIRD entry.
+func parityLearningEpisodeSendBackSpec() apiv1.WorkflowSpec {
+	return fixtureSpec("implement",
+		[]apiv1.Task{
+			detTask("implement", "review"),
+			detTask("local-ci", "local-gate"),
+		},
+		[]apiv1.Gate{
+			statusGate("review", map[string]string{
+				"pass": "local-ci",
+				"fail": "implement",
+			}),
+			statusGate("local-gate", map[string]string{
+				"pass": wf.TerminalComplete,
+				"fail": "implement",
+			}),
+		},
+	)
+}
+
+// premiseLearningEpisodeSendBack pins the runner behaviour the row grades the
+// engine against: two episodes, the first trivial and unchanged, the second
+// addressed to a target attempt the SUBJECT's counter cannot name.
+//
+// The anti-vacuity assertion here is the stage-dispatch one. A fixture that
+// stopped taking the second send-back — a changed repass budget, a changed
+// classifier, a changed script — would report one episode instead of two and
+// the interesting half of the row would silently disappear.
+func premiseLearningEpisodeSendBack(obs parityObservation) error {
+	if err := requireStagesDispatched(obs.Runner,
+		[]string{"implement", "implement", "local-ci", "implement", "local-ci"}); err != nil {
+		return errParityPremisef(obs.Case.Row,
+			"%v — the row needs BOTH send-backs taken, so that implement's entry count overtakes the "+
+				"subject's attempt", err)
+	}
+	got := learningEpisodes(obs.Runner)
+	if len(got) != 2 {
+		return errParityPremisef(obs.Case.Row,
+			"runner injected %d learning episode(s), want exactly 2: %s", len(got), joinLearningEpisodes(got))
+	}
+	trivial, nontrivial := got[0], got[1]
+	if trivial.Subject != "implement" || trivial.Target != "implement" ||
+		trivial.SourceAttempt != 1 || trivial.NextAttempt != 2 {
+		return errParityPremisef(obs.Case.Row,
+			"the trivial send-back produced %s, want subject implement@1 addressed to implement/2 — "+
+				"#3931 must not move the degenerate case", trivial)
+	}
+	if nontrivial.Subject != "local-ci" || nontrivial.Target != "implement" {
+		return errParityPremisef(obs.Case.Row,
+			"the second episode is %s, want subject local-ci sent back to implement — the whole row is "+
+				"about a target that is not the failing stage", nontrivial)
+	}
+	if nontrivial.SourceAttempt != 1 {
+		return errParityPremisef(obs.Case.Row,
+			"the second episode's sourceAttempt is %d, want 1 — it names the SUBJECT's attempt, which is "+
+				"what says which failure the episode is about, and #3931 does not move it",
+			nontrivial.SourceAttempt)
+	}
+	if nontrivial.NextAttempt != 3 {
+		return errParityPremisef(obs.Case.Row,
+			"the second episode is addressed to implement/%d, want implement/3 — local-ci is on attempt 1 "+
+				"while implement is about to take its third entry; sourceAttempt+1 says 2, an entry of "+
+				"implement that has already happened with different content (#3931)",
+			nontrivial.NextAttempt)
+	}
+	if nontrivial.SourceSeq == trivial.SourceSeq {
+		return errParityPremisef(obs.Case.Row,
+			"both episodes name source sequence %d — they correct different failures and must address "+
+				"different events", nontrivial.SourceSeq)
+	}
+	// The annotation is TARGET-scoped (#3931). Its Stage and Attempt name the
+	// entry the correction feeds, not the failure it is about — which is what
+	// makes it findable from the dispatch that reads it, and why sourceStage
+	// exists to name the subject.
+	if nontrivial.Stage != "implement" {
+		return errParityPremisef(obs.Case.Row,
+			"the second episode's annotation is filed under stage %q, want implement — the annotation is "+
+				"scoped to the target it corrects, so a nontrivial send-back files it against the stage "+
+				"being re-entered rather than the one that failed", nontrivial.Stage)
+	}
+	grades := stageFinishedIntegrity(obs.Runner, "implement")
+	if len(grades) != 3 || grades[0] != apiv1.IntegrityTrusted ||
+		grades[1] != apiv1.IntegrityDerived || grades[2] != apiv1.IntegrityDerived {
+		return errParityPremisef(obs.Case.Row,
+			"runner's implement stage.finished integrity was [%s], want [trusted derived derived] — both "+
+				"re-entries are graded on an injected correction", joinIntegrity(grades))
+	}
+	return nil
+}
+
+// checkLearningEpisodeSendBack grades the engine against the runner. Because
+// learningEpisodeRecord carries the episode's content-addressed digest, an
+// engine that derived the target attempt differently — or that read it off the
+// subject, which is what the Temporal DefaultVersion branch still does for
+// pre-#3931 histories — fails on the digest before it fails on the number.
+func checkLearningEpisodeSendBack(obs parityObservation) error {
+	if err := diffLearningEpisodes("engine", learningEpisodes(obs.Engine), learningEpisodes(obs.Runner)); err != nil {
+		return errParityRow(obs.Case.Row,
+			"%v — both drivers must derive the target's next attempt from the TARGET's own history "+
+				"through the shared builder (#3931)", err)
+	}
+	if err := diffLearningPointers(obs); err != nil {
+		return err
+	}
+	if err := diffRepassIntegrity(obs, "implement"); err != nil {
+		return err
+	}
+	return checkAllSurfaces(obs)
 }
 
 // premiseLearningEpisodeForwardBranch pins the runner behaviour the row is
@@ -289,6 +448,7 @@ type learningEpisodeRecord struct {
 	ArtifactName      string
 	PointerName       string
 	Stage             string
+	Subject           string
 	Target            string
 	Gate              string
 	SourceSeq         uint64
@@ -308,10 +468,10 @@ type learningEpisodeRecord struct {
 
 func (r learningEpisodeRecord) String() string {
 	return fmt.Sprintf(
-		"artifact=%s recorded=%t pointer=%s stage=%s target=%s gate=%s sourceSeq=%d sourceAttempt=%d "+
+		"artifact=%s recorded=%t pointer=%s stage=%s subject=%s target=%s gate=%s sourceSeq=%d sourceAttempt=%d "+
 			"nextAttempt=%d id=%s digest=%s path=%s signature=%q classification=%s action=%s "+
 			"correction=%q findings=[%s] integrity=%s",
-		r.ArtifactName, r.ArtifactRecorded, r.PointerName, r.Stage, r.Target, r.Gate, r.SourceSeq,
+		r.ArtifactName, r.ArtifactRecorded, r.PointerName, r.Stage, r.Subject, r.Target, r.Gate, r.SourceSeq,
 		r.SourceAttempt, r.NextAttempt, r.EpisodeID, r.Digest, r.Path, r.Signature, r.Classification,
 		r.RecommendedAction, r.Correction, r.FindingIdentities, r.Integrity)
 }
@@ -343,6 +503,7 @@ func learningEpisodes(side paritySide) []learningEpisodeRecord {
 			ArtifactName:      e.Name,
 			PointerName:       runner.LearningEpisodePointerName(sourceSeq),
 			Stage:             e.Stage,
+			Subject:           annotationString(e.Runner, "sourceStage"),
 			Target:            annotationString(e.Runner, "target"),
 			Gate:              annotationString(e.Runner, "gate"),
 			SourceSeq:         sourceSeq,

@@ -81,6 +81,50 @@
 // answer. Routing and classification are unchanged: a branch the classifier
 // declines still carries no retry-decision annotation and still travels the
 // ordinary advance path.
+// #3931 removed a third kind: not a divergence between the drivers, but a
+// defect they SHARED, and therefore one the parity table graded green.
+//
+// An episode's nextAttempt — the attempt the correction is addressed to — was
+// derived as the failing stage's attempt plus one, on both sides, through the
+// shared builder. That is right only when the gate sends work back to the
+// stage that failed. Every shipped nontrivial send-back separates them:
+// implementation.yaml's `local-gate: fail -> implement` grades a `local-ci`
+// subject, `ci-gate: fail -> remediate-ci` grades `ci-poll`. There the subject
+// runs once per cycle while the target accumulates re-entries, so the
+// correction was addressed to an attempt of the target that had already
+// happened with different content. The episode now carries the TARGET's own
+// next attempt, derived from the target's entry history
+// (runner.ResolveLearningEpisodeAddressing), while SourceAttempt keeps naming
+// the subject — the two answer different questions and had been conflated.
+//
+// The lesson for this ledger is about fixtures rather than about attempts. The
+// defect survived three E10 rows and a ruling because every one of them was a
+// TRIVIAL send-back, where the two derivations produce the same number and no
+// assertion can tell them apart. A parity table cannot see a shared defect at
+// all, and a degenerate fixture cannot see a defect either way; the fix is a
+// non-degenerate row (E10-learning-episode-send-back), not a stronger
+// assertion on a degenerate one.
+//
+// nextAttempt is inside the episode's bytes, so the change moves the artifact's
+// content digest. It does NOT move learning.EpisodeID, which is addressed over
+// SourceRunID, SourceSeq and finding identities alone — the join key every
+// cross-run consumer correlates on is stable, which is what bounded the
+// migration to one Temporal workflow version rather than a data migration. The
+// engine's switch is gated on workflow.GetVersion("learning-episode-target-
+// attempt"); the runner's is not, because the runner re-reads recorded
+// artifacts where the engine re-derives them on replay.
+//
+// #3932 was a divergence internal to the local runner, invisible here for a
+// structural reason worth recording: ruling R9 refuses spec.parallels at run
+// start on the engine, so no parity row can reach it. The runner has two walks
+// that take a gate branch — stepGate and, at maxConcurrentBranches > 1,
+// runBranch — and the second carried a hand-copied HALF of the first, the
+// verdict pointer without the learning episode. A scheduling bound decided
+// whether a repass received its correction. Both now share one producer
+// (runner.recordGateRetryInjection) and one predicate, and the equivalence of
+// the two widths is asserted directly. Divergence-by-duplication is the same
+// shape as #3929's, one layer down: the fix is a shared producer, not a second
+// correct copy.
 //
 // One boundary note, because it was gotten wrong twice: the learning-episode
 // PRODUCER on the generic retry arm (learningEpisode here, recordLearningInjection
