@@ -12,8 +12,9 @@ import (
 	"strings"
 	_ "time/tzdata"
 
-	"github.com/goobers/goobers/internal/version"
 	"golang.org/x/term"
+
+	"github.com/goobers/goobers/internal/version"
 )
 
 const (
