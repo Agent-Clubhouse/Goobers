@@ -97,7 +97,7 @@ func WalkFiles(root string, callback WalkFileCallback, opts WalkFilesOptions) er
 			return nil
 		}
 
-		if !entry.Type().IsRegular() && !(opts.SkipSymlinkEntries == false && entry.Type()&fs.ModeSymlink != 0) {
+		if !entry.Type().IsRegular() && (opts.SkipSymlinkEntries || entry.Type()&fs.ModeSymlink == 0) {
 			return nil
 		}
 
