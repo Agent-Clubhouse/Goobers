@@ -10,7 +10,6 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/runcontrol"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -58,6 +57,12 @@ type gateResult struct {
 	// Reason is the synthesized outcome's own explanation, journaled so an
 	// operator can tell an empty-diff fast-fail from a reviewer's fail.
 	Reason string
+	// Charge is the repass-budget transition this outcome produced
+	// (gate.RepassBudget.Charge). It is carried so a LATER forced escalation —
+	// a duplicate or empty diff — reports the same reason code the runner
+	// reports, from the same helper, rather than re-deriving which budget the
+	// outcome belonged to.
+	Charge gate.RepassCharge
 	// Finding lifecycle across repasses (#3843): which of the previous
 	// verdict's findings this evaluation resolved, suppressed, reopened, or
 	// affirmatively disproved.
@@ -68,33 +73,43 @@ type gateResult struct {
 	DisprovenFindings    []apiv1.Finding
 }
 
-// The walk (engine.go's walk) carries two per-gate map[string]int counters
-// through evaluateGate, and they are easy to mistake for each other because
-// both are keyed by gate name and both feed a "…Attempt" number into
-// gate.started/gate.evaluated. They count two different things:
+// The walk (engine.go's walk) carries the run's repass accounting through
+// evaluateGate as a single gate.RepassBudget, and its four counters are easy
+// to mistake for each other because they are all map[string]int and all feed
+// a "…Attempt" number into gate.started/gate.evaluated. What each one counts,
+// and the fifth counter next door that is NOT part of it:
 //
-//   - gateAttempts is the gate's consecutive non-pass EVALUATION count —
-//     resolveGateOutcome's ledger, advanced (or reset to 0 on a pass) only
-//     AFTER an evaluator outcome comes back. It exists to recover an
-//     interrupted evaluator on replay and to charge the repass budget
-//     (repassAttempts, per re-entered target). It is incremented exactly
-//     once per gate.evaluated and is meaningful for every gate: automated,
-//     self-placed agentic, and pod-dispatched agentic alike.
+//   - budget.Attempts / budget.InfrastructureAttempts are the gate's
+//     consecutive non-pass EVALUATION counts, per class — resolveGateOutcome's
+//     ledger, advanced (or reset to 0) only AFTER an evaluator outcome comes
+//     back. They exist to recover an interrupted evaluator on replay. Each
+//     class resets the other, and a pass resets both. They are incremented
+//     exactly once per gate.evaluated and are meaningful for every gate:
+//     automated, self-placed agentic, and pod-dispatched agentic alike.
+//
+//   - budget.RepassAttempts / budget.InfrastructureRepassAttempts are the
+//     bounded budgets themselves, per RE-ENTERED TARGET STAGE and cumulative
+//     over the run. Policy repasses are bounded by the inherited/per-gate
+//     MaxRepasses; infrastructure ones by gate.DefaultMaxInfrastructureRepasses,
+//     and an intervening non-infra outcome returns the infrastructure retries
+//     the run spent earlier. See gate.RepassBudget for why the two are kept
+//     apart, and #3930 for what happened when this side kept only one.
 //
 //   - gateDispatches (dispatchstage.go's gatePodAttempt) numbers a placed
 //     agentic gate's POD dispatches — advanced BEFORE each dispatch, once
 //     per pod attempt, including infra retries within a single evaluation
 //     that never produced an outcome at all. It is the surrender-plane key
 //     and the pod name (D1: one attempt, one pod), so it has to be unique
-//     per (run, gate) across retries a gateAttempts-keyed number cannot
-//     distinguish — a retried evaluation reuses the SAME gateAttempts value
+//     per (run, gate) across retries a per-evaluation number cannot
+//     distinguish — a retried evaluation reuses the SAME Attempts value
 //     until one finally resolves. Untouched by the self arm, which never
 //     creates a pod.
 //
-// gate.started journals repassAttempt (gateAttempts[gate]+1, read before
-// either counter moves) always, and podAttempt (gateDispatches[gate]+1,
-// likewise read without mutating) only for a gate about to dispatch to a
-// pod — see runJournal.gateStarted.
+// gate.started journals repassAttempt (budget.Attempts[gate]+1, read before
+// any counter moves — the POLICY count, exactly as internal/gate's recordStart
+// reads e.Attempts) always, and podAttempt (gateDispatches[gate]+1, likewise
+// read without mutating) only for a gate about to dispatch to a pod — see
+// runJournal.gateStarted.
 //
 // maxRepassesFor resolves the inherited run budget, retaining the legacy
 // RunInput.MaxRepasses fallback for persisted inputs created before RunControls.
@@ -110,31 +125,33 @@ func maxRepassesFor(in RunInput) int {
 
 // resolveGateOutcome resolves an evaluator outcome to the branch taken and
 // charges every branch that re-enters an already-completed stage to that
-// target's shared budget. Ports gate.Evaluator's trackRepass and escalation
-// override.
-func resolveGateOutcome(g apiv1.Gate, outcome string, reentry bool, gateAttempts, repassAttempts map[string]int, maxRepasses int) (gateResult, error) {
+// target's budget.
+//
+// The charging itself is gate.RepassBudget.Charge — the SAME code
+// gate.Evaluator.trackRepass runs for the local runner, not a workflow-side
+// re-derivation of it (#3930). This function owns only what is genuinely the
+// engine's: resolving the configured branch, and overriding it with the gate's
+// escalation target when the charge exhausted its budget.
+//
+// It used to keep one budget and one bound, and charged infrastructure
+// outcomes to both. That is a decision divergence with nothing failing: on the
+// implementation lane's `local-gate` (infra: local-ci, a self send-back) an
+// engine run escalated a pure infrastructure flake on the FOURTH attempt where
+// the runner escalates on the third, and let two content repasses consume the
+// budget an infrastructure retry needed.
+func resolveGateOutcome(g apiv1.Gate, outcome string, reentry bool, budget *gate.RepassBudget, maxRepasses int) (gateResult, error) {
 	target, ok := wf.BranchTarget(g, outcome)
 	if !ok {
 		return gateResult{}, fmt.Errorf("gate %q: outcome %q has no defined branch (never a silent pass, GT-002)", g.Name, outcome)
 	}
-	if outcome == gate.OutcomePass {
-		gateAttempts[g.Name] = 0
-	} else {
-		gateAttempts[g.Name]++
-	}
-	gateAttempt := gateAttempts[g.Name]
-	if !reentry {
-		return gateResult{Gate: g.Name, Outcome: outcome, Target: target, GateAttempt: gateAttempt}, nil
-	}
-	repassAttempts[target]++
-	attempt := repassAttempts[target]
-	escalated := attempt > runcontrol.MaxRepassesForGate(g, maxRepasses)
-	if escalated {
+	charge := budget.Charge(g, outcome, target, reentry, maxRepasses)
+	if charge.Exceeded {
 		target = escalationTarget(g)
 	}
 	return gateResult{
-		Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt,
-		GateAttempt: gateAttempt, RepassTarget: wfTarget(g, outcome), Escalated: escalated,
+		Gate: g.Name, Outcome: outcome, Target: target, Attempt: charge.Attempt,
+		GateAttempt: charge.GateAttempt, RepassTarget: charge.RepassTarget, Escalated: charge.Exceeded,
+		Charge: charge,
 	}, nil
 }
 
