@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1715,8 +1716,39 @@ func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localschedul
 	if setup.OpenPRRefresher != nil {
 		options = append(options, localscheduler.WithOpenPRCounter(setup.OpenPRRefresher))
 	}
+	if gate := daemonMemoryGate(); gate != nil {
+		options = append(options, localscheduler.WithMemoryGate(gate))
+	}
 	options = append(options, additionalOptions...)
 	return localscheduler.New(setup.Entries, setup.InstanceLog, options...)
+}
+
+// memoryHighWaterEnv names the environment variable that tunes the
+// cgroup-aware admission gate (#3949). It is an environment variable rather
+// than an instance.yaml field because it describes the container the daemon
+// was given, not the instance's workflows: the same instance config is
+// deployed to pods with different memory limits, and the operator who sets the
+// limit is the one who knows the right threshold for it.
+//
+// Unset uses the built-in default. "off" (or "0") disables the gate entirely,
+// which is the escape hatch for an operator who would rather take the OOM kill
+// than the backpressure.
+const memoryHighWaterEnv = "GOOBERS_MEMORY_HIGH_WATER"
+
+// daemonMemoryGate builds the cgroup-aware admission gate, or nil if it is
+// disabled. An unparseable value is not an error: the daemon must still start.
+// NewCgroupMemoryGate clamps an out-of-range fraction to its own default, so a
+// typo degrades to the built-in behaviour instead of refusing every run.
+func daemonMemoryGate() localscheduler.MemoryGate {
+	setting := strings.TrimSpace(os.Getenv(memoryHighWaterEnv))
+	if strings.EqualFold(setting, "off") || setting == "0" {
+		return nil
+	}
+	highWater, err := strconv.ParseFloat(setting, 64)
+	if setting == "" || err != nil {
+		highWater = 0 // Clamped to the package default.
+	}
+	return localscheduler.NewCgroupMemoryGate(highWater)
 }
 
 func publishDaemonAPIAddress(path, address string) error {

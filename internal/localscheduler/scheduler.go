@@ -393,6 +393,19 @@ func WithProviderQuota(gate ProviderQuotaGate) Option {
 	}
 }
 
+// WithMemoryGate wires the cgroup-aware admission gate (#3949): when the
+// daemon's own memory cgroup is near its limit, new runs are refused with
+// ReasonMemoryPressure until it recovers, rather than being admitted into a
+// container that is about to be OOM-killed. Optional — nil/unset leaves it
+// unenforced, which is also what a gate reads as outside a container.
+func WithMemoryGate(gate MemoryGate) Option {
+	return func(s *Scheduler) {
+		if gate != nil {
+			s.conditions.SetMemoryGate(gate)
+		}
+	}
+}
+
 // WithRunnerCapabilities declares the local runner's static advertised
 // capability set (RRQ-1/#1101). A dispatch whose entry requires a capability
 // not in this set is refused before admission, journaling a tick.skipped with a
