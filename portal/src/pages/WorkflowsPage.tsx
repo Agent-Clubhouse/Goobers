@@ -67,7 +67,7 @@ function WorkflowInventory({
           <div>
             <h2>No gaggles configured</h2>
             <p>No configuration is available to the Portal yet. Initialize the instance to begin.</p>
-            <RecoveryCommand command="goobers init --guided <instance>" />
+            <RecoveryCommand command="goobers init --guided" />
           </div>
         </section>
       ) : (

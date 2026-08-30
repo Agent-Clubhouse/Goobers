@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
+	"github.com/goobers/goobers/internal/readmodel/projector"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
@@ -67,6 +68,10 @@ type schedulerSetup struct {
 	// RetentionStats snapshots projection-retention loop counters for status
 	// diagnostics while the daemon is running.
 	RetentionStats func() readmodel.RetentionStats
+	// ProjectorStats snapshots the projector's counters, including the runs it
+	// failed to apply and when it last completed a pass. The read service turns
+	// them into the readState envelope's gap and lag signals (#2843).
+	ProjectorStats func() projector.Stats
 	// ReadModelEpoch is the store's opaque per-build identity (§4.2), read back
 	// at open so a broken store surfaces at daemon start rather than on the first
 	// read. It becomes the SSE cursor's epoch component in Wave 5.
@@ -291,6 +296,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	var watermarks *intake.Store
 	var stopProjector func()
 	var retentionStats func() readmodel.RetentionStats
+	var projectorStats func() projector.Stats
 	var instanceLog *journal.InstanceLog
 	// telemetryOTLPDegradeErr holds a non-nil buildTelemetryClient error that
 	// wraps telemetry.ErrOTLPUnavailable (invalid OTLP TLS material). It is
@@ -432,7 +438,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 				fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
 			} else {
 				watermarks = intakeStore
-				stopProjector, retentionStats = startProjector(ctx, readStore, intakeStore, l, cfg)
+				stopProjector, retentionStats, projectorStats = startProjector(ctx, readStore, intakeStore, l, cfg)
 			}
 		}
 	}
@@ -524,6 +530,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		Watermarks:        watermarks,
 		StopProjector:     stopProjector,
 		RetentionStats:    retentionStats,
+		ProjectorStats:    projectorStats,
 		ReadModelEpoch:    readModelEpoch,
 		Config:            cfg,
 		Definitions:       definitions.Set,

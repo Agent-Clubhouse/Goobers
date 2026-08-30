@@ -589,6 +589,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize read service: %v\n", err)
 		return 1
 	}
+	attachFreshnessSignals(reads, setup)
 	if *disableReadModelReads {
 		// The design §6.6 rollback, made operator-reachable (#2036):
 		// DisableReadModelReads previously had no caller anywhere, so the

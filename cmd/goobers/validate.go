@@ -1117,7 +1117,7 @@ func checkTargetRepositoriesAtFile(
 			continue
 		}
 		pf(stdout, "REPOSITORY %s: reachable\n", label)
-		if repo.Provider == "github" {
+		if repo.Provider == string(providers.ProviderGitHub) {
 			warnOnOversizedRepository(label, repo, token, stdout)
 		}
 	}
@@ -1179,7 +1179,7 @@ func warnOnOversizedRepository(label string, repo instance.RepoRef, token string
 }
 
 func repoUsesToken(repo instance.RepoRef) bool {
-	return repo.Provider != "ado" || repo.Auth == nil || repo.Auth.Kind == instance.ADOAuthPAT
+	return repo.Provider != string(providers.ProviderADO) || repo.Auth == nil || repo.Auth.Kind == instance.ADOAuthPAT
 }
 
 // giteaPreflightRootURL normalizes a Gitea repo's configured baseUrl into the
@@ -1197,7 +1197,7 @@ func giteaPreflightRootURL(repo instance.RepoRef) (string, error) {
 }
 
 func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token string, stores credentials.StoreResolver) error {
-	if repo.Provider == "ado" {
+	if repo.Provider == string(providers.ProviderADO) {
 		provider, err := adoauth.Provider(repo, nil, nil, nil, nil, stores)
 		if err != nil {
 			return err

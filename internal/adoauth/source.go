@@ -15,8 +15,8 @@ import (
 // resolves a store-backed PAT ref (#683); it may be nil only when the PAT is
 // env/file-backed — a store ref without it fails closed at construction.
 func Source(repo instance.RepoRef, runner providers.CommandRunner, stores credentials.StoreResolver) (providers.ADOCredentialSource, error) {
-	if repo.Provider != "ado" {
-		return nil, fmt.Errorf("ADO credential source requires provider %q, got %q", "ado", repo.Provider)
+	if repo.Provider != string(providers.ProviderADO) {
+		return nil, fmt.Errorf("ADO credential source requires provider %q, got %q", providers.ProviderADO, repo.Provider)
 	}
 	kind := instance.ADOAuthPAT
 	if repo.Auth != nil {

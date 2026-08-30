@@ -28,4 +28,34 @@ describe("portal development proxy", () => {
       changeOrigin: true,
     });
   });
+
+  it("routes guided requests to the Getting Started backend", () => {
+    expect(createViteConfig({}).server.proxy["/guided"]).toMatchObject({
+      target: "http://127.0.0.1:8081",
+      changeOrigin: true,
+    });
+    expect(
+      createViteConfig({
+        GOOBERS_GUIDED_URL: "http://127.0.0.1:9091",
+      }).server.proxy["/guided"],
+    ).toMatchObject({
+      target: "http://127.0.0.1:9091",
+      changeOrigin: true,
+    });
+    expect(
+      createViteConfig({}).server.proxy["/guided"].configure,
+    ).toBeTypeOf("function");
+  });
+
+  it("stamps Getting Started mode for the dedicated dev command", () => {
+    const plugin = createViteConfig({}, "getting-started").plugins[1];
+    const html =
+      '<meta name="goobers-dashboard-mode" content="daemon"><title>Goobers · local operations</title>';
+    expect(plugin.transformIndexHtml(html)).toContain(
+      'name="goobers-dashboard-mode" content="getting-started"',
+    );
+    expect(plugin.transformIndexHtml(html)).toContain(
+      "<title>Getting Started | Goobers</title>",
+    );
+  });
 });
