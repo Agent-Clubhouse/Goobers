@@ -226,8 +226,10 @@ partial combination ⇒ a refusal, never a silent local write (decision 005 R3).
 
 Three properties make it safe to hand a stage pod:
 
-- **The key namespace is closed.** `stateclient.ValidKey` admits exactly the four names above (scan
-  cursors by their `backlog-scan-<sha256>.json` shape) and both the client and the daemon enforce it,
+- **The key namespace is closed.** `stateclient.ValidKey` admits exactly the names above, plus the
+  backlog re-sweep generation (`backlog-resweep-<sha256>.json`, joined by Goobers#3898 — it was the
+  last scheduler-directory file the claiming path opened directly), scan cursors by their
+  `backlog-scan-<sha256>.json` shape, and both the client and the daemon enforce it,
   so a state bearer can never address `claims.json`, `config.yaml`, or anything else in the scheduler
   directory. Containment does not rest on path sanitation.
 - **The gaggle is an authorization scope, not a storage location.** The files stay instance-scoped
@@ -258,9 +260,64 @@ lands as an authenticated API call and is journaled as the resolution event. Thi
 
 Exposure rides the existing fail-closed posture: non-loopback bind requires TLS + configured auth
 with no insecure override (`internal/instance/config.go:309-318`, #640), and the shipped OIDC
-authenticator (`internal/oidcauth`) covers humans (HITL, triggers). Pod-to-daemon authentication is
-an open point (§13) — the candidates are projected service-account tokens verified via TokenReview,
-or per-run bearer tokens minted at dispatch and carried as opaque references (#2931-clean).
+authenticator (`internal/oidcauth`) covers humans (HITL, triggers).
+
+### 7.1 Pod-to-daemon authentication, resolved: per-run scoped plane bearers
+
+§14 left the mechanism open between projected service-account tokens and per-run minted bearers.
+Goobers#3897 settles it on the second, and narrows it further: **per-run, per-plane, least-privilege
+bearers minted at dispatch**.
+
+The forcing argument is `GOOBERS_POD_TOKEN`. That token authenticates `__dispatch-exec` — the pod's
+wrapper process — and its authority includes **surrendering the stage's result**. Handing the same
+token to the stage subprocess so it could reach the claims plane would also hand a
+workflow-authored command the ability to declare its own stage successful for work it never did.
+Every downstream gate believes that declaration. So the stage subprocess never sees the pod token at
+all (it is in `dispatcher.DispatcherPrivilegedEnv`, stripped from *every* stage including
+goobers-CLI ones), and the dispatcher instead mints four separate bearers:
+
+| Plane | Endpoint | Bearer | Scope | Also selects on |
+|---|---|---|---|---|
+| Claims | `GOOBERS_CLAIMS_ENDPOINT` | `GOOBERS_CLAIMS_TOKEN` | `claims` | `GOOBERS_RUN_ID` |
+| Scheduler state | `GOOBERS_STATE_ENDPOINT` | `GOOBERS_STATE_TOKEN` | `state` | `GOOBERS_GAGGLE` |
+| Journal | `GOOBERS_JOURNAL_ENDPOINT` | `GOOBERS_JOURNAL_TOKEN` | `journal` | `GOOBERS_RUN_ID` |
+| Telemetry | `GOOBERS_TELEMETRY_ENDPOINT` | `GOOBERS_TELEMETRY_TOKEN` | `telemetry` | `GOOBERS_GAGGLE` |
+
+**Route confinement is enforced server-side, not by naming convention.** A pod bearer carries its
+scopes inside its signature (`internal/podauth`: a third payload segment for `SignedKey`, a grant
+field for the in-memory `Registry`). `httpapi.RequireRoles` resolves every pod-reachable route to
+exactly one scope (`podRouteScope`) and refuses a bearer that does not carry it. A claims bearer
+therefore reaches `/api/v1/claims/*` and nothing else: not the surrender route, not another plane,
+not a human route. The cross product — every scope against every pod route — is asserted in
+`internal/httpapi/podscope_test.go`.
+
+**Run binding is unchanged and independent of scoping.** The subject is still `run:<runID>`, and
+every handler still enforces its own run or gaggle boundary on top. A scope narrows *which planes*;
+the subject narrows *whose data*. Neither substitutes for the other.
+
+**Compatibility, both directions.** An unscoped token keeps the exact pre-scopes payload, so a
+daemon that has not been redeployed still verifies tokens a rolled-forward worker mints, and an
+unscoped principal reaches every pod plane (that is `__dispatch-exec`'s own token). A *scoped* token
+uses a payload shape an old verifier refuses outright — the correct failure direction: an old daemon
+declines the token rather than admitting it with no scope enforcement at all.
+
+**All or nothing.** Each plane client fails closed on a partial environment (`ErrEndpointWithoutToken`,
+`ErrEndpointWithoutRun`, `ErrEndpointWithoutGaggle`), and an endpoint that is simply *absent* is
+worse than an error: the client silently takes its local-file branch, against a pod scratch volume
+nothing reads. The dispatcher therefore stamps the whole eight-variable set or none of it
+(`stampsPlaneEnv`), refusing to dispatch rather than stamping a partial one. The preconditions are:
+a goobers-CLI stage, a configured write API base, a run id, a gaggle, four bearers, and all four
+distinct from each other and from the pod token.
+
+**These variables are authority, not identity.** They sit in a third dispatcher env category,
+`DispatcherPlaneEnv`, alongside `DispatcherPrivilegedEnv` and `DispatcherRunIdentityEnv`. They are
+kept by a goobers-CLI stage exactly as run identity is, but they are *categorised* separately
+because run identity's documented justification is "knowing a run id grants nothing" — and half of
+these names *are* a bearer. Consequences: workflow-authored `env:` may neither name a control
+variable nor dereference one by value (`$(GOOBERS_CLAIMS_TOKEN)` in any declared value is refused at
+render, `ControlEnvOverrideError`); inputs cannot collide by construction
+(`InputEnvVar` prefixes `GOOBERS_INPUT_`); and the operator `envPassthrough` list carries names into
+the `env:default-deny` allowlist only, never values.
 
 ## 8. The live journal service
 
@@ -299,6 +356,29 @@ via new StageAttempt read-model fields (D5).
 the activity; exhaustion fails the attempt as `attemptClass: infra` (#3361 — infrastructure never
 charges the work budget). The event is not droppable: an effect that cannot be journaled did not
 happen, which is the same fail-closed stance the projection took (`ErrUnprojectable`).
+
+**Instance annotations (Goobers#3898).** The scheduler's cross-run narration — "this backlog item
+was eligible but blocked", "this item completed with only blocked work left", "this item's failure
+streak degraded it" — is a `runner.annotation` event in the **instance** log, not in any run's own
+journal. The claiming path used to write it by opening `journal.OpenInstanceLog` on the daemon's
+scheduler directory directly, which is why `backlog-query --claim` could never run in a pod: that
+volume is not mounted there, and mounting it would give a workflow-authored stage write access to
+every run's scheduling record.
+
+It now rides the same run-scoped emit route as a `livejournal.OpInstanceAnnotation` op. The daemon's
+writer appends it to the instance log it was constructed with (`WithInstanceLog`), and **stamps the
+event's `RunID` from the request rather than the payload** — so a pod that legitimately emits for its
+own run still cannot attribute an instance-log entry to a different one. That is a second,
+independent defence behind the route's own `run_mismatch` refusal, on a field the route never
+inspects. A writer built without an instance log **refuses** the op (`ErrNoInstanceLog`) rather than
+dropping it: an annotation a stage believes it delivered and no operator can ever read is exactly
+the invisible failure this replaced.
+
+One documented limit: dedup for these ops holds only while the run is open in memory, because
+`deriveDedupState` rebuilds from run-journal events and these are not run-journal events. A
+duplicated scheduler annotation is append-only narration — noise, not a correctness failure — and
+the stage-side key derivation is content-plus-ordinal so that two genuinely distinct annotations are
+never collapsed into one (the failure that would actually lose information).
 
 **Conformance.** The journal invariant is unchanged: equivalent normative event sets, `(branch, seq)`
 ordered, across runners (A2 harness). The retained projection (DS5) doubles as the cross-check: a
@@ -415,8 +495,10 @@ Falsifiable, aligned with the D11 smoke:
 
 Not re-opened decisions — implementation questions the design deliberately leaves to the epics:
 
-- **Pod-to-daemon auth mechanism** for the write API: projected service-account tokens + TokenReview
-  vs per-run minted bearer references. (Human auth is decided: the shipped OIDC seam.)
+- ~~**Pod-to-daemon auth mechanism** for the write API: projected service-account tokens +
+  TokenReview vs per-run minted bearer references.~~ **Resolved (Goobers#3897), see §7.1:** per-run,
+  per-plane least-privilege bearers minted at dispatch, with route confinement enforced server-side
+  in `httpapi.RequireRoles`. (Human auth was already decided: the shipped OIDC seam.)
 - **Claims store backend** behind the API contract (retain `claims.json` vs a SQLite table on the
   daemon volume) — DS3 makes this swappable; pick at implementation with a migration note.
 - **Emit batching, retry budget, and buffer bounds** for the journal plane before an attempt
@@ -448,3 +530,5 @@ Not re-opened decisions — implementation questions the design deliberately lea
 | #3482 | Increment 1 (D1): moving execution out of the API pod is the first consumer of this seam |
 | #3489 | Root lesson encoded as DS10; confirmation evidence is an open point |
 | #640 / #2901 / #644 | Exposure posture and portal auth ride D10; the write API inherits the fail-closed bind rule |
+| #3897 | Closes §14's pod-to-daemon auth point: per-run, per-plane scoped bearers stamped as a complete fail-closed env set (§7.1) |
+| #3898 | Instance annotations move onto the journal emit plane (§8); the backlog re-sweep generation joins the scheduler-state namespace (§7) |
