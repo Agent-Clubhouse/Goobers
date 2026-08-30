@@ -333,6 +333,11 @@ func TestConnectADOIdentityRecognition(t *testing.T) {
 		if !ok || got != want {
 			t.Errorf("connectADOIdentity(%q) = %+v, %v; want %+v, true", value, got, ok, want)
 		}
+
+		if got, ok := connectADOIdentity("https://dev.azure.com/contoso/Example%20Project/_git/example-repo"); !ok ||
+			got != (connectADORepo{Organization: "contoso", Project: "Example Project", Repository: "example-repo"}) {
+			t.Errorf("escaped project form = %+v, %v", got, ok)
+		}
 	}
 
 	// The short dev.azure.com form ADO emits when project and repository share

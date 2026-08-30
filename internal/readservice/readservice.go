@@ -129,6 +129,10 @@ type Local struct {
 	// AttachIntakeDepth.
 	intakeDepth intakeDepth
 
+	// projectionHealth reports the projector's apply failures and last drain.
+	// Optional; see AttachProjectionHealth.
+	projectionHealth func() ProjectionHealth
+
 	// readMode records how this service answers bounded reads (#1933). Empty
 	// means projected, which keeps every existing construction unchanged.
 	readMode ReadMode

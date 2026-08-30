@@ -71,6 +71,10 @@ type gateResult struct {
 	ReopenedFindingIDs   []string
 	DisprovenFindingIDs  []string
 	DisprovenFindings    []apiv1.Finding
+	// Repeated-finding evidence check (#3136): identities that recurred
+	// across a repass, and the ones the authoritative diff cannot corroborate.
+	RepeatedFindingIDs         []string
+	UnverifiedRepeatFindingIDs []string
 }
 
 // The walk (engine.go's walk) carries the run's repass accounting through

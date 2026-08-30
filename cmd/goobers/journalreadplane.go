@@ -78,7 +78,7 @@ func (s *daemonRunJournalService) crossRun() *journalclient.FileCrossRun {
 // other gaggle's run id.
 func (s *daemonRunJournalService) RunPhase(ctx context.Context, request journalclient.RunPhaseRequest) (journalclient.RunPhaseResponse, error) {
 	if !apiv1.ValidRunID(request.RunID) || !apiv1.ValidRunID(request.TargetRunID) {
-		return journalclient.RunPhaseResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request",
+		return journalclient.RunPhaseResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
 			"runId and targetRunId are required and must be valid run ids", nil)
 	}
 	if !s.runJournalGaggleOK(request.Gaggle, request.RunID) {

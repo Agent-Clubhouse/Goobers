@@ -78,7 +78,7 @@ func podRunContained(w http.ResponseWriter, request *http.Request, run, action s
 		return true
 	}
 	if !apiv1.ValidRunID(run) {
-		writeError(w, http.StatusBadRequest, "invalid_request", "run id is not a safe path segment")
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "run id is not a safe path segment")
 		return false
 	}
 	if principal.Subject != podPrincipalSubject(run) {
@@ -108,14 +108,14 @@ func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLo
 		}
 		var input journalclient.RunPhaseRequest
 		if err := decodeWriteRequest(request, &input); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
 		if !validCrossRunRequest(w, input.RunID, input.Gaggle) {
 			return
 		}
 		if !apiv1.ValidRunID(strings.TrimSpace(input.TargetRunID)) {
-			writeError(w, http.StatusBadRequest, "invalid_request", "targetRunId is required and must be a valid run id")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "targetRunId is required and must be a valid run id")
 			return
 		}
 		if !podBodyRunContained(w, request, input.RunID, "read another run's phase") {
@@ -139,14 +139,14 @@ func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLo
 		}
 		var input journalclient.ConflictTouchRequest
 		if err := decodeWriteRequest(request, &input); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
 		if !validCrossRunRequest(w, input.RunID, input.Gaggle) {
 			return
 		}
 		if input.Since.IsZero() {
-			writeError(w, http.StatusBadRequest, "invalid_request", "since is required; an unbounded conflict-history walk is refused")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "since is required; an unbounded conflict-history walk is refused")
 			return
 		}
 		if !podBodyRunContained(w, request, input.RunID, "read its gaggle's conflict history") {
@@ -173,18 +173,18 @@ func registerRunJournalPlaneRoutes(router *Router, config handlerConfig, errorLo
 		}
 		var input journalclient.UnpushedWorkRequest
 		if err := decodeWriteRequest(request, &input); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
 		if !validCrossRunRequest(w, input.RunID, input.Gaggle) {
 			return
 		}
 		if input.Since.IsZero() {
-			writeError(w, http.StatusBadRequest, "invalid_request", "since is required; an unbounded unpushed-work walk is refused")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "since is required; an unbounded unpushed-work walk is refused")
 			return
 		}
 		if input.MaxInlineDiffBytes < 0 || input.MaxInlineDiffBytes > MaxUnpushedWorkInlineDiffBytes {
-			writeError(w, http.StatusBadRequest, "invalid_request", "maxInlineDiffBytes is out of range")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "maxInlineDiffBytes is out of range")
 			return
 		}
 		if !podBodyRunContained(w, request, input.RunID, "read prior unpushed work") {
@@ -214,11 +214,11 @@ const MaxUnpushedWorkInlineDiffBytes = 1 << 20
 // unscoped walk is precisely what decision 005 R1 declined to expose.
 func validCrossRunRequest(w http.ResponseWriter, runID, gaggle string) bool {
 	if !apiv1.ValidRunID(strings.TrimSpace(runID)) {
-		writeError(w, http.StatusBadRequest, "invalid_request", "runId is required and must be a valid run id")
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "runId is required and must be a valid run id")
 		return false
 	}
 	if strings.TrimSpace(gaggle) == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "gaggle is required; cross-run journal reads are gaggle-scoped")
+		writeError(w, http.StatusBadRequest, CodeInvalidRequest, "gaggle is required; cross-run journal reads are gaggle-scoped")
 		return false
 	}
 	return true

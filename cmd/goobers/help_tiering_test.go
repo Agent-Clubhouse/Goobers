@@ -11,24 +11,23 @@ func TestHelpTiers(t *testing.T) {
 	_, stages, _ := runArgs(t, "help", "stages")
 
 	for _, command := range []string{"init", "validate", "up", "dashboard", "run", "status", "trace"} {
-		line := "goobers " + command
-		if !strings.Contains(core, line) {
-			t.Errorf("core help missing %q", line)
+		if !strings.Contains(core, "\n  "+command) {
+			t.Errorf("core help missing %q", command)
 		}
 	}
-	if strings.Contains(core, "goobers open-pr") {
+	if strings.Contains(core, "\n  open-pr") {
 		t.Error("core help exposes workflow-stage command open-pr")
 	}
-	if strings.Contains(core, "goobers doctor") {
+	if strings.Contains(core, "\n  doctor") {
 		t.Error("core help exposes advanced command doctor")
 	}
-	if !strings.Contains(all, "goobers doctor") || !strings.Contains(all, "goobers open-pr") {
+	if !strings.Contains(all, "\n  doctor") || !strings.Contains(all, "\n  open-pr") {
 		t.Error("complete help does not expose advanced and workflow-stage commands")
 	}
-	if !strings.Contains(stages, "goobers open-pr") {
+	if !strings.Contains(stages, "\n  open-pr") {
 		t.Error("stage help missing open-pr")
 	}
-	if strings.Contains(stages, "goobers init") {
+	if strings.Contains(stages, "\n  init") {
 		t.Error("stage help exposes core command init")
 	}
 }

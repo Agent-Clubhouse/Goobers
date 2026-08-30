@@ -445,3 +445,48 @@ func TestOpenAcceptsAHostAbsolutePath(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 }
+
+// TestOldestPendingReportsBacklogAge pins the age half of the freshness
+// surface: a count alone cannot distinguish a projector mid-pass from one that
+// has stopped.
+func TestOldestPendingReportsBacklogAge(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	if _, found, err := store.OldestPending(ctx); err != nil {
+		t.Fatalf("oldest pending on an empty store: %v", err)
+	} else if found {
+		t.Error("an empty intake store reported a pending observation; a zero time reads " +
+			"as infinitely stale rather than as no backlog")
+	}
+
+	if err := store.Observed(ctx, "run-a", 1); err != nil {
+		t.Fatal(err)
+	}
+	first, found, err := store.OldestPending(ctx)
+	if err != nil || !found {
+		t.Fatalf("oldest pending after one observation: %v, found=%v", err, found)
+	}
+	if err := store.Observed(ctx, "run-b", 1); err != nil {
+		t.Fatal(err)
+	}
+	oldest, found, err := store.OldestPending(ctx)
+	if err != nil || !found {
+		t.Fatalf("oldest pending after two observations: %v, found=%v", err, found)
+	}
+	if !oldest.Equal(first) {
+		t.Errorf("oldest pending = %s, want the first observation %s", oldest, first)
+	}
+
+	if _, err := store.Ack(ctx, "run-a", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Ack(ctx, "run-b", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.OldestPending(ctx); err != nil {
+		t.Fatal(err)
+	} else if found {
+		t.Error("a drained intake store still reports a backlog")
+	}
+}

@@ -187,7 +187,7 @@ func (p *GiteaProvider) GetWorkItem(ctx context.Context, repo RepositoryRef, id 
 		return WorkItem{}, err
 	}
 	if id == "" {
-		return WorkItem{}, fmt.Errorf("issue id is required")
+		return WorkItem{}, errIssueIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id)
 	if err != nil {
@@ -247,7 +247,7 @@ func (p *GiteaProvider) ListComments(ctx context.Context, repo RepositoryRef, id
 		return nil, err
 	}
 	if id == "" {
-		return nil, fmt.Errorf("issue id is required")
+		return nil, errIssueIDRequired
 	}
 	raw, err := p.allIssueComments(ctx, repo, id)
 	if err != nil {
@@ -348,7 +348,7 @@ func (p *GiteaProvider) CreateWorkItemComment(ctx context.Context, repo Reposito
 		return Comment{}, err
 	}
 	if id == "" {
-		return Comment{}, fmt.Errorf("issue id is required")
+		return Comment{}, errIssueIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
 	if err != nil {
@@ -458,7 +458,7 @@ func (p *GiteaProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemRe
 		return WorkItem{}, err
 	}
 	if req.ID == "" {
-		return WorkItem{}, fmt.Errorf("issue id is required")
+		return WorkItem{}, errIssueIDRequired
 	}
 	if req.Milestone != nil && *req.Milestone <= 0 {
 		return WorkItem{}, fmt.Errorf("milestone number must be positive")
@@ -615,7 +615,7 @@ func (p *GiteaProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequ
 		return ClaimResult{}, err
 	}
 	if req.ID == "" {
-		return ClaimResult{}, fmt.Errorf("issue id is required")
+		return ClaimResult{}, errIssueIDRequired
 	}
 	if req.RunID == "" {
 		return ClaimResult{}, fmt.Errorf("run id is required to claim an item")
@@ -659,7 +659,7 @@ func (p *GiteaProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkI
 		return WorkItem{}, err
 	}
 	if req.ID == "" {
-		return WorkItem{}, fmt.Errorf("issue id is required")
+		return WorkItem{}, errIssueIDRequired
 	}
 	if req.RunID == "" {
 		return WorkItem{}, fmt.Errorf("run id is required to release an item")
@@ -775,7 +775,7 @@ func (p *GiteaProvider) HasOpenWorkItemBlocker(ctx context.Context, repo Reposit
 		return false, err
 	}
 	if id == "" {
-		return false, fmt.Errorf("issue id is required")
+		return false, errIssueIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "dependencies")
 	if err != nil {
@@ -811,7 +811,7 @@ func (p *GiteaProvider) ListWorkItemLabelTransitionsForItem(ctx context.Context,
 		return nil, err
 	}
 	if id == "" {
-		return nil, fmt.Errorf("issue id is required")
+		return nil, errIssueIDRequired
 	}
 	if label == "" {
 		return nil, fmt.Errorf("label is required")
@@ -907,38 +907,7 @@ func (p *GiteaProvider) Subscribe(ctx context.Context, sub TriggerSubscription) 
 	if sub.Kind != TriggerPolling {
 		return nil, fmt.Errorf("gitea provider does not support webhook triggers")
 	}
-	interval := sub.PollInterval
-	if interval <= 0 {
-		interval = time.Minute
-	}
-	events := make(chan WorkItemEvent, 1)
-	go func() {
-		defer close(events)
-		seen := map[string]time.Time{}
-		for {
-			items, err := p.ListWorkItems(ctx, ListWorkItemsRequest{Repository: sub.Repository, State: "open", Limit: 100})
-			if err == nil {
-				for _, item := range items {
-					if !shouldEmitWorkItem(seen, item) {
-						continue
-					}
-					select {
-					case <-ctx.Done():
-						return
-					case events <- WorkItemEvent{Provider: ProviderGitea, Kind: TriggerPolling, Item: item, Action: "available"}:
-					}
-				}
-			}
-			timer := time.NewTimer(interval)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-			}
-		}
-	}()
-	return events, nil
+	return subscribeToWorkItems(ctx, sub, ProviderGitea, "open", p.ListWorkItems), nil
 }
 
 // --- label ID resolution (Gitea labels are ID-based, not name-based) ---

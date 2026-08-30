@@ -89,7 +89,7 @@ func stageMutationHandler(action string, interventions InterventionService, life
 		}
 		input, err := decodeInterventionRequest(request)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
 		if principal, ok := PrincipalFromRequest(request); ok {
