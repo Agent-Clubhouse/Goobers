@@ -545,7 +545,7 @@ func TestPullRequestClaimsOverThePlane(t *testing.T) {
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	podRoot := t.TempDir()
 
-	selected, err := claimPullRequestInOrder(podRoot, []providers.PullRequestSummary{{Number: 77}, {Number: 78}}, "run-1", "pr-remediation", time.Hour)
+	selected, err := claimPullRequestInOrder(podRoot, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}, {Number: 78}}, "run-1", "pr-remediation", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +556,7 @@ func TestPullRequestClaimsOverThePlane(t *testing.T) {
 	if err != nil || !ok || number != 78 {
 		t.Fatalf("claimedPullRequestNumber = %d, %v, %v", number, ok, err)
 	}
-	available, err := stageClaimAvailablePullRequests(podRoot, "run-1", []providers.PullRequestSummary{{Number: 77}, {Number: 78}, {Number: 79}}, time.Now())
+	available, err := stageClaimAvailablePullRequests(podRoot, prClaimTestRepo(), "run-1", []providers.PullRequestSummary{{Number: 77}, {Number: 78}, {Number: 79}}, time.Now())
 	if err != nil || len(available) != 2 || available[0].Number != 78 || available[1].Number != 79 {
 		t.Fatalf("claim-available PRs = %+v, %v; want 78 (ours) and 79 (free)", available, err)
 	}

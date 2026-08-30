@@ -151,6 +151,7 @@ func TestFilterClaimAvailablePullRequestsSurfacesLedgerErrors(t *testing.T) {
 	_, err = filterClaimAvailablePullRequests(
 		ledger,
 		"goobers",
+		providers.ProviderGitHub,
 		"",
 		[]providers.PullRequestSummary{{Number: 1}},
 		time.Now(),

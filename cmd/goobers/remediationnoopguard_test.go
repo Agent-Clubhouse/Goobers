@@ -40,7 +40,7 @@ func TestRecordPRRemediationNoopCountsDistinctRuns(t *testing.T) {
 	if err := jr.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 
@@ -85,7 +85,7 @@ func TestRecordPRRemediationNoopSuccessThenNoWorkClearsGuard(t *testing.T) {
 	if err := jr.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 
@@ -135,7 +135,7 @@ func TestTerminalPRRemediationNoopLockTimeoutDefersRecordingToRecovery(t *testin
 	if err := jr.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 

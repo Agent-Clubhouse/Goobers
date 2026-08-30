@@ -226,7 +226,7 @@ func TestRemediationCheckpointRecoversPRFromClaimLedger(t *testing.T) {
 	// Deliberately clear the threaded input: this is the post-agentic-chain
 	// situation, where nothing can thread it.
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "")
-	if _, err := claimPullRequestInOrder(instanceRoot, []providers.PullRequestSummary{{Number: 77}}, "run-364", "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(instanceRoot, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, "run-364", "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed PR claim: %v", err)
 	}
 
@@ -300,7 +300,7 @@ func pushRemediatedFixture(t *testing.T, recordHeadSHA bool) (instanceRoot strin
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
 	t.Chdir(wt.Path)
 
-	if _, err := claimPullRequestInOrder(instanceRoot, []providers.PullRequestSummary{{Number: 77}}, "run-392-push", "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(instanceRoot, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, "run-392-push", "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed PR claim: %v", err)
 	}
 	return instanceRoot, st, wt.Path, headSHA
@@ -546,14 +546,14 @@ func TestClaimedPullRequestNumberIgnoresOtherRuns(t *testing.T) {
 	t.Setenv("GOOBERS_RUN_ID", "run-mine")
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 
-	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 91}}, "run-theirs", "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 91}}, "run-theirs", "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed other run's claim: %v", err)
 	}
 	if _, ok, err := claimedPullRequestNumber(root); err != nil || ok {
 		t.Fatalf("claimedPullRequestNumber = ok %v, err %v; want no claim for this run", ok, err)
 	}
 
-	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, "run-mine", "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, "run-mine", "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed own claim: %v", err)
 	}
 	number, ok, err := claimedPullRequestNumber(root)
@@ -661,7 +661,7 @@ func TestPushRemediatedRefusesToPublishAnUnchangedBranch(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
 	t.Chdir(wt.Path)
-	if _, err := claimPullRequestInOrder(instanceRoot, []providers.PullRequestSummary{{Number: 77}}, "run-392-noop", "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(instanceRoot, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, "run-392-noop", "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed PR claim: %v", err)
 	}
 
