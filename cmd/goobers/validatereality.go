@@ -335,7 +335,8 @@ func appendPlacementFindings(
 // whose resolved ELIGIBLE RUNNER SET excludes every self entry, but whose
 // command or built-in stage kind needs the daemon's instance root — the
 // file claim ledger, a merge lock, an on-disk run journal, or a kind with
-// no pod-side execution path (ci-poll, external-telemetry).
+// no pod-side execution path (external-telemetry; ci-poll gained one in
+// #3881 and no longer warns here).
 //
 // Eligibility comes from the exact solve appendPlacementFindings just ran
 // for placement, reused here rather than re-derived, so this can never

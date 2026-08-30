@@ -288,7 +288,8 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		}
 		// Decision 003 ruling 3: a ledger-touching, journal-reading, or
 		// telemetry-rollup-reading command — or a built-in stage KIND with no
-		// pod-side execution path (ci-poll, external-telemetry) — needs the
+		// pod-side execution path (external-telemetry; ci-poll gained one in
+		// #3881, decision 005 step C5, and is no longer refused here) — needs the
 		// daemon's instance root, which a stage pod does not have. Unlike the
 		// guards above (a misdeclared workspace, an empty command — bugs in
 		// how the stage was built), this is refused as a normal, JOURNALED
@@ -305,7 +306,7 @@ func dispatchRemoteTask(ctx workflow.Context, t apiv1.Task, rec *runJournal, env
 		// treats task.InputsFrom[boundedwait.InputKind] as legal-but-unprovable
 		// statically), and runTask has already resolved that overlay into
 		// env.Inputs immediately before routing here — t.Inputs alone would
-		// miss a dynamically-resolved ci-poll/external-telemetry kind and let
+		// miss a dynamically-resolved external-telemetry kind and let
 		// a pod be created for it.
 		if kind := resolvedKindInput(env); executor.StageRequiresInstanceRoot(t.Run.Command, kind) {
 			return dispatchInstanceRootRefusal(ctx, t, rec, env.ContextPointers, deltaOut, instanceRootRefusalReason(t.Name, t.Run.Command, kind))

@@ -166,9 +166,20 @@ type stageOutcome struct {
 // has no declared command: it executes by invoking a goober through its
 // harness, using the kit the dispatcher published. The kit digest is what
 // distinguishes the two, and it is stamped only for agentic attempts.
+//
+// A DETERMINISTIC stage may still not be a command: `inputs.kind` selects a
+// built-in Go executor, and the declared command is a placeholder the local
+// path never shells out either (internal/executor's TaskExecutor). ci-poll is
+// the one such kind with a pod-side path today (decision 005 C5, #3881); every
+// other kind is refused before dispatch and again by runDeclaredStage's
+// backstop, so falling through to the placeholder command is unreachable for
+// them rather than merely unlikely.
 func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 	if strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest)) != "" {
 		return runAgenticStage(ctx, stdout, stderr)
+	}
+	if strings.TrimSpace(os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) == executor.KindCIPoll {
+		return stageOutcome{Result: runCIPollStage(ctx, stderr)}
 	}
 	return stageOutcome{Result: runDeclaredStage(ctx, stdout, stderr)}
 }
@@ -705,6 +716,23 @@ func dispatcherStampedEnvNames() []string {
 // capabilities this stage declared. The dispatcher stamps the capability NAMES
 // only; the values never exist outside this process and the daemon.
 func resolveStageCredentials(ctx context.Context) ([]dispatcher.MintedCredential, error) {
+	capabilities, err := stageDeclaredCapabilities()
+	if err != nil {
+		return nil, err
+	}
+	if len(capabilities) == 0 {
+		return nil, nil
+	}
+	return resolveCapabilities(ctx, capabilities)
+}
+
+// stageDeclaredCapabilities decodes the capability NAMES the dispatcher
+// stamped for this stage. Separated from the resolution above because the
+// in-pod ci-poll kind (dispatchcipoll.go) must be able to REFUSE on a missing
+// declaration before asking the credential plane for anything — a stage that
+// never declared provider:pr:write has a workflow problem, not a credential
+// one, and calling the plane first would report it as the latter.
+func stageDeclaredCapabilities() ([]string, error) {
 	encoded := strings.TrimSpace(os.Getenv(dispatcher.EnvStageCapabilities))
 	if encoded == "" {
 		return nil, nil
@@ -713,7 +741,7 @@ func resolveStageCredentials(ctx context.Context) ([]dispatcher.MintedCredential
 	if err := json.Unmarshal([]byte(encoded), &capabilities); err != nil {
 		return nil, fmt.Errorf("decode %s: %w", dispatcher.EnvStageCapabilities, err)
 	}
-	return resolveCapabilities(ctx, capabilities)
+	return capabilities, nil
 }
 
 // resolveCheckoutCredential mints the credential that provisions a repo
