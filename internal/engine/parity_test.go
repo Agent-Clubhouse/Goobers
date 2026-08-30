@@ -256,6 +256,31 @@ const (
 	// ruling, and the reason this row is shaped like production rather than
 	// like a fixture.
 	rowLearningEpisodeInfraForwardBranch parityRow = "E10-learning-episode-infra-forward-branch"
+	// rowLearningEpisodeSendBack is the sub-case #3931 closed: a NONTRIVIAL
+	// send-back, where the stage the gate sends work back to is not the stage
+	// that produced the failure.
+	//
+	// Every other E10 fixture is trivial — implement fails, review sends work
+	// back to implement — and on a trivial send-back the subject and the target
+	// are the same stage, so "the subject's attempt plus one" and "the target's
+	// next attempt" are the same number and a derivation off the wrong stage is
+	// invisible. That degeneracy is the reason the defect survived three rows
+	// and a ruling.
+	//
+	// It is also not the shape production runs. implementation.yaml's
+	// `local-gate: fail -> implement` grades a `local-ci` subject;
+	// `ci-gate: fail -> remediate-ci` grades `ci-poll`; pr-remediation's
+	// `finding-responses-gate: fail -> guard-before-implement` grades
+	// `validate-finding-responses`. In each the subject runs once per cycle
+	// while the target accumulates re-entries, so the two numbers diverge on
+	// the second cycle and stay diverged.
+	//
+	// This row walks two cycles of exactly that shape, so the second episode is
+	// addressed to a target attempt the subject's counter cannot name. Both
+	// sides derive it from the target's own history through the shared builder,
+	// so the row is a parity claim about the shared derivation and not only
+	// about the arithmetic.
+	rowLearningEpisodeSendBack parityRow = "E10-learning-episode-send-back"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
@@ -276,9 +301,19 @@ const (
 // strongest state this harness can be in — every registered row is green on
 // both runners — and it is not a licence to stop adding rows. A gap the
 // inventory names but no row pins is still a gap; see the drift ledger in
-// doc.go for divergences observed but not yet inventoried, and #3928/#3930/
-// #3931/#3932 for defects that are real but are NOT parity divergences,
-// because both runners share them.
+// doc.go for divergences observed but not yet inventoried, and #3928/#3930 for
+// defects that are real but are NOT parity divergences, because both runners
+// share them.
+//
+// #3931 and #3932 were two more of that shape and are now closed. #3931 — both
+// drivers derived an episode's nextAttempt from the failing stage rather than
+// from the stage being re-entered — was invisible to this table until
+// rowLearningEpisodeSendBack, because every earlier E10 fixture was a TRIVIAL
+// send-back where the two derivations coincide. That is the failure mode worth
+// naming: a shared defect hides behind a degenerate fixture, and adding the
+// non-degenerate one is what turns it into something a row can see. #3932 was
+// runner-only and unreachable from here at all (R9 refuses parallels), so it is
+// pinned in internal/runner instead.
 var parityExpectedFailures = map[parityRow]string{}
 
 // --- case registration ------------------------------------------------------

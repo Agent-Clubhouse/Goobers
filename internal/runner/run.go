@@ -2099,45 +2099,110 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		return gr, false, terminal, true, failErr
 	}
 	if retry {
-		var injected *apiv1.ContextPointer
-		if gr.VerdictArtifact != nil {
-			pointer := apiv1.ContextPointer{
-				Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
-			}
-			injected = &pointer
+		injection, err := recordGateRetryInjection(
+			ws.jr, ws.in, g.Name, retryTarget, gr, ws.lastStage, ws.lastResult, false,
+		)
+		if err != nil {
+			terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+				fmt.Errorf("runner: journal learning episode injection for gate %q: %w", g.Name, err))
+			return gr, false, terminal, true, failErr
+		}
+		for _, pointer := range injection.pointers() {
 			if ws.parallel != nil {
 				ws.parallel.recordCurrentPointer(pointer)
 			} else {
 				ws.pointers = append(ws.pointers, pointer)
 			}
 		}
-		// #3929: the episode — and ONLY the episode — is gated on the branch
-		// being a true repass. Everything else in this block is the retry
-		// decision itself and is unconditional: the annotation is already
-		// written (routeRetryDecision, with repassAttempt 0 on a forward
-		// branch), the verdict pointer still travels, and ws.state still
-		// takes the branch. A gate that routes ONWARD sends work to a stage
-		// that has not run, which has produced nothing to correct.
-		if LearningEpisodeAppliesToRepass(gr.Attempt) {
-			episode, err := recordLearningInjection(
-				ws.jr, ws.in, g.Name, retryTarget, gr, ws.lastStage, ws.lastResult, injected,
-			)
-			if err != nil {
-				terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
-					fmt.Errorf("runner: journal learning episode injection for gate %q: %w", g.Name, err))
-				return gr, false, terminal, true, failErr
-			}
-			if episode != nil {
-				if ws.parallel != nil {
-					ws.parallel.recordCurrentPointer(*episode)
-				} else {
-					ws.pointers = append(ws.pointers, *episode)
-				}
-			}
-		}
 		ws.state = retryTarget
 	}
 	return gr, retry, Result{}, false, nil
+}
+
+// gateRetryInjection is what a taken retry arm produces for the walk that took
+// it: the reviewer's verdict pointer, and the learning episode's pointer when
+// the branch is a true repass. Both walkers route these into their own
+// accumulator — the sequential walk into ws.pointers or the active branch,
+// runBranch into result.pointers with its artifact/produced accounting.
+type gateRetryInjection struct {
+	verdict *apiv1.ContextPointer
+	episode *apiv1.ContextPointer
+}
+
+// pointers returns the pointers to accumulate, verdict first — the order the
+// sequential walk has always appended them in, and therefore the order a
+// re-entered stage's envelope carries them in.
+func (i gateRetryInjection) pointers() []apiv1.ContextPointer {
+	out := make([]apiv1.ContextPointer, 0, 2)
+	if i.verdict != nil {
+		out = append(out, *i.verdict)
+	}
+	if i.episode != nil {
+		out = append(out, *i.episode)
+	}
+	return out
+}
+
+// recordGateRetryInjection is the retry arm's PRODUCER, shared by both walkers
+// (#3932).
+//
+// The local runner has two walks that reach a gate retry arm — stepGate on the
+// sequential walk and runBranch on the concurrent one — and until this helper
+// existed only the first injected a learning episode. That made
+// maxConcurrentBranches, a scheduling bound, decide whether a repass received
+// its correction: the same definition, the same gate and the same failure
+// produced a durable journal artifact, a context pointer the repass reads and
+// a derived-integrity downgrade, or produced none of them, depending on which
+// walker the scheduler picked. runBranch had copied the verdict-pointer half of
+// the arm and not the learning half, which is the signature of
+// divergence-by-duplication: nothing forced the two arms to stay the same
+// shape.
+//
+// So the arm's producer and its predicate live here, once. The predicate is
+// LearningEpisodeAppliesToRepass — #3929's ruling, itself shared with the
+// engine — rather than a second reading of "did this gate send a stage back",
+// because two walkers diverging on a second axis is the same bug again.
+//
+// replayed is the resume guard runBranch already applied to the verdict
+// pointer: a branch resuming across a gate.evaluated boundary re-derives the
+// gate result from history rather than evaluating it, and its previously
+// recorded pointers are rebuilt by pendingParallel. Recording the artifact
+// again there would double-count it and append a second annotation for one
+// injection. The sequential walk has no such boundary and passes false.
+func recordGateRetryInjection(
+	jr executionJournal,
+	in StartInput,
+	gateName, target string,
+	gr gate.Result,
+	sourceStage string,
+	sourceResult apiv1.ResultEnvelope,
+	replayed bool,
+) (gateRetryInjection, error) {
+	var out gateRetryInjection
+	if replayed {
+		return out, nil
+	}
+	if gr.VerdictArtifact != nil {
+		out.verdict = &apiv1.ContextPointer{
+			Name: gateName + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
+		}
+	}
+	// #3929: the episode — and ONLY the episode — is gated on the branch being
+	// a true repass. Everything else on this arm is the retry decision itself
+	// and is unconditional: the annotation is already written
+	// (routeRetryDecision, with repassAttempt 0 on a forward branch), the
+	// verdict pointer still travels, and the walk still takes the branch. A
+	// gate that routes ONWARD sends work to a stage that has not run, which
+	// has produced nothing to correct.
+	if !LearningEpisodeAppliesToRepass(gr.Attempt) {
+		return out, nil
+	}
+	episode, err := recordLearningInjection(jr, in, gateName, target, gr, sourceStage, sourceResult, out.verdict)
+	if err != nil {
+		return gateRetryInjection{}, err
+	}
+	out.episode = episode
+	return out, nil
 }
 
 func recordLearningInjection(
@@ -2152,7 +2217,8 @@ func recordLearningInjection(
 	if jr == nil {
 		return nil, nil
 	}
-	sourceSeq, sourceAttempt := learningSourceEvent(jr.Dir(), gateName, sourceStage, result.Verdict != nil)
+	addressing := learningEpisodeAddressing(jr.Dir(), gateName, sourceStage, target, result.Verdict != nil)
+	sourceSeq, sourceAttempt := addressing.SourceSeq, addressing.SourceAttempt
 	if sourceAttempt == 0 {
 		sourceAttempt = result.Attempt
 	}
@@ -2161,19 +2227,19 @@ func recordLearningInjection(
 	// injection has to produce the identical struct rather than a second
 	// hand-assembled copy of it.
 	episode := BuildLearningEpisode(LearningEpisodeInput{
-		RunID:          in.RunID,
-		Workflow:       in.Machine.Def.Name,
-		WorkflowDigest: in.Machine.Digest(),
-		GooberDigest:   in.GooberDigest,
-		Gate:           gateName,
-		Stage:          sourceStage,
-		SourceSeq:      sourceSeq,
-		SourceAttempt:  sourceAttempt,
-		Verdict:        result.Verdict,
-		SourceResult:   sourceResult,
-		VerdictPointer: pointer,
+		RunID:             in.RunID,
+		Workflow:          in.Machine.Def.Name,
+		WorkflowDigest:    in.Machine.Digest(),
+		GooberDigest:      in.GooberDigest,
+		Gate:              gateName,
+		Stage:             sourceStage,
+		SourceSeq:         sourceSeq,
+		SourceAttempt:     sourceAttempt,
+		TargetNextAttempt: addressing.TargetNextAttempt,
+		Verdict:           result.Verdict,
+		SourceResult:      sourceResult,
+		VerdictPointer:    pointer,
 	})
-	sourceAttempt = episode.SourceAttempt
 	data, err := json.Marshal(episode)
 	if err != nil {
 		return nil, fmt.Errorf("encode learning episode: %w", err)
@@ -2193,9 +2259,13 @@ func recordLearningInjection(
 	}
 	runner := LearningEpisodeAnnotation(episode, target, ref.Path, ref.Digest)
 	if err := jr.Append(journal.Event{
-		Type:      journal.EventRunnerAnnotation,
+		Type: journal.EventRunnerAnnotation,
+		// #3931: Stage is the TARGET and so is Attempt. A stage-scoped event's
+		// Attempt is that stage's attempt number, and the injection is
+		// evidence for the invocation it FEEDS — which, on a nontrivial
+		// send-back, is not the subject's attempt plus one.
 		Stage:     target,
-		Attempt:   sourceAttempt + 1,
+		Attempt:   episode.NextAttempt,
 		Name:      name,
 		Ref:       &ref,
 		Integrity: ref.Integrity,
@@ -2206,38 +2276,16 @@ func recordLearningInjection(
 	return episodePointer, nil
 }
 
-func learningSourceEvent(runDir, gateName, stage string, reviewer bool) (uint64, int) {
+func learningEpisodeAddressing(runDir, gateName, sourceStage, target string, reviewer bool) LearningEpisodeAddressing {
 	rd, err := journal.OpenRead(runDir)
 	if err != nil {
-		return 0, 0
+		return LearningEpisodeAddressing{}
 	}
 	events, err := rd.Events()
 	if err != nil {
-		return 0, 0
+		return LearningEpisodeAddressing{}
 	}
-	return LearningSourceEvent(events, gateName, stage, reviewer)
-}
-
-// LearningSourceEvent is the pure half of the scan above: which journaled event
-// an injected learning episode is ABOUT, and which attempt produced it.
-//
-// The returned seq is not decorative — it names the episode artifact
-// (LearningEpisodeArtifactName) and its context pointer, so it is part of the
-// conformance surface. Exported for #3882 so the engine, whose events live in
-// workflow state rather than on disk, resolves the identical source rather
-// than inventing its own numbering.
-func LearningSourceEvent(events []journal.Event, gateName, stage string, reviewer bool) (uint64, int) {
-	for i := len(events) - 1; i >= 0; i-- {
-		event := events[i]
-		if reviewer && event.Type == journal.EventGateEvaluated && event.Gate == gateName {
-			attempt, _ := runnerInt(event.Runner["repassAttempt"])
-			return event.Seq, attempt
-		}
-		if !reviewer && event.Type == journal.EventStageFinished && event.Stage == stage {
-			return event.Seq, event.Attempt
-		}
-	}
-	return 0, 0
+	return ResolveLearningEpisodeAddressing(events, gateName, sourceStage, target, reviewer)
 }
 
 func learningFindingsForRepass(gateName, stage string, verdict *apiv1.Verdict, result apiv1.ResultEnvelope) []apiv1.Finding {

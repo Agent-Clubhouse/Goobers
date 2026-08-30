@@ -764,11 +764,25 @@ func (r *Runner) runParallelBranch(
 				return result
 			}
 			if retry {
-				if !replayed && gr.VerdictArtifact != nil {
-					result.pointers = append(result.pointers, apiv1.ContextPointer{
-						Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
-					})
-					result.artifacts++
+				// #3932: the retry arm's producer is SHARED with the
+				// sequential walk (recordGateRetryInjection). runBranch used
+				// to carry a hand-copied half of it — the verdict pointer and
+				// not the learning episode — which made maxConcurrentBranches
+				// decide whether a repass received its correction. Each walker
+				// still routes the pointers into its own accumulator; only the
+				// production of them is one place.
+				injection, err := recordGateRetryInjection(
+					branchJournal, in, g.Name, retryTarget, gr, result.lastStage, result.lastResult, replayed,
+				)
+				if err != nil {
+					result.status, result.err = journal.BranchFailed, err
+					return result
+				}
+				for _, pointer := range injection.pointers() {
+					result.pointers = append(result.pointers, pointer)
+					if pointer.Artifact != nil {
+						result.artifacts++
+					}
 					result.produced = true
 				}
 				state = retryTarget
