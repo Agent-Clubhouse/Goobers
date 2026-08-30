@@ -16,8 +16,9 @@ import (
 // It has bitten three times — GateGooberCapabilities (#294/#3528, every gate
 // resolving to no reviewer grants), RunControls (#3820, every run pinned to
 // the built-in 45m/3 defaults) and now the backlog-query claim partition
-// (#3873, a run claiming the sibling instance's items). Each was a field that
-// existed on one side of this function and not the other.
+// (#3873, a run claiming the sibling instance's items) and the goober digest
+// (#3876, a run whose identity could not name the goober it walked). Each was
+// a field that existed on one side of this function and not the other.
 //
 // The test is deliberately reflective rather than a field-by-field literal
 // comparison: StartSpec and RunInput name these fields identically, so a NEW
@@ -40,6 +41,7 @@ func TestStartInputVersionPinsEveryStartSpecField(t *testing.T) {
 		RunControls:               apiv1.RunControls{MaxRepasses: 7, MaxRunDuration: "6h", StalledRunTimeout: "90m"},
 		BacklogQueryAssignedTo:    "goobersbot",
 		BacklogQueryRequireLabels: "goobers:cloud",
+		GooberDigest:              "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
 	}
 	specValue := reflect.ValueOf(spec)
 	for i := 0; i < specValue.NumField(); i++ {

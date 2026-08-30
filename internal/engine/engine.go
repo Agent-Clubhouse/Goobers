@@ -133,6 +133,19 @@ type RunInput struct {
 	// these fields existed — is a no-op, byte for byte as before.
 	BacklogQueryAssignedTo    string `json:"backlogQueryAssignedTo,omitempty"`
 	BacklogQueryRequireLabels string `json:"backlogQueryRequireLabels,omitempty"`
+	// GooberDigest is the content digest of the goober kit this run's stages
+	// are meant to execute, pinned at start exactly as the local scheduler
+	// stamps it onto a runner-driven StartRequest
+	// (localscheduler.gooberDigestStarter). It lands in the run.yaml identity
+	// so an engine run's provenance names its kit and the parity harness can
+	// compare the two drivers' run.yaml side by side.
+	//
+	// It is provenance, NOT selection: the worker resolves the kit it
+	// actually runs from its own mounted config, so a kit rolled forward
+	// mid-flight is still observed by an in-flight run. Closing that is
+	// #3884. Empty — every input persisted before this field existed —
+	// projects exactly as before.
+	GooberDigest string `json:"gooberDigest,omitempty"`
 }
 
 func (in RunInput) previewFeaturesEnabled() bool {
@@ -267,8 +280,8 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		return RunResult{}, err
 	}
 	for _, g := range in.Spec.Gates {
-		if g.Evaluator == apiv1.EvaluatorHuman {
-			return RunResult{}, fmt.Errorf("%s: gate %q", temporalHumanGateUnsupported, g.Name)
+		if err := refuseHumanGate(g); err != nil {
+			return RunResult{}, err
 		}
 	}
 	rec, err := newRunJournal(ctx, in, m)

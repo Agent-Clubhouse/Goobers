@@ -150,3 +150,47 @@ func refuseUnsupportedEngineFeatures(name string, spec apiv1.WorkflowSpec) error
 	}
 	return &UnsupportedFeaturesError{Workflow: name, Refusals: refusals}
 }
+
+// refuseHumanGate is run()'s human-gate refusal, factored out so the daemon's
+// pre-dispatch check (RefuseDefinition) cannot drift from the walk's own.
+func refuseHumanGate(g apiv1.Gate) error {
+	if g.Evaluator != apiv1.EvaluatorHuman {
+		return nil
+	}
+	return fmt.Errorf("%s: gate %q", temporalHumanGateUnsupported, g.Name)
+}
+
+// RefuseDefinition reports why the engine walk cannot execute this definition,
+// or nil when it can. It aggregates every refusal the walk applies from the
+// definition ALONE — the R9 unsupported-feature set and human gates.
+//
+// # Why the daemon needs this before it dispatches
+//
+// Both refusals fire late: R9 at Registry.StartInputVersion, human gates
+// inside run() itself, and the human-gate one lands BEFORE newRunJournal, so
+// the workflow emits nothing whatsoever. That placement is right for
+// `goobers engine-start`, where the operator sees the refusal on stderr and
+// fixes the definition.
+//
+// It is wrong as a scheduler outcome. Since #3876 a cron tick can dispatch a
+// lane onto the engine, and neither refusal is visible to the placement-pin
+// predicate that made that choice: `spec.parallels`, `task.experiment`,
+// `task.limits`, `task.outbox`, and human gates contribute no placement rows,
+// so a fully remote-pinned lane declaring any of them is selected for the
+// engine and then refused on EVERY tick — permanently, having run perfectly
+// well on the local runner the day before.
+//
+// So the daemon asks this question at selection time and keeps such a lane on
+// the runner, where the feature is implemented, with the refusal text as the
+// operator-facing reason.
+func RefuseDefinition(name string, spec apiv1.WorkflowSpec) error {
+	if err := refuseUnsupportedEngineFeatures(name, spec); err != nil {
+		return err
+	}
+	for _, g := range spec.Gates {
+		if err := refuseHumanGate(g); err != nil {
+			return err
+		}
+	}
+	return nil
+}

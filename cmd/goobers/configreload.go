@@ -210,10 +210,16 @@ func (r *configReloader) poll(now time.Time) error {
 		r.observedDigest = r.appliedDigest
 		return nil
 	}
+	// #3876: buildSchedulerDefinitions built a fresh engine-runtime holder,
+	// and only the boot path has the Temporal client and live-journal writer
+	// to attach one with. Carry the boot attachment across BEFORE the new
+	// entries go live, or every engine lane fails closed from this reload on.
+	definitions.EngineRuntime.adoptFrom(r.setup.EngineRuntime)
 	if err := r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest); err != nil {
 		r.observedDigest = r.appliedDigest
 		return err
 	}
+	r.setup.EngineRuntime = definitions.EngineRuntime
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
 	r.setup.Interventions.Replace(interventionDefinitions(definitions, r.setup.LegacyRunner))
 	if r.setup.CredentialPlane != nil {

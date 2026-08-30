@@ -89,6 +89,11 @@ type schedulerSetup struct {
 	// is configured). Only the `up` daemon starts its Run loop and wires it as
 	// a scheduler option — see up.go.
 	OpenPRRefresher *localscheduler.OpenPRRefresherSet
+	// EngineRuntime is the late-bound engine wiring every engineStarter these
+	// entries carry shares. up.go attaches it once the Temporal client and
+	// live journal writer exist; see engineRuntime for why that cannot happen
+	// at definition-build time.
+	EngineRuntime *engineRuntime
 	// ProviderQuota is the shared provider budget ledger. Stage rate-limit
 	// failures and provider response headers write to it; SchedulerOptions wires
 	// the same pointer into polling and run admission. Unlike OpenPRRefresher it
@@ -113,17 +118,21 @@ type schedulerSetup struct {
 }
 
 type schedulerDefinitions struct {
-	Set               *instance.ConfigSet
-	Validation        *validate.Report
-	HarnessPreflight  harnessPreflightInfo
-	Runner            *runner.Runner
-	Runners           map[string]*runner.Runner
-	Entries           []localscheduler.WorkflowEntry
-	Machines          map[localscheduler.WorkflowIdentity]*workflow.Machine
-	GooberDigests     map[localscheduler.WorkflowIdentity]string
-	Goobers           map[string]apiv1.GooberSpec
-	RepoRefs          map[localscheduler.WorkflowIdentity]apiv1.RepoRef
-	OpenPRRefresher   *localscheduler.OpenPRRefresherSet
+	Set              *instance.ConfigSet
+	Validation       *validate.Report
+	HarnessPreflight harnessPreflightInfo
+	Runner           *runner.Runner
+	Runners          map[string]*runner.Runner
+	Entries          []localscheduler.WorkflowEntry
+	Machines         map[localscheduler.WorkflowIdentity]*workflow.Machine
+	GooberDigests    map[localscheduler.WorkflowIdentity]string
+	Goobers          map[string]apiv1.GooberSpec
+	RepoRefs         map[localscheduler.WorkflowIdentity]apiv1.RepoRef
+	OpenPRRefresher  *localscheduler.OpenPRRefresherSet
+	// EngineRuntime is the late-bound holder every engineStarter these
+	// definitions installed shares; up.go attaches it once the Temporal
+	// client and live journal writer exist. See engineRuntime.
+	EngineRuntime     *engineRuntime
 	Worktrees         *worktree.Manager
 	WorktreesByGaggle map[string]*worktree.Manager
 }
@@ -521,6 +530,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		ConfigDigest:      configDigest,
 		RecoveredClaims:   recoveredClaims,
 		OpenPRRefresher:   definitions.OpenPRRefresher,
+		EngineRuntime:     definitions.EngineRuntime,
 		ProviderQuota:     providerQuota,
 		SharedRegistry:    sharedReg,
 		TerminalNotifier:  terminalNotifier,
@@ -718,10 +728,11 @@ func buildSchedulerDefinitions(
 	}
 	sandboxPostures := sandboxPosturesByGaggle(cfg, set)
 	runners := make(map[string]*runner.Runner)
+	engineHooks := make(map[string]*engineTerminalHooks)
 	for _, gaggle := range configuredGaggleNames(set) {
 		reportStartupProgress(startupProgress, fmt.Sprintf("initializing gaggle %q runtime", gaggle))
 		scoped := workcopyLayouts[gaggle]
-		rn, manager, err := buildRuntimeRunner(
+		rn, manager, hooks, err := buildRuntimeRunner(
 			scoped, cfg, resolvedGoobers, instructions, tel, instanceLog, sharedReg, wtManagers[gaggle],
 			providerQuota, watermarks, terminalNotifier, branchNamespaces, gaggleProjects[gaggle], gaggleAdditionalRepos[gaggle], harnessInfo,
 			stores, sandboxPostures[gaggle], selfIdentities[gaggle], requireLabelsDefaults[gaggle],
@@ -731,6 +742,7 @@ func buildSchedulerDefinitions(
 		}
 		wtManagers[gaggle] = manager
 		runners[gaggle] = rn
+		engineHooks[gaggle] = hooks
 		reportStartupProgress(startupProgress, fmt.Sprintf("gaggle %q runtime ready", gaggle))
 	}
 
@@ -765,6 +777,22 @@ func buildSchedulerDefinitions(
 		fmt.Fprintf(os.Stderr, "warning: workflow %q (gaggle %q) cannot be placed on the declared runners: inventory and is refused: %s\n",
 			identity.Workflow, identity.Gaggle, diagnostic)
 	}
+
+	// #3876 (decision 005 D1): decide, PER ENTRY, whether this lane dispatches
+	// onto the tier-3 engine. See selectEngineForEntry for the predicate and
+	// why it cannot be a daemon-wide switch.
+	selections, err := engineSelections(cfg, set, machines)
+	if err != nil {
+		return nil, err
+	}
+	// The Temporal client and the live journal writer do not exist yet — see
+	// engineRuntime. Every engineStarter shares this holder and up.go attaches
+	// it once both exist.
+	engineRuntimeHolder := &engineRuntime{}
+	// The instance's preview posture, resolved exactly as
+	// bootstrap.RegisterGaggleWorkflows resolves it, so a run this daemon
+	// dispatches pins the same value a `goobers engine-start` run would.
+	allowPreviewFeatures := set.Manifest != nil && workflow.PreviewFeaturesEnabled(set.Manifest.Annotations)
 
 	entries := make([]localscheduler.WorkflowEntry, 0, len(set.Workflows))
 	for i := range set.Workflows {
@@ -880,8 +908,30 @@ func buildSchedulerDefinitions(
 			// provider actually called rather than a future configured adapter.
 			PollProvider: apiv1.ProviderGitHub,
 			PollPriority: pollPriority,
-			Starter:      &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, watermarks: watermarks, log: instanceLog, runners: runnerRegistry},
-			RepoRef:      repoRefs[identity],
+			Starter: selectEntryStarter(entryStarterInput{
+				runnerStarter: &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, watermarks: watermarks, log: instanceLog, runners: runnerRegistry},
+				selection:     selections[identity],
+				runtime:       engineRuntimeHolder,
+				hooks:         engineHooks[wf.Spec.Gaggle],
+				gaggle:        wf.Spec.Gaggle,
+				def:           machine.Def,
+				spec: engineRunRequest{
+					cfg:     cfg,
+					set:     set,
+					gaggle:  wf.Spec.Gaggle,
+					project: repoRefs[identity],
+					def:     machine.Def,
+				},
+				layout:               l.ForGaggle(wf.Spec.Gaggle),
+				log:                  instanceLog,
+				telemetry:            tel,
+				rollupDB:             rollupDB,
+				watermarks:           watermarks,
+				allowPreviewFeatures: allowPreviewFeatures,
+				liveJournal:          cfg.EngineProjectionEnabled(),
+				wg:                   wg,
+			}),
+			RepoRef: repoRefs[identity],
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
 			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
@@ -910,6 +960,7 @@ func buildSchedulerDefinitions(
 		Goobers:           resolvedGoobers,
 		RepoRefs:          repoRefs,
 		OpenPRRefresher:   openPRRefresher,
+		EngineRuntime:     engineRuntimeHolder,
 		Worktrees:         firstWorktrees,
 		WorktreesByGaggle: wtManagers,
 	}, nil
@@ -1085,7 +1136,7 @@ func buildRetainedLegacyRunner(
 	if err != nil {
 		return nil, nil, err
 	}
-	return buildRuntimeRunner(
+	rn, manager, _, err := buildRuntimeRunner(
 		l, cfg, goobers, instructions, tel, instanceLog, sharedReg, nil, providerQuota,
 		watermarks, terminalNotifier, branchNamespacesByGaggle(set), apiv1.RepoRef{}, nil, harnessInfo, stores,
 		// Legacy retained runtime is not gaggle-scoped, so only the
@@ -1095,6 +1146,7 @@ func buildRetainedLegacyRunner(
 		// Same reasoning: no gaggle to consult for a RequireLabels default.
 		"",
 	)
+	return rn, manager, err
 }
 
 func retainedLegacyRuntimeExists(l instance.Layout) (bool, error) {
@@ -1133,7 +1185,7 @@ func buildRuntimeRunner(
 	sandboxPosture instance.SandboxPosture,
 	selfIdentity string,
 	requireLabelsDefault string,
-) (*runner.Runner, *worktree.Manager, error) {
+) (*runner.Runner, *worktree.Manager, *engineTerminalHooks, error) {
 	runnerCfg, manager, err := buildRunnerConfig(runnerCompositionInput{
 		Layout:               l,
 		Config:               cfg,
@@ -1151,15 +1203,16 @@ func buildRuntimeRunner(
 		ProviderQuota:        providerQuota,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
 	runnerCfg.JournalAdvanced = runIntakeObserver(watermarks, instanceLog)
-	runnerCfg.PrepareTerminal, err = buildTerminalBranchPreparer(l, cfg, gaggleProject, sharedReg, stores)
+	prepareTerminal, err := buildTerminalBranchPreparer(l, cfg, gaggleProject, sharedReg, stores)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+	runnerCfg.PrepareTerminal = prepareTerminal.runnerPreparer()
 	// #3347: retire the provider-visible claim marker in the same terminal
 	// cleanup step that releases the ledger lease, so a run that never reaches
 	// issue-close-out (the `no-work` outcome short-circuits straight to
@@ -1167,7 +1220,7 @@ func buildRuntimeRunner(
 	// the next backlog-curation cycle.
 	releaseClaimMarker, claimMarkerRepo, err := buildTerminalClaimMarkerRelease(cfg, gaggleProject, sharedReg, stores)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	runnerCfg.FinalizeTerminal = func(runID string, _ journal.RunPhase) error {
 		return finalizeTerminalRunWithClaimMarkers(l, instanceLog, manager, runID, claimMarkerRepo, releaseClaimMarker)
@@ -1176,9 +1229,27 @@ func buildRuntimeRunner(
 	runnerCfg.NotifyTerminal = composeTerminalNotifier(runnerCfg.NotifyTerminal, terminalNotifier)
 	rn, err := runner.New(runnerCfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return rn, manager, nil
+	// #3876: the engine terminal-hook frame is derived from THIS config, not
+	// rebuilt. Every field below is the identical closure the local runner
+	// will call, so a run that ends on the engine has the same instance-level
+	// consequences as the same run ending on the runner — which is the whole
+	// claim D1's parity rests on.
+	hooks := &engineTerminalHooks{
+		layout:       l,
+		log:          instanceLog,
+		repoRef:      gaggleProject,
+		existingFix:  runnerCfg.ExistingFix,
+		blocked:      runnerCfg.Blocked,
+		failed:       runnerCfg.Failed,
+		escalation:   runnerCfg.Escalation,
+		claimedItems: runnerCfg.ClaimedItems,
+		prepare:      prepareTerminal,
+		notify:       runnerCfg.NotifyTerminal,
+		finalize:     runnerCfg.FinalizeTerminal,
+	}
+	return rn, manager, hooks, nil
 }
 
 // composeTerminalNotifier chains the instance circuit breaker ahead of the

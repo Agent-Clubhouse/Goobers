@@ -147,7 +147,7 @@ func buildTerminalRunAbortLabeler(cfg *instance.Config, project apiv1.RepoRef, r
 // Scans the FULL run history (not just the current resumed segment, unlike
 // finalizeTerminalBranch's branch-cleanup scan) because a PR opened in an
 // earlier segment must still be labeled if this run ultimately aborts.
-func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, jr *journal.Run, repo providers.RepositoryRef, labelPR prLabelFunc) error {
+func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, annotate terminalAnnotator, repo providers.RepositoryRef, labelPR prLabelFunc) error {
 	if phase != journal.PhaseAborted || labelPR == nil {
 		return nil
 	}
@@ -191,10 +191,10 @@ func labelAbortedRunPR(runsDir, runID string, phase journal.RunPhase, jr *journa
 	_, labelErr := labelPR(ctx, providers.UpdateWorkItemRequest{
 		Repository: repo, ID: pr.ID, AddLabels: []string{abortedRunLabel},
 	})
-	return appendRunAbortLabelResult(jr, pr, labelErr)
+	return appendRunAbortLabelResult(annotate, pr, labelErr)
 }
 
-func appendRunAbortLabelResult(jr *journal.Run, pr *journal.ExternalRef, labelErr error) error {
+func appendRunAbortLabelResult(annotate terminalAnnotator, pr *journal.ExternalRef, labelErr error) error {
 	ev := journal.Event{
 		Type:        journal.EventRefTouched,
 		ExternalRef: pr,
@@ -203,7 +203,7 @@ func appendRunAbortLabelResult(jr *journal.Run, pr *journal.ExternalRef, labelEr
 	if labelErr != nil {
 		ev.Error = &journal.ErrorDetail{Code: "run_abort_label_failed", Message: labelErr.Error()}
 	}
-	if err := jr.Append(ev); err != nil {
+	if err := annotate.Append(ev); err != nil {
 		return fmt.Errorf("journal run-abort label: %w", err)
 	}
 	return labelErr
