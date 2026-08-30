@@ -16,7 +16,7 @@ function __goobers_completion_escalations
 end
 
 complete -c goobers -e
-complete -c goobers -n '__fish_use_subcommand' -f -a 'version init connect examples scaffold validate fleet up down service dashboard getting-started run signal workflow status stats trace escalations completion help'
+complete -c goobers -n '__fish_use_subcommand' -f -a 'version init connect examples scaffold validate up down service dashboard getting-started run signal workflow status stats trace escalations completion help'
 complete -c goobers -s h -l help -d 'Show help'
 complete -c goobers -l version -d 'Print the version'
 

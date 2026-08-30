@@ -14,10 +14,6 @@
 | [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
-| [`goobers fleet`](#goobers-fleet) | associate this instance with a Fleet service |
-| [`goobers fleet join`](#goobers-fleet-join) | discover and enroll this instance with a Fleet service |
-| [`goobers fleet leave`](#goobers-fleet-leave) | remove this instance's Fleet association and protected secrets |
-| [`goobers fleet status`](#goobers-fleet-status) | show durable Fleet registration and connection state |
 | [`goobers getting-started`](#goobers-getting-started) | serve and open the guided portal Getting Started walkthrough |
 | [`goobers help`](#goobers-help) | show command or concept help |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
@@ -73,6 +69,10 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers explain`](#goobers-explain) | project field facts from an embedded JSON Schema |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
+| [`goobers fleet`](#goobers-fleet) | associate this instance with a Fleet service |
+| [`goobers fleet join`](#goobers-fleet-join) | discover and enroll this instance with a Fleet service |
+| [`goobers fleet leave`](#goobers-fleet-leave) | remove this instance's Fleet association and protected secrets |
+| [`goobers fleet status`](#goobers-fleet-status) | show durable Fleet registration and connection state |
 | [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
