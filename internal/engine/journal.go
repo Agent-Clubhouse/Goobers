@@ -543,10 +543,17 @@ func (r *runJournal) runFinished(ctx workflow.Context, phase journal.RunPhase) {
 	r.append(ctx, journal.Event{Type: journal.EventRunFinished, Status: string(phase)})
 }
 
-// phaseForStatus maps the engine's RunResult status onto the local runner's
+// PhaseForStatus maps the engine's RunResult status onto the local runner's
 // terminal phase vocabulary — the same mapping the cross-runner outcome tests
 // pin (crossrunner_test.go statusForPhase, inverted).
-func phaseForStatus(status string) (journal.RunPhase, error) {
+//
+// Exported (plan item E2) because the daemon's RunResult -> StartResult mapping
+// and the terminal-hook frame built on it MUST key on the journal PHASE, not on
+// the status word. StatusBlocked — an @abort target — maps to PhaseAborted, not
+// to anything "blocked"-shaped, so a hook table keyed on status wording
+// silently skips that whole class of terminal. Keeping one exported mapping
+// means there is nothing for a second table to disagree with.
+func PhaseForStatus(status string) (journal.RunPhase, error) {
 	switch status {
 	case StatusCompleted:
 		return journal.PhaseCompleted, nil

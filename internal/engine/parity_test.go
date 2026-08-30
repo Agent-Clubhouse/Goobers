@@ -132,6 +132,32 @@ const (
 	// (#562)" (plan item E2): "<stage>.<key>" resolves against ANY completed
 	// stage's outputs on a DSL version that supports it.
 	rowInputsFromStageQualified parityRow = "E2-inputsfrom-stage-qualified"
+	// rowNonRetryableEscalation is inventory row "#415 non-retryable
+	// escalation bypass" (plan item E2): a failure with retryable=false and a
+	// recognized escalate code routes to the Next gate's ESCALATE CONTROL
+	// BRANCH without evaluating the gate.
+	rowNonRetryableEscalation parityRow = "E2-nonretryable-escalation"
+	// rowNonRetryableEscalationDefault is the same inventory row's default
+	// arm: with no escalate control branch on the Next gate, the same failure
+	// ends the run at @escalate rather than entering the repass loop.
+	rowNonRetryableEscalationDefault parityRow = "E2-nonretryable-escalation-default"
+	// rowRetryableFailureStillGated is the NEGATIVE half of the same row: a
+	// RETRYABLE failure carrying the very same escalate code must still route
+	// into the Next gate. It is what forbids a port that escalates on the code
+	// alone.
+	rowRetryableFailureStillGated parityRow = "E2-retryable-failure-still-gated"
+	// rowUnrecognizedFailureStillGated is the other negative half: a
+	// NON-retryable failure carrying a code the escalate set does not name
+	// must also still route into the Next gate. It forbids a port keyed on
+	// error.retryable alone.
+	rowUnrecognizedFailureStillGated parityRow = "E2-unrecognized-failure-still-gated"
+	// rowRetryDecisionAnnotation is inventory row "retry-decision annotation"
+	// (plan item E2): a fail branch re-entering a completed stage leaves the
+	// runner.annotation priorRepassCause reads back (E6).
+	rowRetryDecisionAnnotation parityRow = "E2-retry-decision-annotation"
+	// rowRetryDecisionNotOnPass is the negative half of the annotation row: a
+	// PASSING gate, and an escalated repass, write no retry decision.
+	rowRetryDecisionNotOnPass parityRow = "E2-retry-decision-not-on-pass"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
@@ -147,11 +173,6 @@ const (
 var parityExpectedFailures = map[parityRow]string{
 	rowBacklogQueryDefaults: "engine RunInput has no BacklogQueryAssignedTo/RequireLabels; " +
 		"internal/runner/run.go:4413-4414 applies them in dispatchTask and the engine's runTask has no counterpart. Closed by plan item E1.",
-	rowRunResultNoWork: "engine.RunResult has no NoWork field (engine.go:131-141); the local runner sets " +
-		"Result.NoWork = steps == 1 (run.go:3606) and localscheduler's idle backoff reads it. Closed by plan item E2.",
-	rowInputsFromStageQualified: "engine runTask resolves inputsFrom only against the immediately preceding task's " +
-		"Outputs (engine.go:555-561); the local runner resolves \"<stage>.<key>\" against any completed stage " +
-		"(internal/runner/inputsfrom.go:78-89) when workflow.SupportsStageQualifiedInputs holds. Closed by plan item E2.",
 }
 
 // --- case registration ------------------------------------------------------
