@@ -77,7 +77,8 @@ func (c *Connector) Run(ctx context.Context) error {
 		} else if err != nil {
 			return err
 		}
-		if !record.Association.CredentialExpiresAt.After(c.now()) {
+		if !record.Association.CredentialExpiresAt.IsZero() &&
+			!record.Association.CredentialExpiresAt.After(c.now()) {
 			err := fmt.Errorf("fleet: credential expired at %s", record.Association.CredentialExpiresAt.UTC().Format(time.RFC3339))
 			_ = c.recordDisconnected(record.Association.RegistrationID, err)
 			return err

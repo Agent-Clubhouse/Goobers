@@ -78,7 +78,7 @@ func (c Client) Enroll(ctx context.Context, endpoint string, request EnrollmentR
 	}
 	if response.FleetID == "" || response.RegistrationID == "" || response.RegistrationGeneration <= 0 ||
 		response.CanonicalURI == "" || response.ConnectionEndpoint == "" ||
-		response.Credential == "" || response.CredentialExpiresAt.IsZero() {
+		response.Credential == "" {
 		return EnrollmentResponse{}, fmt.Errorf("fleet: enrollment response is incomplete")
 	}
 	if _, err := validateTransportURI(response.CanonicalURI, "https", "http", ""); err != nil {

@@ -135,6 +135,34 @@ func TestDiscoverAndEnroll(t *testing.T) {
 	}
 }
 
+func TestEnrollAcceptsNonExpiringDevelopmentCredential(t *testing.T) {
+	response := EnrollmentResponse{
+		FleetID:                "fleet-1",
+		RegistrationID:         "registration-1",
+		RegistrationGeneration: 1,
+		CanonicalURI:           "https://fleet.example",
+		ConnectionEndpoint:     "wss://fleet.example/api/fleet/v1/connections",
+		Credential:             "credential",
+		ProtocolVersion:        ProtocolVersion,
+	}
+	data, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enrollment, err := (Client{HTTP: staticHTTPDoer{response: data}}).Enroll(
+		context.Background(),
+		"https://fleet.example/api/fleet/v1/enrollments:redeem",
+		EnrollmentRequest{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enrollment.CredentialExpiresAt.IsZero() {
+		t.Fatalf("credential expiry = %s, want non-expiring zero value", enrollment.CredentialExpiresAt)
+	}
+}
+
 func TestDiscoveryRejectsWrongEndpoints(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(Discovery{

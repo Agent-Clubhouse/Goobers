@@ -156,6 +156,27 @@ func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	}
 }
 
+func TestConnectorAllowsNonExpiringDevelopmentCredential(t *testing.T) {
+	store, _ := connectorTestStorage(t)
+	store.record.Association.CredentialExpiresAt = time.Time{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	connector := NewConnector(store, "root", "v1.2.3")
+	dialed := false
+	connector.Dial = func(context.Context, string, *websocket.DialOptions) (Socket, *http.Response, error) {
+		dialed = true
+		cancel()
+		return nil, nil, context.Canceled
+	}
+
+	if err := connector.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !dialed {
+		t.Fatal("connector rejected a non-expiring development credential before dialing")
+	}
+}
+
 func TestConnectorReconnectsAfterFailure(t *testing.T) {
 	store, _ := connectorTestStorage(t)
 	socket := newFakeSocket(
