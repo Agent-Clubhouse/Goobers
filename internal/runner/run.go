@@ -1203,12 +1203,26 @@ type resumeRetryAccounting struct {
 // that can drift (the #624 shared-constant pattern).
 const BaseSyncConflictErrorCode = "base_sync_conflict"
 
+// RetryDecisionKind and RetryFailureClassKey are the runner.annotation shape
+// routeRetryDecision writes when a gate's fail branch re-enters an
+// already-completed stage, and priorRepassCause reads back to tell an
+// infrastructure repass from a content one. Exported for the same reason
+// BaseSyncConflictErrorCode is (the #624 shared-constant pattern): the Temporal
+// engine writes the identical annotation on its own gate repass route, and a
+// string copy on that side would drift silently — the reader keys on the exact
+// kind and class key, so a divergence is invisible until an infra repass is
+// misclassified as content.
+const (
+	RetryDecisionKind    = "stage.retry.decision"
+	RetryFailureClassKey = "retryFailureClass"
+)
+
 const (
 	interruptedAttemptErrorCode = "interrupted"
 	interruptedAttemptMarkerKey = "interruptedAttempt"
-	retryFailureClassKey        = "retryFailureClass"
+	retryFailureClassKey        = RetryFailureClassKey
 	infraCommittedWorkKey       = "infraFailedAttemptCommittedWork"
-	retryDecisionKind           = "stage.retry.decision"
+	retryDecisionKind           = RetryDecisionKind
 	toleratedFailureErrorCode   = "stage_failure_tolerated"
 	baseSyncConflictErrorCode   = BaseSyncConflictErrorCode
 )
@@ -4256,6 +4270,22 @@ func retryFailureClassForGateResult(g apiv1.Gate, result apiv1.ResultEnvelope, o
 	return class, knownOutcome, retryable
 }
 
+// RetryFailureClass exports retryFailureClass for the Temporal engine, which
+// applies the identical known-outcome shortcut and retry-decision classification
+// on its own gate arm. Shared rather than mirrored (the #624 shared-constant
+// pattern) because the recognized code set (nonzero_exit / base_sync_conflict)
+// and the status-equals default are runner-owned policy: a copy would decide to
+// dispatch a checker on one runner and skip it on the other.
+func RetryFailureClass(g apiv1.Gate, result apiv1.ResultEnvelope) (journal.AttemptClass, string, bool) {
+	return retryFailureClass(g, result)
+}
+
+// RetryFailureClassForGateResult exports retryFailureClassForGateResult, which
+// folds an infrastructure gate outcome into the same classification.
+func RetryFailureClassForGateResult(g apiv1.Gate, result apiv1.ResultEnvelope, outcome string) (journal.AttemptClass, string, bool) {
+	return retryFailureClassForGateResult(g, result, outcome)
+}
+
 func routeRetryDecision(jr executionJournal, result gate.Result, stage string, subject apiv1.ResultEnvelope, class journal.AttemptClass, retryable bool) (string, bool, error) {
 	if !retryable || result.Outcome == gate.OutcomePass || result.Escalated {
 		return "", false, nil
@@ -5081,6 +5111,16 @@ var escalateErrorCodes = map[string]bool{
 // PhaseFailed). nil in → false (no error detail, nothing to route on).
 func isNonRetryableEscalation(e *apiv1.ErrorInfo) bool {
 	return e != nil && !e.Retryable && escalateErrorCodes[e.Code]
+}
+
+// IsNonRetryableEscalation exports isNonRetryableEscalation for the Temporal
+// engine's own #415 route (the #624 shared-constant pattern). escalateErrorCodes
+// is runner-owned POLICY, not a schema enum, so a copied code set on the engine
+// side would drift the moment a new disposition is recognized here — and the
+// symptom would be an item silently re-entering the reviewer→implement loop on
+// one runner and escalating on the other.
+func IsNonRetryableEscalation(e *apiv1.ErrorInfo) bool {
+	return isNonRetryableEscalation(e)
 }
 
 // taskEscalationTarget lets a workflow intercept a non-retryable task

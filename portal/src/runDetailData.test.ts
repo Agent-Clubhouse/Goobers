@@ -13,6 +13,7 @@ import {
   eventNodeId,
   eventStage,
   eventSummary,
+  isFailureJournalEvent,
   journalEntries,
   keyMomentEvidence,
   keyMomentLabel,
@@ -808,6 +809,45 @@ describe("keyMoments", () => {
     ];
 
     expect(keyMoments(events)).toEqual([]);
+  });
+});
+
+describe("isFailureJournalEvent", () => {
+  it("flags an explicit error event", () => {
+    expect(isFailureJournalEvent(event(1, "error", { category: "bookkeeping" }))).toBe(true);
+  });
+
+  it("flags a failed or blocked stage attempt", () => {
+    expect(
+      isFailureJournalEvent(
+        event(1, "stage.finished", { category: "transition", status: "failure" }),
+      ),
+    ).toBe(true);
+    expect(
+      isFailureJournalEvent(
+        event(2, "stage.finished", { category: "transition", status: "blocked" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("flags an escalated event", () => {
+    expect(
+      isFailureJournalEvent(event(1, "stage.finished", { category: "transition", escalated: true })),
+    ).toBe(true);
+    expect(
+      isFailureJournalEvent(event(2, "run.finished", { category: "transition", status: "escalated" })),
+    ).toBe(true);
+  });
+
+  it("does not flag ordinary success events", () => {
+    expect(
+      isFailureJournalEvent(
+        event(1, "stage.finished", { category: "transition", status: "success" }),
+      ),
+    ).toBe(false);
+    expect(isFailureJournalEvent(event(2, "stage.heartbeat", { category: "liveness" }))).toBe(
+      false,
+    );
   });
 });
 

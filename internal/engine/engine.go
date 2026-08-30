@@ -155,6 +155,20 @@ type RunResult struct {
 	// (#710). Empty for every other status.
 	FailureCode    string `json:"failureCode,omitempty"`
 	FailureMessage string `json:"failureMessage,omitempty"`
+	// NoWork is the #233 short-circuit accounting: true only when the run
+	// terminated because its FIRST stage reported no-work, which is the local
+	// runner's Result.NoWork (run.go's `res.NoWork = steps == 1`). The
+	// scheduler's idle backoff consumes it (localscheduler's
+	// recordScheduledPollResult) to stop re-polling a lane that keeps finding
+	// nothing; without it an engine-driven curation tick that claimed nothing
+	// is indistinguishable from one that did real work.
+	//
+	// `omitempty` is load-bearing rather than cosmetic. A RunResult is a
+	// Temporal payload: results persisted before this field existed decode with
+	// NoWork false — the value they meant — and a run that did work encodes
+	// byte-identically to before, so adding the field changes no existing
+	// history and replays clean.
+	NoWork bool `json:"noWork,omitempty"`
 }
 
 // HumanGateSignal is the Temporal signal name a human gate waits on for its
@@ -315,7 +329,7 @@ func run(ctx workflow.Context, in RunInput, scheduledAt *time.Time) (RunResult, 
 		// cause precedes the terminal marker.
 		rec.runFailedCause(ctx, res.FinalState, res.FailureCode, res.FailureMessage)
 	}
-	phase, err := phaseForStatus(res.Status)
+	phase, err := PhaseForStatus(res.Status)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -349,6 +363,13 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 	// record — selected per consumer by selectTaskDelta/selectGateDelta and
 	// threaded to every arm (pod, self, gate).
 	var continuity []continuityEntry
+	// completed accumulates every finished stage's Outputs and produced
+	// integrity grade, keyed by stage — ordinary workflow state, reconstructed
+	// identically on replay from the same deterministic result sequence. It is
+	// what makes a stage-qualified inputsFrom reference (#562) resolvable
+	// against ANY completed stage rather than only the immediately preceding
+	// one; bare keys never read it (inputsfrom.go).
+	completed := newCompletedStages()
 	state := in.Spec.Start
 	steps := 0
 
@@ -374,7 +395,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				return RunResult{}, serr
 			}
 			var published deltaPublication
-			res, terr := runTask(ctx, in, m, t, pointers, lastResult, workspaceBranch, selected.Digest, &published, rec)
+			res, terr := runTask(ctx, in, m, t, pointers, lastResult, completed, workspaceBranch, selected.Digest, &published, rec)
 			if terr != nil {
 				return RunResult{}, terr
 			}
@@ -389,6 +410,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 				res.Outputs = nil
 			}
 			upstream[t.Name] = res
+			recordCompletedStage(completed, t, res)
 			pointers = append(pointers, contextPointersFor(t.Name, res.Artifacts)...)
 			lastStage, lastResult = t.Name, res
 			if res.Status != apiv1.ResultFailure || !t.ContinueOnError {
@@ -418,7 +440,30 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			// before dispatch.
 			rec.gatePaused(ctx, g.Name)
 			gateDelta := selectGateDelta(ctx, g, continuity, workspaceBranch, rec)
-			outcome, verdict, gerr := evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, gateAttempts, gateDispatches, rec)
+			// The knownOutcome shortcut (runner.RetryFailureClass, mirrored
+			// from stepGate): a status-equals gate standing over a
+			// nonzero_exit / base_sync_conflict failure already HAS its
+			// outcome — the check compares a status the walk is holding — so
+			// dispatching the checker would buy nothing and cost an activity.
+			// It resolves exactly as gate.EvaluateKnownOutcome does: gate
+			// markers are journaled, then the outcome is resolved without an
+			// evaluator. Only ever set for an automated gate, which is why the
+			// (agentic-only) gate delta above is unaffected.
+			_, knownOutcome, _ := runner.RetryFailureClass(g, lastResult)
+			var (
+				outcome string
+				verdict *apiv1.Verdict
+				gerr    error
+			)
+			if knownOutcome != "" {
+				rec.gateStarted(ctx, g.Name, gateAttempts[g.Name]+1, 0)
+				if err := rec.emitPending(ctx); err != nil {
+					return RunResult{}, err
+				}
+				outcome = knownOutcome
+			} else {
+				outcome, verdict, gerr = evaluateGate(ctx, m, g, in, lastResult, pointers, workspaceBranch, gateDelta.Digest, gateAttempts, gateDispatches, rec)
+			}
 			if gerr != nil {
 				return RunResult{}, gerr
 			}
@@ -430,6 +475,14 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			verdictArtifact, jerr := rec.gateEvaluated(ctx, gr, verdict)
 			if jerr != nil {
 				return RunResult{}, jerr
+			}
+			// The retry-decision annotation (routeRetryDecision parity):
+			// appended straight after gate.evaluated, exactly where the local
+			// runner appends it, so a fail branch re-entering a completed stage
+			// leaves the record priorRepassCause reads back to classify the
+			// repass as infrastructure or content.
+			if class, _, retryable := runner.RetryFailureClassForGateResult(g, lastResult, gr.Outcome); retryDecisionApplies(gr, retryable) {
+				rec.retryDecision(ctx, gr, lastStage, lastResult, class)
 			}
 			// Gate boundary emission: the verdict (and its artifact) become
 			// live before the walk moves on. Exhausting the emit budget here
@@ -473,6 +526,20 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 // that correctly found nothing must not hand a downstream agentic stage an
 // empty subject). A successful task's Next may itself be a reserved terminal
 // target (@abort/@escalate, #123).
+//
+// A failure that self-identifies a NON-RETRYABLE business disposition (#415)
+// bypasses the Next gate and its repass loop entirely — see escalationOutcome.
+// The bypass is checked before the gate branch for the reason the runner checks
+// it there: an un-scopeable issue the implementer correctly rejected on attempt
+// 1 would otherwise re-enter the reviewer→implement loop and re-derive the
+// identical conclusion until the repass budget exhausts.
+//
+// The #3363 disposition NOTIFICATION the runner posts alongside the bypass is
+// deliberately not ported: it is an outbound side effect with no engine seam
+// (an activity, plus the ownership rule that suppresses it when the escalate
+// branch routes to a stage owning the human-facing disposition itself), and it
+// changes no transition. The routing — the part the parity inventory rows — is
+// what lands here.
 func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1.ResultEnvelope, upstream map[string]apiv1.ResultEnvelope, steps int, rec *runJournal) (next string, out RunResult, terminal bool) {
 	switch result.Status {
 	case apiv1.ResultBlocked:
@@ -483,13 +550,20 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 			rec.toleratedFailure(ctx, t.Name)
 			break
 		}
+		if runner.IsNonRetryableEscalation(result.Error) {
+			return escalationOutcome(m, t, upstream, steps)
+		}
 		if _, isGate := m.Gate(t.Next); t.Next != "" && isGate {
 			return t.Next, RunResult{}, false
 		}
 		code, message := failureCause(result.Error)
 		return "", RunResult{Status: StatusFailed, FinalState: t.Name, FailureCode: code, FailureMessage: message, Outputs: upstream, Steps: steps}, true
 	case apiv1.ResultNoWork:
-		return "", RunResult{Status: StatusCompleted, FinalState: t.Name, Outputs: upstream, Steps: steps}, true
+		// NoWork is the run's #233 accounting, not the stage's: it is set only
+		// when the no-work stage was the FIRST step, which is what makes it the
+		// scheduler's "this tick did nothing" signal rather than "some stage
+		// somewhere found nothing".
+		return "", RunResult{Status: StatusCompleted, FinalState: t.Name, Outputs: upstream, Steps: steps, NoWork: steps == 1}, true
 	}
 	switch t.Next {
 	case wf.TerminalComplete:
@@ -534,7 +608,7 @@ func failureCause(e *apiv1.ErrorInfo) (code, message string) {
 	return e.Code, e.Message
 }
 
-func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, workspaceBranch string, workspaceDelta string, deltaOut *deltaPublication, rec *runJournal) (apiv1.ResultEnvelope, error) {
+func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed completedStages, workspaceBranch string, workspaceDelta string, deltaOut *deltaPublication, rec *runJournal) (apiv1.ResultEnvelope, error) {
 	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
 	inputs, err := wf.TaskInvocationInputs(machine, t)
 	if err != nil {
@@ -563,13 +637,17 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		env.ParentPlatformPolicy = &parent
 	}
 	// Both admission checks run before dispatch, matching the local runner.
-	// The engine resolves inputsFrom only against the immediately preceding
-	// task, so every such value is graded by that task's produced provenance;
-	// Outputs are bare scalars and carry none of their own (TBH-4).
+	// inputsFrom values are graded by the stage that PRODUCED them — the
+	// immediately preceding one for a bare key, the named one for a
+	// stage-qualified reference (#562) — because Outputs are bare scalars and
+	// carry none of their own (TBH-4). inputGrades is computed once, here, and
+	// reused for the produced grade below so the admission check and the
+	// provenance the stage emits describe the same bindings.
+	qualifiedInputs := wf.SupportsStageQualifiedInputs(machine)
+	inputGrades := engineInputGrades(t, upstreamResult, completed, qualifiedInputs)
 	integrityErr := apiv1.ValidateInputIntegrity(env.Item, env.ContextPointers, env.MinimumIntegrity)
 	if integrityErr == nil {
-		integrityErr = apiv1.ValidateResolvedInputIntegrity(
-			engineInputGrades(t, upstreamResult), env.MinimumIntegrity)
+		integrityErr = apiv1.ValidateResolvedInputIntegrity(inputGrades, env.MinimumIntegrity)
 	}
 	if err := integrityErr; err != nil {
 		admission := &apiv1.IntegrityAdmissionError{}
@@ -579,16 +657,19 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		rec.integrityRefused(ctx, t.Name, admission)
 		return apiv1.ResultEnvelope{}, fmt.Errorf("engine: refuse stage %q: %w", t.Name, admission)
 	}
-	// InputsFrom overlays the immediately preceding task's declared outputs on
-	// top of the static Inputs (#132). A declared outputKey missing upstream
-	// fails the stage closed — the declaration is a contract, not a hint —
-	// matching the local runner's dispatchTask. Keys are walked sorted so the
-	// first-missing error is deterministic under replay.
+	// InputsFrom overlays declared outputs on top of the static Inputs (#132),
+	// resolving through internal/runner's exact order: a "<stage>.<key>"
+	// reference binds against ANY completed stage when the DSL version supports
+	// it (#562), and anything else — including a legacy dotted key an older
+	// lane's stage literally emits — binds bare against the immediately
+	// preceding stage. A declared outputKey that resolves nowhere fails the
+	// stage closed: the declaration is a contract, not a hint. Keys are walked
+	// sorted so the first-missing error is deterministic under replay.
 	for _, inputKey := range sortedKeys(t.InputsFrom) {
 		outputKey := t.InputsFrom[inputKey]
-		v, ok := upstreamResult.Outputs[outputKey]
+		v, ok := resolveInputsFrom(outputKey, upstreamResult, completed, qualifiedInputs)
 		if !ok {
-			return apiv1.ResultEnvelope{}, fmt.Errorf("task %q: inputsFrom %q: upstream output %q not found", t.Name, inputKey, outputKey)
+			return apiv1.ResultEnvelope{}, inputsFromError(t.Name, inputKey, outputKey, completed, qualifiedInputs)
 		}
 		env.Inputs[inputKey] = v
 	}
@@ -603,7 +684,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 	// architecture §11 item 1).
 	if placement, remote := remotePlacementFor(in, t.Name); remote {
 		ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(env.Limits, placement.Queue))
-		produced := engineProducedIntegrity(t, env, upstreamResult)
+		produced := engineProducedIntegrity(t, env, inputGrades)
 		// workspaceBranch rides to the pod for the same reason it rides to the
 		// local arms (#392): a run that rebound it — pr-remediation, onto the
 		// claimed PR's head — must have every later stage checked out THERE.
@@ -612,7 +693,7 @@ func runTask(ctx workflow.Context, in RunInput, machine *wf.Machine, t apiv1.Tas
 		return dispatchRemoteTask(ctx, t, rec, env, placement, produced, workspaceBranch, workspaceDelta, deltaOut)
 	}
 	ctx = stageActivityContextOn(ctx, env.Limits, t.RequiredCapabilities)
-	produced := engineProducedIntegrity(t, env, upstreamResult)
+	produced := engineProducedIntegrity(t, env, inputGrades)
 	if t.Type == apiv1.TaskAgentic {
 		// Graded inside the closure: dispatchWithRetry journals stage.finished
 		// from what the closure returns, so setting it afterwards would leave
@@ -979,25 +1060,35 @@ func platformQueueSuffix(capabilities []string) string {
 	return ""
 }
 
-// engineInputGrades maps each inputsFrom entry to the provenance of the task
-// that produced it. The engine resolves only against the immediately preceding
-// task's Outputs, so every entry carries that task's grade.
-func engineInputGrades(t apiv1.Task, upstreamResult apiv1.ResultEnvelope) map[string]apiv1.Integrity {
+// engineInputGrades maps each inputsFrom entry to the provenance of the stage
+// that will produce it, keyed by the CONSUMING input name so an admission
+// failure names the input the workflow author declared.
+//
+// It mirrors runTask's resolution order exactly — via inputsFromIntegrity,
+// which mirrors resolveInputsFrom's own branch order — because a grade that
+// described a different stage than the one actually bound would be worse than
+// no check at all: a stage-qualified reference to an untrusted producer would
+// be admitted on the immediately preceding stage's stronger grade.
+func engineInputGrades(t apiv1.Task, upstreamResult apiv1.ResultEnvelope, completed completedStages, qualified bool) map[string]apiv1.Integrity {
 	if len(t.InputsFrom) == 0 {
 		return nil
 	}
 	grades := make(map[string]apiv1.Integrity, len(t.InputsFrom))
-	for inputKey := range t.InputsFrom {
-		grades[inputKey] = upstreamResult.Integrity
+	for inputKey, outputKey := range t.InputsFrom {
+		grades[inputKey] = inputsFromIntegrity(outputKey, upstreamResult, completed, qualified)
 	}
 	return grades
 }
 
 // engineProducedIntegrity grades what a task emitted, on the same rule the local
-// runner applies: the weakest input it was admitted with, with agentic output
-// always contributing IntegrityDerived.
-func engineProducedIntegrity(t apiv1.Task, env apiv1.InvocationEnvelope, upstreamResult apiv1.ResultEnvelope) apiv1.Integrity {
-	grades := make([]apiv1.Integrity, 0, len(env.ContextPointers)+len(t.InputsFrom)+2)
+// runner applies (producedIntegrity): the weakest input it was admitted with,
+// with agentic output always contributing IntegrityDerived.
+//
+// inputGrades is the map engineInputGrades already resolved for the admission
+// check, threaded rather than re-derived: provenance flows with the data, so
+// the grades that decided admission must be the grades that flow onward.
+func engineProducedIntegrity(t apiv1.Task, env apiv1.InvocationEnvelope, inputGrades map[string]apiv1.Integrity) apiv1.Integrity {
+	grades := make([]apiv1.Integrity, 0, len(env.ContextPointers)+len(inputGrades)+2)
 	if t.Type == apiv1.TaskAgentic {
 		grades = append(grades, apiv1.IntegrityDerived)
 	}
@@ -1013,8 +1104,10 @@ func engineProducedIntegrity(t apiv1.Task, env apiv1.InvocationEnvelope, upstrea
 			grades = append(grades, grade)
 		}
 	}
-	if len(t.InputsFrom) > 0 && upstreamResult.Integrity != "" {
-		grades = append(grades, upstreamResult.Integrity)
+	for _, grade := range inputGrades {
+		if grade != "" {
+			grades = append(grades, grade)
+		}
 	}
 	if len(grades) == 0 {
 		return apiv1.IntegrityTrusted
