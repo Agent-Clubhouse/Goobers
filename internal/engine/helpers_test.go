@@ -47,6 +47,9 @@ type fakeWorkspaces struct {
 	// diffCalls counts Diff() calls per stage, so a test can assert the
 	// reviewer's workspace was read exactly once per evaluation.
 	diffCalls map[string]int
+	// diffSequence, when set for a stage, answers Diff per CALL instead of
+	// from diff: entry n for the nth read, with the last entry repeating.
+	diffSequence map[string][][]byte
 	// headErr, when set for a stage, makes Head fail — the "workspace cannot
 	// report" arm that must never fast-fail a gate.
 	headErr map[string]error
@@ -102,6 +105,28 @@ func (f *fakeWorkspaces) wrap(ws *fakeWorkspace) Workspace {
 	return &fakeDiffWorkspace{fakeWorkspace: ws}
 }
 
+// scriptDiffSequence registers a stage's diff PER READ: the nth Diff call gets
+// the nth entry, and the last entry repeats forever after.
+//
+// The repetition is the point rather than a convenience. "The stage produced
+// the same tree again" is the #316 dedup fixture and "the stage produced a
+// different one" is its negative, and both are a statement about a SEQUENCE of
+// attempts — a single-entry sequence is the former by construction, so a test
+// cannot accidentally write a dedup fixture whose second attempt differs.
+func (f *fakeWorkspaces) scriptDiffSequence(stage string, diffs [][]byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.diffSequence == nil {
+		f.diffSequence = map[string][][]byte{}
+	}
+	f.diffSequence[stage] = diffs
+	if f.diff == nil {
+		f.diff = map[string][]byte{}
+	}
+	// Presence in f.diff is what promotes the workspace to a DiffReader.
+	f.diff[stage] = nil
+}
+
 // scriptDiff registers a stage's diff bytes, creating the map on first use.
 func (f *fakeWorkspaces) scriptDiff(stage string, diff []byte) {
 	f.mu.Lock()
@@ -140,6 +165,13 @@ func (w *fakeDiffWorkspace) Diff(_ context.Context, _ string) ([]byte, error) {
 		w.owner.diffCalls = map[string]int{}
 	}
 	w.owner.diffCalls[w.stage]++
+	if seq, ok := w.owner.diffSequence[w.stage]; ok && len(seq) > 0 {
+		i := w.owner.diffCalls[w.stage] - 1
+		if i >= len(seq) {
+			i = len(seq) - 1
+		}
+		return seq[i], nil
+	}
 	diff, ok := w.owner.diff[w.stage]
 	if !ok {
 		return nil, fmt.Errorf("fakeDiffWorkspace: stage %q has no scripted diff", w.stage)

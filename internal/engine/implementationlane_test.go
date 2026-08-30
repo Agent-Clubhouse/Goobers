@@ -13,8 +13,10 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/temporaltest"
 	wf "github.com/goobers/goobers/internal/workflow"
@@ -990,6 +992,81 @@ func TestNoUnpushedDiffRecordsNothing(t *testing.T) {
 		if laneHasArtifact(proj, name) {
 			t.Errorf("artifact %q recorded for a stage that changed nothing", name)
 		}
+	}
+}
+
+// TestPriorEngineRunsUnpushedWorkIsDiscoverable is #3366's CONSUMER half, and
+// the only test in this file that leaves the engine's own vocabulary.
+//
+// Capturing the patch is worthless if the stage that resumes the work cannot
+// find it. gather-implement-context finds it through internal/journalclient's
+// cross-run reader, which scans PROJECTED run journals for the unpushed-diff
+// sidecar — a reader written against the LOCAL RUNNER's artifact contract,
+// months before this port existed and with no knowledge of it.
+//
+// So this walks the engine, projects the run exactly as the daemon does, and
+// hands the result to that unmodified reader. It is the difference between
+// "the engine records artifacts with the right names" (which the test above
+// checks) and "a real consumer can act on them", and only the second one is
+// the behaviour #3366 is about. If a future edit renames an artifact, changes
+// the sidecar's schema, or drops the item ids, this fails where the byte-level
+// tests would not: discovery would simply return nothing, silently, in
+// production.
+func TestPriorEngineRunsUnpushedWorkIsDiscoverable(t *testing.T) {
+	const patch = "diff --git a/impl.go b/impl.go\n+// the work the pod was about to lose\n"
+	ws := testWorkspaces(t)
+	ws.scriptDiff("implement", []byte(patch))
+	inv := &fakeInvoker{
+		invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+			return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "done"}, nil
+		},
+	}
+	in := runInput("linear", linearSpec())
+	// The claimed item is what makes the work DISCOVERABLE rather than merely
+	// recorded: the reader matches stranded diffs to the items the asking run
+	// currently holds, so a sidecar with no item ids is invisible to it.
+	in.Item = &apiv1.BacklogItem{ID: "42", Provider: "github", URL: "https://example.test/items/42"}
+	env := laneEnv(t, inv, ws)
+	env.ExecuteWorkflow(Run, in)
+	if res := laneResult(t, env); res.Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed", res.Status)
+	}
+
+	// Projected exactly as the daemon projects a finished engine run — the
+	// same function, into a real instance layout, with no test-only shaping.
+	root := t.TempDir()
+	layout := instance.NewLayout(root).ForGaggle("web")
+	if _, err := ProjectRun(layout.RunsDir(), laneJournal(t, env)); err != nil {
+		t.Fatalf("ProjectRun: %v", err)
+	}
+
+	reader := journalclient.NewFileCrossRun(instance.NewLayout(root))
+	reader.Warn = func(msg string) { t.Logf("cross-run reader: %s", msg) }
+	work, err := reader.UnpushedWork(context.Background(), journalclient.UnpushedWorkRequest{
+		RunID:   "run-resuming",
+		Gaggle:  "web",
+		ItemIDs: []string{"42"},
+	})
+	if err != nil {
+		t.Fatalf("UnpushedWork: %v", err)
+	}
+	if work == nil {
+		t.Fatal("the cross-run reader found no stranded work in a projected ENGINE run — " +
+			"the patch is captured but gather-implement-context cannot offer it, which is the " +
+			"whole point of #3366")
+	}
+	if work.RunID != in.RunID {
+		t.Errorf("discovered runId = %q, want %q", work.RunID, in.RunID)
+	}
+	if work.Stage != "implement" {
+		t.Errorf("discovered stage = %q, want implement", work.Stage)
+	}
+	if work.Diff != patch {
+		t.Errorf("discovered diff = %q, want the captured patch %q", work.Diff, patch)
+	}
+	if work.Branch == "" || work.BaseRef == "" || work.DiffDigest == "" {
+		t.Errorf("discovered work = %+v, want branch/base/digest populated — a resuming stage "+
+			"needs to know what the patch was cut against", work)
 	}
 }
 
