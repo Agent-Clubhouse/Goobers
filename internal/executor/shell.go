@@ -326,7 +326,8 @@ func StageRequiresInstanceConfig(command []string) bool {
 // flag-gated: only specific FLAGS made them provider-only rather than
 // ledger-touching, so StageRequiresInstanceRoot matched them by name. Both
 // are now fully plane-served in every mode (#3898, #3948) and neither appears
-// in the map below at all.
+// in the map below at all. pr-select left it the same way (#3988), by
+// admitting its fairness lease to the scheduler-state namespace.
 //
 // Scope: this matches on the COMMAND VECTOR (cmd[0]=="goobers", cmd[1]=the
 // subcommand), the same shape both dispatchRemoteTask and the pod-entrypoint
@@ -345,13 +346,15 @@ func StageRequiresInstanceConfig(command []string) bool {
 // stageCommand() (cmd/goobers/runtime_capabilities.go) before trusting this
 // list is still complete.
 var stageCommandsRequiringInstanceRoot = map[string]bool{
-	// pr-select's FAIRNESS LEASE: cmd/goobers/prselectfairness.go reads
-	// SchedulerDir()/pr-select-fairness.json directly (:85, :112) and
-	// rewrites it under withClaimLock on SchedulerDir()/claims.lock (:260).
-	// That file is not one of stateclient.ValidKey's shapes, so the
-	// scheduler-state plane cannot serve it; admitting it to the namespace is
-	// the removal's prerequisite.
-	"pr-select": true,
+	// pr-select is NOT here any more (Goobers#3988). Its claims are on the
+	// claims plane and the last thing that held it — the FAIRNESS LEASE at
+	// SchedulerDir()/pr-select-fairness.json, #1336's aging plus the one-hour
+	// starvation guard — is now a scheduler-state key
+	// (stateclient.KeyPRSelectFairness), reached through
+	// openStageStateStore/openHeldStageStateStore like every other key in that
+	// namespace and served under the SAME claims.lock it always took, so a
+	// pod-executed selection and a daemon-driven one advance ONE lease rather
+	// than two. Everything else it touches is a provider API call.
 	// issue-close-out reads run journals through journal.OpenRead directly
 	// (issuecloseout.go:96, :168, :241) over a run directory it finds with
 	// instance.Layout.FindRunDir — bypassing the stageRunJournal seam

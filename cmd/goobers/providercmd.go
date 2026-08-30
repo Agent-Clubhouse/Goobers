@@ -80,7 +80,13 @@ const (
 	claimLockOperationPRAcquire            = "pr-claim.acquire"
 	claimLockOperationPRRelease            = "pr-claim.release"
 	claimLockOperationPRCount              = "pr-claim.count"
-	claimLockOperationRunLookup            = "run-claims.lookup"
+	// The two sections pr-select's FAIRNESS LEASE runs in
+	// (stateclient.KeyPRSelectFairness, which rides claims.lock). The observe
+	// label names the section the claim transaction already holds; the clear
+	// label names the standalone rewrite that follows a successful selection.
+	claimLockOperationPRSelectFairnessObserve = "pr-select.fairness-observe"
+	claimLockOperationPRSelectFairnessClear   = "pr-select.fairness-clear"
+	claimLockOperationRunLookup               = "run-claims.lookup"
 	claimLockOperationBlockedUpdate        = "blocked-records.update"
 	claimLockOperationCircuitBreakerOutbox = "circuit-breaker-outbox.update"
 	claimLockOperationRecovery             = "claim-recovery"

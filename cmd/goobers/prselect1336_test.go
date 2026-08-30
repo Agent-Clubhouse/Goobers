@@ -261,7 +261,7 @@ func TestPRSelectActiveClaimDoesNotAccumulateWaitAcrossTicks(t *testing.T) {
 		t.Fatalf("starved PRs = %v, want only unclaimed PRs %v", got, want)
 	}
 
-	state, err := readPRSelectFairnessFile(filepath.Join(layoutFor(root).SchedulerDir(), prSelectFairnessFileName))
+	state, err := readPRSelectFairnessLease(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestPRSelectPartialObservationPreservesUnobservedEligibility(t *testing.T) 
 	); err != nil {
 		t.Fatal(err)
 	}
-	state, err := readPRSelectFairnessFile(filepath.Join(layoutFor(root).SchedulerDir(), prSelectFairnessFileName))
+	state, err := readPRSelectFairnessLease(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +495,7 @@ func TestRunPRSelectWebhookTargetPreservesUnobservedEligibility(t *testing.T) {
 		t.Fatalf("targeted pr-select: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
 	}
 
-	state, err := readPRSelectFairnessFile(filepath.Join(layoutFor(root).SchedulerDir(), prSelectFairnessFileName))
+	state, err := readPRSelectFairnessLease(root)
 	if err != nil {
 		t.Fatal(err)
 	}

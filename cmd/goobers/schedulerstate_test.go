@@ -113,8 +113,9 @@ func stampStatePlaneEnv(t *testing.T, plane *statePlane, gaggle, token string) {
 
 // TestSchedulerStateKeysKeepTheirExistingLocks is finding 002's explicit
 // correction, pinned: the plane must be served under the SAME lock each key
-// already used, not under a new one. blocked.json and the backlog scan cursors
-// ride claims.lock (blockedrecords.go, backlogquery.go); the reconcile ledger
+// already used, not under a new one. blocked.json, the backlog scan cursors
+// and pr-select's fairness lease ride claims.lock (blockedrecords.go,
+// backlogquery.go, prselectfairness.go); the reconcile ledger
 // and the sibling cache keep their own. Splitting the lock domain would let a
 // plane write and an in-process write race the very updates the CAS exists to
 // protect.
@@ -131,6 +132,7 @@ func TestSchedulerStateKeysKeepTheirExistingLocks(t *testing.T) {
 	}{
 		{stateclient.KeyBlockedRecords, claimLockFileName},
 		{stateclient.ScanCursorKey(hexDigest("scan")), claimLockFileName},
+		{stateclient.KeyPRSelectFairness, claimLockFileName},
 		{stateclient.KeyPostMergeReconcileLedger, postMergeReconcileLockFile},
 		{stateclient.KeySiblingContextCache, siblingCacheLockFileName},
 	}

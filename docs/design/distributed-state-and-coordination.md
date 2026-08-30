@@ -219,8 +219,8 @@ a *state* restriction (any pod can call the API) but survives v1 as a scheduling
 opaque `ETag` (`If-Match` to replace a known value, `If-None-Match: *` to create). This is M5's answer
 and the rest of M2's: the scheduler-state files that sit *beside* `claims.json` — `blocked.json`, the
 backlog scan cursors, the post-merge-reconcile ledger, the sibling-context cache, the backlog-health
-ready-transition ledger — are per-node for exactly the reason the ledger is, and a mode-3 stage
-cannot reach them at all. `internal/stateclient`
+ready-transition ledger, `pr-select`'s fairness lease — are per-node for exactly the reason the
+ledger is, and a mode-3 stage cannot reach them at all. `internal/stateclient`
 selects a backend the same way `internal/claimsclient` does: `GOOBERS_STATE_ENDPOINT` +
 `GOOBERS_STATE_TOKEN` + `GOOBERS_GAGGLE` present ⇒ the plane, all three absent ⇒ the file backend, any
 partial combination ⇒ a refusal, never a silent local write (decision 005 R3).
@@ -231,8 +231,9 @@ Three properties make it safe to hand a stage pod:
   backlog re-sweep generation (`backlog-resweep-<sha256>.json`, joined by Goobers#3898 — it was the
   last scheduler-directory file the claiming path opened directly), scan cursors by their
   `backlog-scan-<sha256>.json` shape, the backlog-health ready-transition ledger by its
-  `backlog-health.<gaggle>.<provider>__<repository>__<label>.json` shape (Goobers#3948 — the last
-  file holding a `goobers` subcommand to `StageRequiresInstanceRoot`), and both the client and the
+  `backlog-health.<gaggle>.<provider>__<repository>__<label>.json` shape (Goobers#3948), and
+  `pr-select-fairness.json` (Goobers#3988 — the last file holding a `merge-review` stage to
+  `StageRequiresInstanceRoot`, and so the last Self pin on M3). Both the client and the
   daemon enforce it, so a state bearer can never address `claims.json`, `config.yaml`, or anything
   else in the scheduler directory. Containment does not rest on path sanitation.
 - **The gaggle is an authorization scope, not a storage location.** The files stay instance-scoped
@@ -244,9 +245,13 @@ Three properties make it safe to hand a stage pod:
   route scope alone would let a pod contained to gaggle A name gaggle B's ledger. It is delimited by
   a `.` rather than by the `__` the file name joins on, because a repository or a label may
   legitimately contain `__` and the containment check must never have to guess where the gaggle ends.
-- **The plane takes the same lock the in-process path takes.** `blocked.json` and the scan cursors are
-  served under `claims.lock` (finding 002); the reconcile ledger and sibling cache under their own
-  existing lock files. A runner-driven stage holding the file lock locally and an engine-driven stage
+- **The plane takes the same lock the in-process path takes.** `blocked.json`, the scan cursors and
+  the `pr-select` fairness lease are served under `claims.lock` (finding 002); the reconcile ledger
+  and sibling cache under their own existing lock files. The fairness lease's `claims.lock` is
+  load-bearing rather than incidental: it is observed and rewritten *inside* `pr-select`'s claim
+  transaction, so a candidate's wait and the claim that ends it move as one step, and a second lock
+  would let a concurrent run see a PR as unclaimed-and-aging while another run is halfway through
+  claiming it. A runner-driven stage holding the file lock locally and an engine-driven stage
   CAS-ing through the plane serialize against each other rather than racing — which is the whole point
   of putting the route in front of the file instead of beside it. The ready-transition ledger is the
   single deliberate exception, and in the safe direction: it had *no* cross-process lock (one
@@ -568,3 +573,4 @@ Not re-opened decisions — implementation questions the design deliberately lea
 | #640 / #2901 / #644 | Exposure posture and portal auth ride D10; the write API inherits the fail-closed bind rule |
 | #3897 | Closes §14's pod-to-daemon auth point: per-run, per-plane scoped bearers stamped as a complete fail-closed env set (§7.1) |
 | #3898 | Instance annotations move onto the journal emit plane (§8); the backlog re-sweep generation joins the scheduler-state namespace (§7) |
+| #3988 | `pr-select`'s fairness lease joins the scheduler-state namespace under `claims.lock` (§7); `pr-select` leaves `StageRequiresInstanceRoot`, clearing the last Self pin on `merge-review` (M3 of #3828) |
