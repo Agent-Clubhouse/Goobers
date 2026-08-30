@@ -590,6 +590,87 @@ func TestIssueCloseOutDuplicateEscalationPostsOneCommentAndStoresPRMarker(t *tes
 	}
 }
 
+// #3564: a repass-exhaustion escalation must carry the reviewer's actual
+// findings onto the issue — severity, message, and location — plus the run id,
+// so a human triaging it never has to parse the run's events.jsonl.
+func TestIssueCloseOutEscalationCommentEmbedsReviewFindings(t *testing.T) {
+	root := initDemo(t)
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Stalled implementation", "goobers:approved", "goobers:ready", "goobers:claimed")
+
+	const runID = "run-repass-exhausted"
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(root, "scheduler", claimLedgerFileName))
+	if err != nil {
+		t.Fatalf("open claim ledger: %v", err)
+	}
+	if _, _, err := ledger.Claim("7", runID, "implementation", time.Hour); err != nil {
+		t.Fatalf("seed claim ledger: %v", err)
+	}
+
+	run, err := journal.Create(layoutFor(root).RunsDir(), journal.RunIdentity{
+		RunID: runID, Workflow: "implementation", WorkflowDigest: journal.Digest([]byte("workflow")),
+		Gaggle: "goobers",
+	}, nil)
+	if err != nil {
+		t.Fatalf("create journal: %v", err)
+	}
+	verdictData, err := json.Marshal(apiv1.Verdict{
+		Decision:  apiv1.VerdictNeedsChanges,
+		Summary:   "reviewer returned needs-changes for the third time",
+		Rationale: "the cache root still disagrees with the installer root",
+		Findings: []apiv1.Finding{{
+			Severity: apiv1.SeverityError,
+			Message:  "MSAL cache root must match the installer root",
+			Location: "internal/auth/cache.go:118",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal verdict: %v", err)
+	}
+	ref, err := run.RecordArtifact("verdict/review-3.json", verdictData)
+	if err != nil {
+		t.Fatalf("record verdict: %v", err)
+	}
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "review", Verdict: "needs-changes",
+		Target: "park-escalated", Ref: &ref,
+		Runner: map[string]any{"escalated": true, "repassAttempt": 3},
+	}); err != nil {
+		t.Fatalf("append gate event: %v", err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", runID)
+	t.Setenv("GOOBERS_INPUT_STATUS", "needs-remediation")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "issue-close-out", root)
+	if code != 0 {
+		t.Fatalf("issue-close-out: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	comments := server.issues[7].comments
+	if len(comments) != 1 {
+		t.Fatalf("driving issue comments = %d, want exactly one", len(comments))
+	}
+	comment := comments[0]
+	for _, want := range []string{
+		"the cache root still disagrees with the installer root",
+		"MSAL cache root must match the installer root",
+		"internal/auth/cache.go:118",
+		string(apiv1.SeverityError),
+		runID,
+	} {
+		if !strings.Contains(comment, want) {
+			t.Fatalf("parking comment = %q, want it to contain %q", comment, want)
+		}
+	}
+}
+
 func TestIssueCloseOutReasonUsesNonRetryableTaskSummary(t *testing.T) {
 	runsDir := t.TempDir()
 	run, err := journal.Create(runsDir, journal.RunIdentity{

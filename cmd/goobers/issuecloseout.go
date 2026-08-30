@@ -13,10 +13,10 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -159,6 +159,84 @@ func issueCloseOutReason(runsDir, runID, gateName string) (string, error) {
 	return "", fmt.Errorf("no verdict found for gate %q", gateName)
 }
 
+// issueCloseOutReviewVerdict returns the last reviewer verdict journaled for
+// the run, with the gate that produced it. #3564: the concrete verdict that
+// drove a repass-exhaustion escalation lived only in a content-addressed run
+// artifact, so a human triaging the parked issue saw a generic comment and had
+// to spelunk events.jsonl to learn what was actually wrong.
+func issueCloseOutReviewVerdict(runsDir, runID string) (apiv1.Verdict, string, bool, error) {
+	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		return apiv1.Verdict{}, "", false, err
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return apiv1.Verdict{}, "", false, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != journal.EventGateEvaluated || event.Ref == nil {
+			continue
+		}
+		data, err := reader.ArtifactBytes(*event.Ref)
+		if err != nil {
+			return apiv1.Verdict{}, "", false, fmt.Errorf("read verdict for gate %q: %w", event.Gate, err)
+		}
+		var verdict apiv1.Verdict
+		if err := json.Unmarshal(data, &verdict); err != nil {
+			return apiv1.Verdict{}, "", false, fmt.Errorf("parse verdict for gate %q: %w", event.Gate, err)
+		}
+		if len(verdict.Findings) == 0 && strings.TrimSpace(verdict.Rationale) == "" &&
+			strings.TrimSpace(verdict.Summary) == "" {
+			continue
+		}
+		return verdict, event.Gate, true, nil
+	}
+	return apiv1.Verdict{}, "", false, nil
+}
+
+// issueCloseOutVerdictDetail renders the reviewer verdict a park comment
+// embeds: decision, rationale, and every finding's severity, message, and
+// location, plus the run id for traceability (#3564).
+func issueCloseOutVerdictDetail(verdict apiv1.Verdict, gateName, runID string) string {
+	var b strings.Builder
+	b.WriteString("\n\n---\n\n**Last review verdict**")
+	var qualifiers []string
+	if gateName != "" {
+		qualifiers = append(qualifiers, fmt.Sprintf("gate `%s`", gateName))
+	}
+	if decision := strings.TrimSpace(string(verdict.Decision)); decision != "" {
+		qualifiers = append(qualifiers, fmt.Sprintf("decision `%s`", decision))
+	}
+	if runID != "" {
+		qualifiers = append(qualifiers, fmt.Sprintf("run `%s`", runID))
+	}
+	if len(qualifiers) > 0 {
+		fmt.Fprintf(&b, " (%s)", strings.Join(qualifiers, ", "))
+	}
+	b.WriteString("\n")
+	if rationale := strings.TrimSpace(verdict.Rationale); rationale != "" {
+		fmt.Fprintf(&b, "\n%s\n", rationale)
+	} else if summary := strings.TrimSpace(verdict.Summary); summary != "" {
+		fmt.Fprintf(&b, "\n%s\n", summary)
+	}
+	if len(verdict.Findings) > 0 {
+		b.WriteString("\nFindings:\n\n")
+		for _, finding := range verdict.Findings {
+			severity := strings.TrimSpace(string(finding.Severity))
+			if severity == "" {
+				severity = "finding"
+			}
+			fmt.Fprintf(&b, "- **%s:** %s", severity, strings.TrimSpace(finding.Message))
+			if location := strings.TrimSpace(finding.Location); location != "" {
+				fmt.Fprintf(&b, " (`%s`)", location)
+			}
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
 func issueCloseOutDuplicateEscalation(runsDir, runID string) (implementationEscalationState, bool, error) {
 	reader, err := journal.OpenRead(filepath.Join(runsDir, runID))
 	if err != nil {
@@ -260,17 +338,23 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	}
 
 	l := layoutFor(root)
-	var claim localscheduler.ClaimEntry
+	ledger, err := openStageClaimLedger(l)
+	if err != nil {
+		pf(stderr, "error: open claim ledger: %v\n", err)
+		return 1
+	}
+	var claim claimsclient.Entry
 	var claimHeld bool
-	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
-	err = withClaimLock(lockPath, claimLockOperationCloseOutLookup, func() error {
-		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	err = ledger.Locked(claimContext(), claimLockOperationCloseOutLookup, func(tx claimsclient.Ledger) error {
+		// The run's one claimed item (#241; implementation claims at most
+		// one per run) — the first of ForRunAll's item-ordered entries, where
+		// the ledger's ForRun answered an unspecified one of them.
+		entries, lerr := tx.ForRunAll(claimContext(), runID)
 		if lerr != nil {
-			return fmt.Errorf("open claim ledger: %w", lerr)
+			return fmt.Errorf("read this run's claims: %w", lerr)
 		}
-		entry, ok := ledger.ForRun(runID)
-		if ok {
-			claim = entry
+		if len(entries) > 0 {
+			claim = entries[0]
 			claimHeld = true
 		}
 		return nil
@@ -375,6 +459,20 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 					}
 				}
 			}
+			// #3564: embed the reviewer's actual verdict — rationale and every
+			// finding's severity/message/location — plus the run id, so the
+			// parked issue is self-contained instead of pointing a human at
+			// run artifacts they'd have to parse by hand. Appended after the
+			// question validation above so a needs-human park still states its
+			// question, and the evidence follows it.
+			verdict, gateName, found, err := issueCloseOutReviewVerdict(runsDir, runID)
+			if err != nil {
+				pf(stderr, "error: resolve review verdict for escalation comment: %v\n", err)
+				return 1
+			}
+			if found {
+				comment += issueCloseOutVerdictDetail(verdict, gateName, runID)
+			}
 		}
 		// #2028: needs-remediation never gets the configured human assignee —
 		// withNeedsHumanAssignee only fires for LabelNeedsHuman — so config
@@ -458,12 +556,8 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 	// Release the lease now rather than waiting for it to expire — the run
 	// is finished with this item, and RecoverExpired's periodic sweep
 	// (goobers up, #131) should not have to reclaim it later.
-	err = withClaimLock(lockPath, claimLockOperationCloseOutRelease, func() error {
-		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
-		if lerr != nil {
-			return fmt.Errorf("open claim ledger: %w", lerr)
-		}
-		return ledger.ReleaseEntry(claim, runID)
+	err = ledger.Locked(claimContext(), claimLockOperationCloseOutRelease, func(tx claimsclient.Ledger) error {
+		return tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(claim), runID)
 	})
 	if err != nil {
 		pf(stderr, "warning: release claim %s: %v\n", claim.ItemID, err)

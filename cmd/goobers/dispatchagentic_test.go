@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -283,5 +285,98 @@ func TestPodArtifactRecorderAppendStampsOpTime(t *testing.T) {
 	}
 	if lifecycle.Time.Before(before) || lifecycle.Time.After(after) {
 		t.Fatalf("agent.lifecycle event.Time = %s, want between %s and %s", lifecycle.Time, before, after)
+	}
+}
+
+// substrateRetryable is what narrows reviewSubstrateFailure's Retryable stamp
+// from a blanket true to the failure's actual shape: a *dispatcher.
+// CredentialResolveRefusal is the credential plane's own judgement on the
+// request (403 capability_undeclared, 409 gate_pin_missing) and must not be
+// retried; everything else — a dial error, a 5xx, a checkout or
+// context-materialize or harness-construction fault that never asked the
+// plane anything — keeps the pod's fresh-attempt-is-worth-it default.
+func TestSubstrateRetryable(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "403 capability_undeclared refusal is not retryable",
+			err:  &dispatcher.CredentialResolveRefusal{Status: http.StatusForbidden, Detail: "capability contents:write not declared"},
+			want: false,
+		},
+		{
+			name: "409 gate_pin_missing refusal is not retryable",
+			err:  &dispatcher.CredentialResolveRefusal{Status: http.StatusConflict, Detail: "gate pin missing"},
+			want: false,
+		},
+		{
+			name: "a refusal wrapped by a caller is still found by errors.As",
+			err:  fmt.Errorf("resolve stage capabilities: %w", &dispatcher.CredentialResolveRefusal{Status: http.StatusForbidden}),
+			want: false,
+		},
+		{
+			name: "503 credentials_unavailable stays retryable (the plane's own state, not its judgement)",
+			err:  &dispatcher.CredentialResolveRefusal{Status: http.StatusServiceUnavailable},
+			want: true,
+		},
+		{
+			name: "a dial error (never reached the plane) stays retryable",
+			err:  errors.New("dial tcp 127.0.0.1:1: connect: connection refused"),
+			want: true,
+		},
+		{
+			name: "a pod-local harness-construction fault (agentic_executor_unavailable) stays retryable",
+			err:  errors.New(`harness "copilot" preflight failed in pod: No authentication information found`),
+			want: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := substrateRetryable(tc.err); got != tc.want {
+				t.Fatalf("substrateRetryable(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// fail (the closure runAgenticStage builds) is what actually stamps the
+// surrendered envelope's Retryable bit for a review; this checks it applies
+// substrateRetryable rather than the old blanket true, for both the review
+// arm (where reviewSubstrateFailure gates it) and the invocation arm (where
+// Retryable is never stamped at all — a task's failure is a business
+// outcome, not an infra retry signal).
+func TestFailStampsRetryableFromSubstrateRetryable(t *testing.T) {
+	deterministicRefusal := &dispatcher.CredentialResolveRefusal{Status: http.StatusForbidden, Detail: "capability contents:write not declared"}
+
+	reviewFail := func(code string, err error) stageOutcome {
+		envelope := failureEnvelope(code, err.Error())
+		if reviewSubstrateFailure(code) {
+			envelope.Error.Retryable = substrateRetryable(err)
+		}
+		return stageOutcome{Result: envelope}
+	}
+	out := reviewFail("credential_resolve_failed", deterministicRefusal)
+	if out.Result.Error.Retryable {
+		t.Fatal("a review's credential_resolve_failed wrapping a deterministic plane refusal must surrender Retryable=false")
+	}
+
+	transportErr := errors.New("dial tcp: i/o timeout")
+	out = reviewFail("credential_resolve_failed", transportErr)
+	if !out.Result.Error.Retryable {
+		t.Fatal("a review's credential_resolve_failed from a transport fault must stay Retryable=true")
+	}
+
+	// Invocation mode (kit.IsReview() == false in runAgenticStage's real
+	// closure) never reaches the Retryable stamp at all: a task's failure is
+	// the workflow's business outcome, not an infra signal the engine retries
+	// on a fresh pod. Modeled here by simply not gating on reviewSubstrateFailure.
+	invocationFail := func(code string, err error) stageOutcome {
+		return stageOutcome{Result: failureEnvelope(code, err.Error())}
+	}
+	out = invocationFail("credential_resolve_failed", deterministicRefusal)
+	if out.Result.Error.Retryable {
+		t.Fatal("an invocation's failureEnvelope defaults Retryable to false and must stay false")
 	}
 }

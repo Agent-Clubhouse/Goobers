@@ -226,8 +226,8 @@ func init() {
 			withExamples("goobers fix --to 2.0", "goobers fix --to 2.0 --write ./instance"),
 		command("doctor", apicontract.ActionReadOnlyNavigation, runDoctor).
 			withSynopsis(synopsisByID["doctor"]).
-			withHelp("preflight a Kubernetes cluster against the documented infra shape", doctorHelp).
-			withExamples("goobers doctor --k8s", "goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0"),
+			withHelp("preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions", doctorHelp).
+			withExamples("goobers doctor --k8s", "goobers doctor --k8s --report json --oidc-issuer https://login.example.com/tenant/v2.0", "goobers doctor --av-exclusions --report json ./instance"),
 		command("netpol-render", apicontract.ActionConfigTime, runNetpolRender).
 			withSynopsis(synopsisByID["netpol-render"]).
 			withHelp("render per-runner-class NetworkPolicy reference manifests from the runners: inventory", netpolRenderHelp).
@@ -308,6 +308,10 @@ func init() {
 			withSynopsis(synopsisByID["engine-start"]).
 			withHelp("dispatch one run onto the tier-3 engine via Temporal (experimental)", engineStartHelp).
 			withExamples("goobers engine-start default-implement"),
+		command("engine-queues", apicontract.ActionReadOnlyNavigation, runEngineQueues).
+			withSynopsis(synopsisByID["engine-queues"]).
+			withHelp("report which workers poll this instance's engine and dispatch task queues (experimental)", engineQueuesHelp).
+			withExamples("goobers engine-queues", "goobers engine-queues --json"),
 		command("engine-project", apicontract.ActionDaemonLifecycle, runEngineProject).
 			withSynopsis(synopsisByID["engine-project"]).
 			withHelp("write a completed engine run's journal into the instance (experimental)", engineProjectHelp).
@@ -573,6 +577,10 @@ func init() {
 			withSynopsis(synopsisByID["publish-batch"]).
 			withHelp("publish a verified decomposition batch behind one eligibility barrier (a workflow stage)", publishBatchHelp).
 			withExamples("goobers publish-batch"),
+		stageCommand("file-issues", apicontract.ActionWorkflowExecution, runFileIssues).
+			withSynopsis(synopsisByID["file-issues"]).
+			withHelp("file a validated nominations artifact as deduped, budgeted issues (a workflow stage)", fileIssuesHelp).
+			withExamples("goobers file-issues --check", "goobers file-issues"),
 		stageCommand("reconcile-branches", apicontract.ActionWorkflowExecution, runReconcileBranches).
 			withSynopsis(synopsisByID["reconcile-branches"]).
 			withHelp("report bounded stale goobers/* branch candidates (a workflow stage)", reconcileBranchesHelp).

@@ -21,7 +21,9 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/procenv"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // dispatchexec.go is the mode-3 in-pod stage runtime (#3699): the process a
@@ -80,8 +82,28 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	}
 
 	client := &dispatcher.SurrenderPutClient{BaseURL: daemonAPI, Token: podToken}
-	envelope := runDeclaredStage(ctx, stdout, stderr)
 
+	// #3480: a Windows stage pod says once, in its OWN log, whether the
+	// workspace, temp and profile it is about to write-then-read are
+	// excluded from real-time scanning — the far-side evidence for the
+	// advisory, readable with `kubectl logs` after the fact. Printed before
+	// the stage so it precedes any git error the race would otherwise
+	// surface as. Advisory: bounded by avexclusion.StagePodQueryTimeout (the
+	// pod pays this probe on every stage attempt, so its bound is tighter
+	// than the daemon's), never fails the stage, silent off Windows.
+	if line := stagePodAVExclusionAdvisory(ctx, realStagePodAVExclusionDeps(), os.Getwd, os.Getenv); line != "" {
+		pf(stderr, "dispatch-exec: %s\n", line)
+	}
+
+	// Stage liveness for the daemon's stall sweep (#3875). Started immediately
+	// before the stage and stopped immediately after it, on every path — the
+	// heartbeat must cover exactly the window in which there is something alive
+	// to report on, and no longer. Stop() waits for the goroutine, so nothing
+	// is still emitting when the surrender PUT below runs.
+	stageCtx, heartbeat := startPodStageHeartbeat(ctx, stderr)
+	outcome := runStage(stageCtx, stdout, stderr)
+	heartbeat.Stop()
+	envelope := outcome.Result
 	// Carry whatever this stage committed to the next one (#3763). This pod is
 	// about to be disposed, so a commit that does not leave here does not exist
 	// downstream — on the worker the shared branch ref does this for free.
@@ -93,8 +115,13 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	// A publish failure converts the stage to a FAILURE. The commits exist and
 	// nothing else will carry them, so surrendering success here would strand
 	// exactly the diff this mechanism protects — the silent shape #3763 is about.
-	var delta string
-	if envelope.Status == apiv1.ResultSuccess {
+	//
+	// NEVER for a review (decision 001 ruling 7): a reviewer returns a verdict
+	// and must not commit — the self arm's ReviewGoober publishes nothing —
+	// so a review pod's writable checkout is not bundled, and the engine
+	// refuses a review surrender that carries a delta anyway.
+	var delta publishedWorkspaceDelta
+	if envelope.Status == apiv1.ResultSuccess && outcome.Verdict == nil {
 		published, derr := publishWorkspaceDelta(ctx, ".", stderr)
 		if derr != nil {
 			pf(stderr, "dispatch-exec: %v\n", derr)
@@ -107,7 +134,11 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 			delta = published
 		}
 	}
-	data, err := json.Marshal(dispatcher.SurrenderedResult{Result: envelope, WorkspaceDelta: delta})
+	data, err := json.Marshal(dispatcher.SurrenderedResult{
+		Result: envelope, WorkspaceDelta: delta.Digest, WorkspaceDeltaBase: delta.Base, WorkspaceDeltaTip: delta.Tip,
+		WorkspaceDeltaUnchanged: delta.Unchanged,
+		Verdict:                 outcome.Verdict,
+	})
 	if err != nil {
 		pf(stderr, "dispatch-exec: marshal surrendered result: %v\n", err)
 		return 1
@@ -122,22 +153,45 @@ func runDispatchExecContext(ctx context.Context, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// stageOutcome is what one pod stage produced and owes the surrender plane:
+// its ResultEnvelope and, for an agentic stage dispatched in review mode
+// (agentickit.ModeReview), the reviewer's Verdict. Verdict is nil for every
+// deterministic stage and every invoke-mode agentic stage.
+type stageOutcome struct {
+	Result  apiv1.ResultEnvelope
+	Verdict *apiv1.Verdict
+}
+
+// runStage executes whatever this pod was dispatched to run. An AGENTIC stage
+// has no declared command: it executes by invoking a goober through its
+// harness, using the kit the dispatcher published. The kit digest is what
+// distinguishes the two, and it is stamped only for agentic attempts.
+//
+// A DETERMINISTIC stage may still not be a command: `inputs.kind` selects a
+// built-in Go executor, and the declared command is a placeholder the local
+// path never shells out either (internal/executor's TaskExecutor). ci-poll is
+// the one such kind with a pod-side path today (decision 005 C5, #3881); every
+// other kind is refused before dispatch and again by runDeclaredStage's
+// backstop, so falling through to the placeholder command is unreachable for
+// them rather than merely unlikely.
+func runStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
+	if strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest)) != "" {
+		return runAgenticStage(ctx, stdout, stderr)
+	}
+	if strings.TrimSpace(os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) == executor.KindCIPoll {
+		return stageOutcome{Result: runCIPollStage(ctx, stderr)}
+	}
+	return stageOutcome{Result: runDeclaredStage(ctx, stdout, stderr)}
+}
+
 // runDeclaredStage builds and runs the pinned Command/Script, and always
 // returns a ResultEnvelope — success, failure, or an infra-shaped failure
 // for a malformed declaration — never an error, because the caller's only
 // job past this point is to surrender whatever envelope comes back.
 func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.ResultEnvelope {
-	// An AGENTIC stage has no declared command: it executes by invoking a
-	// goober through its harness, using the kit the dispatcher published. The
-	// kit digest is what distinguishes the two, and it is stamped only for
-	// agentic attempts.
-	if strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest)) != "" {
-		return runAgenticStage(ctx, stdout, stderr)
-	}
-
 	// THE INVARIANT THAT MAKES THE REST OF THIS FUNCTION SAFE, stated because
 	// it is currently enforced by an ABSENCE and an absence is invisible to the
-	// next change: only the agentic branch above materializes this stage's
+	// next change: only the agentic branch (runStage) materializes this stage's
 	// ContextPointers (dispatchcontext.go). A deterministic stage does not need
 	// it because internal/executor never resolves them — `grep -rn
 	// ContextPointers internal/executor/ internal/dispatcher/` returns nothing,
@@ -158,6 +212,26 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		return failureEnvelope("stage_declaration_invalid", err.Error())
 	}
 	defer cleanup()
+
+	// Decision 003 ruling 3, pod-entrypoint backstop: the engine's
+	// dispatchRemoteTask already refuses a stage that needs the daemon's
+	// instance root before ever creating a pod (a ledger-touching or
+	// journal-reading goobers CLI command, or a built-in stage kind with no
+	// pod-side execution path). This re-asserts the identical refusal HERE,
+	// at the one point in the tree where every substrate skew — an older
+	// engine image dispatching to a newer worker, a hand-built attempt —
+	// would actually surface, rather than trusting that the workflow-side
+	// check happened. Gated on GOOBERS_INSTANCE_ROOT being unset (always
+	// true in a pod today, since the dispatcher never stamps it) rather than
+	// "this is a pod": once a plane client lands and a pod gets a scoped
+	// root, this stops firing on its own, no dispatchexec.go change needed.
+	if executor.StageRequiresInstanceRoot(argv, os.Getenv(dispatcher.InputEnvVar(executor.InputKind))) &&
+		strings.TrimSpace(os.Getenv(executor.InstanceRootEnvVar)) == "" {
+		return failureEnvelope(executor.StageRequiresInstanceRootCode, fmt.Sprintf(
+			"stage command %v requires the daemon's instance root (%s is unset in this pod); this should have been refused before dispatch",
+			argv, executor.InstanceRootEnvVar,
+		))
+	}
 
 	timeout := dispatcher.DefaultStageTimeout
 	if declared, err := time.ParseDuration(os.Getenv(dispatcher.EnvStageTimeout)); err == nil && declared > 0 {
@@ -195,6 +269,26 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 		return failureEnvelope("credential_resolve_failed", checkoutErr.Error())
 	}
 	if err := checkoutRepoWorkspace(ctx, ".", stderr, append(append([]dispatcher.MintedCredential{}, creds...), checkoutCreds...)); err != nil {
+		// A genuine syncBase base-merge conflict is classified exactly as the
+		// self arms classify it (#813, internal/engine/activities.go's
+		// RunDeterministic and internal/runner/run.go): a business failure
+		// `failure-class` routes into remediation, not a dispatch error that
+		// burns the implementation repass budget re-deriving the same
+		// rejected diff. Checked BEFORE the generic fail-closed branch below,
+		// which would otherwise swallow it as workspace_provision_failed/
+		// non-retryable and misroute the run regardless of placement.
+		var conflict *worktree.BaseSyncConflictError
+		if errors.As(err, &conflict) {
+			return apiv1.ResultEnvelope{
+				Status:  apiv1.ResultFailure,
+				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
+				Error: &apiv1.ErrorInfo{
+					Code:      runner.BaseSyncConflictErrorCode,
+					Message:   err.Error(),
+					Retryable: true,
+				},
+			}
+		}
 		// Fail closed and NAME the workspace: a stage whose repo never arrived
 		// would otherwise run against an empty directory and fail somewhere far
 		// away — a missing Makefile, a missing test file — with an error that
@@ -250,8 +344,13 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	cmd.Env = append(append(stageEnvironment(), credEnv...), extraEnv...)
 	capturedStdout := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
 	capturedStderr := &boundedCapture{limit: dispatchExecMaxCapturedOutput}
-	cmd.Stdout = io.MultiWriter(stdout, capturedStdout)
-	cmd.Stderr = io.MultiWriter(stderr, capturedStderr)
+	// The third writer is the stage-heartbeat progress signal (#3875): output
+	// is what "this stage is alive" means for a declared command, exactly as it
+	// does for internal/executor/shell.go's capturingWriter on a self runner. A
+	// no-op when no heartbeat is running.
+	progress := podStageProgress(ctx)
+	cmd.Stdout = io.MultiWriter(stdout, capturedStdout, progress)
+	cmd.Stderr = io.MultiWriter(stderr, capturedStderr, progress)
 
 	// proc.Start + a tree-kill on timeout (not exec.CommandContext, whose
 	// context-cancel path only reaches the direct child): the declared
@@ -617,6 +716,23 @@ func dispatcherStampedEnvNames() []string {
 // capabilities this stage declared. The dispatcher stamps the capability NAMES
 // only; the values never exist outside this process and the daemon.
 func resolveStageCredentials(ctx context.Context) ([]dispatcher.MintedCredential, error) {
+	capabilities, err := stageDeclaredCapabilities()
+	if err != nil {
+		return nil, err
+	}
+	if len(capabilities) == 0 {
+		return nil, nil
+	}
+	return resolveCapabilities(ctx, capabilities)
+}
+
+// stageDeclaredCapabilities decodes the capability NAMES the dispatcher
+// stamped for this stage. Separated from the resolution above because the
+// in-pod ci-poll kind (dispatchcipoll.go) must be able to REFUSE on a missing
+// declaration before asking the credential plane for anything — a stage that
+// never declared provider:pr:write has a workflow problem, not a credential
+// one, and calling the plane first would report it as the latter.
+func stageDeclaredCapabilities() ([]string, error) {
 	encoded := strings.TrimSpace(os.Getenv(dispatcher.EnvStageCapabilities))
 	if encoded == "" {
 		return nil, nil
@@ -625,7 +741,7 @@ func resolveStageCredentials(ctx context.Context) ([]dispatcher.MintedCredential
 	if err := json.Unmarshal([]byte(encoded), &capabilities); err != nil {
 		return nil, fmt.Errorf("decode %s: %w", dispatcher.EnvStageCapabilities, err)
 	}
-	return resolveCapabilities(ctx, capabilities)
+	return capabilities, nil
 }
 
 // resolveCheckoutCredential mints the credential that provisions a repo
@@ -833,9 +949,14 @@ const blobWriteThroughFailureArtifact = "blob-write-through.errors"
 // as an infrastructure fault. A REFUSING endpoint is instant (connection
 // refused); a DROPPING one — the NetworkPolicy shape this change's own evidence
 // plan tells operators to look for — is what needs the ceiling. Generous for
-// the payload (stream artifacts are capped at 32 KiB by boundedCapture) and far
-// below anything that would look like a hung pod.
-const blobWriteThroughBudget = 15 * time.Second
+// the payload (stream artifacts are capped at 32 KiB by boundedCapture, and a
+// span transcript by DefaultMaxTranscriptBytes) and far below anything that
+// would look like a hung pod.
+//
+// A var, not a const, so the CEILING ITSELF is testable in bounded time (#3805):
+// a hanging plane is the one failure mode this budget exists for, and a test
+// that had to wait the real 15s to observe it would never be written.
+var blobWriteThroughBudget = 15 * time.Second
 
 // stageBlobWriteThroughContext returns the context the write-through PUTs run
 // under, and it is DELIBERATELY NOT THE STAGE'S.

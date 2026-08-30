@@ -223,6 +223,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gaggle.spec.runControls.stalledRunTimeout` | 3.0 | ga | preview | dev |
 | `gaggle.spec.runsOn` | 3.0 | ga | preview | v0.4.0 |
 | `gaggle.spec.runsOn.capabilities` | 3.0 | ga | preview | v0.4.0 |
+| `gaggle.spec.runsOn.capabilities.privilege.windows-admin` | 3.0 | ga | preview | v0.4.0 |
 | `gaggle.spec.runsOn.os` | 3.0 | ga | preview | v0.4.0 |
 | `gaggle.spec.runsOn.restrictions` | 3.0 | ga | preview | v0.4.0 |
 | `gaggle.spec.selfIdentity` | 3.0 | ga | preview | dev |
@@ -264,6 +265,14 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `gate.evaluator.human.timeout` | 3.0 | ga | preview | dev |
 | `gate.maxRepasses` | 3.0 | ga | preview | dev |
 | `gate.name` | 3.0 | ga | preview | dev |
+| `gate.runsOn` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.capabilities` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.capabilities.privilege.windows-admin` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.cpu` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.disk` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.memory` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.os` | 3.0 | ga | preview | v0.4.0 |
+| `gate.runsOn.restrictions` | 3.0 | ga | preview | v0.4.0 |
 | `goober.spec.capabilities` | 3.0 | ga | preview | dev |
 | `goober.spec.conditionalPolicyActions` | 3.0 | ga | preview | dev |
 | `goober.spec.displayName` | 3.0 | ga | preview | dev |
@@ -325,6 +334,7 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 | `task.retry.maxAttempts` | 3.0 | ga | preview | dev |
 | `task.runsOn` | 3.0 | ga | preview | v0.4.0 |
 | `task.runsOn.capabilities` | 3.0 | ga | preview | v0.4.0 |
+| `task.runsOn.capabilities.privilege.windows-admin` | 3.0 | ga | preview | v0.4.0 |
 | `task.runsOn.cpu` | 3.0 | ga | preview | v0.4.0 |
 | `task.runsOn.disk` | 3.0 | ga | preview | v0.4.0 |
 | `task.runsOn.memory` | 3.0 | ga | preview | v0.4.0 |
@@ -389,6 +399,6 @@ A caveat on the version columns: the registry was backfilled (#3292) to cover ev
 
 ### 2.0 -> 3.0
 
-- Added: `gaggle.spec.runsOn`, `gaggle.spec.runsOn.capabilities`, `gaggle.spec.runsOn.os`, `gaggle.spec.runsOn.restrictions`, `task.commitsRepo`, `task.repoFrom`, `task.runsOn`, `task.runsOn.capabilities`, `task.runsOn.cpu`, `task.runsOn.disk`, `task.runsOn.memory`, `task.runsOn.os`, `task.runsOn.restrictions`
+- Added: `gaggle.spec.runsOn`, `gaggle.spec.runsOn.capabilities`, `gaggle.spec.runsOn.capabilities.privilege.windows-admin`, `gaggle.spec.runsOn.os`, `gaggle.spec.runsOn.restrictions`, `gate.runsOn`, `gate.runsOn.capabilities`, `gate.runsOn.capabilities.privilege.windows-admin`, `gate.runsOn.cpu`, `gate.runsOn.disk`, `gate.runsOn.memory`, `gate.runsOn.os`, `gate.runsOn.restrictions`, `task.commitsRepo`, `task.repoFrom`, `task.runsOn`, `task.runsOn.capabilities`, `task.runsOn.capabilities.privilege.windows-admin`, `task.runsOn.cpu`, `task.runsOn.disk`, `task.runsOn.memory`, `task.runsOn.os`, `task.runsOn.restrictions`
 - Removed: `gaggle.spec.requiredCapabilities`, `gaggle.spec.sandbox`, `stage.run.network.none`, `task.experiment`, `task.requiredCapabilities`
 - Level changes: none

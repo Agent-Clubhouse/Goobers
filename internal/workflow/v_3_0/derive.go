@@ -13,6 +13,9 @@ package v30
 //   - Agentic stages derive "harness:<name>" from the goober's existing
 //     harness: field — declared once, never re-typed per stage; this is what
 //     lets harness-less runner images exist (PO-D8's minimal goobers-base).
+//     An agentic GATE derives the same tag from its reviewer goober
+//     (decision 001: placement is a stage property, so a placed gate and a
+//     placed task read one derivation rule).
 //   - sh/make stages — any deterministic stage that shells out to something
 //     other than the goobers binary, or runs an inline script — derive
 //     "run:shell".
@@ -48,6 +51,47 @@ const DerivedShellTag = runnercap.DerivedShellTag
 // stage: DerivedHarnessTagPrefix + the goober's harness name.
 const DerivedHarnessTagPrefix = runnercap.DerivedHarnessTagPrefix
 
+// PlacementStage is the placement-relevant view of one stage — a task or an
+// agentic gate. Decision 001 makes placement a STAGE property: tasks and
+// gates share one runsOn block, one gaggle-floor merge (EffectiveRunsOn),
+// and one derivation rule (EffectiveCapabilities), so the solver input and
+// every runsOn check read this view rather than the task or gate type.
+type PlacementStage struct {
+	// Kind labels diagnostics: "task" or "gate".
+	Kind string
+	// Name is the stage name — the key every checkpoint and the run-start
+	// pin (bootstrap.PinStagePlacements) look placements up by.
+	Name string
+	// RunsOn is the stage's declared block; nil declares nothing.
+	RunsOn *apiv1.RunsOn
+	// Derived is the D7 derived requirement tag set the stage carries by
+	// construction, independent of RunsOn.
+	Derived []string
+}
+
+const (
+	stageKindTask = "task"
+	stageKindGate = "gate"
+)
+
+func taskPlacementStage(task apiv1.Task, goobers map[string]apiv1.GooberSpec) PlacementStage {
+	return PlacementStage{Kind: stageKindTask, Name: task.Name, RunsOn: task.RunsOn, Derived: DerivedCapabilities(task, goobers)}
+}
+
+func gatePlacementStage(gate apiv1.Gate, goobers map[string]apiv1.GooberSpec) PlacementStage {
+	return PlacementStage{Kind: stageKindGate, Name: gate.Name, RunsOn: gate.RunsOn, Derived: DerivedGateCapabilities(gate, goobers)}
+}
+
+// harnessFor resolves the harness an agentic stage's goober runs on; with a
+// nil map, or a goober declaring no harness, it is the schema-default
+// harness (copilot), matching admission's default resolution.
+func harnessFor(goober string, goobers map[string]apiv1.GooberSpec) apiv1.Harness {
+	if spec, ok := goobers[goober]; ok && spec.Harness != "" {
+		return spec.Harness
+	}
+	return apiv1.HarnessCopilot
+}
+
 // DerivedCapabilities returns the placement requirements task carries by
 // construction (D7), independent of any declared runsOn. goobers supplies the
 // referenced goober specs for harness derivation; with a nil map an agentic
@@ -56,11 +100,7 @@ const DerivedHarnessTagPrefix = runnercap.DerivedHarnessTagPrefix
 func DerivedCapabilities(task apiv1.Task, goobers map[string]apiv1.GooberSpec) []string {
 	switch task.Type {
 	case apiv1.TaskAgentic:
-		harness := apiv1.HarnessCopilot
-		if goober, ok := goobers[task.Goober]; ok && goober.Harness != "" {
-			harness = goober.Harness
-		}
-		return []string{DerivedHarnessTagPrefix + string(harness)}
+		return []string{DerivedHarnessTagPrefix + string(harnessFor(task.Goober, goobers))}
 	case apiv1.TaskDeterministic:
 		if task.Run == nil {
 			return nil
@@ -80,16 +120,28 @@ func DerivedCapabilities(task apiv1.Task, goobers map[string]apiv1.GooberSpec) [
 	}
 }
 
+// DerivedGateCapabilities returns the placement requirements gate carries by
+// construction (D7 applied to gates, decision 001): an agentic gate derives
+// harness:<name> from its REVIEWER goober's harness, by the identical rule an
+// agentic task uses. Automated and human gates evaluate in the control plane
+// and derive nothing.
+func DerivedGateCapabilities(gate apiv1.Gate, goobers map[string]apiv1.GooberSpec) []string {
+	if gate.Evaluator != apiv1.EvaluatorAgentic || gate.Agentic == nil {
+		return nil
+	}
+	return []string{DerivedHarnessTagPrefix + string(harnessFor(gate.Agentic.Goober, goobers))}
+}
+
 // EffectiveCapabilities is a stage's full placement requirement tag set:
 // derived ∪ declared ∪ the gaggle floor (dsl-3.0.md §2 merge rule), sorted
 // and de-duplicated. Declaration never subtracts — union only. OS-unspecified
 // stages contribute no OS here or anywhere: unspecified means no requirement
 // (D3); placement preference is policy the solver owns, never a compiled-in
 // requirement.
-func EffectiveCapabilities(task apiv1.Task, gaggleRunsOn *apiv1.GaggleRunsOn, goobers map[string]apiv1.GooberSpec) []string {
-	tags := DerivedCapabilities(task, goobers)
-	if task.RunsOn != nil {
-		tags = append(tags, task.RunsOn.Capabilities...)
+func EffectiveCapabilities(stage PlacementStage, gaggleRunsOn *apiv1.GaggleRunsOn) []string {
+	tags := append([]string(nil), stage.Derived...)
+	if stage.RunsOn != nil {
+		tags = append(tags, stage.RunsOn.Capabilities...)
 	}
 	if gaggleRunsOn != nil {
 		tags = append(tags, gaggleRunsOn.Capabilities...)

@@ -702,6 +702,18 @@
             "type": "string",
             "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
           }
+        },
+        "windows": {
+          "description": "Claims only a Windows runner can make. Refused at load on a runner whose provides.os is not windows. Omitted on a windows runner, `goobers validate` warns (RNR006): the daemon cannot otherwise learn whether the host or image was prepared, and the failure it guards against surfaces minutes later in a different subsystem.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["avExclusionsVerified"],
+          "properties": {
+            "avExclusionsVerified": {
+              "description": "Asserts that the directories Goobers writes then immediately reads on this runner — the set `goobers doctor --av-exclusions` enumerates (instance root, run journals, workcopies, worker work root, the stage pod's C:\\workspace and TMP) — are excluded from real-time antivirus scanning, so a scan cannot hold a handle on a just-written file and surface later as an unrelated git \"Permission denied\" (#3480, #3161–#3164). Trusted like every other provides: claim (DI-11): nothing re-verifies it against the image or host; the stage pod's own startup advisory line is the evidence. false is an honest \"not prepared\" and still warns.",
+              "type": "boolean"
+            }
+          }
         }
       }
     },

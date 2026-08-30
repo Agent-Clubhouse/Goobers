@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -126,12 +127,20 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 
 	root := *workRoot
 	if root == "" {
-		root = filepath.Join(os.TempDir(), "goobers-worker")
+		root = defaultWorkerRoot(os.TempDir())
 	}
 	engineRuntime, err := workerEngineDeps(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	// #3480: on a Windows host, say once whether the work root and temp the
+	// worker is about to write-then-read are excluded from real-time
+	// scanning. Advisory — the worker starts regardless.
+	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
+		if line := hostAVExclusionAdvisory(context.Background(), "worker", workerAVExclusionDirectories(root, avDeps), avDeps); line != "" {
+			pln(stdout, line)
+		}
 	}
 	defer func() { _ = engineRuntime.Close() }()
 
@@ -227,7 +236,16 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
 			return 2
 		}
-		dispatch, derr := buildStageDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobRoot)
+		// The dispatcher's owner identity: this worker's hostname, which
+		// in-cluster is its pod name. It is stamped on every stage pod and is
+		// the scope the orphan sweep below sweeps within, so a sibling
+		// worker's in-flight pods are outside every sweep by construction.
+		owner, oerr := os.Hostname()
+		if oerr != nil {
+			pf(stderr, "error: resolve stage dispatch owner identity: %v\n", oerr)
+			return 1
+		}
+		dispatch, derr := buildStageDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobRoot, owner)
 		if derr != nil {
 			pf(stderr, "error: %v\n", derr)
 			return 1
@@ -235,8 +253,15 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		engineRuntime.deps.Dispatcher = dispatch.Dispatcher
 		engineRuntime.deps.Surrenders = dispatch.Surrenders
 		queues = mergeQueues(queues, dispatch.Queues)
-		pf(stdout, "goobers worker: mode-3 stage dispatch into namespace %s; dispatch queues %s\n",
-			*dispatchNamespace, strings.Join(dispatch.Queues, ", "))
+		pf(stdout, "goobers worker: mode-3 stage dispatch into namespace %s as owner %s; dispatch queues %s\n",
+			*dispatchNamespace, owner, strings.Join(dispatch.Queues, ", "))
+		// Decision 003's worker-hygiene graft, run BEFORE this worker polls
+		// anything: reclaim the stage pods this same owner left behind when it
+		// last stopped, asking the engine about each one. A pod whose attempt
+		// is still executing is adopted (left running, its surrender still
+		// lands); only a settled attempt's pod is disposed. Never fatal — see
+		// sweepWorkerStageOrphans.
+		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, stdout, stderr)
 	}
 
 	host, err := workerhost.New(workerhost.Config{
@@ -293,6 +318,14 @@ func workerEngineDeps(workRoot string) (workerEngineRuntime, error) {
 
 const workerRootOwnerFile = ".goobers-worker-owner"
 
+// The worker's work-root layout, named once so the provisioner
+// (workerEngineDepsForPlatform) and the #3480 antivirus-exclusion
+// enumeration (`goobers doctor --av-exclusions`, the worker's startup
+// advisory) read the same paths.
+func defaultWorkerRoot(tempDir string) string    { return filepath.Join(tempDir, "goobers-worker") }
+func workerWorkcopiesDir(workRoot string) string { return filepath.Join(workRoot, "workcopies") }
+func workerScratchDir(workRoot string) string    { return filepath.Join(workRoot, "scratch") }
+
 func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRuntime, error) {
 	rootClaim, err := claimWorkerRoot(workRoot, owner)
 	if err != nil {
@@ -302,7 +335,7 @@ func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRunt
 	if goos == "windows" {
 		managerOptions = append(managerOptions, worktree.WithDefaultPathLengthLimit(worktree.PathLengthLimit{}))
 	}
-	wtMgr, err := worktree.NewManager(filepath.Join(workRoot, "workcopies"), managerOptions...)
+	wtMgr, err := worktree.NewManager(workerWorkcopiesDir(workRoot), managerOptions...)
 	if err != nil {
 		return workerEngineRuntime{}, errors.Join(err, rootClaim.Release())
 	}
@@ -312,7 +345,7 @@ func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRunt
 			Auto: gate.NewAutomatedEvaluator(),
 			Workspaces: &workerhost.WorktreeWorkspaces{
 				Manager:    wtMgr,
-				ScratchDir: filepath.Join(workRoot, "scratch"),
+				ScratchDir: workerScratchDir(workRoot),
 			},
 			Scrubber: scrubber,
 		},
