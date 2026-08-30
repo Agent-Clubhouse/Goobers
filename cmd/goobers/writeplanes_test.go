@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -293,6 +294,10 @@ func (s *stubTriggerer) TriggerExact(context.Context, localscheduler.WorkflowIde
 	return s.mint()
 }
 
+func (s *stubTriggerer) TriggerPriority(context.Context, localscheduler.WorkflowIdentity, string, time.Time) (string, error) {
+	return s.mint()
+}
+
 // barrierTriggerer blocks the FIRST mint inside the dispatch seam until
 // released, so a test can deliver a duplicate while the winning delivery's
 // mint is deterministically still in flight. Later mints pass straight
@@ -318,6 +323,10 @@ func (b *barrierTriggerer) Trigger(context.Context, string, time.Time) (string, 
 }
 
 func (b *barrierTriggerer) TriggerExact(context.Context, localscheduler.WorkflowIdentity, time.Time) (string, error) {
+	return b.mint()
+}
+
+func (b *barrierTriggerer) TriggerPriority(context.Context, localscheduler.WorkflowIdentity, string, time.Time) (string, error) {
 	return b.mint()
 }
 
@@ -638,5 +647,177 @@ func TestEscalationAdapterValidatesResolutionInputs(t *testing.T) {
 				t.Fatalf("err = %#v, want code %s", err, test.wantCode)
 			}
 		})
+	}
+}
+
+// TestClaimsPlaneListScopesAndContainment pins the daemon's list read
+// (finding 002 C1 / the critic's claims/list-history row): a run listing is
+// ForRunAll; a namespace listing carries the namespace's current holders,
+// the legacy unscoped entries the ledger holds exclusive against it, and —
+// with history — the released entries (ReleasedAt, RunID) the
+// failure-streak deprioritization reads; a pod-scoped namespace listing is
+// confined to the gaggle the pod's run belongs to.
+func TestClaimsPlaneListScopesAndContainment(t *testing.T) {
+	service, layout := newClaimServiceFixture(t)
+	ctx := context.Background()
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := func(gaggle, item, runID string) {
+		t.Helper()
+		if ok, _, err := ledger.ClaimScoped(localscheduler.ClaimKey{Gaggle: gaggle, Provider: "github", ExternalID: item}, runID, "implementation", time.Hour); err != nil || !ok {
+			t.Fatalf("seed claim %s/%s: ok=%v err=%v", gaggle, item, ok, err)
+		}
+	}
+	claim("g", "1", "run-1")
+	claim("g", "2", "run-1")
+	claim("g", "3", "run-3")
+	claim("other", "1", "run-9")
+	if ok, _, err := ledger.Claim("legacy", "run-legacy", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed legacy claim: ok=%v err=%v", ok, err)
+	}
+	if err := ledger.ReleaseScoped(localscheduler.ClaimKey{Gaggle: "g", Provider: "github", ExternalID: "2"}, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, gaggle := range []string{"g", "other"} {
+		run, err := journal.Create(layout.ForGaggle(gaggle).RunsDir(), journal.RunIdentity{RunID: "run-" + gaggle, Workflow: "w", Gaggle: gaggle}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := run.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	byRun, err := service.List(ctx, httpapi.ClaimListRequest{RunID: "run-1", Scope: httpapi.ClaimListScopeRun, IncludeHistory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byRun.Entries) != 1 || byRun.Entries[0].ItemID != "1" || len(byRun.History) != 2 {
+		t.Fatalf("run listing = %+v, want item 1 held and two history entries", byRun)
+	}
+
+	namespace, err := service.List(ctx, httpapi.ClaimListRequest{Gaggle: "g", Provider: "github", RunID: "run-1", Scope: httpapi.ClaimListScopeNamespace, IncludeHistory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := map[string]string{}
+	for _, entry := range namespace.Entries {
+		items[entry.ItemID] = entry.RunID
+	}
+	if len(items) != 3 || items["1"] != "run-1" || items["3"] != "run-3" || items["legacy"] != "run-legacy" {
+		t.Fatalf("namespace holders = %v, want g's 1 and 3 plus the legacy entry, never other's", items)
+	}
+	var releasedTwo bool
+	for _, entry := range namespace.History {
+		if entry.Gaggle == "other" {
+			t.Fatalf("namespace history leaked another gaggle's entry: %+v", entry)
+		}
+		if entry.ItemID == "2" && entry.ReleasedAt != nil && entry.RunID == "run-1" {
+			releasedTwo = true
+		}
+	}
+	if !releasedTwo {
+		t.Fatalf("namespace history = %+v, want item 2's release by run-1 with ReleasedAt", namespace.History)
+	}
+	bare, err := service.List(ctx, httpapi.ClaimListRequest{Gaggle: "g", Provider: "github", RunID: "run-1", Scope: httpapi.ClaimListScopeNamespace})
+	if err != nil || len(bare.History) != 0 {
+		t.Fatalf("listing without history = %+v, %v", bare, err)
+	}
+
+	// Pod containment: run-g lives in gaggle g, so it may list g and not other.
+	if _, err := service.List(ctx, httpapi.ClaimListRequest{Gaggle: "g", Provider: "github", RunID: "run-g", Scope: httpapi.ClaimListScopeNamespace, PodScoped: true}); err != nil {
+		t.Fatalf("pod listing its own gaggle: %v", err)
+	}
+	_, err = service.List(ctx, httpapi.ClaimListRequest{Gaggle: "other", Provider: "github", RunID: "run-g", Scope: httpapi.ClaimListScopeNamespace, PodScoped: true})
+	var planeErr *httpapi.InterventionError
+	if !errors.As(err, &planeErr) || planeErr.Status != http.StatusForbidden || planeErr.Code != "gaggle_mismatch" {
+		t.Fatalf("pod listing another gaggle: err = %v, want 403 gaggle_mismatch", err)
+	}
+	_, err = service.List(ctx, httpapi.ClaimListRequest{Gaggle: "g", Provider: "github", RunID: "never-admitted", Scope: httpapi.ClaimListScopeNamespace, PodScoped: true})
+	if !errors.As(err, &planeErr) || planeErr.Code != "gaggle_mismatch" {
+		t.Fatalf("pod listing for a run with no journal: err = %v, want gaggle_mismatch", err)
+	}
+	// The gaggle is a pod-supplied path segment on the containment check's
+	// only filesystem probe: anything that is not one plain element is
+	// refused before it is joined, never resolved.
+	for _, gaggle := range []string{"../g", "g/../g", "./g", ".", "..", "sub/g", `sub\g`} {
+		_, err = service.List(ctx, httpapi.ClaimListRequest{
+			Gaggle: gaggle, Provider: "github", RunID: "run-g",
+			Scope: httpapi.ClaimListScopeNamespace, PodScoped: true,
+		})
+		if !errors.As(err, &planeErr) || planeErr.Status != http.StatusForbidden || planeErr.Code != "gaggle_mismatch" {
+			t.Fatalf("pod listing gaggle %q: err = %v, want 403 gaggle_mismatch", gaggle, err)
+		}
+	}
+	if _, err := service.List(ctx, httpapi.ClaimListRequest{Gaggle: "other", Provider: "github", RunID: "run-g", Scope: httpapi.ClaimListScopeNamespace}); err != nil {
+		t.Fatalf("a human (not PodScoped) listing of another gaggle: %v", err)
+	}
+	for name, request := range map[string]httpapi.ClaimListRequest{
+		"no run":                     {Scope: httpapi.ClaimListScopeRun},
+		"bad scope":                  {RunID: "run-1", Scope: "all"},
+		"namespace without provider": {RunID: "run-1", Gaggle: "g", Scope: httpapi.ClaimListScopeNamespace},
+	} {
+		if _, err := service.List(ctx, request); !errors.As(err, &planeErr) || planeErr.Status != http.StatusBadRequest {
+			t.Errorf("%s: err = %v, want 400", name, err)
+		}
+	}
+}
+
+// TestClaimsPlaneReleaseAllForRun pins release with itemId omitted: every
+// claim the run holds goes back (narrowed to a namespace when given), the
+// surrendered entries are reported, other runs' claims are untouched, and
+// the release is journaled per entry like the ledger's own.
+func TestClaimsPlaneReleaseAllForRun(t *testing.T) {
+	service, layout := newClaimServiceFixture(t)
+	ctx := context.Background()
+	acquire := func(gaggle, item, runID string) {
+		t.Helper()
+		response, err := service.Acquire(ctx, httpapi.ClaimRequest{Gaggle: gaggle, Provider: "github", ItemID: item, RunID: runID, Workflow: "implementation"})
+		if err != nil || !response.Ok {
+			t.Fatalf("acquire %s/%s for %s: %+v, %v", gaggle, item, runID, response, err)
+		}
+	}
+	acquire("g", "1", "run-1")
+	acquire("g", "2", "run-1")
+	acquire("h", "1", "run-1")
+	acquire("g", "3", "run-2")
+
+	narrowed, err := service.Release(ctx, httpapi.ClaimRequest{Gaggle: "g", Provider: "github", RunID: "run-1"})
+	if err != nil || !narrowed.Ok || len(narrowed.Released) != 2 {
+		t.Fatalf("namespace-narrowed release-all = %+v, %v; want g's two claims", narrowed, err)
+	}
+	everything, err := service.Release(ctx, httpapi.ClaimRequest{RunID: "run-1"})
+	if err != nil || !everything.Ok || len(everything.Released) != 1 || everything.Released[0].Gaggle != "h" {
+		t.Fatalf("release-all = %+v, %v; want h's remaining claim", everything, err)
+	}
+	again, err := service.Release(ctx, httpapi.ClaimRequest{RunID: "run-1"})
+	if err != nil || !again.Ok || len(again.Released) != 0 {
+		t.Fatalf("repeated release-all = %+v, %v; want an idempotent no-op", again, err)
+	}
+	if _, err := service.Release(ctx, httpapi.ClaimRequest{Gaggle: "g", RunID: "run-1"}); err == nil {
+		t.Fatal("half a namespace was accepted")
+	}
+
+	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layout.SchedulerDir(), claimLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held := ledger.Snapshot(); len(held) != 1 || held[0].RunID != "run-2" {
+		t.Fatalf("ledger after release-all = %+v, want only run-2's claim", held)
+	}
+	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := 0
+	for _, event := range events {
+		if event.Type == journal.EventClaimReleased && event.RunID == "run-1" {
+			released++
+		}
+	}
+	if released != 3 {
+		t.Fatalf("claim.released events for run-1 = %d, want 3", released)
 	}
 }

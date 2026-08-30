@@ -164,6 +164,19 @@ var commands = map[string]Command{
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so decomposition batch publication fails at runtime"),
 		},
 	},
+	"file-issues": {
+		ResultFile: "filed-nominations.json",
+		Capabilities: []CapabilityUse{
+			requiredExactWhenAnyFlag(capability.GitHubIssuesRead, []string{"check"}, "the read-only capability-scoped credential is not injected, so the nomination dedupe scan fails at runtime"),
+			requiredUnlessAnyFlag(capability.GitHubIssuesWrite, []string{"check"}, "the capability-scoped credential is not injected, so nomination issue creation fails at runtime"),
+			// The approve credential is keyed on the autoApprove=deterministic-only
+			// INPUT, not a flag, so the manifest (which sees only args) cannot
+			// require it; the policy table does — that input prescribes
+			// approve-issue, whose contract requires github:issues:approve
+			// (internal/workflow/*/policy_actions.go commandInputPolicyActions).
+			optional(capability.GitHubIssuesApprove, "the approve capability-scoped credential is not injected, so every nomination files unapproved at runtime (autoApprove=deterministic-only prescribes approve-issue, which requires it at admission)"),
+		},
+	},
 	"select-source": {
 		ResultFile:         "selection.json",
 		mutatesClaimLedger: true,
@@ -270,6 +283,12 @@ var commands = map[string]Command{
 		Capabilities: []CapabilityUse{
 			required(capability.GitHubPRWrite, "the capability-scoped credential is not injected, so merged pull-request inspection fails at runtime"),
 			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so post-merge issue updates fail at runtime"),
+		},
+	},
+	"pr-comment-watch": {
+		ResultFile: "comment-watch-result.json",
+		Capabilities: []CapabilityUse{
+			required(capability.GitHubIssuesWrite, "the capability-scoped credential is not injected, so PR comment watching fails at runtime"),
 		},
 	},
 	"pr-select": {

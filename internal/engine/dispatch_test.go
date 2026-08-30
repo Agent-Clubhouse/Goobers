@@ -168,7 +168,7 @@ func TestRunDeterministicActivityRefusesEmptyCommand(t *testing.T) {
 	a := &Activities{Det: det, Workspaces: workspaces}
 	_, err := a.RunDeterministic(context.Background(), apiv1.InvocationEnvelope{
 		TaskID: "run-x:lint", RunID: "run-x", Gaggle: "web",
-	}, apiv1.DeterministicRun{}, "")
+	}, apiv1.DeterministicRun{}, "", "")
 	if err == nil || !strings.Contains(err.Error(), "refusing to execute (fail closed)") {
 		t.Fatalf("activity error = %v, want the empty-command fail-closed error", err)
 	}

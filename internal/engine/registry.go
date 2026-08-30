@@ -140,6 +140,28 @@ type StartSpec struct {
 	// every zero-declaration and local-mode instance, which leaves every
 	// stage on the legacy self path byte for byte.
 	Placements []PinnedPlacement
+	// RunControls is the run's already-resolved run-control policy: the
+	// starter collapses the instance → repo → gaggle → workflow inheritance
+	// (#1671) into one effective block before dispatch, exactly as the
+	// daemon's scheduler entry does, and this pins it for the run.
+	//
+	// The zero value is not "inherit later" — nothing downstream re-reads
+	// the config — it is "no configured layer", which newRunJournal resolves
+	// to the built-in 3-repass / 45m defaults. A starter that has the
+	// instance config must fill this in or every run it dispatches pins the
+	// defaults no matter what the author declared (#3820).
+	RunControls apiv1.RunControls
+	// BacklogQueryAssignedTo is this gaggle's resolved self identity
+	// (instance.EffectiveSelfIdentity) and BacklogQueryRequireLabels its
+	// comma-joined GaggleSpec.RequireLabels — the gaggle defaults
+	// cmd/goobers' selfIdentitiesByGaggle / requireLabelsByGaggle resolve for
+	// the local runner's Config. Pinning them here is what gives an
+	// engine-driven run the same MIRC-2 claim partition the runner has had
+	// since #1901: a starter that leaves them empty dispatches a
+	// backlog-query stage with no partition at all, which on a shared backlog
+	// claims the sibling instance's goobers:local items (#3873).
+	BacklogQueryAssignedTo    string
+	BacklogQueryRequireLabels string
 }
 
 // StartInput resolves the latest version of a workflow and pins it into a
@@ -159,6 +181,15 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 	if !ok {
 		return RunInput{}, fmt.Errorf("workflow %q version %d is not registered", name, version)
 	}
+	// R9 run-start refusal: a definition declaring parallels, a bandit
+	// experiment, a cumulative usage budget or an outbox has no engine walk
+	// implementation, and the walk would otherwise IGNORE the declaration
+	// silently. Refusing here rather than at RegisterDefinition keeps a
+	// gaggle's other lanes startable — see registryrefusal.go for why that
+	// placement is load-bearing.
+	if err := refuseUnsupportedEngineFeatures(name, def.Spec); err != nil {
+		return RunInput{}, err
+	}
 	allowPreviewFeatures := r.allowPreviewFeatures
 	return RunInput{
 		RunID:                  s.RunID,
@@ -176,5 +207,9 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 		GateGooberCapabilities: s.GateGooberCapabilities,
 		LiveJournal:            s.LiveJournal,
 		Placements:             s.Placements,
+		RunControls:            s.RunControls,
+
+		BacklogQueryAssignedTo:    s.BacklogQueryAssignedTo,
+		BacklogQueryRequireLabels: s.BacklogQueryRequireLabels,
 	}, nil
 }

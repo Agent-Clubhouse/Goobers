@@ -262,6 +262,181 @@ func StageRequiresInstanceConfig(command []string) bool {
 	return stageCommandsRequiringInstanceConfig[command[1]]
 }
 
+// stageCommandsRequiringInstanceRoot are goobers CLI subcommands that
+// UNCONDITIONALLY read or write state that lives only under the daemon's
+// instance root — a file this process opens by path, under a lock this
+// process takes, that no plane serves. A stage pod stamps no
+// GOOBERS_INSTANCE_ROOT (internal/dispatcher/podspec.go), so
+// providerStageRoot() falls back to "." and these commands would silently
+// operate on an empty, pod-local root instead of failing — the exact
+// "silent-wrong-result" class this refusal turns loud.
+//
+// THE LIST SHRANK WITH Goobers#3897/#3898. Four plane clients were already
+// landed (claims C1, scheduler-state C2, telemetry C3, journal-read C4) but
+// every one of them selects its backend from environment the dispatcher did
+// not stamp, so a mode-3 stage silently took the local-file branch and the
+// refusals had to stay. #3897 stamps the complete eight-variable set
+// (endpoint + bearer for all four planes, alongside GOOBERS_RUN_ID and
+// GOOBERS_GAGGLE) into every goobers-CLI stage pod, and #3898 moved the
+// claiming path's last two local dependencies — the instance-log annotation
+// write and the backlog re-sweep state file — onto the journal emit plane and
+// the scheduler-state key namespace respectively.
+//
+// The removals were made ONE COMMAND AT A TIME against a per-command audit:
+// a command was removed only when EVERY stateful access it makes, followed
+// transitively from its entry function, reaches a plane seam
+// (openStageClaimLedger, openStageStateStore/openHeldStageStateStore,
+// stageRunJournal/stageCrossRunJournal, openStageAnnotator,
+// stageImplementationOutcomes), a provider API call, or a workspace-relative
+// file. Anything still holding a path under the instance root is BELOW, with
+// the specific file named — because trading a loud refusal for a silent wrong
+// answer is strictly worse than the refusal.
+//
+// backlog-query and backlog-health are deliberately NOT here: only specific
+// FLAGS make them provider-only rather than ledger/journal-touching, so
+// StageRequiresInstanceRoot matches them by name below instead of folding
+// them into this unconditional set.
+//
+// Scope: this matches on the COMMAND VECTOR (cmd[0]=="goobers", cmd[1]=the
+// subcommand), the same shape both dispatchRemoteTask and the pod-entrypoint
+// backstop pass in (t.Run.Command / DeterministicCommand's argv). A stage
+// declared with run.script instead of run.command is out of scope on both
+// sides today — DeterministicCommand's argv for a script is the shell
+// wrapper, never the goobers invocation inside it — matching the
+// pre-existing, narrower StageRequiresInstanceConfig's scope.
+//
+// DERIVED, and re-derivable: per command, follow its handler transitively and
+// grep for SchedulerDir()/journal.OpenInstanceLog/journal.OpenRead/
+// withClaimLock/withFileLock/localscheduler.OpenClaimLedger/TelemetryDB()/
+// RunsDir()/FindRunDir/instance.LoadConfig that is NOT behind a plane seam or
+// a plane predicate (statePlaneSelected/claimsPlaneSelected/
+// journalPlaneSelected). Re-run that walk against every registered
+// stageCommand() (cmd/goobers/runtime_capabilities.go) before trusting this
+// list is still complete.
+var stageCommandsRequiringInstanceRoot = map[string]bool{
+	// pr-select's FAIRNESS LEASE: cmd/goobers/prselectfairness.go reads
+	// SchedulerDir()/pr-select-fairness.json directly (:85, :112) and
+	// rewrites it under withClaimLock on SchedulerDir()/claims.lock (:260).
+	// That file is not one of stateclient.ValidKey's shapes, so the
+	// scheduler-state plane cannot serve it; admitting it to the namespace is
+	// the removal's prerequisite.
+	"pr-select": true,
+	// issue-close-out reads run journals through journal.OpenRead directly
+	// (issuecloseout.go:96, :168, :241) over a run directory it finds with
+	// instance.Layout.FindRunDir — bypassing the stageRunJournal seam
+	// entirely, so the journal plane does not serve it. Its claim RELEASE is
+	// already plane-served; only these three reads hold it here.
+	"issue-close-out": true,
+	// telemetry-query opens the daemon's telemetry ROLLUP database directly
+	// (telemetryquery.go:412 l.TelemetryDB()). The telemetry plane is a write
+	// and gaggle-scoped-evidence surface, not a rollup-query one, and
+	// decision 005 R4 keeps this command refused deliberately. It is also the
+	// only entry in stageCommandsRequiringInstanceConfig.
+	"telemetry-query": true,
+	// gather-pr-context's REMEDIATION NO-OP GUARD: remediationnoopguard.go
+	// takes withClaimLock on SchedulerDir()/claims.lock (:174) and
+	// reads/writes SchedulerDir()/pr-remediation-noop.json (:175, :188), and
+	// reaches localscheduler.OpenClaimLedger plus journal.OpenRead over a
+	// FindRunDir path (:65-79). None of that is in a plane's namespace.
+	"gather-pr-context": true,
+	// select-source opens the instance log (selectsource.go:99), walks the
+	// instance's runs tree through readservice.NewOfflineRuns (:89), and
+	// leases the parent with withClaimLock + localscheduler.OpenClaimLedger
+	// directly (:219-224, :240-243) rather than through the claims seam.
+	"select-source": true,
+	// publish-batch leases decomposition targets with a FileTargetLeaser over
+	// SchedulerDir()/decomposition-target-locks (publishbatch.go:116), opens
+	// the instance log (:145), and shares select-source's direct parent
+	// release (:154). The target-lock directory has no plane at all.
+	"publish-batch": true,
+	// backlog-health is refused in EVERY mode, and NOT for the ledger reason
+	// any more: its claim read and its implementation-outcome evidence read
+	// both reach the daemon through the claims and telemetry planes now. What
+	// holds it here is the READY-TRANSITION LEDGER — the resumable
+	// label-transition scan cursor at instance.Layout.BacklogHealthCursorPath
+	// (written by cmd/goobers/backloghealth.go
+	// resumedBacklogHealthTransitions). It is a per-gaggle/provider/repository
+	// /label file under the instance root, not one of stateclient.ValidKey's
+	// shapes, and losing it in a pod would not merely degrade: an absent
+	// cursor silently reruns a bounded FULL scan and can defer the ready-pool
+	// snapshot, which the telemetry rollup reads as a starvation signal.
+	// Removed once that ledger is admitted to the scheduler-state namespace.
+	"backlog-health": true,
+	// reconcile-branches opens the instance log (reconcilebranches.go:155)
+	// and reads OTHER runs' journals by walking layout.RunsDir() with
+	// journal.OpenRead (:166, :452) — a cross-run walk the journal plane's
+	// three purpose-built gaggle-scoped questions do not answer.
+	"reconcile-branches": true,
+}
+
+// stageKindsWithPodExecution names the built-in deterministic stage KINDS
+// that HAVE a pod-side execution path, so a stage declaring one is not
+// refused by StageRequiresInstanceRoot's kind arm.
+//
+// AN ALLOWLIST, NOT A DENYLIST, and that direction is the point: an
+// unrecognized kind — a newer engine dispatching a kind this binary has never
+// heard of — falls through to `true` and is refused, rather than being
+// dispatched into a pod whose dispatch-exec has no branch for it and would
+// silently run the stage's PLACEHOLDER command instead (implementation.yaml's
+// ["goobers","ci-poll"] exits nonzero; a future kind's placeholder might exit
+// 0 and surrender an empty success). Adding a kind here is therefore a
+// deliberate act taken together with the in-pod branch that runs it.
+//
+//   - KindShell is the ordinary shell-command case (kind == "" means the
+//     same); it has always run in a pod.
+//   - KindCIPoll runs in-process inside dispatch-exec (decision 005 C5,
+//     #3881): cmd/goobers/dispatchcipoll.go builds a CIPollExecutor with
+//     provider:pr:write resolved through the credential plane, exactly as
+//     every other pod stage resolves its declared capabilities. It needs no
+//     ledger, no merge lock and no on-disk journal — only a provider token —
+//     which is why it is the one kind that could leave this refusal.
+//
+// KindExternalTelemetry is deliberately ABSENT and stays refused: its
+// executor is built from the instance's connector configuration
+// (buildExternalTelemetryExecutor, cmd/goobers/runnerwiring_executors.go),
+// which lives under the instance config directory a pod does not have.
+var stageKindsWithPodExecution = map[string]bool{
+	KindShell:  true,
+	KindCIPoll: true,
+}
+
+// StageRequiresInstanceRootCode names, in a stage's failure ErrorInfo.Code,
+// a refusal driven by StageRequiresInstanceRoot — shared by the engine's
+// dispatchRemoteTask (refuses before a pod is ever created) and the
+// pod-entrypoint backstop (cmd/goobers/dispatchexec.go, refuses in-pod on
+// version skew) so the SAME failure carries the SAME name on both sides of
+// the dispatch boundary, rather than two call sites inventing their own
+// spellings of one refusal.
+const StageRequiresInstanceRootCode = "instance_root_required"
+
+// StageRequiresInstanceRoot reports whether a stage cannot execute in a pod
+// today because it needs the daemon's instance root: either its resolved
+// stage KIND is a built-in with no pod-side execution path
+// (external-telemetry, or any kind this binary does not recognize — see
+// stageKindsWithPodExecution; kind == "", KindShell and KindCIPoll all run in
+// a pod and are never refused here), or its command is a goobers CLI
+// subcommand that reads/writes the file claim ledger, a merge lock, or an
+// on-disk run journal — none of which a stage pod has (decision 003 ruling 3;
+// production-lanes-3.0 stillBroken #2).
+//
+// DELIBERATELY one data-driven list (two package-level maps), not a switch
+// spread across call sites: decision 003's
+// later runner branch (step 6) consumes this exact function so the two
+// dispatch paths — the engine's dispatchRemoteTask and the runner's — can
+// never silently diverge on which stages are refused.
+//
+// kind is the stage's resolved Task.Inputs["kind"]; pass "" for an ordinary
+// shell-command stage.
+func StageRequiresInstanceRoot(cmd []string, kind string) bool {
+	if kind != "" && !stageKindsWithPodExecution[kind] {
+		return true
+	}
+	if !StageInvokesGoobersCLI(cmd) || len(cmd) < 2 {
+		return false
+	}
+	return stageCommandsRequiringInstanceRoot[cmd[1]]
+}
+
 // StageInvokesProviderBuiltin narrows transient stderr classification to the
 // built-in stages that call a provider. Other goobers subcommands can fail
 // with similar words but have separate retry contracts.

@@ -23,6 +23,11 @@ import (
 // Windows runtime/shell paths (SystemRoot/WINDIR/TEMP/TMP/ComSpec/PATHEXT/
 // PSModulePath), required for Node CSPRNG initialization and PowerShell tool
 // execution;
+// the Windows Program* install roots (#3753) —
+// ProgramData/ProgramFiles/ProgramFiles(x86)/ProgramW6432/CommonProgramFiles/
+// CommonProgramFiles(x86) — from which NuGet derives its machine-wide settings
+// path, without which any stage shelling out to `dotnet build`, `dotnet test`
+// or `msbuild` dies on "Failed to load NuGet settings";
 // XDG_CONFIG_HOME/XDG_DATA_HOME
 // (XDG base-directory tools); LANG (locale); SSL_CERT_FILE (custom CA
 // bundles behind a corporate proxy); HTTP_PROXY/HTTPS_PROXY/NO_PROXY; the
@@ -48,6 +53,12 @@ var Vars = []string{
 	"PATH", "HOME", "USER", "TMPDIR",
 	"USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH",
 	"SystemRoot", "WINDIR", "TEMP", "TMP", "ComSpec", "PATHEXT", "PSModulePath",
+	// Windows Program* install roots (#3753): NuGet builds its machine-wide
+	// settings path from ProgramData, so without these `dotnet build`/`dotnet
+	// test`/`msbuild` fails immediately with "Failed to load NuGet settings.
+	// Value cannot be null. (Parameter 'path1')" and a misleading MSB4236.
+	"ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
+	"CommonProgramFiles", "CommonProgramFiles(x86)",
 	"XDG_CONFIG_HOME", "XDG_DATA_HOME",
 	"LANG",
 	"SSL_CERT_FILE",

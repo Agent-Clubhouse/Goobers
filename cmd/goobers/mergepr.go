@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/mergepolicy"
 	"github.com/goobers/goobers/providers"
 )
@@ -115,12 +115,11 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	isADO := repo.Provider == providers.ProviderADO
 	isGitHub := repo.Provider == providers.ProviderGitHub
 
-	// prProvider is the concrete *GitHubProvider the GitHub-only helpers
-	// (classifyRemoteTutorChanges, cleanupMergedBranch) require; it stays nil on
-	// non-GitHub providers, where both helpers are gated OFF. Dispatcher is the
-	// capability guard and pass-through around the provider selected above; it
-	// does not perform provider selection itself.
-	var providerCapability = capability.GitHubPRMerge
+	// prProvider is the provider-neutral forge surface the non-ADO helpers
+	// require. dispatcher is the provider-neutral landing seam (CONF-1 #2074)
+	// every poll/compare/detect/enqueue/merge call flows through, so every
+	// registered provider runs one shared code path.
+	providerCapability := capability.GitHubPRMerge
 	if isADO {
 		// Merge/completion authority on ADO rides on the dedicated
 		// capability.ADOPRComplete ("ado:pr:complete") — the ADO counterpart to
@@ -146,12 +145,12 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	dispatcher := providers.NewDispatcher(stageProvider)
-	var prProvider *providers.GitHubProvider
-	if isGitHub {
+	var prProvider mergeProvider
+	if !isADO {
 		var ok bool
-		prProvider, ok = stageProvider.(*providers.GitHubProvider)
+		prProvider, ok = stageProvider.(mergeProvider)
 		if !ok {
-			pf(stderr, "error: repository provider %q does not support GitHub-only merge helpers\n", repo.Provider)
+			pf(stderr, "error: repository provider %q does not support merge lifecycle helpers\n", repo.Provider)
 			return 1
 		}
 	}
@@ -206,8 +205,23 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// completed, which serializing the whole window (not just the final
 	// MergePullRequest call) guarantees. Branch cleanup after a successful
 	// merge is independent per-PR state and does NOT need to be serialized.
+	//
+	// Over the claims plane (a stage pod, which has no instance flock) the
+	// same window is a lease on the synthetic item merge-lock/<owner>/<repo>
+	// held by this run: acquire polls until held, the lease is renewed while
+	// the window runs, and a crashed holder's lease lapses on its own instead
+	// of leaking a flock (finding 002 C1). Same-host stages keep the flock.
 	l := layoutFor(root)
-	lockPath := filepath.Join(l.SchedulerDir(), mergeLockFileName)
+	ledger, err := openStageClaimLedger(l)
+	if err != nil {
+		pf(stderr, "error: open claim ledger: %v\n", err)
+		return 1
+	}
+	mergeLock := claimsclient.MergeLock{
+		Key:      claimsclient.MergeLockKey(providerGaggle(), string(repo.Provider), repo.Owner, repo.Name),
+		RunID:    os.Getenv("GOOBERS_RUN_ID"),
+		Workflow: os.Getenv("GOOBERS_WORKFLOW"),
+	}
 
 	var poll providers.PullRequestPollResult
 	var pollErr error
@@ -218,7 +232,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	var commitErr error
 	var policyErr error
 	var optedOutReason string
-	lockErr := withFileLock(lockPath, func() error {
+	lockErr := ledger.MergeLock(ctx, mergeLock, func(ctx context.Context) error {
 		// Independent, live re-check (D6) — never trust a caller-supplied
 		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
 		// actual current state right before deciding, now guaranteed to be
@@ -432,14 +446,14 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	var cleanup *mergeBranchCleanup
-	// Branch cleanup is GitHub-only: cleanupMergedBranch takes the concrete
-	// *GitHubProvider and ADO PollPullRequest never populates HeadRepository, so
-	// on ADO it could only ever fail "did not report a head repository". Gate OFF
+	// Branch cleanup is unavailable on ADO: its PollPullRequest does not populate
+	// HeadRepository, so it could only fail "did not report a head repository".
+	// Gate OFF
 	// (no-op); ADO source-branch deletion rides on the enqueue/merge
 	// deleteSourceBranch flag, out of scope for this epic (merge-wiring-plan
-	// §1a/§8).
-	if isGitHub && landResult.Outcome == mergepolicy.OutcomeMerged {
-		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, prProvider)
+	// §1a/§8). GitHub and Gitea use the shared provider-neutral cleanup path.
+	if !isADO && landResult.Outcome == mergepolicy.OutcomeMerged {
+		outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
 		cleanup = &outcome
 		if outcome.Error != "" {
 			pf(stderr, "warning: merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
@@ -546,7 +560,7 @@ type mergeBranchCleanup struct {
 	Error      string
 }
 
-func cleanupMergedBranch(ctx context.Context, headRepository *providers.RepositoryRef, headBranch string, prProvider *providers.GitHubProvider) mergeBranchCleanup {
+func cleanupMergedBranch(ctx context.Context, root string, headRepository *providers.RepositoryRef, headBranch string, prProvider mergeProvider) mergeBranchCleanup {
 	out := mergeBranchCleanup{HeadBranch: headBranch}
 	fail := func(err error) mergeBranchCleanup {
 		out.Status = "failed"
@@ -573,12 +587,19 @@ func cleanupMergedBranch(ctx context.Context, headRepository *providers.Reposito
 		return out
 	}
 
-	branchProvider, err := newMergeReviewProviderAs[*providers.GitHubProvider](providerStageRoot(""), *headRepository, false,
+	// Build the delete through a branch-scoped recorder so the journal records
+	// kind="branch", distinct from the merge that preceded it. Provider dispatch
+	// is retained for Gitea instead of falling back to api.github.com.
+	branchStageProvider, err := newProviderForStage(root, *headRepository, false,
 		withStageProviderCapability(capability.GitHubBranchDelete),
 		withStageProviderMutations("branch"),
 	)
 	if err != nil {
 		return fail(err)
+	}
+	branchProvider, ok := branchStageProvider.(providers.BranchDeleter)
+	if !ok {
+		return fail(fmt.Errorf("repository provider %q does not support branch deletion", headRepository.Provider))
 	}
 	if _, err := branchProvider.DeleteBranch(ctx, providers.DeleteBranchRequest{Repository: *headRepository, Name: headBranch}); err != nil {
 		return fail(fmt.Errorf("delete branch %q: %w", headBranch, err))

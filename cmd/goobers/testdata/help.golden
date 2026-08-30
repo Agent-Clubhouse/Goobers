@@ -151,8 +151,8 @@ Advanced operator commands:
                                 lint config via the single authoritative validation engine (alias for validate)
   goobers fix --to <version> [--write] [path]
                                 mechanically migrate workflows to a target dslVersion, one step at a time
-  goobers doctor (--k8s | --repo) [--kubeconfig <path>] [--context <name>] [--report text|json] [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>] [--timeout <duration>]
-                                preflight Kubernetes or compare repository forge policy
+  goobers doctor (--k8s | --repo | --av-exclusions) [--kubeconfig <path>] [--context <name>] [--report text|json] [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>] [--timeout <duration>] [--work-root <dir>]
+                                preflight Kubernetes, compare repository forge policy, or list and verify antivirus exclusions
   goobers netpol-render [--out <dir>] [--check] [--baseline <path>] [--write-baseline] [--timeout <duration>] [--print-blob-endpoint] [path]
                                 render per-runner-class NetworkPolicy reference manifests from the runners: inventory
   goobers config show|materialize|diff [flags] [path]
@@ -164,9 +164,11 @@ Advanced operator commands:
                                 stage and request a supervised binary update
   goobers engine-start [--gaggle <name>] [--temporal-hostport h:p] [--temporal-namespace <name>] [--task-queue <name>] [--dedupe-key <key>] [--live-journal] <workflow> [path]
                                 dispatch one run onto the tier-3 engine (experimental)
+  goobers engine-queues [--temporal-hostport h:p] [--temporal-namespace <name>] [--task-queue <name>] [--timeout <duration>] [--json] [path]
+                                report which workers poll this instance's engine and dispatch task queues (experimental)
   goobers engine-project --gaggle <name> [--temporal-hostport h:p] [--temporal-namespace <name>] <run-id> [path]
                                 write a completed engine run's journal into the instance (experimental)
-  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>] [--instance <path>] [--blob-store <path>] [--daemon-api <url>] [--dispatch-namespace <ns>]
+  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>] [--instance <path>] [--blob-store <path>] [--daemon-api <url>] [--dispatch-namespace <ns>] [--config-reload-interval <dur>]
                                 host a Temporal engine worker (tier-3, experimental)
   goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
   goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon
@@ -207,6 +209,7 @@ Workflow-stage and connector commands:
   goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)
   goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
   goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
+  goobers file-issues [--check]          file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
@@ -241,6 +244,7 @@ Workflow-stage and connector commands:
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
   goobers resolve-review-threads         reply to and resolve remediated native review threads (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
+  goobers pr-comment-watch               label open goober PRs with unaddressed human comments goobers:needs-remediation (a workflow stage)
   goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
   goobers remediation-checkpoint [--budget N] [--escalate <reason> [--escalation-outcome <outcome>]]  durable per-cause attempt budgets + same-diff escalation (a workflow stage)
@@ -265,6 +269,7 @@ Usage:
   goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)
   goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
   goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
+  goobers file-issues [--check]          file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
   goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
                                 report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
   goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
@@ -299,6 +304,7 @@ Usage:
   goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
   goobers resolve-review-threads         reply to and resolve remediated native review threads (a workflow stage)
   goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
+  goobers pr-comment-watch               label open goober PRs with unaddressed human comments goobers:needs-remediation (a workflow stage)
   goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
   goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
   goobers remediation-checkpoint [--budget N] [--escalate <reason> [--escalation-outcome <outcome>]]  durable per-cause attempt budgets + same-diff escalation (a workflow stage)
@@ -754,6 +760,7 @@ Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report t
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                           [--timeout <duration>]
        goobers doctor --repo [--report text|json] [instance-root]
+       goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
 
 --k8s preflights a target Kubernetes cluster against the documented
 infrastructure shape (docs/design/k8s-infra-shape.md) before installing
@@ -791,11 +798,33 @@ skipped. Token-scope introspection is reported as unavailable when GitHub
 does not expose it (fine-grained PAT / GitHub App tokens) — never inferred
 from a failed call. instance-root defaults to ".".
 
---report json emits the stable machine-readable report; text (default)
-prints a human-readable table (--k8s) or per-repo findings (--repo).
+--av-exclusions lists every directory Goobers writes and immediately reads
+back — the set real-time antivirus scanning on Windows must exclude, or a
+scan holding a handle on a just-written file surfaces minutes later as an
+unrelated git "Permission denied" (#3480, #3161–#3164). The list is
+derived from the same path code the daemon (instance root, run journals,
+scheduler ledger, blob store, workcopies, TEMP), the worker (--work-root,
+which applies to this mode only, and its workcopies/scratch subtrees) and
+a Windows stage pod (C:\workspace, the tmp:ephemeral TEMP, the container
+user's profile) actually use, so it cannot drift from what the binary
+writes. Each gaggle's own spec.workcopies.root is enumerated separately,
+since it beats the instance-wide one and may name any drive; when config/
+cannot be read, that is reported rather than passed off as no gaggles.
+On a Windows host it also reads
+Microsoft Defender's exclusion list (Get-MpPreference, read-only) and
+reports each directory as excluded, not-excluded, or unknown; elsewhere
+it lists the set and reports unknown. ADVISORY: exit 0 whatever the
+coverage — an organisation-wide AV policy is the operator's to set, and
+nothing here changes it. Declare the answer on each windows runner as
+provides.windows.avExclusionsVerified (validate warns RNR006 without it).
 
-Exit codes: 0 = conformant (warns allowed for --k8s), 1 = a required check
-failed or drift was found, 2 = usage/IO error.
+--report json emits the stable machine-readable report; text (default)
+prints a human-readable table (--k8s), per-repo findings (--repo), or the
+per-directory coverage list (--av-exclusions).
+
+Exit codes: 0 = conformant (warns allowed for --k8s; always for
+--av-exclusions), 1 = a required check failed or drift was found,
+2 = usage/IO error.
 
 ### down
 Usage: goobers down [path]
@@ -992,6 +1021,32 @@ Write a completed engine run's standard journal into the instance.
 Exit codes: 0 = projected or already present, 1 = query/write failure,
 2 = usage/config error.
 
+### engine-queues
+Usage: goobers engine-queues [flags] [path]
+
+Report which workers poll this instance's engine task queues (experimental).
+The queue set is derived, not typed: the engine's workflow queue plus every
+goobers-dispatch.<gaggle>.<runner> queue the runners: inventory and the
+declared gaggles imply — the same derivation `goobers worker
+--dispatch-namespace` serves. Each queue is described for both task types
+(workflow and activity) and every poller's Temporal identity is printed.
+
+This is the evidence for the queue-ownership check: goobers-worker must poll
+the workflow queue and every dispatch queue, and goobers-api must poll none
+of them — the daemon dispatches as a Temporal client and is never a pod
+creator.
+
+Flags:
+  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort)
+  --temporal-namespace <ns>  Temporal namespace (default engine.namespace)
+  --task-queue <queue>       workflow queue to describe (default
+                             engine.taskQueue)
+  --timeout <duration>       bound on the whole describe (default 30s)
+  --json                     emit the report as JSON
+
+Exit codes: 0 = described, 1 = describe/connection failure, 2 = usage/config
+error.
+
 ### engine-start
 Usage: goobers engine-start [flags] <workflow> [path]
 
@@ -1074,6 +1129,47 @@ human-readable table. With --used, list only the features the instance at path (
 actually references across its workflows and goobers — the subset that
 instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance
 config, 2 = usage/IO error.
+
+### file-issues
+Usage: goobers file-issues [--check] [path]
+
+file-issues is the nomination workflows' deterministic issue filer —
+TBH-1 #2251's first slice, built on the decomposition binding (a typed
+goobers.dev/nominations/v1 artifact, a digest-bound check, a publisher
+that owns every goobers:* label). The finder proposes area/type labels
+and evidence; this stage dedupes by body marker against every issue
+carrying the nominated label, excludes anything flake-watch already
+fingerprints, enforces maxPerRun, and creates issues with a retry-safe
+idempotency key.
+
+goobers:approved (the SEC-047 trust label) is applied on one condition
+only (decision 004): the nomination's evidence names a finding — a go
+vet diagnostic, a golangci-lint issue (linter + file + line) or a go
+test failure (package + test) — that the deterministic signalsStage's
+stdout artifact of THIS run contains byte for byte, as parsed by this
+stage from the run journal; plus riskClass low, type:bug, one package,
+no load-bearing path, no needs-human trigger, and no open or recently
+closed nominated issue naming the same finding (a body marker the
+filer computes from the finding, not the model's dedupeKey), nor an
+earlier nomination of the same artifact naming it. autoApprove=
+deterministic-only (exactly; default never) opts in and the label is
+added with the github:issues:approve credential only.
+Everything else files unapproved with the reasons in the result. On a
+stage pod the run journal is unreachable, so nothing is approved.
+
+With --check, only validate the artifact and run the read-only dedupe
+scan (github:issues:read); nothing is created. The write path must be
+bound to a --check that marked this artifact valid: wire the check
+stage's nominationsDigest output to the checkDigest input (inputsFrom),
+or point checkFile at its result, or run on a self runner where the
+checkStage's recorded result is in the run journal.
+
+Inputs: nominationsFile (nominations.json), producerStage (triage),
+backlogLabel (required), partitionLabel (required), maxPerRun (3),
+dedupeWindowDays (21), nominatedLabel, autoApprove (never), signalsStage
+(collect-repo-signals), checkDigest, checkFile (nomination-check.json),
+checkStage (validate-nominations), resultFile (filed-nominations.json).
+Exit codes: 0 = filed or checked / 1 = business or provider error / 2 = usage error.
 
 ### fix
 Usage: goobers fix --to <version> [--write] [path]
@@ -1515,6 +1611,30 @@ With --release, explicitly release the run's PR claim without querying the
 provider. Releasing an already-released claim is an idempotent success.
 
 Exit codes: 0 = PR open, terminal no-work, or released; 1 = business error;
+2 = usage/IO error.
+
+### pr-comment-watch
+Usage: goobers pr-comment-watch [path]
+
+Scan open goober-authored PRs (head under the gaggle branch namespace)
+and label any whose newest human comment is newer than the bot's own
+newest comment with goobers:needs-remediation, so pr-remediation updates
+that PR in place. A PR parked for a human (needs-human / merge-escalated)
+is un-parked when a fresh human comment lands: the park label is cleared
+and needs-remediation added in one mutation, since the human the PR was
+parked for has now weighed in. The bot identity is the token's own login
+(AuthenticatedLogin) — a dedicated bot account is required for signal;
+with a shared human identity the stage never fires. Comments landing
+mid-remediation after the brief snapshot can be masked by the bot's
+response comment until the human comments again (accepted v1 limit).
+
+Inputs: maxPullRequests (default 20), headPrefixes (default the branch
+namespace), base (default the gaggle base branch), excludeLabels (labels
+that hard-exclude a PR from the scan), unparkLabels (park labels a fresh
+human comment clears while routing, default needs-human,merge-escalated),
+excludeAuthors (extra bot logins to ignore, e.g. Gitea CI bots),
+resultFile (default comment-watch-result.json).
+Exit codes: 0 = scanned (labeled zero or more), 1 = business error,
 2 = usage/IO error.
 
 ### pr-select
@@ -2317,6 +2437,13 @@ Flags:
                              emission through the journal plane, with the
                              per-run bearer from $GOOBERS_POD_TOKEN when
                              set (default $GOOBERS_DAEMON_API)
+  --config-reload-interval <dur>
+                             how often to re-read the instance config
+                             tree and rebuild the gaggle seams whose
+                             config changed, without a restart; 0
+                             disables reload and freezes the worker on
+                             its boot-time tree (default 10s; requires
+                             --instance)
   --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;
                              wires the dispatcher behind the stage-dispatch
                              seam and serves the per-(gaggle x runner)
@@ -2330,6 +2457,13 @@ Flags:
 The worker identity reported to Temporal is versioned
 (goobers-worker/<build>@<host>#<pid>) so visibility alone answers which
 build serves a queue.
+
+With --instance, the worker re-reads its config tree on
+--config-reload-interval and atomically replaces the gaggle, credential,
+and agentic-kit seams whose config changed, so a definitions edit reaches
+the NEXT stage this worker serves without a pod restart. An attempt
+already running keeps the kit it was handed. A reload that does not parse
+is logged and rejected; the last-known-good tree stays in force.
 
 Exit codes: 0 = clean drain, 1 = startup/connection error, 2 = usage error,
 3 = drain timeout expired with in-flight work abandoned.

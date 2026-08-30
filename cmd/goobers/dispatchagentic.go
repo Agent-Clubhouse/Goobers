@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/agentickit"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/harness"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
@@ -26,18 +29,41 @@ import (
 // applied, and the divergence would show up as a differently-behaved agent
 // rather than as an error.
 
-// runAgenticStage executes an agentic stage inside a pod and returns the
-// envelope to surrender.
-func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) apiv1.ResultEnvelope {
+// runAgenticStage executes an agentic stage inside a pod and returns what it
+// owes the surrender plane: the envelope for an invocation, the envelope plus
+// the Verdict for a review (agentickit.ModeReview — decision 001 rulings 7–8).
+func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) stageOutcome {
 	digest := strings.TrimSpace(os.Getenv(dispatcher.EnvAgenticKitDigest))
 	if digest == "" {
-		return failureEnvelope("agentic_kit_missing", "no agentic kit digest was stamped on this pod")
+		// These first two refusals precede the kit, so they precede
+		// kit.IsReview() and the fail closure below: the pod cannot know
+		// whether it was dispatched as a review, and so cannot stamp the
+		// review-only Retryable class. The ENGINE knows (input.Review) and
+		// classifies both codes as infrastructure faults on its side
+		// (engine.reviewActivityResult, #3888).
+		return stageOutcome{Result: failureEnvelope(dispatcher.CodeAgenticKitMissing, "no agentic kit digest was stamped on this pod")}
 	}
 	kit, err := fetchAgenticKit(ctx, digest)
 	if err != nil {
 		// Fail closed and name the kit. A stage that proceeded without its kit
 		// would run with no instructions at all.
-		return failureEnvelope("agentic_kit_unavailable", err.Error())
+		return stageOutcome{Result: failureEnvelope(dispatcher.CodeAgenticKitUnavailable, err.Error())}
+	}
+	// fail shapes every refusal past this point. For a REVIEW the class
+	// matters in a way it does not for an invocation: a task's surrendered
+	// failure is a business outcome the workflow branches on, but a gate has
+	// no branch for "the pod could not start", so the engine reads
+	// Retryable as the pod's own infra/policy classification and retries a
+	// substrate fault on a fresh pod under the gate's evaluator retry bound
+	// (engine.reviewActivityResult). A verdict failure stays policy-classed
+	// and fails the run; a harness failure carries the harness's own class
+	// (see the review arm below), as the self arm's ReviewGoober does.
+	fail := func(code string, err error) stageOutcome {
+		envelope := failureEnvelope(code, err.Error())
+		if kit.IsReview() && reviewSubstrateFailure(code) {
+			envelope.Error.Retryable = substrateRetryable(err)
+		}
+		return stageOutcome{Result: envelope}
 	}
 
 	// An agentic stage needs its workspace PROVISIONED and STAMPED, exactly as
@@ -51,11 +77,11 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Result
 	// it, and resolving twice would mint two credentials for one stage.
 	minted, err := resolveStageCredentials(ctx)
 	if err != nil {
-		return failureEnvelope("credential_resolve_failed", err.Error())
+		return fail("credential_resolve_failed", err)
 	}
 	workspace, err := os.Getwd()
 	if err != nil {
-		return failureEnvelope("workspace_provision_failed", fmt.Sprintf("resolve workspace: %v", err))
+		return fail("workspace_provision_failed", fmt.Errorf("resolve workspace: %w", err))
 	}
 	// The checkout may use a credential the AGENT never receives (#3770): it
 	// provisions the working tree and is excluded from buildPodAgenticExecutor
@@ -63,24 +89,130 @@ func runAgenticStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Result
 	// stage actually declared.
 	checkoutCreds, checkoutErr := resolveCheckoutCredential(ctx)
 	if checkoutErr != nil {
-		return failureEnvelope("credential_resolve_failed", checkoutErr.Error())
+		return fail("credential_resolve_failed", checkoutErr)
 	}
 	if err := checkoutRepoWorkspace(ctx, workspace, stderr, append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...)); err != nil {
-		return failureEnvelope("workspace_provision_failed", err.Error())
+		return fail("workspace_provision_failed", err)
 	}
 	// The stamp the harness actually reads.
 	kit.Envelope.Workspace = workspace
 
-	exec, err := buildPodAgenticExecutor(kit, stderr, minted)
+	// The staging root: what the executor's contextResolver is rooted at AND
+	// what the recorder reports as its Dir(). Created HERE rather than inside
+	// buildPodAgenticExecutor because context materialization has to fill the
+	// same directory the resolver will read, and a directory the constructor
+	// alone knows about cannot be filled from out here.
+	runsDir, err := os.MkdirTemp("", "goobers-agentic-runs-*")
 	if err != nil {
-		return failureEnvelope("agentic_executor_unavailable", err.Error())
+		return fail("workspace_provision_failed", fmt.Errorf("create runs dir: %w", err))
+	}
+
+	// Fetch this stage's upstream artifacts BEFORE the harness looks for them.
+	// See dispatchcontext.go: without this every artifact-backed pointer fails
+	// to resolve, because a pod's staging root starts empty.
+	if err := materializePodContext(ctx, runsDir, kit.Envelope, stderr); err != nil {
+		return fail("context_materialize_failed", err)
+	}
+
+	if kit.IsReview() {
+		// The reviewer's diff evidence (#301 parity on the pod path; decision
+		// 001 ruling 7): computed HERE, by this binary, from the checkout the
+		// delta was just applied to — never reported by a model — and handed
+		// to the reviewer as the "<gate>.diff" context pointer exactly as the
+		// local runner's recordReviewerDiff does. It has to run AFTER the
+		// checkout (so the diff sees the subject stage's commits) and BEFORE
+		// the harness resolves the envelope's pointers, and it fails closed:
+		// a reviewer judging without the evidence it was promised produces a
+		// confident verdict about the wrong change.
+		//
+		// The checkout credential is registered with the diff's scrubber even
+		// though the AGENT never sees it: a commit could have captured it, and
+		// the diff is journaled.
+		pointer, derr := recordPodReviewerDiff(ctx, workspace, runsDir, os.Getenv(dispatcher.EnvStage),
+			append(append([]dispatcher.MintedCredential{}, minted...), checkoutCreds...), stderr)
+		if derr != nil {
+			return fail("reviewer_diff_failed", derr)
+		}
+		if pointer != nil {
+			kit.Envelope.ContextPointers = append(kit.Envelope.ContextPointers, *pointer)
+		}
+	}
+
+	exec, err := buildPodAgenticExecutor(kit, stderr, minted, runsDir)
+	if err != nil {
+		return fail("agentic_executor_unavailable", err)
+	}
+
+	if kit.IsReview() {
+		// The SAME executor and the SAME constructor as an invocation — only
+		// the completion contract differs: harness.Executor.Review drives
+		// ModeReview and validates the verdict against the shared schema.
+		// The surrendered Result carries a bare success: the verdict IS the
+		// outcome, and the engine routes on it after its own re-validation.
+		verdict, err := exec.Review(ctx, kit.Envelope)
+		if err != nil {
+			// The harness's own class survives the surrender plane only as
+			// Retryable, so it is committed HERE, where the marker is still
+			// visible: harness.Executor.Review marks a session that ended
+			// without a completion (ErrNoCompletion) as an
+			// invoke.InfrastructureFailure, and the self arm's ReviewGoober
+			// hands exactly that class to classifySeamError, so the gate's
+			// evaluator retry bound covers it there. A pod that dropped the
+			// class would fail the run where the worker would retry. A
+			// verdict the schema refused, or a harness that would not run,
+			// carries no marker and stays the review's own outcome.
+			outcome := fail("agentic_review_failed", err)
+			outcome.Result.Error.Retryable = invoke.IsInfrastructureFailure(err)
+			return outcome
+		}
+		return stageOutcome{
+			Result:  apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "reviewer verdict surrendered"},
+			Verdict: &verdict,
+		}
 	}
 
 	result, err := exec.Invoke(ctx, kit.Envelope)
 	if err != nil {
-		return failureEnvelope("agentic_invocation_failed", err.Error())
+		return fail("agentic_invocation_failed", err)
 	}
-	return result
+	return stageOutcome{Result: result}
+}
+
+// reviewSubstrateFailure names the pod-side refusals that are faults of the
+// SUBSTRATE — the credential plane, the checkout, the blob plane, the runner
+// image — rather than of the review itself. A review that fails here never
+// reached its harness, so a fresh pod may well succeed; the engine reads the
+// Retryable marking this drives and retries under the gate's evaluator
+// retry bound. Everything else (a harness that would not run, a verdict
+// the schema refused, the diff evidence failing) is the review's own
+// outcome and fails the run.
+func reviewSubstrateFailure(code string) bool {
+	switch code {
+	case "credential_resolve_failed", "workspace_provision_failed", "context_materialize_failed", "agentic_executor_unavailable":
+		return true
+	}
+	return false
+}
+
+// substrateRetryable narrows reviewSubstrateFailure's Retryable stamp to what
+// the failure actually is, rather than marking every substrate code
+// unconditionally retryable. A *dispatcher.CredentialResolveRefusal is the
+// credential plane's own judgement on THIS request (403
+// capability_undeclared, 409 gate_pin_missing, and the like) — deterministic,
+// so a fresh pod asks the plane the same question and gets the same refusal,
+// and spending a retry on it is pointless: Retryable is false. Everything
+// else this function sees — a dial error or a 5xx the plane never got to
+// answer, a checkout or context-materialize fault that never asked the plane
+// anything, a pod-local harness-construction fault (agentic_executor_
+// unavailable's own errors never wrap a plane response at all) — is
+// transport- or infra-shaped, exactly what a fresh pod's retry exists to
+// ride out, so it keeps the historical Retryable=true.
+func substrateRetryable(err error) bool {
+	var refusal *dispatcher.CredentialResolveRefusal
+	if errors.As(err, &refusal) {
+		return !refusal.Deterministic()
+	}
+	return true
 }
 
 // fetchAgenticKit reads the kit from the blob plane and verifies it against the
@@ -145,9 +277,25 @@ func (r podCredentialResolver) Resolve(_ context.Context, name string) (string, 
 		name, strings.Join(capabilities, ", "))
 }
 
+// podHarnessRegistry builds the pod's harness registry, and is a var SO THAT
+// buildPodAgenticExecutor HAS A TEST CALLER AT ALL.
+//
+// The real builder produces adapters that preflight an actual harness binary,
+// which is why this constructor had none — and why the one invariant it cannot
+// get wrong (the staging directory it is handed must be the directory the
+// executor reads context from) was unobservable: a reviewer's ablation that
+// reintroduced a constructor-local os.MkdirTemp here, the original bug's exact
+// shape, passed the entire cmd/goobers suite. Swapping the registry is the
+// smallest seam that lets a test drive the whole constructor. Mirrors the
+// existing newAgenticAdapter / repoCloneURL test seams.
+var podHarnessRegistry = buildHarnessRegistry
+
 // buildPodAgenticExecutor constructs the executor from the kit plus the pod's
 // own local facilities.
-func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential) (invoke.Goober, error) {
+// runsDir is the staging root the caller already created and already
+// materialized this stage's context into; it becomes both the recorder's Dir()
+// and the contextResolver's root, which is what makes the two agree.
+func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dispatcher.MintedCredential, runsDir string) (invoke.Goober, error) {
 	gooberName := kit.Envelope.Goober
 	resolver := podCredentialResolver{byRef: map[string][]string{}, vals: map[string]string{}}
 	for _, g := range kit.Grants {
@@ -195,7 +343,12 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	// The harness is PREFLIGHTED HERE, against the pod's own binary. Shipping
 	// the worker's preflight result would assert something false: it describes
 	// the worker's copilot, not this pod's.
-	adapterRegistry, err := buildHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false)
+	//
+	// No modelCredential resolver: the minted credential was just applied to
+	// the ambient environment above, so the preflight's ambient-env-first
+	// lookup already finds it. There's no *instance.Config/StoreResolver in
+	// this pod-context function to build one anyway.
+	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}
@@ -219,28 +372,75 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	}
 	harnessInfo := harnessPreflightInfo{spec.Harness: info}
 
-	runsDir, err := os.MkdirTemp("", "goobers-agentic-runs-*")
-	if err != nil {
-		return nil, fmt.Errorf("create runs dir: %w", err)
-	}
+	return buildAgenticExecutor(podAgenticExecutorInput(podExecutorWiring{
+		Kit:             kit,
+		RunsDir:         runsDir,
+		Stderr:          stderr,
+		Scrubber:        scrubber,
+		Registry:        registry,
+		Resolver:        resolver,
+		Grants:          grants,
+		AdapterRegistry: adapterRegistry,
+		HarnessInfo:     harnessInfo,
+	}))
+}
 
-	return buildAgenticExecutor(agenticExecutorInput{
-		GooberName:       gooberName,
-		Goobers:          kit.Goobers,
-		Instructions:     kit.Instructions,
-		Assets:           kit.AssetBundles(),
-		HarnessInfo:      harnessInfo,
-		AdapterRegistry:  adapterRegistry,
-		EnvCapabilities:  kit.EnvCapabilities,
-		Resolver:         resolver,
-		Grants:           grants,
-		SharedRegistry:   registry,
-		RunsDir:          runsDir,
-		SandboxPosture:   instance.SandboxPosture(kit.SandboxPosture),
-		ArtifactRecorder: podArtifactRecorder{stderr: stderr, scrubber: scrubber, dir: runsDir},
-		SecretRegistrar:  registry,
+// podExecutorWiring is everything buildPodAgenticExecutor discovers about this
+// pod before it can name an executor: the kit it fetched, the staging root its
+// caller materialized context into, and the local facilities (scrubber,
+// credential resolver, preflighted harness) it built along the way.
+type podExecutorWiring struct {
+	Kit     *agentickit.Kit
+	RunsDir string
+	Stderr  io.Writer
+	// Scrubber redacts artifact bytes before they are digested and emitted.
+	Scrubber journal.Scrubber
+	// Registry is the same scrubber's registry, used as both the shared secret
+	// registry and the SecretRegistrar.
+	Registry        *journal.RegistryScrubber
+	Resolver        credentials.Resolver
+	Grants          []credentials.Grant
+	AdapterRegistry *harness.Registry
+	HarnessInfo     harnessPreflightInfo
+}
+
+// podAgenticExecutorInput assembles the executor input for a pod stage.
+//
+// FACTORED OUT SO THE DIRECTORY AGREEMENT IS OBSERVABLE. The bug this file's
+// change fixes crosses two edges: materializePodContext must be CALLED before
+// the executor is built, AND it must fill the SAME directory the executor's
+// contextResolver reads. The first edge is pinned by a test that drives
+// runAgenticStage. The second could not be pinned at the production
+// constructor, because buildPodAgenticExecutor calls adapter.Preflight against
+// a real harness binary and therefore has no test callers at all — so a
+// refactor that reintroduced a constructor-local staging dir (the original
+// bug's exact shape) would ship green.
+//
+// RunsDir and the recorder's dir are the two fields that MUST name that one
+// directory: the first is where harness.NewContextResolver looks for an
+// upstream artifact, the second is where a produced artifact is reported from.
+// Both are assigned from w.RunsDir here, in a function a test can call, and
+// TestPodAgenticStageReadsAnUpstreamArtifactPointer builds its executor through
+// this function rather than a hand-assembled replica — so the agreement is
+// exercised by the same code production runs.
+func podAgenticExecutorInput(w podExecutorWiring) agenticExecutorInput {
+	return agenticExecutorInput{
+		GooberName:       w.Kit.Envelope.Goober,
+		Goobers:          w.Kit.Goobers,
+		Instructions:     w.Kit.Instructions,
+		Assets:           w.Kit.AssetBundles(),
+		HarnessInfo:      w.HarnessInfo,
+		AdapterRegistry:  w.AdapterRegistry,
+		EnvCapabilities:  w.Kit.EnvCapabilities,
+		Resolver:         w.Resolver,
+		Grants:           w.Grants,
+		SharedRegistry:   w.Registry,
+		RunsDir:          w.RunsDir,
+		SandboxPosture:   instance.SandboxPosture(w.Kit.SandboxPosture),
+		ArtifactRecorder: podArtifactRecorder{stderr: w.Stderr, scrubber: w.Scrubber, dir: w.RunsDir},
+		SecretRegistrar:  w.Registry,
 		AgenticAdapter:   newAgenticAdapter,
-	})
+	}
 }
 
 // podArtifactRecorder satisfies runner.ArtifactRecorder inside a stage pod.
@@ -265,6 +465,13 @@ type podArtifactRecorder struct {
 	dir      string
 }
 
+// RecordArtifact scrubs ONCE, derives the content address of the scrubbed
+// bytes, and hands those SAME bytes to recordStageArtifacts — which is both
+// the journal emit and (#3823) the blob-plane write-through. Re-scrubbing
+// between the digest and the PUT would let the stored content drift from the
+// address it is stored under, and blobstore.Dir.Get re-verifies the digest on
+// the way out, so the drift would surface as a permanently unavailable blob
+// rather than as an error here.
 func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.Ref, error) {
 	scrubbed := data
 	if r.scrubber != nil {
@@ -283,7 +490,35 @@ func (r podArtifactRecorder) RecordArtifact(name string, data []byte) (journal.R
 
 // RecordSpanWithSchema satisfies harness.SpanRecorder. A span is an artifact
 // under a "spans" prefix — the same shape the worker-side recorder uses, so a
-// span produced in a pod lands under the same name it would locally.
+// span produced in a pod lands under the same name it would locally — and,
+// BECAUSE it goes through RecordArtifact, it is also published to the blob
+// plane under the exact digest its ref names.
+//
+// THAT PUBLISH IS THE HALF THAT MAKES THE DAEMON'S SpanSource WIRING MEAN
+// ANYTHING (#3805). The engine workflow never holds the transcript: it emits a
+// pointer-only span op (internal/engine/journal.go JournalSpanOp) and the
+// daemon's live writer fetches the bytes by digest FROM THE BLOB STORE. Until
+// something PUT them there, wiring a span source alone would only change the
+// recorded failure from "no span source configured" to "blobstore: blob not
+// found" — the same span_unavailable code, the same missing transcript.
+//
+// PRECISELY: the daemon does already receive these exact bytes, at this exact
+// digest, moments earlier — recordStageArtifacts puts them on the wire as a
+// livejournal.OpArtifact and the daemon writes them under runs/<id>/artifacts/.
+// What it could not do is FIND them by digest: the span source reads the blob
+// store, and nothing mirrored an artifact op into it. (The alternative design —
+// have the daemon mirror artifact ops named spans/* into its store — is
+// recorded on #3805; it trades a second transfer for a dependency on artifact
+// NAMING, and loses both copies if the artifact emit fails.)
+//
+// ONE WRITE-THROUGH, NOT TWO. #3823's putStageArtifactBlob, inside
+// recordStageArtifacts, already publishes every content-addressed stream a pod
+// produces — spans included, since they reach it through RecordArtifact. A
+// second, span-specific PUT beside it would duplicate the transfer, carry its
+// own timeout, and give the same bytes two chances to disagree about which
+// slice the digest committed to. The properties #3805 needs are exactly the
+// ones that helper already has: the bytes the ref was derived from, best effort
+// with a stderr line, under one batch budget (blobWriteThroughBudget).
 func (r podArtifactRecorder) RecordSpanWithSchema(stage, name, dataSchema string, data []byte) (journal.Ref, error) {
 	_ = stage
 	_ = dataSchema
@@ -308,6 +543,20 @@ func (r podArtifactRecorder) RecordArtifactBoundedWithIntegrity(name string, dat
 		scrubbed = scrubbed[:maxBytes]
 	}
 	return r.RecordArtifact(name, scrubbed)
+}
+
+// RecordArtifactWithIntegrity satisfies the integrity recorder
+// internal/executor asserts on at RUN time (executor's
+// integrityArtifactRecorder). CIPollExecutor's failing-CI arm requires it to
+// record ci-checks.json, and the assertion is a plain type switch that
+// returns "CI failure evidence integrity recorder is unavailable" when it
+// misses — so without this method a pod ci-poll would fail on exactly the
+// runs the evidence exists for (#3881), while a passing poll on the same pod
+// succeeded. The provenance grade is not carried through the journal plane
+// today (nor is it by RecordArtifactBoundedWithIntegrity above), so it is
+// accepted and dropped rather than silently changing the artifact's bytes.
+func (r podArtifactRecorder) RecordArtifactWithIntegrity(name string, data []byte, _ apiv1.Integrity) (journal.Ref, error) {
+	return r.RecordArtifact(name, data)
 }
 
 // Dir satisfies the interface{ Dir() string } the executor asserts for its
@@ -342,9 +591,17 @@ func (r podArtifactRecorder) Append(ev journal.Event) error {
 		RunID:  runID,
 		Gaggle: os.Getenv(dispatcher.EnvGaggle),
 		Ops: []livejournal.Op{{
-			Kind:  livejournal.OpAppend,
-			Key:   fmt.Sprintf("%s/%s/%d", os.Getenv(dispatcher.EnvStage), ev.Type, ev.Seq),
+			Kind: livejournal.OpAppend,
+			Key:  fmt.Sprintf("%s/%s/%d", os.Getenv(dispatcher.EnvStage), ev.Type, ev.Seq),
+			// The daemon's replayClock adopts THIS field as the event's own
+			// Time (livejournal.applyOp: run.clock.set(op.Time)) — a pod has
+			// no journal-plane clock of its own to inherit one from, so an
+			// unstamped Op here durably persists agent.lifecycle/agent.message
+			// events at 0001-01-01T00:00:00Z (#3774), which the run-stalled
+			// watchdog then either misreads as ancient activity or (post
+			// #3775/#3776) declines to judge at all.
 			Event: &event,
+			Time:  time.Now().UTC(),
 		}},
 	})
 	return err

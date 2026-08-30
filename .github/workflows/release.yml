@@ -2,6 +2,9 @@ name: Release
 
 on:
   push:
+    # The trailing "*" matches past embedded dots/dashes, so this also
+    # triggers on pre-release tags (e.g. "v1.2.3-beta.2") — see
+    # docs/guides/releases.md "Pre-release tags".
     tags:
       - "v*.*.*"
   workflow_dispatch:
@@ -439,12 +442,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          # Stable tags never contain a literal "-"; a SemVer pre-release
+          # suffix always does (v1.2.3-beta.2), so this is enough to tell
+          # them apart without re-implementing the full grammar in bash.
+          prerelease=()
+          if [[ "$TAG" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md
+            gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md "${prerelease[@]}"
             gh release upload "$TAG" dist/* --clobber
           else
             gh release create "$TAG" dist/* \
               --verify-tag \
               --title "$TAG" \
-              --notes-file dist/RELEASE_NOTES.md
+              --notes-file dist/RELEASE_NOTES.md \
+              "${prerelease[@]}"
           fi

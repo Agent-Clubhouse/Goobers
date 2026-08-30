@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -221,10 +222,31 @@ func (r *daemonRunnerRegistry) Resolve(runID, gaggle string, fallback *runner.Ru
 	return fallback, false
 }
 
+// sweepStalledRuns terminalizes runs whose journals have gone quiet past
+// their pinned stalledRunTimeout (or past maxRunDuration).
+//
+// An engine-driven run (journal.RunIdentity.EngineDriven) is cancelled on the
+// engine instead, through guards. Terminalizing its journal file would settle
+// nothing: the workflow keeps executing, keeps placing stages and keeps
+// emitting into a journal this sweep just declared finished — nothing in the
+// tree called CancelWorkflow before this change, so a stalled engine run's
+// only outcome was a lie on disk. When no engine client exists the sweep
+// refuses both options and reports it, because terminalizing is the failure
+// mode, not the fallback.
+//
+// A cancel that itself fails is reported and retried on the next tick; it is
+// NOT downgraded to terminalizing the file. That includes NotFound, which is
+// not proof the run is over: a scheduled engine run's RunID is a hash of its
+// claim workflow's id (internal/engine's RunScheduled), so NotFound is the
+// normal answer for one that is executing perfectly well. Repeated identical
+// failures are collapsed by up.go's sweepErrorReporter rather than journaled
+// every tick.
 func sweepStalledRuns(
+	ctx context.Context,
 	l instance.Layout,
 	runners *daemonRunnerRegistry,
 	fallback *runner.Runner,
+	guards *engineRunGuards,
 	log *journal.InstanceLog,
 	prepare stalledTerminalPreparer,
 	notify runner.TerminalNotifier,
@@ -300,12 +322,65 @@ func sweepStalledRuns(
 					sweepErrs = append(sweepErrs, fmt.Errorf("running run %q has no journal events", identity.RunID))
 					continue
 				}
-				if events[len(events)-1].Type == journal.EventGatePaused {
+				// Parked at a gate is the sweep's one exemption, and it has to
+				// hold even when something other than the runner appended after
+				// the pause: a mode-3 pod emits into this journal through the
+				// write API's journal plane (livejournal.Writer.Adopt), so a
+				// retried emit or a pod-executed gate's own events can follow
+				// gate.paused. Testing only the last event escalated a run that
+				// was still waiting for a human. See journal.ParkedAtGate.
+				if journal.ParkedAtGate(events) {
 					continue
 				}
 				if !events[len(events)-1].Time.Before(now.Add(-runTimeout)) {
 					continue
 				}
+			}
+
+			// Past the timeout and engine-driven: cancel the workflow and
+			// leave the journal alone. The engine writes the run's terminal
+			// event itself once the cancellation lands — internal/engine's
+			// cancel arm records run_failed + run.finished(aborted) through a
+			// disconnected context, so the run closes out on the same journal
+			// plane that has been authoring it all along. (Before that arm
+			// existed a cancelled run had NO terminal, which would have left
+			// this sweep cancelling a closed execution on every later tick.)
+			//
+			// The phase differs from the runner-driven neighbour below, which
+			// this sweep escalates: the engine reports what actually happened
+			// to its workflow, and what happened is a cancellation.
+			if identity.EngineDriven() {
+				if err := guards.cancel(ctx, identity.RunID); err != nil {
+					sweepErrs = append(sweepErrs, fmt.Errorf("cancel stalled engine run %q: %w", identity.RunID, err))
+					continue
+				}
+				if log != nil {
+					message := fmt.Sprintf("run exceeded %s without journal activity", runTimeout)
+					if durationExceeded {
+						message = fmt.Sprintf("run exceeded maximum duration %s", runMaxDuration)
+					}
+					appendErr := log.Append(journal.Event{
+						Type: journal.EventRunnerAnnotation, Gaggle: identity.Gaggle, Workflow: identity.Workflow, RunID: identity.RunID,
+						Runner: map[string]any{
+							"kind":   journal.RunnerAnnotationRunRecovery,
+							"reason": message,
+							"action": journal.RecoveryActionEngineCancelRequested,
+							"driver": string(identity.Driver),
+						},
+					})
+					if appendErr != nil {
+						sweepErrs = append(sweepErrs, fmt.Errorf("journal engine cancel for run %q: %w", identity.RunID, appendErr))
+					}
+				}
+				// Deliberately no `release`: a cancellation is a REQUEST, and
+				// the run's scheduler slot belongs to whoever learns the
+				// outcome. For a run this daemon seeded at startup that is
+				// reattachEngineRun's goroutine, still waiting on the workflow
+				// and releasing when it closes; a run started during this
+				// daemon's life has no reconciled slot to release at all.
+				// Freeing it here, on a request that has not landed yet, is the
+				// same duplicate-admission hazard from the other end.
+				continue
 			}
 
 			runLayout := l

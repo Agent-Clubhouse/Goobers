@@ -112,6 +112,12 @@ function goober(gaggle: string): Goober {
   };
 }
 
+// A timestamp a few minutes before "now", for fixture runs the Overview
+// attention list's 24h recency window (#1199) must always find current.
+function recentlyActive(): string {
+  return new Date(Date.now() - 5 * 60_000).toISOString();
+}
+
 function run(
   id: string,
   gaggle: string,
@@ -120,6 +126,7 @@ function run(
   lastSeq: number,
   finishedAt?: string,
   repassCount = 0,
+  lastActivityAt?: string,
 ): RunSummary {
   return {
     id,
@@ -134,7 +141,8 @@ function run(
     startedAt,
     finishedAt,
     durationMillis: finishedAt ? Date.parse(finishedAt) - Date.parse(startedAt) : 120_000,
-    lastActivityAt: finishedAt ?? new Date(Date.parse(startedAt) + 120_000).toISOString(),
+    lastActivityAt:
+      lastActivityAt ?? finishedAt ?? new Date(Date.parse(startedAt) + 120_000).toISOString(),
     stale: false,
     lastSeq,
     repassCount,
@@ -411,6 +419,11 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       12,
       "2026-07-18T05:00:00Z",
       1,
+      // The Overview attention list is a 24h recency window on last activity
+      // (#1199): this fixture's fixed finishedAt drifts further into the past
+      // every day, so pin it near "now" to stay inside the window regardless
+      // of when the suite runs.
+      recentlyActive(),
     ),
     run(
       "01JZ441DAEMONAPI",
@@ -426,6 +439,8 @@ export function populatedDaemonFixtures(): DaemonFixtures {
       "2026-07-18T03:30:00Z",
       6,
       "2026-07-18T04:00:00Z",
+      0,
+      recentlyActive(),
     ),
     run(
       "01JZ300ABORTED",

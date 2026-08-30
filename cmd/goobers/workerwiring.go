@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"maps"
 	"sync"
+	"sync/atomic"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blobstore"
@@ -42,9 +45,61 @@ type workerSeams struct {
 	// through. Nil means node-local only: every stage of a run must then be
 	// polled by THIS worker or the first cross-node pointer fails closed.
 	store blobstore.Store
+	// logf receives reload diagnostics. A rejected reload is loud but never
+	// fatal — the worker keeps serving from its last-known-good snapshot —
+	// so it needs somewhere to say so that is not the failed stage's error.
+	logf func(format string, args ...any)
 
-	mu       sync.Mutex
-	byGaggle map[string]*gaggleSeams
+	// snapshot is the WHOLE config-tree view every seam resolves against,
+	// swapped as one pointer so a concurrent reader observes either the whole
+	// old tree or the whole new one and never a mixture (#3884). Everything it
+	// points at — including its gaggle map — is immutable once published.
+	snapshot atomic.Pointer[workerConfigSnapshot]
+	// mu serializes the two writers that publish a snapshot: forGaggle's lazy
+	// seam construction and the config watcher's reload. Both read the current
+	// pointer, derive a successor, and store it, so neither may interleave
+	// with the other.
+	mu sync.Mutex
+}
+
+// workerConfigSnapshot is one whole, self-consistent view of the worker's
+// config tree: the digest the rest of it was read at, the parsed instance
+// config and config directory, and the per-gaggle seams built from THAT tree.
+//
+// It exists because the worker used to cache seams per gaggle against a
+// boot-time snapshot it never re-read (I-51: a worker one Workflows revision
+// behind the daemon resolved credentials against a stale gaggle for 32
+// minutes). Reload replaces this value wholesale rather than mutating the
+// cache in place, which is what lets an in-flight attempt keep the kit it was
+// handed while the next attempt gets the new tree.
+type workerConfigSnapshot struct {
+	digest string
+	cfg    *instance.Config
+	set    *instance.ConfigSet
+	// gaggles holds the seams already built from this snapshot's tree. The map
+	// is never written after publication: both writers publish a copy.
+	gaggles map[string]*builtGaggleSeams
+}
+
+// builtGaggleSeams pairs a gaggle's constructed seams with the fingerprint of
+// the config inputs they were built from, so a reload can tell whether a new
+// tree actually changed anything this gaggle reads.
+type builtGaggleSeams struct {
+	seams       *gaggleSeams
+	fingerprint string
+}
+
+// withGaggle returns a copy of the snapshot carrying one more built gaggle.
+func (s *workerConfigSnapshot) withGaggle(gaggle string, built *builtGaggleSeams) *workerConfigSnapshot {
+	next := &workerConfigSnapshot{
+		digest:  s.digest,
+		cfg:     s.cfg,
+		set:     s.set,
+		gaggles: make(map[string]*builtGaggleSeams, len(s.gaggles)+1),
+	}
+	maps.Copy(next.gaggles, s.gaggles)
+	next.gaggles[gaggle] = built
+	return next
 }
 
 type gaggleSeams struct {
@@ -73,7 +128,7 @@ func newWorkerSeams(root string, store blobstore.Store) (*workerSeams, error) {
 		scrubber: scrub,
 		shared:   shared,
 		store:    store,
-		byGaggle: map[string]*gaggleSeams{},
+		logf:     log.Printf,
 	}, nil
 }
 
@@ -82,37 +137,46 @@ func newWorkerSeams(root string, store blobstore.Store) (*workerSeams, error) {
 // the #2931 dispatch canary asserts serialized envelopes against.
 func (w *workerSeams) SharedRegistry() *journal.RegistryScrubber { return w.shared }
 
-// forGaggle builds (once) the runner config for a gaggle, reusing the daemon's
-// own wiring so the worker's executors are configured identically to tier 1 —
-// same credential grants, same env allowlist, same stage timeouts, same
-// instance root for goobers-CLI stages.
+// forGaggle builds (once per config tree) the runner config for a gaggle,
+// reusing the daemon's own wiring so the worker's executors are configured
+// identically to tier 1 — same credential grants, same env allowlist, same
+// stage timeouts, same instance root for goobers-CLI stages.
+//
+// The result is cached in the CURRENT config snapshot. A reload that changes
+// what this gaggle reads drops the cached entry, so the next attempt builds
+// against the new tree; an attempt already holding a *gaggleSeams keeps the
+// exact kit it was handed, because nothing here ever mutates a published one.
 func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if g, ok := w.byGaggle[gaggle]; ok {
-		return g, nil
+	// Fast path: no lock, no config read. The published snapshot is immutable,
+	// so a hit here is a whole-tree-consistent kit.
+	if snapshot := w.snapshot.Load(); snapshot != nil {
+		if built, ok := snapshot.gaggles[gaggle]; ok {
+			return built.seams, nil
+		}
 	}
 
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	snapshot, err := w.currentSnapshotLocked()
+	if err != nil {
+		return nil, err
+	}
+	if built, ok := snapshot.gaggles[gaggle]; ok {
+		return built.seams, nil
+	}
+	built, err := w.buildGaggleSeams(snapshot, gaggle)
+	if err != nil {
+		return nil, err
+	}
+	w.snapshot.Store(snapshot.withGaggle(gaggle, built))
+	return built.seams, nil
+}
+
+// buildGaggleSeams constructs one gaggle's executors from a snapshot's tree.
+// Callers must hold w.mu.
+func (w *workerSeams) buildGaggleSeams(snapshot *workerConfigSnapshot, gaggle string) (*builtGaggleSeams, error) {
 	l := instance.NewLayout(w.root)
-	cfg, err := instance.LoadConfig(l.ConfigFile())
-	if err != nil {
-		return nil, fmt.Errorf("worker: load instance config: %w", err)
-	}
-	// The validation report travels with the error rather than being dropped.
-	// A worker that executed a stage against config carrying known problems,
-	// silently, is worse than one that refuses and says which problems — and
-	// this seam has no terminal to print to, so the issues are folded into the
-	// returned error where the activity failure will carry them.
-	// TestCallersDoNotDiscardConfigReports enforces this, and caught it here.
-	set, report, err := loadConfigDirectory(l.ConfigDir())
-	if err != nil {
-		if issues := validationIssueSummary(report); issues != "" {
-			return nil, fmt.Errorf("worker: load config directory: %w (%s)", err, issues)
-		}
-		return nil, fmt.Errorf("worker: load config directory: %w", err)
-	}
-	instance.ApplyGaggleCICommand(set)
-	instance.ApplyGaggleOutboxMirror(set)
+	cfg, set := snapshot.cfg, snapshot.set
 
 	goobers, err := resolveGoobersForGaggle(set, gaggle)
 	if err != nil {
@@ -125,13 +189,21 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 	if err != nil {
 		return nil, fmt.Errorf("worker: load goober instructions: %w", err)
 	}
-	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand)
+	fingerprint, err := gaggleConfigFingerprint(cfg, set, gaggle, goobers, instructions)
 	if err != nil {
-		return nil, fmt.Errorf("worker: harness preflight: %w", err)
+		return nil, fmt.Errorf("worker: fingerprint gaggle %q config: %w", gaggle, err)
 	}
 	stores, err := secretstore.NewRegistry(cfg.SecretStores)
 	if err != nil {
 		return nil, fmt.Errorf("worker: secret stores: %w", err)
+	}
+	modelCredential, err := agentModelCredentialResolver(cfg, stores)
+	if err != nil {
+		return nil, fmt.Errorf("worker: agent:model credential: %w", err)
+	}
+	harnessInfo, err := preflightHarnesses(goobers, set.Workflows, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, modelCredential)
+	if err != nil {
+		return nil, fmt.Errorf("worker: harness preflight: %w", err)
 	}
 
 	scoped := l.ForGaggle(gaggle)
@@ -168,9 +240,10 @@ func (w *workerSeams) forGaggle(gaggle string) (*gaggleSeams, error) {
 	if credentialedMgr == nil {
 		return nil, fmt.Errorf("worker: buildRunnerConfig returned no worktree manager for gaggle %q", gaggle)
 	}
-	g := &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir(), manager: credentialedMgr}
-	w.byGaggle[gaggle] = g
-	return g, nil
+	return &builtGaggleSeams{
+		seams:       &gaggleSeams{cfg: runnerCfg, runsDir: scoped.RunsDir(), manager: credentialedMgr},
+		fingerprint: fingerprint,
+	}, nil
 }
 
 // recorderFor returns the artifact recorder and secret registrar for one run.
@@ -226,7 +299,10 @@ func (p *workerWorkspaces) Provision(ctx context.Context, req engine.WorkspaceRe
 	if err != nil {
 		return nil, err
 	}
-	delegate := &workerhost.WorktreeWorkspaces{Manager: g.manager, ScratchDir: p.scratchRoot}
+	// Store is the same --blob-store the worker's artifact recorder writes
+	// through: the RWX volume the daemon's blob plane serves pods from, so a
+	// bundle a pod PUT is what this provisioner GETs (#3803), and vice versa.
+	delegate := &workerhost.WorktreeWorkspaces{Manager: g.manager, ScratchDir: p.scratchRoot, Store: p.seams.store}
 	return delegate.Provision(ctx, req)
 }
 
@@ -254,45 +330,44 @@ func (d workerDet) Run(ctx context.Context, env apiv1.InvocationEnvelope, run ap
 type workerGoober struct{ seams *workerSeams }
 
 func (a workerGoober) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
-	exec, err := a.executor(env)
+	// Resolve the gaggle's kit ONCE for the whole call. Resolving again for
+	// materialize would let a reload landing mid-invocation hand the same
+	// attempt two different trees (#3884).
+	g, err := a.seams.forGaggle(env.Gaggle)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
-	if err := a.materialize(ctx, env); err != nil {
+	exec, err := a.executor(g, env)
+	if err != nil {
+		return apiv1.ResultEnvelope{}, err
+	}
+	if err := a.seams.materialize(ctx, g, env); err != nil {
 		return apiv1.ResultEnvelope{}, err
 	}
 	return exec.Invoke(ctx, env)
 }
 
 func (a workerGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	exec, err := a.executor(env)
+	g, err := a.seams.forGaggle(env.Gaggle)
 	if err != nil {
 		return apiv1.Verdict{}, err
 	}
-	if err := a.materialize(ctx, env); err != nil {
+	exec, err := a.executor(g, env)
+	if err != nil {
+		return apiv1.Verdict{}, err
+	}
+	if err := a.seams.materialize(ctx, g, env); err != nil {
 		return apiv1.Verdict{}, err
 	}
 	return exec.Review(ctx, env)
 }
 
-func (a workerGoober) materialize(ctx context.Context, env apiv1.InvocationEnvelope) error {
-	g, err := a.seams.forGaggle(env.Gaggle)
-	if err != nil {
-		return err
-	}
-	return a.seams.materialize(ctx, g, env)
-}
-
-func (a workerGoober) executor(env apiv1.InvocationEnvelope) (invoke.Goober, error) {
+func (a workerGoober) executor(g *gaggleSeams, env apiv1.InvocationEnvelope) (invoke.Goober, error) {
 	if env.Goober == "" {
 		// Fail closed and say why. Before the envelope carried a goober name
 		// this seam could not route at all, which is the gap that blocked the
 		// whole wiring slice.
 		return nil, fmt.Errorf("worker: envelope for run %q stage %q carries no goober name", env.RunID, env.TaskID)
-	}
-	g, err := a.seams.forGaggle(env.Gaggle)
-	if err != nil {
-		return nil, err
 	}
 	if g.cfg.NewAgentic == nil {
 		return nil, fmt.Errorf("worker: no agentic executor configured for gaggle %q", env.Gaggle)

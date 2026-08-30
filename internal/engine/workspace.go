@@ -40,6 +40,16 @@ type WorkspaceRequest struct {
 	// createStageWorkspace threads it into worktree.CreateOptions. Never set
 	// for scratch mode (compilation rejects the combination).
 	SyncBase bool
+	// WorkspaceDelta is the blob digest of the workspace-delta bundle earlier
+	// stages of this run published (#3803): what a pod committed, which the
+	// provisioner's own branch ref cannot know about. A repo-mode provisioner
+	// must land it on the run branch (fast-forward-only) BEFORE handing the
+	// workspace over, and must refuse — never silently skip — when it has no
+	// way to fetch it: a stage that runs against base while believing it
+	// continues from its predecessor is the silent wrong result this exists
+	// to remove. Empty means nothing to continue from. Only ever set for a
+	// writable repo mode.
+	WorkspaceDelta string
 }
 
 // Workspace is one provisioned stage-attempt working copy.
@@ -52,6 +62,28 @@ type Workspace interface {
 	Remove(ctx context.Context) error
 }
 
+// WorkspaceDeltaPublication is what a workspace reports after a stage ran in
+// it: the bundle digest of base..HEAD when the stage advanced its branch, or
+// Unchanged when it did not. Base/Tip are the bundle's two commits, journaled
+// beside the digest (runner.workspace.delta).
+type WorkspaceDeltaPublication struct {
+	Digest    string
+	Base      string
+	Tip       string
+	Unchanged bool
+}
+
+// DeltaPublisher is the optional PUBLISH half of continuity a repo-mode
+// Workspace may implement (#3803 reverse direction): after a stage succeeds
+// on a writable repo workspace, the engine asks the workspace to bundle what
+// the stage committed and put it in the blob plane, so the next stage — on
+// a pod, or on another worker — can build on it. A workspace that does not
+// implement this (scratch, tests) publishes nothing, which is exactly the
+// pre-#3803 behaviour for self-placed stages.
+type DeltaPublisher interface {
+	PublishDelta(ctx context.Context) (WorkspaceDeltaPublication, error)
+}
+
 // WorkspaceProvisioner provisions the fresh, isolated, disposable working copy
 // each stage attempt runs in (ARCHITECTURE.md §5). The engine's activities
 // provision one per attempt and stamp its path into the invocation envelope's
@@ -62,4 +94,14 @@ type Workspace interface {
 // supply fakes.
 type WorkspaceProvisioner interface {
 	Provision(ctx context.Context, req WorkspaceRequest) (Workspace, error)
+}
+
+// writableWorkspace reports whether a self-arm workspace mode is one whose
+// commits the continuity record carries. Empty is the historical default —
+// the writable repo worktree — on every self arm (workerhost's Provision
+// treats "" and repo identically), which is why this is not
+// WorkspaceMode.IsWritableRepo: that helper is the pod-side reading, where
+// "" provisions nothing.
+func writableWorkspace(mode apiv1.WorkspaceMode) bool {
+	return mode == "" || mode.IsWritableRepo()
 }

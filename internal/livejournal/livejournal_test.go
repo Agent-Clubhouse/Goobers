@@ -114,6 +114,47 @@ func TestEmitCreatesJournalAtFirstEmitAndStampsOpTimes(t *testing.T) {
 	}
 }
 
+// TestApplyOpRefusesToZeroTheClockOnAnUnstampedOp is #3774 defense in depth
+// at the exact seam applyOp crosses (run.clock.set(op.Time), unconditional
+// before this fix): a pod-side writer defect (fixed at its two call sites,
+// cmd/goobers's podArtifactRecorder.Append and recordStageArtifacts) could
+// still reach here for some future emitter that forgets to stamp a Time. A
+// zero Time reaching applyOp must not zero the run's clock and, through it,
+// the very event this op is about to append — the clock instead holds its
+// last known-good value, so the affected event lands with a stale-but-real
+// timestamp rather than 0001-01-01T00:00:00Z.
+func TestApplyOpRefusesToZeroTheClockOnAnUnstampedOp(t *testing.T) {
+	w, runsDir := testWriter(t)
+	started := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := w.Emit(context.Background(), openBatch("run-clock", started)); err != nil {
+		t.Fatalf("open batch: %v", err)
+	}
+	lastGood := started.Add(time.Second) // openBatch's stage.started op's stamped Time
+
+	// The exact shape #3774's writer defect produced: an Op with no Time set.
+	unstamped := journal.Event{Type: journal.EventStageFinished, Stage: "build", Attempt: 1, Status: "success"}
+	if _, err := w.Emit(context.Background(), EmitRequest{RunID: "run-clock", Gaggle: "web", Ops: []Op{
+		{Kind: OpAppend, Key: "run-clock|0|build|1|1", Event: &unstamped},
+	}}); err != nil {
+		t.Fatalf("unstamped emit: %v", err)
+	}
+
+	events := readEvents(t, runsDir, "run-clock")
+	if len(events) != 3 {
+		t.Fatalf("events = %+v, want 3", events)
+	}
+	got := events[2]
+	if got.Type != journal.EventStageFinished {
+		t.Fatalf("events[2] = %+v, want stage.finished", got)
+	}
+	if got.Time.IsZero() {
+		t.Fatal("unstamped op's event landed with a zero Time (#3774): replayClock.set must refuse to adopt a zero Time rather than zeroing the clock")
+	}
+	if !got.Time.Equal(lastGood) {
+		t.Fatalf("unstamped op's event.Time = %s, want the clock's last known-good time %s (held, not zeroed)", got.Time, lastGood)
+	}
+}
+
 func TestEmitDeduplicatesRetriedBatch(t *testing.T) {
 	w, runsDir := testWriter(t)
 	started := time.Now().UTC().Truncate(time.Second)

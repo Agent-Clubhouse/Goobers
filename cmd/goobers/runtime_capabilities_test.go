@@ -67,15 +67,26 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// (claims + trigger ingestion, #3509 §7; credential resolve, #3511 §11;
 	// blob PUT, decision 010/012 §2a; surrender put, #3699 — each a stage pod
 	// advancing its own execution, the same machine-seam class as the claims
-	// plane). Blob GET needs no entry: it is a genuine read (RouteBlobGet's
-	// ActionClass is read-only-navigation) and falls through to the default
-	// case below.
+	// plane). claims/list is here too: it reads the claims plane, but a pod
+	// principal calls it to select an item BEFORE acquiring — the same
+	// machine-seam-in-flight class as the mutations, not a human-facing
+	// read-only-navigation view. Blob GET needs no entry: it is a genuine
+	// read (RouteBlobGet's ActionClass is read-only-navigation) and falls
+	// through to the default case below. The scheduler-state plane (#3878)
+	// follows the blob plane exactly: gaggleStatePut is a pod compare-and-
+	// swapping its gaggle's scheduler state, and gaggleStateGet is the
+	// genuine read half that needs no entry.
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
 	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
-		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true,
+		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true,
 		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "blobPut": true,
-		"stageSurrender": true,
+		"stageSurrender": true, "gaggleStatePut": true,
+		// The cross-run journal read plane (#3880): POSTs because each carries
+		// a request body naming the asking run, the gaggle and the window, and
+		// machine-seam-in-flight because a stage pod calls them mid-run to
+		// decide what to do next — the same class as claims/list.
+		"journalRunPhase": true, "journalConflictTouches": true, "journalUnpushedWork": true,
 	}
 	for _, action := range apiActions {
 		if runtimeMutationRoutes[action.ID] {

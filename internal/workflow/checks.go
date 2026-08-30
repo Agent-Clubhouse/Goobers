@@ -106,6 +106,19 @@ func CheckRepoHandoffs(def Definition) []string {
 	return interpreter.checkRepoHandoffs(def)
 }
 
+// CheckGateRunsOn reports the gate-only runsOn rules on a 3.0 document —
+// WF023 (decision 001, dsl-3.0.md §2 "Gates"): runsOn on a non-agentic gate,
+// and an agentic gate runsOn without cpu and memory. On a pre-3.0 document
+// the field itself is refused by CheckRunsOnPlacement, so this reports
+// nothing.
+func CheckGateRunsOn(def Definition) []string {
+	interpreter, err := interpreterForDefinition(def)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	return interpreter.checkGateRunsOn(def)
+}
+
 // CheckGateParameters reports invalid built-in gate parameters.
 func CheckGateParameters(def Definition) []string {
 	interpreter, err := interpreterForDefinition(def)

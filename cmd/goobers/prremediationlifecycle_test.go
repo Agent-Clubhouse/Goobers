@@ -16,7 +16,7 @@ func TestPRRemediationLifecycleRechecksAndReleasesTerminalPRClaim(t *testing.T) 
 	st := &remediationCheckpointServerState{number: 77, state: "open"}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	root := remediationCheckpointEnv(t, server.URL, false)
-	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, "run-364", "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, "run-364", "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed PR claim: %v", err)
 	}
 	resultFile := filepath.Join(t.TempDir(), prRemediationLifecycleResultFile)
@@ -74,7 +74,7 @@ func TestPRRemediationLifecycleKeepsOpenPRClaim(t *testing.T) {
 	st := &remediationCheckpointServerState{number: 77, state: "open"}
 	server := newRemediationCheckpointServer(t, "your-org", "your-repo", st)
 	root := remediationCheckpointEnv(t, server.URL, false)
-	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, "run-364", "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, "run-364", "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed PR claim: %v", err)
 	}
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(t.TempDir(), prRemediationLifecycleResultFile))
@@ -99,7 +99,7 @@ func TestPRRemediationLifecycleExplicitReleaseIsIdempotent(t *testing.T) {
 	t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", filepath.Join(t.TempDir(), prRemediationLifecycleResultFile))
-	if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 88}}, "release-run", "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 88}}, "release-run", "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("seed PR claim: %v", err)
 	}
 	ledgerPath := filepath.Join(layoutFor(root).SchedulerDir(), claimLedgerFileName)

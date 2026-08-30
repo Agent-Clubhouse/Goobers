@@ -473,6 +473,26 @@ func recover(dir string, publicationLocked bool, opts ...Option) (*Run, RecoverR
 
 // reconstructPhase derives the run phase from the event log — the source of
 // truth — rather than trusting the derived state.json checkpoint.
+//
+// A gate the runner EXECUTED that resolves to a reserved TERMINAL target
+// ("@abort"/"@escalate") ends the run, and does not always get a trailing
+// run.finished event: terminalization can die between the gate and the
+// run.finished append because the terminal preparer performs external forge
+// cleanup. Left unhandled, the run reports PhaseRunning forever and its claim
+// remains unavailable to both selection and remediation until the lease ends.
+//
+// A HUMAN gate's decision is deliberately NOT terminal here. A human decision
+// is recorded out-of-band (gate.Evaluator.EvaluateHuman appends gate.evaluated
+// directly onto a paused run) BEFORE the runner has resumed and executed it, so
+// the event means "a decision is pending", not "the run ended". Terminalizing on
+// it would make Resume refuse to replay the very decision it was handed. The
+// runner's own execution is what distinguishes the two: an executed gate is
+// always preceded by gate.started, whereas a pending human decision follows
+// gate.paused with no gate.started — see terminalGateExecuted.
+//
+// The scan still runs newest-first, so an explicit run.finished, a resume, or a
+// gate override recorded AFTER the terminal gate wins — a re-entered run is
+// running again regardless of how a previous attempt ended.
 func reconstructPhase(events []Event) RunPhase {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Type {
@@ -480,9 +500,122 @@ func reconstructPhase(events []Event) RunPhase {
 			return PhaseRunning
 		case EventRunFinished:
 			return phaseFromStatus(events[i].Status)
+		case EventGateEvaluated:
+			if phase, terminal := phaseFromTerminalTarget(events[i].Target); terminal {
+				if !terminalGateExecuted(events, i) {
+					return PhaseRunning
+				}
+				return phase
+			}
 		}
 	}
 	return PhaseRunning
+}
+
+// ParkedAtGate reports whether a run's log ends with the run WAITING at a gate
+// — parked for a verdict that has not been recorded yet. The stalled-run
+// sweeps use it as the one exemption from escalation: a run parked for a human
+// is not a run that stopped making progress, and escalating it destroys work
+// nobody asked to abandon.
+//
+// The scan runs newest-first and stops at the first event that says where the
+// run's CONTROL FLOW is. A gate.paused means parked. Anything that moves the
+// run off a gate — a verdict, an override, the runner picking the gate up
+// (gate.started), a resume, a stage, branch or parallel transition, a terminal
+// — means it is not. Everything else is skipped as OBSERVATIONAL:
+// artifact.recorded, span.recorded, agent.lifecycle, stage.heartbeat, runner
+// annotations, errors, redactions.
+//
+// The skip is the whole reason this exists rather than
+// `events[len(events)-1].Type == EventGatePaused`, which is what both sweeps
+// tested before. That test was sound only while ONE writer appended to a
+// runner-driven journal. A mode-3 stage runs in a pod and emits through the
+// journal PLANE into that same journal (livejournal.Writer.Adopt appends its
+// events on the runner's own handle), so an HTTP retry, a late agent.lifecycle
+// (#3774's lineage) or — once gates are placeable, decision 001 — a
+// pod-executed gate's own emits can land AFTER the runner's gate.paused. The
+// last-event test then reads false while the run is still parked, and
+// reconstructPhase's backward scan still reports running, so a gate held
+// longer than the stalled-run timeout is escalated.
+//
+// Unknown and unlisted event types are skipped rather than counted as
+// progress. That is the fail-safe direction, and the asymmetry is the same one
+// Run.IfLastActivityBefore records: declining to escalate a genuinely hung run
+// costs delay, while escalating a parked one destroys human-gated work and
+// cannot be configured away.
+func ParkedAtGate(events []Event) bool {
+	for i := len(events) - 1; i >= 0; i-- {
+		switch events[i].Type {
+		case EventGatePaused:
+			return true
+		case EventGateStarted, EventGateEvaluated, EventGateOverridden,
+			EventRunStarted, EventRunResumed, EventRunFinished,
+			EventStageStarted, EventStageFinished, EventStageRerunRequested,
+			EventParallelStarted, EventParallelFinished,
+			EventBranchStarted, EventBranchFinished:
+			return false
+		}
+	}
+	return false
+}
+
+// terminalGateExecuted reports whether the gate.evaluated at index i was
+// produced by the RUNNER executing the gate, rather than by an out-of-band
+// human decision recorded onto a still-paused run.
+//
+// The runner announces execution with gate.started; a human decision written by
+// EvaluateHuman appends gate.evaluated straight after the gate.paused that is
+// still awaiting it. So: scanning back over this gate's own records, a
+// gate.started means executed, and reaching gate.paused first means the run is
+// still paused with a decision pending.
+//
+// A gate.evaluated with neither marker (the common automated in-line path, and
+// every synthetic/older log) counts as executed — the conservative choice that
+// preserves the stranded-claim fix.
+func terminalGateExecuted(events []Event, i int) bool {
+	gateName := events[i].Gate
+	branch := events[i].Branch
+	for j := i - 1; j >= 0; j-- {
+		ev := events[j]
+		// Parallel branches share one append-only journal. Only records from
+		// this evaluation's branch can establish whether its gate was paused or
+		// started; another branch may interleave arbitrary events between them.
+		if ev.Branch != branch {
+			continue
+		}
+		if ev.Gate != gateName {
+			// Reached records belonging to a different gate or stage: no
+			// pending-decision pause for this one.
+			if ev.Type == EventGatePaused || ev.Type == EventGateStarted {
+				continue
+			}
+			return true
+		}
+		switch ev.Type {
+		case EventGateStarted:
+			return true
+		case EventGatePaused:
+			return false
+		case EventGateEvaluated:
+			// An earlier evaluation of the same gate (a repass); this one was
+			// reached by the runner running the gate again.
+			return true
+		}
+	}
+	return true
+}
+
+// phaseFromTerminalTarget maps a gate's reserved terminal target to the run
+// phase it produces. "@join" is deliberately NOT terminal: it ends a BRANCH and
+// the run continues at the join state.
+func phaseFromTerminalTarget(target string) (RunPhase, bool) {
+	switch target {
+	case TargetAbort:
+		return PhaseAborted, true
+	case TargetEscalate:
+		return PhaseEscalated, true
+	}
+	return PhaseRunning, false
 }
 
 // reconstructReason derives the terminal run's durable reason from the event

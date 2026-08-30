@@ -96,10 +96,17 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	if repo.Provider == providers.ProviderADO {
 		return runPRSelectADO(root, repo, stdout, stderr)
 	}
-	provider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, true,
-		withStageProviderCapability(capability.GitHubPRWrite),
-		withStageProviderCache(),
-	)
+	token, err := providerToken(capability.GitHubPRWrite)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	// Dispatch on the routed repo's own provider kind. Constructing a GitHub
+	// provider unconditionally addressed a Gitea-routed repo's selection scan
+	// to api.github.com with a Gitea credential, failing the stage with a 401
+	// github_auth_failed on a repo that has no GitHub side at all — the same
+	// defect open-pr's per-kind dispatch fixed for PR creation.
+	provider, err := remediationStageProvider(root, repo, token, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -305,7 +312,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 
-	claimed, err := claimEligiblePullRequestInOrder(root, eligible)
+	claimed, err := claimEligiblePullRequestInOrder(root, repo, eligible)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
 		return 1
@@ -360,7 +367,7 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 
 func pullRequestsForSelection(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	base string,
 	headPrefixes []string,
@@ -541,7 +548,7 @@ func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io
 		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
 
-	claimed, err := claimEligiblePullRequestInOrder(root, eligible)
+	claimed, err := claimEligiblePullRequestInOrder(root, repo, eligible)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
 		return 1
@@ -810,7 +817,7 @@ func isOwnPullRequest(author, head string, headPrefixes []string, expectedAuthor
 // AuthenticatedLogin call) fails OPEN to the branch-prefix heuristic rather
 // than failing the whole stage — a momentary identity-lookup hiccup must
 // never block a merge-review cycle outright.
-func daemonIdentityAuthorLogin(ctx context.Context, root string, provider *providers.GitHubProvider) string {
+func daemonIdentityAuthorLogin(ctx context.Context, root string, provider remediationProvider) string {
 	cfg, err := instance.LoadConfig(layoutFor(root).ConfigFile())
 	if err != nil || cfg.DaemonIdentity == nil {
 		return ""

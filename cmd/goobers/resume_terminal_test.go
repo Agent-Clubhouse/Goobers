@@ -103,7 +103,7 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)
@@ -211,7 +211,7 @@ func TestResumeScanReleasesClaimsForAlreadyTerminalRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)
@@ -272,11 +272,11 @@ func TestResumeScanFinalizesTerminalRunFromRemovedGaggle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	var released []string
-	resumed, warned, err := resumeInterruptedRunsWithRunners(
-		context.Background(), l, setup.Runners, nil, setup.RunnerRegistry, setup.Machines, setup.GooberDigests, setup.RepoRefs,
+	resumed, warned, _, err := resumeInterruptedRunsWithRunners(
+		context.Background(), l, setup.Runners, nil, setup.RunnerRegistry, nil, setup.Machines, setup.GooberDigests, setup.RepoRefs,
 		setup.InstanceLog, setup.Telemetry, setup.RollupDB, setup.Watermarks,
 		func(_ string, workflow string) { released = append(released, workflow) }, &wg,
 	)
@@ -379,7 +379,7 @@ func TestResumeScanRecordsIntakeWatermarkForTerminalRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	if setup.Watermarks == nil {
 		t.Fatal("setup.Watermarks is nil — cannot assert intake recording")
 	}

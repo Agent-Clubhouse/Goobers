@@ -201,10 +201,11 @@ func (r *runJournal) emitPending(ctx workflow.Context) error {
 	}
 	if r.emitted == 0 {
 		req.Open = &livejournal.OpenHeader{
-			Identity:   r.proj.Identity,
-			Item:       r.proj.Item,
-			Graph:      r.proj.Graph,
-			Definition: r.proj.Definition,
+			Identity:               r.proj.Identity,
+			Item:                   r.proj.Item,
+			Graph:                  r.proj.Graph,
+			Definition:             r.proj.Definition,
+			GateGooberCapabilities: r.proj.GateGooberCapabilities,
 		}
 	}
 	var resp livejournal.EmitResponse

@@ -18,6 +18,7 @@ import (
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -1344,15 +1345,20 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 		t.Fatalf("filtered = %v, want only 511 — unresolved record must stay parked without blocking healthy items", filtered)
 	}
 
-	path := filepath.Join(t.TempDir(), blockedRecordsFileName)
+	schedulerDir := t.TempDir()
+	path := filepath.Join(schedulerDir, blockedRecordsFileName)
 	if err := saveBlockedRecords(path, recs); err != nil {
+		t.Fatal(err)
+	}
+	store, err := stateclient.NewFile(stateclient.FileConfig{Dir: schedulerDir})
+	if err != nil {
 		t.Fatal(err)
 	}
 	verifiedSkips := make(map[string]blockedEligibilitySkip, len(skipped))
 	for _, skip := range skipped {
 		verifiedSkips[skip.ItemID] = skip
 	}
-	reconciled, reconciledSkips, err := reconcileBlockedEligibilityLocked(path, repo, append([]providers.WorkItem(nil), candidates...), nil, nil, verifiedSkips)
+	reconciled, reconciledSkips, err := reconcileBlockedEligibilityLocked(t.Context(), store, repo, append([]providers.WorkItem(nil), candidates...), nil, nil, verifiedSkips)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1365,7 +1371,7 @@ func TestFilterBlockedEligibilityDegradesOnUnresolvableKey(t *testing.T) {
 	if err := saveBlockedRecords(path, map[string]blockedRecord{malformedKey: replacement}); err != nil {
 		t.Fatal(err)
 	}
-	reconciled, reconciledSkips, err = reconcileBlockedEligibilityLocked(path, repo, append([]providers.WorkItem(nil), candidates...), nil, nil, verifiedSkips)
+	reconciled, reconciledSkips, err = reconcileBlockedEligibilityLocked(t.Context(), store, repo, append([]providers.WorkItem(nil), candidates...), nil, nil, verifiedSkips)
 	if err != nil {
 		t.Fatal(err)
 	}

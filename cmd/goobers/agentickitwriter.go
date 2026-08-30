@@ -61,7 +61,7 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 		return "", fmt.Errorf("envelope for run %s stage %s names no goober", env.RunID, env.TaskID)
 	}
 
-	kit, err := w.buildKit(env)
+	kit, err := w.buildKit(env, kitModeFor(attempt))
 	if err != nil {
 		return "", err
 	}
@@ -87,7 +87,19 @@ func (w agenticKitWriter) WriteKit(ctx context.Context, attempt dispatcher.Attem
 	return digest, nil
 }
 
-func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope) (*agentickit.Kit, error) {
+// kitModeFor is the completion contract stamped INTO the kit (decision 001
+// rulings 7–8): a reviewer gate attempt (Attempt.Review) owes a verdict,
+// everything else a result. The pod learns which from the same verified,
+// content-addressed document that carries its instructions — never from a
+// pod-spec variable anything with namespace read could set.
+func kitModeFor(attempt dispatcher.Attempt) agentickit.Mode {
+	if attempt.Review {
+		return agentickit.ModeReview
+	}
+	return agentickit.ModeInvoke
+}
+
+func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit.Mode) (*agentickit.Kit, error) {
 	l := instance.NewLayout(w.instanceRoot)
 	cfg, err := instance.LoadConfig(l.ConfigFile())
 	if err != nil {
@@ -149,6 +161,7 @@ func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope) (*agentickit.Ki
 
 	return &agentickit.Kit{
 		Envelope:        env,
+		Mode:            mode,
 		Goobers:         scoped,
 		Instructions:    instructions,
 		Assets:          assets,

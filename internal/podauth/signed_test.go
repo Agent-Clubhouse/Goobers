@@ -27,7 +27,7 @@ func TestSignedKeyMintVerifyRoundTrip(t *testing.T) {
 	if !isPodToken(token) {
 		t.Fatalf("minted token %q does not carry the pod prefix, so the authenticator would route it to the human fallback", token)
 	}
-	runID, err := s.verifySigned(token)
+	runID, _, err := s.verifySigned(token)
 	if err != nil {
 		t.Fatalf("verifySigned: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestSignedKeyVerifiesTokenMintedByAnotherInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	runID, err := verifier.verifySigned(token)
+	runID, _, err := verifier.verifySigned(token)
 	if err != nil {
 		t.Fatalf("a separately constructed verifier holding the same key must accept the token: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestSignedKeyRejectsForeignKeyExpiryAndTampering(t *testing.T) {
 		t.Fatalf("Mint: %v", err)
 	}
 
-	if _, err := other.verifySigned(token); !errors.Is(err, ErrUnknownToken) {
+	if _, _, err := other.verifySigned(token); !errors.Is(err, ErrUnknownToken) {
 		t.Fatalf("a token signed by a different key must be rejected, got %v", err)
 	}
 
@@ -88,14 +88,14 @@ func TestSignedKeyRejectsForeignKeyExpiryAndTampering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Mint (expired): %v", err)
 	}
-	if _, err := s.verifySigned(expired); !errors.Is(err, ErrUnknownToken) {
+	if _, _, err := s.verifySigned(expired); !errors.Is(err, ErrUnknownToken) {
 		t.Fatalf("an expired token must be rejected, got %v", err)
 	}
 
 	// Tampering with the payload must not survive the MAC.
 	idx := strings.LastIndex(token, ".")
 	forged := "goobers-pod." + "cnVuLTI" + token[idx:]
-	if _, err := s.verifySigned(forged); err == nil {
+	if _, _, err := s.verifySigned(forged); err == nil {
 		t.Fatal("a token whose run ID was swapped must not verify")
 	}
 }

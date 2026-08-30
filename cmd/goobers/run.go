@@ -176,7 +176,7 @@ func parseRunTarget(selector, gaggleFlag string) (runTarget, error) {
 // runStandaloneTrigger owns the one-shot scheduler and instance lock. A real
 // detached worker stays alive until Starter.Start returns so paused runs
 // release those resources; in-process callers hand that cleanup to a goroutine.
-func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarget, root string, noWait, worker bool, release func(), stdout, stderr io.Writer) int {
+func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarget, root string, noWait, worker bool, release func(), stdout, stderr io.Writer) (result int) {
 	releaseOnReturn := true
 	defer func() {
 		if releaseOnReturn {
@@ -201,10 +201,28 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	if warning := windowsLargeRepoEnvironmentWarning(setup.Config, l.WorkcopiesDir(), realWindowsLargeRepoPreflightDeps()); warning != "" {
 		pln(stdout, warning)
 	}
+	// #3851: a discarded close error here would lose final telemetry, rollup,
+	// or journal state without any diagnostic, and — because the issue
+	// requires not reporting clean completion after losing final persisted
+	// state — without failing the command either. Shutdown itself runs once,
+	// so both this defer and the --no-wait cleanup below can call it. When
+	// shutdown runs synchronously (every return path except --no-wait, which
+	// hands cleanup to a detached goroutine after already returning 0), a
+	// failure here downgrades an otherwise-successful result to failure; it
+	// never masks a run-outcome exit code that is already non-zero.
+	shutdownSetup := func() error {
+		if err := setup.Shutdown(context.Background()); err != nil {
+			pf(stderr, "error: shut down scheduler services: %v\n", err)
+			return err
+		}
+		return nil
+	}
 	shutdownOnReturn := true
 	defer func() {
 		if shutdownOnReturn {
-			setup.Shutdown(context.Background())
+			if err := shutdownSetup(); err != nil && result == 0 {
+				result = 1
+			}
 		}
 	}()
 	if err := claimRecovery.finish(ctx, l, setup, stderr); err != nil {
@@ -285,7 +303,7 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		releaseOnReturn = false
 		cleanup := func() {
 			sched.Wait()
-			setup.Shutdown(context.Background())
+			_ = shutdownSetup()
 			release()
 		}
 		pf(stdout, "inspect with: goobers trace %s %s\n", runID, root)
@@ -613,6 +631,20 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	// `run abort` appends a terminal event straight into the run's own
+	// journal. On an engine-driven run that is a forgery: the workflow keeps
+	// executing on the engine and keeps emitting into the journal this
+	// command just declared finished.
+	//
+	// An already-terminal engine run is NOT refused here — it falls through to
+	// the terminal guard below, which answers "run %s is already terminal".
+	// Nothing is going to be forged into a journal that is already closed, and
+	// pointing the operator at an engine workflow that no longer exists is the
+	// same class of misleading answer this refusal fixes for `run cancel`.
+	if identity.EngineDriven() && !engineRunSettledOnDisk(reader) {
+		pf(stderr, "error: %v\n", engineDrivenRefusal(identity.RunID, "run abort"))
+		return 1
+	}
 	runLayout := l
 	if identity.Gaggle != "" && filepath.Clean(filepath.Dir(dir)) != filepath.Clean(l.RunsDir()) {
 		runLayout = l.ForGaggle(identity.Gaggle)
@@ -823,6 +855,17 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	// `run cancel` asks the daemon to stop a run it is executing in-process.
+	// It never is for an engine-driven run, so the honest answer names the
+	// driver instead of the daemon's generic "not currently running under
+	// this daemon" — which reads like a race and invites the operator to
+	// reach for `run abort`, the one command that would actually corrupt the
+	// journal. As with abort, an already-terminal run gets the accurate
+	// "already terminal" answer from the guard below instead.
+	if identity.EngineDriven() && !engineRunSettledOnDisk(reader) {
+		pf(stderr, "error: %v\n", engineDrivenRefusal(identity.RunID, "run cancel"))
+		return 1
+	}
 	// Event-log-first terminal guard (#242), matching `run abort`: a run that
 	// already finished has nothing live to cancel.
 	if phase, err := reader.Phase(); err == nil {
@@ -890,8 +933,8 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 // `run` holds its own instance lock) stays PhaseRunning indefinitely by
 // design; ctx cancellation (SIGINT/SIGTERM) is what lets a caller stop
 // waiting on it, reporting its phase as of that moment.
-// runTerminalWaitTimeout, when > 0, bounds how long waitForRunTerminal polls for
-// a run to reach a terminal phase before giving up with an error. It is 0
+// runTerminalWaitTimeout, when > 0, bounds how long waitForRunTerminal polls
+// WITHOUT OBSERVING PROGRESS before giving up with an error. It is 0
 // (unbounded) in production: a human running `goobers run` waits until the run
 // finishes or they Ctrl-C, and nothing should cut that short. The test suite
 // sets a generous bound (see cmd/goobers TestMain) so that if the
@@ -899,6 +942,17 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 // FAILS FAST — in ~2 minutes — instead of silently hanging the whole local-ci
 // stage for its full 10-minute limit and wedging the merge queue with no signal.
 // Var, not const, so only the suite opts in; production leaves it 0.
+//
+// The bound is idle time, not total elapsed time, because a wedge is the
+// ABSENCE of journal progress, not slowness. Bounding total elapsed time made
+// the tripwire fire on runs that were demonstrably healthy: under a saturated
+// concurrent `make ci`, TestDemoTourRunsOfflineThroughDaemon's nested run kept
+// advancing stage by stage (curate at 12s, implement at 1m39s, review at 1m53s)
+// and was failed at the 2-minute mark purely for being slow — a false red that
+// costs a whole CI repass and teaches nothing. Resetting the deadline on every
+// newly observed journal event keeps a genuinely wedged run failing just as
+// fast (a wedge appends nothing, so its idle clock never resets) while a
+// merely-slow-under-load run runs to completion.
 var runTerminalWaitTimeout time.Duration
 
 // isTerminalPhase reports whether a run has reached one of the four terminal
@@ -920,18 +974,18 @@ func waitForRunTerminalWithProgress(ctx context.Context, runsDir, runID string, 
 }
 
 func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, progress *runWaitReporter) (journal.RunPhase, error) {
-	if runTerminalWaitTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, runTerminalWaitTimeout)
-		defer cancel()
-	}
-
 	dir := filepath.Join(runsDir, runID)
+	observedEvents := -1
+	lastProgress := time.Now()
 	for {
 		if reader, err := journal.OpenRead(dir); err == nil {
 			events, eventsErr := reader.Events()
 			if eventsErr != nil {
 				return journal.PhaseRunning, fmt.Errorf("read progress for run %s: %w", runID, eventsErr)
+			}
+			if len(events) != observedEvents {
+				observedEvents = len(events)
+				lastProgress = time.Now()
 			}
 			progress.observe(events, time.Now())
 			// Terminality is decided from the very slice just rendered, not by
@@ -948,21 +1002,30 @@ func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, 
 			return journal.PhaseRunning, fmt.Errorf("open run %s while waiting for terminal phase: %w", runID, err)
 		}
 
+		// An idle bound (only ever set by the test suite) elapsing on a
+		// still-running run is the #827-regression tripwire: surface it as an
+		// error so the caller exits non-zero and the test fails fast, rather
+		// than reporting a non-terminal phase as though the wait completed
+		// normally.
+		if idle := time.Since(lastProgress); runTerminalWaitTimeout > 0 && idle >= runTerminalWaitTimeout {
+			phase := journal.PhaseRunning
+			if reader, err := journal.OpenRead(dir); err == nil {
+				phase = runPhase(reader)
+			} else if !errors.Is(err, journal.ErrNotRunDirectory) {
+				return journal.PhaseRunning, fmt.Errorf("open run %s after wait timeout: %w", runID, err)
+			}
+			if isTerminalPhase(phase) {
+				return phase, nil
+			}
+			return phase, fmt.Errorf("run %s did not reach a terminal phase and made no journal progress for %s (still %s); failing fast instead of hanging — a make-ci journal-IO wedge may have regressed (#827)", runID, runTerminalWaitTimeout, phase)
+		}
+
 		select {
 		case <-ctx.Done():
 			if reader, err := journal.OpenRead(dir); err == nil {
-				phase := runPhase(reader)
-				// A deadline (only ever set by the test suite) firing on a
-				// still-running run is the #827-regression tripwire: surface it
-				// as an error so the caller exits non-zero and the test fails
-				// fast, rather than reporting a non-terminal phase as though the
-				// wait completed normally. A signal-driven cancel (production
-				// Ctrl-C, which sets no deadline) keeps the prior behavior:
-				// report whatever phase we can read.
-				if ctx.Err() == context.DeadlineExceeded && !isTerminalPhase(phase) {
-					return phase, fmt.Errorf("run %s did not reach a terminal phase within %s (still %s); failing fast instead of hanging — a make-ci journal-IO wedge may have regressed (#827)", runID, runTerminalWaitTimeout, phase)
-				}
-				return phase, nil
+				// A signal-driven cancel (production Ctrl-C) reports whatever
+				// phase we can read, with no error.
+				return runPhase(reader), nil
 			} else if !errors.Is(err, journal.ErrNotRunDirectory) {
 				return journal.PhaseRunning, fmt.Errorf("open run %s after wait cancellation: %w", runID, err)
 			}

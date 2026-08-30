@@ -528,3 +528,79 @@ func TestDispatchToleratesTransientUnschedulability(t *testing.T) {
 		t.Fatalf("a pod that becomes schedulable must not be failed: %v", err)
 	}
 }
+
+// Report.Image is the placement provenance the engine hands back to the run's
+// driver (decision 003, "placement provenance in the dispatch result"): the
+// image the stage container was actually created with. It is read off the
+// RENDERED pod, not off RunnerSpec.Host, and the deployment case is what
+// makes the difference observable — there Host is a Deployment NAME and the
+// image comes from that Deployment's pod template.
+func TestDispatchReportsTheStageImageItRendered(t *testing.T) {
+	t.Run("image host", func(t *testing.T) {
+		pods := &fakePodAPI{}
+		d, _ := newTestDispatcher(t, testConfig(), pods, nil)
+		runner := linuxRunner()
+		report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{runner})
+		if err != nil {
+			t.Fatalf("Dispatch: %v", err)
+		}
+		if report.Image != runner.Host {
+			t.Fatalf("report.Image = %q, want the stage container's image %q", report.Image, runner.Host)
+		}
+	})
+
+	t.Run("deployment template host", func(t *testing.T) {
+		const templateImage = "ghcr.io/consumer/fat:" + fullSha
+		template := &appsv1.Deployment{}
+		template.Name = "consumer-runner"
+		template.Spec.Template.Spec.Containers = []corev1.Container{{Name: "stage", Image: templateImage}}
+		pods := &fakePodAPI{deployments: map[string]*appsv1.Deployment{"consumer-runner": template}}
+		d, _ := newTestDispatcher(t, testConfig(), pods, nil)
+		runner := RunnerSpec{
+			Name: "consumer", OS: "linux", HostKind: instance.RunnerHostDeployment, Host: "consumer-runner",
+		}
+		report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{runner})
+		if err != nil {
+			t.Fatalf("Dispatch: %v", err)
+		}
+		if report.Image != templateImage {
+			t.Fatalf("report.Image = %q, want the TEMPLATE's stage image %q, not the Deployment name %q",
+				report.Image, templateImage, runner.Host)
+		}
+	})
+
+	// A self resolution creates no pod, so there is no image to report — the
+	// engine's provenance block is nil for exactly this case.
+	t.Run("self host reports no image", func(t *testing.T) {
+		pods := &fakePodAPI{}
+		d, _ := newTestDispatcher(t, testConfig(), pods, nil)
+		self := RunnerSpec{Name: "self", OS: "linux", HostKind: instance.RunnerHostSelf, Host: "self"}
+		report, err := d.Dispatch(context.Background(), testAttempt(), []RunnerSpec{self})
+		if err != nil {
+			t.Fatalf("Dispatch: %v", err)
+		}
+		if !report.Local || report.Image != "" {
+			t.Fatalf("report = %+v, want a local resolution with no image", report)
+		}
+	})
+}
+
+// A review is a completion contract for a goober invocation (decision 001
+// rulings 7–8): an attempt marked Review without Agentic has no goober to
+// drive and no verdict to write, and is refused before a kit or a pod exists.
+func TestDispatchRefusesReviewWithoutAgentic(t *testing.T) {
+	pods := &fakePodAPI{}
+	d, err := New(testConfig(), pods, nil, confirmGate{confirmed: true}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	attempt := testAttempt()
+	attempt.Review = true
+	_, err = d.Dispatch(context.Background(), attempt, []RunnerSpec{linuxRunner()})
+	if err == nil || !strings.Contains(err.Error(), "marked review but not agentic") {
+		t.Fatalf("Dispatch = %v, want the review-without-goober refusal", err)
+	}
+	if len(pods.created) != 0 {
+		t.Fatalf("a refused review attempt created pods %v", pods.created)
+	}
+}

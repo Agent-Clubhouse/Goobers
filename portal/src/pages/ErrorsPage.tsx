@@ -5,6 +5,7 @@ import type {
   TelemetryError,
   TelemetryErrorsOptions,
 } from "../api/types";
+import { ScopedRequests, type ScopedRequest } from "../api/scopedRequest";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
 import { ScopeStrip } from "../components/ScopeStrip";
 import { dataCacheKey, type DataCacheDependency } from "../dataCache";
@@ -156,7 +157,10 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
     const cached = initialCached.current;
     return cached ? { status: "ready", data: cached } : { status: "loading" };
   });
-  const request = useRef<AbortController | undefined>(undefined);
+  const request = useRef<ScopedRequest | undefined>(undefined);
+  // Owns the controllers for background refreshes so scope teardown can abort
+  // them and any completion that outlives its scope is rejected (#3656).
+  const scopedRequests = useRef(new ScopedRequests());
   const items = useRef<TelemetryError[]>(initialCached.current?.items ?? []);
   const nextCursor = useRef<string | undefined>(initialCached.current?.nextCursor);
   const loadingMore = useRef(false);
@@ -191,8 +195,8 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
     request.current?.abort();
     const dependencies = errorHistoryDependencies(filters);
     const cacheRevision = cache.beginWrite(cacheKey, dependencies);
-    const controller = new AbortController();
-    request.current = controller;
+    const pending = scopedRequests.current.begin();
+    request.current = pending;
     items.current = [];
     nextCursor.current = undefined;
     loadingMore.current = false;
@@ -202,9 +206,10 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
         : { status: "loading" },
     );
 
-    return client.listTelemetryErrors(errorRequest(filters), { signal: controller.signal }).then(
+    return client.listTelemetryErrors(errorRequest(filters), { signal: pending.signal }).then(
       (page) => {
-        if (controller.signal.aborted) {
+        pending.end();
+        if (pending.obsolete) {
           return true;
         }
         items.current = page.items;
@@ -213,7 +218,8 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
         return true;
       },
       (error: unknown) => {
-        if (!controller.signal.aborted) {
+        pending.end();
+        if (!pending.obsolete) {
           const queryError =
             error instanceof Error ? error : new Error("Unable to read matching errors.");
           setState((current) =>
@@ -253,11 +259,16 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
     }
     const dependencies = errorHistoryDependencies(filters);
     const cacheRevision = cache.beginWrite(cacheKey, dependencies);
-    const controller = new AbortController();
+    // Registered with scopedRequests, unlike the controller this used to hold
+    // privately: a refresh started under one signature, scope, or window must
+    // not merge its page into a different one after the operator navigates
+    // (#3656).
+    const pending = scopedRequests.current.begin();
 
-    return client.listTelemetryErrors(errorRequest(filters), { signal: controller.signal }).then(
+    return client.listTelemetryErrors(errorRequest(filters), { signal: pending.signal }).then(
       (page) => {
-        if (controller.signal.aborted) {
+        pending.end();
+        if (pending.obsolete) {
           return true;
         }
         items.current = mergeErrors(items.current, page.items);
@@ -265,7 +276,8 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
         return true;
       },
       (error: unknown) => {
-        if (!controller.signal.aborted) {
+        pending.end();
+        if (!pending.obsolete) {
           setState((current) =>
             current.status === "ready" || current.status === "stale"
               ? {
@@ -308,20 +320,21 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
     if (!nextCursor.current || loadingMore.current) {
       return;
     }
-    const controller = new AbortController();
+    const pending = scopedRequests.current.begin();
     const dependencies = errorHistoryDependencies(filters);
     const cacheRevision = cache.beginWrite(cacheKey, dependencies);
-    request.current = controller;
+    request.current = pending;
     loadingMore.current = true;
     publish(isFresh());
     void client
       .listTelemetryErrors(
         { ...errorRequest(filters), cursor: nextCursor.current },
-        { signal: controller.signal },
+        { signal: pending.signal },
       )
       .then(
         (page) => {
-          if (controller.signal.aborted) {
+          pending.end();
+          if (pending.obsolete) {
             return;
           }
           items.current = [...items.current, ...page.items];
@@ -330,7 +343,8 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
           publish(isFresh(), cacheRevision);
         },
         (error: unknown) => {
-          if (!controller.signal.aborted) {
+          pending.end();
+          if (!pending.obsolete) {
             loadingMore.current = false;
             setState({
               status: "stale",
@@ -384,6 +398,11 @@ function useErrorHistory(client: DaemonClient, filters: ErrorRouteFilters) {
     return () => {
       unsubscribe();
       request.current?.abort();
+      // Unmount and a scope change are the same thing here: everything started
+      // for the scope being torn down is abandoned, and anything that already
+      // resolved is rejected on the way back in (#3656).
+      scopedRequests.current.cancelScope();
+      request.current = undefined;
     };
   }, [cache, cacheKey, filters.gaggle, filters.workflow, isFresh, reload, refreshWindow, subscribe]);
 

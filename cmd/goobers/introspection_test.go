@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -370,7 +371,7 @@ func TestValidateJSONLateChecksUseDefinitionSources(t *testing.T) {
 
 	t.Run("harness", func(t *testing.T) {
 		root := initIntrospectionInstance(t)
-		withHarnessAdapter(t, func(apiv1.Harness, []string, map[string][]string) (harness.Adapter, error) {
+		withHarnessAdapter(t, func(apiv1.Harness, []string, map[string][]string, func(context.Context) (string, error)) (harness.Adapter, error) {
 			return &harnesstest.FakeAdapter{PreflightErr: errNotSignedIn}, nil
 		})
 

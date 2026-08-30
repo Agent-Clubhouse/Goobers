@@ -1105,6 +1105,19 @@ describe("run detail", () => {
       screen.getByRole("button", { name: "implement, agentic, Failed at sequence 5" }),
     ).toBeInTheDocument();
   });
+
+  it("marks the failing ledger event with a severity class and a text label, not color alone", async () => {
+    renderRun("01JZ400FAILED");
+
+    const failingRow = await screen.findByRole("button", {
+      name: /^Select sequence 5:.*Failed\.$/,
+    });
+    expect(failingRow.closest("li")).toHaveClass("ledger-item-failure");
+    expect(within(failingRow).getByText("Failed")).toBeInTheDocument();
+
+    const successRow = screen.getByRole("button", { name: /^Select sequence 3:/ });
+    expect(successRow.closest("li")).not.toHaveClass("ledger-item-failure");
+  });
 });
 
 // The journal is scanned by stage: the reader is looking for "the second
@@ -1147,6 +1160,64 @@ describe("journal stage column", () => {
 
     await user.selectOptions(filter, "");
     expect(screen.getAllByRole("button", { name: /^Select sequence/ })).toHaveLength(all);
+  });
+});
+
+// A long, high-fanout run has no way to jump to "the timeout row" other than
+// reading every entry; free-text search closes that gap and must compose
+// with the stage filter rather than replace it.
+describe("journal search", () => {
+  it("filters the ledger by matching text and reports an explicit empty state", async () => {
+    const user = userEvent.setup();
+    renderRun("01JZ441DAEMONAPI");
+
+    await screen.findByRole("heading", { name: "Event ledger" });
+    fireEvent.click(screen.getByRole("button", { name: /^All events/ }));
+    const all = screen.getAllByRole("button", { name: /^Select sequence/ }).length;
+
+    const search = screen.getByPlaceholderText("Search events");
+    await user.type(search, "evaluation");
+
+    const filtered = screen.getAllByRole("button", { name: /^Select sequence/ });
+    expect(filtered.length).toBeGreaterThan(0);
+    expect(filtered.length).toBeLessThan(all);
+    for (const row of filtered) {
+      expect(row.getAttribute("aria-label")).toMatch(/evaluation/i);
+    }
+
+    await user.clear(search);
+    await user.type(search, "no-such-event-text");
+    expect(screen.getAllByRole("heading", { name: "Event ledger" })).toHaveLength(1);
+    expect(screen.getByText("No events match")).toBeInTheDocument();
+    expect(screen.queryAllByRole("button", { name: /^Select sequence/ })).toHaveLength(0);
+
+    await user.clear(search);
+    expect(screen.getAllByRole("button", { name: /^Select sequence/ })).toHaveLength(all);
+  });
+
+  it("composes the search with the stage filter", async () => {
+    const user = userEvent.setup();
+    renderRun("01JZ441DAEMONAPI");
+
+    await screen.findByRole("heading", { name: "Event ledger" });
+    fireEvent.click(screen.getByRole("button", { name: /^All events/ }));
+
+    const stageSelect = screen.getByLabelText("Stage");
+    await user.selectOptions(stageSelect, "implement");
+    const stageOnly = screen.getAllByRole("button", { name: /^Select sequence/ }).length;
+
+    const search = screen.getByPlaceholderText("Search events");
+    await user.type(search, "evaluation");
+
+    // "evaluation" only appears on the review gate's summary, which isn't
+    // the implement stage, so composing the two filters empties the ledger
+    // rather than falling back to either filter alone.
+    expect(screen.getByText("No events match")).toBeInTheDocument();
+
+    await user.selectOptions(stageSelect, "");
+    const searchOnly = screen.getAllByRole("button", { name: /^Select sequence/ }).length;
+    expect(searchOnly).toBeGreaterThan(0);
+    expect(searchOnly).toBeLessThan(stageOnly);
   });
 });
 

@@ -29,8 +29,12 @@ type ClaimRequest struct {
 	Gaggle   string `json:"gaggle"`
 	Provider string `json:"provider"`
 	// ItemID is the provider-external work item identity (issue number, PR
-	// number) being claimed.
-	ItemID   string `json:"itemId"`
+	// number) being claimed. Required on acquire, renew, and settle. On
+	// release it may be omitted, which means "every claim RunID holds" —
+	// narrowed to the gaggle/provider namespace when one is given — the
+	// plane's form of the CLI's release-all-for-run (finding 002 C1: the
+	// backlog-query --release / issue-close-out / FinalizeTerminal shape).
+	ItemID   string `json:"itemId,omitempty"`
 	RunID    string `json:"runId"`
 	Workflow string `json:"workflow,omitempty"`
 	// LeaseSeconds bounds the lease for acquire/renew. Zero takes the
@@ -68,6 +72,62 @@ type ClaimResponse struct {
 	Holder string `json:"holder,omitempty"`
 	// ExpiresAt is the lease expiry after a successful acquire/renew.
 	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	// Released lists the claims a release-all-for-run (release with itemId
+	// omitted) actually surrendered, so the caller can mirror each one onto
+	// its provider-visible marker. Empty for a single-item release.
+	Released []ClaimEntry `json:"released,omitempty"`
+}
+
+// ClaimEntry is the wire form of one ledger lease
+// (localscheduler.ClaimEntry, restated with identical JSON tags so the two
+// round-trip; the daemon converts). Restated rather than imported for the
+// same reason internal/dispatcher restates MintedCredential: this package is
+// the server, and the ledger package has no business depending on it.
+type ClaimEntry struct {
+	ItemID     string     `json:"itemId"`
+	Gaggle     string     `json:"gaggle,omitempty"`
+	Provider   string     `json:"provider,omitempty"`
+	ExternalID string     `json:"externalId,omitempty"`
+	RunID      string     `json:"runId"`
+	Workflow   string     `json:"workflow"`
+	ClaimedAt  time.Time  `json:"claimedAt"`
+	ExpiresAt  time.Time  `json:"expiresAt"`
+	ReleasedAt *time.Time `json:"releasedAt,omitempty"`
+}
+
+// Claim list scopes.
+const (
+	// ClaimListScopeRun lists every claim RunID currently holds, across every
+	// namespace — the ledger's ForRunAll.
+	ClaimListScopeRun = "run"
+	// ClaimListScopeNamespace lists the gaggle/provider namespace: its current
+	// holders (plus the ledger's legacy unscoped entries, which are exclusive
+	// against every namespace) and, when IncludeHistory is set, its released
+	// history — the input the failure-streak deprioritization reads.
+	ClaimListScopeNamespace = "namespace"
+)
+
+// ClaimListRequest asks the claims plane for a read of the ledger.
+type ClaimListRequest struct {
+	Gaggle   string `json:"gaggle,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	// RunID is the caller's own run: the subject of ClaimListScopeRun and, for
+	// a pod principal, the containment key on every scope.
+	RunID string `json:"runId"`
+	// Scope is ClaimListScopeRun or ClaimListScopeNamespace.
+	Scope          string `json:"scope"`
+	IncludeHistory bool   `json:"includeHistory,omitempty"`
+	// PodScoped is set by the route, never decoded from the body: the caller
+	// is a pod principal, so a namespace listing must be confined to the
+	// gaggle the caller's run belongs to (the service verifies RunID lives
+	// there and refuses otherwise).
+	PodScoped bool `json:"-"`
+}
+
+// ClaimListResponse is the ledger slice the list route answers with.
+type ClaimListResponse struct {
+	Entries []ClaimEntry `json:"entries"`
+	History []ClaimEntry `json:"history,omitempty"`
 }
 
 // ClaimService is the daemon-side claims plane. Implementations wrap the
@@ -77,8 +137,12 @@ type ClaimResponse struct {
 type ClaimService interface {
 	Acquire(ctx context.Context, request ClaimRequest) (ClaimResponse, error)
 	Renew(ctx context.Context, request ClaimRequest) (ClaimResponse, error)
+	// Release surrenders one claim, or — with ItemID empty — every claim the
+	// run holds in the (optional) namespace, reporting them in Released.
 	Release(ctx context.Context, request ClaimRequest) (ClaimResponse, error)
 	Settle(ctx context.Context, request ClaimRequest) (ClaimResponse, error)
+	// List reads the ledger for the caller's run or namespace.
+	List(ctx context.Context, request ClaimListRequest) (ClaimListResponse, error)
 }
 
 // TriggerRequest asks the daemon to mint one workflow run. RequestID is the
@@ -89,6 +153,20 @@ type TriggerRequest struct {
 	Gaggle    string `json:"gaggle,omitempty"`
 	Workflow  string `json:"workflow"`
 	RequestID string `json:"requestId,omitempty"`
+	// SourceRun names the run whose newly-published durable state is the
+	// reason for this trigger. Non-empty makes it a PRIORITY re-tick
+	// (Scheduler.TriggerPriority) rather than an ordinary mint — the plane's
+	// form of apply-verdict's crowned-lander file drop
+	// (writePriorityTriggerRequest), which a stage pod has no scheduler
+	// directory to write. It is an output-driven signal, not a bypass: normal
+	// readiness admission still applies.
+	SourceRun string `json:"sourceRun,omitempty"`
+	// PodScoped and PodRunID are set by the route, never decoded from the
+	// body: the caller is a pod principal, so the trigger must name the
+	// gaggle the caller's run belongs to (the service verifies it) and a
+	// priority re-tick must name the caller's own run as its source.
+	PodScoped bool   `json:"-"`
+	PodRunID  string `json:"-"`
 }
 
 // MaxTriggerRequestIDBytes caps the caller-supplied delivery identity — the
@@ -196,6 +274,7 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 		func(ctx context.Context, claims ClaimService, request ClaimRequest) (ClaimResponse, error) {
 			return claims.Settle(ctx, request)
 		})
+	registerClaimListRoute(router, config.claims, errorLog)
 	registerTriggerRoute(router, config.triggers, errorLog)
 	registerEscalationRoute(router, config.escalations, config.interventionContext, errorLog)
 	registerCredentialRoute(router, config.credentials, errorLog)
@@ -210,6 +289,7 @@ func registerClaimRoute(
 	call func(context.Context, ClaimService, ClaimRequest) (ClaimResponse, error),
 ) {
 	settle := routeID == apicontract.RouteClaimSettle
+	release := routeID == apicontract.RouteClaimRelease
 	router.Handle(routeID, func(w http.ResponseWriter, request *http.Request) {
 		if claims == nil {
 			writeError(w, http.StatusServiceUnavailable, "claims_unavailable", "the claims plane is not available from this server")
@@ -224,7 +304,18 @@ func registerClaimRoute(
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		if input.Gaggle == "" || input.Provider == "" || input.ItemID == "" || input.RunID == "" {
+		switch {
+		case input.RunID == "":
+			writeError(w, http.StatusBadRequest, "invalid_request", "gaggle, provider, itemId, and runId are required")
+			return
+		case input.ItemID == "" && release:
+			// Release-all-for-run: the namespace is an optional narrowing, but
+			// half a namespace is neither "all" nor "this namespace".
+			if (input.Gaggle == "") != (input.Provider == "") {
+				writeError(w, http.StatusBadRequest, "invalid_request", "gaggle and provider must be given together for a release of every claim the run holds")
+				return
+			}
+		case input.Gaggle == "" || input.Provider == "" || input.ItemID == "":
 			writeError(w, http.StatusBadRequest, "invalid_request", "gaggle, provider, itemId, and runId are required")
 			return
 		}
@@ -263,6 +354,60 @@ func registerClaimRoute(
 // podPrincipalSubject is the Principal.Subject a pod token for runID carries.
 func podPrincipalSubject(runID string) string { return "run:" + runID }
 
+// registerClaimListRoute serves the claims plane's read. The same containment
+// as the mutations (a pod principal names only its own run) plus one more:
+// a pod's namespace listing is flagged PodScoped so the service confines it
+// to the gaggle the run belongs to — a stage pod has no business reading
+// another gaggle's ledger, even read-only.
+func registerClaimListRoute(router *Router, claims ClaimService, errorLog *log.Logger) {
+	router.Handle(apicontract.RouteClaimList, func(w http.ResponseWriter, request *http.Request) {
+		if claims == nil {
+			writeError(w, http.StatusServiceUnavailable, "claims_unavailable", "the claims plane is not available from this server")
+			return
+		}
+		if status, code, message := validateMutationTransport(request); status != 0 {
+			writeError(w, status, code, message)
+			return
+		}
+		var input ClaimListRequest
+		if err := decodeWriteRequest(request, &input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if input.RunID == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "runId is required")
+			return
+		}
+		switch input.Scope {
+		case ClaimListScopeRun:
+		case ClaimListScopeNamespace:
+			if input.Gaggle == "" || input.Provider == "" {
+				writeError(w, http.StatusBadRequest, "invalid_request", "gaggle and provider are required for a namespace listing")
+				return
+			}
+		default:
+			writeError(w, http.StatusBadRequest, "invalid_request", "scope must be run or namespace")
+			return
+		}
+		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
+			if principal.Subject != podPrincipalSubject(input.RunID) {
+				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only list its own run's claims")
+				return
+			}
+			input.PodScoped = true
+		}
+		response, err := claims.List(request.Context(), input)
+		if err != nil {
+			writePlaneError(w, errorLog, "list claims", err)
+			return
+		}
+		if response.Entries == nil {
+			response.Entries = []ClaimEntry{}
+		}
+		writeJSON(w, http.StatusOK, response)
+	})
+}
+
 func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log.Logger) {
 	router.Handle(apicontract.RouteTriggerIngest, func(w http.ResponseWriter, request *http.Request) {
 		if triggers == nil {
@@ -286,6 +431,34 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 			writeError(w, http.StatusBadRequest, "invalid_request",
 				fmt.Sprintf("requestId must be no longer than %d bytes", MaxTriggerRequestIDBytes))
 			return
+		}
+		// Pod containment (decision 005 ruling R3): a pod token proves "I am
+		// run X's stage pod". That authorizes minting a run in the gaggle X
+		// belongs to — apply-verdict's crowned-lander priority dispatch — and
+		// nothing wider. The gaggle must be named explicitly (an unscoped
+		// trigger would let the daemon's ambiguity resolution pick a workflow
+		// in some other gaggle), the run the priority re-tick is attributed to
+		// must be the caller's own, and the service independently verifies
+		// that the run really does live in that gaggle. Fail closed at every
+		// step.
+		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
+			runID, named := podPrincipalRunID(principal)
+			if !named {
+				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal does not name a run")
+				return
+			}
+			if strings.TrimSpace(input.Gaggle) == "" {
+				writeError(w, http.StatusForbidden, "gaggle_required",
+					"pod principal must name the gaggle its own run belongs to")
+				return
+			}
+			if source := strings.TrimSpace(input.SourceRun); source != "" && source != runID {
+				writeError(w, http.StatusForbidden, "run_mismatch",
+					"pod principal may only request a priority trigger for its own run")
+				return
+			}
+			input.PodScoped = true
+			input.PodRunID = runID
 		}
 		response, err := triggers.Trigger(request.Context(), input)
 		if err != nil {

@@ -52,9 +52,17 @@ func taskLedgerTouching(task apiv1.Task) bool {
 	return false
 }
 
-// PinStagePlacements resolves each task's execution placement for one
-// engine-started run of def and returns the pinned list for
+// PinStagePlacements resolves each placeable stage's execution placement —
+// every task, and every agentic gate that declares runsOn (decision 001) —
+// for one engine-started run of def and returns the pinned list for
 // engine.StartSpec.Placements.
+//
+// Pins are keyed by STAGE NAME: each solver row is looked up by
+// StageRequirement.Stage against the task and gate lists, never by position
+// into def.Spec.Tasks. The index coupling this replaced was the one place a
+// wrong refactor could silently attach a task's ledger/CPU facts to a gate
+// once gate rows followed task rows (decision 001 ruling 6). A gate is never
+// ledger-touching: only a task's PolicyActions can name a claims action.
 //
 // Zero-declaration invariance (architecture §11 item 1) is decided here, by
 // inventory shape alone: with no runners: block, or an inventory whose every
@@ -99,16 +107,47 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 		specs[spec.Name] = spec
 	}
 
+	// Name keying is only as safe as name uniqueness: a task and a gate that
+	// share a name would let the second insert silently overwrite the
+	// first's facts — the inverse of the mis-attribution ruling 6 exists to
+	// prevent. The 3.0 compiler already refuses duplicate state names
+	// (structuralProblems), so this is defence in depth for a definition
+	// that reaches here uncompiled: never a silent overwrite.
+	requirementFor := make(map[string]runnersolve.StageRequirement, len(requirements))
+	for _, requirement := range requirements {
+		if _, dup := requirementFor[requirement.Stage]; dup {
+			return nil, fmt.Errorf("workflow %q: placement requirements name stage %q twice; stage names must be unique for name-keyed pinning", def.Name, requirement.Stage)
+		}
+		requirementFor[requirement.Stage] = requirement
+	}
+	ledgerFor := make(map[string]bool, len(def.Spec.Tasks)+len(def.Spec.Gates))
+	for _, task := range def.Spec.Tasks {
+		if _, dup := ledgerFor[task.Name]; dup {
+			return nil, fmt.Errorf("workflow %q: task name %q is declared twice; stage names must be unique for name-keyed pinning", def.Name, task.Name)
+		}
+		ledgerFor[task.Name] = taskLedgerTouching(task)
+	}
+	for _, gate := range def.Spec.Gates {
+		if _, dup := ledgerFor[gate.Name]; dup {
+			return nil, fmt.Errorf("workflow %q: stage name %q is declared as both a task and a gate (or twice as a gate); stage names must be unique for name-keyed pinning", def.Name, gate.Name)
+		}
+		ledgerFor[gate.Name] = false
+	}
+
 	result := runnersolve.Solve(inventory, requirements)
 	placements := make([]engine.PinnedPlacement, 0, len(result.Stages))
-	for i, stage := range result.Stages {
+	for _, stage := range result.Stages {
 		if stage.Unsat != nil {
 			return nil, fmt.Errorf("workflow %q stage %q cannot place on the declared runners: inventory: %s", def.Name, stage.Stage, stage.Unsat.Diagnostic)
 		}
-		// Solve and StagePlacements both walk def.Spec.Tasks in order, so
-		// index i names the same task across all three.
-		req := requirements[i]
-		ledger := taskLedgerTouching(def.Spec.Tasks[i])
+		req, ok := requirementFor[stage.Stage]
+		if !ok {
+			return nil, fmt.Errorf("workflow %q: solver returned stage %q which the workflow's placement requirements do not name", def.Name, stage.Stage)
+		}
+		ledger, ok := ledgerFor[stage.Stage]
+		if !ok {
+			return nil, fmt.Errorf("workflow %q: placement requirement names stage %q which is neither a task nor a gate", def.Name, stage.Stage)
+		}
 		eligible := make([]dispatcher.RunnerSpec, 0, len(stage.Eligible))
 		for _, name := range stage.Eligible {
 			spec, ok := specs[name]
@@ -127,6 +166,11 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 		if serr != nil {
 			return nil, fmt.Errorf("workflow %q: %w", def.Name, serr)
 		}
+		// A gate pins exactly as a task does (decision 001 rulings 6–8): the
+		// same queue, eligible set and quantities, which engine.evaluateGate
+		// reads through remotePlacementFor and routes to dispatchRemoteGate.
+		// The start-time refusal that stood here while the engine half was
+		// unlanded (#3848's HOLD) is gone with it.
 		pin := engine.PinnedPlacement{Stage: stage.Stage, LedgerTouching: ledger}
 		if selected.HostKind == instance.RunnerHostSelf {
 			pin.Self = true
@@ -137,6 +181,7 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 			pin.Memory = req.Memory
 			pin.Disk = req.Disk
 			pin.Restrictions = req.Restrictions
+			pin.Capabilities = req.Capabilities
 		}
 		placements = append(placements, pin)
 	}

@@ -240,6 +240,74 @@ func TestEscalateStalledPreservesPausedHumanGate(t *testing.T) {
 	}
 }
 
+// TestEscalateStalledPreservesPausedGateBehindAPodPlaneEmit is the same
+// protection, on the log a run-with-pods actually produces. A mode-3 stage
+// emits into the run's own journal through the write API's journal plane
+// (livejournal.Writer.Adopt appends on the runner's handle), so a retried emit,
+// a late agent.lifecycle or — once gates are placeable — a pod-executed gate's
+// artifacts can land AFTER the runner's gate.paused. Testing only the LAST
+// event then read "not parked" while the run was still waiting for a human,
+// and a gate held longer than the timeout was escalated: destructive, and no
+// setting could prevent it.
+func TestEscalateStalledPreservesPausedGateBehindAPodPlaneEmit(t *testing.T) {
+	now := time.Date(2026, 7, 20, 20, 0, 0, 0, time.UTC)
+	eventTime := now.Add(-2 * time.Hour)
+	root := t.TempDir()
+	runsDir := filepath.Join(root, "runs")
+	manager, err := worktree.NewManager(filepath.Join(root, "workcopies"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := journal.Create(runsDir, journal.RunIdentity{
+		RunID: "paused-pod-run", Workflow: "implementation", WorkflowVersion: 1,
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+	}, nil, journal.WithClock(func() time.Time { return eventTime }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.SetMachineState("approval")
+	if err := run.Append(journal.Event{Type: journal.EventGatePaused, Gate: "approval"}); err != nil {
+		t.Fatal(err)
+	}
+	// The pod-plane emit that lands after the pause, carrying the emit key the
+	// journal plane stamps on everything it writes.
+	if _, err := run.RecordArtifactAnnotated("pr.json", []byte(`{"number":42}`),
+		apiv1.IntegrityDerived, map[string]any{"emitKey": "paused-pod-run|0|open-pr|1|0"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := New(Config{Worktrees: manager, RunsDir: runsDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, escalated, err := r.EscalateStalled("paused-pod-run", now, 45*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if escalated || result.Phase != journal.PhaseRunning {
+		t.Fatalf("escalated=%v result=%+v; a run parked at a gate must survive a pod emit landing after the pause", escalated, result)
+	}
+	reader, err := journal.OpenRead(filepath.Join(runsDir, "paused-pod-run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The precondition that makes this test the one it claims to be: the last
+	// event is NOT gate.paused, which is exactly why the old check failed.
+	if last := events[len(events)-1].Type; last != journal.EventArtifactRecorded {
+		t.Fatalf("last event = %s, want the pod emit to sit after gate.paused", last)
+	}
+	if phase, err := reader.Phase(); err != nil || phase != journal.PhaseRunning {
+		t.Fatalf("phase = %s err = %v, want the run left running", phase, err)
+	}
+}
+
 func TestEscalateStalledInterruptsRetryBackoff(t *testing.T) {
 	flaky := &flakyDeterministic{failUntil: 100}
 	r, runsDir := newTestRunnerWithDeterministic(t, func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) {

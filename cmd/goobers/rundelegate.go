@@ -10,9 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/stateclient"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
@@ -382,4 +384,29 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 		}
 	}
 	return sweepErr
+}
+
+// dispatchPriorityTrigger routes apply-verdict's crowned-lander re-tick to
+// whichever half of the trigger seam this stage can actually reach (#3878).
+//
+// A stage pod has no pending-triggers directory the daemon sweeps — the one it
+// can see is its own container's, so the file drop below is written and then
+// discarded with the pod. When the scheduler plane is selected, the re-tick
+// goes to the daemon's trigger route instead, under the same pod principal and
+// the same gaggle containment the scheduler-state route applies. Everywhere
+// else (a self runner, a local mode) the file drop is still the right and only
+// mechanism.
+func dispatchPriorityTrigger(ctx context.Context, l instance.Layout, gaggle, workflow, sourceRun string) (string, error) {
+	if gaggle == "" || workflow == "" || sourceRun == "" {
+		return "", errors.New("delegate: priority trigger requires gaggle, workflow, and source run")
+	}
+	store, err := openStageStateStore(l)
+	if err != nil {
+		return "", err
+	}
+	triggerer, ok := store.(stateclient.PriorityTriggerer)
+	if !ok || !statePlaneSelected() {
+		return writePriorityTriggerRequest(l.SchedulerDir(), gaggle, workflow, sourceRun)
+	}
+	return triggerer.PriorityTrigger(ctx, workflow, sourceRun)
 }
