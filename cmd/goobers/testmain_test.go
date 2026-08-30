@@ -110,7 +110,10 @@ func TestMain(m *testing.M) {
 	// so those tests would fail precisely when the feature is working. Tests
 	// that exercise the gate itself override this with t.Setenv.
 	if _, set := os.LookupEnv(memoryHighWaterEnv); !set {
-		os.Setenv(memoryHighWaterEnv, "off")
+		if err := os.Setenv(memoryHighWaterEnv, "off"); err != nil {
+			fmt.Fprintf(os.Stderr, "set %s: %v\n", memoryHighWaterEnv, err)
+			os.Exit(1)
+		}
 	}
 
 	// Deterministic stages substitute os.Executable for a bare "goobers"
