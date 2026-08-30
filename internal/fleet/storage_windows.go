@@ -46,7 +46,7 @@ func cryptData(input []byte, encrypt bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data)))
+	defer func() { _, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data))) }()
 	result := append([]byte(nil), unsafe.Slice(out.Data, out.Size)...)
 	return result, nil
 }
