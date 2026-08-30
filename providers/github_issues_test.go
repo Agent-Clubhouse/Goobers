@@ -1424,3 +1424,37 @@ func (c failingHTTPClient) Do(*http.Request) (*http.Response, error) {
 	c.t.Fatal("configured login must not trigger any HTTP request")
 	return nil, nil
 }
+
+// TestAuthenticatedLoginRefused (#3914): when identity could not be resolved
+// AND the GET /user fallback is known-unsafe — a stage pod under GitHub App
+// auth, where the declaring config is unreadable — AuthenticatedLogin fails
+// closed with the reason, before any transport. The failing client proves it.
+func TestAuthenticatedLoginRefused(t *testing.T) {
+	provider := NewGitHubProvider("installation-token",
+		WithLoginSelfReportRefused("no GOOBERS_PROVIDER_BOT_LOGIN was stamped for acme/web"),
+		WithHTTPClient(failingHTTPClient{t: t}),
+	)
+	_, err := provider.AuthenticatedLogin(context.Background())
+	var refused *LoginSelfReportRefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("AuthenticatedLogin err = %v, want *LoginSelfReportRefusedError", err)
+	}
+	if !strings.Contains(refused.Error(), "acme/web") {
+		t.Fatalf("error %q does not carry the reason; the caller has to be able to act on it", refused.Error())
+	}
+}
+
+// A configured login WINS over a refusal: the refusal exists only for the case
+// where nothing was resolved, so a provider handed both is one whose identity
+// is known and must simply answer.
+func TestAuthenticatedLoginConfiguredBeatsRefusal(t *testing.T) {
+	provider := NewGitHubProvider("installation-token",
+		WithLoginSelfReportRefused("unresolved"),
+		WithConfiguredLogin("goobersbot[bot]"),
+		WithHTTPClient(failingHTTPClient{t: t}),
+	)
+	login, err := provider.AuthenticatedLogin(context.Background())
+	if err != nil || login != "goobersbot[bot]" {
+		t.Fatalf("login = %q, err = %v; want the configured identity", login, err)
+	}
+}

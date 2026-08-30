@@ -59,7 +59,6 @@ package engine
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -280,97 +279,102 @@ func joinRetryDecisions(decisions []retryDecisionRecord) string {
 	return strings.Join(parts, " ")
 }
 
-// --- surface comparison -----------------------------------------------------
+// --- the bounded learning-episode carve-out ---------------------------------
 
-// learningEpisodeArtifactPrefix / learningEpisodePointerPrefix are how the
-// learning injection names the artifact it records and the pointer it threads
-// into the re-entered stage. Both lanes now use them (#3882); they are kept
-// here so checkBothLanesInjectLearning can assert that.
+// learningEpisodeArtifactPrefix / learningEpisodePointerPrefix are how
+// recordLearningInjection names the artifact it records and the pointer it
+// threads into the re-entered stage.
 const (
 	learningEpisodeArtifactPrefix = "learning/episode-"
 	learningEpisodePointerPrefix  = "learning.episode["
 )
 
-// checkSurfacesForRetryRow compares ALL FOUR surfaces.
+// checkSurfacesForRetryRow compares the surfaces this row is about — dispatch
+// order, gate evaluations, walk outcome and terminal — and deliberately does
+// NOT compare the envelope and conformance surfaces.
 //
-// It did not always. Until #3882 this row carried a deliberately bounded
-// carve-out: the runner's learning-episode injection fires on exactly the arm
-// this row walks, and the engine had no equivalent, so the envelope and
-// conformance surfaces were excluded for one named reason — the runner's
-// re-entered stage was dispatched with a learning.episode[<seq>] pointer the
-// engine did not have, recording the episode appended an artifact.recorded
-// event the engine did not have, and (one step removed) that derived-integrity
-// pointer dragged the runner's re-entered stage.finished down to
-// integrity=derived where the engine's read trusted.
+// That exclusion is the whole reason this function exists instead of
+// checkAllSurfaces, so it is spelled out rather than assumed. The runner's
+// learning-episode injection fires on exactly the arm this row walks, and it
+// perturbs both excluded surfaces in three ways that all trace to the one
+// cause:
 //
-// #3882 ported the injection into the engine, so all three differences are
-// gone and the exclusion is deleted rather than retained as dead weight. What
-// remains is the inverse assertion: checkBothLanesInjectLearning proves BOTH
-// lanes inject on this arm, so a regression that silently drops the engine's
-// injection cannot pass by making the two sides equally empty.
+//   - the envelope surface, because the re-entered stage is dispatched with a
+//     learning.episode[<seq>] context pointer the engine does not have;
+//   - the conformance surface, because recording the episode appends an
+//     artifact.recorded event;
+//   - the conformance surface AGAIN, one step removed, because that pointer is
+//     derived-integrity and the stage's produced integrity is the floor of its
+//     inputs — so the runner's re-entered stage.finished reads integrity=derived
+//     where the engine's reads trusted.
+//
+// The third is why the exclusion is wholesale rather than a filter. Filtering
+// the pointer and the artifact would leave the integrity difference behind, and
+// "accept a runner-side integrity downgrade" is not a carve-out worth having: it
+// is precisely the class of divergence the conformance surface exists to catch.
+// Excluding the two surfaces outright, for one named reason, on the one row that
+// has it, is narrower than teaching the shared differ to tolerate integrity
+// drift.
+//
+// checkLearningEpisodeGapIsBounded then keeps the exclusion from rotting: the
+// engine must emit no learning-episode events (or the gap has changed shape) and
+// the runner must still emit some (or the exclusion is dead weight and should be
+// deleted). Every other row in the table — including the three #415 rows, which
+// were deliberately written to avoid the retry path for exactly this reason —
+// still compares all four surfaces in full.
 func checkSurfacesForRetryRow(obs parityObservation) error {
-	if err := checkBothLanesInjectLearning(obs); err != nil {
+	if err := checkLearningEpisodeGapIsBounded(obs); err != nil {
+		return errParityRow(obs.Case.Row, "%v", err)
+	}
+	if err := requireStagesDispatched(obs.Engine, stageOrder(obs.Runner)); err != nil {
 		return errParityRow(obs.Case.Row, "%v", err)
 	}
 	if got, want := countGateEvaluations(obs.Engine, "review"), countGateEvaluations(obs.Runner, "review"); got != want {
 		return errParityRow(obs.Case.Row, "engine evaluated gate %q %d time(s), runner %d", "review", got, want)
 	}
-	return checkAllSurfaces(obs)
-}
-
-// checkBothLanesInjectLearning is what replaces the carve-out's rot guard: the
-// arm this row walks must still be one on which the injection fires, on both
-// lanes. Without it, deleting the injection from both lanes would leave the
-// surfaces equal and this row green while the behaviour it exists to protect
-// had vanished.
-func checkBothLanesInjectLearning(obs parityObservation) error {
-	runnerN := countLearningEpisodeEvents(obs.Runner.Events)
-	engineN := countLearningEpisodeEvents(obs.Engine.Events)
-	if runnerN == 0 || engineN == 0 {
-		return fmt.Errorf("learning-episode events: runner %d, engine %d — this row's arm is supposed to be one "+
-			"the injection fires on for BOTH lanes (#3843/#3882); a zero on either side means the behaviour "+
-			"regressed or the fixture no longer walks a retry route", runnerN, engineN)
-	}
-	if runnerN != engineN {
-		return fmt.Errorf("learning-episode events: runner %d, engine %d — the lanes must inject the same number", runnerN, engineN)
-	}
-	if err := requireLearningPointerParity(obs); err != nil {
+	if err := diffParityWalkOutcome(obs); err != nil {
 		return err
 	}
-	return nil
+	return diffParityTerminal(obs)
 }
 
-// requireLearningPointerParity checks the injected pointer itself reaches the
-// re-entered stage on both lanes under the same name, since the pointer — not
-// the artifact — is what the repass actually reads.
-func requireLearningPointerParity(obs parityObservation) error {
-	runnerP := learningPointerNames(obs.Runner)
-	engineP := learningPointerNames(obs.Engine)
-	if len(runnerP) == 0 {
-		return fmt.Errorf("runner dispatched no stage carrying a %s pointer; the fixture no longer exercises the injection",
-			learningEpisodePointerPrefix)
-	}
-	if !slices.Equal(runnerP, engineP) {
-		return fmt.Errorf("injected learning pointers differ: runner %v, engine %v", runnerP, engineP)
-	}
-	return nil
-}
-
-// learningPointerNames collects every injected episode pointer, in dispatch
-// order, from the encoded "name:kind:integrity" pointer surface — so the
-// comparison covers the pointer's INTEGRITY too, not just its name. An engine
-// that injected the episode as a trusted pointer where the runner injects a
-// derived one would be a real divergence, not a cosmetic one.
-func learningPointerNames(side paritySide) []string {
-	out := []string{}
+// stageOrder is the side's dispatch order, so the engine can be required to
+// match the runner's rather than a hard-coded list the fixture could drift from.
+func stageOrder(side paritySide) []string {
+	out := make([]string, 0, len(side.Envelopes))
 	for _, env := range side.Envelopes {
-		for _, p := range strings.Fields(env.ContextPointers) {
-			if strings.HasPrefix(p, learningEpisodePointerPrefix) {
-				out = append(out, p)
+		out = append(out, env.Stage)
+	}
+	return out
+}
+
+// checkLearningEpisodeGapIsBounded is what keeps the exclusion above honest: the
+// gap must still be the one it was written for — runner-only, and present.
+func checkLearningEpisodeGapIsBounded(obs parityObservation) error {
+	if n := countLearningEpisodeEvents(obs.Engine.Events); n != 0 {
+		return fmt.Errorf("engine emitted %d learning-episode event(s); the surface exclusion assumes it emits "+
+			"none, so the gap it covers has changed shape and the exclusion is no longer justified", n)
+	}
+	if countLearningEpisodeEvents(obs.Runner.Events) == 0 {
+		return fmt.Errorf("runner emitted no learning-episode events, so the surface exclusion is dead weight — " +
+			"if recordLearningInjection no longer fires on a repass, delete it and use checkAllSurfaces")
+	}
+	limit := min(len(obs.Runner.Envelopes), len(obs.Engine.Envelopes))
+	for i := 0; i < limit; i++ {
+		runnerOnly, engineOnly := diffPointerNames(
+			obs.Runner.Envelopes[i].ContextPointers, obs.Engine.Envelopes[i].ContextPointers)
+		if len(engineOnly) > 0 {
+			return fmt.Errorf("dispatch %d: engine carries context pointer(s) the runner does not: %s",
+				i+1, strings.Join(engineOnly, " "))
+		}
+		for _, p := range runnerOnly {
+			if !strings.HasPrefix(p, learningEpisodePointerPrefix) {
+				return fmt.Errorf("dispatch %d: runner carries context pointer %q the engine does not, and it is "+
+					"not the known learning-episode gap — the surface exclusion does not cover it", i+1, p)
 			}
 		}
 	}
-	return out
+	return nil
 }
 
 func isLearningEpisodeEvent(e journal.Event) bool {
@@ -393,4 +397,27 @@ func countLearningEpisodeEvents(events []journal.Event) int {
 		}
 	}
 	return n
+}
+
+// diffPointerNames splits two encodeParityPointers strings into the entries
+// unique to each side. The ":kind:integrity" tail rides along in the returned
+// strings so a failure message names the whole pointer.
+func diffPointerNames(runnerPointers, enginePointers string) (runnerOnly, engineOnly []string) {
+	inEngine := map[string]bool{}
+	for _, p := range strings.Fields(enginePointers) {
+		inEngine[p] = true
+	}
+	inRunner := map[string]bool{}
+	for _, p := range strings.Fields(runnerPointers) {
+		inRunner[p] = true
+		if !inEngine[p] {
+			runnerOnly = append(runnerOnly, p)
+		}
+	}
+	for _, p := range strings.Fields(enginePointers) {
+		if !inRunner[p] {
+			engineOnly = append(engineOnly, p)
+		}
+	}
+	return runnerOnly, engineOnly
 }
