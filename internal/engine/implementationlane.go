@@ -502,6 +502,58 @@ func collectGateEvidence(
 	return ev, nil
 }
 
+// applyImplementationLaneOutcome writes the implementation lane's evidence
+// onto a resolved gate result, mirroring the tail of internal/gate's
+// resolveOutcome field for field.
+//
+// Three of these are decisions, not decoration, and that is why this is a
+// function rather than four assignments at the call site:
+//
+//   - A DUPLICATE diff forces escalation. Without it, a stage that keeps
+//     producing a byte-identical tree would ride the ordinary repass budget
+//     down to exhaustion, one synthesized needs-changes at a time, which is
+//     precisely the loop #316 exists to cut short. The runner escalates on the
+//     first duplicate; so does this.
+//   - An EMPTY diff forces escalation for the same reason and by the same
+//     route (internal/gate passes emptyDiff as resolveOutcome's
+//     forcedEscalation argument). The distinction matters more than it looks:
+//     routing an empty-diff fail to the gate's own `fail` branch would send a
+//     degenerate run down an ordinary failure path, when what has actually
+//     happened is that an agentic stage reported success while doing nothing —
+//     a condition no branch of the workflow can repair and a human has to see.
+//   - repassCause is journaled ONLY for a duplicate diff. The runner is
+//     deliberate about that: on any other evaluation the cause is inferable
+//     from the events themselves, whereas an unchanged repass is the one case
+//     where the annotation carries the only record of what the implementer was
+//     asked to fix and did not.
+//
+// The reason ladder is the runner's, in the runner's order: a finding
+// transition names itself, a duplicate diff overrides it (the finding
+// reconcile is skipped for a synthesized verdict anyway, so they cannot both
+// be set), and any other escalation — including the empty-diff one — falls
+// back to the budget code, which is what the runner journals there too.
+func applyImplementationLaneOutcome(g apiv1.Gate, gr *gateResult, ev gateEvidence, review GateReviewResult, findingReason string) {
+	gr.DiffDigest = review.DiffDigest
+	gr.DuplicateDiff = review.DuplicateDiff
+	gr.CacheHit = ev.CacheHit
+	reason := findingReason
+	if review.DuplicateDiff {
+		gr.RepassCause = ev.RepassCause
+		reason = gate.ReasonUnchangedRepass
+	}
+	if (review.DuplicateDiff || review.EmptyDiff) && !gr.Escalated {
+		gr.Escalated = true
+		gr.Target = escalationTarget(g)
+	}
+	if gr.Escalated && reason == "" {
+		reason = gate.ReasonRepassBudgetExhausted
+		if gr.Outcome == gate.OutcomeInfra {
+			reason = gate.ReasonInfrastructureBudgetExhausted
+		}
+	}
+	gr.Reason = reason
+}
+
 // reconcileGateFindings applies the #3843 finding lifecycle to a reviewer's
 // verdict: which of the PREVIOUS episodes' findings this one resolved or
 // suppressed, which came back, and which the subject affirmatively disproved

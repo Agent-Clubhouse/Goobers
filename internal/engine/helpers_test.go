@@ -31,6 +31,25 @@ type fakeWorkspaces struct {
 	// PublishDelta (keyed by stage) — the fake's stand-in for the worker's
 	// bundle-and-Put. Nil publishes nothing, the pre-#3803 self-arm shape.
 	publish func(stage string) (WorkspaceDeltaPublication, error)
+	// diff, when set, makes provisioned workspaces implement DiffReader
+	// (#3882) — the seam the reviewer-diff capture, the two gate
+	// short-circuits and the unpushed-diff capture all read. Keyed by stage so
+	// a fixture can script a stage that changes the tree and one that does
+	// not; nil leaves the workspace WITHOUT the interface at all, which is the
+	// pre-#3882 provisioner shape every other test still asserts against.
+	//
+	// The two "nothing" answers are deliberately distinguishable, because the
+	// production code distinguishes them and the distinction is what licenses
+	// the empty-diff fast-fail: a stage present in the map with empty bytes
+	// OBSERVED an unchanged branch, a stage absent from it reports an error
+	// (the workspace could not tell).
+	diff map[string][]byte
+	// diffCalls counts Diff() calls per stage, so a test can assert the
+	// reviewer's workspace was read exactly once per evaluation.
+	diffCalls map[string]int
+	// headErr, when set for a stage, makes Head fail — the "workspace cannot
+	// report" arm that must never fast-fail a gate.
+	headErr map[string]error
 }
 
 func testWorkspaces(t *testing.T) *fakeWorkspaces {
@@ -62,13 +81,70 @@ func (f *fakeWorkspaces) Provision(_ context.Context, req WorkspaceRequest) (Wor
 	}
 	f.requests = append(f.requests, req)
 	if f.emptyPath {
-		return &fakeWorkspace{owner: f, stage: req.Stage}, nil
+		return f.wrap(&fakeWorkspace{owner: f, stage: req.Stage}), nil
 	}
 	path, err := os.MkdirTemp(f.root, fmt.Sprintf("%s-%s-*", req.RunID, req.Stage))
 	if err != nil {
 		return nil, err
 	}
-	return &fakeWorkspace{owner: f, path: path, stage: req.Stage}, nil
+	return f.wrap(&fakeWorkspace{owner: f, path: path, stage: req.Stage}), nil
+}
+
+// wrap promotes the workspace to a DiffReader only when the fixture scripted
+// diffs. Returning the richer type unconditionally would be the easy thing and
+// the wrong one: half this file's existing assertions are about a provisioner
+// that CANNOT report a diff, and production has such provisioners (scratch
+// workspaces, and any worker predating #3882).
+func (f *fakeWorkspaces) wrap(ws *fakeWorkspace) Workspace {
+	if f.diff == nil {
+		return ws
+	}
+	return &fakeDiffWorkspace{fakeWorkspace: ws}
+}
+
+// scriptDiff registers a stage's diff bytes, creating the map on first use.
+func (f *fakeWorkspaces) scriptDiff(stage string, diff []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.diff == nil {
+		f.diff = map[string][]byte{}
+	}
+	f.diff[stage] = diff
+}
+
+func (f *fakeWorkspaces) diffCallCount(stage string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.diffCalls[stage]
+}
+
+// fakeDiffWorkspace is the DiffReader arm of the fake. Head reports a branch
+// name and base ref shaped like the worker's; Diff answers from the script.
+type fakeDiffWorkspace struct {
+	*fakeWorkspace
+}
+
+func (w *fakeDiffWorkspace) Head(_ context.Context) (string, string, error) {
+	w.owner.mu.Lock()
+	defer w.owner.mu.Unlock()
+	if err := w.owner.headErr[w.stage]; err != nil {
+		return "", "", err
+	}
+	return "goobers/wf/" + w.stage, "origin/main", nil
+}
+
+func (w *fakeDiffWorkspace) Diff(_ context.Context, _ string) ([]byte, error) {
+	w.owner.mu.Lock()
+	defer w.owner.mu.Unlock()
+	if w.owner.diffCalls == nil {
+		w.owner.diffCalls = map[string]int{}
+	}
+	w.owner.diffCalls[w.stage]++
+	diff, ok := w.owner.diff[w.stage]
+	if !ok {
+		return nil, fmt.Errorf("fakeDiffWorkspace: stage %q has no scripted diff", w.stage)
+	}
+	return diff, nil
 }
 
 func (f *fakeWorkspaces) provisioned() []WorkspaceRequest {

@@ -548,16 +548,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal) (Ru
 			if rerr != nil {
 				return RunResult{}, rerr
 			}
-			gr.DiffDigest = review.DiffDigest
-			gr.DuplicateDiff = review.DuplicateDiff
-			gr.CacheHit = ev.CacheHit
-			gr.RepassCause = ev.RepassCause
-			if review.EmptyDiff || review.DuplicateDiff {
-				gr.Reason = review.Summary
-			}
-			if findingReason != "" {
-				gr.Reason = findingReason
-			}
+			applyImplementationLaneOutcome(g, &gr, ev, review, findingReason)
 			gr.ResolvedFindingIDs = lifecycle.Resolved
 			gr.SuppressedFindingIDs = lifecycle.Suppressed
 			gr.ReopenedFindingIDs = lifecycle.Reopened
