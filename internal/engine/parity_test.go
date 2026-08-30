@@ -143,6 +143,10 @@ const (
 	// (#562)" (plan item E2): "<stage>.<key>" resolves against ANY completed
 	// stage's outputs on a DSL version that supports it.
 	rowInputsFromStageQualified parityRow = "E2-inputsfrom-stage-qualified"
+	// rowPlacementProvenance is inventory row "runner.placement provenance"
+	// (plan item E3, #3875): every stage attempt journals where it physically
+	// executed, on both runners, once the deployment has declared placement.
+	rowPlacementProvenance parityRow = "E3-placement-provenance"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
