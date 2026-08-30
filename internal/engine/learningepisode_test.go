@@ -439,6 +439,68 @@ func TestEngineInjectsNoEpisodeWithoutARetry(t *testing.T) {
 	}
 }
 
+// TestEngineInjectsNoEpisodeWhenTheRepassAttemptIsZero is the engine-side
+// Attempt==0 negative for the #3929 ruling, and it is deliberately NOT the
+// same test as TestEngineInjectsNoEpisodeWithoutARetry above.
+//
+// That one fails with assertion_failed, which retryFailureClass does not
+// recognise: the gate never enters the retry arm at all, so no episode is a
+// trivially correct outcome that would survive any predicate whatsoever.
+//
+// This one fails with nonzero_exit through a status-equals gate, which is
+// exactly the shape the retry arm DOES classify. The engine therefore reaches
+// the injection site with a live retry route and a retryable, policy-classed
+// failure, and the only thing standing between it and a fabricated episode is
+// the ruling: the gate's fail branch routes ONWARD to park, park has never
+// run, resolveGateOutcome finds no upstream entry for it, and the repass
+// attempt is 0.
+//
+// Before #3929 the engine answered this question with its own re-derived
+// gateSendsBack predicate rather than with the evidenced repass attempt. The
+// two agreed here, which is why this row went unnoticed; pinning the negative
+// against the CANONICAL predicate is what stops a future edit to either
+// derivation from silently re-opening it.
+func TestEngineInjectsNoEpisodeWhenTheRepassAttemptIsZero(t *testing.T) {
+	spec := fixtureSpec("implement",
+		[]apiv1.Task{detTask("implement", "review"), detTask("park", wf.TargetAbort)},
+		[]apiv1.Gate{statusGate("review", map[string]string{
+			"pass": wf.TerminalComplete, "fail": "park",
+		})},
+	)
+	events, _, err := shortcutRunWithID(t, "e10-attempt-zero", spec,
+		map[string][]scriptedCall{
+			"implement": {fail("nonzero_exit", "exit status 1")},
+			"park":      {succeed(map[string]interface{}{"parked": "true"})},
+		})
+	if err != nil {
+		t.Fatalf("engine walk: %v", err)
+	}
+
+	// The premise: this really is the retry-classified route, and its
+	// evidenced repass attempt really is 0. Without this, a future change that
+	// stopped classifying nonzero_exit would make the assertion below pass for
+	// the wrong reason.
+	decisions := retryDecisions(paritySide{Name: "engine", Events: events})
+	if len(decisions) != 1 {
+		t.Fatalf("retry decisions = %d (%+v), want exactly 1 — the fixture must reach the retry arm:\n%s",
+			len(decisions), decisions, formatEventSeqs(events))
+	}
+	if got := decisions[0]; got.RepassAttempt != 0 || got.Target != "park" ||
+		got.FailureClass != string(journal.AttemptPolicy) || got.FailureCode != "nonzero_exit" {
+		t.Fatalf("retry decision = %+v, want policy/nonzero_exit -> park at repass attempt 0", got)
+	}
+
+	if got := learningEpisodes(paritySide{Name: "engine", Events: events}); len(got) != 0 {
+		t.Fatalf("engine injected %d learning episode(s) on a forward branch at repass attempt 0, want 0:\n%s",
+			len(got), formatEventSeqs(events))
+	}
+	for _, ev := range events {
+		if ev.Type == journal.EventStageFinished && ev.Integrity == apiv1.IntegrityDerived {
+			t.Fatalf("stage %q finished derived with no injection; a forward branch must not downgrade integrity", ev.Stage)
+		}
+	}
+}
+
 // --- small readers ----------------------------------------------------------
 
 func findArtifactRecorded(events []journal.Event, name string) (journal.Event, bool) {

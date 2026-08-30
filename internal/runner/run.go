@@ -2111,19 +2111,28 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 				ws.pointers = append(ws.pointers, pointer)
 			}
 		}
-		episode, err := recordLearningInjection(
-			ws.jr, ws.in, g.Name, retryTarget, gr, ws.lastStage, ws.lastResult, injected,
-		)
-		if err != nil {
-			terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
-				fmt.Errorf("runner: journal learning episode injection for gate %q: %w", g.Name, err))
-			return gr, false, terminal, true, failErr
-		}
-		if episode != nil {
-			if ws.parallel != nil {
-				ws.parallel.recordCurrentPointer(*episode)
-			} else {
-				ws.pointers = append(ws.pointers, *episode)
+		// #3929: the episode — and ONLY the episode — is gated on the branch
+		// being a true repass. Everything else in this block is the retry
+		// decision itself and is unconditional: the annotation is already
+		// written (routeRetryDecision, with repassAttempt 0 on a forward
+		// branch), the verdict pointer still travels, and ws.state still
+		// takes the branch. A gate that routes ONWARD sends work to a stage
+		// that has not run, which has produced nothing to correct.
+		if LearningEpisodeAppliesToRepass(gr.Attempt) {
+			episode, err := recordLearningInjection(
+				ws.jr, ws.in, g.Name, retryTarget, gr, ws.lastStage, ws.lastResult, injected,
+			)
+			if err != nil {
+				terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+					fmt.Errorf("runner: journal learning episode injection for gate %q: %w", g.Name, err))
+				return gr, false, terminal, true, failErr
+			}
+			if episode != nil {
+				if ws.parallel != nil {
+					ws.parallel.recordCurrentPointer(*episode)
+				} else {
+					ws.pointers = append(ws.pointers, *episode)
+				}
 			}
 		}
 		ws.state = retryTarget

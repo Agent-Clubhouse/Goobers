@@ -220,12 +220,42 @@ const (
 	rowLearningEpisodeContextFrom parityRow = "E10-learning-episode-contextfrom"
 	// rowLearningEpisodeForwardBranch is the sub-case this table DISCOVERED
 	// while pinning the two above: a gate's fail branch that routes ONWARD, to
-	// a stage that has not run, on a retry-classifiable failure. The local
-	// runner injects there (routeRetryDecision does not ask whether the target
-	// already completed); the engine's port does (gateSendsBack). Which side is
-	// right is a ruling, so the row states the divergence and carries an
-	// expected-failure entry rather than resolving it.
+	// a stage that has not run, on a RETRY-CLASSIFIABLE failure. It is the one
+	// place the two sides disagreed — the local runner injected there
+	// (routeRetryDecision asks only retryable/non-pass/non-escalated/
+	// real-target), the engine did not — and it was registered as a documented
+	// expected failure because resolving it was a ruling, not a patch.
+	//
+	// #3929 took that ruling: an episode is injected IFF the branch is a true
+	// repass, using the gate result's own repassAttempt. So the row is now the
+	// POSITIVE statement of the ruling rather than a report of a divergence —
+	// neither side injects, and the expected-failure entry is gone with it.
+	//
+	// It is deliberately distinct from rowLearningEpisodeNotInjected, which
+	// also routes onward: there the retry classifier DECLINES the failure, so
+	// there is no retry arm at all and the row would stay green under either
+	// side of the ruling. Here the classifier ACCEPTS it, the retry decision is
+	// really taken and really annotated, and only the injection is withheld.
+	// That is the distinction the ruling is about.
 	rowLearningEpisodeForwardBranch parityRow = "E10-learning-episode-forward-branch"
+	// rowLearningEpisodeInfraForwardBranch is the same ruling on the arm that
+	// actually carries it in production, and on the failure class the synthetic
+	// row cannot reach.
+	//
+	// The synthetic forward-branch row above walks a status-equals gate over a
+	// nonzero_exit failure — journal.AttemptPolicy. The only shipped branch the
+	// ruling CHANGES is pr-remediation's `local-gate` (failure-class evaluator,
+	// `infra: park-infrastructure-failure`), which is retryable by the OTHER
+	// route through retryFailureClassForGateResult: not because the failure
+	// code is recognized, but because the gate resolved gate.OutcomeInfra. That
+	// is journal.AttemptInfra, a different class down a different branch of the
+	// classifier, and no other row in this table produces it.
+	//
+	// The target is a parking stage whose own escalation text says "no
+	// implementation defect was established" — the concrete case for the
+	// ruling, and the reason this row is shaped like production rather than
+	// like a fixture.
+	rowLearningEpisodeInfraForwardBranch parityRow = "E10-learning-episode-infra-forward-branch"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
@@ -238,21 +268,18 @@ const (
 //
 // Do not add an entry to silence a regression. An entry is only legitimate for
 // a row the parity inventory names as a known, planned gap.
-// The list is EMPTY as of plan item E2: E1 closed the backlog-query defaulting
-// row (#3873) and E2 closed the NoWork and stage-qualified inputsFrom rows
-// (#3874). An empty list is the strongest state this harness can be in — every
-// registered row is now green on both runners — and it is not a licence to stop
-// adding rows. A gap the inventory names but no row pins is still a gap; see
-// the drift ledger in doc.go for divergences observed but not yet inventoried.
-var parityExpectedFailures = map[parityRow]string{
-	rowLearningEpisodeForwardBranch: "E10/#3913: a gate fail branch that routes ONWARD (to a stage that has " +
-		"not run) on a retry-classifiable failure injects a learning episode on the local runner and not on " +
-		"the engine. internal/runner's routeRetryDecision guard asks only retryable/non-pass/non-escalated/" +
-		"real-target, so the runner hands a correction to a stage that never failed, naming nextAttempt = " +
-		"sourceAttempt+1 for an attempt that is 1; the engine's port (gateSendsBack, #3882) additionally " +
-		"requires the target to be an already-completed stage. Closing it needs a RULING on which behaviour " +
-		"is intended — port gateSendsBack's condition into internal/runner, or drop it from the engine — " +
-		"and the loser is a behaviour change on a live lane, not a parity fix. Tracked on #3913."}
+//
+// The list is EMPTY again as of plan item E10's ruling (#3929), which closed
+// the E10-learning-episode-forward-branch entry #3917 registered — the only one
+// it has ever carried since E1 (#3873) and E2 (#3874) closed the backlog-query
+// defaulting, NoWork and stage-qualified inputsFrom rows. An empty list is the
+// strongest state this harness can be in — every registered row is green on
+// both runners — and it is not a licence to stop adding rows. A gap the
+// inventory names but no row pins is still a gap; see the drift ledger in
+// doc.go for divergences observed but not yet inventoried, and #3928/#3930/
+// #3931/#3932 for defects that are real but are NOT parity divergences,
+// because both runners share them.
+var parityExpectedFailures = map[parityRow]string{}
 
 // --- case registration ------------------------------------------------------
 
