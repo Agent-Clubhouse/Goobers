@@ -5,15 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
@@ -422,10 +419,6 @@ func (s blockedEligibilitySkip) reason() string {
 	return fmt.Sprintf("learned block: item %s parked on open blocker(s): %s", s.ItemID, strings.Join(s.OpenBlockers, ","))
 }
 
-func blockedRecordsPath(l instance.Layout) string {
-	return filepath.Join(l.SchedulerDir(), blockedRecordsFileName)
-}
-
 func blockedRepositoryIdentity(repo providers.RepositoryRef) string {
 	if blockedRepositoryEmpty(repo) {
 		return ""
@@ -499,21 +492,6 @@ func needsHumanAssigneeFor(l instance.Layout) (string, error) {
 	return cfg.NeedsHumanAssignee, nil
 }
 
-func loadBlockedRecords(path string) (map[string]blockedRecord, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return map[string]blockedRecord{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-	recs := map[string]blockedRecord{}
-	if err := json.Unmarshal(data, &recs); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	return recs, nil
-}
-
 // decodeBlockedRecords is loadBlockedRecords over a scheduler-state value
 // rather than a path: an absent key is the empty map for the same reason a
 // missing file is (the overwhelmingly common steady state), and the decode is
@@ -540,24 +518,6 @@ func encodeBlockedRecords(recs map[string]blockedRecord) ([]byte, error) {
 		return nil, fmt.Errorf("marshal blocked records: %w", err)
 	}
 	return data, nil
-}
-
-func saveBlockedRecords(path string, recs map[string]blockedRecord) error {
-	data, err := json.MarshalIndent(recs, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal blocked records: %w", err)
-	}
-	// Write-then-rename for the same torn-write reason the claim ledger's own
-	// persistence uses: a crash mid-write must never leave a half-written
-	// file that fails every subsequent selection tick's parse.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", tmp, err)
-	}
-	if err := durability.ReplaceFile(tmp, path); err != nil {
-		return fmt.Errorf("rename %s: %w", tmp, err)
-	}
-	return nil
 }
 
 func snapshotBlockedRecords(l instance.Layout) (map[string]blockedRecord, error) {

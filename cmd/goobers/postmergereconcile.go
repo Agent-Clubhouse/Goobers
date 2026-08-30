@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
-	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
@@ -723,26 +722,4 @@ func encodePostMergeReconcileLedger(ledger postMergeReconcileLedger) ([]byte, er
 		return nil, fmt.Errorf("encode post-merge reconcile ledger: %w", err)
 	}
 	return append(data, '\n'), nil
-}
-
-func readPostMergeReconcileLedger(path string) (postMergeReconcileLedger, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return emptyPostMergeReconcileLedger(), nil
-	}
-	if err != nil {
-		return emptyPostMergeReconcileLedger(), fmt.Errorf("read post-merge reconcile ledger: %w", err)
-	}
-	return decodePostMergeReconcileLedger(stateclient.Value{Data: data, ETag: stateclient.ETagFor(data)})
-}
-
-func writePostMergeReconcileLedger(path string, ledger postMergeReconcileLedger) error {
-	data, err := encodePostMergeReconcileLedger(ledger)
-	if err != nil {
-		return err
-	}
-	if err := journal.WriteFileAtomic(path, data, 0o644); err != nil {
-		return fmt.Errorf("write post-merge reconcile ledger: %w", err)
-	}
-	return nil
 }
