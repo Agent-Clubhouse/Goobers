@@ -590,20 +590,14 @@ func (p *GitHubProvider) Commit(ctx context.Context, req CommitRequest) (CommitR
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return CommitResult{}, err
 	}
-	if req.Branch == "" {
-		return CommitResult{}, fmt.Errorf("branch is required")
-	}
-	if req.Message == "" {
-		return CommitResult{}, fmt.Errorf("message is required")
-	}
-	if len(req.Files) == 0 {
-		return CommitResult{}, fmt.Errorf("at least one file is required")
+	if err := validateCommitRequest(req); err != nil {
+		return CommitResult{}, err
 	}
 
 	var last githubContentResponse
 	for _, file := range req.Files {
-		if file.Path == "" {
-			return CommitResult{}, fmt.Errorf("file path is required")
+		if err := validateCommitFile(file); err != nil {
+			return CommitResult{}, err
 		}
 		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "contents", file.Path)
 		if err != nil {
@@ -2923,38 +2917,7 @@ func (p *GitHubProvider) Subscribe(ctx context.Context, sub TriggerSubscription)
 	if sub.Kind != TriggerPolling {
 		return nil, fmt.Errorf("github provider supports polling subscriptions in-process; webhook delivery is configured externally")
 	}
-	interval := sub.PollInterval
-	if interval <= 0 {
-		interval = time.Minute
-	}
-	events := make(chan WorkItemEvent, 1)
-	go func() {
-		defer close(events)
-		seen := map[string]time.Time{}
-		for {
-			items, err := p.ListWorkItems(ctx, ListWorkItemsRequest{Repository: sub.Repository, State: "open", Limit: 100})
-			if err == nil {
-				for _, item := range items {
-					if !shouldEmitWorkItem(seen, item) {
-						continue
-					}
-					select {
-					case <-ctx.Done():
-						return
-					case events <- WorkItemEvent{Provider: ProviderGitHub, Kind: TriggerPolling, Item: item, Action: "available"}:
-					}
-				}
-			}
-			timer := time.NewTimer(interval)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-			}
-		}
-	}()
-	return events, nil
+	return subscribeToWorkItems(ctx, sub, ProviderGitHub, "open", p.ListWorkItems), nil
 }
 
 func (p *GitHubProvider) contentSHA(ctx context.Context, endpoint string) (string, bool, error) {

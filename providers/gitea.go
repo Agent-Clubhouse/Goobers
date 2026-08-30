@@ -417,14 +417,8 @@ func (p *GiteaProvider) Commit(ctx context.Context, req CommitRequest) (CommitRe
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return CommitResult{}, err
 	}
-	if req.Branch == "" {
-		return CommitResult{}, fmt.Errorf("branch is required")
-	}
-	if req.Message == "" {
-		return CommitResult{}, fmt.Errorf("message is required")
-	}
-	if len(req.Files) == 0 {
-		return CommitResult{}, fmt.Errorf("at least one file is required")
+	if err := validateCommitRequest(req); err != nil {
+		return CommitResult{}, err
 	}
 	runner, ok := p.Runner.(environmentCommandRunner)
 	if !ok {
@@ -447,8 +441,8 @@ func (p *GiteaProvider) Commit(ctx context.Context, req CommitRequest) (CommitRe
 		return CommitResult{}, fmt.Errorf("git clone: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	for _, file := range req.Files {
-		if file.Path == "" {
-			return CommitResult{}, fmt.Errorf("file path is required")
+		if err := validateCommitFile(file); err != nil {
+			return CommitResult{}, err
 		}
 		abs := filepath.Join(workDir, filepath.FromSlash(file.Path))
 		exists := false

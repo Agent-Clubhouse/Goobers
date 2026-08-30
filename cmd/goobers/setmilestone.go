@@ -36,8 +36,8 @@ func runSetMilestone(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
 	*itemID = strings.TrimSpace(*itemID)
@@ -50,11 +50,6 @@ func runSetMilestone(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 	repo, err := providerRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)

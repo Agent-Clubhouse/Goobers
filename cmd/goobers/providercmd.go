@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -143,6 +144,14 @@ func providerStageRoot(pathArg string) string {
 		return root
 	}
 	return "."
+}
+
+func providerStageRootArg(fs *flag.FlagSet) (string, bool) {
+	if fs.NArg() > 1 {
+		fs.Usage()
+		return "", false
+	}
+	return providerStageRoot(fs.Arg(0)), true
 }
 
 // providerRepo returns the repository routed into a stage invocation. Standalone

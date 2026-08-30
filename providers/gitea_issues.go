@@ -907,38 +907,7 @@ func (p *GiteaProvider) Subscribe(ctx context.Context, sub TriggerSubscription) 
 	if sub.Kind != TriggerPolling {
 		return nil, fmt.Errorf("gitea provider does not support webhook triggers")
 	}
-	interval := sub.PollInterval
-	if interval <= 0 {
-		interval = time.Minute
-	}
-	events := make(chan WorkItemEvent, 1)
-	go func() {
-		defer close(events)
-		seen := map[string]time.Time{}
-		for {
-			items, err := p.ListWorkItems(ctx, ListWorkItemsRequest{Repository: sub.Repository, State: "open", Limit: 100})
-			if err == nil {
-				for _, item := range items {
-					if !shouldEmitWorkItem(seen, item) {
-						continue
-					}
-					select {
-					case <-ctx.Done():
-						return
-					case events <- WorkItemEvent{Provider: ProviderGitea, Kind: TriggerPolling, Item: item, Action: "available"}:
-					}
-				}
-			}
-			timer := time.NewTimer(interval)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-			}
-		}
-	}()
-	return events, nil
+	return subscribeToWorkItems(ctx, sub, ProviderGitea, "open", p.ListWorkItems), nil
 }
 
 // --- label ID resolution (Gitea labels are ID-based, not name-based) ---
