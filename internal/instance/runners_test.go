@@ -643,3 +643,47 @@ func TestSelfRunnerCapabilitiesWithoutSelfEntryClaimsNothing(t *testing.T) {
 		t.Errorf("SelfRunnerCapabilities() = %v, want nil for an inventory with no self entry", got)
 	}
 }
+
+// TestSelfRunnerRestrictionsReadsTheSelfEntry pins the accessor the daemon's
+// composition root reads to decide which isolation effects to BIND on the
+// local execution seams. Restrictions are a runner property
+// (docs/design/goobernetes-restrictions.md §5): what the self entry declares
+// is what every stage placed on self runs under, asked for or not.
+func TestSelfRunnerRestrictionsReadsTheSelfEntry(t *testing.T) {
+	cfg := &Config{Runners: []RunnerEntry{
+		{Name: "linux-pod", Host: "ghcr.io/example/ci:v1", Restrictions: []RunnerRestriction{RunnerRestrictionFSReadonly}},
+		{Name: "self", Host: RunnerHostSelfName, Restrictions: []RunnerRestriction{RunnerRestrictionTmpEphemeral}},
+	}}
+	if got := cfg.SelfRunnerRestrictions(); len(got) != 1 || got[0] != RunnerRestrictionTmpEphemeral {
+		t.Fatalf("SelfRunnerRestrictions() = %v, want [tmp:ephemeral]", got)
+	}
+	if !cfg.SelfRunnerEnforces(RunnerRestrictionTmpEphemeral) {
+		t.Fatal("SelfRunnerEnforces(tmp:ephemeral) = false for a self entry that declares it")
+	}
+	// A non-self entry's restrictions are never the self runner's: a pod
+	// class enforcing an effect says nothing about the daemon host.
+	if cfg.SelfRunnerEnforces(RunnerRestrictionFSReadonly) {
+		t.Fatal("SelfRunnerEnforces read a NON-self entry's restriction as the self runner's")
+	}
+}
+
+// TestSelfRunnerRestrictionsAreEmptyWithoutAnInventory is the
+// zero-declaration-invariance half (goobernetes-architecture.md §11 item 1):
+// an instance that declares no runners: block binds no effect, so its stage
+// environments stay byte-identical to every previous release.
+func TestSelfRunnerRestrictionsAreEmptyWithoutAnInventory(t *testing.T) {
+	legacy := &Config{Runner: RunnerConfig{Capabilities: []string{"dotnet@8"}}}
+	if got := legacy.SelfRunnerRestrictions(); got != nil {
+		t.Fatalf("SelfRunnerRestrictions() = %v on a legacy config, want nil", got)
+	}
+	if legacy.SelfRunnerEnforces(RunnerRestrictionTmpEphemeral) {
+		t.Fatal("a config with no runners: block must enforce nothing locally")
+	}
+	// An inventory with no self entry likewise enforces nothing locally.
+	remoteOnly := &Config{Runners: []RunnerEntry{
+		{Name: "linux-pod", Host: "ghcr.io/example/ci:v1", Restrictions: []RunnerRestriction{RunnerRestrictionTmpEphemeral}},
+	}}
+	if remoteOnly.SelfRunnerEnforces(RunnerRestrictionTmpEphemeral) {
+		t.Fatal("an inventory with no self entry must enforce nothing locally")
+	}
+}

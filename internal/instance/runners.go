@@ -305,6 +305,44 @@ func (c *Config) SelfRunnerCapabilities() []string {
 	return nil
 }
 
+// SelfRunnerRestrictions returns the isolation effects the resolved
+// inventory's self entry ENFORCES. An instance with no runners: list declares
+// none (the implicit self entry ResolvedRunners synthesizes carries no
+// restrictions), which is what keeps zero-declaration installs byte-identical
+// — the daemon binds an effect only once an operator has asked for it
+// (goobernetes-architecture.md §11 item 1). With a declared inventory it is
+// the first host:"self" entry's restrictions; an inventory with no self entry
+// enforces nothing locally.
+//
+// The self entry's restrictions are a RUNNER PROPERTY, not a per-stage
+// requirement (docs/design/goobernetes-restrictions.md §5): a stage placed
+// here runs under them whether or not it asked. Wiring reads this once at
+// composition and binds the effects onto the local execution seams, so the
+// solver's claim that self "enforces" a declared effect is true of every
+// stage it runs rather than only of the ones that named it.
+func (c *Config) SelfRunnerRestrictions() []RunnerRestriction {
+	if len(c.Runners) == 0 {
+		return nil
+	}
+	for i := range c.Runners {
+		if c.Runners[i].Host == RunnerHostSelfName {
+			return c.Runners[i].Restrictions
+		}
+	}
+	return nil
+}
+
+// SelfRunnerEnforces reports whether the resolved inventory's self entry
+// declares restriction r.
+func (c *Config) SelfRunnerEnforces(r RunnerRestriction) bool {
+	for _, declared := range c.SelfRunnerRestrictions() {
+		if declared == r {
+			return true
+		}
+	}
+	return false
+}
+
 // validateSchemaVersion accepts the two known revisions. Only an ABSENT
 // schemaVersion means legacy; an explicit 0 is refused, matching the
 // published schema's enum [1, 2] (the pointer field is what lets the strict

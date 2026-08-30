@@ -132,6 +132,15 @@ type ClaudeAdapter struct {
 	ExtraEnvAllowlist              []string
 	InstanceRoot                   string
 	SelfBin                        string
+	// EphemeralTmp binds `tmp:ephemeral` on the self runner for this
+	// adapter's subprocess — see CopilotAdapter.EphemeralTmp for the full
+	// contract; the two adapters share it so a self entry declaring the
+	// effect is true of every agentic stage, not just the ones that happen to
+	// run under one harness.
+	EphemeralTmp bool
+	// EphemeralTmpRoot overrides the temp root the per-attempt directory is
+	// carved out of. Empty means the daemon's own temp root.
+	EphemeralTmpRoot string
 }
 
 // Name returns the adapter's diagnostic identity.
@@ -277,6 +286,13 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 	if req.Workspace == "" {
 		return Outcome{}, fmt.Errorf("harness: claude-code: RunRequest.Workspace is empty")
 	}
+	// The self-runner tmp:ephemeral binding for this attempt, reclaimed on
+	// every exit path below.
+	ephemeralTmp, err := establishEphemeralTmp(c.Name(), c.EphemeralTmp, c.EphemeralTmpRoot)
+	if err != nil {
+		return Outcome{}, err
+	}
+	defer func() { _ = ephemeralTmp.Reclaim() }()
 	req = withAutoGoobersIOClaude(req, c.SelfBin)
 	options, err := normalizeClaudeConfig(req.Model, req.HarnessOptions)
 	if err != nil {
@@ -337,6 +353,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, r
 		extraEnvAllowlist:              c.ExtraEnvAllowlist,
 		instanceRoot:                   c.InstanceRoot,
 		selfBin:                        c.SelfBin,
+		ephemeralTmp:                   ephemeralTmp,
 	}, req)
 	if err != nil {
 		return Outcome{}, err

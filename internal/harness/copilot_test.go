@@ -554,7 +554,7 @@ func TestCopilotAdapterAllowsStoredAuthWithUnmaterializedADOCapability(t *testin
 		Project:  "Example Service",
 		Name:     "Example.Repo",
 	}
-	got, err := adapter.credentialEnv(context.Background(), RunRequest{
+	got, err := adapter.credentialEnv(context.Background(), nil, RunRequest{
 		Envelope:    env,
 		Workspace:   t.TempDir(),
 		Credentials: creds,
@@ -663,7 +663,7 @@ func TestCredentialEnvToleratesMissingRepoPushOnADO(t *testing.T) {
 	}
 	env := testEnvelope(t.TempDir(), "repo:push")
 	env.RepoRef = apiv1.RepoRef{Provider: apiv1.ProviderADO, Owner: "example-org", Project: "Example Service", Name: "Example.Repo"}
-	got, err := adapter.credentialEnv(context.Background(), RunRequest{
+	got, err := adapter.credentialEnv(context.Background(), nil, RunRequest{
 		Envelope:    env,
 		Workspace:   t.TempDir(),
 		Credentials: creds,
@@ -699,7 +699,7 @@ func TestCredentialEnvFailsClosedForMissingRepoPushOnGitHub(t *testing.T) {
 		EnvCapabilities: map[string]string{"repo:push": "GOOBERS_REPO_TOKEN"},
 	}
 	env := testEnvelope(t.TempDir(), "repo:push")
-	_, err = adapter.credentialEnv(context.Background(), RunRequest{
+	_, err = adapter.credentialEnv(context.Background(), nil, RunRequest{
 		Envelope:    env,
 		Workspace:   t.TempDir(),
 		Credentials: creds,
