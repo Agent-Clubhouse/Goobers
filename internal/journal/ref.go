@@ -81,6 +81,18 @@ func digestHex(digest string) (string, error) {
 	return hexPart, nil
 }
 
+// ArtifactPath is the journal-relative storage path an artifact with digest
+// occupies inside a run directory — the exported form of the same fan-out
+// layout ArtifactRef computes.
+//
+// It exists for readers that learn a digest without learning a path: the
+// daemon's run-read routes address artifacts by digest alone (the read
+// service's ArtifactMetadata deliberately omits journal-relative paths), so a
+// client reconstructing a journal.Ref from that projection must derive Path
+// from the one place the layout is defined rather than restating the shard
+// rule a second time.
+func ArtifactPath(digest string) (string, error) { return artifactPath(digest) }
+
 // artifactPath is the fan-out storage path for an artifact blob, sharding by the
 // first byte of the hex digest to keep directories shallow.
 func artifactPath(digest string) (string, error) {
