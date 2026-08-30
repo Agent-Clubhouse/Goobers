@@ -66,6 +66,21 @@
 // gateSendsBack is deleted. Deriving a fact twice is how two drivers drift, so
 // the shared helper is the fix rather than an incidental tidy-up.
 //
+// #3942 closed that ruling's own residual, which was a divergence from the
+// RULING rather than between the drivers. Both sides evaluated the predicate
+// inside the retry-decision arm, so the injection silently also required the
+// retry CLASSIFIER (runner.RetryFailureClassForGateResult) to accept the
+// failure — an automated status-equals gate over nonzero_exit/
+// base_sync_conflict, or any gate resolving infra. An AGENTIC reviewer's
+// needs-changes is none of those, so the canonical repass of the whole system
+// was the one true repass that never received a correction, and both drivers
+// declined it in agreement (which is why no parity row was red). The predicate
+// is now runner.LearningEpisodeAppliesToBranch, which asks the injection
+// question directly — non-pass, non-escalated, target is a real stage,
+// repassAttempt >= 1 — and both drivers call it OUTSIDE the classifier's
+// answer. Routing and classification are unchanged: a branch the classifier
+// declines still carries no retry-decision annotation and still travels the
+// ordinary advance path.
 // #3931 removed a third kind: not a divergence between the drivers, but a
 // defect they SHARED, and therefore one the parity table graded green.
 //
@@ -102,7 +117,7 @@
 // #3932 was a divergence internal to the local runner, invisible here for a
 // structural reason worth recording: ruling R9 refuses spec.parallels at run
 // start on the engine, so no parity row can reach it. The runner has two walks
-// that take a gate retry arm — stepGate and, at maxConcurrentBranches > 1,
+// that take a gate branch — stepGate and, at maxConcurrentBranches > 1,
 // runBranch — and the second carried a hand-copied HALF of the first, the
 // verdict pointer without the learning episode. A scheduling bound decided
 // whether a repass received its correction. Both now share one producer

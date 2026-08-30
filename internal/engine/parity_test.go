@@ -256,6 +256,29 @@ const (
 	// ruling, and the reason this row is shaped like production rather than
 	// like a fixture.
 	rowLearningEpisodeInfraForwardBranch parityRow = "E10-learning-episode-infra-forward-branch"
+	// rowLearningEpisodeAgenticRepass is the sub-case #3942 discovered after
+	// #3938 landed the #3929 ruling: the ruling names the predicate ("is the
+	// branch a true repass?") but both drivers evaluated it INSIDE the
+	// retry-decision arm, so the injection also required the retry CLASSIFIER
+	// to accept the failure — an automated status-equals gate over
+	// nonzero_exit/base_sync_conflict, or any gate resolving infra.
+	//
+	// An AGENTIC reviewer resolving needs-changes back into its implementer is
+	// the canonical true repass of the whole system and satisfies none of
+	// those: the evaluator is not automated, and the outcome is the verdict
+	// decision rather than infra. Both drivers therefore declined it, IN
+	// AGREEMENT, which is exactly why no existing row went red — the
+	// divergence was against the ruling, not between the runners. The two
+	// shipped lanes that do implementation work (implementation.yaml's
+	// `review` -> `implement`, pr-remediation.yaml's `review` ->
+	// `guard-before-implement`) were the ones starved.
+	//
+	// Every other E10 row walks a DETERMINISTIC failure through an AUTOMATED
+	// gate, which is the one shape where the classifier's answer and the
+	// ruling's answer coincide. This row is the shape where they do not, and
+	// it is the row that would have caught it.
+	rowLearningEpisodeAgenticRepass parityRow = "E10-learning-episode-agentic-repass"
+
 	// rowLearningEpisodeSendBack is the sub-case #3931 closed: a NONTRIVIAL
 	// send-back, where the stage the gate sends work back to is not the stage
 	// that produced the failure.
@@ -462,11 +485,16 @@ func parityCases() []parityCase {
 //     and Integrity grade are what a stage's admission and evidence depend
 //     on, and both are compared (ContextPointers below).
 type parityEnvelope struct {
-	Stage             string
-	RunID             string
-	WorkflowID        string
-	Goal              string
-	Goober            string
+	Stage      string
+	RunID      string
+	WorkflowID string
+	Goal       string
+	Goober     string
+	// GooberDigest is the kit the run was admitted against, and since #3884
+	// the value the worker SELECTS its kit by. Both drivers stamp it from the
+	// run's pin, so a side that dropped it — or minted its own — would be
+	// dispatching against a kit the other side never agreed to.
+	GooberDigest      string
 	Gaggle            string
 	BranchNamespace   string
 	BaseBranch        string
@@ -529,11 +557,11 @@ var parityEnvelopeExcludedFields = map[string]string{
 // identical-looking envelopes differ" — so the two must stay in lockstep;
 // TestParityEnvelopeStringPrintsEveryComparedField enforces that.
 func (e parityEnvelope) String() string {
-	return fmt.Sprintf("stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s ownership=%s "+
+	return fmt.Sprintf("stage=%s runId=%s workflowId=%s gaggle=%s goal=%q goober=%s gooberDigest=%s ownership=%s "+
 		"branchNamespace=%q baseBranch=%q triggerRef=%q minIntegrity=%q addendum=%q "+
 		"inputs=[%s] caps=[%s] policy=[%s] pointers=[%s] item=%q "+
 		"repoRef=%s additionalWorkspaces=[%s] checkoutCones=%s limits=%s parentPlatformPolicy=%s nestedAgentPolicy=%s",
-		e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.OwnershipBoundary,
+		e.Stage, e.RunID, e.WorkflowID, e.Gaggle, e.Goal, e.Goober, e.GooberDigest, e.OwnershipBoundary,
 		e.BranchNamespace, e.BaseBranch, e.TriggerRef, e.MinimumIntegrity, e.InstructionAddendum,
 		e.Inputs, e.Capabilities, e.PolicyActions, e.ContextPointers, e.Item,
 		e.RepoRef, e.AdditionalWorkspaces, e.CheckoutCones, e.Limits,
@@ -553,6 +581,7 @@ func projectParityEnvelope(env apiv1.InvocationEnvelope) parityEnvelope {
 		WorkflowID:           env.WorkflowID,
 		Goal:                 env.Goal,
 		Goober:               env.Goober,
+		GooberDigest:         env.GooberDigest,
 		Gaggle:               env.Gaggle,
 		BranchNamespace:      env.BranchNamespace,
 		BaseBranch:           env.BaseBranch,
@@ -1396,7 +1425,8 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Every field set to a value that appears nowhere else in the rendering.
 	full := parityEnvelope{
 		Stage: "s-stage", RunID: "s-runid", WorkflowID: "s-workflow", Goal: "s-goal", Goober: "s-goober",
-		Gaggle: "s-gaggle", BranchNamespace: "s-namespace", BaseBranch: "s-base",
+		GooberDigest: "s-gooberdigest",
+		Gaggle:       "s-gaggle", BranchNamespace: "s-namespace", BaseBranch: "s-base",
 		TriggerRef: "s-trigger", OwnershipBoundary: "s-ownership",
 		MinimumIntegrity:    apiv1.Integrity("s-integrity"),
 		InstructionAddendum: "s-addendum",
@@ -1407,7 +1437,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	}
 	rendered := full.String()
 	for _, sentinel := range []string{
-		"s-stage", "s-runid", "s-workflow", "s-goal", "s-goober", "s-gaggle", "s-namespace", "s-base",
+		"s-stage", "s-runid", "s-workflow", "s-goal", "s-goober", "s-gooberdigest", "s-gaggle", "s-namespace", "s-base",
 		"s-trigger", "s-ownership", "s-integrity", "s-addendum", "s-inputs", "s-caps", "s-policy",
 		"s-pointers", "s-item", "s-reporef", "s-additional", "s-cones", "s-limits",
 		"s-parentpolicy", "s-nestedpolicy",
@@ -1419,7 +1449,7 @@ func TestParityEnvelopeStringPrintsEveryComparedField(t *testing.T) {
 	// Guard the other direction: a newly added field must be added to String.
 	// reflect.NumField is the tripwire — bump the count deliberately, together
 	// with the sentinel list above.
-	if got, want := reflect.TypeOf(full).NumField(), 23; got != want {
+	if got, want := reflect.TypeOf(full).NumField(), 24; got != want {
 		t.Fatalf("parityEnvelope now has %d fields, this test knows %d — add the new field to String() and to the sentinel list", got, want)
 	}
 }

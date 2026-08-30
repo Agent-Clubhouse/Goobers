@@ -243,7 +243,7 @@ changed. The manifest that broke reload here read exactly like a working one.
 `--config-reload-interval` (default 10s, `0` disables) and atomically replaces
 the gaggle, credential, and agentic-kit seams whose config changed, so a
 definitions edit reaches the **next** stage that worker serves without a pod
-restart (#3884). It is the same content-digest reload the daemon runs
+restart (#3912). It is the same content-digest reload the daemon runs
 (`configDirectoryDigest`), including the read-validate-reread stability check
 that keeps a half-written tree from ever becoming the tree in force.
 
@@ -273,11 +273,46 @@ that writes into the mounted directory), then verify by execution: edit the
 tree, wait past the interval, and confirm the worker logged
 `worker config reload: applied config tree sha256:…`.
 
-Reload is also *not* a pin. Without a per-run goober digest recorded at start
-(the daemon-side half tracked in #3876/D1), a reload landing between two
-attempts of the same run can still hand attempt *N+1* a different curator than
-attempt *N*, with nothing in `run.yaml` to show it. Reload removes the stale
-window; the pin is what would make a mismatch detectable.
+### The worker refuses a kit its run was not admitted against
+
+Reload alone is not a pin: it removes the stale window, but on its own a reload
+landing between two attempts of the same run would hand attempt *N+1* a
+different curator than attempt *N*. #3884 closes that. Every stage envelope an
+engine run dispatches carries the run's `gooberDigest`, and the worker serves
+the config tree whose goober digest **equals** that pin, or serves nothing.
+
+- **A pin the worker cannot serve is refused, by name.** The attempt fails with
+  `gate_pin_missing` (no held tree matches) or `run_pin_unverifiable` (no tree
+  could be compiled into a digest at all, so a match cannot be proven either
+  way). The message names the gaggle, workflow, expected digest and the digests
+  the worker can serve — **digests only**, never instructions, skills or
+  credentials, so it is safe in any log an operator reads.
+- **The refusal is retriable.** It is classified as an infrastructure failure,
+  so it spends the run's infrastructure-retry budget, not its policy budget.
+  Roll the worker's config tree forward, let the reload apply, and the next
+  retry resolves the pin and proceeds. That is the intended repair, and it is
+  the reason the refusal is not fatal.
+- **Recently superseded trees are retained, within a bound.** The worker keeps
+  up to `--config-history-depth` (default 3, `0` disables) superseded snapshots,
+  newest first, so a reload can *add* a satisfiable digest without *removing*
+  one an in-flight run still needs. Snapshots are self-contained: instructions
+  and skill packages are captured when the tree is read, never re-read from
+  disk later, because a retained snapshot that went back to disk would resolve
+  the current tree while claiming to be the old one.
+- **Past the bound it fails closed, and a restart holds nothing.** Evicted trees
+  refuse with `gate_pin_missing`; a restarted worker has no history at all and
+  refuses every stale pin. Retention keeps in-flight runs alive across a reload;
+  it is never a correctness guarantee a run may lean on.
+- **Deterministic stages stay unpinned.** `gooberDigest` is goober-kit identity
+  — instructions, skills, model, harness, MCP, tools — and a deterministic stage
+  executes none of it. It runs on the current tree, which is what the reload
+  above is for.
+
+Set the bound to match how long your stages actually take:
+`--config-history-depth 0` if you want every superseded pin to refuse
+immediately, higher if you routinely roll config forward while multi-hour runs
+are in flight. Each retained tree costs one snapshot's worth of instructions and
+skill files in memory, so keep it small.
 
 ### Images
 

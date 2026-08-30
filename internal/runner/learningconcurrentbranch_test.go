@@ -13,6 +13,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // #3932. The local runner has two walks that reach a gate's retry arm:
@@ -335,11 +336,11 @@ func TestResumedBranchKeepsItsInjectedCorrection(t *testing.T) {
 	// record NOTHING, so the pointer restored above is not joined by a second
 	// artifact and a second annotation for one injection. A nil journal is the
 	// strongest way to say it — the helper must not reach the journal at all.
-	out, err := recordGateRetryInjection(nil, StartInput{RunID: "run-x"}, "gate-a", "impl-a",
+	out, err := recordGateBranchInjection(nil, StartInput{RunID: "run-x"}, "gate-a", "impl-a",
 		gate.Result{Attempt: 1, VerdictArtifact: &apiv1.ArtifactPointer{Path: "gates/gate-a-1.json"}},
 		"impl-a", apiv1.ResultEnvelope{Status: apiv1.ResultFailure}, true)
 	if err != nil {
-		t.Fatalf("recordGateRetryInjection on the replay pass: %v", err)
+		t.Fatalf("recordGateBranchInjection on the replay pass: %v", err)
 	}
 	if len(out.pointers()) != 0 {
 		t.Fatalf("the replay pass produced pointers %+v, want none — pendingParallel has already "+
@@ -485,4 +486,221 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestConcurrentBranchInjectsOnTheAdvancePathToo is the same equivalence claim
+// on the arm #3943 opened, and it is the reason this file could not simply be
+// merged with that change and left alone.
+//
+// #3943 established that a stage-re-entering branch reaches its target by
+// EITHER route: an agentic reviewer's needs-changes is the canonical true
+// repass of the system, and it is precisely the branch the retry classifier
+// declines, so routeRetryDecision returns retry == false and the walk takes
+// the ADVANCE path. #3943 wired an injection into walk()'s advance path, which
+// is the sequential walker's. runBranch has its OWN advance path, so wiring
+// only the retry arm would have rebuilt #3932's exact divergence — this time
+// for the branch that matters most, and only at maxConcurrentBranches > 1.
+//
+// Both routes now go through one producer, so the assertion is again
+// equivalence across the scheduling bound rather than "the concurrent walker
+// also injects".
+func TestConcurrentBranchInjectsOnTheAdvancePathToo(t *testing.T) {
+	byWidth := map[int]learningInjectionRecord{}
+	for _, width := range []int{1, 2} {
+		t.Run(fmt.Sprintf("maxConcurrentBranches=%d", width), func(t *testing.T) {
+			run := runAgenticBranchRepassFixture(t, fmt.Sprintf("run-branch-agentic-%d", width), width)
+
+			// The branch really did repass, and it did so WITHOUT a retry
+			// decision: that is what makes this the advance path rather than
+			// the retry arm the sibling case covers.
+			if got := countStageStarts(run.events, "impl-a"); got != 2 {
+				t.Fatalf("impl-a started %d time(s), want 2 — the reviewer's needs-changes must "+
+					"actually send the branch back for there to be a correction to inject", got)
+			}
+			if got := forwardRetryDecisions(run.events); len(got) != 0 {
+				t.Fatalf("retry decision annotations = %d (%+v), want 0 — a reviewer verdict is not a "+
+					"retry-classifiable failure, so this branch must travel the advance path", len(got), got)
+			}
+			if len(run.injections) != 1 {
+				t.Fatalf("learning injections = %d, want exactly 1:\n%s",
+					len(run.injections), formatInjections(run.injections))
+			}
+			injection := run.injections[0]
+			want := learningInjectionRecord{
+				Gate: "review-a", Subject: "impl-a", Target: "impl-a",
+				AnnotationStage: "impl-a", AnnotationAttempt: 2,
+				SourceAttempt: 1, NextAttempt: 2,
+			}
+			if injection.comparable() != want {
+				t.Fatalf("injection = %+v, want %+v", injection.comparable(), want)
+			}
+			if injection.Branch != 1 {
+				t.Fatalf("episode annotation landed on branch %d, want branch 1 (a)", injection.Branch)
+			}
+
+			// Delivered, not merely journaled.
+			second := run.capture.envelopes("impl-a")
+			if len(second) != 2 {
+				t.Fatalf("impl-a was dispatched %d time(s), want 2", len(second))
+			}
+			// An agentic gate addresses the episode by the REVIEWER's event —
+			// the gate.evaluated that carries the verdict — not by a failing
+			// stage.finished, because the stage did not fail: the reviewer
+			// rejected its output.
+			corrected := needsChangesGateSeq(t, run.events, "review-a")
+			if want := LearningEpisodePointerName(corrected); injection.PointerName != want {
+				t.Fatalf("episode pointer = %q, want %q — the pointer names the reviewer's verdict "+
+					"event, and the repass resolves the correction by that name", injection.PointerName, want)
+			}
+			if !envelopeCarriesEpisode(second[1], injection.PointerName) {
+				t.Fatalf("the repass of impl-a carried pointers %v, want the episode pointer %q",
+					envelopePointerNames(second[1]), injection.PointerName)
+			}
+			if !stageFinishedDerived(run.events, "impl-a") {
+				t.Fatal("no impl-a stage.finished carries derived integrity — a stage graded on an " +
+					"injected correction must be downgraded on the advance path too")
+			}
+			if got, want := flattenCompleteness(run.completeness), "1:a:succeeded;2:b:no-output"; got != want {
+				t.Fatalf("completeness = %q, want %q", got, want)
+			}
+			byWidth[width] = injection.comparable()
+		})
+	}
+	if byWidth[1] != byWidth[2] {
+		t.Fatalf("the two widths produced different corrections on the advance path:\n"+
+			"  width 1: %+v\n  width 2: %+v\n"+
+			"maxConcurrentBranches is a scheduling bound, not a semantic one", byWidth[1], byWidth[2])
+	}
+}
+
+// runAgenticBranchRepassFixture is runBranchRepassFixture's agentic twin: the
+// branch's gate is an agentic reviewer that returns needs-changes and then
+// pass, so the send-back is not retry-classifiable and the branch walker must
+// reach the injection through its advance path.
+func runAgenticBranchRepassFixture(t *testing.T, runID string, width int) branchRepassFixtureRun {
+	t.Helper()
+	capture := newEnvelopeCapture()
+	script := newScriptedDeterministic(map[string][]stubTaskResult{
+		runID + ":impl-a":  {{status: apiv1.ResultSuccess}, {status: apiv1.ResultSuccess}},
+		runID + ":lens-b":  {{status: apiv1.ResultSuccess}},
+		runID + ":collate": {{status: apiv1.ResultSuccess}},
+	}, capture)
+	reviewer := &scriptedReviewer{t: t, verdicts: []apiv1.Verdict{
+		{Decision: apiv1.VerdictNeedsChanges, Summary: "the branch's work does not hold",
+			Rationale: "handle the empty case before the scan rather than after it"},
+		{Decision: apiv1.VerdictPass, Summary: "the empty case is handled now"},
+	}}
+
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	runsDir := filepath.Join(instanceRoot, "runs")
+	fixtureRepo := newFixtureRepo(t)
+	r, err := New(Config{
+		NewDeterministic: func(ArtifactRecorder, SecretRegistrar) (invoke.Deterministic, error) { return script, nil },
+		NewAgentic:       func(string, ArtifactRecorder, SecretRegistrar) (invoke.Goober, error) { return reviewer, nil },
+		Worktrees:        wtMgr,
+		RunsDir:          runsDir,
+		RepoCloneURL:     func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	r.cfg.ScratchDir = t.TempDir()
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: agenticBranchRepassMachine(t, width),
+		Gaggle:  "demo",
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+
+	runDir := filepath.Join(runsDir, runID)
+	events := readJournalEvents(t, runDir)
+	var completeness []journal.BranchOutcome
+	for i := range events {
+		if events[i].Type == journal.EventParallelFinished {
+			completeness = events[i].Completeness
+		}
+	}
+	if completeness == nil {
+		t.Fatal("no parallel.finished event — the parallel never settled")
+	}
+	return branchRepassFixtureRun{
+		events:       events,
+		injections:   learningInjectionRecords(t, runDir, events),
+		completeness: completeness,
+		capture:      capture,
+	}
+}
+
+func agenticBranchRepassMachine(t *testing.T, width int) *workflow.Machine {
+	t.Helper()
+	task := func(name, next string) apiv1.Task {
+		return apiv1.Task{
+			Name: name, Type: apiv1.TaskDeterministic, Goal: name,
+			Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+			Next: next,
+		}
+	}
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "branch-agentic-repass", Version: 1, DSLVersion: "2.0",
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:   "demo",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:    "fan",
+			Tasks: []apiv1.Task{
+				task("impl-a", "review-a"),
+				task("lens-b", workflow.TargetJoin),
+				task("collate", workflow.TerminalComplete),
+			},
+			Gates: []apiv1.Gate{{
+				Name:      "review-a",
+				Evaluator: apiv1.EvaluatorAgentic,
+				Agentic:   &apiv1.AgenticGate{Goober: "reviewer", Workspace: apiv1.WorkspaceRepoReadOnly},
+				Branches: map[string]string{
+					string(apiv1.VerdictPass):         workflow.TargetJoin,
+					string(apiv1.VerdictNeedsChanges): "impl-a",
+					gate.OutcomeFail:                  workflow.TargetJoin,
+				},
+			}},
+			Parallels: []apiv1.Parallel{{
+				Name: "fan", FailurePolicy: apiv1.BranchContinueOnError,
+				MaxConcurrentBranches: int32(width),
+				Join:                  "collate",
+				Branches: []apiv1.Branch{
+					{Name: "a", Start: "impl-a"},
+					{Name: "b", Start: "lens-b"},
+				},
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile branch-agentic-repass fixture: %v", err)
+	}
+	return machine
+}
+
+// needsChangesGateSeq returns the sequence of the first gate.evaluated event
+// for gateName that sent work back — the event an agentic episode is addressed
+// to.
+func needsChangesGateSeq(t *testing.T, events []journal.Event, gateName string) uint64 {
+	t.Helper()
+	for _, e := range events {
+		if e.Type == journal.EventGateEvaluated && e.Gate == gateName && e.Runner != nil {
+			if attempt, _ := runnerInt(e.Runner["repassAttempt"]); attempt >= 1 {
+				return e.Seq
+			}
+		}
+	}
+	t.Fatalf("no repassing gate.evaluated for %q", gateName)
+	return 0
 }

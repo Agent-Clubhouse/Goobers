@@ -31,6 +31,16 @@ import (
 // agenticKitWriter satisfies dispatcher.KitWriter.
 type agenticKitWriter struct {
 	instanceRoot string
+	// seams is the worker's own config-snapshot store. The kit a stage pod
+	// executes is resolved through it BY THE RUN'S PINNED GOOBER DIGEST
+	// (#3884), never by re-reading the config tree: this writer runs once per
+	// attempt, and a re-read would publish attempt N+1 whatever instructions
+	// happen to be mounted — the same silent substitution on the pod path
+	// that forPinnedGaggle closes on the self path. Resolving through the
+	// shared seams also means the pod path sees the SAME retained trees the
+	// self path does, so a reload cannot make one path refuse while the other
+	// serves.
+	seams        *workerSeams
 	blobEndpoint string
 	// minter issues the per-run bearer this writer presents to the blob plane.
 	//
@@ -101,19 +111,17 @@ func kitModeFor(attempt dispatcher.Attempt) agentickit.Mode {
 
 func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit.Mode) (*agentickit.Kit, error) {
 	l := instance.NewLayout(w.instanceRoot)
-	cfg, err := instance.LoadConfig(l.ConfigFile())
-	if err != nil {
-		return nil, fmt.Errorf("load instance config: %w", err)
+	if w.seams == nil {
+		return nil, fmt.Errorf("agentic kit writer for run %s stage %s has no config snapshot store; refusing to resolve a kit from ambient config", env.RunID, env.TaskID)
 	}
-	set, report, err := loadConfigDirectory(l.ConfigDir())
+	// The whole point of the pin: this resolves the config tree the RUN was
+	// admitted against, or refuses by name (#3884). Never the tree that
+	// happens to be mounted at attempt time.
+	snapshot, err := w.seams.snapshotForPin(env.Gaggle, env.WorkflowID, env.GooberDigest)
 	if err != nil {
-		if issues := validationIssueSummary(report); issues != "" {
-			return nil, fmt.Errorf("load config directory: %w (%s)", err, issues)
-		}
-		return nil, fmt.Errorf("load config directory: %w", err)
+		return nil, err
 	}
-	instance.ApplyGaggleCICommand(set)
-	instance.ApplyGaggleOutboxMirror(set)
+	cfg, set := snapshot.cfg, snapshot.set
 
 	goobers, err := resolveGoobersForGaggle(set, env.Gaggle)
 	if err != nil {
@@ -129,12 +137,9 @@ func (w agenticKitWriter) buildKit(env apiv1.InvocationEnvelope, mode agentickit
 	}
 	scoped := map[string]apiv1.GooberSpec{env.Goober: spec}
 
-	instructions, err := loadGooberInstructions(l.ConfigDir(), scoped)
+	instructions, err := snapshot.instructionsFor(scoped)
 	if err != nil {
 		return nil, fmt.Errorf("load goober instructions: %w", err)
-	}
-	if _, ok := instructions[env.Goober]; !ok {
-		return nil, fmt.Errorf("goober %q has no resolved instructions", env.Goober)
 	}
 
 	assets := make(map[string]*gooberassets.WireBundle, 1)

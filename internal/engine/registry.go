@@ -169,12 +169,23 @@ type StartSpec struct {
 	// Pinning it here puts the same value in the engine run's run.yaml
 	// identity, so an engine-driven run's provenance names the kit exactly as
 	// a runner-driven one does and the two are comparable in the parity
-	// harness. It does NOT yet SELECT the kit the worker executes: the
-	// worker resolves its kit from its own mounted config, so a
-	// mid-flight kit change can still be observed by an in-flight engine run.
-	// That gap is tracked as #3884 and is deliberately out of D1's scope —
-	// see docs/reference/engine-parity.md.
+	// harness. Since #3884 it also SELECTS the kit the worker executes: it
+	// rides every InvocationEnvelope, and the worker serves the attempt from
+	// the config snapshot whose tree resolves this digest — refusing by name
+	// (retriable) when it holds no such tree — instead of substituting its
+	// current instructions. See docs/reference/engine-parity.md.
 	GooberDigest string
+	// HITL pins this run's human-in-the-loop posture (#3883, decision 005
+	// R8). Nil — the value every run started before the protocol existed
+	// carries, and the value an instance that did not opt in carries — means
+	// the run settles at its terminal exactly as it always did, and an
+	// operator intent addressed to it is refused by name.
+	//
+	// It is PINNED at start rather than read from config mid-run for the
+	// WF-016 reason every other control here is pinned: the workflow must
+	// decide the same way on replay as it did live, and a config edit between
+	// the two would otherwise change the command sequence and wedge the run.
+	HITL *HITLPolicy
 }
 
 // StartInput resolves the latest version of a workflow and pins it into a
@@ -241,6 +252,7 @@ func RunInputFor(name string, def wf.Definition, allowPreviewFeatures bool, s St
 		Placements:             s.Placements,
 		RunControls:            s.RunControls,
 		GooberDigest:           s.GooberDigest,
+		HITL:                   s.HITL,
 
 		BacklogQueryAssignedTo:    s.BacklogQueryAssignedTo,
 		BacklogQueryRequireLabels: s.BacklogQueryRequireLabels,

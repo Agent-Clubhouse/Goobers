@@ -1816,6 +1816,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			if !advance {
 				return res, nil
 			}
+			var injected *apiv1.ContextPointer
 			if gr.VerdictArtifact != nil {
 				// #412: the next dispatch — a repass back to the stage that
 				// produced the subject this gate just evaluated, most
@@ -1829,11 +1830,34 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 				pointer := apiv1.ContextPointer{
 					Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
 				}
+				injected = &pointer
 				if ws.parallel != nil {
 					ws.parallel.recordCurrentPointer(pointer)
 				} else {
 					ws.pointers = append(ws.pointers, pointer)
 				}
+			}
+			// The ADVANCE path's half of the learning injection, under the
+			// same canonical predicate stepGate's retry arm uses.
+			//
+			// A gate branch is a correctable re-entry independently of
+			// whether retryFailureClassForGateResult classified the subject's
+			// failure, and the branch that matters most does not classify: an
+			// agentic reviewer resolving needs-changes back into its
+			// implementer is not an automated status-equals check over
+			// nonzero_exit/base_sync_conflict, and is not `infra`, so
+			// routeRetryDecision declined it and the run arrived here with
+			// retry == false. Before this, the main implementation lane's
+			// reviewer→implement loop was therefore the one true repass in
+			// the system that never received a correction.
+			//
+			// Routing is untouched: `next` is gr.Target (the predicate
+			// excludes every reserved terminal, which is exactly the set
+			// gateTransition consumes rather than advancing to), and no
+			// retry-decision annotation is written here — that stays the
+			// classifier's to own.
+			if terminal, failed, err := r.injectLearningEpisode(ctx, ws, g, next, gr, injected); failed {
+				return terminal, err
 			}
 			if ws.parallel != nil && next == workflow.TargetJoin && ws.lastResult.Status == apiv1.ResultFailure && !gateClearsFailure(gr, g) {
 				ws.parallel.markCurrentFailed()
@@ -2099,32 +2123,50 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		return gr, false, terminal, true, failErr
 	}
 	if retry {
-		injection, err := recordGateRetryInjection(
-			ws.jr, ws.in, g.Name, retryTarget, gr, ws.lastStage, ws.lastResult, false,
-		)
-		if err != nil {
-			terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
-				fmt.Errorf("runner: journal learning episode injection for gate %q: %w", g.Name, err))
-			return gr, false, terminal, true, failErr
-		}
-		for _, pointer := range injection.pointers() {
+		var injected *apiv1.ContextPointer
+		if gr.VerdictArtifact != nil {
+			pointer := apiv1.ContextPointer{
+				Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
+			}
+			injected = &pointer
 			if ws.parallel != nil {
 				ws.parallel.recordCurrentPointer(pointer)
 			} else {
 				ws.pointers = append(ws.pointers, pointer)
 			}
 		}
+		// #3929: the episode — and ONLY the episode — is gated on the branch
+		// being a true repass. Everything else in this block is the retry
+		// decision itself and is unconditional: the annotation is already
+		// written (routeRetryDecision, with repassAttempt 0 on a forward
+		// branch), the verdict pointer still travels, and ws.state still
+		// takes the branch. A gate that routes ONWARD sends work to a stage
+		// that has not run, which has produced nothing to correct.
+		//
+		// The predicate is the canonical one every driver and every walk
+		// shares, and it is deliberately NOT "retry": a branch the retry
+		// classifier declines — an agentic reviewer's needs-changes, above
+		// all — reaches the same re-entry through the advance path in walk().
+		// It is applied inside recordGateBranchEpisode (#3932) rather than
+		// here, so the concurrent branch walker cannot answer it differently.
+		if terminal, failed, err := r.injectLearningEpisode(ctx, ws, g, retryTarget, gr, injected); failed {
+			return gr, false, terminal, true, err
+		}
 		ws.state = retryTarget
 	}
 	return gr, retry, Result{}, false, nil
 }
 
-// gateRetryInjection is what a taken retry arm produces for the walk that took
-// it: the reviewer's verdict pointer, and the learning episode's pointer when
-// the branch is a true repass. Both walkers route these into their own
-// accumulator — the sequential walk into ws.pointers or the active branch,
-// runBranch into result.pointers with its artifact/produced accounting.
-type gateRetryInjection struct {
+// gateBranchInjection is what a gate branch that re-enters a stage produces
+// for the walk that took it: the reviewer's verdict pointer, and the learning
+// episode's pointer when the branch is one the shared predicate admits.
+//
+// It exists for the CONCURRENT branch walker, which has no walkState to hand
+// injectLearningEpisode and so cannot use that method's routing. Both walkers
+// therefore share the production (recordGateBranchEpisode) while each routes
+// into its own accumulator: the sequential walk into ws.pointers or the active
+// branch, runBranch into result.pointers with its artifact/produced accounting.
+type gateBranchInjection struct {
 	verdict *apiv1.ContextPointer
 	episode *apiv1.ContextPointer
 }
@@ -2132,7 +2174,7 @@ type gateRetryInjection struct {
 // pointers returns the pointers to accumulate, verdict first — the order the
 // sequential walk has always appended them in, and therefore the order a
 // re-entered stage's envelope carries them in.
-func (i gateRetryInjection) pointers() []apiv1.ContextPointer {
+func (i gateBranchInjection) pointers() []apiv1.ContextPointer {
 	out := make([]apiv1.ContextPointer, 0, 2)
 	if i.verdict != nil {
 		out = append(out, *i.verdict)
@@ -2143,33 +2185,32 @@ func (i gateRetryInjection) pointers() []apiv1.ContextPointer {
 	return out
 }
 
-// recordGateRetryInjection is the retry arm's PRODUCER, shared by both walkers
-// (#3932).
+// recordGateBranchInjection is the CONCURRENT branch walker's whole gate-branch
+// arm, produced once so it cannot drift from the sequential walk's (#3932).
 //
-// The local runner has two walks that reach a gate retry arm — stepGate on the
-// sequential walk and runBranch on the concurrent one — and until this helper
-// existed only the first injected a learning episode. That made
-// maxConcurrentBranches, a scheduling bound, decide whether a repass received
-// its correction: the same definition, the same gate and the same failure
-// produced a durable journal artifact, a context pointer the repass reads and
-// a derived-integrity downgrade, or produced none of them, depending on which
-// walker the scheduler picked. runBranch had copied the verdict-pointer half of
-// the arm and not the learning half, which is the signature of
-// divergence-by-duplication: nothing forced the two arms to stay the same
-// shape.
+// The local runner has two walks that evaluate a gate and take its branch:
+// stepGate/walk, which serve the sequential walk and every branch of a
+// sequentially-executed parallel, and runBranch, which serves the concurrent
+// walk when maxConcurrentBranches > 1. runBranch carried a hand-copied HALF of
+// the arm — the verdict pointer and not the learning episode — so
+// maxConcurrentBranches, a scheduling bound tuned for machine capacity and
+// routinely different between a laptop, CI and a deployment, decided whether a
+// repass received its correction, its context pointer and its derived-integrity
+// downgrade. Nothing in the DSL says that bound is semantic, and it is not.
 //
-// So the arm's producer and its predicate live here, once. The predicate is
-// LearningEpisodeAppliesToRepass — #3929's ruling, itself shared with the
-// engine — rather than a second reading of "did this gate send a stage back",
-// because two walkers diverging on a second axis is the same bug again.
+// The two arms are kept identical by construction rather than by review: this
+// helper produces both halves, and the episode half is the shared
+// recordGateBranchEpisode the sequential walk reaches through
+// injectLearningEpisode. A walker cannot acquire a different predicate or a
+// different episode without changing the one place both read.
 //
 // replayed is the resume guard runBranch already applied to the verdict
 // pointer: a branch resuming across a gate.evaluated boundary re-derives the
 // gate result from history rather than evaluating it, and its previously
 // recorded pointers are rebuilt by pendingParallel. Recording the artifact
-// again there would double-count it and append a second annotation for one
-// injection. The sequential walk has no such boundary and passes false.
-func recordGateRetryInjection(
+// again would double-count it and file a second annotation for one injection.
+// The sequential walk has no such boundary.
+func recordGateBranchInjection(
 	jr executionJournal,
 	in StartInput,
 	gateName, target string,
@@ -2177,8 +2218,8 @@ func recordGateRetryInjection(
 	sourceStage string,
 	sourceResult apiv1.ResultEnvelope,
 	replayed bool,
-) (gateRetryInjection, error) {
-	var out gateRetryInjection
+) (gateBranchInjection, error) {
+	var out gateBranchInjection
 	if replayed {
 		return out, nil
 	}
@@ -2187,22 +2228,84 @@ func recordGateRetryInjection(
 			Name: gateName + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
 		}
 	}
-	// #3929: the episode — and ONLY the episode — is gated on the branch being
-	// a true repass. Everything else on this arm is the retry decision itself
-	// and is unconditional: the annotation is already written
-	// (routeRetryDecision, with repassAttempt 0 on a forward branch), the
-	// verdict pointer still travels, and the walk still takes the branch. A
-	// gate that routes ONWARD sends work to a stage that has not run, which
-	// has produced nothing to correct.
-	if !LearningEpisodeAppliesToRepass(gr.Attempt) {
-		return out, nil
-	}
-	episode, err := recordLearningInjection(jr, in, gateName, target, gr, sourceStage, sourceResult, out.verdict)
+	episode, err := recordGateBranchEpisode(jr, in, gateName, target, gr, sourceStage, sourceResult, out.verdict)
 	if err != nil {
-		return gateRetryInjection{}, err
+		return gateBranchInjection{}, err
 	}
 	out.episode = episode
 	return out, nil
+}
+
+// recordGateBranchEpisode is THE learning-injection producer: one predicate and
+// one construction, reached by every arm that can re-enter a stage.
+//
+// #3929 ruled which branches owe an episode and #3943 spelled the ruling as
+// LearningEpisodeAppliesToBranch, shared with the engine. #3932's point is that
+// the ruling has to be APPLIED in one place too: the runner reaches a
+// stage-re-entering branch from four arms — stepGate's retry arm, walk()'s
+// advance path, and runBranch's own two — and a predicate re-read per arm is a
+// predicate that will eventually differ per arm. It already had.
+//
+// Returns a nil pointer, and journals nothing, for a branch the predicate
+// declines. That is a disposition (a forward branch, a terminal, an escalation)
+// rather than a correction: a stage that has not run has produced nothing to
+// correct.
+func recordGateBranchEpisode(
+	jr executionJournal,
+	in StartInput,
+	gateName, target string,
+	gr gate.Result,
+	sourceStage string,
+	sourceResult apiv1.ResultEnvelope,
+	verdictPointer *apiv1.ContextPointer,
+) (*apiv1.ContextPointer, error) {
+	if !LearningEpisodeAppliesToBranch(LearningEpisodeBranchFor(gr)) {
+		return nil, nil
+	}
+	return recordLearningInjection(jr, in, gateName, target, gr, sourceStage, sourceResult, verdictPointer)
+}
+
+// injectLearningEpisode commits the repass correction and hands the re-entered
+// stage a pointer to it, scoping that pointer to the active parallel branch
+// when one is running.
+//
+// It is a method with two call sites — stepGate's retry arm and walk()'s
+// advance path — because the branches that owe an episode are split across
+// them by a condition that has nothing to do with the episode: whether
+// retryFailureClassForGateResult happens to classify the failure. Both pass
+// the same already-appended "<gate>.verdict" pointer as the episode's
+// evidence, so the artifact bytes do not depend on which arm the branch
+// travelled.
+//
+// Neither call site reads the LearningEpisodeAppliesToBranch predicate itself
+// (#3932): it lives inside recordGateBranchEpisode, with the construction, so
+// that the concurrent branch walker — which has no walkState and so cannot use
+// this method at all — cannot acquire a different answer to the same question.
+// This method is the ROUTING half; the production is shared.
+//
+// The bool reports that the run has TERMINATED (the caller must return the
+// accompanying Result and error): a correction that cannot be journaled must
+// not silently route the run.
+func (r *Runner) injectLearningEpisode(
+	ctx context.Context, ws *walkState, g apiv1.Gate, target string,
+	gr gate.Result, verdictPointer *apiv1.ContextPointer,
+) (Result, bool, error) {
+	episode, err := recordGateBranchEpisode(
+		ws.jr, ws.in, g.Name, target, gr, ws.lastStage, ws.lastResult, verdictPointer,
+	)
+	if err != nil {
+		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+			fmt.Errorf("runner: journal learning episode injection for gate %q: %w", g.Name, err))
+		return terminal, true, failErr
+	}
+	if episode != nil {
+		if ws.parallel != nil {
+			ws.parallel.recordCurrentPointer(*episode)
+		} else {
+			ws.pointers = append(ws.pointers, *episode)
+		}
+	}
+	return Result{}, false, nil
 }
 
 func recordLearningInjection(
@@ -5768,6 +5871,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		BranchNamespace:      r.branchNamespaceFor(in.Gaggle),
 		BaseBranch:           baseBranch,
 		Goal:                 goal,
+		GooberDigest:         in.GooberDigest,
 		Workspace:            workspace.path,
 		RepoRef:              in.RepoRef.EnvelopeRef(),
 		AdditionalWorkspaces: additionalWorkspaces(workspace),

@@ -75,7 +75,14 @@ var newStageDispatcher = dispatcher.New
 // pod name): stamped on every pod it creates and the scope its orphan sweep
 // sweeps within. See dispatcher.Config.Owner for why it must be stable across
 // a restart and distinct between workers.
-func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner string) (stageDispatch, error) {
+// seams is the worker's own config-snapshot store, shared so the mode-3 kit
+// writer resolves a stage pod's kit through the SAME current-plus-retained
+// config trees the self-execution path resolves against (#3884). Nil disables
+// the kit writer entirely, which makes Dispatch refuse agentic stages
+// explicitly rather than create a pod that would find no kit — and, crucially,
+// rather than fall back to reading whatever config tree is mounted, which is
+// the substitution the pin exists to prevent.
+func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner string, seams *workerSeams) (stageDispatch, error) {
 	if blobRoot == "" {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: a surrender plane is required — pass --blob-store")
 	}
@@ -148,7 +155,7 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner stri
 		// plane — plus the instance config only the worker has. Nil when no
 		// blob endpoint is configured, which makes Dispatch refuse agentic
 		// stages explicitly instead of creating a pod that would find no kit.
-		KitWriter:       agenticKitWriterFor(instanceRoot, os.Getenv("GOOBERS_BLOB_ENDPOINT"), signed),
+		KitWriter:       agenticKitWriterFor(instanceRoot, seams, os.Getenv("GOOBERS_BLOB_ENDPOINT"), signed),
 		Namespace:       namespace,
 		Owner:           owner,
 		EmbeddedCommit:  build.Commit,
@@ -224,12 +231,16 @@ func podTokenMinter(cfg *instance.Config) (*podauth.SignedKey, error) {
 // KitWriter != nil check pass and then panic — the same interface trap the
 // token minter already documents — so the nil is returned through the
 // interface type explicitly.
-func agenticKitWriterFor(instanceRoot, blobEndpoint string, minter *podauth.SignedKey) dispatcher.KitWriter {
-	if strings.TrimSpace(instanceRoot) == "" || strings.TrimSpace(blobEndpoint) == "" {
+// A nil seams also returns nil: a kit writer with no snapshot store could only
+// resolve a kit from ambient config, and publishing a pod kit that ignores the
+// run's pinned goober digest is exactly the silent staleness #3884 closes.
+func agenticKitWriterFor(instanceRoot string, seams *workerSeams, blobEndpoint string, minter *podauth.SignedKey) dispatcher.KitWriter {
+	if strings.TrimSpace(instanceRoot) == "" || strings.TrimSpace(blobEndpoint) == "" || seams == nil {
 		return nil
 	}
 	return agenticKitWriter{
 		instanceRoot: instanceRoot,
+		seams:        seams,
 		blobEndpoint: blobEndpoint,
 		minter:       minter,
 		registrar:    journal.NewRegistryScrubber(),

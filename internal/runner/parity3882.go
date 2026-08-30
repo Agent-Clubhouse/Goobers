@@ -9,6 +9,7 @@ import (
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/learning"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 // This file is the SHARED half of decision 005's implementation-lane parity
@@ -309,11 +310,19 @@ func LearningEpisodePointerName(sourceSeq uint64) string {
 // repass, and a branch is a true repass exactly when the gate result's repass
 // attempt is at least 1.
 //
-// The caller has already established that the branch is a retry decision at
-// all — retryable, non-pass, non-escalated, and targeting a real stage rather
-// than a reserved terminal (internal/runner.routeRetryDecision's guard, and
-// internal/engine.retryDecisionApplies). This is the SECOND question, and only
-// this one: is the stage being re-entered, or entered for the first time?
+// The caller — LearningEpisodeAppliesToBranch, which is what both drivers
+// actually call — has already established the branch SHAPE: non-pass,
+// non-escalated, and targeting a real stage rather than a reserved terminal.
+// This is the SECOND question, and only this one: is the stage being
+// re-entered, or entered for the first time?
+//
+// Note what is deliberately NOT among the caller's preconditions any more:
+// `retryable`. #3929 was taken while both injection sites sat inside the
+// retry-decision arm, so the ruling was read as applying only to failures the
+// retry CLASSIFIER accepts. #3942 separated the two — a reviewer's
+// needs-changes is a true repass that the classifier declines — and this
+// predicate is unchanged by that, because the attempt is the attempt however
+// the branch was classified.
 //
 // # Why the repass attempt, and not a re-derived "has the target completed?"
 //
@@ -347,6 +356,90 @@ func LearningEpisodePointerName(sourceSeq uint64) string {
 // control — for a correction it is not receiving.
 func LearningEpisodeAppliesToRepass(repassAttempt int) bool {
 	return repassAttempt >= 1
+}
+
+// LearningEpisodeBranch is the resolved gate branch the injection predicate
+// reads: exactly the four fields of a gate verdict that decide whether the
+// branch is a correctable re-entry, and nothing else.
+//
+// It is a struct rather than the driver's own result type because the two
+// drivers hold that verdict in different types — internal/gate.Result on the
+// local runner, internal/engine.gateResult on the Temporal engine — and
+// internal/engine imports internal/runner, never the other way round.
+type LearningEpisodeBranch struct {
+	// Outcome is the gate's resolved outcome: "pass"/"fail"/"infra" for an
+	// automated check, or the reviewer's verdict decision for an agentic gate.
+	Outcome string
+	// Escalated reports that the gate exhausted a budget or force-escalated,
+	// in which case the branch is a disposition rather than a correction.
+	Escalated bool
+	// Target is the resolved branch target.
+	Target string
+	// Attempt is the repass attempt internal/gate.trackRepass (local runner)
+	// or internal/engine.resolveGateOutcome charged to Target.
+	Attempt int
+}
+
+// LearningEpisodeAppliesToBranch is the CANONICAL injection predicate, spelled
+// once for both drivers: a learning episode is injected if and only if the
+// resolved branch is a correctable re-entry — a non-pass, non-escalated branch
+// whose target is a real stage rather than a reserved terminal, and which the
+// gate has charged a repass attempt of at least 1.
+//
+// # Why this exists separately from the retry decision
+//
+// #3929 ruled that "true repass" is the whole predicate, and hoisted
+// LearningEpisodeAppliesToRepass so both drivers would answer it the same way.
+// What it left in place was the condition WRAPPING that call on both sides:
+// the injection sat inside the retry-decision arm, so it also required
+// `retryable` — internal/runner.retryFailureClassForGateResult, which is true
+// only for an automated `status-equals` gate failing on
+// `nonzero_exit`/`base_sync_conflict`, or for ANY gate resolving `infra`.
+//
+// That is a CLASSIFICATION question ("is this failure's outcome knowable
+// without dispatching the checker, and is it policy or infrastructure?"), and
+// it answers a different question from the one the injection asks ("is a stage
+// being asked to do its work again, with something to learn from?"). An
+// AGENTIC reviewer gate resolving `needs-changes` back into `implement` is the
+// canonical true repass of the whole system, and the classifier declines it:
+// the evaluator is not `automated`, the outcome is not `infra`, so `retryable`
+// was false and the episode was never built. The main implementation lane's
+// reviewer→implement loop — reference-workflows/.../implementation.yaml's
+// `review` gate, and pr-remediation.yaml's — therefore never received the
+// correction that internal/gate.reconcileLearningFindings exists to read back,
+// while the deterministic `nonzero_exit` lanes did.
+//
+// # What it deliberately does NOT do
+//
+// It does not change ROUTING, and it does not change CLASSIFICATION. The
+// retry-decision annotation, the repass budget, `routeRetryDecision`'s return
+// and the failure class that annotation carries are all untouched: a branch
+// the classifier declines still re-enters its stage through the ordinary
+// advance path, and still carries no retry-decision annotation. Only the
+// episode is widened, and only onto branches that were already re-entries.
+//
+// The reserved-terminal and non-pass/non-escalated guards are retained
+// verbatim from internal/runner.routeRetryDecision so that an ONWARD or
+// TERMINAL branch remains excluded: a stage that has not run has produced
+// nothing to correct (#3929), and a disposition branch would have a
+// content-addressed correction asserted against work it never did.
+func LearningEpisodeAppliesToBranch(b LearningEpisodeBranch) bool {
+	if b.Outcome == gate.OutcomePass || b.Escalated {
+		return false
+	}
+	switch b.Target {
+	case workflow.TargetAbort, workflow.TargetEscalate, workflow.TerminalComplete:
+		return false
+	}
+	return LearningEpisodeAppliesToRepass(b.Attempt)
+}
+
+// LearningEpisodeBranchFor adapts the local runner's gate verdict to the
+// canonical predicate's input.
+func LearningEpisodeBranchFor(r gate.Result) LearningEpisodeBranch {
+	return LearningEpisodeBranch{
+		Outcome: r.Outcome, Escalated: r.Escalated, Target: r.Target, Attempt: r.Attempt,
+	}
 }
 
 // LearningEpisodeInjectedKind is the runner.annotation kind recording an

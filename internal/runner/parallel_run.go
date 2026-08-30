@@ -763,37 +763,45 @@ func (r *Runner) runParallelBranch(
 				result.status, result.err = journal.BranchFailed, err
 				return result
 			}
+			// #3932: this branch's gate arm is PRODUCED by the same helper the
+			// sequential walk uses (recordGateBranchInjection), on both the
+			// retry route and the advance route.
+			//
+			// runBranch used to carry a hand-copied half of it — the verdict
+			// pointer without the learning episode — which made
+			// maxConcurrentBranches, a scheduling bound, decide whether a
+			// repass received its correction. Both routes go through the
+			// helper because #3943 established that a stage-re-entering branch
+			// arrives by EITHER: an agentic reviewer's needs-changes is a true
+			// repass the retry classifier declines, so it advances rather than
+			// retries. Wiring only the retry route would have rebuilt the same
+			// divergence for the branch that matters most.
+			//
+			// Only the ROUTING is local: pointers land in the branch's own
+			// accumulator, and a recorded artifact is charged to the branch's
+			// artifact/produced accounting, which is what a join's
+			// completeness record reports.
+			injectTarget := gr.Target
 			if retry {
-				// #3932: the retry arm's producer is SHARED with the
-				// sequential walk (recordGateRetryInjection). runBranch used
-				// to carry a hand-copied half of it — the verdict pointer and
-				// not the learning episode — which made maxConcurrentBranches
-				// decide whether a repass received its correction. Each walker
-				// still routes the pointers into its own accumulator; only the
-				// production of them is one place.
-				injection, err := recordGateRetryInjection(
-					branchJournal, in, g.Name, retryTarget, gr, result.lastStage, result.lastResult, replayed,
-				)
-				if err != nil {
-					result.status, result.err = journal.BranchFailed, err
-					return result
+				injectTarget = retryTarget
+			}
+			injection, err := recordGateBranchInjection(
+				branchJournal, in, g.Name, injectTarget, gr, result.lastStage, result.lastResult, replayed,
+			)
+			if err != nil {
+				result.status, result.err = journal.BranchFailed, err
+				return result
+			}
+			for _, pointer := range injection.pointers() {
+				result.pointers = append(result.pointers, pointer)
+				if pointer.Artifact != nil {
+					result.artifacts++
 				}
-				for _, pointer := range injection.pointers() {
-					result.pointers = append(result.pointers, pointer)
-					if pointer.Artifact != nil {
-						result.artifacts++
-					}
-					result.produced = true
-				}
+				result.produced = true
+			}
+			if retry {
 				state = retryTarget
 				continue
-			}
-			if !replayed && gr.VerdictArtifact != nil {
-				result.pointers = append(result.pointers, apiv1.ContextPointer{
-					Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
-				})
-				result.artifacts++
-				result.produced = true
 			}
 			if ctx.Err() != nil {
 				result.status = journal.BranchCancelled

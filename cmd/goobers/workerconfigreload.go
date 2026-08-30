@@ -57,6 +57,11 @@ type workerReloadOutcome struct {
 	// Retained names the gaggles the new tree did not touch. Their seams are
 	// carried over by pointer — no rebuild, no repeated harness preflight.
 	Retained []string
+	// RetainedDigests names the superseded config trees this worker still
+	// holds after the publish, newest first — the bounded set a run's pinned
+	// goober digest can still be resolved against (#3884). Empty when
+	// retention is disabled or nothing has been superseded yet.
+	RetainedDigests []string
 }
 
 // currentSnapshotLocked returns the published snapshot, loading one on first
@@ -110,6 +115,14 @@ func (w *workerSeams) loadConfigSnapshot() (*workerConfigSnapshot, bool, error) 
 	instance.ApplyGaggleCICommand(set)
 	instance.ApplyGaggleOutboxMirror(set)
 
+	// Capture — not reference — the config-tree content this snapshot's kits
+	// and goober digests are derived from, so it stays answerable after the
+	// tree on disk moves past it (#3884, snapshot retention).
+	instructions, skillPackages, err := loadSnapshotGooberInputs(l.ConfigDir(), set)
+	if err != nil {
+		return nil, false, fmt.Errorf("worker: load goober kit content: %w", err)
+	}
+
 	// Read-validate-reread, the same stability check the daemon's reloader
 	// uses: if the digest moved while the directory was being parsed, the
 	// parse may have seen half of one tree and half of another.
@@ -118,10 +131,13 @@ func (w *workerSeams) loadConfigSnapshot() (*workerConfigSnapshot, bool, error) 
 		return nil, false, fmt.Errorf("worker: digest config directory: %w", err)
 	}
 	snapshot := &workerConfigSnapshot{
-		digest:  digest,
-		cfg:     cfg,
-		set:     set,
-		gaggles: map[string]*builtGaggleSeams{},
+		digest:        digest,
+		cfg:           cfg,
+		set:           set,
+		instructions:  instructions,
+		skillPackages: skillPackages,
+		digests:       newGooberDigestIndex(cfg, set, instructions, skillPackages),
+		gaggles:       map[string]*builtGaggleSeams{},
 	}
 	return snapshot, settled == digest, nil
 }
@@ -194,20 +210,41 @@ func (w *workerSeams) reloadOnce() (workerReloadOutcome, error) {
 	}
 	slices.Sort(outcome.Invalidated)
 	slices.Sort(outcome.Retained)
+	// The tree being replaced is retained, bounded, so an in-flight run pinned
+	// to it is still served ITS kit rather than these new instructions
+	// (#3884). Done before the publish, under the same lock, so there is no
+	// instant at which the superseded tree is neither current nor retained.
+	w.retainSupersededLocked(current)
+	outcome.RetainedDigests = w.historyDigestsLocked()
 	// One pointer store publishes the new tree and every carried-over kit
 	// together, so a concurrent reader sees whole-old or whole-new.
 	w.snapshot.Store(next)
 	return outcome, nil
 }
 
+// historyDigestsLocked lists the retained superseded trees, newest first.
+// Callers must hold w.mu.
+func (w *workerSeams) historyDigestsLocked() []string {
+	out := make([]string, 0, len(w.history))
+	for _, entry := range w.history {
+		out = append(out, entry.digest)
+	}
+	return out
+}
+
 // gaggleFingerprint fingerprints everything one gaggle's seams are built from,
 // as that gaggle would read it out of the given snapshot.
+//
+// Snapshot-sourced, not disk-sourced: comparing a candidate tree against a
+// built kit has to compare the CANDIDATE's instruction bytes, and re-reading
+// the directory here would compare whatever landed since instead — which
+// could retain a kit across a change it does not reflect.
 func (w *workerSeams) gaggleFingerprint(snapshot *workerConfigSnapshot, gaggle string) (string, error) {
 	goobers, err := resolveGoobersForGaggle(snapshot.set, gaggle)
 	if err != nil {
 		return "", err
 	}
-	instructions, err := loadGooberInstructions(instance.NewLayout(w.root).ConfigDir(), goobers)
+	instructions, err := snapshot.instructionsFor(goobers)
 	if err != nil {
 		return "", err
 	}
