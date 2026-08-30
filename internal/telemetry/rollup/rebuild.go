@@ -150,20 +150,70 @@ func createStagingDB(dbPath string) (string, error) {
 	return name, nil
 }
 
-// replaceDB swaps the staged database in for the active one. The stale sidecars
-// are removed first: a leftover -wal from the old database would otherwise be
-// replayed against the renamed file, which is the one way this swap could
-// publish a corrupt projection.
+// replaceDB swaps the staged database in for the active one. A leftover -wal
+// from the old database would otherwise be replayed against the renamed file,
+// so the old sidecars must be gone once this returns successfully — but they
+// are staged out of the way with a reversible rename, not deleted outright,
+// so that a failure at any point (staging a sidecar, or the swap itself)
+// restores them and leaves the previously active database exactly as it was
+// instead of publishing a half-replaced, WAL-less projection.
 func replaceDB(dbPath, stagingPath string) error {
-	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
-		if err := os.Remove(dbPath + suffix); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("rollup: remove existing %s%s: %w", dbPath, suffix, err)
-		}
+	trashed, err := trashSidecars(dbPath)
+	if err != nil {
+		return err
 	}
 	if err := durability.ReplaceFile(stagingPath, dbPath); err != nil {
+		restoreSidecars(trashed)
 		return fmt.Errorf("rollup: replace %s with staged rollup %s: %w", dbPath, stagingPath, err)
 	}
+	removeTrashedSidecars(trashed)
 	return nil
+}
+
+// trashedSidecar records a sidecar file that was moved aside so it can be put
+// back exactly where it was if the swap does not complete.
+type trashedSidecar struct {
+	original string
+	trash    string
+}
+
+// trashSidecars moves each existing sidecar of dbPath to a reversible temp
+// name in the same directory (a same-filesystem rename, so it is itself
+// atomic and cheap) rather than deleting it outright. If any rename fails,
+// whatever was already moved is restored before returning, so the active
+// database and its sidecars are left fully intact.
+func trashSidecars(dbPath string) ([]trashedSidecar, error) {
+	var trashed []trashedSidecar
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		original := dbPath + suffix
+		trash := original + ".rebuild-trash"
+		if err := os.Rename(original, trash); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			restoreSidecars(trashed)
+			return nil, fmt.Errorf("rollup: stage existing %s out of the way: %w", original, err)
+		}
+		trashed = append(trashed, trashedSidecar{original: original, trash: trash})
+	}
+	return trashed, nil
+}
+
+// restoreSidecars puts trashed sidecars back at their original names. It is
+// used on any failure path after trashSidecars has moved at least one file,
+// so the previously active database is left exactly as it was found.
+func restoreSidecars(trashed []trashedSidecar) {
+	for _, t := range trashed {
+		_ = os.Rename(t.trash, t.original)
+	}
+}
+
+// removeTrashedSidecars permanently discards sidecars that were staged out of
+// the way, once the swap they were staged for has actually committed.
+func removeTrashedSidecars(trashed []trashedSidecar) {
+	for _, t := range trashed {
+		_ = os.Remove(t.trash)
+	}
 }
 
 // removeDBFiles discards a staged database and any sidecars it left behind. A
