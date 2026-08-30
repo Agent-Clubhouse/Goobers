@@ -93,6 +93,13 @@ func (f *fakeEngineWorkflows) CancelWorkflow(_ context.Context, workflowID, _ st
 	f.mu.Lock()
 	f.cancelled = append(f.cancelled, workflowID)
 	f.mu.Unlock()
+	// Cancelling a workflow id nothing executes under is NotFound, exactly as
+	// describing one is — which is the whole scheduled-run shape: a run's own
+	// id addresses nothing, and the cancel has to be resolved through the
+	// open-workflow inverse before it can land.
+	if len(f.workflowIDs) > 0 && !f.knownWorkflowID(workflowID) {
+		return serviceerror.NewNotFound("workflow not found")
+	}
 	return f.cancelErr
 }
 
@@ -658,30 +665,6 @@ func TestReattachEngineRunReportsUnresolvableWorkflow(t *testing.T) {
 	}
 }
 
-// TestRunAbortRefusesEngineDrivenRun: `run abort` appends a terminal event
-// straight into a run's own journal. On an engine-driven run that forges a
-// terminal for a workflow that keeps executing and keeps emitting into the
-// same file.
-func TestRunAbortRefusesEngineDrivenRun(t *testing.T) {
-	root := initDemo(t)
-	l := instance.NewLayout(root)
-	const runID = "engine-run-abort"
-	createDriverRun(t, l.RunsDir(), runID, "default-implement", "", journal.DriverEngine, time.Now(), nil)
-	before := runEventCount(t, l.RunsDir(), runID)
-
-	code, _, stderr := runArgs(t, "run", "abort", runID, root)
-	if code != 1 {
-		t.Fatalf("run abort: code = %d, stderr = %q, want the business refusal (1)", code, stderr)
-	}
-	if !strings.Contains(stderr, "engine-driven") || !strings.Contains(stderr, runID) {
-		t.Fatalf("run abort stderr = %q, want a named engine-driven refusal", stderr)
-	}
-	if got := runEventCount(t, l.RunsDir(), runID); got != before {
-		t.Fatalf("run journal grew from %d to %d events — abort wrote into a journal the engine owns", before, got)
-	}
-	assertWatchdogPhase(t, l.RunsDir(), runID, journal.PhaseRunning)
-}
-
 // TestRunAbortOnTerminalEngineDrivenRunReportsItTerminal: the engine-driven
 // refusal is about protecting a journal that still has a writer. Once the run
 // is closed there is nothing left to protect, and the refusal's advice — go
@@ -718,25 +701,6 @@ func closeDriverRun(t *testing.T, runsDir, runID string, phase journal.RunPhase)
 	}
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// TestRunCancelRefusesEngineDrivenRun: `run cancel` asks the daemon to stop a
-// run it is executing in-process. It never is, for an engine-driven run — and
-// the generic "not currently running under this daemon" answer reads like a
-// race, which invites the operator to reach for `run abort` instead.
-func TestRunCancelRefusesEngineDrivenRun(t *testing.T) {
-	root := initDemo(t)
-	l := instance.NewLayout(root)
-	const runID = "engine-run-cancel"
-	createDriverRun(t, l.RunsDir(), runID, "default-implement", "", journal.DriverEngine, time.Now(), nil)
-
-	code, _, stderr := runArgs(t, "run", "cancel", runID, root)
-	if code != 1 {
-		t.Fatalf("run cancel: code = %d, stderr = %q, want the business refusal (1)", code, stderr)
-	}
-	if !strings.Contains(stderr, "engine-driven") || !strings.Contains(stderr, runID) {
-		t.Fatalf("run cancel stderr = %q, want a named engine-driven refusal", stderr)
 	}
 }
 

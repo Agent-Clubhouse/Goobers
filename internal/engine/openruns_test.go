@@ -23,6 +23,11 @@ func (f *memoedDescriber) ListWorkflow(_ context.Context, _ *workflowservice.Lis
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
+	if f.listPages > 0 {
+		// Simulate an enumeration that never terminates within the page cap,
+		// matching fakeDescriber's own unbounded shape.
+		return &workflowservice.ListWorkflowExecutionsResponse{NextPageToken: []byte("more")}, nil
+	}
 	resp := &workflowservice.ListWorkflowExecutionsResponse{}
 	for _, id := range f.open {
 		info := &workflowpb.WorkflowExecutionInfo{

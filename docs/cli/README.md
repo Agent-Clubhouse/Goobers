@@ -2766,7 +2766,9 @@ Usage: goobers run abort <run-id> [path]
 
 Mark a stuck non-terminal run aborted by appending a terminal
 run.finished(status=aborted) event to its own journal (default path
-"."). Exit codes: 0 = aborted, 1 = business error (run already terminal),
+"."). An ENGINE-DRIVEN run is cancelled on the engine instead — its
+journal is never edited here, and the engine writes its terminal event.
+Exit codes: 0 = aborted, 1 = business error (run already terminal),
 2 = usage/IO error (unknown run).
 ~~~
 
@@ -2787,10 +2789,12 @@ Ask the live `goobers up` daemon to stop a run it is actively executing
 (default path "."): it cancels the active stage, tears down the run
 worktree, releases the backlog claim so the item can be re-queued, and
 records terminal phase aborted — without stopping the daemon or editing a
-journal behind its back. Use `run abort` instead when no daemon is running
-(that path finalizes a stuck run's journal directly). Exit codes: 0 =
-cancelled, 1 = business error (already terminal, not currently running, or
-no daemon to cancel it), 2 = usage/IO error (unknown run).
+journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine
+(CancelWorkflow) instead, with no live daemon required. Use `run abort`
+instead when no daemon is running (that path finalizes a stuck run's
+journal directly). Exit codes: 0 = cancelled, 1 = business error
+(already terminal, not currently running, or no daemon to cancel it),
+2 = usage/IO error (unknown run).
 ~~~
 
 **Examples**

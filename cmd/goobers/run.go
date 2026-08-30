@@ -590,7 +590,9 @@ func runFlagArgs(args []string) []string {
 const runAbortHelp = "Usage: goobers run abort <run-id> [path]\n\n" +
 	"Mark a stuck non-terminal run aborted by appending a terminal\n" +
 	"run.finished(status=aborted) event to its own journal (default path\n" +
-	"\".\"). Exit codes: 0 = aborted, 1 = business error (run already terminal),\n" +
+	"\".\"). An ENGINE-DRIVEN run is cancelled on the engine instead — its\n" +
+	"journal is never edited here, and the engine writes its terminal event.\n" +
+	"Exit codes: 0 = aborted, 1 = business error (run already terminal),\n" +
 	"2 = usage/IO error (unknown run).\n"
 
 func runRunAbort(args []string, stdout, stderr io.Writer) int {
@@ -634,16 +636,16 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	// `run abort` appends a terminal event straight into the run's own
 	// journal. On an engine-driven run that is a forgery: the workflow keeps
 	// executing on the engine and keeps emitting into the journal this
-	// command just declared finished.
+	// command just declared finished. So it does not abort one — it asks the
+	// ENGINE to cancel the workflow (#3877), and the engine writes the run's
+	// terminal itself. Nothing in this process touches that journal.
 	//
-	// An already-terminal engine run is NOT refused here — it falls through to
+	// An already-terminal engine run is NOT routed here — it falls through to
 	// the terminal guard below, which answers "run %s is already terminal".
-	// Nothing is going to be forged into a journal that is already closed, and
-	// pointing the operator at an engine workflow that no longer exists is the
-	// same class of misleading answer this refusal fixes for `run cancel`.
+	// There is no workflow left to cancel, and pointing the operator at one
+	// that has finished is the same class of misleading answer.
 	if identity.EngineDriven() && !engineRunSettledOnDisk(reader) {
-		pf(stderr, "error: %v\n", engineDrivenRefusal(identity.RunID, "run abort"))
-		return 1
+		return runEngineDrivenCancel(l, identity, "run abort", stdout, stderr)
 	}
 	runLayout := l
 	if identity.Gaggle != "" && filepath.Clean(filepath.Dir(dir)) != filepath.Clean(l.RunsDir()) {
@@ -812,10 +814,12 @@ const runCancelHelp = "Usage: goobers run cancel <run-id> [path]\n\n" +
 	"(default path \".\"): it cancels the active stage, tears down the run\n" +
 	"worktree, releases the backlog claim so the item can be re-queued, and\n" +
 	"records terminal phase aborted — without stopping the daemon or editing a\n" +
-	"journal behind its back. Use `run abort` instead when no daemon is running\n" +
-	"(that path finalizes a stuck run's journal directly). Exit codes: 0 =\n" +
-	"cancelled, 1 = business error (already terminal, not currently running, or\n" +
-	"no daemon to cancel it), 2 = usage/IO error (unknown run).\n"
+	"journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine\n" +
+	"(CancelWorkflow) instead, with no live daemon required. Use `run abort`\n" +
+	"instead when no daemon is running (that path finalizes a stuck run's\n" +
+	"journal directly). Exit codes: 0 = cancelled, 1 = business error\n" +
+	"(already terminal, not currently running, or no daemon to cancel it),\n" +
+	"2 = usage/IO error (unknown run).\n"
 
 func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("run cancel", flag.ContinueOnError)
@@ -856,15 +860,15 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	// `run cancel` asks the daemon to stop a run it is executing in-process.
-	// It never is for an engine-driven run, so the honest answer names the
-	// driver instead of the daemon's generic "not currently running under
-	// this daemon" — which reads like a race and invites the operator to
-	// reach for `run abort`, the one command that would actually corrupt the
-	// journal. As with abort, an already-terminal run gets the accurate
-	// "already terminal" answer from the guard below instead.
+	// It never is for an engine-driven run — so the cancellation goes to the
+	// ENGINE instead (#3877), where the run actually executes. This is
+	// deliberately NOT gated on a live daemon: the daemon is not the thing
+	// driving the run, and requiring one would leave an engine run
+	// unstoppable during exactly the outage an operator most wants to stop it
+	// in. As with abort, an already-terminal run gets the accurate "already
+	// terminal" answer from the guard below instead.
 	if identity.EngineDriven() && !engineRunSettledOnDisk(reader) {
-		pf(stderr, "error: %v\n", engineDrivenRefusal(identity.RunID, "run cancel"))
-		return 1
+		return runEngineDrivenCancel(l, identity, "run cancel", stdout, stderr)
 	}
 	// Event-log-first terminal guard (#242), matching `run abort`: a run that
 	// already finished has nothing live to cancel.
