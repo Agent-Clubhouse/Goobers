@@ -17,11 +17,14 @@ package engine
 // server.
 
 import (
+	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
@@ -170,6 +173,13 @@ func (o *hitlOutcome) callbacks(t *testing.T) *testsuite.TestUpdateCallback {
 }
 
 // deliver schedules one intent at delay and returns the outcome it collects.
+//
+// The delay is a MOCK-CLOCK delay, and the mock clock only advances when the
+// workflow has nothing left to do, so this schedules a delivery for the
+// instant the run has parked — on its operator hold, for every fixture here.
+// It is the right tool for "an intent arrives while the run is awaiting an
+// operator" and the WRONG tool for "an intent arrives mid-execution": see
+// deliverWhileExecuting.
 func deliver(t *testing.T, env *testsuite.TestWorkflowEnvironment, delay time.Duration, updateID string, intent HITLIntent) *hitlOutcome {
 	t.Helper()
 	out := &hitlOutcome{}
@@ -177,6 +187,149 @@ func deliver(t *testing.T, env *testsuite.TestWorkflowEnvironment, delay time.Du
 		env.UpdateWorkflow(HITLUpdateName, updateID, out.callbacks(t), intent)
 	}, delay)
 	return out
+}
+
+// hitlDelivery is one intent queued for a deterministic delivery point, paired
+// with the outcome that delivery collects.
+type hitlDelivery struct {
+	updateID string
+	intent   HITLIntent
+	out      *hitlOutcome
+}
+
+func newHITLDelivery(updateID string, intent HITLIntent) *hitlDelivery {
+	return &hitlDelivery{updateID: updateID, intent: intent, out: &hitlOutcome{}}
+}
+
+// hitlExecutionProbe records the point deliverWhileExecuting actually
+// delivered at, so a test asserts its own observation point instead of
+// trusting it. A mid-execution test whose delivery silently drifted past the
+// terminal would otherwise keep passing — or start failing — for reasons that
+// have nothing to do with the invariant it claims to pin.
+type hitlExecutionProbe struct {
+	fired    bool
+	activity string
+	phase    string
+}
+
+// deliverWhileExecuting delivers intents at a point that is DETERMINISTICALLY
+// mid-execution: while the named stage activity is still in flight.
+//
+// Do not reach for deliver()/RegisterDelayedCallback for this. The test
+// environment's mock clock does not advance while an activity is running, so a
+// delayed callback scheduled "a nanosecond in" is not delivered a nanosecond
+// in. The SDK converts the remaining MOCK duration into a WALL-CLOCK timer
+// (autoFireNextTimer, internal_workflow_testsuite.go) and races that timer's
+// goroutine against the activities the run is executing. Whether the intent
+// lands while the run is executing or after it has parked on its operator hold
+// is then decided by goroutine scheduling: the same one-nanosecond delay
+// observes "executing" on an idle machine and "awaiting-operator" on a loaded
+// race shard, which is how #3947 turned a phase-gate invariant into a coin
+// flip. Nothing about the run's phase gating was involved either way.
+//
+// SetOnActivityStartedListener has no such race, and needs no wall clock at
+// all. The SDK runs the listener as a callback on the environment's main loop
+// and BLOCKS the activity until the listener returns, so every callback the
+// listener posts — the update delivery included — is queued strictly ahead of
+// that activity's own completion callback and is processed while the workflow
+// is still blocked on it. The run is therefore mid-execution by construction,
+// on any machine, at any load, under -race or not.
+func deliverWhileExecuting(t *testing.T, env *testsuite.TestWorkflowEnvironment, activityType string, deliveries ...*hitlDelivery) *hitlExecutionProbe {
+	t.Helper()
+	return deliverWhileExecutingNth(t, env, activityType, 1, deliveries...)
+}
+
+// deliverWhileExecutingNth is deliverWhileExecuting against the nth (1-based)
+// start of the named activity, so a test can also aim at a stage the run only
+// reaches after an earlier intent resumed it.
+func deliverWhileExecutingNth(t *testing.T, env *testsuite.TestWorkflowEnvironment, activityType string, nth int, deliveries ...*hitlDelivery) *hitlExecutionProbe {
+	t.Helper()
+	probe := &hitlExecutionProbe{}
+	var mu sync.Mutex
+	seen := 0
+	env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name != activityType {
+			return
+		}
+		mu.Lock()
+		seen++
+		fire := seen == nth
+		mu.Unlock()
+		if !fire {
+			return
+		}
+		probe.fired = true
+		probe.activity = info.ActivityType.Name
+		probe.phase = hitlPhaseNow(t, env)
+		for _, d := range deliveries {
+			env.UpdateWorkflow(HITLUpdateName, d.updateID, d.out.callbacks(t), d.intent)
+		}
+	})
+	return probe
+}
+
+// hitlPhaseNow reads the run's HITL phase at the instant it is called. It runs
+// on the environment's main loop (its callers are main-loop callbacks), so the
+// phase it reports is the phase the update validator will see.
+func hitlPhaseNow(t *testing.T, env *testsuite.TestWorkflowEnvironment) string {
+	t.Helper()
+	val, err := env.QueryWorkflow(HITLStateQuery)
+	if err != nil {
+		t.Errorf("query HITL state: %v", err)
+		return ""
+	}
+	var st HITLState
+	if err := val.Get(&st); err != nil {
+		t.Errorf("decode HITL state: %v", err)
+		return ""
+	}
+	return st.Phase
+}
+
+// assertMidExecution fails the test unless the probe delivered where it said
+// it would.
+func (p *hitlExecutionProbe) assertMidExecution(t *testing.T, activityType string) {
+	t.Helper()
+	if !p.fired {
+		t.Fatalf("no %s activity ever started; the intent was never delivered mid-execution", activityType)
+	}
+	if p.phase != hitlPhaseExecuting {
+		t.Fatalf("delivered at phase %q during %s, want %q — the observation point drifted off mid-execution",
+			p.phase, p.activity, hitlPhaseExecuting)
+	}
+}
+
+// refusal returns whichever error the delivery was refused with — the
+// validator's rejection or the handler's — or nil if it was accepted.
+func (o *hitlOutcome) refusal() error {
+	if o.rejected != nil {
+		return o.rejected
+	}
+	return o.err
+}
+
+// assertOperatorTraceIsConsistent pins the fact the whole protocol rests on:
+// what the caller was told and what the journal records never disagree. An
+// operator told "resumed" must have a journaled operator event, and every
+// journaled operator event must belong to a caller that was told the intent
+// landed. Either half failing means an intent was applied to a state its
+// operator never saw, or a verdict was recorded that no operator was ever
+// told about.
+func assertOperatorTraceIsConsistent(t *testing.T, proj JournalProjection, outcomes ...*hitlOutcome) {
+	t.Helper()
+	events := hitlEvents(proj)
+	journaled := hitlCountEvents(events, journal.EventRunResumed) +
+		hitlCountEvents(events, journal.EventStageRerunRequested)
+	told := 0
+	for _, out := range outcomes {
+		if out.refusal() == nil && out.ack.Resumed {
+			told++
+		}
+	}
+	if journaled != told {
+		t.Fatalf("%d operator events journaled but %d callers were told their intent resumed the run: %v",
+			journaled, told, hitlEventTypes(events))
+	}
 }
 
 func baseIntent(kind HITLIntentKind, requestID string) HITLIntent {
@@ -649,6 +802,10 @@ func TestHITLRequestIDReusedForDifferentPayloadIsRefused(t *testing.T) {
 // intent for a run that has not reached a resumable terminal is refused BY
 // NAME — never queued — because queueing it would apply an operator's verdict
 // to a state they never saw.
+//
+// The delivery point is synchronized on the run's own execution rather than on
+// a mock-clock delay: see deliverWhileExecuting for why a delay cannot express
+// "mid-execution" in this environment, and #3947 for what that cost.
 func TestHITLIntentWhileExecutingIsRefusedExplicitly(t *testing.T) {
 	exec := hitlFailingExec()
 	env := hitlEnv(t, exec)
@@ -657,18 +814,25 @@ func TestHITLIntentWhileExecutingIsRefusedExplicitly(t *testing.T) {
 	intent.Gate = "review"
 	intent.Resolution = HITLResolutionApprove
 	intent.Decision = "pass"
-	// Delivered at t=0, before the first stage has even finished.
-	early := deliver(t, env, time.Nanosecond, "update-early", intent)
+	// Delivered while the FIRST stage's activity is still in flight, so the
+	// run demonstrably has not reached any terminal, let alone a resumable one.
+	early := newHITLDelivery("update-early", intent)
+	probe := deliverWhileExecuting(t, env, ActInvokeGoober, early)
 
 	env.ExecuteWorkflow(Run, hitlInput(t))
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("workflow error: %v", err)
 	}
-	if early.rejected == nil {
-		t.Fatal("an intent delivered mid-execution was not rejected")
+	probe.assertMidExecution(t, ActInvokeGoober)
+	if early.out.rejected == nil {
+		t.Fatalf("an intent delivered mid-execution was not rejected (accepted=%t ack=%+v err=%v)",
+			early.out.accepted, early.out.ack, early.out.err)
 	}
-	if !strings.Contains(early.rejected.Error(), HITLErrRunExecuting) {
-		t.Fatalf("rejection = %v, want the %s refusal", early.rejected, HITLErrRunExecuting)
+	if !strings.Contains(early.out.rejected.Error(), HITLErrRunExecuting) {
+		t.Fatalf("rejection = %v, want the %s refusal", early.out.rejected, HITLErrRunExecuting)
+	}
+	if early.out.accepted {
+		t.Fatal("a refused intent was also reported accepted; a validator rejection must not reach the handler")
 	}
 	var res RunResult
 	if err := env.GetWorkflowResult(&res); err != nil {
@@ -680,6 +844,320 @@ func TestHITLIntentWhileExecutingIsRefusedExplicitly(t *testing.T) {
 	events := hitlEvents(hitlProjection(t, env))
 	if got := hitlCountEvents(events, journal.EventRunResumed); got != 0 {
 		t.Fatalf("run.resumed count = %d, want 0 — a refused intent must leave no trace", got)
+	}
+	if exec.calls["ship"] != 0 {
+		t.Fatalf("ship dispatched %d times, want 0 — a refused intent must not resume the walk", exec.calls["ship"])
+	}
+}
+
+// TestHITLDuplicateMidExecutionDeliveriesAreEachRefused is the adversarial
+// half of the phase gate: an operator (or a retrying daemon) hammering the
+// same intent at a run that is still executing gets the same named refusal
+// every time. Not one refusal and one silent queue, and not a second delivery
+// admitted because the first one left a record of itself behind.
+func TestHITLDuplicateMidExecutionDeliveriesAreEachRefused(t *testing.T) {
+	exec := hitlFailingExec()
+	env := hitlEnv(t, exec)
+
+	intent := baseIntent(HITLResolveEscalation, "req-hammer")
+	intent.Gate = "review"
+	intent.Resolution = HITLResolutionApprove
+	intent.Decision = "pass"
+	// Same request id under two Temporal update ids — a genuine client retry,
+	// the case server-side update dedup does not cover.
+	first := newHITLDelivery("update-hammer-1", intent)
+	second := newHITLDelivery("update-hammer-2", intent)
+	probe := deliverWhileExecuting(t, env, ActInvokeGoober, first, second)
+
+	env.ExecuteWorkflow(Run, hitlInput(t))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	probe.assertMidExecution(t, ActInvokeGoober)
+	for i, out := range []*hitlOutcome{first.out, second.out} {
+		if out.rejected == nil {
+			t.Fatalf("delivery %d was not rejected (ack=%+v err=%v)", i+1, out.ack, out.err)
+		}
+		if !strings.Contains(out.rejected.Error(), HITLErrRunExecuting) {
+			t.Fatalf("delivery %d rejection = %v, want the %s refusal", i+1, out.rejected, HITLErrRunExecuting)
+		}
+	}
+	var res RunResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatalf("workflow result: %v", err)
+	}
+	if res.Status != StatusEscalated {
+		t.Fatalf("status = %q, want %q", res.Status, StatusEscalated)
+	}
+	proj := hitlProjection(t, env)
+	if got := hitlCountEvents(hitlEvents(proj), journal.EventRunResumed); got != 0 {
+		t.Fatalf("run.resumed count = %d, want 0", got)
+	}
+	assertOperatorTraceIsConsistent(t, proj, first.out, second.out)
+}
+
+// TestHITLRefusedMidExecutionIntentLeavesNoIdempotencyResidue is the other
+// direction of "never queued": a refusal must not be REMEMBERED either.
+//
+// The validator admits an already-seen request id so the handler can answer it
+// idempotently. If a mid-execution refusal recorded the id anyway, the very
+// next delivery of that same intent — the one the refusal told the operator to
+// make, once the run is actually holding its terminal — would be short-
+// circuited as a duplicate of an intent that never landed, or refused as a key
+// reused. It must instead be accepted on its own merits.
+func TestHITLRefusedMidExecutionIntentLeavesNoIdempotencyResidue(t *testing.T) {
+	exec := hitlFailingExec()
+	env := hitlEnv(t, exec)
+
+	intent := baseIntent(HITLResolveEscalation, "req-reissued")
+	intent.Gate = "review"
+	intent.Resolution = HITLResolutionApprove
+	intent.Decision = "pass"
+
+	early := newHITLDelivery("update-reissued-early", intent)
+	probe := deliverWhileExecuting(t, env, ActInvokeGoober, early)
+	// The operator does what the refusal told them to: re-reads the run and
+	// reissues the same intent once it is holding its terminal open.
+	reissued := deliver(t, env, time.Minute, "update-reissued-late", intent)
+
+	env.ExecuteWorkflow(Run, hitlInput(t))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	probe.assertMidExecution(t, ActInvokeGoober)
+	if early.out.rejected == nil || !strings.Contains(early.out.rejected.Error(), HITLErrRunExecuting) {
+		t.Fatalf("mid-execution delivery = %v, want the %s refusal", early.out.rejected, HITLErrRunExecuting)
+	}
+	if err := reissued.refusal(); err != nil {
+		t.Fatalf("reissued intent refused: %v — a refusal must leave no idempotency residue", err)
+	}
+	if reissued.ack.Duplicate {
+		t.Fatal("reissued intent was answered as a duplicate of an intent that never landed")
+	}
+	if !reissued.ack.Resumed || reissued.ack.ResumeState != "ship" {
+		t.Fatalf("reissued ack = %+v, want a resume at ship", reissued.ack)
+	}
+	var res RunResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatalf("workflow result: %v", err)
+	}
+	if res.Status != StatusCompleted {
+		t.Fatalf("status = %q, want %q", res.Status, StatusCompleted)
+	}
+	proj := hitlProjection(t, env)
+	// Exactly one resume: the reissued one. The refused delivery contributed
+	// nothing, neither an event nor a second application of the same verdict.
+	if got := hitlCountEvents(hitlEvents(proj), journal.EventRunResumed); got != 1 {
+		t.Fatalf("run.resumed count = %d, want exactly 1", got)
+	}
+	if exec.calls["ship"] != 1 {
+		t.Fatalf("ship dispatched %d times, want exactly 1", exec.calls["ship"])
+	}
+	assertOperatorTraceIsConsistent(t, proj, early.out, reissued)
+}
+
+// TestHITLIntentDuringTheFinalTransitionIsRefusedNotQueued covers an intent
+// that lands concurrently with the run's FINAL transition: the operator has
+// already resolved the escalation, the run has left its terminal and is
+// executing the last stage on the way to @complete, and a second intent
+// arrives against the terminal generation the first operator resolved.
+//
+// The run is executing again, so the second intent is refused by name — the
+// generation it quotes is real but the terminal behind it is gone. It must not
+// be queued against the terminal the run is about to reach, which is a
+// terminal that operator never saw.
+func TestHITLIntentDuringTheFinalTransitionIsRefusedNotQueued(t *testing.T) {
+	exec := hitlFailingExec()
+	env := hitlEnv(t, exec)
+
+	resolve := baseIntent(HITLResolveEscalation, "req-resolve")
+	resolve.Gate = "review"
+	resolve.Resolution = HITLResolutionApprove
+	resolve.Decision = "pass"
+	resolved := deliver(t, env, time.Minute, "update-resolve", resolve)
+
+	late := baseIntent(HITLResumeFromTerminal, "req-late")
+	late.Complete = true
+	lateDelivery := newHITLDelivery("update-late", late)
+	// InvokeGoober #1 is implement; #2 is ship, the stage the resolution
+	// resumed the run into and the last thing it does before @complete.
+	probe := deliverWhileExecutingNth(t, env, ActInvokeGoober, 2, lateDelivery)
+
+	env.ExecuteWorkflow(Run, hitlInput(t))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	probe.assertMidExecution(t, ActInvokeGoober)
+	if err := resolved.refusal(); err != nil {
+		t.Fatalf("the resolving intent was refused: %v", err)
+	}
+	if lateDelivery.out.rejected == nil {
+		t.Fatalf("an intent delivered during the final transition was not rejected (ack=%+v err=%v)",
+			lateDelivery.out.ack, lateDelivery.out.err)
+	}
+	if !strings.Contains(lateDelivery.out.rejected.Error(), HITLErrRunExecuting) {
+		t.Fatalf("rejection = %v, want the %s refusal", lateDelivery.out.rejected, HITLErrRunExecuting)
+	}
+	var res RunResult
+	if err := env.GetWorkflowResult(&res); err != nil {
+		t.Fatalf("workflow result: %v", err)
+	}
+	if res.Status != StatusCompleted {
+		t.Fatalf("status = %q, want %q — the run finishes through ship, not through the refused intent",
+			res.Status, StatusCompleted)
+	}
+	proj := hitlProjection(t, env)
+	events := hitlEvents(proj)
+	// Exactly one resume — the first operator's. The refused intent is not
+	// applied to the terminal the run reached after it was refused.
+	if got := hitlCountEvents(events, journal.EventRunResumed); got != 1 {
+		t.Fatalf("run.resumed count = %d, want exactly 1: %v", got, hitlEventTypes(events))
+	}
+	if got := hitlCountEvents(events, journal.EventRunFinished); got != 2 {
+		t.Fatalf("run.finished count = %d, want 2 (escalated then completed): %v", got, hitlEventTypes(events))
+	}
+	if exec.calls["ship"] != 1 {
+		t.Fatalf("ship dispatched %d times, want exactly 1", exec.calls["ship"])
+	}
+	assertOperatorTraceIsConsistent(t, proj, resolved, lateDelivery.out)
+}
+
+// TestHITLPhaseGateNamesBothRefusalsAtTheSeam pins acceptingNow directly, in
+// both non-accepting directions and without an environment: a run that has not
+// reached its terminal and a run whose terminal is closed refuse with
+// DIFFERENT named codes, because they are different instructions to the
+// operator — wait, versus do not bother.
+func TestHITLPhaseGateNamesBothRefusalsAtTheSeam(t *testing.T) {
+	intent := baseIntent(HITLResolveEscalation, "req-phase")
+	intent.Gate = "review"
+	intent.Resolution = HITLResolutionApprove
+	intent.Decision = "pass"
+
+	for _, tt := range []struct {
+		name  string
+		phase string
+		want  string
+	}{
+		{"executing", hitlPhaseExecuting, HITLErrRunExecuting},
+		{"settled", hitlPhaseSettled, HITLErrRunSettled},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			session := &hitlSession{
+				runID:        "run-hitl",
+				policy:       &HITLPolicy{Enabled: true},
+				phase:        tt.phase,
+				fingerprints: map[string]string{},
+			}
+			code, message, ok := HITLRefusalCode(session.validate(intent))
+			if !ok || code != tt.want {
+				t.Fatalf("refusal code = (%q, %v), want %q", code, ok, tt.want)
+			}
+			if !strings.Contains(message, "run-hitl") {
+				t.Fatalf("refusal message = %q, want it to name the run", message)
+			}
+			if session.phase != tt.phase {
+				t.Fatalf("validating moved the phase to %q; the validator must not mutate state", session.phase)
+			}
+		})
+	}
+}
+
+// TestHITLIntentConcurrentWithCancellationLeavesNoResumeTrace is the
+// cancellation half of the same race. `goobers run cancel` on an engine run
+// routes to CancelWorkflow (#3877/D2); an intent delivered in the same
+// workflow task as that cancellation must not leave the run claiming, in its
+// own journal, to have resumed somewhere it never went.
+func TestHITLIntentConcurrentWithCancellationLeavesNoResumeTrace(t *testing.T) {
+	exec := hitlFailingExec()
+	env := hitlEnv(t, exec)
+
+	intent := baseIntent(HITLResolveEscalation, "req-cancelled")
+	intent.Gate = "review"
+	intent.Resolution = HITLResolutionApprove
+	intent.Decision = "pass"
+
+	out := &hitlOutcome{}
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+		env.UpdateWorkflow(HITLUpdateName, "update-cancelled", out.callbacks(t), intent)
+	}, time.Minute)
+
+	env.ExecuteWorkflow(Run, hitlInput(t))
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("cancellation did not close a workflow holding a HITL terminal open")
+	}
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatal("a cancelled run must report the cancellation")
+	}
+	proj := hitlProjection(t, env)
+	events := hitlEvents(proj)
+	// The escalated terminal the hold wrote, then the abort the cancellation
+	// wrote on top of it — and nothing in between.
+	if got := hitlCountEvents(events, journal.EventRunFinished); got != 2 {
+		t.Fatalf("run.finished count = %d, want 2 (escalated then aborted): %v", got, hitlEventTypes(events))
+	}
+	if got := hitlCountEvents(events, journal.EventRunResumed); got != 0 {
+		t.Fatalf("run.resumed count = %d, want 0 — a cancelled run never resumed anywhere: %v",
+			got, hitlEventTypes(events))
+	}
+	if exec.calls["ship"] != 0 {
+		t.Fatalf("ship dispatched %d times, want 0 on a cancelled run", exec.calls["ship"])
+	}
+	if out.refusal() == nil && out.ack.Resumed {
+		t.Fatalf("the caller was told the run resumed, but it was cancelled: ack=%+v", out.ack)
+	}
+	assertOperatorTraceIsConsistent(t, proj, out)
+}
+
+// TestHITLRerunAttemptCountsTheTargetStagesOwnEntries pins the rerun attempt
+// number against the shape #3946 corrected on the learning path: a gate whose
+// fail branch sends the run BACK to a stage, so the target accumulates entries
+// the escalation itself did not produce.
+//
+// The number an operator's rerun is journaled under is the TARGET stage's own
+// cumulative entry count plus one — nextRerunAttempt's arithmetic — not a
+// number derived from whatever stage most recently ran. It is asserted on the
+// two-entry shape because a one-entry fixture cannot tell the two apart, which
+// is exactly how the learning path's addressing bug survived three rows.
+func TestHITLRerunAttemptCountsTheTargetStagesOwnEntries(t *testing.T) {
+	spec := hitlEscalatingSpec()
+	spec.Gates[0].Branches["fail"] = "implement"
+	exec := hitlFailingExec()
+	exec.verdicts = map[string][]apiv1.Verdict{
+		"review": {
+			{Decision: apiv1.VerdictFail, Summary: "send it back"},
+			{Decision: apiv1.VerdictNeedsChanges, Summary: "still not there"},
+		},
+	}
+	env := hitlEnv(t, exec)
+
+	intent := baseIntent(HITLRerunStage, "req-target-attempt")
+	intent.Stage = "implement"
+	intent.InstructionAddendum = "third time, with the reviewer's finding addressed"
+	out := deliver(t, env, time.Minute, "update-target-attempt", intent)
+
+	env.ExecuteWorkflow(Run, hitlInputFor(t, spec))
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	if err := out.refusal(); err != nil {
+		t.Fatalf("rerun intent refused: %v", err)
+	}
+	// implement ran twice before the escalation (the original entry and the
+	// gate's send-back), so the operator's rerun is the third.
+	if out.ack.Attempt != 3 {
+		t.Fatalf("ack attempt = %d, want 3 — one past the target stage's own two entries", out.ack.Attempt)
+	}
+	events := hitlEvents(hitlProjection(t, env))
+	req, ok := hitlFindEvent(events, journal.EventStageRerunRequested)
+	if !ok {
+		t.Fatalf("no stage.rerun.requested event: %v", hitlEventTypes(events))
+	}
+	if req.Attempt != 3 {
+		t.Fatalf("rerun attempt = %d, want 3", req.Attempt)
+	}
+	if req.Stage != "implement" {
+		t.Fatalf("rerun stage = %q, want implement", req.Stage)
 	}
 }
 

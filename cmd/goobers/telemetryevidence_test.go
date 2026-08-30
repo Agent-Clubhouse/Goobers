@@ -277,9 +277,12 @@ func TestTelemetryQueryStaysRefusedOnTheEnginePath(t *testing.T) {
 		t.Fatal("kind=external-telemetry must stay refused on the dispatch path")
 	}
 	// The stage that this issue's read route DOES serve is unchanged too:
-	// backlog-health keeps its own refusal until C2 lands its scheduler-state
-	// reads (scan cursor, provider snapshot), which this issue does not touch.
-	if !executor.StageRequiresInstanceRoot([]string{"goobers", "backlog-health", "--feedback"}, "") {
-		t.Fatal("backlog-health's refusal is C2's to lift, not C3's")
+	// backlog-health's own refusal was never C3's to lift, and C2 has since
+	// lifted it (Goobers#3948, its ready-transition ledger joining the
+	// scheduler-state namespace). What must not drift is the boundary this
+	// test draws: `--feedback` reads the telemetry plane, and that read alone
+	// never required the instance root.
+	if executor.StageRequiresInstanceRoot([]string{"goobers", "backlog-health", "--feedback"}, "") {
+		t.Fatal("backlog-health is fully plane-served since Goobers#3948; a refusal here means a file dependency came back")
 	}
 }
