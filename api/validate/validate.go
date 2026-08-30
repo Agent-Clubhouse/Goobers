@@ -686,12 +686,8 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() && path != root && strings.HasPrefix(d.Name(), ".") {
-			return filepath.SkipDir
-		}
-		if d.IsDir() && configtree.IsGaggleSkillsDir(root, path) {
-			return filepath.SkipDir
-		}
+		// Handle asset validation first (needs to validate before skipping)
+		// Check for assets before dir checks since assets can be symlinks
 		if gooberassets.IsSourceDir(path) {
 			if assetErr := gooberassets.Validate(path); assetErr != nil {
 				rel, _ := filepath.Rel(root, path)
@@ -703,6 +699,10 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			return nil
 		}
 		if d.IsDir() {
+			// Skip hidden dirs and gaggle skills dirs
+			if configtree.ShouldSkipConfigDirExcludingAssets(root, path) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))
