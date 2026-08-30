@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/goobers/goobers/internal/flake"
@@ -129,6 +130,11 @@ type Evaluator struct {
 	RepairLane bool
 	// Now is the clock, for tests. Defaults to time.Now.
 	Now func() time.Time
+
+	// probeMu guards probing, the per-baseline locks that keep two runs which
+	// hit the same red base at the same moment from each measuring it.
+	probeMu sync.Mutex
+	probing map[string]*sync.Mutex
 }
 
 // ErrNoStore reports an Evaluator used without a Store.
@@ -141,7 +147,7 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 	if e == nil || e.Store == nil {
 		return Decision{}, ErrNoStore
 	}
-	signature := flake.NormalizeSignature(req.FailureText)
+	signature := flake.NormalizeSignature(FailureSignatureText(req.FailureText))
 	fingerprint := Fingerprint(req.Command, signature)
 	decision := Decision{Class: ClassUnknown, BaseSHA: req.BaseSHA, Fingerprint: fingerprint, Signature: signature}
 	if strings.TrimSpace(req.BaseSHA) == "" || len(req.Command) == 0 {
@@ -195,7 +201,36 @@ func (e *Evaluator) Classify(ctx context.Context, req Request) (Decision, error)
 	return decision, nil
 }
 
+// ReleaseReady un-parks every subject whose park no longer reflects reality:
+// the baseline recovered, or the target branch has advanced past the commit the
+// subject was parked at, which is new evidence nobody has measured yet. It is
+// the counterpart of Classify's park — without it a red base would hold its
+// waiters forever, since a parked subject never runs and so never re-measures.
+// It returns the released subjects, for the caller's journal.
+func (e *Evaluator) ReleaseReady(repo, currentBaseSHA string) ([]Waiter, error) {
+	if e == nil || e.Store == nil {
+		return nil, ErrNoStore
+	}
+	ready := e.Store.ReadyToRetry(repo, currentBaseSHA)
+	for _, waiter := range ready {
+		if err := e.Store.Release(repo, waiter.Subject); err != nil {
+			return nil, err
+		}
+	}
+	return ready, nil
+}
+
 func (e *Evaluator) probe(ctx context.Context, req Request) (Observation, error) {
+	// Only one measurement per repo+base+command runs at a time: a baseline
+	// probe is a full CI run in a disposable checkout, so two runs that hit the
+	// same red base concurrently would otherwise both pay for it (and, sharing
+	// a probe directory, could tear it out from under each other). The loser of
+	// the race finds the winner's observation in the cache.
+	unlock := e.lockProbe(req)
+	defer unlock()
+	if cached, ok := e.Store.Baseline(req.Repo, req.BaseSHA, req.Command); ok {
+		return cached, nil
+	}
 	if e.ProbeTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, e.ProbeTimeout)
@@ -213,13 +248,29 @@ func (e *Evaluator) probe(ctx context.Context, req Request) (Observation, error)
 		ObservedAt: e.now(),
 	}
 	if !result.Green {
-		observation.Signature = flake.NormalizeSignature(result.Output)
+		observation.Signature = flake.NormalizeSignature(FailureSignatureText(result.Output))
 		observation.Fingerprint = Fingerprint(req.Command, observation.Signature)
 	}
 	if err := e.Store.Record(observation); err != nil {
 		return Observation{}, err
 	}
 	return observation, nil
+}
+
+func (e *Evaluator) lockProbe(req Request) func() {
+	key := observationKey(req.Repo, req.BaseSHA, CommandKey(req.Command))
+	e.probeMu.Lock()
+	if e.probing == nil {
+		e.probing = map[string]*sync.Mutex{}
+	}
+	lock, ok := e.probing[key]
+	if !ok {
+		lock = &sync.Mutex{}
+		e.probing[key] = lock
+	}
+	e.probeMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
 }
 
 func (e *Evaluator) now() time.Time {
@@ -232,6 +283,18 @@ func (e *Evaluator) now() time.Time {
 // CommandKey renders an argv as the stable string the baseline cache keys on.
 func CommandKey(command []string) string {
 	return strings.Join(command, "\x1f")
+}
+
+// RepoKey is the repository identity the cache and the blocker registry are
+// namespaced by. Both the runner (apiv1.RepoRef) and backlog selection
+// (providers.RepositoryRef) key through it so the two never drift apart.
+func RepoKey(owner, name string) string {
+	return owner + "/" + name
+}
+
+// CommandDisplay renders a cached command key back as a readable command line.
+func CommandDisplay(key string) string {
+	return strings.Join(strings.Split(key, "\x1f"), " ")
 }
 
 // Fingerprint is the identity two failures must share to be the same failure:

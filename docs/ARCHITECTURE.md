@@ -298,6 +298,17 @@ Contract rules:
   is the explicit opt-in that lets an affected branch carry the shared repair
   instead of parking; it is off by default so an unrelated fix is never added to
   a feature branch behind its author's back.
+  A parked subject cannot re-measure the base itself, so every run on the
+  repository releases the waiters whose park is stale (the base advanced, or the
+  baseline measured green) before it walks its machine, and backlog selection
+  skips a subject only while its park is current — the park is self-healing and
+  needs no human and no relabelling. `goobers status` renders the blocker
+  registry (command, signature, base, and the waiting subjects) so several quiet
+  parked runs read as one shared failure with one repair. The shared blocker is
+  instance-local state (`baseline-health.json`): #2971 deliberately stops short
+  of opening a provider-side blocker issue, because parking, releasing, and
+  reporting are all reachable from local state that the repo:push-scoped run
+  stages already own.
 
 ## 6. Instance anatomy (local runner)
 

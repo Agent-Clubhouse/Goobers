@@ -47,11 +47,7 @@ type Blocker struct {
 	// first-seen order; the last entry is the most recent red base.
 	BaseSHAs []string `json:"baseShas"`
 	Resolved bool     `json:"resolved"`
-	// ExternalRef is the provider-side blocker (issue URL/id) an operator or a
-	// later stage attached to this record, so re-parking updates one durable
-	// blocker rather than filing a new one per run.
-	ExternalRef string   `json:"externalRef,omitempty"`
-	Waiting     []Waiter `json:"waiting,omitempty"`
+	Waiting  []Waiter `json:"waiting,omitempty"`
 }
 
 // state is the store's on-disk form.
@@ -120,12 +116,31 @@ func (s *Store) Record(observation Observation) error {
 	s.state.Observations[observationKey(observation.Repo, observation.BaseSHA, observation.Command)] = observation
 	if observation.Green {
 		for _, blocker := range s.state.Blockers {
-			if blocker.Repo == observation.Repo && blocker.Command == observation.Command && !blocker.Resolved {
-				blocker.Resolved = true
+			if blocker.Repo != observation.Repo || blocker.Command != observation.Command || blocker.Resolved {
+				continue
 			}
+			if staleResolution(blocker, observation) {
+				continue
+			}
+			blocker.Resolved = true
 		}
 	}
 	return s.persistLocked()
+}
+
+// staleResolution reports that a green observation is not evidence about the
+// base the blocker is currently red at: it was measured before the blocker was
+// last seen red, or it is pinned to a base commit the blocker has already moved
+// past. Resolving on either would release every waiter onto a base that still
+// reproduces the failure.
+func staleResolution(blocker *Blocker, observation Observation) bool {
+	if observation.ObservedAt.Before(blocker.LastSeenAt) {
+		return true
+	}
+	if len(blocker.BaseSHAs) > 1 && contains(blocker.BaseSHAs[:len(blocker.BaseSHAs)-1], observation.BaseSHA) {
+		return true
+	}
+	return false
 }
 
 // Park records waiter against the durable blocker for observation's failure,
@@ -172,22 +187,6 @@ func (s *Store) Park(observation Observation, waiter Waiter) (Blocker, error) {
 		return Blocker{}, err
 	}
 	return *blocker, nil
-}
-
-// AttachExternalRef records the provider-side blocker (issue URL or id) that
-// represents key, so the same durable blocker is updated rather than reopened.
-func (s *Store) AttachExternalRef(key, ref string) error {
-	if s == nil {
-		return ErrNoStore
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	blocker, ok := s.state.Blockers[key]
-	if !ok {
-		return fmt.Errorf("baseline: unknown blocker %q", key)
-	}
-	blocker.ExternalRef = ref
-	return s.persistLocked()
 }
 
 // Blockers returns every recorded blocker for repo (all repositories when repo

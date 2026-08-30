@@ -122,25 +122,6 @@ func TestReleaseDropsARetriedSubject(t *testing.T) {
 	}
 }
 
-func TestAttachExternalRefRecordsTheDurableBlocker(t *testing.T) {
-	store, _ := newStore(t)
-	blocker, err := store.Park(redObservation("sha-1"), Waiter{Subject: "101", BaseSHA: "sha-1"})
-	if err != nil {
-		t.Fatalf("Park: %v", err)
-	}
-	if err := store.AttachExternalRef(blocker.Key, "https://example.test/issues/9"); err != nil {
-		t.Fatalf("AttachExternalRef: %v", err)
-	}
-	if err := store.AttachExternalRef("no-such-blocker", "x"); err == nil {
-		t.Fatal("AttachExternalRef error = nil, want an error for an unknown blocker")
-	}
-
-	blockers := store.Blockers("")
-	if len(blockers) != 1 || blockers[0].ExternalRef != "https://example.test/issues/9" {
-		t.Fatalf("blockers = %+v, want the external blocker reference recorded", blockers)
-	}
-}
-
 func TestRedBaseAtANewShaReusesTheSameBlocker(t *testing.T) {
 	store, _ := newStore(t)
 	if _, err := store.Park(redObservation("sha-1"), Waiter{Subject: "101", BaseSHA: "sha-1"}); err != nil {
@@ -170,4 +151,63 @@ func TestNilStoreIsInert(t *testing.T) {
 	if err := store.Record(Observation{}); err == nil {
 		t.Fatal("Record error = nil, want ErrNoStore")
 	}
+}
+
+// TestStaleGreenObservationDoesNotResolveABlocker guards the release gate: a
+// green measurement that predates the blocker's last red sighting, or that is
+// pinned to a base the blocker has already moved past, is evidence about a
+// commit nobody is waiting on. Resolving on it would release every waiter onto
+// a base that still reproduces the failure.
+func TestStaleGreenObservationDoesNotResolveABlocker(t *testing.T) {
+	store, _ := newStore(t)
+	parkedAt := time.Date(2026, 8, 30, 8, 0, 0, 0, time.UTC)
+	if _, err := store.Park(redObservation("sha-1"), Waiter{Subject: "101", BaseSHA: "sha-1", ParkedAt: parkedAt}); err != nil {
+		t.Fatalf("Park at sha-1: %v", err)
+	}
+	if _, err := store.Park(redObservation("sha-2"), Waiter{Subject: "202", BaseSHA: "sha-2", ParkedAt: parkedAt.Add(time.Hour)}); err != nil {
+		t.Fatalf("Park at sha-2: %v", err)
+	}
+
+	early := redObservation("sha-2")
+	early.Green, early.Fingerprint, early.Signature = true, "", ""
+	early.ObservedAt = parkedAt
+	if err := store.Record(early); err != nil {
+		t.Fatalf("Record early green: %v", err)
+	}
+	if parkedOnCurrentBase(store.ReadyToRetry("acme/web", "sha-2")) {
+		t.Fatal("subject 202 released: a green measurement predating the last red sighting must not resolve the blocker")
+	}
+
+	superseded := redObservation("sha-1")
+	superseded.Green, superseded.Fingerprint, superseded.Signature = true, "", ""
+	superseded.ObservedAt = parkedAt.Add(2 * time.Hour)
+	if err := store.Record(superseded); err != nil {
+		t.Fatalf("Record superseded green: %v", err)
+	}
+	if parkedOnCurrentBase(store.ReadyToRetry("acme/web", "sha-2")) {
+		t.Fatal("subject 202 released: sha-1 is a base the blocker has already moved past")
+	}
+
+	current := redObservation("sha-2")
+	current.Green, current.Fingerprint, current.Signature = true, "", ""
+	current.ObservedAt = parkedAt.Add(3 * time.Hour)
+	if err := store.Record(current); err != nil {
+		t.Fatalf("Record current green: %v", err)
+	}
+	if !parkedOnCurrentBase(store.ReadyToRetry("acme/web", "sha-2")) {
+		t.Fatal("subject 202 still parked: a green measurement of the current base resolves the blocker")
+	}
+}
+
+// parkedOnCurrentBase reports whether subject 202 — the waiter pinned to the
+// blocker's current base — is among the released waiters. Subject 101 is parked
+// at the older base and is always retry-ready there, so only 202 isolates the
+// resolution gate.
+func parkedOnCurrentBase(ready []Waiter) bool {
+	for _, waiter := range ready {
+		if waiter.Subject == "202" {
+			return true
+		}
+	}
+	return false
 }

@@ -36,6 +36,49 @@ type BaselineHealth interface {
 	BaseSHA(ctx context.Context, repo apiv1.RepoRef, repoURL string) (string, error)
 	// Classify attributes one failing CI observation.
 	Classify(ctx context.Context, req baseline.Request) (baseline.Decision, error)
+	// ReleaseReady un-parks the subjects whose shared baseline failure is no
+	// longer current — the base advanced, or the baseline recovered — and
+	// reports which ones it released.
+	ReleaseReady(ctx context.Context, repo apiv1.RepoRef, repoURL string) ([]baseline.Waiter, error)
+}
+
+// baselineReleaseKind is the runner.annotation kind recording that a run start
+// released parked subjects.
+const baselineReleaseKind = "baseline.release"
+
+// releaseBaselineParks un-parks subjects waiting on a shared baseline failure
+// whose base has since advanced (or gone green), at the start of every run that
+// touches the repository. A parked subject is not selectable, so it can never
+// re-measure the base itself — some OTHER run has to notice the base moved, and
+// every run of any workflow on that repository is exactly the cheap, always-
+// available trigger for that. Best effort throughout: a repository this run
+// cannot resolve, an unreadable store, or a failed journal append leaves the
+// parks exactly as they were rather than disturbing the run.
+func (r *Runner) releaseBaselineParks(ctx context.Context, ws *walkState) {
+	health := r.cfg.BaselineHealth
+	if health == nil || !machineUsesRepo(ws.in.Machine) {
+		return
+	}
+	repoURL, err := r.cfg.RepoCloneURL(ws.in.RepoRef)
+	if err != nil {
+		return
+	}
+	released, err := health.ReleaseReady(ctx, ws.in.RepoRef, repoURL)
+	if err != nil || len(released) == 0 {
+		return
+	}
+	subjects := make([]string, 0, len(released))
+	for _, waiter := range released {
+		subjects = append(subjects, waiter.Subject)
+	}
+	_ = ws.jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":     baselineReleaseKind,
+			"subjects": strings.Join(subjects, ","),
+			"released": len(subjects),
+		},
+	})
 }
 
 // ciCommand returns the configured local-ci stage's full argv, or nil when the
@@ -69,6 +112,8 @@ func baselineCandidate(task apiv1.Task, result apiv1.ResultEnvelope) bool {
 // baselineFailureText is the bounded evidence a signature is derived from: the
 // stage's summary plus its error message, which together carry the executor's
 // extracted failure diagnostic (internal/executor summarizeCommandFailure).
+// baseline.FailureSignatureText reduces this and the probe's raw transcript to
+// the same diagnostic, so the two halves of a comparison are comparable.
 func baselineFailureText(result apiv1.ResultEnvelope) string {
 	parts := make([]string, 0, 2)
 	if summary := strings.TrimSpace(result.Summary); summary != "" {
@@ -141,7 +186,7 @@ func (r *Runner) classifyBaselineFailure(ctx context.Context, ws *walkState, tas
 		return result, r.annotateBaselineError(ws, task.Name, err)
 	}
 	req := baseline.Request{
-		Repo:        repo.Owner + "/" + repo.Name,
+		Repo:        baseline.RepoKey(repo.Owner, repo.Name),
 		RepoURL:     repoURL,
 		BaseSHA:     baseSHA,
 		Command:     command,

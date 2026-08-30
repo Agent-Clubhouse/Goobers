@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -74,11 +76,33 @@ func (a *baselineHealthAdapter) Classify(ctx context.Context, req baseline.Reque
 	return a.evaluator.Classify(ctx, req)
 }
 
+// ReleaseReady implements runner.BaselineHealth: it resolves the repository's
+// current target-branch commit and un-parks every subject whose shared baseline
+// failure was measured at an older base (or has since gone green). The base SHA
+// comes from the managed mirror, so a release costs no provider call.
+func (a *baselineHealthAdapter) ReleaseReady(ctx context.Context, repo apiv1.RepoRef, repoURL string) ([]baseline.Waiter, error) {
+	baseSHA, err := a.BaseSHA(ctx, repo, repoURL)
+	if err != nil {
+		return nil, err
+	}
+	return a.evaluator.ReleaseReady(baseline.RepoKey(repo.Owner, repo.Name), baseSHA)
+}
+
 // Materialize implements baseline.Checkout with a disposable detached worktree
 // at the pinned base commit — the target branch exactly as the affected run
 // synced it, with none of that run's own commits.
+//
+// The directory is unique per probe rather than derived from the base SHA: two
+// runs measuring the same base must never share one worktree, or the first to
+// finish removes the tree the second is still running CI in. Concurrent
+// measurement of the same baseline is separately collapsed by the evaluator's
+// per-baseline probe lock, so this is the second line of defence.
 func (a *baselineHealthAdapter) Materialize(ctx context.Context, target baseline.ProbeTarget) (string, func(), error) {
-	runID := "baseline-" + target.BaseSHA
+	nonce := make([]byte, 8)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", nil, fmt.Errorf("baseline: probe id: %w", err)
+	}
+	runID := fmt.Sprintf("baseline-%s-%s", baselineShortSHA(target.BaseSHA), hex.EncodeToString(nonce))
 	wt, err := a.manager.Create(ctx, worktree.CreateOptions{
 		RepoURL: target.RepoURL,
 		RunID:   runID,
@@ -94,4 +118,13 @@ func (a *baselineHealthAdapter) Materialize(ctx context.Context, target baseline
 		_ = wt.Remove(context.WithoutCancel(ctx), worktree.RemoveOptions{})
 	}
 	return wt.Path, release, nil
+}
+
+// baselineShortSHA keeps a probe worktree name readable; the nonce, not the
+// commit, is what makes it unique.
+func baselineShortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }

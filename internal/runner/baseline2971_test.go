@@ -18,10 +18,17 @@ type stubBaselineHealth struct {
 	baseSHA  string
 	decision baseline.Decision
 	requests []baseline.Request
+	released []baseline.Waiter
+	releases int
 }
 
 func (s *stubBaselineHealth) BaseSHA(context.Context, apiv1.RepoRef, string) (string, error) {
 	return s.baseSHA, nil
+}
+
+func (s *stubBaselineHealth) ReleaseReady(context.Context, apiv1.RepoRef, string) ([]baseline.Waiter, error) {
+	s.releases++
+	return s.released, nil
 }
 
 func (s *stubBaselineHealth) Classify(_ context.Context, req baseline.Request) (baseline.Decision, error) {
@@ -268,5 +275,67 @@ func TestCICommandReturnsTheConfiguredArgv(t *testing.T) {
 	}
 	if ciCommand(agenticGateMachine(t)) != nil {
 		t.Fatal("ciCommand = non-nil for a machine with no local-ci stage")
+	}
+}
+
+// TestRunStartReleasesRetryReadyParks covers the un-park half of #2971: a
+// subject parked on a shared baseline failure is not selectable, so it can
+// never re-measure the base itself. Every run on the repository therefore asks
+// the baseline store what is now retry-ready and journals what it released.
+func TestRunStartReleasesRetryReadyParks(t *testing.T) {
+	const runID = "run-release-parks"
+	health := &stubBaselineHealth{
+		baseSHA:  "def4567890abc123",
+		decision: baseline.Decision{Class: baseline.ClassPRIntroduced},
+		released: []baseline.Waiter{{Subject: "101", BaseSHA: "abc123def4567890"}, {Subject: "202", BaseSHA: "abc123def4567890"}},
+	}
+
+	_, runsDir := runLocalCIFailure(t, runID, health)
+
+	if health.releases != 1 {
+		t.Fatalf("release calls = %d, want exactly one per run", health.releases)
+	}
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var released map[string]any
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == baselineReleaseKind {
+			released = event.Runner
+		}
+	}
+	if released == nil {
+		t.Fatal("no baseline.release annotation journaled, want the released subjects recorded")
+	}
+	if released["subjects"] != "101,202" {
+		t.Fatalf("released subjects = %v, want both un-parked subjects", released["subjects"])
+	}
+}
+
+// TestRunStartWithNothingToReleaseIsSilent keeps the release path free of
+// journal noise on the overwhelmingly common case: no parks to release.
+func TestRunStartWithNothingToReleaseIsSilent(t *testing.T) {
+	const runID = "run-nothing-to-release"
+	health := &stubBaselineHealth{baseSHA: "def4567890abc123", decision: baseline.Decision{Class: baseline.ClassPRIntroduced}}
+
+	_, runsDir := runLocalCIFailure(t, runID, health)
+
+	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == journal.EventRunnerAnnotation && event.Runner["kind"] == baselineReleaseKind {
+			t.Fatalf("annotation %+v journaled, want none when nothing was released", event.Runner)
+		}
 	}
 }

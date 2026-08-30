@@ -14,6 +14,8 @@ Each run includes work identity, stage liveness, PR trajectory, claim drift, lat
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 It lists parked backlog items too — open issues carrying a park disposition without
 goobers:ready, which backlog selection can no longer see and no workflow re-readies.
+Shared baseline failures are listed with the subjects waiting on them: runs parked
+because the target branch itself fails CI, all released by one repair to that branch.
 With --daemon, report daemon health, identity, and effective behavior settings instead.
 With --agents, list only the agentic stages in flight right now, by role and run id.
 The --agents answer comes from the runner's own journals, never from a process table,

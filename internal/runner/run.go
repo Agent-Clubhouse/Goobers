@@ -1475,6 +1475,10 @@ func workspaceBranchFrom(outputs map[string]interface{}, nsPrefix string) string
 // (#316), and context reconstructed from the journal (#107/#108).
 func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	ws.ex = newExecutors(r.cfg, ws.jr, ws.reg)
+	// #2971: a subject parked on a shared baseline failure cannot un-park
+	// itself, so every run on the repository checks whether the base has moved
+	// past the failure that parked it.
+	r.releaseBaselineParks(ctx, ws)
 	ws.gateEval = &gate.Evaluator{
 		Automated:   r.cfg.Automated,
 		Journal:     ws.jr,
