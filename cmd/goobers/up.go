@@ -26,6 +26,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/oidcauth"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/platform/memstat"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
@@ -1789,6 +1790,17 @@ func summarizeHeartbeat(events []journal.Event, afterSeq uint64) (heartbeatActiv
 	return activity, lastSeq
 }
 
+// emitHeartbeats prints a periodic liveness line carrying scheduler activity
+// since startup and the daemon's current memory footprint.
+//
+// The memory clause is not decoration. Without it the operator-facing log
+// cannot distinguish a leaking daemon from a pod whose memory cgroup is filling
+// with page cache produced by the stages it runs — in #3949 the 47 minutes of
+// heartbeats preceding an OOMKill were indistinguishable from healthy ones, and
+// the kill was misread as a daemon leak while the daemon's own anonymous memory
+// sat flat at 62 MiB. memstat.Read is cheap (no stop-the-world, a few small
+// file reads) and never fails, so it costs the heartbeat nothing to always
+// carry it.
 func emitHeartbeats(
 	ctx context.Context,
 	stdout io.Writer,
@@ -1817,15 +1829,18 @@ func emitHeartbeats(
 				events, err = tail.Events()
 				if err == nil {
 					activity, _ := summarizeHeartbeat(events, 0)
-					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped\n",
-						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped)
+					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped; %s\n",
+						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped, memstat.Read())
 					continue
 				}
 				_ = tail.Close()
 				tail = nil
 			}
 			if err != nil {
-				pf(stdout, "[%s] alive — scheduler activity unavailable: %v\n", now.Format("15:04:05"), err)
+				// The memory clause rides the degraded line too. A daemon that
+				// has lost its journal tail is exactly when an operator most
+				// needs to know whether it is also about to be OOM-killed.
+				pf(stdout, "[%s] alive — scheduler activity unavailable: %v; %s\n", now.Format("15:04:05"), err, memstat.Read())
 				continue
 			}
 		}
