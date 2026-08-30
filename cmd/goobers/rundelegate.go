@@ -318,7 +318,7 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 				var runID string
 				var terr error
 				if req.Priority {
-					runID, terr = sched.TriggerPriority(ctx, localscheduler.WorkflowIdentity{
+					runID, terr = sched.TriggerPriorityWithDispatchContext(requestCtx, ctx, localscheduler.WorkflowIdentity{
 						Gaggle: req.Gaggle, Workflow: req.Workflow,
 					}, req.SourceRun, sweepTime)
 				} else if req.Gaggle != "" {
@@ -327,7 +327,7 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 						runID, terr = sched.TriggerSignalExactWithDispatchContext(requestCtx, ctx, identity, webhookhttp.SignalName("pull_request"),
 							webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: req.PR}), sweepTime)
 					} else {
-						runID, terr = sched.TriggerExact(ctx, identity, sweepTime)
+						runID, terr = sched.TriggerExactWithDispatchContext(requestCtx, ctx, identity, sweepTime)
 					}
 				} else {
 					if req.PR > 0 {
@@ -335,7 +335,7 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 							webhookhttp.SignalName("pull_request"),
 							webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: req.PR}), sweepTime)
 					} else {
-						runID, terr = sched.Trigger(ctx, req.Workflow, sweepTime)
+						runID, terr = sched.TriggerWithDispatchContext(requestCtx, ctx, req.Workflow, sweepTime)
 					}
 				}
 				cancelRequest()

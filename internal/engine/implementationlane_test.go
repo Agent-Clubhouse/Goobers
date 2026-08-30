@@ -670,106 +670,19 @@ func TestFirstPassJournalsNoObligation(t *testing.T) {
 
 // --- #3843 learning findings and episode injection --------------------------
 
-// TestSendBackInjectsALearningEpisode: the repass is handed a pointer to an
-// episode describing what sent it back, and the episode artifact is committed
-// with it.
-//
-// The fixture is a status-equals gate over a FAILING stage rather than an
-// agentic reviewer, and that is not an arbitrary choice: in the local runner
-// the injection lives inside routeRetryDecision's `if retry` block, and
-// retryFailureClass only returns retryable for a status-equals gate over a
-// recognized failure code. Writing this against a reviewer send-back would
-// have tested a route the local runner does not inject on either — an
-// engine-only behaviour dressed up as parity.
-func TestSendBackInjectsALearningEpisode(t *testing.T) {
-	spec := fixtureSpec("implement",
-		[]apiv1.Task{detTask("implement", "review")},
-		[]apiv1.Gate{statusGate("review", map[string]string{
-			"pass": wf.TerminalComplete,
-			"fail": "implement",
-		})},
-	)
-	var repassPointers []apiv1.ContextPointer
-	attempts := 0
-	det := &fakeRunner{
-		run: func(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
-			attempts++
-			if attempts == 2 {
-				repassPointers = env.ContextPointers
-				return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "green"}, nil
-			}
-			return apiv1.ResultEnvelope{
-				Status:  apiv1.ResultFailure,
-				Summary: "3 tests failed",
-				Error:   &apiv1.ErrorInfo{Code: "nonzero_exit", Message: "3 tests failed", Retryable: true},
-			}, nil
-		},
-	}
-	var ts testsuite.WorkflowTestSuite
-	env := temporaltest.NewWorkflowEnvironment(&ts)
-	env.RegisterActivity(&Activities{
-		Det: det, Auto: gate.NewAutomatedEvaluator(), Workspaces: testWorkspaces(t),
-	})
-	env.ExecuteWorkflow(Run, runInput("retry", spec))
+// The #3843 learning-episode PRODUCER — the episode artifact and the
+// learning.episode[<seq>] pointer the repass is dispatched with — is not part
+// of this lane's port. It needs an in-walk artifact-recording seam and is owned
+// by #3913; the retry-decision parity row asserts the gap stays bounded
+// meanwhile. What this file does cover is the CONSUMER half of item 4: the
+// verdict-gated reconcileLearningFindings and disproveReviewerFindings
+// transitions below, which read episodes rather than write them.
 
-	if attempts != 2 {
-		t.Fatalf("stage attempts = %d, want 2", attempts)
-	}
-	var episodePointer *apiv1.ContextPointer
-	for i, p := range repassPointers {
-		if strings.HasPrefix(p.Name, "learning.episode[") {
-			episodePointer = &repassPointers[i]
-		}
-	}
-	if episodePointer == nil {
-		t.Fatalf("repass pointers = %+v, want an injected learning.episode pointer", repassPointers)
-	}
-	if episodePointer.Integrity != apiv1.IntegrityDerived {
-		t.Errorf("episode pointer integrity = %q, want derived", episodePointer.Integrity)
-	}
-	proj := laneJournal(t, env)
-	injections := laneAnnotations(proj, runner.LearningEpisodeInjectedKind)
-	if len(injections) != 1 {
-		t.Fatalf("learning injections = %d, want 1", len(injections))
-	}
-	var episodeName string
-	for _, n := range laneArtifactNames(proj) {
-		if strings.HasPrefix(n, "learning/episode-") {
-			episodeName = n
-		}
-	}
-	if episodeName == "" {
-		t.Fatalf("artifacts = %v, want a learning episode", laneArtifactNames(proj))
-	}
-	// The pointer must address the episode this run committed, not a
-	// look-alike: an injected pointer to a blob that is not in the journal is
-	// worse than no injection, because the repass would fail to resolve it.
-	data := laneArtifact(t, proj, episodeName)
-	ref, err := journal.ArtifactRef(data)
-	if err != nil {
-		t.Fatalf("address episode: %v", err)
-	}
-	if episodePointer.Artifact == nil || episodePointer.Artifact.Digest != ref.Digest {
-		t.Fatalf("episode pointer = %+v, want digest %s", episodePointer.Artifact, ref.Digest)
-	}
-	var episode map[string]any
-	if err := json.Unmarshal(data, &episode); err != nil {
-		t.Fatalf("decode episode: %v", err)
-	}
-	if got, _ := episode["gate"].(string); got != "review" {
-		t.Errorf("episode gate = %q, want review", got)
-	}
-	if got, _ := episode["stage"].(string); got != "implement" {
-		t.Errorf("episode stage = %q, want implement", got)
-	}
-	if got, _ := episode["correctionFeedback"].(string); !strings.Contains(got, "3 tests failed") {
-		t.Errorf("episode correctionFeedback = %q, want the failure carried into it", got)
-	}
-}
-
-// TestPassingGateInjectsNoEpisode is the negative: an advancing gate has taught
-// the run nothing, so it commits no episode and hands the next stage no pointer
-// to one.
+// TestPassingGateInjectsNoEpisode holds the far side of #3913's boundary: an
+// advancing gate has taught the run nothing, so no episode is committed and the
+// next stage is handed no pointer to one. It passes today because the engine
+// injects on NO route yet; it keeps its teeth once #3913 lands the retry-route
+// producer, which is exactly when an over-broad injection could appear here.
 func TestPassingGateInjectsNoEpisode(t *testing.T) {
 	inv := &fakeInvoker{
 		invoke: func(context.Context, apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {

@@ -219,6 +219,32 @@ func WithObserver(observer func(runID string, seq uint64)) Option {
 	return func(w *Writer) { w.observer = observer }
 }
 
+// WithEventObserver reports each durable APPEND op with the event body the
+// writer just committed, in the same order it committed them.
+//
+// It exists because WithObserver — journal.WithAppendObserver's shape —
+// delivers only (runID, seq). That is everything the read-model intake needs
+// (it re-reads the journal at seq anyway) and nothing a mid-run policy
+// consumer needs: decision 005 D1's RateLimited observer has to see the
+// stage's own error code and its rateLimitReset output as they land, without
+// re-parsing the whole journal on every append. Re-reading the run journal at
+// seq inside the existing observer was the alternative and was rejected: it
+// costs an O(N) parse per append on a path that already holds the run's lock.
+//
+// Contract, and the reason this is deliberately narrow:
+//
+//   - Called with the event EXACTLY as appended (the emit key is already in
+//     ev.Runner), while the run's lock is held. An observer must therefore be
+//     cheap and non-blocking, must never call back into the writer, and must
+//     never retain the event's maps beyond the call.
+//   - APPEND ops only. Artifact and span ops record content, not decisions;
+//     the error event an unavailable span degrades to IS an append and is
+//     delivered.
+//   - Best-effort side channel: it never affects whether the op was applied.
+func WithEventObserver(observer func(runID string, ev journal.Event)) Option {
+	return func(w *Writer) { w.eventObserver = observer }
+}
+
 // WithScrubber sets the boundary scrubber handed to the journal writer.
 func WithScrubber(s journal.Scrubber) Option {
 	return func(w *Writer) { w.scrubber = s }
@@ -259,11 +285,12 @@ func WithClock(now func() time.Time) Option {
 // the handle on loan instead of opening a second one; see Adopt. One handle,
 // one lock, either way.
 type Writer struct {
-	runsDir  func(gaggle string) (string, bool)
-	spans    SpanSource
-	observer func(runID string, seq uint64)
-	scrubber journal.Scrubber
-	now      func() time.Time
+	runsDir       func(gaggle string) (string, bool)
+	spans         SpanSource
+	observer      func(runID string, seq uint64)
+	eventObserver func(runID string, ev journal.Event)
+	scrubber      journal.Scrubber
+	now           func() time.Time
 	// instanceLog is the daemon's instance log, the destination of
 	// OpInstanceAnnotation. Nil in every non-daemon assembly of this writer,
 	// which makes that op kind refuse rather than silently no-op.
@@ -1004,7 +1031,8 @@ func (w *Writer) rehydrate(req EmitRequest, dir string) (*liveRun, error) {
 // applyOp applies one op under the run's lock. Returns whether the op was
 // appended (false = deduplicated). runID is the EMIT REQUEST's run — already
 // checked against the caller's principal by the route — and is the identity
-// an instance annotation is stamped with, never one the op carries.
+// an instance annotation is stamped with, never one the op carries. It is
+// also the run the event observer is notified for.
 func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op) (bool, error) {
 	if _, applied := run.keys[op.Key]; applied {
 		return false, nil
@@ -1057,6 +1085,7 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 		if ev.Type == journal.EventRunFinished {
 			run.keys[terminalMarker] = run.jr.Seq()
 		}
+		w.notifyEvent(runID, ev)
 		return true, nil
 	case OpArtifact:
 		a := op.Artifact
@@ -1104,6 +1133,13 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 				return false, appendErr
 			}
 			run.keys[op.Key] = run.jr.Seq()
+			w.notifyEvent(runID, journal.Event{
+				Type: journal.EventError, Stage: s.Stage, Attempt: s.Attempt, AttemptClass: s.Class,
+				Error: &journal.ErrorDetail{
+					Code:    SpanUnavailableErrorCode,
+					Message: fmt.Sprintf("span %q (%s): %v", s.Name, s.Ref.Digest, err),
+				},
+			})
 			return true, nil
 		}
 		if _, err := run.jr.RecordSpanAnnotated(s.Stage, s.Name, s.DataSchema, data, map[string]any{EmitKeyRunnerField: op.Key}); err != nil {
@@ -1156,8 +1192,19 @@ func (w *Writer) applyOp(ctx context.Context, runID string, run *liveRun, op Op)
 	}
 }
 
-// fetchSpan fetches digest and confirms the bytes hash to it — the span
-// source is an external dependency, and wrong content must surface as an
+// notifyEvent hands one committed append to the event observer (DS4's
+// mid-run policy side channel; see WithEventObserver). Best-effort and
+// side-effect-free with respect to the write that just landed: the op is
+// already durable, and the observer's job is to react to it, never to gate
+// it.
+func (w *Writer) notifyEvent(runID string, ev journal.Event) {
+	if w.eventObserver == nil {
+		return
+	}
+	w.eventObserver(runID, ev)
+}
+
+// fetchSpan fetches digest and confirms the bytes hash to it — the span// source is an external dependency, and wrong content must surface as an
 // unavailable span, never a silently mismatched one (projection parity).
 func (w *Writer) fetchSpan(ctx context.Context, digest string) ([]byte, error) {
 	if w.spans == nil {

@@ -456,8 +456,24 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	// requests through the GitHub PR API, so they need both a github:pr:write
 	// token and the concrete GitHub provider. An ADO stage (ghIssueProvider nil)
 	// gets exactly the pre-backstop label-only behavior — no hard failure.
+	//
+	// Built through the shared stage-provider seam so this second provider
+	// carries the same declared identity the issue provider above does
+	// (#3885/#3890 locally, #3914 in a pod) instead of being a second,
+	// identity-less GitHub client constructed beside it. A construction
+	// failure degrades exactly as an absent token does — to the pre-backstop
+	// label-only behavior — rather than becoming a new fatal path: reaching
+	// here means the issue provider already resolved to GitHub with a
+	// registered factory and an explicit token, so there is nothing left for
+	// the seam to refuse.
 	if prToken, tokenErr := providerToken(capability.GitHubPRWrite); tokenErr == nil && ghIssueProvider != nil {
-		prProvider = newCachedGitHubProvider(root, prToken)
+		prProvider, _ = newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
+			withStageProviderCapability(capability.GitHubPRWrite),
+			withStageProviderToken(prToken),
+			withStageProviderCache(),
+		)
+	}
+	if prProvider != nil {
 		openIssues, err = openPRIssueNumbers(ctx, prProvider, repo)
 		if err != nil {
 			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")

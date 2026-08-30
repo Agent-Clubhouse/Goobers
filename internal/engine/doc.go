@@ -40,16 +40,27 @@
 //   - The context-manifest artifact is journaled even when workspace
 //     provisioning failed; the gate-evaluator has no per-attempt deadline; and
 //     InputsFrom failures produce no stage-attributed events.
+//   - Learning-episode INJECTION (#3913, E10). On a retry the local runner
+//     records a learning/episode-<gate>-<seq>.json artifact and threads a
+//     learning.episode[<seq>] context pointer into the re-entered stage; the
+//     walk does neither, because doing so needs an in-walk artifact-recording
+//     seam (artifacts reach the journal during projection today, after the
+//     walk). Owned by #3913 and landing before the implementation cutover —
+//     NOT by this file's lane, which owns only the verdict-gated CONSUMER
+//     half (reconcileLearningFindings, disproveReviewerFindings). The gap is
+//     bounded, not tolerated: the retry-decision parity row asserts on every
+//     fail-branch walk that the engine emits zero learning-episode events and
+//     that no non-learning pointer diverges, so it cannot widen silently.
 //
-// Plan item E4-E9 (#3882) closed the implementation-lane entries this ledger
-// used to carry — the transient worktree-provision reclassification and the
-// learning-episode injection gap the parity harness itself surfaced — along
-// with the seven finding-002 inventory rows beside them: the cached verdict,
-// the reviewer diff artifact with its dedup and empty-diff fast-fails, the
-// repass cause and remediation-evidence obligation, the onTimeout salvage
-// marker, the CONTEXT_NOT_INSPECTED re-dispatch, the base-sync conflict
-// detail, and the #3366 unpushed-diff capture. Each is now pinned by a row of
-// the parity table for the same reason E2's are.
+// Plan item E4-E9 (#3882) closed the transient worktree-provision
+// reclassification this ledger used to carry, along with the seven finding-002
+// inventory rows beside it: the cached verdict, the reviewer diff artifact with
+// its dedup and empty-diff fast-fails, the repass cause and remediation-evidence
+// obligation, the verdict-gated learning-finding reconciliation with its
+// disprove and suppress transitions, the onTimeout salvage marker, the
+// CONTEXT_NOT_INSPECTED re-dispatch, the base-sync conflict detail, and the
+// #3366 unpushed-diff capture. Each is now pinned by a row of the parity table
+// for the same reason E2's are.
 //
 // Plan item E2 (#3874) closed four of the entries this ledger used to carry:
 // the #415 non-retryable escalation bypass, the retry-decision annotation and
