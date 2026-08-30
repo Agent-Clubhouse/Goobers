@@ -71,19 +71,29 @@ func TestCloseMootPullRequestDispatchesToADO(t *testing.T) {
 
 // TestPublishADOPassVerdictPublishesValidationStatus proves the ADO PASS
 // transport directly: the verdict rides on a native goobers/validation PR
-// status (the surface an ADO status-check branch policy gates on) and the stage
-// emits decision=pass so merge-review's published-verdict gate advances. It must
-// never fall back to the GitHub UpdateWorkItem(ID: PR#) label write.
+// status (the surface an ADO status-check branch policy gates on) AND on a PR
+// thread comment carrying the SHA-pinned verdict-json merge-pr recovers the
+// merge commit's rationale from (#2746), and the stage emits decision=pass so
+// merge-review's published-verdict gate advances. It must never fall back to
+// the GitHub UpdateWorkItem(ID: PR#) label write.
 func TestPublishADOPassVerdictPublishesValidationStatus(t *testing.T) {
 	var (
 		statusMethod string
 		statusBody   map[string]interface{}
+		threadBody   map[string]interface{}
 	)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/statuses", func(w http.ResponseWriter, r *http.Request) {
 		statusMethod = r.Method
 		_ = json.NewDecoder(r.Body).Decode(&statusBody)
 		_, _ = w.Write([]byte(`{"id":7}`))
+	})
+	mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/359/threads", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&threadBody)
+		writeJSONResp(t, w, map[string]interface{}{
+			"id":       11,
+			"comments": []interface{}{map[string]interface{}{"id": 1, "commentType": "text"}},
+		})
 	})
 	// A PR-as-work-item write would land here (numeric PR id into wit/workitems);
 	// it must never be reached on ADO.
@@ -104,6 +114,7 @@ func TestPublishADOPassVerdictPublishesValidationStatus(t *testing.T) {
 		providers.RepositoryRef{Provider: providers.ProviderADO, Project: "project", Name: "repo"},
 		359,
 		providers.PullRequestSummary{Number: 359, HeadSHA: "head-sha", BaseSHA: "base-sha"},
+		apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "Looks good.", Rationale: "Tests cover the new path."},
 		resultFile,
 		&stdout,
 		&stderr,
@@ -120,6 +131,21 @@ func TestPublishADOPassVerdictPublishesValidationStatus(t *testing.T) {
 	}
 	if statusBody["state"] != "succeeded" {
 		t.Fatalf("status state = %v, want succeeded", statusBody["state"])
+	}
+	comments, _ := threadBody["comments"].([]interface{})
+	if len(comments) != 1 {
+		t.Fatalf("thread body = %+v, want one posted comment (#2746)", threadBody)
+	}
+	content, _ := comments[0].(map[string]interface{})["content"].(string)
+	posted, ok := parseVerdictComment(content)
+	if !ok {
+		t.Fatalf("thread comment = %q, want a parseable verdict payload", content)
+	}
+	if posted.Decision != apiv1.VerdictPass || posted.Rationale != "Tests cover the new path." {
+		t.Fatalf("posted verdict = %+v, want the pass decision and rationale", posted)
+	}
+	if posted.HeadSHA != "head-sha" || posted.BaseSHA != "base-sha" {
+		t.Fatalf("posted verdict pin = %s/%s, want head-sha/base-sha", posted.HeadSHA, posted.BaseSHA)
 	}
 	result := readVerdictResult(t, resultFile)
 	if result["decision"] != "pass" {
@@ -226,6 +252,18 @@ func adoMergeReviewMux(t *testing.T, repo providers.RepositoryRef, prNumber int,
 		}
 		*posted = true
 		_, _ = w.Write([]byte(`{"id":7}`))
+	})
+	// The verdict thread (#2746): apply-verdict posts every verdict — pass
+	// included — to the PR thread so merge-pr can recover it.
+	mux.HandleFunc(prBase+"/"+strconv.Itoa(prNumber)+"/threads", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSONResp(t, w, map[string]interface{}{"value": []interface{}{}})
+			return
+		}
+		writeJSONResp(t, w, map[string]interface{}{
+			"id":       11,
+			"comments": []interface{}{map[string]interface{}{"id": 1, "commentType": "text"}},
+		})
 	})
 	return mux
 }
