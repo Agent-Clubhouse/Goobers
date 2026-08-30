@@ -41,7 +41,7 @@ func TestIntegrationInstallScriptVerifiesInstallAndPointsToGettingStarted(t *tes
 			"The release installer installs the binary and documentation only. Start setup " +
 			"with `goobers getting-started` after installation.\n\n" +
 			"If you opened this README directly from an extracted archive instead:\n\n" +
-			"```sh\ngoobers getting-started\n```\n"),
+			"```sh\ngoobers-v1.2.3 getting-started\n```\n"),
 		"docs/RELEASE.md":           []byte("# Goobers v1.2.3 documentation\n"),
 		"docs/guides/quickstart.md": []byte("# Quickstart v1.2.3\n"),
 		"onboarding/manifest.json":  []byte("{\"release\":{\"version\":\"v1.2.3\"}}\n"),

@@ -144,10 +144,7 @@ func TestGettingStartedInspectsLocalGitHubRepository(t *testing.T) {
 		{"init", "-b", "trunk"},
 		{"remote", "add", "origin", "https://github.com/acme/widgets.git"},
 	} {
-		command := exec.Command("git", append([]string{"-C", repository}, args...)...)
-		if output, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
-		}
+		runAgentKitTestGit(t, repository, args...)
 	}
 	if err := os.WriteFile(filepath.Join(repository, "Makefile"), []byte("ci:\n\t@true\n"), 0o644); err != nil {
 		t.Fatal(err)
