@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/oidcauth"
+	"github.com/goobers/goobers/internal/platform/cpustat"
 	"github.com/goobers/goobers/internal/platform/durability"
 	"github.com/goobers/goobers/internal/platform/memstat"
 	"github.com/goobers/goobers/internal/platform/proc"
@@ -1791,16 +1792,23 @@ func summarizeHeartbeat(events []journal.Event, afterSeq uint64) (heartbeatActiv
 }
 
 // emitHeartbeats prints a periodic liveness line carrying scheduler activity
-// since startup and the daemon's current memory footprint.
+// since startup and the daemon's current memory and CPU footprint.
 //
-// The memory clause is not decoration. Without it the operator-facing log
-// cannot distinguish a leaking daemon from a pod whose memory cgroup is filling
-// with page cache produced by the stages it runs — in #3949 the 47 minutes of
-// heartbeats preceding an OOMKill were indistinguishable from healthy ones, and
-// the kill was misread as a daemon leak while the daemon's own anonymous memory
-// sat flat at 62 MiB. memstat.Read is cheap (no stop-the-world, a few small
-// file reads) and never fails, so it costs the heartbeat nothing to always
-// carry it.
+// Neither resource clause is decoration. Without the memory one the
+// operator-facing log cannot distinguish a leaking daemon from a pod whose
+// memory cgroup is filling with page cache produced by the stages it runs — in
+// #3949 the 47 minutes of heartbeats preceding an OOMKill were indistinguishable
+// from healthy ones, and the kill was misread as a daemon leak while the
+// daemon's own anonymous memory sat flat at 62 MiB.
+//
+// The CPU one answers the question that incident could not (#3963): a container
+// pinned at its CPU quota is indistinguishable from a busy one in every
+// point-in-time metric, and only nr_throttled separates "doing work" from
+// "being stopped". The same pod was losing 79.5% of its CFS periods to
+// throttling, visible nowhere but a shell inside it.
+//
+// Both reads are cheap (no stop-the-world, a few small file reads) and neither
+// can fail, so it costs the heartbeat nothing to always carry them.
 func emitHeartbeats(
 	ctx context.Context,
 	stdout io.Writer,
@@ -1829,18 +1837,19 @@ func emitHeartbeats(
 				events, err = tail.Events()
 				if err == nil {
 					activity, _ := summarizeHeartbeat(events, 0)
-					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped; %s\n",
-						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped, memstat.Read())
+					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped; %s; %s\n",
+						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped, memstat.Read(), cpustat.Read())
 					continue
 				}
 				_ = tail.Close()
 				tail = nil
 			}
 			if err != nil {
-				// The memory clause rides the degraded line too. A daemon that
-				// has lost its journal tail is exactly when an operator most
-				// needs to know whether it is also about to be OOM-killed.
-				pf(stdout, "[%s] alive — scheduler activity unavailable: %v; %s\n", now.Format("15:04:05"), err, memstat.Read())
+				// Both resource clauses ride the degraded line too. A daemon
+				// that has lost its journal tail is exactly when an operator
+				// most needs to know whether it is also about to be OOM-killed,
+				// or merely too throttled to make progress.
+				pf(stdout, "[%s] alive — scheduler activity unavailable: %v; %s; %s\n", now.Format("15:04:05"), err, memstat.Read(), cpustat.Read())
 				continue
 			}
 		}

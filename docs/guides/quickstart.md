@@ -318,6 +318,13 @@ validation errors, and `2` for usage or I/O errors.
   `GOCACHE`, `GOMODCACHE`, `GOFLAGS`, `GOPROXY`, `GOSUMDB`, `GOPRIVATE`,
   `GOTOOLCHAIN`) into every stage — set these before `goobers up` if your host
   relocates the Go cache/module store or sits behind a corporate module proxy.
+- `GOMAXPROCS` is *derived*, not just passed through. When the daemon runs in a
+  container whose CPU quota is narrower than the machine's CPU count, every
+  stage and harness subprocess is told that quota, so `go build -p`/`go test -p`
+  size their process fan-out to what the container can actually run instead of
+  to the node's CPU count. Nothing is set on an unconstrained host, and a
+  `GOMAXPROCS` you set yourself — on the daemon, or in a stage's own `env:` —
+  always wins.
 
 **Upgrading a flat V0 instance:** on first startup, an instance with one active
 gaggle automatically moves populated top-level `runs/` and `workcopies/` into
