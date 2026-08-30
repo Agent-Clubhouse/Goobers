@@ -329,7 +329,7 @@ func TestFeedDoesNotRetainWaitersOnEveryExit(t *testing.T) {
 func TestFeedNotifyRacesWithUnregister(t *testing.T) {
 	feed := NewFeed(nil)
 	for i := 0; i < 200; i++ {
-		waiter, unregister := feed.wait()
+		_, unregister := feed.wait()
 		notified := make(chan struct{})
 		go func() {
 			feed.Notify()
@@ -337,10 +337,6 @@ func TestFeedNotifyRacesWithUnregister(t *testing.T) {
 		}()
 		unregister()
 		<-notified
-		select {
-		case <-waiter:
-		default:
-		}
 		if count := waiterCount(feed); count != 0 {
 			t.Fatalf("%d waiters retained after notify/unregister, want 0", count)
 		}
