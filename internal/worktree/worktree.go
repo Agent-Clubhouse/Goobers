@@ -13,16 +13,21 @@ import (
 	"github.com/goobers/goobers/internal/mergeresolve"
 )
 
-// botGitUserName/botGitUserEmail are the commit identity Create sets local
+// BotGitUserName/BotGitUserEmail are the commit identity Create sets local
 // to every worktree it provisions (#237) — an agentic implementer stage
 // commits inside the worktree, and that commit must not depend on the
 // daemon host's own ambient git config (which V0's isolation story
 // otherwise never relies on: worktrees, credential injection, and env
 // allowlisting all exist precisely so a stage's behavior doesn't depend on
 // host dotfiles).
+//
+// EXPORTED because a stage pod's clone is the third substrate that needs it
+// (#392): the in-pod syncBase merge writes a merge commit, and a second
+// spelling of "who commits for Goobers" is exactly the drift this repository
+// keeps paying for.
 const (
-	botGitUserName           = "goobers-bot"
-	botGitUserEmail          = "goobers-bot@users.noreply.github.com"
+	BotGitUserName           = "goobers-bot"
+	BotGitUserEmail          = "goobers-bot@users.noreply.github.com"
 	botIdentityRetryAttempts = 4
 	botIdentityRetryBackoff  = 50 * time.Millisecond
 )
@@ -98,6 +103,22 @@ func (e *BaseSyncConflictError) Error() string {
 
 func (e *BaseSyncConflictError) Unwrap() error {
 	return e.cause
+}
+
+// NewBaseSyncConflictError constructs a BaseSyncConflictError for a caller
+// outside this package that detects the same genuine content conflict by its
+// own means — the pod-side checkout (cmd/goobers/dispatchcheckout.go) runs
+// the merge directly with git rather than through Manager.Create, but a
+// conflict it hits is the identical business failure this type exists to
+// classify (#813), and cause is unexported so no other package can construct
+// one without this seam.
+func NewBaseSyncConflictError(branch, baseRef string, conflictingFiles []string, cause error) *BaseSyncConflictError {
+	return &BaseSyncConflictError{
+		Branch:           branch,
+		BaseRef:          baseRef,
+		ConflictingFiles: conflictingFiles,
+		cause:            cause,
+	}
 }
 
 // Worktree is a disposable, isolated working copy for one run, branched off
@@ -334,12 +355,12 @@ func (m *Manager) Create(ctx context.Context, opts CreateOptions) (_ *Worktree, 
 	// host's ambient git config) — an agentic stage's commit must not depend
 	// on the daemon host happening to have user.name/user.email set (#237).
 	if err := retryBotIdentityConfig(ctx, func() error {
-		return runGit(ctx, path, "config", "user.name", botGitUserName)
+		return runGit(ctx, path, "config", "user.name", BotGitUserName)
 	}); err != nil {
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}
 	if err := retryBotIdentityConfig(ctx, func() error {
-		return runGit(ctx, path, "config", "user.email", botGitUserEmail)
+		return runGit(ctx, path, "config", "user.email", BotGitUserEmail)
 	}); err != nil {
 		return nil, fmt.Errorf("worktree: set bot identity for run %s: %w", opts.RunID, err)
 	}

@@ -37,7 +37,15 @@ const (
 	TelemetryStatsPath           = V1Prefix + "/telemetry/stats"
 	TelemetryErrorSignaturesPath = V1Prefix + "/telemetry/error-signatures"
 	TelemetryErrorsPath          = V1Prefix + "/telemetry/errors"
-	EventsPath                   = V1Prefix + "/events"
+	// TelemetryImplementationOutcomesPath is the curation-evidence read
+	// (decision 005 R4 / finding 002 C3): the terminal implementation runs
+	// that claimed a backlog item, with the run's last error and gate verdict
+	// retained as bounded evidence. Derived entirely from the rollup rows the
+	// stats and errors routes already project — same low sensitivity, same
+	// gaggle filter — and split out only because `backlog-health --feedback`
+	// needs the run-to-item join neither of those two carries.
+	TelemetryImplementationOutcomesPath = V1Prefix + "/telemetry/implementation-outcomes"
+	EventsPath                          = V1Prefix + "/events"
 
 	// Tier-2 human-intervention mutation routes. The CLI and dashboard use this
 	// same API-first surface, behind the shared access-control seam.
@@ -143,7 +151,10 @@ const (
 	RouteTelemetryStats           RouteID = "telemetryStats"
 	RouteTelemetryErrorSignatures RouteID = "telemetryErrorSignatures"
 	RouteTelemetryErrors          RouteID = "telemetryErrors"
-	RouteEvents                   RouteID = "events"
+
+	RouteTelemetryImplementationOutcomes RouteID = "telemetryImplementationOutcomes"
+
+	RouteEvents RouteID = "events"
 
 	RouteApproveStage  RouteID = "approveStage"
 	RouteOverrideStage RouteID = "overrideStage"
@@ -270,6 +281,7 @@ var v1Routes = []Route{
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteTelemetryImplementationOutcomes, Method: http.MethodGet, Path: TelemetryImplementationOutcomesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},

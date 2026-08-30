@@ -22,6 +22,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
@@ -1025,5 +1026,58 @@ func TestEnvDefaultDenyFailsClosedOnAnUnparseableAllowlist(t *testing.T) {
 		if name, _, _ := strings.Cut(kv, "="); name == "IMAGE_AMBIENT_VAR" {
 			t.Fatal("a malformed allowlist must fall back to procenv's base, not to os.Environ()")
 		}
+	}
+}
+
+// A genuine syncBase base-merge conflict on the pod substrate must classify
+// exactly as it does on the self arms (#813, internal/engine/activities.go's
+// RunDeterministic and internal/runner/run.go): base_sync_conflict and
+// Retryable, so failure-class routes the run into remediation rather than
+// burning an implementation repass re-deriving the identical rejected diff
+// purely because the stage happened to be pod- rather than worker-placed.
+func TestDispatchExecClassifiesSyncBaseConflictAsRetryableInfra(t *testing.T) {
+	const prBranch = "goobers/impl/remediation-364"
+	work := t.TempDir()
+	gitCommand(t, work, "init", "--quiet", "-b", "main", work)
+	writeFile(t, work, "conflict.txt", "original\n")
+	gitCommand(t, work, "add", "conflict.txt")
+	gitCommand(t, work, "commit", "--quiet", "-m", "seed")
+	gitCommand(t, work, "checkout", "--quiet", "-b", prBranch)
+	writeFile(t, work, "conflict.txt", "the PR's version\n")
+	gitCommand(t, work, "commit", "--quiet", "-am", "PR edit")
+	gitCommand(t, work, "checkout", "--quiet", "main")
+	writeFile(t, work, "conflict.txt", "base's version\n")
+	gitCommand(t, work, "commit", "--quiet", "-am", "base edit")
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	gitCommand(t, work, "clone", "--quiet", "--bare", work, bare)
+
+	prev := checkoutCloneURL
+	t.Cleanup(func() { checkoutCloneURL = prev })
+	stageCheckoutEnv(t, bare, string(apiv1.WorkspaceRepo))
+	t.Setenv(dispatcher.EnvWorkspaceBranch, prBranch)
+	t.Setenv(dispatcher.EnvStageSyncBase, "true")
+	t.Setenv(dispatcher.EnvStageCommand, `["true"]`)
+	t.Setenv(dispatcher.EnvStageTimeout, "10s")
+	t.Setenv(dispatcher.EnvDaemonAPI, "")
+
+	ws := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(ws); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	got := runDeclaredStage(context.Background(), io.Discard, io.Discard)
+	if got.Status != apiv1.ResultFailure {
+		t.Fatalf("status = %q, want failure", got.Status)
+	}
+	if got.Error == nil || got.Error.Code != runner.BaseSyncConflictErrorCode {
+		t.Fatalf("error = %+v, want code %q (the self arms' classification, so failure-class routes to remediation instead of an implementation repass)", got.Error, runner.BaseSyncConflictErrorCode)
+	}
+	if !got.Error.Retryable {
+		t.Fatal("a base_sync_conflict must be Retryable, matching internal/engine/activities.go's RunDeterministic and internal/runner/run.go — failure-class's isRecognizedInfrastructureFailure never matches this code, so Retryable is the only thing that routes it OutcomeInfra")
 	}
 }

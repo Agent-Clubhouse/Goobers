@@ -536,29 +536,18 @@ func applyImplementationFeedback(
 		return writeImplementationFeedbackReport(report, stdout, stderr)
 	}
 
-	dbPath := layoutFor(root).TelemetryDB()
-	info, err := os.Stat(dbPath)
+	// The evidence read: the daemon's gaggle-scoped telemetry plane in a stage
+	// pod, the instance's own rollup otherwise (decision 005 R4 / finding 002
+	// C3). No evidence at all — an instance that has never finished an
+	// implementation run — leaves the report empty, exactly as a missing
+	// rollup file did before the plane existed.
+	outcomes, err := stageImplementationOutcomes(ctx, root, earliestReadyAt)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return writeImplementationFeedbackReport(report, stdout, stderr)
-		}
-		pf(stderr, "error: inspect telemetry rollup %s: %v\n", dbPath, err)
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if info.Size() == 0 {
+	if len(outcomes) == 0 {
 		return writeImplementationFeedbackReport(report, stdout, stderr)
-	}
-	db, err := rollup.Open(dbPath)
-	if err != nil {
-		pf(stderr, "error: open telemetry rollup %s: %v\n", dbPath, err)
-		return 1
-	}
-	defer func() { _ = db.Close() }()
-
-	outcomes, err := db.ImplementationOutcomes(ctx, providerGaggle(), earliestReadyAt)
-	if err != nil {
-		pf(stderr, "error: query implementation outcomes: %v\n", err)
-		return 1
 	}
 	mutationAttempted := false
 	for _, item := range items {

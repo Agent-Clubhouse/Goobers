@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 	yamlv3 "gopkg.in/yaml.v3"
@@ -532,9 +533,23 @@ func (r *Report) addFeatureDiagnostics(file, gaggle, kind, name string, diagnost
 }
 
 // Validator holds compiled schemas, reusable across many validations.
+//
+// A Validator is safe for concurrent use by multiple goroutines (#3887).
+// Callers share one process-wide — the engine's verdict validator is a
+// sync.OnceValues singleton read by every concurrent placed-gate review, and
+// the harness, agentkit and configsync builders each keep one for the life of
+// their component — so the lazy compile below cannot be left unsynchronized:
+// jsonschema.Compiler mutates its own resource maps while compiling, and the
+// cache is a plain map, so two cold-cache validations at once raced and could
+// fatal the worker with "concurrent map writes" or panic inside the compiler.
 type Validator struct {
 	compiler *jsonschema.Compiler
-	cache    map[string]*jsonschema.Schema
+	// mu guards compiler and cache. It is held across Compile (and only
+	// Compile): compiled *jsonschema.Schema values are immutable once
+	// returned, so Validate runs lock-free and the lock is paid once per
+	// schema file, not once per validation.
+	mu    sync.Mutex
+	cache map[string]*jsonschema.Schema
 }
 
 // New builds a Validator with all embedded schemas registered so cross-schema
@@ -555,6 +570,8 @@ func New() (*Validator, error) {
 }
 
 func (v *Validator) schema(file string) (*jsonschema.Schema, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	if s, ok := v.cache[file]; ok {
 		return s, nil
 	}

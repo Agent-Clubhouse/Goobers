@@ -651,6 +651,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
 	}
+	// The telemetry read plane's containment (decision 005 R4 / finding 002
+	// C3). Wired unconditionally: without it every pod telemetry read is
+	// refused, so this is what OPENS the plane, and a daemon that serves stage
+	// pods at all can always answer which gaggle one of its own runs is in.
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithPodRunGaggle(podRunGaggleResolver(l)))
 	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
 	// deployments — Goobers#3701), else the daemon-local in-memory registry.
 	podVerifier, perr := buildPodVerifier(setup.Config)

@@ -10,6 +10,7 @@ const (
 	workspaceDeltaKeyDigest          = "digest"
 	workspaceDeltaKeyBaseSHA         = "baseSha"
 	workspaceDeltaKeyTipSHA          = "tipSha"
+	workspaceDeltaKeyBranch          = "branch"
 )
 
 // WorkspaceDeltaAction names what a runner.workspace.delta event records.
@@ -44,6 +45,18 @@ type WorkspaceDelta struct {
 	Digest  string `json:"digest,omitempty"`
 	BaseSHA string `json:"baseSha,omitempty"`
 	TipSHA  string `json:"tipSha,omitempty"`
+	// Branch is the run's workspace-branch binding the publication was made on
+	// (or the selected entry was made on), when the run rebound it away from
+	// the derived run branch (#392 — pr-remediation binds it to the claimed
+	// PR's head). Empty for every run that never rebinds, which keeps the
+	// event bytes of a 2.0 lane and of an unrebound 3.0 lane identical to
+	// before this field existed.
+	//
+	// It is the far-side reader's answer to "which branch does this digest
+	// belong to": a bundle carries base..tip and is meaningless on any other
+	// line of history, so a selection and a publication that name different
+	// branches are a bug this field makes visible in events.jsonl.
+	Branch string `json:"branch,omitempty"`
 }
 
 // WorkspaceDeltaEvent builds the runner.workspace.delta event for one stage
@@ -66,6 +79,9 @@ func WorkspaceDeltaEvent(stage, gate string, attempt int, class AttemptClass, d 
 	}
 	if d.TipSHA != "" {
 		runner[workspaceDeltaKeyTipSHA] = d.TipSHA
+	}
+	if d.Branch != "" {
+		runner[workspaceDeltaKeyBranch] = d.Branch
 	}
 	return Event{
 		Type:         EventRunnerWorkspaceDelta,
