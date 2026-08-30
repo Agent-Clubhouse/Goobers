@@ -79,9 +79,10 @@ func verdictLabel(decision apiv1.VerdictDecision, findings []apiv1.Finding) stri
 // findingIsRealDefect reports whether a finding is a genuine reason to withhold
 // landing authority, as opposed to an ordering note or a nit.
 //
-// Two things make a finding harmless for sequencing: it is a cross-pr-blocked
-// ordering finding, or it is severity `info`. Everything else — including an
-// unset or unrecognised severity — counts as a real defect, so this fails
+// Three things make a finding harmless for sequencing: it is a cross-pr-blocked
+// ordering finding, it merely echoes the acknowledgeable #1313 scope gate (see
+// findingIsScopeGateEcho), or it is severity `info`. Everything else — including
+// an unset or unrecognised severity — counts as a real defect, so this fails
 // closed: a malformed verdict can never launder itself into landing authority.
 //
 // Severity used to be ignored entirely here, which deadlocked whole clusters
@@ -100,7 +101,50 @@ func findingIsRealDefect(finding apiv1.Finding) bool {
 	if finding.Class == apiv1.FindingCrossPRBlocked {
 		return false
 	}
+	if findingIsScopeGateEcho(finding) {
+		return false
+	}
 	return finding.Severity != apiv1.SeverityInfo
+}
+
+// scopeGateEchoPattern matches a finding that restates the #1313 scope gate
+// (an oversized diff) rather than reporting a code defect.
+var scopeGateEchoPattern = regexp.MustCompile(`(?i)\bscope[ -]?gate\b|\bscope threshold\b`)
+
+// findingIsScopeGateEcho reports whether a finding merely restates the
+// deterministic #1313 scope gate — "this PR is too big, split it" — instead of
+// naming a defect in the diff.
+//
+// The scope gate is operator-acknowledgeable by design (`goobers:scope-gate-ack`)
+// and is enforced deterministically on the merge path by the scope-gate gate,
+// which runs after the election. Counting the reviewer's echo of it as a
+// disqualifying finding therefore withheld the crown for a condition the
+// election does not decide and cannot resolve, deadlocking whole clusters with
+// no lander at all (#3237: clusters #3185/#3187 and #3187/#3190). Ordering
+// first, ack before merge — the gate still blocks the merge itself.
+//
+// Deliberately narrow: only a finding whose location names no file at all (the
+// gate is a property of the whole diff, not of a line) can qualify, so a real
+// defect that happens to mention the gate in passing still disqualifies.
+func findingIsScopeGateEcho(finding apiv1.Finding) bool {
+	switch finding.Class {
+	case apiv1.FindingSubstantive, apiv1.FindingScopeCreep:
+	default:
+		return false
+	}
+	if !scopeGateEchoPattern.MatchString(finding.Message) {
+		return false
+	}
+	return !locationNamesFile(finding.Location)
+}
+
+// locationNamesFile reports whether a finding location points at anything
+// beyond bare PR references — i.e. whether it names a file/line at all.
+func locationNamesFile(location string) bool {
+	residual := prReferencePattern.ReplaceAllString(location, "")
+	return strings.TrimFunc(residual, func(r rune) bool {
+		return r == ',' || r == ':' || r == ';' || r == '(' || r == ')' || r == ' ' || r == '\t' || r == '\n'
+	}) != ""
 }
 
 // electableUnderOrdering reports whether findings leave the selected PR safely
@@ -178,9 +222,13 @@ func parseOverlappingSiblings(csv string) []int {
 // verdict's findings so sequencing routing uses ground truth, not only the LLM
 // reviewer's classification. Conservative and additive:
 //
-//   - A substantive finding whose location names only siblings in the
-//     deterministic overlap set is normalized to cross-pr-blocked. This is the
-//     #2478 shape: pure overlap was misclassified as a selected-PR defect.
+//   - A substantive or conflict finding whose location names only siblings in
+//     the deterministic overlap set is normalized to cross-pr-blocked. This is
+//     the #2478 shape: pure overlap was misclassified as a selected-PR defect.
+//     A `conflict` finding that says "sequence these two PRs" carries the same
+//     semantic content as `cross-pr-blocked` and asks for exactly the decision
+//     the election makes, so counting it as a defect disqualified the winner by
+//     the very fact that made it the winner (#3237).
 //   - If any real defect remains (see findingIsRealDefect), the normalized
 //     findings are returned without adding the overlap backstop. A real bug,
 //     conflict, or rebase need takes priority and must route to remediation.
@@ -231,7 +279,9 @@ func withOverlapBackstop(findings []apiv1.Finding, overlappingSiblings []int) []
 }
 
 func overlapOnlyBlockingPRs(finding apiv1.Finding, overlappingSiblings []int) ([]int, bool) {
-	if finding.Class != apiv1.FindingSubstantive {
+	switch finding.Class {
+	case apiv1.FindingSubstantive, apiv1.FindingConflict:
+	default:
 		return nil, false
 	}
 	overlapping := make(map[int]bool, len(overlappingSiblings))

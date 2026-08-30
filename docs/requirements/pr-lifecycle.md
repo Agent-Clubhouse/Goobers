@@ -157,7 +157,15 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   pure, deterministic function of `{selected PR, blocker set, policy}` so every
   cluster member independently computes the **same** winner — exactly one
   member is crowned, with no central coordination. A verdict carrying any real
-  defect (any finding other than `cross-pr-blocked`) is **never electable**.
+  defect is **never electable**. Findings whose only remedy is the ordering
+  decision itself do **not** count as defects (#3237): a `conflict` finding
+  whose location names only PRs in the PRL-011 overlap set is normalized to
+  `cross-pr-blocked`, and a finding that merely restates the acknowledgeable
+  `goobers:scope-gate` park (#1313 — operator-acknowledgeable via
+  `goobers:scope-gate-ack`, and enforced deterministically on the merge path)
+  gates the merge, not the election —
+  otherwise the winner is disqualified by the very overlap that made it the
+  winner and the cluster has no lander at all.
 - **PRL-022 (MUST, Shipped):** The election policy MUST be a **workflow-
   configurable seam** (#834): `fifo` (lowest PR number — default) and `newest`
   ship as pure policies; cluster-data policies (`most-blockers`,
