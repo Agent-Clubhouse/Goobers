@@ -260,14 +260,13 @@ func TestGatherPRContextADOParksRepeatedEscalatedDigest(t *testing.T) {
 	t.Chdir(wt.Path)
 	resultFile := filepath.Join(wt.Path, remediationBriefResultFile)
 	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
-	if err := updateRemediationNoopState(
-		layoutFor(root).SchedulerDir(),
+	seedRemediationNoopState(
+		t,
+		layoutFor(root),
 		remediationNoopKey("", prNumber),
 		remediationNoopSignature{HeadSHA: headSHA, DiffDigest: digest},
 		"prior-ado-digest-run",
-	); err != nil {
-		t.Fatalf("seed digest no-op state: %v", err)
-	}
+	)
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", root)
 	if code != 0 {
@@ -292,11 +291,7 @@ func TestGatherPRContextADOParksRepeatedEscalatedDigest(t *testing.T) {
 	if rec.workItemTouched {
 		t.Fatal("ADO parking touched a work item instead of native PR labels")
 	}
-	state, err := readRemediationNoopState(layoutFor(root).SchedulerDir())
-	if err != nil {
-		t.Fatalf("read no-op state: %v", err)
-	}
-	record := state.Records[remediationNoopKey("", prNumber)]
+	record := remediationNoopStateRecord(t, layoutFor(root), remediationNoopKey("", prNumber))
 	if record.Attempts != remediationNoopLimit || !record.Parked {
 		t.Fatalf("no-op record = %+v, want parked at limit %d", record, remediationNoopLimit)
 	}

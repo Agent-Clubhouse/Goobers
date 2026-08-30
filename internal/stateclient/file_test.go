@@ -20,7 +20,7 @@ func testFileStore(t *testing.T, dir string) *File {
 }
 
 // TestValidKeyIsAClosedNamespace is the containment guarantee the whole plane
-// rests on: a state bearer can only ever address these six shapes, so it can
+// rests on: a state bearer can only ever address these known shapes, so it can
 // never be turned into a read or a write of claims.json, the instance config,
 // or anything else that shares the scheduler directory.
 func TestValidKeyIsAClosedNamespace(t *testing.T) {
@@ -37,6 +37,9 @@ func TestValidKeyIsAClosedNamespace(t *testing.T) {
 		// Goobers#3898: the backlog re-sweep generation, the last scheduler
 		// file the claiming path held open directly.
 		ResweepStateKey(digest),
+		// Goobers#3989: the per-PR pr-remediation no-op record, the last
+		// scheduler file gather-pr-context read and wrote directly.
+		PRRemediationNoopKey(digest),
 		// Goobers#3948: the backlog-health ready-transition ledger, the only
 		// key that resolves into a subdirectory and the only one that carries
 		// its gaggle in its name.
@@ -71,6 +74,16 @@ func TestValidKeyIsAClosedNamespace(t *testing.T) {
 		"backlog-resweep-" + digest + "x.json",
 		"backlog-resweep-" + digest + ".json.tmp",
 		"backlog-resweep-" + digest + ".json/../claims.json",
+		// The pre-#3989 aggregate name. Admitting it would hand a state
+		// bearer EVERY pull request's no-op record in a single read, which is
+		// exactly why the record was keyed rather than left where it was.
+		"pr-remediation-noop.json",
+		"pr-remediation-noop-.json",
+		"pr-remediation-noop-" + strings.ToUpper(digest) + ".json",
+		"pr-remediation-noop-" + digest[:63] + ".json",
+		"pr-remediation-noop-" + digest + "x.json",
+		"pr-remediation-noop-" + digest + ".json.tmp",
+		"pr-remediation-noop-" + digest + ".json/../claims.json",
 		"sub/blocked.json",
 		// The backlog-health cursor's shape, probed for every way a key could
 		// acquire a second path element, a traversal, or a wire escape.
@@ -138,6 +151,7 @@ func TestBacklogHealthCursorKeyResolvesIntoItsOwnSubdirectory(t *testing.T) {
 		KeyPRSelectFairness,
 		ScanCursorKey(strings.Repeat("ab", 32)),
 		ResweepStateKey(strings.Repeat("ab", 32)),
+		PRRemediationNoopKey(strings.Repeat("ab", 32)),
 	} {
 		relative, err := KeyRelativePath(key)
 		if err != nil {
