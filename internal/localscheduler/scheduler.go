@@ -1092,8 +1092,13 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 					candidate.dispatchedThisTick = true
 					break
 				}
+				// Retained demand must survive a refusal the next tick can
+				// clear on its own. Memory pressure is such a refusal (#3960),
+				// so it joins the two max-parallel reasons here; it is
+				// prefix-matched because Admit appends the measurement to it.
 				if kind == journal.TriggerSchedule && candidate.scheduleDemand &&
-					reason != ReasonMaxParallel && reason != ReasonInstanceMaxParallel {
+					reason != ReasonMaxParallel && reason != ReasonInstanceMaxParallel &&
+					!strings.HasPrefix(reason, ReasonMemoryPressure) {
 					s.clearPendingScheduleDemand(candidate.entry)
 				}
 				candidate.stopped = true
@@ -2033,7 +2038,13 @@ func (e *TriggerRejectedError) Error() string {
 // capacity that is about to exist. Budget/quota/open-PR-cap refusals are not
 // transient in this sense and must still fail fast.
 func (e *TriggerRejectedError) Transient() bool {
-	return e.Reason == ReasonMaxParallel || e.Reason == ReasonInstanceMaxParallel
+	// ReasonMemoryPressure is prefix-matched, not compared: Admit appends the
+	// cgroup measurement after it. It belongs here because it is capacity in
+	// exactly the sense above — the pod's memory frees as runs finish and the
+	// kernel reclaims, so a refused trigger is refused for capacity that is
+	// about to exist (#3960).
+	return e.Reason == ReasonMaxParallel || e.Reason == ReasonInstanceMaxParallel ||
+		strings.HasPrefix(e.Reason, ReasonMemoryPressure)
 }
 
 // RecordTriggerRefusal journals a trigger rejected by an admission layer

@@ -44,6 +44,31 @@ const defaultMemoryHighWater = 0.90
 // aggregate, not a per-run value.
 const memoryGateSampleTTL = time.Second
 
+// memoryPressureWindow is how long a rise in the cgroup's at-limit counter
+// keeps the gate armed.
+//
+// THIS WINDOW IS WHAT STOPS THE GATE LATCHING SHUT, and that is a real failure
+// mode rather than a hypothetical one. memory.current includes reclaimable
+// page cache, and the kernel only reclaims under allocation pressure. A cgroup
+// holding a large idle build cache therefore sits above any high-water mark
+// indefinitely. Gating on that number alone is self-sustaining: the gate
+// refuses every run, nothing allocates, nothing is reclaimed, the number never
+// falls, and a pod that used to OOM occasionally instead idles forever — which
+// is a worse outage than the one being fixed, and a much harder one to read.
+//
+// So a high reading is necessary but not sufficient. The cgroup must ALSO have
+// been driven against its limit recently, which is what memory.events `max`
+// counts. That only rises when something is actually allocating faster than
+// the kernel can reclaim — the precise condition an OOM kill comes out of.
+// A quiescent cgroup full of cache never trips it, and admitting a run there
+// is correct: the cache is reclaimable and the run will reclaim it.
+//
+// 60s spans the incident pod's observed rate (roughly 2 per minute, sustained)
+// with room for the gaps between bursts, so a burst in progress keeps the gate
+// armed across consecutive ticks instead of flapping open between two
+// increments.
+const memoryPressureWindow = time.Minute
+
 // CgroupMemoryGate is the MemoryGate backed by the process's own memory
 // cgroup. Outside a container — a developer machine, most CI — there is no
 // cgroup to read and the gate never refuses anything.
@@ -59,6 +84,13 @@ type CgroupMemoryGate struct {
 	cached     memstat.Footprint
 	cachedAt   time.Time
 	haveCached bool
+	// atLimit is the last observed memory.events `max` counter, and
+	// atLimitRoseAt when it was last seen to increase. Together they answer
+	// "is the cgroup being driven against its limit right now?", which
+	// memory.current alone cannot — see memoryPressureWindow.
+	atLimit       uint64
+	haveAtLimit   bool
+	atLimitRoseAt time.Time
 }
 
 // NewCgroupMemoryGate returns a gate refusing admission above highWater, a
@@ -72,32 +104,58 @@ func NewCgroupMemoryGate(highWater float64) *CgroupMemoryGate {
 	return &CgroupMemoryGate{highWater: highWater, read: memstat.Read, now: time.Now}
 }
 
-// UnderPressure implements MemoryGate.
+// UnderPressure implements MemoryGate. It refuses only when BOTH terms hold:
+// the cgroup is above the high-water mark, and it has been driven against its
+// limit within memoryPressureWindow. See that constant for why the second term
+// is not optional.
 func (g *CgroupMemoryGate) UnderPressure() (bool, string) {
 	if g == nil {
 		return false, ""
 	}
-	footprint := g.sample()
+	footprint, rising := g.sample()
 	used, ok := footprint.Cgroup.UsedFraction()
 	// No cgroup, or one with no limit set: there is no ceiling to be near, so
 	// there is nothing to refuse. Fail open, like every other condition does
 	// on missing wiring.
-	if !ok || used < g.highWater {
+	if !ok || used < g.highWater || !rising {
 		return false, ""
 	}
-	return true, fmt.Sprintf("%s at %.0f%% of limit (threshold %.0f%%); %s",
-		memstat.FormatBytes(footprint.Cgroup.Current), used*100, g.highWater*100, footprint.Cgroup.Breakdown())
+	return true, fmt.Sprintf("%s at %.0f%% of limit (threshold %.0f%%), %d at-limit episode(s); %s",
+		memstat.FormatBytes(footprint.Cgroup.Current), used*100, g.highWater*100,
+		footprint.Cgroup.AtLimit, footprint.Cgroup.Breakdown())
 }
 
-func (g *CgroupMemoryGate) sample() memstat.Footprint {
+// sample returns the current footprint and whether the cgroup's at-limit
+// counter has risen within memoryPressureWindow.
+func (g *CgroupMemoryGate) sample() (memstat.Footprint, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
-	if g.haveCached && now.Sub(g.cachedAt) < memoryGateSampleTTL {
-		return g.cached
+	if !g.haveCached || now.Sub(g.cachedAt) >= memoryGateSampleTTL {
+		g.cached = g.read()
+		g.cachedAt = now
+		g.haveCached = true
+		g.observeAtLimit(now)
 	}
-	g.cached = g.read()
-	g.cachedAt = now
-	g.haveCached = true
-	return g.cached
+	rising := g.haveAtLimit && !g.atLimitRoseAt.IsZero() &&
+		now.Sub(g.atLimitRoseAt) <= memoryPressureWindow
+	return g.cached, rising
+}
+
+// observeAtLimit records a rise in the at-limit counter. The first observation
+// only establishes a baseline: a counter is monotonic for the life of the
+// cgroup, so its absolute value says how much pressure there has been since
+// the container started, not how much there is now. Only a change between two
+// readings carries that.
+func (g *CgroupMemoryGate) observeAtLimit(now time.Time) {
+	if g.cached.Cgroup == nil {
+		g.haveAtLimit = false
+		return
+	}
+	current := g.cached.Cgroup.AtLimit
+	if g.haveAtLimit && current > g.atLimit {
+		g.atLimitRoseAt = now
+	}
+	g.atLimit = current
+	g.haveAtLimit = true
 }
