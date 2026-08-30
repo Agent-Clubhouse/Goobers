@@ -299,7 +299,14 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// its own flagged gate gets the stricter-review label; ordinary gate
 	// tuning gets the lighter one. Best-effort — labeling failures never fail
 	// an already-opened PR, same posture as flagScopeDrift.
-	if kind, subject := gateEditClassificationFromJournal(root, runID); kind != "" && kind != "none" {
+	kind, subject, classifyErr := gateEditClassificationFromJournal(root, runID)
+	switch {
+	case classifyErr != nil:
+		// Loud, not silent: an unreadable journal means we do not KNOW whether
+		// this diff edits its own gate, and the PR is going out unlabelled.
+		pf(stderr, "warning: could not read gate-edit classification for pr #%d from the run journal (%v) — the pr is unlabelled for gate-edit review routing\n",
+			result.Number, classifyErr)
+	case kind != "" && kind != "none":
 		if gh, ok := provider.(*providers.GitHubProvider); ok {
 			if lerr := labelGateEdit(ctx, gh, repo, result.Number, kind, subject); lerr != nil {
 				pf(stderr, "warning: could not label pr #%d for gate-edit review routing (%v)\n", result.Number, lerr)

@@ -270,9 +270,24 @@ func StageRequiresInstanceConfig(command []string) bool {
 // stamps no GOOBERS_INSTANCE_ROOT (internal/dispatcher/podspec.go), so
 // providerStageRoot() falls back to "." and these commands would silently
 // operate on an empty, pod-local root instead of failing — the exact
-// "silent-wrong-result" class this refusal turns loud. None of them has a
-// pod-reachable plane yet: the claims plane has a server but no client, and
-// run-journal reads stay human-only (internal/httpapi/router.go).
+// "silent-wrong-result" class this refusal turns loud. None of them can be
+// removed from this list yet — see the note below on what each one is still
+// waiting for.
+//
+// #3880 / decision 005 R1 landed the READ half of the journal seam: a pod
+// principal may GET its own run's events, artifacts and stage attempts, and
+// three purpose-built gaggle-scoped routes answer the cross-run questions
+// (internal/journalclient, internal/httpapi/journalreadplane.go). Every
+// journal-reading command in this list now goes through that seam rather than
+// journal.OpenRead. They stay refused ANYWAY, deliberately, because the seam
+// selects the plane from GOOBERS_JOURNAL_ENDPOINT/GOOBERS_JOURNAL_TOKEN and
+// the dispatcher does not stamp either yet (internal/dispatcher/podspec.go).
+// Removing a command here before that stamping exists would trade a loud
+// refusal for a fail-closed error inside the pod — better than the silent
+// wrong answer, but strictly worse than the refusal. The removals belong with
+// the dispatcher-env change, and only for commands whose OTHER instance-root
+// needs (a claim ledger, a merge lock, the sibling cache) are also served by
+// then.
 //
 // backlog-query and backlog-health are deliberately NOT here: only specific
 // FLAGS make them provider-only rather than ledger/journal-touching (for
@@ -292,7 +307,8 @@ func StageRequiresInstanceConfig(command []string) bool {
 //
 // DERIVED, and re-derivable: per command, grep its handler for
 // SchedulerDir()/claimLedgerFileName/mergeLockFileName (a ledger or lock) or
-// journal.OpenRead (an on-disk run-journal read) — cmd/goobers/{prclaim,
+// journal.OpenRead / stageRunJournal / stageCrossRunJournal (a run-journal
+// read) — cmd/goobers/{prclaim,
 // prremediationlifecycle,prselect,updatebehindpr,mergepr,
 // postmergereconcile,applyverdict,respondtofindings,implementcontext,
 // issuecloseout,telemetryquery,backlogdedupe,gatherprcontext,
@@ -307,23 +323,23 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	"update-behind-pr":         true, // selects/leases the PR via the claim ledger before its API update
 	"merge-pr":                 true, // instance-wide flock in SchedulerDir around poll->decide->merge (issue #719)
 	"reconcile-post-merge":     true, // reads/writes the post-merge reconcile ledger in SchedulerDir
-	"apply-verdict":            true, // reads the review gate's verdict from the on-disk run journal
-	"respond-to-findings":      true, // reads implement's outputs from the on-disk run journal, plain or --check ("validate-finding-responses" in the workflow DSL)
-	"gather-implement-context": true, // reads OTHER runs' on-disk journals
+	"apply-verdict":            true, // reads the review gate's verdict from its own run journal (#3880 seam: waiting only on dispatcher journal-endpoint stamping)
+	"respond-to-findings":      true, // reads implement's outputs from its own run journal, plain or --check ("validate-finding-responses" in the workflow DSL) (#3880 seam: same)
+	"gather-implement-context": true, // reads OTHER runs' journals (#3880 cross-run seam: same)
 	"issue-close-out":          true, // unconditionally releases the claim-ledger lease on every terminal status
 	"telemetry-query":          true, // reads the instance telemetry rollup under the instance root (also refused separately for its instance CONFIG read via StageRequiresInstanceConfig)
 	"backlog-dedupe":           true, // opens the claim ledger and lists this run's claimed IDs (backlogdedupe.go) — a missing ledger file in a pod resolves to a FRESH EMPTY ledger, not an error, so this is the silent-wrong-result class this list exists to close
 	"gather-pr-context":        true, // filters claim-available PRs via the claim ledger in SchedulerDir before candidate selection (gatherprcontext.go)
-	"gather-ci-failures":       true, // reads the current run's on-disk journal (gathercifailures.go)
-	"gather-issue-context":     true, // reads the current run's on-disk journal (gatherissuecontext.go)
-	"gather-sibling-context":   true, // reads the sibling cache under SchedulerDir (prsiblingcontext.go)
-	"resolve-review-threads":   true, // reads the current run's on-disk journal (resolvereviewthreads.go)
+	"gather-ci-failures":       true, // reads the current run's journal (gathercifailures.go) (#3880 seam: waiting only on dispatcher stamping)
+	"gather-issue-context":     true, // reads the current run's journal (gatherissuecontext.go) (#3880 seam: same)
+	"gather-sibling-context":   true, // reads the sibling cache under SchedulerDir (prsiblingcontext.go) — NOT a journal read at all; finding 002 C2's scheduler-state concern, not C4's
+	"resolve-review-threads":   true, // reads the current run's journal (resolvereviewthreads.go) (#3880 seam: waiting only on dispatcher stamping)
 	"select-source":            true, // opens the instance log and the claim ledger under SchedulerDir to lease/select the parent (selectsource.go)
 	"publish-batch":            true, // locks under SchedulerDir/decomposition-target-locks and releases the parent claim via the instance log (publishbatch.go)
 	"post-merge":               true, // reads the sibling cache under SchedulerDir (postmerge.go)
 	"reconcile-branches":       true, // opens the instance log under SchedulerDir (reconcilebranches.go)
-	"validate-plan":            true, // reads the current run's on-disk journal for the selection artifact (validateplan.go)
-	"gate-removal-guard":       true, // reads the analyze stage's finding from the run journal (gateremovalguard.go)
+	"validate-plan":            true, // reads the current run's journal for the selection artifact (validateplan.go) (#3880 seam: waiting only on dispatcher stamping)
+	"gate-removal-guard":       true, // reads the analyze stage's finding from the run journal (gateremovalguard.go) (#3880 seam: same)
 }
 
 // StageRequiresInstanceRootCode names, in a stage's failure ErrorInfo.Code,

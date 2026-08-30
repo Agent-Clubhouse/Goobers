@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 )
 
 const validatePlanHelp = "Usage: goobers validate-plan [path]\n\n" +
@@ -164,12 +165,16 @@ func readDecompositionInput[T any](root, path, defaultPath, stage, artifactSuffi
 	if runID == "" {
 		return value, err
 	}
-	runDir, runErr := runDirFor(layoutFor(root), runID)
+	reader, runErr := stageRunJournal(root, runID)
 	if runErr != nil {
-		return value, err
-	}
-	reader, runErr := journal.OpenRead(runDir)
-	if runErr != nil {
+		// A run with no journal on this host is the pre-seam tolerance: the
+		// optional input simply is not available, and the caller gets the
+		// original missing-file error. Anything else — an unreadable journal,
+		// a refused or failed plane read — is surfaced, never swallowed into
+		// "the input wasn't there".
+		if errors.Is(runErr, journalclient.ErrRunNotFound) {
+			return value, err
+		}
 		return value, fmt.Errorf("open run journal for %s input: %w", stage, runErr)
 	}
 	events, runErr := reader.Events()

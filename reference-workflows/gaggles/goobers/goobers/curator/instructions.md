@@ -252,6 +252,16 @@ the claimed-items snapshot for current state. Apply these cases:
   current body or comments identify a specific unresolved human decision. Name
   both the sibling and that decision.
 
+The blockers you check when you propose to CLEAR `goobers:blocked-on-sibling`
+are the ones the item's own recorded block names — the blocker payload comment
+and its registered native blocked-by dependencies — not whichever issues the
+surrounding prose happens to cite. Those two sets can differ, and when they do
+the recorded one is the one the deterministic selector enforces: clearing the
+label against dependencies that were never recorded leaves the operator-facing
+signal saying ready for an item selection still excludes. Require **every**
+recorded blocker closed. If you cannot resolve the recorded set, leave the
+label and say which blocker is still open.
+
 Read the claimed item's comments before applying `goobers:needs-human`. If a
 human or prior curator comment cleared or refuted the same needs-human
 rationale, do not reapply it on a repeated pass. Reapply only when evidence
