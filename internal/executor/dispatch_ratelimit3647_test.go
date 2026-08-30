@@ -29,7 +29,7 @@ func TestTransientPollCodeClassifiesUntypedRateLimit(t *testing.T) {
 	if err == nil {
 		t.Fatal("GetWorkItem() error = nil, want an exhausted rate-limit failure")
 	}
-	if got := transientPollCode(err); got != providers.ErrorCodeRateLimited {
-		t.Fatalf("transientPollCode(untyped 429) = %q, want %q", got, providers.ErrorCodeRateLimited)
+	if got := CIPollFailureCode(err); got != providers.ErrorCodeRateLimited {
+		t.Fatalf("CIPollFailureCode(untyped 429) = %q, want %q", got, providers.ErrorCodeRateLimited)
 	}
 }
