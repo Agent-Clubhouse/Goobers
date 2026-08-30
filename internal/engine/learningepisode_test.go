@@ -144,9 +144,26 @@ func TestEngineLearningEpisodeNamesTheCorrectedEvent(t *testing.T) {
 // BuildLearningEpisode surfaces here as a digest diff rather than as a
 // nondeterminism panic in production.
 func TestEngineLearningEpisodeIsDeterministic(t *testing.T) {
-	spec, script := parityLearningEpisodeSpec(), learningEpisodeScript()
-	first, _, firstErr := shortcutRunWithID(t, "e10-det", spec, script)
-	second, _, secondErr := shortcutRunWithID(t, "e10-det", spec, script)
+	for _, fixture := range []struct {
+		name string
+		id   string
+		spec apiv1.WorkflowSpec
+	}{
+		{name: "no contextFrom", id: "e10-det", spec: parityLearningEpisodeSpec()},
+		{name: "implementation-lane contextFrom", id: "e10-det-contextfrom",
+			spec: parityLearningEpisodeContextFromSpec()},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			assertLearningEpisodeIsDeterministic(t, fixture.id, fixture.spec)
+		})
+	}
+}
+
+func assertLearningEpisodeIsDeterministic(t *testing.T, id string, spec apiv1.WorkflowSpec) {
+	t.Helper()
+	script := learningEpisodeScript()
+	first, _, firstErr := shortcutRunWithID(t, id, spec, script)
+	second, _, secondErr := shortcutRunWithID(t, id, spec, script)
 	if (firstErr == nil) != (secondErr == nil) {
 		t.Fatalf("walk error differs between runs: %v vs %v", firstErr, secondErr)
 	}
@@ -177,6 +194,14 @@ func TestEngineLearningEpisodeIsDeterministic(t *testing.T) {
 // pointer depends on and the one a determinism panic would never tell us about
 // (a walk can be perfectly deterministic in its commands while deriving a
 // different artifact name).
+//
+// It runs over BOTH E10 fixtures: the original one, whose re-entered stage
+// declares no contextFrom, and #3928's, whose stage declares the flagship
+// implementation lane's contextFrom and minimum. The second is not redundant:
+// selection happens inside the walk, on the pointer set the injection just
+// added to, so a selector that dropped the episode would change what the walk
+// dispatches — and the replayed history has to agree with the original about
+// that too, or the digest a repass is handed stops being reproducible.
 func TestEngineLearningEpisodeHistoryReplays(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -195,25 +220,52 @@ func TestEngineLearningEpisodeHistoryReplays(t *testing.T) {
 	})
 	temporalClient := server.Client()
 
-	taskQueue := "e10-replay"
-	exec := newScriptedExec(learningEpisodeScript())
-	w := temporalworker.New(temporalClient, taskQueue, temporalworker.Options{})
-	RegisterWith(w, &Activities{
-		Goober:     exec,
-		Det:        exec,
-		Auto:       gate.NewAutomatedEvaluator(),
-		Workspaces: testWorkspaces(t),
-	})
-	if err := w.Start(); err != nil {
-		t.Fatalf("start Temporal worker: %v", err)
+	// One worker (and one scriptedExec) PER fixture: the script's last call
+	// repeats, so a shared executor would hand the second run's first
+	// implement dispatch the previous run's trailing success — no failure, no
+	// retry arm, no injection, and a fixture that silently stopped testing
+	// anything.
+	for _, fixture := range []struct {
+		name string
+		id   string
+		spec apiv1.WorkflowSpec
+	}{
+		{name: "no contextFrom", id: "e10-replay", spec: parityLearningEpisodeSpec()},
+		{name: "implementation-lane contextFrom", id: "e10-replay-contextfrom",
+			spec: parityLearningEpisodeContextFromSpec()},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			exec := newScriptedExec(learningEpisodeScript())
+			w := temporalworker.New(temporalClient, fixture.id, temporalworker.Options{})
+			RegisterWith(w, &Activities{
+				Goober:     exec,
+				Det:        exec,
+				Auto:       gate.NewAutomatedEvaluator(),
+				Workspaces: testWorkspaces(t),
+			})
+			if err := w.Start(); err != nil {
+				t.Fatalf("start Temporal worker: %v", err)
+			}
+			t.Cleanup(w.Stop)
+			replayLearningEpisodeHistory(ctx, t, temporalClient, fixture.id, fixture.id, fixture.spec)
+		})
 	}
-	t.Cleanup(w.Stop)
+}
 
-	in := runInput("e10-replay", parityLearningEpisodeSpec())
-	in.RunID = "e10-replay"
+// replayLearningEpisodeHistory runs one fixture to completion on a live dev
+// server, replays its recorded history through the determinism checker, and
+// asserts the episode identity the replay re-derives is the one the original
+// walk produced.
+func replayLearningEpisodeHistory(
+	ctx context.Context, t *testing.T, temporalClient client.Client,
+	taskQueue, id string, spec apiv1.WorkflowSpec,
+) {
+	t.Helper()
+	in := runInput(id, spec)
+	in.RunID = id
 	in.TriggerKind = string(journal.TriggerManual)
 	run, err := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:        "e10-replay",
+		ID:        id,
 		TaskQueue: taskQueue,
 	}, Run, in)
 	if err != nil {

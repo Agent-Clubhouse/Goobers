@@ -103,7 +103,12 @@ func readEpisodeHistory(pointers []apiv1.ContextPointer, resolve ArtifactBytes, 
 	}
 	var episodes []learning.Episode
 	for _, pointer := range pointers {
-		if !strings.HasPrefix(pointer.Name, "learning.episode") || pointer.Artifact == nil {
+		// The SAME classifier contextFrom selection uses (#3928), so the set
+		// of names that reach a stage and the set this reads back cannot
+		// drift: a pointer selected as an episode is read as one, and a
+		// malformed name is neither.
+		class, _ := apiv1.ClassifyContextPointer(pointer.Name)
+		if class != apiv1.ContextPointerLearningEpisode || pointer.Artifact == nil {
 			continue
 		}
 		data, err := resolve(*pointer.Artifact)
