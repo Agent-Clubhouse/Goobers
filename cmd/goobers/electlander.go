@@ -227,6 +227,16 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	// open-PR set is in hand. An unknown name falls back to fifo.
 	policyName := providerInput("electionPolicy", defaultElectionPolicy)
 
+	// #2741: the sibling-serialization strategy — which cluster this stage
+	// serializes against — is selectable independently of the ordering policy.
+	// MUST match apply-verdict's siblingSerialization so both stages resolve
+	// the same cluster.
+	serializationInput := providerInput("siblingSerialization", defaultSiblingSerialization)
+	serialization, knownSerialization := resolveSiblingSerialization(serializationInput)
+	if !knownSerialization {
+		pf(stderr, "warning: unknown sibling-serialization strategy %q — falling back to %q\n", serializationInput, serialization)
+	}
+
 	// writeResult emits the routing decision plus the pass-through outputs the
 	// two possible successor stages resolve their inputsFrom against.
 	writeResult := func(elected bool) int {
@@ -275,6 +285,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	// parked even if the reviewer under-named or missed the blocking siblings;
 	// a verdict carrying a real defect is left unchanged (never electable).
 	effectiveFindings := withOverlapBackstop(verdict.Findings, overlappingSiblings)
+	serializedCluster := serializationCluster(serialization, effectiveFindings, overlappingSiblings, selectedNumber)
 
 	// The election needs the live open-PR set for two things: the elected
 	// verdict's SHA-pin re-check below, and (#950) knowing which cluster members
@@ -352,7 +363,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		demoted = unionPRSets(demoted, ineligible)
 	}
 
-	if reason := noLanderEscalationReason(verdict.Decision, effectiveFindings, selectedNumber, overlappingSiblings, policy, demoted, resolvedPolicy); reason != "" {
+	if reason := noLanderEscalationReason(verdict.Decision, effectiveFindings, selectedNumber, serializedCluster, policy, demoted, resolvedPolicy); reason != "" {
 		pf(stdout, "%s — routing to apply-verdict for explicit escalation\n", reason)
 		return writeResult(false)
 	}

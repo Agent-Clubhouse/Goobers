@@ -679,6 +679,20 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// the parked-record). A gather failure fails the stage explicitly rather
 	// than silently deriving a different winner.
 	policyInput := providerInput("electionPolicy", defaultElectionPolicy)
+
+	// #2741: which siblings this PR serializes against is its own selectable
+	// surface, orthogonal to the ordering policy above. "election" (default)
+	// serializes only over the deterministic overlap set the election machinery
+	// supplies; "ordering" also serializes over the reviewer's named cross-PR
+	// blockers, so a workflow that omits elect-lander/elect-gate still gets a
+	// deterministic lander instead of a permanent needs-changes loop.
+	serializationInput := providerInput("siblingSerialization", defaultSiblingSerialization)
+	serialization, knownSerialization := resolveSiblingSerialization(serializationInput)
+	if !knownSerialization {
+		pf(stderr, "warning: unknown sibling-serialization strategy %q — falling back to %q\n", serializationInput, serialization)
+	}
+	serializedCluster := serializationCluster(serialization, effective.Findings, overlappingSiblings, selectedNumber)
+
 	clusterBlockers := electionClusterBlockers(effective.Findings, overlappingSiblings)
 	clusterPolicy, resolvedPolicyName, perr := resolveElectionPolicyForCluster(
 		ctx, prProvider, repo, policyInput, selectedNumber, clusterBlockers, prs)
@@ -690,7 +704,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// sibling will defer to it. Publish that zero-winner state as a distinct
 	// human escalation instead of silently splitting the cluster between
 	// blocked-on-sibling and needs-remediation.
-	if reason := noLanderEscalationReason(posted.Decision, effective.Findings, selectedNumber, overlappingSiblings, clusterPolicy, demoted, resolvedPolicyName); reason != "" {
+	if reason := noLanderEscalationReason(posted.Decision, effective.Findings, selectedNumber, serializedCluster, clusterPolicy, demoted, resolvedPolicyName); reason != "" {
 		posted.Decision = apiv1.VerdictFail
 		posted.Rationale = reason
 	}
@@ -701,7 +715,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// GitHub's native merge queue must never be a second, uncoordinated
 	// merge authority that crowns a cluster member on its own. See
 	// resolveElectionOutcome.
-	if elected, rationale := resolveElectionOutcome(selectedNumber, posted.Decision, effective.Findings, posted.Rationale, overlappingSiblings, demoted, clusterPolicy, resolvedPolicyName); rationale != "" {
+	if elected, rationale := resolveElectionOutcome(selectedNumber, posted.Decision, effective.Findings, posted.Rationale, serializedCluster, demoted, clusterPolicy, resolvedPolicyName); rationale != "" {
 		posted.Elected = elected
 		posted.Rationale = rationale
 		if elected {

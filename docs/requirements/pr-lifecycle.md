@@ -169,6 +169,18 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   `apply-verdict` MUST be configured with the **same** policy and MUST derive
   identical decisions from identical inputs (a pinned test enforces
   agreement).
+- **PRL-084 (MUST, Shipped):** Sibling **serialization** MUST be a selectable
+  strategy surface (#2741), orthogonal to the election policy of PRL-022:
+  the policy decides *who goes first* within a cluster, the strategy decides
+  *which siblings form the cluster*. `election` (default) serializes only over
+  the deterministic overlap set the election machinery threads as
+  `overlappingSiblings`; `ordering` additionally serializes over the
+  reviewer-named cross-PR blockers, so a merge-review workflow that omits
+  `elect-lander`/`elect-gate` still resolves a deterministic lander instead of
+  inheriting a permanent `needs-changes` loop with no ordering mechanism at
+  all. An unknown strategy name falls back to `election` with a logged warning,
+  never a pipeline failure, and `elect-lander` and `apply-verdict` MUST be
+  configured with the **same** strategy.
 - **PRL-023 (MUST, Shipped):** Election means "those siblings stop counting as
   blockers", **not** a separate merge authority: the crowned lander's verdict
   is resolved into a **derived, published `pass`** (rationale stating the
