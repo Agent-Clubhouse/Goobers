@@ -44,22 +44,68 @@ Claim partitioning is pinned the same way: `BacklogQueryAssignedTo` and
 required labels, which is what gives an engine run the MIRC-2 claim partition the runner has
 had since #1901.
 
-## The gap: kit selection is not yet by digest (#3884)
+## Kit selection is by digest (#3884)
 
-`GooberDigest` is **descriptive, not prescriptive**. It records which kit the run was
-admitted against; it does not select the kit the worker executes. A worker resolves its kit
-from its own mounted config, so a kit change that lands mid-flight can still be observed by
-an in-flight engine run — the run's `run.yaml` will name the digest it started with while
-its later stages executed against the new one.
+`GooberDigest` is **prescriptive, not merely descriptive**. It records which kit the run was
+admitted against *and it selects the kit the worker executes.*
 
-For a runner-driven run this cannot happen: the runner resolves the kit in the same process
-that recorded the digest.
+Every stage envelope the engine dispatches carries the run's `GooberDigest`
+(`InvocationEnvelope.GooberDigest`). On the far side, the worker resolves the goober kit for
+that gaggle by recomputing the digest of each config tree it holds and serving the one that
+matches the pin. It never serves a kit whose digest differs from the pin — not the current
+tree, not a "close enough" tree. An unpinned envelope (empty `GooberDigest`) resolves the
+current tree exactly as before, which is what keeps runs started before D1 byte-identical on
+the wire.
 
-This gap is tracked as **#3884** and was deliberately left outside D1's scope. Closing it
-means the worker resolving its kit *by the digest the run pinned* rather than from ambient
-config. Until then, treat `GooberDigest` on an engine run as "the kit this run was admitted
-against", and avoid landing kit changes while long engine runs are in flight if exact
-stage-level kit provenance matters to you.
+The local runner stamps the same field on its envelopes (`runner.buildEnvelope`), so the two
+drivers' dispatch payloads name the same kit and stay diffable in the parity harness. The
+runner does not need the pin to *select* anything — it resolves the kit in the same process
+that computed the digest — but it must not be the driver that drops the field.
+
+### When the worker cannot serve the pin
+
+A worker whose config tree has rolled forward past the run's pin **refuses the attempt** with
+a named, retriable refusal rather than silently substituting its current instructions:
+
+| code | meaning |
+| --- | --- |
+| `gate_pin_missing` | The worker holds no config tree whose goober digest equals the run's pin. |
+| `run_pin_unverifiable` | The worker could not compute a goober digest for that gaggle/workflow at all, so it cannot prove a match either way. |
+
+The refusal names the gaggle, the workflow, the expected digest and the digests the worker
+*can* serve. It names **digests only** — never instructions, skill content, credentials or
+any other config body — so it is safe in logs an operator can read.
+
+The refusal is classified as an **infrastructure** failure, so it consumes the run's
+infrastructure-retry budget rather than its policy/repass budget. That classification is the
+mechanism by which "roll the worker's config forward, the run recovers" is true: the attempt
+fails, the worker's reload (#3912) picks up the tree carrying the pinned kit, and the next
+retry resolves and proceeds. A policy-class or non-retryable refusal would end the run before
+the reload could land.
+
+### Bounded retention is what lets a reload keep in-flight runs alive
+
+The worker retains a bounded, newest-first history of superseded config snapshots
+(`--config-history-depth`, default 3, `0` disables). A run pinned to a tree that a reload has
+just superseded is still served from history, so a reload can *add* a satisfiable digest
+without ever *removing* one an in-flight run depends on. Snapshots are self-contained —
+instructions and skill packages are captured at load time, never re-read from disk — because
+a retained snapshot that went back to disk would resolve the *current* tree while claiming to
+be the old one, which is precisely the substitution the pin exists to prevent.
+
+Retention is bounded, and it is deliberately not durable:
+
+- Past the bound, the oldest tree is evicted and its pins **fail closed** with
+  `gate_pin_missing`. Eviction is by age; the worker cannot know which runs are live without
+  a Temporal round-trip on the config path.
+- A restarted worker holds **no** history. It serves its current tree and refuses stale pins.
+  Retention is an availability optimisation for in-flight runs across a reload, never a
+  correctness assumption a run may rely on.
+
+Deterministic stages and workspace provisioning stay **unpinned** on the current tree by
+design: `GooberDigest` is goober-kit identity (instructions, skills, model, harness, MCP,
+tools) and a deterministic stage executes none of it. The credential staleness that used to
+hurt those paths was closed by the reload in #3912.
 
 ## `engine-start` routing and dedupe
 

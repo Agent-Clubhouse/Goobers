@@ -56,8 +56,9 @@ type engineRunRequest struct {
 	item *apiv1.BacklogItem
 
 	// gooberDigest is the kit digest the scheduler entry pins for this lane
-	// (localscheduler.WorkflowEntry.GooberDigest). Provenance only — see
-	// engine.StartSpec.GooberDigest and #3884.
+	// (localscheduler.WorkflowEntry.GooberDigest). Both provenance and, since
+	// #3884, the selector every attempt of the run resolves its kit by — see
+	// engine.StartSpec.GooberDigest.
 	gooberDigest string
 }
 
