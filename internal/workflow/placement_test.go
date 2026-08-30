@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
@@ -160,25 +161,54 @@ func TestStagePlacementsPreV30(t *testing.T) {
 	}
 }
 
-// TestCheckGatePlacementWarningsRouter: WF024 rides the 3.0 arm only. The
-// same placed gate on a 2.0 document draws nothing here — the router refuses
-// the field outright (preV30SurfaceProblems), so there is no unhonoured
-// placement to warn about.
-func TestCheckGatePlacementWarningsRouter(t *testing.T) {
-	spec := apiv1.WorkflowSpec{
-		Tasks: []apiv1.Task{{Name: "implement", Type: apiv1.TaskAgentic, Goober: "dev", Next: "review"}},
-		Gates: []apiv1.Gate{{
-			Name: "review", Evaluator: apiv1.EvaluatorAgentic,
-			Agentic:  &apiv1.AgenticGate{Goober: "reviewer"},
-			RunsOn:   &apiv1.RunsOn{CPU: "1000m", Memory: "2Gi"},
-			Branches: map[string]string{"pass": "", "fail": "@abort"},
-		}},
+// TestStagePlacementsPreV30RefusesWindowsAdmin: the pre-3.0 arm refuses the
+// one product-interpreted token instead of matching it (#3619). Without this,
+// a 2.0 task naming privilege=windows-admin in requiredCapabilities would
+// reach the solver with no OS and no coherence rule, pin to whichever class
+// claims the token, and render ContainerAdministrator — through validate's
+// checkpoint solve and the run-start pin, both of which read StagePlacements
+// directly rather than through Compile. Task and gaggle-level sets alike;
+// the same document on 3.0 runsOn is the accepted spelling.
+func TestStagePlacementsPreV30RefusesWindowsAdmin(t *testing.T) {
+	task := apiv1.Task{
+		Name: "install-service", Type: apiv1.TaskDeterministic,
+		Run: &apiv1.DeterministicRun{Command: []string{"install.cmd"}},
 	}
-	v30 := CheckGatePlacementWarnings(Definition{Name: "wf", Version: 1, DSLVersion: supportmatrix.V3DSLVersion, Spec: spec})
-	if len(v30) != 1 || !strings.Contains(v30[0], `gate "review" declares runsOn`) || !strings.Contains(v30[0], "no execution path honours a gate placement yet") {
-		t.Fatalf("3.0 CheckGatePlacementWarnings = %v, want one WF024 naming the gate", v30)
+	def := func(caps []string) Definition {
+		t := task
+		t.RequiredCapabilities = caps
+		return Definition{Name: "wf", Version: 1, DSLVersion: "2.0", Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{t}}}
 	}
-	if v20 := CheckGatePlacementWarnings(Definition{Name: "wf", Version: 1, DSLVersion: "2.0", Spec: spec}); len(v20) != 0 {
-		t.Fatalf("2.0 CheckGatePlacementWarnings = %v, want none (the router refuses the field instead)", v20)
+
+	_, err := StagePlacements(def([]string{"dotnet@8", runnercap.CapabilityWindowsAdmin}), apiv1.GaggleSpec{}, nil)
+	if err == nil || !strings.Contains(err.Error(), `task "install-service" declares requiredCapabilities "privilege=windows-admin"`) {
+		t.Fatalf("StagePlacements(2.0 task token) error = %v, want the router refusal", err)
+	}
+
+	_, err = StagePlacements(def([]string{"dotnet@8"}), apiv1.GaggleSpec{RequiredCapabilities: []string{runnercap.CapabilityWindowsAdmin}}, nil)
+	if err == nil || !strings.Contains(err.Error(), `the gaggle declares requiredCapabilities "privilege=windows-admin"`) {
+		t.Fatalf("StagePlacements(2.0 gaggle token) error = %v, want the router refusal", err)
+	}
+
+	// Any other token is still an opaque tag the pre-3.0 arm passes through.
+	requirements, err := StagePlacements(def([]string{"dotnet@8", "privilege=other"}), apiv1.GaggleSpec{}, nil)
+	if err != nil {
+		t.Fatalf("StagePlacements(2.0 plain tokens) = %v, want success", err)
+	}
+	if !reflect.DeepEqual(requirements, []runnersolve.StageRequirement{{Stage: "install-service", Capabilities: []string{"dotnet@8", "privilege=other"}}}) {
+		t.Fatalf("requirements = %#v, want the declared tags verbatim", requirements)
+	}
+
+	// The 3.0 spelling of the same requirement is accepted and carries the OS
+	// the coherence rule demands.
+	v30Task := task
+	v30Task.RunsOn = &apiv1.RunsOn{OS: "windows", Capabilities: []string{"dotnet@8", runnercap.CapabilityWindowsAdmin}}
+	requirements, err = StagePlacements(Definition{Name: "wf", Version: 1, DSLVersion: supportmatrix.V3DSLVersion,
+		Spec: apiv1.WorkflowSpec{Tasks: []apiv1.Task{v30Task}}}, apiv1.GaggleSpec{}, nil)
+	if err != nil {
+		t.Fatalf("StagePlacements(3.0 runsOn token) = %v, want success", err)
+	}
+	if len(requirements) != 1 || requirements[0].OS != "windows" || !runnercap.HasWindowsAdmin(requirements[0].Capabilities) {
+		t.Fatalf("requirements = %#v, want one windows row carrying the token", requirements)
 	}
 }

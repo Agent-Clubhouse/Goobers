@@ -100,6 +100,12 @@ func DispatchOne(ctx workflow.Context, in DispatchStageInput) (DispatchStageResu
 	// bounded ScheduleToStart so a queue no worker serves fails with a
 	// timeout naming it instead of hanging forever.
 	ctx = workflow.WithActivityOptions(ctx, stageActivityOptions(in.Envelope.Limits, in.Placement.Queue))
+	// This execution is the attempt's driver, so it — not the caller who
+	// built the payload — states the id the orphan sweep describes. Assigned
+	// unconditionally: a caller-supplied value is overwritten rather than
+	// trusted, which is the same posture refuseUnboundAttemptIdentity takes
+	// above, and workflow.GetInfo's execution id is deterministic on replay.
+	in.OwningWorkflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
 	var result DispatchStageResult
 	if err := workflow.ExecuteActivity(ctx, ActDispatchStage, in).Get(ctx, &result); err != nil {
 		// Returned bare: the caller classifies it with

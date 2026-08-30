@@ -145,7 +145,7 @@ apply the recorded checked-in source to the runtime instance
 render the effective instance config (secrets redacted)
 .TP
 \fBgoobers doctor\fR
-preflight a Kubernetes cluster against the documented infra shape
+preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
 .TP
 \fBgoobers e2e\fR
 check the Goobernetes distributed e2e proof harness's assertions against a recorded run
@@ -158,6 +158,9 @@ verify the Goobernetes S1-S9 e2e proof harness against one completed run's recor
 .TP
 \fBgoobers engine-project\fR
 write a completed engine run's journal into the instance (experimental)
+.TP
+\fBgoobers engine-queues\fR
+report which workers poll this instance's engine and dispatch task queues (experimental)
 .TP
 \fBgoobers engine-start\fR
 dispatch one run onto the tier-3 engine via Temporal (experimental)
@@ -468,6 +471,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-e2e-verify\fR(1),
 \fBgoobers-elect-lander\fR(1),
 \fBgoobers-engine-project\fR(1),
+\fBgoobers-engine-queues\fR(1),
 \fBgoobers-engine-start\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),

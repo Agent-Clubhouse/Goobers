@@ -410,6 +410,25 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	pf(stdout, "startup: scheduler initialized\n")
+	// #3480: on a Windows host, say once whether the directories this daemon
+	// writes then immediately reads are excluded from real-time scanning.
+	// Advisory — startup continues regardless.
+	//
+	// Printed HERE, not beside the large-repo warning above, because the set
+	// includes each gaggle's own workcopies.root — an override that beats the
+	// instance-wide one and can point at any drive — and setup.Definitions is
+	// the gaggle inventory the daemon itself is about to provision from. Read
+	// off instance.yaml alone, the advisory would have reported an
+	// affirmative all-clear over directories it never enumerated.
+	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
+		if line := hostAVExclusionAdvisory(ctx, "daemon",
+			daemonAVExclusionDirectories(l, setup.Config, setup.Definitions, avDeps), avDeps); line != "" {
+			pln(stdout, line)
+		}
+		if setup.Definitions == nil {
+			pln(stdout, "av-exclusions (advisory, daemon): config directory unavailable; per-gaggle workcopies roots are NOT enumerated above")
+		}
+	}
 	// #3806: instance config validated, definitions/scheduler wiring built.
 	configLoaded.Store(true)
 	defer setup.Shutdown(context.Background())
@@ -601,6 +620,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
 		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog)),
+		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
 		httpapi.WithTriggerService(triggerPlane),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
 		httpapi.WithCredentialService(credentialPlane),
@@ -616,6 +636,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if instance.IsLoopbackListenAddress(apiListenAddress(setup.Config)) {
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithRunRevealer(runDirectoryRevealer(l)))
 	}
+	// The telemetry read plane's containment (decision 005 R4 / finding 002
+	// C3). Wired unconditionally: without it every pod telemetry read is
+	// refused, so this is what OPENS the plane, and a daemon that serves stage
+	// pods at all can always answer which gaggle one of its own runs is in.
+	apiHandlerOpts = append(apiHandlerOpts, httpapi.WithPodRunGaggle(podRunGaggleResolver(l)))
 	// Pod-plane verifier: shared-key when configured (split daemon/dispatcher
 	// deployments — Goobers#3701), else the daemon-local in-memory registry.
 	podVerifier, perr := buildPodVerifier(setup.Config)
@@ -1170,6 +1195,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	telemetryRetentionTicker := time.NewTicker(telemetryRetentionSweepInterval)
 	telemetryRetentionTickerDone := make(chan struct{})
 	telemetryRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "telemetry_retention_sweep_failed")
+	// Stale journal-generation cleanup is diagnostic, not fatal: it gets its
+	// own reporter so a stranded generation is journaled without failing the
+	// retention sweep that otherwise succeeded (#3654).
+	journalGenerationCleanupErrors := newSweepErrorReporter(setup.InstanceLog, "journal_generation_cleanup_failed")
 	go func() {
 		defer close(telemetryRetentionTickerDone)
 		defer telemetryRetentionTicker.Stop()
@@ -1180,7 +1209,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case now := <-telemetryRetentionTicker.C:
 				_, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, now)
 				if err == nil {
-					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, now)
+					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, journalGenerationCleanupErrors, now)
 				}
 				telemetryRetentionErrors.report(err)
 			}

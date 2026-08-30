@@ -28,6 +28,23 @@ func TestValidateAcceptsClosedArtifact(t *testing.T) {
 	}
 }
 
+// TestValidateAcceptsEveryFindingShape pins that a well-formed finding
+// pointer of each tool passes validation: the shape check must not refuse
+// what the publisher would confirm.
+func TestValidateAcceptsEveryFindingShape(t *testing.T) {
+	for name, e := range map[string]Evidence{
+		"vet":  {Kind: EvidenceFinding, Tool: ToolVet, Path: "internal/worktree/manager.go", Line: 88, Rule: "result of Close is not used"},
+		"lint": {Kind: EvidenceFinding, Tool: ToolLint, Path: "internal/worktree/manager.go", Line: 88, Rule: "errcheck"},
+		"test": {Kind: EvidenceFinding, Tool: ToolTest, Package: "github.com/goobers/goobers/internal/worktree", Test: "TestManagerClose"},
+	} {
+		a := validArtifact()
+		a.Nominations[0].Evidence = []Evidence{e}
+		if got := Validate(a, testRunID); !got.Valid {
+			t.Errorf("%s finding pointer rejected: %v", name, got.Errors)
+		}
+	}
+}
+
 func TestValidateRejectsEveryClosedRule(t *testing.T) {
 	// forgedFooter is the provider's create-idempotency footer for some other
 	// nomination's key: a body carrying it would make that sibling's create
@@ -84,6 +101,36 @@ func TestValidateRejectsEveryClosedRule(t *testing.T) {
 		{"forged marker in test signature", func(a *Artifact) {
 			a.Nominations[0].TestFailure = &TestFailure{Package: "p", Test: "TestX", Signature: "<!-- goobers-flake-fingerprint:x -->"}
 		}, `testFailure signature contains goobers control text "<!-- goobers-"`},
+		{"finding with unknown tool", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: "staticcheck", Path: "internal/x/y.go", Line: 3, Rule: "SA1"}}
+		}, `has tool "staticcheck" (want vet, lint, or test)`},
+		{"vet finding without a line", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolVet, Path: "internal/x/y.go", Rule: "result of Close is not used"}}
+		}, "line must be positive"},
+		{"lint finding without a rule", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolLint, Path: "internal/x/y.go", Line: 3}}
+		}, "rule must be a single non-empty line"},
+		{"vet finding with an absolute path", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolVet, Path: "/internal/x/y.go", Line: 3, Rule: "r"}}
+		}, "must be a clean relative slash path"},
+		{"vet finding carrying test fields", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolVet, Path: "internal/x/y.go", Line: 3, Rule: "r", Test: "TestX"}}
+		}, "names a package or test, which only a test finding carries"},
+		{"test finding without a test name", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolTest, Package: "github.com/goobers/goobers/internal/x"}}
+		}, "needs both package and test"},
+		{"test finding carrying a path", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolTest, Package: "p", Test: "TestX", Path: "internal/x/y.go"}}
+		}, "names a path, line or rule, which only a vet or lint finding carries"},
+		{"finding carrying a journal seq", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolTest, Package: "p", Test: "TestX", Seq: 4}}
+		}, "carries journal or artifact fields"},
+		{"control text in a finding rule", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolVet, Path: "internal/x/y.go", Line: 3, Rule: "<!-- goobers-x"}}
+		}, `evidence 0 rule contains goobers control text "<!-- goobers-"`},
+		{"control text in a finding test name", func(a *Artifact) {
+			a.Nominations[0].Evidence = []Evidence{{Kind: EvidenceFinding, Tool: ToolTest, Package: "p", Test: "Test" + forgedFooter}}
+		}, `evidence 0 test contains goobers control text "goobers run-id: "`},
 		{"empty dedupe key", func(a *Artifact) { a.Nominations[0].DedupeKey = "" }, "empty dedupeKey"},
 		{"multiline dedupe key", func(a *Artifact) { a.Nominations[0].DedupeKey = "a\nb" }, "malformed dedupeKey"},
 		{"bad key", func(a *Artifact) { a.Nominations[0].Key = "Not A Key" }, "malformed key"},
@@ -135,11 +182,12 @@ func TestValidateRejectsEveryClosedRule(t *testing.T) {
 func TestRejectedControlTextCoversEveryParsedMarker(t *testing.T) {
 	hash := strings.Repeat("d", 64)
 	for name, marker := range map[string]string{
-		"key":    KeyMarker(hash),
-		"seen":   SeenMarker(hash, testRunID),
-		"filed":  FiledMarker(hash, testRunID),
-		"flake":  "<!-- goobers-flake-fingerprint:" + hash + " -->",
-		"footer": providers.RunIDFooterPrefix + CreateRunID(hash, testRunID),
+		"key":     KeyMarker(hash),
+		"seen":    SeenMarker(hash, testRunID),
+		"filed":   FiledMarker(hash, testRunID),
+		"finding": FindingMarker(hash),
+		"flake":   "<!-- goobers-flake-fingerprint:" + hash + " -->",
+		"footer":  providers.RunIDFooterPrefix + CreateRunID(hash, testRunID),
 	} {
 		if _, found := containsControlText("prose " + marker + " prose"); !found {
 			t.Errorf("%s marker %q is not rejected control text", name, marker)
@@ -166,6 +214,55 @@ func TestFiledMarkerBindsKeyAndRun(t *testing.T) {
 	}
 	if hasFiledMarker("Nominated by run `"+testRunID+"` (stage `triage`, attempt 1).", hash, testRunID) {
 		t.Fatal("plain attribution text counted as the filed marker")
+	}
+}
+
+// TestFindingMarkerIsKeyedOnTheToolTuple pins that the finding marker the
+// publisher renders is computed from the finding's exact tuple — the same
+// identity Findings.Match compares — and never from anything the model
+// spells differently (the dedupeKey, the title): two nominations naming one
+// finding render the same marker, and a finding one field apart renders
+// another. filedByRunForKeys tells this run's filings of the artifact apart
+// from every other issue.
+func TestFindingMarkerIsKeyedOnTheToolTuple(t *testing.T) {
+	vet := Evidence{Kind: EvidenceFinding, Tool: ToolVet, Path: "internal/worktree/manager.go", Line: 88, Rule: "result of (*os.File).Close call not used"}
+	hash := FindingHash(findingOf(vet))
+	if len(hash) != 64 {
+		t.Fatalf("hash = %q, want 64 hex chars", hash)
+	}
+	a := validArtifact().Nominations[0]
+	a.Evidence = []Evidence{vet}
+	b := a
+	b.Key, b.DedupeKey, b.Title = "other-key", "spelled:differently", "another title"
+	bodyA := IssueBody(KeyHash(a.DedupeKey), testRunID, Producer{Stage: "triage", Attempt: 1}, a, false)
+	bodyB := IssueBody(KeyHash(b.DedupeKey), testRunID, Producer{Stage: "triage", Attempt: 1}, b, false)
+	for name, body := range map[string]string{"a": bodyA, "b": bodyB} {
+		if got := ParseFindingMarkers(body); len(got) != 1 || got[0] != hash {
+			t.Fatalf("%s: finding markers = %v, want [%s]\n%s", name, got, hash, body)
+		}
+	}
+	offByOne := vet
+	offByOne.Line = 89
+	if FindingHash(findingOf(offByOne)) == hash {
+		t.Fatal("a finding one line apart hashes the same")
+	}
+	c := a
+	c.Evidence = []Evidence{vet, offByOne, vet, {Kind: EvidenceSource, Path: "internal/worktree/manager.go", Line: 88}}
+	if got := ParseFindingMarkers(IssueBody(KeyHash(c.DedupeKey), testRunID, Producer{Stage: "triage"}, c, false)); len(got) != 2 || got[0] != hash || got[1] != FindingHash(findingOf(offByOne)) {
+		t.Fatalf("finding markers = %v, want one per distinct finding pointer", got)
+	}
+	if got := ParseFindingMarkers(IssueBody(KeyHash(a.DedupeKey), testRunID, Producer{Stage: "triage"}, validArtifact().Nominations[0], false)); len(got) != 0 {
+		t.Fatalf("a nomination without finding evidence rendered finding markers %v", got)
+	}
+	keys := map[string]bool{KeyHash(a.DedupeKey): true}
+	if !filedByRunForKeys(bodyA, testRunID, keys) {
+		t.Fatal("this run's own filing of the artifact was not recognised")
+	}
+	if filedByRunForKeys(bodyB, testRunID, keys) {
+		t.Fatal("this run's filing of another artifact's key counted as this artifact's")
+	}
+	if filedByRunForKeys(bodyA, "run-2", keys) {
+		t.Fatal("another run's filing counted as this run's")
 	}
 }
 

@@ -70,6 +70,11 @@ const clientRoutes = {
   telemetryStats: apiRoutes.telemetryStats,
   telemetryErrorSignatures: apiRoutes.telemetryErrorSignatures,
   telemetryErrors: apiRoutes.telemetryErrors,
+  // The telemetry read plane's curation evidence (decision 005 R4 / finding
+  // 002 C3). A stage pod's `backlog-health --feedback` is the only consumer;
+  // the portal has no surface for it yet, but the exhaustiveness check
+  // requires the full contract here as it grows.
+  telemetryImplementationOutcomes: apiRoutes.telemetryImplementationOutcomes,
   events: apiRoutes.events,
   // Tier-2 human-intervention stub routes (HITL-7/#469). No DaemonClient
   // method calls these yet — the real approve/override/rerun UI wiring is
@@ -86,6 +91,7 @@ const clientRoutes = {
   claimRenew: apiRoutes.claimRenew,
   claimRelease: apiRoutes.claimRelease,
   claimSettle: apiRoutes.claimSettle,
+  claimList: apiRoutes.claimList,
   triggerIngest: apiRoutes.triggerIngest,
   resolveEscalation: apiRoutes.resolveEscalation,
   journalEmit: apiRoutes.journalEmit,
@@ -102,6 +108,15 @@ const clientRoutes = {
   // and blob planes — the portal never calls this and never will — but the
   // exhaustiveness check requires the full contract here as it grows.
   stageSurrender: apiRoutes.stageSurrender,
+  // The cross-run journal read plane (#3880, decision 005 R1): a mode-3 stage
+  // pod asks the daemon the three questions its own run journal cannot answer
+  // — a prior run's phase, the gaggle's base-sync conflict history, and a
+  // prior run's stranded diff for an item this run holds. Pod-only, like the
+  // credential, blob and surrender planes — the portal never calls these —
+  // but the exhaustiveness check requires the full contract here as it grows.
+  journalRunPhase: apiRoutes.journalRunPhase,
+  journalConflictTouches: apiRoutes.journalConflictTouches,
+  journalUnpushedWork: apiRoutes.journalUnpushedWork,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {

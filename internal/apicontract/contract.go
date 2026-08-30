@@ -37,7 +37,15 @@ const (
 	TelemetryStatsPath           = V1Prefix + "/telemetry/stats"
 	TelemetryErrorSignaturesPath = V1Prefix + "/telemetry/error-signatures"
 	TelemetryErrorsPath          = V1Prefix + "/telemetry/errors"
-	EventsPath                   = V1Prefix + "/events"
+	// TelemetryImplementationOutcomesPath is the curation-evidence read
+	// (decision 005 R4 / finding 002 C3): the terminal implementation runs
+	// that claimed a backlog item, with the run's last error and gate verdict
+	// retained as bounded evidence. Derived entirely from the rollup rows the
+	// stats and errors routes already project — same low sensitivity, same
+	// gaggle filter — and split out only because `backlog-health --feedback`
+	// needs the run-to-item join neither of those two carries.
+	TelemetryImplementationOutcomesPath = V1Prefix + "/telemetry/implementation-outcomes"
+	EventsPath                          = V1Prefix + "/events"
 
 	// Tier-2 human-intervention mutation routes. The CLI and dashboard use this
 	// same API-first surface, behind the shared access-control seam.
@@ -53,10 +61,19 @@ const (
 	// validate/dedupe/mint path the pending-triggers sweep uses; the HITL
 	// plane resolves an escalated run (approve/deny/redirect). Modes 1/2 keep
 	// their file seams — these routes are the non-local path.
-	ClaimAcquirePath         = V1Prefix + "/claims/acquire"
-	ClaimRenewPath           = V1Prefix + "/claims/renew"
-	ClaimReleasePath         = V1Prefix + "/claims/release"
-	ClaimSettlePath          = V1Prefix + "/claims/settle"
+	ClaimAcquirePath = V1Prefix + "/claims/acquire"
+	ClaimRenewPath   = V1Prefix + "/claims/renew"
+	ClaimReleasePath = V1Prefix + "/claims/release"
+	ClaimSettlePath  = V1Prefix + "/claims/settle"
+	// ClaimListPath is the claims plane's read (decision 005 amendment /
+	// finding 002 C1): a pod principal lists the claims its own run holds, or
+	// its gaggle namespace's current holders plus released history, so the
+	// selection filters every ledger-touching CLI stage runs in-process today
+	// (pre-existing claims, dedupe, ready-pool, PR claim-availability,
+	// failure-streak deprioritization) keep their input off the daemon. POST
+	// like its sibling routes: it is served under the same claims lock and
+	// carries a body, not a query string.
+	ClaimListPath            = V1Prefix + "/claims/list"
 	TriggerIngestPath        = V1Prefix + "/triggers"
 	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
 	// RunJournalEmitPath is the journal plane (§8, DS4): batched live journal
@@ -91,6 +108,30 @@ const (
 	// carries no run scope to check, so containment is "authenticated pod
 	// principal or refused" rather than a per-run comparison.
 	BlobDigestPath = V1Prefix + "/blobs/{digest}"
+
+	// The cross-run journal plane (decision 005 R1 option 1, finding 002 C4).
+	//
+	// A pod principal reads ITS OWN run's journal through the existing
+	// run-scoped read routes above (RunEventsPath / StageAttemptsPath /
+	// RunArtifactPath), contained by the handler to the run its token names.
+	// The reads that legitimately cross runs do NOT get a general cross-run
+	// reader: each is a purpose-built, gaggle-scoped question whose answer the
+	// daemon derives, so what is exposable is decided on the daemon rather
+	// than by whatever a stage chooses to fetch.
+	//
+	// JournalRunPhasePath answers "what phase did run X end in" — the input
+	// backlog-query --claim's terminalFailureStreak walks an item's released
+	// claim history for. Nothing but the phase crosses the boundary.
+	JournalRunPhasePath = V1Prefix + "/journal/run-phase"
+	// JournalConflictTouchesPath answers "which runs recorded base-sync
+	// conflicts, over which files, since T" — gather-implement-context's
+	// hot-file history. File names and run ids only; no artifact bytes.
+	JournalConflictTouchesPath = V1Prefix + "/journal/conflict-touches"
+	// JournalUnpushedWorkPath answers "is there stranded committed-but-never-
+	// published work for the items this run holds" (#3366). The daemon derives
+	// the asking run's items from its own claim ledger rather than trusting
+	// the request, so a pod cannot ask about an item it does not hold.
+	JournalUnpushedWorkPath = V1Prefix + "/journal/unpushed-work"
 )
 
 // RouteID is the stable cross-adapter identity of a versioned route.
@@ -116,7 +157,10 @@ const (
 	RouteTelemetryStats           RouteID = "telemetryStats"
 	RouteTelemetryErrorSignatures RouteID = "telemetryErrorSignatures"
 	RouteTelemetryErrors          RouteID = "telemetryErrors"
-	RouteEvents                   RouteID = "events"
+
+	RouteTelemetryImplementationOutcomes RouteID = "telemetryImplementationOutcomes"
+
+	RouteEvents RouteID = "events"
 
 	RouteApproveStage  RouteID = "approveStage"
 	RouteOverrideStage RouteID = "overrideStage"
@@ -126,6 +170,7 @@ const (
 	RouteClaimRenew        RouteID = "claimRenew"
 	RouteClaimRelease      RouteID = "claimRelease"
 	RouteClaimSettle       RouteID = "claimSettle"
+	RouteClaimList         RouteID = "claimList"
 	RouteTriggerIngest     RouteID = "triggerIngest"
 	RouteResolveEscalation RouteID = "resolveEscalation"
 	RouteJournalEmit       RouteID = "journalEmit"
@@ -137,6 +182,11 @@ const (
 	// carries exactly one Method.
 	RouteBlobGet RouteID = "blobGet"
 	RouteBlobPut RouteID = "blobPut"
+
+	// The cross-run journal plane (decision 005 R1, finding 002 C4).
+	RouteJournalRunPhase        RouteID = "journalRunPhase"
+	RouteJournalConflictTouches RouteID = "journalConflictTouches"
+	RouteJournalUnpushedWork    RouteID = "journalUnpushedWork"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -235,6 +285,7 @@ var v1Routes = []Route{
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteTelemetryImplementationOutcomes, Method: http.MethodGet, Path: TelemetryImplementationOutcomesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
@@ -252,6 +303,11 @@ var v1Routes = []Route{
 	{ID: RouteClaimRenew, Method: http.MethodPost, Path: ClaimRenewPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteClaimRelease, Method: http.MethodPost, Path: ClaimReleasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteClaimSettle, Method: http.MethodPost, Path: ClaimSettlePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	// claims/list is a read of the ledger, but it is served under the same
+	// claims lock as the four mutations and pooled with them on purpose: a
+	// claimant's select-then-acquire must not have its select shed as read
+	// traffic while its acquire is admitted.
+	{ID: RouteClaimList, Method: http.MethodPost, Path: ClaimListPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 
@@ -281,6 +337,18 @@ var v1Routes = []Route{
 	// RouteJournalEmit accepts for its own inline artifact bytes).
 	{ID: RouteBlobGet, Method: http.MethodGet, Path: BlobDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	{ID: RouteBlobPut, Method: http.MethodPut, Path: BlobDigestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
+	// The cross-run journal plane (decision 005 R1 option 1, finding 002 C4)
+	// is a machine seam like the claims plane: a stage pod asking the daemon
+	// one derived question about its own gaggle so a CLI stage keeps an input
+	// it used to read off the local filesystem. Workflow-execution and
+	// mutation-classed for exactly the reason claims/list is — these are reads
+	// taken IN FLIGHT by a claimant whose next act depends on the answer, and
+	// shedding them as read traffic would silently change a stage's decision
+	// rather than delay a human's page.
+	{ID: RouteJournalRunPhase, Method: http.MethodPost, Path: JournalRunPhasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalConflictTouches, Method: http.MethodPost, Path: JournalConflictTouchesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalUnpushedWork, Method: http.MethodPost, Path: JournalUnpushedWorkPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.

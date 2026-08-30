@@ -679,16 +679,16 @@ type Gate struct {
 	// has no quantities and a review is the most expensive stage class in a
 	// lane, so an inherited envelope would silently under-provision).
 	//
-	// NOT YET HONOURED AT EXECUTION: the block is validated, solved
-	// (RNR001/RNR003) and pinned by name, but the engine's gate evaluator has
-	// no placement arm until decision 001's engine/pod half (rulings 7–8)
-	// lands. Until then `goobers validate` warns (WF024) and the start seams
-	// fail closed — a gate placement self cannot satisfy is refused (the
-	// workflow is marked refused for daemon-scheduled runs; engine-start
-	// returns a named error) rather than run the reviewer outside its
-	// declared isolation; a placement self satisfies pins self and evaluates
-	// in-process. Interpreters before 3.0 refuse the field; the compiler
-	// enforces that, not the shared schema.
+	// Honoured at execution by the engine (rulings 7–8): a gate pinned to a
+	// non-self runner evaluates in a dispatcher-created pod on that runner's
+	// queue — the reviewer runs in review mode, the pod computes the
+	// reviewer diff itself and surrenders a Verdict the engine re-validates
+	// — and a placement self satisfies pins self and evaluates in-process. A
+	// DAEMON-scheduled run (internal/runner) has no gate dispatch arm yet:
+	// there, a gate placement self cannot satisfy is refused at boot
+	// (workflow.refused) rather than run outside its declared isolation.
+	// Interpreters before 3.0 refuse the field; the compiler enforces that,
+	// not the shared schema.
 	// +optional
 	RunsOn *RunsOn `json:"runsOn,omitempty" yaml:"runsOn,omitempty"`
 }
