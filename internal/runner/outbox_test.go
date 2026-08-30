@@ -59,6 +59,27 @@ func TestCollectOutboxFilesDirectoryRecursion(t *testing.T) {
 	}
 }
 
+func TestCollectOutboxFilesIncludesHiddenDirectories(t *testing.T) {
+	root := t.TempDir()
+	writeWorkspaceFile(t, root, "reports/.debug/log.txt", "debug")
+	writeWorkspaceFile(t, root, "reports/visible.txt", "visible")
+
+	files, err := collectOutboxFiles(root, []string{"reports"})
+	if err != nil {
+		t.Fatalf("collectOutboxFiles: %v", err)
+	}
+	got := map[string]string{}
+	for _, f := range files {
+		got[f.RelPath] = string(f.Data)
+	}
+	if got["reports/.debug/log.txt"] != "debug" {
+		t.Fatalf("hidden outbox file missing: %+v", got)
+	}
+	if got["reports/visible.txt"] != "visible" {
+		t.Fatalf("visible outbox file missing: %+v", got)
+	}
+}
+
 func TestCollectOutboxFilesMissingPathIsSkipped(t *testing.T) {
 	root := t.TempDir()
 
