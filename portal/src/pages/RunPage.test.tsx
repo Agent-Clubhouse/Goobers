@@ -1105,6 +1105,19 @@ describe("run detail", () => {
       screen.getByRole("button", { name: "implement, agentic, Failed at sequence 5" }),
     ).toBeInTheDocument();
   });
+
+  it("marks the failing ledger event with a severity class and a text label, not color alone", async () => {
+    renderRun("01JZ400FAILED");
+
+    const failingRow = await screen.findByRole("button", {
+      name: /^Select sequence 5:.*Failed\.$/,
+    });
+    expect(failingRow.closest("li")).toHaveClass("ledger-item-failure");
+    expect(within(failingRow).getByText("Failed")).toBeInTheDocument();
+
+    const successRow = screen.getByRole("button", { name: /^Select sequence 3:/ });
+    expect(successRow.closest("li")).not.toHaveClass("ledger-item-failure");
+  });
 });
 
 // The journal is scanned by stage: the reader is looking for "the second

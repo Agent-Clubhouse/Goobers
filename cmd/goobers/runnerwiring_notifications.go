@@ -363,15 +363,24 @@ const failureStreakThreshold = 3
 // Shared by buildFailedHandler (PhaseFailed) and buildTerminalCircuitBreaker
 // (PhaseEscalated/PhaseAborted) so that ALL non-completed terminals count
 // toward the same streak.
+//
+// A park whose provider mutation fails is persisted to the circuit-breaker
+// outbox (#3646) and retried here on the next terminal: discarding it left the
+// item goobers:ready with no durable evidence the protection had been
+// attempted, so unhealthy work kept churning.
 func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.Layout, repoRef providers.RepositoryRef, runID, stage, runURL string) error {
+	var errs []error
+	if err := reconcileCircuitBreakerOutbox(ctx, poster, l); err != nil {
+		errs = append(errs, err)
+	}
 	itemIDs, err := claimedItemIDsForRun(l, runID)
 	if err != nil {
-		return err
+		errs = append(errs, err)
+		return errors.Join(errs...)
 	}
 	if len(itemIDs) == 0 {
-		return nil
+		return errors.Join(errs...)
 	}
-	var errs []error
 	for _, itemID := range itemIDs {
 		prevCount, _, countErr := gate.CountFailureStreak(ctx, poster, repoRef, itemID)
 		if countErr != nil {
@@ -392,6 +401,11 @@ func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 				RemoveLabels: []string{providers.LabelReady},
 			}); err != nil {
 				errs = append(errs, fmt.Errorf("apply circuit breaker on %s#%s: %w", repoRef.Name, itemID, err))
+				if rerr := recordCircuitBreakerMutationFailure(l, repoRef, itemID, runID, stage, count, err); rerr != nil {
+					errs = append(errs, fmt.Errorf("persist circuit breaker park for %s#%s: %w", repoRef.Name, itemID, rerr))
+				}
+			} else if cerr := clearCircuitBreakerMutations(l, repoRef, itemID); cerr != nil {
+				errs = append(errs, fmt.Errorf("clear circuit breaker park for %s#%s: %w", repoRef.Name, itemID, cerr))
 			}
 		}
 	}
@@ -409,6 +423,11 @@ func resetCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 			errs = append(errs, fmt.Errorf("reset failure streak on %s#%s: %w", repoRef.Name, itemID, err))
 		}
 	}
+	// A completed run resets the streak that motivated any still-pending park
+	// for these items, so the outbox entry is moot rather than owed (#3646).
+	if err := clearCircuitBreakerMutations(l, repoRef, itemIDs...); err != nil {
+		errs = append(errs, fmt.Errorf("clear circuit breaker parks on %s: %w", repoRef.Name, err))
+	}
 	return errors.Join(errs...)
 }
 
@@ -417,6 +436,11 @@ func resetCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 // buildFailedHandler (which calls applyCircuitBreaker directly), so this
 // wrapper skips PhaseFailed to avoid double-counting. Returns nil when no repo
 // is configured.
+//
+// Breaker errors are returned, not discarded (#3646): the runner journals a
+// TerminalNotifier failure as terminal_notification_failed, so a park that did
+// not reach the provider leaves an actionable diagnostic in the run trace
+// alongside the durable outbox entry.
 func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar, inner runner.TerminalNotifier) runner.TerminalNotifier {
 	if len(cfg.Repos) == 0 {
 		return inner
@@ -435,20 +459,25 @@ func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolv
 	}
 
 	return func(runID string, phase journal.RunPhase, finalState string) error {
+		var errs []error
 		if phase == journal.PhaseCompleted || phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			runURL, _ := failureRunURL(l, cfg, runID)
 			if phase == journal.PhaseCompleted {
-				_ = resetCircuitBreaker(ctx, poster, l, repoRef, runID, runURL)
-			} else {
-				_ = applyCircuitBreaker(ctx, poster, l, repoRef, runID, finalState, runURL)
+				if err := resetCircuitBreaker(ctx, poster, l, repoRef, runID, runURL); err != nil {
+					errs = append(errs, fmt.Errorf("reset circuit breaker for run %q: %w", runID, err))
+				}
+			} else if err := applyCircuitBreaker(ctx, poster, l, repoRef, runID, finalState, runURL); err != nil {
+				errs = append(errs, fmt.Errorf("apply circuit breaker for run %q: %w", runID, err))
 			}
 		}
 		if inner != nil {
-			return inner(runID, phase, finalState)
+			if err := inner(runID, phase, finalState); err != nil {
+				errs = append(errs, err)
+			}
 		}
-		return nil
+		return errors.Join(errs...)
 	}
 }
 
