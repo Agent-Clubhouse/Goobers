@@ -76,16 +76,23 @@ func (c Client) Enroll(ctx context.Context, endpoint string, request EnrollmentR
 }
 
 func (c Client) Join(ctx context.Context, storage Storage, options JoinOptions) (Association, error) {
+	discovery, err := c.Discover(ctx, options.URL)
+	if err != nil {
+		return Association{}, err
+	}
+	return c.JoinDiscovered(ctx, storage, discovery, options)
+}
+
+func (c Client) JoinDiscovered(ctx context.Context, storage Storage, discovery Discovery, options JoinOptions) (Association, error) {
 	if strings.TrimSpace(options.Grant) == "" {
 		return Association{}, fmt.Errorf("fleet: enrollment grant must not be empty")
+	}
+	if err := validateDiscovery(discovery); err != nil {
+		return Association{}, err
 	}
 	if _, err := storage.Load(options.InstanceRoot); err == nil {
 		return Association{}, fmt.Errorf("fleet: instance is already associated; leave it before joining another Fleet")
 	} else if !errors.Is(err, ErrNotAssociated) {
-		return Association{}, err
-	}
-	discovery, err := c.Discover(ctx, options.URL)
-	if err != nil {
 		return Association{}, err
 	}
 	key, err := GenerateKey()

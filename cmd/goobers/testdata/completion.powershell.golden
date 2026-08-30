@@ -9,6 +9,7 @@ Register-ArgumentCompleter -Native -CommandName @('goobers') -ScriptBlock {
         'examples'
         'scaffold'
         'validate'
+        'fleet'
         'up'
         'down'
         'service'
