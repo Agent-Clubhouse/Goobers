@@ -86,6 +86,7 @@ type Association struct {
 	RevokeReason           string    `json:"revokeReason,omitempty"`
 	Connected              bool      `json:"connected"`
 	ConnectionID           string    `json:"connectionId,omitempty"`
+	HeartbeatSeconds       int       `json:"heartbeatSeconds,omitempty"`
 	LastConnectedAt        time.Time `json:"lastConnectedAt,omitempty"`
 	LastHeartbeatAt        time.Time `json:"lastHeartbeatAt,omitempty"`
 	LastError              string    `json:"lastError,omitempty"`

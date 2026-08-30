@@ -182,14 +182,23 @@ func TestFleetStatusJSONRedactsSecretsAndLeaveDeletes(t *testing.T) {
 				ProtocolVersion:     fleet.ProtocolVersion,
 				ACL:                 fleet.ACL{PolicyVersion: fleet.ProtocolVersion},
 				CredentialExpiresAt: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+				Connected:           true,
+				ConnectionID:        "connection-1",
+				HeartbeatSeconds:    10,
+				LastHeartbeatAt:     time.Date(2026, 8, 30, 0, 0, 0, 0, time.UTC),
 			},
 			PrivateKey: []byte("private-secret"),
 			Credential: "bearer-secret",
 		},
 	}
 	originalStorage := newFleetStorage
+	originalNow := fleetStatusNow
 	newFleetStorage = func() (fleet.Storage, error) { return store, nil }
-	t.Cleanup(func() { newFleetStorage = originalStorage })
+	fleetStatusNow = func() time.Time { return time.Date(2026, 8, 30, 0, 0, 31, 0, time.UTC) }
+	t.Cleanup(func() {
+		newFleetStorage = originalStorage
+		fleetStatusNow = originalNow
+	})
 
 	code, stdout, stderr := runArgs(t, "fleet", "status", "--json", root)
 	if code != 0 || stderr != "" {
@@ -205,6 +214,9 @@ func TestFleetStatusJSONRedactsSecretsAndLeaveDeletes(t *testing.T) {
 	if !status.Associated || status.RegistrationID != "registration-1" {
 		t.Fatalf("status = %+v", status)
 	}
+	if status.Connected || !status.Stale || status.ConnectionState != "stale" || status.HeartbeatSeconds != 10 {
+		t.Fatalf("stale connection status = %+v", status)
+	}
 	if store.loadAssociationCalls != 1 || store.loadCalls != 0 {
 		t.Fatalf("status storage reads: metadata=%d secrets=%d", store.loadAssociationCalls, store.loadCalls)
 	}
@@ -212,6 +224,69 @@ func TestFleetStatusJSONRedactsSecretsAndLeaveDeletes(t *testing.T) {
 	code, stdout, stderr = runArgs(t, "fleet", "leave", root)
 	if code != 0 || stderr != "" || store.saved {
 		t.Fatalf("leave code=%d stdout=%q stderr=%q saved=%v", code, stdout, stderr, store.saved)
+	}
+}
+
+func TestFleetConnectionStateHeartbeatFreshness(t *testing.T) {
+	now := time.Date(2026, 8, 30, 1, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		association fleet.Association
+		want        string
+	}{
+		{name: "disconnected", association: fleet.Association{}, want: "disconnected"},
+		{name: "revoked", association: fleet.Association{Connected: true, Revoked: true}, want: "revoked"},
+		{
+			name: "fresh within three intervals",
+			association: fleet.Association{
+				Connected:        true,
+				HeartbeatSeconds: 20,
+				LastHeartbeatAt:  now.Add(-time.Minute),
+			},
+			want: "connected",
+		},
+		{
+			name: "stale after three intervals",
+			association: fleet.Association{
+				Connected:        true,
+				HeartbeatSeconds: 20,
+				LastHeartbeatAt:  now.Add(-time.Minute - time.Nanosecond),
+			},
+			want: "stale",
+		},
+		{
+			name: "minimum freshness window",
+			association: fleet.Association{
+				Connected:        true,
+				HeartbeatSeconds: 1,
+				LastHeartbeatAt:  now.Add(-30*time.Second - time.Nanosecond),
+			},
+			want: "stale",
+		},
+		{
+			name: "awaiting first heartbeat",
+			association: fleet.Association{
+				Connected:        true,
+				HeartbeatSeconds: 10,
+				LastConnectedAt:  now.Add(-29 * time.Second),
+			},
+			want: "connected",
+		},
+		{
+			name: "missing activity is stale",
+			association: fleet.Association{
+				Connected:        true,
+				HeartbeatSeconds: 10,
+			},
+			want: "stale",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := fleetConnectionState(test.association, now); got != test.want {
+				t.Fatalf("fleetConnectionState = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

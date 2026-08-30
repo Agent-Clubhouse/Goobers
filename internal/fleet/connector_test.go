@@ -151,6 +151,9 @@ func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 		record.Association.Connected {
 		t.Fatalf("association after revoke = %+v", record.Association)
 	}
+	if record.Association.HeartbeatSeconds != 30 {
+		t.Fatalf("heartbeat seconds = %d, want 30", record.Association.HeartbeatSeconds)
+	}
 }
 
 func TestConnectorReconnectsAfterFailure(t *testing.T) {

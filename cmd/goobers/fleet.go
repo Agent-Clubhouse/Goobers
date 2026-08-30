@@ -60,7 +60,10 @@ var (
 		return fleet.NewFileStorage("")
 	}
 	fleetHTTPClient = &http.Client{Timeout: 15 * time.Second}
+	fleetStatusNow  = time.Now
 )
+
+const minimumFleetStaleAfter = 30 * time.Second
 
 func runFleet(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
@@ -195,6 +198,7 @@ func runFleetStatus(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: read Fleet association: %v\n", err)
 		return 1
 	}
+	connectionState := fleetConnectionState(association, fleetStatusNow())
 	status := fleetStatusOutput{
 		Associated:             true,
 		InstanceID:             association.InstanceID,
@@ -209,8 +213,11 @@ func runFleetStatus(args []string, stdout, stderr io.Writer) int {
 		CredentialExpiresAt:    association.CredentialExpiresAt,
 		Revoked:                association.Revoked,
 		RevokeReason:           association.RevokeReason,
-		Connected:              association.Connected,
+		Connected:              connectionState == "connected",
+		Stale:                  connectionState == "stale",
+		ConnectionState:        connectionState,
 		ConnectionID:           association.ConnectionID,
+		HeartbeatSeconds:       association.HeartbeatSeconds,
 		LastConnectedAt:        association.LastConnectedAt,
 		LastHeartbeatAt:        association.LastHeartbeatAt,
 		LastError:              association.LastError,
@@ -225,7 +232,7 @@ func runFleetStatus(args []string, stdout, stderr io.Writer) int {
 	pf(stdout, "Fleet: %s\n", status.CanonicalURI)
 	pf(stdout, "  instance: %s (%s)\n", status.DisplayName, status.InstanceID)
 	pf(stdout, "  registration: %s generation %d\n", status.RegistrationID, status.RegistrationGeneration)
-	pf(stdout, "  connection: %s", fleetConnectionState(status))
+	pf(stdout, "  connection: %s", status.ConnectionState)
 	if status.ConnectionID != "" {
 		pf(stdout, " (%s)", status.ConnectionID)
 	}
@@ -293,7 +300,10 @@ type fleetStatusOutput struct {
 	Revoked                bool      `json:"revoked"`
 	RevokeReason           string    `json:"revokeReason,omitempty"`
 	Connected              bool      `json:"connected"`
+	Stale                  bool      `json:"stale"`
+	ConnectionState        string    `json:"connectionState"`
 	ConnectionID           string    `json:"connectionId,omitempty"`
+	HeartbeatSeconds       int       `json:"heartbeatSeconds,omitempty"`
 	LastConnectedAt        time.Time `json:"lastConnectedAt,omitempty"`
 	LastHeartbeatAt        time.Time `json:"lastHeartbeatAt,omitempty"`
 	LastError              string    `json:"lastError,omitempty"`
@@ -411,15 +421,25 @@ func stdinIsTerminal(stdin *os.File) bool {
 	return term.IsTerminal(int(stdin.Fd()))
 }
 
-func fleetConnectionState(status fleetStatusOutput) string {
+func fleetConnectionState(association fleet.Association, now time.Time) string {
 	switch {
-	case status.Revoked:
+	case association.Revoked:
 		return "revoked"
-	case status.Connected:
-		return "connected"
-	default:
+	case !association.Connected:
 		return "disconnected"
 	}
+	staleAfter := 3 * time.Duration(association.HeartbeatSeconds) * time.Second
+	if staleAfter < minimumFleetStaleAfter {
+		staleAfter = minimumFleetStaleAfter
+	}
+	lastActivity := association.LastHeartbeatAt
+	if lastActivity.IsZero() {
+		lastActivity = association.LastConnectedAt
+	}
+	if lastActivity.IsZero() || now.After(lastActivity.Add(staleAfter)) {
+		return "stale"
+	}
+	return "connected"
 }
 
 func formatFleetTime(value time.Time) string {

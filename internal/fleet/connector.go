@@ -183,6 +183,7 @@ func (c *Connector) connectOnce(ctx context.Context, record Record) error {
 		}
 		association.Connected = true
 		association.ConnectionID = challenge.ConnectionID
+		association.HeartbeatSeconds = ack.HeartbeatSeconds
 		association.LastConnectedAt = connectedAt
 		association.LastError = ""
 		return nil
