@@ -46,6 +46,9 @@ func (stubReadService) TelemetryErrorSignatures(context.Context, readservice.Tel
 func (stubReadService) TelemetryErrors(context.Context, readservice.TelemetryErrorsRequest) (readservice.TelemetryErrorsPage, error) {
 	return readservice.TelemetryErrorsPage{}, nil
 }
+func (stubReadService) TelemetryImplementationOutcomes(context.Context, readservice.TelemetryImplementationOutcomesRequest) (readservice.TelemetryImplementationOutcomesResult, error) {
+	return readservice.TelemetryImplementationOutcomesResult{}, nil
+}
 func (stubReadService) ListRuns(context.Context, readservice.RunListOptions) (readservice.RunList, error) {
 	return readservice.RunList{}, nil
 }

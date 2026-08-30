@@ -33,6 +33,15 @@ type fakeTelemetryStore struct {
 	trendReq       rollup.TrendRequest
 	trendResults   []rollup.TrendResult
 	signatureCalls int
+	outcomes       []rollup.ImplementationOutcome
+	outcomeGaggle  string
+	outcomeSince   time.Time
+}
+
+func (f *fakeTelemetryStore) ImplementationOutcomes(_ context.Context, gaggle string, since time.Time) ([]rollup.ImplementationOutcome, error) {
+	f.outcomeGaggle = gaggle
+	f.outcomeSince = since
+	return f.outcomes, f.err
 }
 
 type analyticsReadModel struct {
