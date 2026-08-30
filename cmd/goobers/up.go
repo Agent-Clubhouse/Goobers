@@ -583,7 +583,22 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// through the same scheduler path the pending-triggers sweep dispatches,
 	// HITL resolution over the intervention machinery. The file seams remain
 	// for local/mode-1 callers.
-	triggerPlane := newDaemonTriggerService()
+	triggerPlane := newDaemonTriggerService().withGaggleContainment(func(gaggle, runID string) bool {
+		return runBelongsToGaggle(l, gaggle, runID)
+	})
+	// The scheduler-state plane (#3878, decision 005 R3 / finding 002 C2):
+	// the gaggle-scoped KV route for the scheduler state that is NOT a claim
+	// — blocked.json, the backlog scan cursors, the reconcile-post-merge
+	// ledger, the sibling-context cache. Served from the SAME files under the
+	// SAME per-key locks the local CLI seams take (claims.lock for
+	// blocked.json and the cursors), so a pod's compare-and-swap and a
+	// runner-driven run's in-process update contend on one lock rather than
+	// racing across two.
+	statePlane, err := newDaemonStateService(l)
+	if err != nil {
+		pf(stderr, "error: initialize scheduler-state plane: %v\n", err)
+		return 1
+	}
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
 	// stage start through the same capability-gated machinery the local
@@ -626,6 +641,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithCredentialService(credentialPlane),
 		httpapi.WithBlobService(blobStore),
 		httpapi.WithSurrenderService(surrenderStore),
+		httpapi.WithStateService(statePlane),
 	)
 	if liveJournals != nil {
 		// The journal plane (§8): remote stage pods emit their run's journal

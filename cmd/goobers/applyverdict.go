@@ -881,7 +881,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if label == blockedOnSiblingLabel {
 		// #952: publish the blocker record first so the re-tick's selector can
 		// rank the elected predecessor from durable state.
-		if _, err := writePriorityTriggerRequest(l.SchedulerDir(), providerGaggle(), workflowName, runID); err != nil {
+		if _, err := dispatchPriorityTrigger(ctx, l, providerGaggle(), workflowName, runID); err != nil {
 			pf(stderr, "error: queue crowned-lander priority dispatch: %v\n", err)
 			return 1
 		}

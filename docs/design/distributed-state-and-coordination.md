@@ -204,7 +204,7 @@ Field evidence filed upstream: #2854, #2860, #2861, #2862, #2863, #2864, #2865.
 ## 7. The daemon write API
 
 One versioned surface, extending the existing `/api/v1` contract (`internal/apicontract/contract.go:20-47`
-— routes there already carry cost classes and budgets; the write routes join that discipline). Five
+— routes there already carry cost classes and budgets; the write routes join that discipline). Six
 planes:
 
 **Claims plane** — `claim`, `renew`, `release`, `settle`. The ledger-touching deterministic stages
@@ -214,6 +214,35 @@ API's contract; arbitration happens where the ledger lives. The CLI's bolted-on 
 (`withClaimLock`, `cmd/goobers/providercmd.go:644`; `pending-claims` file delegation) is subsumed on
 this path. D9's solver rule — ledger-touching stages never place on Windows — becomes unnecessary as
 a *state* restriction (any pod can call the API) but survives v1 as a scheduling default.
+
+**Scheduler-state plane** — `GET`/`PUT /api/v1/gaggles/{gaggle}/state/{key}`, compare-and-swap on an
+opaque `ETag` (`If-Match` to replace a known value, `If-None-Match: *` to create). This is M5's answer
+and the rest of M2's: the scheduler-state files that sit *beside* `claims.json` — `blocked.json`, the
+backlog scan cursors, the post-merge-reconcile ledger, the sibling-context cache — are per-node for
+exactly the reason the ledger is, and a mode-3 stage cannot reach them at all. `internal/stateclient`
+selects a backend the same way `internal/claimsclient` does: `GOOBERS_STATE_ENDPOINT` +
+`GOOBERS_STATE_TOKEN` + `GOOBERS_GAGGLE` present ⇒ the plane, all three absent ⇒ the file backend, any
+partial combination ⇒ a refusal, never a silent local write (decision 005 R3).
+
+Three properties make it safe to hand a stage pod:
+
+- **The key namespace is closed.** `stateclient.ValidKey` admits exactly the four names above (scan
+  cursors by their `backlog-scan-<sha256>.json` shape) and both the client and the daemon enforce it,
+  so a state bearer can never address `claims.json`, `config.yaml`, or anything else in the scheduler
+  directory. Containment does not rest on path sanitation.
+- **The gaggle is an authorization scope, not a storage location.** The files stay instance-scoped
+  under `layout.SchedulerDir()`; the path segment decides *who may ask*. A pod principal is contained
+  to the gaggle its own `run.yaml` proves it belongs to — verified, like claims/list, by validating
+  both segments before joining them and refusing anything that is not one plain path element.
+- **The plane takes the same lock the in-process path takes.** `blocked.json` and the scan cursors are
+  served under `claims.lock` (finding 002); the reconcile ledger and sibling cache under their own
+  existing lock files. A runner-driven stage holding the file lock locally and an engine-driven stage
+  CAS-ing through the plane serialize against each other rather than racing — which is the whole point
+  of putting the route in front of the file instead of beside it.
+
+Priority triggers (apply-verdict's crowned-lander dispatch) ride the trigger plane rather than the file
+drop, under the same containment: a pod principal may post a trigger only for its own gaggle and only
+naming its own run as the source.
 
 **Journal plane** — `emit` (batched events), `adopt-span` (by digest). See §8.
 
