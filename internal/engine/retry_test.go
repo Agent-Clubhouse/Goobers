@@ -225,11 +225,11 @@ func TestTransientWorkspaceProvisioningIsInfrastructure(t *testing.T) {
 	_, err = activity.RunDeterministic(context.Background(), apiv1.InvocationEnvelope{
 		RunID:  "workspace-flaky",
 		TaskID: "workspace-flaky:implement",
-	}, apiv1.DeterministicRun{Command: []string{"true"}}, "")
+	}, apiv1.DeterministicRun{Command: []string{"true"}}, "", "")
 	if err == nil {
 		t.Fatal("RunDeterministic unexpectedly succeeded")
 	}
-	class, classifyErr := attemptFailureClass(err)
+	class, classifyErr := ClassifyDispatchFailure(err)
 	if classifyErr != nil {
 		t.Fatalf("attemptFailureClass: %v", classifyErr)
 	}
@@ -268,7 +268,7 @@ func (w managerWorkspace) Remove(ctx context.Context) error {
 
 func TestClassifySeamErrorPreservesInfrastructureAttemptClass(t *testing.T) {
 	err := classifySeamError(invoke.InfrastructureFailure(errors.New("transient workspace failure")))
-	class, classifyErr := attemptFailureClass(err)
+	class, classifyErr := ClassifyDispatchFailure(err)
 	if classifyErr != nil {
 		t.Fatalf("attemptFailureClass: %v", classifyErr)
 	}
