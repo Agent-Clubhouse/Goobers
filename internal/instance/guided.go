@@ -53,12 +53,6 @@ var guidedWorkflowGoobers = map[string][]string{
 	GuidedWorkflowWorkNomination:  {"nominator"},
 }
 
-// GuidedWorkflowNames returns the canonical workflows available during guided
-// initialization in their display order.
-func GuidedWorkflowNames() []string {
-	return append([]string(nil), guidedWorkflowOrder...)
-}
-
 // GuidedOptions describes one guided first-run instance.
 type GuidedOptions struct {
 	GaggleName           string

@@ -213,9 +213,9 @@ test("configures a repository through the multi-page guided wizard", async ({ pa
   await expect(page.getByText(/All configuration, harness, and repository checks passed/)).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
 
-  await page.getByRole("button", { name: "Start run" }).click();
-  await expect(page.getByText(`Run ${runId}`)).toBeVisible();
-  await expect(page.getByText("The workflow completed successfully.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Goobers is ready" })).toBeVisible();
+  await expect(page.getByText('goobers run implementation "C:\\work\\tutorial-instance"')).toBeVisible();
+  expect(fixture.jobStarted).toBe(false);
 
   await page.getByRole("button", { name: "Back" }).click();
   await expect(page.getByRole("heading", { name: "Check the setup" })).toBeVisible();
