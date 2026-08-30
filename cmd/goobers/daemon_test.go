@@ -1182,6 +1182,62 @@ func TestEmitHeartbeatsReadsConstantBytesPerTick(t *testing.T) {
 	}
 }
 
+// The memory clause is the whole reason #3949 was diagnosable only by hand: a
+// heartbeat carrying scheduler counts alone cannot distinguish a leaking daemon
+// from a memory cgroup filling with page cache from the stages it runs. Assert
+// it is on the line, on both the healthy and the degraded path.
+func TestEmitHeartbeatsCarriesTheMemoryFootprint(t *testing.T) {
+	dir := t.TempDir()
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	if err := log.Append(journal.Event{Type: journal.EventTriggerFired, Workflow: "w"}); err != nil {
+		t.Fatal(err)
+	}
+	tail, err := journal.OpenInstanceLogTail(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		dir      string
+		tail     *journal.InstanceLogTail
+		wantLine string
+	}{
+		{name: "activity available", dir: dir, tail: tail, wantLine: "trigger(s) fired"},
+		// A nil tail makes emitHeartbeats reopen the instance log; pointing it
+		// at a directory that has none drives the degraded branch.
+		{name: "activity unavailable", dir: filepath.Join(t.TempDir(), "absent"), wantLine: "scheduler activity unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			stdout := newDaemonOutput()
+			done := make(chan struct{})
+			go emitHeartbeats(ctx, stdout, tc.dir, 1, tc.tail, nil, 10*time.Millisecond, done)
+
+			select {
+			case <-stdout.heartbeat:
+			case <-time.After(2 * time.Second):
+				cancel()
+				<-done
+				t.Fatal("heartbeat was not emitted")
+			}
+			cancel()
+			<-done
+
+			output := stdout.String()
+			for _, want := range []string{tc.wantLine, "heap ", "retained ", "goroutine(s)"} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("heartbeat output = %q, want it to contain %q", output, want)
+				}
+			}
+		})
+	}
+}
+
 func TestUpHeartbeatIsDefaultOnAndQuietSuppressesIt(t *testing.T) {
 	previous := heartbeatInterval
 	heartbeatInterval = 20 * time.Millisecond
