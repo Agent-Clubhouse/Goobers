@@ -272,6 +272,47 @@ func TestCrossRunnerTerminalOutcomeParity(t *testing.T) {
 			wantCode:   "hidden",
 		},
 		{
+			// #2736 parity: a task that NAMES its producers with contextFrom
+			// and claims no-work with none of them delivering anything is a
+			// run whose evidence never arrived — both runners must record it
+			// as failed rather than as a healthy empty tick.
+			name: "no-work with a barren declared upstream fails both runners",
+			spec: crSpec("analyze", []apiv1.Task{
+				crTask("analyze", "verdict"),
+				func() apiv1.Task {
+					task := crTask("verdict", "")
+					task.ContextFrom = []string{"analyze"}
+					return task
+				}(),
+			}, nil),
+			results: map[string][]apiv1.ResultEnvelope{
+				"analyze": {{Status: apiv1.ResultSuccess}},
+				"verdict": {{Status: apiv1.ResultNoWork, Summary: "nothing to rule on"}},
+			},
+			wantStatus: StatusFailed,
+			wantCalls:  map[string]int{"analyze": 1, "verdict": 1},
+			wantEvals:  0,
+			wantCode:   runner.NoWorkUnsubstantiatedCode,
+		},
+		{
+			name: "no-work with a delivering declared upstream still completes",
+			spec: crSpec("analyze", []apiv1.Task{
+				crTask("analyze", "verdict"),
+				func() apiv1.Task {
+					task := crTask("verdict", "")
+					task.ContextFrom = []string{"analyze"}
+					return task
+				}(),
+			}, nil),
+			results: map[string][]apiv1.ResultEnvelope{
+				"analyze": {{Status: apiv1.ResultSuccess, Outputs: map[string]any{"candidates": 4}}},
+				"verdict": {{Status: apiv1.ResultNoWork, Summary: "none actionable"}},
+			},
+			wantStatus: StatusCompleted,
+			wantCalls:  map[string]int{"analyze": 1, "verdict": 1},
+			wantEvals:  0,
+		},
+		{
 			name: "tolerated failure advances",
 			spec: crSpec("implement", []apiv1.Task{
 				func() apiv1.Task {

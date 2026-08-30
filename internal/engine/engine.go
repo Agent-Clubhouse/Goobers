@@ -472,6 +472,20 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 		code, message := failureCause(result.Error)
 		return "", RunResult{Status: StatusFailed, FinalState: t.Name, FailureCode: code, FailureMessage: message, Outputs: upstream, Steps: steps}, true
 	case apiv1.ResultNoWork:
+		// #2736 parity with internal/runner: a no-work claim from a task that
+		// NAMES its producers with contextFrom short-circuits the run to
+		// completed only when one of those producers actually delivered
+		// evidence. Producers that all journaled nothing mean the evidence
+		// never arrived, and completing on the claim alone would record that
+		// as a healthy empty tick.
+		if barren := runner.BarrenUpstream(declaredUpstreamProduction(t, upstream)); len(barren) > 0 {
+			return "", RunResult{
+				Status: StatusFailed, FinalState: t.Name,
+				FailureCode:    runner.NoWorkUnsubstantiatedCode,
+				FailureMessage: runner.NoWorkUnsubstantiatedMessage(t.Name, barren),
+				Outputs:        upstream, Steps: steps,
+			}, true
+		}
 		return "", RunResult{Status: StatusCompleted, FinalState: t.Name, Outputs: upstream, Steps: steps}, true
 	}
 	switch t.Next {
@@ -483,6 +497,32 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 		return "", RunResult{Status: StatusEscalated, FinalState: t.Name, Outputs: upstream, Steps: steps}, true
 	}
 	return t.Next, RunResult{}, false
+}
+
+// declaredUpstreamProduction reports what each producer t named with
+// contextFrom delivered, in declaration order. Empty for a task that named
+// none: like the local runner's noWorkEvidenceGap, only a declared consumer of
+// upstream artifacts is judged on them, since a producer can also deliver
+// through the shared workspace and return an empty envelope.
+func declaredUpstreamProduction(t apiv1.Task, upstream map[string]apiv1.ResultEnvelope) []runner.StageProduction {
+	production := make([]runner.StageProduction, 0, len(t.ContextFrom))
+	for _, source := range t.ContextFrom {
+		if source == t.Name {
+			continue
+		}
+		result, ok := upstream[source]
+		if !ok {
+			// A gate verdict, or a producer that never ran on this path: the
+			// walk's upstream map holds task results only, so there is
+			// nothing here to call barren.
+			continue
+		}
+		production = append(production, runner.StageProduction{
+			Stage:     source,
+			Delivered: runner.DeliveredEvidence(result),
+		})
+	}
+	return production
 }
 
 // gateTransition maps a resolved gate branch to the walk's next move,
