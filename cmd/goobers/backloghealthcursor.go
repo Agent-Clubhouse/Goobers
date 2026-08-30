@@ -2,14 +2,11 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"time"
 
-	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -28,6 +25,14 @@ import (
 // item's "labeled" event may be arbitrarily far back in history and still has to
 // resolve its ReadyAt. Steady state therefore reads only the pages holding
 // events newer than the cursor.
+//
+// Since #3948 the cursor is reached through the scheduler-state seam
+// (openStageStateStore) rather than through os.ReadFile: the same file, in the
+// same place, under a real cross-process lock locally, and over the daemon's
+// C2 plane from a stage pod — which is what lets `backlog-health` run in a pod
+// at all. Losing the ledger in a pod would not degrade gracefully: an absent
+// cursor silently reruns a bounded FULL scan and can defer the ready-pool
+// snapshot, which the telemetry rollup reads as a starvation signal.
 //
 // A full scan runs only when there is no usable cursor: first run, or an
 // integrity mismatch (unparsable file, a cursor keyed to a different
@@ -87,39 +92,49 @@ func (s backlogHealthScan) resumable() bool {
 	return s.Mode == backlogHealthScanIncremental
 }
 
-// backlogHealthCursorKey is the provider-native repository key the cursor file
-// is named for.
-func backlogHealthCursorKey(repo providers.RepositoryRef) string {
+// backlogHealthCursorKey is the scheduler-state key addressing this scan's
+// ready-transition ledger (#3948). Both halves come from the SAME sanitizer
+// instance.Layout.BacklogHealthCursorPath builds the file name with, so the
+// plane backend and the file backend can never disagree about which ledger a
+// scan means.
+func backlogHealthCursorKey(gaggle string, repo providers.RepositoryRef, label string) string {
+	return stateclient.BacklogHealthCursorKey(
+		instance.SchedulerNameSegment(gaggle),
+		instance.BacklogHealthCursorScope(
+			string(repo.Provider), backlogHealthCursorRepositoryKey(repo), label))
+}
+
+// backlogHealthCursorRepositoryKey is the provider-native repository key the
+// cursor file is named for.
+func backlogHealthCursorRepositoryKey(repo providers.RepositoryRef) string {
 	if repo.Project != "" {
 		return repo.Owner + "/" + repo.Project + "/" + repo.Name
 	}
 	return repo.Owner + "/" + repo.Name
 }
 
-// readBacklogHealthCursor loads the durable cursor. It never fails the stage: a
-// missing, unreadable, malformed, mis-keyed, or self-contradictory cursor
-// simply reports the reason a full scan is required, so a corrupted ledger
-// self-heals on the next cycle instead of wedging the check.
-func readBacklogHealthCursor(
-	path, gaggle string,
+// decodeBacklogHealthCursor reads the durable cursor out of one scheduler-state
+// value. It never fails the stage: a missing, unreadable, malformed, mis-keyed,
+// or self-contradictory cursor simply reports the reason a full scan is
+// required, so a corrupted ledger self-heals on the next cycle instead of
+// wedging the check.
+func decodeBacklogHealthCursor(
+	value stateclient.Value,
+	gaggle string,
 	repo providers.RepositoryRef,
 	label string,
 ) (backlogHealthCursor, string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return backlogHealthCursor{}, backlogHealthScanFirstRun
-		}
-		return backlogHealthCursor{}, backlogHealthScanIntegrityMismatch
+	if !value.Exists() {
+		return backlogHealthCursor{}, backlogHealthScanFirstRun
 	}
 	var cursor backlogHealthCursor
-	if err := json.Unmarshal(data, &cursor); err != nil {
+	if err := json.Unmarshal(value.Data, &cursor); err != nil {
 		return backlogHealthCursor{}, backlogHealthScanIntegrityMismatch
 	}
 	if cursor.Schema != backlogHealthCursorSchema ||
 		cursor.Gaggle != gaggle ||
 		cursor.Provider != string(repo.Provider) ||
-		cursor.Repository != backlogHealthCursorKey(repo) ||
+		cursor.Repository != backlogHealthCursorRepositoryKey(repo) ||
 		cursor.Label != label ||
 		cursor.HighWaterEventID <= 0 {
 		return backlogHealthCursor{}, backlogHealthScanIntegrityMismatch
@@ -134,32 +149,15 @@ func readBacklogHealthCursor(
 	return cursor, ""
 }
 
-// writeBacklogHealthCursor persists the advanced cursor atomically, so a crash
-// mid-write cannot leave a truncated ledger that claims a high-water mark it
-// does not cover.
-func writeBacklogHealthCursor(path string, cursor backlogHealthCursor) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
+// encodeBacklogHealthCursor renders the cursor exactly as the pre-plane writer
+// did, trailing newline included, so a type-1/type-2 instance's file keeps the
+// bytes it had.
+func encodeBacklogHealthCursor(cursor backlogHealthCursor) ([]byte, error) {
 	data, err := json.Marshal(cursor)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	data = append(data, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return durability.ReplaceFile(tmp, path)
-}
-
-// discardBacklogHealthCursor removes a ledger that cannot explain the live
-// ready pool, so the immediate full rescan starts from a clean slate.
-func discardBacklogHealthCursor(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("discard backlog-health cursor %s: %w", path, err)
-	}
-	return nil
+	return append(data, '\n'), nil
 }
 
 // mergeLabelTransitions folds a scan's transitions into the durable ledger,

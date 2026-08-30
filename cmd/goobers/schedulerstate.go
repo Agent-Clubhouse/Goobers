@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
@@ -47,6 +48,22 @@ const (
 	// names the section it was waiting on.
 	stateLockOperationPostMergeUpdate = "post-merge-reconcile.update"
 	stateLockOperationSiblingUpdate   = "sibling-context-cache.update"
+	// backlogHealthCursorLockFile guards the backlog-health ready-transition
+	// ledger. It is a NEW lock file, and deliberately not claims.lock.
+	//
+	// The ledger had no cross-process lock at all before the plane (#3392's
+	// writer is one atomic write-then-rename by one in-process caller), so
+	// there is no existing discipline to preserve — but there is now a reason
+	// to have one: over the plane the compare and the swap are separate round
+	// trips into the daemon, and only a lock the daemon holds across both
+	// makes the CAS a compare-and-swap rather than two racing writes. Its own
+	// file, because folding it into claims.lock would put a 400-page provider
+	// walk's persist step into contention with every claim, release and
+	// blocked-record update on the instance — the ledger is not in the
+	// claiming path's atomicity domain and must not join it.
+	backlogHealthCursorLockFile = "backlog-health-cursor.lock"
+	// stateLockOperationBacklogHealthCursor labels that section.
+	stateLockOperationBacklogHealthCursor = "backlog-health-cursor.update"
 )
 
 // schedulerStateLock maps a scheduler-state key onto the cross-process lock
@@ -57,11 +74,14 @@ const (
 func schedulerStateLock(l instance.Layout) func(key, operation string, fn func() error) error {
 	schedulerDir := l.SchedulerDir()
 	return func(key, operation string, fn func() error) error {
-		switch key {
-		case stateclient.KeyPostMergeReconcileLedger:
+		switch {
+		case key == stateclient.KeyPostMergeReconcileLedger:
 			return withFileLock(filepath.Join(schedulerDir, postMergeReconcileLockFile), fn)
-		case stateclient.KeySiblingContextCache:
+		case key == stateclient.KeySiblingContextCache:
 			return withFileLock(filepath.Join(schedulerDir, siblingCacheLockFileName), fn)
+		case strings.HasPrefix(key, stateclient.BacklogHealthCursorKeyPrefix):
+			return withBoundedFileLock(
+				filepath.Join(schedulerDir, backlogHealthCursorLockFile), operation, fn)
 		default:
 			// blocked.json and every backlog-scan-<hash>.json cursor: the
 			// claims lock, which is what the in-process readers and writers
@@ -137,10 +157,24 @@ func newDaemonStateService(layout instance.Layout) (*daemonStateService, error) 
 // listing makes. Fail closed — an unverifiable gaggle is not a gaggle the run
 // belongs to, and a gaggle that is not one plain path element is refused
 // outright rather than resolved.
+//
+// The key is checked against the gaggle TOO, not only against the namespace.
+// For every key whose name is gaggle-agnostic the route's own scope is the
+// whole of the containment, but the backlog-health ready-transition ledger
+// carries its gaggle IN the key (Goobers#3948) — so without this a pod
+// contained to gaggle A could name gaggle B's cursor and the route would serve
+// it under A's scope. Applied to every principal, not only pod ones: the check
+// costs nothing and a rule that holds only for the principals we remembered to
+// enumerate is not containment.
 func (s *daemonStateService) authorize(request httpapi.StateGetRequest) error {
 	if !stateclient.ValidKey(request.Key) {
 		return httpapi.NewInterventionError(http.StatusBadRequest, "invalid_state_key",
 			"key is not a scheduler-state key", nil)
+	}
+	if !stateclient.BacklogHealthCursorKeyContained(
+		request.Key, instance.SchedulerNameSegment(request.Gaggle)) {
+		return httpapi.NewInterventionError(http.StatusForbidden, "gaggle_mismatch",
+			"scheduler-state key names a different gaggle than the route's", nil)
 	}
 	if !request.PodScoped {
 		return nil

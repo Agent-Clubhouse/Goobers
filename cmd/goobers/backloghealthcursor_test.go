@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -263,13 +264,14 @@ func TestMergeLabelTransitionsDeduplicatesOnEventID(t *testing.T) {
 	}
 }
 
-func TestReadBacklogHealthCursorRejectsMisKeyedLedger(t *testing.T) {
+func TestDecodeBacklogHealthCursorRejectsMisKeyedLedger(t *testing.T) {
 	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "cursor.json")
 
-	if _, reason := readBacklogHealthCursor(path, "", repo, providers.LabelReady); reason != backlogHealthScanFirstRun {
-		t.Fatalf("missing cursor reason = %q, want %q", reason, backlogHealthScanFirstRun)
+	// An ABSENT scheduler-state value is the first-run state, exactly as a
+	// missing file was before the ledger reached the C2 plane (#3948).
+	if _, reason := decodeBacklogHealthCursor(
+		stateclient.Value{}, "", repo, providers.LabelReady); reason != backlogHealthScanFirstRun {
+		t.Fatalf("absent cursor reason = %q, want %q", reason, backlogHealthScanFirstRun)
 	}
 
 	valid := backlogHealthCursor{
@@ -282,22 +284,38 @@ func TestReadBacklogHealthCursorRejectsMisKeyedLedger(t *testing.T) {
 			{EventID: 4, ItemID: "7", Label: providers.LabelReady, Added: true, OccurredAt: time.Now().UTC()},
 		},
 	}
-	if err := writeBacklogHealthCursor(path, valid); err != nil {
-		t.Fatal(err)
+	value := func(cursor backlogHealthCursor) stateclient.Value {
+		t.Helper()
+		data, err := encodeBacklogHealthCursor(cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return stateclient.Value{Data: data, ETag: stateclient.ETagFor(data)}
 	}
-	if _, reason := readBacklogHealthCursor(path, "", repo, providers.LabelReady); reason != "" {
+	if _, reason := decodeBacklogHealthCursor(
+		value(valid), "", repo, providers.LabelReady); reason != "" {
 		t.Fatalf("valid cursor reason = %q, want it accepted", reason)
+	}
+	// Malformed bytes still SELF-HEAL into a full scan rather than failing the
+	// stage: a decode outcome, never a read failure.
+	if _, reason := decodeBacklogHealthCursor(
+		stateclient.Value{Data: []byte("{not json"), ETag: "x"}, "", repo, providers.LabelReady,
+	); reason != backlogHealthScanIntegrityMismatch {
+		t.Fatalf("malformed cursor reason = %q", reason)
 	}
 	// A cursor keyed to another repository, gaggle, or label must never be
 	// resumed: its high-water mark describes a different event stream.
 	other := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "other-repo"}
-	if _, reason := readBacklogHealthCursor(path, "", other, providers.LabelReady); reason != backlogHealthScanIntegrityMismatch {
+	if _, reason := decodeBacklogHealthCursor(
+		value(valid), "", other, providers.LabelReady); reason != backlogHealthScanIntegrityMismatch {
 		t.Fatalf("mis-keyed repo reason = %q", reason)
 	}
-	if _, reason := readBacklogHealthCursor(path, "prod", repo, providers.LabelReady); reason != backlogHealthScanIntegrityMismatch {
+	if _, reason := decodeBacklogHealthCursor(
+		value(valid), "prod", repo, providers.LabelReady); reason != backlogHealthScanIntegrityMismatch {
 		t.Fatalf("mis-keyed gaggle reason = %q", reason)
 	}
-	if _, reason := readBacklogHealthCursor(path, "", repo, "other:label"); reason != backlogHealthScanIntegrityMismatch {
+	if _, reason := decodeBacklogHealthCursor(
+		value(valid), "", repo, "other:label"); reason != backlogHealthScanIntegrityMismatch {
 		t.Fatalf("mis-keyed label reason = %q", reason)
 	}
 
@@ -306,10 +324,8 @@ func TestReadBacklogHealthCursorRejectsMisKeyedLedger(t *testing.T) {
 	contradictory.Transitions = []providers.WorkItemLabelTransition{
 		{EventID: 99, ItemID: "7", Label: providers.LabelReady, Added: true, OccurredAt: time.Now().UTC()},
 	}
-	if err := writeBacklogHealthCursor(path, contradictory); err != nil {
-		t.Fatal(err)
-	}
-	if _, reason := readBacklogHealthCursor(path, "", repo, providers.LabelReady); reason != backlogHealthScanIntegrityMismatch {
+	if _, reason := decodeBacklogHealthCursor(
+		value(contradictory), "", repo, providers.LabelReady); reason != backlogHealthScanIntegrityMismatch {
 		t.Fatalf("contradictory ledger reason = %q", reason)
 	}
 }
