@@ -628,17 +628,6 @@ type findingLifecycle struct {
 	DisprovenFindings []apiv1.Finding
 }
 
-// gateSendsBack reports whether this gate's branch re-enters a stage the run
-// has already completed — the retry route, and the only one a learning episode
-// belongs on. An advancing gate has produced no lesson to carry.
-func gateSendsBack(gr gateResult, next string, upstream map[string]apiv1.ResultEnvelope) bool {
-	if next == "" || gr.Escalated {
-		return false
-	}
-	_, completed := upstream[next]
-	return completed
-}
-
 // contextNotInspectedRedispatch applies the #3374 ruling to a finished stage:
 // a DEPENDENCY_NOT_MET the activity rejected as UNINSPECTED is re-dispatched
 // once, carrying the rejection as its instruction addendum, instead of being

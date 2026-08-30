@@ -412,6 +412,21 @@ test. Result: a daemon restart of any duration shorter than the lease (30 min de
 claim while the reaper itself is down; only a restarted daemon that sees a *closed or vanished*
 workflow lets the lease lapse.
 
+**"Maps to an open workflow" is an inverse, not an identity (decision 005 D2).** A directly started
+run executes under `WorkflowID == RunID`, so the mapping is free. A `RunScheduled` run does not: its
+`RunID` is rewritten to a hash of the schedule claim id, and the work executes under the claim
+workflow or its `-run` child. `WorkflowLiveness` therefore keeps *one* bounded, TTL-cached open-
+workflow enumeration (`internal/engine/liveness.go`) that yields both a liveness set and the exact
+`RunID -> WorkflowID` inverse, and every consumer — renewal, boot reattach (`OpenRuns`), the guards'
+`await`/`cancel`, and `goobers run cancel/abort` — reads that same scan. Consumers describe the run's
+own id first and consult the inverse only on `NotFound`, so the common case never costs a visibility
+page. The scan's bounds (10s cache TTL, 100-execution pages, 10-page cap) are the DS6 budget: hitting
+the cap, failing the scan, or resolving ambiguously is reported as *unknown*, never as *settled*, so
+a reconciled slot is never freed under a live workflow. Independently, an engine-enabled daemon
+asserts at boot that no Temporal `Schedule` reconciliation is configured — the embedded scheduler
+stays the trigger source and delegates to the engine, which is what keeps the rewritten shape rare
+and the scan budget honest.
+
 **Outage window (DS7).** With one daemon pod on RWO storage, pod loss means, until Kubernetes
 reschedules onto the volume: no new run admission, no claim/release, no trigger or HITL ingestion, no
 journal emission. What does *not* stop: in-flight stage activities keep executing; blobstore

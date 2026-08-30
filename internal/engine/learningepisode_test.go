@@ -144,9 +144,26 @@ func TestEngineLearningEpisodeNamesTheCorrectedEvent(t *testing.T) {
 // BuildLearningEpisode surfaces here as a digest diff rather than as a
 // nondeterminism panic in production.
 func TestEngineLearningEpisodeIsDeterministic(t *testing.T) {
-	spec, script := parityLearningEpisodeSpec(), learningEpisodeScript()
-	first, _, firstErr := shortcutRunWithID(t, "e10-det", spec, script)
-	second, _, secondErr := shortcutRunWithID(t, "e10-det", spec, script)
+	for _, fixture := range []struct {
+		name string
+		id   string
+		spec apiv1.WorkflowSpec
+	}{
+		{name: "no contextFrom", id: "e10-det", spec: parityLearningEpisodeSpec()},
+		{name: "implementation-lane contextFrom", id: "e10-det-contextfrom",
+			spec: parityLearningEpisodeContextFromSpec()},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			assertLearningEpisodeIsDeterministic(t, fixture.id, fixture.spec)
+		})
+	}
+}
+
+func assertLearningEpisodeIsDeterministic(t *testing.T, id string, spec apiv1.WorkflowSpec) {
+	t.Helper()
+	script := learningEpisodeScript()
+	first, _, firstErr := shortcutRunWithID(t, id, spec, script)
+	second, _, secondErr := shortcutRunWithID(t, id, spec, script)
 	if (firstErr == nil) != (secondErr == nil) {
 		t.Fatalf("walk error differs between runs: %v vs %v", firstErr, secondErr)
 	}
@@ -177,6 +194,14 @@ func TestEngineLearningEpisodeIsDeterministic(t *testing.T) {
 // pointer depends on and the one a determinism panic would never tell us about
 // (a walk can be perfectly deterministic in its commands while deriving a
 // different artifact name).
+//
+// It runs over BOTH E10 fixtures: the original one, whose re-entered stage
+// declares no contextFrom, and #3928's, whose stage declares the flagship
+// implementation lane's contextFrom and minimum. The second is not redundant:
+// selection happens inside the walk, on the pointer set the injection just
+// added to, so a selector that dropped the episode would change what the walk
+// dispatches — and the replayed history has to agree with the original about
+// that too, or the digest a repass is handed stops being reproducible.
 func TestEngineLearningEpisodeHistoryReplays(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -195,25 +220,52 @@ func TestEngineLearningEpisodeHistoryReplays(t *testing.T) {
 	})
 	temporalClient := server.Client()
 
-	taskQueue := "e10-replay"
-	exec := newScriptedExec(learningEpisodeScript())
-	w := temporalworker.New(temporalClient, taskQueue, temporalworker.Options{})
-	RegisterWith(w, &Activities{
-		Goober:     exec,
-		Det:        exec,
-		Auto:       gate.NewAutomatedEvaluator(),
-		Workspaces: testWorkspaces(t),
-	})
-	if err := w.Start(); err != nil {
-		t.Fatalf("start Temporal worker: %v", err)
+	// One worker (and one scriptedExec) PER fixture: the script's last call
+	// repeats, so a shared executor would hand the second run's first
+	// implement dispatch the previous run's trailing success — no failure, no
+	// retry arm, no injection, and a fixture that silently stopped testing
+	// anything.
+	for _, fixture := range []struct {
+		name string
+		id   string
+		spec apiv1.WorkflowSpec
+	}{
+		{name: "no contextFrom", id: "e10-replay", spec: parityLearningEpisodeSpec()},
+		{name: "implementation-lane contextFrom", id: "e10-replay-contextfrom",
+			spec: parityLearningEpisodeContextFromSpec()},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			exec := newScriptedExec(learningEpisodeScript())
+			w := temporalworker.New(temporalClient, fixture.id, temporalworker.Options{})
+			RegisterWith(w, &Activities{
+				Goober:     exec,
+				Det:        exec,
+				Auto:       gate.NewAutomatedEvaluator(),
+				Workspaces: testWorkspaces(t),
+			})
+			if err := w.Start(); err != nil {
+				t.Fatalf("start Temporal worker: %v", err)
+			}
+			t.Cleanup(w.Stop)
+			replayLearningEpisodeHistory(ctx, t, temporalClient, fixture.id, fixture.id, fixture.spec)
+		})
 	}
-	t.Cleanup(w.Stop)
+}
 
-	in := runInput("e10-replay", parityLearningEpisodeSpec())
-	in.RunID = "e10-replay"
+// replayLearningEpisodeHistory runs one fixture to completion on a live dev
+// server, replays its recorded history through the determinism checker, and
+// asserts the episode identity the replay re-derives is the one the original
+// walk produced.
+func replayLearningEpisodeHistory(
+	ctx context.Context, t *testing.T, temporalClient client.Client,
+	taskQueue, id string, spec apiv1.WorkflowSpec,
+) {
+	t.Helper()
+	in := runInput(id, spec)
+	in.RunID = id
 	in.TriggerKind = string(journal.TriggerManual)
 	run, err := temporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:        "e10-replay",
+		ID:        id,
 		TaskQueue: taskQueue,
 	}, Run, in)
 	if err != nil {
@@ -383,6 +435,68 @@ func TestEngineInjectsNoEpisodeWithoutARetry(t *testing.T) {
 		if ev.Integrity == apiv1.IntegrityDerived {
 			t.Fatalf("stage %q finished derived without any injection; the integrity downgrade must be a "+
 				"consequence of the injected pointer, not of evaluating a gate", ev.Stage)
+		}
+	}
+}
+
+// TestEngineInjectsNoEpisodeWhenTheRepassAttemptIsZero is the engine-side
+// Attempt==0 negative for the #3929 ruling, and it is deliberately NOT the
+// same test as TestEngineInjectsNoEpisodeWithoutARetry above.
+//
+// That one fails with assertion_failed, which retryFailureClass does not
+// recognise: the gate never enters the retry arm at all, so no episode is a
+// trivially correct outcome that would survive any predicate whatsoever.
+//
+// This one fails with nonzero_exit through a status-equals gate, which is
+// exactly the shape the retry arm DOES classify. The engine therefore reaches
+// the injection site with a live retry route and a retryable, policy-classed
+// failure, and the only thing standing between it and a fabricated episode is
+// the ruling: the gate's fail branch routes ONWARD to park, park has never
+// run, resolveGateOutcome finds no upstream entry for it, and the repass
+// attempt is 0.
+//
+// Before #3929 the engine answered this question with its own re-derived
+// gateSendsBack predicate rather than with the evidenced repass attempt. The
+// two agreed here, which is why this row went unnoticed; pinning the negative
+// against the CANONICAL predicate is what stops a future edit to either
+// derivation from silently re-opening it.
+func TestEngineInjectsNoEpisodeWhenTheRepassAttemptIsZero(t *testing.T) {
+	spec := fixtureSpec("implement",
+		[]apiv1.Task{detTask("implement", "review"), detTask("park", wf.TargetAbort)},
+		[]apiv1.Gate{statusGate("review", map[string]string{
+			"pass": wf.TerminalComplete, "fail": "park",
+		})},
+	)
+	events, _, err := shortcutRunWithID(t, "e10-attempt-zero", spec,
+		map[string][]scriptedCall{
+			"implement": {fail("nonzero_exit", "exit status 1")},
+			"park":      {succeed(map[string]interface{}{"parked": "true"})},
+		})
+	if err != nil {
+		t.Fatalf("engine walk: %v", err)
+	}
+
+	// The premise: this really is the retry-classified route, and its
+	// evidenced repass attempt really is 0. Without this, a future change that
+	// stopped classifying nonzero_exit would make the assertion below pass for
+	// the wrong reason.
+	decisions := retryDecisions(paritySide{Name: "engine", Events: events})
+	if len(decisions) != 1 {
+		t.Fatalf("retry decisions = %d (%+v), want exactly 1 — the fixture must reach the retry arm:\n%s",
+			len(decisions), decisions, formatEventSeqs(events))
+	}
+	if got := decisions[0]; got.RepassAttempt != 0 || got.Target != "park" ||
+		got.FailureClass != string(journal.AttemptPolicy) || got.FailureCode != "nonzero_exit" {
+		t.Fatalf("retry decision = %+v, want policy/nonzero_exit -> park at repass attempt 0", got)
+	}
+
+	if got := learningEpisodes(paritySide{Name: "engine", Events: events}); len(got) != 0 {
+		t.Fatalf("engine injected %d learning episode(s) on a forward branch at repass attempt 0, want 0:\n%s",
+			len(got), formatEventSeqs(events))
+	}
+	for _, ev := range events {
+		if ev.Type == journal.EventStageFinished && ev.Integrity == apiv1.IntegrityDerived {
+			t.Fatalf("stage %q finished derived with no injection; a forward branch must not downgrade integrity", ev.Stage)
 		}
 	}
 }

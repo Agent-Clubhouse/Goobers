@@ -1,7 +1,9 @@
 package engine
 
-// Parity rows E10-learning-episode-injection and E10-learning-episode-not-injected
-// — plan item E10 (#3913).
+// Parity rows E10-learning-episode-injection, E10-learning-episode-not-injected
+// and E10-learning-episode-forward-branch — plan item E10 (#3913). The
+// production-shaped infrastructure sibling of the third lives next door in
+// parity_row_learning_episode_infra_test.go.
 //
 // Inventory row (finding 002): "Learning-episode injection on the generic gate
 // retry arm (recordLearningInjection): a repassing gate records a
@@ -58,7 +60,27 @@ package engine
 // learningepisode_test.go, which exercises the runner's branch-scoped route and
 // asserts the engine's refusal beside it. If parallels ever start walking on
 // the engine, that test goes red and the branch-scoped route must be ported
-// with it.
+// with it. Note the separately filed #3932: the CONCURRENT walker's own retry
+// arm injects no episode at all, so lifting R9 needs that fixed first.
+//
+// # The forward-branch ruling (#3929)
+//
+// #3917 registered E10-learning-episode-forward-branch as an expected failure:
+// on a retryable failure whose gate branch routes ONWARD to a stage that has
+// never run, the runner injected an episode and the engine did not. The ruling
+// that settled it is that the engine was right for the wrong reason, and the
+// right reason is now spelled once, in runner.LearningEpisodeAppliesToRepass:
+// an episode is injected IFF the gate result's repass attempt is at least 1.
+//
+// The engine used to answer the same question with its own re-derived
+// gateSendsBack predicate (implementationlane.go), which happened to agree with
+// the repass attempt at that call site but was a second derivation of a fact
+// the gate had already computed and journalled. It is gone; both drivers now
+// read the evidenced attempt. Nothing else moved: retry classification, the
+// stage.retry.decision annotation (still written, still carrying repassAttempt
+// 0 on a forward branch), routeRetryDecision's return, the routing itself and
+// parallel failure accounting are all untouched — which is what the E2 rows
+// and internal/runner's own forward-branch regressions pin.
 
 import (
 	"fmt"
@@ -130,29 +152,33 @@ func init() {
 		Check:   checkLearningEpisodeNotInjected,
 	})
 
-	// The row this table DISCOVERED while pinning the two above.
+	// The row this table DISCOVERED while pinning the two above, and the row
+	// #3929's ruling closed.
 	//
 	// A gate's fail branch does not have to send a stage BACK. It can route
-	// onward, to a stage that has not run — the abort/park shape every lane
-	// uses. The local runner's retry arm does not distinguish the two: its
-	// guard (routeRetryDecision) asks only "retryable, non-pass, non-escalated,
-	// real target", so a forward branch on a retryable code injects an episode
-	// into a stage that never failed. The engine's port asks one question more
-	// (gateSendsBack: is the target already completed?) and does not.
+	// onward, to a stage that has not run — the park/disposition shape every
+	// lane uses. The local runner's retry arm used not to distinguish the two:
+	// its guard (routeRetryDecision) asks only "retryable, non-pass,
+	// non-escalated, real target", so a forward branch on a retryable code
+	// injected an episode into a stage that had never run. The engine asked one
+	// question more and did not. That divergence was registered here as a
+	// documented expected failure, because resolving it was a ruling.
 	//
-	// Which side is right is a RULING, not a test: the runner's injection names
-	// nextAttempt = sourceAttempt + 1 for a stage whose attempt is 1, and hands
-	// a "correction" to work that was never corrected — but the parity contract
-	// is that the engine reproduces the runner, and #3913's disposition for the
-	// generic arm was "port the whole arm". So the divergence is stated here,
-	// not resolved here: an expected failure with the reason on the row.
+	// The ruling: an episode is injected IFF the branch is a true repass, read
+	// off the gate result's own repassAttempt — the number the evaluator
+	// already charged to the target's budget and the retry decision already
+	// journaled. A forward branch has repassAttempt 0, so NEITHER side injects,
+	// and the row states that as a positive claim.
 	//
-	// The premise deliberately asserts the RUNNER still injects, so the day the
-	// runner is fixed instead this row goes vacuous and reports as a harness
-	// bug rather than silently passing.
+	// What the row must keep proving is that the arm is still LIVE. Zero
+	// episodes on both sides is exactly what a fixture that stopped reaching
+	// the retry arm at all would also report, so the premise asserts the retry
+	// decision was really taken — the annotation, its policy class, and
+	// repassAttempt 0 — and the check asserts that annotation still matches on
+	// both sides. Without that this row would grade a broken fixture green.
 	registerParityRow(parityCase{
 		Row:        rowLearningEpisodeForwardBranch,
-		Name:       "a retryable failure whose fail branch routes ONWARD injects on the runner only",
+		Name:       "a retryable failure whose fail branch routes ONWARD injects on neither runner",
 		DSLVersion: "2.0",
 		Spec: fixtureSpec("implement",
 			[]apiv1.Task{
@@ -166,38 +192,70 @@ func init() {
 		),
 		Script: map[string][]scriptedCall{
 			// nonzero_exit IS retry-classifiable, which is what separates this
-			// row from the negative one above: there the class declines the
-			// failure, so neither side injects and the rows agree. Here the
-			// class accepts it and only the target differs.
+			// row from the negative one above: there the class DECLINES the
+			// failure, so there is no retry arm at all and the row would be
+			// green under either side of the ruling. Here the class ACCEPTS
+			// it, the retry decision is really taken and really annotated, and
+			// the only thing withheld is the injection.
 			"implement":   {fail("nonzero_exit", "3 tests failed")},
 			"park-failed": {succeed(map[string]interface{}{"parked": "true"})},
 		},
 		Premise: premiseLearningEpisodeForwardBranch,
-		Check:   checkLearningEpisodeInjectionCount,
+		Check:   checkLearningEpisodeForwardBranch,
 	})
 }
 
 // premiseLearningEpisodeForwardBranch pins the runner behaviour the row is
 // about: the fail branch really does route ONWARD (park-failed never ran
-// before the gate), and the runner really does inject there anyway.
+// before the gate), the retry arm really was ENTERED (a policy-classed retry
+// decision naming the forward target, at repassAttempt 0 — the value #3929's
+// predicate reads), and the runner injects nothing there.
+//
+// The middle assertion is the anti-vacuity one and it is the whole reason this
+// row is distinct from E10-learning-episode-not-injected. Both rows observe
+// zero episodes; only this one observes zero episodes on a branch the retry
+// classifier ACCEPTED. If the fixture ever stopped producing a retry decision
+// — a changed classifier, a changed gate, a changed failure code — the two
+// rows would collapse into the same claim and this one would be measuring
+// nothing.
 func premiseLearningEpisodeForwardBranch(obs parityObservation) error {
 	if err := requireStagesDispatched(obs.Runner, []string{"implement", "park-failed"}); err != nil {
 		return errParityPremisef(obs.Case.Row,
 			"%v — this row is about a fail branch that routes ONWARD rather than re-entering", err)
 	}
-	got := learningEpisodes(obs.Runner)
-	if len(got) != 1 {
+	want := []retryDecisionRecord{{
+		Stage: "implement", Gate: "review", FailureClass: string(journal.AttemptPolicy),
+		FailureCode: "nonzero_exit", RepassAttempt: 0, Target: "park-failed",
+	}}
+	if err := diffRetryDecisions("runner", retryDecisions(obs.Runner), want); err != nil {
 		return errParityPremisef(obs.Case.Row,
-			"runner injected %d learning episode(s) on a forward fail branch, want exactly 1: %s — if the "+
-				"runner has stopped injecting here, this row's divergence is closed from the OTHER side and "+
-				"the expected-failure entry must go with it",
+			"%v — this row's claim is that a retry-CLASSIFIABLE forward branch injects nothing, so the "+
+				"runner must still take the retry decision (at repassAttempt 0, which is the value #3929's "+
+				"predicate reads); a fixture that stopped reaching the retry arm would report zero episodes "+
+				"for the wrong reason", err)
+	}
+	if got := learningEpisodes(obs.Runner); len(got) != 0 {
+		return errParityPremisef(obs.Case.Row,
+			"runner injected %d learning episode(s) into a stage that has never run, want 0: %s — #3929 "+
+				"ruled that an episode is injected iff the branch is a true repass (repassAttempt >= 1); a "+
+				"forward branch is a disposition, and a stage that has not run has produced nothing to correct",
 			len(got), joinLearningEpisodes(got))
 	}
-	if got[0].Target != "park-failed" {
-		return errParityPremisef(obs.Case.Row,
-			"runner's injected episode targets %q, want the forward stage %q", got[0].Target, "park-failed")
-	}
 	return nil
+}
+
+// checkLearningEpisodeForwardBranch grades the engine against the runner: the
+// same (empty) injection, the same retry decision, and all four shared
+// surfaces. The retry-decision comparison is the load-bearing half — it is
+// what proves the two sides took the same live retry arm and then both
+// declined to inject, rather than one of them never getting there.
+func checkLearningEpisodeForwardBranch(obs parityObservation) error {
+	if err := diffRetryDecisions("engine", retryDecisions(obs.Engine), retryDecisions(obs.Runner)); err != nil {
+		return errParityRow(obs.Case.Row,
+			"%v — the ruling gates the INJECTION only; retry classification, the annotation and the branch "+
+				"taken are unchanged on both sides", err)
+	}
+	return checkLearningEpisodeInjectionCount(obs)
 }
 
 // checkLearningEpisodeInjectionCount compares the injections themselves. It is

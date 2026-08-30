@@ -51,6 +51,32 @@
 // detail, and the #3366 unpushed-diff capture. Each is now pinned by a row of
 // the parity table for the same reason E2's are.
 //
+// Plan item E10's residual (#3929) removed a divergence of a different kind:
+// one this package created for itself. Both drivers must decide whether a
+// gate's retry route earns a learning episode, and the engine answered it with
+// its own re-derived gateSendsBack predicate over its upstream map while the
+// runner answered it not at all (it injected on every retry route). #3917
+// caught the disagreement on a FORWARD branch — a gate routing onward to a
+// stage that has never run — and registered it as an expected parity failure.
+//
+// The ruling is that neither derivation was the question: the gate already
+// computes, charges and journals a repass attempt, and an episode belongs to a
+// TRUE REPASS, which is exactly repassAttempt >= 1. That predicate now lives
+// once, in runner.LearningEpisodeAppliesToRepass, and both drivers call it;
+// gateSendsBack is deleted. Deriving a fact twice is how two drivers drift, so
+// the shared helper is the fix rather than an incidental tidy-up.
+//
+// One boundary note, because it was gotten wrong twice: the learning-episode
+// PRODUCER on the generic retry arm (learningEpisode here, recordLearningInjection
+// in the runner) is lane-agnostic, not implementation-lane, and was filed as
+// E10 (#3913). It landed here with E4-E9 ahead of that split; #3913 therefore
+// kept the halves the behaviour did not carry — the E10 parity rows, the
+// dedicated replay proof that the digest a REPLAY re-derives is the digest the
+// original walk produced, and the shared-helper suite — rather than a second
+// copy of the behaviour. Removing the producer to "restore" the boundary breaks
+// those rows; the boundary lives in the inventory and the rows, not in a
+// second implementation.
+//
 // Plan item E2 (#3874) closed four of the entries this ledger used to carry:
 // the #415 non-retryable escalation bypass, the retry-decision annotation and
 // its knownOutcome shortcut, RunResult.NoWork, and stage-qualified inputsFrom

@@ -703,7 +703,15 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			// and hands the repass a pointer to it, so the next attempt argues
 			// with the reviewer's finding instead of rediscovering it. Only on
 			// the retry route — an advancing gate has nothing to teach.
-			if retryRoute && gateSendsBack(gr, next, upstream) {
+			//
+			// #3929: "sending BACK" is the gate result's own repass attempt,
+			// the number resolveGateOutcome already charged to this target's
+			// budget and rec.retryDecision already journaled — not a second,
+			// independently re-derived reading of the upstream map. The engine
+			// used to ask `upstream[next] != nil` here (gateSendsBack), which
+			// was equal to gr.Attempt >= 1 by construction at this call site
+			// and so could drift from it without any test noticing.
+			if retryRoute && runner.LearningEpisodeAppliesToRepass(gr.Attempt) {
 				episode, eerr := rec.learningEpisode(ctx, in, g.Name, next, gr, verdict, lastStage, lastResult, injected)
 				if eerr != nil {
 					return RunResult{}, fmt.Errorf("engine: journal learning episode for gate %q: %w", g.Name, eerr)

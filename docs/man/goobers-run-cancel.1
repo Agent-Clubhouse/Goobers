@@ -12,10 +12,12 @@ Ask the live `goobers up` daemon to stop a run it is actively executing
 (default path "."): it cancels the active stage, tears down the run
 worktree, releases the backlog claim so the item can be re-queued, and
 records terminal phase aborted — without stopping the daemon or editing a
-journal behind its back. Use `run abort` instead when no daemon is running
-(that path finalizes a stuck run's journal directly). Exit codes: 0 =
-cancelled, 1 = business error (already terminal, not currently running, or
-no daemon to cancel it), 2 = usage/IO error (unknown run).
+journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine
+(CancelWorkflow) instead, with no live daemon required. Use `run abort`
+instead when no daemon is running (that path finalizes a stuck run's
+journal directly). Exit codes: 0 = cancelled, 1 = business error
+(already terminal, not currently running, or no daemon to cancel it),
+2 = usage/IO error (unknown run).
 .fi
 .SH EXAMPLES
 .nf

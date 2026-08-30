@@ -203,6 +203,20 @@ func statusGate(name string, branches map[string]string) apiv1.Gate {
 	}
 }
 
+// failureClassGate is the OTHER automated evaluator a shipped lane puts over a
+// failed stage: gate.DefaultChecks' "failure-class", which separates a
+// retryable/infrastructure failure (gate.OutcomeInfra) from a real one. It is
+// the only check that can produce an infra outcome, and therefore the only one
+// that reaches retryFailureClassForGateResult's second, journal.AttemptInfra
+// arm — see parity_row_learning_episode_infra_test.go.
+func failureClassGate(name string, branches map[string]string) apiv1.Gate {
+	return apiv1.Gate{
+		Name: name, Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "failure-class"},
+		Branches:  branches,
+	}
+}
+
 func fixtureSpec(start string, tasks []apiv1.Task, gates []apiv1.Gate) apiv1.WorkflowSpec {
 	return apiv1.WorkflowSpec{
 		Gaggle:   "web",
@@ -217,6 +231,17 @@ func fail(code, message string) scriptedCall {
 	return scriptedCall{result: apiv1.ResultEnvelope{
 		Status: apiv1.ResultFailure,
 		Error:  &apiv1.ErrorInfo{Code: code, Message: message},
+	}}
+}
+
+// failRetryable is a failure the producer itself marked retryable. It is what
+// gate.AutomatedInputs flattens into errorRetryable, which is what the
+// "failure-class" check reads to answer gate.OutcomeInfra — the signal a real
+// lane uses to say "the work did not fail, the machinery did".
+func failRetryable(code, message string) scriptedCall {
+	return scriptedCall{result: apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: code, Message: message, Retryable: true},
 	}}
 }
 
