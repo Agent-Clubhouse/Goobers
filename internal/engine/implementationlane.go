@@ -680,6 +680,20 @@ func reconcileGateFindings(
 			reason = gate.ReasonFindingDisproven
 		}
 	}
+	// #3136, after both lifecycle rules, exactly as Evaluate orders it: a
+	// verdict still asking for changes routes to arbitration when every
+	// finding on it merely repeats one this run's current diff cannot
+	// corroborate.
+	if verdict.Decision == apiv1.VerdictNeedsChanges {
+		arbitrated, arbitration := gate.ArbitrateRepeatedFindings(*verdict, pointers, bytesFor, g.Name)
+		verdict = &arbitrated
+		lifecycle.Arbitrated = arbitration.Arbitrated
+		lifecycle.RepeatDispositions = arbitration.Dispositions
+		if arbitration.Arbitrate {
+			lifecycle.Arbitrate = true
+			reason = gate.ReasonFindingArbitration
+		}
+	}
 	return verdict, reason, lifecycle, nil
 }
 
@@ -691,6 +705,13 @@ type findingLifecycle struct {
 	Reopened          []string
 	Disproven         []string
 	DisprovenFindings []apiv1.Finding
+	// Arbitrated/RepeatDispositions/Arbitrate carry the #3136 repeated-finding
+	// arbitration: which repeats the current diff could not corroborate, why
+	// each repeat was dispatched or arbitrated, and whether the verdict as a
+	// whole must escalate instead of consuming another repass.
+	Arbitrated         []string
+	RepeatDispositions []gate.RepeatFindingDisposition
+	Arbitrate          bool
 }
 
 // contextNotInspectedRedispatch applies the #3374 ruling to a finished stage:

@@ -655,6 +655,15 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			gr.ReopenedFindingIDs = lifecycle.Reopened
 			gr.DisprovenFindingIDs = lifecycle.Disproven
 			gr.DisprovenFindings = lifecycle.DisprovenFindings
+			gr.ArbitratedFindingIDs = lifecycle.Arbitrated
+			gr.RepeatFindingDispositions = lifecycle.RepeatDispositions
+			// #3136: an arbitration verdict escalates like a duplicate diff —
+			// gr.Reason already names it, so the budget's own reason code does
+			// not overwrite the explanation.
+			if lifecycle.Arbitrate && !gr.Escalated {
+				gr.Escalated = true
+				gr.Target = escalationTarget(g)
+			}
 			verdictArtifact, jerr := rec.gateEvaluated(ctx, gr, verdict)
 			if jerr != nil {
 				return RunResult{}, jerr

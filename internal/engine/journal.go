@@ -648,6 +648,12 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 	if len(gr.DisprovenFindings) > 0 {
 		ev.Runner["disprovenLearningFindings"] = gate.LearningFindingRecords(gr.DisprovenFindings)
 	}
+	if len(gr.ArbitratedFindingIDs) > 0 {
+		ev.Runner["arbitratedFindingIdentities"] = gr.ArbitratedFindingIDs
+	}
+	if len(gr.RepeatFindingDispositions) > 0 {
+		ev.Runner["repeatFindingDispositions"] = gr.RepeatFindingDispositions
+	}
 	var artifact *apiv1.ArtifactPointer
 	if verdict != nil {
 		data, err := json.Marshal(verdict)

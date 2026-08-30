@@ -108,6 +108,12 @@ type Result struct {
 	// DisprovenFindings retain the complete finding-level contract so a
 	// same-evaluation deterministic disproval projects as false-finding.
 	DisprovenFindings []apiv1.Finding
+	// ArbitratedFindingIDs repeated a previous episode's identity that the
+	// current authoritative diff cannot corroborate (issue #3136).
+	ArbitratedFindingIDs []string
+	// RepeatFindingDispositions explains, per repeated finding, why this
+	// evaluation dispatched another repass or stopped for arbitration.
+	RepeatFindingDispositions []RepeatFindingDisposition
 }
 
 // RepassCause is the machine-readable upstream reason for a repass.
@@ -438,8 +444,24 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			outcomeReason = ReasonFindingDisproven
 		}
 	}
+	// #3136, last: a needs-changes verdict that survived both finding-lifecycle
+	// rules still dispatches a repass, and a reviewer repeating an
+	// unverifiable finding every round would spend the whole budget doing it.
+	arbitrate := false
+	if outcome == string(apiv1.VerdictNeedsChanges) && verdict != nil {
+		normalized, arbitration := arbitrateRepeatedFindings(
+			*verdict, env.ContextPointers, ArtifactBytesFromRoot(journalDir(e.Journal)), g.Name,
+		)
+		verdict = &normalized
+		learningResolution.Arbitrated = arbitration.Arbitrated
+		learningResolution.RepeatDispositions = arbitration.Dispositions
+		if arbitration.Arbitrate {
+			arbitrate = true
+			outcomeReason = ReasonFindingArbitration
+		}
+	}
 
-	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit, outcomeReason, learningResolution)
+	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff || arbitrate, cacheHit, outcomeReason, learningResolution)
 }
 
 // EvaluateHuman applies an explicit human decision to a human gate. The
@@ -539,7 +561,8 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 		DuplicateDiff: duplicateDiff, RepassCause: repassCause, Reason: reason, CacheHit: cacheHit, Verdict: verdict,
 		ResolvedFindingIDs: resolution.Resolved, SuppressedFindingIDs: resolution.Suppressed,
 		ReopenedFindingIDs: resolution.Reopened, DisprovenFindingIDs: resolution.Disproven,
-		DisprovenFindings: resolution.DisprovenFindings,
+		DisprovenFindings:    resolution.DisprovenFindings,
+		ArbitratedFindingIDs: resolution.Arbitrated, RepeatFindingDispositions: resolution.RepeatDispositions,
 	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {

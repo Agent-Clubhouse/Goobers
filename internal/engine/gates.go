@@ -71,6 +71,11 @@ type gateResult struct {
 	ReopenedFindingIDs   []string
 	DisprovenFindingIDs  []string
 	DisprovenFindings    []apiv1.Finding
+	// ArbitratedFindingIDs are repeated findings the current authoritative
+	// diff could not corroborate (#3136), and RepeatFindingDispositions
+	// explains every repeated finding's routing.
+	ArbitratedFindingIDs      []string
+	RepeatFindingDispositions []gate.RepeatFindingDisposition
 }
 
 // The walk (engine.go's walk) carries the run's repass accounting through

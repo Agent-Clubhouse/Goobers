@@ -48,6 +48,12 @@ type FindingResolution struct {
 	Reopened          []string
 	Disproven         []string
 	DisprovenFindings []apiv1.Finding
+	// Arbitrated lists the repeated finding identities the current
+	// authoritative diff could not corroborate (#3136).
+	Arbitrated []string
+	// RepeatDispositions explains every repeated finding's routing, whether it
+	// dispatched another repass or stopped the run for arbitration.
+	RepeatDispositions []RepeatFindingDisposition
 	// AllSuppressed reports that every finding on a needs-changes verdict was
 	// a suppressed re-raise, so the verdict was converted to pass.
 	AllSuppressed bool
@@ -115,6 +121,20 @@ func DisproveReviewerFindings(
 	gateName string,
 ) (apiv1.Verdict, bool) {
 	return disproveReviewerFindings(verdict, pointers, resolve, gateName)
+}
+
+// ArbitrateRepeatedFindings routes a needs-changes verdict whose findings are
+// ALL unverifiable repeats of the previous episode's to arbitration instead of
+// another repass (#3136). Exported alongside DisproveReviewerFindings and for
+// the same reason: the engine lane must reach the identical rule. resolve may
+// be nil.
+func ArbitrateRepeatedFindings(
+	verdict apiv1.Verdict,
+	pointers []apiv1.ContextPointer,
+	resolve ArtifactBytes,
+	gateName string,
+) (apiv1.Verdict, RepeatArbitration) {
+	return arbitrateRepeatedFindings(verdict, pointers, resolve, gateName)
 }
 
 // FindingIDs lists the non-empty identities of a finding set, in order.
