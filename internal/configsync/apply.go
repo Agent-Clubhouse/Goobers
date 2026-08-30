@@ -80,7 +80,11 @@ type ClientApplier struct {
 // complete, the authoritative pointer is switched atomically, and only then are
 // stale objects pruned. Any failure before the switch leaves the previous
 // generation authoritative and returns an *ApplyError naming every mutation that
-// committed or whose outcome is ambiguous.
+// committed or whose outcome is ambiguous. Objects are stamped and upserted in
+// place, so only the authoritative pointer — not the previous generation's object
+// contents — is preserved on failure: a consumer selecting the previous
+// generation during the apply window sees a shrinking set as objects are
+// re-stamped to the new, not-yet-published generation.
 func (a *ClientApplier) Apply(ctx context.Context, rs *RenderSet) error {
 	objects, generation, err := generationObjects(rs)
 	if err != nil {
@@ -153,13 +157,13 @@ func generationObjects(rs *RenderSet) ([]client.Object, string, error) {
 // the same one.
 func generationID(namespace string, objects []client.Object) (string, error) {
 	sum := sha256.New()
-	fmt.Fprintf(sum, "namespace=%s\n", namespace)
+	_, _ = fmt.Fprintf(sum, "namespace=%s\n", namespace)
 	for _, obj := range objects {
 		data, err := yaml.Marshal(obj)
 		if err != nil {
 			return "", fmt.Errorf("hash %s: %w", objKey(obj), err)
 		}
-		fmt.Fprintf(sum, "object=%s\n%s\n", objKey(obj), data)
+		_, _ = fmt.Fprintf(sum, "object=%s\n%s\n", objKey(obj), data)
 	}
 	return "g" + hex.EncodeToString(sum.Sum(nil))[:32], nil
 }
