@@ -47,11 +47,11 @@ func startProjector(
 	watermarks *intake.Store,
 	l instance.Layout,
 	cfg *instance.Config,
-) (func(), func() readmodel.RetentionStats) {
+) (func(), func() readmodel.RetentionStats, func() projector.Stats) {
 	runsDirs, err := l.RunDirs()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: resolve runs directories for projector: %v\n", err)
-		return func() {}, nil
+		return func() {}, nil, nil
 	}
 
 	// The change feed the SSE stream will tail (#1929). Wired here so the
@@ -98,5 +98,5 @@ func startProjector(
 	return func() {
 		stopSweep()
 		stop()
-	}, retention.Stats
+	}, retention.Stats, p.Stats
 }

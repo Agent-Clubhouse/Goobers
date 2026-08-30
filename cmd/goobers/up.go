@@ -536,6 +536,23 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize read service: %v\n", err)
 		return 1
 	}
+	// The freshness signals the envelope reports (#2843). Attached here because
+	// the daemon is the only construction that HAS a projector and an intake
+	// store: without them the envelope reported pendingIntake 0 and zero lag
+	// unconditionally, so a projection gap looked exactly like a healthy
+	// projection.
+	if setup.Watermarks != nil {
+		reads.AttachIntakeDepth(setup.Watermarks)
+	}
+	if setup.ProjectorStats != nil {
+		reads.AttachProjectionHealth(func() readservice.ProjectionHealth {
+			stats := setup.ProjectorStats()
+			return readservice.ProjectionHealth{
+				ApplyFailures: stats.ProjectFailures,
+				LastDrainAt:   stats.LastDrainAt,
+			}
+		})
+	}
 	if *disableReadModelReads {
 		// The design §6.6 rollback, made operator-reachable (#2036):
 		// DisableReadModelReads previously had no caller anywhere, so the

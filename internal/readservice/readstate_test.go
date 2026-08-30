@@ -155,3 +155,116 @@ func (blockingFreshnessReader) SourceApplied(context.Context, string) (readmodel
 func (blockingFreshnessReader) SatisfiesSourceApplied(context.Context, readmodel.SourcePosition) (bool, error) {
 	return false, nil
 }
+
+// recordingFreshnessReader captures the input the service assembles, which is
+// the thing under test: the envelope's gap and lag fields are only as good as
+// what the service passes down.
+type recordingFreshnessReader struct {
+	readmodel.Reader
+	input readmodel.ReadStateInput
+}
+
+func (r *recordingFreshnessReader) ReadState(_ context.Context, input readmodel.ReadStateInput) (readmodel.ReadState, error) {
+	r.input = input
+	return readmodel.ReadState{}, nil
+}
+
+// stubIntake reports both halves of the intake surface.
+type stubIntake struct {
+	count  int
+	oldest time.Time
+}
+
+func (s stubIntake) Count(context.Context) (int, error) { return s.count, nil }
+
+func (s stubIntake) OldestPending(context.Context) (time.Time, bool, error) {
+	if s.oldest.IsZero() {
+		return time.Time{}, false, nil
+	}
+	return s.oldest, true, nil
+}
+
+// countOnlyIntake has no age surface, which must still yield the count.
+type countOnlyIntake struct{ count int }
+
+func (c countOnlyIntake) Count(context.Context) (int, error) { return c.count, nil }
+
+// TestEnvelopeCarriesIntakeAndProjectionSignals is #2843's service-side half.
+//
+// Before this, pendingIntake was hardcoded to zero and the projection lag and
+// apply-failure fields were never populated at all, so a daemon that had
+// silently dropped runs reported the same envelope as a healthy one.
+func TestEnvelopeCarriesIntakeAndProjectionSignals(t *testing.T) {
+	now := time.Date(2026, 8, 12, 5, 0, 0, 0, time.UTC)
+	reader := &recordingFreshnessReader{}
+	service := &Local{
+		sources: LocalSources{ReadModel: reader},
+		now:     func() time.Time { return now },
+	}
+	service.AttachIntakeDepth(stubIntake{count: 3, oldest: now.Add(-90 * time.Second)})
+	service.AttachProjectionHealth(func() ProjectionHealth {
+		return ProjectionHealth{ApplyFailures: 2, LastDrainAt: now.Add(-45 * time.Second)}
+	})
+
+	if got := service.readStateEnvelope(context.Background()); got.ReadState == nil {
+		t.Fatal("no envelope was produced")
+	}
+	if reader.input.PendingIntake != 3 {
+		t.Errorf("pendingIntake = %d, want 3", reader.input.PendingIntake)
+	}
+	if want := now.Add(-90 * time.Second); !reader.input.OldestPendingAt.Equal(want) {
+		t.Errorf("oldestPendingAt = %s, want %s", reader.input.OldestPendingAt, want)
+	}
+	if reader.input.ProjectFailures != 2 {
+		t.Errorf("projectFailures = %d, want 2", reader.input.ProjectFailures)
+	}
+	if reader.input.ProjectionLagSeconds != 45 {
+		t.Errorf("projectionLagSeconds = %v, want 45", reader.input.ProjectionLagSeconds)
+	}
+}
+
+// TestEnvelopeToleratesADepthSourceWithoutAnAgeSurface pins the optional half:
+// losing the age must not lose the count with it.
+func TestEnvelopeToleratesADepthSourceWithoutAnAgeSurface(t *testing.T) {
+	reader := &recordingFreshnessReader{}
+	service := &Local{
+		sources: LocalSources{ReadModel: reader},
+		now:     time.Now,
+	}
+	service.AttachIntakeDepth(countOnlyIntake{count: 7})
+
+	service.readStateEnvelope(context.Background())
+	if reader.input.PendingIntake != 7 {
+		t.Errorf("pendingIntake = %d, want 7", reader.input.PendingIntake)
+	}
+	if !reader.input.OldestPendingAt.IsZero() {
+		t.Errorf("oldestPendingAt = %s, want the zero time when unknown",
+			reader.input.OldestPendingAt)
+	}
+}
+
+// TestEnvelopeReportsNoLagWithoutAProjector pins that an unattached projector
+// reads as unknown rather than as a projector that has never drained: a zero
+// LastDrainAt must not become an enormous lag number.
+func TestEnvelopeReportsNoLagWithoutAProjector(t *testing.T) {
+	reader := &recordingFreshnessReader{}
+	service := &Local{
+		sources: LocalSources{ReadModel: reader},
+		now:     time.Now,
+	}
+	service.AttachProjectionHealth(func() ProjectionHealth { return ProjectionHealth{} })
+
+	service.readStateEnvelope(context.Background())
+	if reader.input.ProjectionLagSeconds != 0 {
+		t.Errorf("projectionLagSeconds = %v, want 0 when the projector has not drained",
+			reader.input.ProjectionLagSeconds)
+	}
+}
+
+func (*recordingFreshnessReader) SourceApplied(context.Context, string) (readmodel.SourcePosition, bool, error) {
+	return readmodel.SourcePosition{}, false, nil
+}
+
+func (*recordingFreshnessReader) SatisfiesSourceApplied(context.Context, readmodel.SourcePosition) (bool, error) {
+	return false, nil
+}
