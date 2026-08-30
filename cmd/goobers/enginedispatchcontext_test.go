@@ -11,6 +11,7 @@ import (
 
 	"path/filepath"
 
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -160,9 +161,12 @@ func TestEngineRunGuardsResolveScheduledRunWorkflowID(t *testing.T) {
 		t.Fatal("the fake answered for the run id; the fixture does not reproduce the scheduled-run shape")
 	}
 
-	resolved := guards.withWorkflowIDResolver(func(id string) (string, bool) {
+	resolved := guards.withWorkflowIDResolver(func(_ context.Context, id string) (string, error) {
 		wf, ok := fake.workflowIDs[id]
-		return wf, ok
+		if !ok {
+			return "", engine.ErrRunNotOpen
+		}
+		return wf, nil
 	})
 	attachment := resolved.await(context.Background(), runID)
 	if !attachment.Found {
@@ -184,15 +188,28 @@ func TestEngineRunGuardsResolveScheduledRunWorkflowID(t *testing.T) {
 
 // TestEngineRunGuardsFallBackToTheRunIDWithoutAResolver: a DIRECT engine run's
 // workflow id IS its run id, and that is the overwhelming majority of runs. A
-// missing or unhelpful resolver must leave them addressed exactly as before.
+// missing resolver — and a resolver that answers ErrRunNotOpen — must leave
+// them addressed exactly as before, by the run id alone, with the inverse
+// never consulted for a describe that already succeeded.
 func TestEngineRunGuardsFallBackToTheRunIDWithoutAResolver(t *testing.T) {
-	guards := &engineRunGuards{client: &fakeEngineWorkflows{}}
-	if got := guards.workflowIDFor("run-direct"); got != "run-direct" {
-		t.Errorf("workflowIDFor = %q, want the run id itself", got)
+	fake := &fakeEngineWorkflows{status: enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED}
+	guards := &engineRunGuards{client: fake}
+	if attachment := guards.await(context.Background(), "run-direct"); !attachment.Found || !attachment.Settled {
+		t.Fatalf("direct run attachment = %+v, want found and settled", attachment)
 	}
-	empty := guards.withWorkflowIDResolver(func(string) (string, bool) { return "", false })
-	if got := empty.workflowIDFor("run-direct"); got != "run-direct" {
-		t.Errorf("workflowIDFor with an unhelpful resolver = %q, want the run id itself", got)
+	var resolverCalls int
+	resolving := guards.withWorkflowIDResolver(func(context.Context, string) (string, error) {
+		resolverCalls++
+		return "", engine.ErrRunNotOpen
+	})
+	if attachment := resolving.await(context.Background(), "run-direct"); !attachment.Found || !attachment.Settled {
+		t.Fatalf("direct run attachment with a resolver = %+v, want found and settled", attachment)
+	}
+	if resolverCalls != 0 {
+		t.Errorf("the open-workflow inverse was consulted %d times for a direct run, want 0 — the describe already answered", resolverCalls)
+	}
+	if described, _, _ := fake.snapshot(); len(described) != 2 || described[0] != "run-direct" || described[1] != "run-direct" {
+		t.Errorf("described %v, want the run id itself both times", described)
 	}
 }
 

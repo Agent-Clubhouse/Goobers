@@ -20,11 +20,11 @@ import (
 // reattach by run id), it does not fail the boot.
 const engineOpenRunScanTimeout = 60 * time.Second
 
-// attachEngineOpenRunResolver performs the daemon's single boot-time
-// open-workflow scan and returns guards that can name the Temporal workflow
-// behind any run id, plus the runs the scan found.
+// attachEngineOpenRunResolver performs the daemon's boot-time open-workflow
+// scan and returns guards that can name the Temporal workflow behind any run
+// id, plus the runs the scan found.
 //
-// # Why this exists (decision 005 D1, piece 6)
+// # Why this exists (decision 005 D1 piece 6, D2 #3877)
 //
 // The daemon's restart story for an engine-driven run is: find runs/<id>/,
 // see `driver: engine`, and reattach by describing the workflow. Two holes in
@@ -46,6 +46,15 @@ const engineOpenRunScanTimeout = 60 * time.Second
 //     reported, so an operator sees it instead of it silently continuing to
 //     run with nothing in this process watching.
 //
+// The resolver it installs is LIVE, not a boot snapshot: it reads
+// engine.WorkflowLiveness's TTL-cached index, so a scheduled run started
+// after boot — or after this daemon's last renewal pass — resolves too, while
+// the cache keeps the whole daemon to one namespace enumeration per TTL
+// however many guards, probes and boot scans ask. A guard consults it ONLY
+// after a describe on the run's own id returned NotFound, so the direct-run
+// path (WorkflowID == RunID, the common case after #3876) never pages
+// visibility at all.
+//
 // The gaggle filter is what keeps sibling instances sharing one Temporal
 // namespace from reattaching to each other's runs, and it is fail-closed: an
 // empty owned-gaggle set matches nothing.
@@ -53,16 +62,20 @@ func attachEngineOpenRunResolver(ctx context.Context, client *daemonEngineClient
 	if client == nil || client.Temporal() == nil || guards == nil {
 		return guards, nil, nil
 	}
+	liveness := engine.NewWorkflowLiveness(client.Temporal(), client.Namespace())
+	// The resolver is installed FIRST and unconditionally: a boot scan that
+	// could not complete must not also cost the daemon its ability to resolve
+	// a scheduled run later, when visibility has recovered.
+	guards = guards.withWorkflowIDResolver(func(resolveCtx context.Context, runID string) (string, error) {
+		return liveness.ResolveWorkflowID(resolveCtx, runID, gaggles)
+	})
 	scanCtx, cancel := context.WithTimeout(ctx, engineOpenRunScanTimeout)
 	defer cancel()
-	open, err := engine.NewWorkflowLiveness(client.Temporal(), client.Namespace()).OpenRuns(scanCtx, gaggles)
+	open, err := liveness.OpenRuns(scanCtx, gaggles)
 	if err != nil {
 		return guards, nil, fmt.Errorf("scan open engine runs: %w", err)
 	}
-	return guards.withWorkflowIDResolver(func(runID string) (string, bool) {
-		run, ok := open[runID]
-		return run.WorkflowID, ok
-	}), open, nil
+	return guards, open, nil
 }
 
 // ownedGaggleSet is the set of gaggle names this daemon serves, in the shape

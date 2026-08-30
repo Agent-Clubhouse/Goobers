@@ -497,6 +497,19 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	defer engineClient.Close()
 	engineGuards := engineClient.Guards()
+	// #3877 (decision 005 D2): decision 005's "Temporal Schedules are never
+	// the trigger source" invariant, asserted before anything starts a run.
+	// A Schedule fire rewrites the run's id, which would make the bounded
+	// open-workflow inverse the NORMAL path for every re-attach and cancel
+	// rather than the exceptional one. A check that could not complete is a
+	// warning; a schedule that is actually there refuses the boot.
+	if scheduleErr, mayStart := checkEngineScheduleInvariant(ctx, engineClient, setup.InstanceLog); scheduleErr != nil {
+		if !mayStart {
+			pf(stderr, "error: %v\n", scheduleErr)
+			return 1
+		}
+		pf(stderr, "warning: %v\n", scheduleErr)
+	}
 	// blobStore is the SAME store the writer adopts spans from (#3805): DS5
 	// verifies a live-authored journal against a re-projection, so a source
 	// given to one and not the other turns every adopted span into a false
