@@ -67,6 +67,7 @@ const testOnlyExports = {
     "attentionDismissalsStorageKey",
     "readStoredAttentionDismissals",
   ],
+  "src/components/GaggleWorkflowExplorer.tsx": ["WorkflowPicker"],
   "src/components/RunStageInspector.tsx": ["TranscriptView"],
   "src/dataCache.ts": ["DATA_CACHE_TTL_MS"],
   "src/insightData.ts": [

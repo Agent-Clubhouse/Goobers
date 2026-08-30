@@ -361,21 +361,21 @@ describe("workflow and gaggle inventory", () => {
     expect(screen.getByText("goobers validate <instance>")).toBeInTheDocument();
   });
 
-  it("shows one gaggle's workflows as topology boxes with workflow drill-through", async () => {
+  it("shows independent workflows as compact tabs with full-workflow drill-through", async () => {
     window.location.hash = "#/gaggle/core";
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
 
     expect(await screen.findByRole("heading", { name: "Core product" })).toBeInTheDocument();
-    const topology = screen.getByRole("list", { name: "Core product workflows" });
-    const workflowLink = within(topology).getByRole("link", {
-      name: "Open workflow Implementation for gaggle Core product",
-    });
+    const topology = screen.getByRole("tablist", { name: "Core product workflows" });
+    expect(within(topology).getByRole("tab", { name: /Implementation/ })).toBeInTheDocument();
+    expect(within(topology).queryByText("Implement approved core backlog items.")).not.toBeInTheDocument();
+    const workflowLink = screen.getByRole("link", { name: "Open full workflow" });
     expect(workflowLink).toHaveAttribute("href", "#/workflow/core/implementation");
-    expect(within(topology).getByText("Implement approved core backlog items.")).toBeInTheDocument();
-    expect(
-      within(topology).queryByText("Implement approved tools backlog items."),
-    ).not.toBeInTheDocument();
     expect(within(topology).getByText("Escalated")).toBeInTheDocument();
+    expect(screen.getByText(/do not imply an execution order/i)).toBeInTheDocument();
+    expect(
+      await screen.findByRole("group", { name: "implementation execution graph" }),
+    ).toHaveAttribute("data-preview", "true");
     const connections = screen.getByRole("region", {
       name: "Core product repository connections",
     });
@@ -395,7 +395,7 @@ describe("workflow and gaggle inventory", () => {
     );
   });
 
-  it("pivots the gaggle heading and a workflow card into pre-scoped Runs/Insight views (#2529)", async () => {
+  it("pivots the gaggle heading and selected workflow into pre-scoped Runs/Insight views (#2529)", async () => {
     window.location.hash = "#/gaggle/core";
     const user = userEvent.setup();
     render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
@@ -406,11 +406,10 @@ describe("workflow and gaggle inventory", () => {
       "#/runs?gaggle=core",
     );
 
-    const topology = screen.getByRole("list", { name: "Core product workflows" });
-    const openWorkflowLink = within(topology).getByRole("link", {
-      name: "Open workflow Implementation for gaggle Core product",
-    });
-    const pivotLink = within(topology).getByRole("link", {
+    const topology = screen.getByRole("tablist", { name: "Core product workflows" });
+    expect(within(topology).getByRole("tab", { name: /Implementation/ })).toBeInTheDocument();
+    const openWorkflowLink = screen.getByRole("link", { name: "Open full workflow" });
+    const pivotLink = screen.getByRole("link", {
       name: "View Core product / Implementation in Insight",
     });
     expect(pivotLink).toHaveAttribute("href", "#/insight?gaggle=core&workflow=implementation");
@@ -440,7 +439,9 @@ describe("workflow and gaggle inventory", () => {
     expect(
       await screen.findByText("No workflows are provisioned for this gaggle."),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("list", { name: "Core product workflows" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tablist", { name: "Core product workflows" }),
+    ).not.toBeInTheDocument();
     const connections = screen.getByRole("region", {
       name: "Core product repository connections",
     });
