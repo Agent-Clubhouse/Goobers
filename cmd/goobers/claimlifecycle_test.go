@@ -139,7 +139,7 @@ func TestConfiguredRunnerReleasesClaimsAtTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	const runID = "terminal-claim-run"
 	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)

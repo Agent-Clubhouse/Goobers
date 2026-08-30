@@ -145,7 +145,7 @@ func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	for identity, machine := range setup.Machines {
 		var found bool
@@ -216,7 +216,7 @@ credentials:
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
 	if setup != nil {
-		setup.Shutdown(context.Background())
+		_ = setup.Shutdown(context.Background())
 		t.Fatal("buildSchedulerSetup returned a setup with a missing scheduled credential")
 	}
 	if err == nil ||
@@ -278,7 +278,7 @@ func TestBuildSchedulerSetupRejectsMissingDefaultRepoCredentialForScheduledTask(
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
 	if setup != nil {
-		setup.Shutdown(context.Background())
+		_ = setup.Shutdown(context.Background())
 		t.Fatal("buildSchedulerSetup returned a setup with a missing default repo credential")
 	}
 	if err == nil ||
@@ -364,7 +364,7 @@ spec:
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
 	if setup != nil {
-		setup.Shutdown(context.Background())
+		_ = setup.Shutdown(context.Background())
 		t.Fatal("buildSchedulerSetup returned a setup with a missing parallel branch credential")
 	}
 	if err == nil ||
@@ -540,7 +540,7 @@ func TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	// Telemetry itself really is off — otherwise this test would not be
 	// exercising the case it claims to.
@@ -618,7 +618,7 @@ func TestBuildSchedulerSetupDegradesOnInvalidOTLPTLSMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSchedulerSetup() = %v, want a bad otlp.tls.caFile to degrade rather than fail setup", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	if !strings.Contains(stderrBuf.String(), "otlp") || !strings.Contains(stderrBuf.String(), missingCAFile) {
 		t.Fatalf("stderr = %q, want an otlp degrade warning naming %q", stderrBuf.String(), missingCAFile)
@@ -715,7 +715,7 @@ func TestBuildSchedulerSetupPrunesChangeFeedWithDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(ctx)
+	defer func() { _ = setup.Shutdown(ctx) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -868,7 +868,7 @@ func TestIdleTickIngestsBatchedSchedulerTelemetry(t *testing.T) {
 		InstanceLog:   instanceLog,
 		ProviderQuota: quota,
 	}
-	t.Cleanup(func() { setup.Shutdown(ctx) })
+	t.Cleanup(func() { _ = setup.Shutdown(ctx) })
 	schedule, err := localscheduler.ParseSchedule("@every 1m")
 	if err != nil {
 		t.Fatal(err)
@@ -921,7 +921,7 @@ func TestSchedulerOptionsIngestsBlockedTickSpan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	tickAt := time.Now().Add(25 * time.Hour)
 	setup.ProviderQuota.RecordExhausted(tickAt.Add(time.Hour))
@@ -996,7 +996,7 @@ func TestSchedulerShutdownIngestsRejectedDispatchSpans(t *testing.T) {
 			setup.ProviderQuota.RecordExhausted(now.Add(time.Hour))
 			sched := localscheduler.New(entries, setup.InstanceLog, setup.SchedulerOptions()...)
 			tt.dispatch(t, sched, entries[0].Workflow, now)
-			setup.Shutdown(context.Background())
+			_ = setup.Shutdown(context.Background())
 
 			body, err := os.ReadFile(filepath.Join(l.SchedulerDir(), "spans", "spans.jsonl"))
 			if err != nil {
@@ -1041,7 +1041,7 @@ func TestBuildSchedulerSetupRejectsInvalidOTLPEnvironment(t *testing.T) {
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
 	if setup != nil {
-		setup.Shutdown(context.Background())
+		_ = setup.Shutdown(context.Background())
 		t.Fatal("buildSchedulerSetup returned a setup for invalid OTLP configuration")
 	}
 	if err == nil || !strings.Contains(err.Error(), "insecure mode is allowed only") {
