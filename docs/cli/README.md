@@ -3766,6 +3766,13 @@ Flags:
                              emission through the journal plane, with the
                              per-run bearer from $GOOBERS_POD_TOKEN when
                              set (default $GOOBERS_DAEMON_API)
+  --config-reload-interval <dur>
+                             how often to re-read the instance config
+                             tree and rebuild the gaggle seams whose
+                             config changed, without a restart; 0
+                             disables reload and freezes the worker on
+                             its boot-time tree (default 10s; requires
+                             --instance)
   --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;
                              wires the dispatcher behind the stage-dispatch
                              seam and serves the per-(gaggle x runner)
@@ -3779,6 +3786,13 @@ Flags:
 The worker identity reported to Temporal is versioned
 (goobers-worker/<build>@<host>#<pid>) so visibility alone answers which
 build serves a queue.
+
+With --instance, the worker re-reads its config tree on
+--config-reload-interval and atomically replaces the gaggle, credential,
+and agentic-kit seams whose config changed, so a definitions edit reaches
+the NEXT stage this worker serves without a pod restart. An attempt
+already running keeps the kit it was handed. A reload that does not parse
+is logged and rejected; the last-known-good tree stays in force.
 
 Exit codes: 0 = clean drain, 1 = startup/connection error, 2 = usage error,
 3 = drain timeout expired with in-flight work abandoned.

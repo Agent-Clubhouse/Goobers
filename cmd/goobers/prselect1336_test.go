@@ -214,7 +214,7 @@ func TestPRSelectIneligiblePRDoesNotAccumulateAge(t *testing.T) {
 func TestPRSelectActiveClaimDoesNotAccumulateWaitAcrossTicks(t *testing.T) {
 	root := initDemo(t)
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
-	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
 	active := providers.PullRequestSummary{Number: 10, HeadSHA: "active-head"}
 	waiting := providers.PullRequestSummary{Number: 20, HeadSHA: "waiting-head"}
 	eligible := []providers.PullRequestSummary{active, waiting}
@@ -227,7 +227,7 @@ func TestPRSelectActiveClaimDoesNotAccumulateWaitAcrossTicks(t *testing.T) {
 		t.Fatal(err)
 	}
 	ranked, _, _ := rankEligiblePullRequests(first.UnclaimedEligible, nil, first.EligibleSince, start)
-	selected, err := claimPullRequestInOrder(root, ranked, "first-run", "merge-review", 2*time.Hour)
+	selected, err := claimPullRequestInOrder(root, repo, ranked, "first-run", "merge-review", 2*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestPRSelectClaimedIntervalDoesNotResumeAfterReleaseOrExpiry(t *testing.T) 
 			root := initDemo(t)
 			t.Setenv("GOOBERS_GAGGLE", "goobers")
 			t.Setenv("GOOBERS_RUN_ID", runID)
-			repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+			repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo"}
 			pr := providers.PullRequestSummary{Number: prNumber, HeadSHA: "claimed-head"}
 			seededAt := time.Now().UTC().Add(-2 * time.Hour)
 
@@ -333,7 +333,7 @@ func TestPRSelectClaimedIntervalDoesNotResumeAfterReleaseOrExpiry(t *testing.T) 
 			); err != nil {
 				t.Fatal(err)
 			}
-			selected, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{pr}, runID, "merge-review", time.Hour)
+			selected, err := claimPullRequestInOrder(root, repo, []providers.PullRequestSummary{pr}, runID, "merge-review", time.Hour)
 			if err != nil {
 				t.Fatal(err)
 			}

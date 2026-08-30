@@ -191,6 +191,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 		if len(keys) > limit {
 			keys = keys[:limit]
 		}
+		var reconcileErrs []error
 		for _, key := range keys {
 			entry := ledger.Entries[key]
 			report.Scanned++
@@ -216,6 +217,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 			if len(actionErrs) > 0 {
 				report.Pending++
 				ledger.Entries[key] = entry
+				reconcileErrs = append(reconcileErrs, fmt.Errorf("pr #%s: %w", entry.PullNumber, errors.Join(actionErrs...)))
 				continue
 			}
 			// ADO's post-merge path closes work items only. Do not checkpoint
@@ -231,9 +233,17 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 			ledger.Entries[key] = entry
 			report.Reconciled++
 		}
-		return session.write(ledger)
+		if err := session.write(ledger); err != nil {
+			return err
+		}
+		if len(reconcileErrs) > 0 {
+			return &postMergeReconcileProviderError{err: errors.Join(reconcileErrs...)}
+		}
+		return nil
 	})
 	if err != nil {
+		pf(stdout, "post-merge reconciliation: scanned %d, reconciled %d, still pending %d, expired %d\n",
+			report.Scanned, report.Reconciled, report.Pending, report.Expired)
 		return failProviderStage(stderr, "reconcile timed-out merge queue entries", err, "")
 	}
 	pf(stdout, "post-merge reconciliation: scanned %d, reconciled %d, still pending %d, expired %d\n",
@@ -259,7 +269,7 @@ func reconcileOpenPullRequestParks(
 		if err != nil {
 			return err
 		}
-		key := strings.ToLower(repo.Owner + "/" + repo.Name + "#" + base)
+		key := postMergeOpenPRScanKey(repo, base)
 		page := ledger.OpenPRScanPage[key]
 		if page < 1 {
 			page = 1
@@ -598,11 +608,19 @@ func pendingPostMergeReconcileKeys(ledger postMergeReconcileLedger, repo provide
 }
 
 func sameRepository(left, right providers.RepositoryRef) bool {
-	return strings.EqualFold(left.Owner, right.Owner) && strings.EqualFold(left.Name, right.Name)
+	return providers.SameRepository(left, right)
 }
 
+// postMergeReconcileKey keys a durable reconciliation record by the canonical
+// provider-complete repository identity (#3649): owner/name alone repeat
+// across providers, Azure DevOps projects, and self-hosted services, which let
+// one repository's completed record suppress another's reconciliation.
 func postMergeReconcileKey(repo providers.RepositoryRef, pullNumber string) string {
-	return strings.ToLower(repo.Owner) + "/" + strings.ToLower(repo.Name) + "#" + pullNumber
+	return repo.CanonicalKey() + "#" + pullNumber
+}
+
+func postMergeOpenPRScanKey(repo providers.RepositoryRef, base string) string {
+	return repo.CanonicalKey() + "#" + strings.ToLower(strings.TrimSpace(base))
 }
 
 // postMergeReconcileSession is one critical section over the reconcile ledger.
@@ -713,7 +731,42 @@ func decodePostMergeReconcileLedger(value stateclient.Value) (postMergeReconcile
 	if ledger.OpenPRScanPage == nil {
 		ledger.OpenPRScanPage = map[string]int{}
 	}
+	ledger.Entries = canonicalizePostMergeReconcileEntries(ledger.Entries)
 	return ledger, nil
+}
+
+// canonicalizePostMergeReconcileEntries rekeys records written before the
+// canonical provider-complete key (#3649). Each entry carries the repository
+// it belongs to, so the canonical key is recomputable in place; without this,
+// a ledger written by an earlier build would keep pending records under keys
+// no lookup can ever reach again, re-reconciling them forever.
+func canonicalizePostMergeReconcileEntries(
+	entries map[string]postMergeReconcileEntry,
+) map[string]postMergeReconcileEntry {
+	canonical := make(map[string]postMergeReconcileEntry, len(entries))
+	for key, entry := range entries {
+		target := key
+		if entry.PullNumber != "" {
+			target = postMergeReconcileKey(entry.Repository, entry.PullNumber)
+		}
+		existing, clash := canonical[target]
+		if clash && !postMergeEntryPreferred(entry, existing) {
+			continue
+		}
+		canonical[target] = entry
+	}
+	return canonical
+}
+
+// postMergeEntryPreferred resolves two legacy records that collapse onto the
+// same canonical key: a completed record wins so reconciliation is never
+// repeated, then the most recent timeout, so the outcome does not depend on
+// map iteration order.
+func postMergeEntryPreferred(candidate, existing postMergeReconcileEntry) bool {
+	if (candidate.State == postMergeReconcileCompleted) != (existing.State == postMergeReconcileCompleted) {
+		return candidate.State == postMergeReconcileCompleted
+	}
+	return candidate.TimedOutAt.After(existing.TimedOutAt)
 }
 
 func encodePostMergeReconcileLedger(ledger postMergeReconcileLedger) ([]byte, error) {

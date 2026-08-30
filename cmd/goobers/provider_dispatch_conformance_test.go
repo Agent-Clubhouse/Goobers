@@ -146,7 +146,7 @@ func TestPRClaimDispatchesFromCommand(t *testing.T) {
 		root := initDemo(t)
 		t.Setenv("GOOBERS_RUN_ID", runID)
 		t.Setenv("GOOBERS_WORKFLOW", "pr-remediation")
-		if _, err := claimPullRequestInOrder(root, []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
+		if _, err := claimPullRequestInOrder(root, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 77}}, runID, "pr-remediation", time.Hour); err != nil {
 			t.Fatalf("seed PR claim: %v", err)
 		}
 		return root

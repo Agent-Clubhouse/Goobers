@@ -804,7 +804,7 @@ func TestScheduledRunProjectsTriggerFire(t *testing.T) {
 	in.TriggerRef = scheduleID
 
 	var suite testsuite.WorkflowTestSuite
-	env := suite.NewTestWorkflowEnvironment()
+	env := temporaltest.NewWorkflowEnvironment(&suite)
 	env.SetStartWorkflowOptions(client.StartWorkflowOptions{ID: claimID})
 	env.RegisterActivity(&Activities{Det: &scriptedStages{}, Workspaces: testWorkspaces(t)})
 	env.ExecuteWorkflow(RunScheduled, in)
