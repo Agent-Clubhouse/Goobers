@@ -132,6 +132,10 @@ const (
 	// (#562)" (plan item E2): "<stage>.<key>" resolves against ANY completed
 	// stage's outputs on a DSL version that supports it.
 	rowInputsFromStageQualified parityRow = "E2-inputsfrom-stage-qualified"
+	// rowPlacementProvenance is inventory row "runner.placement provenance"
+	// (plan item E3, #3875): every stage attempt journals where it physically
+	// executed, on both runners, once the deployment has declared placement.
+	rowPlacementProvenance parityRow = "E3-placement-provenance"
 )
 
 // parityExpectedFailures is the DOCUMENTED expected-failure list: parity rows
@@ -152,6 +156,10 @@ var parityExpectedFailures = map[parityRow]string{
 	rowInputsFromStageQualified: "engine runTask resolves inputsFrom only against the immediately preceding task's " +
 		"Outputs (engine.go:555-561); the local runner resolves \"<stage>.<key>\" against any completed stage " +
 		"(internal/runner/inputsfrom.go:78-89) when workflow.SupportsStageQualifiedInputs holds. Closed by plan item E2.",
+	rowPlacementProvenance: "the engine journals no runner.placement at all: DispatchStageResult.Placement " +
+		"(activities.go) carries a pod attempt's provenance and has no journal call site, and the in-process arms " +
+		"report none, while internal/runner's runTask appends journal.PlacementEvent beside every attempt's " +
+		"stage.started. Closed by plan item E3 (#3875).",
 }
 
 // --- case registration ------------------------------------------------------
