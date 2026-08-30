@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
@@ -95,5 +95,37 @@ describe("gaggle switcher (#2531)", () => {
 
     expect(await screen.findByRole("heading", { name: "Core product" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Switch gaggle")).not.toBeInTheDocument();
+  });
+});
+
+// #3658: a per-phase failure used to be swallowed into an empty group, so the
+// gaggle read as idle when a phase was merely unreadable.
+describe("gaggle partial run-phase failures (#3658)", () => {
+  it("warns that the activity sections are incomplete when one phase query fails", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const real = client.listRuns.bind(client);
+    vi.spyOn(client, "listRuns").mockImplementation(async (request, options) => {
+      if (request?.phase === "completed") {
+        throw new Error("The daemon request timed out after 10000ms.");
+      }
+      return real(request, options);
+    });
+    window.location.hash = "#/gaggle/core";
+
+    render(<App client={client} />);
+
+    expect(await screen.findByRole("heading", { name: "Core product" })).toBeInTheDocument();
+    const warning = await screen.findByRole("alert");
+    expect(warning).toHaveTextContent(/Run activity for the completed phase could not be read/);
+    const active = screen.getByRole("region", { name: "Core product active runs" });
+    expect(within(active).getByText(/01JZ441DAEMONAPI/)).toBeInTheDocument();
+  });
+
+  it("shows no incomplete-data warning when every phase reads successfully", async () => {
+    window.location.hash = "#/gaggle/core";
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    expect(await screen.findByRole("heading", { name: "Core product" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

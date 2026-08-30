@@ -9,6 +9,7 @@ import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryS
 import { GaggleWorkflowExplorer } from "../components/GaggleWorkflowExplorer";
 import { ScopePivot } from "../components/ScopePivot";
 import {
+  incompleteRunPhasesMessage,
   useGaggleActivity,
   useGaggleList,
   useOperationalSnapshot,
@@ -272,6 +273,13 @@ function GaggleActivitySections({
 
   return (
     <>
+      {/* Some phase queries failed while others succeeded: the sections below
+          are missing those runs and must not read as an idle gaggle (#3658). */}
+      {activity?.incomplete && (
+        <p className="inline-empty" role="alert">
+          {incompleteRunPhasesMessage(activity.incomplete)}
+        </p>
+      )}
       <section className="content-section">
         <div className="section-heading">
           <div>
