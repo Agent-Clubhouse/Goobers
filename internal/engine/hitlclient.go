@@ -42,7 +42,11 @@ type HITLDeliverer struct {
 	// the run id), so without this an operator intent for a scheduled run is
 	// addressed to a workflow that does not exist. nil falls back to the run
 	// id, which is correct for every direct run.
-	resolveWorkflowID func(runID string) (string, bool)
+	//
+	// It shares #3877's contract exactly: ErrRunNotOpen is DEFINITE (nothing
+	// open is driving this run), and any other error is UNKNOWN and must not
+	// be reported to an operator as "no such run".
+	resolveWorkflowID func(ctx context.Context, runID string) (string, error)
 }
 
 // NewHITLDeliverer builds a deliverer over a Temporal client.
@@ -53,9 +57,10 @@ func NewHITLDeliverer(c client.Client) (*HITLDeliverer, error) {
 	return &HITLDeliverer{client: c}, nil
 }
 
-// WithWorkflowIDResolver returns a deliverer that consults resolve before
-// addressing a run. Returns d unchanged when either is nil.
-func (d *HITLDeliverer) WithWorkflowIDResolver(resolve func(runID string) (string, bool)) *HITLDeliverer {
+// WithWorkflowIDResolver returns a deliverer that consults resolve when
+// addressing a run by its run id comes back NotFound. Returns d unchanged when
+// either is nil.
+func (d *HITLDeliverer) WithWorkflowIDResolver(resolve func(ctx context.Context, runID string) (string, error)) *HITLDeliverer {
 	if d == nil || resolve == nil {
 		return d
 	}
@@ -91,16 +96,37 @@ func (d *HITLDeliverer) Deliver(ctx context.Context, intent HITLIntent) (HITLAck
 	if strings.TrimSpace(intent.RequestID) == "" {
 		return HITLAck{}, errors.New("engine: operator intent carries no request id")
 	}
-	workflowID := runID
-	if d.resolveWorkflowID != nil {
-		if resolved, ok := d.resolveWorkflowID(runID); ok && resolved != "" {
-			workflowID = resolved
-		}
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, hitlUpdateTimeout)
 	defer cancel()
 
+	// Address the run id first. A direct engine run's workflow id IS its run
+	// id (#3876), which is the common case, and that path never pays for an
+	// enumeration. Only a NotFound is worth the inverse lookup.
+	ack, err := d.submit(ctx, runID, intent)
+	if err == nil || !errors.Is(err, ErrHITLRunNotFound) || d.resolveWorkflowID == nil {
+		return ack, err
+	}
+	workflowID, resolveErr := d.resolveWorkflowID(ctx, runID)
+	switch {
+	case errors.Is(resolveErr, ErrRunNotOpen):
+		// DEFINITE. Nothing open is driving this run, so the NotFound stands
+		// and the operator is correctly told there is no run to address.
+		return HITLAck{}, err
+	case resolveErr != nil:
+		// UNKNOWN. An enumeration that failed, or a run id that maps to more
+		// than one open workflow, is NOT evidence the run is gone, and must
+		// never be reported as such — an operator told "no such run" stops
+		// looking. Report the ambiguity instead.
+		return HITLAck{}, fmt.Errorf("engine: resolve run %s to a workflow id for an operator intent: %w", runID, resolveErr)
+	case workflowID == "" || workflowID == runID:
+		// The inverse answered with the id that just came back NotFound.
+		return HITLAck{}, err
+	}
+	return d.submit(ctx, workflowID, intent)
+}
+
+// submit performs one delivery against a known workflow id.
+func (d *HITLDeliverer) submit(ctx context.Context, workflowID string, intent HITLIntent) (HITLAck, error) {
 	handle, err := d.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		// The request id IS the Temporal update id, so a retried delivery is
 		// deduplicated by the SERVER before it ever reaches the workflow. The
@@ -116,14 +142,14 @@ func (d *HITLDeliverer) Deliver(ctx context.Context, intent HITLIntent) (HITLAck
 	})
 	if err != nil {
 		if isHITLNotFound(err) {
-			return HITLAck{}, fmt.Errorf("%w: %s", ErrHITLRunNotFound, runID)
+			return HITLAck{}, fmt.Errorf("%w: %s", ErrHITLRunNotFound, intent.RunID)
 		}
-		return HITLAck{}, fmt.Errorf("engine: deliver operator intent to run %s: %w", runID, err)
+		return HITLAck{}, fmt.Errorf("engine: deliver operator intent to run %s: %w", intent.RunID, err)
 	}
 	var ack HITLAck
 	if err := handle.Get(ctx, &ack); err != nil {
 		if isHITLNotFound(err) {
-			return HITLAck{}, fmt.Errorf("%w: %s", ErrHITLRunNotFound, runID)
+			return HITLAck{}, fmt.Errorf("%w: %s", ErrHITLRunNotFound, intent.RunID)
 		}
 		// A protocol refusal is the workflow's considered answer, and is
 		// returned unwrapped in meaning: HITLRefusalCode reads its code and

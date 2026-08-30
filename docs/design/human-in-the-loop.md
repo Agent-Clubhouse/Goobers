@@ -213,6 +213,26 @@ What *does* change while the hold is open is that the run's **Temporal workflow 
 therefore its scheduler concurrency slot stays occupied. That is why the protocol is opt-in and why
 the window is configurable — see rollback below.
 
+### Addressing the run
+
+The daemon submits the update to the **run id** first. A direct engine run's workflow id *is* its
+run id (#3876), so the common path never pays for an enumeration.
+
+Only on `NotFound` does it consult #3877's inverse lookup, and it reads that lookup's three answers
+exactly as the run guards do:
+
+| Resolver answer | Meaning | Delivery |
+|---|---|---|
+| `(id, nil)` where `id != runID` | the run executes as `id` | retry against `id` |
+| `("", engine.ErrRunNotOpen)` | **definite** — nothing open drives this run | 404 `run_not_found` |
+| `("", anything else)` | **unknown** — the enumeration failed, or the id is ambiguous | 500, never 404 |
+
+The last row is the load-bearing one. A scheduled engine run's workflow id is not its run id
+(`RunScheduled` hashes the claim workflow's id in), so a scheduled run addressed by run id alone
+comes back `NotFound` while it is very much executing. Reporting an *unknown* resolution as
+"no such run" would tell an operator to stop looking for a run that is alive, escalated, and
+holding a scheduler slot.
+
 ### Refusal codes → HTTP
 
 | Code | HTTP | Intervention code |
