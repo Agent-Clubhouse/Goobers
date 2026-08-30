@@ -10,6 +10,7 @@ import (
 	"fmt"
 )
 
+// GenerateKey generates a new ECDSA P-256 instance key.
 func GenerateKey() (*ecdsa.PrivateKey, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -18,6 +19,7 @@ func GenerateKey() (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
+// MarshalPrivateKey encodes key as a PKCS#8 DER-encoded private key.
 func MarshalPrivateKey(key *ecdsa.PrivateKey) ([]byte, error) {
 	der, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
@@ -26,6 +28,7 @@ func MarshalPrivateKey(key *ecdsa.PrivateKey) ([]byte, error) {
 	return der, nil
 }
 
+// ParsePrivateKey decodes a PKCS#8 DER-encoded ECDSA P-256 private key.
 func ParsePrivateKey(der []byte) (*ecdsa.PrivateKey, error) {
 	parsed, err := x509.ParsePKCS8PrivateKey(der)
 	if err != nil {
@@ -42,6 +45,8 @@ func errorsNewInvalidKey() error {
 	return fmt.Errorf("fleet: instance private key is not ECDSA P-256")
 }
 
+// PublicKeySPKI returns the base64-encoded SubjectPublicKeyInfo for key's
+// public key.
 func PublicKeySPKI(key *ecdsa.PrivateKey) (string, error) {
 	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err != nil {
@@ -50,11 +55,15 @@ func PublicKeySPKI(key *ecdsa.PrivateKey) (string, error) {
 	return base64.StdEncoding.EncodeToString(der), nil
 }
 
+// ChallengePayload returns the canonical byte payload used to sign and
+// verify a connection challenge.
 func ChallengePayload(fleetID, registrationID string, generation int64, connectionID, nonce string) string {
 	return fmt.Sprintf("goobers-fleet-v1\n%s\n%s\n%d\n%s\n%s",
 		fleetID, registrationID, generation, connectionID, nonce)
 }
 
+// SignChallenge signs the connection challenge payload with key and returns
+// the base64url-encoded ASN.1 signature.
 func SignChallenge(key *ecdsa.PrivateKey, fleetID, registrationID string, generation int64, connectionID, nonce string) (string, error) {
 	digest := sha256.Sum256([]byte(ChallengePayload(fleetID, registrationID, generation, connectionID, nonce)))
 	signature, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
@@ -64,6 +73,8 @@ func SignChallenge(key *ecdsa.PrivateKey, fleetID, registrationID string, genera
 	return base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
+// VerifyChallenge verifies that signature is a valid signature over the
+// connection challenge payload for publicKey.
 func VerifyChallenge(publicKey *ecdsa.PublicKey, signature, fleetID, registrationID string, generation int64, connectionID, nonce string) error {
 	decoded, err := base64.RawURLEncoding.DecodeString(signature)
 	if err != nil {

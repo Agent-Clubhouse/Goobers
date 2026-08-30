@@ -14,10 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/platform/secfile"
-	"golang.org/x/term"
 )
 
 const fleetHelp = `Usage: goobers fleet <join|status|leave> [flags] [path]

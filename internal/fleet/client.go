@@ -1,3 +1,6 @@
+// Package fleet implements the Goobers Fleet enrollment and connection
+// protocol: discovering a Fleet service, joining it, and persisting the
+// resulting durable association, private key, and credential.
 package fleet
 
 import (
@@ -19,15 +22,20 @@ import (
 
 const maxResponseBytes = 1 << 20
 
+// HTTPDoer is the subset of *http.Client used by Client, allowing callers to
+// substitute a custom transport (for example, in tests).
 type HTTPDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
+// Client is a Fleet enrollment client that performs discovery, enrollment,
+// and join operations against a Fleet service.
 type Client struct {
 	HTTP HTTPDoer
 	Now  func() time.Time
 }
 
+// JoinOptions configures a Join or JoinDiscovered call.
 type JoinOptions struct {
 	URL          string
 	Grant        string
@@ -36,6 +44,8 @@ type JoinOptions struct {
 	ACL          ACL
 }
 
+// Discover fetches and validates the Fleet service's well-known discovery
+// document at fleetURL.
 func (c Client) Discover(ctx context.Context, fleetURL string) (Discovery, error) {
 	base, err := url.Parse(strings.TrimSpace(fleetURL))
 	if err != nil || !base.IsAbs() || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
@@ -56,6 +66,8 @@ func (c Client) Discover(ctx context.Context, fleetURL string) (Discovery, error
 	return discovery, nil
 }
 
+// Enroll redeems an enrollment grant at endpoint and returns the resulting
+// enrollment response, validating that it is complete and protocol-compatible.
 func (c Client) Enroll(ctx context.Context, endpoint string, request EnrollmentRequest) (EnrollmentResponse, error) {
 	var response EnrollmentResponse
 	if err := c.doJSON(ctx, http.MethodPost, endpoint, request, &response); err != nil {
@@ -75,6 +87,8 @@ func (c Client) Enroll(ctx context.Context, endpoint string, request EnrollmentR
 	return response, nil
 }
 
+// Join discovers the Fleet service at options.URL and enrolls the instance
+// with it, persisting the resulting association to storage.
 func (c Client) Join(ctx context.Context, storage Storage, options JoinOptions) (Association, error) {
 	discovery, err := c.Discover(ctx, options.URL)
 	if err != nil {
@@ -83,6 +97,9 @@ func (c Client) Join(ctx context.Context, storage Storage, options JoinOptions) 
 	return c.JoinDiscovered(ctx, storage, discovery, options)
 }
 
+// JoinDiscovered enrolls the instance with an already-discovered Fleet
+// service, generates a new instance key, and persists the resulting
+// association to storage.
 func (c Client) JoinDiscovered(ctx context.Context, storage Storage, discovery Discovery, options JoinOptions) (Association, error) {
 	if strings.TrimSpace(options.Grant) == "" {
 		return Association{}, fmt.Errorf("fleet: enrollment grant must not be empty")
@@ -219,7 +236,7 @@ func (c Client) doJSON(ctx context.Context, method, endpoint string, requestBody
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
