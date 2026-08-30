@@ -51,15 +51,17 @@ func readCgroupV2(dir string) *Cgroup {
 	if limit, ok := readUint(filepath.Join(dir, "memory.max")); ok {
 		cgroup.Limit = limit
 	}
-	stat := readKeyedFile(filepath.Join(dir, "memory.stat"))
+	stat, _ := readKeyedFile(filepath.Join(dir, "memory.stat"))
 	cgroup.Anon = stat["anon"]
 	cgroup.File = stat["file"]
 	// memory.events uses the same "<key> <value>" format as memory.stat.
-	// Absent keys read as zero, which is the correct reading for a kernel
-	// that does not export them.
-	events := readKeyedFile(filepath.Join(dir, "memory.events"))
+	// Whether the FILE was readable is tracked separately from the value it
+	// held: an unreadable file and a genuinely idle cgroup both yield zero,
+	// and the memory gate treats those two readings very differently.
+	events, ok := readKeyedFile(filepath.Join(dir, "memory.events"))
 	cgroup.AtLimit = events["max"]
 	cgroup.OOMKills = events["oom_kill"]
+	cgroup.AtLimitKnown = ok
 	return cgroup
 }
 
@@ -72,15 +74,17 @@ func readCgroupV1(dir string) *Cgroup {
 	if limit, ok := readUint(filepath.Join(dir, "memory.limit_in_bytes")); ok && limit < v1UnlimitedFloor {
 		cgroup.Limit = limit
 	}
-	stat := readKeyedFile(filepath.Join(dir, "memory.stat"))
+	stat, _ := readKeyedFile(filepath.Join(dir, "memory.stat"))
 	// v1 names the same two quantities "rss" and "cache". Mapping them onto
 	// Anon and File keeps the reading generation-agnostic for every caller.
 	cgroup.Anon = stat["rss"]
 	cgroup.File = stat["cache"]
-	// v1 has no "max" equivalent, so AtLimit stays zero. It does report
-	// kills, under a different filename and alongside non-numeric lines
-	// readKeyedFile skips.
-	cgroup.OOMKills = readKeyedFile(filepath.Join(dir, "memory.oom_control"))["oom_kill"]
+	// v1 has no "max" equivalent, so AtLimit stays zero and AtLimitKnown
+	// stays false — which is what tells the memory gate it has no pressure
+	// signal here, rather than a calm one. It does report kills, under a
+	// different filename and alongside non-numeric lines readKeyedFile skips.
+	oom, _ := readKeyedFile(filepath.Join(dir, "memory.oom_control"))
+	cgroup.OOMKills = oom["oom_kill"]
 	return cgroup
 }
 
@@ -104,11 +108,15 @@ func readUint(path string) (uint64, bool) {
 // use for memory.stat. Unparseable lines are skipped rather than failing the
 // read: memory.stat gains keys across kernel versions, and one unrecognized
 // line must not cost the caller the keys it did understand.
-func readKeyedFile(path string) map[string]uint64 {
+// readKeyedFile parses a "<key> <value>" file. The bool reports whether the
+// file could be READ, which a caller needs when an absent file and an all-zero
+// one mean different things; the map is always non-nil so callers that do not
+// care can ignore it.
+func readKeyedFile(path string) (map[string]uint64, bool) {
 	values := make(map[string]uint64)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return values
+		return values, false
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
@@ -122,5 +130,5 @@ func readKeyedFile(path string) map[string]uint64 {
 		}
 		values[string(key)] = value
 	}
-	return values
+	return values, true
 }

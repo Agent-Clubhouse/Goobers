@@ -1638,12 +1638,23 @@ func TestDaemonMemoryGateIsSafeToConsultAnywhere(t *testing.T) {
 	if gate == nil {
 		t.Fatal("daemonMemoryGate() = nil, want a gate by default")
 	}
-	pressured, detail := gate.UnderPressure()
-	if !pressured && detail != "" {
-		t.Fatalf("detail = %q, want empty when admitting", detail)
+	// The first consultation can only baseline the at-limit counter, so it
+	// must admit no matter how full this machine's cgroup is. Asserting that
+	// pins the design: a single reading is never grounds for a refusal.
+	if pressured, _ := gate.UnderPressure(); pressured {
+		t.Fatal("the first consultation refused; one reading cannot establish memory pressure")
 	}
-	if pressured && detail == "" {
-		t.Fatal("a refusal carried no measurement to justify it")
+	// Consult again past the sample TTL so a refusal is reachable, and hold
+	// the invariant across both readings.
+	time.Sleep(1100 * time.Millisecond)
+	for i := range 2 {
+		pressured, detail := gate.UnderPressure()
+		if !pressured && detail != "" {
+			t.Fatalf("reading %d: detail = %q, want empty when admitting", i, detail)
+		}
+		if pressured && detail == "" {
+			t.Fatalf("reading %d: a refusal carried no measurement to justify it", i)
+		}
 	}
 }
 

@@ -71,6 +71,18 @@ type Cgroup struct {
 	// restartCount — it reports kills of *child* processes that did not take
 	// the container's pid 1 down with them, which are otherwise invisible.
 	OOMKills uint64
+	// AtLimitKnown reports whether AtLimit was actually read, as opposed to
+	// left at its zero value because the kernel does not export it. Only
+	// cgroup v2 with a readable `memory.events` sets it.
+	//
+	// The distinction matters because a consumer cannot tell "this cgroup has
+	// never been driven against its limit" from "this kernel cannot say"
+	// by looking at AtLimit alone, and those call for opposite conclusions.
+	// localscheduler's memory gate requires a RISE in AtLimit before it
+	// refuses anything, so where the counter is unreadable the gate can never
+	// fire — a fact that has to be visible rather than inferred from a
+	// permanently-zero number.
+	AtLimitKnown bool
 }
 
 // runtime metric names. Sampled through runtime/metrics rather than
@@ -159,6 +171,12 @@ func (f Footprint) String() string {
 	// that an operator is already reading.
 	if f.Cgroup.AtLimit > 0 {
 		fmt.Fprintf(&b, ", %d at-limit", f.Cgroup.AtLimit)
+	}
+	// The one case where a zero IS worth the width: a limited cgroup whose
+	// at-limit counter cannot be read is one where the memory gate is inert,
+	// and an operator reading a heartbeat has no other way to learn that.
+	if !f.Cgroup.AtLimitKnown && f.Cgroup.Limit > 0 {
+		b.WriteString(", at-limit counter unavailable")
 	}
 	if f.Cgroup.OOMKills > 0 {
 		fmt.Fprintf(&b, ", %d oom-kill(s)", f.Cgroup.OOMKills)

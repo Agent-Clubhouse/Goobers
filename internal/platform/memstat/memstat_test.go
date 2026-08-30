@@ -219,10 +219,11 @@ func TestFootprintStringCarriesTheAnonCacheSplit(t *testing.T) {
 		RetainedBytes: 96 * 1024 * 1024,
 		Goroutines:    128,
 		Cgroup: &Cgroup{
-			Current: 8217665536,
-			Limit:   10737418240,
-			Anon:    610402304,
-			File:    6251020288,
+			Current:      8217665536,
+			Limit:        10737418240,
+			Anon:         610402304,
+			File:         6251020288,
+			AtLimitKnown: true,
 		},
 	}
 
@@ -290,6 +291,9 @@ func TestReadCgroupV2CarriesTheAtLimitAndOOMKillCounters(t *testing.T) {
 	if cgroup.AtLimit != 6198 {
 		t.Fatalf("AtLimit = %d, want 6198", cgroup.AtLimit)
 	}
+	if !cgroup.AtLimitKnown {
+		t.Fatal("AtLimitKnown = false, want true when memory.events was read")
+	}
 	if cgroup.OOMKills != 3 {
 		t.Fatalf("OOMKills = %d, want 3", cgroup.OOMKills)
 	}
@@ -306,6 +310,12 @@ func TestReadCgroupV2WithoutEventsFileReportsZeroCounters(t *testing.T) {
 	cgroup := readCgroup(root)
 	if cgroup == nil {
 		t.Fatal("readCgroup = nil, want a v2 reading")
+	}
+	// An unreadable counter must not masquerade as a calm one: the value is
+	// zero either way, so AtLimitKnown is the only thing that separates them,
+	// and the memory gate refuses to arm without it.
+	if cgroup.AtLimitKnown {
+		t.Fatal("AtLimitKnown = true, want false when memory.events is absent")
 	}
 	if cgroup.AtLimit != 0 || cgroup.OOMKills != 0 {
 		t.Fatalf("at-limit/oom-kills = %d/%d, want 0/0 without memory.events", cgroup.AtLimit, cgroup.OOMKills)
@@ -330,14 +340,14 @@ func TestReadCgroupV1ReadsOOMKillsFromOOMControl(t *testing.T) {
 	if cgroup.OOMKills != 7 {
 		t.Fatalf("OOMKills = %d, want 7", cgroup.OOMKills)
 	}
-	if cgroup.AtLimit != 0 {
-		t.Fatalf("AtLimit = %d, want 0 (v1 exports no equivalent)", cgroup.AtLimit)
+	if cgroup.AtLimit != 0 || cgroup.AtLimitKnown {
+		t.Fatalf("AtLimit = %d (known %t), want 0/false (v1 exports no equivalent)", cgroup.AtLimit, cgroup.AtLimitKnown)
 	}
 }
 
 func TestFootprintStringAppendsPressureCountersOnlyWhenNonZero(t *testing.T) {
 	base := func() Footprint {
-		return Footprint{Cgroup: &Cgroup{Current: 8217665536, Limit: 10737418240, Anon: 610402304, File: 6251020288}}
+		return Footprint{Cgroup: &Cgroup{Current: 8217665536, Limit: 10737418240, Anon: 610402304, File: 6251020288, AtLimitKnown: true}}
 	}
 
 	quiet := base().String()
@@ -358,5 +368,28 @@ func TestCgroupBreakdownOnNilCgroup(t *testing.T) {
 	var cgroup *Cgroup
 	if got := cgroup.Breakdown(); got != "" {
 		t.Fatalf("Breakdown() = %q, want empty for a nil cgroup", got)
+	}
+}
+
+// A cgroup with a limit but no readable at-limit counter leaves the memory
+// gate unable to ever fire. That is a safety property an operator has to be
+// able to SEE, so the heartbeat says so rather than printing a zero that is
+// indistinguishable from a healthy, idle cgroup.
+func TestFootprintStringFlagsAnUnavailableAtLimitCounter(t *testing.T) {
+	unavailable := Footprint{Cgroup: &Cgroup{Current: 1024, Limit: 4096, Anon: 512, File: 512}}.String()
+	if !strings.Contains(unavailable, "at-limit counter unavailable") {
+		t.Fatalf("String() = %q, want it to flag the unavailable counter", unavailable)
+	}
+
+	// Known-and-zero is a real reading, not a gap, so it stays quiet.
+	known := Footprint{Cgroup: &Cgroup{Current: 1024, Limit: 4096, AtLimitKnown: true}}.String()
+	if strings.Contains(known, "unavailable") {
+		t.Fatalf("String() = %q, want no warning when the counter reads zero", known)
+	}
+
+	// Neither does an unlimited cgroup, where the gate is inert regardless.
+	unlimited := Footprint{Cgroup: &Cgroup{Current: 1024}}.String()
+	if strings.Contains(unlimited, "unavailable") {
+		t.Fatalf("String() = %q, want no warning without a limit to be near", unlimited)
 	}
 }

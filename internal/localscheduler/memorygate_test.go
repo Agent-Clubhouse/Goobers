@@ -28,6 +28,7 @@ func gateAt(t *testing.T, highWater float64, footprint memstat.Footprint) *Cgrou
 			cgroup := *reading.Cgroup
 			atLimit++
 			cgroup.AtLimit = atLimit
+			cgroup.AtLimitKnown = true
 			reading.Cgroup = &cgroup
 		}
 		now = now.Add(memoryGateSampleTTL)
@@ -159,7 +160,7 @@ func TestCgroupMemoryGateDoesNotLatchOnAQuiescentCacheFilledCgroup(t *testing.T)
 	gate.read = func() memstat.Footprint {
 		return memstat.Footprint{Cgroup: &memstat.Cgroup{
 			Current: 9_800_000_000, Limit: limit,
-			Anon: 200_000_000, File: 9_600_000_000, AtLimit: 6198,
+			Anon: 200_000_000, File: 9_600_000_000, AtLimit: 6198, AtLimitKnown: true,
 		}}
 	}
 
@@ -181,7 +182,7 @@ func TestCgroupMemoryGateArmsWhenTheAtLimitCounterRises(t *testing.T) {
 	gate.read = func() memstat.Footprint {
 		return memstat.Footprint{Cgroup: &memstat.Cgroup{
 			Current: 9_800_000_000, Limit: limit,
-			Anon: 5_900_000_000, File: 3_900_000_000, AtLimit: atLimit,
+			Anon: 5_900_000_000, File: 3_900_000_000, AtLimit: atLimit, AtLimitKnown: true,
 		}}
 	}
 
@@ -323,5 +324,65 @@ func TestMemoryPressureIsATransientTriggerRejection(t *testing.T) {
 		if (&TriggerRejectedError{Reason: reason}).Transient() {
 			t.Fatalf("Transient() = true for %q, want false", reason)
 		}
+	}
+}
+
+// cgroup v1 has no memory.events, so the at-limit counter is unreadable there.
+// The gate requires a RISE in that counter before it refuses anything, which
+// means it is inert on such a kernel — it must admit, not refuse on the
+// threshold alone. Refusing would resurrect the latch the rise term exists to
+// prevent, since v1's usage_in_bytes counts the same reclaimable page cache.
+func TestCgroupMemoryGateStaysOpenWhenTheAtLimitCounterIsUnreadable(t *testing.T) {
+	gate := NewCgroupMemoryGate(0.90)
+	now := time.Unix(0, 0)
+	gate.now = func() time.Time { return now }
+	reads := 0
+	gate.read = func() memstat.Footprint {
+		reads++
+		now = now.Add(memoryGateSampleTTL)
+		return memstat.Footprint{Cgroup: &memstat.Cgroup{
+			// Far above the threshold, and rising in absolute terms — but
+			// with no counter to corroborate it.
+			Current: 9_900_000_000 + uint64(reads),
+			Limit:   10_737_418_240,
+			Anon:    5_900_000_000,
+			File:    3_900_000_000,
+		}}
+	}
+	for i := range 20 {
+		if pressured, detail := gate.UnderPressure(); pressured {
+			t.Fatalf("reading %d refused (%s) without a readable at-limit counter", i, detail)
+		}
+	}
+}
+
+// The counter being readable and zero is a different reading from it being
+// unreadable, and only the former can ever arm the gate.
+func TestCgroupMemoryGateArmsOnceAReadableCounterMoves(t *testing.T) {
+	gate := NewCgroupMemoryGate(0.90)
+	now := time.Unix(0, 0)
+	gate.now = func() time.Time { return now }
+	atLimit := uint64(0)
+	gate.read = func() memstat.Footprint {
+		now = now.Add(memoryGateSampleTTL)
+		return memstat.Footprint{Cgroup: &memstat.Cgroup{
+			Current: 9_900_000_000, Limit: 10_737_418_240,
+			Anon: 5_900_000_000, File: 3_900_000_000,
+			AtLimit: atLimit, AtLimitKnown: true,
+		}}
+	}
+	if pressured, _ := gate.UnderPressure(); pressured {
+		t.Fatal("refused on the baseline reading")
+	}
+	if pressured, _ := gate.UnderPressure(); pressured {
+		t.Fatal("refused while the readable counter held at zero")
+	}
+	atLimit = 1
+	pressured, detail := gate.UnderPressure()
+	if !pressured {
+		t.Fatal("admitted after the at-limit counter rose above the high-water mark")
+	}
+	if detail == "" {
+		t.Fatal("refusal carried no measurement")
 	}
 }

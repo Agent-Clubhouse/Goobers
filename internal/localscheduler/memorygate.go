@@ -148,7 +148,15 @@ func (g *CgroupMemoryGate) sample() (memstat.Footprint, bool) {
 // the container started, not how much there is now. Only a change between two
 // readings carries that.
 func (g *CgroupMemoryGate) observeAtLimit(now time.Time) {
-	if g.cached.Cgroup == nil {
+	// No cgroup, or a kernel that does not export the counter (cgroup v1, or
+	// v2 without memory.events): there is no rise to observe, so the gate
+	// cannot arm and every run is admitted. That is deliberate — the
+	// threshold alone is not a safe refusal signal (see memoryPressureWindow)
+	// and refusing on it would risk the latch this whole term exists to
+	// prevent. The cost is that the gate is inert on those kernels, which
+	// memstat surfaces on every heartbeat as "at-limit counter unavailable"
+	// rather than leaving it to be inferred from a permanently-zero count.
+	if g.cached.Cgroup == nil || !g.cached.Cgroup.AtLimitKnown {
 		g.haveAtLimit = false
 		return
 	}
