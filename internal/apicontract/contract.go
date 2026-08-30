@@ -393,7 +393,6 @@ func indexRoutes(name string, routes []Route) (map[RouteID]Route, error) {
 		case ActionConfigTime:
 			// Configuration actions include both read-only discovery and
 			// validated mutations, so their method is declared per route.
-			break
 		default:
 			return nil, fmt.Errorf(
 				"%s route %q action class %q is not valid for an API route",

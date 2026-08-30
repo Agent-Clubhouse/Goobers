@@ -46,6 +46,7 @@ func V1ConfigAuthoringRoutes() []Route {
 // resolved checkout or host filesystem location.
 type ConfigSourceKind string
 
+// Known configuration source kinds.
 const (
 	ConfigSourceLocal    ConfigSourceKind = "local"
 	ConfigSourceGit      ConfigSourceKind = "git"
@@ -80,6 +81,7 @@ type ConfigSourcePage struct {
 // ConfigDocumentKind identifies a known authored definition.
 type ConfigDocumentKind string
 
+// Known authored definition kinds.
 const (
 	ConfigDocumentManifest ConfigDocumentKind = "manifest"
 	ConfigDocumentInstance ConfigDocumentKind = "instance"
@@ -134,6 +136,7 @@ type ConfigDocument struct {
 // ConfigChangeOperation is one candidate document operation.
 type ConfigChangeOperation string
 
+// Known configuration change operations.
 const (
 	ConfigChangeUpsert ConfigChangeOperation = "upsert"
 	ConfigChangeDelete ConfigChangeOperation = "delete"
@@ -178,6 +181,7 @@ type ConfigChangeSet struct {
 // ConfigDiagnosticSeverity is the validation diagnostic severity.
 type ConfigDiagnosticSeverity string
 
+// Known configuration diagnostic severities.
 const (
 	ConfigDiagnosticError   ConfigDiagnosticSeverity = "error"
 	ConfigDiagnosticWarning ConfigDiagnosticSeverity = "warning"
@@ -228,6 +232,7 @@ type ConfigChangePreview struct {
 // ConfigWriteStrategy selects a capability advertised by the source.
 type ConfigWriteStrategy string
 
+// Known configuration write strategies.
 const (
 	ConfigWriteDirect ConfigWriteStrategy = "direct"
 	ConfigWriteReview ConfigWriteStrategy = "review"
