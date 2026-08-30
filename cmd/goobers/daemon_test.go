@@ -1646,3 +1646,17 @@ func TestDaemonMemoryGateIsSafeToConsultAnywhere(t *testing.T) {
 		t.Fatal("a refusal carried no measurement to justify it")
 	}
 }
+
+// Every spelling of zero must disable the gate. "0.0" parses successfully as
+// zero, and a naive implementation clamps that back up to the default —
+// enabling the gate for an operator who was trying to turn it off.
+func TestDaemonMemoryGateTreatsEverySpellingOfZeroAsOff(t *testing.T) {
+	for _, setting := range []string{"0", "0.0", "0.00", "00", "off", "OFF", " 0.0 "} {
+		t.Run(setting, func(t *testing.T) {
+			t.Setenv(memoryHighWaterEnv, setting)
+			if gate := daemonMemoryGate(); gate != nil {
+				t.Fatalf("daemonMemoryGate() = %v, want nil for %q", gate, setting)
+			}
+		})
+	}
+}

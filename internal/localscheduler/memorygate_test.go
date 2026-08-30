@@ -11,10 +11,32 @@ import (
 
 // gateAt builds a gate whose sampled reading is fixed, so the threshold
 // arithmetic is tested without depending on the machine the test runs on.
+//
+// The gate needs a RISING at-limit counter as well as a high reading, so this
+// advances both the clock and the counter between samples — the shape of a
+// cgroup actively being driven against its limit. Tests that need the opposite
+// (a high but quiescent cgroup) drive the gate directly.
 func gateAt(t *testing.T, highWater float64, footprint memstat.Footprint) *CgroupMemoryGate {
 	t.Helper()
 	gate := NewCgroupMemoryGate(highWater)
-	gate.read = func() memstat.Footprint { return footprint }
+	now := time.Unix(0, 0)
+	gate.now = func() time.Time { return now }
+	atLimit := uint64(0)
+	gate.read = func() memstat.Footprint {
+		reading := footprint
+		if reading.Cgroup != nil {
+			cgroup := *reading.Cgroup
+			atLimit++
+			cgroup.AtLimit = atLimit
+			reading.Cgroup = &cgroup
+		}
+		now = now.Add(memoryGateSampleTTL)
+		return reading
+	}
+	// Two samples: the first establishes the counter's baseline, the second
+	// observes it rise. A single reading of a monotonic counter says nothing
+	// about the present.
+	gate.UnderPressure()
 	return gate
 }
 
@@ -119,6 +141,71 @@ func TestCgroupMemoryGateCachesWithinItsTTL(t *testing.T) {
 	}
 }
 
+// THE LATCHING FAILURE MODE, AND THE REASON THE GATE HAS A SECOND TERM.
+//
+// memory.current counts reclaimable page cache, and the kernel only reclaims
+// under allocation pressure. A cgroup holding a large idle build cache sits
+// above any high-water mark indefinitely. If a high reading alone refused
+// runs, nothing would allocate, nothing would be reclaimed, the reading would
+// never fall, and the daemon would idle forever — trading an occasional OOM
+// for a permanent outage.
+func TestCgroupMemoryGateDoesNotLatchOnAQuiescentCacheFilledCgroup(t *testing.T) {
+	const limit = 10 * 1024 * 1024 * 1024
+	now := time.Unix(0, 0)
+	gate := NewCgroupMemoryGate(0.90)
+	gate.now = func() time.Time { return now }
+	// 95% of limit and almost entirely page cache, with an at-limit counter
+	// that is high but STATIC — nothing is allocating.
+	gate.read = func() memstat.Footprint {
+		return memstat.Footprint{Cgroup: &memstat.Cgroup{
+			Current: 9_800_000_000, Limit: limit,
+			Anon: 200_000_000, File: 9_600_000_000, AtLimit: 6198,
+		}}
+	}
+
+	for range 100 {
+		if pressured, detail := gate.UnderPressure(); pressured {
+			t.Fatalf("UnderPressure() = true (%s) on a quiescent cgroup, want fail-open", detail)
+		}
+		now = now.Add(10 * time.Second)
+	}
+}
+
+// The converse: once the counter starts moving, the same reading must refuse.
+func TestCgroupMemoryGateArmsWhenTheAtLimitCounterRises(t *testing.T) {
+	const limit = 10 * 1024 * 1024 * 1024
+	now := time.Unix(0, 0)
+	atLimit := uint64(6198)
+	gate := NewCgroupMemoryGate(0.90)
+	gate.now = func() time.Time { return now }
+	gate.read = func() memstat.Footprint {
+		return memstat.Footprint{Cgroup: &memstat.Cgroup{
+			Current: 9_800_000_000, Limit: limit,
+			Anon: 5_900_000_000, File: 3_900_000_000, AtLimit: atLimit,
+		}}
+	}
+
+	if pressured, _ := gate.UnderPressure(); pressured {
+		t.Fatal("the first reading only establishes a baseline; it must not refuse")
+	}
+
+	now = now.Add(memoryGateSampleTTL)
+	atLimit += 12
+	pressured, detail := gate.UnderPressure()
+	if !pressured {
+		t.Fatal("UnderPressure() = false while the at-limit counter is rising, want a refusal")
+	}
+	if !strings.Contains(detail, "at-limit episode") {
+		t.Fatalf("detail = %q, want the at-limit count that armed the gate", detail)
+	}
+
+	// And it must disarm once the burst stops, rather than staying latched.
+	now = now.Add(memoryPressureWindow + memoryGateSampleTTL)
+	if pressured, detail := gate.UnderPressure(); pressured {
+		t.Fatalf("UnderPressure() = true (%s) after the burst ended, want it to disarm", detail)
+	}
+}
+
 func TestNilCgroupMemoryGateAdmits(t *testing.T) {
 	var gate *CgroupMemoryGate
 	if pressured, _ := gate.UnderPressure(); pressured {
@@ -217,5 +304,24 @@ func TestConfiguredCapsAreReportedBeforeMemoryPressure(t *testing.T) {
 	}
 	if reason != ReasonInstanceMaxParallel {
 		t.Fatalf("reason = %q, want %q to win over memory pressure", reason, ReasonInstanceMaxParallel)
+	}
+}
+
+// A memory refusal is capacity, not policy: it clears as runs finish and the
+// kernel reclaims. Classifying it as permanent would make `goobers run` fail
+// hard and the API return 409 instead of 429, and would discard retained
+// schedule demand that the next tick could have dispatched.
+func TestMemoryPressureIsATransientTriggerRejection(t *testing.T) {
+	err := &TriggerRejectedError{
+		Reason: ReasonMemoryPressure + ": 9.5Gi at 95% of limit",
+	}
+	if !err.Transient() {
+		t.Fatal("Transient() = false for memory pressure, want true")
+	}
+	// The permanent refusals must stay permanent.
+	for _, reason := range []string{ReasonBudget, ReasonOpenPRCap, ReasonDailyBudget} {
+		if (&TriggerRejectedError{Reason: reason}).Transient() {
+			t.Fatalf("Transient() = true for %q, want false", reason)
+		}
 	}
 }
