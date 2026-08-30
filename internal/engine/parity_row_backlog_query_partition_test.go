@@ -127,12 +127,12 @@ func requireClaimPartition(side paritySide) error {
 		}
 		filter, err := labelpredicate.Compile("", splitParityLabelList(require), splitParityLabelList(exclude))
 		if err != nil {
-			return fmt.Errorf("%s envelope for stage %q (dispatch %d) carries a requireLabels/excludeLabels pair backlog-query cannot compile: %v",
+			return fmt.Errorf("%s envelope for stage %q (dispatch %d) carries a requireLabels/excludeLabels pair backlog-query cannot compile: %w",
 				side.Name, env.Stage, dispatches, err)
 		}
 		sibling, err := filter.Matches(paritySiblingItemLabels)
 		if err != nil {
-			return fmt.Errorf("%s envelope for stage %q (dispatch %d): evaluate sibling item: %v", side.Name, env.Stage, dispatches, err)
+			return fmt.Errorf("%s envelope for stage %q (dispatch %d): evaluate sibling item: %w", side.Name, env.Stage, dispatches, err)
 		}
 		if sibling {
 			return fmt.Errorf("%s envelope for stage %q (dispatch %d) would CLAIM the sibling instance's item %v: "+
@@ -141,7 +141,7 @@ func requireClaimPartition(side paritySide) error {
 		}
 		own, err := filter.Matches(parityCloudItemLabels)
 		if err != nil {
-			return fmt.Errorf("%s envelope for stage %q (dispatch %d): evaluate own item: %v", side.Name, env.Stage, dispatches, err)
+			return fmt.Errorf("%s envelope for stage %q (dispatch %d): evaluate own item: %w", side.Name, env.Stage, dispatches, err)
 		}
 		if !own {
 			return fmt.Errorf("%s envelope for stage %q (dispatch %d) would claim NOTHING: requireLabels=%q excludes this instance's own item %v. inputs were: %s",
