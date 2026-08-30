@@ -46,11 +46,32 @@ type Grant struct {
 	Ref        string `json:"ref"`
 }
 
+// Mode is the completion contract an agentic stage pod owes: invoke a goober
+// for a stage result, or drive it as a reviewer gate for a verdict (decision
+// 001 rulings 7–8). It rides the kit — the verified, content-addressed
+// document — so a pod cannot be told to review by anything that did not also
+// author its instructions.
+type Mode string
+
+const (
+	// ModeInvoke executes the stage through invoke.Goober.Invoke and surrenders
+	// the ResultEnvelope it returns. The zero value decodes as invoke too: a
+	// kit published by a worker that predates Mode is an invocation, which is
+	// the only thing such a worker ever dispatched.
+	ModeInvoke Mode = "invoke"
+	// ModeReview executes the stage through invoke.Goober.Review and
+	// surrenders the Verdict it returns (dispatcher.SurrenderedResult.Verdict).
+	ModeReview Mode = "review"
+)
+
 // Kit is one agentic stage's complete execution input.
 type Kit struct {
 	// Envelope is the invocation the stage executes. It is the same value the
 	// engine handed the dispatch activity, carried through rather than rebuilt.
 	Envelope apiv1.InvocationEnvelope `json:"envelope"`
+	// Mode is the completion contract this stage owes (invoke | review);
+	// empty reads as invoke. See Mode.
+	Mode Mode `json:"mode,omitempty"`
 	// Goobers are the specs the executor routes on, keyed by goober name.
 	Goobers map[string]apiv1.GooberSpec `json:"goobers"`
 	// Instructions are each goober's system instructions.
@@ -100,6 +121,13 @@ func Unmarshal(data []byte, wantDigest string) (*Kit, error) {
 		return nil, fmt.Errorf("agentickit: unmarshal: %w", err)
 	}
 	return &k, nil
+}
+
+// IsReview reports whether the kit asks for the review completion contract.
+// Anything that is not exactly ModeReview — including the empty pre-Mode
+// value — is an invocation.
+func (k *Kit) IsReview() bool {
+	return k != nil && k.Mode == ModeReview
 }
 
 // AssetBundles reconstructs the asset bundles for handing to the executor.

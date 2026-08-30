@@ -121,7 +121,6 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 		requirementFor[requirement.Stage] = requirement
 	}
 	ledgerFor := make(map[string]bool, len(def.Spec.Tasks)+len(def.Spec.Gates))
-	isGate := make(map[string]bool, len(def.Spec.Gates))
 	for _, task := range def.Spec.Tasks {
 		if _, dup := ledgerFor[task.Name]; dup {
 			return nil, fmt.Errorf("workflow %q: task name %q is declared twice; stage names must be unique for name-keyed pinning", def.Name, task.Name)
@@ -133,7 +132,6 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 			return nil, fmt.Errorf("workflow %q: stage name %q is declared as both a task and a gate (or twice as a gate); stage names must be unique for name-keyed pinning", def.Name, gate.Name)
 		}
 		ledgerFor[gate.Name] = false
-		isGate[gate.Name] = true
 	}
 
 	result := runnersolve.Solve(inventory, requirements)
@@ -168,24 +166,14 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 		if serr != nil {
 			return nil, fmt.Errorf("workflow %q: %w", def.Name, serr)
 		}
+		// A gate pins exactly as a task does (decision 001 rulings 6–8): the
+		// same queue, eligible set and quantities, which engine.evaluateGate
+		// reads through remotePlacementFor and routes to dispatchRemoteGate.
+		// The start-time refusal that stood here while the engine half was
+		// unlanded (#3848's HOLD) is gone with it.
 		pin := engine.PinnedPlacement{Stage: stage.Stage, LedgerTouching: ledger}
 		if selected.HostKind == instance.RunnerHostSelf {
 			pin.Self = true
-		} else if isGate[stage.Stage] {
-			// HOLD until decision 001's engine half (rulings 7–8) lands:
-			// engine.evaluateGate has no placement arm — an agentic gate
-			// always runs ActReviewGoober in-process on the workflow queue,
-			// so a remote gate pin would be manufactured and then ignored,
-			// and the reviewer would run with the worker's OS, network and
-			// envelope instead of the isolation the author declared. That
-			// is the insecure half; refuse the START with the placement
-			// named instead. Mirrors checkpoint 3's posture for
-			// daemon-scheduled runs (placementRefusals solves gates against
-			// the self-only substrate). REMOVE this branch, WF024 and their
-			// tests together when evaluateGate honours a non-self gate pin.
-			return nil, fmt.Errorf(
-				"workflow %q gate %q: its runsOn places the reviewer on runner %q (queue %s), but gate placement is not honoured at execution yet (decision 001 rulings 7–8, the engine/pod half, are unlanded) — the reviewer would evaluate in the control plane outside its declared isolation; refusing the start. Declare a gate placement self satisfies, or remove runsOn from the gate, until the engine half lands",
-				def.Name, stage.Stage, selected.Name, dispatcher.QueueName(gaggle, selected.Name))
 		} else {
 			pin.Queue = dispatcher.QueueName(gaggle, selected.Name)
 			pin.Eligible = eligible
@@ -193,6 +181,7 @@ func PinStagePlacements(cfg *instance.Config, set *instance.ConfigSet, gaggle st
 			pin.Memory = req.Memory
 			pin.Disk = req.Disk
 			pin.Restrictions = req.Restrictions
+			pin.Capabilities = req.Capabilities
 		}
 		placements = append(placements, pin)
 	}

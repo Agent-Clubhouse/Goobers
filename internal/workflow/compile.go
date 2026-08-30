@@ -6,6 +6,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/runcontrol"
+	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/runnersolve"
 	"github.com/goobers/goobers/internal/supportmatrix"
 	v30 "github.com/goobers/goobers/internal/workflow/v_3_0"
@@ -23,10 +24,9 @@ type versionedInterpreter struct {
 	checkRunsOnOSTokens             func(Definition, *apiv1.GaggleRunsOn) []string
 	checkRunsOnRestrictions         func(Definition, *apiv1.GaggleRunsOn) []string
 	checkRunsOnPlacement            func(Definition, *apiv1.GaggleRunsOn) []string
-	stagePlacements                 func(Definition, apiv1.GaggleSpec, map[string]apiv1.GooberSpec) []runnersolve.StageRequirement
+	stagePlacements                 func(Definition, apiv1.GaggleSpec, map[string]apiv1.GooberSpec) ([]runnersolve.StageRequirement, error)
 	checkRepoHandoffs               func(Definition) []string
 	checkGateRunsOn                 func(Definition) []string
-	checkGatePlacementWarnings      func(Definition) []string
 	checkGateParameters             func(Definition) []string
 	checkGateOutcomes               func(Definition) []string
 	checkStageRequiredInputs        func(Definition) []string
@@ -95,6 +95,47 @@ func preV30SurfaceProblems(def Definition, gaggleRunsOn *apiv1.GaggleRunsOn) []s
 			"the gaggle declares runsOn, which requires every workflow in the gaggle to pin dslVersion %q (this workflow pins %q); migrate the workflow with `goobers fix --to %s`, or keep the gaggle on requiredCapabilities until then",
 			supportmatrix.V3DSLVersion, version, supportmatrix.V3DSLVersion))
 	}
+	return append(problems, preV30WindowsAdminProblems(def, nil)...)
+}
+
+// preV30WindowsAdminProblems refuses the one product-interpreted capability
+// token (#3619, runnercap.CapabilityWindowsAdmin) in a pre-3.0 document's
+// requiredCapabilities — on its tasks and, when the caller supplies it, on
+// the gaggle-level GaggleSpec.RequiredCapabilities it unions in.
+//
+// requiredCapabilities is an exact-match tag set with no OS, no coherence
+// rule (windowsAdminProblems is 3.0-only) and no CAP005 Windows-restriction
+// check. Left alone, a 2.0 task naming the token would pin to a class whose
+// provides.capabilities claims it and the dispatcher would render that pod as
+// ContainerAdministrator — placed by the accident of which runners claim the
+// token, exactly the shape the 3.0 rule refuses, and a substrate effect the
+// frozen interpreter never learned (PO-D0). So the token is refused here in
+// the router like runsOn itself: it exists only as 3.0 runsOn.capabilities
+// under an effective runsOn.os: windows. Every other token stays an opaque
+// tag on 2.0, byte-identical to before.
+//
+// Two callers, one rule: refusePreV30Surface (compile, with the gaggle set)
+// and preV30StagePlacements (the solver input every admission checkpoint and
+// the run-start pin read), so a document that bypasses compile — validate's
+// checkpoint solve, PinStagePlacements — is refused just the same.
+func preV30WindowsAdminProblems(def Definition, gaggleRequiredCapabilities []string) []string {
+	version := def.DSLVersion
+	if version == "" {
+		version = supportmatrix.CurrentDSLVersion
+	}
+	var problems []string
+	for _, task := range def.Spec.Tasks {
+		if runnercap.HasWindowsAdmin(task.RequiredCapabilities) {
+			problems = append(problems, fmt.Sprintf(
+				"task %q declares requiredCapabilities %q, the ContainerAdministrator identity of a Windows stage pod, which exists only as runsOn.capabilities under runsOn.os: windows on dslVersion %q (this workflow pins %q); migrate with `goobers fix --to %s` and declare runsOn (#3619)",
+				task.Name, runnercap.CapabilityWindowsAdmin, supportmatrix.V3DSLVersion, version, supportmatrix.V3DSLVersion))
+		}
+	}
+	if runnercap.HasWindowsAdmin(gaggleRequiredCapabilities) {
+		problems = append(problems, fmt.Sprintf(
+			"the gaggle declares requiredCapabilities %q, the ContainerAdministrator identity of a Windows stage pod, which exists only as a gaggle runsOn floor (runsOn.os: windows) over dslVersion %q workflows (this workflow pins %q); migrate the workflow with `goobers fix --to %s` and move the gaggle to runsOn (#3619)",
+			runnercap.CapabilityWindowsAdmin, supportmatrix.V3DSLVersion, version, supportmatrix.V3DSLVersion))
+	}
 	return problems
 }
 
@@ -107,11 +148,6 @@ func noRepoHandoffProblems(Definition) []string { return nil }
 // interpreter never sees the field), so the gate-only rules have nothing to
 // say.
 func noGateRunsOnProblems(Definition) []string { return nil }
-
-// noGatePlacementWarnings is the pre-3.0 checkGatePlacementWarnings arm: a
-// 2.0 gate cannot carry runsOn (refused by preV30SurfaceProblems), so there
-// is no unhonoured placement to warn about.
-func noGatePlacementWarnings(Definition) []string { return nil }
 
 var nextInterpreter = versionedInterpreter{
 	compile:                         compileNext,
@@ -127,7 +163,6 @@ var nextInterpreter = versionedInterpreter{
 	stagePlacements:                 preV30StagePlacements,
 	checkRepoHandoffs:               noRepoHandoffProblems,
 	checkGateRunsOn:                 noGateRunsOnProblems,
-	checkGatePlacementWarnings:      noGatePlacementWarnings,
 	checkGateParameters:             vnext.CheckGateParameters,
 	checkGateOutcomes:               vnext.CheckGateOutcomes,
 	checkStageRequiredInputs:        vnext.CheckStageRequiredInputs,
@@ -164,7 +199,6 @@ var v30Interpreter = versionedInterpreter{
 	stagePlacements:                 v30StagePlacements,
 	checkRepoHandoffs:               v30.CheckRepoHandoffs,
 	checkGateRunsOn:                 v30.CheckGateRunsOn,
-	checkGatePlacementWarnings:      v30.CheckGatePlacementWarnings,
 	checkGateParameters:             v30.CheckGateParameters,
 	checkGateOutcomes:               v30.CheckGateOutcomes,
 	checkStageRequiredInputs:        v30.CheckStageRequiredInputs,
@@ -294,6 +328,10 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 // validate` through the checkRunsOnPlacement arm.
 func refusePreV30Surface(def Definition, config compileConfig) error {
 	problems := preV30SurfaceProblems(def, config.gaggleRunsOn)
+	// The task half of the windows-admin refusal is already in
+	// preV30SurfaceProblems; the gaggle-level requiredCapabilities are a
+	// compile option, so their half is added here.
+	problems = append(problems, preV30WindowsAdminProblems(Definition{DSLVersion: def.DSLVersion}, config.gaggleRequiredCapabilities)...)
 	if len(problems) == 0 {
 		return nil
 	}

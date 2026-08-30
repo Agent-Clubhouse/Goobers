@@ -23,10 +23,12 @@ type fakeReader struct {
 	stats        readservice.TelemetryStatsResult
 	signatures   readservice.TelemetryErrorSignaturesResult
 	errors       readservice.TelemetryErrorsPage
+	outcomes     readservice.TelemetryImplementationOutcomesResult
 	telemetryErr error
 	statsReq     readservice.TelemetryStatsRequest
 	signatureReq readservice.TelemetryErrorSignaturesRequest
 	errorsReq    readservice.TelemetryErrorsRequest
+	outcomesReq  readservice.TelemetryImplementationOutcomesRequest
 	runs         readservice.RunList
 	run          readservice.RunDetail
 	events       readservice.EventList
@@ -85,6 +87,11 @@ func (f *fakeReader) TelemetryErrorSignatures(_ context.Context, req readservice
 func (f *fakeReader) TelemetryErrors(_ context.Context, req readservice.TelemetryErrorsRequest) (readservice.TelemetryErrorsPage, error) {
 	f.errorsReq = req
 	return f.errors, f.telemetryErr
+}
+
+func (f *fakeReader) TelemetryImplementationOutcomes(_ context.Context, req readservice.TelemetryImplementationOutcomesRequest) (readservice.TelemetryImplementationOutcomesResult, error) {
+	f.outcomesReq = req
+	return f.outcomes, f.telemetryErr
 }
 
 func (f *fakeReader) ListRuns(_ context.Context, options readservice.RunListOptions) (readservice.RunList, error) {

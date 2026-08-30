@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/providers"
@@ -48,7 +50,13 @@ func (c *remediationDemandCounter) EligibleCount(ctx context.Context) (int, erro
 	if c.now != nil {
 		now = c.now()
 	}
-	prs, err = filterClaimAvailablePullRequests(c.schedulerDir, c.gaggle, "", prs, now)
+	// The daemon's own readiness counter reads its own ledger file: it is
+	// the claims plane's server, never its client.
+	ledger, err := fileClaimLedger(instance.NewLayout(filepath.Dir(c.schedulerDir)))
+	if err != nil {
+		return 0, fmt.Errorf("open claim ledger: %w", err)
+	}
+	prs, err = filterClaimAvailablePullRequests(ledger, c.gaggle, "", prs, now)
 	if err != nil {
 		return 0, err
 	}
@@ -66,21 +74,36 @@ func (c *remediationDemandCounter) ProviderQuotaGuarded() bool {
 	return c.quota != nil
 }
 
+// stageClaimAvailablePullRequests is filterClaimAvailablePullRequests over a
+// stage's own ledger seam (the plane in a pod, the instance file otherwise).
+func stageClaimAvailablePullRequests(
+	root string,
+	currentRunID string,
+	candidates []providers.PullRequestSummary,
+	now time.Time,
+) ([]providers.PullRequestSummary, error) {
+	ledger, err := openStageClaimLedger(layoutFor(root))
+	if err != nil {
+		return nil, fmt.Errorf("open claim ledger: %w", err)
+	}
+	return filterClaimAvailablePullRequests(ledger, providerGaggle(), currentRunID, candidates, now)
+}
+
 func filterClaimAvailablePullRequests(
-	schedulerDir string,
+	ledger claimsclient.Ledger,
 	gaggle string,
 	currentRunID string,
 	candidates []providers.PullRequestSummary,
 	now time.Time,
 ) ([]providers.PullRequestSummary, error) {
 	available := make([]providers.PullRequestSummary, 0, len(candidates))
-	err := withClaimLock(filepath.Join(schedulerDir, claimLockFileName), claimLockOperationPRCount, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(filepath.Join(schedulerDir, claimLedgerFileName))
+	err := ledger.Locked(claimContext(), claimLockOperationPRCount, func(tx claimsclient.Ledger) error {
+		claims, err := pullRequestClaimListing(tx, gaggle)
 		if err != nil {
-			return fmt.Errorf("open claim ledger: %w", err)
+			return err
 		}
 		for _, candidate := range candidates {
-			claimed, ownedByCurrentRun := pullRequestClaimStatus(ledger, gaggle, candidate.Number, currentRunID, now)
+			claimed, ownedByCurrentRun := pullRequestClaimStatus(claims, gaggle, candidate.Number, currentRunID, now)
 			if !claimed || ownedByCurrentRun {
 				available = append(available, candidate)
 			}

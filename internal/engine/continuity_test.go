@@ -41,34 +41,34 @@ func TestSelectDelta(t *testing.T) {
 		{Stage: "b", Attempt: 1, Digest: deltaB},
 	}
 	t.Run("empty record selects nothing on both arms", func(t *testing.T) {
-		if got, err := selectDelta(nil, "c", nil); err != nil || got.Digest != "" {
+		if got, err := selectDelta(nil, "c", nil, ""); err != nil || got.Digest != "" {
 			t.Fatalf("nil arm = %+v, %v", got, err)
 		}
-		if got, err := selectDelta(nil, "c", []string{"a"}); err != nil || got.Digest != "" {
+		if got, err := selectDelta(nil, "c", []string{"a"}, ""); err != nil || got.Digest != "" {
 			t.Fatalf("declared arm = %+v, %v", got, err)
 		}
 	})
 	t.Run("nil repoFrom (2.0, gates) is last-writer", func(t *testing.T) {
-		got, err := selectDelta(record, "c", nil)
+		got, err := selectDelta(record, "c", nil, "")
 		if err != nil || got.Stage != "b" || got.Digest != deltaB {
 			t.Fatalf("selectDelta = %+v, %v; want b's entry", got, err)
 		}
 	})
 	t.Run("declared repoFrom picks the most recent declared producer", func(t *testing.T) {
-		got, err := selectDelta(record, "c", []string{"a", "b"})
+		got, err := selectDelta(record, "c", []string{"a", "b"}, "")
 		if err != nil || got.Stage != "b" {
 			t.Fatalf("selectDelta = %+v, %v; want b", got, err)
 		}
 	})
 	t.Run("own prior attempts are continuity (decision 001 rule 3)", func(t *testing.T) {
 		own := append(append([]continuityEntry{}, record...), continuityEntry{Stage: "c", Attempt: 1, Digest: deltaX})
-		got, err := selectDelta(own, "c", []string{"a", "b"})
+		got, err := selectDelta(own, "c", []string{"a", "b"}, "")
 		if err != nil || got.Stage != "c" || got.Digest != deltaX {
 			t.Fatalf("selectDelta = %+v, %v; want c's own prior entry", got, err)
 		}
 	})
 	t.Run("undeclared most-recent producer fails closed naming both stages", func(t *testing.T) {
-		_, err := selectDelta(record, "c", []string{"a"})
+		_, err := selectDelta(record, "c", []string{"a"}, "")
 		if err == nil {
 			t.Fatal("selectDelta accepted a consumer building on an undeclared producer")
 		}

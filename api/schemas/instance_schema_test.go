@@ -202,6 +202,8 @@ runners:
     host: win-runner-pool
     provides:
       os: windows
+      windows:
+        avExclusionsVerified: true
 engine:
   hostPort: temporal.goobers-system:7233
 `},
@@ -301,6 +303,36 @@ repos: []
 engine:
   hostPort: temporal.internal
 `, "hostPort"},
+		{"windows claim block without its one claim", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+schemaVersion: 2
+repos: []
+runners:
+  - name: win
+    host: win-runner-pool
+    provides:
+      os: windows
+      windows: {}
+engine:
+  hostPort: temporal.goobers-system:7233
+`, "avExclusionsVerified"},
+		{"windows claim block with a misspelled claim", `
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+schemaVersion: 2
+repos: []
+runners:
+  - name: win
+    host: win-runner-pool
+    provides:
+      os: windows
+      windows:
+        avExclusionsVerified: true
+        defenderExcluded: true
+engine:
+  hostPort: temporal.goobers-system:7233
+`, "defenderExcluded"},
 		{"ado repo without project", `
 apiVersion: goobers.dev/v1alpha1
 kind: Instance

@@ -176,6 +176,7 @@ func TestSpecFromEntry(t *testing.T) {
 		Host: "ghcr.io/goobers/goobers-base:v0.1.0",
 		Provides: instance.RunnerProvides{
 			OS: instance.RunnerOSLinux, CPU: "2000m", Memory: "4Gi",
+			Capabilities: []string{"go@1.26", "make"},
 		},
 		Restrictions: []instance.RunnerRestriction{instance.RunnerRestrictionNetworkAllowlist},
 	}
@@ -188,5 +189,14 @@ func TestSpecFromEntry(t *testing.T) {
 	}
 	if len(spec.Restrictions) != 1 || spec.Restrictions[0] != "network:allowlist" {
 		t.Fatalf("Restrictions = %v", spec.Restrictions)
+	}
+	// provides.capabilities reaches the dispatcher's view (#3619 reads the
+	// privilege token from it), as a copy the inventory cannot alias.
+	if len(spec.Capabilities) != 2 || spec.Capabilities[0] != "go@1.26" || spec.Capabilities[1] != "make" {
+		t.Fatalf("Capabilities = %v, want the entry's provides.capabilities", spec.Capabilities)
+	}
+	entry.Provides.Capabilities[0] = "mutated"
+	if spec.Capabilities[0] != "go@1.26" {
+		t.Fatal("RunnerSpec.Capabilities aliases the inventory entry's slice")
 	}
 }

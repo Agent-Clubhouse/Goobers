@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -130,6 +131,18 @@ type DispatchStageResult struct {
 	// already recorded, so a provenance block there would say nothing. Nil
 	// also, and unavoidably, for a refused placement — see StagePlacement.
 	Placement *StagePlacement `json:"placement,omitempty"`
+	// Verdict is the reviewer's decision when the attempt was an agentic
+	// reviewer GATE dispatched to a pod (DispatchStageInput.Review; decision
+	// 001 rulings 7–8) — what ReviewGoober returns for the self arm, carried
+	// on the dispatch result because DispatchStage is the one activity every
+	// pod attempt returns through. Nil for every task attempt and for every
+	// in-process arm. Additive and omitempty: a history recorded before it
+	// existed decodes with a nil Verdict.
+	//
+	// DispatchStage populates it ONLY after re-validating the surrendered
+	// verdict (a non-empty Decision, the verdict schema): a non-nil Verdict
+	// here is one the engine may route on.
+	Verdict *apiv1.Verdict `json:"verdict,omitempty"`
 }
 
 // StagePlacement is the substrate provenance of one pod-executed stage
@@ -314,23 +327,76 @@ func (a *Activities) provisionWorkspace(ctx context.Context, env *apiv1.Invocati
 		return nil, fmt.Errorf("provision workspace for stage %q: %w", env.TaskID, err)
 	}
 	if ws == nil || ws.Path() == "" {
-		removeWorkspace(ctx, ws)
+		removeWorkspace(ctx, env.TaskID, ws)
 		return nil, fmt.Errorf("workspace provisioner returned no path for stage %q (the closed invocation schema requires workspace)", env.TaskID)
 	}
 	env.Workspace = ws.Path()
 	return ws, nil
 }
 
+// workspaceTeardownTimeout bounds one attempt's detached workspace cleanup
+// (#3645). Teardown runs detached from the attempt context, so nothing else
+// would ever cancel it: a git worktree removal wedged on a filesystem lock
+// would otherwise retain the worker's resources for the process's lifetime.
+// A variable so tests can shorten the bound; production never reassigns it.
+var workspaceTeardownTimeout = 2 * time.Minute
+
+// MetricWorkspaceTeardownFailure is the counter incremented once per stage
+// attempt whose workspace teardown failed or exceeded
+// workspaceTeardownTimeout. Locked or wedged worktrees accumulate on the
+// worker's disk, so this is the operator's signal to sweep them (#3645).
+const MetricWorkspaceTeardownFailure = "goobers_workspace_teardown_failure"
+
 // removeWorkspace tears one attempt's working copy down. Best-effort by
 // design: a teardown failure never overrides the stage's own result/error
-// (the local runner's additive removeErr contract, issue #136); until the
-// history→journal projection (#629) exists there is no journal to surface it
-// to. Detached from ctx so an already-expired attempt still cleans up.
-func removeWorkspace(ctx context.Context, ws Workspace) {
+// (the local runner's additive removeErr contract, issue #136). Detached from
+// ctx so an already-expired attempt still cleans up, but bounded by
+// workspaceTeardownTimeout and never silent: a failed or timed-out teardown
+// leaves a leaked working copy behind, so it is reported as an error log with
+// the stage and path that leaked plus a counter increment (#3645), rather
+// than being discarded.
+func removeWorkspace(ctx context.Context, taskID string, ws Workspace) {
 	if ws == nil {
 		return
 	}
-	_ = ws.Remove(context.WithoutCancel(ctx))
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workspaceTeardownTimeout)
+	defer cancel()
+	// Remove runs on its own goroutine so an implementation that ignores
+	// cancellation still cannot pin the attempt past the bound; the abandoned
+	// goroutine finishes (or not) on its own, having been reported as leaked.
+	done := make(chan error, 1)
+	go func() { done <- ws.Remove(cleanupCtx) }()
+	var err error
+	select {
+	case err = <-done:
+	case <-cleanupCtx.Done():
+		err = fmt.Errorf("workspace teardown exceeded %s: %w", workspaceTeardownTimeout, cleanupCtx.Err())
+	}
+	if err == nil {
+		return
+	}
+	reportWorkspaceTeardownFailure(ctx, taskID, ws.Path(), err)
+}
+
+// reportWorkspaceTeardownFailure emits the durable diagnostics for a leaked
+// workspace. Inside an activity it uses the worker's own logger and metrics
+// handler (so the failure lands in the worker's log/metrics pipeline
+// alongside the attempt it belongs to); outside one — engine unit tests, the
+// in-process paths — it falls back to the default slog logger rather than
+// panicking on the missing activity environment.
+func reportWorkspaceTeardownFailure(ctx context.Context, taskID, path string, err error) {
+	if activity.IsActivity(ctx) {
+		activity.GetMetricsHandler(ctx).Counter(MetricWorkspaceTeardownFailure).Inc(1)
+		activity.GetLogger(ctx).Error(
+			"workspace teardown failed; the working copy leaked and must be swept",
+			"stage", taskID, "workspace", path, "error", err.Error(),
+		)
+		return
+	}
+	slog.Error(
+		"workspace teardown failed; the working copy leaked and must be swept",
+		"stage", taskID, "workspace", path, "error", err.Error(),
+	)
 }
 
 // refuseLeakedEnvelope is the dispatch-side assertion of the #2931 canary,
@@ -397,7 +463,7 @@ func (a *Activities) InvokeGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, ws)
+	defer removeWorkspace(ctx, env.TaskID, ws)
 	res, err := a.Goober.Invoke(ctx, env)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)
@@ -431,7 +497,7 @@ func (a *Activities) ReviewGoober(ctx context.Context, env apiv1.InvocationEnvel
 	if err != nil {
 		return apiv1.Verdict{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, ws)
+	defer removeWorkspace(ctx, env.TaskID, ws)
 	verdict, err := a.Goober.Review(ctx, env)
 	if err != nil {
 		return apiv1.Verdict{}, classifySeamError(err)
@@ -481,7 +547,7 @@ func (a *Activities) RunDeterministic(ctx context.Context, env apiv1.InvocationE
 		}
 		return stageActivityResult{}, classifySeamError(err)
 	}
-	defer removeWorkspace(ctx, ws)
+	defer removeWorkspace(ctx, env.TaskID, ws)
 	res, err := a.Det.Run(ctx, env, run)
 	if err != nil {
 		return stageActivityResult{}, classifySeamError(err)

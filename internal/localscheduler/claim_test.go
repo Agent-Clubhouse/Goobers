@@ -813,3 +813,45 @@ func TestClaimConcurrentRace(t *testing.T) {
 		t.Fatalf("expected exactly 1 winner, got %d", wins)
 	}
 }
+
+// TestHistorySnapshotOrdersEveryRetainedEntryNewestFirst pins the whole-
+// ledger history read the claims plane's list route slices: every retained
+// entry across every run, released ones carrying ReleasedAt, newest
+// activity first.
+func TestHistorySnapshotOrdersEveryRetainedEntryNewestFirst(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	ledger, err := OpenClaimLedger(filepath.Join(t.TempDir(), "claims.json"), WithLedgerClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := func(item string) ClaimKey { return ClaimKey{Gaggle: "g", Provider: "github", ExternalID: item} }
+	if ok, _, err := ledger.ClaimScoped(key("1"), "run-a", "w", time.Hour); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	now = now.Add(time.Minute)
+	if err := ledger.ReleaseScoped(key("1"), "run-a"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	if ok, _, err := ledger.ClaimScoped(key("2"), "run-b", "w", time.Hour); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	now = now.Add(time.Minute)
+	if ok, _, err := ledger.ClaimScoped(key("1"), "run-c", "w", time.Hour); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+
+	history := ledger.HistorySnapshot()
+	if len(history) != 3 {
+		t.Fatalf("history = %+v, want three retained entries", history)
+	}
+	if history[0].RunID != "run-c" || history[1].RunID != "run-b" || history[2].RunID != "run-a" {
+		t.Fatalf("history order = %s, %s, %s; want newest activity first (run-c, run-b, run-a)", history[0].RunID, history[1].RunID, history[2].RunID)
+	}
+	if history[2].ReleasedAt == nil || history[0].ReleasedAt != nil {
+		t.Fatalf("released markers: run-a %v, run-c %v", history[2].ReleasedAt, history[0].ReleasedAt)
+	}
+	if empty, err := OpenClaimLedger(filepath.Join(t.TempDir(), "claims.json")); err != nil || len(empty.HistorySnapshot()) != 0 {
+		t.Fatalf("fresh ledger history = %v, %v", empty.HistorySnapshot(), err)
+	}
+}

@@ -48,4 +48,12 @@ type PinnedPlacement struct {
 	Memory         string   `json:"memory,omitempty"`
 	Disk           string   `json:"disk,omitempty"`
 	Restrictions   []string `json:"restrictions,omitempty"`
+	// Capabilities is the stage's effective runsOn.capabilities requirement
+	// (declared ∪ derived ∪ gaggle floor), carried for the same reason as
+	// Restrictions: the dispatcher decides a Windows pod's container identity
+	// from whether the stage REQUIRES runnercap.CapabilityWindowsAdmin
+	// (#3619), and cannot recompute the requirement mid-run. Additive on the
+	// wire (omitempty): a history recorded before the field decodes to no
+	// requirement, which is the fail-closed reading (ContainerUser).
+	Capabilities []string `json:"capabilities,omitempty"`
 }
