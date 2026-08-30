@@ -23,40 +23,88 @@ make sense with that context.
 
 ## 2. Sandbox / shadow-run safety (MUST)
 
-- [ ] A shadow (dark) run cannot perform a real side effect — mode
-      `no-op`/`mock`/`replay` is enforced by the adapter, not just by
-      convention in the calling stage.
-- [ ] Adapters declare `side_effects` (db/email/payment/etc.) and the runner's
-      policy enforcement actually blocks disallowed effects for the run mode,
-      rather than only logging them.
+Rules below are from [`EVALS_SANDBOX_API.md`](../../evals/EVALS_SANDBOX_API.md)
+§6 — read it in full if the PR touches adapter or runner policy code.
+
+- [ ] `mode: "real"` is rejected whenever `metadata.shadow: true`, and
+      independently in **two** places — the runner's policy layer (before
+      the call leaves the runner process) and the adapter shim itself. A PR
+      that removes either check because "the other one already covers it" is
+      removing intentional redundancy, not dead code.
+- [ ] A shadow run's adapter set defaults to `no-op` for any adapter with a
+      non-empty `side_effects` manifest, with no implicit fallback to `real`
+      — the suite author must explicitly pin an adapter to `mock`/`replay`
+      to override this.
+- [ ] Shadow invocations get a credential-free environment and no network
+      egress to production/staging hosts — this is a second, independent
+      barrier, not just the policy check above.
+- [ ] A blocked or denied `real` call during a shadow run is logged to the
+      audit trail at `warn` or higher, not silently absorbed — an adapter
+      response of `status: "blocked"` is a distinct, expected outcome, not a
+      transport error to be swallowed or retried.
 - [ ] No production credentials or endpoints are reachable from a shadow or
       replay-mode run.
 
 ## 3. Cassettes (MUST if the PR touches cassette recording/storage)
 
+Rules below are from [`EVALS_CASSETTE.md`](../../evals/EVALS_CASSETTE.md) —
+read it in full for a cassette-format or recorder-behavior change.
+
 - [ ] Sensitive fields (PII, auth tokens, payment identifiers) are scrubbed
-      before a cassette is written — check the actual recorded fixture, not
-      just the scrubbing code.
-- [ ] Cassette signatures are computed from normalized request + seed, with
-      volatile headers (e.g. `Date`, request IDs) excluded — a signature that
-      changes on every recording defeats replay.
-- [ ] Cassette writes are disabled in CI unless an explicit recording flag is
-      set; CI should replay, never silently record.
-- [ ] Cassettes are treated as immutable — an update creates a new
-      signature/tag rather than mutating a file in place.
+      **before** a cassette is written, per the adapter's declared scrub
+      rules — check the actual recorded fixture, not just the scrubbing
+      code, and confirm `scrubbed_fields` is populated whenever scrubbing
+      occurred.
+- [ ] Cassette signatures are computed from canonicalized request (sorted
+      keys, volatile headers like `Date`/`Request-Id`/`Traceparent`
+      stripped) + seed (appended separately, not folded into the request) —
+      a signature that changes on every recording defeats replay.
+- [ ] Cassette writes are disabled in CI by default; `recorder_mode: "record"`
+      requires an explicit, separate opt-in flag from `mode: "real"` — the
+      two must not be conflated, and no suite-gating CI job sets the record
+      flag.
+- [ ] A missing cassette in `replay` mode fails fast (`CASSETTE_NOT_FOUND`)
+      rather than falling back to a live call or a synthesized response —
+      don't let a PR "fix" a replay failure by adding a silent fallback.
+- [ ] Cassettes are immutable — an update creates a new file (new signature,
+      or an explicit `superseded_signature` rotation tag) rather than
+      mutating or deleting the old one in place.
+- [ ] Cassettes recorded from real production-adjacent interactions live in
+      access-controlled storage, never committed to the repo, regardless of
+      scrubbing.
 
 ## 4. Judge changes (MUST if the PR touches judge prompts, weights, or thresholds)
+
+Routing rules below are from
+[`EVALS_JUDGE_DESIGN.md`](../../evals/EVALS_JUDGE_DESIGN.md) — read it in
+full for the worked ensemble examples before reviewing a change to
+`compute_ensemble_score` or `route_for_review`.
 
 - [ ] A changed prompt, weight, or threshold documents *why* — a threshold
       change is a policy decision, not a drive-by tuning fix, and needs the
       same scrutiny as a gate change elsewhere in the runner.
-- [ ] The gray-zone / low-confidence routing to human review still triggers
-      correctly after the change (don't let a threshold edit silently widen
-      or collapse the human-review band).
+- [ ] `route_for_review`'s priority order is preserved: strict-checker
+      failure → safety-critical dissent (`< max(pass_threshold, 0.95)`) →
+      low-confidence LLM judge (`< low_confidence_floor`, default `0.6`) →
+      gray-zone ensemble score (default `[0.6, 0.8)`) → pass/fail on
+      `pass_threshold` (default `0.8`). Don't let a refactor silently
+      reorder or short-circuit an earlier rule.
+- [ ] A new or changed checker sets `JudgeResult.strict` correctly —
+      `strict=True` only for a genuine binary assertion (exact-match/regex)
+      on a real evaluation. A graded score (e.g. similarity) or an
+      abstention (nothing to compare against) must be `strict=False`, or it
+      will unconditionally hard-fail scenarios it should instead be scored
+      or excluded from evaluation entirely.
+- [ ] `compute_ensemble_score` divides by the weight of only the judge kinds
+      that actually ran for a scenario — a configured-but-absent kind (e.g.
+      no classifier judge) must not silently drag the score toward 0. If a
+      PR changes this math, check it against both worked examples in
+      `EVALS_JUDGE_DESIGN.md` (all kinds present; one kind absent).
 - [ ] Judge output still matches the documented schema
-      (`score`, `labels`, `reason`, `confidence`) — a judge that returns a
-      differently-shaped object breaks every downstream consumer of the
-      report, not just this suite.
+      (`score`, `labels`, `reason`, `confidence`, each `score`/`confidence`
+      validated to `[0.0, 1.0]`) — a judge that returns a differently-shaped
+      or out-of-range object breaks every downstream consumer, not just this
+      suite.
 
 ## 5. Schema / DSL changes (MUST if the PR touches `eval_schema.json` or the suite DSL)
 
@@ -81,10 +129,10 @@ make sense with that context.
 
 - [ ] No secrets, tokens, or real connection strings in a committed cassette
       or fixture.
-- [ ] New EvalSuite artifacts (schema, docs, samples) go where the design doc
-      says they go, not scattered ad hoc — check
-      [`docs/design/evals-suite.md`](../design/evals-suite.md) for the
-      current landing spots.
+- [ ] New EvalSuite artifacts (schema, docs, samples, code) land under
+      [`evals/`](../../evals/), not scattered ad hoc — check
+      [`docs/design/evals-suite.md`](../design/evals-suite.md) and
+      [`evals/README.md`](../../evals/README.md) for the current layout.
 - [ ] Docs (this checklist, the onboarding guide, the design overview) are
       updated in the same PR if the change makes any of them inaccurate —
       don't leave a follow-up doc PR as the only trace of a design decision.

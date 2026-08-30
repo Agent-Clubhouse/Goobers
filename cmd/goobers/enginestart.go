@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"time"
 
 	"go.temporal.io/sdk/client"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/bootstrap"
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 const engineStartHelp = "Usage: goobers engine-start [flags] <workflow> [path]\n\n" +
@@ -94,25 +97,20 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: workflow %q is not registered\n", workflowName)
 		return 1
 	}
-	// Mode-3 placement pinning (#3588): resolve every stage's execution
-	// placement now, against the declared runner inventory, and pin the
-	// outcome into the run input — the workflow reads it as data and never
-	// solves mid-run (the WF-016 snapshot / determinism constraint). Nil on
-	// every zero-declaration and local-mode instance.
-	placements, err := bootstrap.PinStagePlacements(cfg, set, target, def)
+	spec, err := engineStartSpec(engineStartRequest{
+		cfg:         cfg,
+		set:         set,
+		gaggle:      target,
+		dedupeKey:   *dedupe,
+		project:     project,
+		def:         def,
+		liveJournal: *liveJournal,
+	})
 	if err != nil {
-		pf(stderr, "error: resolve stage placements: %v\n", err)
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	in, err := reg.StartInput(workflowName, engine.StartSpec{
-		RunID:           engine.RunID(target, workflowName, *dedupe),
-		Gaggle:          target,
-		RepoRef:         project,
-		TriggerKind:     "manual",
-		BranchNamespace: branchNamespacesByGaggle(set)[target],
-		LiveJournal:     *liveJournal,
-		Placements:      placements,
-	})
+	in, err := reg.StartInput(workflowName, spec)
 	if err != nil {
 		pf(stderr, "error: pin workflow %q: %v\n", workflowName, err)
 		return 1
@@ -133,4 +131,157 @@ func runEngineStart(args []string, stdout, stderr io.Writer) int {
 	}
 	pf(stdout, "engine run started: %s (workflow=%s v%d, gaggle=%s, queue=%s)\n", res.RunID, in.WorkflowName, in.Version, in.Gaggle, *taskQueue)
 	return 0
+}
+
+// engineStartRequest is everything one `goobers engine-start` dispatch needs
+// to build its StartSpec. It is a struct rather than a positional argument
+// list because the inputs are otherwise a run of same-typed values — the
+// gaggle name and the dedupe key both feed engine.RunID, and transposing them
+// compiles cleanly while pinning a different run identity. Naming them at the
+// call site makes that transposition visible rather than silent.
+//
+// The workflow name is deliberately absent: it is def.Name. The registry
+// returned def for the requested name, so reading it back from the definition
+// keeps the graph, the placements and the run controls sourced from one
+// object instead of from a name that a second lookup might resolve elsewhere.
+type engineStartRequest struct {
+	cfg         *instance.Config
+	set         *instance.ConfigSet
+	gaggle      string
+	dedupeKey   string
+	project     apiv1.RepoRef
+	def         workflow.Definition
+	liveJournal bool
+}
+
+// engineStartSpec builds the StartSpec one `goobers engine-start` dispatch
+// pins. It is the engine-side counterpart of the daemon's scheduler entry
+// (schedulerDefinitions): everything a run's identity commits to at start and
+// never re-reads from config is resolved here, so both starters can be
+// compared at one seam instead of two divergent literals.
+func engineStartSpec(req engineStartRequest) (engine.StartSpec, error) {
+	// Mode-3 placement pinning (#3588): resolve every stage's execution
+	// placement now, against the declared runner inventory, and pin the
+	// outcome into the run input — the workflow reads it as data and never
+	// solves mid-run (the WF-016 snapshot / determinism constraint). Nil on
+	// every zero-declaration and local-mode instance.
+	placements, err := bootstrap.PinStagePlacements(req.cfg, req.set, req.gaggle, req.def)
+	if err != nil {
+		return engine.StartSpec{}, fmt.Errorf("resolve stage placements: %w", err)
+	}
+	// #3820: run controls are pinned at start and the watchdog enforces the
+	// pinned value, so a starter that skips this resolution silently commits
+	// the run to the 3-repass / 45m defaults whatever the author declared.
+	controls, err := engineStartRunControls(req)
+	if err != nil {
+		return engine.StartSpec{}, err
+	}
+	return engine.StartSpec{
+		RunID:           engine.RunID(req.gaggle, req.def.Name, req.dedupeKey),
+		Gaggle:          req.gaggle,
+		RepoRef:         req.project,
+		TriggerKind:     "manual",
+		BranchNamespace: branchNamespacesByGaggle(req.set)[req.gaggle],
+		LiveJournal:     req.liveJournal,
+		Placements:      placements,
+		RunControls:     controls,
+		// #294/#3528: an agentic gate's reviewer capabilities are instance
+		// policy, pinned into the run at start and read back from the run's
+		// own snapshot afterwards — the daemon's credential plane resolves a
+		// gate stage's grants from journal.PinnedGateGooberCapabilities, not
+		// from the currently-served config. A starter that leaves this empty
+		// pins an EMPTY map, so every gate branch on the run resolves to no
+		// reviewer grants at all; the daemon's scheduler entry has always
+		// filled it in (runnerwiring.go) and engine-start did not.
+		GateGooberCapabilities: engineStartGateGooberCapabilities(req.set, req.gaggle),
+		// #3873 (MIRC-2 claim partition): the gaggle's self identity and
+		// RequireLabels default, resolved through the SAME helpers that feed
+		// the daemon's runner Config (daemon.go:1156-1157). The engine walk
+		// injects them into every `goobers backlog-query` stage that does not
+		// declare its own, exactly as dispatchTask does. A dispatch that
+		// leaves them empty hands the stage no partition, and on this
+		// instance's shared backlog that claims the sibling (laptop)
+		// instance's goobers:local items.
+		BacklogQueryAssignedTo:    selfIdentitiesByGaggle(req.cfg, req.set)[req.gaggle],
+		BacklogQueryRequireLabels: requireLabelsByGaggle(req.set)[req.gaggle],
+	}, nil
+}
+
+// engineStartGateGooberCapabilities maps each goober a gaggle's stages may
+// name to its declared capabilities. A goober with no declared capabilities is
+// omitted rather than mapped to an empty slice; nil when the gaggle declares
+// no capability-bearing goobers, which pins no snapshot at all rather than an
+// empty one.
+//
+// The projection is GAGGLE-SCOPED, and deliberately so — it is NOT the
+// daemon's map. runnerwiring.go's gateGooberCaps is built from goobersByName,
+// which is instance-wide and shared across every gaggle; this one applies
+// workerwiring.go's resolveGoobersForGaggle rule (a goober with no gaggle, or
+// with this gaggle), because an engine-start run executes on a worker whose
+// goober admission uses exactly that rule. Pinning a reviewer the worker will
+// not admit would put a capability grant in the run's immutable snapshot for a
+// goober that cannot participate in it.
+//
+// The divergence is fail-closed in one direction: a workflow in gaggle A whose
+// agentic gate names a reviewer declared under gaggle B gets its grants pinned
+// on the daemon's own dispatch path and nothing pinned here, and the
+// credential plane's gate branch resolves an absent reviewer to no grants.
+// Nothing validates that cross-gaggle reference today; making it an error at
+// compile time is the fix, not widening the pin.
+func engineStartGateGooberCapabilities(set *instance.ConfigSet, gaggle string) map[string][]string {
+	if set == nil {
+		return nil
+	}
+	var caps map[string][]string
+	for i := range set.Goobers {
+		g := set.Goobers[i]
+		if g.Spec.Gaggle != "" && g.Spec.Gaggle != gaggle {
+			continue
+		}
+		if len(g.Spec.Capabilities) == 0 {
+			continue
+		}
+		if caps == nil {
+			caps = make(map[string][]string)
+		}
+		caps[g.Name] = append([]string(nil), g.Spec.Capabilities...)
+	}
+	return caps
+}
+
+// engineStartRunControls resolves the run-control policy for one manually
+// dispatched workflow through resolveWorkflowRunControls — the same four
+// layers, in the same order, the daemon's scheduler entry resolves.
+func engineStartRunControls(req engineStartRequest) (apiv1.RunControls, error) {
+	var gaggleCfg apiv1.Gaggle
+	for i := range req.set.Gaggles {
+		if req.set.Gaggles[i].Name == req.gaggle {
+			gaggleCfg = req.set.Gaggles[i]
+			break
+		}
+	}
+	// Resolution is layer-complete or it fails: silently defaulting a
+	// workflow the config set does not carry is the #3820 failure mode.
+	declared := false
+	for i := range req.set.Workflows {
+		if req.set.Workflows[i].Name == req.def.Name && req.set.Workflows[i].Spec.Gaggle == req.gaggle {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return apiv1.RunControls{}, fmt.Errorf("workflow %q is not declared in gaggle %q", req.def.Name, req.gaggle)
+	}
+	// The workflow layer comes from the definition the registry pinned, NOT
+	// from a fresh scan of set.Workflows. bootstrap.RegisterGaggleWorkflows
+	// registers every entry in the gaggle, so two same-named workflow files
+	// become v1 and v2 of one name; reg.Latest hands back the LAST, while a
+	// forward scan finds the FIRST. Sourcing both from def is what keeps the
+	// dispatched graph and its watchdog budget the same version.
+	workflowCfg := apiv1.Workflow{Spec: req.def.Spec}
+	controls, err := resolveWorkflowRunControls(req.cfg, req.project, gaggleCfg, workflowCfg)
+	if err != nil {
+		return apiv1.RunControls{}, fmt.Errorf("workflow %q run controls: %w", req.def.Name, err)
+	}
+	return controls.Overrides(), nil
 }

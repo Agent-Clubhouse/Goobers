@@ -32,6 +32,47 @@ const (
 	LabelStage = "goobers.dev/stage"
 	// LabelAttempt carries the attempt ordinal.
 	LabelAttempt = "goobers.dev/attempt"
+	// LabelOwner names the dispatcher process that created the pod
+	// (Config.Owner, sanitized to label grammar). Decision 003 wires
+	// SweepOrphans on the WORKER, and a cluster legitimately runs more than
+	// one: without this the sweep's selector matches a sibling worker's live
+	// stage pods too, and one worker's restart would dispose another's
+	// in-flight attempts. Scoped by owner, a sweep can only ever reach pods
+	// it created.
+	LabelOwner = "goobers.dev/owner"
+)
+
+// Dispatcher-owned annotations carrying the attempt identity VERBATIM.
+//
+// The matching labels exist for humans and for selectors, so they are run
+// through sanitizeNameSegment — which lowercases and maps every non-alphanumeric
+// rune to '-'. That makes them unusable as an ADDRESS: the orphan sweep has to
+// ask the engine whether <runID>/<stage>/<attempt> is still executing, and
+// "run-2026-08-22-0001" does not survive the round trip. These carry the exact
+// strings the attempt was dispatched under. (The attempt ordinal needs no
+// annotation — LabelAttempt is already exact, being a decimal integer.)
+const (
+	// AnnotationRunID is the attempt's run ID, unsanitized.
+	AnnotationRunID = "goobers.dev/run-id"
+	// AnnotationStage is the attempt's stage name, unsanitized.
+	AnnotationStage = "goobers.dev/stage-name"
+	// AnnotationOwningWorkflowID is the Temporal workflow execution that owns
+	// the dispatch: the execution whose activity created this pod, and the
+	// only one whose liveness answers "is anything still driving this
+	// attempt?".
+	//
+	// It is stamped rather than DERIVED because the attempt's own identity
+	// cannot address its driver. A SCHEDULED run executes under
+	// claimID+"-run" while its RunID has been rewritten to a sha256 prefix of
+	// claimID (engine's RunScheduled; engine/liveness.go states the mapping),
+	// so an id composed from AnnotationRunID names no execution at all — and a
+	// sweep that reads "no such workflow" as "settled" would delete the pod of
+	// a live, possibly mutating, stage. Composing is a lossy address on a
+	// DELETE path; this is the verbatim one.
+	//
+	// Absent = unaddressable, not disposable: podAttempt refuses the pod and
+	// the sweep leaves it to activeDeadlineSeconds.
+	AnnotationOwningWorkflowID = "goobers.dev/owning-workflow-id"
 )
 
 // The pod environment contract: what a stage pod needs to reach the planes
@@ -76,6 +117,42 @@ const (
 	// keeps its run context instead of stripping it with the control plane.
 	EnvStageIsCLI = "GOOBERS_STAGE_IS_CLI"
 
+	// EnvWorkspaceDelta carries the blob digest of the git bundle holding what
+	// earlier stages of this run committed (#3763). Privileged: it names a blob
+	// the pod's own token can fetch, and a stage has no business reading or
+	// forging it.
+	EnvWorkspaceDelta = "GOOBERS_WORKSPACE_DELTA"
+	// EnvWorkspaceBranch carries the run's REBOUND workspace branch (#392) — the
+	// branch the in-pod checkout must clone instead of the one it would derive
+	// from workflow + run id. Stamped only when a stage actually rebound it
+	// (pr-remediation, onto the claimed PR's head); absent otherwise, so every
+	// pod spec for a run that never rebinds is byte-identical to before.
+	//
+	// Privileged, exactly like EnvStageWorkspace and for the same reason: a
+	// stage that could rewrite it would choose which branch the platform
+	// provisions for it, and in this lane that branch is the one
+	// push-remediated force-pushes with a lease.
+	EnvWorkspaceBranch = "GOOBERS_WORKSPACE_BRANCH"
+	// EnvStageSyncBase is stamped "true" when the stage declared
+	// run.syncBase (#813) on a writable repo workspace, so the in-pod checkout
+	// merges the freshly fetched base into the branch it landed on the way the
+	// worktree provisioner does on the self runner. Privileged: a stage that
+	// could set it would rewrite its own branch's history relative to base.
+	EnvStageSyncBase = "GOOBERS_STAGE_SYNC_BASE"
+	// EnvCheckoutCapability names the capability the pod may mint SOLELY to
+	// provision a repo workspace (#3770). Privileged, and deliberately separate
+	// from EnvStageCapabilities: the resulting credential authenticates the
+	// checkout inside the goobers process and is never exported to the stage's
+	// environment, so a stage does not gain repository authority by needing a
+	// working tree.
+	//
+	// Without this the checkout authenticated with the stage's BUSINESS
+	// capabilities, so a repo workspace could only be provisioned when the
+	// stage happened to declare a repo-shaped one for unrelated reasons —
+	// open-pr declares provider:pr:write alone and could not run in a pod at
+	// all. The worker has never had this problem: it provisions worktrees with
+	// instance credentials regardless of what the stage declares.
+	EnvCheckoutCapability = "GOOBERS_CHECKOUT_CAPABILITY"
 	// EnvStageWorkspace carries the declared workspace mode so the in-pod
 	// executor knows whether to provision a checkout. Privileged: a stage that
 	// could rewrite it would change what the platform provisioned for it.
@@ -85,6 +162,46 @@ const (
 	// Privileged: a stage that could rewrite it would choose which instructions
 	// it runs under.
 	EnvAgenticKitDigest = "GOOBERS_AGENTIC_KIT"
+
+	// EnvStageEnvDefaultDeny is stamped "true" when the RESOLVED RUNNER CLASS
+	// enforces env:default-deny (#3725). It is what makes that restriction real
+	// in the pod: without it __dispatch-exec hands the stage the container's
+	// whole os.Environ() minus the control plane, so a class declaring
+	// env:default-deny got the label, the NetworkPolicy, and none of the
+	// environment isolation the name promises.
+	//
+	// Privileged, and this is the security property, not an accident of
+	// grouping: the restriction must be DISPATCHER-STAMPED and stage-invisible.
+	// A stage that could read it learns which posture it is under; a stage that
+	// could set or clear it turns its own isolation off — self-authorization by
+	// exactly the shape EnvStageWorkspace/EnvStageIsCLI are privileged to avoid.
+	// The signal never comes from the stage's own command.
+	//
+	// Derived from the RUNNER's enforced set rather than the stage's required
+	// set, the same source every other restriction binding in this file reads
+	// (tmp:ephemeral's tmpfs, fs:readonly's readOnlyRootFilesystem). A stage
+	// that required nothing but LANDED on a restricted class gets the class's
+	// posture — which is the case #3725 was filed about: cli-stage-probe placed
+	// on linux-shell-strict and "worked because the restriction is
+	// unimplemented".
+	EnvStageEnvDefaultDeny = "GOOBERS_STAGE_ENV_DEFAULT_DENY"
+	// EnvStageEnvAllow carries, as a JSON array, the env var NAMES the
+	// dispatcher stamped ON THE STAGE'S BEHALF — its declared `env:` keys, its
+	// GOOBERS_INPUT_* inputs, its run context — plus the instance's declared
+	// envPassthrough. Stamped only alongside EnvStageEnvDefaultDeny, because
+	// only the filter reads it.
+	//
+	// It exists because in a pod those variables arrive as ORDINARY container
+	// environment variables, indistinguishable at os.Environ() from whatever the
+	// image happens to export. Filtering the inherited environment through
+	// procenv's allowlist alone would therefore drop the stage's own declared
+	// env and its inputs — the same restriction-conditional, diagnosed-at-the-
+	// far-side failure #3725 was filed about, one seam over. The dispatcher is
+	// the only party that knows which ambient names it put there, so it says so.
+	//
+	// Privileged: a stage that could extend this list would re-admit exactly the
+	// ambient variables the restriction exists to deny it.
+	EnvStageEnvAllow = "GOOBERS_STAGE_ENV_ALLOW"
 )
 
 // DispatcherControlEnv is the set of variables the DISPATCHER stamps for its
@@ -109,7 +226,9 @@ var DispatcherControlEnv = append(append([]string{}, DispatcherPrivilegedEnv...)
 var DispatcherPrivilegedEnv = []string{
 	EnvBlobEndpoint, EnvDaemonAPI, EnvPodToken,
 	EnvStageCommand, EnvStageScript, EnvStageTimeout, EnvStageCapabilities, EnvStageIsCLI,
-	EnvStageWorkspace, EnvAgenticKitDigest,
+	EnvStageWorkspace, EnvAgenticKitDigest, EnvWorkspaceDelta, EnvWorkspaceBranch,
+	EnvStageSyncBase, EnvCheckoutCapability,
+	EnvStageEnvDefaultDeny, EnvStageEnvAllow,
 }
 
 // DispatcherRunIdentityEnv is the half that is operational identity rather than
@@ -169,11 +288,17 @@ const (
 	// (dispatcher §5: readOnlyRootFilesystem + writable workspace + writable
 	// HOME).
 	LinuxHomePath = "/home/goobers"
+	// WindowsHomePath is the container user's profile in the Windows base
+	// image (USER ContainerUser, DI-4): git and harness configuration land
+	// here, and the tmp:ephemeral temp is nested inside it. Named so the
+	// #3480 antivirus-exclusion enumeration reads it from the same contract
+	// the mounts use rather than retyping it.
+	WindowsHomePath = `C:\Users\ContainerUser`
 	// LinuxTmpPath / WindowsTmpPath is the platform temp path the
 	// tmp:ephemeral volume mounts at (Linux /tmp; Windows the profile-nested
 	// temp — decision 006).
 	LinuxTmpPath   = "/tmp"
-	WindowsTmpPath = `C:\Users\ContainerUser\AppData\Local\Temp`
+	WindowsTmpPath = WindowsHomePath + `\AppData\Local\Temp`
 )
 
 // Node scheduling contract.
@@ -196,9 +321,19 @@ const (
 	// are stamped: tolerating a taint a cluster does not apply costs nothing,
 	// and picking one convention silently breaks every cluster using the other.
 	WindowsTolerationKeyLegacy = "kubernetes.io/os"
-	// WindowsRunAsUserName is the non-admin Windows container identity the
-	// fs restriction binds to (decision 007).
+	// WindowsRunAsUserName is the non-admin Windows container identity EVERY
+	// Windows stage pod runs as unless the stage requires — and its runner
+	// class provides — runnercap.CapabilityWindowsAdmin (#3619). Stamped
+	// explicitly rather than inherited from the image's USER directive, so
+	// least privilege is a property of the rendered spec, not of whichever
+	// image a class happens to name.
 	WindowsRunAsUserName = "ContainerUser"
+	// WindowsAdminRunAsUserName is the administrator identity a Windows
+	// stage pod runs as when — and only when — the stage requires
+	// runnercap.CapabilityWindowsAdmin and the resolved runner class provides
+	// it. Provided-but-not-required stays ContainerUser; required-but-not-
+	// provided is refused at create (WindowsIdentityError), never defaulted.
+	WindowsAdminRunAsUserName = "ContainerAdministrator"
 	// StageContainerName names the stage container in dispatcher-rendered
 	// pods.
 	StageContainerName = "stage"
@@ -252,6 +387,34 @@ func (e *RestrictionMismatchError) Error() string {
 		e.Runner, strings.Join(e.Missing, ", "))
 }
 
+// WindowsIdentityError is the create-time refusal of the Windows identity
+// and binding rules (#3619; restrictions doc D4 as corrected there):
+//
+//   - the stage requires runnercap.CapabilityWindowsAdmin and the resolved
+//     runner does not provide it (or is not Windows at all) — the solver
+//     should never have placed it here, and a stage that needs admin is
+//     never served as ContainerUser to fail later with Access Denied, nor
+//     served as ContainerAdministrator on a class that never claimed it;
+//   - the resolved Windows runner's class carries a restriction Windows
+//     cannot bind (runnercap.DeclarableOnWindows is false) — the pod would
+//     carry the class label and the restrictions annotation and none of the
+//     isolation they name, the fail-open shape decision 007 refused for
+//     readOnlyRootFilesystem.
+//
+// Both are re-assertions of facts the validator and the inventory loader
+// already refuse; this is the dispatch-time arm ("asserted at dispatch,
+// refuse-to-create on mismatch", restrictions doc §6).
+type WindowsIdentityError struct {
+	// Runner is the resolved runner.
+	Runner string
+	// Reason is the named, human-readable cause.
+	Reason string
+}
+
+func (e *WindowsIdentityError) Error() string {
+	return fmt.Sprintf("dispatcher: refusing to create stage pod on runner %q: %s", e.Runner, e.Reason)
+}
+
 // PodName derives the fresh pod's name for one attempt: deterministic per
 // (run, stage, attempt) and unique across attempts, so "a new attempt is a
 // new pod" holds by construction and a redelivered create of the SAME attempt
@@ -300,6 +463,10 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 	if err := assertRestrictionsEnforced(attempt, runner); err != nil {
 		return nil, err
 	}
+	admin, err := assertWindowsIdentity(attempt, runner)
+	if err != nil {
+		return nil, err
+	}
 
 	windows := runner.OS == osWindows
 	class := restrictionSet(runner.Restrictions)
@@ -332,7 +499,9 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 		ImagePullPolicy: corev1.PullAlways,
 		Command:         []string{"goobers"},
 		Args:            []string{DispatchExecCommand},
-		Env:             stageEnv(cfg, attempt),
+		// nil: the image path builds a fresh container, so the only names on
+		// it are the ones stageEnv stamps.
+		Env: stageEnv(cfg, attempt, class, nil),
 	}
 
 	// Extra (non-goobers.dev) metadata merges FIRST; the dispatcher-owned
@@ -340,7 +509,7 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 	// to overwrite even the managed-by marker (that is how a pod hides from
 	// the orphan sweep).
 	labels := copyStringMap(attempt.ExtraLabels)
-	for key, value := range stampedLabels(attempt, runner) {
+	for key, value := range stampedLabels(cfg, attempt, runner) {
 		labels[key] = value
 	}
 	pod := &corev1.Pod{
@@ -358,10 +527,11 @@ func RenderPod(cfg Config, attempt Attempt, runner RunnerSpec) (*corev1.Pod, err
 		},
 	}
 	stampClassRestrictionsAnnotation(pod.Annotations, runner)
+	stampIdentityAnnotations(pod.Annotations, attempt)
 
 	stampResources(cfg, attempt, runner, &container, class, windows)
 	stampVolumes(cfg, attempt, &pod.Spec, &container, class, windows)
-	stampSecurity(&pod.Spec, &container, class, windows)
+	stampSecurity(&pod.Spec, &container, class, windows, admin)
 	if windows {
 		pod.Spec.Tolerations = append(pod.Spec.Tolerations, windowsTolerations()...)
 	}
@@ -386,6 +556,10 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	if err := assertRestrictionsEnforced(attempt, runner); err != nil {
 		return nil, err
 	}
+	admin, err := assertWindowsIdentity(attempt, runner)
+	if err != nil {
+		return nil, err
+	}
 	template := deployment.Spec.Template.DeepCopy()
 	if len(template.Spec.Containers) == 0 {
 		return nil, fmt.Errorf("dispatcher: template deployment %q for runner %q has no containers", deployment.Name, runner.Name)
@@ -405,7 +579,7 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	for key, value := range attempt.ExtraLabels {
 		labels[key] = value
 	}
-	for key, value := range stampedLabels(attempt, runner) {
+	for key, value := range stampedLabels(cfg, attempt, runner) {
 		labels[key] = value
 	}
 	annotations := copyStringMap(template.Annotations)
@@ -430,7 +604,8 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 		spec.Tolerations = append(spec.Tolerations, windowsTolerations()...)
 	}
 
-	stage := &spec.Containers[0]
+	// Non-nil: the empty-container template was refused above.
+	stage := stageContainerIn(spec.Containers)
 	// Command/Args are dispatcher-owned in the template path too (#3699):
 	// the disposal gate's surrender requirement applies uniformly to every
 	// host kind, so whatever ENTRYPOINT/CMD the template's image declares is
@@ -439,13 +614,28 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	// its own stage container actually runs the authored stage.
 	stage.Command = []string{"goobers"}
 	stage.Args = []string{DispatchExecCommand}
-	stage.Env = append(stage.Env, stageEnv(cfg, attempt)...)
+	// The consumer's template may declare its own container env (DI-9 owns
+	// sidecars, volumes, node selectors AND the stage container's ambient
+	// contract). Those names are ambient container variables in the pod, so
+	// under env:default-deny the in-pod rebuild would drop them unless the
+	// allowlist carries them — a template-declared var present on an
+	// unrestricted class and silently gone on a restricted one. The consumer
+	// Deployment is operator-authored infrastructure, the same trust level as
+	// envPassthrough, so it is allowlisted rather than denied; a control-plane
+	// name among them is still removed by the strip that runs after the
+	// rebuild.
+	templateDeclared := make([]string, 0, len(stage.Env))
+	for _, e := range stage.Env {
+		templateDeclared = append(templateDeclared, e.Name)
+	}
+	stage.Env = append(stage.Env, stageEnv(cfg, attempt, class, templateDeclared)...)
 	stampResources(cfg, attempt, runner, stage, class, windows)
 	stampVolumes(cfg, attempt, spec, stage, class, windows)
 	// Security bindings stamp the STAGE container and the pod level; sidecar
-	// containers keep the consumer's own settings except the fs restriction,
-	// which is a pod-wide effect and stamps every container.
-	stampSecurity(spec, stage, class, windows)
+	// containers keep the consumer's own settings — on Windows, a sidecar's
+	// own windowsOptions.runAsUserName included (stampSecurity) — except the
+	// fs restriction, which is a pod-wide effect and stamps every container.
+	stampSecurity(spec, stage, class, windows, admin)
 	if !windows && class[string(runnercap.RestrictionFSReadonly)] {
 		for i := 1; i < len(spec.Containers); i++ {
 			side := &spec.Containers[i]
@@ -457,6 +647,7 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	}
 
 	stampClassRestrictionsAnnotation(annotations, runner)
+	stampIdentityAnnotations(annotations, attempt)
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        PodName(attempt),
@@ -468,13 +659,39 @@ func RenderFromTemplate(cfg Config, attempt Attempt, runner RunnerSpec, deployme
 	}, nil
 }
 
+// stageContainerIn resolves the stage container within a rendered or templated
+// pod spec's container list: the FIRST one, nil when there is none.
+//
+// This is DI-9's "a template controls sidecars/volumes/node selectors, not
+// which container is the stage" rule, and it lives in one function because it
+// is one rule. Both render paths honour it — RenderPod builds a pod with
+// exactly one container, RenderFromTemplate takes the template's first
+// container as the stage container — and the skew check and the report's image
+// stamp then read the same container the render wrote to, by construction
+// rather than by three sites agreeing. Index 0 rather than a name lookup: a
+// consumer template whose first container is not called "stage" would
+// otherwise silently resolve to nothing.
+//
+// Decision 002 Q2 / architecture §12 open point 2 names this first-container
+// rule as an UNCLOSED architecture point. Routing every reader through here
+// keeps the number of sites a future ruling has to change at one.
+func stageContainerIn(containers []corev1.Container) *corev1.Container {
+	if len(containers) == 0 {
+		return nil
+	}
+	return &containers[0]
+}
+
 // templateStageImage returns the template's stage-container image for the
 // skew check ("" when unreadable; the render itself re-validates shape).
 func templateStageImage(deployment *appsv1.Deployment) string {
-	if deployment == nil || len(deployment.Spec.Template.Spec.Containers) == 0 {
+	if deployment == nil {
 		return ""
 	}
-	return deployment.Spec.Template.Spec.Containers[0].Image
+	if stage := stageContainerIn(deployment.Spec.Template.Spec.Containers); stage != nil {
+		return stage.Image
+	}
+	return ""
 }
 
 // refuseOverrides is the §3 refuse-to-create for workflow/gaggle/stage input:
@@ -505,6 +722,40 @@ func assertRestrictionsEnforced(attempt Attempt, runner RunnerSpec) error {
 	return nil
 }
 
+// assertWindowsIdentity decides the Windows container identity of the
+// attempt on runner, refusing the incoherent shapes (WindowsIdentityError).
+// It returns admin=true exactly when the stage REQUIRES
+// runnercap.CapabilityWindowsAdmin and the runner PROVIDES it — the one
+// case stampSecurity renders ContainerAdministrator. On a Linux runner it
+// only refuses a stage that requires the Windows privilege; the Linux
+// identity model is untouched.
+func assertWindowsIdentity(attempt Attempt, runner RunnerSpec) (admin bool, err error) {
+	required := runnercap.HasWindowsAdmin(attempt.RunsOnCapabilities)
+	windows := runner.OS == osWindows
+	if required && !windows {
+		return false, &WindowsIdentityError{Runner: runner.Name, Reason: fmt.Sprintf(
+			"the stage requires %q (the ContainerAdministrator identity of a Windows stage pod) but the runner's os is %q — the solver should never have placed it here (#3619)",
+			runnercap.CapabilityWindowsAdmin, runner.OS)}
+	}
+	if !windows {
+		return false, nil
+	}
+	for _, effect := range runnercap.CanonicalRestrictions(runner.Restrictions) {
+		if runnercap.KnownRestriction(effect) && !runnercap.DeclarableOnWindows(runnercap.Restriction(effect)) {
+			return false, &WindowsIdentityError{Runner: runner.Name, Reason: fmt.Sprintf(
+				"its class declares %q, which has no Windows binding in v1 — the pod would carry the class label and none of the isolation it names (restrictions doc D4/D11; the inventory loader refuses this entry)",
+				effect)}
+		}
+	}
+	provided := runnercap.HasWindowsAdmin(runner.Capabilities)
+	if required && !provided {
+		return false, &WindowsIdentityError{Runner: runner.Name, Reason: fmt.Sprintf(
+			"the stage requires %q but the runner's provides.capabilities does not claim it — a stage that needs ContainerAdministrator is refused, never served as ContainerUser to fail with Access Denied, and never granted on a class that did not claim it (#3619)",
+			runnercap.CapabilityWindowsAdmin)}
+	}
+	return required && provided, nil
+}
+
 func restrictionSet(restrictions []string) map[string]bool {
 	set := make(map[string]bool, len(restrictions))
 	for _, r := range restrictions {
@@ -516,16 +767,43 @@ func restrictionSet(restrictions []string) map[string]bool {
 // stampedLabels are the dispatcher-owned labels every stage pod carries:
 // exactly one runner-class label DERIVED from the resolved restriction set
 // via the single shared producer (runnercap.RunnerClassValue, delivery
-// decision 015), the role marker the baseline policies select on, and the
-// run/attempt identity the reconcile sweep keys on.
-func stampedLabels(attempt Attempt, runner RunnerSpec) map[string]string {
-	return map[string]string{
+// decision 015), the role marker the baseline policies select on, the
+// run/attempt identity the reconcile sweep keys on, and — when this
+// dispatcher declares one — the owner the sweep scopes itself to.
+func stampedLabels(cfg Config, attempt Attempt, runner RunnerSpec) map[string]string {
+	labels := map[string]string{
 		LabelManagedBy:             ManagedByValue,
 		runnercap.LabelRole:        runnercap.RoleStage,
 		runnercap.LabelRunnerClass: runnercap.RunnerClassValue(runner.Restrictions),
 		LabelRun:                   sanitizeNameSegment(attempt.RunID, 63),
 		LabelStage:                 sanitizeNameSegment(attempt.Stage, 63),
 		LabelAttempt:               fmt.Sprintf("%d", attempt.Number),
+	}
+	// Absent owner stamps nothing rather than an "unknown" placeholder: a
+	// placeholder is a value a second ownerless dispatcher would also match,
+	// which is the cross-worker disposal this label exists to prevent. An
+	// unlabeled pod is instead unreachable by any sweep, and SweepOrphans
+	// refuses to run without an owner at all.
+	if owner := cfg.ownerLabel(); owner != "" {
+		labels[LabelOwner] = owner
+	}
+	return labels
+}
+
+// stampIdentityAnnotations records the attempt's verbatim run ID and stage
+// name (see AnnotationRunID) and the workflow execution driving it (see
+// AnnotationOwningWorkflowID). Both render paths call it, so a pod that the
+// sweep can select is always a pod the sweep can address.
+//
+// An absent OwningWorkflowID stamps NOTHING rather than an empty value, for
+// the same reason ownerLabel stamps nothing: a value the sweep would then
+// have to special-case is a value it can get wrong, and podAttempt's
+// "annotation missing" arm already means exactly "leave this pod alone".
+func stampIdentityAnnotations(annotations map[string]string, attempt Attempt) {
+	annotations[AnnotationRunID] = attempt.RunID
+	annotations[AnnotationStage] = attempt.Stage
+	if attempt.OwningWorkflowID != "" {
+		annotations[AnnotationOwningWorkflowID] = attempt.OwningWorkflowID
 	}
 }
 
@@ -572,7 +850,19 @@ func activeDeadlineSeconds(cfg Config, attempt Attempt) int64 {
 	return int64(deadline.Seconds())
 }
 
-func stageEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
+// stageEnv renders the dispatcher-owned half of the stage container's
+// environment. class is the RESOLVED RUNNER's enforced restriction set — the
+// same map every other binding in this file reads — because one of those
+// bindings (env:default-deny, #3725) is now an environment stamp rather than a
+// volume or a security context.
+//
+// alreadyOnContainer names the variables the container ALREADY carries before
+// this appends to it — the DI-9 template path's consumer-declared container
+// env. They are not stamped here, but under env:default-deny the in-pod
+// rebuild would drop them unless the allowlist names them, so they are threaded
+// in rather than re-derived: only the caller knows what the template declared.
+// The image path passes nil.
+func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnContainer []string) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{Name: EnvRunID, Value: attempt.RunID},
 		{Name: EnvGaggle, Value: attempt.Gaggle},
@@ -625,12 +915,93 @@ func stageEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
 	if attempt.KitDigest != "" {
 		env = append(env, corev1.EnvVar{Name: EnvAgenticKitDigest, Value: attempt.KitDigest})
 	}
+	if cap := attempt.CheckoutCapability; cap != "" {
+		env = append(env, corev1.EnvVar{Name: EnvCheckoutCapability, Value: cap})
+	}
+	if attempt.WorkspaceDelta != "" {
+		env = append(env, corev1.EnvVar{Name: EnvWorkspaceDelta, Value: attempt.WorkspaceDelta})
+	}
+	if branch := strings.TrimSpace(attempt.WorkspaceBranch); branch != "" {
+		env = append(env, corev1.EnvVar{Name: EnvWorkspaceBranch, Value: branch})
+	}
+	if attempt.SyncBase {
+		env = append(env, corev1.EnvVar{Name: EnvStageSyncBase, Value: "true"})
+	}
 	if len(attempt.Capabilities) > 0 {
 		if encoded, err := json.Marshal(attempt.Capabilities); err == nil {
 			env = append(env, corev1.EnvVar{Name: EnvStageCapabilities, Value: string(encoded)})
 		}
 	}
+	// env:default-deny (#3725). Stamped ONLY for a class that enforces it, so
+	// every other pod spec is byte-identical to before this existed.
+	if class[string(runnercap.RestrictionEnvDefaultDeny)] {
+		allow, _ := json.Marshal(stageEnvAllowlist(cfg, attempt, alreadyOnContainer))
+		env = append(env,
+			corev1.EnvVar{Name: EnvStageEnvDefaultDeny, Value: "true"},
+			corev1.EnvVar{Name: EnvStageEnvAllow, Value: string(allow)},
+		)
+	}
 	return env
+}
+
+// stageEnvAllowlist names the ambient container variables __dispatch-exec must
+// keep when it applies env:default-deny: everything the DISPATCHER itself
+// stamped for the stage above and everything a DI-9 template already declared
+// on the stage container, plus the instance's operator-declared envPassthrough.
+//
+// The list is names only — never values — because the pod reads the values out
+// of its own environment, where the container runtime already put them.
+//
+// The invariant it must satisfy, pinned by TestEveryStampedStageVarIsAllowlisted
+// OrStripped: every name stageEnv() stamps is either in this list, in
+// DispatcherControlEnv (stripped in the pod), or in procenv's own base. A name
+// that is in none of the three is DELETED for a stage on a declaring class and
+// present for the same stage on every other class — restriction-conditional
+// breakage diagnosed at the far side, which is the #3725 shape itself. The
+// run-identity names below fell exactly there in review: they are stamped in
+// stageEnv's base block, a goobers-CLI stage keeps them by design, and without
+// them here the in-pod rebuild deleted them before the CLI/non-CLI split ever
+// ran — GOOBERS_RUN_ID/GOOBERS_WORKFLOW gone, so providerRunContext() fails
+// closed and providers.BranchName cannot compose the run branch.
+//
+// Listing them is safe for a NON-CLI stage by the ordering property below:
+// DispatcherControlEnv contains DispatcherRunIdentityEnv, and the strip runs
+// after the rebuild, so a plain shell stage still loses them.
+//
+// It deliberately does NOT name GOOBERS_CRED_* or GOOBERS_REPO_*-by-prefix.
+// Resolved credentials never pass through this filter at all: they are minted
+// in-pod at stage start and appended to the command's environment AFTER it
+// (dispatchexec.go). Naming them here would be an allowlist entry that looks
+// load-bearing and is not — and a prefix grant for any image-baked GOOBERS_CRED_*
+// besides. The run-context names (GOOBERS_REPO_* and friends) ARE listed, by
+// exact name, because those the dispatcher really does stamp; the CLI/non-CLI
+// control-plane split still decides whether a given stage keeps them.
+//
+// A control-plane name reaching this list would be re-admitted here and then
+// removed again by the control-plane strip that runs after it, so the ordering
+// in stageEnvironment() is what makes this list unable to re-admit the pod
+// token BY NAME even if a stage declared `env: {GOOBERS_POD_TOKEN: ...}`.
+// By NAME is the whole scope of that claim: kubelet expands $(VAR_NAME) inside
+// a container env value against variables declared earlier in the same list, so
+// a stage declaring `env: {X: "$(GOOBERS_POD_TOKEN)"}` receives the token's
+// VALUE under a name this list legitimately allows. That by-value path predates
+// this restriction — it leaks on an unrestricted class too, where nothing
+// filters at all — and closing it means validating declared env values or
+// reserving the GOOBERS_ prefix for env keys, which is its own change.
+func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string) []string {
+	names := make([]string, 0, len(attempt.Env)+len(attempt.Inputs)+len(attempt.RunContext)+len(cfg.EnvPassthrough)+len(DispatcherRunIdentityEnv)+len(alreadyOnContainer))
+	names = append(names, sortedKeys(attempt.Env)...)
+	for _, key := range sortedKeys(attempt.Inputs) {
+		names = append(names, InputEnvVar(key))
+	}
+	names = append(names, sortedKeys(attempt.RunContext)...)
+	// The run's operational identity, stamped in stageEnv's base block above.
+	// A goobers-CLI stage keeps these; every other stage is stripped of them
+	// by the control-plane strip that runs after the rebuild.
+	names = append(names, DispatcherRunIdentityEnv...)
+	names = append(names, alreadyOnContainer...)
+	names = append(names, cfg.EnvPassthrough...)
+	return names
 }
 
 // stampResources sets requests from the stage's runsOn minimums and limits
@@ -761,27 +1132,53 @@ func stampVolumes(cfg Config, attempt Attempt, spec *corev1.PodSpec, container *
 //     RuntimeDefault seccomp, no privilege escalation, drop ALL), and
 //     readOnlyRootFilesystem: true exactly when the class carries
 //     fs:readonly-except-workspace.
-//   - Windows: the fs restriction binds to
-//     windowsOptions.runAsUserName: ContainerUser, and the dispatcher MUST
-//     NOT stamp readOnlyRootFilesystem — Kubernetes silently ignores it on
-//     Windows, which FAILS OPEN: a spec that says readonly and a pod that
-//     is not (decision 007). The Linux-only baseline fields are likewise
-//     not stamped (Windows kubelets reject or ignore them).
-func stampSecurity(spec *corev1.PodSpec, container *corev1.Container, class map[string]bool, windows bool) {
+//   - Windows: the container IDENTITY is the binding (#3619). Every Windows
+//     stage pod is stamped windowsOptions.runAsUserName explicitly:
+//     ContainerAdministrator when admin (the stage requires
+//     runnercap.CapabilityWindowsAdmin and the class provides it —
+//     assertWindowsIdentity), ContainerUser otherwise. The pre-#3619 shape
+//     stamped ContainerUser only as the fs:readonly binding and let every
+//     other Windows pod inherit the image's USER; now that an
+//     admin-requiring stage has a declaration path, the identity is the
+//     dispatcher's decision in BOTH directions, never the image's default.
+//     The dispatcher MUST NOT stamp readOnlyRootFilesystem — Kubernetes
+//     silently ignores it on Windows, which FAILS OPEN: a spec that says
+//     readonly and a pod that is not (decision 007); fs:readonly is not
+//     declarable on a Windows class at all (assertWindowsIdentity refuses
+//     it). The Linux-only baseline fields are likewise not stamped (Windows
+//     kubelets reject or ignore them).
+func stampSecurity(spec *corev1.PodSpec, container *corev1.Container, class map[string]bool, windows, admin bool) {
 	if windows {
-		// ContainerUser binds ONLY to fs:readonly-except-workspace (dispatcher
-		// §5, AC-4), the Windows equivalent of readOnlyRootFilesystem. Stamping
-		// it unconditionally would impose a non-admin identity on every Windows
-		// stage — Access Denied for admin-requiring stages — and nothing asked
-		// for it. In v1 no Windows pod carries fs:readonly (restrictions D4), so
-		// this branch stamps nothing in v1; the binding is here for when it can.
-		if class[string(runnercap.RestrictionFSReadonly)] {
-			spec.SecurityContext = &corev1.PodSecurityContext{
-				WindowsOptions: &corev1.WindowsSecurityContextOptions{
-					RunAsUserName: ptr.To(WindowsRunAsUserName),
-				},
-			}
+		identity := WindowsRunAsUserName
+		if admin {
+			identity = WindowsAdminRunAsUserName
 		}
+		// Pod level, so the identity is legible on the pod and is the default
+		// for every container a consumer template brought along that sets no
+		// identity of its own; AND the stage container itself, because a
+		// container-level runAsUserName wins over the pod-level one in
+		// Kubernetes — a template whose stage container pre-set
+		// ContainerAdministrator would otherwise override the dispatcher's
+		// decision silently. A template SIDECAR that sets its own
+		// runAsUserName keeps it (the container level wins there too): the
+		// decision here is the STAGE's identity, and sidecars are
+		// operator-owned infrastructure on the same trust root as
+		// instance.yaml — the same boundary the Linux arm draws, which
+		// stamps the PSS baseline on the stage container only.
+		if spec.SecurityContext == nil {
+			spec.SecurityContext = &corev1.PodSecurityContext{}
+		}
+		if spec.SecurityContext.WindowsOptions == nil {
+			spec.SecurityContext.WindowsOptions = &corev1.WindowsSecurityContextOptions{}
+		}
+		spec.SecurityContext.WindowsOptions.RunAsUserName = ptr.To(identity)
+		if container.SecurityContext == nil {
+			container.SecurityContext = &corev1.SecurityContext{}
+		}
+		if container.SecurityContext.WindowsOptions == nil {
+			container.SecurityContext.WindowsOptions = &corev1.WindowsSecurityContextOptions{}
+		}
+		container.SecurityContext.WindowsOptions.RunAsUserName = ptr.To(identity)
 		return
 	}
 	spec.SecurityContext = &corev1.PodSecurityContext{

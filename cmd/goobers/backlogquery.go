@@ -17,13 +17,16 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/fieldpredicate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/labelpredicate"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -81,15 +84,29 @@ const blockedOnlyCompletionAnnotation = "backlog.completed-with-blocked-only"
 
 const inReviewStatusLabel = "goobers/status:in-review"
 
-type backlogClaimLedger interface {
-	Claim(itemID, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
-	ClaimScoped(key localscheduler.ClaimKey, runID, workflow string, leaseDuration time.Duration) (bool, string, error)
-	ForRunAll(runID string) []localscheduler.ClaimEntry
-}
+const (
+	backlogFailureDeprioritizeThreshold = 3
+	backlogFailureWindow                = 7 * 24 * time.Hour
+)
 
-var openBacklogClaimLedger = func(path string, opts ...localscheduler.LedgerOption) (backlogClaimLedger, error) {
-	return localscheduler.OpenClaimLedger(path, opts...)
-}
+// terminalFailureStreakDegradedAnnotation marks a cycle where the
+// consecutive-terminal-failure count for one or more items could not be
+// fully computed.
+//
+// The streak's two inputs are now both plane-answerable (finding 002 C3/C4):
+// the released claim history comes from claims/list with history (C1), and
+// the prior run's phase comes from the gaggle-scoped run-phase route this
+// command reaches through stageCrossRunJournal (#3880 / decision 005 R1). A
+// stage pod therefore computes the SAME streak the daemon would, rather than
+// silently degrading toward 0 because it has no instance root — which is the
+// bug this annotation was created to make visible.
+//
+// The annotation stays, because the shortfall it names is still possible for
+// honest reasons: a reaped run directory, a run outside the asking run's
+// gaggle, a shed or failed plane read. In all of those the count is a floor
+// rather than the truth, and a floor that quietly deprioritizes nothing is
+// exactly the silent policy change this must not become.
+const terminalFailureStreakDegradedAnnotation = "backlog.failure-streak-degraded"
 
 func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
@@ -472,7 +489,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		return code
 	}
 	eligible := scan.eligible
-	lockPath, cursorPath := scan.lockPath, scan.cursorPath
+	lockPath, cursorKey := scan.lockPath, scan.cursorKey
 	scanCursor, nextScanCursor := scan.cursor, scan.nextCursor
 	observedRecords, remainingRecords := scan.observedRecords, scan.remainingRecords
 	verifiedSkips, observedSkips := scan.verifiedSkips, scan.observedSkips
@@ -499,10 +516,50 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	curationModeByID := resweep.modeByID
 	persistResweepState := resweep.persist
 
+	if claim {
+		ledger, err := openStageClaimLedger(env.layout)
+		if err != nil {
+			pf(stderr, "error: open claim ledger: %v\n", err)
+			return 1
+		}
+		// One namespace read — current holders and released history — is the
+		// failure-streak input (the critic's terminalFailureStreak row: over
+		// the plane this is claims/list with history, so the deprioritization
+		// keeps its input off the daemon).
+		listing, err := ledger.ListNamespace(claimContext(), providerGaggle(), string(env.repo.Provider))
+		if err != nil {
+			pf(stderr, "error: read claim ledger: %v\n", err)
+			return 1
+		}
+		// The phase half of the streak input. Failure to even SELECT a
+		// backend (an endpoint with no token, say) is fatal: a claim cycle
+		// that cannot compute failure streaks would silently stop
+		// deprioritizing repeatedly-failing work, which is a policy change,
+		// not a degradation.
+		phases, err := stageCrossRunJournal(env.root, nil)
+		if err != nil {
+			pf(stderr, "error: open cross-run journal reader for failure-streak input: %v\n", err)
+			return 1
+		}
+		eligible = deprioritizeRepeatedFailures(env.layout, phases, listing, eligible, observedAt, env, runID, workflow)
+	}
+
+	// The claim transaction's blocked-record reconcile runs INSIDE the claims
+	// ledger's locked section, so it needs a store that does not take the lock
+	// again: locally that is the same scheduler-state files with the lock
+	// already held, and in a pod it is the plane, where the daemon takes the
+	// lock on the caller's behalf.
+	heldState, err := openHeldStageStateStore(env.layout)
+	if err != nil {
+		pf(stderr, "error: open scheduler state: %v\n", err)
+		return 1
+	}
+
 	if !claim {
 		reportBacklogEligibility(env, scan.eligible, nil, verifiedSkips)
-		return runPlainBacklogQuery(env, scan)
+		return runPlainBacklogQuery(ctx, env, scan)
 	}
+
 	reportBacklogEligibility(env, eligible, readOnlyResweep, verifiedSkips)
 	return runClaimBacklogQuery(ctx, env, backlogClaimOptions{
 		eligible:               eligible,
@@ -512,7 +569,9 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 		maxItems:               maxItems,
 		persistResweepState:    persistResweepState,
 		lockPath:               lockPath,
-		cursorPath:             cursorPath,
+		state:                  scan.state,
+		heldState:              heldState,
+		cursorKey:              cursorKey,
 		scanCursor:             scanCursor,
 		nextScanCursor:         nextScanCursor,
 		observedRecords:        observedRecords,
@@ -530,6 +589,92 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 	})
 }
 
+func deprioritizeRepeatedFailures(
+	layout instance.Layout,
+	phases journalclient.CrossRun,
+	claims claimsclient.Listing,
+	items []providers.WorkItem,
+	now time.Time,
+	env backlogQueryEnv,
+	runID, workflow string,
+) []providers.WorkItem {
+	if len(items) < 2 {
+		return items
+	}
+	healthy := make([]providers.WorkItem, 0, len(items))
+	deprioritized := make([]providers.WorkItem, 0, len(items))
+	var degraded []string
+	for _, item := range items {
+		streak, degradedAt := terminalFailureStreak(phases, claims.HistoryForItem(item.ID), now)
+		if degradedAt != "" {
+			degraded = append(degraded, item.ID+"@"+degradedAt)
+		}
+		if streak >= backlogFailureDeprioritizeThreshold {
+			deprioritized = append(deprioritized, item)
+			env.debugf("deprioritized %s: %d consecutive terminal failures", item.ID, streak)
+			continue
+		}
+		healthy = append(healthy, item)
+	}
+	if len(degraded) > 0 {
+		journalFailureStreakDegraded(layout, env.stderr, runID, workflow, degraded)
+	}
+	return append(healthy, deprioritized...)
+}
+
+// terminalFailureStreak returns the item's consecutive terminal-failure
+// count and, when the walk stopped because a prior run's phase could not be
+// read (rather than a clean end-of-window or a non-failed phase), the id of
+// that run — the caller's signal to fire
+// terminalFailureStreakDegradedAnnotation rather than let the shortfall pass
+// unremarked.
+func terminalFailureStreak(phases journalclient.CrossRun, history []localscheduler.ClaimEntry, now time.Time) (streak int, degradedRunID string) {
+	for _, entry := range history {
+		endedAt := entry.ReleasedAt
+		if endedAt == nil || now.Sub(*endedAt) > backlogFailureWindow || now.Before(*endedAt) {
+			return streak, ""
+		}
+		phase, err := phases.RunPhase(context.Background(), entry.RunID)
+		if err != nil {
+			// Stop AND report. Continuing past an unreadable run would count a
+			// streak across a gap whose phase might not be a failure at all.
+			return streak, entry.RunID
+		}
+		if phase != journal.PhaseFailed {
+			return streak, ""
+		}
+		streak++
+	}
+	return streak, ""
+}
+
+// journalFailureStreakDegraded records, once per backlog-query cycle, that
+// repeated-failure deprioritization was dropped for one or more items — see
+// terminalFailureStreakDegradedAnnotation. Best-effort like
+// blockedOnlyCompletionAnnotation's write above: a journal failure here must
+// never turn a working claim cycle into a failed one, so it is warned to
+// stderr and swallowed rather than propagated.
+func journalFailureStreakDegraded(layout instance.Layout, stderr io.Writer, runID, workflow string, degraded []string) {
+	instanceLog, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		pf(stderr, "warning: journal failure-streak degradation: open instance log: %v\n", err)
+		return
+	}
+	defer func() { _ = instanceLog.Close() }()
+	if err := instanceLog.Append(journal.Event{
+		Type:     journal.EventRunnerAnnotation,
+		Workflow: workflow,
+		RunID:    runID,
+		Reason:   fmt.Sprintf("repeated-failure deprioritization dropped for %d item(s): a prior run's phase could not be read (finding 002 C3/C4 — no plane route yet)", len(degraded)),
+		Runner: map[string]any{
+			"annotation": terminalFailureStreakDegradedAnnotation,
+			"items":      degraded,
+		},
+	}); err != nil {
+		pf(stderr, "warning: journal failure-streak degradation: %v\n", err)
+	}
+}
+
 type backlogClaimOptions struct {
 	eligible               []providers.WorkItem
 	readOnlyResweep        []providers.WorkItem
@@ -538,7 +683,9 @@ type backlogClaimOptions struct {
 	maxItems               int
 	persistResweepState    func() error
 	lockPath               string
-	cursorPath             string
+	state                  stateclient.Store
+	heldState              stateclient.Store
+	cursorKey              string
 	scanCursor             backlogScanCursor
 	nextScanCursor         backlogScanCursor
 	observedRecords        map[string]blockedRecord
@@ -559,7 +706,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 	l, backlogRepo := env.layout, env.backlogRepo
 	stdout, stderr := env.stdout, env.stderr
 	eligible, readOnlyResweep := opts.eligible, opts.readOnlyResweep
-	lockPath, cursorPath := opts.lockPath, opts.cursorPath
+	cursorKey := opts.cursorKey
 	scanCursor, nextScanCursor := opts.scanCursor, opts.nextScanCursor
 	observedRecords, remainingRecords := opts.observedRecords, opts.remainingRecords
 	verifiedSkips, observedSkips := opts.verifiedSkips, opts.observedSkips
@@ -571,22 +718,20 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 	eligible = reorderContestedBacklogItems(ctx, env, opts.prProvider, eligible, opts.forwardEligibleCount)
 
 	if len(eligible) == 0 && len(readOnlyResweep) == 0 {
-		err := withClaimLock(lockPath, claimLockOperationBacklogFilterBlocked, func() error {
-			_, _, rerr := reconcileBlockedEligibilityLocked(
-				blockedRecordsPath(l),
-				backlogRepo,
-				eligible,
-				observedRecords,
-				remainingRecords,
-				verifiedSkips,
-			)
-			return rerr
-		})
+		_, _, err := reconcileBlockedEligibilityLocked(
+			ctx,
+			opts.state,
+			backlogRepo,
+			eligible,
+			observedRecords,
+			remainingRecords,
+			verifiedSkips,
+		)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
-		if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
+		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, scanCursor, nextScanCursor); err != nil {
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
@@ -621,16 +766,22 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 		return 1
 	}
 	defer func() { _ = instanceLog.Close() }()
+	ledger, err := openStageClaimLedger(l, localscheduler.WithInstanceLog(instanceLog))
+	if err != nil {
+		pf(stderr, "error: open claim ledger: %v\n", err)
+		return 1
+	}
 
 	session := backlogClaimSession{
 		env:              env,
 		instanceLog:      instanceLog,
+		ledger:           ledger,
+		heldState:        opts.heldState,
 		eligible:         eligible,
 		observedRecords:  observedRecords,
 		remainingRecords: remainingRecords,
 		verifiedSkips:    verifiedSkips,
 		observedSkips:    observedSkips,
-		lockPath:         lockPath,
 		runID:            runID,
 		workflow:         workflow,
 		leaseDuration:    leaseDuration,
@@ -657,7 +808,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 	}
 	eligible, observedSkips, claimed := session.eligible, session.observedSkips, session.claimed
 	if len(eligible) == 0 && len(readOnlyResweep) == 0 {
-		if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
+		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, scanCursor, nextScanCursor); err != nil {
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
@@ -690,7 +841,7 @@ func runClaimBacklogQuery(ctx context.Context, env backlogQueryEnv, opts backlog
 	// runner short-circuits on, rather than the old return 1. Batch-aware len
 	// check (#236) replaces #274's pointer-nil check.
 	if len(claimed) == 0 && len(readOnlyResweep) == 0 {
-		if err := advanceBacklogScanCursor(lockPath, cursorPath, scanCursor, nextScanCursor); err != nil {
+		if err := advanceBacklogScanCursor(ctx, opts.state, cursorKey, scanCursor, nextScanCursor); err != nil {
 			pf(stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
@@ -844,8 +995,17 @@ func reorderContestedBacklogItems(
 }
 
 type backlogClaimSession struct {
-	env                 backlogQueryEnv
-	instanceLog         *journal.InstanceLog
+	env         backlogQueryEnv
+	instanceLog *journal.InstanceLog
+	// ledger is the claim-ledger seam (claimledger.go): the instance's file
+	// under claims.lock on a self runner, the daemon's claims plane in a pod.
+	ledger claimsclient.Ledger
+	// heldState is the scheduler-state store for the blocked-record reconcile
+	// that runs inside ledger.Locked: the instance's own files with the lock
+	// ALREADY held on a self runner, the scheduler-state plane in a pod
+	// (#3878). Never the locking file store — that would wait on the flock
+	// this session is standing inside.
+	heldState           stateclient.Store
 	eligible            []providers.WorkItem
 	observedRecords     map[string]blockedRecord
 	remainingRecords    map[string]blockedRecord
@@ -854,7 +1014,6 @@ type backlogClaimSession struct {
 	claimed             []providers.WorkItem
 	newlyClaimed        []providers.WorkItem
 	preexistingClaimIDs map[string]struct{}
-	lockPath            string
 	runID               string
 	workflow            string
 	gaggle              string
@@ -868,7 +1027,7 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 	malformedReadyItems := 0
 	for !session.claimSetPrepared || (len(session.claimed) < session.maxItems && session.nextClaimIndex < len(session.eligible)) {
 		firstNewClaim := len(session.claimed)
-		if err := session.acquire(); err != nil {
+		if err := session.acquire(ctx); err != nil {
 			pf(session.env.stderr, "error: %v\n", err)
 			return malformedReadyItems, 1
 		}
@@ -886,7 +1045,7 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 				}
 				if err := annotateReadyTimes(session.claimed[index:index+1], providers.LabelReady, transitions); err != nil {
 					malformed := session.claimed[index]
-					if releaseErr := session.releaseLedger(malformed); releaseErr != nil {
+					if releaseErr := session.releaseLedger(ctx, malformed); releaseErr != nil {
 						pf(session.env.stderr, "error: release malformed eligible item %s: %v\n", malformed.ID, releaseErr)
 						return malformedReadyItems, 1
 					}
@@ -907,15 +1066,24 @@ func (session *backlogClaimSession) collect(ctx context.Context, labelFilter *la
 	return malformedReadyItems, 0
 }
 
-func (session *backlogClaimSession) acquire() error {
-	return withClaimLock(session.lockPath, claimLockOperationBacklogClaim, session.acquireLocked)
+// acquire is the claim transaction: the blocked-record reconcile and the
+// select-then-acquire loop inside one Locked section. On the file backend
+// that is the single claims.lock critical section it has always been; on
+// the plane the daemon serializes each acquire and the blocked-record
+// filter stays a stage-local read until the scheduler-state route lands
+// (finding 002 C2).
+func (session *backlogClaimSession) acquire(ctx context.Context) error {
+	return session.ledger.Locked(ctx, claimLockOperationBacklogClaim, func(tx claimsclient.Ledger) error {
+		return session.acquireLocked(ctx, tx)
+	})
 }
 
-func (session *backlogClaimSession) acquireLocked() error {
+func (session *backlogClaimSession) acquireLocked(ctx context.Context, ledger claimsclient.Ledger) error {
 	if !session.claimSetPrepared {
 		var err error
 		session.eligible, session.observedSkips, err = reconcileBlockedEligibilityLocked(
-			blockedRecordsPath(session.env.layout),
+			ctx,
+			session.heldState,
 			session.env.backlogRepo,
 			session.eligible,
 			session.observedRecords,
@@ -930,18 +1098,13 @@ func (session *backlogClaimSession) acquireLocked() error {
 		}
 		session.claimSetPrepared = true
 	}
-	ledger, err := openBacklogClaimLedger(
-		filepath.Join(session.env.layout.SchedulerDir(), claimLedgerFileName),
-		localscheduler.WithInstanceLog(session.instanceLog),
-	)
-	if err != nil {
-		return fmt.Errorf("open claim ledger: %w", err)
+	if err := session.rememberPreexistingClaims(ctx, ledger); err != nil {
+		return err
 	}
-	session.rememberPreexistingClaims(ledger)
 	for session.nextClaimIndex < len(session.eligible) && len(session.claimed) < session.maxItems {
 		item := session.eligible[session.nextClaimIndex]
 		session.nextClaimIndex++
-		ok, err := session.claimItem(ledger, item)
+		ok, err := session.claimItem(ctx, ledger, item)
 		if err != nil {
 			return err
 		}
@@ -986,12 +1149,16 @@ func (session *backlogClaimSession) journalBlockedSkips() error {
 	return nil
 }
 
-func (session *backlogClaimSession) rememberPreexistingClaims(ledger backlogClaimLedger) {
+func (session *backlogClaimSession) rememberPreexistingClaims(ctx context.Context, ledger claimsclient.Ledger) error {
 	if session.preexistingClaimIDs != nil {
-		return
+		return nil
+	}
+	entries, err := ledger.ForRunAll(ctx, session.runID)
+	if err != nil {
+		return fmt.Errorf("read this run's claims: %w", err)
 	}
 	session.preexistingClaimIDs = make(map[string]struct{})
-	for _, entry := range ledger.ForRunAll(session.runID) {
+	for _, entry := range entries {
 		if session.gaggle == "" {
 			if entry.Gaggle == "" && entry.Provider == "" {
 				session.preexistingClaimIDs[entry.ItemID] = struct{}{}
@@ -1002,20 +1169,25 @@ func (session *backlogClaimSession) rememberPreexistingClaims(ledger backlogClai
 			session.preexistingClaimIDs[entry.ExternalID] = struct{}{}
 		}
 	}
+	return nil
 }
 
-func (session *backlogClaimSession) claimItem(ledger backlogClaimLedger, item providers.WorkItem) (bool, error) {
-	var ok bool
-	var err error
+// claimKey addresses item in this session's namespace: legacy (unscoped)
+// when the stage runs ungaggled, scoped otherwise — the same split the
+// ledger's Claim/ClaimScoped pair expressed.
+func (session *backlogClaimSession) claimKey(item providers.WorkItem) claimsclient.Key {
 	if session.gaggle == "" {
-		ok, _, err = ledger.Claim(item.ID, session.runID, session.workflow, session.leaseDuration)
-	} else {
-		ok, _, err = ledger.ClaimScoped(localscheduler.ClaimKey{
-			Gaggle:     session.gaggle,
-			Provider:   string(session.env.repo.Provider),
-			ExternalID: item.ID,
-		}, session.runID, session.workflow, session.leaseDuration)
+		return claimsclient.Key{ExternalID: item.ID}
 	}
+	return claimsclient.Key{
+		Gaggle:     session.gaggle,
+		Provider:   string(session.env.repo.Provider),
+		ExternalID: item.ID,
+	}
+}
+
+func (session *backlogClaimSession) claimItem(ctx context.Context, ledger claimsclient.Ledger, item providers.WorkItem) (bool, error) {
+	ok, _, err := ledger.ClaimScoped(ctx, session.claimKey(item), session.runID, session.workflow, session.leaseDuration)
 	if err != nil {
 		return false, fmt.Errorf("claim %s in ledger: %w", item.ID, err)
 	}
@@ -1038,7 +1210,7 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 			continue
 		}
 
-		if err := session.releaseLedger(item); err != nil {
+		if err := session.releaseLedger(ctx, item); err != nil {
 			return fmt.Errorf("release losing ledger claim %s: %w", item.ID, err)
 		}
 		session.forgetNewClaim(item.ID)
@@ -1064,27 +1236,13 @@ func (session *backlogClaimSession) rollback(ctx context.Context, item providers
 		ID:         item.ID,
 		RunID:      session.runID,
 	})
-	ledgerErr := session.releaseLedger(item)
+	ledgerErr := session.releaseLedger(ctx, item)
 	return errors.Join(providerErr, ledgerErr)
 }
 
-func (session *backlogClaimSession) releaseLedger(item providers.WorkItem) error {
-	return withClaimLock(session.lockPath, claimLockOperationBacklogRelease, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(
-			filepath.Join(session.env.layout.SchedulerDir(), claimLedgerFileName),
-			localscheduler.WithInstanceLog(session.instanceLog),
-		)
-		if err != nil {
-			return fmt.Errorf("open claim ledger: %w", err)
-		}
-		if session.gaggle == "" {
-			return ledger.Release(item.ID, session.runID)
-		}
-		return ledger.ReleaseScoped(localscheduler.ClaimKey{
-			Gaggle:     session.gaggle,
-			Provider:   string(session.env.repo.Provider),
-			ExternalID: item.ID,
-		}, session.runID)
+func (session *backlogClaimSession) releaseLedger(ctx context.Context, item providers.WorkItem) error {
+	return session.ledger.Locked(ctx, claimLockOperationBacklogRelease, func(tx claimsclient.Ledger) error {
+		return tx.ReleaseScoped(ctx, session.claimKey(item), session.runID)
 	})
 }
 
@@ -1364,25 +1522,23 @@ func reportBacklogEligibility(
 	}
 }
 
-func runPlainBacklogQuery(env backlogQueryEnv, scan backlogEligibilityScan) int {
-	err := withClaimLock(scan.lockPath, claimLockOperationBacklogFilterBlocked, func() error {
-		var err error
-		scan.eligible, _, err = reconcileBlockedEligibilityLocked(
-			blockedRecordsPath(env.layout),
-			env.backlogRepo,
-			scan.eligible,
-			scan.observedRecords,
-			scan.remainingRecords,
-			scan.verifiedSkips,
-		)
-		return err
-	})
+func runPlainBacklogQuery(ctx context.Context, env backlogQueryEnv, scan backlogEligibilityScan) int {
+	filtered, _, err := reconcileBlockedEligibilityLocked(
+		ctx,
+		scan.state,
+		env.backlogRepo,
+		scan.eligible,
+		scan.observedRecords,
+		scan.remainingRecords,
+		scan.verifiedSkips,
+	)
 	if err != nil {
 		pf(env.stderr, "error: %v\n", err)
 		return 1
 	}
+	scan.eligible = filtered
 	if len(scan.eligible) == 0 {
-		if err := advanceBacklogScanCursor(scan.lockPath, scan.cursorPath, scan.cursor, scan.nextCursor); err != nil {
+		if err := advanceBacklogScanCursor(ctx, scan.state, scan.cursorKey, scan.cursor, scan.nextCursor); err != nil {
 			pf(env.stderr, "error: advance backlog scan cursor: %v\n", err)
 			return 1
 		}
@@ -1478,8 +1634,14 @@ type backlogScanOptions struct {
 }
 
 type backlogEligibilityScan struct {
-	eligible         []providers.WorkItem
-	lockPath         string
+	eligible []providers.WorkItem
+	lockPath string
+	// state is the scheduler-state store this scan reads and writes
+	// blocked.json and its scan cursor through: the instance's own files under
+	// claims.lock locally, the daemon's copy over the scheduler-state plane in
+	// a stage pod (#3878).
+	state            stateclient.Store
+	cursorKey        string
 	cursorPath       string
 	cursor           backlogScanCursor
 	nextCursor       backlogScanCursor
@@ -1498,14 +1660,20 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 		queryAssignee = opts.assignedTo
 	}
 	result.lockPath = filepath.Join(env.layout.SchedulerDir(), claimLockFileName)
-	result.cursorPath = backlogScanCursorPath(
-		env.layout.SchedulerDir(), env.backlogRepo, opts.trustLabel, opts.labelExpression, opts.fieldExpression,
+	result.cursorKey = backlogScanCursorKey(
+		env.backlogRepo, opts.trustLabel, opts.labelExpression, opts.fieldExpression,
 		opts.requireLabels, opts.excludeLabels, queryAssignee,
 	)
+	result.cursorPath = filepath.Join(env.layout.SchedulerDir(), result.cursorKey)
+	store, err := openStageStateStore(env.layout)
+	if err != nil {
+		pf(env.stderr, "error: open scheduler state: %v\n", err)
+		return result, 1
+	}
+	result.state = store
 	exhaustiveScan := opts.fieldOrder.Configured()
-	var err error
 	if !exhaustiveScan {
-		result.cursor, err = readBacklogScanCursor(result.lockPath, result.cursorPath)
+		result.cursor, err = readBacklogScanCursor(ctx, result.state, result.cursorKey)
 		if err != nil {
 			pf(env.stderr, "error: read backlog scan cursor: %v\n", err)
 			return result, 1
@@ -2041,8 +2209,13 @@ func parseWorkItemID(id string) (int64, bool) {
 	return n, err == nil
 }
 
-func backlogScanCursorPath(
-	schedulerDir string,
+// backlogScanCursorKey is the scheduler-state key holding the pagination
+// cursor for one distinct backlog scan shape. The name is a pure function of
+// the query — repository, trust label, predicates, assignee — so two
+// differently-scoped scans never share a cursor, and the SAME scan reaches the
+// same cursor whether it runs in the daemon's process or in a stage pod
+// talking to the scheduler-state plane.
+func backlogScanCursorKey(
 	repo providers.RepositoryRef,
 	trustLabel, labelExpression, fieldExpression string,
 	requireLabels, excludeLabels []string,
@@ -2074,55 +2247,63 @@ func backlogScanCursorPath(
 		Assignee:        queryAssignee,
 	})
 	sum := sha256.Sum256(key)
-	return filepath.Join(schedulerDir, fmt.Sprintf("backlog-scan-%x.json", sum))
+	return stateclient.ScanCursorKey(fmt.Sprintf("%x", sum))
 }
 
-func readBacklogScanCursor(lockPath, cursorPath string) (backlogScanCursor, error) {
-	cursor := backlogScanCursor{}
-	err := withClaimLock(lockPath, claimLockOperationBacklogScanCursor, func() error {
-		var err error
-		cursor, err = loadBacklogScanCursor(cursorPath)
-		return err
-	})
-	return cursor, err
-}
-
-func loadBacklogScanCursor(path string) (backlogScanCursor, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return backlogScanCursor{}, nil
-	}
+func readBacklogScanCursor(ctx context.Context, store stateclient.Store, key string) (backlogScanCursor, error) {
+	value, err := store.Get(ctx, key)
 	if err != nil {
 		return backlogScanCursor{}, err
 	}
+	return decodeBacklogScanCursor(value)
+}
+
+// decodeBacklogScanCursor is loadBacklogScanCursor over a scheduler-state
+// value: an absent key is the zero cursor (start of the backlog), exactly as a
+// missing file was.
+func decodeBacklogScanCursor(value stateclient.Value) (backlogScanCursor, error) {
+	if !value.Exists() {
+		return backlogScanCursor{}, nil
+	}
 	var cursor backlogScanCursor
-	if err := json.Unmarshal(data, &cursor); err != nil {
-		return backlogScanCursor{}, fmt.Errorf("decode %s: %w", path, err)
+	if err := json.Unmarshal(value.Data, &cursor); err != nil {
+		return backlogScanCursor{}, fmt.Errorf("decode %s: %w", stateclient.KeyBlockedRecords, err)
 	}
 	return cursor, nil
 }
 
+// advanceBacklogScanCursor moves the cursor from observed to next, and does
+// nothing if the stored cursor is no longer the one this scan observed —
+// another scanner already advanced it and this scan's "next" would rewind or
+// skip its progress.
+//
+// The observed-value check and the write are one read-modify-write: on the
+// file backend they are the claims.lock section this has always been, and on
+// the scheduler-state plane they are a compare-and-swap the daemon serves
+// under that same claims.lock. That is the point of #3878 — a pod-executed
+// `backlog-query --claim` and a runner-driven one advancing the same cursor
+// serialize against each other instead of each advancing a private copy.
 func advanceBacklogScanCursor(
-	lockPath, cursorPath string,
+	ctx context.Context,
+	store stateclient.Store,
+	key string,
 	observed, next backlogScanCursor,
 ) error {
-	return withClaimLock(lockPath, claimLockOperationBacklogScanCursor, func() error {
-		current, err := loadBacklogScanCursor(cursorPath)
-		if err != nil {
-			return err
-		}
-		if current != observed {
-			return nil
-		}
-		data, err := json.Marshal(next)
-		if err != nil {
-			return fmt.Errorf("marshal backlog scan cursor: %w", err)
-		}
-		if err := journal.WriteFileAtomic(cursorPath, data, 0o644); err != nil {
-			return fmt.Errorf("write backlog scan cursor: %w", err)
-		}
-		return nil
-	})
+	return store.Update(ctx, key, claimLockOperationBacklogScanCursor,
+		func(value stateclient.Value) ([]byte, bool, error) {
+			current, err := decodeBacklogScanCursor(value)
+			if err != nil {
+				return nil, false, err
+			}
+			if current != observed {
+				return nil, false, nil
+			}
+			data, err := json.Marshal(next)
+			if err != nil {
+				return nil, false, fmt.Errorf("marshal backlog scan cursor: %w", err)
+			}
+			return data, true, nil
+		})
 }
 
 func listBacklogScanWindow(
@@ -2215,15 +2396,18 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 		return 1
 	}
 
-	lockPath := filepath.Join(l.SchedulerDir(), claimLockFileName)
+	ledger, err := openStageClaimLedger(l)
+	if err != nil {
+		pf(stderr, "error: open claim ledger: %v\n", err)
+		return 1
+	}
 	var released []string
 	var providerErr error
-	err = withClaimLock(lockPath, claimLockOperationBacklogRelease, func() error {
-		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	err = ledger.Locked(claimContext(), claimLockOperationBacklogRelease, func(tx claimsclient.Ledger) error {
+		entries, lerr := tx.ForRunAll(claimContext(), runID)
 		if lerr != nil {
-			return fmt.Errorf("open claim ledger: %w", lerr)
+			return fmt.Errorf("read this run's claims: %w", lerr)
 		}
-		entries := ledger.ForRunAll(runID)
 		if len(entries) == 0 {
 			return nil
 		}
@@ -2259,7 +2443,7 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 				providerErr = fmt.Errorf("release provider claim marker for %s: %w", entry.ItemID, rerr)
 				return providerErr
 			}
-			if rerr := ledger.ReleaseEntry(entry, runID); rerr != nil {
+			if rerr := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID); rerr != nil {
 				return fmt.Errorf("release %s in ledger: %w", entry.ItemID, rerr)
 			}
 			released = append(released, entry.ItemID)

@@ -23,10 +23,12 @@ type fakeReader struct {
 	stats        readservice.TelemetryStatsResult
 	signatures   readservice.TelemetryErrorSignaturesResult
 	errors       readservice.TelemetryErrorsPage
+	outcomes     readservice.TelemetryImplementationOutcomesResult
 	telemetryErr error
 	statsReq     readservice.TelemetryStatsRequest
 	signatureReq readservice.TelemetryErrorSignaturesRequest
 	errorsReq    readservice.TelemetryErrorsRequest
+	outcomesReq  readservice.TelemetryImplementationOutcomesRequest
 	runs         readservice.RunList
 	run          readservice.RunDetail
 	events       readservice.EventList
@@ -85,6 +87,11 @@ func (f *fakeReader) TelemetryErrorSignatures(_ context.Context, req readservice
 func (f *fakeReader) TelemetryErrors(_ context.Context, req readservice.TelemetryErrorsRequest) (readservice.TelemetryErrorsPage, error) {
 	f.errorsReq = req
 	return f.errors, f.telemetryErr
+}
+
+func (f *fakeReader) TelemetryImplementationOutcomes(_ context.Context, req readservice.TelemetryImplementationOutcomesRequest) (readservice.TelemetryImplementationOutcomesResult, error) {
+	f.outcomesReq = req
+	return f.outcomes, f.telemetryErr
 }
 
 func (f *fakeReader) ListRuns(_ context.Context, options readservice.RunListOptions) (readservice.RunList, error) {
@@ -357,6 +364,7 @@ func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
 	}{
 		{name: "list", path: RunsPath + "?workflow=implementation&gaggle=goobers&stage=implement&outcome=terminal&population=measured&phase=running&trigger=item&since=2026-07-01T00:00:00Z&until=2026-07-08T00:00:00Z&limit=10&cursor=next"},
 		{name: "latest workflow outcomes", path: RunsPath + "?gaggle=goobers&latestPerWorkflow=true"},
+		{name: "order by activity", path: RunsPath + "?phase=escalated&since=2026-07-01T00:00:00Z&orderByActivity=true"},
 		{name: "detail", path: RunsPath + "/run-1"},
 		{name: "events", path: RunsPath + "/run-1/events"},
 		{name: "attempts", path: RunsPath + "/run-1/stages/implement/attempts"},
@@ -393,6 +401,14 @@ func TestRunDiagnosticRoutesUseSharedReadService(t *testing.T) {
 	if !reader.options.LatestPerWorkflow || reader.options.Gaggle != "goobers" {
 		t.Fatalf("latest workflow options = %+v", reader.options)
 	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, tests[2].path, nil))
+	if !reader.options.OrderByActivity || reader.options.Phase != "escalated" ||
+		!reader.options.Since.Equal(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("order by activity options = %+v", reader.options)
+	}
+
 	if reader.runID != "run-1" || reader.stage != "implement" {
 		t.Fatalf("path values = run %q, stage %q", reader.runID, reader.stage)
 	}
@@ -512,6 +528,15 @@ func TestAPIErrorsUseStructuredEnvelope(t *testing.T) {
 			reader:     &fakeReader{},
 			method:     http.MethodGet,
 			path:       RunsPath + "?latestPerWorkflow=sometimes",
+			authorizer: AllowAll,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_argument",
+		},
+		{
+			name:       "invalid order by activity flag",
+			reader:     &fakeReader{},
+			method:     http.MethodGet,
+			path:       RunsPath + "?orderByActivity=sometimes",
 			authorizer: AllowAll,
 			wantStatus: http.StatusBadRequest,
 			wantCode:   "invalid_argument",

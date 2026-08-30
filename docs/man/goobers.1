@@ -140,7 +140,7 @@ apply the recorded checked-in source to the runtime instance
 render the effective instance config (secrets redacted)
 .TP
 \fBgoobers doctor\fR
-preflight a Kubernetes cluster against the documented infra shape
+preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
 .TP
 \fBgoobers e2e\fR
 check the Goobernetes distributed e2e proof harness's assertions against a recorded run
@@ -153,6 +153,9 @@ verify the Goobernetes S1-S9 e2e proof harness against one completed run's recor
 .TP
 \fBgoobers engine-project\fR
 write a completed engine run's journal into the instance (experimental)
+.TP
+\fBgoobers engine-queues\fR
+report which workers poll this instance's engine and dispatch task queues (experimental)
 .TP
 \fBgoobers engine-start\fR
 dispatch one run onto the tier-3 engine via Temporal (experimental)
@@ -320,6 +323,9 @@ emit the docs-drift churn digest since the watermark (a connector stage)
 \fBgoobers elect-lander\fR
 elect the landing PR among a merge-review cohort (a workflow stage)
 .TP
+\fBgoobers file-issues\fR
+file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
+.TP
 \fBgoobers gate-removal-guard\fR
 block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
 .TP
@@ -364,6 +370,9 @@ post-merge fan-out + close the referenced issue (a workflow stage)
 .TP
 \fBgoobers pr-claim\fR
 check PR liveness or release its remediation claim (a workflow stage)
+.TP
+\fBgoobers pr-comment-watch\fR
+label open goober PRs carrying unaddressed human comments (a workflow stage)
 .TP
 \fBgoobers pr-select\fR
 select one managed or advisory open PR for merge-review (a workflow stage)
@@ -454,6 +463,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-e2e-verify\fR(1),
 \fBgoobers-elect-lander\fR(1),
 \fBgoobers-engine-project\fR(1),
+\fBgoobers-engine-queues\fR(1),
 \fBgoobers-engine-start\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),
@@ -462,6 +472,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-examples-show\fR(1),
 \fBgoobers-explain\fR(1),
 \fBgoobers-features\fR(1),
+\fBgoobers-file-issues\fR(1),
 \fBgoobers-fix\fR(1),
 \fBgoobers-gate-removal-guard\fR(1),
 \fBgoobers-gather-ci-failures\fR(1),
@@ -488,6 +499,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-override\fR(1),
 \fBgoobers-post-merge\fR(1),
 \fBgoobers-pr-claim\fR(1),
+\fBgoobers-pr-comment-watch\fR(1),
 \fBgoobers-pr-select\fR(1),
 \fBgoobers-preflight\fR(1),
 \fBgoobers-publish-batch\fR(1),

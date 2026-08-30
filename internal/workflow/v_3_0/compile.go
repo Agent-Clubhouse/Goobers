@@ -191,7 +191,9 @@ func blockingFeatureProblems(diagnostics []FeatureDiagnostic) []string {
 // (requiredCapabilities, run.network, gaggle sandbox — removedSurfaceProblems),
 // an os=* token anywhere in the document (CAP004, osTokenProblems), an
 // unknown restriction effect (CAP005, restrictionProblems), a malformed
-// runsOn block or a gaggle-vs-stage OS conflict (runsOnProblems), and an
+// runsOn block or a gaggle-vs-stage OS conflict (runsOnProblems), a runsOn
+// block on a non-agentic gate or an agentic gate runsOn without cpu and
+// memory (WF023, gateRunsOnProblems — decision 001), and an
 // undeclared or mis-covered repo-handoff chain (WF022, repoHandoffProblems —
 // which subsumes 2.0's #2861 cross-platform push-boundary rule: with every
 // chain declared, the unsafe transition it rejected cannot be written).
@@ -243,6 +245,7 @@ func Compile(def Definition, opts ...Option) (*Machine, error) {
 	problems = append(problems, runsOnProblems(def, o.gaggleRunsOn)...)
 	problems = append(problems, osTokenProblems(def, o.gaggleRunsOn)...)
 	problems = append(problems, restrictionProblems(def, o.gaggleRunsOn)...)
+	problems = append(problems, gateRunsOnProblems(def)...)
 	problems = append(problems, repoHandoffProblems(def)...)
 	problems = append(problems, gateVocabProblems(def)...)
 	problems = append(problems, gateParamProblems(def)...)

@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/providers"
 )
 
 // fakeStageDispatcher is a scripted StageDispatcher: it records every
@@ -83,8 +84,8 @@ func remoteEligible() []dispatcher.RunnerSpec {
 	}}
 }
 
-func dispatchInput(runID, stage string, attempt int) dispatchStageInput {
-	return dispatchStageInput{
+func dispatchInput(runID, stage string, attempt int) DispatchStageInput {
+	return DispatchStageInput{
 		Envelope: apiv1.InvocationEnvelope{
 			TaskID:     runID + ":" + stage,
 			WorkflowID: "wf",
@@ -310,7 +311,7 @@ func TestDispatchStageFailsClosed(t *testing.T) {
 	})
 }
 
-// #3699: the pod actually needs to know what to run. dispatchStageInput
+// #3699: the pod actually needs to know what to run. DispatchStageInput
 // carries the pinned DeterministicRun through to the activity, and
 // DispatchStage lands it on the dispatcher.Attempt the pod spec is rendered
 // from.
@@ -356,12 +357,12 @@ func TestDispatchStagePopulatesAttemptFromRun(t *testing.T) {
 // builtin command must never reach the dispatcher, because the in-pod
 // executor cannot honor any of them yet.
 func TestDispatchStageRefusesV1UnsupportedRun(t *testing.T) {
-	for name, mutate := range map[string]func(*dispatchStageInput){
+	for name, mutate := range map[string]func(*DispatchStageInput){
 		// repo and scratch are both provisioned in-pod now (pod-side checkout);
 		// what remains refused is a mode this substrate has never had, because
 		// running it as if it were scratch would hand the stage the wrong
 		// workspace silently.
-		"workspace mode the pod cannot provision": func(in *dispatchStageInput) {
+		"workspace mode the pod cannot provision": func(in *DispatchStageInput) {
 			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceMode("shared-nfs")}
 		},
 		// Narrow, measured replacement for the blanket goobers-CLI refusal:
@@ -369,7 +370,7 @@ func TestDispatchStageRefusesV1UnsupportedRun(t *testing.T) {
 		// definitions), which a stage pod does not have. Every other CLI stage
 		// this instance's workflows invoke reaches its repo and credential
 		// through the environment and now dispatches.
-		"goobers command reading the config dir": func(in *dispatchStageInput) {
+		"goobers command reading the config dir": func(in *DispatchStageInput) {
 			in.Run = &apiv1.DeterministicRun{Command: []string{"goobers", "telemetry-query"}, Workspace: apiv1.WorkspaceScratch}
 		},
 	} {
@@ -408,6 +409,7 @@ func TestModeThreeStageExecutesThroughDispatchActivity(t *testing.T) {
 	in.Placements = []PinnedPlacement{{
 		Stage: "build", Queue: dispatcher.QueueName("web", "win-ci"),
 		Eligible: remoteEligible(), Memory: "4Gi",
+		Capabilities: []string{"win-tools"},
 	}}
 
 	store := surrenderStore(t)
@@ -450,6 +452,12 @@ func TestModeThreeStageExecutesThroughDispatchActivity(t *testing.T) {
 	attempts, eligible := fake.recorded()
 	if attempts[0].Stage != "build" || len(eligible[0]) != 1 || eligible[0][0].Name != "win-ci" {
 		t.Fatalf("dispatch got attempt %+v eligible %+v, want the pinned placement data", attempts[0], eligible[0])
+	}
+	// The pinned runner-capability requirement reaches the attempt (#3619:
+	// the dispatcher reads the Windows admin privilege from it) — distinct
+	// from the envelope's credential Capabilities.
+	if got := attempts[0].RunsOnCapabilities; len(got) != 1 || got[0] != "win-tools" {
+		t.Fatalf("attempt.RunsOnCapabilities = %v, want the pinned placement's capabilities [win-tools]", got)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -553,6 +561,232 @@ func TestSelfAndAbsentPlacementsKeepLocalArms(t *testing.T) {
 				t.Fatalf("dispatcher calls = %d, want the seam never consulted", fake.calls.Load())
 			}
 		})
+	}
+}
+
+// Decision 003 ruling 3: a placed ledger-touching goobers-CLI stage —
+// backlog-query --claim, the shape every production backlog-curation lane
+// leads with — is refused BEFORE dispatch. The refusal carries the named
+// code in the run's failure (stage.finished's ErrorInfo.Code, surfaced here
+// as RunResult.FailureCode), and the dispatcher is never consulted: no
+// activity is executed, so no pod is ever created.
+func TestModeThreeRefusesInstanceRootStageBeforeDispatch(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "query-backlog",
+		Tasks: []apiv1.Task{
+			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "claim a backlog item",
+				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities:  []string{"github:issues:write"},
+				PolicyActions: []string{"claim-backlog-items"}},
+		},
+	}
+	in := runInput("mode-three-instance-root", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "query-backlog", Queue: dispatcher.QueueName("web", "linux-toolchain"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	// The dispatcher would happily succeed if reached — the point of the
+	// test is that it is never asked to.
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux-toolchain", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenderStore(t)})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v (the refusal must be a normal stage failure, not a workflow-level error)", err)
+	}
+	var result RunResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusFailed {
+		t.Fatalf("status = %q, want %q (ContinueOnError is unset on query-backlog)", result.Status, StatusFailed)
+	}
+	if result.FailureCode != executor.StageRequiresInstanceRootCode {
+		t.Fatalf("failure code = %q, want %q", result.FailureCode, executor.StageRequiresInstanceRootCode)
+	}
+	if !strings.Contains(result.FailureMessage, "backlog-query") {
+		t.Fatalf("failure message = %q, want it to name the refused command", result.FailureMessage)
+	}
+	if fake.calls.Load() != 0 {
+		t.Fatal("the dispatcher must never be called for a stage refused before dispatch — no pod may be created")
+	}
+}
+
+// The kind-based half of the same refusal: a placed
+// `inputs.kind: external-telemetry` stage has no pod-side execution path at
+// all (no CLI subcommand backs it, and its executor is constructed from the
+// instance's connector configuration, which a pod has no config directory to
+// read) and must be refused exactly like a ledger command, never dispatched
+// to find out.
+//
+// ci-poll was this test's subject until #3881 and deliberately is not any
+// more: it now HAS a pod-side path (cmd/goobers/dispatchcipoll.go), and
+// TestModeThreeDispatchesCIPollToAPod below is the ablation that pins the
+// removal. external-telemetry keeps the kind arm of the refusal honest.
+func TestModeThreeRefusesInstanceRootKindBeforeDispatch(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "await-ci",
+		Tasks: []apiv1.Task{
+			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "publish telemetry",
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "external-telemetry"}, Workspace: apiv1.WorkspaceScratch},
+				Inputs:       map[string]string{"kind": "external-telemetry"},
+				Capabilities: []string{"telemetry:read"}},
+		},
+	}
+	in := runInput("mode-three-instance-root-kind", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "await-ci", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenderStore(t)})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var result RunResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.FailureCode != executor.StageRequiresInstanceRootCode {
+		t.Fatalf("failure code = %q, want %q", result.FailureCode, executor.StageRequiresInstanceRootCode)
+	}
+	if !strings.Contains(result.FailureMessage, "external-telemetry") {
+		t.Fatalf("failure message = %q, want it to name the refused kind", result.FailureMessage)
+	}
+	if fake.calls.Load() != 0 {
+		t.Fatal("a kind=external-telemetry stage must never reach the dispatcher")
+	}
+}
+
+// TestModeThreeDispatchesCIPollToAPod is #3881's engine-side ablation and
+// the exact inverse of the test above: the SHIPPED ci-poll shape — the
+// implementation lane's await-ci stage, `command: [goobers, ci-poll]` with
+// `inputs.kind: ci-poll` and `capabilities: [provider:pr:write]` — placed on
+// a remote queue must now reach the dispatcher and be executed in the pod,
+// not refused before one is created.
+//
+// This is the whole point of decision 005 step C5: ci-poll was the last
+// gate-shaped stage in the implementation lane that pinned the run to the
+// daemon's own host, so with it dispatchable the lane can be placed entirely
+// off-self. If StageRequiresInstanceRoot ever re-adds ci-poll, this fails
+// while the refusal test above still passes, which is what makes the pair
+// meaningful.
+func TestModeThreeDispatchesCIPollToAPod(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "await-ci",
+		Tasks: []apiv1.Task{
+			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "await CI",
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}, Workspace: apiv1.WorkspaceScratch},
+				Inputs:       map[string]string{"kind": "ci-poll", "prNumber": "42"},
+				Capabilities: []string{"provider:pr:write"}},
+		},
+	}
+	in := runInput("mode-three-ci-poll-dispatches", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "await-ci", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "await-ci", 1, dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Outputs: map[string]interface{}{executor.OutputCIStatus: string(providers.CheckStatePassing), executor.OutputPRNumber: "42"},
+	}})
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var result RunResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.FailureCode == executor.StageRequiresInstanceRootCode {
+		t.Fatalf("ci-poll was refused before dispatch (%q: %s) — #3881 gives it an in-pod path", result.FailureCode, result.FailureMessage)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, want %q (failure: %s %s)", result.Status, StatusCompleted, result.FailureCode, result.FailureMessage)
+	}
+	if fake.calls.Load() != 1 {
+		t.Fatalf("dispatcher calls = %d, want 1 — a placed ci-poll stage must be dispatched to a pod", fake.calls.Load())
+	}
+}
+
+// TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch: the same
+// refusal when the kind is resolved DYNAMICALLY via inputsFrom rather than
+// declared statically in Task.Inputs — a supported shape
+// (internal/workflow/v_3_0/timeoutcoherence.go explicitly treats
+// task.InputsFrom[boundedwait.InputKind] as legal but unprovable
+// statically). The task's static Run.Command names an ordinary known
+// built-in (docs-churn) — a dynamic-only kind fails 3.0 compile's own
+// isShellStage check if the command isn't a known subcommand, since that
+// check does not special-case inputsFrom either — so this reproduces
+// exactly the shape decision 003 warns about: a stage that reads as an
+// ordinary shell command at admission time but resolves to a built-in kind
+// with no pod-side path at run time. dispatchRemoteTask must read the
+// resolved value out of env.Inputs (which runTask overlays from inputsFrom
+// before routing), not the task's static Inputs alone — otherwise a
+// dynamically-resolved external-telemetry kind sails past this
+// guard, a pod is created, and only the pod-entrypoint backstop catches it.
+func TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "resolve-kind",
+		Tasks: []apiv1.Task{
+			{Name: "resolve-kind", Type: apiv1.TaskDeterministic, Goal: "resolve the downstream stage's kind",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}},
+				Next: "await-ci"},
+			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "await CI",
+				Run:        &apiv1.DeterministicRun{Command: []string{"goobers", "docs-churn"}, Workspace: apiv1.WorkspaceScratch},
+				InputsFrom: map[string]string{"kind": "resolvedKind"}},
+		},
+	}
+	in := runInput("mode-three-instance-root-dynamic-kind", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "await-ci", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	det := &capturingDeterministic{result: apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Outputs: map[string]interface{}{"resolvedKind": "external-telemetry"},
+	}}
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Det: det, Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenderStore(t)})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var result RunResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.FailureCode != executor.StageRequiresInstanceRootCode {
+		t.Fatalf("failure code = %q, want %q (a kind resolved dynamically via inputsFrom must be refused exactly like a statically-declared one)", result.FailureCode, executor.StageRequiresInstanceRootCode)
+	}
+	if !strings.Contains(result.FailureMessage, "external-telemetry") {
+		t.Fatalf("failure message = %q, want it to name the dynamically-resolved kind", result.FailureMessage)
+	}
+	if fake.calls.Load() != 0 {
+		t.Fatal("a dynamically-resolved kind=external-telemetry stage must never reach the dispatcher")
 	}
 }
 
@@ -770,7 +1004,8 @@ func TestModeThreeDispatchesAgenticStageWithItsInvocation(t *testing.T) {
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
 		Start:    "agentic-edit",
 		Tasks: []apiv1.Task{
-			{Name: "agentic-edit", Type: apiv1.TaskAgentic, Goal: "edit the repo", Goober: "implementer"},
+			{Name: "agentic-edit", Type: apiv1.TaskAgentic, Goal: "edit the repo", Goober: "implementer",
+				Workspace: apiv1.WorkspaceRepoReadOnly},
 		},
 	}
 	in := runInput("mode-three-agentic", spec)
@@ -792,6 +1027,13 @@ func TestModeThreeDispatchesAgenticStageWithItsInvocation(t *testing.T) {
 		t.Fatal("no attempt recorded")
 	}
 	got := fake.attempts[0]
+	// An agentic task declares its workspace on the TASK — it has no
+	// DeterministicRun to carry one. Without this the pod stamps no workspace
+	// mode, its checkout no-ops, and the agent runs against an empty directory
+	// and truthfully reports the repo's files missing.
+	if got.Workspace != string(apiv1.WorkspaceRepoReadOnly) {
+		t.Fatalf("attempt workspace = %q, want the task-level %q", got.Workspace, apiv1.WorkspaceRepoReadOnly)
+	}
 	if !got.Agentic {
 		t.Fatal("attempt is not marked agentic; the dispatcher would publish no kit and the pod would find no instructions")
 	}
@@ -800,5 +1042,363 @@ func TestModeThreeDispatchesAgenticStageWithItsInvocation(t *testing.T) {
 	}
 	if got.Envelope.Goober == "" {
 		t.Fatalf("envelope names no goober: %+v", got.Envelope)
+	}
+	// A repo-backed workspace is useless without the repository to check out.
+	// Stamping the mode while withholding the identity is the failure this
+	// guards: the pod refused with "repo workspace requested but the dispatcher
+	// stamped no repository", because the stamp was gated on the stage having a
+	// DeterministicRun and an agentic task has none.
+	if got.RunContext[executor.RepoOwnerEnvVar] == "" || got.RunContext[executor.RepoNameEnvVar] == "" {
+		t.Fatalf("agentic repo workspace carries no repository for the checkout: %v", got.RunContext)
+	}
+	// The repo facts must NOT make it look like a CLI stage: that flag controls
+	// whether the run identity survives in the stage's own environment (#322).
+	if got.CLIStage {
+		t.Fatal("agentic stage marked as a goobers-CLI stage; run identity would leak into the stage environment")
+	}
+}
+
+// The engine must hand what one pod committed to the next one (#3763). On the
+// worker this needs no carrier: every attempt gets a worktree on the same run
+// branch in the same mirror clone. A pod is disposed after surrender, so
+// without this threading the second stage clones base and silently continues
+// from it — MEASURED on run e1cfcfe2, where the pod arm's observe stage
+// reported the PRE-COMMIT head and reported success.
+func TestModeThreeThreadsWorkspaceDeltaToTheNextStage(t *testing.T) {
+	const delta = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "commit",
+		Tasks: []apiv1.Task{
+			{Name: "commit", Type: apiv1.TaskDeterministic, Goal: "commit",
+				Run: &apiv1.DeterministicRun{Command: []string{"commit.sh"}, Workspace: apiv1.WorkspaceRepo}, Next: "consume"},
+			{Name: "consume", Type: apiv1.TaskDeterministic, Goal: "consume",
+				Run: &apiv1.DeterministicRun{Command: []string{"consume.sh"}, Workspace: apiv1.WorkspaceRepo}},
+		},
+	}
+	in := runInput("mode-three-delta", spec)
+	in.Placements = []PinnedPlacement{
+		{Stage: "commit", Queue: dispatcher.QueueName("web", "linux"), Eligible: remoteEligible(), Memory: "2Gi"},
+		{Stage: "consume", Queue: dispatcher.QueueName("web", "linux"), Eligible: remoteEligible(), Memory: "2Gi"},
+	}
+	surrenders := surrenderStore(t)
+	// The first stage surrenders a delta, exactly as a pod that committed does.
+	putSurrendered(t, surrenders, in.RunID, "commit", 1, dispatcher.SurrenderedResult{
+		Result:         apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+		WorkspaceDelta: delta,
+	})
+	putSurrendered(t, surrenders, in.RunID, "consume", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+
+	if len(fake.attempts) < 2 {
+		t.Fatalf("expected both stages to dispatch, got %d attempt(s)", len(fake.attempts))
+	}
+	// The FIRST stage has nothing to continue from — a delta here would mean
+	// the engine invented one.
+	if got := fake.attempts[0].WorkspaceDelta; got != "" {
+		t.Fatalf("first stage carried workspace delta %q; nothing precedes it", got)
+	}
+	// The SECOND stage must receive what the first surrendered.
+	if got := fake.attempts[1].WorkspaceDelta; got != delta {
+		t.Fatalf("second stage carried workspace delta %q, want %q — without it the pod clones base and silently drops the first stage's commits", got, delta)
+	}
+}
+
+// A read-only or scratch stage must never be handed a delta: applying one would
+// move a repo-readonly stage off the pinned base it exists to read, turning a
+// research stage into a consumer of unreviewed work.
+func TestModeThreeWithholdsWorkspaceDeltaFromReadOnlyStages(t *testing.T) {
+	const delta = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "commit",
+		Tasks: []apiv1.Task{
+			{Name: "commit", Type: apiv1.TaskDeterministic, Goal: "commit",
+				Run: &apiv1.DeterministicRun{Command: []string{"commit.sh"}, Workspace: apiv1.WorkspaceRepo}, Next: "read"},
+			{Name: "read", Type: apiv1.TaskDeterministic, Goal: "read",
+				Run: &apiv1.DeterministicRun{Command: []string{"read.sh"}, Workspace: apiv1.WorkspaceRepoReadOnly}},
+		},
+	}
+	in := runInput("mode-three-delta-readonly", spec)
+	in.Placements = []PinnedPlacement{
+		{Stage: "commit", Queue: dispatcher.QueueName("web", "linux"), Eligible: remoteEligible(), Memory: "2Gi"},
+		{Stage: "read", Queue: dispatcher.QueueName("web", "linux"), Eligible: remoteEligible(), Memory: "2Gi"},
+	}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "commit", 1, dispatcher.SurrenderedResult{
+		Result:         apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+		WorkspaceDelta: delta,
+	})
+	putSurrendered(t, surrenders, in.RunID, "read", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+
+	if len(fake.attempts) < 2 {
+		t.Fatalf("expected both stages to dispatch, got %d attempt(s)", len(fake.attempts))
+	}
+	if got := fake.attempts[1].WorkspaceDelta; got != "" {
+		t.Fatalf("a repo-readonly stage was handed workspace delta %q; it must read the pinned base", got)
+	}
+}
+
+// A stage needing a repo workspace must get a credential to CLONE it without
+// having to declare repository authority it does not otherwise need (#3770).
+//
+// MEASURED: open-pr declares provider:pr:write alone and could not run in a
+// pod at all — "could not read Username for 'https://github.com'" — because the
+// in-pod checkout authenticated with the stage's BUSINESS capabilities. The
+// worker never had this problem: it provisions worktrees with instance
+// credentials regardless of what the stage declares, so the same workflow
+// worked on self and failed on a pod.
+func TestModeThreeNamesACheckoutCapabilityForRepoWorkspaces(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "open-pr",
+		Tasks: []apiv1.Task{
+			// Exactly production open-pr's shape: provider authority, a repo
+			// workspace, and no repo-shaped capability.
+			{Name: "open-pr", Type: apiv1.TaskDeterministic, Goal: "open a pr",
+				Capabilities:  []string{"provider:pr:write"},
+				PolicyActions: []string{"open-or-update-pr"},
+				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "open-pr"}, Workspace: apiv1.WorkspaceRepo}},
+		},
+	}
+	in := runInput("mode-three-checkout-cap", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "open-pr", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "2Gi",
+	}}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "open-pr", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+
+	if len(fake.attempts) == 0 {
+		t.Fatalf("no attempt recorded; workflow error = %v", env.GetWorkflowError())
+	}
+	got := fake.attempts[0]
+	if got.CheckoutCapability == "" {
+		t.Fatal("no checkout capability named for a repo workspace; the pod would clone anonymously and fail on a private repository")
+	}
+	// It must NOT have been folded into the stage's own capabilities: those are
+	// exported to the stage's environment as GOOBERS_CRED_*, so widening them
+	// would hand a push token to a stage that never asked for one.
+	for _, c := range got.Capabilities {
+		if strings.Contains(strings.ToLower(c), "repo") {
+			t.Fatalf("checkout capability leaked into the stage's declared capabilities (%v); those reach the stage environment", got.Capabilities)
+		}
+	}
+}
+
+// A stage that ALREADY declares repository access needs no second credential —
+// the checkout uses the one it has.
+func TestModeThreeSkipsCheckoutCapabilityWhenTheStageHasRepoAccess(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "push",
+		Tasks: []apiv1.Task{
+			{Name: "push", Type: apiv1.TaskDeterministic, Goal: "push",
+				Capabilities: []string{"repo:push"},
+				// A plain command: what is under test is that a declared repo
+				// capability suppresses the separate checkout mint, not how a
+				// goobers-CLI stage dispatches.
+				Run: &apiv1.DeterministicRun{Command: []string{"build.sh"}, Workspace: apiv1.WorkspaceRepo}},
+		},
+	}
+	in := runInput("mode-three-checkout-cap-skip", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "push", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "2Gi",
+	}}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "push", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+
+	if len(fake.attempts) == 0 {
+		t.Fatal("no attempt recorded")
+	}
+	if got := fake.attempts[0].CheckoutCapability; got != "" {
+		t.Fatalf("named checkout capability %q for a stage that already declares repo:push; the checkout uses the one it has", got)
+	}
+}
+
+// A scratch workspace clones nothing and must never be handed a credential.
+func TestModeThreeNamesNoCheckoutCapabilityForScratch(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerBacklogItem}},
+		Start:    "probe",
+		Tasks: []apiv1.Task{
+			{Name: "probe", Type: apiv1.TaskDeterministic, Goal: "probe",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch}},
+		},
+	}
+	in := runInput("mode-three-checkout-cap-scratch", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "probe", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "probe", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+
+	if len(fake.attempts) == 0 {
+		t.Fatal("no attempt recorded")
+	}
+	if got := fake.attempts[0].CheckoutCapability; got != "" {
+		t.Fatalf("named checkout capability %q for a scratch workspace, which clones nothing", got)
+	}
+}
+
+// TestStagePlacementAccompaniesSettledAttemptsOnly pins the contract
+// StagePlacement's doc now states, because that doc is what the step-6 runner
+// will code against and a comment cannot fail.
+//
+// Two halves, and the second is the one that was previously mis-documented:
+//
+//   - a SETTLED attempt (success, or ErrStageFailed with surrender confirmed)
+//     carries provenance with ALL FIVE fields populated — so a caller may read
+//     Pod/Image/PodStartedAt without a nil-ish branch;
+//   - an attempt refused BEFORE its pod existed carries none at all, even
+//     though the dispatcher's report already names the runner and the image.
+//     DispatchStage discards that report. The evidence that survives is the
+//     classified error's text, so the runner and the skew subject are asserted
+//     there instead — that is what §11 acceptance 6 has to be journalled from
+//     for a refused placement.
+func TestStagePlacementAccompaniesSettledAttemptsOnly(t *testing.T) {
+	settled := func(t *testing.T, dispatchErr error, phase corev1.PodPhase) *StagePlacement {
+		t.Helper()
+		store := surrenderStore(t)
+		queuedAt := time.Date(2026, 8, 29, 9, 0, 0, 0, time.UTC)
+		fake := &fakeStageDispatcher{
+			report: dispatcher.Report{
+				Runner: "win-ci", Pod: "goobers-run-settled-build-1", Image: "ghcr.io/example/win:v1",
+				Phase: phase, SurrenderConfirmed: true, Disposed: true,
+				QueuedAt: queuedAt, PodStartedAt: queuedAt.Add(11 * time.Second),
+			},
+			err: dispatchErr,
+		}
+		putSurrendered(t, store, "run-settled", "build", 1, dispatcher.SurrenderedResult{
+			Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess, Summary: "settled"},
+		})
+		a := &Activities{Dispatcher: fake, Surrenders: store}
+		result, err := a.DispatchStage(context.Background(), dispatchInput("run-settled", "build", 1))
+		if err != nil {
+			t.Fatalf("DispatchStage on a settled attempt: %v", err)
+		}
+		if result.Placement == nil {
+			t.Fatal("settled attempt returned no placement provenance")
+		}
+		return result.Placement
+	}
+
+	for _, tc := range []struct {
+		name        string
+		dispatchErr error
+		phase       corev1.PodPhase
+	}{
+		{name: "success", phase: corev1.PodSucceeded},
+		{name: "stage failed with surrender confirmed", phase: corev1.PodFailed,
+			dispatchErr: fmt.Errorf("%w (run run-settled stage build attempt 1, pod p)", dispatcher.ErrStageFailed)},
+	} {
+		t.Run("settled: "+tc.name+" populates every field", func(t *testing.T) {
+			got := settled(t, tc.dispatchErr, tc.phase)
+			// Field by field rather than a DeepEqual against a want: the
+			// claim under test is "no field is ever zero", and a struct
+			// comparison would still pass if the contract later grew a
+			// sixth field nobody populated.
+			if got.Runner == "" || got.Pod == "" || got.Image == "" ||
+				got.QueuedAt.IsZero() || got.PodStartedAt.IsZero() {
+				t.Fatalf("placement = %+v; a settled attempt must populate runner, pod, image, queuedAt and podStartedAt — "+
+					"StagePlacement's doc tells the driver it may read all five without a partial-block branch", got)
+			}
+		})
+	}
+
+	// The three refusals §11 acceptance 6 most wants journalled, each raised
+	// where Dispatch raises it: before CreatePod, with a report that already
+	// carries Runner (and, for skew, the image).
+	for _, tc := range []struct {
+		name        string
+		err         error
+		report      dispatcher.Report
+		wantInError []string
+	}{
+		{
+			name:        "capacity wait",
+			err:         fmt.Errorf("dispatcher: capacity wait for runner %q timed out", "win-ci"),
+			report:      dispatcher.Report{Runner: "win-ci", QueuedAt: time.Now().UTC()},
+			wantInError: []string{"win-ci"},
+		},
+		{
+			name:        "decision-009 skew refusal",
+			err:         &dispatcher.SkewError{Image: "ghcr.io/example/win:v1", Reason: "tag is not this dispatcher's commit"},
+			report:      dispatcher.Report{Runner: "win-ci", QueuedAt: time.Now().UTC()},
+			wantInError: []string{"ghcr.io/example/win:v1"},
+		},
+		{
+			name:        "agentic kit publish",
+			err:         fmt.Errorf("dispatcher: publish agentic kit for run run-refused stage build attempt 1: blob plane unavailable"),
+			report:      dispatcher.Report{},
+			wantInError: []string{"publish agentic kit"},
+		},
+	} {
+		t.Run("refused before the pod existed: "+tc.name, func(t *testing.T) {
+			fake := &fakeStageDispatcher{report: tc.report, err: tc.err}
+			a := &Activities{Dispatcher: fake, Surrenders: surrenderStore(t)}
+			result, err := a.DispatchStage(context.Background(), dispatchInput("run-refused", "build", 1))
+			if err == nil {
+				t.Fatal("DispatchStage returned no error for a refused placement")
+			}
+			if result.Placement != nil {
+				t.Fatalf("placement = %+v, want nil: DispatchStage discards the report on an unsettled "+
+					"dispatcher error, so provenance cannot accompany a refusal", result.Placement)
+			}
+			// Not a gap left silent: the runner (and the skew subject) reach
+			// the driver in the classified error's message, which is the
+			// evidence a refused placement is journalled from.
+			for _, want := range tc.wantInError {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("classified error %q does not name %q; a refused placement's only provenance is this text", err, want)
+				}
+			}
+		})
 	}
 }

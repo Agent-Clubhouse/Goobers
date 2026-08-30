@@ -347,11 +347,15 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	// Static reality cross-checks (2026-08-08 cold-start audit; dsl-3.0.md §5
 	// checkpoint 1): the per-stage placement solve against the resolved
 	// runner inventory (RNR001/RNR003 — ERROR when a runners: inventory is
-	// declared, the #3497 fix; RNR004 always advisory), a
-	// requiredCapabilities token no runner claims (CAP003, 2.0 documents on
-	// inventory-less instances), an unenforceable maxOpenPRs cap (PRCAP001),
-	// and an automated gate completion branch a failed stage can never
-	// complete through (WF018). Warnings append to the report like the
+	// declared, the #3497 fix; RNR004 always advisory), a stage whose
+	// declared runsOn.restrictions guarantees it resolves off the daemon's
+	// own host but whose command or kind needs the daemon's instance root
+	// (RNR005, always advisory — decision 003 ruling 3; the enforcement is
+	// at dispatch), a requiredCapabilities token no runner claims (CAP003,
+	// 2.0 documents on inventory-less instances), an unenforceable
+	// maxOpenPRs cap (PRCAP001), and an automated gate completion branch a
+	// failed stage can never complete through (WF018). Warnings append to
+	// the report like the
 	// harness/skill warnings above (--strict and the JSON report treat them
 	// as ordinary config warnings); error-severity placement findings fail
 	// validation below. --source-tree solves against instance.yaml.example
@@ -420,9 +424,21 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	}
 
 	if options.checkHarness {
+		harnessStores, err := secretstore.NewRegistry(cfg.SecretStores)
+		if err != nil {
+			pf(stdout, "INVALID secretStores:\n  %v\n", err)
+			diagnostics.add(diagnosticFile(root, configFile), "/secretStores", "INSTANCE002", string(validate.Error), err.Error())
+			return 1
+		}
+		modelCredential, err := agentModelCredentialResolver(cfg, harnessStores)
+		if err != nil {
+			pf(stdout, "INVALID credentials:\n  %v\n", err)
+			diagnostics.add(diagnosticFile(root, configFile), "/credentials", "INSTANCE003", string(validate.Error), err.Error())
+			return 1
+		}
 		if !checkHarnessesAtSources(set.Goobers, stdout, stderr, func(goober apiv1.Goober) string {
 			return gooberDiagnosticFile(root, configDir, set, goober.Name)
-		}, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, diagnostics) {
+		}, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, modelCredential, diagnostics) {
 			return 1
 		}
 	}
@@ -445,17 +461,20 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		checkRepositoryReality(root, configDir, cfg, set, stores, stdout, diagnostics)
 	}
 	printDSLVersionSummary(stdout, set.Workflows)
-	// Deprecation notices (DVL020) are strict-neutral by ruling: a deprecated
-	// dslVersion stays fully supported, so nudging users to migrate must never
-	// turn an existing green pipeline red. They print and land in diagnostics
-	// but are excluded from --strict's promotion.
-	deprecationCount := 0
+	// Two codes are strict-neutral by ruling: they print and land in
+	// diagnostics but are excluded from --strict's promotion. Both are
+	// nudges about something fully supported, and both would otherwise turn
+	// an existing green pipeline red purely on upgrade. See each code's own
+	// doc comment in api/validate for the full reasoning — RNR006's second
+	// reason (only `true` silences it, so promotion would coerce an
+	// unearned trusted claim) is the load-bearing one.
+	strictNeutral := 0
 	for _, w := range report.Warnings() {
-		if w.Code == validate.WarningDeprecatedDSLVersion {
-			deprecationCount++
+		if isStrictNeutralWarning(w.Code) {
+			strictNeutral++
 		}
 	}
-	warningCount := len(report.Warnings()) - deprecationCount + len(placeholderFindings)
+	warningCount := len(report.Warnings()) - strictNeutral + len(placeholderFindings)
 	if options.strict && warningCount > 0 {
 		pf(stdout, "\nconfiguration has %d warning(s); --strict treats warnings as errors\n", warningCount)
 		return 1
@@ -464,6 +483,20 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 	pf(stdout, "OK: instance.yaml valid; config/ valid (%d gaggle(s), %d goober(s), %d workflow(s))\n",
 		len(set.Gaggles), len(set.Goobers), len(set.Workflows))
 	return 0
+}
+
+// isStrictNeutralWarning reports whether code is one of the warnings
+// `--strict` deliberately does not promote to an error. Keep this list
+// short and each entry justified at its own declaration: the default for a
+// config-shape finding is to count (DI-10), and a code that opts out is
+// saying its nudge must never be able to break a green pipeline.
+func isStrictNeutralWarning(code validate.WarningCode) bool {
+	switch code {
+	case validate.WarningDeprecatedDSLVersion, validate.RunnerAVExclusionsUnverified:
+		return true
+	default:
+		return false
+	}
 }
 
 type placeholderFinding struct {
@@ -1149,6 +1182,20 @@ func repoUsesToken(repo instance.RepoRef) bool {
 	return repo.Provider != "ado" || repo.Auth == nil || repo.Auth.Kind == instance.ADOAuthPAT
 }
 
+// giteaPreflightRootURL normalizes a Gitea repo's configured baseUrl into the
+// forge ROOT that git clone/ls-remote URLs hang off, applying the same
+// trailing-slash and "/api/v1" trimming NewGiteaProvider does when it derives
+// RootURL. An operator who (reasonably) writes the API endpoint as baseUrl
+// would otherwise get an ls-remote against <host>/api/v1/<owner>/<repo>.git and
+// a misleading "unreachable" diagnosis.
+func giteaPreflightRootURL(repo instance.RepoRef) (string, error) {
+	trimmed := strings.TrimRight(strings.TrimSpace(repo.BaseURL), "/")
+	if trimmed == "" {
+		return "", fmt.Errorf("gitea repo %s/%s has no baseUrl configured", repo.Owner, repo.Name)
+	}
+	return strings.TrimSuffix(trimmed, "/api/v1"), nil
+}
+
 func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token string, stores credentials.StoreResolver) error {
 	if repo.Provider == "ado" {
 		provider, err := adoauth.Provider(repo, nil, nil, nil, nil, stores)
@@ -1162,16 +1209,40 @@ func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token st
 			Name:     repo.Name,
 		})
 	}
-	if repo.Provider != "github" {
+	var url string
+	var env []string
+	switch repo.Provider {
+	case "gitea":
+		// Preflight the SAME endpoint and credential shape a real run uses:
+		// the clone URL derived from the configured forge root, authenticated
+		// by providers.GiteaGitAuthEnvironment. Gitea sends the token as the
+		// basic-auth USERNAME with an empty password, whereas gitAuthEnv (the
+		// GitHub arm below) sends "x-access-token:<token>" — so reusing the
+		// GitHub helper here would fail auth against a perfectly healthy
+		// forge and report the repo unreachable.
+		//
+		// Without this arm the preflight refused outright ("provider %q does
+		// not support repository preflight"), so `goobers validate
+		// --check-repos` failed REPO001 on every Gitea instance even though
+		// the repo was reachable and every other check passed.
+		root, err := giteaPreflightRootURL(repo)
+		if err != nil {
+			return err
+		}
+		url = fmt.Sprintf("%s/%s/%s.git", root, repo.Owner, repo.Name)
+		env = providers.GiteaGitAuthEnvironment(token, url, nil)
+	case "github":
+		url = fmt.Sprintf("https://github.com/%s/%s.git", repo.Owner, repo.Name)
+		env = append(gitAuthEnv(token), "GIT_TERMINAL_PROMPT=0")
+	default:
 		return fmt.Errorf("provider %q does not support repository preflight", repo.Provider)
 	}
-	url := fmt.Sprintf("https://github.com/%s/%s.git", repo.Owner, repo.Name)
 	cmd := exec.Command("git",
 		"-c", "credential.helper=",
 		"-c", "credential.interactive=never",
 		"ls-remote", url,
 	)
-	cmd.Env = append(gitAuthEnv(token), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = env
 
 	var output bytes.Buffer
 	cmd.Stdout = &output
@@ -1232,6 +1303,7 @@ func checkHarnessesAtSources(
 	sourceFile func(apiv1.Goober) string,
 	envPassthrough []string,
 	harnessCommand map[string][]string,
+	modelCredential func(ctx context.Context) (string, error),
 	collectors ...*diagnosticCollector,
 ) bool {
 	seen := map[apiv1.Harness]bool{}
@@ -1247,7 +1319,7 @@ func checkHarnessesAtSources(
 			file = sourceFile(g)
 		}
 
-		adapter, err := harnessAdapterFor(h, envPassthrough, harnessCommand)
+		adapter, err := harnessAdapterFor(h, envPassthrough, harnessCommand, modelCredential)
 		if err != nil {
 			pf(stdout, "HARNESS %s: %v\n", h, err)
 			addDiagnostic(collectors, file, "/spec/harness", "HARNESS001", string(validate.Error), err.Error())
@@ -1288,8 +1360,8 @@ func addDiagnostic(collectors []*diagnosticCollector, file, path, code, severity
 // presence (#238). Both look the harness up through here, so wiring the probe
 // once here is what closes #238's "catch a signed-out harness at startup, not
 // mid-run" criterion.
-func adapterFor(h apiv1.Harness, envPassthrough []string, harnessCommand map[string][]string) (harness.Adapter, error) {
-	registry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", false)
+func adapterFor(h apiv1.Harness, envPassthrough []string, harnessCommand map[string][]string, modelCredential func(ctx context.Context) (string, error)) (harness.Adapter, error) {
+	registry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", false, modelCredential)
 	if err != nil {
 		return nil, err
 	}

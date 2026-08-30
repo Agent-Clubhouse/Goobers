@@ -58,7 +58,6 @@ github.com/goobers/goobers/internal/workflow/v_next.CheckGaggleFeatureSupport # 
 github.com/goobers/goobers/internal/workflow/v_next.LookupFeature # Next-interpreter feature lookup retained as part of the independently versioned interpreter API.
 github.com/goobers/goobers/providers.WithADOMaxRateLimitRetries # Public ADO retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithRateLimitMaxWait # Public provider tuning option retained for external callers with stage-specific time budgets.
-github.com/goobers/goobers/providers.WithGiteaTokenSource # Public Gitea per-request token-source option retained for the credentialed construction path and external provider consumers; mirrors the ADO credential-source option and is exercised by provider tests.
 github.com/goobers/goobers/providers.WithGiteaSecretRegistrar # Public Gitea secret-registrar option retained for external provider consumers; mirrors WithADOSecretRegistrar.
 github.com/goobers/goobers/providers.WithGiteaHTTPClient # Public Gitea HTTP-client injection option retained for external provider consumers and custom transports.
 github.com/goobers/goobers/providers.WithGiteaMaxRateLimitRetries # Public Gitea retry option retained for external provider consumers; mirrors WithADOMaxRateLimitRetries.
@@ -148,11 +147,10 @@ github.com/goobers/goobers/internal/engine.NewScheduleReconciler # Temporal sche
 github.com/goobers/goobers/internal/engine.ScheduleReconciler.Reconcile # Temporal schedule reconciliation entrypoint (#635) retained for quarantined tier 3, exercised by schedule integration tests.
 github.com/goobers/goobers/internal/engine.ScheduleReconciler.reconcileDurably # Durable Temporal schedule reconciliation helper (#635) reachable through the quarantined tier-3 entrypoint.
 github.com/goobers/goobers/internal/engine.ScheduleClaimID # Deterministic Temporal schedule-fire claim helper (#635) retained for tier-3 diagnostics and integration assertions.
-github.com/goobers/goobers/internal/engine.WithSpanSource # Span-adoption seam (#2907) shipped ahead of its caller: no process wires a fleet blob store into the projection driver yet, so only projection tests configure a SpanSource today. Exercised by spanprojection_test.go; goes stale when a production caller (e.g. cmd/goobers's projection driver) lands.
 github.com/goobers/goobers/internal/harness.Registry.Register # Harness extension registry retained for additional adapters.
 github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch conformance projection retained for the tier-3 harness; seq is not comparable across branches.
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
-github.com/goobers/goobers/internal/journal.SetLockTimeoutForTest # Lock-timeout test seam used only from cmd/goobers's live-daemon abort-delegation tests (#2270).
+github.com/goobers/goobers/internal/journal.SetLockTimeoutForTest # Lock-timeout test seam used only from _test.go files: cmd/goobers's live-daemon abort-delegation tests (#2270) and the journal-plane adoption tests that shrink the 30s bound instead of waiting it out (#3828).
 github.com/goobers/goobers/internal/localscheduler.ActiveRunCounts # Scheduler readiness helper retained for alternate trigger integrations.
 github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration.
 github.com/goobers/goobers/internal/platform/shutdown.Notifier.Reason # Shutdown reason accessor retained for service and diagnostics integrations.
@@ -210,20 +208,49 @@ github.com/goobers/goobers/internal/httpapi.requireIfMatch # Concurrent-edit det
 github.com/goobers/goobers/internal/httpapi.normaliseETag # ETag comparison on the digest rather than the formatting (#1934).
 github.com/goobers/goobers/internal/httpapi.definitionETag # Renders a definition digest as an ETag (#1934).
 github.com/goobers/goobers/internal/httpapi.admissionController.inFlight # Per-class occupancy for diagnostics (#1926); its tests are _test.go, which this gate does not count.
+
+# FakeAdapter is the shared harness test double, promoted to a non-test file so
+# tests in other packages (cmd/goobers) can import it (#2886). Only *_test.go
+# reference it and its helpers, which this gate does not count.
+github.com/goobers/goobers/internal/harness.FakeAdapter.Name # shared harness test double (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/harness.FakeAdapter.Preflight # shared harness test double (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/harness.FakeAdapter.Run # shared harness test double (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/harness.FakeAdapter.RunNested # shared harness test double (#2886, nested-agent support #3547); only _test.go callers.
+github.com/goobers/goobers/internal/harness.FakeAdapter.ValidateNestedAgentPolicy # shared harness test double (#2886, nested-agent support #3547); only _test.go callers.
+github.com/goobers/goobers/internal/harness.FakeAdapter.run # shared harness test double's private Run/RunNested helper (#2886, nested-agent support #3547); only _test.go callers.
+github.com/goobers/goobers/internal/harness.WriteCompletion # shared harness completion-file test helper (#2886); only _test.go callers.
+
+# testdep is a cross-package test-dependency guard (skips a test when a required
+# CLI/env is absent); it must be an importable package rather than a _test.go
+# helper so other packages' tests can call it (#2886). Only *_test.go reference it.
+github.com/goobers/goobers/internal/testdep.Dependencies # cross-package test-dep guard (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/testdep.Require # cross-package test-dep guard (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/testdep.RequireEnv # cross-package test-dep guard (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/testdep.require # cross-package test-dep guard (#2886); only _test.go callers.
+
 github.com/goobers/goobers/internal/temporaltest.StartDevServer # Dev-server acquisition seam used only from engine/bootstrap _test.go files (#3393).
 github.com/goobers/goobers/internal/temporaltest.resolveDevServerAcquisition # Offline-vs-download resolution helper for the test-only dev-server seam (#3393).
-github.com/goobers/goobers/internal/livejournal.WithSpanSource # Live-journal span-adoption seam; production wiring lands with the mode-3 dispatcher's blobstore integration (#3513).
 github.com/goobers/goobers/internal/livejournal.WithScrubber # Live-journal writer option exercised by tests; production path uses the default scrubber until #3513 wires per-run scrubbers.
 github.com/goobers/goobers/internal/livejournal.WithClock # Live-journal writer clock option exercised by tests (idle-close determinism).
 
 # Goobernetes dispatcher (#3513): the engine-side substrate is production-wired by the
 # #3588 mode-3 cutover (goobers worker --dispatch-namespace binds the dispatch queues and
-# serves DispatchStage). What remains exempt is the POD-side surface — the network blob
-# client, the stage-credential resolve, and the egress-probe acceptance tooling — whose
-# callers are the in-pod stage runtime (image contract,
-# docs/design/goobernetes-deployment-images.md) and the v1 exit smoke (#3517).
-github.com/goobers/goobers/internal/dispatcher.BlobClient.Has # Unused: Get and Put became reachable when agentic kit delivery landed, Has and Describe did not. Has is the HEAD probe a caller would use to skip a large Get; no caller skips one yet.
-github.com/goobers/goobers/internal/dispatcher.BlobClient.Describe # Unused: diagnostic string for the blob endpoint; nothing formats it today.
+# serves DispatchStage). What remains exempt is the POD-side surface — the stage-credential
+# resolve and the egress-probe acceptance tooling — whose callers are the in-pod stage
+# runtime (image contract, docs/design/goobernetes-deployment-images.md) and the v1 exit
+# smoke (#3517).
+#
+# BlobClient is no longer on that list. #3823 wired the pod's context-materialization path
+# (cmd/goobers/dispatchcontext.go), which calls BlobClient.Describe directly for the
+# blob-plane diagnostic and hands the client to workerhost.MaterializeContext as a
+# blobstore.Store — an interface that declares Has. Both methods are reachable from
+# production now, so exempting them would be a stale entry and test/deadcode rejects it.
+#
+# #3805 removed the same two entries independently, on a WEAKER footing — the pod span
+# recorder then carried a *dispatcher.BlobClient field, which only put the type in the
+# analyzer's runtime-type set. That field is gone (spans now ride #3823's one
+# write-through), and this reachability does not depend on it: dispatchcontext.go's
+# Describe call is a direct, named production caller.
 github.com/goobers/goobers/internal/dispatcher.EgressTriple.Verdict # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).
 github.com/goobers/goobers/internal/dispatcher.ProbeOutcome.String # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).
 github.com/goobers/goobers/internal/dispatcher.ProbeTCP # Pod-side surface, test-exercised; the caller is the in-pod stage runtime / #3517 smoke, not the engine (#3588 wired the engine side).

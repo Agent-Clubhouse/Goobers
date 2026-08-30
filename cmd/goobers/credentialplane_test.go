@@ -367,17 +367,36 @@ func TestCredentialPlaneResolvesGateReviewerScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve gate: %v", err)
 	}
-	if len(response.Credentials) != 1 || response.Credentials[0].Capability != "github:issues:write" {
-		t.Fatalf("gate credentials = %+v, want exactly issues:write", response.Credentials)
+	// The reviewer's own grant is exactly issues:write. repo:push rides beside
+	// it as the IMPLICIT checkout key (decision 001 rulings 7–8): a reviewer
+	// evaluated in a pod clones the repository with it, exactly as a task
+	// with a repo workspace does (#3770/#3773), and the plane appends every
+	// implicit key to the response as it always has for MCP BYO keys. It is
+	// not the implement stage's grant leaking: gateCredentialCapabilities
+	// below proves the declared set.
+	if got := gateCredentialCapabilities(response); len(got) != 2 || !got["github:issues:write"] || !got["repo:push"] {
+		t.Fatalf("gate credentials = %+v, want exactly issues:write plus the implicit checkout key repo:push", response.Credentials)
 	}
 
+	// The gate must still refuse anything the reviewer neither declared nor
+	// needs for its checkout.
 	_, err = service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
-		RunID: runID, Stage: "review", Capabilities: []string{"repo:push"},
+		RunID: runID, Stage: "review", Capabilities: []string{"provider:admin"},
 	})
 	planeErr := planeErrorOf(t, err)
 	if planeErr.Status != http.StatusForbidden || planeErr.Code != "capability_undeclared" {
-		t.Fatalf("reviewer repo:push refusal = %d %s, want 403 capability_undeclared", planeErr.Status, planeErr.Code)
+		t.Fatalf("reviewer provider:admin refusal = %d %s, want 403 capability_undeclared", planeErr.Status, planeErr.Code)
 	}
+}
+
+// gateCredentialCapabilities is the set of capability names a resolve
+// answered with.
+func gateCredentialCapabilities(response httpapi.CredentialResolveResponse) map[string]bool {
+	got := make(map[string]bool, len(response.Credentials))
+	for _, credential := range response.Credentials {
+		got[credential.Capability] = true
+	}
+	return got
 }
 
 // TestCredentialPlaneGateReviewerCapabilitiesComeFromTheRunPin is the PR
@@ -395,7 +414,7 @@ func TestCredentialPlaneGateReviewerCapabilitiesComeFromTheRunPin(t *testing.T) 
 	// to repo:push and the live snapshot swapped, exactly as a config reload
 	// does.
 	widened := credentialPlaneGoobers()
-	widened["reviewer"] = apiv1.GooberSpec{Gaggle: "web", Capabilities: []string{"github:issues:write", "repo:push"}}
+	widened["reviewer"] = apiv1.GooberSpec{Gaggle: "web", Capabilities: []string{"github:issues:write", "provider:admin"}}
 	service.Replace(credentialPlaneDefinitions{
 		Scopes:  map[string]credentialGaggleScope{"web": {Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}}},
 		Goobers: widened,
@@ -409,33 +428,35 @@ func TestCredentialPlaneGateReviewerCapabilitiesComeFromTheRunPin(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Resolve gate on the pinned run: %v", err)
 	}
-	if len(response.Credentials) != 1 || response.Credentials[0].Capability != "github:issues:write" {
-		t.Fatalf("pinned-run gate credentials = %+v, want exactly the pinned issues:write", response.Credentials)
+	// (repo:push is the implicit checkout key, present on every reviewer
+	// resolve — see TestCredentialPlaneResolvesGateReviewerScope — so the
+	// widening is probed with a capability the checkout does not need.)
+	if got := gateCredentialCapabilities(response); len(got) != 2 || !got["github:issues:write"] || !got["repo:push"] {
+		t.Fatalf("pinned-run gate credentials = %+v, want exactly the pinned issues:write plus the implicit checkout key", response.Credentials)
 	}
 	_, err = service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
-		RunID: runID, Stage: "review", Capabilities: []string{"repo:push"},
+		RunID: runID, Stage: "review", Capabilities: []string{"provider:admin"},
 	})
 	planeErr := planeErrorOf(t, err)
 	if planeErr.Status != http.StatusForbidden || planeErr.Code != "capability_undeclared" {
-		t.Fatalf("widened-live-config repo:push on the pinned run = %d %s, want 403 capability_undeclared", planeErr.Status, planeErr.Code)
+		t.Fatalf("widened-live-config provider:admin on the pinned run = %d %s, want 403 capability_undeclared", planeErr.Status, planeErr.Code)
 	}
 
-	// A FRESH run started under the edited config pins — and resolves — the
-	// new set.
+	// A FRESH run started under the edited config pins — and admits — the
+	// new set: the capability the live run was refused above resolves
+	// without a 403 here (the fixture grants it no credential, so it is
+	// admitted and simply absent from the response, buildCredentialEnv's own
+	// skip).
 	const freshRunID = "run-credential-plane-fresh"
 	writePinnedRun(t, service.layout, "web", freshRunID, machine, credentialPlaneGateCaps(widened))
 	response, err = service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
-		RunID: freshRunID, Stage: "review",
+		RunID: freshRunID, Stage: "review", Capabilities: []string{"provider:admin"},
 	})
 	if err != nil {
-		t.Fatalf("Resolve gate on the fresh run: %v", err)
+		t.Fatalf("Resolve the widened provider:admin on the fresh run: %v (the fresh pin must carry the edited declaration)", err)
 	}
-	byCapability := map[string]bool{}
-	for _, credential := range response.Credentials {
-		byCapability[credential.Capability] = true
-	}
-	if len(byCapability) != 2 || !byCapability["github:issues:write"] || !byCapability["repo:push"] {
-		t.Fatalf("fresh-run gate credentials = %+v, want the widened issues:write and repo:push", response.Credentials)
+	if got := gateCredentialCapabilities(response); got["provider:admin"] {
+		t.Fatalf("fresh-run gate credentials = %+v: provider:admin is admitted but has no grant, so it must be absent", response.Credentials)
 	}
 }
 
@@ -608,5 +629,177 @@ func TestCredentialPlaneHoldsNoValuesAcrossRequests(t *testing.T) {
 	}
 	if mints != 2 {
 		t.Fatalf("source resolved %d times for 2 requests; the plane must not cache values across requests", mints)
+	}
+}
+
+// A stage that needs a repo workspace must be able to resolve the credential
+// that CLONES it, without declaring repository authority it does not otherwise
+// need (#3770/#3773).
+//
+// MEASURED: open-pr declares provider:pr:write and no repo capability —
+// correctly, it opens a pull request and does not push. The dispatcher named a
+// checkout capability for it and the pod requested it, and this gate refused:
+//
+//	capability "repo:push" is not declared by stage "open-pr-on-pod"
+//
+// so the run died one stage from done, having already implemented, validated
+// and pushed real work. The stamp was useless without the plane agreeing to
+// materialize it.
+//
+// This does not widen what the stage can DO: the pod consumes this credential
+// inside the checkout and never exports it to the stage's environment.
+func TestCredentialPlaneMaterializesTheCheckoutCapabilityForRepoWorkspaces(t *testing.T) {
+	spec := credentialPlaneSpec()
+	spec.Start = "open-pr"
+	spec.Tasks = []apiv1.Task{{
+		Name: "open-pr", Type: apiv1.TaskDeterministic, Goal: "open a pr",
+		// Exactly production open-pr: provider authority, a repo workspace, and
+		// deliberately NO repo-shaped capability.
+		Capabilities:  []string{"provider:pr:write"},
+		PolicyActions: []string{"open-or-update-pr"},
+		Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "open-pr"}, Workspace: apiv1.WorkspaceRepo},
+	}}
+	spec.Gates = nil
+	machine := compileCredentialPlaneMachine(t, spec)
+	service, _, runID := newCredentialPlaneFixture(t, machine)
+
+	resolved, err := service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "open-pr", Capabilities: []string{"repo:push"},
+	})
+	if err != nil {
+		t.Fatalf("the checkout capability was refused for a repo workspace: %v", err)
+	}
+	if len(resolved.Credentials) == 0 {
+		t.Fatal("no credential materialized for the checkout capability")
+	}
+
+	// The gate must still refuse anything the stage neither declared nor needs
+	// for a checkout — this is an implicit key, not an open door.
+	_, err = service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "open-pr", Capabilities: []string{"provider:admin"},
+	})
+	planeErr := planeErrorOf(t, err)
+	if planeErr.Status != http.StatusForbidden || planeErr.Code != "capability_undeclared" {
+		t.Fatalf("refusal = %d %s, want 403 capability_undeclared for an unrelated capability", planeErr.Status, planeErr.Code)
+	}
+}
+
+// A SCRATCH workspace clones nothing, so the checkout capability must stay
+// refused there — the implicit grant is tied to needing a working tree.
+func TestCredentialPlaneRefusesTheCheckoutCapabilityForScratchWorkspaces(t *testing.T) {
+	spec := credentialPlaneSpec()
+	spec.Start = "probe"
+	spec.Tasks = []apiv1.Task{{
+		Name: "probe", Type: apiv1.TaskDeterministic, Goal: "probe",
+		Capabilities: []string{"github:issues:read"},
+		Run:          &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+	}}
+	spec.Gates = nil
+	machine := compileCredentialPlaneMachine(t, spec)
+	service, _, runID := newCredentialPlaneFixture(t, machine)
+
+	_, err := service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: runID, Stage: "probe", Capabilities: []string{"repo:push"},
+	})
+	planeErr := planeErrorOf(t, err)
+	if planeErr.Status != http.StatusForbidden || planeErr.Code != "capability_undeclared" {
+		t.Fatalf("refusal = %d %s, want 403 for a scratch stage that clones nothing", planeErr.Status, planeErr.Code)
+	}
+}
+
+// TestCredentialPlaneReviewPodMintsFromThePinnedGateMap is the credential
+// half of decision 001 rulings 7–8: a reviewer evaluated in a pod asks the
+// plane for agent:model as stage=<gate> and is answered from the run's PINNED
+// gate-goober map (never the live config), gets its checkout credential
+// through the same implicit repo:push key a task's checkout uses — because
+// a reviewer's working tree is never optional, an undeclared
+// agentic.workspace still reads as repo — and is refused gate_pin_missing
+// on a run that carries no gate pin. A reviewer declared into a scratch
+// workspace has no checkout and therefore no implicit checkout key.
+func TestCredentialPlaneReviewPodMintsFromThePinnedGateMap(t *testing.T) {
+	const modelToken = "model-t0ken-0123456789abcdef"
+	goobers := credentialPlaneGoobers()
+	goobers["reviewer"] = apiv1.GooberSpec{Gaggle: "web", Harness: apiv1.HarnessCopilot, Capabilities: []string{"agent:model"}}
+	build := func(spec apiv1.WorkflowSpec) (*daemonCredentialService, *workflow.Machine) {
+		machine := compileCredentialPlaneMachine(t, spec)
+		service, _, _ := newCredentialPlaneFixture(t, machine)
+		service.Replace(credentialPlaneDefinitions{
+			Scopes:  map[string]credentialGaggleScope{"web": {Project: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web"}}},
+			Goobers: goobers,
+		})
+		service.buildSources = func(credentialGaggleScope) (credentials.Resolver, []credentials.Grant, error) {
+			resolver, err := credentials.NewResolverWithExpiring(nil, nil, map[string]credentials.ResolveFunc{
+				"model-ref": func(context.Context) (string, error) { return modelToken, nil },
+				"repo-ref":  func(context.Context) (string, error) { return credentialPlaneTestSecret, nil },
+			}, nil)
+			if err != nil {
+				return nil, nil, err
+			}
+			return resolver, []credentials.Grant{
+				{Capability: "agent:model", Ref: "model-ref"},
+				{Capability: "repo:push", Ref: "repo-ref"},
+			}, nil
+		}
+		return service, machine
+	}
+
+	service, machine := build(credentialPlaneSpec())
+	const pinnedRun = "run-review-pod"
+	writePinnedRun(t, service.layout, "web", pinnedRun, machine, credentialPlaneGateCaps(goobers))
+
+	// The review pod's own mint: agent:model for stage=review.
+	response, err := service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: pinnedRun, Stage: "review", Capabilities: []string{"agent:model"},
+	})
+	if err != nil {
+		t.Fatalf("Resolve agent:model for the review pod: %v", err)
+	}
+	var model *httpapi.MintedCredential
+	for i := range response.Credentials {
+		if response.Credentials[i].Capability == "agent:model" {
+			model = &response.Credentials[i]
+		}
+	}
+	if model == nil || model.Value != modelToken {
+		t.Fatalf("review pod credentials = %+v, want agent:model minted from the pinned gate map", response.Credentials)
+	}
+	if got := gateCredentialCapabilities(response); len(got) != 2 || !got["repo:push"] {
+		t.Fatalf("review pod credentials = %+v, want agent:model plus the implicit checkout key and nothing else", response.Credentials)
+	}
+	// The checkout mint (dispatcher.CheckoutCapability): implicit, like a
+	// task's, for the reviewer's default repo workspace.
+	response, err = service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: pinnedRun, Stage: "review", Capabilities: []string{"repo:push"},
+	})
+	if err != nil {
+		t.Fatalf("Resolve the review pod's checkout credential: %v", err)
+	}
+	if len(response.Credentials) != 1 || response.Credentials[0].Capability != "repo:push" {
+		t.Fatalf("checkout credentials = %+v, want repo:push through the implicit checkout key", response.Credentials)
+	}
+
+	// Without the pin: gate_pin_missing, nothing minted.
+	const pinlessRun = "run-review-pod-no-pin"
+	writePinnedRun(t, service.layout, "web", pinlessRun, machine, nil)
+	_, err = service.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: pinlessRun, Stage: "review", Capabilities: []string{"agent:model"},
+	})
+	planeErr := planeErrorOf(t, err)
+	if planeErr.Status != http.StatusConflict || planeErr.Code != "gate_pin_missing" {
+		t.Fatalf("pin-less review pod mint = %d %s, want 409 gate_pin_missing", planeErr.Status, planeErr.Code)
+	}
+
+	// A reviewer declared into scratch has no checkout, so no implicit key.
+	scratchSpec := credentialPlaneSpec()
+	scratchSpec.Gates[0].Agentic.Workspace = apiv1.WorkspaceScratch
+	scratchService, scratchMachine := build(scratchSpec)
+	const scratchRun = "run-review-pod-scratch"
+	writePinnedRun(t, scratchService.layout, "web", scratchRun, scratchMachine, credentialPlaneGateCaps(goobers))
+	_, err = scratchService.Resolve(context.Background(), httpapi.CredentialResolveRequest{
+		RunID: scratchRun, Stage: "review", Capabilities: []string{"repo:push"},
+	})
+	planeErr = planeErrorOf(t, err)
+	if planeErr.Status != http.StatusForbidden || planeErr.Code != "capability_undeclared" {
+		t.Fatalf("scratch reviewer checkout mint = %d %s, want 403 capability_undeclared (no working tree, no checkout key)", planeErr.Status, planeErr.Code)
 	}
 }

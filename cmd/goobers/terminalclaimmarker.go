@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -167,8 +168,13 @@ func releaseTerminalClaimMarkers(l instance.Layout, log *journal.InstanceLog, ru
 // Skips pull-request claims (pullRequestClaimPrefix): pr-claim keys the ledger
 // by pr/<number> and never writes a provider claim marker at all, so releasing
 // one would post a claim-release breadcrumb onto a PR that never carried a claim.
-// Skips claims from a different provider than the one this instance's terminal
-// cleanup is credentialed for.
+// Skips merge-lock leases (claimsclient.MergeLockItemPrefix): mergepr's
+// exclusive window is a synthetic ledger item, never a backlog item or a PR,
+// so a leaked lease from a crashed merge-pr run is not a GitHub issue to post
+// a claim-release breadcrumb onto — retiring it here would either error against
+// a nonexistent issue or, worse, land on whatever issue happens to share its
+// numeral suffix. Skips claims from a different provider than the one this
+// instance's terminal cleanup is credentialed for.
 func terminalClaimMarkerEntries(l instance.Layout, runID string) ([]localscheduler.ClaimEntry, error) {
 	var entries []localscheduler.ClaimEntry
 	err := withClaimLockForRun(
@@ -183,6 +189,9 @@ func terminalClaimMarkerEntries(l instance.Layout, runID string) ([]localschedul
 			}
 			for _, entry := range ledger.ForRunAll(runID) {
 				if strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
+					continue
+				}
+				if strings.HasPrefix(entry.ItemID, claimsclient.MergeLockItemPrefix) {
 					continue
 				}
 				if entry.Provider != "" && entry.Provider != string(providers.ProviderGitHub) {

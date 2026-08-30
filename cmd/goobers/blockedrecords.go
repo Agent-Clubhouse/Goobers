@@ -5,15 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -24,7 +22,13 @@ import (
 // identical block every tick. Sibling to claims.json and guarded by the same
 // claims.lock — records are written by the runner's blocked handler and
 // cleared by backlog-query's self-heal once every recorded blocker closes.
-const blockedRecordsFileName = "blocked.json"
+//
+// Since #3878 every access goes through a stateclient.Store rather than this
+// path directly, so a stage running in a pod reaches the daemon's copy over
+// the scheduler-state plane under that same claims.lock instead of writing a
+// pod-local file nothing else ever reads. The name is the plane's key
+// (stateclient.KeyBlockedRecords) as well as the file's name.
+const blockedRecordsFileName = stateclient.KeyBlockedRecords
 
 // blockedRecord is one learned dependency block: the issue numbers the item
 // was reported blocked on, plus provenance for a human inspecting the file.
@@ -415,10 +419,6 @@ func (s blockedEligibilitySkip) reason() string {
 	return fmt.Sprintf("learned block: item %s parked on open blocker(s): %s", s.ItemID, strings.Join(s.OpenBlockers, ","))
 }
 
-func blockedRecordsPath(l instance.Layout) string {
-	return filepath.Join(l.SchedulerDir(), blockedRecordsFileName)
-}
-
 func blockedRepositoryIdentity(repo providers.RepositoryRef) string {
 	if blockedRepositoryEmpty(repo) {
 		return ""
@@ -492,47 +492,44 @@ func needsHumanAssigneeFor(l instance.Layout) (string, error) {
 	return cfg.NeedsHumanAssignee, nil
 }
 
-func loadBlockedRecords(path string) (map[string]blockedRecord, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return map[string]blockedRecord{}, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
+// decodeBlockedRecords is loadBlockedRecords over a scheduler-state value
+// rather than a path: an absent key is the empty map for the same reason a
+// missing file is (the overwhelmingly common steady state), and the decode is
+// identical whether the bytes arrived from the instance's own file or from the
+// scheduler-state plane.
+func decodeBlockedRecords(value stateclient.Value) (map[string]blockedRecord, error) {
 	recs := map[string]blockedRecord{}
-	if err := json.Unmarshal(data, &recs); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+	if !value.Exists() {
+		return recs, nil
+	}
+	if err := json.Unmarshal(value.Data, &recs); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", stateclient.KeyBlockedRecords, err)
 	}
 	return recs, nil
 }
 
-func saveBlockedRecords(path string, recs map[string]blockedRecord) error {
+// encodeBlockedRecords renders the records map exactly as saveBlockedRecords
+// renders it, so an instance that switches between the file backend and the
+// plane produces byte-identical blocked.json and its ETag is stable across the
+// two paths.
+func encodeBlockedRecords(recs map[string]blockedRecord) ([]byte, error) {
 	data, err := json.MarshalIndent(recs, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal blocked records: %w", err)
+		return nil, fmt.Errorf("marshal blocked records: %w", err)
 	}
-	// Write-then-rename for the same torn-write reason the claim ledger's own
-	// persistence uses: a crash mid-write must never leave a half-written
-	// file that fails every subsequent selection tick's parse.
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", tmp, err)
-	}
-	if err := durability.ReplaceFile(tmp, path); err != nil {
-		return fmt.Errorf("rename %s: %w", tmp, err)
-	}
-	return nil
+	return data, nil
 }
 
 func snapshotBlockedRecords(l instance.Layout) (map[string]blockedRecord, error) {
-	var recs map[string]blockedRecord
-	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogFilterBlocked, func() error {
-		var err error
-		recs, err = loadBlockedRecords(blockedRecordsPath(l))
-		return err
-	})
-	return recs, err
+	store, err := openStageStateStore(l)
+	if err != nil {
+		return nil, err
+	}
+	value, err := store.Get(stateContext(), stateclient.KeyBlockedRecords)
+	if err != nil {
+		return nil, err
+	}
+	return decodeBlockedRecords(value)
 }
 
 // snapshotBlockedRecordsForRepository migrates records written before
@@ -541,23 +538,39 @@ func snapshotBlockedRecords(l instance.Layout) (map[string]blockedRecord, error)
 // snapshot, so an upgrade preserves the existing skip/self-heal behavior
 // without allowing legacy records to match every repository.
 func snapshotBlockedRecordsForRepository(l instance.Layout, repo providers.RepositoryRef) (map[string]blockedRecord, error) {
+	store, err := openStageStateStore(l)
+	if err != nil {
+		return nil, err
+	}
 	var recs map[string]blockedRecord
-	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogFilterBlocked, func() error {
-		var err error
-		recs, err = loadBlockedRecords(blockedRecordsPath(l))
-		if err != nil {
-			return err
-		}
-		changed := migrateLegacyBlockedRecords(recs, repo)
-		if repairMalformedBlockedRecordItemIDs(recs) {
-			changed = true
-		}
-		if changed {
-			return saveBlockedRecords(blockedRecordsPath(l), recs)
-		}
-		return nil
-	})
-	return recs, err
+	err = store.Update(stateContext(), stateclient.KeyBlockedRecords, claimLockOperationBacklogFilterBlocked,
+		func(value stateclient.Value) ([]byte, bool, error) {
+			// Recomputed from the observed value on every compare-and-swap
+			// attempt: the migration is a pure function of what is currently
+			// stored, so a retry after a lost swap migrates the winner's map
+			// rather than re-applying a stale one.
+			current, decodeErr := decodeBlockedRecords(value)
+			if decodeErr != nil {
+				return nil, false, decodeErr
+			}
+			recs = current
+			changed := migrateLegacyBlockedRecords(current, repo)
+			if repairMalformedBlockedRecordItemIDs(current) {
+				changed = true
+			}
+			if !changed {
+				return nil, false, nil
+			}
+			data, encodeErr := encodeBlockedRecords(current)
+			if encodeErr != nil {
+				return nil, false, encodeErr
+			}
+			return data, true, nil
+		})
+	if err != nil {
+		return nil, err
+	}
+	return recs, nil
 }
 
 func migrateLegacyBlockedRecords(recs map[string]blockedRecord, repo providers.RepositoryRef) bool {
@@ -619,17 +632,54 @@ func repairMalformedBlockedRecordItemIDs(recs map[string]blockedRecord) bool {
 // claims.lock through any subsequent claim so a blocked-record update cannot
 // race the eligibility decision.
 func reconcileBlockedEligibilityLocked(
-	path string,
+	ctx context.Context,
+	store stateclient.Store,
 	repo providers.RepositoryRef,
 	eligible []providers.WorkItem,
 	observedRecords, refreshedRecords map[string]blockedRecord,
 	verifiedSkips map[string]blockedEligibilitySkip,
 ) ([]providers.WorkItem, []blockedEligibilitySkip, error) {
-	current, err := loadBlockedRecords(path)
+	var (
+		filtered []providers.WorkItem
+		skipped  []blockedEligibilitySkip
+	)
+	// One read-modify-write. On the file backend that is the single locked
+	// section it has always been; on the scheduler-state plane it is a
+	// compare-and-swap the daemon serves under that same lock, retried on a
+	// lost swap. The body is therefore written to be re-runnable: every
+	// decision is recomputed from the value it just observed, and nothing is
+	// accumulated across attempts.
+	err := store.Update(ctx, stateclient.KeyBlockedRecords, claimLockOperationBacklogFilterBlocked,
+		func(value stateclient.Value) ([]byte, bool, error) {
+			current, decodeErr := decodeBlockedRecords(value)
+			if decodeErr != nil {
+				return nil, false, decodeErr
+			}
+			changed := applyRefreshedBlockedRecords(current, observedRecords, refreshedRecords, verifiedSkips)
+			filtered, skipped = partitionBlockedEligibility(current, repo, eligible, verifiedSkips)
+			if !changed {
+				return nil, false, nil
+			}
+			data, encodeErr := encodeBlockedRecords(current)
+			if encodeErr != nil {
+				return nil, false, encodeErr
+			}
+			return data, true, nil
+		})
 	if err != nil {
 		return nil, nil, err
 	}
+	return filtered, skipped, nil
+}
 
+// applyRefreshedBlockedRecords folds this cycle's provider-refreshed records
+// into current, reporting whether current changed. A record that no longer
+// matches what was observed is left alone — the concurrent writer's version
+// wins and the item fails closed downstream.
+func applyRefreshedBlockedRecords(
+	current, observedRecords, refreshedRecords map[string]blockedRecord,
+	verifiedSkips map[string]blockedEligibilitySkip,
+) bool {
 	changed := false
 	for recordKey, observed := range observedRecords {
 		record, ok := current[recordKey]
@@ -653,14 +703,21 @@ func reconcileBlockedEligibilityLocked(
 			verifiedSkips[itemID] = skip
 		}
 	}
-	if changed {
-		if err := saveBlockedRecords(path, current); err != nil {
-			return nil, nil, err
-		}
-	}
+	return changed
+}
 
+// partitionBlockedEligibility splits eligible into the items selection may
+// take and the items that stay parked, given the blocked records current for
+// this repository. It is a pure function of its inputs so a compare-and-swap
+// retry recomputes it against the value that actually won.
+func partitionBlockedEligibility(
+	current map[string]blockedRecord,
+	repo providers.RepositoryRef,
+	eligible []providers.WorkItem,
+	verifiedSkips map[string]blockedEligibilitySkip,
+) ([]providers.WorkItem, []blockedEligibilitySkip) {
 	if len(current) == 0 {
-		return eligible, nil, nil
+		return eligible, nil
 	}
 	// After migration every record that applies to this repository has a
 	// distinct item id, so a per-item map is a faithful 1:1 view of the
@@ -672,7 +729,9 @@ func reconcileBlockedEligibilityLocked(
 		}
 		applicable[blockedRecordItemID(recordKey, record)] = record
 	}
-	filtered := eligible[:0]
+	// A fresh slice, not eligible[:0]: the caller's slice must survive intact
+	// for a compare-and-swap retry to partition it again.
+	filtered := make([]providers.WorkItem, 0, len(eligible))
 	var skipped []blockedEligibilitySkip
 	for _, item := range eligible {
 		record, blocked := applicable[item.ID]
@@ -693,7 +752,7 @@ func reconcileBlockedEligibilityLocked(
 			record:              record,
 		})
 	}
-	return filtered, skipped, nil
+	return filtered, skipped
 }
 
 func sameBlockedRecord(a, b blockedRecord) bool {
@@ -881,20 +940,23 @@ func refreshBlockedEligibility(
 	for _, skip := range observedSkips {
 		verifiedSkips[skip.ItemID] = skip
 	}
-	filtered := candidates
-	err = withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogFilterBlocked, func() error {
-		var reconcileErr error
-		filtered, _, reconcileErr = reconcileBlockedEligibilityLocked(
-			blockedRecordsPath(l),
-			repo,
-			filtered,
-			observedRecords,
-			refreshedRecords,
-			verifiedSkips,
-		)
-		return reconcileErr
-	})
-	return filtered, err
+	store, err := openStageStateStore(l)
+	if err != nil {
+		return nil, err
+	}
+	filtered, _, err := reconcileBlockedEligibilityLocked(
+		ctx,
+		store,
+		repo,
+		candidates,
+		observedRecords,
+		refreshedRecords,
+		verifiedSkips,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return filtered, nil
 }
 
 // updateBlockedRecords applies fn to the records map under the instance's
@@ -902,15 +964,27 @@ func refreshBlockedEligibility(
 // lock file — writers are the same claim-lifecycle actors) and persists the
 // result. fn returns false to skip the write (nothing changed).
 func updateBlockedRecords(l instance.Layout, fn func(recs map[string]blockedRecord) bool) error {
-	path := blockedRecordsPath(l)
-	return withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBlockedUpdate, func() error {
-		recs, err := loadBlockedRecords(path)
-		if err != nil {
-			return err
-		}
-		if !fn(recs) {
-			return nil
-		}
-		return saveBlockedRecords(path, recs)
-	})
+	store, err := openStageStateStore(l)
+	if err != nil {
+		return err
+	}
+	return store.Update(stateContext(), stateclient.KeyBlockedRecords, claimLockOperationBlockedUpdate,
+		func(value stateclient.Value) ([]byte, bool, error) {
+			// fn runs against the value observed on THIS attempt, so a lost
+			// compare-and-swap re-applies the caller's mutation to the winner's
+			// map rather than overwriting it — the lost-update this route
+			// exists to prevent.
+			recs, decodeErr := decodeBlockedRecords(value)
+			if decodeErr != nil {
+				return nil, false, decodeErr
+			}
+			if !fn(recs) {
+				return nil, false, nil
+			}
+			data, encodeErr := encodeBlockedRecords(recs)
+			if encodeErr != nil {
+				return nil, false, encodeErr
+			}
+			return data, true, nil
+		})
 }

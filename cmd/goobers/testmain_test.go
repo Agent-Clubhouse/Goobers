@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -81,6 +82,10 @@ func (testCopilotModelLister) ListModels(context.Context, []string, []string) ([
 //
 //  3. It disables git fsync for every git subprocess these tests spawn (#811).
 //     See disableGitFsyncForTests.
+//
+//  4. It disables git's automatic background housekeeping for every git
+//     subprocess these tests spawn (#3172). See
+//     disableGitAutoMaintenanceForTests.
 func TestMain(m *testing.M) {
 	if os.Getenv(portalBuildMakeEnv) == "1" && isDocsDryRunMakeProcess() {
 		os.Exit(runPortalBuildMake())
@@ -107,7 +112,7 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow, []string, map[string][]string) (harnessPreflightInfo, error) {
+	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow, []string, map[string][]string, func(context.Context) (string, error)) (harnessPreflightInfo, error) {
 		return harnessPreflightInfo{}, nil
 	}
 
@@ -120,11 +125,30 @@ func TestMain(m *testing.M) {
 	}
 
 	disableGitFsyncForTests()
+	disableGitAutoMaintenanceForTests()
 	disableGitLineEndingConversionForTests()
 	disableJournalFsyncForTests()
 	runTerminalWaitTimeout = suiteRunWaitTimeout
 
-	os.Exit(m.Run())
+	packageDir, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "package directory guard: resolve working directory: %v\n", err)
+		os.Exit(1)
+	}
+	guard, err := newPackageDirGuard(packageDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "package directory guard: snapshot %s: %v\n", packageDir, err)
+		os.Exit(1)
+	}
+
+	code := m.Run()
+	if changes := guard.changes(); len(changes) > 0 {
+		fmt.Fprintln(os.Stderr, packageDirGuardFailure(packageDir, changes))
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
 }
 
 // installMakeExecutableFixture writes a copy of this test binary into dir as
@@ -205,6 +229,29 @@ func TestJournalFsyncDisabledForSuite(t *testing.T) {
 // the combined output callers like gatherPRContext parse.
 func disableGitFsyncForTests() {
 	appendGitConfigForTests("core.fsync", "none")
+}
+
+// disableGitAutoMaintenanceForTests stops every git subprocess this suite
+// spawns from starting background housekeeping (#3172). A push into a fixture's
+// bare `origin.git` makes receive-pack run `git gc --auto`, which by default
+// detaches (gc.autoDetach) and outlives the test that triggered it. That orphan
+// keeps creating and deleting files under `origin.git/objects/pack` while
+// t.TempDir's RemoveAll is walking the very same directory, so cleanup failed
+// with "unlinkat .../objects/pack: directory not empty" — a flake attributable
+// to whichever test happened to own the temp dir (TestRebasePRResolvesLiteral-
+// PathspecFilename in the reported stress run), not to any defect in it.
+//
+// internal/testgit already passes `-c gc.auto=0 -c maintenance.auto=0` for the
+// fixture git commands it builds, but that covers only its own children; the
+// runner code under test (worktree clones, rebase, push) shells out to git
+// through production paths that inherit this process's environment instead.
+// Layering the same settings via GIT_CONFIG_* closes that gap for both.
+// gc.autoDetach is pinned as well so an explicitly requested gc stays in the
+// foreground and finishes before its caller returns.
+func disableGitAutoMaintenanceForTests() {
+	appendGitConfigForTests("gc.auto", "0")
+	appendGitConfigForTests("gc.autoDetach", "false")
+	appendGitConfigForTests("maintenance.auto", "false")
 }
 
 func disableGitLineEndingConversionForTests() {

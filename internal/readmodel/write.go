@@ -21,10 +21,10 @@ import (
 // change row published before the fact it describes would tell a client to
 // refetch data that is not there yet.
 //
-// Idempotent on last_seq: re-applying a projection whose sequence is not newer
-// is a no-op. That is what makes the post-commit acknowledgement in §4.3 safe —
-// a crash between committing the projection and acknowledging the watermark
-// simply reprocesses, harmlessly.
+// Idempotent on last_seq and terminal state: re-applying an unchanged projection
+// is a no-op, while a newer projector may correct the interpretation of the same
+// journal prefix. That distinction matters across binary upgrades: source
+// position identifies the input, not the version of the pure projection code.
 func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	// Merged before the transaction opens, so an unrelated store's latency never
 	// lands on the read model's single writer (measurement.go).
@@ -49,23 +49,26 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	if err != nil {
 		return err
 	}
-	// A projection at or behind the stored source position is a no-op, and a
-	// no-op must not emit a change. Publishing one would wake every connected
-	// client to refetch a row that did not move.
+	// A projection behind the stored source position is a no-op, and a no-op must
+	// not emit a change. Publishing one would wake every connected client to
+	// refetch a row that did not move.
 	//
-	// AT the stored position counts, not just behind it. The projection is a
-	// pure function of the journal prefix (§3.2), so the same last_seq yields
-	// byte-identical output — re-applying it cannot change the row, and the only
-	// effect of letting it through is a spurious change row. That is not a rare
-	// case: a resumed build, a repair sweep, and a rebuild all re-project runs
-	// they have already seen, so under `<` every resumed build would replay its
-	// entire completed prefix into the live feed.
+	// At the stored position, phase and terminality are compared too. They are
+	// derived facts and can legitimately change when a newer binary fixes its
+	// projection rules without changing the immutable journal. An identical
+	// replay still stops here, preserving idempotence and avoiding a spurious
+	// change row; a corrected terminal interpretation proceeds and publishes the
+	// transition once.
 	//
 	// Found by the backend-neutral conformance contract (#1921) on its first
 	// run, which is the argument for having written it: nothing in the Wave 2
 	// tests exercised a same-position replay, and the failure is invisible until
 	// a client is connected to watch it.
-	if existed && p.Run.LastSeq <= previous.LastSeq {
+	if existed && p.Run.LastSeq < previous.LastSeq {
+		return nil
+	}
+	if existed && p.Run.LastSeq == previous.LastSeq &&
+		p.Run.Phase == previous.Phase && p.Run.Terminal == previous.Terminal {
 		return nil
 	}
 
@@ -142,8 +145,8 @@ func readRunRowTx(ctx context.Context, tx *sql.Tx, runID string) (RunRow, bool, 
 	var out RunRow
 	var terminal int
 	err := tx.QueryRowContext(ctx,
-		`SELECT run_id, terminal, last_seq FROM run WHERE run_id = ?`, runID).
-		Scan(&out.RunID, &terminal, &out.LastSeq)
+		`SELECT run_id, phase, terminal, last_seq FROM run WHERE run_id = ?`, runID).
+		Scan(&out.RunID, &out.Phase, &terminal, &out.LastSeq)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return RunRow{}, false, nil

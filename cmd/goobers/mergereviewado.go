@@ -56,6 +56,14 @@ func (p mergeReviewADOProvider) PullRequestMergeable(context.Context, providers.
 	return nil, p.unsupported("pull request mergeability")
 }
 
+func (p mergeReviewADOProvider) RepositoryFileContent(context.Context, providers.RepositoryRef, string, string) ([]byte, error) {
+	return nil, p.unsupported("repository file content")
+}
+
+func (p mergeReviewADOProvider) SubmitPullRequestReview(context.Context, providers.PullRequestReviewRequest) (providers.PullRequestReviewResult, error) {
+	return providers.PullRequestReviewResult{}, p.unsupported("pull request review submission")
+}
+
 func (p mergeReviewADOProvider) unsupported(operation string) error {
 	return fmt.Errorf("ADO merge-review does not support %s", operation)
 }

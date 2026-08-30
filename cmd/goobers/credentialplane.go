@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
@@ -364,6 +365,42 @@ type stageProfile struct {
 //     behavior for its goober);
 //   - an automated or human gate declares nothing and can resolve nothing.
 //
+// taskWorkspaceIsRepoBacked reports whether a task's declared workspace needs a
+// repository checked out. Run.Workspace takes precedence over the task-level
+// declaration (apiv1.Task.EffectiveWorkspace, the engine's own resolution) —
+// an agentic task has no DeterministicRun and can only express a workspace on
+// the task.
+func taskWorkspaceIsRepoBacked(task apiv1.Task) bool {
+	workspace := task.EffectiveWorkspace()
+	// An UNSPECIFIED workspace does not qualify, even though the engine
+	// defaults a deterministic task to repo. The implicit grant follows an
+	// explicit declaration and nothing else, because §13 item 7 holds that a
+	// stage declaring no capabilities resolves nothing — and a stage that
+	// declares neither capabilities nor a workspace has said nothing at all to
+	// hang a credential on. Requiring the declaration also matches DSL 3.0's
+	// explicit-complete direction: a stage that needs a working tree says so.
+	if workspace == "" {
+		return false
+	}
+	return workspace.IsRepoBacked()
+}
+
+// gateWorkspaceIsRepoBacked reports whether an agentic gate's reviewer is cut
+// a repository checkout. Unlike taskWorkspaceIsRepoBacked, an UNSPECIFIED
+// workspace qualifies: a reviewer's working tree is never optional — every
+// agentic reviewer, self-placed or pod-placed, is provisioned a repo worktree
+// (engine.Activities.ReviewGoober reads "" as the writable repo; the engine's
+// dispatchRemoteGate resolves the same default before dispatch) — so
+// AgenticGate.Workspace selects the MODE of the checkout, never whether there
+// is one. A stage that says nothing has still said "review the repository".
+func gateWorkspaceIsRepoBacked(gate apiv1.Gate) bool {
+	workspace := gate.EffectiveWorkspace()
+	if workspace == "" {
+		workspace = apiv1.WorkspaceRepo
+	}
+	return workspace.IsRepoBacked()
+}
+
 // An unknown stage is a typed 404: a pod cannot probe another workflow's
 // stage names into grants.
 func stageCredentialProfile(machine *workflow.Machine, defs credentialPlaneDefinitions, stage string, loadGateCapabilities func() (map[string][]string, bool, error)) (stageProfile, error) {
@@ -379,6 +416,25 @@ func stageCredentialProfile(machine *workflow.Machine, defs credentialPlaneDefin
 					fmt.Sprintf("goober %q for stage %q is no longer configured", task.Goober, stage))
 			}
 			profile.implicitKeys = mcpconfig.BYOCredentialKeys(spec.MCPServers)
+		}
+		// A repo-backed workspace has to be CLONED, and the dispatcher names a
+		// capability for exactly that (#3770/#3773). It is IMPLICIT here rather
+		// than declared by the stage, because requiring the declaration is the
+		// bug that was fixed: open-pr declares provider:pr:write and no repo
+		// capability — correctly, it opens a PR and does not push — and could
+		// not be provisioned at all.
+		//
+		// MEASURED: the dispatcher stamped the capability, the pod requested
+		// it, and this gate refused with "capability "repo:push" is not
+		// declared by stage "open-pr-on-pod"" — so the fix stamped a
+		// credential nothing would materialize.
+		//
+		// This does NOT widen what the stage can do. The pod consumes this
+		// credential inside the checkout and never exports it to the stage's
+		// environment (dispatchexec builds credEnv from the stage's own
+		// credentials only), so the grant ends where the working tree begins.
+		if taskWorkspaceIsRepoBacked(task) {
+			profile.implicitKeys = append(profile.implicitKeys, string(capability.RepoPush))
 		}
 		return profile, nil
 	}
@@ -404,11 +460,21 @@ func stageCredentialProfile(machine *workflow.Machine, defs credentialPlaneDefin
 		// A reviewer absent from the pinned map declared no capabilities at
 		// run start and resolves nothing — the same fail-closed stance the
 		// runner's gate envelope takes on an unmapped goober (#294).
-		return stageProfile{
+		profile := stageProfile{
 			goober:       reviewer,
 			capabilities: append([]string(nil), pinnedCapabilities[reviewer]...),
 			implicitKeys: mcpconfig.BYOCredentialKeys(spec.MCPServers),
-		}, nil
+		}
+		// A reviewer evaluated in a pod (decision 001 rulings 7–8) checks the
+		// repository out with the same in-pod askpass checkout capability a
+		// task uses (#3773/#3777) — the same implicit key, for the same
+		// reason, with the same boundary: the pod consumes it inside the
+		// checkout and never exports it to the reviewer's environment. No
+		// second, weaker credential path is created for gates.
+		if gateWorkspaceIsRepoBacked(gate) {
+			profile.implicitKeys = append(profile.implicitKeys, string(capability.RepoPush))
+		}
+		return profile, nil
 	}
 	return stageProfile{}, credentialPlaneError(http.StatusNotFound, "stage_unknown",
 		fmt.Sprintf("stage %q is not part of the run's pinned workflow definition", stage))

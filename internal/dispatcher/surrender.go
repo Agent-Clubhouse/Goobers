@@ -42,6 +42,24 @@ import (
 // "surrender confirmed but result absent" precisely.
 var ErrNoSurrender = errors.New("dispatcher: no surrendered result for attempt")
 
+// The two kit-fetch failure codes a stage pod can surrender BEFORE it has
+// anything else — no kit digest stamped on the pod, or a kit the blob plane
+// would not serve (cmd/goobers/dispatchagentic.go's first two returns).
+//
+// They live on the surrender contract rather than in the pod binary because
+// both ends read them: the pod writes them, and the engine classifies a
+// REVIEW attempt carrying either one as an infrastructure failure (#3888) —
+// both are substrate faults on the way to the reviewer, not the reviewer's
+// own outcome. Keeping the strings in one place is what stops the two sides
+// from drifting into a silently unclassified code.
+const (
+	// CodeAgenticKitMissing: the pod was created without a kit digest.
+	CodeAgenticKitMissing = "agentic_kit_missing"
+	// CodeAgenticKitUnavailable: the kit digest was stamped but the blob
+	// plane did not serve or did not verify it.
+	CodeAgenticKitUnavailable = "agentic_kit_unavailable"
+)
+
 // SurrenderPlane stores and serves surrendered result documents by attempt
 // identity.
 type SurrenderPlane interface {
@@ -84,6 +102,43 @@ type SurrenderedResult struct {
 	// MutationIssues carry malformed-provenance notes without converting a
 	// successful stage into a failure (the sidecar's own rule).
 	MutationIssues []string `json:"mutationIssues,omitempty"`
+	// WorkspaceDelta is the blob digest of a git bundle carrying whatever this
+	// stage committed beyond the run's base (#3763). Empty when the stage has
+	// no repo workspace or committed nothing, which is the common case.
+	//
+	// The engine threads this to the NEXT stage exactly as it already threads
+	// workspaceBranch: a pod is disposed after surrender, so a commit that does
+	// not leave through here does not exist for anything downstream.
+	WorkspaceDelta string `json:"workspaceDelta,omitempty"`
+	// WorkspaceDeltaBase and WorkspaceDeltaTip are the two commits the bundle
+	// was cut between (base..tip), surrendered beside the digest so the
+	// engine can journal them (runner.workspace.delta) and a far-side reader
+	// can compare the next stage's checkout against the tip by SHA rather
+	// than by trusting the digest. Both empty whenever WorkspaceDelta is.
+	WorkspaceDeltaBase string `json:"workspaceDeltaBase,omitempty"`
+	WorkspaceDeltaTip  string `json:"workspaceDeltaTip,omitempty"`
+	// WorkspaceDeltaUnchanged reports that this stage ran on a WRITABLE repo
+	// workspace, succeeded, and the pod CHECKED that its branch carries no
+	// commits beyond base — so no bundle was published. It is a positive
+	// claim the pod makes, distinct from an absent WorkspaceDelta: a stage on
+	// a scratch or read-only workspace, a failed stage, or a stage image that
+	// predates this field all surrender neither, and the engine journals
+	// nothing about the branch rather than inferring "unchanged" from
+	// silence. Never set beside a non-empty WorkspaceDelta.
+	WorkspaceDeltaUnchanged bool `json:"workspaceDeltaUnchanged,omitempty"`
+	// Verdict is the reviewer's decision when the attempt was an agentic
+	// reviewer GATE evaluated in a pod (Attempt.Review, agentickit.ModeReview;
+	// decision 001 rulings 7–8) — the same apiv1.Verdict the worker's
+	// ReviewGoober activity returns in-process. Result then carries a bare
+	// success status (the harness session completed), never a business
+	// outcome: the verdict IS the outcome, and the engine routes on
+	// Verdict.Decision alone. Nil for every task attempt.
+	//
+	// The engine RE-VALIDATES what comes back (fail closed on an empty
+	// Decision and on the verdict schema) rather than trusting the pod's own
+	// harness validation: a substituted or truncated surrender document must
+	// never route control flow (#3838's shape).
+	Verdict *apiv1.Verdict `json:"verdict,omitempty"`
 }
 
 // ReadSurrenderedResult fetches and decodes one attempt's surrendered result.

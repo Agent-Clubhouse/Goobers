@@ -219,7 +219,24 @@ export function useRunsHistory(
         if (controller.signal.aborted) {
           return true;
         }
-        runs.current = mergeRuns(runs.current, [...fetched, ...targeted]);
+        // A by-id fetch bypasses the daemon's phase and scope filtering, so a
+        // targeted row can come back no longer belonging in this window (a
+        // running run that finished while "active" is selected). Evicting it
+        // here — the boundary where the unfiltered row enters — is what keeps
+        // it from surviving until a full reload (#3655).
+        const retained: RunSummary[] = [];
+        const evicted = new Set<string>();
+        for (const run of targeted) {
+          if (matchesRunsWindow(run, filter, scope)) {
+            retained.push(run);
+          } else {
+            evicted.add(run.id);
+          }
+        }
+        runs.current = mergeRuns(
+          evicted.size > 0 ? runs.current.filter((run) => !evicted.has(run.id)) : runs.current,
+          [...fetched, ...retained],
+        );
         if (!hasAnyRuns.current && runs.current.length === 0) {
           hasAnyRuns.current = await instanceHasRuns(client, controller.signal);
         } else if (runs.current.length > 0) {
@@ -392,6 +409,49 @@ async function advanceStreams(
     }),
   );
   return pages.flat();
+}
+
+// Whether a run still belongs in the window the user is looking at.
+//
+// Only the predicates the summary can answer exactly are checked: phase (the
+// filter chip), gaggle, workflow, the no-work exclusion, and the started-at
+// bounds. `stage`, `outcome` and `population` are journal-derived server-side
+// predicates that a summary cannot reproduce, so they are left to the daemon
+// rather than guessed at — guessing would evict rows that do match.
+function matchesRunsWindow(
+  run: RunSummary,
+  filter: RunsFilter,
+  scope: RunHistoryScope,
+): boolean {
+  const phases = FILTER_PHASES[filter];
+  if (!phases.includes(undefined) && !phases.includes(run.phase)) {
+    return false;
+  }
+  if (scope.gaggle !== undefined && run.gaggle !== scope.gaggle) {
+    return false;
+  }
+  if (scope.workflow !== undefined && run.workflow !== scope.workflow) {
+    return false;
+  }
+  if (!scope.showNoWork && run.noWork) {
+    return false;
+  }
+  const startedAt = Date.parse(run.startedAt);
+  if (Number.isNaN(startedAt)) {
+    return true;
+  }
+  return withinBound(startedAt, scope.since, "since") && withinBound(startedAt, scope.until, "until");
+}
+
+function withinBound(startedAt: number, bound: string | undefined, kind: "since" | "until"): boolean {
+  if (bound === undefined) {
+    return true;
+  }
+  const boundary = Date.parse(bound);
+  if (Number.isNaN(boundary)) {
+    return true;
+  }
+  return kind === "since" ? startedAt >= boundary : startedAt <= boundary;
 }
 
 function mergeRuns(existing: RunSummary[], incoming: RunSummary[]): RunSummary[] {

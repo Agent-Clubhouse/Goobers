@@ -4535,6 +4535,20 @@ a.telemetry-error-row:hover {
   justify-items: end;
 }
 
+.journal-search input {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  color: var(--ink);
+  font: inherit;
+  padding: 3px 6px;
+}
+
+.journal-search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .journal-view-control {
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -5543,6 +5557,14 @@ a.telemetry-error-row:hover {
   padding: 12px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Large artifact bodies get a scroll cap so one oversized log/JSON blob
+   doesn't push the whole run page long. Small bodies keep the unbounded
+   default above, so short content shows no scroll chrome. */
+.artifact-content-bounded {
+  max-height: 320px;
+  overflow-y: auto;
 }
 
 .definition-disclosure {

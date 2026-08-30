@@ -183,8 +183,18 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				WorkflowVersion: in.Version,
 				WorkflowDigest:  m.Digest(),
 				Gaggle:          in.Gaggle,
-				RunControls:     &runControls,
-				Trigger:         journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
+				// Every run this workflow journals is, by construction, driven
+				// by the engine. The daemon reads it back from run.yaml to
+				// keep its resume scan, stall sweep and operator paths off a
+				// run it does not own (decision 003, Phase-0 hygiene). It is
+				// pinned here — in the workflow, as deterministic state —
+				// rather than stamped by the projection writer, so the live
+				// journal plane's OpenHeader carries it from the very first
+				// emit and a run is never briefly indistinguishable from a
+				// runner-driven one.
+				Driver:      journal.DriverEngine,
+				RunControls: &runControls,
+				Trigger:     journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
 			},
 			Item:                   in.Item,
 			Graph:                  graph,
@@ -306,6 +316,68 @@ func (r *runJournal) stageStarted(at time.Time, stage string, attempt int, class
 	r.appendAt(at, journal.Event{Type: journal.EventStageStarted, Stage: stage, Attempt: attempt, AttemptClass: class})
 }
 
+// placement journals one attempt's runner.placement provenance from what the
+// dispatch reported back (#3875, plan item E3) — the engine's counterpart to
+// internal/runner.runTask's own PlacementEvent append beside stage.started.
+//
+// Journal-only and conformance-EXCLUDED (journal/event.go), so it has no state
+// effect on the walk and cannot move a run's control flow; §11 acceptance 6
+// ("which runner served the stage, which pod carried it, which image that pod
+// actually ran, and how long the attempt waited for capacity") is the whole
+// reason it exists, and the stall sweep is its first reader.
+//
+// AFTER the dispatch, not beside stage.started, and that ordering is forced
+// rather than chosen: a pod attempt's placement is not KNOWN until the pod has
+// been created and the attempt has settled (StagePlacement's "settled attempts
+// only" contract), and inventing one at stage.started would journal the
+// placement the walk ASKED for instead of the one it got — precisely the fact
+// finding 002's inventory row says is missing. It still lands between this
+// attempt's stage.started and the next event a reader correlates it with, so
+// "every stage.started is followed by a runner.placement" holds on the wire.
+//
+// An attempt whose dispatch FAILED carries no placement (every dispatcher error
+// discards the report) and journals nothing: absence is honest here, and a
+// fabricated block would be the first untested branch in a contract that has
+// none.
+func (r *runJournal) placement(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, result stageActivityResult) {
+	placement, ok := attemptPlacement(result)
+	if !ok {
+		return
+	}
+	r.append(ctx, journal.PlacementEvent(stage, attempt, class, placement))
+}
+
+// attemptPlacement projects one dispatch result onto the journal's placement
+// payload, preferring the pod arm's dispatcher report over the self arm's
+// self-observation. Both are never set at once — a stage executes on exactly
+// one substrate — and the pod arm is checked first so a result that somehow
+// carried both would still describe the pod that actually ran the work.
+func attemptPlacement(result stageActivityResult) (journal.Placement, bool) {
+	if pod := result.Placement; pod != nil {
+		placement := journal.Placement{
+			Runner: pod.Runner,
+			Pod:    pod.Pod,
+			Image:  pod.Image,
+		}
+		// Absent rather than zero: journal.Placement's timestamps are pointers
+		// precisely so "this attempt never queued" and "it queued at the zero
+		// instant" stay distinguishable.
+		if !pod.QueuedAt.IsZero() {
+			queuedAt := pod.QueuedAt
+			placement.QueuedAt = &queuedAt
+		}
+		if !pod.PodStartedAt.IsZero() {
+			podStartedAt := pod.PodStartedAt
+			placement.PodStartedAt = &podStartedAt
+		}
+		return placement, placement.Runner != ""
+	}
+	if self := result.SelfPlacement; self != nil {
+		return *self, self.Runner != ""
+	}
+	return journal.Placement{}, false
+}
+
 // contextManifest mirrors internal/runner's recordContextManifest byte-for-byte
 // so both runners commit identical manifest blobs (identical digests).
 func (r *runJournal) contextManifest(at time.Time, stage string, attempt int, class journal.AttemptClass, pointers []apiv1.ContextPointer) error {
@@ -418,13 +490,27 @@ func (r *runJournal) gatePaused(ctx workflow.Context, gate string) {
 	r.append(ctx, journal.Event{Type: journal.EventGatePaused, Gate: gate})
 }
 
-// gateStarted mirrors internal/gate's recordStart durable pre-dispatch marker.
-func (r *runJournal) gateStarted(ctx workflow.Context, gate string, repassAttempt int) {
-	r.append(ctx, journal.Event{
+// gateStarted mirrors internal/gate's recordStart durable pre-dispatch
+// marker. podAttempt is the pod dispatch this marker precedes — the gate's
+// gateDispatches ordinal (gatePodAttempt; see gates.go for the two counters'
+// full contract) that the dispatch arm's evaluateWithInfraRetry call is about
+// to claim — and 0 for the self arm, which never dispatches a pod. Passed 0
+// rather than the eventual attempt count on an infra retry: this marker is
+// journaled once, before the retry loop starts, so it can only attribute the
+// FIRST pod attempt an evaluation will try; a retry's own later attempt
+// number is visible on the surrendered result and the pod it names, not
+// re-journaled here. The key is omitted from Runner rather than journaled as
+// 0, so a self-arm gate.started reads exactly as it always has.
+func (r *runJournal) gateStarted(ctx workflow.Context, gate string, repassAttempt, podAttempt int) {
+	ev := journal.Event{
 		Type:   journal.EventGateStarted,
 		Gate:   gate,
 		Runner: map[string]any{"repassAttempt": repassAttempt},
-	})
+	}
+	if podAttempt > 0 {
+		ev.Runner["podAttempt"] = podAttempt
+	}
+	r.append(ctx, ev)
 }
 
 // evaluatorRetry mirrors internal/gate's recordEvaluatorRetry (#765).
@@ -499,6 +585,18 @@ func (r *runJournal) runFailedCause(ctx workflow.Context, stage, code, message s
 		Type: journal.EventError, Stage: stage,
 		Error: &journal.ErrorDetail{Code: "run_failed", Message: journaled},
 	})
+}
+
+// runCanceledCause is the run_failed cause text for a cancelled run. The
+// cancellation error itself is Temporal vocabulary ("canceled"), so the cause
+// names the event in the run's own terms and keeps the underlying error for
+// the operator who has to tell an external `temporal workflow cancel` apart
+// from the daemon's stall sweep.
+func runCanceledCause(err error) string {
+	if err == nil {
+		return "run canceled on the engine"
+	}
+	return "run canceled on the engine: " + err.Error()
 }
 
 // runFinished closes the projection with the terminal phase, mapped to the

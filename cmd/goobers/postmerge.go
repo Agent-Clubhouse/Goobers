@@ -124,7 +124,7 @@ func parsePostMergeRemediationHandoff(body string) (postMergeRemediationHandoff,
 
 func persistPostMergeRemediationHandoff(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	prNumber int,
 	author string,
@@ -234,20 +234,12 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, false,
-		withStageProviderToken(prToken),
-		withStageProviderCache(),
-		withStageProviderMutations("pr"),
-	)
+	provider, err := remediationStageProviderWithRecorder(root, repo, prToken, true, sidecarMutationRecorder{kind: "pr"})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesProvider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, false,
-		withStageProviderToken(issuesToken),
-		withStageProviderCache(),
-		withStageProviderMutations("issue"),
-	)
+	issuesProvider, err := remediationStageProviderWithRecorder(root, repo, issuesToken, true, sidecarMutationRecorder{kind: "issue"})
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -266,8 +258,8 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 	var pollErr error
 	var postMergeErrs []error
 	alreadyCompleted := false
-	err = withPostMergeReconcileLock(root, func(ledgerPath string) error {
-		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+	err = withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
+		ledger, err := session.read()
 		if err != nil {
 			return err
 		}
@@ -284,7 +276,7 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 			return nil
 		}
 		if completePostMergeReconciliation(&ledger, repo, pullNumber) {
-			return writePostMergeReconcileLedger(ledgerPath, ledger)
+			return session.write(ledger)
 		}
 		return nil
 	})
@@ -350,8 +342,8 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 	var pollErr error
 	var postMergeErrs []error
 	alreadyCompleted := false
-	err = withPostMergeReconcileLock(root, func(ledgerPath string) error {
-		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+	err = withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
+		ledger, err := session.read()
 		if err != nil {
 			return err
 		}
@@ -369,7 +361,7 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 			return nil
 		}
 		if completePostMergeReconciliation(&ledger, repo, pullNumber) {
-			return writePostMergeReconcileLedger(ledgerPath, ledger)
+			return session.write(ledger)
 		}
 		return nil
 	})
@@ -459,7 +451,7 @@ func closeReferencedWorkItemADO(ctx context.Context, closer adoWorkItemCloser, b
 	return err
 }
 
-func performPostMerge(ctx context.Context, provider, issuesProvider *providers.GitHubProvider, repo providers.RepositoryRef, root, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
+func performPostMerge(ctx context.Context, provider, issuesProvider remediationProvider, repo providers.RepositoryRef, root, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
 	var errs []error
 	labeled, skipped, labelErrs := fanOutNeedsRemediation(ctx, provider, repo, root, poll.Number, poll.BaseBranch, stderr)
 	for _, lerr := range labelErrs {
@@ -506,7 +498,7 @@ func performPostMerge(ctx context.Context, provider, issuesProvider *providers.G
 // dead-end whose SHA has not moved (escalationStillBlocks fail-closed) keeps
 // the label and its human handoff. Mirrors unparkResolvedSiblings' shape and
 // best-effort error posture.
-func unparkSelfHealedEscalations(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, base string, stderr io.Writer) (unparked []int, errs []error) {
+func unparkSelfHealedEscalations(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, base string, stderr io.Writer) (unparked []int, errs []error) {
 	if base == "" {
 		return nil, nil
 	}
@@ -520,7 +512,7 @@ func unparkSelfHealedEscalations(ctx context.Context, provider *providers.GitHub
 	return unparkSelfHealedEscalationsFrom(ctx, provider, repo, mergedNumber, others, stderr)
 }
 
-func unparkSelfHealedEscalationsFrom(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (unparked []int, errs []error) {
+func unparkSelfHealedEscalationsFrom(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (unparked []int, errs []error) {
 	for _, pr := range others {
 		if pr.Number == mergedNumber {
 			continue
@@ -555,7 +547,7 @@ func unparkSelfHealedEscalationsFrom(ctx context.Context, provider *providers.Gi
 // a natural sweep point, exactly as it is for merge-escalated. A PR still stuck
 // at the same head keeps the label. Mirrors unparkSelfHealedEscalations' shape
 // and best-effort error posture.
-func unparkSelfHealedDemotions(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, base string, stderr io.Writer) (healed []int, errs []error) {
+func unparkSelfHealedDemotions(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, base string, stderr io.Writer) (healed []int, errs []error) {
 	if base == "" {
 		return nil, nil
 	}
@@ -569,7 +561,7 @@ func unparkSelfHealedDemotions(ctx context.Context, provider *providers.GitHubPr
 	return unparkSelfHealedDemotionsFrom(ctx, provider, repo, mergedNumber, others, stderr)
 }
 
-func unparkSelfHealedDemotionsFrom(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (healed []int, errs []error) {
+func unparkSelfHealedDemotionsFrom(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (healed []int, errs []error) {
 	for _, pr := range others {
 		if pr.Number == mergedNumber {
 			continue
@@ -606,7 +598,7 @@ func unparkSelfHealedDemotionsFrom(ctx context.Context, provider *providers.GitH
 // blockers is left parked. Best-effort per PR, mirroring fanOutNeedsRemediation:
 // a single failure is a warning, never fatal to the merge that already
 // succeeded or to the other siblings.
-func unparkResolvedSiblings(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, base string, stderr io.Writer) (unparked []int, errs []error) {
+func unparkResolvedSiblings(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, base string, stderr io.Writer) (unparked []int, errs []error) {
 	if base == "" {
 		return nil, nil
 	}
@@ -620,7 +612,7 @@ func unparkResolvedSiblings(ctx context.Context, provider *providers.GitHubProvi
 	return unparkResolvedSiblingsFrom(ctx, provider, repo, mergedNumber, others, stderr)
 }
 
-func unparkResolvedSiblingsFrom(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (unparked []int, errs []error) {
+func unparkResolvedSiblingsFrom(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, mergedNumber int, others []providers.PullRequestSummary, stderr io.Writer) (unparked []int, errs []error) {
 	for _, pr := range others {
 		if pr.Number == mergedNumber {
 			continue
@@ -662,7 +654,7 @@ func unparkResolvedSiblingsFrom(ctx context.Context, provider *providers.GitHubP
 // silently treated as "clean" — it conservatively labels needs-remediation
 // (the pre-#715 behavior for that one PR) rather than risk a false negative
 // on an API hiccup; see triageSibling's own doc comment.
-func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, root string, mergedNumber int, base string, stderr io.Writer) (labeled, skipped []int, errs []error) {
+func fanOutNeedsRemediation(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, root string, mergedNumber int, base string, stderr io.Writer) (labeled, skipped []int, errs []error) {
 	if base == "" {
 		errs = append(errs, fmt.Errorf("merged PR has no recorded base branch, skipping fan-out"))
 		return nil, nil, errs
@@ -702,7 +694,7 @@ func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvi
 	// instead of re-fetching. A cold/corrupt/absent cache (any other
 	// workflow, or a standalone invocation) degrades to nil here, which
 	// triageSibling treats as an unconditional cache miss — never a failure.
-	cached := loadSiblingCache(layoutFor(root).SchedulerDir(), stderr)
+	cached := loadSiblingCache(layoutFor(root), stderr)
 
 	var handoffAuthor string
 	var handoffAuthorErr error
@@ -770,7 +762,7 @@ func fanOutNeedsRemediation(ctx context.Context, provider *providers.GitHubProvi
 // actually conflicts) risks exactly the "two textually-clean-looking PRs
 // break main" failure mode post-merge main CI is the last backstop for, not
 // the first.
-func triageSibling(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, mergedPaths map[string]bool, cached map[string]siblingCacheEntry, stderr io.Writer) (siblingTriage, bool) {
+func triageSibling(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, mergedPaths map[string]bool, cached map[string]siblingCacheEntry, stderr io.Writer) (siblingTriage, bool) {
 	mergeable, merr := provider.PullRequestMergeable(ctx, repo, strconv.Itoa(pr.Number))
 	if merr != nil {
 		pf(stderr, "warning: check mergeable state for pr #%d: %v — conservatively labeling needs-remediation\n", pr.Number, merr)
@@ -811,7 +803,7 @@ func triageSibling(ctx context.Context, provider *providers.GitHubProvider, repo
 // when its recorded head SHA still matches pr's current one (siblingcache.go,
 // issue #523) — cached is nil-safe (a plain map miss on a nil map behaves
 // like an empty map). A cache miss or stale entry fetches fresh.
-func siblingFilesForTriage(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, cached map[string]siblingCacheEntry) ([]string, error) {
+func siblingFilesForTriage(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, pr providers.PullRequestSummary, cached map[string]siblingCacheEntry) ([]string, error) {
 	if entry, ok := cached[strconv.Itoa(pr.Number)]; ok && entry.HeadSHA == pr.HeadSHA {
 		return entry.Files, nil
 	}
@@ -830,7 +822,7 @@ func siblingFilesForTriage(ctx context.Context, provider *providers.GitHubProvid
 // GitHub's closing-keyword grammar (Fixes/Closes/Resolves #N) done. A PR
 // referencing no issue is a normal outcome (not every PR closes a backlog
 // item), not an error.
-func closeReferencedIssues(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, body, pullNumber string) (closed []string, errs []error) {
+func closeReferencedIssues(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, body, pullNumber string) (closed []string, errs []error) {
 	for _, issueID := range closingIssueNumbers(body) {
 		if err := closeReferencedIssue(ctx, provider, repo, issueID, pullNumber); err != nil {
 			errs = append(errs, fmt.Errorf("close issue #%s: %w", issueID, err))
@@ -841,7 +833,7 @@ func closeReferencedIssues(ctx context.Context, provider *providers.GitHubProvid
 	return closed, errs
 }
 
-func closeReferencedIssue(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, issueID, pullNumber string) error {
+func closeReferencedIssue(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, issueID, pullNumber string) error {
 	item, err := provider.GetWorkItem(ctx, repo, issueID)
 	if err != nil {
 		return err

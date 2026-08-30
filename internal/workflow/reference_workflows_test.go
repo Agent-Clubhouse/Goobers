@@ -309,6 +309,8 @@ func TestReferenceReviewerUsesFindingsAsCompleteBlockerLedger(t *testing.T) {
 	}
 	instructions := strings.Join(strings.Fields(string(raw)), " ")
 	for _, required := range []string{
+		"attached cumulative `base...HEAD` diff",
+		"never substitute only the tip commit's diff or commit message",
 		"Structured findings are the complete blocker ledger.",
 		"every distinct condition you describe as blocking readiness MUST have a corresponding entry in `findings`",
 		"Never leave a blocker only in prose.",

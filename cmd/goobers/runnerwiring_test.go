@@ -3,9 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"maps"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +33,7 @@ import (
 	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	grpccredentials "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -313,6 +322,147 @@ func TestBuildTelemetryClientScrubsRegisteredSecretFromOTLP(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("collector did not receive an OTLP export")
 	}
+}
+
+// TestBuildTelemetryClientThreadsOTLPTLSFields is #3804's runnerwiring_
+// telemetry.go seam: buildTelemetryClient must copy every field of
+// instance.OTLPTLSConfig into telemetry.Config, not just caFile. The
+// collector requires a client certificate (mTLS) AND is dialed by an IP
+// address its certificate does not cover, so the export only reaches it if
+// caFile, certFile, keyFile, AND serverName all made the trip — dropping
+// any one of the four breaks the connection and the test times out waiting
+// for an export that never arrives.
+func TestBuildTelemetryClientThreadsOTLPTLSFields(t *testing.T) {
+	serverCert := runnerWiringSelfSignedCert(t, []string{"otlp-collector.runnerwiring.test"}, nil)
+	clientCert := runnerWiringSelfSignedCert(t, nil, []net.IP{net.ParseIP("127.0.0.1")})
+
+	serverPair, err := tls.LoadX509KeyPair(serverCert.certFile, serverCert.keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientCAPool := x509.NewCertPool()
+	clientCAPool.AddCert(clientCert.certificate)
+	serverTLSConfig := &tls.Config{
+		Certificates: []tls.Certificate{serverPair},
+		ClientCAs:    clientCAPool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer(grpc.Creds(grpccredentials.NewTLS(serverTLSConfig)))
+	collector := &runnerWiringOTLPCollector{requests: make(chan *collectortrace.ExportTraceServiceRequest, 1)}
+	collectortrace.RegisterTraceServiceServer(server, collector)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+
+	client, err := buildTelemetryClient(
+		context.Background(),
+		instance.NewLayout(t.TempDir()),
+		nil,
+		journal.NewRegistryScrubber(),
+		instance.OTLPConfig{
+			Endpoint: listener.Addr().String(),
+			TLS: &instance.OTLPTLSConfig{
+				CAFile:     serverCert.certFile,
+				ServerName: "otlp-collector.runnerwiring.test",
+				CertFile:   clientCert.certFile,
+				KeyFile:    clientCert.keyFile,
+			},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shutdown := false
+	t.Cleanup(func() {
+		if !shutdown {
+			_ = client.Shutdown(context.Background())
+		}
+	})
+
+	_, span, err := client.StartRun(context.Background(), telemetry.RunAttributes{
+		Gaggle:     "acme-web",
+		WorkflowID: "wf",
+		RunID:      "0af7651916cd43dd8448eb211c80319c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.End()
+	// buildTelemetryClient always configures Batch: true (unlike the raw
+	// telemetry.Config tests in internal/telemetry/otlptls_test.go), so the
+	// export is buffered until a flush — Shutdown forces one, mirroring
+	// TestBuildTelemetryClientScrubsRegisteredSecretFromOTLP above.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	shutdown = true
+
+	select {
+	case <-collector.requests:
+	case <-time.After(5 * time.Second):
+		t.Fatal("collector received no export — an OTLPTLSConfig field was dropped between instance.OTLPConfig and telemetry.Config")
+	}
+}
+
+// runnerWiringSelfSignedCert is runnerwiring_test.go's copy of the
+// self-signed-leaf-as-trust-anchor helper (internal/httpapi/auth_test.go's
+// selfSignedCertFiles, internal/telemetry/otlptls_test.go's
+// generateOTLPTestCertificate) — small enough, and package-scoped, that
+// duplicating it here reads clearer than exporting one across packages for
+// three test-only callers.
+type runnerWiringSelfSignedCertificate struct {
+	certFile, keyFile string
+	certificate       *x509.Certificate
+}
+
+func runnerWiringSelfSignedCert(t *testing.T, dnsNames []string, ips []net.IP) runnerWiringSelfSignedCertificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: "goobers-runnerwiring-test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		DNSNames:     dnsNames,
+		IPAddresses:  ips,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "cert.pem")
+	keyFile := filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return runnerWiringSelfSignedCertificate{certFile: certFile, keyFile: keyFile, certificate: certificate}
 }
 
 func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) {
@@ -663,7 +813,7 @@ func TestRunRejectsStoredCopilotAuthShadowingBeforeRunAdmission(t *testing.T) {
 
 func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false)
+	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -732,7 +882,7 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 // allowlist (#1471), goobers-io (#2774), and declared mcpServers (#1492)
 // each did for weeks before their own follow-up issue was filed.
 func TestBuildHarnessRegistryAdaptersAreConformanceCovered(t *testing.T) {
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false)
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -770,7 +920,7 @@ func TestAdapterForAppliesLauncherOverride(t *testing.T) {
 	override := map[string][]string{
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 	}
-	adapter, err := adapterFor(apiv1.HarnessCopilot, nil, override)
+	adapter, err := adapterFor(apiv1.HarnessCopilot, nil, override, nil)
 	if err != nil {
 		t.Fatalf("adapterFor: %v", err)
 	}
@@ -788,7 +938,7 @@ func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 		// claude-code intentionally omitted: it must keep its default launcher.
 	}
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "", false)
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "", false, nil)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}

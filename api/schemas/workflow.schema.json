@@ -560,6 +560,48 @@
           "type": "integer",
           "minimum": 1
         },
+        "runsOn": {
+          "description": "The placement an agentic gate's reviewer requires (DSL 3.0 only, dsl-3.0.md §2 Gates; decision 001): the identical placement block tasks carry — OS, resource minimums, toolchain capability tags, required runner restrictions — with the identical gaggle-floor merge and the derived harness:<reviewer goober's harness> tag. Omitted, the reviewer evaluates in the daemon/control plane as before. Valid only when evaluator is agentic (automated and human gates are never placed), and a declared block must carry both cpu and memory (WF023): the gaggle floor has no quantities and a review is the most expensive stage class in a lane. Honoured at execution by the engine (rulings 7-8): a gate pinned to a non-self runner evaluates in a dispatcher-created pod on that runner's queue, in the harness's review mode, and surrenders a verdict the engine re-validates; a placement self satisfies pins self and evaluates in-process. A daemon-scheduled run has no gate dispatch arm yet, so there a placement self cannot satisfy is refused at boot rather than run outside its declared isolation. Interpreters before 3.0 refuse the block.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "os": {
+              "description": "Required operating system for the reviewer — a validated enum (product spellings, not GOOS). Unset means no OS requirement; placement policy prefers, and will wait bounded for, a Linux-class runner when the inventory has one.",
+              "type": "string",
+              "enum": ["linux", "windows", "macOS"]
+            },
+            "cpu": {
+              "description": "Minimum CPU for the reviewer as a Kubernetes quantity string (e.g. \"2000m\"), verbatim. Required whenever runsOn is declared on a gate (WF023). Minimums become pod resource requests in distributed mode; limits come from the matched runner's ceiling. Advisory on local modes.",
+              "type": "string",
+              "minLength": 1
+            },
+            "memory": {
+              "description": "Minimum memory for the reviewer as a Kubernetes quantity string (e.g. \"4Gi\"), verbatim. Required whenever runsOn is declared on a gate (WF023).",
+              "type": "string",
+              "minLength": 1
+            },
+            "disk": {
+              "description": "Minimum disk for the reviewer as a Kubernetes quantity string (e.g. \"20Gi\"), verbatim.",
+              "type": "string",
+              "minLength": 1
+            },
+            "capabilities": {
+              "description": "Open toolchain tag set the reviewer's runner must provide (internal/runnercap grammar, exact set membership, no ranges); unions with the gaggle floor and the derived harness tag. os=* tokens are rejected (CAP004): runsOn.os is the only platform vocabulary in a 3.0 document. maxItems bounds CRD CEL validation cost (#3168).",
+              "type": "array",
+              "maxItems": 32,
+              "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@=+-]*$" }
+            },
+            "restrictions": {
+              "description": "Isolation effects the reviewer's runner must ENFORCE, from the closed v1 effect list (Goobernetes decision D7). Unknown tokens are rejected with a suggestion (CAP005). maxItems bounds CRD CEL validation cost (#3168).",
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "enum": ["network:none", "network:allowlist", "fs:readonly-except-workspace", "tmp:ephemeral", "env:default-deny"]
+              }
+            }
+          }
+        },
         "branches": {
           "type": "object",
           "description": "Outcome-to-next-state mapping. The pass key is the success branch; escalate may route forced escalation.",

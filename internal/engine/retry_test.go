@@ -264,7 +264,7 @@ func TestAttemptFailureClass(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			class, err := attemptFailureClass(tc.err)
+			class, err := ClassifyDispatchFailure(tc.err)
 			if tc.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "unclassifiable") {
 					t.Fatalf("err = %v, want the unclassifiable fail-closed error", err)
@@ -272,7 +272,7 @@ func TestAttemptFailureClass(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("attemptFailureClass: %v", err)
+				t.Fatalf("ClassifyDispatchFailure: %v", err)
 			}
 			if class != tc.wantClass {
 				t.Fatalf("class = %q, want %q", class, tc.wantClass)
@@ -318,7 +318,7 @@ func TestSideEffectingStageTimeoutRedispatch(t *testing.T) {
 						return stageActivityResult{}, temporal.NewTimeoutError(test.timeoutType, nil)
 					}
 					return stageActivityResult{ResultEnvelope: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}}, nil
-				})
+				}, nil)
 				return err
 			})
 
