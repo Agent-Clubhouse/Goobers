@@ -303,19 +303,13 @@ func (p *ADOProvider) Commit(ctx context.Context, req CommitRequest) (CommitResu
 	if err := requireRepo(req.Repository); err != nil {
 		return CommitResult{}, err
 	}
-	if req.Branch == "" {
-		return CommitResult{}, fmt.Errorf("branch is required")
-	}
-	if req.Message == "" {
-		return CommitResult{}, fmt.Errorf("message is required")
-	}
-	if len(req.Files) == 0 {
-		return CommitResult{}, fmt.Errorf("at least one file is required")
+	if err := validateCommitRequest(req); err != nil {
+		return CommitResult{}, err
 	}
 	changes := make([]adoChange, 0, len(req.Files))
 	for _, file := range req.Files {
-		if file.Path == "" {
-			return CommitResult{}, fmt.Errorf("file path is required")
+		if err := validateCommitFile(file); err != nil {
+			return CommitResult{}, err
 		}
 		exists, err := p.pathExists(ctx, req.Repository, req.Branch, file.Path)
 		if err != nil {

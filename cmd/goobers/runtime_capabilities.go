@@ -115,7 +115,7 @@ func init() {
 		coreCommand("init", apicontract.ActionConfigTime, runInit).
 			withSynopsis(synopsisByID["init"]).
 			withHelp("scaffold an instance root", initHelp).
-			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --template=quickstart --source-tree ./tutorial-config --json", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
+			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --template=quickstart --source-tree ./tutorial-config --json", "goobers init --demo ./demo"),
 		coreCommand("connect", apicontract.ActionConfigTime, runConnect).
 			withSynopsis(synopsisByID["connect"]).
 			withHelp("connect an instance to your own GitHub repository", connectHelp).
@@ -141,18 +141,11 @@ func init() {
 				withExamples(
 					"goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json",
 				),
-			subcommand("onboarding stub-sample", "stub-sample", apicontract.ActionConfigTime, runOnboardingStubSample).
-				withHelp("materialize and optionally seed the disposable Getting Started target", stubSampleHelp).
-				withExamples(
-					"goobers onboarding stub-sample --destination ./getting-started-task-api --json",
-					"goobers onboarding stub-sample --destination ./getting-started-task-api --work-tracking my-org/tutorial",
-				),
 		).
 			withSynopsis(synopsisByID["onboarding"]).
 			withHelp("run non-interactive onboarding actions", onboardingHelp).
 			withExamples(
 				"goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json",
-				"goobers onboarding stub-sample --destination ./getting-started-task-api --json",
 			),
 		coreGroupCommand(
 			"examples",
@@ -324,13 +317,6 @@ func init() {
 			withSynopsis(synopsisByID["dashboard"]).
 			withHelp("serve and open the local operations portal", fmt.Sprintf(dashboardHelp, defaultDashboardPort)).
 			withExamples("goobers dashboard", "goobers dashboard --port=auto --no-open"),
-		// Read-only-navigation like dashboard: the server itself only navigates —
-		// every guided write action is a user-invoked CLI subprocess that carries
-		// its own action class.
-		coreCommand("getting-started", apicontract.ActionReadOnlyNavigation, runGettingStarted).
-			withSynopsis(synopsisByID["getting-started"]).
-			withHelp("serve and open the guided portal Getting Started walkthrough", fmt.Sprintf(gettingStartedHelp, defaultDashboardPort)).
-			withExamples("goobers getting-started", "goobers getting-started --no-open --workdir ~/goobers-tutorial"),
 		coreCommandWithSubcommands(
 			"run",
 			apicontract.ActionWorkflowExecution,

@@ -410,15 +410,10 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 	resultFile := providerInput("resultFile", "verdict-result.json")
 
 	selectedNumberStr := providerInput("selectedNumber", "")
@@ -638,7 +633,9 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// Azure DevOps: a PASS verdict is published as a provider-native PR
 		// status (genre goobers, name validation — the same surface
 		// report-pr-status publishes) so the published-verdict gate and any ADO
-		// status-check branch policy observe it. The GitHub verdict-publication
+		// status-check branch policy observe it, plus a PR thread comment
+		// carrying the verdict payload merge-pr builds its commit message from
+		// (#2746). The GitHub verdict-publication
 		// path below (native self-review + sticky comment + PR-as-work-item
 		// label write) does not apply on ADO: there is no self-review to submit,
 		// and UpdateWorkItem(ID: PR#) would mutate the unrelated work item that
@@ -647,7 +644,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 		// bridge (they return before reaching here); this gate is reached on ADO
 		// only for a PASS.
 		if adoProvider, ok := provider.(*providers.ADOProvider); ok && verdict.Decision == apiv1.VerdictPass {
-			return publishADOPassVerdict(ctx, adoProvider, repo, selectedNumber, current, resultFile, stdout, stderr)
+			return publishADOPassVerdict(ctx, adoProvider, repo, selectedNumber, current, *verdict, resultFile, stdout, stderr)
 		}
 		pf(stderr, "error: apply-verdict can close an objectively moot %s pull request, but publishing a non-moot verdict is not supported for that provider\n", repo.Provider)
 		return 1
@@ -667,7 +664,6 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// keeps downstream consumers from rediscovering the reviewer's classification
 	// miss; a verdict with any real defect still routes to remediation.
 	overlappingSiblings := parseOverlappingSiblings(providerInput("overlappingSiblings", ""))
-	posted.OverlapCluster = len(overlappingSiblings) > 0
 	effective := posted
 	effective.Findings = withOverlapBackstop(posted.Findings, overlappingSiblings)
 	posted.Findings = effective.Findings
@@ -679,6 +675,28 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// the parked-record). A gather failure fails the stage explicitly rather
 	// than silently deriving a different winner.
 	policyInput := providerInput("electionPolicy", defaultElectionPolicy)
+
+	// #2741: which siblings this PR serializes against is its own selectable
+	// surface, orthogonal to the ordering policy above. "election" (default)
+	// serializes only over the deterministic overlap set the election machinery
+	// supplies; "ordering" also serializes over the reviewer's named cross-PR
+	// blockers, so a workflow that omits elect-lander/elect-gate still gets a
+	// deterministic lander instead of a permanent needs-changes loop.
+	serializationInput := providerInput("siblingSerialization", defaultSiblingSerialization)
+	serialization, knownSerialization := resolveSiblingSerialization(serializationInput)
+	if !knownSerialization {
+		pf(stderr, "warning: unknown sibling-serialization strategy %q — falling back to %q\n", serializationInput, serialization)
+	}
+	serializedCluster := serializationCluster(serialization, effective.Findings, overlappingSiblings, selectedNumber)
+
+	// The published cluster evidence MUST describe the SAME cluster the
+	// election below resolves over, or a published `pass` could carry
+	// Elected:true with OverlapCluster:false and falsify the invariant
+	// merge-pr's #1071 conjunct reads. Deriving it from the serialized cluster
+	// keeps that conjunct fail-closed under every strategy, including an
+	// "ordering" cluster with no deterministic overlap set at all.
+	posted.OverlapCluster = len(serializedCluster) > 0
+
 	clusterBlockers := electionClusterBlockers(effective.Findings, overlappingSiblings)
 	clusterPolicy, resolvedPolicyName, perr := resolveElectionPolicyForCluster(
 		ctx, prProvider, repo, policyInput, selectedNumber, clusterBlockers, prs)
@@ -690,7 +708,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// sibling will defer to it. Publish that zero-winner state as a distinct
 	// human escalation instead of silently splitting the cluster between
 	// blocked-on-sibling and needs-remediation.
-	if reason := noLanderEscalationReason(posted.Decision, effective.Findings, selectedNumber, overlappingSiblings, clusterPolicy, demoted, resolvedPolicyName); reason != "" {
+	if reason := noLanderEscalationReason(posted.Decision, effective.Findings, selectedNumber, serializedCluster, clusterPolicy, demoted, resolvedPolicyName); reason != "" {
 		posted.Decision = apiv1.VerdictFail
 		posted.Rationale = reason
 	}
@@ -701,7 +719,7 @@ func runApplyVerdict(args []string, stdout, stderr io.Writer) int {
 	// GitHub's native merge queue must never be a second, uncoordinated
 	// merge authority that crowns a cluster member on its own. See
 	// resolveElectionOutcome.
-	if elected, rationale := resolveElectionOutcome(selectedNumber, posted.Decision, effective.Findings, posted.Rationale, overlappingSiblings, demoted, clusterPolicy, resolvedPolicyName); rationale != "" {
+	if elected, rationale := resolveElectionOutcome(selectedNumber, posted.Decision, effective.Findings, posted.Rationale, serializedCluster, demoted, clusterPolicy, resolvedPolicyName); rationale != "" {
 		posted.Elected = elected
 		posted.Rationale = rationale
 		if elected {
@@ -1491,27 +1509,49 @@ func newApplyVerdictProviderForRepo(root string, repo providers.RepositoryRef) (
 	return newMergeReviewProvider(root, repo, false, opts...)
 }
 
+// adoPassVerdictPublisher is the ADO surface publishADOPassVerdict writes to:
+// the native goobers/validation PR status plus the PR thread carrying the
+// machine-readable verdict payload (#2746).
+type adoPassVerdictPublisher interface {
+	providers.PullRequestStatusPublisher
+	PostPullRequestThreadComment(ctx context.Context, repo providers.RepositoryRef, pullID, body string) (providers.Comment, error)
+}
+
 // publishADOPassVerdict publishes a PASS merge-review verdict on Azure DevOps.
 // ADO has neither a native self-review to submit nor the GitHub
 // sticky-comment/label verdict transport (the GitHub path's
 // UpdateWorkItem(ID: PR#) would address the unrelated work item that shares the
-// PR's numeric id — the wrong-object hazard), so the verdict rides on a
-// provider-native PR status (genre "goobers", name "validation" — the same
-// surface report-pr-status publishes) that an ADO status-check branch policy can
-// gate on. It emits decision=pass into the result file so merge-review's
+// PR's numeric id — the wrong-object hazard), so the verdict rides on two
+// provider-native surfaces:
+//
+//  1. A passing PR status (genre "goobers", name "validation" — the same
+//     surface report-pr-status publishes) that an ADO status-check branch
+//     policy can gate on.
+//  2. The verdict + verdict-json machine payload posted as a PR thread comment
+//     (PostPullRequestThreadComment), SHA-pinned to the reviewed head/base —
+//     the same transport publishADONonPassVerdict uses for a non-pass verdict.
+//     Only non-pass verdicts used to land on the thread, so on the ADO path
+//     that actually merges there was no reviewer attribution or rationale left
+//     to recover, and merge-pr's commit degraded to title + "Closes #N"
+//     (#2746). merge-pr recovers this comment BEFORE taking the merge lock, so
+//     the audit trail is restored without an extra in-lock round-trip (#719).
+//
+// It emits decision=pass into the result file so merge-review's
 // published-verdict gate advances to merge-pr. See the ADO merge epic (#2061).
 func publishADOPassVerdict(
 	ctx context.Context,
-	provider providers.PullRequestStatusPublisher,
+	provider adoPassVerdictPublisher,
 	repo providers.RepositoryRef,
 	selectedNumber int,
 	current providers.PullRequestSummary,
+	verdict apiv1.Verdict,
 	resultFile string,
 	stdout, stderr io.Writer,
 ) int {
+	pullID := strconv.Itoa(selectedNumber)
 	if _, err := provider.PublishPullRequestStatus(ctx, providers.PullRequestStatusRequest{
 		Repository:  repo,
-		PullID:      strconv.Itoa(selectedNumber),
+		PullID:      pullID,
 		Genre:       "goobers",
 		Name:        "validation",
 		State:       providers.CheckStatePassing,
@@ -1519,7 +1559,16 @@ func publishADOPassVerdict(
 	}); err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("publish pass verdict status for PR #%d", selectedNumber), err, resultFile)
 	}
-	pf(stdout, "approved PR #%d at %s via goobers/validation PR status\n", selectedNumber, current.HeadSHA)
+	// SHA-pin the published verdict to the reviewed state so merge-pr only
+	// trusts it while the PR is still at that exact head/base, mirroring the
+	// non-pass path and the GitHub sticky comment's pin.
+	verdict.Decision = apiv1.VerdictPass
+	verdict.HeadSHA = current.HeadSHA
+	verdict.BaseSHA = current.BaseSHA
+	if _, err := provider.PostPullRequestThreadComment(ctx, repo, pullID, renderVerdictComment(verdict)); err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("post verdict thread comment to PR #%d", selectedNumber), err, resultFile)
+	}
+	pf(stdout, "approved PR #%d at %s via goobers/validation PR status and PR thread\n", selectedNumber, current.HeadSHA)
 	return writeApplyVerdictResult(resultFile, selectedNumber, current.HeadSHA, current.BaseSHA, string(apiv1.VerdictPass), "", stderr)
 }
 

@@ -152,6 +152,16 @@ func recordVerdict(j Journal, r Result, diffDigest string) (*apiv1.ArtifactPoint
 	if len(r.DisprovenFindings) > 0 {
 		runner["disprovenLearningFindings"] = learningFindingRecords(r.DisprovenFindings)
 	}
+	// #3136: why another repass was dispatched, or withheld — the identities
+	// that recurred across the repass, and the ones the reviewed diff could
+	// not corroborate. Journaled even when the repass proceeds, so an
+	// operator can see the check ran and what it concluded.
+	if len(r.RepeatedFindingIDs) > 0 {
+		runner["repeatedFindingIdentities"] = r.RepeatedFindingIDs
+	}
+	if len(r.UnverifiedRepeatFindingIDs) > 0 {
+		runner["unverifiedRepeatFindingIdentities"] = r.UnverifiedRepeatFindingIDs
+	}
 	ev := journal.Event{
 		Type:      journal.EventGateEvaluated,
 		Actor:     r.Actor,
