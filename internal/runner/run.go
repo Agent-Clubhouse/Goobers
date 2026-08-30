@@ -3711,11 +3711,11 @@ func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.Run
 		return Result{}, errors.Join(pinnedOutcomeErr, prepareErr, fmt.Errorf("runner: journal run.finished: %w", err))
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
-	r.notifyTerminal(runID, phase, finalState)
+	notifyErr := r.notifyTerminal(jr, runID, phase, finalState)
 	if err := r.FinalizeTerminal(runID, phase); err != nil {
-		return res, errors.Join(pinnedOutcomeErr, prepareErr, err)
+		return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr, err)
 	}
-	return res, errors.Join(pinnedOutcomeErr, prepareErr)
+	return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr)
 }
 
 func (r *Runner) recordPinnedOutcome(runID string, phase journal.RunPhase, jr *journal.Run) error {
@@ -3743,10 +3743,27 @@ func (r *Runner) recordPinnedOutcome(runID string, phase journal.RunPhase, jr *j
 	})
 }
 
-func (r *Runner) notifyTerminal(runID string, phase journal.RunPhase, finalState string) {
-	if r.cfg.NotifyTerminal != nil {
-		_ = r.cfg.NotifyTerminal(runID, phase, finalState)
+// notifyTerminal invokes the configured TerminalNotifier. A notifier failure —
+// e.g. the instance circuit breaker failing to apply goobers:needs-human — is
+// journaled (terminal_notification_failed) and swallowed rather than discarded
+// (#3646): the run must still reach its terminal phase, but the failed
+// protection has to leave durable, actionable evidence. Only a journal-write
+// failure is returned (a journal that cannot be written is fatal, §2.6).
+func (r *Runner) notifyTerminal(jr *journal.Run, runID string, phase journal.RunPhase, finalState string) error {
+	if r.cfg.NotifyTerminal == nil {
+		return nil
 	}
+	err := r.cfg.NotifyTerminal(runID, phase, finalState)
+	if err == nil {
+		return nil
+	}
+	if aerr := jr.Append(journal.Event{
+		Type:  journal.EventError,
+		Error: &journal.ErrorDetail{Code: "terminal_notification_failed", Message: err.Error()},
+	}); aerr != nil {
+		return fmt.Errorf("runner: journal terminal-notification failure for run %q: %w", runID, aerr)
+	}
+	return nil
 }
 
 func (r *Runner) prepareTerminal(runID string, phase journal.RunPhase, jr *journal.Run) error {
