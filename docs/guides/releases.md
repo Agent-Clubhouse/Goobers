@@ -65,17 +65,24 @@ This is unrelated to the DSL feature/support-matrix registry's own
 intentionally does not accept pre-release identifiers. A pre-release tag
 never appears in that lineage.
 
-## Install a pinned release
+## Install the latest stable release
 
-On Linux or macOS, run the installer attached to the current `v0.1.0` release:
+On Linux or macOS, resolve GitHub's latest stable release and run the installer
+attached to that exact tag:
 
 ```sh
-VERSION=v0.1.0
+VERSION="$(curl -fsSL https://api.github.com/repos/Agent-Clubhouse/Goobers/releases/latest |
+  awk -F '"' '/tag_name/ { print $4; exit }')"
 /bin/sh -c "$(curl -fsSL "https://github.com/Agent-Clubhouse/Goobers/releases/download/${VERSION}/install.sh")" \
   -- "$VERSION"
 ```
 
-The command downloads only assets attached to that tag. The helper detects the
+To pin a known stable release, replace the first command with an explicit tag,
+for example `VERSION=v0.3.3`. Pre-release installers are published with their
+tags but intentionally reject pre-release versions; download and verify a
+pre-release archive directly when testing one.
+
+The installer downloads only assets attached to the selected stable tag. The helper detects the
 host OS and architecture, downloads the matching archive plus `SHA256SUMS`,
 verifies the archive before extraction, and installs `goobers` to
 `$HOME/.local/bin` (override with `GOOBERS_INSTALL_DIR`). It retains the exact
