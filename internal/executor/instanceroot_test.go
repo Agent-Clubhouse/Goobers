@@ -43,7 +43,6 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		// --- STILL REFUSED: a direct instance-root file no plane serves ---
 		// Each of these names the specific file in shell.go's map comment.
 		{name: "issue-close-out (journal.OpenRead over FindRunDir)", cmd: []string{"goobers", "issue-close-out"}, want: true},
-		{name: "telemetry-query (layout.TelemetryDB)", cmd: []string{"goobers", "telemetry-query", "--window", "24h"}, want: true},
 		{name: "select-source (instance log + direct claim ledger)", cmd: []string{"goobers", "select-source"}, want: true},
 		{name: "publish-batch (SchedulerDir/decomposition-target-locks)", cmd: []string{"goobers", "publish-batch"}, want: true},
 		{name: "publish-batch with an unrelated --claim-shaped flag", cmd: []string{"goobers", "publish-batch", "--claim"}, want: true},
@@ -107,6 +106,15 @@ func TestStageRequiresInstanceRoot(t *testing.T) {
 		// it always took, so a pod and the daemon advance ONE lease. This was
 		// the last Self pin on merge-review (M3 of #3828).
 		{name: "pr-select (fairness lease on the scheduler-state plane)", cmd: []string{"goobers", "pr-select"}, want: false},
+		// telemetry-query joined them at Goobers#4001 (blocker 1 of #3996):
+		// its rollup read is a NARROW derived-aggregate plane now
+		// (apicontract.TelemetryDefectAggregatesPath) — four fixed families,
+		// gaggle-contained, with error signatures normalized before they
+		// leave the daemon — and the command selects that plane before it
+		// resolves a root at all. A regression here silently returns the
+		// defect-nomination lane to a pod-local "." rollup that reports no
+		// defects, which is correctness, not cost.
+		{name: "telemetry-query (defect-aggregate plane)", cmd: []string{"goobers", "telemetry-query", "--window", "24h"}, want: false},
 
 		// --- unrelated / provider-only commands stay dispatchable ---
 		{name: "push-branch", cmd: []string{"goobers", "push-branch"}, want: false},

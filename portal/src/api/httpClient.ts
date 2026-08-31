@@ -126,6 +126,14 @@ const clientRoutes = {
   journalRunPhase: apiRoutes.journalRunPhase,
   journalConflictTouches: apiRoutes.journalConflictTouches,
   journalUnpushedWork: apiRoutes.journalUnpushedWork,
+  // The defect-nomination aggregate plane (#4001, decision 005 R4 as
+  // amended): a mode-3 stage pod asks the daemon for the four derived
+  // families `goobers telemetry-query` nominates from, with error signatures
+  // normalized before they cross. Pod-facing like the planes above — the
+  // portal renders telemetry through its own read routes and never calls this
+  // one — but the exhaustiveness check requires the full contract here as it
+  // grows.
+  telemetryDefectAggregates: apiRoutes.telemetryDefectAggregates,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {

@@ -20,6 +20,7 @@ export const apiRoutes = {
   "telemetryErrorSignatures": { method: "GET", path: "/api/v1/telemetry/error-signatures", actionClass: "read-only-navigation" },
   "telemetryErrors": { method: "GET", path: "/api/v1/telemetry/errors", actionClass: "read-only-navigation" },
   "telemetryImplementationOutcomes": { method: "GET", path: "/api/v1/telemetry/implementation-outcomes", actionClass: "read-only-navigation" },
+  "telemetryDefectAggregates": { method: "GET", path: "/api/v1/telemetry/defect-aggregates", actionClass: "read-only-navigation" },
   "events": { method: "GET", path: "/api/v1/events", actionClass: "read-only-navigation" },
   "approveStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/approve", actionClass: "runtime-mutation", capability: "approve" },
   "overrideStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/override", actionClass: "runtime-mutation", capability: "override" },
