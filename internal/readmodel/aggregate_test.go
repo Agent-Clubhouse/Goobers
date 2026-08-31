@@ -3,6 +3,7 @@ package readmodel
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -168,7 +169,8 @@ func TestLatestPerWorkflowAgreesWithTheList(t *testing.T) {
 // 900 rows the query is too cheap to measure against a contended host.
 //
 // So the assertion is made where the signal is: the LARGE corpus, with a floor
-// far below every observed value. Measured ratios across hosts: 5.7x, 4.1x,
+// far below every observed value, and each side estimated by its FASTEST
+// repetition rather than its mean (#4087) so a loaded host cannot inflate it. Measured ratios across hosts: 5.7x, 4.1x,
 // 4.0x, and 3.0x on the loaded macOS runner. A floor of 1.5x has real headroom
 // while still catching the regression that matters — if the aggregate ever
 // degenerated into ranking all history, the ratio would collapse toward 1.
@@ -220,17 +222,33 @@ func aggregateTiming(t *testing.T, ctx context.Context, workflows, runsEach int)
 	store := openTestStore(t)
 	seedAggregateCorpus(t, store, workflows, runsEach)
 
+	// #4087: the MINIMUM over repetitions, not the mean. Host contention can
+	// only ever ADD time to a measurement, never remove it, so the minimum
+	// converges on the query's own cost while the mean converges on that cost
+	// plus the runner's average interference. One preempted repetition out of
+	// fifteen moves the mean and not the minimum — and since the two sides are
+	// timed in separate loops at different moments, a burst landing in one and
+	// not the other tilts the ratio directly. That failed PR #4076, which
+	// touched nothing in this package, at 1.24x against a 1.5x floor.
 	const reps = 15
-	start := time.Now()
-	for i := 0; i < reps; i++ {
+	fastest := func(once func()) time.Duration {
+		best := time.Duration(math.MaxInt64)
+		for i := 0; i < reps; i++ {
+			start := time.Now()
+			once()
+			if elapsed := time.Since(start); elapsed < best {
+				best = elapsed
+			}
+		}
+		return best
+	}
+
+	agg := fastest(func() {
 		if _, err := store.LatestPerWorkflow(ctx, AggregateOptions{Gaggle: "alpha"}); err != nil {
 			t.Fatal(err)
 		}
-	}
-	agg := time.Since(start) / reps
-
-	start = time.Now()
-	for i := 0; i < reps; i++ {
+	})
+	window := fastest(func() {
 		rows, err := store.reader.Query(windowFunctionQuery, "alpha")
 		if err != nil {
 			t.Fatal(err)
@@ -238,8 +256,8 @@ func aggregateTiming(t *testing.T, ctx context.Context, workflows, runsEach int)
 		for rows.Next() { //nolint:revive // draining the result is the measurement
 		}
 		_ = rows.Close()
-	}
-	return aggregateTimings{aggregate: agg, window: time.Since(start) / reps}
+	})
+	return aggregateTimings{aggregate: agg, window: window}
 }
 
 // seedAggregateCorpus inserts workflows x runsEach terminal runs into one gaggle.
