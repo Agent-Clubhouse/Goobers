@@ -9,6 +9,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/safepath"
 )
 
 // ContextResolver exposes the run journal's root directory so the executor
@@ -158,8 +159,13 @@ func (e *Executor) materializeContext(env apiv1.InvocationEnvelope) (map[string]
 			return nil, fmt.Errorf("harness: resolve context pointer %q: %w", cp.Name, err)
 		}
 		relPath := filepath.Join(contextDir, safeContextFilename(i, cp.Name))
-		full := filepath.Join(env.Workspace, relPath)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		// This write happens in the harness's own process, before the
+		// spawned harness subprocess is sandboxed, into a workspace that may
+		// contain repository-controlled content — so a symlink planted at
+		// .goobers/context, or at any not-yet-existing intermediate
+		// component of it, must not be followed (#2413).
+		full, err := safepath.Resolve(env.Workspace, relPath, true)
+		if err != nil {
 			return nil, fmt.Errorf("harness: prepare context dir: %w", err)
 		}
 		if err := os.WriteFile(full, data, 0o600); err != nil {

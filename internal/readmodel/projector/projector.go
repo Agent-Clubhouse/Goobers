@@ -130,6 +130,11 @@ type Projector struct {
 	// stats are observable counters for the freshness surface.
 	mu    sync.Mutex
 	stats Stats
+	// unresolved holds the runs that failed to apply and have not since been
+	// projected. The counters above are cumulative by design — they answer "has
+	// this ever happened?" — but the freshness surface needs the OPEN set, so a
+	// gap that repair later closes stops being reported as a gap.
+	unresolved map[string]struct{}
 
 	started bool
 	stop    chan struct{}
@@ -153,6 +158,12 @@ type Stats struct {
 	Superseded      int
 	AckFailures     int
 	ProjectFailures int
+	// UnresolvedRuns counts runs that failed to apply and have NOT been
+	// projected since. Unlike ProjectFailures this falls back to zero once a
+	// retry or the repair sweep projects the run, which is what makes it usable
+	// as a health signal: a cumulative counter would pin the freshness envelope
+	// to "partial" for the daemon's whole life after one transient failure.
+	UnresolvedRuns int
 	// LastDrainAt is when the last intake pass completed.
 	LastDrainAt time.Time
 }
@@ -260,22 +271,32 @@ func (p *Projector) commit(ctx context.Context, request commitRequest) error {
 
 // UpsertRun commits a prepared projection through the sole-writer loop.
 func (p *Projector) UpsertRun(ctx context.Context, projection Projection) error {
-	return p.commit(ctx, commitRequest{
+	if err := p.commit(ctx, commitRequest{
 		write: func(ctx context.Context, store Store) error {
 			return store.UpsertRun(ctx, projection)
 		},
 		notify: true,
-	})
+	}); err != nil {
+		return err
+	}
+	p.resolveProjectFailure(projection.Run.RunID)
+	return nil
 }
 
 // RemoveRun removes a projected run through the sole-writer loop.
 func (p *Projector) RemoveRun(ctx context.Context, runID string) error {
-	return p.commit(ctx, commitRequest{
+	if err := p.commit(ctx, commitRequest{
 		write: func(ctx context.Context, store Store) error {
 			return store.RemoveRun(ctx, runID)
 		},
 		notify: true,
-	})
+	}); err != nil {
+		return err
+	}
+	// A removed run is no longer expected in the projection, so its gap is
+	// closed by its absence.
+	p.resolveProjectFailure(runID)
+	return nil
 }
 
 // SaveSweepCursor commits repair progress through the sole-writer loop.
@@ -387,7 +408,7 @@ func (p *Projector) Drain(ctx context.Context) (int, error) {
 				// in the batch unprocessed for the same reason.
 				p.options.Logger.Warn("project run failed",
 					"run_id", marker.RunID, "error", err)
-				p.bump(func(s *Stats) { s.ProjectFailures++ })
+				p.recordProjectFailure(marker.RunID)
 				return
 			}
 			mu.Lock()
@@ -569,7 +590,7 @@ func (p *Projector) Restart(ctx context.Context) (RestartResult, error) {
 		if err != nil {
 			p.options.Logger.Warn("restart reprojection failed",
 				"run_id", row.RunID, "error", err)
-			p.bump(func(s *Stats) { s.ProjectFailures++ })
+			p.recordProjectFailure(row.RunID)
 			continue
 		}
 		if !found {
@@ -601,7 +622,35 @@ type RestartResult struct {
 func (p *Projector) Stats() Stats {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.stats
+	snapshot := p.stats
+	snapshot.UnresolvedRuns = len(p.unresolved)
+	return snapshot
+}
+
+// recordProjectFailure notes that a run could not be applied.
+func (p *Projector) recordProjectFailure(runID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stats.ProjectFailures++
+	if p.unresolved == nil {
+		p.unresolved = make(map[string]struct{})
+	}
+	p.unresolved[runID] = struct{}{}
+}
+
+// resolveProjectFailure closes a run's gap once it has been projected.
+//
+// Called from the commit path rather than from Drain so that every writer
+// closes the gap — the repair sweep and the retention loop commit through the
+// same loop, and a run rediscovered by the sweep is just as projected as one a
+// retry applied.
+func (p *Projector) resolveProjectFailure(runID string) {
+	if runID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.unresolved, runID)
 }
 
 func (p *Projector) bump(mutate func(*Stats)) {

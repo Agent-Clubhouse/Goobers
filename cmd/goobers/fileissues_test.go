@@ -125,20 +125,30 @@ providers/model.go:10:2: unreachable code
 
 // recordSignals records stdout as the collect-repo-signals stage's stdout
 // artifact in runID's run journal, exactly as the executor does for a
-// deterministic stage (internal/executor/shell.go: "<task>/stdout.log" listed
-// in the stage.finished event) — the only source the filer confirms finding
-// evidence against.
+// deterministic stage: a stage.started, then RecordArtifact under
+// "<task>/stdout.log" with no stage of its own, then a successful
+// stage.finished listing it with the text/plain pointer
+// (internal/executor/shell.go). The started event is not decoration — the
+// daemon's read projection infers an artifact's owning stage from the attempt
+// that was ACTIVE when it was recorded, so a journal without it describes a
+// shape the executor never produces and would not exercise the plane read
+// this stage now performs.
 func (f *fileIssuesFixture) recordSignals(runID, stdout string) {
 	f.t.Helper()
 	run, err := journal.Create(layoutFor(f.root).RunsDir(), journal.RunIdentity{RunID: runID, Workflow: "defect-nomination", Gaggle: "goobers"}, nil)
 	if err != nil {
 		f.t.Fatal(err)
 	}
+	if err := run.Append(journal.Event{Type: journal.EventStageStarted, Stage: "collect-repo-signals", Attempt: 1}); err != nil {
+		f.t.Fatal(err)
+	}
 	ref, err := run.RecordArtifact(runID+":collect-repo-signals/stdout.log", []byte(stdout))
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	if err := run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "collect-repo-signals", Attempt: 1, Status: string(apiv1.ResultSuccess), Artifacts: []journal.Ref{ref}}); err != nil {
+	pointer := ref
+	pointer.MediaType = "text/plain"
+	if err := run.Append(journal.Event{Type: journal.EventStageFinished, Stage: "collect-repo-signals", Attempt: 1, Status: string(apiv1.ResultSuccess), Artifacts: []journal.Ref{pointer}}); err != nil {
 		f.t.Fatal(err)
 	}
 	if err := run.Close(); err != nil {
@@ -864,8 +874,8 @@ func TestFileIssuesApprovalBounds(t *testing.T) {
 	}
 }
 
-// TestFileIssuesRefusesApprovalWithoutTheSignalsArtifact pins the pod shape:
-// with no run journal reachable (a stage pod), or a journal that records no
+// TestFileIssuesRefusesApprovalWithoutTheSignalsArtifact pins the unconfirmed
+// shape: with no run journal reachable at all, or a journal that records no
 // successful collect-repo-signals stage, nothing can be confirmed, so a
 // nomination that would otherwise be approved files unapproved with the
 // named reason — never approved on the model's word.
@@ -883,8 +893,18 @@ func TestFileIssuesRefusesApprovalWithoutTheSignalsArtifact(t *testing.T) {
 			t.Fatalf("result = %+v; want the issue filed once, unapproved", result)
 		}
 		reasons := strings.Join(result.Issues[0].ApprovalUnmet, "\n")
-		if !strings.Contains(reasons, "no tool finding can be confirmed") || !strings.Contains(reasons, "collect-repo-signals stdout artifact of run "+fileIssuesTestRunID+" is not readable from this stage") || !strings.Contains(reasons, "a stage pod cannot reach the run journal") {
+		// The reason must name the run and the underlying cause. It must NOT
+		// claim a stage pod cannot reach the run journal — since Goobers#3996
+		// blocker 2 a pod reads it over the run-scoped journal plane, and a
+		// reason that blames the pod shape would send the next reader after
+		// an imaginary defect.
+		if !strings.Contains(reasons, "no tool finding can be confirmed") ||
+			!strings.Contains(reasons, "collect-repo-signals stdout artifact of run "+fileIssuesTestRunID+" is not readable from this stage") ||
+			!strings.Contains(reasons, "run journal not found") {
 			t.Fatalf("approvalUnmet = %v", result.Issues[0].ApprovalUnmet)
+		}
+		if strings.Contains(reasons, "cannot reach the run journal") {
+			t.Fatalf("the reason still blames the pod shape: %v", result.Issues[0].ApprovalUnmet)
 		}
 		if result.Findings.Available || result.Findings.Reason == "" || result.Findings.Stage != "collect-repo-signals" {
 			t.Fatalf("findings summary = %+v", result.Findings)

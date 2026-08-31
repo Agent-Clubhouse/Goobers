@@ -301,26 +301,26 @@ func registerClaimRoute(
 		}
 		var input ClaimRequest
 		if err := decodeWriteRequest(request, &input); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
 		switch {
 		case input.RunID == "":
-			writeError(w, http.StatusBadRequest, "invalid_request", "gaggle, provider, itemId, and runId are required")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "gaggle, provider, itemId, and runId are required")
 			return
 		case input.ItemID == "" && release:
 			// Release-all-for-run: the namespace is an optional narrowing, but
 			// half a namespace is neither "all" nor "this namespace".
 			if (input.Gaggle == "") != (input.Provider == "") {
-				writeError(w, http.StatusBadRequest, "invalid_request", "gaggle and provider must be given together for a release of every claim the run holds")
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "gaggle and provider must be given together for a release of every claim the run holds")
 				return
 			}
 		case input.Gaggle == "" || input.Provider == "" || input.ItemID == "":
-			writeError(w, http.StatusBadRequest, "invalid_request", "gaggle, provider, itemId, and runId are required")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "gaggle, provider, itemId, and runId are required")
 			return
 		}
 		if input.LeaseSeconds < 0 {
-			writeError(w, http.StatusBadRequest, "invalid_request", "leaseSeconds must not be negative")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "leaseSeconds must not be negative")
 			return
 		}
 		if input.LeaseSeconds > MaxClaimLeaseSeconds {
@@ -329,7 +329,7 @@ func registerClaimRoute(
 			return
 		}
 		if input.Outcome != "" && !settle {
-			writeError(w, http.StatusBadRequest, "invalid_request", "outcome is only valid for settle")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "outcome is only valid for settle")
 			return
 		}
 		// Per-run containment: a pod token proves "I am run X's stage pod",
@@ -371,22 +371,22 @@ func registerClaimListRoute(router *Router, claims ClaimService, errorLog *log.L
 		}
 		var input ClaimListRequest
 		if err := decodeWriteRequest(request, &input); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
 		if input.RunID == "" {
-			writeError(w, http.StatusBadRequest, "invalid_request", "runId is required")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "runId is required")
 			return
 		}
 		switch input.Scope {
 		case ClaimListScopeRun:
 		case ClaimListScopeNamespace:
 			if input.Gaggle == "" || input.Provider == "" {
-				writeError(w, http.StatusBadRequest, "invalid_request", "gaggle and provider are required for a namespace listing")
+				writeError(w, http.StatusBadRequest, CodeInvalidRequest, "gaggle and provider are required for a namespace listing")
 				return
 			}
 		default:
-			writeError(w, http.StatusBadRequest, "invalid_request", "scope must be run or namespace")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "scope must be run or namespace")
 			return
 		}
 		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
@@ -420,15 +420,15 @@ func registerTriggerRoute(router *Router, triggers TriggerService, errorLog *log
 		}
 		var input TriggerRequest
 		if err := decodeWriteRequest(request, &input); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
 		if strings.TrimSpace(input.Workflow) == "" {
-			writeError(w, http.StatusBadRequest, "invalid_request", "workflow is required")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "workflow is required")
 			return
 		}
 		if len(input.RequestID) > MaxTriggerRequestIDBytes {
-			writeError(w, http.StatusBadRequest, "invalid_request",
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest,
 				fmt.Sprintf("requestId must be no longer than %d bytes", MaxTriggerRequestIDBytes))
 			return
 		}
@@ -485,7 +485,7 @@ func registerEscalationRoute(router *Router, escalations EscalationService, life
 		}
 		var input EscalationResolutionRequest
 		if err := decodeWriteRequest(request, &input); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 			return
 		}
 		input.RunID = request.PathValue("run")
@@ -493,7 +493,7 @@ func registerEscalationRoute(router *Router, escalations EscalationService, life
 		switch input.Resolution {
 		case EscalationResolutionApprove, EscalationResolutionDeny, EscalationResolutionRedirect:
 		default:
-			writeError(w, http.StatusBadRequest, "invalid_request", "resolution must be approve, deny, or redirect")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "resolution must be approve, deny, or redirect")
 			return
 		}
 		if principal, ok := PrincipalFromRequest(request); ok {

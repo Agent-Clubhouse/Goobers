@@ -510,17 +510,41 @@ function TranscriptRow({
   const [content, setContent] = useState<string>();
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
   const [error, setError] = useState<string>();
+  const request = useRef<AbortController | undefined>(undefined);
+
+  // A transcript body is large and keeps streaming after the reader leaves, so
+  // a load that outlives its row — the inspector unmounted, or other evidence
+  // was selected — is cancelled rather than left buffering into a component
+  // that will never render it (#3665).
+  useEffect(() => {
+    setContent(undefined);
+    setState("idle");
+    setError(undefined);
+    return () => {
+      request.current?.abort();
+      request.current = undefined;
+    };
+  }, [client, event.seq, runId]);
 
   const load = () => {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
     setState("loading");
     setError(undefined);
     client
-      .getTranscript(runId, event.seq)
+      .getTranscript(runId, event.seq, { signal: controller.signal })
       .then((value) => {
+        if (controller.signal.aborted) {
+          return;
+        }
         setContent(new TextDecoder().decode(value.bytes));
         setState("idle");
       })
       .catch((err: unknown) => {
+        if (controller.signal.aborted) {
+          return;
+        }
         setError(err instanceof Error ? err.message : "Unknown error");
         setState("error");
       });
@@ -812,17 +836,41 @@ function ArtifactRow({
   const [content, setContent] = useState<ArtifactContent>();
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
   const [error, setError] = useState<string>();
+  const request = useRef<AbortController | undefined>(undefined);
+
+  // Same cancellation contract as the transcript row: an artifact download is
+  // abandoned when the row goes away or points at different evidence, so the
+  // transfer stops at the earliest boundary instead of completing into a dead
+  // component (#3665).
+  useEffect(() => {
+    setContent(undefined);
+    setState("idle");
+    setError(undefined);
+    return () => {
+      request.current?.abort();
+      request.current = undefined;
+    };
+  }, [artifact.digest, client, runId]);
 
   const load = () => {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
     setState("loading");
     setError(undefined);
     client
-      .getArtifact(runId, artifact.digest)
+      .getArtifact(runId, artifact.digest, { signal: controller.signal })
       .then((value) => {
+        if (controller.signal.aborted) {
+          return;
+        }
         setContent(value);
         setState("idle");
       })
       .catch((err: unknown) => {
+        if (controller.signal.aborted) {
+          return;
+        }
         setError(err instanceof Error ? err.message : "Unknown error");
         setState("error");
       });

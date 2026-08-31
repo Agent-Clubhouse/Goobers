@@ -314,20 +314,27 @@ func surrenderPlanePath(path string) bool {
 
 // telemetryPlanePath reports whether path is one of the telemetry read routes
 // a pod principal may GET (decision 005 R4 / finding 002 C3): the stats and
-// errors aggregates, plus the implementation-outcome evidence derived from
-// the same rows. Derived, low-sensitivity data — no raw secret, no other
-// gaggle's configuration — and gaggle containment is enforced by the
-// handlers, which can see the query string and the principal together
+// errors aggregates, the implementation-outcome evidence derived from the
+// same rows, and the defect-nomination aggregate read (Goobers#4001).
+// Derived, low-sensitivity data — no raw secret, no other gaggle's
+// configuration — and gaggle containment is enforced by the handlers, which
+// can see the query string and the principal together
 // (registerTelemetryRoutes/podTelemetryGaggle).
 //
-// TelemetryErrorSignaturesPath is deliberately NOT here: the ruling named
-// stats and errors, and the signature aggregate has no consumer on the pod
-// side. Adding it is a ruling amendment, not an oversight to fix silently.
+// TelemetryErrorSignaturesPath is deliberately NOT here, and its absence
+// survived Goobers#4001 rather than being overtaken by it. That route serves
+// RAW (code, error_class) pairs with an example run, stage and attempt —
+// exactly what R4 keeps off the plane. The defect-aggregate route below
+// serves the NORMALIZED signature instead
+// (telemetryclient.NormalizeErrorSignature), which is what the amended ruling
+// admits. Admitting the raw route is still a ruling amendment, not an
+// oversight to fix silently.
 func telemetryPlanePath(path string) bool {
 	switch path {
 	case apicontract.TelemetryStatsPath,
 		apicontract.TelemetryErrorsPath,
-		apicontract.TelemetryImplementationOutcomesPath:
+		apicontract.TelemetryImplementationOutcomesPath,
+		apicontract.TelemetryDefectAggregatesPath:
 		return true
 	default:
 		return false
@@ -501,6 +508,7 @@ type handlerConfig struct {
 	blobs               blobstore.Store
 	surrenders          SurrenderService
 	state               StateService
+	telemetryDefects    TelemetryDefectAggregateService
 	podRunGaggle        func(context.Context, string) (string, error)
 }
 
@@ -811,6 +819,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		writeJSON(w, http.StatusOK, portalConfig)
 	})
 	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
+	registerTelemetryDefectAggregateRoute(router, config.telemetryDefects, config.podRunGaggle, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
@@ -910,7 +919,7 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		w.Header().Set("Content-Length", strconv.Itoa(len(artifact.Bytes)))
 		w.Header().Set("ETag", `"`+artifact.Metadata.Digest+`"`)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Goobers-Digest", artifact.Metadata.Digest)
+		w.Header().Set(apicontract.DigestHeader, artifact.Metadata.Digest)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(artifact.Bytes)
 	})

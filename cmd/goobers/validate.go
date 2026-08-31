@@ -461,13 +461,14 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 		checkRepositoryReality(root, configDir, cfg, set, stores, stdout, diagnostics)
 	}
 	printDSLVersionSummary(stdout, set.Workflows)
-	// Two codes are strict-neutral by ruling: they print and land in
-	// diagnostics but are excluded from --strict's promotion. Both are
-	// nudges about something fully supported, and both would otherwise turn
-	// an existing green pipeline red purely on upgrade. See each code's own
-	// doc comment in api/validate for the full reasoning — RNR006's second
-	// reason (only `true` silences it, so promotion would coerce an
-	// unearned trusted claim) is the load-bearing one.
+	// Three codes are strict-neutral by ruling: they print and land in
+	// diagnostics but are excluded from --strict's promotion. Each is a
+	// nudge about something the author cannot fix by editing their config
+	// alone, and each would otherwise turn an existing green pipeline red
+	// purely on upgrade. See each code's own doc comment in api/validate for
+	// the full reasoning — RNR006's second reason (only `true` silences it,
+	// so promotion would coerce an unearned trusted claim) is the
+	// load-bearing one.
 	strictNeutral := 0
 	for _, w := range report.Warnings() {
 		if isStrictNeutralWarning(w.Code) {
@@ -492,7 +493,8 @@ func runValidateConfig(options validateOptions, stdout, stderr io.Writer, diagno
 // saying its nudge must never be able to break a green pipeline.
 func isStrictNeutralWarning(code validate.WarningCode) bool {
 	switch code {
-	case validate.WarningDeprecatedDSLVersion, validate.RunnerAVExclusionsUnverified:
+	case validate.WarningDeprecatedDSLVersion, validate.RunnerAVExclusionsUnverified,
+		validate.WarningConnectionRefUnhonored:
 		return true
 	default:
 		return false
@@ -1117,7 +1119,7 @@ func checkTargetRepositoriesAtFile(
 			continue
 		}
 		pf(stdout, "REPOSITORY %s: reachable\n", label)
-		if repo.Provider == "github" {
+		if repo.Provider == string(providers.ProviderGitHub) {
 			warnOnOversizedRepository(label, repo, token, stdout)
 		}
 	}
@@ -1179,7 +1181,7 @@ func warnOnOversizedRepository(label string, repo instance.RepoRef, token string
 }
 
 func repoUsesToken(repo instance.RepoRef) bool {
-	return repo.Provider != "ado" || repo.Auth == nil || repo.Auth.Kind == instance.ADOAuthPAT
+	return repo.Provider != string(providers.ProviderADO) || repo.Auth == nil || repo.Auth.Kind == instance.ADOAuthPAT
 }
 
 // giteaPreflightRootURL normalizes a Gitea repo's configured baseUrl into the
@@ -1197,7 +1199,7 @@ func giteaPreflightRootURL(repo instance.RepoRef) (string, error) {
 }
 
 func gitRepositoryReachable(ctx context.Context, repo instance.RepoRef, token string, stores credentials.StoreResolver) error {
-	if repo.Provider == "ado" {
+	if repo.Provider == string(providers.ProviderADO) {
 		provider, err := adoauth.Provider(repo, nil, nil, nil, nil, stores)
 		if err != nil {
 			return err

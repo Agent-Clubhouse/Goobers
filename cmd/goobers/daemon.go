@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -21,12 +20,14 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/readmodel/intake"
+	"github.com/goobers/goobers/internal/readmodel/projector"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
+	"github.com/goobers/goobers/internal/workcopyroot"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -67,6 +68,10 @@ type schedulerSetup struct {
 	// RetentionStats snapshots projection-retention loop counters for status
 	// diagnostics while the daemon is running.
 	RetentionStats func() readmodel.RetentionStats
+	// ProjectorStats snapshots the projector's counters, including the runs it
+	// failed to apply and when it last completed a pass. The read service turns
+	// them into the readState envelope's gap and lag signals (#2843).
+	ProjectorStats func() projector.Stats
 	// ReadModelEpoch is the store's opaque per-build identity (§4.2), read back
 	// at open so a broken store surfaces at daemon start rather than on the first
 	// read. It becomes the SSE cursor's epoch component in Wave 5.
@@ -259,6 +264,14 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	if err != nil {
 		return nil, err
 	}
+	// Goobers#3989: fold the pre-keyed aggregate pr-remediation-noop.json into
+	// the per-PR scheduler-state keys before anything can read one. The record
+	// is a loop breaker, so losing it across the upgrade would spend a full
+	// agentic remediation cycle per currently-suppressed PR proving again that
+	// there is nothing to do.
+	if err := migrateLegacyRemediationNoopState(l); err != nil {
+		return nil, err
+	}
 	claimProviders := claimProvidersByGaggle(set)
 
 	// telemetry.enabled defaults to true; instance.yaml can opt out (issue
@@ -291,6 +304,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	var watermarks *intake.Store
 	var stopProjector func()
 	var retentionStats func() readmodel.RetentionStats
+	var projectorStats func() projector.Stats
 	var instanceLog *journal.InstanceLog
 	// telemetryOTLPDegradeErr holds a non-nil buildTelemetryClient error that
 	// wraps telemetry.ErrOTLPUnavailable (invalid OTLP TLS material). It is
@@ -432,7 +446,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 				fmt.Fprintf(os.Stderr, "warning: open intake store: %v\n", intakeErr)
 			} else {
 				watermarks = intakeStore
-				stopProjector, retentionStats = startProjector(ctx, readStore, intakeStore, l, cfg)
+				stopProjector, retentionStats, projectorStats = startProjector(ctx, readStore, intakeStore, l, cfg)
 			}
 		}
 	}
@@ -524,6 +538,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		Watermarks:        watermarks,
 		StopProjector:     stopProjector,
 		RetentionStats:    retentionStats,
+		ProjectorStats:    projectorStats,
 		ReadModelEpoch:    readModelEpoch,
 		Config:            cfg,
 		Definitions:       definitions.Set,
@@ -637,9 +652,9 @@ func claimWorkcopyRoot(claims map[string]workcopyRootClaim, gaggle, root string,
 	if err != nil {
 		return fmt.Errorf("resolve workcopies path for gaggle %s: %w", gaggle, err)
 	}
-	key := filepath.Clean(path)
-	if runtime.GOOS == "windows" {
-		key = strings.ToLower(key)
+	key, err := workcopyroot.Key(path)
+	if err != nil {
+		return fmt.Errorf("resolve workcopies path for gaggle %s: %w", gaggle, err)
 	}
 	if other, exists := claims[key]; exists && other.gaggle != gaggle && (alternate || other.alternate) {
 		return fmt.Errorf("workcopies path collision: gaggles %s and %s resolve to %s", other.gaggle, gaggle, path)
@@ -774,26 +789,40 @@ func buildSchedulerDefinitions(
 		gagglesByName[set.Gaggles[i].Name] = set.Gaggles[i]
 	}
 
-	// Checkpoint 3 (#2860, dsl-3.0.md §5): solve every workflow against the
-	// declared inventory; an unsatisfiable workflow is marked refused with a
-	// named diagnostic — journaled and refused per-run by the scheduler —
-	// while the daemon and every other workflow keep serving. nil on a
-	// zero-declaration instance (see placementrefusal.go).
-	refusals, err := placementRefusals(cfg, set, goobers, machines)
-	if err != nil {
-		return nil, err
-	}
-	for identity, diagnostic := range refusals {
-		fmt.Fprintf(os.Stderr, "warning: workflow %q (gaggle %q) cannot be placed on the declared runners: inventory and is refused: %s\n",
-			identity.Workflow, identity.Gaggle, diagnostic)
-	}
-
 	// #3876 (decision 005 D1): decide, PER ENTRY, whether this lane dispatches
 	// onto the tier-3 engine. See selectEngineForEntry for the predicate and
 	// why it cannot be a daemon-wide switch.
+	//
+	// Computed BEFORE checkpoint 3 (#3987), because checkpoint 3's answer
+	// depends on it: the boot refusal is a statement about the substrate the
+	// DAEMON executes on, and an engine-selected lane never touches it. The
+	// order is safe and cannot cycle — engineSelections reads cfg, set and the
+	// compiled machines only, and never consults a refusal.
 	selections, err := engineSelections(cfg, set, machines)
 	if err != nil {
 		return nil, err
+	}
+
+	// Checkpoint 3 (#2860, dsl-3.0.md §5): solve every workflow against the
+	// declared inventory; an unsatisfiable RUNNER-DRIVEN workflow is marked
+	// refused with a named diagnostic — journaled and refused per-run by the
+	// scheduler — while the daemon and every other workflow keep serving.
+	// Empty on a zero-declaration instance (see placementrefusal.go).
+	placement, err := placementRefusals(cfg, set, goobers, machines, selections)
+	if err != nil {
+		return nil, err
+	}
+	for _, identity := range sortedWorkflowIdentities(placement.Refusals) {
+		fmt.Fprintf(os.Stderr, "warning: workflow %q (gaggle %q) cannot be placed on the declared runners: inventory and is refused: %s\n",
+			identity.Workflow, identity.Gaggle, placement.Refusals[identity])
+	}
+	// An exempted lane's diagnostic is still reported: it names the runners
+	// the stage can place on, which is what an operator needs if the engine
+	// side of the dispatch later misbehaves. Reported as a note, because
+	// nothing is refused.
+	for _, identity := range sortedWorkflowIdentities(placement.EngineDeferred) {
+		fmt.Fprintf(os.Stderr, "note: workflow %q (gaggle %q) cannot be placed on the daemon's own substrate (%s), but every stage is pinned on the declared inventory and the run dispatches through the engine, so it is not refused\n",
+			identity.Workflow, identity.Gaggle, placement.EngineDeferred[identity])
 	}
 	// The Temporal client and the live journal writer do not exist yet — see
 	// engineRuntime. Every engineStarter shares this holder and up.go attaches
@@ -945,8 +974,10 @@ func buildSchedulerDefinitions(
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
 			// Checkpoint 3 (#2860): non-empty exactly when the boot solve
-			// above found this workflow unplaceable on the declared inventory.
-			PlacementRefusal: refusals[identity],
+			// above found this workflow unplaceable on the declared inventory
+			// AND the entry is runner-driven — an engine-selected entry's
+			// placement is proven against the full inventory instead (#3987).
+			PlacementRefusal: placement.Refusals[identity],
 		})
 		entries[len(entries)-1].GooberDigest = gooberDigests[identity]
 	}

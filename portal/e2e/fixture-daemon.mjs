@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -266,8 +266,9 @@ function serveEvents(response) {
   response.on("close", () => eventStreams.delete(response));
 }
 
-function serveStatic(pathname, response) {
-  const requestPath = pathname === "/" ? "index.html" : normalize(decodeURIComponent(pathname)).slice(1);
+function serveStatic(pathname, mode, response) {
+  const requestPath =
+    pathname === "/" ? "index.html" : normalize(decodeURIComponent(pathname)).slice(1);
   const file = resolve(join(distRoot, requestPath));
   const pathFromRoot = relative(distRoot, file);
   const escapesRoot = pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`) || isAbsolute(pathFromRoot);
@@ -279,6 +280,14 @@ function serveStatic(pathname, response) {
   response.writeHead(200, {
     "Content-Type": contentTypes[extname(file)] ?? "application/octet-stream",
   });
+  if (requestPath === "index.html" && mode === "getting-started") {
+    response.end(
+      readFileSync(file, "utf8")
+        .replace('content="daemon"', 'content="getting-started"')
+        .replace("<title>Goobers · local operations</title>", "<title>Getting Started | Goobers</title>"),
+    );
+    return;
+  }
   createReadStream(file).pipe(response);
 }
 
@@ -318,7 +327,7 @@ createServer((request, response) => {
     sendJSON(response, fixture);
     return;
   }
-  serveStatic(url.pathname, response);
+  serveStatic(url.pathname, url.searchParams.get("mode"), response);
 }).listen(port, "127.0.0.1", () => {
   console.log(`Fixture daemon listening on http://127.0.0.1:${port}`);
 });

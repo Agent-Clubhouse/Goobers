@@ -45,7 +45,7 @@ func TestOnboardingActionsComposeToCleanInstance(t *testing.T) {
 
 	results := make([]onboardingActionResult, 0, len(invocations))
 	for _, args := range invocations {
-		code, stdout, stderr := runArgs(t, args...)
+		code, stdout, stderr := runOnboardingFixtureArgs(t, args...)
 		if code != 0 || stderr != "" {
 			t.Fatalf("%v: code=%d stdout=%q stderr=%q", args, code, stdout, stderr)
 		}
@@ -158,7 +158,7 @@ func TestOnboardingStubAgentInstructionsDestinationGoldens(t *testing.T) {
 				}
 			}
 
-			code, stdout, stderr := runArgs(
+			code, stdout, stderr := runOnboardingFixtureArgs(
 				t,
 				"onboarding", "stub-agent-instructions",
 				"--source-tree", root,
@@ -173,7 +173,7 @@ func TestOnboardingStubAgentInstructionsDestinationGoldens(t *testing.T) {
 				t.Fatalf("decode result: %v\n%s", err, stdout)
 			}
 			if len(result.Prompts) != 3 ||
-				!strings.Contains(result.Prompts[0], "DSL author") ||
+				!strings.Contains(result.Prompts[0], "Getting Started") ||
 				!strings.Contains(result.Prompts[1], "run operator") ||
 				!strings.Contains(result.Prompts[1], "<instance-path>") ||
 				!strings.Contains(result.Prompts[2], "workflow upgrade") {
@@ -228,7 +228,7 @@ func TestOnboardingStubAgentInstructionsRefusesToolkitCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, stdout, stderr := runArgs(
+	code, stdout, stderr := runOnboardingFixtureArgs(
 		t,
 		"onboarding", "stub-agent-instructions",
 		"--source-tree", root,
@@ -345,7 +345,7 @@ func TestOnboardingStubSampleDestinationGoldens(t *testing.T) {
 				}
 			}
 
-			code, stdout, stderr := runArgs(
+			code, stdout, stderr := runOnboardingFixtureArgs(
 				t,
 				"onboarding", "stub-sample",
 				"--destination", destination,
@@ -402,7 +402,7 @@ func TestOnboardingStubSampleRefusesClobberBeforeWriting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, _, stderr := runArgs(t, "onboarding", "stub-sample", "--destination", destination)
+	code, _, stderr := runOnboardingFixtureArgs(t, "onboarding", "stub-sample", "--destination", destination)
 	if code != 1 || !strings.Contains(stderr, "without --force") {
 		t.Fatalf("without force: code=%d stderr=%q", code, stderr)
 	}
@@ -413,7 +413,7 @@ func TestOnboardingStubSampleRefusesClobberBeforeWriting(t *testing.T) {
 		t.Fatalf("preflight wrote files before refusing conflict: %v", err)
 	}
 
-	code, _, stderr = runArgs(t, "onboarding", "stub-sample", "--destination", destination, "--force")
+	code, _, stderr = runOnboardingFixtureArgs(t, "onboarding", "stub-sample", "--destination", destination, "--force")
 	if code != 0 {
 		t.Fatalf("with force: code=%d stderr=%q", code, stderr)
 	}
@@ -496,7 +496,7 @@ func TestOnboardingStubSampleRefusesSymlinkedDestinationAncestor(t *testing.T) {
 	}
 	destination := filepath.Join(link, "sample")
 
-	code, _, stderr := runArgs(t, "onboarding", "stub-sample", "--destination", destination)
+	code, _, stderr := runOnboardingFixtureArgs(t, "onboarding", "stub-sample", "--destination", destination)
 	if code != 1 || !strings.Contains(stderr, "symbolic-link destination ancestor") {
 		t.Fatalf("symlinked ancestor: code=%d stderr=%q", code, stderr)
 	}
@@ -523,7 +523,7 @@ func TestOnboardingStubSampleForceReplacesReadOnlyConflict(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(conflict, 0o600) })
 
-	code, _, stderr := runArgs(t, "onboarding", "stub-sample", "--destination", destination, "--force")
+	code, _, stderr := runOnboardingFixtureArgs(t, "onboarding", "stub-sample", "--destination", destination, "--force")
 	if code != 0 {
 		t.Fatalf("with force: code=%d stderr=%q", code, stderr)
 	}
@@ -560,7 +560,7 @@ func TestOnboardingStubSampleReportsPendingWithoutCredentials(t *testing.T) {
 	}
 	t.Cleanup(func() { newOnboardingIssueSeeder = previous })
 
-	code, stdout, stderr := runArgs(
+	code, stdout, stderr := runOnboardingFixtureArgs(
 		t,
 		"onboarding", "stub-sample",
 		"--destination", filepath.Join(onboardingTestTempDir(t), "sample"),
@@ -605,7 +605,7 @@ func TestOnboardingStubSampleSeedsLabelsAndIssuesIdempotently(t *testing.T) {
 	destination := filepath.Join(onboardingTestTempDir(t), "sample")
 	run := func() onboardingActionResult {
 		t.Helper()
-		code, stdout, stderr := runArgs(
+		code, stdout, stderr := runOnboardingFixtureArgs(
 			t,
 			"onboarding", "stub-sample",
 			"--destination", destination,
@@ -671,6 +671,17 @@ func onboardingTestTempDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+func runOnboardingFixtureArgs(t *testing.T, args ...string) (int, string, string) {
+	t.Helper()
+	if len(args) >= 2 && args[0] == "onboarding" && args[1] == "stub-sample" {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		code := runOnboardingStubSample(args[2:], &stdout, &stderr)
+		return code, stdout.String(), stderr.String()
+	}
+	return runArgs(t, args...)
 }
 
 type fakeOnboardingIssueSeeder struct {

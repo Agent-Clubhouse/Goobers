@@ -9,13 +9,11 @@ spec:
     owner: acme
     name: web
     branch: main
-    connectionRef: github-main
   backlog:
     provider: github
     project: acme/web
     labels:
       - goober:ready
-    connectionRef: github-backlog
   isolation:
     namespace: gaggle-acme-web
     identityRef: acme-web-workload

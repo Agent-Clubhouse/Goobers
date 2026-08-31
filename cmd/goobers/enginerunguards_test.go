@@ -124,8 +124,9 @@ type fakeWorkflowRun struct {
 	id     string
 }
 
-func (r *fakeWorkflowRun) GetID() string    { return r.id }
-func (r *fakeWorkflowRun) GetRunID() string { return "" }
+func (r *fakeWorkflowRun) GetID() string                  { return r.id }
+func (r *fakeWorkflowRun) GetRunID() string               { return "" }
+func (r *fakeWorkflowRun) GetFirstExecutionRunID() string { return "" }
 
 func (r *fakeWorkflowRun) Get(ctx context.Context, out any) error {
 	r.parent.mu.Lock()

@@ -310,7 +310,7 @@ func writeAgentKitNextSteps(w io.Writer, target, instanceRoot string) {
 	// (no backslashes to escape), but on Windows it doubled every path
 	// separator (C:\Users\... became C:\\Users\\...) — a starter prompt meant
 	// to be copy-pasted verbatim then showed the wrong path.
-	pf(w, "  Authoring: \"%s\"\n", prompts[0])
+	pf(w, "  Getting Started: \"%s\"\n", prompts[0])
 	pf(w, "  Run Q&A: \"%s\"\n", prompts[1])
 	pf(w, "  Upgrade: \"%s\"\n", prompts[2])
 	pf(w, "\nToolkit maintenance:\n")
@@ -326,7 +326,7 @@ func agentKitStarterPrompts(instanceRoot string) []string {
 		instanceTarget = absolutePath(instanceRoot)
 	}
 	return []string{
-		"Use the Goobers DSL author skill to create or modify a workflow from this plain-English goal: <describe the workflow>.",
+		"Use the Goobers Getting Started skill to inspect target repository <target-path-or-provider-url>, derive its default branch, CI command, toolchain, and conventions, and create the smallest validated configuration source here. Explain each write and ask only when required evidence or behavior cannot be safely derived.",
 		"Use the Goobers run operator skill to summarize recent runs, issues, and pull requests for the Goobers instance at " + instanceTarget + ".",
 		"Use the Goobers workflow upgrade skill to assess this config source for upgrade to the installed Goobers release.",
 	}

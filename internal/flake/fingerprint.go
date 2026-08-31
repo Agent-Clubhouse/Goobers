@@ -17,6 +17,14 @@ var (
 	volatileGoroutine     = regexp.MustCompile(`\bgoroutine\s+\d+\b`)
 	volatileTimestamp     = regexp.MustCompile(`\b20\d\d-\d\d-\d\d[T ][0-9:.+-]+Z?\b`)
 	volatileUUID          = regexp.MustCompile(`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`)
+	// volatileTempSuffix is the random tail os.MkdirTemp (and so t.TempDir)
+	// appends to the directory name it is given: /tmp/TestFoo833401532 and
+	// /tmp/TestFoo1845522470 are the same directory from two runs.
+	volatileTempSuffix = regexp.MustCompile(`([\\/][^\s:()\\/]*?)\d{6,}\b`)
+	// volatileHexSegment is a whole path segment of hex — a content hash the
+	// system under test derived (a mirror's repo key, an object directory),
+	// stable within a run and different in the next.
+	volatileHexSegment = regexp.MustCompile(`([\\/])[0-9a-fA-F]{8,}\b`)
 )
 
 // NormalizeSignature removes volatile values while retaining the assertion,
@@ -157,5 +165,7 @@ func normalizeLine(line string) string {
 	line = volatileAddress.ReplaceAllString(line, "<addr>")
 	line = volatileGoroutine.ReplaceAllString(line, "goroutine <id>")
 	line = volatileDuration.ReplaceAllString(line, "<duration>")
+	line = volatileTempSuffix.ReplaceAllString(line, "${1}<rand>")
+	line = volatileHexSegment.ReplaceAllString(line, "${1}<hash>")
 	return strings.Join(strings.Fields(line), " ")
 }

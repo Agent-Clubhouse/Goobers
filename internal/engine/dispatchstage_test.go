@@ -366,13 +366,15 @@ func TestDispatchStageRefusesV1UnsupportedRun(t *testing.T) {
 			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceMode("shared-nfs")}
 		},
 		// Narrow, measured replacement for the blanket goobers-CLI refusal:
-		// telemetry-query reads the instance CONFIG DIRECTORY (the workflow
-		// definitions), which a stage pod does not have. Every other CLI stage
-		// this instance's workflows invoke reaches its repo and credential
-		// through the environment and now dispatches.
-		"goobers command reading the config dir": func(in *DispatchStageInput) {
-			in.Run = &apiv1.DeterministicRun{Command: []string{"goobers", "telemetry-query"}, Workspace: apiv1.WorkspaceScratch}
-		},
+		// this arm refuses a command that reads the instance CONFIG DIRECTORY
+		// (the workflow definitions), which a stage pod does not have.
+		//
+		// It has no member today. telemetry-query was the only one, and
+		// Goobers#4001 moved its rollup read onto a narrow derived-aggregate
+		// plane and its config read behind a local-path-only guard, so it
+		// dispatches now — see TestDispatchStageAdmitsTelemetryQuery below,
+		// which pins that directly. The arm itself stays because the
+		// CONDITION is still true for the next command that needs one.
 	} {
 		t.Run(name, func(t *testing.T) {
 			fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
@@ -386,6 +388,41 @@ func TestDispatchStageRefusesV1UnsupportedRun(t *testing.T) {
 				t.Fatal("an unsupported Run reached the dispatcher instead of being refused first")
 			}
 		})
+	}
+}
+
+// TestDispatchStageAdmitsTelemetryQuery pins Goobers#4001 at the engine seam.
+//
+// telemetry-query was this guard's only subject: it read the instance config
+// directory and the telemetry rollup, so a pod would have found neither and
+// reported no defects at all. It now reads a narrow, gaggle-contained
+// derived-aggregate plane instead, and the command refuses its own local path
+// when the resolved root is not an instance. A refusal here would silently
+// re-pin the whole defect-nomination lane to a self runner, which is what
+// #3996 was filed about.
+func TestDispatchStageAdmitsTelemetryQuery(t *testing.T) {
+	store := surrenderStore(t)
+	putSurrendered(t, store, "run-u", "build", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{
+		Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true, Disposed: true,
+	}}
+	a := &Activities{Dispatcher: fake, Surrenders: store}
+	input := dispatchInput("run-u", "build", 1)
+	input.Run = &apiv1.DeterministicRun{
+		Command: []string{
+			"goobers", "telemetry-query", "--window", "168h",
+			"--aggregate", "stage-failure-rate", "--aggregate", "error-signature",
+			"--aggregate", "gate-noise", "--aggregate", "credit-assignment",
+		},
+		Workspace: apiv1.WorkspaceScratch,
+	}
+	if _, err := a.DispatchStage(context.Background(), input); err != nil {
+		t.Fatalf("DispatchStage error: %v", err)
+	}
+	if fake.calls.Load() != 1 {
+		t.Fatalf("dispatch calls = %d, want the stage to reach the dispatcher", fake.calls.Load())
 	}
 }
 

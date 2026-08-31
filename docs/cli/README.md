@@ -2,7 +2,7 @@
 
 <!-- Generated from the command registry (cmd/goobers/runtime_capabilities.go) by `make docs`. Do not edit by hand; edits are overwritten and the CI drift guard will fail. -->
 
-`goobers` is the tier 1-2 local instance CLI. This reference is generated from the CLI command registry, so it always matches the shipped binary.
+`goobers` is the Goobers command-line interface. This reference is generated from the CLI command registry, so it always matches the shipped binary.
 
 ## Core commands
 
@@ -14,7 +14,6 @@
 | [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
-| [`goobers getting-started`](#goobers-getting-started) | serve and open the guided portal Getting Started walkthrough |
 | [`goobers help`](#goobers-help) | show command or concept help |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
@@ -75,7 +74,6 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers netpol-render`](#goobers-netpol-render) | render per-runner-class NetworkPolicy reference manifests from the runners: inventory |
 | [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
 | [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
-| [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
 | [`goobers override`](#goobers-override) | override a nondeterministic gate with a rationale |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
@@ -1523,8 +1521,11 @@ filer computes from the finding, not the model's dedupeKey), nor an
 earlier nomination of the same artifact naming it. autoApprove=
 deterministic-only (exactly; default never) opts in and the label is
 added with the github:issues:approve credential only.
-Everything else files unapproved with the reasons in the result. On a
-stage pod the run journal is unreachable, so nothing is approved.
+Everything else files unapproved with the reasons in the result. The
+journal read goes through the run-scoped journal plane, so a dispatched
+stage pod confirms against the same artifact a daemon host does; a
+half-configured plane is a hard failure, and a run whose signals stage
+recorded nothing simply approves nothing and says so.
 
 With --check, only validate the artifact and run the read-only dedupe
 scan (github:issues:read); nothing is created. The write path must be
@@ -1675,8 +1676,11 @@ Usage: goobers gather-pr-context [path]
 
 Select one open, goober-authored PR labeled goobers:needs-remediation
 or reporting failing CI, falling back to a PR behind its base only when
-neither stronger signal is present. Check out its branch into this
-stage's worktree and load the latest merge-review verdict + PR-thread
+neither stronger signal is present. A run dispatched for one pull
+request (goobers run --pr, or a pull_request webhook delivery) selects
+that PR and no other, and reports no-work naming the reason when it is
+not selectable. Check out its branch into this stage's worktree and
+load the latest merge-review verdict + PR-thread
 comments + whether the base has advanced since this PR branched, writing
 the versioned remediation-brief artifact to the declared result file.
 [path] is the instance root (matching
@@ -1749,43 +1753,6 @@ lookup, always forcing a fresh review. Exit codes: 0 = context gathered
 $ goobers gather-sibling-context
 ~~~
 
-## `goobers getting-started`
-
-serve and open the guided portal Getting Started walkthrough
-
-~~~text
-Usage: goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
-
-Serve and open the portal's guided Getting Started walkthrough: two paths
-from an empty working directory to a first autonomous pull request. The
-recommended path connects a repository you already work in — goobers init,
-goobers connect --json, goobers validate --json --check-harness
---check-repos, and goobers run default-implement — and ends with a real PR
-against your own backlog. The alternative walks a disposable
-getting-started-task-api sample instead — goobers onboarding stub-sample,
-goobers init --template=quickstart, the same validate call, and goobers run
-quickstart. Every write action the guide offers is a thin wrapper over
-these documented CLI commands; it never scaffolds, connects, or validates
-on its own. The manual steps stay yours, and the guide states each one
-explicitly: exporting your token for the own-repository path, or creating
-the disposable GitHub repository, pushing the sample, and exporting tokens
-for the sample path. Time to First PR is computed locally and reported
-only to you; nothing leaves your machine.
-
---workdir (default ".") holds the sample checkout and the tutorial
-instance; no instance root needs to exist yet. The default --port is auto,
-incrementing from 8081 until a port is available. Blocks until interrupted.
-Exit codes: 0 = clean shutdown, 1 = service or browser failure, 2 =
-usage/IO error.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers getting-started
-$ goobers getting-started --no-open --workdir ~/goobers-tutorial
-~~~
-
 ## `goobers help`
 
 show command or concept help
@@ -1793,8 +1760,8 @@ show command or concept help
 ~~~text
 Usage: goobers help [all|stages|COMMAND|CONCEPT]
 
-Show core command help with no topic, the complete or workflow-stage command
-list with all or stages, a command's full help, or one of these concepts:
+List core commands with no topic, show the complete or workflow-stage command
+list with all or stages, show a command's full help, or explain one of these concepts:
 instance, gaggle, goober, workflow, stage, gate, harness, capability.
 ~~~
 
@@ -1803,19 +1770,15 @@ instance, gaggle, goober, workflow, stage, gate, harness, capability.
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
 placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
-gaggles/<gaggle>/ at runtime. Re-running without --guided is safe — existing
-pieces are left untouched. --guided is first-run only and refuses a target
-with instance.yaml or a populated config/ before prompting. It separately
-selects a checked-in config source and target GitHub application repository,
-then validates both. It can optionally preview and install the release-matched
-agent toolkit into that config source after an explicit harness and destination
-choice. The source may be new or existing locally, cloned from GitHub, or
-optionally backed by a newly confirmed GitHub repository.
+gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
+untouched.
+--guided opens the browser-based setup for a real repository and instance.
+It prepares and validates configuration but does not run a workflow.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
@@ -1837,7 +1800,6 @@ launch the fully isolated WSL 2 route instead. --insecure requires --demo.
 $ goobers init
 $ goobers init --template=quickstart ./tutorial
 $ goobers init --template=quickstart --source-tree ./tutorial-config --json
-$ goobers init --guided ./my-instance
 $ goobers init --demo ./demo
 ~~~
 
@@ -2131,7 +2093,6 @@ explicitly named.
 
 Commands:
   stub-agent-instructions  install agent assets into a config source
-  stub-sample              materialize the disposable Getting Started target
 
 Run `goobers onboarding <command> -h` for action flags.
 ~~~
@@ -2140,7 +2101,6 @@ Run `goobers onboarding <command> -h` for action flags.
 
 ~~~console
 $ goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json
-$ goobers onboarding stub-sample --destination ./getting-started-task-api --json
 ~~~
 
 ## `goobers onboarding stub-agent-instructions`
@@ -2169,40 +2129,6 @@ drift, or write error, 2 = usage error.
 
 ~~~console
 $ goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json
-~~~
-
-## `goobers onboarding stub-sample`
-
-materialize and optionally seed the disposable Getting Started target
-
-~~~text
-Usage: goobers onboarding stub-sample --destination <path> [--work-tracking <owner/repo>] [--token-env <name>] [--force] [--json]
-
-Materialize the embedded getting-started-task-api sample at an explicitly
-named destination. Existing matching files are skipped. A conflicting file
-fails the complete preflight without changing the destination unless --force
-is set; symbolic links are always refused.
-
-With --work-tracking owner/repo, seed the catalog's missing GitHub labels and
-issues using the token named by --token-env. If the token is unset, report
-the issues pending and complete the local materialization without network
-access. No remote repository is created or pushed.
-
-Flags:
-  --destination <path>      required sample destination
-  --work-tracking <repo>    optional GitHub owner/repo to seed
-  --token-env <name>        issue token environment variable (default GOOBERS_GITHUB_ISSUES_TOKEN)
-  --force                   replace conflicting regular files
-  --json                    emit the versioned action envelope
-
-Exit codes: 0 = materialized, 1 = conflict/provider error, 2 = usage error.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers onboarding stub-sample --destination ./getting-started-task-api --json
-$ goobers onboarding stub-sample --destination ./getting-started-task-api --work-tracking my-org/tutorial
 ~~~
 
 ## `goobers open-pr`
@@ -3514,6 +3440,17 @@ merge time and first observed post-merge configuration transition. Exact
 EffectiveVersion cohorts verify transitions and additions; a removal is
 verified when the workflow is absent from the live reconciled config.
 
+In a dispatched stage pod (GOOBERS_TELEMETRY_ENDPOINT + its bearer +
+GOOBERS_GAGGLE) the query is answered by the daemon's bounded
+defect-aggregate plane instead of a local rollup file. That plane serves
+only --aggregate stage-failure-rate, error-signature, gate-noise and
+credit-assignment with --format candidate-findings, error signatures are
+normalized by the daemon before they cross, and the read is contained to
+the stage's own gaggle. Anything outside that — another --format, another
+aggregate, --learning-action, a path argument, or a threshold governing an
+unserved family — is refused rather than answered narrowly. Off the plane,
+the resolved root must be a real goobers instance.
+
 Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
 ~~~
@@ -3621,8 +3558,12 @@ Usage: goobers update-behind-pr [path]
 
 Update one behind-base PR through GitHub's update-branch API when it
 is mergeable, CI-clean, and carries no substantive findings. Other
-candidates are routed to full remediation. Exit codes: 0 = updated,
-routed, or no-work; 1 = business error; 2 = usage/IO error.
+candidates are routed to full remediation. A run dispatched for one
+pull request (goobers run --pr, or a pull_request webhook delivery)
+selects that PR and no other; when the target is not selectable the
+stage reports no-work naming the reason instead of falling back to
+another PR. Exit codes: 0 = updated, routed, or no-work;
+1 = business error; 2 = usage/IO error.
 ~~~
 
 **Examples**

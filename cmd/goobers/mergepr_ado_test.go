@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
@@ -22,6 +25,25 @@ type adoMergePRServer struct {
 	evalCalls  int64
 	cfgCalls   int64
 	patchBody  atomic.Value // map[string]interface{}
+	// threadComments is the PR's thread comments the pre-lock verdict recovery
+	// reads (#2746) — empty until setVerdictThread seeds one.
+	threadComments atomic.Value // []map[string]any
+}
+
+// adoMergePRAuthor is the display name the fake connectionData endpoint reports,
+// i.e. the identity a recovered verdict thread must be authored by to be
+// trusted.
+const adoMergePRAuthor = "goobers-bot"
+
+// setVerdictThread seeds the PR with a merge-review verdict thread comment
+// authored by author, as apply-verdict's ADO pass path posts it.
+func (s *adoMergePRServer) setVerdictThread(author, body string) {
+	s.threadComments.Store([]map[string]any{{
+		"id":          1,
+		"commentType": "text",
+		"content":     body,
+		"author":      map[string]string{"displayName": author},
+	}})
 }
 
 // newADOMergePRServer stands up the fake ADO endpoints for org/project/repo,
@@ -94,6 +116,19 @@ func newADOMergePRServer(t *testing.T, headSHA, baseSHA string) (*httptest.Serve
 		atomic.AddInt64(&state.cfgCalls, 1)
 		// No blocking branch policy → DetectMergePolicy = direct merge.
 		_ = json.NewEncoder(w).Encode(map[string]any{"value": []any{}})
+	})
+	mux.HandleFunc("/myorg/myproject/_apis/git/repositories/myrepo/pullrequests/359/threads", func(w http.ResponseWriter, _ *http.Request) {
+		comments, _ := state.threadComments.Load().([]map[string]any)
+		threads := []map[string]any{}
+		if len(comments) > 0 {
+			threads = append(threads, map[string]any{"id": 11, "comments": comments})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"value": threads})
+	})
+	mux.HandleFunc("/myorg/_apis/connectionData", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"authenticatedUser": map[string]any{"id": "id", "providerDisplayName": adoMergePRAuthor},
+		})
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -237,7 +272,7 @@ func TestADOMergeCommitMessageBypassesVerdictLookup(t *testing.T) {
 		t.Fatal("structuredMergeCommitMessage: want error on empty CommentsSince, got nil")
 	}
 
-	title, message, err := adoMergeCommitMessage(poll)
+	title, message, err := adoMergeCommitMessage(poll, nil)
 	if err != nil {
 		t.Fatalf("adoMergeCommitMessage: unexpected error %v", err)
 	}
@@ -249,7 +284,172 @@ func TestADOMergeCommitMessageBypassesVerdictLookup(t *testing.T) {
 	}
 
 	// An empty title is still a business error, matching the GitHub assembly.
-	if _, _, err := adoMergeCommitMessage(providers.PullRequestPollResult{Title: "   "}); err == nil {
+	if _, _, err := adoMergeCommitMessage(providers.PullRequestPollResult{Title: "   "}, nil); err == nil {
 		t.Fatal("adoMergeCommitMessage: want error on empty title, got nil")
+	}
+}
+
+// TestADOMergeCommitMessageRecordsRecoveredVerdict is #2746's unit-level
+// acceptance: a verdict recovered from the ADO PR thread contributes the
+// reviewer's summary, rationale, and attribution to the merge commit — but only
+// while it is still pinned to the polled head AND base, so a verdict computed
+// against a state the PR has moved past never gets recorded as the reason this
+// commit landed.
+func TestADOMergeCommitMessageRecordsRecoveredVerdict(t *testing.T) {
+	poll := providers.PullRequestPollResult{
+		Title:   "Wire ADO merge dispatch",
+		Body:    "Implements the merge wiring.\n\nFixes #1456",
+		HeadSHA: "headsha1",
+		BaseSHA: "basesha1",
+	}
+	recovered := &adoRecoveredVerdict{
+		Author: "goobers-bot",
+		Verdict: apiv1.Verdict{
+			Decision:  apiv1.VerdictPass,
+			Summary:   "Merge wiring is correct.",
+			Rationale: "Every conjunct is re-polled under the lock.",
+			HeadSHA:   "headsha1",
+			BaseSHA:   "basesha1",
+		},
+	}
+
+	title, message, err := adoMergeCommitMessage(poll, recovered)
+	if err != nil {
+		t.Fatalf("adoMergeCommitMessage: unexpected error %v", err)
+	}
+	if title != "Wire ADO merge dispatch" {
+		t.Fatalf("title = %q, want the PR title", title)
+	}
+	want := "Merge wiring is correct.\n\nEvery conjunct is re-polled under the lock.\n\nCloses #1456\n\nReviewed-by: goobers-bot"
+	if message != want {
+		t.Fatalf("message = %q, want %q", message, want)
+	}
+
+	for _, stale := range []struct {
+		name    string
+		verdict apiv1.Verdict
+	}{
+		{name: "head moved", verdict: apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "s", HeadSHA: "other", BaseSHA: "basesha1"}},
+		{name: "base moved", verdict: apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "s", HeadSHA: "headsha1", BaseSHA: "other"}},
+		{name: "unpinned", verdict: apiv1.Verdict{Decision: apiv1.VerdictPass, Summary: "s"}},
+	} {
+		t.Run(stale.name, func(t *testing.T) {
+			_, message, err := adoMergeCommitMessage(poll, &adoRecoveredVerdict{Author: "goobers-bot", Verdict: stale.verdict})
+			if err != nil {
+				t.Fatalf("adoMergeCommitMessage: unexpected error %v", err)
+			}
+			if message != "Closes #1456" {
+				t.Fatalf("message = %q, want the non-verdict fallback for a stale pin", message)
+			}
+		})
+	}
+}
+
+// TestRecoverADOPassVerdictTrustsOnlyOwnStatusComments proves the pre-lock
+// recovery only trusts a merge-review status comment written by the
+// authenticated identity, ignores non-pass and untrusted comments, and returns
+// the LATEST trusted pass (#2746).
+func TestRecoverADOPassVerdictTrustsOnlyOwnStatusComments(t *testing.T) {
+	server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+	provider := providers.NewADOProvider("myorg", "myproject", "token", func(p *providers.ADOProvider) {
+		p.BaseURL = server.URL
+	})
+	repo := providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "myorg", Project: "myproject", Name: "myrepo"}
+	var stderr bytes.Buffer
+
+	if got := recoverADOPassVerdict(context.Background(), provider, repo, "359", &stderr); got != nil {
+		t.Fatalf("recovered = %+v, want nil with no verdict thread", got)
+	}
+
+	state.threadComments.Store([]map[string]any{
+		{"id": 1, "commentType": "text", "content": renderVerdictComment(apiv1.Verdict{
+			Decision: apiv1.VerdictPass, Summary: "impostor", HeadSHA: "headsha1", BaseSHA: "basesha1",
+		}), "author": map[string]string{"displayName": "someone-else"}},
+		{"id": 2, "commentType": "text", "content": renderVerdictComment(apiv1.Verdict{
+			Decision: apiv1.VerdictNeedsChanges, Summary: "earlier review", HeadSHA: "old", BaseSHA: "basesha1",
+		}), "author": map[string]string{"displayName": adoMergePRAuthor}},
+		{"id": 3, "commentType": "text", "content": renderVerdictComment(apiv1.Verdict{
+			Decision: apiv1.VerdictPass, Summary: "latest pass", HeadSHA: "headsha1", BaseSHA: "basesha1",
+		}), "author": map[string]string{"displayName": adoMergePRAuthor}},
+	})
+	recovered := recoverADOPassVerdict(context.Background(), provider, repo, "359", &stderr)
+	if recovered == nil {
+		t.Fatalf("recovered = nil, want the trusted pass verdict; stderr = %q", stderr.String())
+	}
+	if recovered.Verdict.Summary != "latest pass" {
+		t.Fatalf("recovered summary = %q, want the latest trusted pass", recovered.Verdict.Summary)
+	}
+	if recovered.Author != adoMergePRAuthor {
+		t.Fatalf("recovered author = %q, want %q", recovered.Author, adoMergePRAuthor)
+	}
+}
+
+// TestMergePRADORecoversVerdictForCommitMessage is #2746's stage-level
+// acceptance: with apply-verdict's pass verdict on the PR thread, the ADO land's
+// commit message carries the reviewer's rationale and attribution instead of the
+// bare title + "Closes #N" the audit trail used to degrade to.
+func TestMergePRADORecoversVerdictForCommitMessage(t *testing.T) {
+	server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+	state.setVerdictThread(adoMergePRAuthor, renderVerdictComment(apiv1.Verdict{
+		Decision:  apiv1.VerdictPass,
+		Summary:   "Merge wiring is correct.",
+		Rationale: "Every conjunct is re-polled under the lock.",
+		HeadSHA:   "headsha1",
+		BaseSHA:   "basesha1",
+	}))
+	root, dir := adoMergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "359",
+		"verdict":    "pass",
+		"headSha":    "headsha1",
+		"baseSha":    "basesha1",
+	})
+
+	code, stdout, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	result := readMergeResult(t, dir)
+	if merged, _ := result["merged"].(bool); !merged {
+		t.Fatalf("result = %+v, want merged=true", result)
+	}
+	body, _ := state.patchBody.Load().(map[string]interface{})
+	opts, _ := body["completionOptions"].(map[string]interface{})
+	if opts == nil {
+		t.Fatalf("PATCH body = %+v, want completionOptions", body)
+	}
+	want := "Merge wiring is correct.\n\nEvery conjunct is re-polled under the lock.\n\nCloses #1456\n\nReviewed-by: " + adoMergePRAuthor
+	if got := opts["mergeCommitMessage"]; got != want {
+		t.Fatalf("mergeCommitMessage = %q, want %q", got, want)
+	}
+}
+
+// TestMergePRADOStaleThreadVerdictFallsBackToPRFields proves the recovered
+// verdict is SHA-pinned end to end: a verdict pinned to a head the PR has since
+// moved past never lands in the commit message, and the merge still succeeds on
+// the non-verdict assembly.
+func TestMergePRADOStaleThreadVerdictFallsBackToPRFields(t *testing.T) {
+	server, state := newADOMergePRServer(t, "headsha1", "basesha1")
+	state.setVerdictThread(adoMergePRAuthor, renderVerdictComment(apiv1.Verdict{
+		Decision:  apiv1.VerdictPass,
+		Summary:   "Reviewed an older head.",
+		Rationale: "Stale rationale.",
+		HeadSHA:   "staleheadsha",
+		BaseSHA:   "basesha1",
+	}))
+	root, _ := adoMergePREnv(t, server.URL, false, map[string]string{
+		"pullNumber": "359",
+		"verdict":    "pass",
+		"headSha":    "headsha1",
+		"baseSha":    "basesha1",
+	})
+
+	code, stdout, stderr := runArgs(t, "merge-pr", root)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	body, _ := state.patchBody.Load().(map[string]interface{})
+	opts, _ := body["completionOptions"].(map[string]interface{})
+	if got := opts["mergeCommitMessage"]; got != "Closes #1456" {
+		t.Fatalf("mergeCommitMessage = %q, want the non-verdict fallback %q", got, "Closes #1456")
 	}
 }

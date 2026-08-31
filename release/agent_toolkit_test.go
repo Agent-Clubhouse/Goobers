@@ -165,6 +165,7 @@ func TestAgentToolkitRejectsUnsafeProducerMetadata(t *testing.T) {
 func assertAgentToolkitReferencesMatchRelease(t *testing.T, repoRoot string, entries map[string][]byte) {
 	t.Helper()
 	references := map[string]string{
+		"skills/goobers-getting-started/SKILL.md":               "skills/goobers-getting-started/SKILL.md",
 		"skills/goobers-dsl-author/SKILL.md":                    "skills/goobers-dsl-author/SKILL.md",
 		"docs/ARCHITECTURE.md":                                  "docs/ARCHITECTURE.md",
 		"api/schemas/workflow.schema.json":                      "api/schemas/workflow.schema.json",

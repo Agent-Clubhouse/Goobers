@@ -589,6 +589,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize read service: %v\n", err)
 		return 1
 	}
+	attachFreshnessSignals(reads, setup)
 	if *disableReadModelReads {
 		// The design §6.6 rollback, made operator-reachable (#2036):
 		// DisableReadModelReads previously had no caller anywhere, so the
@@ -705,6 +706,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithBlobService(blobStore),
 		httpapi.WithSurrenderService(surrenderStore),
 		httpapi.WithStateService(statePlane),
+		// The defect-nomination aggregate read (Goobers#4001). Wired
+		// unconditionally, like the containment below: the four aggregates
+		// are derived from this instance's own rollup by the same function
+		// the CLI runs locally, so a daemon that can serve stage pods at all
+		// can always answer them. An instance with no rollup answers "no
+		// telemetry rollup yet", exactly as the local path does.
+		httpapi.WithTelemetryDefectAggregateService(newDaemonTelemetryDefectAggregateService(l)),
 	)
 	if liveJournals != nil {
 		// The journal plane (§8): remote stage pods emit their run's journal

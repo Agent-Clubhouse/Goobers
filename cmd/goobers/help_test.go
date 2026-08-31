@@ -70,9 +70,9 @@ func TestHelpConceptProseMatchesGlossary(t *testing.T) {
 func TestUsageFooterLinksOnboardingPaths(t *testing.T) {
 	_, stdout, _ := runArgs(t, "help")
 	for _, line := range []string{
-		"Quickstart guide: docs/guides/quickstart.md",
-		"DSL entry points: `goobers schema` and `goobers examples`",
-		"Troubleshooting: `goobers status`, `goobers trace`, and `goobers escalations`",
+		"Quickstart         docs/guides/quickstart.md",
+		"DSL                goobers schema, goobers examples",
+		"Troubleshooting    goobers status, goobers trace, goobers escalations",
 	} {
 		if !strings.Contains(stdout, line) {
 			t.Errorf("help footer missing %q", line)

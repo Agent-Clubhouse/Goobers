@@ -81,7 +81,33 @@ describe("useRunDetail", () => {
 
     unmount();
   });
+
+  it("publishes stale when the live stream drops while the request is in flight (#3657)", async () => {
+    const runId = "01JZ441DAEMONAPI";
+    const client = new DeferredRunDetailClient();
+    const { result, unmount } = renderHook(() => useRunDetail(client, runId), {
+      wrapper: liveWrapper(client),
+    });
+
+    await waitFor(() => expect(client.signals).toHaveLength(2));
+    act(() => goOffline());
+
+    act(() => client.release(2));
+    await waitFor(() => expect(result.current.state.status).toBe("stale"));
+    if (result.current.state.status !== "stale") {
+      throw new Error("Expected run detail to be stale while disconnected.");
+    }
+    expect(result.current.state.data.run.id).toBe(runId);
+    expect(result.current.state.error).toBeUndefined();
+
+    unmount();
+  });
 });
+
+function goOffline(): void {
+  Object.defineProperty(window.navigator, "onLine", { configurable: true, value: false });
+  window.dispatchEvent(new Event("offline"));
+}
 
 class DeferredRunDetailClient extends FixtureDaemonClient {
   readonly signals: (AbortSignal | undefined)[] = [];

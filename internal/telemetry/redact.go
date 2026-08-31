@@ -14,6 +14,12 @@ import (
 // (#117).
 const RedactedPlaceholder = journal.Redacted
 
+// RedactedTokenPlaceholder is journal.RedactedToken: the placeholder for a
+// match whose surrounding syntax is preserved and only the credential value
+// removed (an authorization scheme). Shared with the journal for the same
+// reason as RedactedPlaceholder — one spelling of a redaction system-wide.
+const RedactedTokenPlaceholder = journal.RedactedToken
+
 // providerNet is the single, shared provider-token pattern net: journal's
 // canonical net (internal/journal, #8/#114), reused here rather than maintained
 // as a second, drifting copy. Before #117 this package kept its own list that

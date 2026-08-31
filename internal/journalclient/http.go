@@ -327,6 +327,13 @@ func (h *HTTP) ArtifactBytes(ref journal.Ref) ([]byte, error) {
 	return h.ArtifactByDigest(ref.Digest)
 }
 
+// ArtifactBytesBounded implements Reader: ArtifactBytes with the ceiling
+// applied at the TRANSPORT, so an oversized body is refused as it arrives
+// rather than after it has been buffered.
+func (h *HTTP) ArtifactBytesBounded(ref journal.Ref, maxBytes int64) ([]byte, error) {
+	return h.artifactByDigest(context.Background(), ref.Digest, maxBytes)
+}
+
 // ArtifactByDigest implements Reader over GET /runs/{run}/artifacts/{digest}.
 func (h *HTTP) ArtifactByDigest(digest string) ([]byte, error) {
 	return h.ArtifactByDigestContext(context.Background(), digest)
@@ -334,6 +341,10 @@ func (h *HTTP) ArtifactByDigest(digest string) ([]byte, error) {
 
 // ArtifactByDigestContext is ArtifactByDigest with an explicit context.
 func (h *HTTP) ArtifactByDigestContext(ctx context.Context, digest string) ([]byte, error) {
+	return h.artifactByDigest(ctx, digest, 0)
+}
+
+func (h *HTTP) artifactByDigest(ctx context.Context, digest string, maxBytes int64) ([]byte, error) {
 	if strings.TrimSpace(digest) == "" {
 		return nil, errors.New("journalclient: artifact digest is required")
 	}
@@ -342,10 +353,23 @@ func (h *HTTP) ArtifactByDigestContext(ctx context.Context, digest string) ([]by
 	if _, err := journal.ArtifactPath(digest); err != nil {
 		return nil, err
 	}
+	limit := int64(MaxArtifactBytes)
+	if maxBytes > 0 && maxBytes < limit {
+		// do() treats limit as exclusive, so +1 admits exactly maxBytes and
+		// refuses the first byte past it.
+		limit = maxBytes + 1
+	}
 	path := h.runPath(apicontract.RunArtifactPath, map[string]string{"digest": digest})
-	raw, _, err := h.do(ctx, http.MethodGet, path, nil, MaxArtifactBytes)
+	raw, header, err := h.do(ctx, http.MethodGet, path, nil, limit)
 	if err != nil {
 		return nil, err
+	}
+	// The route names the digest it served. When it does, it must be the one
+	// asked for: a mismatch is caught by name before the bytes are digested,
+	// so the refusal says which artifact was substituted rather than only
+	// that the content was wrong.
+	if served := strings.TrimSpace(header.Get(apicontract.DigestHeader)); served != "" && served != digest {
+		return nil, fmt.Errorf("journalclient: asked for artifact %s and the daemon served %s", digest, served)
 	}
 	if got := journal.Digest(raw); got != digest {
 		return nil, fmt.Errorf("journalclient: digest mismatch for %s: have %s", digest, got)

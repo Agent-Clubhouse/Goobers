@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -27,8 +28,12 @@ const (
 const updateBehindPRHelp = "Usage: goobers update-behind-pr [path]\n\n" +
 	"Update one behind-base PR through GitHub's update-branch API when it\n" +
 	"is mergeable, CI-clean, and carries no substantive findings. Other\n" +
-	"candidates are routed to full remediation. Exit codes: 0 = updated,\n" +
-	"routed, or no-work; 1 = business error; 2 = usage/IO error.\n"
+	"candidates are routed to full remediation. A run dispatched for one\n" +
+	"pull request (goobers run --pr, or a pull_request webhook delivery)\n" +
+	"selects that PR and no other; when the target is not selectable the\n" +
+	"stage reports no-work naming the reason instead of falling back to\n" +
+	"another PR. Exit codes: 0 = updated, routed, or no-work;\n" +
+	"1 = business error; 2 = usage/IO error.\n"
 
 // runUpdateBehindPR is pr-remediation's API-only preflight. It terminates the
 // workflow after updating a mechanically stale PR, or routes every non-trivial
@@ -40,15 +45,10 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -76,27 +76,38 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// #3985: the pull request this run was dispatched for, when `goobers run
+	// --pr` (or a pull_request webhook delivery) named one. Resolved before
+	// any selection so every narrowing step below can be attributed in the
+	// refusal an unselectable target produces.
+	target := remediationTargetFromEnv()
+	base := providerInput("base", providerBaseBranch())
+	headPrefix := providerInput("headPrefix", providerBranchNamespace())
+
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository:     repo,
-		Base:           providerInput("base", providerBaseBranch()),
-		HeadPrefix:     providerInput("headPrefix", providerBranchNamespace()),
+		Base:           base,
+		HeadPrefix:     headPrefix,
 		SkipCheckState: true,
 	})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, "update-behind-result.json")
 	}
+	listed := prs
 	prs, blockedDependents, err := filterRemediationPullRequests(ctx, provider, repo, prs, nil)
 	if err != nil {
 		return failProviderStage(stderr, "filter remediation candidates", err, "update-behind-result.json")
 	}
+	filtered := prs
 	prs, err = stageClaimAvailablePullRequests(
-		root, repo, os.Getenv("GOOBERS_RUN_ID"), prs, time.Now(),
+		root, repo, os.Getenv(executor.RunIDEnvVar), prs, time.Now(),
 	)
 	if err != nil {
 		return failProviderStage(stderr, "filter claimed remediation candidates", err, "update-behind-result.json")
 	}
+	unclaimed := prs
 
 	baseTips := map[string]string{}
 	behindByPR := map[int]bool{}
@@ -113,6 +124,19 @@ func runUpdateBehindPR(args []string, stdout, stderr io.Writer) int {
 	candidates, _, err := selectRemediationCandidates(prs, blockedDependents, behindBase)
 	if err != nil {
 		return failProviderStage(stderr, "determine remediation eligibility", err, "update-behind-result.json")
+	}
+	// #3985: policy ranked the whole eligible set exactly as it does on a
+	// scheduled tick; a targeted run then keeps only the PR the trigger named.
+	// A target that ranking, claiming, or eligibility dropped ends the run with
+	// the reason — never a fallback to the lane's next-best candidate.
+	candidates, refusal := target.apply(
+		remediationTargetStage{prs: listed, reason: remediationTargetUnlistedReason(base, headPrefix)},
+		remediationTargetStage{prs: filtered, reason: remediationTargetFilteredReason},
+		remediationTargetStage{prs: unclaimed, reason: remediationTargetClaimedReason},
+		remediationTargetStage{prs: candidates, reason: remediationTargetIneligibleReason},
+	)
+	if refusal != "" {
+		return writeNoWorkResult(stdout, stderr, refusal)
 	}
 	if len(candidates) == 0 {
 		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")

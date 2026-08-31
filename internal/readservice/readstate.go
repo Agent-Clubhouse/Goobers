@@ -46,6 +46,32 @@ type intakeDepth interface {
 	Count(ctx context.Context) (int, error)
 }
 
+// intakeAge is the optional half of the intake surface: how long the oldest
+// waiting watermark has waited.
+//
+// Separate from intakeDepth rather than folded into it so a depth source that
+// cannot answer it still attaches — the envelope degrades to "count only"
+// instead of losing the count as well.
+type intakeAge interface {
+	OldestPending(ctx context.Context) (time.Time, bool, error)
+}
+
+// ProjectionHealth is what the projector knows about its own currency.
+//
+// Declared here rather than reusing the projector's Stats so the read path does
+// not import the package that writes the projection (§3.1) — the same reason
+// intakeDepth is an interface.
+type ProjectionHealth struct {
+	// ApplyFailures counts runs the projector could not apply and has not
+	// projected since. Each one is a known, still-open gap in the projection;
+	// runs a retry or the repair sweep has since applied are excluded, so the
+	// envelope recovers instead of staying partial forever.
+	ApplyFailures int
+	// LastDrainAt is when the projector last completed an intake pass. Zero
+	// means it has not completed one since start.
+	LastDrainAt time.Time
+}
+
 // Optional freshness metadata must not consume the primary read's route budget.
 const readStateTimeout = 100 * time.Millisecond
 
@@ -56,6 +82,16 @@ const readStateTimeout = 100 * time.Millisecond
 // are waiting, and says so by leaving pendingIntake at zero with the sweep-age
 // bound still in force.
 func (s *Local) AttachIntakeDepth(depth intakeDepth) { s.intakeDepth = depth }
+
+// AttachProjectionHealth supplies the projector's view of its own currency.
+//
+// Optional, and for the same reason as AttachIntakeDepth: a topology with no
+// projector (the CLI, a standalone reader) has nothing to report. Without it the
+// envelope cannot see apply failures, so a gap the projector already knows about
+// stays invisible to the operator reading the response.
+func (s *Local) AttachProjectionHealth(health func() ProjectionHealth) {
+	s.projectionHealth = health
+}
 
 // readStateEnvelope builds the envelope for a response.
 //
@@ -79,6 +115,22 @@ func (s *Local) readStateEnvelope(ctx context.Context) ReadStateEnvelope {
 	if s.intakeDepth != nil {
 		if pending, err := s.intakeDepth.Count(ctx); err == nil {
 			input.PendingIntake = pending
+		}
+		if aged, ok := s.intakeDepth.(intakeAge); ok {
+			if oldest, found, err := aged.OldestPending(ctx); err == nil && found {
+				input.OldestPendingAt = oldest
+			}
+		}
+	}
+	if s.projectionHealth != nil {
+		health := s.projectionHealth()
+		input.ProjectFailures = health.ApplyFailures
+		// Time since the projector last finished a pass. A projector that has
+		// stopped shows a lag that keeps growing, which is the signal a pending
+		// count alone cannot give: an empty intake table and a dead projector
+		// look identical without it.
+		if !health.LastDrainAt.IsZero() {
+			input.ProjectionLagSeconds = s.now().Sub(health.LastDrainAt).Seconds()
 		}
 	}
 	state, err := stateful.ReadState(ctx, input)

@@ -4,6 +4,7 @@ import type { RunSummary, UpdateModel } from "./api/types";
 import { DATA_CACHE_TTL_MS, SessionDataCache } from "./dataCache";
 import {
   INVENTORY_CACHE_TTL_MS,
+  incompleteRunPhasesMessage,
   loadOperationalOverview,
   loadOperationalSnapshot,
 } from "./operationalData";
@@ -272,6 +273,61 @@ describe("loadOperationalOverview", () => {
 
     expect(refreshed.groups).toEqual(previous.groups);
     expect(refreshed.sectionErrors?.runs).toBeInstanceOf(Error);
+  });
+
+  // #3658: the surviving phases are real data, but the phase that failed was
+  // silently rendered as an empty group — indistinguishable from a gaggle with
+  // nothing in that phase.
+  it("names the phases it could not read instead of reporting them empty (#3658)", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const real = client.listRuns.bind(client);
+    vi.spyOn(client, "listRuns").mockImplementation(async (request, options) => {
+      if (request?.phase === "completed") {
+        throw new Error("The daemon request timed out after 10000ms.");
+      }
+      return real(request, options);
+    });
+
+    const overview = await loadOperationalOverview(client);
+
+    expect(overview.sectionErrors?.runs).toBeUndefined();
+    expect(overview.groups.incomplete?.phases).toEqual(["completed"]);
+    expect(overview.groups.incomplete?.error.message).toContain("timed out");
+    expect(incompleteRunPhasesMessage(overview.groups.incomplete!)).toContain("completed");
+  });
+
+  it("reports no incomplete phases when every phase query succeeds (#3658)", async () => {
+    const overview = await loadOperationalOverview(
+      new FixtureDaemonClient(populatedDaemonFixtures()),
+    );
+
+    expect(overview.groups.incomplete).toBeUndefined();
+  });
+
+  it("keeps the previous runs of a phase that fails on refresh (#3658)", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const previous = await loadOperationalOverview(client);
+    const previousCompleted = previous.groups.recent.filter((run) => run.phase === "completed");
+    expect(previousCompleted.length).toBeGreaterThan(0);
+    const real = client.listRuns.bind(client);
+    vi.spyOn(client, "listRuns").mockImplementation(async (request, options) => {
+      if (request?.phase === "completed") {
+        throw new Error("daemon unavailable");
+      }
+      return real(request, options);
+    });
+
+    const refreshed = await loadOperationalOverview(client, undefined, {
+      previous,
+      models: new Set(["run"]),
+    });
+
+    expect(refreshed.groups.recent.filter((run) => run.phase === "completed")).toEqual(
+      previousCompleted,
+    );
+    expect(refreshed.groups.incomplete?.phases).toEqual(["completed"]);
+    // The phases that did read successfully are still refreshed, not frozen.
+    expect(refreshed.groups.active.length).toBe(previous.groups.active.length);
   });
 
   it("still fails the whole load when nothing at all could be read (#1709)", async () => {

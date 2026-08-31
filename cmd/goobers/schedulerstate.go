@@ -33,8 +33,9 @@ import (
 //     client.
 //
 // Nothing about the file path changes for a type-1/type-2 instance. The lock
-// each key takes is the lock it already took: claims.lock for blocked.json and
-// the backlog scan cursors (blockedrecords.go, backlogquery.go),
+// each key takes is the lock it already took: claims.lock for blocked.json,
+// the backlog scan cursors and pr-select's fairness lease
+// (blockedrecords.go, backlogquery.go, prselectfairness.go),
 // post-merge-reconcile.lock for the reconcile ledger, and
 // sibling-context-cache.lock for the gather memo. That is what makes a
 // plane-served write and an in-process write ONE atomicity domain: the daemon
@@ -83,12 +84,18 @@ func schedulerStateLock(l instance.Layout) func(key, operation string, fn func()
 			return withBoundedFileLock(
 				filepath.Join(schedulerDir, backlogHealthCursorLockFile), operation, fn)
 		default:
-			// blocked.json and every backlog-scan-<hash>.json cursor: the
-			// claims lock, which is what the in-process readers and writers
-			// have always taken (blockedrecords.go's updateBlockedRecords,
-			// backlogquery.go's advanceBacklogScanCursor). Serving the plane
-			// under any other lock would split the atomicity domain in two and
-			// lose exactly the updates the CAS is there to protect.
+			// blocked.json, every backlog-scan-<hash>.json cursor, and
+			// pr-select-fairness.json: the claims lock, which is what the
+			// in-process readers and writers have always taken
+			// (blockedrecords.go's updateBlockedRecords, backlogquery.go's
+			// advanceBacklogScanCursor, prselectfairness.go's
+			// observePRSelectEligibility/clearPRSelectEligibilityWait).
+			// Serving the plane under any other lock would split the atomicity
+			// domain in two and lose exactly the updates the CAS is there to
+			// protect — and for the fairness lease it would additionally
+			// break the lease's mutual exclusion WITH the claim transaction
+			// it is observed inside, which is what makes a candidate's wait
+			// and the claim that ends it one atomic step.
 			return withClaimLock(filepath.Join(schedulerDir, claimLockFileName), operation, fn)
 		}
 	}

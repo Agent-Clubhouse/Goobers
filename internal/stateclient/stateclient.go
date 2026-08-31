@@ -7,21 +7,25 @@
 // learned-dependency block records (blocked.json), the per-scan backlog
 // cursor (backlog-scan-<hash>.json, #2067 fairness), the backlog re-sweep
 // generation, the reconcile-post-merge ledger, the gather-sibling-context
-// cache, and the backlog-health ready-transition ledger
+// cache, the backlog-health ready-transition ledger
 // (backlog-health/<gaggle>__<provider>__<repository>__<label>.json,
-// Goobers#3948). Each lives as one JSON file in the instance's scheduler
-// directory today, read and written in-process by the CLI when it shares a
-// host with the daemon (type-1/type-2) and by the daemon's own scheduler. A
-// stage POD has neither the file nor the lock.
+// Goobers#3948), the per-PR pr-remediation no-op record
+// (pr-remediation-noop-<hash>.json, Goobers#3989), and pr-select's fairness
+// lease (pr-select-fairness.json, Goobers#3988). Each lives as one JSON
+// file in the instance's scheduler directory today, read and written
+// in-process by the CLI when it shares a host with the daemon (type-1/type-2)
+// and by the daemon's own scheduler. A stage POD has neither the file nor the
+// lock.
 //
 // The two backends:
 //
 //   - File: the instance's own file under the key's own cross-process lock —
 //     byte for byte the discipline cmd/goobers used before this package
 //     existed. The lock is injected by the caller, so nothing about how the
-//     daemon serializes changes: blocked.json and the scan cursor keep
-//     claims.lock, the post-merge ledger keeps post-merge-reconcile.lock, the
-//     sibling cache keeps sibling-context-cache.lock, and the ready-transition
+//     daemon serializes changes: blocked.json, the scan cursor and the
+//     pr-select fairness lease keep claims.lock, the post-merge ledger keeps
+//     post-merge-reconcile.lock, the sibling cache keeps
+//     sibling-context-cache.lock, and the ready-transition
 //     ledger — which had no lock at all, because until the plane existed it
 //     had a single in-process writer — gets its own, since a compare-and-swap
 //     served over the plane is atomic only if the daemon serializes the
@@ -116,6 +120,26 @@ const (
 	// KeySiblingContextCache is gather-sibling-context's per-sibling memo
 	// (#523).
 	KeySiblingContextCache = "sibling-context-cache.json"
+	// KeyPRSelectFairness is pr-select's FAIRNESS LEASE (#1336,
+	// Goobers#3988): the first-eligible timestamp per candidate PR that the
+	// aging boost and the one-hour starvation guard are computed from.
+	//
+	// It is load-bearing, not a cache, and that is why it joins the namespace
+	// rather than being tolerated as a miss in a pod. A pod is never stamped
+	// GOOBERS_INSTANCE_ROOT, so an absent file reads as a FRESH lease on every
+	// run: every candidate's wait resets to zero, the aging boost never
+	// accumulates, the starvation guard never fires, and a single PR can
+	// monopolise the one pr-select slot indefinitely — silently, because a
+	// fresh lease is indistinguishable from a legitimately new one. That is
+	// the silent-wrong-result class executor.StageRequiresInstanceRoot exists
+	// to make loud, so the lease is admitted here instead.
+	//
+	// Guarded by claims.lock in-process — the same lock pr-select's own claim
+	// transaction takes, because the lease is observed and rewritten INSIDE
+	// that transaction (observePRSelectEligibility) so a candidate's wait and
+	// the claim that ends it move as one. The plane serves it under that same
+	// lock.
+	KeyPRSelectFairness = "pr-select-fairness.json"
 )
 
 // scanCursorKeyPattern matches the per-scan backlog cursor,
@@ -138,6 +162,36 @@ var scanCursorKeyPattern = regexp.MustCompile(`^backlog-scan-[0-9a-f]{64}\.json$
 // re-sweep and a daemon-driven one serialize instead of each advancing a
 // private copy.
 var resweepStateKeyPattern = regexp.MustCompile(`^backlog-resweep-[0-9a-f]{64}\.json$`)
+
+// prRemediationNoopKeyPattern matches the PER-PULL-REQUEST pr-remediation
+// no-op record, pr-remediation-noop-<sha256 of the record's gaggle-scoped PR
+// key>.json, pinned to the same 64-lowercase-hex digest as the two cursors
+// above and for the same reason.
+//
+// It joins the namespace because it was the last scheduler-directory file
+// `gather-pr-context` read and wrote directly (Goobers#3989). The record is
+// what stops the pr-remediation lane burning a full agentic cycle
+// re-attempting a PR whose previous attempt already concluded there was
+// nothing to do; in a pod there is no instance root, so the absent record
+// read as "no prior no-op" on EVERY run and the guard failed open silently.
+// Correctness, not cost — which is why it is a plane key rather than a
+// tolerated local-only file.
+//
+// KEYED, not a fixed name, because the record is per PR: the pre-plane file
+// was one `pr-remediation-noop.json` holding a map of every PR's record, and
+// serving that shape over the plane would have made one PR's compare-and-swap
+// contend with every other PR's — a lane-wide hot key whose CAS retries grow
+// with the size of the remediation backlog. One key per (gaggle, PR) is the
+// backlog-scan-<sha256>.json precedent, and it keeps a pod's write contained
+// to the single record it is entitled to change.
+//
+// The gaggle is inside the DIGEST rather than in the clear (the
+// backlog-resweep precedent, not the backlog-health one): the key is opaque,
+// so there is nothing for a route-level containment check to read, and the
+// route's own gaggle scope plus the claims lock the key rides are the
+// containment. See cmd/goobers's remediationNoopStateKey for the digest's
+// input.
+var prRemediationNoopKeyPattern = regexp.MustCompile(`^pr-remediation-noop-[0-9a-f]{64}\.json$`)
 
 // The backlog-health READY-TRANSITION cursor (Goobers#3948), the one key in
 // this namespace that does not live directly in the scheduler directory and
@@ -257,14 +311,21 @@ func ResweepStateKey(digest string) string {
 	return "backlog-resweep-" + digest + ".json"
 }
 
+// PRRemediationNoopKey names the pr-remediation no-op record for one PR's
+// record-key digest.
+func PRRemediationNoopKey(digest string) string {
+	return "pr-remediation-noop-" + digest + ".json"
+}
+
 // ValidKey reports whether key is one of the closed scheduler-state keys.
 func ValidKey(key string) bool {
 	switch key {
-	case KeyBlockedRecords, KeyPostMergeReconcileLedger, KeySiblingContextCache:
+	case KeyBlockedRecords, KeyPostMergeReconcileLedger, KeySiblingContextCache, KeyPRSelectFairness:
 		return true
 	}
 	return scanCursorKeyPattern.MatchString(key) ||
 		resweepStateKeyPattern.MatchString(key) ||
+		prRemediationNoopKeyPattern.MatchString(key) ||
 		backlogHealthCursorKeyPattern.MatchString(key)
 }
 

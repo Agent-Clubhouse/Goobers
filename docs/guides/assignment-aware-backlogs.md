@@ -203,12 +203,10 @@ spec:
     owner: acme
     name: payments
     branch: main
-    connectionRef: github-main
   backlog:
     provider: github
     project: acme/payments
     labels: [goobers]
-    connectionRef: github-backlog
   branchNamespace: "goobers-east/"
   isolation:
     namespace: payments-east
@@ -229,17 +227,24 @@ spec:
     owner: acme
     name: payments
     branch: main
-    connectionRef: github-main
   backlog:
     provider: github
     project: acme/payments
     labels: [goobers]
-    connectionRef: github-backlog
   branchNamespace: "goobers-west/"
   isolation:
     namespace: payments-west
     identityRef: payments-west-identity
 ```
+
+> **`connectionRef` is not a runtime credential selector.** The local runner
+> resolves every access's token from `instance.yaml` `repos[]` by repository
+> identity, never from the named Connection, so declaring one connection for
+> the project and another for the backlog would not route the two accesses
+> through two credentials. `goobers validate` reports `REF012` (#3296)
+> wherever the field is declared, and the shipped configs leave it out
+> for that reason. Scope the token itself in `instance.yaml` when a narrower
+> one is wanted.
 
 Both instances add `respectAssignee: "true"` to the `query-backlog` task shown
 above and leave `assignedTo` undeclared. East therefore claims only

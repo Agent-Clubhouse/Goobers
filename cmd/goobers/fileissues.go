@@ -13,7 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
-	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/nomination"
 	"github.com/goobers/goobers/providers"
 )
@@ -39,8 +39,11 @@ const fileIssuesHelp = "Usage: goobers file-issues [--check] [path]\n\n" +
 	"earlier nomination of the same artifact naming it. autoApprove=\n" +
 	"deterministic-only (exactly; default never) opts in and the label is\n" +
 	"added with the github:issues:approve credential only.\n" +
-	"Everything else files unapproved with the reasons in the result. On a\n" +
-	"stage pod the run journal is unreachable, so nothing is approved.\n\n" +
+	"Everything else files unapproved with the reasons in the result. The\n" +
+	"journal read goes through the run-scoped journal plane, so a dispatched\n" +
+	"stage pod confirms against the same artifact a daemon host does; a\n" +
+	"half-configured plane is a hard failure, and a run whose signals stage\n" +
+	"recorded nothing simply approves nothing and says so.\n\n" +
 	"With --check, only validate the artifact and run the read-only dedupe\n" +
 	"scan (github:issues:read); nothing is created. The write path must be\n" +
 	"bound to a --check that marked this artifact valid: wire the check\n" +
@@ -127,15 +130,10 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 	resultFile := providerInput("resultFile", fileIssuesResultFileName)
 
 	runID, _, err := providerRunContext()
@@ -175,10 +173,18 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 	}
 	// The tool findings a nomination can be confirmed against come from the
 	// deterministic signals stage's stdout artifact of this run, read from
-	// the run journal — never from a file the finder could have written.
-	// Unreachable (a stage pod) means nothing matches and nothing is
-	// approved; the reason is recorded, not hidden.
-	findings, findingsSummary := loadFileIssuesFindings(root, runID, signalsStage)
+	// the run journal — never from a file the finder could have written. On
+	// a stage pod that read goes over the run-scoped journal plane
+	// (Goobers#3996 blocker 2), so a pod confirms exactly what the daemon
+	// would. An artifact that genuinely is not there means nothing matches
+	// and nothing is approved; the reason is recorded, not hidden. A plane
+	// that is configured but unusable is fatal instead — see
+	// loadFileIssuesFindings.
+	findings, findingsSummary, err := loadFileIssuesFindings(root, runID, signalsStage)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 	if !findingsSummary.Available {
 		pf(stderr, "warning: %s; no nomination can be approved\n", findingsSummary.Reason)
 	}
@@ -294,18 +300,40 @@ func runFileIssues(args []string, stdout, stderr io.Writer) int {
 }
 
 // loadFileIssuesFindings reads the signals stage's stdout artifact of this
-// run through the run journal — the same path readDecompositionInput's
+// run through the run journal — the same seam readDecompositionInput's
 // journal arm uses — and parses the tool findings out of it. There is
 // deliberately no file arm: a file in the working directory could have been
 // written by anything, while the journal artifact is what the runner
-// recorded from the deterministic stage's own stdout. A stage pod cannot
-// reach the journal; the summary then says so and nothing is approved.
-func loadFileIssuesFindings(root, runID, stage string) (*nomination.Findings, fileIssuesFindings) {
+// recorded from the deterministic stage's own stdout.
+//
+// Goobers#3996 blocker 2 gave that read a POD ROUTE. It used to open a run
+// directory under the instance root by path, which in a pod is an unstamped
+// GOOBERS_INSTANCE_ROOT falling back to "." — so the read always failed there
+// and the lane filed every nomination unapproved while exiting 0. It now goes
+// through stageRunJournal like every other converted reader, so on the plane
+// the identical question is answered by the daemon for this run and only this
+// run.
+//
+// A read that cannot be served is still not fatal — decision 004's bar is
+// "approve only what can be confirmed", so an unconfirmable nomination files
+// UNAPPROVED with the reason rather than failing the stage. What IS fatal is
+// a half-wired plane (fileIssuesFindingsFatal): an endpoint with no bearer or
+// no run identity means this stage cannot tell "there is no finding" from "I
+// was not allowed to look", and quietly choosing the first is the
+// silent-wrong-result class the seam exists to close.
+func loadFileIssuesFindings(root, runID, stage string) (*nomination.Findings, fileIssuesFindings, error) {
 	summary := fileIssuesFindings{Stage: stage}
 	data, err := readStageStdoutArtifact(root, runID, stage)
 	if err != nil {
-		summary.Reason = fmt.Sprintf("the %s stdout artifact of run %s is not readable from this stage (%v); a stage pod cannot reach the run journal, so no nomination can be confirmed against a tool finding", stage, runID, err)
-		return nil, summary
+		if fileIssuesFindingsFatal(err) {
+			return nil, summary, fmt.Errorf(
+				"the journal plane is configured but unusable, so the %s stdout artifact of run %s cannot be read: %w",
+				stage, runID, err)
+		}
+		summary.Reason = fmt.Sprintf(
+			"the %s stdout artifact of run %s is not readable from this stage (%v), so no nomination can be confirmed against a tool finding",
+			stage, runID, err)
+		return nil, summary, nil
 	}
 	findings := nomination.ParseSignals(data)
 	summary.Available = true
@@ -313,34 +341,61 @@ func loadFileIssuesFindings(root, runID, stage string) (*nomination.Findings, fi
 	summary.Lint = findings.Counts[nomination.ToolLint]
 	summary.Test = findings.Counts[nomination.ToolTest]
 	summary.Problems = findings.Problems
-	return findings, summary
+	return findings, summary, nil
 }
 
-// readStageStdoutArtifact returns the stdout artifact the run journal
-// records for stage's successful finish: the executor records every
-// deterministic stage's captured stdout as "<task>/stdout.log" and lists it
-// in the stage.finished event (internal/executor/shell.go).
+// fileIssuesFindingsFatal reports the failures that must stop the stage
+// instead of degrading it to "nothing can be approved": a journal plane that
+// is configured but incomplete, and a plane that is configured for a
+// different run than this stage claims to be. Both are misconfiguration, not
+// absence, and both would otherwise be indistinguishable from a run whose
+// signals stage simply produced nothing.
+func fileIssuesFindingsFatal(err error) bool {
+	return errors.Is(err, journalclient.ErrEndpointWithoutToken) ||
+		errors.Is(err, journalclient.ErrEndpointWithoutRun) ||
+		errors.Is(err, ErrPlaneRunMismatch)
+}
+
+// fileIssuesStdoutArtifactSuffix is the name the executor records every
+// deterministic stage's captured stdout under ("<task>/stdout.log",
+// internal/executor/shell.go), listed in that stage's stage.finished event.
+const fileIssuesStdoutArtifactSuffix = "/stdout.log"
+
+// maxFileIssuesSignalsBytes bounds the signals artifact this stage will parse.
+// The signals stage prints tool output, not blobs; a stdout capture larger
+// than this is not something to confirm evidence against, and buffering it in
+// a pod is how a stage container is OOM-killed instead of failing loudly.
+// The executor's own stdout capture is truncated well below it.
+const maxFileIssuesSignalsBytes = 8 << 20
+
+// readStageStdoutArtifact returns the stdout artifact the run journal records
+// for stage's newest successful finish, through whichever backend this stage
+// is on. The reference is resolved from this run's OWN journal — no path, no
+// digest and no run is taken from anywhere else — and the bytes are bounded,
+// media-checked and digest-verified before they are returned
+// (journalclient.StageArtifactContent).
 func readStageStdoutArtifact(root, runID, stage string) ([]byte, error) {
 	if runID == "" {
 		return nil, errors.New("no run id")
 	}
-	runDir, err := runDirFor(layoutFor(root), runID)
+	reader, err := stageRunJournal(root, runID)
 	if err != nil {
 		return nil, err
 	}
-	reader, err := journal.OpenRead(runDir)
+	content, err := journalclient.StageArtifactContent(reader, stage, fileIssuesStdoutArtifactSuffix, journalclient.ArtifactBounds{
+		MaxBytes: maxFileIssuesSignalsBytes,
+		// The executor declares stdout captures as text/plain. A generic or
+		// absent declaration is admitted (the daemon's projection cannot
+		// report a more specific one); a positively different type is not.
+		MediaTypes: []string{"text/plain"},
+	})
 	if err != nil {
+		if errors.Is(err, journalclient.ErrArtifactNotRecorded) {
+			return nil, fmt.Errorf("the run journal records no successful %s stage with a stdout artifact", stage)
+		}
 		return nil, err
 	}
-	events, err := reader.Events()
-	if err != nil {
-		return nil, err
-	}
-	ref, ok := decompositionStageArtifact(events, stage, "/stdout.log")
-	if !ok {
-		return nil, fmt.Errorf("the run journal records no successful %s stage with a stdout artifact", stage)
-	}
-	return reader.ArtifactBytes(ref)
+	return content.Bytes, nil
 }
 
 func nonNilFiled(filed []nomination.FiledIssue) []nomination.FiledIssue {

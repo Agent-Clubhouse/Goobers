@@ -285,7 +285,7 @@ func TestInitGuidedRejectsExistingConfigurationBeforeWriting(t *testing.T) {
 }
 
 func TestInitGuidedIndividualWorkflowSelections(t *testing.T) {
-	for _, workflow := range GuidedWorkflowNames() {
+	for _, workflow := range guidedWorkflowOrder {
 		t.Run(workflow, func(t *testing.T) {
 			opts := GuidedOptions{
 				GaggleName:           "widget",

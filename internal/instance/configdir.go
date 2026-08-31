@@ -16,7 +16,6 @@ import (
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/configsource"
 	"github.com/goobers/goobers/internal/configtree"
-	"github.com/goobers/goobers/internal/gooberassets"
 )
 
 // ErrInvalidConfig is returned by LoadConfigDir when the config directory
@@ -173,13 +172,7 @@ func readDocs(root string) ([]rawDoc, error) {
 			return err
 		}
 		if d.IsDir() {
-			if path != root && strings.HasPrefix(d.Name(), ".") {
-				return filepath.SkipDir
-			}
-			if configtree.IsGaggleSkillsDir(root, path) {
-				return filepath.SkipDir
-			}
-			if gooberassets.IsSourceDir(path) {
+			if configtree.ShouldSkipConfigDir(root, path) {
 				return filepath.SkipDir
 			}
 			return nil

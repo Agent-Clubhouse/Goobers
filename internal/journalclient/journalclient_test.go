@@ -6,6 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/apicontract"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 // journalclient_test.go covers the stage-side half of #3880's fail-closed
@@ -241,4 +244,72 @@ func TestArtifactReadsRejectMalformedDigests(t *testing.T) {
 	if served != 0 {
 		t.Fatalf("%d malformed-digest requests were sent", served)
 	}
+}
+
+// TestArtifactFetchBoundsTheBodyAtTheTransport is the pod's memory guard: a
+// daemon that answers a bounded artifact request with an unbounded body must
+// be cut off as it arrives, not after the whole thing has been buffered and
+// then found too large.
+func TestArtifactFetchBoundsTheBodyAtTheTransport(t *testing.T) {
+	oversized := strings.Repeat("x", 64<<10)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(oversized))
+	}))
+	defer server.Close()
+
+	client, err := NewHTTP(HTTPConfig{BaseURL: server.URL, Token: "tok", RunID: "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := journal.Ref{Digest: journal.Digest([]byte(oversized))}
+	if _, err := client.ArtifactBytesBounded(ref, 1024); err == nil {
+		t.Fatal("a 64KiB body was accepted under a 1KiB bound")
+	}
+	// The same body inside the bound still verifies and is returned.
+	data, err := client.ArtifactBytesBounded(ref, int64(len(oversized)))
+	if err != nil {
+		t.Fatalf("within-bound fetch: %v", err)
+	}
+	if len(data) != len(oversized) {
+		t.Fatalf("len = %d, want %d", len(data), len(oversized))
+	}
+}
+
+// TestArtifactFetchRefusesASubstitutedArtifact covers both ways the daemon
+// can answer with content other than what was asked for: naming a different
+// digest in the response header, and simply serving different bytes. Neither
+// may reach the caller — a stage that confirms evidence against an artifact
+// must fail loudly rather than confirm against a substitute.
+func TestArtifactFetchRefusesASubstitutedArtifact(t *testing.T) {
+	wanted := journal.Digest([]byte("the real signals output"))
+	other := journal.Digest([]byte("something else entirely"))
+
+	t.Run("header names another digest", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set(apicontract.DigestHeader, other)
+			_, _ = w.Write([]byte("the real signals output"))
+		}))
+		defer server.Close()
+		client, err := NewHTTP(HTTPConfig{BaseURL: server.URL, Token: "tok", RunID: "run-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.ArtifactByDigest(wanted); err == nil || !strings.Contains(err.Error(), other) {
+			t.Fatalf("err = %v, want a refusal naming the substituted digest", err)
+		}
+	})
+
+	t.Run("body is not what the digest addresses", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("fabricated signals output"))
+		}))
+		defer server.Close()
+		client, err := NewHTTP(HTTPConfig{BaseURL: server.URL, Token: "tok", RunID: "run-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.ArtifactByDigest(wanted); err == nil {
+			t.Fatal("substituted content was accepted")
+		}
+	})
 }

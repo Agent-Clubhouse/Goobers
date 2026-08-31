@@ -143,6 +143,42 @@ func TestPlacementRefusalSkippedByTick(t *testing.T) {
 	}
 }
 
+// TestUnrefusedEntryTicksAndTriggers is the #3987 counterpart of the two
+// tests above: the SAME entry shape with the refusal lifted ticks and
+// dispatches on an explicit trigger.
+//
+// It exists because "stop stamping PlacementRefusal on engine-selected
+// entries" is only a fix if an entry without the field actually serves. The
+// two assertions are the two ways the outage manifested on the live instance
+// (#3987): backlog-curation was skipped silently on every tick, and an
+// explicit trigger came back ReasonPlacementUnsatisfiable.
+func TestUnrefusedEntryTicksAndTriggers(t *testing.T) {
+	unrefused := func(starter Starter, counter BacklogCounter) []WorkflowEntry {
+		return []WorkflowEntry{{
+			Workflow:       "pod-pinned",
+			Gaggle:         "example",
+			Readiness:      apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+			Starter:        starter,
+			BacklogCounter: counter,
+			PollProvider:   apiv1.ProviderGitHub,
+		}}
+	}
+
+	counter := &countingBacklogCounter{}
+	ticked, _ := newTestScheduler(t, unrefused(&fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}, counter))
+	ticked.Tick(context.Background(), time.Now())
+	if counter.calls == 0 {
+		t.Error("an entry carrying no placement refusal must be polled by Tick, not skipped")
+	}
+
+	starter := &fakeStarter{result: StartResult{Phase: journal.PhaseCompleted}}
+	triggered, _ := newTestScheduler(t, unrefused(starter, nil))
+	if _, err := triggered.Trigger(context.Background(), "pod-pinned", time.Now()); err != nil {
+		t.Fatalf("an entry carrying no placement refusal must accept an explicit trigger, got %v", err)
+	}
+	waitForCount(t, func() int { return starter.count() }, 1)
+}
+
 type countingBacklogCounter struct{ calls int }
 
 func (c *countingBacklogCounter) EligibleCount(context.Context) (int, error) {

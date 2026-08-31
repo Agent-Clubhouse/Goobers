@@ -28,8 +28,8 @@ func TestWorkflowCRDRejectsSyncBaseInScratchWorkspace(t *testing.T) {
 
 	root := crd.Spec.Versions[0].Schema.OpenAPIV3Schema
 	runSchema := root.Properties["spec"].Properties["tasks"].Items.Schema.Properties["run"]
-	if len(runSchema.XValidations) != 2 {
-		t.Fatalf("run schema CEL validations = %d, want 2", len(runSchema.XValidations))
+	if len(runSchema.XValidations) != 3 {
+		t.Fatalf("run schema CEL validations = %d, want 3", len(runSchema.XValidations))
 	}
 	validation := runSchema.XValidations[1]
 	const wantRule = "!has(self.syncBase) || !self.syncBase || !has(self.workspace) || self.workspace != 'scratch'"
@@ -65,6 +65,28 @@ func TestWorkflowCRDRequiresExactlyOneRunForm(t *testing.T) {
 	}
 	if runSchema.Properties["script"].MinLength == nil || *runSchema.Properties["script"].MinLength != 1 {
 		t.Fatal("run.script must require at least one character")
+	}
+}
+
+func TestWorkflowCRDRejectsEmptyExecutableName(t *testing.T) {
+	data, err := os.ReadFile("../../config/crd/bases/goobers.dev_workflows.yaml")
+	if err != nil {
+		t.Fatalf("read Workflow CRD: %v", err)
+	}
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(data, &crd); err != nil {
+		t.Fatalf("decode Workflow CRD: %v", err)
+	}
+
+	root := crd.Spec.Versions[0].Schema.OpenAPIV3Schema
+	runSchema := root.Properties["spec"].Properties["tasks"].Items.Schema.Properties["run"]
+	validation := runSchema.XValidations[2]
+	const wantRule = "!has(self.command) || size(self.command[0]) > 0"
+	if validation.Rule != wantRule {
+		t.Fatalf("run schema CEL rule = %q, want %q", validation.Rule, wantRule)
+	}
+	if validation.Message != "command[0] must name an executable" {
+		t.Fatalf("run schema CEL message = %q", validation.Message)
 	}
 }
 

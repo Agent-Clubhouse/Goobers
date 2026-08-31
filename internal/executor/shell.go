@@ -271,13 +271,19 @@ func StageInvokesGoobersCLI(command []string) bool {
 // cannot run there.
 //
 // DERIVED, and re-derivable: `grep -l LoadConfigDir cmd/goobers/*.go`, then map
-// each file to the command its newCLIFlagSet declares. That yields 16 files, of
-// which all but this one are operator commands (config, connect, fix, features,
+// each file to the command its newCLIFlagSet declares. That yields 16 files,
+// all of which are operator commands (config, connect, fix, features,
 // onboarding, run, workflow) that a workflow never invokes as a stage. If that
 // grep ever names a new STAGE command, it belongs here.
-var stageCommandsRequiringInstanceConfig = map[string]bool{
-	"telemetry-query": true,
-}
+//
+// The map is EMPTY as of Goobers#4001. Its only entry was telemetry-query,
+// which now reads the daemon's bounded defect-aggregate plane in a dispatched
+// pod (internal/httpapi/telemetrydefectplane.go) and only consults the config
+// directory on the local path, which it refuses to take without a real
+// instance root. The map is kept rather than deleted because the CONDITION it
+// encodes is still real: a stage pod has no config directory, and the next
+// command that needs one belongs here.
+var stageCommandsRequiringInstanceConfig = map[string]bool{}
 
 // StageRequiresInstanceConfig reports whether a stage command needs the instance
 // config directory, and so cannot run in a stage pod. This is deliberately a
@@ -326,7 +332,8 @@ func StageRequiresInstanceConfig(command []string) bool {
 // flag-gated: only specific FLAGS made them provider-only rather than
 // ledger-touching, so StageRequiresInstanceRoot matched them by name. Both
 // are now fully plane-served in every mode (#3898, #3948) and neither appears
-// in the map below at all.
+// in the map below at all. pr-select left it the same way (#3988), by
+// admitting its fairness lease to the scheduler-state namespace.
 //
 // Scope: this matches on the COMMAND VECTOR (cmd[0]=="goobers", cmd[1]=the
 // subcommand), the same shape both dispatchRemoteTask and the pod-entrypoint
@@ -345,31 +352,47 @@ func StageRequiresInstanceConfig(command []string) bool {
 // stageCommand() (cmd/goobers/runtime_capabilities.go) before trusting this
 // list is still complete.
 var stageCommandsRequiringInstanceRoot = map[string]bool{
-	// pr-select's FAIRNESS LEASE: cmd/goobers/prselectfairness.go reads
-	// SchedulerDir()/pr-select-fairness.json directly (:85, :112) and
-	// rewrites it under withClaimLock on SchedulerDir()/claims.lock (:260).
-	// That file is not one of stateclient.ValidKey's shapes, so the
-	// scheduler-state plane cannot serve it; admitting it to the namespace is
-	// the removal's prerequisite.
-	"pr-select": true,
+	// pr-select is NOT here any more (Goobers#3988). Its claims are on the
+	// claims plane and the last thing that held it — the FAIRNESS LEASE at
+	// SchedulerDir()/pr-select-fairness.json, #1336's aging plus the one-hour
+	// starvation guard — is now a scheduler-state key
+	// (stateclient.KeyPRSelectFairness), reached through
+	// openStageStateStore/openHeldStageStateStore like every other key in that
+	// namespace and served under the SAME claims.lock it always took, so a
+	// pod-executed selection and a daemon-driven one advance ONE lease rather
+	// than two. Everything else it touches is a provider API call.
 	// issue-close-out reads run journals through journal.OpenRead directly
 	// (issuecloseout.go:96, :168, :241) over a run directory it finds with
 	// instance.Layout.FindRunDir — bypassing the stageRunJournal seam
 	// entirely, so the journal plane does not serve it. Its claim RELEASE is
 	// already plane-served; only these three reads hold it here.
 	"issue-close-out": true,
-	// telemetry-query opens the daemon's telemetry ROLLUP database directly
-	// (telemetryquery.go:412 l.TelemetryDB()). The telemetry plane is a write
-	// and gaggle-scoped-evidence surface, not a rollup-query one, and
-	// decision 005 R4 keeps this command refused deliberately. It is also the
-	// only entry in stageCommandsRequiringInstanceConfig.
-	"telemetry-query": true,
-	// gather-pr-context's REMEDIATION NO-OP GUARD: remediationnoopguard.go
-	// takes withClaimLock on SchedulerDir()/claims.lock (:174) and
-	// reads/writes SchedulerDir()/pr-remediation-noop.json (:175, :188), and
-	// reaches localscheduler.OpenClaimLedger plus journal.OpenRead over a
-	// FindRunDir path (:65-79). None of that is in a plane's namespace.
-	"gather-pr-context": true,
+	// telemetry-query is NOT here any more (Goobers#4001). It opened the
+	// daemon's telemetry ROLLUP database directly (l.TelemetryDB()), and
+	// decision 005 R4 refused it at dispatch because the only shape anyone
+	// had for serving it would have exposed that database or raw error
+	// signatures. It now reads a NARROW, gaggle-contained, run-authenticated
+	// aggregate route instead (apicontract.TelemetryDefectAggregatesPath):
+	// four fixed derived families, no SQL, no path, no connector, and error
+	// signatures normalized before they leave the daemon. The command selects
+	// that plane BEFORE resolving a root, and on the local path it now
+	// refuses outright when the resolved root is not an instance — so the
+	// silent "." fallback this entry existed to prevent is unreachable from
+	// either direction rather than merely undispatched.
+	// gather-pr-context is NOT here any more (Goobers#3989). Its REMEDIATION
+	// NO-OP GUARD — the record that stops the lane re-attempting a PR whose
+	// previous attempt already concluded there was nothing to do — held it
+	// three separate ways, and all three are now plane seams
+	// (remediationnoopguard.go): the record is a keyed scheduler-state key
+	// (stateclient.PRRemediationNoopKey, one per gaggle+PR) reached through
+	// openStageStateStore, its claim resolution goes through the claims seam
+	// (stageClaimLedgerForRun/Locked) instead of localscheduler.OpenClaimLedger,
+	// and the terminal run's journal is read through stageRunJournal instead of
+	// journal.OpenRead over a FindRunDir path. claims.lock mutual exclusion is
+	// preserved: every no-op key falls through schedulerStateLock's default
+	// arm, which is claims.lock, and the daemon serves a pod's compare-and-swap
+	// under that same lock. remediation-checkpoint, which shares the guard,
+	// clears with it.
 	// select-source opens the instance log (selectsource.go:99), walks the
 	// instance's runs tree through readservice.NewOfflineRuns (:89), and
 	// leases the parent with withClaimLock + localscheduler.OpenClaimLedger
@@ -397,6 +420,26 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	// journal.OpenRead (:166, :452) — a cross-run walk the journal plane's
 	// three purpose-built gaggle-scoped questions do not answer.
 	"reconcile-branches": true,
+	// file-issues is deliberately NOT here, and was never here — which was
+	// the defect Goobers#3996 blocker 2 named rather than a decision. It read
+	// the signals stage's stdout artifact by opening a run directory under the
+	// instance root (fileissues.go readStageStdoutArtifact), which in a pod
+	// resolves to "." and fails; because nothing refused the command, the lane
+	// ran GREEN while filing every nomination unapproved — the silent-wrong-
+	// result this list exists to make loud, arriving without a refusal.
+	//
+	// It is not added here because the read now reaches a plane seam:
+	// stageRunJournal plus journalclient.StageArtifactContent, a typed
+	// artifact-content fetch resolved only from a reference the caller's own
+	// run journal records. Per-command audit, every stateful access followed
+	// from runFileIssues: the nominations artifact and the check result go
+	// through readDecompositionInput (already the stageRunJournal seam), the
+	// findings read is the new seam, the repo and all three credentials come
+	// from providerRepo/providerToken (environment first), the dedupe scan and
+	// every mutation are provider API calls, and the result file and mutation
+	// sidecar are workspace-relative. Nothing holds a path under the instance
+	// root, so the refusal that would have covered the old defect would now
+	// only keep a working lane on self.
 }
 
 // stageKindsWithPodExecution names the built-in deterministic stage KINDS
