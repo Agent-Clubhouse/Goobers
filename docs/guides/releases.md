@@ -77,9 +77,9 @@ VERSION="$(curl -fsSL https://api.github.com/repos/Agent-Clubhouse/Goobers/relea
   -- "$VERSION"
 ```
 
-To pin a known stable release, replace the first command with an explicit tag,
-for example `VERSION=v0.3.3`. Pre-release installers are published with their
-tags but intentionally reject pre-release versions; download and verify a
+To pin a known stable release, replace the first command by setting `VERSION`
+to an explicit stable tag. Pre-release installers are published with their tags
+but intentionally reject pre-release versions; download and verify a
 pre-release archive directly when testing one.
 
 The installer downloads only assets attached to the selected stable tag. The helper detects the
