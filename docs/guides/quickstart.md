@@ -95,9 +95,10 @@ bin/goobers trace <run-id> ./demo-instance
 Next, use the versioned `quickstart@v1` template for a first autonomous run
 against a disposable GitHub repository you control. This path requires a
 GitHub token and an authenticated agent harness. The shipped template's
-goobers default to `harness: copilot`; to run it on Claude Code instead, set
-`harness: claude-code` in `./tutorial-instance/config/gaggles/example/goobers/{implementer,reviewer}/goober.yaml`
-after materializing the instance below (see
+goobers default to `harness: copilot`; to run it on Claude Code instead, pass
+`--harness claude-code` to the `goobers init --template=quickstart` command
+below, which seeds every goober with that harness and needs no `goober.yaml`
+edit (see
 [`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)
 for a full claude-code gaggle reference).
 
