@@ -289,6 +289,7 @@ const (
 	errorRunControls              WarningCode = "WF016"
 	errorPathSimulation           WarningCode = "WF017"
 	errorCapabilityRuntimeSupport WarningCode = "WF019"
+	errorWorkflowCompile          WarningCode = "WF025"
 	errorDocsRoot                 WarningCode = "DOCS001"
 	errorUnsupportedFeature       WarningCode = "VER005"
 	errorLabelPredicateGaggle     WarningCode = "LBL001"
@@ -1127,6 +1128,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 		ix.checkWorkflow(r, indexed.definition, indexed.file, allowPreview)
 		checkWorkflowDSLVersion(r, indexed.definition, indexed.file, allowPreview)
 	}
+	ix.checkWorkflowsCompile(r, allowPreview)
 
 	// Every referenceNotFound call in this pass (including from checkWorkflow
 	// above) was buffered, not yet added to r — flush now that the run's full
@@ -2154,6 +2156,72 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// one missing line. It stays exported for callers that want the strict
 	// bar (this repo holds its own shipped workflows to it in
 	// internal/workflow's stage-contract test).
+}
+
+// checkWorkflowsCompile closes the admission gap between canonical config
+// loading and the runtime (#3664). Every workflow check above mirrors part of
+// the versioned compiler, but the mirror was never complete: compiler-only
+// structural rules — an unresolved contextFrom source, a parallel topology
+// problem, a dotted state name, incompatible placement across claims-mutating
+// stages — were enforced only where something actually called
+// workflow.Compile (the CLI and daemon startup), so a GitOps, config-sync, or
+// direct-loader consumer of LoadConfigDir got a weaker verdict than the
+// daemon it was feeding. Running the real compiler here makes the loader's
+// verdict the runtime's verdict by construction, with no second
+// implementation to drift.
+//
+// It runs only on a config this pass has otherwise admitted. The compiler
+// aggregates every problem it finds across the whole document — including
+// ones the checks above already reported, and ones that belong to the Goober
+// or Gaggle a workflow binds rather than to the workflow itself — so on an
+// already-invalid config it would restate those findings under a second code
+// and a less precise scope. A config that is already rejected loses nothing
+// by that: it fails closed either way, and the compiler's remaining findings
+// surface on the next pass once the reported errors are fixed.
+//
+// Compile options mirror the individual wf.Check* calls in checkWorkflow
+// exactly — the goober specs, the preview-feature opt-in, and the
+// gaggle-level requirement floor. The registries only a running daemon owns
+// (known automated checks, known harnesses) stay unset, as they are for those
+// checks, so this reports nothing that depends on runtime wiring the loader
+// cannot see.
+func (ix *index) checkWorkflowsCompile(r *Report, allowPreview bool) {
+	if r.HasErrors() || len(ix.pendingReferenceIssues) > 0 {
+		return
+	}
+	goobers := ix.gooberSpecs()
+	for _, identity := range sortedWorkflowIdentities(ix.workflows) {
+		indexed := ix.workflows[identity]
+		w := indexed.definition
+		opts := []wf.Option{
+			wf.WithGoobers(goobers),
+			wf.WithPreviewFeatures(allowPreview),
+		}
+		if gaggle, ok := ix.gaggles[w.Spec.Gaggle]; ok {
+			opts = append(opts,
+				wf.WithGaggleRequiredCapabilities(gaggle.Spec.RequiredCapabilities),
+				wf.WithGaggleRunsOn(gaggle.Spec.RunsOn),
+			)
+		}
+		def := wf.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}
+		if _, err := wf.Compile(def, opts...); err != nil {
+			r.add(errorWorkflowCompile, Error, indexed.file, "Workflow", w.Name, "%v", err)
+		}
+	}
+}
+
+func sortedWorkflowIdentities(workflows map[workflowIdentity]indexedWorkflow) []workflowIdentity {
+	identities := make([]workflowIdentity, 0, len(workflows))
+	for identity := range workflows {
+		identities = append(identities, identity)
+	}
+	sort.Slice(identities, func(i, j int) bool {
+		if identities[i].gaggle != identities[j].gaggle {
+			return identities[i].gaggle < identities[j].gaggle
+		}
+		return identities[i].name < identities[j].name
+	})
+	return identities
 }
 
 func (ix *index) checkCapabilityRuntimeSupport(r *Report, w apiv1.Workflow, file string) {

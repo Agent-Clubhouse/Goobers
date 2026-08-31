@@ -176,6 +176,52 @@ func TestLoadConfigDirForComparisonReturnsParseableInvalidSet(t *testing.T) {
 	}
 }
 
+// TestLoadConfigDirRejectsCompilerOnlyDefect is the #3664 regression at the
+// loader boundary: a definition the versioned compiler refuses — here a
+// contextFrom source naming no state in the workflow — used to load cleanly
+// through LoadConfigDir even though `goobers validate` and daemon startup
+// both rejected it, leaving GitOps and config-sync consumers with the weaker
+// verdict. Canonical loading now fails closed on it like any other invalid
+// config.
+func TestLoadConfigDirRejectsCompilerOnlyDefect(t *testing.T) {
+	root := t.TempDir()
+	if err := os.CopyFS(root, os.DirFS(validConfigDir)); err != nil {
+		t.Fatal(err)
+	}
+	workflow := filepath.Join(root, "gaggles", "acme-web", "workflows", "implementation.yaml")
+	data, err := os.ReadFile(workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched := strings.Replace(string(data), "      contextFrom:\n        - query-backlog", "      contextFrom:\n        - ghost-stage", 1)
+	if patched == string(data) {
+		t.Fatal("fixture no longer contains the contextFrom list this test patches")
+	}
+	if err := os.WriteFile(workflow, []byte(patched), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	set, report, err := LoadConfigDir(root)
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("expected ErrInvalidConfig, got %v", err)
+	}
+	if set != nil {
+		t.Fatalf("expected a nil ConfigSet on an invalid directory, got %+v", set)
+	}
+	if report == nil || !report.HasErrors() {
+		t.Fatalf("expected a report with errors, got %+v", report)
+	}
+	var found bool
+	for _, issue := range report.Issues {
+		if strings.Contains(issue.Message, `contextFrom source "ghost-stage" is not a defined task or gate`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("report did not name the unresolved contextFrom source: %+v", report.Issues)
+	}
+}
+
 func TestLoadConfigDirIgnoresAssetDefinitions(t *testing.T) {
 	root := t.TempDir()
 	if err := os.CopyFS(root, os.DirFS(validConfigDir)); err != nil {
