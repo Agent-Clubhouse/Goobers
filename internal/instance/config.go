@@ -1964,13 +1964,7 @@ func LoadConfig(path string) (*Config, error) {
 // tick that tries to use it.
 func (c *Config) Validate() error {
 	c.ResolveLargeRepoPresets()
-	if err := validateInOrder(
-		c.validateSchemaVersion,
-		c.Workcopies.validate,
-		func() error { return c.API.validate(c.APIListenAddress()) },
-		c.validateWorkflowSource,
-		func() error { return c.Webhook.validate(c.WebhookListenAddress()) },
-	); err != nil {
+	if err := c.validateBaseConfig(); err != nil {
 		return err
 	}
 
@@ -1979,27 +1973,7 @@ func (c *Config) Validate() error {
 	if err != nil {
 		return err
 	}
-	return validateInOrder(
-		func() error { return c.Portal.validate() },
-		c.validateSpeech,
-		func() error { return c.Webhook.validateSecret(stores) },
-		c.validateTimezone,
-		c.Runner.validateDefaultStageTimeout,
-		func() error { return c.Telemetry.validate(stores, c.TelemetryEnabled()) },
-		c.validateExternalTelemetry,
-		c.Telemetry.Retention.validate,
-		c.RunConditions.validate,
-		c.Retention.validate,
-		func() error { return c.validateRepos(stores) },
-		c.validateGitHubCLIIdentityRefs,
-		func() error { return c.validateDaemonIdentity(stores) },
-		func() error { return c.validateCredentials(stores) },
-		c.Runner.validate,
-		c.validateRunners,
-		c.validateEgress,
-		func() error { return c.validateWorkflowSourceCredentials(stores) },
-		c.validateSandbox,
-	)
+	return c.validateConfigSections(stores)
 }
 
 // validateSecretStores checks every secretStores entry fail-closed at load

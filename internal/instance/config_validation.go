@@ -26,6 +26,40 @@ func validateInOrder(validators ...func() error) error {
 	return nil
 }
 
+func (c *Config) validateBaseConfig() error {
+	return validateInOrder(
+		c.validateSchemaVersion,
+		c.Workcopies.validate,
+		func() error { return c.API.validate(c.APIListenAddress()) },
+		c.validateWorkflowSource,
+		func() error { return c.Webhook.validate(c.WebhookListenAddress()) },
+	)
+}
+
+func (c *Config) validateConfigSections(stores map[string]bool) error {
+	return validateInOrder(
+		func() error { return c.Portal.validate() },
+		c.validateSpeech,
+		func() error { return c.Webhook.validateSecret(stores) },
+		c.validateTimezone,
+		c.Runner.validateDefaultStageTimeout,
+		func() error { return c.Telemetry.validate(stores, c.TelemetryEnabled()) },
+		c.validateExternalTelemetry,
+		c.Telemetry.Retention.validate,
+		c.RunConditions.validate,
+		c.Retention.validate,
+		func() error { return c.validateRepos(stores) },
+		c.validateGitHubCLIIdentityRefs,
+		func() error { return c.validateDaemonIdentity(stores) },
+		func() error { return c.validateCredentials(stores) },
+		c.Runner.validate,
+		c.validateRunners,
+		c.validateEgress,
+		func() error { return c.validateWorkflowSourceCredentials(stores) },
+		c.validateSandbox,
+	)
+}
+
 func (c *WorkcopiesConfig) validate() error {
 	if c != nil && c.Root != "" && !filepath.IsAbs(c.Root) {
 		return fmt.Errorf("workcopies.root must be an absolute path: %q", c.Root)
