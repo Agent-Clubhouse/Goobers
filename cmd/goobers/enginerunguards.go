@@ -20,6 +20,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 )
 
@@ -509,7 +510,7 @@ func reattachEngineRun(ctx context.Context, guards *engineRunGuards, id journal.
 		if deps.release != nil {
 			deps.release(id.RunID, id.Workflow)
 		}
-		ingestRunTelemetry(deps.telemetry, deps.rollupDB, deps.watermarks, deps.layout, id.RunID, deps.log)
+		telemetryingest.RunTelemetry(deps.telemetry, deps.rollupDB, deps.watermarks, deps.layout, id.RunID, deps.log)
 	}
 	if deps.log == nil {
 		return

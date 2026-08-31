@@ -23,6 +23,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/signals"
+	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
@@ -324,7 +325,7 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	// waitForRunTerminal polls the run's OWN journal and returns as soon as
 	// it sees a terminal phase — that races trackedStarter.Start's dispatch
 	// goroutine, which still has its post-completion telemetry ingest
-	// (ingestRunTelemetry) to run before it calls wg.Done(). Waiting for wg
+	// (telemetryingest.RunTelemetry) to run before it calls wg.Done(). Waiting for wg
 	// here (this run is the only dispatch `goobers run` ever tracks) closes
 	// that gap, so `goobers trace` run immediately afterward reliably sees
 	// this run's rollup rows without needing a separate --rebuild.
@@ -725,13 +726,13 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	// #2191: an aborted run advanced its journal just like a normal terminal
-	// run, but unlike the daemon's ingestRunTelemetry call this one-shot CLI
+	// run, but unlike the daemon's telemetryingest.RunTelemetry call this one-shot CLI
 	// path never opens the intake store — so the dashboard never learns the
 	// abort happened until the repair sweep eventually finds it.
 	if watermarks, err := intake.Open(runLayout.IntakeDB()); err != nil {
 		pf(stderr, "warning: open intake store for run %s: %v\n", runID, err)
 	} else {
-		recordRunIntake(watermarks, runLayout, runID, nil)
+		telemetryingest.RunIntake(watermarks, runLayout, runID, nil)
 		_ = watermarks.Close()
 	}
 	if err := finalizeTerminalRunForRecovery(runLayout, nil, wtMgr, runID); err != nil {
