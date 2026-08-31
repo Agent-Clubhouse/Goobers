@@ -1521,8 +1521,11 @@ filer computes from the finding, not the model's dedupeKey), nor an
 earlier nomination of the same artifact naming it. autoApprove=
 deterministic-only (exactly; default never) opts in and the label is
 added with the github:issues:approve credential only.
-Everything else files unapproved with the reasons in the result. On a
-stage pod the run journal is unreachable, so nothing is approved.
+Everything else files unapproved with the reasons in the result. The
+journal read goes through the run-scoped journal plane, so a dispatched
+stage pod confirms against the same artifact a daemon host does; a
+half-configured plane is a hard failure, and a run whose signals stage
+recorded nothing simply approves nothing and says so.
 
 With --check, only validate the artifact and run the read-only dedupe
 scan (github:issues:read); nothing is created. The write path must be

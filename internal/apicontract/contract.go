@@ -166,6 +166,14 @@ const (
 	JournalUnpushedWorkPath = V1Prefix + "/journal/unpushed-work"
 )
 
+// DigestHeader names the content address of the body RunArtifactPath served.
+// A client that asked for one artifact and was answered with another can say
+// so by NAME rather than only by "the bytes did not verify", which is the
+// difference between a diagnosable substitution and an opaque integrity
+// failure. Named here rather than spelled in the router and the client
+// separately, so the two cannot drift.
+const DigestHeader = "X-Goobers-Digest"
+
 // RouteID is the stable cross-adapter identity of a versioned route.
 type RouteID string
 

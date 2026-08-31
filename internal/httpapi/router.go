@@ -919,7 +919,7 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		w.Header().Set("Content-Length", strconv.Itoa(len(artifact.Bytes)))
 		w.Header().Set("ETag", `"`+artifact.Metadata.Digest+`"`)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Goobers-Digest", artifact.Metadata.Digest)
+		w.Header().Set(apicontract.DigestHeader, artifact.Metadata.Digest)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(artifact.Bytes)
 	})

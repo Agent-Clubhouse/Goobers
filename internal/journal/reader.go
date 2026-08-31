@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,14 +211,54 @@ func (e Event) KnownSchema() bool { return e.Schema == EventSchema }
 // — the same containment guard Redact already applies to the identical
 // operation via containedBlobPath.
 func (r *Reader) ArtifactBytes(ref Ref) ([]byte, error) {
+	return r.ArtifactBytesBounded(ref, 0)
+}
+
+// ArtifactBytesBounded is ArtifactBytes with an explicit ceiling: a blob
+// larger than maxBytes is refused BEFORE its bytes are read into memory, and
+// the read itself is limited so a file that grows between the stat and the
+// read cannot exceed the ceiling either. maxBytes <= 0 means unbounded, which
+// is what ArtifactBytes asks for.
+//
+// The ceiling exists for the same reason the plane backend's does: a reader
+// that will only ever act on a bounded artifact should not be able to be made
+// to buffer an unbounded one, whether the oversize came from a hostile daemon
+// or from a run directory that grew an artifact nobody expected.
+func (r *Reader) ArtifactBytesBounded(ref Ref, maxBytes int64) ([]byte, error) {
 	full, err := containedExistingBlobPath(r.dir, ref.Path)
 	if err != nil {
 		return nil, err
 	}
-	b, err := os.ReadFile(full)
+	if maxBytes <= 0 {
+		b, err := os.ReadFile(full)
+		if err != nil {
+			return nil, fmt.Errorf("journal: read blob %q: %w", ref.Path, err)
+		}
+		return verifiedBlob(ref, b)
+	}
+	info, err := os.Stat(full)
 	if err != nil {
 		return nil, fmt.Errorf("journal: read blob %q: %w", ref.Path, err)
 	}
+	if info.Size() > maxBytes {
+		return nil, fmt.Errorf("journal: blob %q is %d bytes, exceeding the %d byte ceiling", ref.Path, info.Size(), maxBytes)
+	}
+	file, err := os.Open(full)
+	if err != nil {
+		return nil, fmt.Errorf("journal: read blob %q: %w", ref.Path, err)
+	}
+	defer func() { _ = file.Close() }()
+	b, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("journal: read blob %q: %w", ref.Path, err)
+	}
+	if int64(len(b)) > maxBytes {
+		return nil, fmt.Errorf("journal: blob %q exceeds the %d byte ceiling", ref.Path, maxBytes)
+	}
+	return verifiedBlob(ref, b)
+}
+
+func verifiedBlob(ref Ref, b []byte) ([]byte, error) {
 	if got := Digest(b); got != ref.Digest {
 		return nil, fmt.Errorf("journal: digest mismatch for %q: have %s want %s", ref.Path, got, ref.Digest)
 	}

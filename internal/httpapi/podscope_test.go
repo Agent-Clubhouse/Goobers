@@ -56,6 +56,13 @@ func podRouteTable() []struct {
 		{"journal unpushed-work", http.MethodPost, apicontract.JournalUnpushedWorkPath, ScopeJournal},
 		{"journal emit", http.MethodPost, "/api/v1/runs/run-1/journal/emit", ScopeJournal},
 		{"run events read", http.MethodGet, "/api/v1/runs/run-1/events", ScopeJournal},
+		{"run stage attempts read", http.MethodGet, "/api/v1/runs/run-1/stages/build/attempts", ScopeJournal},
+		// The artifact CONTENT route. It is content-addressed like the blob
+		// plane and yet deliberately NOT on it: the blob bearer reaches any
+		// digest the store holds, while this one is contained by the handler
+		// to artifacts the caller's OWN run journal recorded. A blob-scoped
+		// bearer reaching here would erase that difference.
+		{"run artifact read", http.MethodGet, "/api/v1/runs/run-1/artifacts/sha256:abc", ScopeJournal},
 		{"surrender", http.MethodPost, "/api/v1/runs/run-1/stages/build/attempts/1/surrender", ScopeSurrender},
 		{"blob read", http.MethodGet, "/api/v1/blobs/sha256:abc", ScopeBlob},
 		{"blob write", http.MethodPut, "/api/v1/blobs/sha256:abc", ScopeBlob},
