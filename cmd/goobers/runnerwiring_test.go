@@ -50,42 +50,15 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
-	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
-	"github.com/goobers/goobers/internal/telemetry/rollup"
+	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
-
-func TestRunIntakeObserverRecordsEveryRunInBurst(t *testing.T) {
-	store, err := intake.Open(filepath.Join(t.TempDir(), intake.FileName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	observe := runIntakeObserver(store, nil)
-
-	for index, runID := range []string{"run-a", "run-b", "run-c", "run-d", "run-e"} {
-		observe(runID, uint64(index+2))
-	}
-
-	pending, err := store.Pending(context.Background(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pending) != 5 {
-		t.Fatalf("pending markers = %d, want 5", len(pending))
-	}
-	for index, marker := range pending {
-		if marker.SourceSeq != uint64(index+2) {
-			t.Fatalf("marker %s sequence = %d, want %d", marker.RunID, marker.SourceSeq, index+2)
-		}
-	}
-}
 
 // resolveGrants materializes each grant's ref through the resolver, returning a
 // capability->token-value map so tests can assert which token actually backs a
@@ -524,7 +497,7 @@ func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) 
 
 	done := make(chan struct{})
 	go func() {
-		ingestRunTelemetry(client, nil, nil, instance.Layout{}, "", nil)
+		telemetryingest.RunTelemetry(client, nil, nil, instance.Layout{}, "", nil)
 		close(done)
 	}()
 	select {
@@ -2849,65 +2822,6 @@ func TestBuildGooberCredentialGrantsScopesSourcesToIdentity(t *testing.T) {
 	if got := grants[0]; got.Goober != "curator" || got.Capability != "agent:model" || got.Ref != "model-token" {
 		t.Fatalf("grant = %+v, want curator/agent:model/model-token", got)
 	}
-}
-
-// TestIngestRunTelemetryLogsForcedFailure is issue #246's third fix: a
-// swallowed rollup-ingest error used to leave nothing but a bare `_ =` — no
-// visible trace anywhere that the rollup silently fell behind. This forces
-// IngestRun to fail (a closed *rollup.DB) and asserts the failure is visible
-// in the instance log, not merely absorbed.
-func TestIngestRunTelemetryLogsForcedFailure(t *testing.T) {
-	root := t.TempDir()
-	l := instance.NewLayout(root)
-
-	db, err := rollup.Open(filepath.Join(root, "telemetry.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Force IngestRun/IngestSchedulerLog to fail deterministically, without
-	// relying on any particular on-disk run-directory shape.
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = log.Close() })
-
-	ingestRunTelemetry(nil, db, nil, l, "run-forced-failure", log)
-
-	events, err := journal.ReadInstanceLog(l.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found bool
-	for _, ev := range events {
-		if ev.Type == journal.EventError && ev.RunID == "run-forced-failure" && ev.Error != nil &&
-			strings.Contains(ev.Error.Code, "telemetry_ingest") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected a telemetry_ingest_* error event for run-forced-failure, got: %+v", events)
-	}
-}
-
-// TestIngestRunTelemetryNilLogDoesNotPanic proves logIngestFailure's nil-log
-// guard holds — ingestRunTelemetry is called from contexts (tests, a
-// standalone db) where no instance log may be wired.
-func TestIngestRunTelemetryNilLogDoesNotPanic(t *testing.T) {
-	root := t.TempDir()
-	l := instance.NewLayout(root)
-	db, err := rollup.Open(filepath.Join(root, "telemetry.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	ingestRunTelemetry(nil, db, nil, l, "run-nil-log", nil)
 }
 
 // --- #312: escalation-notifier wiring ---

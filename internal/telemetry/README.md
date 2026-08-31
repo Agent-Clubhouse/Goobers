@@ -31,6 +31,12 @@ The workflow engine should call `StartRun` once per workflow run, then use the
 returned context for task-attempt and gate-evaluation spans. Within-stage
 happenings are span events rather than peer stage spans.
 
+`internal/telemetry/ingest` is the run-completion side of the same pipeline: it
+flushes a finished run's spans, ingests the run and the scheduler decision log
+into the `internal/telemetry/rollup` store, and records the read model's intake
+watermark. It sits below `internal/telemetry` and `internal/telemetry/rollup`
+rather than inside either, so the CLI's runner wiring stays construction-only.
+
 ## Load/scale harness for the read path
 
 `test/scale` is the committed load/scale harness (issue #1416, epic #1410). It
