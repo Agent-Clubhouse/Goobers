@@ -1531,8 +1531,8 @@ func (env *remediationCheckpointRunEnv) priorCheckpointState(comments []provider
 	// predicate that authorized the release and drop the whole prior record,
 	// matching the operator-clear reset above. A park whose cause a rebase
 	// cannot cure never reaches here: escalationStillBlocks keeps it blocked.
-	if prior.Escalated && escalationBaseAdvanceUnparks(prior) && prior.EscalatedBaseSHA != "" {
-		liveBaseTip, err := env.provider.BranchTipSHA(env.ctx, env.repo, env.base)
+	if prior.Escalated && escalationBaseAdvanceUnparks(prior) && prior.EscalatedBaseSHA != "" && env.features.LiveBaseTip != nil {
+		liveBaseTip, err := env.features.LiveBaseTip(env.ctx, env.base)
 		switch {
 		case err != nil:
 			// Fail closed to today's behavior: keep the prior record rather
