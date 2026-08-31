@@ -209,6 +209,22 @@ type Contained interface {
 	ContainedRunID() string
 }
 
+// StaleRecoverer is implemented by a backend that can have the ledger's
+// STALE-CLAIM SWEEP performed — expired leases plus leases whose owning run
+// is already terminal — without the caller holding the instance root.
+//
+// Only the plane implements it, and that asymmetry is the point (Goobers#4016).
+// The sweep is not a ledger primitive a client can compose from acquire and
+// release: terminality is read from the OWNING run's journal under the
+// instance root, and the daemon additionally holds the intervention state and
+// the restart-time recovery gate that decide whether a lease is reapable at
+// all. A pod has none of that, so it asks the single writer to sweep. The
+// file backend does NOT implement this — its caller already IS the process
+// with the instance root, and runs the sweep in-process exactly as before.
+type StaleRecoverer interface {
+	RecoverStale(ctx context.Context) ([]Entry, error)
+}
+
 // Select chooses the backend for a stage process from its environment: the
 // plane when EnvEndpoint is set (fail closed on a missing bearer or run
 // identity — never a silent fall-through to a ledger file the pod does not

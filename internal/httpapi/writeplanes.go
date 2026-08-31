@@ -130,6 +130,32 @@ type ClaimListResponse struct {
 	History []ClaimEntry `json:"history,omitempty"`
 }
 
+// ClaimRecoverRequest asks the daemon to run its own stale-claim recovery
+// sweep — release every expired lease and every lease whose owning run is
+// already terminal — and report what it released.
+//
+// It carries no item, namespace or lease: the sweep is instance-wide by
+// nature, and the ONLY thing the caller supplies is its own identity. This is
+// deliberate. A stage pod cannot perform the sweep itself at any fidelity:
+// terminality is read from the owning run's journal under the instance root,
+// active interventions are in-memory daemon state, and the restart-time
+// recovery gate exists precisely so a sweep never races the renewal pass. The
+// route therefore delegates the WHOLE decision to the daemon rather than
+// exposing a lock a pod could take over a filesystem it does not have.
+type ClaimRecoverRequest struct {
+	// RunID is the caller's own run — the plane's containment key, checked
+	// against a pod principal's subject exactly as the mutations are.
+	RunID string `json:"runId"`
+	// PodScoped is set by the route, never decoded from the body.
+	PodScoped bool `json:"-"`
+}
+
+// ClaimRecoverResponse reports the leases the sweep released. Empty is the
+// ordinary answer: a healthy ledger has nothing stale in it.
+type ClaimRecoverResponse struct {
+	Released []ClaimEntry `json:"released,omitempty"`
+}
+
 // ClaimService is the daemon-side claims plane. Implementations wrap the
 // existing claim ledger under its existing cross-process atomicity (the flock
 // plus fresh-open discipline the CLI claimants use); the ledger file remains
@@ -143,6 +169,9 @@ type ClaimService interface {
 	Settle(ctx context.Context, request ClaimRequest) (ClaimResponse, error)
 	// List reads the ledger for the caller's run or namespace.
 	List(ctx context.Context, request ClaimListRequest) (ClaimListResponse, error)
+	// Recover runs the daemon's own stale-claim sweep and reports the
+	// released leases (Goobers#4016).
+	Recover(ctx context.Context, request ClaimRecoverRequest) (ClaimRecoverResponse, error)
 }
 
 // TriggerRequest asks the daemon to mint one workflow run. RequestID is the
@@ -275,6 +304,7 @@ func registerWritePlaneRoutes(router *Router, config handlerConfig, errorLog *lo
 			return claims.Settle(ctx, request)
 		})
 	registerClaimListRoute(router, config.claims, errorLog)
+	registerClaimRecoverRoute(router, config.claims, errorLog)
 	registerTriggerRoute(router, config.triggers, errorLog)
 	registerEscalationRoute(router, config.escalations, config.interventionContext, errorLog)
 	registerCredentialRoute(router, config.credentials, errorLog)
@@ -403,6 +433,49 @@ func registerClaimListRoute(router *Router, claims ClaimService, errorLog *log.L
 		}
 		if response.Entries == nil {
 			response.Entries = []ClaimEntry{}
+		}
+		writeJSON(w, http.StatusOK, response)
+	})
+}
+
+// registerClaimRecoverRoute serves the claims plane's stale-claim sweep. The
+// containment is the mutations' containment: a pod principal may only ask for
+// a sweep as its own run. That is an identity check, not an authorization
+// narrowing — the sweep itself is instance-wide because staleness is — and it
+// is what keeps the plane's audit trail attributable.
+func registerClaimRecoverRoute(router *Router, claims ClaimService, errorLog *log.Logger) {
+	router.Handle(apicontract.RouteClaimRecover, func(w http.ResponseWriter, request *http.Request) {
+		if claims == nil {
+			writeError(w, http.StatusServiceUnavailable, "claims_unavailable", "the claims plane is not available from this server")
+			return
+		}
+		if status, code, message := validateMutationTransport(request); status != 0 {
+			writeError(w, status, code, message)
+			return
+		}
+		var input ClaimRecoverRequest
+		if err := decodeWriteRequest(request, &input); err != nil {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, err.Error())
+			return
+		}
+		if strings.TrimSpace(input.RunID) == "" {
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "runId is required")
+			return
+		}
+		if principal, ok := PrincipalFromRequest(request); ok && IsPodPrincipal(principal) {
+			if principal.Subject != podPrincipalSubject(input.RunID) {
+				writeError(w, http.StatusForbidden, "run_mismatch", "pod principal may only request claim recovery as its own run")
+				return
+			}
+			input.PodScoped = true
+		}
+		response, err := claims.Recover(request.Context(), input)
+		if err != nil {
+			writePlaneError(w, errorLog, "recover claims", err)
+			return
+		}
+		if response.Released == nil {
+			response.Released = []ClaimEntry{}
 		}
 		writeJSON(w, http.StatusOK, response)
 	})

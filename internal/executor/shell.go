@@ -335,6 +335,18 @@ func StageRequiresInstanceConfig(command []string) bool {
 // in the map below at all. pr-select left it the same way (#3988), by
 // admitting its fairness lease to the scheduler-state namespace.
 //
+// backlog-query --reconcile lost its LAST instance-root dependency the same
+// way (#4016). It opens the metadata reconciliation with a stale-claim sweep,
+// and that sweep is not a composable ledger primitive: it reads the owning
+// run's journal under the instance root and the daemon applies the
+// intervention check and the recovery gate to it. Rather than hand the pod a
+// root it must not have, the sweep became a claims-plane call
+// (apicontract.ClaimRecoverPath, claimsclient.StaleRecoverer) that asks the
+// daemon to run its own sweep; cmd/goobers/staleclaimrecovery.go refuses
+// loudly when neither a plane nor a real instance root is present, rather
+// than resolving "scheduler/claims.lock" relative to a pod's cwd — the exact
+// silent-wrong-answer-turned-ENOENT that #4016 hit in production.
+//
 // Scope: this matches on the COMMAND VECTOR (cmd[0]=="goobers", cmd[1]=the
 // subcommand), the same shape both dispatchRemoteTask and the pod-entrypoint
 // backstop pass in (t.Run.Command / DeterministicCommand's argv). A stage

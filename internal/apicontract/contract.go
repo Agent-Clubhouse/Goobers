@@ -87,7 +87,18 @@ const (
 	// failure-streak deprioritization) keep their input off the daemon. POST
 	// like its sibling routes: it is served under the same claims lock and
 	// carries a body, not a query string.
-	ClaimListPath            = V1Prefix + "/claims/list"
+	ClaimListPath = V1Prefix + "/claims/list"
+	// ClaimRecoverPath is the claims plane's STALE-CLAIM SWEEP (Goobers#4016):
+	// release the ledger's expired leases and the leases whose owning run is
+	// already terminal. Unlike the five routes above it is not a primitive a
+	// stage could equivalently run itself — terminality is resolved from the
+	// OWNING run's journal under the instance root, and the daemon's own
+	// sweep additionally honours active interventions and the restart-time
+	// recovery gate, none of which a pod can see. `backlog-query --reconcile`
+	// needs the sweep to have happened before it inspects provider claim
+	// markers, so the plane's answer is "the daemon ran its own recovery",
+	// not "here is a lock you may take".
+	ClaimRecoverPath         = V1Prefix + "/claims/recover"
 	TriggerIngestPath        = V1Prefix + "/triggers"
 	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
 	// RunJournalEmitPath is the journal plane (§8, DS4): batched live journal
@@ -217,6 +228,7 @@ const (
 	RouteClaimRelease      RouteID = "claimRelease"
 	RouteClaimSettle       RouteID = "claimSettle"
 	RouteClaimList         RouteID = "claimList"
+	RouteClaimRecover      RouteID = "claimRecover"
 	RouteTriggerIngest     RouteID = "triggerIngest"
 	RouteResolveEscalation RouteID = "resolveEscalation"
 	RouteJournalEmit       RouteID = "journalEmit"
@@ -367,6 +379,9 @@ var v1Routes = []Route{
 	// claimant's select-then-acquire must not have its select shed as read
 	// traffic while its acquire is admitted.
 	{ID: RouteClaimList, Method: http.MethodPost, Path: ClaimListPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	// claims/recover mutates the ledger (it releases leases), so it is pooled
+	// with the mutations rather than the reads.
+	{ID: RouteClaimRecover, Method: http.MethodPost, Path: ClaimRecoverPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 

@@ -44,10 +44,21 @@ var claimSettleOutcomes = map[string]bool{"completed": true, "abandoned": true}
 type daemonClaimService struct {
 	layout instance.Layout
 	log    *journal.InstanceLog
+	// recover is the daemon's OWN stale-claim sweep, injected rather than
+	// reconstructed: it closes over the intervention predicate and the
+	// restart-time recovery gate (up.go), which are in-memory daemon state
+	// this service has no other way to see. nil in an assembly that has no
+	// sweep to offer, which answers the route unavailable rather than
+	// silently running a weaker sweep.
+	recover func(now time.Time) ([]localscheduler.ClaimEntry, error)
 }
 
-func newDaemonClaimService(layout instance.Layout, log *journal.InstanceLog) *daemonClaimService {
-	return &daemonClaimService{layout: layout, log: log}
+func newDaemonClaimService(
+	layout instance.Layout,
+	log *journal.InstanceLog,
+	recover func(now time.Time) ([]localscheduler.ClaimEntry, error),
+) *daemonClaimService {
+	return &daemonClaimService{layout: layout, log: log, recover: recover}
 }
 
 func (s *daemonClaimService) lockPath() string {
@@ -298,6 +309,37 @@ func claimEntryWire(entry localscheduler.ClaimEntry) httpapi.ClaimEntry {
 		ExpiresAt:  entry.ExpiresAt,
 		ReleasedAt: entry.ReleasedAt,
 	}
+}
+
+// Recover runs the daemon's OWN stale-claim sweep (Goobers#4016) and reports
+// the leases it released.
+//
+// The route exists because the sweep is not portable to the caller. Three of
+// its inputs live only here: a lease's terminality is resolved from the
+// OWNING run's journal under the instance root, an active intervention must
+// hold a claim that would otherwise look reapable, and the restart-time
+// recovery gate keeps a sweep from racing the renewal pass that rebuilds a
+// live distributed run's leases across a daemon restart. A stage pod has none
+// of the three, so the plane delegates the whole decision rather than lending
+// out a lock — which is exactly what `backlog-query --reconcile` used to try
+// to take against a relative "scheduler/claims.lock" the pod did not have.
+//
+// A claims-lock timeout is deliberately NOT an error: the sweep is
+// best-effort maintenance whose only consequence is that a dead claimant's
+// provider marker survives one more reconciliation pass, and the daemon's own
+// periodic recovery retries it. The daemon's startup and tick call sites
+// swallow the same error for the same reason.
+func (s *daemonClaimService) Recover(_ context.Context, _ httpapi.ClaimRecoverRequest) (httpapi.ClaimRecoverResponse, error) {
+	if s.recover == nil {
+		return httpapi.ClaimRecoverResponse{}, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "claims_recovery_unavailable",
+			"this server does not run claim recovery", nil)
+	}
+	released, err := s.recover(time.Now())
+	if err != nil && !isJournaledClaimsLockTimeout(err) {
+		return httpapi.ClaimRecoverResponse{}, err
+	}
+	return httpapi.ClaimRecoverResponse{Released: claimEntriesWire(released)}, nil
 }
 
 func claimEntriesWire(entries []localscheduler.ClaimEntry) []httpapi.ClaimEntry {

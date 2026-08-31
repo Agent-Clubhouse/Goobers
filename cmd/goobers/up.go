@@ -695,10 +695,20 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize surrender plane: %v\n", err)
 		return 1
 	}
+	// recoverExpiredClaims is the daemon's single stale-claim sweep, defined
+	// once here so the claims plane's recover route (Goobers#4016) and the
+	// startup/periodic call sites below all run the SAME sweep — with the
+	// intervention predicate and the recovery gate applied — rather than two
+	// sweeps that could drift apart. recoverClaims itself never touches
+	// stdout/stderr: it returns the released entries so only the synchronous
+	// startup call site below prints.
+	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
+		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive, claimRecoveryGate)
+	}
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
-		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog)),
+		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)),
 		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
 		httpapi.WithTriggerService(triggerPlane),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
@@ -843,13 +853,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// new ticks, same ordering rationale as crash-resume below. withClaimLock
 	// serializes this against a concurrent
 	// `goobers backlog-query` subprocess claiming/releasing on the same
-	// ledger file (providercmd.go's doc). recoverExpiredClaims itself never
-	// touches stdout/stderr — it returns the released entries so ONLY the
-	// synchronous startup call site below prints; the periodic goroutine
-	// below deliberately does not (see its own comment).
-	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive, claimRecoveryGate)
-	}
+	// ledger file (providercmd.go's doc). The sweep itself is
+	// recoverExpiredClaims, defined once above with the claims plane's
+	// recover route so both run the same thing; the periodic goroutine below
+	// deliberately does not print (see its own comment).
 	startupReleased := append([]localscheduler.ClaimEntry(nil), setup.RecoveredClaims...)
 	newlyReleased, err := recoverExpiredClaims(time.Now())
 	if err != nil && !isJournaledClaimsLockTimeout(err) {

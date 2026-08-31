@@ -64,7 +64,9 @@ func reconcileBacklogMetadata(
 	// Reap terminal and expired ledger leases before inspecting provider labels.
 	// This makes the ledger's liveness decision available to the provider-marker
 	// reconciliation below, so a dead claimant cannot keep its marker forever.
-	if _, err := recoverClaims(l, nil, now(), nil, nil); err != nil {
+	// Through the seam (staleclaimrecovery.go): the daemon runs the sweep when
+	// this stage is pod-dispatched and has no instance root of its own.
+	if err := recoverStageClaims(l, now()); err != nil {
 		return 0, fmt.Errorf("recover stale claims before metadata reconciliation: %w", err)
 	}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
