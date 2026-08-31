@@ -17,6 +17,8 @@ Closes #
 - [ ] Scope is limited to one logical concern (no unrelated changes)
 - [ ] New behavior and error paths have tests
 - [ ] `make ci` passes locally (fmt-check · vet · build · test · lint)
+- [ ] Any new closed JSON schema joins the structural drift guard in this change
+      ([review rules](../CONTRIBUTING.md#review-rules))
 - [ ] Docs/comments updated where behavior changed
 - [ ] For security-sensitive changes, I followed [SECURITY.md](../SECURITY.md)
 

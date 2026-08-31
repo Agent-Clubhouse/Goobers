@@ -224,6 +224,47 @@ documented and enforced policies do not drift.
 
 Prefer small, reviewable PRs. Squash-merge is the default so `main` stays linear.
 
+## Review rules
+
+Class-level rules distilled from repeated incidents
+([#2081](https://github.com/Agent-Clubhouse/Goobers/issues/2081)). They apply to
+every change, and merge review enforces them through the
+[PR checklist](.github/PULL_REQUEST_TEMPLATE.md).
+
+### Closed JSON schemas join the structural drift guard
+
+A new **closed** JSON schema (`additionalProperties: false`) that mirrors a Go
+type must join the structural Go-to-schema drift guard **in the change that adds
+it** — not in a follow-up. A closed schema rejects an envelope carrying a field
+it does not declare, so a field added to the Go producer later becomes a
+validation failure at runtime rather than a build failure, and nothing else in
+the tree notices the divergence.
+[#1700](https://github.com/Agent-Clubhouse/Goobers/issues/1700)/[#1704](https://github.com/Agent-Clubhouse/Goobers/issues/1704)
+and [#2042](https://github.com/Agent-Clubhouse/Goobers/issues/2042) — the last
+adding `DataSchema` to `journal.Event` with no matching schema property — are
+instances of that one class, which is why the rule is structural rather than a
+reviewer's memory.
+
+Registration path, both steps in the same change:
+
+1. Register the schema file in [`api/schemas/embed.go`](api/schemas/embed.go):
+   in the map naming its contract family (`Envelope`, `Journal`,
+   `Notification`), or as an exported constant for a standalone artifact
+   schema.
+2. Add a fully populated round-trip fixture for it to the `fixtures` map in
+   `TestSchemaBackedEnvelopeCompleteness`
+   ([`api/validate/envelope_completeness_test.go`](api/validate/envelope_completeness_test.go)).
+   The guard asserts every JSON field of the Go value is populated, marshals
+   it, and validates the result against the schema, so a Go field the schema
+   does not declare fails the merge gate. An entry in `schemas.Envelope` with no fixture
+   fails the guard on its own; a schema outside that map — like
+   `journal-event` — is covered only once its fixture is added, so add it
+   explicitly.
+
+The guard runs in `make ci` (`go test ./api/validate/...`). If a schema
+genuinely has no Go producer to drift from, say so in the pull request rather
+than leaving the omission unexplained.
+
 ## DSL compatibility policy
 
 The `apiVersion` on configuration resources defines a compatibility line. Within
