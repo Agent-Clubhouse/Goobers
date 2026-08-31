@@ -921,7 +921,16 @@ const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budg
 	"recorded (escalated or not — both are normal outcomes), 1 = business\n" +
 	"error, 2 = usage/IO error.\n"
 
-func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
+// remediationCheckpointFlags is the parsed, validated CLI surface of
+// remediation-checkpoint.
+type remediationCheckpointFlags struct {
+	pathArg        string
+	budgetOverride int
+	escalateReason string
+	forcedOutcome  remediationEscalationOutcome
+}
+
+func parseRemediationCheckpointFlags(args []string, stderr io.Writer) (remediationCheckpointFlags, int, bool) {
 	fs := newCLIFlagSet("remediation-checkpoint", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "remediation-checkpoint")
@@ -937,11 +946,11 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 		"machine-readable outcome for --escalate (did-not-converge, budget-exhausted, or infrastructure-failure)",
 	)
 	if err := fs.Parse(args); err != nil {
-		return 2
+		return remediationCheckpointFlags{}, 2, false
 	}
 	if fs.NArg() > 1 {
 		fs.Usage()
-		return 2
+		return remediationCheckpointFlags{}, 2, false
 	}
 	pathArg := ""
 	if fs.NArg() == 1 {
@@ -952,349 +961,448 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	case remediationOutcomeDidNotConverge, remediationOutcomeBudgetExhausted, remediationOutcomeInfrastructure:
 	default:
 		pf(stderr, "error: --escalation-outcome must be %q, %q, or %q\n", remediationOutcomeDidNotConverge, remediationOutcomeBudgetExhausted, remediationOutcomeInfrastructure)
-		return 2
+		return remediationCheckpointFlags{}, 2, false
 	}
 	if *escalateReason == "" && forcedOutcome != remediationOutcomeDidNotConverge {
 		pf(stderr, "error: --escalation-outcome requires --escalate\n")
-		return 2
+		return remediationCheckpointFlags{}, 2, false
 	}
-	root := providerStageRoot(pathArg)
+	return remediationCheckpointFlags{
+		pathArg:        pathArg,
+		budgetOverride: *budgetOverride,
+		escalateReason: *escalateReason,
+		forcedOutcome:  forcedOutcome,
+	}, 0, true
+}
 
-	var selectedNumber int
+func resolveCheckpointSelectedNumber(root string, stderr io.Writer) (int, int, bool) {
 	if selectedNumberStr := providerInput("selectedNumber", ""); selectedNumberStr != "" {
 		n, err := strconv.Atoi(selectedNumberStr)
 		if err != nil {
 			pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumberStr, err)
-			return 1
+			return 0, 1, false
 		}
-		selectedNumber = n
-	} else {
-		// Ledger fallback (#392): in --escalate mode this stage runs after the
-		// agentic chain, where Task.InputsFrom can no longer reach
-		// gather-pr-context's selectedNumber — implement and local-ci each
-		// became the upstream in turn. The run's own PR claim is the durable
-		// answer. Still an error if there is no claim either: escalating
-		// without knowing WHICH PR would label an arbitrary one.
-		n, ok, err := claimedPullRequestNumber(root)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
-		if !ok {
-			pf(stderr, "error: selectedNumber is required (inputsFrom gather-pr-context's selectedNumber output, or a PR claim held by this run)\n")
-			return 1
-		}
-		selectedNumber = n
+		return n, 0, true
 	}
-
-	repo, err := providerRepo(root)
+	// Ledger fallback (#392): in --escalate mode this stage runs after the
+	// agentic chain, where Task.InputsFrom can no longer reach
+	// gather-pr-context's selectedNumber — implement and local-ci each
+	// became the upstream in turn. The run's own PR claim is the durable
+	// answer. Still an error if there is no claim either: escalating
+	// without knowing WHICH PR would label an arbitrary one.
+	n, ok, err := claimedPullRequestNumber(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
-		return 1
+		return 0, 1, false
 	}
-	// Azure DevOps reaches a NEW branch that talks to the small ADO primitive
-	// surface (PR threads + PR labels + PollPullRequest), mirroring the
-	// merge-review ADO stages (runPRSelectADO, runGatherSiblingContextADO). It is
-	// entered before any github:pr:write token is resolved — ADO carries its own
-	// org-scoped auth (remediation-wiring-plan §3.5). The forced-escalation flags
-	// (--escalate/--escalation-outcome/--budget) are already parsed and validated
-	// above, so they flow in; every other input the ADO body reads itself.
-	if repo.Provider == providers.ProviderADO {
-		return runRemediationCheckpointADO(root, repo, selectedNumber, *escalateReason, forcedOutcome, *budgetOverride, stdout, stderr)
+	if !ok {
+		pf(stderr, "error: selectedNumber is required (inputsFrom gather-pr-context's selectedNumber output, or a PR claim held by this run)\n")
+		return 0, 1, false
 	}
+	return n, 0, true
+}
+
+// remediationCheckpointRunEnv carries the resolved handles every phase of the
+// GitHub checkpoint body shares: the provider seam, the sticky-comment
+// transport, the PR snapshot this cycle acts on, and the writers stage output
+// goes to.
+type remediationCheckpointRunEnv struct {
+	ctx            context.Context
+	root           string
+	repo           providers.RepositoryRef
+	provider       remediationProvider
+	transport      issueCommentCheckpointTransport
+	pushToken      string
+	selectedNumber int
+	base           string
+	headPrefix     string
+	prs            []providers.PullRequestSummary
+	current        *providers.PullRequestSummary
+	stdout         io.Writer
+	stderr         io.Writer
+}
+
+func openRemediationCheckpointEnv(
+	ctx context.Context,
+	root string,
+	repo providers.RepositoryRef,
+	selectedNumber int,
+	stdout, stderr io.Writer,
+) (*remediationCheckpointRunEnv, int, bool) {
 	token, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
-		return 1
+		return nil, 1, false
 	}
 	// repo:push is not for writing here — it's the same credential
 	// checkoutExistingBranch uses to fetch the PR's branch (see the
-	// re-checkout comment below).
+	// re-checkout comment on checkoutAndDigest).
 	pushToken, err := providerToken(capability.RepoPush)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
-		return 1
+		return nil, 1, false
 	}
 	provider, err := remediationStageProvider(root, repo, token, true)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
-		return 1
+		return nil, 1, false
 	}
-	transport := issueCommentCheckpointTransport{provider: provider, repo: repo, number: selectedNumber}
-
-	base := providerInput("base", providerBaseBranch())
-	headPrefix := providerInput("headPrefix", providerBranchNamespace())
-	ctx, cancel := providerCommandContext()
-	defer cancel()
+	env := &remediationCheckpointRunEnv{
+		ctx:            ctx,
+		root:           root,
+		repo:           repo,
+		provider:       provider,
+		transport:      issueCommentCheckpointTransport{provider: provider, repo: repo, number: selectedNumber},
+		pushToken:      pushToken,
+		selectedNumber: selectedNumber,
+		base:           providerInput("base", providerBaseBranch()),
+		headPrefix:     providerInput("headPrefix", providerBranchNamespace()),
+		stdout:         stdout,
+		stderr:         stderr,
+	}
 	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
+		Repository: repo, Base: env.base, HeadPrefix: env.headPrefix, SkipCheckState: true,
 	})
 	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, "")
+		return nil, failProviderStage(stderr, "list pull requests", err, ""), false
 	}
-	var current *providers.PullRequestSummary
+	env.prs = prs
+	found := false
 	for i := range prs {
 		if prs[i].Number == selectedNumber {
-			current = &prs[i]
+			found = true
 			break
 		}
 	}
-	if current == nil {
+	if !found {
 		// Halt, don't continue: there is no longer a PR to remediate, so
 		// spending an agentic session on it would be pure waste (#392).
-		return remediationCheckpointMoot(stdout, stderr, selectedNumber)
+		return nil, remediationCheckpointMoot(stdout, stderr, selectedNumber), false
 	}
 	// The list may come from the scheduler tick's shared snapshot. Refresh the
 	// selected PR before acting on state that can already be stale.
-	refreshed, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
-	if err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+	if code, ok := env.refreshCurrent(fmt.Sprintf("get pull request #%d", selectedNumber)); !ok {
+		return nil, code, false
 	}
-	if refreshed.State != "open" || refreshed.Merged {
-		return remediationCheckpointMoot(stdout, stderr, selectedNumber)
-	}
-	current = &refreshed
+	return env, 0, true
+}
 
-	// Re-checkout the PR's own branch: this stage gets its OWN fresh
-	// worktree (internal/runner's buildEnvelope keys worktree continuity on
-	// the run's shared branch, not on whatever an earlier stage locally
-	// checked out — #133/#363's own re-checkout for the same reason), so
-	// gather-pr-context's or rebase-pr's checkout does not survive to here.
-	// Without this, diffDigest would diff against whatever this fresh
-	// worktree defaulted to (the run's own untouched base checkout), not
-	// the PR's actual just-pushed content.
-	// ...UNLESS this worktree is already on that branch, which since #392 is
-	// the normal case: gather-pr-context rebinds the run's workspace branch to
-	// the PR's head, so the runner provisions this stage on it directly.
-	//
-	// Re-checking-out anyway would be actively destructive rather than merely
-	// redundant. checkoutExistingBranch is `git checkout -B <branch>
-	// FETCH_HEAD` — a hard reset to the REMOTE tip — and on the
-	// substantive-findings path rebase-pr deliberately does NOT push its
-	// rebase (rebasepr.go's `!conflict && !hasSubstantiveFindings` guard), so
-	// that rebase exists only as a local commit on this very branch. Resetting
-	// here would discard it, hand `implement` an un-rebased tree, and leave the
-	// PR still behind its base after a successful remediation — looping every
-	// such PR until the D4 budget escalated it.
-	//
-	// A forced escalation (--escalate) skips all of it: the caller already has
-	// a terminal reason, so no digest is consulted to reach the decision. Doing
-	// the fetch anyway would let a transient git/network failure exit non-zero
-	// BEFORE the labelling below — leaving goobers:merge-escalated unapplied
-	// and goobers:needs-remediation still set, so the PR is re-selected and the
-	// reviewer re-rejects the same approach, which is exactly what §4 D2's
-	// escalate-immediately rule exists to prevent.
+func (env *remediationCheckpointRunEnv) livePullRequest(what string) (providers.PullRequestSummary, int, bool) {
+	live, err := env.provider.GetPullRequest(env.ctx, env.repo, strconv.Itoa(env.selectedNumber))
+	if err != nil {
+		return providers.PullRequestSummary{}, failProviderStage(env.stderr, what, err, ""), false
+	}
+	if live.State != "open" || live.Merged {
+		return providers.PullRequestSummary{}, remediationCheckpointMoot(env.stdout, env.stderr, env.selectedNumber), false
+	}
+	return live, 0, true
+}
+
+func (env *remediationCheckpointRunEnv) refreshCurrent(what string) (int, bool) {
+	live, code, ok := env.livePullRequest(what)
+	if !ok {
+		return code, false
+	}
+	env.current = &live
+	return 0, true
+}
+
+// remediationCheckpointMode is the loop-control mode this cycle runs in. A
+// forced escalation consults no digest and touches no git, so every phase
+// downstream branches on it.
+type remediationCheckpointMode struct {
+	forced           bool
+	reason           string
+	policyExcluded   bool
+	conflicted       bool
+	attemptedHeadSHA string
+	forcedOutcome    remediationEscalationOutcome
+	causes           []remediationCause
+	budgets          remediationBudgets
+}
+
+func resolveRemediationCheckpointMode(flags remediationCheckpointFlags, stderr io.Writer) (remediationCheckpointMode, int, bool) {
 	conflicted, err := strconv.ParseBool(providerInput("conflict", "false"))
 	if err != nil {
 		pf(stderr, "error: invalid conflict input: %v\n", err)
-		return 1
+		return remediationCheckpointMode{}, 1, false
 	}
-	attemptedHeadSHA := providerInput("attemptedHeadSha", "")
 	// A rebase-pr cycle whose only detected cause(s) the declared `remediate`
 	// policy excludes (#941/PRR-6) escalates immediately here, exactly like
 	// an explicit --escalate: no agent ever ran on this cycle, so budget/
 	// no-progress checks would just delay the same inevitable outcome.
-	// *escalateReason (the reviewer-fail path, §4 D2) wins if somehow both
-	// are set — it is the more specific, caller-supplied terminal reason.
+	// --escalate (the reviewer-fail path, §4 D2) wins if somehow both are
+	// set — it is the more specific, caller-supplied terminal reason.
 	policyExcluded, err := strconv.ParseBool(providerInput("policyExcluded", "false"))
 	if err != nil {
 		pf(stderr, "error: invalid policyExcluded input: %v\n", err)
-		return 1
+		return remediationCheckpointMode{}, 1, false
 	}
-	escalateReasonValue := *escalateReason
-	if escalateReasonValue == "" {
-		if policyExcluded {
-			escalateReasonValue = providerInput("policyExcludedReason", "declared remediation policy excludes the only detected cause(s)")
-		}
+	mode := remediationCheckpointMode{
+		reason:           flags.escalateReason,
+		policyExcluded:   policyExcluded,
+		conflicted:       conflicted,
+		attemptedHeadSHA: providerInput("attemptedHeadSha", ""),
+		forcedOutcome:    flags.forcedOutcome,
 	}
-	forced := escalateReasonValue != ""
-	if *budgetOverride < 0 {
+	if mode.reason == "" && policyExcluded {
+		mode.reason = providerInput("policyExcludedReason", "declared remediation policy excludes the only detected cause(s)")
+	}
+	mode.forced = mode.reason != ""
+	if flags.budgetOverride < 0 {
 		pf(stderr, "error: --budget must not be negative\n")
+		return remediationCheckpointMode{}, 1, false
+	}
+	if mode.forced {
+		return mode, 0, true
+	}
+	rawCauses := providerInput("remediationCauses", "")
+	if strings.TrimSpace(rawCauses) == "" {
+		return mode, 0, true
+	}
+	causes, err := parseRemediationCauses(rawCauses)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return remediationCheckpointMode{}, 1, false
+	}
+	budgets, err := declaredRemediationBudgets(flags.budgetOverride)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return remediationCheckpointMode{}, 1, false
+	}
+	mode.causes = causes
+	mode.budgets = budgets
+	return mode, 0, true
+}
+
+func (env *remediationCheckpointRunEnv) recordSequencingOnlyWait() int {
+	if hasAnyLabel(env.current.Labels, []string{needsRemediationLabel}) {
+		if err := env.transport.UpdateLabels(env.ctx, nil, []string{needsRemediationLabel}); err != nil {
+			return failProviderStage(env.stderr, fmt.Sprintf("clear needs-remediation label from sequencing-only PR #%d", env.selectedNumber), err, "")
+		}
+	}
+	if err := writeCheckpointResult(env.stderr, false, env.selectedNumber, env.current.Head, env.current.HeadSHA, remediationEscalation{}); err != nil {
 		return 1
 	}
-	var causes []remediationCause
-	var budgets remediationBudgets
-	if !forced {
-		rawCauses := providerInput("remediationCauses", "")
-		if strings.TrimSpace(rawCauses) != "" {
-			causes, err = parseRemediationCauses(rawCauses)
-			if err != nil {
-				pf(stderr, "error: %v\n", err)
-				return 1
-			}
-			budgets, err = declaredRemediationBudgets(*budgetOverride)
-			if err != nil {
-				pf(stderr, "error: %v\n", err)
-				return 1
-			}
+	pf(env.stdout, "PR #%d is blocked only on sibling sequencing — waiting without consuming remediation budget\n", env.selectedNumber)
+	return 0
+}
+
+// remediationCheckpointObservation is what one stabilized checkpoint read saw:
+// the diff digest this cycle compares against the recorded one, any structural
+// collision behind a conflict, and the comment thread the sticky state is read
+// back from.
+type remediationCheckpointObservation struct {
+	digest               string
+	structuralCollisions []structuralCollision
+	comments             []providers.Comment
+}
+
+// checkoutAndDigest re-checkouts the PR's own branch when needed and hashes its
+// diff against the base.
+//
+// This stage gets its OWN fresh worktree (internal/runner's buildEnvelope keys
+// worktree continuity on the run's shared branch, not on whatever an earlier
+// stage locally checked out — #133/#363's own re-checkout for the same reason),
+// so gather-pr-context's or rebase-pr's checkout does not survive to here.
+// Without this, diffDigest would diff against whatever this fresh worktree
+// defaulted to (the run's own untouched base checkout), not the PR's actual
+// just-pushed content.
+// ...UNLESS this worktree is already on that branch, which since #392 is the
+// normal case: gather-pr-context rebinds the run's workspace branch to the PR's
+// head, so the runner provisions this stage on it directly.
+//
+// Re-checking-out anyway would be actively destructive rather than merely
+// redundant. checkoutExistingBranch is `git checkout -B <branch> FETCH_HEAD` —
+// a hard reset to the REMOTE tip — and on the substantive-findings path
+// rebase-pr deliberately does NOT push its rebase (rebasepr.go's `!conflict &&
+// !hasSubstantiveFindings` guard), so that rebase exists only as a local commit
+// on this very branch. Resetting here would discard it, hand `implement` an
+// un-rebased tree, and leave the PR still behind its base after a successful
+// remediation — looping every such PR until the D4 budget escalated it.
+//
+// A forced escalation (--escalate) skips all of it in the caller: the caller
+// already has a terminal reason, so no digest is consulted to reach the
+// decision. Doing the fetch anyway would let a transient git/network failure
+// exit non-zero BEFORE the labelling below — leaving goobers:merge-escalated
+// unapplied and goobers:needs-remediation still set, so the PR is re-selected
+// and the reviewer re-rejects the same approach, which is exactly what §4 D2's
+// escalate-immediately rule exists to prevent.
+func (env *remediationCheckpointRunEnv) checkoutAndDigest(
+	mode remediationCheckpointMode,
+	forceHeadRefresh, forceBaseRefresh, attemptMatchesLiveHead bool,
+) (string, bool, int, bool) {
+	onBranch, err := currentBranchIs(".", env.current.Head)
+	if err != nil {
+		pf(env.stderr, "error: resolve current branch for PR #%d: %v\n", env.selectedNumber, err)
+		return "", attemptMatchesLiveHead, 1, false
+	}
+	refreshBranch := forceHeadRefresh || !onBranch
+	if onBranch && mode.conflicted && mode.attemptedHeadSHA != "" {
+		localHeadSHA, err := resolveHead(".")
+		if err != nil {
+			pf(env.stderr, "error: resolve current head for PR #%d: %v\n", env.selectedNumber, err)
+			return "", attemptMatchesLiveHead, 1, false
+		}
+		// A conflicted rebase was aborted, so there is no local rebase to
+		// preserve when a concurrent push makes this checkout stale.
+		refreshBranch = refreshBranch || localHeadSHA != env.current.HeadSHA
+	}
+	if refreshBranch {
+		fetchedSHA, err := checkoutExistingBranch(".", env.current.Head, env.pushToken)
+		if err != nil {
+			pf(env.stderr, "error: checkout PR #%d's branch %q: %v\n", env.selectedNumber, env.current.Head, err)
+			return "", attemptMatchesLiveHead, 1, false
+		}
+		env.current.HeadSHA = fetchedSHA
+		if mode.conflicted && mode.attemptedHeadSHA != "" {
+			attemptMatchesLiveHead = mode.attemptedHeadSHA == fetchedSHA
 		}
 	}
-	if !forced && sequencingOnlyCheckpointWait(current.Labels, causes) {
-		if hasAnyLabel(current.Labels, []string{needsRemediationLabel}) {
-			if err := transport.UpdateLabels(ctx, nil, []string{needsRemediationLabel}); err != nil {
-				return failProviderStage(stderr, fmt.Sprintf("clear needs-remediation label from sequencing-only PR #%d", selectedNumber), err, "")
-			}
+	if forceBaseRefresh {
+		if _, err := fetchExistingBranch(".", env.current.Base, env.pushToken); err != nil {
+			pf(env.stderr, "error: refresh PR #%d's base branch %q: %v\n", env.selectedNumber, env.current.Base, err)
+			return "", attemptMatchesLiveHead, 1, false
 		}
-		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA, remediationEscalation{}); err != nil {
-			return 1
-		}
-		pf(stdout, "PR #%d is blocked only on sibling sequencing — waiting without consuming remediation budget\n", selectedNumber)
-		return 0
 	}
-	var (
-		digest               string
-		structuralCollisions []structuralCollision
-		rawComments          []providers.Comment
+	digest, err := diffDigest(".", env.current.BaseSHA)
+	if err != nil {
+		pf(env.stderr, "error: compute diff digest for PR #%d: %v\n", env.selectedNumber, err)
+		return "", attemptMatchesLiveHead, 1, false
+	}
+	return digest, attemptMatchesLiveHead, 0, true
+}
+
+func (env *remediationCheckpointRunEnv) collectStructuralCollisions() ([]structuralCollision, int, bool) {
+	conflictLocations, err := decodeConflictLocations(providerInput("conflictLocations", ""))
+	if err != nil {
+		pf(env.stderr, "error: %v\n", err)
+		return nil, 1, false
+	}
+	collisions, err := findStructuralCollisions(
+		env.ctx, env.provider, env.repo, *env.current, env.base, env.headPrefix, conflictLocations,
+		".", env.pushToken, providerInput("rebaseBaseSha", ""),
 	)
+	if err != nil {
+		return nil, failProviderStage(env.stderr, fmt.Sprintf("detect same-function structural collision for PR #%d", env.selectedNumber), err, ""), false
+	}
+	return collisions, 0, true
+}
+
+// stabilize reads the checkpoint's inputs (branch digest, structural
+// collisions, comment thread) and re-reads them until the PR's head and base
+// stop moving underneath the read, so the recorded state pairs one head/base
+// with the digest actually computed for it.
+func (env *remediationCheckpointRunEnv) stabilize(mode remediationCheckpointMode) (remediationCheckpointObservation, int, bool) {
+	const maxCheckpointRefreshes = 3
+	var observation remediationCheckpointObservation
 	forceHeadRefresh := false
 	forceBaseRefresh := false
-	stableCheckpoint := false
-	const maxCheckpointRefreshes = 3
 	for refreshAttempt := 0; refreshAttempt < maxCheckpointRefreshes; refreshAttempt++ {
 		attemptMatchesLiveHead := false
-		if conflicted && !forced && attemptedHeadSHA != "" {
-			liveCurrent, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
-			if err != nil {
-				return failProviderStage(stderr, fmt.Sprintf("get live state for PR #%d", selectedNumber), err, "")
+		if mode.conflicted && !mode.forced && mode.attemptedHeadSHA != "" {
+			if code, ok := env.refreshCurrent(fmt.Sprintf("get live state for PR #%d", env.selectedNumber)); !ok {
+				return observation, code, false
 			}
-			if liveCurrent.State != "open" || liveCurrent.Merged {
-				return remediationCheckpointMoot(stdout, stderr, selectedNumber)
-			}
-			current = &liveCurrent
-			attemptMatchesLiveHead = attemptedHeadSHA == current.HeadSHA
+			attemptMatchesLiveHead = mode.attemptedHeadSHA == env.current.HeadSHA
 		}
 
-		digest = ""
-		if !forced {
-			onBranch, err := currentBranchIs(".", current.Head)
-			if err != nil {
-				pf(stderr, "error: resolve current branch for PR #%d: %v\n", selectedNumber, err)
-				return 1
+		observation.digest = ""
+		if !mode.forced {
+			digest, matched, code, ok := env.checkoutAndDigest(mode, forceHeadRefresh, forceBaseRefresh, attemptMatchesLiveHead)
+			if !ok {
+				return observation, code, false
 			}
-			refreshBranch := forceHeadRefresh || !onBranch
-			if onBranch && conflicted && attemptedHeadSHA != "" {
-				localHeadSHA, err := resolveHead(".")
-				if err != nil {
-					pf(stderr, "error: resolve current head for PR #%d: %v\n", selectedNumber, err)
-					return 1
-				}
-				// A conflicted rebase was aborted, so there is no local rebase to
-				// preserve when a concurrent push makes this checkout stale.
-				refreshBranch = refreshBranch || localHeadSHA != current.HeadSHA
-			}
-			if refreshBranch {
-				fetchedSHA, err := checkoutExistingBranch(".", current.Head, pushToken)
-				if err != nil {
-					pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selectedNumber, current.Head, err)
-					return 1
-				}
-				current.HeadSHA = fetchedSHA
-				if conflicted && attemptedHeadSHA != "" {
-					attemptMatchesLiveHead = attemptedHeadSHA == fetchedSHA
-				}
-			}
-			if forceBaseRefresh {
-				if _, err := fetchExistingBranch(".", current.Base, pushToken); err != nil {
-					pf(stderr, "error: refresh PR #%d's base branch %q: %v\n", selectedNumber, current.Base, err)
-					return 1
-				}
-			}
-			digest, err = diffDigest(".", current.BaseSHA)
-			if err != nil {
-				pf(stderr, "error: compute diff digest for PR #%d: %v\n", selectedNumber, err)
-				return 1
-			}
+			observation.digest = digest
+			attemptMatchesLiveHead = matched
 		}
 
-		structuralCollisions = nil
-		if conflicted && !forced && attemptMatchesLiveHead {
-			conflictLocations, err := decodeConflictLocations(providerInput("conflictLocations", ""))
-			if err != nil {
-				pf(stderr, "error: %v\n", err)
-				return 1
+		observation.structuralCollisions = nil
+		if mode.conflicted && !mode.forced && attemptMatchesLiveHead {
+			collisions, code, ok := env.collectStructuralCollisions()
+			if !ok {
+				return observation, code, false
 			}
-			structuralCollisions, err = findStructuralCollisions(
-				ctx, provider, repo, *current, base, headPrefix, conflictLocations,
-				".", pushToken, providerInput("rebaseBaseSha", ""),
-			)
-			if err != nil {
-				return failProviderStage(stderr, fmt.Sprintf("detect same-function structural collision for PR #%d", selectedNumber), err, "")
-			}
+			observation.structuralCollisions = collisions
 		}
 
-		rawComments, err = transport.ListComments(ctx)
+		comments, err := env.transport.ListComments(env.ctx)
 		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selectedNumber), err, "")
+			return observation, failProviderStage(env.stderr, fmt.Sprintf("list comments on PR #%d", env.selectedNumber), err, ""), false
 		}
+		observation.comments = comments
 		// Keep this read independent from current: assigning through the value
 		// current points at would pair newly read metadata with the old digest.
-		lateCurrent, err := provider.GetPullRequest(ctx, repo, strconv.Itoa(selectedNumber))
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("get pull request #%d", selectedNumber), err, "")
+		lateCurrent, code, ok := env.livePullRequest(fmt.Sprintf("get pull request #%d", env.selectedNumber))
+		if !ok {
+			return observation, code, false
 		}
-		if lateCurrent.State != "open" || lateCurrent.Merged {
-			return remediationCheckpointMoot(stdout, stderr, selectedNumber)
-		}
-		headChanged := lateCurrent.Head != current.Head || lateCurrent.HeadSHA != current.HeadSHA
-		baseChanged := lateCurrent.Base != current.Base || lateCurrent.BaseSHA != current.BaseSHA
-		current = &lateCurrent
-		if !forced && (headChanged || baseChanged) {
+		headChanged := lateCurrent.Head != env.current.Head || lateCurrent.HeadSHA != env.current.HeadSHA
+		baseChanged := lateCurrent.Base != env.current.Base || lateCurrent.BaseSHA != env.current.BaseSHA
+		env.current = &lateCurrent
+		if !mode.forced && (headChanged || baseChanged) {
 			forceHeadRefresh = headChanged
 			forceBaseRefresh = baseChanged
 			continue
 		}
-		stableCheckpoint = true
-		break
+		return observation, 0, true
 	}
-	if !stableCheckpoint {
-		return failProviderStage(
-			stderr,
-			fmt.Sprintf("stabilize pull request #%d", selectedNumber),
-			fmt.Errorf("head or base changed during %d consecutive checkpoint reads", maxCheckpointRefreshes),
-			"",
-		)
+	return observation, failProviderStage(
+		env.stderr,
+		fmt.Sprintf("stabilize pull request #%d", env.selectedNumber),
+		fmt.Errorf("head or base changed during %d consecutive checkpoint reads", maxCheckpointRefreshes),
+		"",
+	), false
+}
+
+// noopGuardEscalation returns a terminal escalation reason when the implementer
+// has reported no-work for the same head and cause(s) too many cycles running,
+// or "" when the guard has not tripped.
+func (env *remediationCheckpointRunEnv) noopGuardEscalation() (string, int, bool) {
+	signature := remediationNoopSignature{
+		HeadSHA: env.current.HeadSHA,
+		Causes:  normalizeRemediationCauses(providerInput("remediationCauses", "")),
 	}
-	if !forced && len(causes) > 0 {
-		signature := remediationNoopSignature{
-			HeadSHA: current.HeadSHA,
-			Causes:  normalizeRemediationCauses(providerInput("remediationCauses", "")),
-		}
-		l := layoutFor(root)
-		noOpRecord, err := remediationNoopRecordForSignature(l, selectedNumber, signature)
-		if err != nil {
-			pf(stderr, "error: inspect remediation no-op guard: %v\n", err)
-			return 1
-		}
-		gaggle := l.Gaggle()
-		if gaggle == "" {
-			gaggle = providerGaggle()
-		}
-		key := remediationNoopKey(gaggle, selectedNumber)
-		if noOpRecord.Parked && !hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
-			if err := clearRemediationNoopRecord(l, key); err != nil {
-				pf(stderr, "error: reset operator-cleared remediation no-op guard: %v\n", err)
-				return 1
-			}
-			noOpRecord = remediationNoopRecord{}
-		}
-		if noOpRecord.Attempts >= remediationNoopLimit {
-			if err := markRemediationNoopParked(l, key); err != nil {
-				pf(stderr, "error: park remediation no-op guard: %v\n", err)
-				return 1
-			}
-			escalateReasonValue = fmt.Sprintf(
-				"the implementer reported no-work %d consecutive times for unchanged head %s and remediation cause(s) %s",
-				noOpRecord.Attempts, signature.HeadSHA, signature.Causes,
-			)
-			forced = true
-		}
+	l := layoutFor(env.root)
+	noOpRecord, err := remediationNoopRecordForSignature(l, env.selectedNumber, signature)
+	if err != nil {
+		pf(env.stderr, "error: inspect remediation no-op guard: %v\n", err)
+		return "", 1, false
 	}
+	gaggle := l.Gaggle()
+	if gaggle == "" {
+		gaggle = providerGaggle()
+	}
+	key := remediationNoopKey(gaggle, env.selectedNumber)
+	if noOpRecord.Parked && !hasAnyLabel(env.current.Labels, []string{remediationEscalatedLabel}) {
+		if err := clearRemediationNoopRecord(l, key); err != nil {
+			pf(env.stderr, "error: reset operator-cleared remediation no-op guard: %v\n", err)
+			return "", 1, false
+		}
+		noOpRecord = remediationNoopRecord{}
+	}
+	if noOpRecord.Attempts < remediationNoopLimit {
+		return "", 0, true
+	}
+	if err := markRemediationNoopParked(l, key); err != nil {
+		pf(env.stderr, "error: park remediation no-op guard: %v\n", err)
+		return "", 1, false
+	}
+	return fmt.Sprintf(
+		"the implementer reported no-work %d consecutive times for unchanged head %s and remediation cause(s) %s",
+		noOpRecord.Attempts, signature.HeadSHA, signature.Causes,
+	), 0, true
+}
+
+// priorCheckpointState reads back the sticky state this cycle advances, the
+// comment ID it edits in place, and the human-comment watermark it records.
+func (env *remediationCheckpointRunEnv) priorCheckpointState(comments []providers.Comment) (remediationState, string, string) {
 	// Latest comment carrying an embedded payload wins, same rationale as
 	// gather-pr-context's verdict scan: only the most recently recorded
 	// checkpoint state is still actionable. Its comment ID (if any) is the
 	// sticky comment this cycle edits in place (#716 AC3), rather than
 	// posting a new one.
-	prior, priorCommentID, _ := latestRemediationStateForPR(current.Body, rawComments)
+	prior, priorCommentID, _ := latestRemediationStateForPR(env.current.Body, comments)
 
 	// #1808: the escalation comment advertises three unpark paths, one of which
 	// is "a human removes goobers:merge-escalated". That path did not work. The
@@ -1314,94 +1422,162 @@ func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
 	// the stall check — a different reason, the same dead end. priorCommentID is
 	// deliberately preserved so this cycle still edits the sticky comment in
 	// place instead of posting a new one.
-	if prior.Escalated && !hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
-		pf(stdout, "PR #%d: escalation cleared by an operator — resetting remediation budget (was %d cycles, attempts %s)\n",
-			selectedNumber, prior.Cycles, renderRemediationAttempts(prior.AttemptsByCause))
+	if prior.Escalated && !hasAnyLabel(env.current.Labels, []string{remediationEscalatedLabel}) {
+		pf(env.stdout, "PR #%d: escalation cleared by an operator — resetting remediation budget (was %d cycles, attempts %s)\n",
+			env.selectedNumber, prior.Cycles, renderRemediationAttempts(prior.AttemptsByCause))
 		prior = remediationState{}
 	}
 
 	// Record the human-comment watermark this cycle sees. The refresh loop lists
-	// rawComments unconditionally (even on forced escalations), so the newest
+	// comments unconditionally (even on forced escalations), so the newest
 	// timestamp is always available; when the thread carries no timestamped
 	// comment, carry the prior watermark forward rather than dropping it (which
 	// would fail closed and never retrigger on human-comment again).
-	watermark := latestCommentTimestamp(rawComments)
+	watermark := latestCommentTimestamp(comments)
 	if watermark == "" {
 		watermark = prior.LastSeenCommentAt
 	}
+	return prior, priorCommentID, watermark
+}
 
-	decision := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
-		Prior: prior, Causes: causes, Budgets: budgets, Digest: digest,
-		HeadSHA: current.HeadSHA, BaseSHA: current.BaseSHA, Watermark: watermark,
-		Forced: forced, ForcedReason: escalateReasonValue, ForcedOutcome: forcedOutcome,
-		PolicyExcluded: policyExcluded, StructuralCollisions: structuralCollisions,
-		StructuralCollisionContext: renderStructuralCollisionContext(selectedNumber, structuralCollisions),
-	})
-	if decision.Escalated {
-		var overlaps []siblingOverlapFinding
-		if !forced && len(structuralCollisions) == 0 {
-			overlaps, err = knownSiblingOverlapFindings(
-				ctx, provider, repo, selectedNumber, base, headPrefix, prs,
-				time.Now().UTC().Add(-siblingOverlapLookback),
-			)
-			if err != nil {
-				return failProviderStage(stderr, fmt.Sprintf("load sibling-overlap findings for PR #%d", selectedNumber), err, "")
-			}
-		}
-		// Record the LIVE base-branch tip, not current.BaseSHA (GitHub's
-		// pinned pull_request.base.sha): escalationStillBlocks compares this
-		// snapshot against the live tip to detect a base advance, and
-		// pull_request.base.sha never moves when the base branch does, so
-		// pinning it here would make the self-heal comparison always match
-		// and the escalation permanent-until-human (#1052).
-		var escalatedBaseTip string
-		escalatedBaseTip, err = provider.BranchTipSHA(ctx, repo, base)
+func (env *remediationCheckpointRunEnv) escalate(
+	decision remediationCheckpointDecision,
+	mode remediationCheckpointMode,
+	observation remediationCheckpointObservation,
+	priorCommentID string,
+) int {
+	var overlaps []siblingOverlapFinding
+	if !mode.forced && len(observation.structuralCollisions) == 0 {
+		found, err := knownSiblingOverlapFindings(
+			env.ctx, env.provider, env.repo, env.selectedNumber, env.base, env.headPrefix, env.prs,
+			time.Now().UTC().Add(-siblingOverlapLookback),
+		)
 		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("resolve base branch %q tip for PR #%d", base, selectedNumber), err, "")
+			return failProviderStage(env.stderr, fmt.Sprintf("load sibling-overlap findings for PR #%d", env.selectedNumber), err, "")
 		}
-		decision.State.EscalatedBaseSHA = escalatedBaseTip
-		decision.State.SiblingOverlapContext = renderSiblingOverlapContext(overlaps)
-		if err := transport.UpdateLabels(ctx, []string{remediationEscalatedLabel}, []string{needsRemediationLabel}); err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("escalate PR #%d", selectedNumber), err, "")
-		}
-		if err := transport.PutStickyComment(ctx, priorCommentID, renderRemediationComment(decision.State)); err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("record escalation comment on PR #%d", selectedNumber), err, "")
-		}
-		if err := writeCheckpointResult(stderr, false, selectedNumber, current.Head, current.HeadSHA, decision.Escalation); err != nil {
-			return 1
-		}
-		pf(stdout, "escalated PR #%d (escalation %d for head %s): %s\n", selectedNumber, decision.Escalation.Generation, current.HeadSHA, decision.Escalation.Reason)
-		return 0
+		overlaps = found
 	}
+	// Record the LIVE base-branch tip, not current.BaseSHA (GitHub's
+	// pinned pull_request.base.sha): escalationStillBlocks compares this
+	// snapshot against the live tip to detect a base advance, and
+	// pull_request.base.sha never moves when the base branch does, so
+	// pinning it here would make the self-heal comparison always match
+	// and the escalation permanent-until-human (#1052).
+	escalatedBaseTip, err := env.provider.BranchTipSHA(env.ctx, env.repo, env.base)
+	if err != nil {
+		return failProviderStage(env.stderr, fmt.Sprintf("resolve base branch %q tip for PR #%d", env.base, env.selectedNumber), err, "")
+	}
+	decision.State.EscalatedBaseSHA = escalatedBaseTip
+	decision.State.SiblingOverlapContext = renderSiblingOverlapContext(overlaps)
+	if err := env.transport.UpdateLabels(env.ctx, []string{remediationEscalatedLabel}, []string{needsRemediationLabel}); err != nil {
+		return failProviderStage(env.stderr, fmt.Sprintf("escalate PR #%d", env.selectedNumber), err, "")
+	}
+	if err := env.transport.PutStickyComment(env.ctx, priorCommentID, renderRemediationComment(decision.State)); err != nil {
+		return failProviderStage(env.stderr, fmt.Sprintf("record escalation comment on PR #%d", env.selectedNumber), err, "")
+	}
+	if err := writeCheckpointResult(env.stderr, false, env.selectedNumber, env.current.Head, env.current.HeadSHA, decision.Escalation); err != nil {
+		return 1
+	}
+	pf(env.stdout, "escalated PR #%d (escalation %d for head %s): %s\n", env.selectedNumber, decision.Escalation.Generation, env.current.HeadSHA, decision.Escalation.Reason)
+	return 0
+}
 
+func (env *remediationCheckpointRunEnv) recordCheckpoint(decision remediationCheckpointDecision, digest, priorCommentID string) int {
 	// Clear the label before replacing its escalation snapshot. Otherwise a
 	// failed label removal leaves a non-escalated state that fails closed.
-	if hasAnyLabel(current.Labels, []string{remediationEscalatedLabel}) {
-		if err := transport.UpdateLabels(ctx, nil, []string{remediationEscalatedLabel}); err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("clear self-healed escalation label from PR #%d", selectedNumber), err, "")
+	if hasAnyLabel(env.current.Labels, []string{remediationEscalatedLabel}) {
+		if err := env.transport.UpdateLabels(env.ctx, nil, []string{remediationEscalatedLabel}); err != nil {
+			return failProviderStage(env.stderr, fmt.Sprintf("clear self-healed escalation label from PR #%d", env.selectedNumber), err, "")
 		}
 	}
-	if err := transport.PutStickyComment(ctx, priorCommentID, renderRemediationComment(decision.State)); err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("record checkpoint state on PR #%d", selectedNumber), err, "")
+	if err := env.transport.PutStickyComment(env.ctx, priorCommentID, renderRemediationComment(decision.State)); err != nil {
+		return failProviderStage(env.stderr, fmt.Sprintf("record checkpoint state on PR #%d", env.selectedNumber), err, "")
 	}
-	if err := writeCheckpointResult(stderr, decision.HasObservedCause, selectedNumber, current.Head, current.HeadSHA, remediationEscalation{}); err != nil {
+	if err := writeCheckpointResult(env.stderr, decision.HasObservedCause, env.selectedNumber, env.current.Head, env.current.HeadSHA, remediationEscalation{}); err != nil {
 		return 1
 	}
 
 	if !decision.HasObservedCause {
 		pf(
-			stdout,
+			env.stdout,
 			"recorded no-cause checkpoint for PR #%d: cycle %d, counters unchanged, digest %s; remediation halted without consuming an allowance\n",
-			selectedNumber, decision.State.Cycles, digest,
+			env.selectedNumber, decision.State.Cycles, digest,
 		)
 		return 0
 	}
 	pf(
-		stdout,
+		env.stdout,
 		"recorded checkpoint for PR #%d: cycle %d, attempts by cause %s, digest %s\n",
-		selectedNumber, decision.State.Cycles, renderRemediationAttempts(decision.State.AttemptsByCause), digest,
+		env.selectedNumber, decision.State.Cycles, renderRemediationAttempts(decision.State.AttemptsByCause), digest,
 	)
 	return 0
+}
+
+func runRemediationCheckpoint(args []string, stdout, stderr io.Writer) int {
+	flags, code, ok := parseRemediationCheckpointFlags(args, stderr)
+	if !ok {
+		return code
+	}
+	root := providerStageRoot(flags.pathArg)
+	selectedNumber, code, ok := resolveCheckpointSelectedNumber(root, stderr)
+	if !ok {
+		return code
+	}
+	repo, err := providerRepo(root)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	// Azure DevOps reaches a NEW branch that talks to the small ADO primitive
+	// surface (PR threads + PR labels + PollPullRequest), mirroring the
+	// merge-review ADO stages (runPRSelectADO, runGatherSiblingContextADO). It is
+	// entered before any github:pr:write token is resolved — ADO carries its own
+	// org-scoped auth (remediation-wiring-plan §3.5). The forced-escalation flags
+	// (--escalate/--escalation-outcome/--budget) are already parsed and validated
+	// above, so they flow in; every other input the ADO body reads itself.
+	if repo.Provider == providers.ProviderADO {
+		return runRemediationCheckpointADO(root, repo, selectedNumber, flags.escalateReason, flags.forcedOutcome, flags.budgetOverride, stdout, stderr)
+	}
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	env, code, ok := openRemediationCheckpointEnv(ctx, root, repo, selectedNumber, stdout, stderr)
+	if !ok {
+		return code
+	}
+	mode, code, ok := resolveRemediationCheckpointMode(flags, stderr)
+	if !ok {
+		return code
+	}
+	if !mode.forced && sequencingOnlyCheckpointWait(env.current.Labels, mode.causes) {
+		return env.recordSequencingOnlyWait()
+	}
+	observation, code, ok := env.stabilize(mode)
+	if !ok {
+		return code
+	}
+	if !mode.forced && len(mode.causes) > 0 {
+		reason, code, ok := env.noopGuardEscalation()
+		if !ok {
+			return code
+		}
+		if reason != "" {
+			mode.reason = reason
+			mode.forced = true
+		}
+	}
+	prior, priorCommentID, watermark := env.priorCheckpointState(observation.comments)
+
+	decision := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
+		Prior: prior, Causes: mode.causes, Budgets: mode.budgets, Digest: observation.digest,
+		HeadSHA: env.current.HeadSHA, BaseSHA: env.current.BaseSHA, Watermark: watermark,
+		Forced: mode.forced, ForcedReason: mode.reason, ForcedOutcome: mode.forcedOutcome,
+		PolicyExcluded: mode.policyExcluded, StructuralCollisions: observation.structuralCollisions,
+		StructuralCollisionContext: renderStructuralCollisionContext(selectedNumber, observation.structuralCollisions),
+	})
+	if decision.Escalated {
+		return env.escalate(decision, mode, observation, priorCommentID)
+	}
+	return env.recordCheckpoint(decision, observation.digest, priorCommentID)
 }
 
 // runRemediationCheckpointADO is the Azure DevOps counterpart of
