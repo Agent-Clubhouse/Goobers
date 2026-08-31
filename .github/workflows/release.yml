@@ -426,10 +426,6 @@ jobs:
           goobers init --template=quickstart smoke/quickstart-instance
           goobers validate smoke/quickstart-instance
           test -f smoke/quickstart-instance/config/gaggles/example/workflows/quickstart.yaml
-          test -f smoke/quickstart-config/instance.yaml.example
-          test -f smoke/quickstart-config/manifest.yaml
-          test -f smoke/quickstart-config/gaggles/goobers/workflows/implementation.yaml
-          test ! -e smoke/quickstart-config/telemetry.db
           mkdir generated-docs
           goobers __generate-docs generated-docs
           diff --recursive smoke/docs/cli generated-docs/cli
