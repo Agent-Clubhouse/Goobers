@@ -2349,17 +2349,27 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		} else {
 			offset = (page - 1) * pageSize
 		}
+		skipped := 0
 		if req.Cursor != "" {
 			offset, err = strconv.Atoi(req.Cursor)
 			if err != nil || offset < 0 {
 				return nil, fmt.Errorf("invalid GitHub work-item cursor %q", req.Cursor)
 			}
-			for pageSize > 1 && offset%pageSize != 0 {
-				pageSize--
-			}
-			values.Set("per_page", strconv.Itoa(pageSize))
+			// Resume at an arbitrary offset by reading the FULL-WIDTH page
+			// that contains it and dropping the records before it, rather
+			// than shrinking per_page until it divides the offset evenly
+			// (#4036). That shrink made the resumed window's width a
+			// property of the offset's factorization: offset 158 read a
+			// 79-record page, and a prime offset collapsed per_page to 1 —
+			// so a scan budgeted for backlogScanCeiling candidates examined
+			// a small fraction of them and then, because the short page was
+			// not itself capped, reported the result set exhausted. Full
+			// pages keep "one page = up to per_page candidates" true for
+			// every offset, which is what the caller's page budget assumes.
 			page = offset/pageSize + 1
+			skipped = offset % pageSize
 		}
+		values.Set("per_page", strconv.Itoa(pageSize))
 		values.Set("page", strconv.Itoa(page))
 		endpoint, err = addQuery(endpoint, values)
 		if err != nil {
@@ -2368,6 +2378,13 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		var issues []githubIssue
 		if err := p.do(ctx, http.MethodGet, endpoint, nil, &issues); err != nil {
 			return nil, err
+		}
+		// fetched is the raw page width, which is what says whether GitHub
+		// itself capped this read; issues is narrowed to the candidates at or
+		// after the resume offset, which is what this call actually inspects.
+		fetched := len(issues)
+		if skipped > 0 {
+			issues = issues[min(skipped, fetched):]
 		}
 		items, scanned, err := issuesToWorkItems(issues, req)
 		if err != nil {
@@ -2381,9 +2398,11 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 			// issues behind — and even scanning every fetched issue without
 			// reaching Limit matches still leaves more to look at when the
 			// fetch itself hit pageSize (GitHub may hold further candidates
-			// beyond what this round asked for).
+			// beyond what this round asked for) — measured on the raw page
+			// width, before the resume offset's leading records were
+			// dropped, since those were still fetched.
 			scannedEverything := scanned == len(issues)
-			fetchWasCapped := len(issues) == pageSize
+			fetchWasCapped := fetched == pageSize
 			req.PageInfo.CandidateCount = len(issues)
 			req.PageInfo.HasNext = !scannedEverything || fetchWasCapped
 			req.PageInfo.NextCursor = ""
