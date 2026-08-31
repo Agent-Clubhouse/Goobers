@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
@@ -85,6 +86,51 @@ const (
 // failed) — a first-class outcome a workflow definition can route to
 // remediation, never silently conflated with "fail" or "timeout".
 const OutcomeEvicted = "evicted"
+
+const maxRegexCacheEntries = 128
+
+// regexCache caches compiled regular expressions to avoid recompiling the
+// same patterns across repeated gate checks. The cache is bounded to keep long-
+// lived gate evaluators from accumulating unbounded compiled-regexp state.
+// Access must be protected by regexCacheMutex.
+var (
+	regexCache      = make(map[string]*regexp.Regexp, maxRegexCacheEntries)
+	regexCacheOrder = make([]string, 0, maxRegexCacheEntries)
+	regexCacheMutex sync.Mutex
+)
+
+// getCompiledRegex returns a cached compiled regexp for the given pattern,
+// compiling and caching it if not already cached. Returns an error if the
+// pattern is invalid. Thread-safe and bounded to a small LRU-style working set.
+func getCompiledRegex(pattern string) (*regexp.Regexp, error) {
+	regexCacheMutex.Lock()
+	defer regexCacheMutex.Unlock()
+
+	if re, ok := regexCache[pattern]; ok {
+		for i, cachedPattern := range regexCacheOrder {
+			if cachedPattern == pattern {
+				regexCacheOrder = append(regexCacheOrder[:i], regexCacheOrder[i+1:]...)
+				regexCacheOrder = append(regexCacheOrder, pattern)
+				break
+			}
+		}
+		return re, nil
+	}
+
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+
+	regexCache[pattern] = re
+	regexCacheOrder = append(regexCacheOrder, pattern)
+	for len(regexCache) > maxRegexCacheEntries {
+		oldest := regexCacheOrder[0]
+		regexCacheOrder = regexCacheOrder[1:]
+		delete(regexCache, oldest)
+	}
+	return re, nil
+}
 
 // CheckFunc evaluates one named automated check against a gate's flattened
 // Inputs and its configured Params, returning an outcome ("pass"/"fail" for
@@ -258,7 +304,7 @@ func DefaultChecks() map[string]CheckFunc {
 			if !ok {
 				return "", fmt.Errorf("gate: check %q requires params.pattern", "output-matches")
 			}
-			re, err := regexp.Compile(pattern)
+			re, err := getCompiledRegex(pattern)
 			if err != nil {
 				return "", fmt.Errorf("gate: check %q: params.pattern %q: %w", "output-matches", pattern, err)
 			}
