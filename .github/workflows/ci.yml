@@ -411,11 +411,20 @@ jobs:
       # same GOMODCACHE the release-tag worktree will read from offline. #3973
       # surfaced this: it bumped a module whose current version no longer
       # overlaps what the latest release tag pinned.
+      #
+      # The prerelease filter keeps this selection identical to the test's
+      # (latestReleaseTag -> parseReleaseVersion, which requires a canonical
+      # vMAJOR.MINOR.PATCH and so skips a tag like v0.4.0-beta.1). Git's
+      # version sort ranks that beta ABOVE the release the test will pick, so
+      # without the filter this step primes one tag's modules while the test
+      # reads another's — #4045: every branch went red within minutes of the
+      # first beta tag being pushed.
       - name: Prime module cache for latest release tag
         timeout-minutes: 12
         shell: bash
         run: |
-          latest_tag=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          latest_tag=$(git tag --list 'v*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
           if [ -z "$latest_tag" ]; then
             echo "::warning::no version-shaped release tag found; skipping release-tag module priming"
             exit 0
@@ -481,7 +490,8 @@ jobs:
         timeout-minutes: 12
         shell: bash
         run: |
-          latest_tag=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          latest_tag=$(git tag --list 'v*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
           if [ -z "$latest_tag" ]; then
             echo "::warning::no version-shaped release tag found; skipping release-tag module priming"
             exit 0
@@ -553,7 +563,8 @@ jobs:
         timeout-minutes: 12
         shell: bash
         run: |
-          latest_tag=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          latest_tag=$(git tag --list 'v*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
           if [ -z "$latest_tag" ]; then
             echo "::warning::no version-shaped release tag found; skipping release-tag module priming"
             exit 0
