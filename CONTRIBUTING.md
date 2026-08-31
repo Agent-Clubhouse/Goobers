@@ -301,8 +301,8 @@ observable contract is a patch. If a "fix" changes what a workflow observes,
 it is a new DSL minor or major, not a patch — see the DSL compatibility
 policy above.
 
-A **frozen** interpreter package (`internal/workflow/v_current`, once
-`v_next` supersedes it in turn) may only receive contract-preserving
+A **frozen** interpreter package (`internal/workflow/v_next`, once
+`v_3_0` supersedes it in turn) may only receive contract-preserving
 patches; a feature or semantic change belongs in a copied-forward
 interpreter instead. This is enforced, not just documented: each frozen
 package's `testdata/golden/PATCH_LOG.json` pins its `digests.json` by
