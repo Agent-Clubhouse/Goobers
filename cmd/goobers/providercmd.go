@@ -72,6 +72,8 @@ const (
 	claimLockOperationBacklogReconcile     = "backlog-query.reconcile"
 	claimLockOperationBacklogClaim         = "backlog-query.claim"
 	claimLockOperationBacklogRelease       = "backlog-query.release"
+	claimLockOperationBacklogRouteLookup   = "backlog-query.route-lookup"
+	claimLockOperationBacklogRoute         = "backlog-query.route"
 	claimLockOperationSelectSourceClaim    = "select-source.claim"
 	claimLockOperationSelectSourceRelease  = "select-source.release"
 	claimLockOperationPRLookup             = "pr-claim.lookup"

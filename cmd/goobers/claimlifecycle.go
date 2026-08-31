@@ -186,15 +186,26 @@ func recoverClaims(
 	return released, err
 }
 
+// currentClaimEntry re-reads entry under the lock, using the SAME key the
+// entry is actually stored under — ClaimEntry.Key(), which is exactly what
+// ReleaseEntry/RenewEntry dispatch on. Rebuilding the key by hand from
+// gaggle/provider/external-ID silently dropped ClaimEntry.Backlog, so every
+// v3 backlog-scoped lease (personal-gaggle-routing §5.3) was looked up under
+// its v2 storage key, reported as "no longer held", and skipped: recovery's
+// terminal-claim cleanup then never released a backlog-scoped claim whose
+// owning run was already gone, and never recorded that run's PR-remediation
+// no-op either. The lease stayed held until it expired, which is precisely the
+// deferred cleanup §5.9 requires recovery to perform.
+//
+// The legacy fallback is unchanged and mirrors ReleaseEntry's own condition: an
+// entry with neither a backlog nor a complete gaggle/provider pair is a v1
+// item-only key.
 func currentClaimEntry(ledger *localscheduler.ClaimLedger, entry localscheduler.ClaimEntry) (localscheduler.ClaimEntry, bool) {
-	if entry.Gaggle == "" || entry.Provider == "" {
+	key := entry.Key()
+	if key.Backlog.IsZero() && (key.Gaggle == "" || key.Provider == "") {
 		return ledger.Lookup(entry.ItemID)
 	}
-	return ledger.LookupScoped(localscheduler.ClaimKey{
-		Gaggle:     entry.Gaggle,
-		Provider:   entry.Provider,
-		ExternalID: entry.ExternalID,
-	})
+	return ledger.LookupScoped(key)
 }
 
 func recordTerminalClaimInspectionError(log *journal.InstanceLog, entry localscheduler.ClaimEntry, err error) {

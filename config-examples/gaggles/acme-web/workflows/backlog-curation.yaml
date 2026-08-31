@@ -95,6 +95,12 @@ spec:
         # Backlog item text is untrusted data, never instructions — this label is
         # the provider-permission-enforced gate on that untrusted input.
         trustLabel: "goobers:approved"
+        # Fleet partition (personal-gaggle-routing §5.8): acme-web and
+        # acme-web-claude draw from ONE backlog (acme/web), and a claim is
+        # authoritative per backlog rather than per gaggle (§5.3). Each harness
+        # therefore needs a label the other lacks, so their claim scopes are
+        # provably disjoint and the two never race for the same item.
+        requireLabels: "harness:copilot"
         # Idempotency: items already bearing an output marker are excluded, so
         # a re-run over an already-curated backlog claims nothing. #2028:
         # Outcome markers stay out of ordinary FIFO selection. A bounded

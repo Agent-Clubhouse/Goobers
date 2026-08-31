@@ -204,7 +204,7 @@ _goobers_completion()
             flags+=(--feedback)
             ;;
         backlog-query)
-            flags+=(--claim --debug --release --read-only --reconcile)
+            flags+=(--claim --debug --release --read-only --reconcile --route)
             ;;
         reconcile-branches)
             flags+=(--delete --max --min-age --after)

@@ -14,6 +14,15 @@ import (
 
 type policyActionContract struct {
 	requiredCapabilities []capability.Capability
+	// forbiddenCapabilities are capabilities a task declaring this action must
+	// NOT also hold. It expresses a separation of duties that required
+	// capabilities cannot: some actions are safe only because the stage that
+	// performs them is unable to do something else.
+	forbiddenCapabilities []capability.Capability
+	// forbiddenReason explains, in the diagnostic, WHY the combination is
+	// refused, so an author sees the separation being protected rather than an
+	// arbitrary restriction.
+	forbiddenReason string
 }
 
 var policyActionContracts = map[string]policyActionContract{
@@ -48,15 +57,31 @@ var policyActionContracts = map[string]policyActionContract{
 	"release-backlog-claim":         {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
 	"release-pr-claim":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
 	"respond-to-findings":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"resolve-review-threads":        {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"rework-pr":                     {requiredCapabilities: []capability.Capability{capability.RepoPush}},
-	"route-queue-outcome":           {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"route-provider-verdict":        {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
-	"route-verdict":                 {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"unpark-resolved-siblings":      {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"update-issue":                  {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
-	"update-pr-branch":              {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
-	"watch-merge-queue":             {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
+	// route-backlog-item is the deterministic routing transaction: it applies
+	// statically allowlisted routing labels to a backlog item this run already
+	// owns, then hands ownership off. It is deliberately separate from
+	// update-issue/claim-backlog-items so a router's mutation surface is
+	// exactly "route", never general issue labeling.
+	//
+	// Its forbidden set is the trust separation itself (personal-gaggle-routing
+	// 5.7): a router decides where work goes, so it must never also be able to
+	// write the repository or its pull requests. One goober that could both
+	// route work to itself and act on it would collapse the router/destination
+	// boundary the whole topology depends on.
+	"route-backlog-item": {
+		requiredCapabilities:  []capability.Capability{capability.GitHubIssuesWrite},
+		forbiddenCapabilities: []capability.Capability{capability.RepoPush, capability.GitHubPRWrite, capability.GitHubPRMerge, capability.GitHubPRReview},
+		forbiddenReason:       "a router decides where work is routed and must not also write the target repository or its pull requests; give the destination gaggle those capabilities instead",
+	},
+	"resolve-review-threads":   {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"rework-pr":                {requiredCapabilities: []capability.Capability{capability.RepoPush}},
+	"route-queue-outcome":      {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"route-provider-verdict":   {requiredCapabilities: []capability.Capability{capability.ProviderPRWrite}},
+	"route-verdict":            {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"unpark-resolved-siblings": {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"update-issue":             {requiredCapabilities: []capability.Capability{capability.GitHubIssuesWrite}},
+	"update-pr-branch":         {requiredCapabilities: []capability.Capability{capability.GitHubPRWrite}},
+	"watch-merge-queue":        {requiredCapabilities: []capability.Capability{capability.GitHubPRMerge}},
 }
 
 var commandPolicyActions = map[string][]string{
@@ -91,6 +116,7 @@ var commandArgumentPolicyActions = map[string]map[string][]string{
 		"claim":     {"claim-backlog-items"},
 		"reconcile": {"claim-backlog-items", "close-issue"},
 		"release":   {"release-backlog-claim"},
+		"route":     {"route-backlog-item"},
 	},
 	"reconcile-branches": {
 		"delete": {"delete-branch"},
@@ -112,6 +138,7 @@ func policyActionProblems(def Definition, goobers map[string]apiv1.GooberSpec) [
 	known := knownPolicyActions()
 	checkedGoobers := map[string]bool{}
 	for _, task := range def.Spec.Tasks {
+		problems = append(problems, staticRouteInputProblems(task)...)
 		declared := make(map[string]bool, len(task.PolicyActions))
 		checked := make(map[string]bool, len(task.PolicyActions))
 		for _, action := range task.PolicyActions {
@@ -236,6 +263,58 @@ func gooberPolicyActionProblems(name string, goober apiv1.GooberSpec, known []st
 	return problems
 }
 
+// staticRouteInputs are the `goobers backlog-query --route` inputs that are
+// SECURITY POLICY rather than data flow (personal-gaggle-routing §5.4). Each
+// one constrains what the routing transaction is permitted to do, so sourcing
+// any of them from an upstream stage's output would let the stage being
+// constrained choose its own constraint — the deciding agent widening the very
+// allowlist that is supposed to bound it.
+//
+// The rejection has to live here, at compile/config time, because it cannot
+// live at runtime. A task's inputsFrom values are merged INTO the same flat
+// Inputs map the static inputs occupy (internal/runner: env.Inputs[inputKey] =
+// v) and are exported through the one GOOBERS_INPUT_* namespace, so by the time
+// --route calls providerInput("allowedRouteLabels") an inputsFrom override is
+// byte-indistinguishable from the author's own declared value. The workflow
+// definition is the last place the provenance still exists, so that is where an
+// inputsFrom mapping onto these keys is refused.
+//
+// The value is the reason reported to the author, so the diagnostic names the
+// separation being protected rather than reading as an arbitrary restriction.
+var staticRouteInputs = map[string]string{
+	"allowedRouteLabels": "it is the static allowlist that bounds which labels the routing transaction may apply, so a stage that could widen it could grant itself any label",
+	"routePlanFile":      "it selects which plan the transaction applies, so a stage that could redirect it could substitute a plan outside the agreed handoff",
+	"trustLabel":         "it contributes the workflow's own trust label to the reserved denylist, so a stage that could clear it could make that trust label routable",
+	"claimLabel":         "it contributes the active claim marker to the reserved denylist, so a stage that could clear it could make ownership markers routable",
+}
+
+// staticRouteInputProblems reports inputsFrom mappings onto the static route
+// contract. It is keyed on the command actually invoking --route rather than on
+// the declared policy action, so a task cannot escape the check by omitting
+// route-backlog-item (that omission is itself reported, separately).
+func staticRouteInputProblems(task apiv1.Task) []string {
+	if task.Run == nil || policyCommand(task) != "backlog-query" || len(task.InputsFrom) == 0 {
+		return nil
+	}
+	if !booleanCommandArgument(task.Run.Command[2:], "route") {
+		return nil
+	}
+	names := make([]string, 0, len(task.InputsFrom))
+	for name := range task.InputsFrom {
+		if _, static := staticRouteInputs[name]; static {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	problems := make([]string, 0, len(names))
+	for _, name := range names {
+		problems = append(problems, fmt.Sprintf(
+			"task %q runs `goobers backlog-query --route` and must declare input %q statically; it is wired from upstream output %q through inputsFrom, which is refused because %s",
+			task.Name, name, task.InputsFrom[name], staticRouteInputs[name]))
+	}
+	return problems
+}
+
 func missingPolicyActionCapabilities(task apiv1.Task, action string, contract policyActionContract) []string {
 	declared := toSet(task.Capabilities)
 	var problems []string
@@ -244,6 +323,13 @@ func missingPolicyActionCapabilities(task apiv1.Task, action string, contract po
 			problems = append(problems, fmt.Sprintf(
 				"task %q policy action %q requires capability %q, but the task does not declare it",
 				task.Name, action, required))
+		}
+	}
+	for _, forbidden := range contract.forbiddenCapabilities {
+		if declared[string(forbidden)] {
+			problems = append(problems, fmt.Sprintf(
+				"task %q policy action %q must not be combined with capability %q: %s",
+				task.Name, action, forbidden, contract.forbiddenReason))
 		}
 	}
 	return problems

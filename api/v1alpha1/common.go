@@ -1,5 +1,11 @@
 package v1alpha1
 
+import (
+	"fmt"
+	"net/url"
+	"strings"
+)
+
 // Provider identifies a backing system vendor. v1 abstracts repo + backlog over
 // both GitHub and Azure DevOps (ADO) from the start (see VISION §8 "v1 providers").
 type Provider string
@@ -124,6 +130,118 @@ type BacklogRef struct {
 	// ConnectionRef names the connection (credentials) used to reach the backlog.
 	// +optional
 	ConnectionRef string `json:"connectionRef,omitempty" yaml:"connectionRef,omitempty"`
+}
+
+// BacklogIdentity canonically identifies a provider work-item container —
+// the stable scope key that authoritative claims, routing validation, and
+// journal correlation share. It is derived deterministically from a
+// BacklogRef's configuration and is provider-neutral. Normalization rules:
+//   - Provider is the canonical enum value.
+//   - BaseURL is trimmed, lowered, and stripped of trailing "/".
+//   - GitHub/Gitea: Owner and Name are parsed from BacklogRef.Project
+//     ("owner/name"); Project is left empty, so the raw "owner/name" string can
+//     never produce a second, differently-shaped key for the same container.
+//   - ADO: Project is the ADO project and Owner is the ADO organization, which
+//     a BacklogRef cannot carry itself (the provider is organization-scoped and
+//     the organization comes from instance config) — see BacklogIdentityFor.
+//     Name is empty because an ADO backlog is project-scoped, not repo-scoped.
+//   - Serialization is "provider|baseUrl|owner|project|name" with each field
+//     URL-query-escaped, stable across processes and platforms.
+//
+// Two backlogs are the same container exactly when their identities are equal,
+// so equal external item IDs drawn from different backlogs never contend.
+type BacklogIdentity struct {
+	Provider Provider `json:"provider"`
+	BaseURL  string   `json:"baseUrl,omitempty"`
+	Owner    string   `json:"owner,omitempty"`
+	Project  string   `json:"project,omitempty"`
+	Name     string   `json:"name,omitempty"`
+}
+
+// BacklogIdentityFromRef derives a canonical backlog identity from a BacklogRef
+// alone. Use BacklogIdentityFor when the ADO organization is known; without it
+// an ADO identity is scoped only by project, which is correct for a
+// single-organization instance and the historical behavior everywhere else.
+func BacklogIdentityFromRef(ref BacklogRef) (BacklogIdentity, error) {
+	return BacklogIdentityFor(ref, "")
+}
+
+// BacklogIdentityFor derives a canonical backlog identity, supplying the
+// organization context a BacklogRef cannot carry. organization is used only by
+// ADO (where it is the organization the project lives under); GitHub and Gitea
+// parse their owner out of BacklogRef.Project and ignore it.
+func BacklogIdentityFor(ref BacklogRef, organization string) (BacklogIdentity, error) {
+	id := BacklogIdentity{
+		Provider: ref.Provider,
+		BaseURL:  normalizeBaseURL(ref.BaseURL),
+	}
+	switch ref.Provider {
+	case ProviderGitHub, ProviderGitea:
+		owner, name, ok := strings.Cut(ref.Project, "/")
+		if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+			return BacklogIdentity{}, fmt.Errorf("backlog identity: %s project must be %q, got %q", ref.Provider, "owner/name", ref.Project)
+		}
+		id.Owner = owner
+		id.Name = name
+	case ProviderADO:
+		if ref.Project == "" {
+			return BacklogIdentity{}, fmt.Errorf("backlog identity: ado backlog requires a project")
+		}
+		id.Owner = organization
+		id.Project = ref.Project
+	default:
+		return BacklogIdentity{}, fmt.Errorf("backlog identity: unsupported provider %q", ref.Provider)
+	}
+	return id, nil
+}
+
+// Validate rejects an identity that is incomplete for its provider. Callers
+// that build an identity by hand (deserialized ledger entries, tests) use it so
+// a half-populated value can never become an ownership key that silently
+// collides with another backlog's.
+func (b BacklogIdentity) Validate() error {
+	switch b.Provider {
+	case ProviderGitHub, ProviderGitea:
+		if b.Owner == "" || b.Name == "" {
+			return fmt.Errorf("backlog identity: %s requires owner and name", b.Provider)
+		}
+		if b.Project != "" {
+			return fmt.Errorf("backlog identity: %s must not set project", b.Provider)
+		}
+	case ProviderADO:
+		if b.Project == "" {
+			return fmt.Errorf("backlog identity: ado requires a project")
+		}
+	default:
+		return fmt.Errorf("backlog identity: unsupported provider %q", b.Provider)
+	}
+	return nil
+}
+
+// String returns the stable serialization used as a claim ledger scope key.
+func (b BacklogIdentity) String() string {
+	return url.QueryEscape(string(b.Provider)) + "|" +
+		url.QueryEscape(b.BaseURL) + "|" +
+		url.QueryEscape(b.Owner) + "|" +
+		url.QueryEscape(b.Project) + "|" +
+		url.QueryEscape(b.Name)
+}
+
+// IsZero reports whether the identity is empty/unset.
+func (b BacklogIdentity) IsZero() bool {
+	return b.Provider == "" && b.BaseURL == "" && b.Owner == "" && b.Project == "" && b.Name == ""
+}
+
+// Equal reports whether two identities refer to the same backlog container.
+func (b BacklogIdentity) Equal(other BacklogIdentity) bool {
+	return b == other
+}
+
+func normalizeBaseURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	return strings.TrimRight(strings.ToLower(strings.TrimSpace(raw)), "/")
 }
 
 // Connection declares a named, reusable link to an external system. Manifests

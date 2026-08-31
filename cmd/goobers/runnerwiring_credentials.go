@@ -208,16 +208,31 @@ func deterministicCredentialGrants(sources []credentials.Grant) []credentials.Gr
 }
 
 func credentialGrantKey(grant instance.CredentialGrant) (string, error) {
+	declared := 0
+	for _, set := range []bool{grant.Capability != "", grant.MCP != "", grant.Connection != ""} {
+		if set {
+			declared++
+		}
+	}
+	if declared != 1 {
+		return "", errors.New("credential grant must set exactly one of capability, mcp, or connection")
+	}
 	switch {
-	case grant.Capability != "" && grant.MCP == "":
+	case grant.Capability != "":
 		if !capability.StageDeclarable(grant.Capability) {
 			return "", fmt.Errorf("capability %q cannot be stage-scoped", grant.Capability)
 		}
 		return grant.Capability, nil
-	case grant.Capability == "" && mcpconfig.ValidBYOCredentialName(grant.MCP):
+	case grant.MCP != "":
+		if !mcpconfig.ValidBYOCredentialName(grant.MCP) {
+			return "", fmt.Errorf("mcp credential name %q is not valid", grant.MCP)
+		}
 		return mcpconfig.BYOCredentialKey(grant.MCP), nil
 	default:
-		return "", errors.New("credential grant must set exactly one valid capability or mcp name")
+		if !credentials.ValidConnectionName(grant.Connection) {
+			return "", fmt.Errorf("connection name %q is not valid", grant.Connection)
+		}
+		return credentials.ConnectionCredentialKey(grant.Connection), nil
 	}
 }
 

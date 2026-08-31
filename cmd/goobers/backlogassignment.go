@@ -108,12 +108,12 @@ func runBacklogAssignmentWithMutationHook(
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	assigner, err := assignmentProvider(root, repo)
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	assigner, err := assignmentProvider(root, repo, backlogRepo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	backlogRepo := backlogRepoRefForStage(root, repo)
 
 	labels := append([]string{trustLabel}, labelFilter.RequiredLabels()...)
 	ctx, cancel := providerCommandContext()
@@ -244,8 +244,11 @@ func parseAssignmentMaxItems(raw string) (int, error) {
 	return maxItems, nil
 }
 
-func assignmentProvider(root string, repo providers.RepositoryRef) (providers.BacklogProvider, error) {
-	return newProviderForStage(root, repo, false, withStageProviderCache(), withStageProviderMutations("issue"))
+// assignmentProvider builds the provider every assignment call is addressed
+// through. Assignment reads and writes work items, so it targets the backlog
+// and authenticates as the backlog's connection, never the project's token.
+func assignmentProvider(root string, repo, backlogRepo providers.RepositoryRef) (providers.BacklogProvider, error) {
+	return newBacklogProviderForStage(root, repo, backlogRepo, false, withStageProviderCache(), withStageProviderMutations("issue"))
 }
 
 func assignmentEligibleItems(

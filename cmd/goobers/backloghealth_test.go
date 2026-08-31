@@ -25,7 +25,7 @@ func TestBacklogHealthProviderDispatchesADOAndGitea(t *testing.T) {
 	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
 		t.Run(string(kind), func(t *testing.T) {
 			root, repo := providerDispatchFixture(t, kind)
-			provider, err := newBacklogHealthProvider(root, repo, true)
+			provider, err := newBacklogHealthProvider(root, repo, backlogRepoRefForStage(root, repo), true)
 			if err != nil {
 				t.Fatalf("newBacklogHealthProvider(%s): %v", kind, err)
 			}
@@ -141,7 +141,7 @@ func TestMeasureReadyPoolDepthAndAge(t *testing.T) {
 	if ok, _, err := ledger.Claim("1", "run-1", "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("claim item 1: ok=%v err=%v", ok, err)
 	}
-	available := unclaimedReadyItems(append([]providers.WorkItem(nil), items...), ledger, "", "github", now)
+	available := unclaimedReadyItems(append([]providers.WorkItem(nil), items...), ledger, apiv1.BacklogIdentity{}, "", "github", now)
 	if got := measureReadyPool(available, "goobers:ready", now).ReadyPoolDepth; got != 1 {
 		t.Fatalf("unclaimed ready depth = %d, want 1", got)
 	}

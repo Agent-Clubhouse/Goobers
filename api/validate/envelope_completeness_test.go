@@ -107,11 +107,19 @@ func completeInvocationEnvelope() apiv1.InvocationEnvelope {
 			Branch:        "main",
 			ConnectionRef: "origin",
 		},
+		BacklogRef: &apiv1.BacklogRef{
+			Provider:       apiv1.ProviderGitHub,
+			BaseURL:        "https://github.example.com",
+			Project:        "agent-clubhouse/private-backlog",
+			Labels:         []string{"goobers"},
+			LabelPredicate: `"goobers" in labels`,
+			FieldPredicate: `fields["state"] == "open"`,
+			ConnectionRef:  "private-backlog",
+		},
 		AdditionalWorkspaces: []apiv1.AdditionalWorkspace{{
 			Name: "reference",
 			Path: "/workspace-reference",
-		}},
-		CheckoutCones: map[string][]string{
+		}}, CheckoutCones: map[string][]string{
 			"":          {"services/web"},
 			"reference": {"docs"},
 		},

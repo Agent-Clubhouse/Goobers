@@ -970,9 +970,9 @@ func (r TokenRef) CredentialTokenRef(name string) credentials.TokenRef {
 	return credentials.TokenRef{Name: name, Env: r.Env, File: r.File, Keychain: r.Keychain, Store: r.Store}
 }
 
-// CredentialGrant sources either one stage capability or one named BYO MCP
-// credential from its own token ref. Runner-owned capabilities use their
-// dedicated config surfaces instead.
+// CredentialGrant sources either one stage capability, one named BYO MCP
+// credential, or one named connection from its own token ref. Runner-owned
+// capabilities use their dedicated config surfaces instead.
 type CredentialGrant struct {
 	// Capability is the canonical capability string (internal/capability) this
 	// token backs, e.g. "agent:model" or "repo:push" (to override the default).
@@ -980,6 +980,12 @@ type CredentialGrant struct {
 	// MCP names a BYO MCP credential. It is not a stage capability and is
 	// reachable only by goobers whose MCP server declarations reference it.
 	MCP string `json:"mcp,omitempty" yaml:"mcp,omitempty"`
+	// Connection names a gaggle connection (spec.project.connectionRef /
+	// spec.backlog.connectionRef). Like MCP it is not a stage capability, so it
+	// is reachable only through an explicit connectionRef — which is what lets a
+	// gaggle's backlog authenticate with a credential distinct from the one its
+	// project repository uses.
+	Connection string `json:"connection,omitempty" yaml:"connection,omitempty"`
 	// Token is the source of the credential — exactly one supported TokenRef
 	// source, like a repo's token; inline secret values are never permitted.
 	Token TokenRef `json:"token" yaml:"token"`

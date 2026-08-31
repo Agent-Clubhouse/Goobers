@@ -63,12 +63,13 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 	advisoryMode := providerInput("advisoryMode", "false")
 	resultFile := providerInput("resultFile", "issue-staleness-result.json")
 
-	// issuesRepo is where the pinned work item actually lives. On GitHub the
-	// code repo and issue tracker coincide (issuesRepo == repo); on Azure
-	// DevOps the pinned work item lives in the backlog project — a different
-	// project from the routed code repo the PR/branch landed in — so its
-	// GetWorkItem read must target the backlog project (backlogRepoRefForStage).
-	issuesRepo := repo
+	// issuesRepo is where the pinned work item actually lives. It is the
+	// resolved BACKLOG for every provider, not just ADO: since personal-gaggle
+	// routing a GitHub gaggle's backlog may be an entirely different repository
+	// from the code repo the PR/branch landed in. When no distinct backlog is
+	// declared, backlogRepoRefForStage returns the routed repo, so the
+	// same-repository majority is byte-identical to before.
+	issuesRepo := backlogRepoRefForStage(root, repo)
 	prProvider, err := newProviderForStage(root, repo, false,
 		withStageProviderCapability(capability.GitHubPRWrite),
 		withStageProviderCache(),
@@ -77,22 +78,22 @@ func runCheckIssueStaleness(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesProvider := prProvider
-	if repo.Provider == providers.ProviderADO {
-		issuesRepo = backlogRepoRefForStage(root, repo)
-	} else {
-		// The PR poll and the originating-issue read authenticate with distinct
-		// capabilities (github:pr:write vs github:issues:write), the same split
-		// gather-issue-context uses, so issue resolution never fails on a
-		// PR-scoped credential and vice versa.
-		issuesProvider, err = newProviderForStage(root, repo, false,
-			withStageProviderCapability(capability.GitHubIssuesWrite),
-			withStageProviderCache(),
-		)
-		if err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 1
-		}
+	// The PR poll and the originating-issue read are separate providers on
+	// purpose. They authenticate with distinct capabilities (github:pr:write vs
+	// github:issues:write, the same split gather-issue-context uses) so issue
+	// resolution never fails on a PR-scoped credential and vice versa — and the
+	// issue read additionally authenticates as the BACKLOG connection, since
+	// the work item it reads may live under different ownership than the pull
+	// request. This holds for ADO too: the backlog project may be governed by a
+	// different credential than the code repository, and reusing prProvider
+	// there would silently read it with the code repo's.
+	issuesProvider, err := newBacklogProviderForStage(root, repo, issuesRepo, false,
+		withStageProviderCapability(capability.GitHubIssuesWrite),
+		withStageProviderCache(),
+	)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 
 	ctx, cancel := providerCommandContext()

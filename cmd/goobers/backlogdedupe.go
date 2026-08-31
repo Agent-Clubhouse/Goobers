@@ -136,12 +136,12 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issueProvider, err := backlogDedupeProvider(root, repo)
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	issueProvider, err := backlogDedupeProvider(root, repo, backlogRepo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	backlogRepo := backlogRepoRefForStage(root, repo)
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
@@ -196,8 +196,10 @@ func runBacklogDedupe(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func backlogDedupeProvider(root string, repo providers.RepositoryRef) (providers.BacklogProvider, error) {
-	return newProviderForStage(root, repo, true, withStageProviderCache())
+// backlogDedupeProvider scans the backlog read-only, so it is addressed at and
+// authenticated as the backlog rather than the routed code repository.
+func backlogDedupeProvider(root string, repo, backlogRepo providers.RepositoryRef) (providers.BacklogProvider, error) {
+	return newBacklogProviderForStage(root, repo, backlogRepo, true, withStageProviderCache())
 }
 
 func surfaceDuplicateCandidates(items []providers.WorkItem, claimed map[string]bool) []dedupeCandidate {

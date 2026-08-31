@@ -321,14 +321,20 @@
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
           "description": "Name of a bring-your-own MCP credential. It is NOT a stage capability: it is reachable only by goobers whose MCP server declarations reference this name."
         },
+        "connection": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "Name of a gaggle connection (spec.project.connectionRef / spec.backlog.connectionRef). Like `mcp` it is NOT a stage capability: it is reachable only through an explicit connectionRef, which is what lets a gaggle's backlog authenticate with a credential its target repository never receives."
+        },
         "token": {
           "description": "Where this credential is read from — exactly one source, never an inline value.",
           "$ref": "#/$defs/tokenRef"
         }
       },
       "oneOf": [
-        { "required": ["capability"], "not": { "required": ["mcp"] } },
-        { "required": ["mcp"], "not": { "required": ["capability"] } }
+        { "required": ["capability"], "not": { "anyOf": [{ "required": ["mcp"] }, { "required": ["connection"] }] } },
+        { "required": ["mcp"], "not": { "anyOf": [{ "required": ["capability"] }, { "required": ["connection"] }] } },
+        { "required": ["connection"], "not": { "anyOf": [{ "required": ["capability"] }, { "required": ["mcp"] }] } }
       ]
     },
     "daemonIdentity": {

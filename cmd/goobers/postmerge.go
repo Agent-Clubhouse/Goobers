@@ -229,11 +229,6 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
 	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
 		withStageProviderToken(prToken),
 		withStageProviderCache(),
@@ -243,8 +238,15 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesProvider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
-		withStageProviderToken(issuesToken),
+	// The issues half of post-merge closes BACKLOG items the merged PR
+	// resolved, which since personal-gaggle routing may live in a different
+	// repository — and under different ownership — than the PR. It is therefore
+	// addressed at and authenticated as the backlog. With no distinct backlog
+	// declared, backlogRepo == repo and the connection is empty, so the
+	// capability-scoped issues token resolves exactly as before.
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	issuesProvider, err := newBacklogProviderForStageAs[*providers.GitHubProvider](root, repo, backlogRepo, false,
+		withStageProviderCapability(capability.GitHubIssuesWrite),
 		withStageProviderCache(),
 		withStageProviderMutations("issue"),
 	)
@@ -279,7 +281,7 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		if pollErr != nil {
 			return nil
 		}
-		postMergeErrs = performPostMerge(ctx, provider, issuesProvider, repo, root, pullNumber, poll, stdout, stderr)
+		postMergeErrs = performPostMerge(ctx, provider, issuesProvider, repo, backlogRepo, root, pullNumber, poll, stdout, stderr)
 		if len(postMergeErrs) > 0 {
 			return nil
 		}
@@ -330,13 +332,22 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Mandatory Provider methods (PollPullRequest here, BacklogProvider in the
-	// close) route through the dispatcher, which embeds Provider — never a
-	// concrete *providers.GitHubProvider (merge-wiring-plan.md §8).
+	// Mandatory Provider methods (PollPullRequest here) route through the
+	// dispatcher, which embeds Provider — never a concrete
+	// *providers.GitHubProvider (merge-wiring-plan.md §8).
 	dispatcher := providers.NewDispatcher(adoProvider)
 	// Work items (the closed PBI) live in the backlog project on ADO, not the
-	// routed code repo whose PR this stage merged; address them there (§6).
+	// routed code repo whose PR this stage merged; address them there (§6) —
+	// and, when the gaggle declares a backlog connection, authenticate as that
+	// connection rather than the code repository's credential. The PR poll
+	// above keeps the project credential: it addresses the code repo.
 	backlogRepo := backlogRepoRefForStage(root, repo)
+	backlogCloser, err := newBacklogProviderForStageAs[*providers.ADOProvider](root, repo, backlogRepo, false)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	closer := providers.NewDispatcher(backlogCloser)
 
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {
@@ -364,7 +375,7 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 		if pollErr != nil {
 			return nil
 		}
-		postMergeErrs = performPostMergeADO(ctx, dispatcher, backlogRepo, poll, pullNumber, stdout, stderr)
+		postMergeErrs = performPostMergeADO(ctx, closer, backlogRepo, poll, pullNumber, stdout, stderr)
 		if len(postMergeErrs) > 0 {
 			return nil
 		}
@@ -459,7 +470,7 @@ func closeReferencedWorkItemADO(ctx context.Context, closer adoWorkItemCloser, b
 	return err
 }
 
-func performPostMerge(ctx context.Context, provider, issuesProvider *providers.GitHubProvider, repo providers.RepositoryRef, root, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
+func performPostMerge(ctx context.Context, provider, issuesProvider *providers.GitHubProvider, repo, backlogRepo providers.RepositoryRef, root, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
 	var errs []error
 	labeled, skipped, labelErrs := fanOutNeedsRemediation(ctx, provider, repo, root, poll.Number, poll.BaseBranch, stderr)
 	for _, lerr := range labelErrs {
@@ -485,7 +496,10 @@ func performPostMerge(ctx context.Context, provider, issuesProvider *providers.G
 	}
 	errs = append(errs, undemoteErrs...)
 
-	closed, closeErrs := closeReferencedIssues(ctx, issuesProvider, repo, poll.Body, pullNumber)
+	// The sibling/demotion/remediation actions above operate on PULL REQUESTS in
+	// the code repository; only the issue close operates on a BACKLOG item, so
+	// only it is addressed at backlogRepo.
+	closed, closeErrs := closeReferencedIssues(ctx, issuesProvider, backlogRepo, poll.Body, pullNumber)
 	for _, cerr := range closeErrs {
 		pf(stderr, "warning: %v\n", cerr)
 	}

@@ -221,6 +221,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, err
 	}
 	claimProviders := claimProvidersByGaggle(set)
+	backlogIdentities := backlogIdentitiesByGaggle(set)
 
 	// telemetry.enabled defaults to true; instance.yaml can opt out (issue
 	// #129). tel/rollupDB stay nil in that case — every downstream use
@@ -401,7 +402,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		if err != nil {
 			return err
 		}
-		return ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
+		if err := ledger.MigrateLegacyClaims(func(entry localscheduler.ClaimEntry) (localscheduler.ClaimNamespace, error) {
 			namespace, resolveErr := legacyClaimNamespace(l, claimProviders, entry)
 			if errors.Is(resolveErr, localscheduler.ErrLegacyClaimOwnershipUnresolved) {
 				_ = instanceLog.Append(journal.Event{
@@ -413,6 +414,26 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 				})
 			}
 			return namespace, resolveErr
+		}); err != nil {
+			return err
+		}
+		// Backlog scoping (personal-gaggle-routing §5.3) runs AFTER the legacy
+		// namespace migration so every entry it sees already carries the gaggle
+		// that identifies its backlog. It must happen here, not in
+		// OpenClaimLedger, because only the daemon has the loaded config the
+		// gaggle -> backlog-identity mapping comes from.
+		return ledger.MigrateBacklogScope(func(entry localscheduler.ClaimEntry) (apiv1.BacklogIdentity, error) {
+			identity, resolveErr := backlogScopeForClaim(backlogIdentities, entry)
+			if errors.Is(resolveErr, localscheduler.ErrLegacyClaimOwnershipUnresolved) {
+				_ = instanceLog.Append(journal.Event{
+					Type: journal.EventError, RunID: entry.RunID, Workflow: entry.Workflow,
+					Error: &journal.ErrorDetail{
+						Code:    "backlog_claim_scope_unresolved",
+						Message: resolveErr.Error(),
+					},
+				})
+			}
+			return identity, resolveErr
 		})
 	}); err != nil {
 		return nil, err
@@ -553,6 +574,61 @@ func claimProvidersByGaggle(set *instance.ConfigSet) map[string]apiv1.Provider {
 		providers[set.Gaggles[i].Name] = set.Gaggles[i].Spec.Project.Provider
 	}
 	return providers
+}
+
+// backlogIdentitiesByGaggle precomputes each configured gaggle's canonical
+// backlog identity — the config half of the v2 -> v3 claim migration. A gaggle
+// whose backlog is malformed is simply absent from the map, which
+// backlogScopeForClaim turns into conservative retention rather than a guess.
+func backlogIdentitiesByGaggle(set *instance.ConfigSet) map[string]apiv1.BacklogIdentity {
+	identities := make(map[string]apiv1.BacklogIdentity, len(set.Gaggles))
+	for i := range set.Gaggles {
+		g := &set.Gaggles[i]
+		identity, err := apiv1.BacklogIdentityFor(g.Spec.Backlog, g.Spec.Project.Owner)
+		if err != nil || identity.Validate() != nil {
+			continue
+		}
+		identities[g.Name] = identity
+	}
+	return identities
+}
+
+// backlogScopeForClaim decides one pre-v3 entry's fate during migration.
+//
+// Correctly classifying an entry matters more than migrating it: promoting a
+// pull-request lease to backlog scope would corrupt PR exclusivity, and
+// guessing a backlog for an entry whose gaggle is gone could either free an
+// item another run still owns or collide it with an unrelated one. Both
+// uncertain cases therefore keep the entry exactly as it is.
+func backlogScopeForClaim(identities map[string]apiv1.BacklogIdentity, entry localscheduler.ClaimEntry) (apiv1.BacklogIdentity, error) {
+	if isPullRequestClaimEntry(entry) {
+		return apiv1.BacklogIdentity{}, localscheduler.ErrClaimNotBacklogScoped
+	}
+	if entry.Gaggle == "" {
+		// A schema-less item-only entry the legacy migration could not resolve
+		// either. It stays exclusive against every claimant until it expires.
+		return apiv1.BacklogIdentity{}, fmt.Errorf(
+			"%w: claim %q has no owning gaggle to resolve a backlog from",
+			localscheduler.ErrLegacyClaimOwnershipUnresolved, entry.ItemID)
+	}
+	identity, ok := identities[entry.Gaggle]
+	if !ok {
+		return apiv1.BacklogIdentity{}, fmt.Errorf(
+			"%w: owning gaggle %q has no resolvable backlog identity",
+			localscheduler.ErrLegacyClaimOwnershipUnresolved, entry.Gaggle)
+	}
+	return identity, nil
+}
+
+// isPullRequestClaimEntry reports whether an entry is a pull-request lease
+// rather than a backlog-item one. PR claims are stored under the same ledger
+// with a distinguishing external-ID prefix (pullRequestClaimKey).
+func isPullRequestClaimEntry(entry localscheduler.ClaimEntry) bool {
+	id := entry.ExternalID
+	if id == "" {
+		id = entry.ItemID
+	}
+	return strings.HasPrefix(id, pullRequestClaimPrefix)
 }
 
 type workcopyRootClaim struct {
@@ -797,6 +873,7 @@ func buildSchedulerDefinitions(
 			PollPriority: pollPriority,
 			Starter:      &trackedStarter{r: runners[wf.Spec.Gaggle], machine: machine, runControls: controls.Overrides(), requiredCaps: requiredCaps, wg: wg, l: l.ForGaggle(wf.Spec.Gaggle), tel: tel, rollupDB: rollupDB, watermarks: watermarks, log: instanceLog, runners: runnerRegistry},
 			RepoRef:      repoRefs[identity],
+			BacklogRef:   backlogRefForGaggle(gagglesByName[wf.Spec.Gaggle]),
 			// RRQ-1/#1101 schedule-match + #735 host preflight both consume this.
 			RequiredCapabilities: requiredCaps,
 		})
@@ -1101,6 +1178,21 @@ func configuredGaggleNames(set *instance.ConfigSet) []string {
 	return names
 }
 
+// backlogRefForGaggle returns the gaggle's declared backlog reference for
+// injection into the stage environment. It is always non-nil for a configured
+// gaggle: spec.backlog is a required field, and carrying it unconditionally is
+// what makes a stage's backlog identity, addressing, and credential resolvable
+// without re-deriving them from the code repository. A gaggle whose backlog
+// coincides with its project repository resolves to exactly the same container
+// it always did, so this changes no existing behavior.
+func backlogRefForGaggle(g apiv1.Gaggle) *apiv1.BacklogRef {
+	if g.Spec.Backlog.Provider == "" || g.Spec.Backlog.Project == "" {
+		return nil
+	}
+	ref := g.Spec.Backlog
+	return &ref
+}
+
 // SchedulerOptions returns the localscheduler.Option slice reflecting this
 // setup's telemetry state — no telemetry options when it is disabled (issue
 // #129).
@@ -1216,6 +1308,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		Gaggle:               req.Gaggle,
 		Trigger:              req.Trigger,
 		RepoRef:              req.RepoRef,
+		BacklogRef:           req.BacklogRef,
 		Item:                 req.Item,
 		RunControls:          s.runControls,
 		RequiredCapabilities: s.requiredCaps,

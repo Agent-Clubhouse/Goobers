@@ -311,7 +311,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	for key, value := range run.Env {
 		declaredEnv[key] = value
 	}
-	stageEnv, err := buildStageEnv(ctx, e.Injector, env.Capabilities, registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
+	stageEnv, err := buildStageEnv(ctx, e.Injector, stageCredentialKeys(env), registry, env.RunID, env.Gaggle, env.WorkflowID, env.BranchNamespace, env.BaseBranch, e.InstanceRoot, injectRunContext, env.Inputs, declaredEnv, e.ExtraEnvAllowlist, additionalRepoPaths(env.AdditionalWorkspaces))
 	if err != nil {
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
@@ -327,6 +327,29 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		)
 		if env.RepoRef.Project != "" {
 			stageEnv = append(stageEnv, RepoProjectEnvVar+"="+env.RepoRef.Project)
+		}
+	}
+	if injectRunContext && env.BacklogRef != nil {
+		stageEnv = append(stageEnv,
+			BacklogProviderEnvVar+"="+string(env.BacklogRef.Provider),
+			BacklogProjectEnvVar+"="+env.BacklogRef.Project,
+		)
+		if env.BacklogRef.BaseURL != "" {
+			stageEnv = append(stageEnv, BacklogBaseURLEnvVar+"="+env.BacklogRef.BaseURL)
+		}
+		if env.BacklogRef.ConnectionRef != "" {
+			stageEnv = append(stageEnv, BacklogConnectionRefEnvVar+"="+env.BacklogRef.ConnectionRef)
+		}
+		// Owner/Name are the canonical parse of BacklogRef.Project, so a stage
+		// never has to re-implement the "owner/name" split (and cannot disagree
+		// with the claim ledger about how it was split). A malformed project is
+		// left for the stage's own identity resolution to report, which fails
+		// with the actionable message rather than silently exporting halves.
+		if id, err := apiv1.BacklogIdentityFromRef(*env.BacklogRef); err == nil {
+			stageEnv = append(stageEnv,
+				BacklogOwnerEnvVar+"="+id.Owner,
+				BacklogNameEnvVar+"="+id.Name,
+			)
 		}
 	}
 	if implicitResultFile != "" {

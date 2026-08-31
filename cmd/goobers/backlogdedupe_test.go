@@ -33,7 +33,7 @@ func TestBacklogDedupeProviderDispatchesADOAndGitea(t *testing.T) {
 	for _, kind := range []providers.ProviderKind{providers.ProviderADO, providers.ProviderGitea} {
 		t.Run(string(kind), func(t *testing.T) {
 			root, repo := providerDispatchFixture(t, kind)
-			provider, err := backlogDedupeProvider(root, repo)
+			provider, err := backlogDedupeProvider(root, repo, backlogRepoRefForStage(root, repo))
 			if err != nil {
 				t.Fatalf("backlogDedupeProvider(%s): %v", kind, err)
 			}

@@ -138,6 +138,7 @@ func TestSelectSourceClaimsEligibleEscalation(t *testing.T) {
 		got.ErrorCode != "ISSUE_OVER_SCOPE" ||
 		got.Parent.ID != "501" ||
 		got.Parent.Provider != "github" ||
+		got.Parent.Repository != "acme/widgets" ||
 		got.IssueSnapshotDigest == "" {
 		t.Fatalf("selection = %+v", got)
 	}
@@ -146,12 +147,19 @@ func TestSelectSourceClaimsEligibleEscalation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open claim ledger: %v", err)
 	}
-	entry, ok := ledger.LookupScoped(localscheduler.ClaimKey{Gaggle: "", Provider: "github", ExternalID: "501"})
-	if !ok {
-		entry, ok = ledger.Lookup("501")
+	// Same-project/same-backlog topology: the backlog identity still resolves
+	// (to this very repository), so the parent claim is backlog-scoped exactly
+	// like backlog-query's own claim on the same item would be. That shared key
+	// is what makes the two mutually exclusive.
+	identity := apiv1.BacklogIdentity{
+		Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "widgets",
 	}
+	entry, ok := ledger.LookupScoped(backlogClaimKey(identity, "", "501"))
 	if !ok || entry.RunID != "decomposition-run-1" {
-		t.Fatalf("ledger entry for 501 = %+v, ok=%v, want held by decomposition-run-1", entry, ok)
+		t.Fatalf("ledger entry for 501 = %+v, ok=%v, want a backlog-scoped claim held by decomposition-run-1", entry, ok)
+	}
+	if backlog, scoped := entry.BacklogIdentity(); !scoped || !backlog.Equal(identity) {
+		t.Fatalf("claim backlog = %+v (scoped=%v), want %+v", backlog, scoped, identity)
 	}
 }
 

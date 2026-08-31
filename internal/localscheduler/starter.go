@@ -34,6 +34,9 @@ type StartRequest struct {
 	Gaggle       string
 	Trigger      journal.Trigger
 	RepoRef      apiv1.RepoRef
+	// BacklogRef carries the gaggle's backlog reference when it differs from
+	// the project repository. Nil when the backlog and project coincide.
+	BacklogRef *apiv1.BacklogRef
 	// Item is the originating backlog item for a claimed unit of work. Nil for
 	// a schedule/signal-triggered producer run.
 	Item *apiv1.BacklogItem

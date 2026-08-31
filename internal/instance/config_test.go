@@ -2980,3 +2980,64 @@ func TestRepoAuthBotLogin(t *testing.T) {
 		})
 	}
 }
+
+// TestConfigAcceptsConnectionCredentialGrant closes the gap that made
+// spec.backlog.connectionRef unusable end to end: CredentialGrant.Connection
+// is what sources the credential a gaggle's backlog authenticates with (and
+// the only key space that credential is reachable through), but validation
+// rejected the field outright, so an instance.yaml declaring one failed to
+// load at all and both the stage and daemon connection paths were dead code.
+func TestConfigAcceptsConnectionCredentialGrant(t *testing.T) {
+	cfg := Config{Credentials: []CredentialGrant{{
+		Connection: "private-backlog",
+		Token:      TokenRef{Env: "BACKLOG_PAT"},
+	}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want a connection grant to be accepted", err)
+	}
+}
+
+func TestConfigRejectsInvalidConnectionCredentialGrants(t *testing.T) {
+	for name, test := range map[string]struct {
+		grant   CredentialGrant
+		wantErr string
+	}{
+		"invalid name": {
+			grant:   CredentialGrant{Connection: "Not Valid", Token: TokenRef{Env: "T"}},
+			wantErr: "must be a lowercase DNS label",
+		},
+		"connection and capability": {
+			grant:   CredentialGrant{Connection: "private-backlog", Capability: "agent:model", Token: TokenRef{Env: "T"}},
+			wantErr: "set exactly one of capability, mcp, or connection",
+		},
+		"connection and mcp": {
+			grant:   CredentialGrant{Connection: "private-backlog", MCP: "notes", Token: TokenRef{Env: "T"}},
+			wantErr: "set exactly one of capability, mcp, or connection",
+		},
+		"nothing declared": {
+			grant:   CredentialGrant{Token: TokenRef{Env: "T"}},
+			wantErr: "set exactly one of capability, mcp, or connection",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Config{Credentials: []CredentialGrant{test.grant}}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+// TestConfigRejectsDuplicateConnectionCredentialGrants keeps a connection in
+// the same single-source key space as capabilities and MCP credentials.
+func TestConfigRejectsDuplicateConnectionCredentialGrants(t *testing.T) {
+	cfg := Config{Credentials: []CredentialGrant{
+		{Connection: "private-backlog", Token: TokenRef{Env: "A"}},
+		{Connection: "private-backlog", Token: TokenRef{Env: "B"}},
+	}}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "sourced more than once") {
+		t.Fatalf("Validate() error = %v, want a duplicate-source rejection", err)
+	}
+}

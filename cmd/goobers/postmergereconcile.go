@@ -130,7 +130,10 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesProvider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
+	// Late post-merge reconciliation closes the same BACKLOG items the inline
+	// post-merge stage would have; address and authenticate them as the backlog.
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	issuesProvider, err := newBacklogProviderForStageAs[*providers.GitHubProvider](root, repo, backlogRepo, false,
 		withStageProviderCapability(capability.GitHubIssuesWrite),
 		withStageProviderMutations("issue"),
 	)
@@ -148,7 +151,7 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	unparkErrs := reconcileOpenPullRequestParks(ctx, provider, repo, root, providerInput("base", providerBaseBranch()), *limit, stdout, stderr)
-	report, err := reconcilePostMerges(ctx, provider, issuesProvider, repo, root, *limit, *lookback, time.Now, stdout, stderr)
+	report, err := reconcilePostMerges(ctx, provider, issuesProvider, repo, backlogRepo, root, *limit, *lookback, time.Now, stdout, stderr)
 	if err != nil {
 		var providerErr *postMergeReconcileProviderError
 		if errors.As(err, &providerErr) {
@@ -239,7 +242,7 @@ func filterPullRequestsByHeadPrefix(prs []providers.PullRequestSummary, prefix s
 func reconcilePostMerges(
 	ctx context.Context,
 	provider, issuesProvider *providers.GitHubProvider,
-	repo providers.RepositoryRef,
+	repo, backlogRepo providers.RepositoryRef,
 	root string,
 	limit int,
 	lookback time.Duration,
@@ -305,7 +308,7 @@ func reconcilePostMerges(
 			if err := writePostMergeReconcileLedger(ledgerPath, ledger); err != nil {
 				return err
 			}
-			actionErrs, err := reconcilePostMergeActions(ctx, provider, issuesProvider, root, poll, key, &ledger, ledgerPath, stdout, stderr)
+			actionErrs, err := reconcilePostMergeActions(ctx, provider, issuesProvider, backlogRepo, root, poll, key, &ledger, ledgerPath, stdout, stderr)
 			if err != nil {
 				return err
 			}
@@ -342,6 +345,7 @@ func reconcilePostMerges(
 func reconcilePostMergeActions(
 	ctx context.Context,
 	provider, issuesProvider *providers.GitHubProvider,
+	backlogRepo providers.RepositoryRef,
 	root string,
 	poll providers.PullRequestPollResult,
 	key string,
@@ -413,7 +417,10 @@ func reconcilePostMergeActions(
 		if entry.Actions.ClosedIssueNumbers[issueID] {
 			continue
 		}
-		if err := closeReferencedIssue(ctx, issuesProvider, entry.Repository, issueID, entry.PullNumber); err != nil {
+		// The PR-shaped actions above use entry.Repository (the code repo the
+		// merged PR lives in); the issue close targets the BACKLOG, which may be
+		// a different repository under different ownership.
+		if err := closeReferencedIssue(ctx, issuesProvider, backlogRepo, issueID, entry.PullNumber); err != nil {
 			wrapped := fmt.Errorf("close issue #%s: %w", issueID, err)
 			actionErrs = append(actionErrs, wrapped)
 			pf(stderr, "warning: late-merged pr #%s %v\n", entry.PullNumber, wrapped)

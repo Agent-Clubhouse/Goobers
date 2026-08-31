@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
@@ -95,7 +96,7 @@ func runBacklogQuery(args []string, stdout, stderr io.Writer) int {
 	return runBacklogQueryWithClaimBarrier(args, stdout, stderr, nil)
 }
 
-const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release] [path]\n\n" +
+const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release | --route] [path]\n\n" +
 	"Query the provider for eligible backlog items — labeled with trustLabel\n" +
 	"(SEC-047: required on public repos, since backlog content is untrusted\n" +
 	"input otherwise), requireLabels, excludeLabels, and the optional\n" +
@@ -122,8 +123,25 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"released, e.g. re-run after a crash) is a no-op success, not an error.\n" +
 	"With --reconcile, repairs drifted backlog labels against the claim ledger\n" +
 	"and live issue/child state, then writes the actual correction count to the\n" +
-	"declared result file. --claim, --reconcile, and --release are mutually\n" +
-	"exclusive.\n\n" +
+	"declared result file. --claim, --reconcile, --release, and --route are\n" +
+	"mutually exclusive.\n\n" +
+	"With --route, applies routing labels from a route plan and hands the item\n" +
+	"off in one deterministic transaction. It requires the route-backlog-item\n" +
+	"policy action. Inputs: routePlanFile (default route-plan.json),\n" +
+	"resultFile (default route-result.json), and allowedRouteLabels — a static,\n" +
+	"comma-separated allowlist of exact labels or trailing-wildcard prefixes\n" +
+	"(e.g. \"goobers:routed,repo:*,workflow:*\"). The allowlist is task\n" +
+	"configuration and must not come from inputsFrom. Trust and claim labels\n" +
+	"(goobers:approved, goobers:claimed, the workflow's trustLabel) are\n" +
+	"reserved: an allowlist entry that could match one is rejected outright, so\n" +
+	"routing can never grant trust. For each planned item the command re-checks\n" +
+	"that this run still owns the backlog-scoped lease, applies the labels,\n" +
+	"removes the provider claim marker, then releases the lease — in that order,\n" +
+	"so a failure after labeling retains ownership for retry rather than\n" +
+	"publishing a half-routed item. Retrying an item whose labels are already\n" +
+	"present and whose lease is gone reports alreadyRouted. Batches are per-item\n" +
+	"transactional: every outcome is recorded in resultFile and the command\n" +
+	"exits non-zero if any item failed.\n\n" +
 	"With --claim, contested-file dispatch awareness (#1085) deprioritizes\n" +
 	"claiming an issue whose referenced files are already contested by\n" +
 	"contestedFileMinPRs+ (default 2) open PRs, so new work isn't fed into an\n" +
@@ -154,9 +172,9 @@ const backlogQueryHelp = "Usage: goobers backlog-query [--debug] [--read-only | 
 	"value is the null/unassigned-only mode: only items with no assignee at\n" +
 	"all are eligible.\n\n" +
 	"Exit codes: 0 = eligible item found (and claimed, if --claim) / released\n" +
-	"(--release), 1 = business error (no eligible/claimable item, missing\n" +
-	"trustLabel with --claim, config/credential/provider error), 2 =\n" +
-	"usage/IO error.\n"
+	"(--release) / routed (--route), 1 = business error (no eligible/claimable\n" +
+	"item, missing trustLabel with --claim, invalid route plan or allowlist, a\n" +
+	"failed route item, config/credential/provider error), 2 = usage/IO error.\n"
 
 // The barrier lets the blocked-record race regression pause immediately before
 // the lock-protected reconciliation and claim transaction.
@@ -167,6 +185,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	claim := fs.Bool("claim", false, "claim the first eligible item (mirrors the claim in the local ledger + provider)")
 	reconcile := fs.Bool("reconcile", false, "repair drifted backlog metadata and report the correction count")
 	release := fs.Bool("release", false, "remove provider claim markers and release this run's claim ledger leases early (issues #234/#1003)")
+	route := fs.Bool("route", false, "validate and apply routing labels from a route plan, then release the claim")
 	debug := fs.Bool("debug", false, "explain candidate eligibility, exclusions, and lost claim attempts on stderr")
 	fs.Usage = helpUsage(stderr, "backlog-query")
 	if err := fs.Parse(args); err != nil {
@@ -176,7 +195,7 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		fs.Usage()
 		return 2
 	}
-	mode, ok := selectBacklogQueryMode(*readOnly, *claim, *reconcile, *release)
+	mode, ok := selectBacklogQueryMode(*readOnly, *claim, *reconcile, *release, *route)
 	if !ok {
 		fs.Usage()
 		return 2
@@ -196,6 +215,9 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 	if mode == backlogQueryModeRelease {
 		return runBacklogQueryRelease(env)
 	}
+	if mode == backlogQueryModeRoute {
+		return runBacklogQueryRoute(env)
+	}
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -203,10 +225,30 @@ func runBacklogQueryWithClaimBarrier(args []string, stdout, stderr io.Writer, be
 		return 1
 	}
 	env.repo = repo
+	// The backlog repository is resolved BEFORE the provider is opened: every
+	// work-item call this command makes is addressed at env.backlogRepo, so the
+	// provider must be built for that repository and authenticated with its
+	// connection credential rather than the project's.
+	env.backlogRepo = backlogRepoRefForStage(root, repo)
 	if code := env.openProvider(mode == backlogQueryModeReadOnly); code != 0 {
 		return code
 	}
-	env.backlogRepo = backlogRepoRefForStage(root, repo)
+	// The authoritative claim scope must be resolvable before any claim is
+	// taken: falling back to a gaggle-scoped key would silently let two gaggles
+	// sharing this backlog both claim the same item (§5.3). Only a gaggle-owned
+	// run is scoped this way, so a standalone invocation — which has no siblings
+	// to contend with — tolerates an unresolvable identity and keeps the
+	// historical key.
+	identity, identityErr := backlogIdentityForStage(root, repo)
+	switch {
+	case identityErr == nil:
+		env.backlogIdentity = identity
+	case providerGaggle() != "" && mode != backlogQueryModeReadOnly && mode != backlogQueryModePlain:
+		pf(stderr, "error: resolve backlog identity: %v\n", identityErr)
+		return 1
+	default:
+		env.debugf("backlog identity unresolved (%v); using the unscoped claim key", identityErr)
+	}
 	return runBacklogQueryMode(mode, env, beforeClaimTransaction)
 }
 
@@ -218,9 +260,10 @@ const (
 	backlogQueryModeClaim
 	backlogQueryModeReconcile
 	backlogQueryModeRelease
+	backlogQueryModeRoute
 )
 
-func selectBacklogQueryMode(readOnly, claim, reconcile, release bool) (backlogQueryMode, bool) {
+func selectBacklogQueryMode(readOnly, claim, reconcile, release, route bool) (backlogQueryMode, bool) {
 	mode := backlogQueryModePlain
 	for _, candidate := range []struct {
 		mode    backlogQueryMode
@@ -230,6 +273,7 @@ func selectBacklogQueryMode(readOnly, claim, reconcile, release bool) (backlogQu
 		{backlogQueryModeClaim, claim},
 		{backlogQueryModeReconcile, reconcile},
 		{backlogQueryModeRelease, release},
+		{backlogQueryModeRoute, route},
 	} {
 		if !candidate.enabled {
 			continue
@@ -247,6 +291,7 @@ type backlogQueryEnv struct {
 	layout          instance.Layout
 	repo            providers.RepositoryRef
 	backlogRepo     providers.RepositoryRef
+	backlogIdentity apiv1.BacklogIdentity
 	issueProvider   backlogIssueProvider
 	ghIssueProvider *providers.GitHubProvider
 	stdout          io.Writer
@@ -272,14 +317,17 @@ func (env *backlogQueryEnv) openProvider(readOnly bool) int {
 	if !readOnly {
 		opts = append(opts, withStageProviderCache())
 	}
-	provider, err := newProviderForStage(env.root, env.repo, readOnly, opts...)
+	// Built for the BACKLOG repository and its connection credential (not the
+	// routed code repo): every call below is addressed at env.backlogRepo, and
+	// a distinct backlog may live in another repository, forge, or account.
+	provider, err := newBacklogProviderForStage(env.root, env.repo, env.backlogRepo, readOnly, opts...)
 	if err != nil {
 		pf(env.stderr, "error: %v\n", err)
 		return 1
 	}
 	issueProvider, ok := provider.(backlogIssueProvider)
 	if !ok {
-		pf(env.stderr, "error: backlog-query does not support repository provider %q\n", env.repo.Provider)
+		pf(env.stderr, "error: backlog-query does not support repository provider %q\n", env.backlogRepo.Provider)
 		return 1
 	}
 	env.issueProvider = issueProvider
@@ -447,7 +495,7 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 			return failProviderStage(stderr, "list open pull requests", err, "claimed-item.json")
 		}
 		if claim {
-			if err := reconcileClosedUnmergedInReview(ctx, ghIssueProvider, prProvider, repo); err != nil {
+			if err := reconcileClosedUnmergedInReview(ctx, ghIssueProvider, prProvider, repo, env.backlogRepo); err != nil {
 				return failProviderStage(stderr, "reconcile closed pull requests", err, "claimed-item.json")
 			}
 		}
@@ -740,8 +788,10 @@ func writeClaimedBacklogResult(
 	var curationItems []curationClaimedItem
 	var err error
 	if opts.curationRun {
+		// Staleness reads each claimed item's comment thread, which lives in
+		// the backlog container, not the routed code repo.
 		curationItems, err = enrichClaimedItemsWithStaleness(
-			ctx, env.ghIssueProvider, env.repo, claimed, opts.observedAt, opts.stalenessPolicy,
+			ctx, env.ghIssueProvider, env.backlogRepo, claimed, opts.observedAt, opts.stalenessPolicy,
 		)
 		if err != nil {
 			return failProviderStage(env.stderr, "compute claimed-item staleness", err, "claimed-items.json")
@@ -750,7 +800,7 @@ func writeClaimedBacklogResult(
 			curationItems[index].CurationMode = opts.curationModeByID[curationItems[index].ID]
 		}
 		readOnlyItems, enrichErr := enrichClaimedItemsWithStaleness(
-			ctx, env.ghIssueProvider, env.repo, readOnly, opts.observedAt, opts.stalenessPolicy,
+			ctx, env.ghIssueProvider, env.backlogRepo, readOnly, opts.observedAt, opts.stalenessPolicy,
 		)
 		if enrichErr != nil {
 			return failProviderStage(env.stderr, "compute read-only re-sweep staleness", enrichErr, "claimed-items.json")
@@ -986,12 +1036,37 @@ func (session *backlogClaimSession) journalBlockedSkips() error {
 	return nil
 }
 
+func (session *backlogClaimSession) claimKey(itemID string) localscheduler.ClaimKey {
+	return backlogClaimKey(session.env.backlogIdentity, session.gaggle, itemID)
+}
+
+// backlogScoped reports whether this session has an authoritative backlog
+// identity to key claims by.
+//
+// Backlog scope exists to make one item exclusive across the SIBLING GAGGLES of
+// one instance, so it applies only when this run belongs to a gaggle. A
+// gaggle-less standalone invocation has no siblings to contend with and keeps
+// the historical item-only ledger key, which is also what preserves
+// compatibility for direct CLI use.
+func (session *backlogClaimSession) backlogScoped() bool {
+	return session.gaggle != "" && !session.env.backlogIdentity.IsZero()
+}
+
 func (session *backlogClaimSession) rememberPreexistingClaims(ledger backlogClaimLedger) {
 	if session.preexistingClaimIDs != nil {
 		return
 	}
 	session.preexistingClaimIDs = make(map[string]struct{})
 	for _, entry := range ledger.ForRunAll(session.runID) {
+		if session.backlogScoped() {
+			// Backlog scope is what makes this run's own prior claim
+			// recognizable across gaggles: match on the container, not on which
+			// gaggle happened to record it.
+			if identity, ok := entry.BacklogIdentity(); ok && identity.Equal(session.env.backlogIdentity) {
+				session.preexistingClaimIDs[entry.ExternalID] = struct{}{}
+			}
+			continue
+		}
 		if session.gaggle == "" {
 			if entry.Gaggle == "" && entry.Provider == "" {
 				session.preexistingClaimIDs[entry.ItemID] = struct{}{}
@@ -1007,9 +1082,12 @@ func (session *backlogClaimSession) rememberPreexistingClaims(ledger backlogClai
 func (session *backlogClaimSession) claimItem(ledger backlogClaimLedger, item providers.WorkItem) (bool, error) {
 	var ok bool
 	var err error
-	if session.gaggle == "" {
+	switch {
+	case session.backlogScoped():
+		ok, _, err = ledger.ClaimScoped(session.claimKey(item.ID), session.runID, session.workflow, session.leaseDuration)
+	case session.gaggle == "":
 		ok, _, err = ledger.Claim(item.ID, session.runID, session.workflow, session.leaseDuration)
-	} else {
+	default:
 		ok, _, err = ledger.ClaimScoped(localscheduler.ClaimKey{
 			Gaggle:     session.gaggle,
 			Provider:   string(session.env.repo.Provider),
@@ -1077,14 +1155,18 @@ func (session *backlogClaimSession) releaseLedger(item providers.WorkItem) error
 		if err != nil {
 			return fmt.Errorf("open claim ledger: %w", err)
 		}
-		if session.gaggle == "" {
+		switch {
+		case session.backlogScoped():
+			return ledger.ReleaseScoped(session.claimKey(item.ID), session.runID)
+		case session.gaggle == "":
 			return ledger.Release(item.ID, session.runID)
+		default:
+			return ledger.ReleaseScoped(localscheduler.ClaimKey{
+				Gaggle:     session.gaggle,
+				Provider:   string(session.env.repo.Provider),
+				ExternalID: item.ID,
+			}, session.runID)
 		}
-		return ledger.ReleaseScoped(localscheduler.ClaimKey{
-			Gaggle:     session.gaggle,
-			Provider:   string(session.env.repo.Provider),
-			ExternalID: item.ID,
-		}, session.runID)
 	})
 }
 
@@ -1880,14 +1962,20 @@ func openPRIssueNumbers(ctx context.Context, provider *providers.GitHubProvider,
 // reconcileClosedUnmergedInReview restores backlog eligibility for issues whose
 // linked implementation PRs all closed without merging. The bot-authored issue
 // breadcrumb is durable association evidence even if mutable PR metadata changes.
+//
+// It straddles the two containers this feature separates: the work items live
+// in backlogRepo, while the linked pull requests — and the PR URLs the
+// breadcrumb comments carry — live in the routed code repo. Addressing both
+// halves at one repository is only correct in the same-repository majority.
 func reconcileClosedUnmergedInReview(
 	ctx context.Context,
 	issueProvider *providers.GitHubProvider,
 	prProvider *providers.GitHubProvider,
 	repo providers.RepositoryRef,
+	backlogRepo providers.RepositoryRef,
 ) error {
 	items, err := issueProvider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
-		Repository: repo,
+		Repository: backlogRepo,
 		Labels:     []string{inReviewStatusLabel},
 		State:      "open",
 	})
@@ -1908,7 +1996,7 @@ func reconcileClosedUnmergedInReview(
 			continue
 		}
 
-		comments, err := issueProvider.ListComments(ctx, repo, item.ID)
+		comments, err := issueProvider.ListComments(ctx, backlogRepo, item.ID)
 		if err != nil {
 			return fmt.Errorf("list issue #%s comments: %w", item.ID, err)
 		}
@@ -1936,7 +2024,7 @@ func reconcileClosedUnmergedInReview(
 			continue
 		}
 		if _, err := issueProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository:   repo,
+			Repository:   backlogRepo,
 			ID:           item.ID,
 			RemoveLabels: []string{inReviewStatusLabel},
 		}); err != nil {
@@ -2232,17 +2320,14 @@ func runBacklogQueryRelease(env backlogQueryEnv) int {
 		if rerr != nil {
 			return rerr
 		}
-		stageProvider, err := newProviderForStage(root, repo, false, withStageProviderMutations("issue"))
+		// Work-item claim markers live in the backlog, not the routed code repo
+		// (see backlogRepoRefForStage) — so the release provider is addressed
+		// at and authenticated as the backlog.
+		backlogRepo := backlogRepoRefForStage(root, repo)
+		issueProvider, err := newBacklogIssueProviderForStage(root, repo, backlogRepo)
 		if err != nil {
 			return err
 		}
-		issueProvider, ok := stageProvider.(backlogIssueProvider)
-		if !ok {
-			return fmt.Errorf("backlog-query release does not support repository provider %q", repo.Provider)
-		}
-		// Work-item claim markers live in the backlog project on ADO, not the
-		// routed code repo (see backlogRepoRefForStage).
-		backlogRepo := backlogRepoRefForStage(root, repo)
 		ctx, cancel := providerCommandContext()
 		defer cancel()
 

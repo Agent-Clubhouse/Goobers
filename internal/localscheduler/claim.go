@@ -10,16 +10,33 @@ import (
 	"sync"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
 )
 
 const forceReleaseActorCLI = "cli"
 
-// ClaimKey identifies one provider item within a gaggle.
+// ClaimKey identifies one claimable provider item.
+//
+// Two ownership scopes exist, and which one applies is decided solely by
+// whether Backlog is set:
+//
+//   - Backlog scope (v3, personal-gaggle-routing §5.3). A backlog *item* is
+//     owned by (canonical backlog identity, external item ID). Gaggle and
+//     Provider stay on the entry as descriptive fields but are NOT part of the
+//     ownership key, so two gaggles that share one physical backlog cannot both
+//     claim the same item, while equal external IDs in *different* backlogs
+//     remain independent.
+//   - Gaggle scope (v2). Everything that is not a backlog item — pull-request
+//     claims, decomposition-parent claims on a gaggle-less instance, and any
+//     other non-backlog lease — keeps its explicit gaggle/provider scope and
+//     must never migrate to backlog scope.
 type ClaimKey struct {
 	Gaggle     string
 	Provider   string
 	ExternalID string
+	// Backlog, when set, promotes this key to authoritative backlog scope.
+	Backlog apiv1.BacklogIdentity
 }
 
 // ClaimNamespace identifies the gaggle and provider that own a legacy claim.
@@ -32,24 +49,79 @@ type ClaimNamespace struct {
 // unchanged until a later startup can resolve it or its lease expires.
 var ErrLegacyClaimOwnershipUnresolved = errors.New("legacy claim ownership unresolved")
 
+// backlogScopePrefix is the v3 storage-key discriminator. It is deliberately
+// distinct from the v2 prefix so an older binary, which only understands v1/v2
+// keys, cannot silently reinterpret a backlog-scoped lease as a gaggle-scoped
+// one (§5.3: "An older binary encountering v3 refuses startup rather than
+// interpreting it loosely" — enforced by claimLedgerSchema).
+const backlogScopePrefix = "v3|backlog|"
+
 func (k ClaimKey) storageKey() (string, error) {
+	if !k.Backlog.IsZero() {
+		if k.ExternalID == "" {
+			return "", fmt.Errorf("localscheduler: backlog-scoped claim key requires an external ID")
+		}
+		if err := k.Backlog.Validate(); err != nil {
+			return "", fmt.Errorf("localscheduler: backlog-scoped claim key: %w", err)
+		}
+		return backlogScopePrefix + k.Backlog.String() + "|" + url.QueryEscape(k.ExternalID), nil
+	}
 	if k.Gaggle == "" || k.Provider == "" || k.ExternalID == "" {
 		return "", fmt.Errorf("localscheduler: claim key requires gaggle, provider, and external ID")
 	}
 	return "v2|" + url.QueryEscape(k.Gaggle) + "|" + url.QueryEscape(k.Provider) + "|" + url.QueryEscape(k.ExternalID), nil
 }
 
+// gaggleScopedStorageKey returns the v2 key this claim would have used before
+// backlog scoping. It is how a backlog-scoped claim stays mutually exclusive
+// with an as-yet-unmigrated v2 entry for the same item.
+func (k ClaimKey) gaggleScopedStorageKey() string {
+	if k.Gaggle == "" || k.Provider == "" || k.ExternalID == "" {
+		return ""
+	}
+	return "v2|" + url.QueryEscape(k.Gaggle) + "|" + url.QueryEscape(k.Provider) + "|" + url.QueryEscape(k.ExternalID)
+}
+
 // ClaimEntry is one lease in the claim ledger.
 type ClaimEntry struct {
-	ItemID     string     `json:"itemId"`
-	Gaggle     string     `json:"gaggle,omitempty"`
-	Provider   string     `json:"provider,omitempty"`
-	ExternalID string     `json:"externalId,omitempty"`
-	RunID      string     `json:"runId"`
-	Workflow   string     `json:"workflow"`
-	ClaimedAt  time.Time  `json:"claimedAt"`
-	ExpiresAt  time.Time  `json:"expiresAt"`
-	ReleasedAt *time.Time `json:"releasedAt,omitempty"`
+	ItemID string `json:"itemId"`
+	// Gaggle and Provider are descriptive for a backlog-scoped entry (they
+	// record who claimed it and through which provider) and load-bearing for a
+	// gaggle-scoped one (they are its ownership key).
+	Gaggle     string `json:"gaggle,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	ExternalID string `json:"externalId,omitempty"`
+	// Backlog is the canonical backlog container this item belongs to. Non-nil
+	// exactly for v3 backlog-scoped entries; it is what recovery and
+	// reconciliation use to address the right provider container when cleaning
+	// up a marker for a lease whose owning run is gone (§5.9).
+	Backlog    *apiv1.BacklogIdentity `json:"backlog,omitempty"`
+	RunID      string                 `json:"runId"`
+	Workflow   string                 `json:"workflow"`
+	ClaimedAt  time.Time              `json:"claimedAt"`
+	ExpiresAt  time.Time              `json:"expiresAt"`
+	ReleasedAt *time.Time             `json:"releasedAt,omitempty"`
+}
+
+// Key reconstructs the ownership key this entry is stored under, so a caller
+// iterating Snapshot/ForRunAll never has to re-derive scope by hand.
+func (e ClaimEntry) Key() ClaimKey {
+	key := ClaimKey{Gaggle: e.Gaggle, Provider: e.Provider, ExternalID: e.ExternalID}
+	if key.ExternalID == "" {
+		key.ExternalID = e.ItemID
+	}
+	if e.Backlog != nil {
+		key.Backlog = *e.Backlog
+	}
+	return key
+}
+
+// BacklogIdentity returns the entry's backlog container and whether it has one.
+func (e ClaimEntry) BacklogIdentity() (apiv1.BacklogIdentity, bool) {
+	if e.Backlog == nil {
+		return apiv1.BacklogIdentity{}, false
+	}
+	return *e.Backlog, true
 }
 
 // expired reports whether the lease is no longer live at now.
@@ -80,8 +152,16 @@ type ClaimLedger struct {
 }
 
 const (
+	// claimLedgerSchema is written while every entry is gaggle-scoped (v1/v2
+	// keys) — byte-compatible with binaries predating backlog scoping.
 	claimLedgerSchema = "goobers.dev/scheduler/claims/v1"
-	claimHistoryTTL   = 30 * 24 * time.Hour
+	// claimLedgerSchemaBacklogScoped is written as soon as ANY entry carries a
+	// v3 backlog-scoped key. Bumping the schema string is what makes an older
+	// binary refuse startup rather than reinterpret a backlog-scoped lease as a
+	// gaggle-scoped one (§5.3). An instance that never uses backlog scoping
+	// keeps emitting claimLedgerSchema and stays readable by older binaries.
+	claimLedgerSchemaBacklogScoped = "goobers.dev/scheduler/claims/v2"
+	claimHistoryTTL                = 30 * 24 * time.Hour
 )
 
 type claimLedgerState struct {
@@ -136,7 +216,7 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 			return nil, fmt.Errorf("localscheduler: parse legacy claim ledger %q: %w", path, err)
 		}
 	} else {
-		if state.Schema != claimLedgerSchema {
+		if state.Schema != claimLedgerSchema && state.Schema != claimLedgerSchemaBacklogScoped {
 			return nil, fmt.Errorf("localscheduler: unknown claim ledger schema %q", state.Schema)
 		}
 		if state.Entries != nil {
@@ -157,6 +237,17 @@ func OpenClaimLedger(path string, opts ...LedgerOption) (*ClaimLedger, error) {
 	}
 	l.history = l.retainedHistory(l.now())
 	return l, nil
+}
+
+// backlogPointer returns a heap copy of the key's backlog identity for storage
+// on a ClaimEntry, or nil for a gaggle-scoped key. The copy means a stored
+// entry can never alias a caller's mutable value.
+func (k ClaimKey) backlogPointer() *apiv1.BacklogIdentity {
+	if k.Backlog.IsZero() {
+		return nil
+	}
+	identity := k.Backlog
+	return &identity
 }
 
 // MigrateLegacyNamespace upgrades pre-GAG-011 item-only keys into the sole
@@ -241,6 +332,185 @@ func (l *ClaimLedger) MigrateLegacyClaims(resolve func(ClaimEntry) (ClaimNamespa
 	return nil
 }
 
+// ErrClaimNotBacklogScoped tells MigrateBacklogScope that an entry is
+// deliberately not a backlog-item claim — a pull-request lease, a decomposition
+// parent on a gaggle-less instance, or any other non-backlog claim — and must
+// retain its existing gaggle/legacy scope rather than being promoted (§5.3:
+// "Pull-request or other non-backlog claims retain an explicit gaggle/repository
+// scope and do not accidentally migrate to backlog scope").
+var ErrClaimNotBacklogScoped = errors.New("claim is not backlog-scoped")
+
+// MigrateBacklogScope rewrites schema-less/v1 and gaggle-scoped/v2 backlog-item
+// claims onto the authoritative v3 key (backlog identity, external item ID).
+//
+// It cannot run inside OpenClaimLedger because the mapping from a claim's
+// gaggle to its canonical backlog identity lives in the loaded gaggle config,
+// which the ledger has no access to. Daemon initialization therefore performs
+// it once, config in hand, under the same claim lock as the rest of startup
+// recovery.
+//
+// resolve is called for every candidate entry and decides its fate:
+//
+//   - an identity: the entry is rewritten under the v3 key;
+//   - ErrClaimNotBacklogScoped: the entry keeps its current key untouched;
+//   - ErrLegacyClaimOwnershipUnresolved: the entry is RETAINED unchanged, so an
+//     item whose gaggle has been removed or renamed stays exclusive against
+//     every claimant until its lease expires rather than being freed or
+//     silently rescoped;
+//   - any other error: the whole migration aborts with the ledger unchanged.
+//
+// Two live entries collapsing onto one v3 key is exactly the double-claim this
+// feature exists to prevent, so it aborts the migration and reports both
+// owners rather than silently discarding one. An expired entry loses to a live
+// one and is dropped (RecoverExpired would reap it moments later anyway).
+//
+// The rewrite is all-or-nothing: a failed persist restores the previous map.
+func (l *ClaimLedger) MigrateBacklogScope(resolve func(ClaimEntry) (apiv1.BacklogIdentity, error)) error {
+	if resolve == nil {
+		return fmt.Errorf("localscheduler: backlog claim migration requires an ownership resolver")
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	type migration struct {
+		oldKey string
+		newKey string
+		entry  ClaimEntry
+	}
+	// Deterministic order so a collision is reported identically on every
+	// startup and the planned-key bookkeeping never depends on map order.
+	oldKeys := make([]string, 0, len(l.entries))
+	for storageKey := range l.entries {
+		oldKeys = append(oldKeys, storageKey)
+	}
+	sort.Strings(oldKeys)
+
+	migrations := make([]migration, 0, len(oldKeys))
+	planned := make(map[string]ClaimEntry, len(oldKeys))
+	for _, storageKey := range oldKeys {
+		entry := l.entries[storageKey]
+		if entry.Backlog != nil {
+			continue // already v3
+		}
+		identity, err := resolve(entry)
+		switch {
+		case errors.Is(err, ErrClaimNotBacklogScoped),
+			errors.Is(err, ErrLegacyClaimOwnershipUnresolved):
+			continue
+		case err != nil:
+			return fmt.Errorf("localscheduler: resolve backlog scope for claim %q: %w", entry.ItemID, err)
+		}
+		if err := identity.Validate(); err != nil {
+			return fmt.Errorf("localscheduler: resolve backlog scope for claim %q: %w", entry.ItemID, err)
+		}
+
+		externalID := entry.ExternalID
+		if externalID == "" {
+			externalID = entry.ItemID
+		}
+		key := ClaimKey{
+			Gaggle:     entry.Gaggle,
+			Provider:   entry.Provider,
+			ExternalID: externalID,
+			Backlog:    identity,
+		}
+		newKey, err := key.storageKey()
+		if err != nil {
+			return err
+		}
+		if newKey == storageKey {
+			continue
+		}
+
+		entry.ItemID = externalID
+		entry.ExternalID = externalID
+		entry.Backlog = key.backlogPointer()
+
+		if existing, collides := planned[newKey]; collides {
+			winner, existingWins, err := resolveBacklogScopeCollision(existing, entry, now)
+			if err != nil {
+				return err
+			}
+			if existingWins {
+				continue // keep the already-planned entry; drop this expired one
+			}
+			// Replace the previously planned (expired) entry with this one.
+			for i := range migrations {
+				if migrations[i].newKey == newKey {
+					migrations[i].entry = winner
+					migrations[i].oldKey = storageKey
+					break
+				}
+			}
+			planned[newKey] = winner
+			continue
+		}
+		if existing, collides := l.entries[newKey]; collides {
+			// An entry ALREADY at the v3 key. resolveBacklogScopeCollision's
+			// verdict is load-bearing here, not just an error check: when the
+			// live v3 lease wins over an expired pre-v3 one, planning the
+			// migration anyway would overwrite the live owner with the expired
+			// entry and hand the item to the next claimant — the exact
+			// double-claim backlog scoping exists to prevent. The expired
+			// loser keeps its old key and RecoverExpired reaps it moments
+			// later, matching the planned-collision branch above.
+			_, existingWins, err := resolveBacklogScopeCollision(existing, entry, now)
+			if err != nil {
+				return err
+			}
+			if existingWins {
+				continue
+			}
+		}
+		planned[newKey] = entry
+		migrations = append(migrations, migration{oldKey: storageKey, newKey: newKey, entry: entry})
+	}
+	if len(migrations) == 0 {
+		return nil
+	}
+
+	previous := make(map[string]ClaimEntry, len(l.entries))
+	for storageKey, entry := range l.entries {
+		previous[storageKey] = entry
+	}
+	for _, m := range migrations {
+		delete(l.entries, m.oldKey)
+	}
+	for _, m := range migrations {
+		l.entries[m.newKey] = m.entry
+	}
+	if err := l.persist(); err != nil {
+		l.entries = previous
+		return err
+	}
+	return nil
+}
+
+// resolveBacklogScopeCollision decides which of two entries that collapse onto
+// one v3 key survives. Two LIVE leases colliding means the pre-migration ledger
+// was already admitting the double-claim this scope change exists to prevent,
+// so it is reported rather than resolved. Otherwise the live entry wins.
+//
+// aWins is returned explicitly rather than left for the caller to infer by
+// comparing the winner's fields: two entries for the same item can share a run
+// id and claim instant, so field comparison cannot reliably tell the sides
+// apart, and getting it backwards silently discards the surviving owner.
+func resolveBacklogScopeCollision(a, b ClaimEntry, now time.Time) (winner ClaimEntry, aWins bool, err error) {
+	aLive, bLive := !a.expired(now), !b.expired(now)
+	switch {
+	case aLive && bLive:
+		return ClaimEntry{}, false, fmt.Errorf(
+			"localscheduler: cannot migrate claim %q to backlog scope: live leases held by runs %q and %q collapse onto one backlog-scoped key",
+			b.ItemID, a.RunID, b.RunID)
+	case aLive:
+		return a, true, nil
+	default:
+		return b, false, nil
+	}
+}
+
 // Claim attempts to atomically acquire itemID for runID under workflow, for
 // leaseDuration. It fails (ok=false, holder=the current owner's run id) if a
 // live (non-expired) lease is already held by a DIFFERENT run. An idempotent
@@ -257,16 +527,36 @@ func (l *ClaimLedger) MigrateLegacyClaims(resolve func(ClaimEntry) (ClaimNamespa
 // bypassed by a caller-supplied duration (e.g. a workflow's leaseDuration
 // input) reaching a live-lease branch that skips validation.
 func (l *ClaimLedger) Claim(itemID, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
-	return l.claim(itemID, "", ClaimKey{ExternalID: itemID}, runID, workflow, leaseDuration)
+	return l.claim(itemID, nil, ClaimKey{ExternalID: itemID}, runID, workflow, leaseDuration)
 }
 
-// ClaimScoped acquires a claim namespaced by gaggle, provider, and external ID.
+// ClaimScoped acquires a claim under key's scope: backlog scope when
+// key.Backlog is set (authoritative across every gaggle sharing that backlog),
+// otherwise gaggle scope.
 func (l *ClaimLedger) ClaimScoped(key ClaimKey, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
 	storageKey, err := key.storageKey()
 	if err != nil {
 		return false, "", err
 	}
-	return l.claim(storageKey, key.ExternalID, key, runID, workflow, leaseDuration)
+	return l.claim(storageKey, key.legacyStorageKeys(), key, runID, workflow, leaseDuration)
+}
+
+// legacyStorageKeys returns every older-schema key that could still hold this
+// item, and which therefore must remain mutually exclusive with it until it is
+// migrated or expires. A backlog-scoped claim is blocked by both an
+// unmigrated v2 entry for the same gaggle and an unresolved v1 item-only entry;
+// a gaggle-scoped claim is blocked only by the v1 entry, exactly as before.
+func (k ClaimKey) legacyStorageKeys() []string {
+	var keys []string
+	if !k.Backlog.IsZero() {
+		if v2 := k.gaggleScopedStorageKey(); v2 != "" {
+			keys = append(keys, v2)
+		}
+	}
+	if k.ExternalID != "" {
+		keys = append(keys, k.ExternalID)
+	}
+	return keys
 }
 
 // ReclaimAll atomically reacquires a prior run's complete claim set. Either
@@ -281,9 +571,9 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 	}
 
 	type plannedClaim struct {
-		storageKey       string
-		legacyStorageKey string
-		key              ClaimKey
+		storageKey        string
+		legacyStorageKeys []string
+		key               ClaimKey
 	}
 	planned := make([]plannedClaim, 0, len(entries))
 	seen := make(map[string]struct{}, len(entries))
@@ -295,29 +585,30 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 		if itemID == "" {
 			return false, "", errors.New("localscheduler: reclaim entry requires an item ID")
 		}
-		if (entry.Gaggle == "") != (entry.Provider == "") {
+		if entry.Backlog == nil && (entry.Gaggle == "") != (entry.Provider == "") {
 			return false, "", fmt.Errorf("localscheduler: reclaim entry %q requires both gaggle and provider", itemID)
 		}
 
-		key := ClaimKey{Gaggle: entry.Gaggle, Provider: entry.Provider, ExternalID: itemID}
+		key := entry.Key()
+		key.ExternalID = itemID
 		storageKey := itemID
-		legacyStorageKey := ""
-		if entry.Gaggle != "" {
+		var legacyStorageKeys []string
+		if entry.Backlog != nil || entry.Gaggle != "" {
 			var keyErr error
 			storageKey, keyErr = key.storageKey()
 			if keyErr != nil {
 				return false, "", keyErr
 			}
-			legacyStorageKey = itemID
+			legacyStorageKeys = key.legacyStorageKeys()
 		}
 		if _, duplicate := seen[storageKey]; duplicate {
 			return false, "", fmt.Errorf("localscheduler: duplicate reclaim entry %q", itemID)
 		}
 		seen[storageKey] = struct{}{}
 		planned = append(planned, plannedClaim{
-			storageKey:       storageKey,
-			legacyStorageKey: legacyStorageKey,
-			key:              key,
+			storageKey:        storageKey,
+			legacyStorageKeys: legacyStorageKeys,
+			key:               key,
 		})
 	}
 	sort.Slice(planned, func(i, j int) bool { return planned[i].storageKey < planned[j].storageKey })
@@ -327,8 +618,11 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 
 	now := l.now()
 	for _, claim := range planned {
-		if claim.legacyStorageKey != "" {
-			if existing, held := l.entries[claim.legacyStorageKey]; held && !existing.expired(now) && existing.RunID != runID {
+		for _, legacyStorageKey := range claim.legacyStorageKeys {
+			if legacyStorageKey == claim.storageKey {
+				continue
+			}
+			if existing, held := l.entries[legacyStorageKey]; held && !existing.expired(now) && existing.RunID != runID {
 				return false, existing.RunID, nil
 			}
 		}
@@ -349,6 +643,7 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 			Gaggle:     claim.key.Gaggle,
 			Provider:   claim.key.Provider,
 			ExternalID: claim.key.ExternalID,
+			Backlog:    claim.key.backlogPointer(),
 			RunID:      runID,
 			Workflow:   workflow,
 			ClaimedAt:  now,
@@ -373,7 +668,7 @@ func (l *ClaimLedger) ReclaimAll(entries []ClaimEntry, runID, workflow string, l
 	return true, runID, nil
 }
 
-func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
+func (l *ClaimLedger) claim(storageKey string, legacyStorageKeys []string, key ClaimKey, runID, workflow string, leaseDuration time.Duration) (ok bool, holder string, err error) {
 	if leaseDuration <= 0 {
 		return false, "", fmt.Errorf("localscheduler: lease duration must be positive, got %s", leaseDuration)
 	}
@@ -382,9 +677,14 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 	defer l.mu.Unlock()
 
 	now := l.now()
-	// An unresolved item-only claim could belong to any namespace, so it
-	// remains exclusive against every scoped claimant until its lease expires.
-	if legacyStorageKey != "" {
+	// An unresolved item-only claim could belong to any namespace, and an
+	// unmigrated gaggle-scoped claim could be this very item under its old key,
+	// so both remain exclusive against every scoped claimant until they expire
+	// or a config-aware migration rewrites them.
+	for _, legacyStorageKey := range legacyStorageKeys {
+		if legacyStorageKey == storageKey {
+			continue
+		}
 		if existing, held := l.entries[legacyStorageKey]; held && !existing.expired(now) {
 			return false, existing.RunID, nil
 		}
@@ -399,6 +699,7 @@ func (l *ClaimLedger) claim(storageKey, legacyStorageKey string, key ClaimKey, r
 		Gaggle:     key.Gaggle,
 		Provider:   key.Provider,
 		ExternalID: key.ExternalID,
+		Backlog:    key.backlogPointer(),
 		RunID:      runID,
 		Workflow:   workflow,
 		ClaimedAt:  now,
@@ -444,16 +745,12 @@ func (l *ClaimLedger) ReleaseScoped(key ClaimKey, runID string) error {
 }
 
 // ReleaseEntry releases entry without reconstructing whether it came from a
-// scoped or legacy ledger key.
+// backlog-scoped, gaggle-scoped, or legacy ledger key.
 func (l *ClaimLedger) ReleaseEntry(entry ClaimEntry, runID string) error {
-	if entry.Gaggle == "" || entry.Provider == "" {
+	if entry.Backlog == nil && (entry.Gaggle == "" || entry.Provider == "") {
 		return l.Release(entry.ItemID, runID)
 	}
-	return l.ReleaseScoped(ClaimKey{
-		Gaggle:     entry.Gaggle,
-		Provider:   entry.Provider,
-		ExternalID: entry.ExternalID,
-	}, runID)
+	return l.ReleaseScoped(entry.Key(), runID)
 }
 
 // RenewEntry re-acquires entry's own claim via Claim/ClaimScoped's existing
@@ -465,15 +762,11 @@ func (l *ClaimLedger) ReleaseEntry(entry ClaimEntry, runID string) error {
 // a renewal racing a legitimate ownership change is stale work for the
 // caller to stop retrying, not a failure.
 func (l *ClaimLedger) RenewEntry(entry ClaimEntry, leaseDuration time.Duration) (ok bool, err error) {
-	if entry.Gaggle == "" || entry.Provider == "" {
+	if entry.Backlog == nil && (entry.Gaggle == "" || entry.Provider == "") {
 		ok, _, err = l.Claim(entry.ItemID, entry.RunID, entry.Workflow, leaseDuration)
 		return ok, err
 	}
-	ok, _, err = l.ClaimScoped(ClaimKey{
-		Gaggle:     entry.Gaggle,
-		Provider:   entry.Provider,
-		ExternalID: entry.ExternalID,
-	}, entry.RunID, entry.Workflow, leaseDuration)
+	ok, _, err = l.ClaimScoped(entry.Key(), entry.RunID, entry.Workflow, leaseDuration)
 	return ok, err
 }
 
@@ -513,14 +806,10 @@ func (l *ClaimLedger) ForceRelease(itemID string) error {
 // ForceReleaseEntry force-releases entry without losing its namespace and
 // records actor in the distinct administrative journal event.
 func (l *ClaimLedger) ForceReleaseEntry(entry ClaimEntry, actor string) error {
-	if entry.Gaggle == "" || entry.Provider == "" {
+	if entry.Backlog == nil && (entry.Gaggle == "" || entry.Provider == "") {
 		return l.forceRelease(entry.ItemID, actor)
 	}
-	storageKey, err := (ClaimKey{
-		Gaggle:     entry.Gaggle,
-		Provider:   entry.Provider,
-		ExternalID: entry.ExternalID,
-	}).storageKey()
+	storageKey, err := entry.Key().storageKey()
 	if err != nil {
 		return err
 	}
@@ -662,9 +951,21 @@ func (l *ClaimLedger) Snapshot() []ClaimEntry {
 		if entries[i].Gaggle != entries[j].Gaggle {
 			return entries[i].Gaggle < entries[j].Gaggle
 		}
-		return entries[i].Provider < entries[j].Provider
+		if entries[i].Provider != entries[j].Provider {
+			return entries[i].Provider < entries[j].Provider
+		}
+		return backlogSortKey(entries[i]) < backlogSortKey(entries[j])
 	})
 	return entries
+}
+
+// backlogSortKey gives Snapshot a total order even when two entries differ only
+// by backlog container (the same external ID claimed in two backlogs).
+func backlogSortKey(entry ClaimEntry) string {
+	if entry.Backlog == nil {
+		return ""
+	}
+	return entry.Backlog.String()
 }
 
 // ForRun returns the entry runID currently holds, if any (for inspection;
@@ -712,7 +1013,7 @@ func (l *ClaimLedger) ForRunAll(runID string) []ClaimEntry {
 func (l *ClaimLedger) persist() error {
 	history := l.retainedHistory(l.now())
 	data, err := json.MarshalIndent(claimLedgerState{
-		Schema: claimLedgerSchema, Entries: l.entries, History: history,
+		Schema: l.schemaVersion(), Entries: l.entries, History: history,
 	}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("localscheduler: marshal claim ledger: %w", err)
@@ -722,6 +1023,17 @@ func (l *ClaimLedger) persist() error {
 	}
 	l.history = history
 	return nil
+}
+
+// schemaVersion reports the schema string this ledger's current contents must
+// be written under. Caller holds l.mu.
+func (l *ClaimLedger) schemaVersion() string {
+	for _, entry := range l.entries {
+		if entry.Backlog != nil {
+			return claimLedgerSchemaBacklogScoped
+		}
+	}
+	return claimLedgerSchema
 }
 
 // HistoryForRun returns every retained claim durably assigned to runID.
@@ -740,7 +1052,10 @@ func (l *ClaimLedger) HistoryForRun(runID string) []ClaimEntry {
 		if entries[i].Provider != entries[j].Provider {
 			return entries[i].Provider < entries[j].Provider
 		}
-		return entries[i].ExternalID < entries[j].ExternalID
+		if entries[i].ExternalID != entries[j].ExternalID {
+			return entries[i].ExternalID < entries[j].ExternalID
+		}
+		return backlogSortKey(entries[i]) < backlogSortKey(entries[j])
 	})
 	return entries
 }
@@ -820,10 +1135,19 @@ func cloneClaimHistory(history map[string]ClaimEntry) map[string]ClaimEntry {
 // the claim/release operation the ledger already committed.
 func (l *ClaimLedger) journal(eventType journal.EventType, entry ClaimEntry) {
 	var runner map[string]any
-	if entry.Provider != "" {
+	if entry.Provider != "" || entry.Backlog != nil {
 		runner = map[string]any{
 			"claimProvider":   entry.Provider,
 			"claimExternalId": entry.ExternalID,
+		}
+		// claimBacklog joins a routing event to the destination gaggle's claim
+		// of the same item (§5.10): both carry the same (claimBacklog,
+		// claimExternalId) pair even though their gaggles differ.
+		if entry.Backlog != nil {
+			runner["claimBacklog"] = entry.Backlog.String()
+			if runner["claimProvider"] == "" {
+				runner["claimProvider"] = string(entry.Backlog.Provider)
+			}
 		}
 	}
 	l.journalWithRunner(eventType, entry, runner)

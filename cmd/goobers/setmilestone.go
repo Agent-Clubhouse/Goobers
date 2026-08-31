@@ -60,17 +60,29 @@ func runSetMilestone(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	token, err := providerToken(capability.GitHubMilestonesWrite)
+	// A milestone is assigned to a BACKLOG work item, which since
+	// personal-gaggle-routing may live in a different repository — and under
+	// different ownership — than the routed code repository. Address and
+	// authenticate at the backlog, not spec.project. With no distinct backlog
+	// declared, backlogRepo == repo and the connection is empty, so the
+	// capability-scoped milestones token resolves exactly as before (the
+	// historical same-repo fallback). Milestones stay GitHub-only, mirroring
+	// post-merge's issues provider (postmerge.go): the concrete type keeps a
+	// backlog resolved to another provider failing with an explicit dispatch
+	// error instead of silently degrading.
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	provider, err := newBacklogProviderForStageAs[*providers.GitHubProvider](root, repo, backlogRepo, false,
+		withStageProviderCapability(capability.GitHubMilestonesWrite),
+		withStageProviderMutations("issue"))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 
-	provider := newGitHubProvider(token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	item, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-		Repository: repo,
+		Repository: backlogRepo,
 		ID:         *itemID,
 		Milestone:  milestone,
 	})

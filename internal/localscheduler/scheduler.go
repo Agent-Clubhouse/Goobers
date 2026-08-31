@@ -64,6 +64,9 @@ type WorkflowEntry struct {
 	ScheduleDemandCounter BacklogCounter
 	Starter               Starter
 	RepoRef               apiv1.RepoRef
+	// BacklogRef carries the gaggle's backlog reference when it differs
+	// from the project repository.
+	BacklogRef *apiv1.BacklogRef
 	// RequiredCapabilities is the union of runner (toolchain/platform)
 	// capabilities this workflow's gaggle and stages require (RRQ-1/#1101).
 	// dispatch refuses the run before admission when the runner does not claim
@@ -1946,10 +1949,11 @@ func (s *Scheduler) dispatch(ctx context.Context, entry WorkflowEntry, now time.
 		defer s.releaseAdmissionOwner(runID, entry.Workflow, admissionGeneration)
 		entry.Starter = gooberDigestStarter{digest: entry.GooberDigest, next: entry.Starter}
 		result, startErr := entry.Starter.Start(ctx, StartRequest{
-			RunID:   runID,
-			Gaggle:  entry.Gaggle,
-			Trigger: trigger,
-			RepoRef: entry.RepoRef,
+			RunID:      runID,
+			Gaggle:     entry.Gaggle,
+			Trigger:    trigger,
+			RepoRef:    entry.RepoRef,
+			BacklogRef: entry.BacklogRef,
 		})
 		if startErr == nil {
 			s.recordScheduledPollResult(identity, entry, backoffTokens, result.NoWork, s.now())

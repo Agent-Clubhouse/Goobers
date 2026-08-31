@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
@@ -23,18 +25,85 @@ import (
 // client (mirrors newPRPoller).
 var newEscalationPoster = func(token string) gate.Commenter { return providers.NewGitHubProvider(token) }
 
+// daemonBacklogTarget is the daemon-side answer to the two questions every
+// work-item mutation has to agree on: which container does this address, and
+// which credential reaches it. stageBacklogRef answers both for a stage from
+// the injected env; this answers both for the daemon process, which has only
+// the gaggle-scoped layout.
+type daemonBacklogTarget struct {
+	// routed is the repository the run targets — retained because ADO's
+	// provider is organization-scoped and its config lookup matches on the
+	// routed tuple, and because it is the credential fallback.
+	routed providers.RepositoryRef
+	// repo is the container work items actually live in.
+	repo          providers.RepositoryRef
+	connectionRef string
+}
+
+// resolveDaemonBacklogTarget derives the addressing repository AND the
+// credential connection from ONE gaggleBacklogRef call, which is what makes
+// "built for the backlog" and "authenticated as the backlog" inseparable in the
+// daemon exactly as backlogStageProviderOptions makes them inseparable for a
+// stage. Resolving them independently is how a handler ends up reaching the
+// right repository with the wrong token — invisible in the same-repository
+// majority (one token serves both) and an opaque 404/403 in precisely the
+// cross-repository topology this exists to support.
+//
+// Both fall back to the routed repository when the gaggle declares no distinct
+// backlog, so a same-repository gaggle keeps exactly its previous behavior.
+func resolveDaemonBacklogTarget(l instance.Layout, routed providers.RepositoryRef) daemonBacklogTarget {
+	ref, _ := gaggleBacklogRef(l, routed)
+	target := daemonBacklogTarget{routed: routed, repo: routed, connectionRef: ref.ConnectionRef}
+	if repo, err := backlogRepositoryRef(ref, routed); err == nil {
+		target.repo = repo
+	}
+	return target
+}
+
+// credentialRefs is the ordered list of resolver refs that may hold the
+// credential this target's provider must present, most specific first:
+//
+//  1. the declared connection (buildCredentials registers it under
+//     credentialRefName(ConnectionCredentialKey(name)));
+//  2. the backlog repository's own binding, for a cross-repository backlog
+//     that is itself a configured repo but names no connection;
+//  3. the routed repository's binding — the pre-routing behavior, and the
+//     correct answer whenever backlog and project coincide.
+//
+// Falling through rather than failing on a missing connection credential
+// mirrors stageProviderToken's connectionToken fallback: a gaggle may name a
+// connection purely for documentation/validation while project and backlog
+// live under one account and one token.
+func (t daemonBacklogTarget) credentialRefs() []string {
+	refs := make([]string, 0, 3)
+	if t.connectionRef != "" {
+		refs = append(refs, credentialRefName(credentials.ConnectionCredentialKey(t.connectionRef)))
+	}
+	for _, repo := range []providers.RepositoryRef{t.repo, t.routed} {
+		if repo.Owner == "" || repo.Name == "" {
+			continue
+		}
+		ref := repo.Owner + "/" + repo.Name
+		if !slices.Contains(refs, ref) {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
 // escalationCommenter is the gate.Commenter the runner posts escalation
 // comments through (#312). Like buildCIPollExecutor it resolves the org-repo
 // token per call — honoring credentials.Resolver's re-read-on-resolve rotation
 // contract rather than capturing a token once at daemon startup — registers it
 // for scrubbing, then posts through a freshly-authenticated provider.
 //
-// On Azure DevOps there is no static repo token to resolve (azure-cli auth
-// shells out to `az`), so the ADO branch builds a provider straight from
-// instance config (adoauth) and routes the work-item mutation to the backlog
-// project the PBI lives in — mirroring the provider-chain stages. Without this
-// every ADO run's failure/park/escalation handler no-ops (token ref not found),
-// leaking the goobers/status:claimed marker and never applying needs-human.
+// Every method resolves the backlog target first, so the repository addressed
+// and the credential presented always come from the same spec.backlog. On
+// Azure DevOps there is no static repo token to resolve (azure-cli auth shells
+// out to `az`), so the ADO branch builds a provider straight from instance
+// config (adoauth). Without this every ADO run's failure/park/escalation
+// handler no-ops (token ref not found), leaking the goobers/status:claimed
+// marker and never applying needs-human.
 type escalationCommenter struct {
 	resolver           credentials.Resolver
 	reg                runner.SecretRegistrar
@@ -42,90 +111,168 @@ type escalationCommenter struct {
 	needsHumanAssignee string
 }
 
+// backlogToken resolves the credential this daemon handler must present to the
+// backlog, re-resolved on every call (rotation) and registered for scrubbing
+// before it can reach a journal. Refs are tried in credentialRefs order and a
+// ref the instance simply does not configure falls through to the next.
+func (c *escalationCommenter) backlogToken(ctx context.Context, target daemonBacklogTarget) (string, error) {
+	refs := target.credentialRefs()
+	var lastErr error
+	for _, ref := range refs {
+		token, err := c.resolver.Resolve(ctx, ref)
+		if err != nil {
+			lastErr = err
+			if errors.Is(err, credentials.ErrTokenRefNotFound) {
+				continue
+			}
+			return "", fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
+		}
+		c.reg.Register([]byte(token))
+		return token, nil
+	}
+	if lastErr == nil {
+		lastErr = credentials.ErrTokenRefNotFound
+	}
+	return "", fmt.Errorf("resolve escalation-comment token for %s: %w", strings.Join(refs, ", "), lastErr)
+}
+
+// adoProvider is the ADO half of the connection-aware daemon construction. It
+// redirects ONLY PAT auth, exactly like newADOProviderForConnection does for a
+// stage: the Entra-backed kinds authenticate as an ambient identity with no
+// token ref to substitute. With no connection credential configured it goes
+// through the unchanged newADOProviderForStage seam, so a gaggle that declares
+// no backlog connection — and every test that stubs that seam — is untouched.
+func (c *escalationCommenter) adoProvider(target daemonBacklogTarget) (*providers.ADOProvider, error) {
+	if repo, ok := adoBacklogConnectionRepo(c.layout.Root, target); ok {
+		return adoauth.Provider(repo, nil, nil, nil, nil, nil)
+	}
+	return newADOProviderForStage(c.layout.Root, target.routed)
+}
+
+// adoBacklogConnectionRepo reports the ADO RepoRef to build the backlog
+// provider from when — and only when — the gaggle declares a backlog
+// connection, the instance configures a credential for it, and the repo uses
+// PAT auth. The connection's own TokenRef is substituted rather than a resolved
+// string so adoauth keeps re-reading it per call (rotation), matching how the
+// repo's own token behaves.
+func adoBacklogConnectionRepo(root string, target daemonBacklogTarget) (instance.RepoRef, bool) {
+	if target.connectionRef == "" || target.repo.Provider != providers.ProviderADO {
+		return instance.RepoRef{}, false
+	}
+	repo, err := adoRepoRefForStage(root, target.repo)
+	if err != nil {
+		return instance.RepoRef{}, false
+	}
+	kind := instance.ADOAuthPAT
+	if repo.Auth != nil {
+		kind = repo.Auth.Kind
+	}
+	if kind != instance.ADOAuthPAT {
+		return instance.RepoRef{}, false
+	}
+	cfg, err := instance.LoadConfig(instance.NewLayout(root).ConfigFile())
+	if err != nil {
+		return instance.RepoRef{}, false
+	}
+	for _, grant := range cfg.Credentials {
+		if grant.Connection != target.connectionRef || !grant.Token.Configured() {
+			continue
+		}
+		repo.Token = grant.Token
+		return repo, true
+	}
+	return instance.RepoRef{}, false
+}
+
 func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	// PR remediation uses pr/<number> as its internal claim key; provider work
 	// item endpoints use the shared bare issue/PR number.
 	req.ID = blockedLookupID(req.ID)
 	req = withNeedsHumanAssignee(req, c.needsHumanAssignee)
-	if req.Repository.Provider == providers.ProviderADO {
-		provider, err := newADOProviderForStage(c.layout.Root, req.Repository)
+	target := resolveDaemonBacklogTarget(c.layout, req.Repository)
+	// The mutation is addressed at the backlog for EVERY provider, not just
+	// ADO: a GitHub or Gitea gaggle whose backlog lives in another repository
+	// was previously parked/labelled/commented on the code repo instead.
+	req.Repository = target.repo
+	switch target.repo.Provider {
+	case providers.ProviderADO:
+		provider, err := c.adoProvider(target)
 		if err != nil {
-			return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", req.Repository.Owner, req.Repository.Name, err)
+			return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", target.routed.Owner, target.routed.Name, err)
 		}
-		req.Repository = backlogRepoRefForGaggle(c.layout, req.Repository)
 		return provider.UpdateWorkItem(ctx, req)
-	}
-	if req.Repository.Provider == providers.ProviderGitea {
+	case providers.ProviderGitea:
 		// Gitea authenticates with a static token like GitHub (resolved per call
 		// through the rotation-aware resolver), but the mutation must reach the
 		// self-hosted forge — newGiteaProviderForStage resolves its BaseURL from
 		// instance config. The claim marker is the plain LabelClaimed (as GitHub),
-		// so no ADO status-label rewrite is needed, and backlogRepoRefForGaggle is
-		// a no-op for gitea (code repo and backlog coincide).
-		ref := req.Repository.Owner + "/" + req.Repository.Name
-		token, err := c.resolver.Resolve(ctx, ref)
+		// so no ADO status-label rewrite is needed.
+		token, err := c.backlogToken(ctx, target)
 		if err != nil {
-			return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
+			return providers.WorkItem{}, err
 		}
-		c.reg.Register([]byte(token))
-		provider, err := newGiteaProviderForStage(c.layout.Root, req.Repository, token)
+		provider, err := newGiteaProviderForStage(c.layout.Root, target.repo, token)
 		if err != nil {
-			return providers.WorkItem{}, fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
+			return providers.WorkItem{}, fmt.Errorf("build gitea escalation provider for %s/%s: %w", target.repo.Owner, target.repo.Name, err)
 		}
 		return provider.UpdateWorkItem(ctx, req)
 	}
-	ref := req.Repository.Owner + "/" + req.Repository.Name
-	token, err := c.resolver.Resolve(ctx, ref)
+	token, err := c.backlogToken(ctx, target)
 	if err != nil {
-		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
+		return providers.WorkItem{}, err
 	}
-	c.reg.Register([]byte(token))
 	return newEscalationPoster(token).UpdateWorkItem(ctx, req)
 }
 
 func (c *escalationCommenter) ListComments(ctx context.Context, repository providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
 	itemID = blockedLookupID(itemID)
-	if repository.Provider == providers.ProviderADO {
-		provider, err := newADOProviderForStage(c.layout.Root, repository)
+	target := resolveDaemonBacklogTarget(c.layout, repository)
+	switch target.repo.Provider {
+	case providers.ProviderADO:
+		provider, err := c.adoProvider(target)
 		if err != nil {
-			return nil, fmt.Errorf("build ADO escalation provider for %s/%s: %w", repository.Owner, repository.Name, err)
+			return nil, fmt.Errorf("build ADO escalation provider for %s/%s: %w", target.routed.Owner, target.routed.Name, err)
 		}
-		return provider.ListComments(ctx, backlogRepoRefForGaggle(c.layout, repository), itemID)
+		return provider.ListComments(ctx, target.repo, itemID)
+	case providers.ProviderGitea:
+		token, err := c.backlogToken(ctx, target)
+		if err != nil {
+			return nil, err
+		}
+		provider, err := newGiteaProviderForStage(c.layout.Root, target.repo, token)
+		if err != nil {
+			return nil, fmt.Errorf("build gitea escalation provider for %s/%s: %w", target.repo.Owner, target.repo.Name, err)
+		}
+		return provider.ListComments(ctx, target.repo, itemID)
 	}
-	ref := repository.Owner + "/" + repository.Name
-	token, err := c.resolver.Resolve(ctx, ref)
+	token, err := c.backlogToken(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
+		return nil, err
 	}
-	c.reg.Register([]byte(token))
-	if repository.Provider == providers.ProviderGitea {
-		provider, err := newGiteaProviderForStage(c.layout.Root, repository, token)
-		if err != nil {
-			return nil, fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
-		}
-		return provider.ListComments(ctx, repository, itemID)
-	}
-	return newEscalationPoster(token).ListComments(ctx, repository, itemID)
+	return newEscalationPoster(token).ListComments(ctx, target.repo, itemID)
 }
 
 func (c *escalationCommenter) UpdateComment(ctx context.Context, repository providers.RepositoryRef, commentID, body string) error {
-	if repository.Provider == providers.ProviderADO {
+	target := resolveDaemonBacklogTarget(c.layout, repository)
+	switch target.repo.Provider {
+	case providers.ProviderADO:
 		return fmt.Errorf("ado work-item comment editing not implemented; streak comment will be posted fresh")
-	}
-	ref := repository.Owner + "/" + repository.Name
-	token, err := c.resolver.Resolve(ctx, ref)
-	if err != nil {
-		return fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
-	}
-	c.reg.Register([]byte(token))
-	if repository.Provider == providers.ProviderGitea {
-		provider, err := newGiteaProviderForStage(c.layout.Root, repository, token)
+	case providers.ProviderGitea:
+		token, err := c.backlogToken(ctx, target)
 		if err != nil {
-			return fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
+			return err
 		}
-		return provider.UpdateComment(ctx, repository, commentID, body)
+		provider, err := newGiteaProviderForStage(c.layout.Root, target.repo, token)
+		if err != nil {
+			return fmt.Errorf("build gitea escalation provider for %s/%s: %w", target.repo.Owner, target.repo.Name, err)
+		}
+		return provider.UpdateComment(ctx, target.repo, commentID, body)
 	}
-	return newEscalationPoster(token).UpdateComment(ctx, repository, commentID, body)
+	token, err := c.backlogToken(ctx, target)
+	if err != nil {
+		return err
+	}
+	return newEscalationPoster(token).UpdateComment(ctx, target.repo, commentID, body)
 }
 
 // buildEscalationNotifier wires the gate.EscalationNotifier (#20) at the
@@ -350,6 +497,15 @@ const failureStreakThreshold = 3
 // Shared by buildFailedHandler (PhaseFailed) and buildTerminalCircuitBreaker
 // (PhaseEscalated/PhaseAborted) so that ALL non-completed terminals count
 // toward the same streak.
+//
+// The streak is counted, commented, and enforced on the BACKLOG item — for
+// every provider, not just ADO. The rewrite belongs here as well as inside
+// escalationCommenter because this function's own bookkeeping is repo-scoped:
+// gate.CountFailureStreak reads the comment thread of whatever repository it is
+// handed, so counting against the code repo while the comment lands on the
+// backlog would restart the streak at 1 on every terminal failure and the
+// breaker would never trip. backlogRepoRefForGaggle is idempotent, so a
+// caller that already resolved the backlog loses nothing.
 func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.Layout, repoRef providers.RepositoryRef, runID, stage, runURL string) error {
 	itemIDs, err := claimedItemIDsForRun(l, runID)
 	if err != nil {
@@ -358,6 +514,7 @@ func applyCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 	if len(itemIDs) == 0 {
 		return nil
 	}
+	repoRef = backlogRepoRefForGaggle(l, repoRef)
 	var errs []error
 	for _, itemID := range itemIDs {
 		prevCount, _, countErr := gate.CountFailureStreak(ctx, poster, repoRef, itemID)

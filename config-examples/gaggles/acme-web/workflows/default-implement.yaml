@@ -23,6 +23,11 @@ spec:
         command: ["goobers", "backlog-query", "--claim"]
       inputs:
         trustLabel: "goobers"
+        # Fleet partition (personal-gaggle-routing §5.8): acme-web and
+        # acme-web-claude share ONE backlog, and claims are authoritative per
+        # backlog rather than per gaggle, so each harness needs a distinguishing
+        # label or the two race for every item.
+        requireLabels: "harness:copilot"
         maxItems: "1"
         resultFile: "claimed-item.json"
       capabilities:

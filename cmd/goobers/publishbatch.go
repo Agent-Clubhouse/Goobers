@@ -3,16 +3,12 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
-	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/providers"
 )
 
 const publishBatchHelp = "Usage: goobers publish-batch [path]\n\n" +
@@ -79,27 +75,29 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	var provider publishBatchProvider
-	switch repo.Provider {
-	case providers.ProviderADO:
-		provider, err = newADOProviderForStage(root, repo)
-	case providers.ProviderGitea:
-		var token string
-		token, err = providerToken(capability.GitHubIssuesWrite)
-		if err == nil {
-			provider, err = newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-		}
-	case providers.ProviderGitHub:
-		var token string
-		token, err = providerToken(capability.GitHubIssuesWrite)
-		if err == nil {
-			provider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-		}
-	default:
-		err = fmt.Errorf("publish-batch does not support repository provider %q", repo.Provider)
+	// The batch is published into the BACKLOG container select-source claimed
+	// the parent in — parent update, child creation, hierarchy links, and every
+	// marker comment. Fail-loud resolution, like select-source's: publishing a
+	// batch into the wrong container is not recoverable by retry.
+	backlogRepo, err := backlogRepositoryRefForStage(root, repo)
+	if err != nil {
+		pf(stderr, "error: resolve backlog repository: %v\n", err)
+		return 1
 	}
+	// One constructor for all three providers: built for the backlog repository
+	// and authenticated as spec.backlog.connectionRef, so a cross-account
+	// backlog is never reached with the project's capability token. The
+	// per-provider switch this replaced hard-coded the routed repo and the
+	// project credential for GitHub/Gitea and the routed repo for ADO.
+	backlogProvider, err := newBacklogProviderForStage(root, repo, backlogRepo, false,
+		withStageProviderCache(), withStageProviderMutations("issue"))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	provider, ok := backlogProvider.(publishBatchProvider)
+	if !ok {
+		pf(stderr, "error: publish-batch does not support repository provider %q\n", backlogRepo.Provider)
 		return 1
 	}
 
@@ -110,12 +108,21 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	gaggle := providerGaggle()
+	// Resolved before publication so the release below can never fall back to a
+	// gaggle-scoped key that would leave the authoritative backlog-scoped lease
+	// select-source took held until it expires.
+	backlogIdentity, identityErr := backlogIdentityForStage(root, repo)
+	if identityErr != nil && gaggle != "" {
+		pf(stderr, "error: resolve backlog identity: %v\n", identityErr)
+		return 1
+	}
 	batch, err := (decomposition.Publisher{
 		Provider: provider,
 		Leaser: decomposition.FileTargetLeaser{
 			Directory: filepath.Join(layoutFor(root).SchedulerDir(), "decomposition-target-locks"),
 		},
-		Repo:  repo,
+		Repo:  backlogRepo,
 		RunID: runID,
 	}).Publish(ctx, plan)
 	if err != nil {
@@ -148,9 +155,11 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer func() { _ = instanceLog.Close() }()
-	key := localscheduler.ClaimKey{
-		Gaggle: providerGaggle(), Provider: string(repo.Provider), ExternalID: plan.Parent.ID,
-	}
+	// The exact key select-source claimed under, rebuilt from the same
+	// resolution inputs — a mismatched key silently no-ops the release
+	// (ClaimLedger.release is idempotent by design) and strands the parent's
+	// lease until it expires.
+	key := selectSourceClaimKey(backlogIdentity, gaggle, backlogRepo, plan.Parent.ID)
 	if err := releaseSelectSourceParent(schedulerDir, instanceLog, key, runID); err != nil {
 		pf(stderr, "error: release parent claim: %v\n", err)
 		return 1

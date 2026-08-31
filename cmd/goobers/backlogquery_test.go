@@ -1580,7 +1580,7 @@ func TestSelectBacklogQueryMode(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, ok := selectBacklogQueryMode(test.readOnly, test.claim, test.reconcile, test.release)
+			got, ok := selectBacklogQueryMode(test.readOnly, test.claim, test.reconcile, test.release, false)
 			if got != test.want || ok != test.ok {
 				t.Fatalf("selectBacklogQueryMode() = (%v, %v), want (%v, %v)", got, ok, test.want, test.ok)
 			}

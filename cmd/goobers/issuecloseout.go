@@ -239,19 +239,19 @@ func runIssueCloseOut(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	stageProvider, err := newProviderForStage(root, repo, false, withStageProviderMutations("issue"))
+	// Work items (the claimed PBI) live in the backlog, not the routed code
+	// repo whose branch/PR this stage links; address AND authenticate there.
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	stageProvider, err := newBacklogProviderForStage(root, repo, backlogRepo, false, withStageProviderMutations("issue"))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
 	provider, ok := stageProvider.(issueCloseOutProvider)
 	if !ok {
-		pf(stderr, "error: issue-close-out does not support repository provider %q\n", repo.Provider)
+		pf(stderr, "error: issue-close-out does not support repository provider %q\n", backlogRepo.Provider)
 		return 1
 	}
-	// Work items (the claimed PBI) live in the backlog project on ADO, not the
-	// routed code repo whose branch/PR this stage links; address them there.
-	backlogRepo := backlogRepoRefForStage(root, repo)
 
 	runID, workflow, err := providerRunContext()
 	if err != nil {

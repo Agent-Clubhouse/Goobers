@@ -601,6 +601,9 @@ type StartInput struct {
 	Trigger journal.Trigger
 	// RepoRef is the target repository every stage worktree branches from.
 	RepoRef apiv1.RepoRef
+	// BacklogRef carries the gaggle's backlog reference when it differs from
+	// the project repository. Nil when the backlog and project coincide.
+	BacklogRef *apiv1.BacklogRef
 	// Item is the originating backlog item, snapshotted immutably into the
 	// journal at run start. Nil for a schedule/signal-triggered producer run.
 	Item *apiv1.BacklogItem
@@ -4710,6 +4713,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		Goal:                 goal,
 		Workspace:            workspace.path,
 		RepoRef:              in.RepoRef.EnvelopeRef(),
+		BacklogRef:           in.BacklogRef,
 		AdditionalWorkspaces: additionalWorkspaces(workspace),
 		CheckoutCones:        checkoutCones(workspace),
 		Item:                 in.Item,

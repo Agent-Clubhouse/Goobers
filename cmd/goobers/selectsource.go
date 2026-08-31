@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
@@ -54,13 +55,29 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// Every work-item call this stage makes — the parent fetch, its comments,
+	// and the claim marker — addresses the BACKLOG container, which since
+	// personal-gaggle-routing may be a different repository, forge, or account
+	// than the routed code repo. Resolved fail-loud (backlogRepositoryRefForStage,
+	// not backlogRepoRefForStage): select-source takes ownership of the parent,
+	// and silently falling back to the project repository would claim an item in
+	// one container while addressing another.
+	backlogRepo, err := backlogRepositoryRefForStage(root, repo)
+	if err != nil {
+		pf(stderr, "error: resolve backlog repository: %v\n", err)
+		return 1
+	}
 	trustLabel := strings.TrimSpace(providerInput("trustLabel", ""))
 	if trustLabel == "" {
 		pln(stderr, "error: trustLabel is required for decomposition selection (SEC-047)")
 		return 1
 	}
 
-	issueProvider, err := newProviderForStage(root, repo, false, withStageProviderCache(), withStageProviderMutations("issue"))
+	// Built for the backlog repository AND authenticated as the backlog
+	// connection: the two must never disagree, or a cross-account backlog is
+	// reached with a project token that cannot see it (an opaque 404/403).
+	issueProvider, err := newBacklogProviderForStage(root, repo, backlogRepo, false,
+		withStageProviderCache(), withStageProviderMutations("issue"))
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -72,6 +89,17 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	gaggle := providerGaggle()
+
+	// The authoritative claim scope, resolved BEFORE any claim is taken. A
+	// gaggle-owned run must never degrade to a gaggle-scoped key: two gaggles
+	// sharing one backlog would then both be able to claim the same parent
+	// (§5.3). A standalone invocation has no siblings to contend with and keeps
+	// the historical key, exactly as backlog-query does.
+	backlogIdentity, identityErr := backlogIdentityForStage(root, repo)
+	if identityErr != nil && gaggle != "" {
+		pf(stderr, "error: resolve backlog identity: %v\n", identityErr)
+		return 1
+	}
 
 	leaseDuration := DefaultClaimLease
 	if s := providerInput("leaseDuration", ""); s != "" {
@@ -104,7 +132,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 	defer func() { _ = instanceLog.Close() }()
 
 	for _, candidate := range candidates {
-		item, getErr := issueProvider.GetWorkItem(ctx, repo, candidate.ParentID)
+		item, getErr := issueProvider.GetWorkItem(ctx, backlogRepo, candidate.ParentID)
 		if getErr != nil {
 			// The parent may have been deleted/transferred since the source
 			// run touched it; skip it rather than fail the whole scan.
@@ -113,7 +141,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 		if !parentEligibleForDecomposition(item, trustLabel) {
 			continue
 		}
-		comments, commentsErr := issueProvider.ListComments(ctx, repo, item.ID)
+		comments, commentsErr := issueProvider.ListComments(ctx, backlogRepo, item.ID)
 		if commentsErr != nil {
 			return failProviderStage(stderr, fmt.Sprintf("list comments for parent %s", item.ID), commentsErr, "selection.json")
 		}
@@ -124,7 +152,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 
-		key := localscheduler.ClaimKey{Gaggle: gaggle, Provider: string(repo.Provider), ExternalID: item.ID}
+		key := selectSourceClaimKey(backlogIdentity, gaggle, backlogRepo, item.ID)
 		ok, _, claimErr := claimSelectSourceParent(l.SchedulerDir(), instanceLog, key, runID, workflow, leaseDuration)
 		if claimErr != nil {
 			return failProviderStage(stderr, fmt.Sprintf("claim parent %s", item.ID), claimErr, "selection.json")
@@ -156,8 +184,12 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 			ErrorCode:      candidate.ErrorCode,
 			ErrorMessage:   candidate.ErrorMessage,
 			Parent: decomposition.ParentRef{
-				Provider:         string(repo.Provider),
-				Repository:       repositoryDisplayName(repo),
+				// The parent is recorded in BACKLOG coordinates, not project
+				// ones: publish-batch re-derives its publisher repository the
+				// same way and refuses a plan whose parent names a different
+				// container, so the two must agree on the backlog.
+				Provider:         string(backlogRepo.Provider),
+				Repository:       repositoryDisplayName(backlogRepo),
 				ID:               item.ID,
 				ObservedRevision: observedRevision,
 			},
@@ -183,7 +215,7 @@ func runSelectSource(args []string, stdout, stderr io.Writer) int {
 
 		// Provider-visible marker: best-effort mirror of the ledger's
 		// (already authoritative) decision, same discipline as backlog-query.
-		if _, cerr := issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: repo, ID: item.ID, RunID: runID}); cerr != nil {
+		if _, cerr := issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{Repository: backlogRepo, ID: item.ID, RunID: runID}); cerr != nil {
 			pf(stderr, "warning: provider claim marker for %s failed (ledger claim still holds): %v\n", item.ID, cerr)
 		}
 
@@ -212,10 +244,28 @@ func writeSelectSourceNoWork(stdout, stderr io.Writer, reason string) int {
 	return 0
 }
 
+// selectSourceClaimKey builds the parent claim's ownership key. A resolved
+// backlog identity makes it authoritative v3 backlog scope — the same key
+// backlog-query's own claims use, which is what makes decomposition's parent
+// claim mutually exclusive with an implementation run's claim on that item
+// even when the two runs belong to different gaggles sharing one backlog
+// (§5.3). Only a standalone, gaggle-less invocation with no resolvable backlog
+// falls through to the historical gaggle/provider key.
+func selectSourceClaimKey(identity apiv1.BacklogIdentity, gaggle string, backlogRepo providers.RepositoryRef, itemID string) localscheduler.ClaimKey {
+	if identity.Validate() == nil {
+		return backlogClaimKey(identity, gaggle, itemID)
+	}
+	return localscheduler.ClaimKey{Gaggle: gaggle, Provider: string(backlogRepo.Provider), ExternalID: itemID}
+}
+
 // claimSelectSourceParent and releaseSelectSourceParent mirror backlog-query's
-// own gaggle-empty fallback (backlogquery.go): ClaimKey.storageKey requires a
-// non-empty Gaggle, so a gaggle-less instance must use the legacy unscoped
-// Claim/Release rather than ClaimScoped.
+// own scoped/legacy dispatch: ClaimKey.storageKey requires either a backlog
+// identity or a complete gaggle+provider pair, so a key with neither must use
+// the legacy unscoped Claim/Release.
+func selectSourceClaimScoped(key localscheduler.ClaimKey) bool {
+	return !key.Backlog.IsZero() || (key.Gaggle != "" && key.Provider != "")
+}
+
 func claimSelectSourceParent(schedulerDir string, instanceLog *journal.InstanceLog, key localscheduler.ClaimKey, runID, workflow string, leaseDuration time.Duration) (bool, string, error) {
 	var ok bool
 	var holder string
@@ -227,7 +277,7 @@ func claimSelectSourceParent(schedulerDir string, instanceLog *journal.InstanceL
 		if err != nil {
 			return fmt.Errorf("open claim ledger: %w", err)
 		}
-		if key.Gaggle == "" {
+		if !selectSourceClaimScoped(key) {
 			ok, holder, err = ledger.Claim(key.ExternalID, runID, workflow, leaseDuration)
 		} else {
 			ok, holder, err = ledger.ClaimScoped(key, runID, workflow, leaseDuration)
@@ -246,7 +296,7 @@ func releaseSelectSourceParent(schedulerDir string, instanceLog *journal.Instanc
 		if err != nil {
 			return fmt.Errorf("open claim ledger: %w", err)
 		}
-		if key.Gaggle == "" {
+		if !selectSourceClaimScoped(key) {
 			return ledger.Release(key.ExternalID, runID)
 		}
 		return ledger.ReleaseScoped(key, runID)

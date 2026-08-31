@@ -38,6 +38,7 @@
     },
     "item": { "$ref": "#/$defs/backlogItem", "description": "Bounded provider-neutral descriptor of the backlog item that started the run. Omitted when no item triggered the run." },
     "repoRef": { "$ref": "#/$defs/repoRef", "description": "Primary repository targeted by this run." },
+    "backlogRef": { "$ref": "#/$defs/backlogRef", "description": "The gaggle's backlog (spec.backlog) carried independently of the target code repository, so a gaggle whose backlog lives in a different repository, project, or provider resolves work-item operations, authoritative claim scope, and credentials against the correct container. Omitted when the run has no distinct backlog context." },
     "additionalWorkspaces": {
       "type": "array",
       "description": "Read-only checkouts of the gaggle's reference repos (GaggleSpec.AdditionalRepos, MGV-11 #1286). The stage may read them; no push credential is provisioned, so they are read-only by construction. Surfaced as GOOBERS_ADDITIONAL_REPO_<UPPER_SANITIZED_NAME>=<path>.",
@@ -143,10 +144,24 @@
         "connectionRef": { "type": "string", "description": "Connection that supplies credentials for the repository." }
       }
     },
+    "backlogRef": {
+      "type": "object",
+      "description": "Provider-neutral backlog identity and credential-connection reference. Distinct from repoRef: the backlog is where work items live, which need not be the repository the run writes code to.",
+      "additionalProperties": false,
+      "required": ["provider", "project"],
+      "properties": {
+        "provider": { "type": "string", "enum": ["github", "ado", "gitea"], "description": "Backlog provider." },
+        "baseUrl": { "type": "string", "description": "Forge root URL (e.g. https://gitea.example.com); required when provider is gitea, since self-hosted Gitea has no fixed host." },
+        "project": { "type": "string", "minLength": 1, "description": "Backlog scope: a GitHub/Gitea repository as \"owner/name\", or an Azure DevOps project." },
+        "labels": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Labels narrowing which items this gaggle considers work." },
+        "labelPredicate": { "type": "string", "minLength": 1, "description": "CEL expression over the item's label set, ANDed with labels." },
+        "fieldPredicate": { "type": "string", "minLength": 1, "description": "CEL expression over the provider's typed native-field projection, ANDed with labels." },
+        "connectionRef": { "type": "string", "description": "Connection that supplies credentials for the backlog. Declaring one distinct from the repository's connection is what lets a gaggle read a private backlog under credentials its target repository never receives." }
+      }
+    },
     "limits": {
       "type": "object",
-      "description": "Stage execution limits. Zero values mean no explicit limit.",
-      "additionalProperties": false,
+      "description": "Stage execution limits. Zero values mean no explicit limit.",      "additionalProperties": false,
       "properties": {
         "maxDurationSeconds": { "type": "integer", "minimum": 0, "description": "Maximum stage wall-clock duration in seconds." },
         "maxTokens": { "type": "integer", "minimum": 0, "description": "Maximum model tokens the stage may consume." },

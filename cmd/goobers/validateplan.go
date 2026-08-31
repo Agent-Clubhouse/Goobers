@@ -75,8 +75,21 @@ func runValidatePlan(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	// The live parent lives in the BACKLOG container select-source claimed it
+	// in, not in the routed code repository. Reading the project repo instead
+	// either 404s (cross-repository backlog) or — worse, when both repositories
+	// number issues alike — compares the plan against an unrelated issue and
+	// reports a bogus live-parent conflict. Fail-loud like the rest of the
+	// decomposition trio: this stage gates publication.
+	backlogRepo, err := backlogRepositoryRefForStage(root, repo)
+	if err != nil {
+		pf(stderr, "error: resolve backlog repository: %v\n", err)
+		return 1
+	}
 
-	issueProvider, err := newProviderForStage(root, repo, true, withStageProviderCache())
+	// Read-only, but still authenticated as the backlog connection: a private
+	// backlog in another account is unreadable with the project's token.
+	issueProvider, err := newBacklogProviderForStage(root, repo, backlogRepo, true, withStageProviderCache())
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -85,7 +98,7 @@ func runValidatePlan(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
-	item, err := issueProvider.GetWorkItem(ctx, repo, selection.Parent.ID)
+	item, err := issueProvider.GetWorkItem(ctx, backlogRepo, selection.Parent.ID)
 	if err != nil {
 		return failProviderStage(stderr, fmt.Sprintf("get parent %s", selection.Parent.ID), err, "plan-validation.json")
 	}

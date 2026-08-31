@@ -7,8 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/providers"
 )
 
 func TestSetMilestoneAssignsAndChangesMilestone(t *testing.T) {
@@ -59,6 +62,71 @@ func TestSetMilestoneAssignsAndChangesMilestone(t *testing.T) {
 	result := readProviderStageResult(t, filepath.Join(workDir, "milestone-result.json"))
 	if result["itemId"] != "7" || result["milestone"] != float64(23) {
 		t.Fatalf("milestone result = %#v, want item 7 milestone 23", result)
+	}
+}
+
+// TestSetMilestoneUsesBacklogRepositoryAndCredential is the
+// personal-gaggle-routing regression test: the run is routed to project repo
+// gim-home/dev-brandiv, while the milestone target lives in the BACKLOG repo
+// gim-home/brandiv.goobers behind its own connection credential. Only the
+// backlog server has handlers registered, so a stage that (incorrectly)
+// addresses the routed project repo gets a 404 instead of silently mutating
+// the wrong container; recordStageProviderConfigs then confirms the provider
+// was authenticated with the backlog connection's credential, not the
+// project's plain milestones-write token.
+func TestSetMilestoneUsesBacklogRepositoryAndCredential(t *testing.T) {
+	root := initDemo(t)
+	const (
+		backlogOwner = decompositionBacklogOwner
+		backlogName  = decompositionBacklogName
+		projectName  = decompositionProjectName
+		connection   = decompositionConnection
+	)
+	server := newFakeGitHubServer(t, backlogOwner, backlogName)
+	server.addIssue(9, "Plan the roadmap")
+	providerCmdEnv(t, server, executor.CredentialEnvVar(string(capability.GitHubMilestonesWrite)), "milestone-cross-repo")
+	// providerCmdEnv routes the stage at the server's repo; re-point the
+	// ROUTED repo at the project so the backlog is genuinely a different
+	// repository.
+	t.Setenv(executor.RepoNameEnvVar, projectName)
+	setBacklogStageEnv(t, apiv1.BacklogRef{
+		Provider:      apiv1.ProviderGitHub,
+		Project:       backlogOwner + "/" + backlogName,
+		ConnectionRef: connection,
+	})
+	t.Setenv(executor.CredentialEnvVar(string(capability.GitHubMilestonesWrite)), "project-token")
+	t.Setenv(executor.CredentialEnvVar(credentials.ConnectionCredentialKey(connection)), "backlog-token")
+	t.Setenv(executor.InputEnvVar("itemID"), "9")
+	t.Setenv(executor.InputEnvVar("milestone"), "22")
+	recorded := recordStageProviderConfigs(t)
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	code, stdout, stderr := runArgs(t, "set-milestone", root)
+	if code != 0 {
+		t.Fatalf("set-milestone: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "issue 9") || !strings.Contains(stdout, "milestone 22") {
+		t.Fatalf("stdout = %q, want assigned issue and milestone", stdout)
+	}
+
+	server.mu.Lock()
+	gotMilestone := server.issues[9].milestone
+	server.mu.Unlock()
+	if gotMilestone != 22 {
+		t.Fatalf("milestone = %d, want 22 on the backlog repository", gotMilestone)
+	}
+
+	if len(*recorded) != 1 {
+		t.Fatalf("recorded %d provider builds, want 1", len(*recorded))
+	}
+	assertBacklogCredential(t, (*recorded)[0], providers.RepositoryRef{
+		Provider: providers.ProviderGitHub, Owner: backlogOwner, Name: backlogName,
+	})
+
+	result := readProviderStageResult(t, filepath.Join(workDir, "milestone-result.json"))
+	if result["itemId"] != "9" || result["milestone"] != float64(22) {
+		t.Fatalf("milestone result = %#v, want item 9 milestone 22", result)
 	}
 }
 

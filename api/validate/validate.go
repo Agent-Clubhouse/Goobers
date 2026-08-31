@@ -137,6 +137,7 @@ const (
 	errorCICommand                WarningCode = "CFG005"
 	errorBranchNamespace          WarningCode = "CFG006"
 	errorGaggleCheckoutSparse     WarningCode = "CFG007"
+	errorSharedBacklogOverlap     WarningCode = "BKL001"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -886,6 +887,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkGaggleBranchNamespace(r)
 	// Sibling-scope overlap warning (MIRC-2, #1901).
 	ix.checkGaggleSiblingLabelOverlap(r)
+	// Same-instance shared-backlog overlap (personal-gaggle-routing).
+	ix.checkSharedBacklogOverlap(r)
 	ix.checkGaggleRunControls(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
@@ -1237,6 +1240,23 @@ func isBacklogQueryTask(task apiv1.Task) bool {
 		task.Run.Command[1] == "backlog-query"
 }
 
+// isBacklogClaimTask narrows isBacklogQueryTask to the mode that actually
+// acquires ownership. Only `--claim` consults requireLabels to decide WHICH
+// items a gaggle takes; `--reconcile`, `--release`, `--route`, and a plain
+// listing take no selector, so counting them as claim scopes would report a
+// spurious "empty selector" for every gaggle that merely reconciles or releases.
+func isBacklogClaimTask(task apiv1.Task) bool {
+	if !isBacklogQueryTask(task) {
+		return false
+	}
+	for _, arg := range task.Run.Command[2:] {
+		if arg == "--claim" {
+			return true
+		}
+	}
+	return false
+}
+
 // prLifecycleBaseCommands are the goobers CLI subcommands whose "base" input
 // resolves, at runtime, to the gaggle's own branch via providerBaseBranch()
 // (cmd/goobers/providercmd.go, #2087) rather than a hardcoded "main" — the
@@ -1497,6 +1517,214 @@ func intersectLabels(a, b []string) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// backlogConsumer is one gaggle's claim footprint on a shared backlog.
+type backlogConsumer struct {
+	gaggle string
+	file   string
+	// scopes is one effective requireLabels set per backlog-query task, or the
+	// gaggle-level default when the gaggle declares no backlog-query task.
+	scopes [][]string
+}
+
+// checkSharedBacklogOverlap groups gaggles within one instance by canonical
+// backlog identity (personal-gaggle-routing §5.8). Same-instance consumers of
+// one backlog share a single authoritative claim ledger, so an unpartitioned
+// pair does not merely duplicate work — the two gaggles race for every item,
+// and whichever loses simply starves. That is a configuration error, not a
+// warning.
+//
+// Two selectors are disjoint when EACH holds at least one label the other
+// lacks. requireLabels is conjunctive (an item must carry every listed label),
+// so:
+//
+//   - {routed, repo:a} vs {routed, repo:b} is disjoint — the shared "routed"
+//     label is the very mechanism that makes routing work, and repo:a/repo:b
+//     partition the space. This is the reference topology.
+//   - {routed} vs {routed, repo:a} is NOT disjoint — every item the second
+//     gaggle can claim, the first can claim too, so the broader gaggle races
+//     the narrower one for all of its work. A task-level requireLabels
+//     override that drops the distinguishing label lands in exactly this case,
+//     which is how §5.8's "may not drop a gaggle-level label that establishes
+//     disjointness" is enforced.
+//
+// Reporting only the subset case is what keeps this check from rejecting the
+// exact topology the feature exists to enable.
+//
+// Scope: "same instance" means declared active in the SAME Manifest, not merely
+// co-present in the config tree. A config directory is a catalog — it may hold
+// alternative gaggle definitions (e.g. two harness variants of one team) that
+// are never activated together — and only manifest.spec.gaggles says which ones
+// actually share a running instance's claim ledger. A tree with no Manifest at
+// all falls back to checking every gaggle, so a bare directory still gets the
+// diagnostic.
+func (ix *index) checkSharedBacklogOverlap(r *Report) {
+	for _, active := range ix.activeGaggleSets() {
+		ix.checkSharedBacklogOverlapForInstance(r, active)
+	}
+}
+
+// activeGaggleSets returns one gaggle-name set per instance whose consumers
+// share a claim ledger.
+func (ix *index) activeGaggleSets() []map[string]bool {
+	var sets []map[string]bool
+	for _, manifest := range ix.manifests {
+		if len(manifest.Spec.Gaggles) == 0 {
+			continue
+		}
+		active := make(map[string]bool, len(manifest.Spec.Gaggles))
+		for _, name := range manifest.Spec.Gaggles {
+			active[name] = true
+		}
+		sets = append(sets, active)
+	}
+	if len(sets) == 0 {
+		all := make(map[string]bool, len(ix.gaggles))
+		for name := range ix.gaggles {
+			all[name] = true
+		}
+		sets = append(sets, all)
+	}
+	return sets
+}
+
+func (ix *index) checkSharedBacklogOverlapForInstance(r *Report, active map[string]bool) {
+	groups := make(map[string][]backlogConsumer)
+
+	names := make([]string, 0, len(ix.gaggles))
+	for name := range ix.gaggles {
+		if active[name] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		g := ix.gaggles[name]
+		id, err := apiv1.BacklogIdentityFromRef(g.Spec.Backlog)
+		if err != nil {
+			continue // malformed backlogs are reported by schema validation
+		}
+		consumer := backlogConsumer{gaggle: name, file: ix.gaggleFile[name]}
+		for _, identity := range ix.backlogQueryWorkflowIdentities(name) {
+			for _, task := range ix.workflows[identity].definition.Spec.Tasks {
+				if !isBacklogClaimTask(task) {
+					continue
+				}
+				labels := g.Spec.RequireLabels
+				if v, overridden := task.Inputs["requireLabels"]; overridden {
+					labels = splitLabelInput(v)
+				}
+				consumer.scopes = append(consumer.scopes, labels)
+			}
+		}
+		if len(consumer.scopes) == 0 {
+			// No backlog-query --claim task anywhere in this gaggle. A gaggle
+			// that never claims cannot contend for this backlog's items, so it
+			// is not a consumer at all — synthesizing an empty scope for it
+			// would report an overlap against a gaggle that takes no work.
+			// A gaggle-level requireLabels is still honored, since declaring
+			// one is an explicit statement of intent to consume once a workflow
+			// adopts it.
+			if len(g.Spec.RequireLabels) == 0 {
+				continue
+			}
+			consumer.scopes = append(consumer.scopes, g.Spec.RequireLabels)
+		}
+		groups[id.String()] = append(groups[id.String()], consumer)
+	}
+
+	keys := make([]string, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		group := groups[key]
+		if len(group) < 2 {
+			continue
+		}
+		for _, consumer := range group {
+			for _, labels := range consumer.scopes {
+				if len(labels) != 0 {
+					continue
+				}
+				// An empty selector claims everything in the backlog, so it can
+				// never be disjoint from any sibling.
+				r.add(errorSharedBacklogOverlap, Error, consumer.file, "Gaggle", consumer.gaggle,
+					"shares a backlog with %d other gaggle(s) in this instance but has an empty effective requireLabels selector; same-instance consumers of one backlog must each declare at least one distinguishing label",
+					len(group)-1)
+				break
+			}
+		}
+		for i := 0; i < len(group); i++ {
+			for j := i + 1; j < len(group); j++ {
+				reportBacklogSelectorOverlap(r, group[i], group[j])
+			}
+		}
+	}
+}
+
+// backlogQueryWorkflowIdentities returns the gaggle's workflow identities in a
+// deterministic order, so diagnostics do not vary with map iteration.
+func (ix *index) backlogQueryWorkflowIdentities(gaggle string) []workflowIdentity {
+	var identities []workflowIdentity
+	for identity := range ix.workflows {
+		if identity.gaggle == gaggle {
+			identities = append(identities, identity)
+		}
+	}
+	sort.Slice(identities, func(i, j int) bool {
+		if identities[i].gaggle != identities[j].gaggle {
+			return identities[i].gaggle < identities[j].gaggle
+		}
+		return identities[i].name < identities[j].name
+	})
+	return identities
+}
+
+// reportBacklogSelectorOverlap reports the first non-disjoint selector pair
+// between two gaggles that share a backlog.
+func reportBacklogSelectorOverlap(r *Report, a, b backlogConsumer) {
+	for _, scopeA := range a.scopes {
+		for _, scopeB := range b.scopes {
+			if len(scopeA) == 0 || len(scopeB) == 0 {
+				continue // already reported as an empty selector
+			}
+			distinguishingA := len(subtractLabels(scopeA, scopeB)) > 0
+			distinguishingB := len(subtractLabels(scopeB, scopeA)) > 0
+			if distinguishingA && distinguishingB {
+				continue
+			}
+			broader, narrower := a, b
+			broaderScope, narrowerScope := scopeA, scopeB
+			if !distinguishingB {
+				broader, narrower = b, a
+				broaderScope, narrowerScope = scopeB, scopeA
+			}
+			r.add(errorSharedBacklogOverlap, Error, broader.file, "Gaggle", broader.gaggle,
+				"shares a backlog with gaggle %q, and its effective requireLabels %v selects every item %q's %v selects; same-instance consumers of one backlog must be provably disjoint, so each needs a label the other lacks (e.g. a distinct repo: routing label)",
+				narrower.gaggle, broaderScope, narrower.gaggle, narrowerScope)
+			return
+		}
+	}
+}
+
+// subtractLabels returns the labels in a that are absent from b.
+func subtractLabels(a, b []string) []string {
+	inB := make(map[string]struct{}, len(b))
+	for _, label := range b {
+		inB[label] = struct{}{}
+	}
+	var out []string
+	for _, label := range a {
+		if _, ok := inB[label]; !ok {
+			out = append(out, label)
+		}
+	}
 	return out
 }
 

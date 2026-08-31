@@ -363,6 +363,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "release", desc: "Release this run's claim leases early"},
 		{name: "read-only", desc: "Query without mutating provider state"},
 		{name: "reconcile", desc: "Reconcile claim state"},
+		{name: "route", desc: "Apply allowlisted routing labels from a route plan and release the claim"},
 	},
 	"set-milestone": {
 		{name: "item", takesArg: true, desc: "Issue item id"},

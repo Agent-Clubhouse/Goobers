@@ -457,3 +457,84 @@ func TestRecoverClaimsResolvesBacklogReconcileClaimsByOwningRun(t *testing.T) {
 		}
 	}
 }
+
+// TestRecoverClaimsReleasesTerminalBacklogScopedClaim is the currentClaimEntry
+// regression: a v3 backlog-scoped lease (personal-gaggle-routing §5.3) is
+// stored under the backlog key, so re-reading it under a hand-rebuilt
+// gaggle/provider key found nothing, recovery concluded "no longer held", and
+// the lease of an already-terminal run was never released — it sat held until
+// its lease expired, and the run's PR-remediation no-op was never recorded.
+//
+// The gaggle-scoped claim alongside it proves the legacy dispatch still works
+// and that fixing the backlog lookup did not start releasing the wrong entry.
+func TestRecoverClaimsReleasesTerminalBacklogScopedClaim(t *testing.T) {
+	root := initDeterministicDemo(t)
+	l := instance.NewLayout(root)
+	const (
+		terminalRun = "backlog-scoped-terminal-holder"
+		liveRun     = "backlog-scoped-live-holder"
+	)
+	newStaleTerminalRun(t, l, terminalRun, "default-implement", journal.PhaseCompleted, "local-ci")
+	newLiveRun(t, l, liveRun, "default-implement")
+
+	identity := apiv1.BacklogIdentity{
+		Provider: apiv1.ProviderGitHub, Owner: "gim-home", Name: "brandiv.goobers",
+	}
+	if err := identity.Validate(); err != nil {
+		t.Fatalf("fixture backlog identity: %v", err)
+	}
+	terminalKey := backlogClaimKey(identity, "example", "820")
+	liveKey := backlogClaimKey(identity, "example", "821")
+
+	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, _, err := ledger.ClaimScoped(terminalKey, terminalRun, "default-implement", time.Hour); err != nil || !ok {
+		t.Fatalf("seed backlog-scoped terminal claim: ok=%v err=%v", ok, err)
+	}
+	if ok, _, err := ledger.ClaimScoped(liveKey, liveRun, "default-implement", time.Hour); err != nil || !ok {
+		t.Fatalf("seed backlog-scoped live claim: ok=%v err=%v", ok, err)
+	}
+	gaggleKey := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: "822"}
+	if ok, _, err := ledger.ClaimScoped(gaggleKey, terminalRun, "default-implement", time.Hour); err != nil || !ok {
+		t.Fatalf("seed gaggle-scoped terminal claim: ok=%v err=%v", ok, err)
+	}
+
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	released, err := recoverClaims(l, log, time.Now(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	releasedItems := make(map[string]bool, len(released))
+	for _, entry := range released {
+		if entry.RunID != terminalRun {
+			t.Fatalf("recovery released a claim held by %q: %+v", entry.RunID, entry)
+		}
+		releasedItems[entry.ItemID] = true
+	}
+	if !releasedItems["820"] || !releasedItems["822"] || len(releasedItems) != 2 {
+		t.Fatalf("released items = %v, want the terminal run's backlog-scoped (820) and gaggle-scoped (822) claims", releasedItems)
+	}
+
+	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := reopened.LookupScoped(terminalKey); held {
+		t.Fatalf("backlog-scoped claim of a terminal run survived recovery: %+v", entry)
+	}
+	if entry, held := reopened.LookupScoped(gaggleKey); held {
+		t.Fatalf("gaggle-scoped claim of a terminal run survived recovery: %+v", entry)
+	}
+	if entry, held := reopened.LookupScoped(liveKey); !held || entry.RunID != liveRun {
+		t.Fatalf("live run's backlog-scoped claim = (%+v, %v), want preserved", entry, held)
+	}
+}

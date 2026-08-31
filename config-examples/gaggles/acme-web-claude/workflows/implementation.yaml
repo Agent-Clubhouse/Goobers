@@ -34,7 +34,7 @@ spec:
         command: ["goobers", "backlog-query", "--claim"]
       inputs:
         trustLabel: "goobers:approved"
-        requireLabels: "goobers:ready"
+        requireLabels: "goobers:ready,harness:claude-code"
         # Issue #361/#355: close-out now sets status=in-review at PR-open
         # time instead of closing the issue outright, so an issue with a PR
         # still cycling through merge-review stays open (not closed) and

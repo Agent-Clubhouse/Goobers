@@ -2013,10 +2013,32 @@ func TestBuildSchedulerSetupMigratesLiveLegacyClaimForRemovedWorkflow(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := localscheduler.ClaimKey{Gaggle: "example", Provider: "github", ExternalID: "159"}
+	// Startup runs BOTH migrations under one lock (daemon.go): the legacy
+	// namespace pass resolves the item-only key onto the owning run's gaggle,
+	// and the backlog-scope pass then promotes that gaggle-scoped key onto the
+	// authoritative v3 backlog key. Asserting the intermediate v2 key would
+	// assert a state startup deliberately no longer leaves behind, so the
+	// expectation is the gaggle's own resolved backlog identity.
+	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
+	if err != nil {
+		t.Fatalf("load fixture config: %v (report: %+v)", err, report)
+	}
+	identity, ok := backlogIdentitiesByGaggle(set)["example"]
+	if !ok {
+		t.Fatal("fixture gaggle \"example\" has no resolvable backlog identity")
+	}
+	key := backlogClaimKey(identity, "example", "159")
 	entry, ok := reopened.LookupScoped(key)
 	if !ok || entry.RunID != runID {
-		t.Fatalf("migrated claim = %+v, %v; want claim scoped from the run's gaggle", entry, ok)
+		t.Fatalf("migrated claim = %+v, %v; want a backlog-scoped claim from the run's gaggle", entry, ok)
+	}
+	if backlog, scoped := entry.BacklogIdentity(); !scoped || !backlog.Equal(identity) {
+		t.Fatalf("migrated claim backlog = %+v (scoped=%v), want %+v", backlog, scoped, identity)
+	}
+	if _, ok := reopened.LookupScoped(localscheduler.ClaimKey{
+		Gaggle: "example", Provider: "github", ExternalID: "159",
+	}); ok {
+		t.Fatal("gaggle-scoped claim remained after backlog-scope migration")
 	}
 	if _, ok := reopened.Lookup("159"); ok {
 		t.Fatal("item-only legacy claim remained after ownership was resolved without the removed workflow")

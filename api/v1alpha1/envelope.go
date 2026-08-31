@@ -86,6 +86,11 @@ type InvocationEnvelope struct {
 	Workspace string `json:"workspace"`
 	// RepoRef is the target repository for this run.
 	RepoRef RepoRef `json:"repoRef"`
+	// BacklogRef carries the gaggle's backlog identity and credential scope
+	// independently of the target code repository, so a gaggle whose backlog
+	// lives in a different repository/provider resolves backlog operations
+	// against the correct container and credential.
+	BacklogRef *BacklogRef `json:"backlogRef,omitempty"`
 	// AdditionalWorkspaces are read-only checkouts of the gaggle's reference
 	// repos (GaggleSpec.AdditionalRepos, MGV-11 #1286): the stage may READ them
 	// for cross-repo context, but no push credential is ever provisioned for

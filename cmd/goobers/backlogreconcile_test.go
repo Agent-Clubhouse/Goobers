@@ -486,11 +486,21 @@ func TestReconcileBacklogMetadataReservationBlocksConcurrentClaim(t *testing.T) 
 					if err != nil {
 						return err
 					}
-					result.ok, result.holder, err = ledger.ClaimScoped(localscheduler.ClaimKey{
-						Gaggle:     "goobers",
-						Provider:   string(providers.ProviderGitHub),
-						ExternalID: "7",
-					}, "concurrent-run", "implementation", time.Hour)
+					// Claim through the SAME authoritative key the real claim
+					// path builds (backlog-scoped, not gaggle-scoped): the
+					// reservation only blocks a claimant that contends for the
+					// same ownership key, so a hand-built legacy key here would
+					// silently stop testing the exclusion it is named for.
+					identity, err := backlogIdentityForStage(root, providers.RepositoryRef{
+						Provider: providers.ProviderGitHub, Owner: "your-org", Name: "your-repo",
+					})
+					if err != nil {
+						return err
+					}
+					result.ok, result.holder, err = ledger.ClaimScoped(
+						backlogClaimKey(identity, "goobers", "7"),
+						"concurrent-run", "implementation", time.Hour,
+					)
 					return err
 				})
 				if result.ok {

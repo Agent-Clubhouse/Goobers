@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runcontrol"
@@ -500,8 +501,17 @@ func (c CredentialGrant) validate(i int, seen map[string]bool, stores map[string
 }
 
 func (c CredentialGrant) identity(i int) (string, string, error) {
+	declared := 0
+	for _, set := range []bool{c.Capability != "", c.MCP != "", c.Connection != ""} {
+		if set {
+			declared++
+		}
+	}
+	if declared > 1 {
+		return "", "", fmt.Errorf("credentials[%d]: set exactly one of capability, mcp, or connection", i)
+	}
 	switch {
-	case c.Capability != "" && c.MCP == "":
+	case c.Capability != "":
 		if !capability.Known(c.Capability) {
 			return "", "", fmt.Errorf("credentials[%d]: unknown capability %q", i, c.Capability)
 		}
@@ -509,12 +519,23 @@ func (c CredentialGrant) identity(i int) (string, string, error) {
 			return "", "", fmt.Errorf("credentials[%d]: capability %q is runner-owned; configure it through workflowSource.token", i, c.Capability)
 		}
 		return c.Capability, "capability " + strconv.Quote(c.Capability), nil
-	case c.Capability == "" && mcpconfig.ValidBYOCredentialName(c.MCP):
+	case mcpconfig.ValidBYOCredentialName(c.MCP):
 		return mcpconfig.BYOCredentialKey(c.MCP), "MCP credential " + strconv.Quote(c.MCP), nil
-	case c.Capability == "" && c.MCP != "":
+	case c.MCP != "":
 		return "", "", fmt.Errorf("credentials[%d]: MCP credential name %q must be a lowercase DNS label", i, c.MCP)
+	// A connection grant is what sources the credential a gaggle's
+	// spec.backlog.connectionRef (or spec.project.connectionRef) authenticates
+	// with. It is deliberately NOT a stage capability, so it lives in its own
+	// key space (credentials.ConnectionCredentialKey) and is reachable only
+	// through an explicit connectionRef — which is what lets one gaggle hold a
+	// project credential and a distinct backlog credential at the same time.
+	case credentials.ValidConnectionName(c.Connection):
+		return credentials.ConnectionCredentialKey(c.Connection),
+			"connection " + strconv.Quote(c.Connection), nil
+	case c.Connection != "":
+		return "", "", fmt.Errorf("credentials[%d]: connection name %q must be a lowercase DNS label", i, c.Connection)
 	default:
-		return "", "", fmt.Errorf("credentials[%d]: set exactly one of capability or mcp", i)
+		return "", "", fmt.Errorf("credentials[%d]: set exactly one of capability, mcp, or connection", i)
 	}
 }
 

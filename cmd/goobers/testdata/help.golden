@@ -197,7 +197,7 @@ Workflow-stage and connector commands:
   goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
   goobers backlog-assignment             assign eligible backlog items from a configured roster (a workflow stage)
   goobers backlog-health [--feedback]    snapshot ready-pool depth and age (a workflow stage)
-  goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)
+  goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release | --route]  query/claim one eligible backlog item (a workflow stage)
   goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)
   goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
   goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
@@ -255,7 +255,7 @@ Usage:
   goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
   goobers backlog-assignment             assign eligible backlog items from a configured roster (a workflow stage)
   goobers backlog-health [--feedback]    snapshot ready-pool depth and age (a workflow stage)
-  goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)
+  goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release | --route]  query/claim one eligible backlog item (a workflow stage)
   goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)
   goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
   goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
@@ -428,7 +428,7 @@ implementation runs meet the implementationFailureThreshold input (minimum 2).
 Exit codes: 0 = OK, 1 = provider/IO error, 2 = usage error.
 
 ### backlog-query
-Usage: goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release] [path]
+Usage: goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release | --route] [path]
 
 Query the provider for eligible backlog items — labeled with trustLabel
 (SEC-047: required on public repos, since backlog content is untrusted
@@ -458,8 +458,26 @@ ledger. Idempotent: releasing claims this run does not hold (already
 released, e.g. re-run after a crash) is a no-op success, not an error.
 With --reconcile, repairs drifted backlog labels against the claim ledger
 and live issue/child state, then writes the actual correction count to the
-declared result file. --claim, --reconcile, and --release are mutually
-exclusive.
+declared result file. --claim, --reconcile, --release, and --route are
+mutually exclusive.
+
+With --route, applies routing labels from a route plan and hands the item
+off in one deterministic transaction. It requires the route-backlog-item
+policy action. Inputs: routePlanFile (default route-plan.json),
+resultFile (default route-result.json), and allowedRouteLabels — a static,
+comma-separated allowlist of exact labels or trailing-wildcard prefixes
+(e.g. "goobers:routed,repo:*,workflow:*"). The allowlist is task
+configuration and must not come from inputsFrom. Trust and claim labels
+(goobers:approved, goobers:claimed, the workflow's trustLabel) are
+reserved: an allowlist entry that could match one is rejected outright, so
+routing can never grant trust. For each planned item the command re-checks
+that this run still owns the backlog-scoped lease, applies the labels,
+removes the provider claim marker, then releases the lease — in that order,
+so a failure after labeling retains ownership for retry rather than
+publishing a half-routed item. Retrying an item whose labels are already
+present and whose lease is gone reports alreadyRouted. Batches are per-item
+transactional: every outcome is recorded in resultFile and the command
+exits non-zero if any item failed.
 
 With --claim, contested-file dispatch awareness (#1085) deprioritizes
 claiming an issue whose referenced files are already contested by
@@ -495,9 +513,9 @@ value is the null/unassigned-only mode: only items with no assignee at
 all are eligible.
 
 Exit codes: 0 = eligible item found (and claimed, if --claim) / released
-(--release), 1 = business error (no eligible/claimable item, missing
-trustLabel with --claim, config/credential/provider error), 2 =
-usage/IO error.
+(--release) / routed (--route), 1 = business error (no eligible/claimable
+item, missing trustLabel with --claim, invalid route plan or allowlist, a
+failed route item, config/credential/provider error), 2 = usage/IO error.
 
 ### blocked
 Usage: goobers blocked <command> [flags] [path]

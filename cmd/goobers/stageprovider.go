@@ -2,10 +2,14 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"strings"
 
+	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/providers"
 )
@@ -21,6 +25,9 @@ type stageProviderConfig struct {
 	openPR       bool
 	noRetries    bool
 	observeToken func(string)
+	// connectionRef names the gaggle connection whose credential this provider
+	// must authenticate as, instead of the stage's capability-scoped default.
+	connectionRef string
 }
 
 type stageProviderOption func(*stageProviderConfig)
@@ -67,6 +74,21 @@ func withStageProviderTokenObserver(observer func(string)) stageProviderOption {
 	}
 }
 
+// withStageProviderConnection authenticates this provider as the named gaggle
+// connection rather than with the stage's capability-scoped token. It is how a
+// backlog that lives under different ownership than the target repository gets
+// its own credential (spec.backlog.connectionRef): the runner injects the
+// connection's token alongside — not instead of — the capability tokens, so one
+// stage can hold a project credential and a backlog credential simultaneously.
+//
+// An empty name is a no-op, keeping every gaggle that declares no connectionRef
+// on exactly its previous credential path.
+func withStageProviderConnection(name string) stageProviderOption {
+	return func(cfg *stageProviderConfig) {
+		cfg.connectionRef = name
+	}
+}
+
 type stageProviderFactory func(stageProviderConfig) (providers.Provider, error)
 
 var stageProviderFactories = map[providers.ProviderKind]stageProviderFactory{
@@ -110,9 +132,16 @@ func newProviderForStageAs[T providers.Provider](root string, repo providers.Rep
 
 func stageProviderToken(cfg stageProviderConfig) (string, error) {
 	var token string
-	if cfg.token != "" {
+	switch {
+	case cfg.token != "":
 		token = cfg.token
-	} else {
+	case cfg.connectionRef != "":
+		var err error
+		token, err = connectionToken(cfg.connectionRef, cfg.capability)
+		if err != nil {
+			return "", err
+		}
+	default:
 		var err error
 		token, err = providerToken(cfg.capability)
 		if err != nil {
@@ -121,6 +150,22 @@ func stageProviderToken(cfg stageProviderConfig) (string, error) {
 	}
 	if cfg.observeToken != nil {
 		cfg.observeToken(token)
+	}
+	return token, nil
+}
+
+// connectionToken reads the credential the runner injected for a named gaggle
+// connection. It falls back to the capability-scoped credential when the
+// instance declares no credentials: entry for the connection — a gaggle may
+// legitimately name a connection purely for documentation/validation while both
+// project and backlog live under one account and one token.
+func connectionToken(name string, cap capability.Capability) (string, error) {
+	if token := os.Getenv(executor.CredentialEnvVar(credentials.ConnectionCredentialKey(name))); token != "" {
+		return token, nil
+	}
+	token, err := providerToken(cap)
+	if err != nil {
+		return "", fmt.Errorf("no credential for connection %q and no capability credential to fall back on: %w", name, err)
 	}
 	return token, nil
 }
@@ -156,7 +201,36 @@ func newRegisteredADOProviderForStage(cfg stageProviderConfig) (providers.Provid
 	if cfg.openPR {
 		return newADOProviderForOpenPR(cfg.root, cfg.repo)
 	}
+	if cfg.connectionRef != "" {
+		return newADOProviderForConnection(cfg.root, cfg.repo, cfg.connectionRef)
+	}
 	return newADOProviderForStage(cfg.root, cfg.repo)
+}
+
+// newADOProviderForConnection builds the ADO provider for a stage that must
+// authenticate as a named connection rather than with the routed repo's own
+// default credential — the backlog half of a gaggle whose backlog project is
+// governed by different credentials than its code repository.
+//
+// Only PAT auth is redirected: the Entra-backed kinds (azure-cli, workload and
+// managed identity) authenticate as an ambient identity with no token ref to
+// substitute, so they are left exactly as configured. When the connection
+// credential is absent the repo's configured auth stands, which keeps a gaggle
+// that names a connection but shares one credential working unchanged.
+func newADOProviderForConnection(root string, routed providers.RepositoryRef, connectionRef string) (*providers.ADOProvider, error) {
+	repo, err := adoRepoRefForStage(root, routed)
+	if err != nil {
+		return nil, err
+	}
+	kind := instance.ADOAuthPAT
+	if repo.Auth != nil {
+		kind = repo.Auth.Kind
+	}
+	envVar := executor.CredentialEnvVar(credentials.ConnectionCredentialKey(connectionRef))
+	if kind == instance.ADOAuthPAT && os.Getenv(envVar) != "" {
+		repo.Token = instance.TokenRef{Env: envVar}
+	}
+	return adoauth.Provider(repo, nil, nil, nil, nil, nil)
 }
 
 func newRegisteredGiteaProviderForStage(cfg stageProviderConfig) (providers.Provider, error) {

@@ -179,6 +179,7 @@ var constBackedEnums = []enumRule{
 	{schema: "gaggle.schema.json", path: "$defs/backlogRef/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
 	{schema: "invocation.schema.json", path: "$defs/backlogItem/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
 	{schema: "invocation.schema.json", path: "$defs/repoRef/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
+	{schema: "invocation.schema.json", path: "$defs/backlogRef/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
 	{schema: "instance.schema.json", path: "$defs/repo/properties/provider/enum", source: "api/v1alpha1.Provider", want: goConsts("api/v1alpha1/common.go", "Provider")},
 	{schema: "instance.schema.json", path: "$defs/harnessName/enum", source: "api/v1alpha1.Harness", want: goConsts("api/v1alpha1/goober_types.go", "Harness")},
 

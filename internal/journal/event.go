@@ -120,6 +120,9 @@ const (
 	EventClaimReleased EventType = "claim.released"
 	// EventClaimForceReleased records an operator overriding a claim lease.
 	EventClaimForceReleased EventType = "claim.force_released"
+	// EventBacklogItemRouted records a deterministic route transaction that
+	// classified a backlog item with routing labels and released its claim.
+	EventBacklogItemRouted EventType = "backlog.item.routed"
 	// EventClaimLockSlow records claims-lock contention above the local runner's
 	// diagnostic threshold. Timing, operation, and process details live under
 	// Runner because they are runner-specific and excluded from conformance.

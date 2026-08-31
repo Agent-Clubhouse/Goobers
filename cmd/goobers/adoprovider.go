@@ -2,9 +2,7 @@ package main
 
 import (
 	"fmt"
-	"os"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/adoauth"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
@@ -81,75 +79,43 @@ func buildADOProviderForOpenPR(root string, routed providers.RepositoryRef) (*pr
 }
 
 // backlogRepoRefForStage resolves the RepositoryRef the work-item (backlog)
-// operations of a provider-chain stage must address. On Azure DevOps the code
-// repository a run targets (gaggle.spec.project — where branches and PRs land,
-// e.g. "Example Service") is a *different ADO project* from the backlog the
-// gaggle draws PBIs from (gaggle.spec.backlog — e.g. "Example Backlog"). Work-item WIQL
-// and REST are project-scoped ([System.TeamProject] = @project), so a backlog
-// list/claim/close must target the backlog project, not the routed code-repo
-// project — otherwise the query runs against the wrong (usually far larger)
-// project and returns no matching PBIs. Only the project tier differs: the ADO
-// provider is organization-scoped and the backlog project lives under the same
-// organization (and the same azure-cli/PAT auth), so organization, name, and
-// credentials stay the routed code repo's. On GitHub, where the code repo and
-// backlog coincide, and whenever no ADO backlog project is declared or the
-// gaggle can't be resolved, the routed repo is returned unchanged.
+// operations of a provider-chain stage must address. The backlog a gaggle draws
+// from (gaggle.spec.backlog) is modeled independently of the code repository a
+// run targets (gaggle.spec.project): on Azure DevOps they are different
+// projects within one organization ("Example Backlog" vs "Example Service"),
+// and since personal-gaggle-routing they may be an entirely different
+// repository or even a different provider — a gaggle targeting repo A can
+// consume a private backlog in repo B.
+//
+// Resolution is delegated to stageBacklogRef (backlogidentity.go) so the
+// addressing ref, the authoritative claim scope, and the credential connection
+// are all derived from the same resolved spec.backlog. A resolution failure
+// returns the routed repo unchanged, preserving the historical
+// same-project/same-backlog behavior for every gaggle that declares no distinct
+// backlog; callers that must not silently address the wrong container use
+// backlogIdentityForStage, which fails loudly instead.
 func backlogRepoRefForStage(root string, routed providers.RepositoryRef) providers.RepositoryRef {
-	if routed.Provider != providers.ProviderADO {
+	ref, _, err := stageBacklogRef(root, routed)
+	if err != nil {
 		return routed
 	}
-	gaggle := os.Getenv("GOOBERS_GAGGLE")
-	if gaggle == "" {
+	backlogRepo, err := backlogRepositoryRef(ref, routed)
+	if err != nil {
 		return routed
 	}
-	set, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
-	if err != nil || report == nil || set == nil {
-		return routed
-	}
-	return applyBacklogProject(set, gaggle, routed)
+	return backlogRepo
 }
 
 // backlogRepoRefForGaggle is the daemon-side counterpart of
 // backlogRepoRefForStage: the run's failure/park/escalation handlers execute in
 // the daemon process (not a routed stage subprocess), so the gaggle name comes
 // from the gaggle-scoped layout (instance.Layout.ForGaggle) rather than the
-// GOOBERS_GAGGLE stage-env var. It applies the same code-repo→backlog-project
-// override so an ADO work-item mutation (park needs-human, release claim, leave
-// a failure comment) targets the backlog project (e.g. "Example Backlog") the PBI actually
-// lives in, not the code-repo project the branch/PR landed in.
+// GOOBERS_GAGGLE stage-env var.
 func backlogRepoRefForGaggle(l instance.Layout, routed providers.RepositoryRef) providers.RepositoryRef {
-	if routed.Provider != providers.ProviderADO {
+	ref, _ := gaggleBacklogRef(l, routed)
+	backlogRepo, err := backlogRepositoryRef(ref, routed)
+	if err != nil {
 		return routed
 	}
-	gaggle := l.Gaggle()
-	if gaggle == "" {
-		return routed
-	}
-	set, report, err := instance.LoadConfigDir(l.ConfigDir())
-	if err != nil || report == nil || set == nil {
-		return routed
-	}
-	return applyBacklogProject(set, gaggle, routed)
-}
-
-// applyBacklogProject overrides only the project tier of routed with the named
-// gaggle's ADO backlog project. Organization, name, and credentials stay the
-// routed code repo's (the ADO provider is org-scoped and the backlog lives
-// under the same organization and auth). Returns routed unchanged when the
-// gaggle is absent, its backlog is not ADO, or no backlog project is declared.
-func applyBacklogProject(set *instance.ConfigSet, gaggle string, routed providers.RepositoryRef) providers.RepositoryRef {
-	for i := range set.Gaggles {
-		g := &set.Gaggles[i]
-		if g.Name != gaggle {
-			continue
-		}
-		backlog := g.Spec.Backlog
-		if backlog.Provider != apiv1.ProviderADO || backlog.Project == "" {
-			return routed
-		}
-		ref := routed
-		ref.Project = backlog.Project
-		return ref
-	}
-	return routed
+	return backlogRepo
 }

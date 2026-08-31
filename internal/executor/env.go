@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/procenv"
@@ -90,7 +91,54 @@ const (
 	// read-only reference-repo checkouts (MGV-11 #1286) available to this stage,
 	// so a stage can discover which GOOBERS_ADDITIONAL_REPO_* vars are set.
 	AdditionalReposEnvVar = "GOOBERS_ADDITIONAL_REPOS"
+
+	// Backlog stage context: backlog identity and credential carried
+	// independently from the code repository so a gaggle targeting repo A can
+	// consume work items from a different repo/project B.
+
+	// BacklogProviderEnvVar carries the backlog's provider kind to goobers CLI
+	// stages. Set when spec.backlog differs from spec.project.
+	BacklogProviderEnvVar = "GOOBERS_BACKLOG_PROVIDER"
+	// BacklogBaseURLEnvVar carries the backlog's base URL (self-hosted forges).
+	BacklogBaseURLEnvVar = "GOOBERS_BACKLOG_BASE_URL"
+	// BacklogOwnerEnvVar carries the backlog's owner (GitHub/Gitea).
+	BacklogOwnerEnvVar = "GOOBERS_BACKLOG_OWNER"
+	// BacklogProjectEnvVar carries the backlog's project (ADO project or
+	// "owner/name" for GitHub/Gitea).
+	BacklogProjectEnvVar = "GOOBERS_BACKLOG_PROJECT"
+	// BacklogNameEnvVar carries the backlog's repository/container name.
+	BacklogNameEnvVar = "GOOBERS_BACKLOG_NAME"
+	// BacklogConnectionRefEnvVar carries the backlog's declared connectionRef
+	// so the stage can resolve a distinct credential.
+	BacklogConnectionRefEnvVar = "GOOBERS_BACKLOG_CONNECTION_REF"
 )
+
+// stageCredentialKeys is the credential key set a stage's env is materialized
+// for: its declared capabilities, plus the connection credential its gaggle's
+// backlog references.
+//
+// Adding the backlog connection here is what gives one stage two independently
+// scoped credentials at once — the ordinary capability token for its project
+// repository, and a separate connection-scoped token for a backlog that lives
+// under different ownership. A gaggle that declares no backlog connectionRef
+// produces exactly the capability list it did before, so nothing changes for
+// the same-project/same-backlog majority.
+//
+// The key is only ever *requested*; credentials.Injector still refuses to
+// materialize it unless an instance credentials: entry actually granted it, so
+// naming a connection cannot conjure a token.
+func stageCredentialKeys(env apiv1.InvocationEnvelope) []string {
+	if env.BacklogRef == nil || env.BacklogRef.ConnectionRef == "" {
+		return env.Capabilities
+	}
+	key := credentials.ConnectionCredentialKey(env.BacklogRef.ConnectionRef)
+	if slices.Contains(env.Capabilities, key) {
+		return env.Capabilities
+	}
+	keys := make([]string, 0, len(env.Capabilities)+1)
+	keys = append(keys, env.Capabilities...)
+	return append(keys, key)
+}
 
 // AdditionalRepoEnvVar returns the deterministic env var name a read-only
 // reference-repo checkout's path is injected under, e.g. a repo named "goobers"

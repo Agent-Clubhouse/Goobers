@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
@@ -88,12 +89,12 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issueProvider, err := newBacklogHealthProvider(root, repo, !*feedback)
+	backlogRepo := backlogRepoRefForStage(root, repo)
+	issueProvider, err := newBacklogHealthProvider(root, repo, backlogRepo, !*feedback)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	backlogRepo := backlogRepoRefForStage(root, repo)
 	trustLabel := providerInput("trustLabel", "")
 	readyLabel := providerInput("readyLabel", providers.LabelReady)
 	var labels []string
@@ -146,7 +147,13 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: inspect ready-pool claims: %v\n", err)
 		return 1
 	}
-	items = unclaimedReadyItems(items, ledger, providerGaggle(), string(backlogRepo.Provider), observedAt)
+	backlogIdentity := apiv1.BacklogIdentity{}
+	if providerGaggle() != "" {
+		if identity, err := backlogIdentityForStage(root, repo); err == nil {
+			backlogIdentity = identity
+		}
+	}
+	items = unclaimedReadyItems(items, ledger, backlogIdentity, providerGaggle(), string(backlogRepo.Provider), observedAt)
 	report := measureReadyPool(items, readyLabel, observedAt)
 	report.ReadyTransitions = transitions
 	data, err := json.Marshal(report)
@@ -163,14 +170,17 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func newBacklogHealthProvider(root string, repo providers.RepositoryRef, readOnly bool) (backlogHealthProvider, error) {
-	provider, err := newProviderForStage(root, repo, readOnly, withStageProviderCache(), withStageProviderMutations("issue"))
+// newBacklogHealthProvider builds the health/feedback provider. Every call it
+// makes is addressed at the backlog, so it authenticates as the backlog's
+// connection rather than the project credential.
+func newBacklogHealthProvider(root string, repo, backlogRepo providers.RepositoryRef, readOnly bool) (backlogHealthProvider, error) {
+	provider, err := newBacklogProviderForStage(root, repo, backlogRepo, readOnly, withStageProviderCache(), withStageProviderMutations("issue"))
 	if err != nil {
 		return nil, err
 	}
 	healthProvider, ok := provider.(backlogHealthProvider)
 	if !ok {
-		return nil, fmt.Errorf("backlog-health does not support repository provider %q", repo.Provider)
+		return nil, fmt.Errorf("backlog-health does not support repository provider %q", backlogRepo.Provider)
 	}
 	return healthProvider, nil
 }
@@ -595,17 +605,39 @@ func annotateBacklogReadyTimes(
 	return nil
 }
 
+// unclaimedReadyItems removes items that currently carry a live lease.
+//
+// The backlog-scoped lookup is deliberately gaggle-agnostic: ready-pool depth
+// is a property of the BACKLOG, so an item leased by a sibling gaggle that
+// shares this backlog is genuinely not available work and must not be counted
+// as ready-pool depth for this one. backlog is zero only for a standalone
+// invocation that could not resolve one, which keeps the historical
+// gaggle-scoped behavior.
 func unclaimedReadyItems(
 	items []providers.WorkItem,
 	ledger *localscheduler.ClaimLedger,
+	backlog apiv1.BacklogIdentity,
 	gaggle, provider string,
 	observedAt time.Time,
 ) []providers.WorkItem {
 	if ledger == nil {
 		return items
 	}
+	live := make(map[string]struct{})
+	if !backlog.IsZero() {
+		for _, entry := range ledger.Snapshot() {
+			identity, ok := entry.BacklogIdentity()
+			if !ok || !identity.Equal(backlog) || !entry.ExpiresAt.After(observedAt) {
+				continue
+			}
+			live[entry.ExternalID] = struct{}{}
+		}
+	}
 	available := items[:0]
 	for _, item := range items {
+		if _, held := live[item.ID]; held {
+			continue
+		}
 		var (
 			entry localscheduler.ClaimEntry
 			ok    bool

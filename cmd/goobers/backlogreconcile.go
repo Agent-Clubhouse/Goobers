@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
@@ -48,6 +49,8 @@ type backlogReconcileReservation struct {
 	gaggle   string
 	provider string
 	runID    string
+	// backlog is the authoritative claim scope when it could be resolved.
+	backlog *apiv1.BacklogIdentity
 }
 
 func reconcileBacklogMetadata(
@@ -233,6 +236,19 @@ func reserveBacklogClaimReconciliation(
 		provider: string(repo.Provider),
 		runID:    runID,
 	}
+	// Reconciliation reserves the item under the SAME authoritative scope a
+	// real claim uses, so it cannot repair metadata for an item another gaggle
+	// sharing this backlog is actively working. Like the claim path, backlog
+	// scope applies only to a gaggle-owned run; a standalone invocation keeps
+	// the historical key. An unresolvable identity falls back to gaggle scope
+	// rather than failing the repair pass: reconciliation is best-effort
+	// maintenance, and refusing to run would be a worse outcome than reserving
+	// slightly too narrowly.
+	if gaggle != "" {
+		if identity, err := backlogIdentityForStage(l.Root, repo); err == nil {
+			reservation.backlog = &identity
+		}
+	}
 	acquired := false
 	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationBacklogReconcile, func() error {
 		ledger, err := localscheduler.OpenClaimLedger(
@@ -242,18 +258,30 @@ func reserveBacklogClaimReconciliation(
 		if err != nil {
 			return fmt.Errorf("open claim ledger: %w", err)
 		}
-		if gaggle == "" {
-			acquired, _, err = ledger.Claim(itemID, runID, "backlog-reconcile", stageTimeout())
+		if key, scoped := reservation.claimKey(); scoped {
+			acquired, _, err = ledger.ClaimScoped(key, runID, "backlog-reconcile", stageTimeout())
 		} else {
-			acquired, _, err = ledger.ClaimScoped(localscheduler.ClaimKey{
-				Gaggle:     gaggle,
-				Provider:   string(repo.Provider),
-				ExternalID: itemID,
-			}, runID, "backlog-reconcile", stageTimeout())
+			acquired, _, err = ledger.Claim(itemID, runID, "backlog-reconcile", stageTimeout())
 		}
 		return err
 	})
 	return reservation, acquired, err
+}
+
+// claimKey returns the reservation's ledger key and whether it is scoped at
+// all (a gaggle-less standalone invocation keeps the item-only key).
+func (r backlogReconcileReservation) claimKey() (localscheduler.ClaimKey, bool) {
+	if r.backlog != nil {
+		return backlogClaimKey(*r.backlog, r.gaggle, r.itemID), true
+	}
+	if r.gaggle == "" {
+		return localscheduler.ClaimKey{}, false
+	}
+	return localscheduler.ClaimKey{
+		Gaggle:     r.gaggle,
+		Provider:   r.provider,
+		ExternalID: r.itemID,
+	}, true
 }
 
 func releaseBacklogClaimReconciliation(l instance.Layout, reservation backlogReconcileReservation) error {
@@ -262,14 +290,10 @@ func releaseBacklogClaimReconciliation(l instance.Layout, reservation backlogRec
 		if err != nil {
 			return fmt.Errorf("open claim ledger: %w", err)
 		}
-		if reservation.gaggle == "" {
-			return ledger.Release(reservation.itemID, reservation.runID)
+		if key, scoped := reservation.claimKey(); scoped {
+			return ledger.ReleaseScoped(key, reservation.runID)
 		}
-		return ledger.ReleaseScoped(localscheduler.ClaimKey{
-			Gaggle:     reservation.gaggle,
-			Provider:   reservation.provider,
-			ExternalID: reservation.itemID,
-		}, reservation.runID)
+		return ledger.Release(reservation.itemID, reservation.runID)
 	})
 }
 

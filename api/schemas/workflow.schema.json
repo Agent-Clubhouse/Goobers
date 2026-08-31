@@ -333,6 +333,7 @@
               "respond-to-findings",
               "resolve-review-threads",
               "rework-pr",
+              "route-backlog-item",
               "route-queue-outcome",
               "route-provider-verdict",
               "route-verdict",

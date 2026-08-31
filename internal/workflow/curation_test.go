@@ -195,7 +195,7 @@ func TestBacklogCurationCompiles(t *testing.T) {
 	// Bumped when intentional workflow contract changes alter the machine.
 	// #2332: blocked-on-sibling revalidation is bounded and happens before claim.
 	// #2386: read-only sampling and dedupe use issue-read rather than issue-write.
-	const wantDigest = "sha256:2cef3d2bdd74216f571783769d430f2dc252fd4f8f64f012204782b8626f6484"
+	const wantDigest = "sha256:814e8a2a74c72ccad8b69aaa86cd442cb35b5b23ce097e9f5e39277d6947d900"
 	if m.Digest() != wantDigest {
 		t.Logf("backlog-curation digest = %s", m.Digest())
 		t.Errorf("digest drift for backlog-curation:\n got  %s\n want %s\n(update wantDigest if the change is intended)", m.Digest(), wantDigest)
