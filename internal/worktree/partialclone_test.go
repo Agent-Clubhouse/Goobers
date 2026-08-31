@@ -39,9 +39,12 @@ func newFilterableSourceRepo(t *testing.T) (dir, url string) {
 // hardenedGitPrefix restates the exact override prefix hardenedGitArgs
 // prepends to every package git invocation, so the byte-identical invocation
 // pins below fail loudly if the hardening prefix ever changes shape — the
-// safe-bare-repo opt-in (#247) plus the hook/fsmonitor neutralization that
-// keeps agent-plantable repo state inert under daemon-side git (S3/#166).
-var hardenedGitPrefix = "-c safe.bareRepository=all -c core.hooksPath=" + os.DevNull + " -c core.fsmonitor=false"
+// safe-bare-repo opt-in (#247), the hook/fsmonitor neutralization that keeps
+// agent-plantable repo state inert under daemon-side git (S3/#166), and the
+// foreground pin that keeps auto maintenance from outliving the command and
+// writing into a mirror its caller is tearing down (#3990/#4000).
+var hardenedGitPrefix = "-c safe.bareRepository=all -c core.hooksPath=" + os.DevNull +
+	" -c core.fsmonitor=false -c maintenance.autoDetach=false -c gc.autoDetach=false"
 
 // missingObjectCount counts objects reachable from the repo's refs that are
 // not present locally — non-zero exactly when a promisor mirror is holding
