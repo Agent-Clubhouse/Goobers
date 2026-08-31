@@ -1,11 +1,13 @@
 package mcpio
 
-import "github.com/goobers/goobers/internal/safepath"
+import (
+	"github.com/goobers/goobers/internal/pathutil"
+)
 
 // resolveRooted resolves rel under root without following a symlink planted
-// anywhere in the chain. The logic lives in internal/safepath because the
-// harness's other pre-sandbox workspace writes need exactly the same
-// discipline (#2413); see safepath.Resolve for the rationale.
+// anywhere in the chain. The logic lives in internal/pathutil, which shares
+// this discipline with api/v1alpha1 and internal/configboundary; see
+// pathutil.ResolveRootedPath for the rationale.
 func resolveRooted(root, rel string, createMissingDirs bool) (string, error) {
-	return safepath.Resolve(root, rel, createMissingDirs)
+	return pathutil.ResolveRootedPath(root, rel, createMissingDirs)
 }
