@@ -237,12 +237,12 @@ func TestExplainReportsSelectorCandidatesAndNearMisses(t *testing.T) {
 		},
 		{
 			name:           "misspelled field",
-			selector:       "goober.spec.capabilites",
-			wantSegment:    "capabilites",
+			selector:       "goober.spec.capabilties",
+			wantSegment:    "capabilties",
 			wantPrefix:     "goober.spec",
 			wantSuggestion: "goober.spec.capabilities",
 			wantCandidates: []string{"capabilities", "role"},
-			wantMessage:    []string{`no field "capabilites" under "goober.spec"`, `valid fields at "goober.spec":`},
+			wantMessage:    []string{`no field "capabilties" under "goober.spec"`, `valid fields at "goober.spec":`},
 		},
 		{
 			name:           "array element marker omitted",
@@ -341,7 +341,7 @@ func TestNearestNameRejectsDistantCandidates(t *testing.T) {
 		name string
 		want string
 	}{
-		{"capabilites", "capabilities"},
+		{"capabilties", "capabilities"},
 		{"Role", "role"},
 		{"mode", "model"},
 		{"harness", ""},

@@ -180,7 +180,7 @@ func TestAuthoringCommandsRejectInvalidInputAndRenderHumanOutput(t *testing.T) {
 		// author guessing at the whole schema surface.
 		{[]string{"explain", "workflow.stages[].gate"}, 1, `no field "stages" under "workflow"`},
 		{[]string{"explain", "workflow.stages[].gate"}, 1, `valid fields at "workflow": apiVersion`},
-		{[]string{"explain", "goober.spec.capabilites"}, 1, `did you mean "goober.spec.capabilities"?`},
+		{[]string{"explain", "goober.spec.capabilties"}, 1, `did you mean "goober.spec.capabilities"?`},
 		{[]string{"explain", "workflow.spec.tasks.name"}, 1, `did you mean "workflow.spec.tasks[].name"?`},
 		// workflow.spec.tasks[].run.script is 2.0 surface and explains
 		// successfully now that resolution spans every loadable DSL version
