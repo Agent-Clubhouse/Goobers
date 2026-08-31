@@ -779,10 +779,10 @@ func latestMergeReviewVerdict(comments []providers.Comment) (apiv1.Verdict, bool
 // a park regardless of this answer, so every escape hatch (push a commit,
 // remove the label) stays reachable for every cause class.
 //
-// Rebase-curable: a rebase conflict, and a sibling-overlap rejection whose
-// resolution IS the sibling landing on the base branch. Not rebase-curable: a
-// substantive reviewer rejection, failing CI, and a human comment — those are
-// properties of the PR's own content, so re-running remediation against an
+// Rebase-curable: a rebase conflict, a sibling-overlap rejection whose
+// resolution IS the sibling landing on the base branch, and failing CI. Not
+// rebase-curable: a substantive reviewer rejection and a human comment — those
+// are properties of the PR's own content, so re-running remediation against an
 // unchanged head reproduces the same escalation no matter how far the base has
 // moved. Same for infrastructure-failure and policy-excluded outcomes (the PR
 // was never evaluated on its merits, and no base advance changes that) and for
@@ -821,6 +821,28 @@ func escalationBaseAdvanceUnparks(state remediationState) bool {
 func baseAdvanceCuresRemediationCause(cause remediationCause) bool {
 	switch cause {
 	case remediationCauseConflict, remediationCauseSiblingOverlap:
+		return true
+	case remediationCauseFailingCI:
+		// #4058: CI is evaluated against merge(base, head), not against head
+		// alone, so a base advance genuinely re-decides it. Treating a
+		// failing-ci park as a property of the PR's own content made every
+		// escalation caused BY THE BASE permanent: pr-remediation excludes
+		// escalated PRs upstream, so the head can never move, so the "parked
+		// until this PR's head changes" exit the escalation comment advertises
+		// is unreachable.
+		//
+		// Live on 2026-08-31 that killed two of the four PRs in the lane.
+		// #4040 and #4044 were both escalated on failing-ci by #4045, a
+		// repo-wide CI break in which the module-priming step selected the
+		// prerelease tag v0.4.0-beta.1 while TestFeatureRegistryAgainstLatestRelease
+		// selected v0.3.3 — identical failures on every suite that runs that
+		// test, on every PR in the repo, and nothing whatsoever to do with
+		// either PR's diff. #4045 was fixed on main and the base advanced five
+		// times, and both PRs stayed parked with no reachable exit.
+		//
+		// Bounded exactly like conflict and sibling-overlap: the retry happens
+		// once per base advance, and if CI still fails at the new base the next
+		// cycle re-escalates against the new snapshot.
 		return true
 	default:
 		return false
@@ -1461,6 +1483,35 @@ func (env *remediationCheckpointRunEnv) priorCheckpointState(comments []provider
 		pf(env.stdout, "PR #%d: escalation cleared by an operator — resetting remediation budget (was %d cycles, attempts %s)\n",
 			env.selectedNumber, prior.Cycles, renderRemediationAttempts(prior.AttemptsByCause))
 		prior = remediationState{}
+	}
+
+	// #4058: the base-advance exit had the identical hole #1808 fixed one exit
+	// over. escalationStillBlocks releases a rebase-curable park the moment the
+	// live base tip moves past EscalatedBaseSHA, but the counters that escalated
+	// it live in this payload, not in the label — so the re-admitted PR arrived
+	// with failing-ci already at 2/2 and the very next cycle re-escalated with
+	// budget-exhausted before an agent ever ran. LastDiffDigest does the same
+	// through the stall check. The unpark was real but inert.
+	//
+	// A base advance is new evidence about exactly the causes
+	// baseAdvanceCuresRemediationCause admits, so gate the reset on the same
+	// predicate that authorized the release and drop the whole prior record,
+	// matching the operator-clear reset above. A park whose cause a rebase
+	// cannot cure never reaches here: escalationStillBlocks keeps it blocked.
+	if prior.Escalated && escalationBaseAdvanceUnparks(prior) && prior.EscalatedBaseSHA != "" {
+		liveBaseTip, err := env.provider.BranchTipSHA(env.ctx, env.repo, env.base)
+		switch {
+		case err != nil:
+			// Fail closed to today's behavior: keep the prior record rather
+			// than handing out a fresh budget on an unverified base advance.
+			pf(env.stderr, "warning: could not resolve base branch %q tip for PR #%d (%v) — keeping the prior remediation budget\n",
+				env.base, env.selectedNumber, err)
+		case liveBaseTip != prior.EscalatedBaseSHA:
+			pf(env.stdout, "PR #%d: escalation released by a base advance (%.12s -> %.12s) — resetting remediation budget (was %d cycles, attempts %s)\n",
+				env.selectedNumber, prior.EscalatedBaseSHA, liveBaseTip,
+				prior.Cycles, renderRemediationAttempts(prior.AttemptsByCause))
+			prior = remediationState{}
+		}
 	}
 
 	// Record the human-comment watermark this cycle sees. The refresh loop lists
