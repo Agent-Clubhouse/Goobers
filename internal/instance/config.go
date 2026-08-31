@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/speechnotify"
+	"github.com/goobers/goobers/internal/workcopyroot"
 )
 
 // APIVersion and Kind for instance.yaml. Mirrors the config-as-code
@@ -218,8 +219,8 @@ func EffectiveWorkcopiesLayout(layout Layout, c *Config, gaggle *apiv1.Gaggle) (
 	if root == "" {
 		return layout, nil
 	}
-	if !filepath.IsAbs(root) {
-		return Layout{}, fmt.Errorf("workcopies.root must be an absolute path: %q", root)
+	if err := workcopyroot.Validate("workcopies.root", root); err != nil {
+		return Layout{}, err
 	}
 	return layout.WithWorkcopiesRoot(filepath.Clean(root)), nil
 }

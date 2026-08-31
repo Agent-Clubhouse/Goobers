@@ -34,6 +34,7 @@ import (
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/workcopyroot"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -247,6 +248,8 @@ const (
 	errorCICommand                WarningCode = "CFG005"
 	errorBranchNamespace          WarningCode = "CFG006"
 	errorGaggleCheckoutSparse     WarningCode = "CFG007"
+	errorWorkcopiesRoot           WarningCode = "CFG008"
+	errorWorkcopiesCollision      WarningCode = "CFG009"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -1047,6 +1050,8 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	ix.checkGaggleRunControls(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
+	// Managed working-copy root normalization and cross-gaggle collisions (#3663).
+	ix.checkGaggleWorkcopies(r)
 	ix.checkLabelPredicates(r)
 	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)
@@ -1674,6 +1679,63 @@ func intersectLabels(a, b []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// checkGaggleWorkcopies rejects managed working-copy roots the daemon cannot
+// build definitions from (#3663): a relative spec.workcopies.root, which
+// instance.EffectiveWorkcopiesLayout refuses at startup, and two gaggles whose
+// resolved working-copy directories collide — the same directory or one nested
+// beneath the other, which would make two workforces share mutable mirrors and
+// worktrees. Validation applies the daemon's own normalization
+// (internal/workcopyroot) so both boundaries agree on what a root resolves to.
+func (ix *index) checkGaggleWorkcopies(r *Report) {
+	type resolved struct {
+		gaggle string
+		root   string
+		dir    string
+		key    string
+	}
+	var roots []resolved
+	for _, name := range sortedGaggleNames(ix.gaggles) {
+		spec := ix.gaggles[name].Spec.Workcopies
+		if spec == nil || spec.Root == "" {
+			continue
+		}
+		if err := workcopyroot.Validate("spec.workcopies.root", spec.Root); err != nil {
+			r.add(errorWorkcopiesRoot, Error, ix.gaggleFile[name], "Gaggle", name, "%v", err)
+			continue
+		}
+		// A gaggle-scoped layout appends the gaggle name beneath the
+		// configured base (instance.Layout.WorkcopiesDir).
+		dir := filepath.Join(spec.Root, name)
+		key, err := workcopyroot.Key(dir)
+		if err != nil {
+			r.add(errorWorkcopiesRoot, Error, ix.gaggleFile[name], "Gaggle", name,
+				"spec.workcopies.root %q cannot be resolved: %v", spec.Root, err)
+			continue
+		}
+		roots = append(roots, resolved{gaggle: name, root: spec.Root, dir: dir, key: key})
+	}
+	for i := range roots {
+		for j := i + 1; j < len(roots); j++ {
+			if !workcopyroot.Overlap(roots[i].key, roots[j].key) {
+				continue
+			}
+			r.add(errorWorkcopiesCollision, Error, ix.gaggleFile[roots[j].gaggle], "Gaggle", roots[j].gaggle,
+				"spec.workcopies.root %q resolves to %s, which collides with gaggle %q at %s — "+
+					"each gaggle needs its own managed working-copy tree",
+				roots[j].root, roots[j].dir, roots[i].gaggle, roots[i].dir)
+		}
+	}
+}
+
+func sortedGaggleNames(gaggles map[string]apiv1.Gaggle) []string {
+	names := make([]string, 0, len(gaggles))
+	for name := range gaggles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (ix *index) checkGaggleRunControls(r *Report) {
