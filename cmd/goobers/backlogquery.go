@@ -1241,6 +1241,26 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 			continue
 		}
 
+		retired, retireErr := session.retireSurrenderedProviderClaim(ctx, item, result.ClaimedBy)
+		if retireErr != nil {
+			pf(session.env.stderr, "warning: could not retire the surrendered provider claim on item %s left by run %s: %v\n", item.ID, result.ClaimedBy, retireErr)
+		} else if retired {
+			retiredHolder := result.ClaimedBy
+			result, err = session.env.issueProvider.ClaimWorkItem(ctx, providers.ClaimWorkItemRequest{
+				Repository: session.env.backlogRepo,
+				ID:         item.ID,
+				RunID:      session.runID,
+			})
+			if err != nil {
+				return fmt.Errorf("%s: %w", item.ID, err)
+			}
+			if result.Claimed {
+				pf(session.env.stderr, "notice: retired the surrendered provider claim on item %s left by run %s and claimed it\n", item.ID, retiredHolder)
+				index++
+				continue
+			}
+		}
+
 		if err := session.releaseLedger(ctx, item); err != nil {
 			return fmt.Errorf("release losing ledger claim %s: %w", item.ID, err)
 		}
@@ -1249,6 +1269,64 @@ func (session *backlogClaimSession) confirmProviderClaims(ctx context.Context, s
 		pf(session.env.stderr, "warning: claim race lost for item %s to run %s; released local claim and stopped this run from processing it\n", item.ID, result.ClaimedBy)
 	}
 	return nil
+}
+
+// retireSurrenderedProviderClaim releases a provider claim marker this
+// instance's own ledger has already surrendered. ClaimWorkItem's breadcrumb is
+// durable and only a release ends its epoch, so a run that gave up (or had
+// recovered from it) its ledger lease and then died before its provider
+// release landed leaves an item permanently unclaimable: every later run wins
+// the ledger, loses the provider confirm, and rolls itself back. MEASURED:
+// Goobers-Site 168 and 177 sat ready and unclaimable for eleven days behind
+// breadcrumbs from runs c164ee3a and dc4eae14, whose ledger leases both carry
+// a releasedAt — the implementation lane rolled back on every five-minute
+// tick. The metadata reconciler cannot repair this: it selects items by label
+// (hasReconciledMetadataLabel) and a stranded breadcrumb is a comment, so the
+// items are never even inspected.
+//
+// The rule is the ledger's own invariant (BL-005): the lease ledger is the
+// source of truth and the marker only mirrors it. holder is retired only when
+// THIS instance's ledger records holder's lease on THIS item as released — a
+// marker from another instance sharing the repository never appears in our
+// history and is left strictly alone, and a live holder holds a live lease
+// rather than a released one. A holder whose lease was reaped by
+// RecoverExpired is retired on purpose: that reap is already the decision that
+// the item is free.
+//
+// Reports whether a marker was retired, so the caller can re-confirm.
+func (session *backlogClaimSession) retireSurrenderedProviderClaim(ctx context.Context, item providers.WorkItem, holder string) (bool, error) {
+	if holder == "" || holder == session.runID {
+		return false, nil
+	}
+	listing, err := session.ledger.ListNamespace(ctx, session.gaggle, string(session.env.repo.Provider))
+	if err != nil {
+		return false, fmt.Errorf("read claim namespace: %w", err)
+	}
+	if current, held := listing.Lookup(session.claimKey(item)); held && current.RunID == holder {
+		return false, nil
+	}
+	surrendered := false
+	for _, entry := range listing.HistoryForItem(item.ID) {
+		if entry.RunID != holder {
+			continue
+		}
+		surrendered = entry.ReleasedAt != nil
+		break
+	}
+	if !surrendered {
+		return false, nil
+	}
+	if _, err := session.env.issueProvider.ReleaseWorkItemClaim(ctx, providers.ClaimWorkItemRequest{
+		Repository: session.env.backlogRepo,
+		ID:         item.ID,
+		// This run holds the authoritative ledger lease for the item, which is
+		// exactly the precondition LedgerAuthorized documents.
+		RunID:            session.runID,
+		LedgerAuthorized: true,
+	}); err != nil {
+		return false, fmt.Errorf("retire provider claim: %w", err)
+	}
+	return true, nil
 }
 
 func (session *backlogClaimSession) forgetNewClaim(itemID string) {
