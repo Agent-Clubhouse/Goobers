@@ -222,6 +222,39 @@ func ReadInstanceLog(dir string) ([]Event, error) {
 	return events, err
 }
 
+// ReadInstanceLogAfterSeq returns the durably-committed events in the instance
+// journal at dir whose sequence is greater than seq, scanning back only far
+// enough to find that sequence instead of reading the whole journal.
+//
+// A caller that folds the result into state it already holds pays for what was
+// appended since its previous read rather than for the journal's history, which
+// is what keeps a recurring read (a status request, a metric) from growing with
+// the instance's age (#3050). seq 0 returns every event, matching
+// ReadInstanceLog.
+func ReadInstanceLogAfterSeq(dir string, seq uint64) ([]Event, error) {
+	path, _, err := resolveInstanceEventsPath(dir)
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("journal: open instance log: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	events, _, bytesRead, err := readEventsAfterSeq(file, seq)
+	readprobe.RecordInstanceTailRead(bytesRead)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateEventSchemas(events); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 func highestEventSeq(events []Event) uint64 {
 	var highest uint64
 	for _, ev := range events {

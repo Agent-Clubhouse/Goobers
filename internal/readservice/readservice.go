@@ -136,6 +136,11 @@ type Local struct {
 	// readMode records how this service answers bounded reads (#1933). Empty
 	// means projected, which keeps every existing construction unchanged.
 	readMode ReadMode
+
+	// instanceLog retains the instance-journal fold behind SchedulerStatus and
+	// TimeToFirstPR so those requests read the journal's growth since the last
+	// request instead of its whole history (#3050).
+	instanceLog instanceFold
 }
 
 type definitionSnapshot struct {
