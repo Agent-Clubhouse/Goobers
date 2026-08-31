@@ -61,6 +61,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -162,7 +163,52 @@ func placementRefusals(
 			decisions.EngineDeferred[identity] = diagnostic
 			continue
 		}
-		decisions.Refusals[identity] = diagnostic
+		decisions.Refusals[identity] = diagnostic + mixedLaneCause(selections[identity])
 	}
 	return decisions, nil
+}
+
+// mixedLaneCause explains a refusal an operator would otherwise read as a
+// contradiction.
+//
+// A MIXED lane — one stage pinned to a remote runner, another pinned to Self —
+// is refused here even on an engine-enabled instance, and the solver's own
+// diagnostic can only name the remote stage it could not place. An operator
+// reading that alone sees "the engine is on, the pod stage declares a pod, and
+// it is still refused" and reasonably concludes the #3987 carve-out is broken.
+// It is not: the self-pinned stage is what took the lane off the engine
+// (selectEngineForEntry cannot dispatch a self-pinned stage to a Temporal
+// worker), and once the lane is runner-driven the pod stage has nowhere to go.
+// This appends the missing half, so the refusal names the stage an operator
+// actually has to change.
+//
+// Diagnostic ONLY. It appends to a string that is already a refusal and never
+// creates, withholds or reclassifies one — admission is decided above. This
+// matters because a mixed lane is not invalid: it runs correctly under
+// `goobers engine-start`, whose walk handles Self pins directly. What is
+// unreachable is the mixed lane on the DAEMON's runner-driven path (#4009).
+func mixedLaneCause(selection engineSelection) string {
+	if selection.UseEngine || len(selection.SelfPinnedStages) == 0 {
+		return ""
+	}
+	stages := make([]string, 0, len(selection.SelfPinnedStages))
+	for _, stage := range selection.SelfPinnedStages {
+		stages = append(stages, strconv.Quote(stage))
+	}
+	return fmt.Sprintf(
+		"; this lane is not engine-selected because %s, "+
+			"so it runs on the local runner, where the requirement above is unplaceable "+
+			"(a lane mixing self-pinned and remote-only stages is refused by design, #4009)",
+		selfPinnedClause(stages),
+	)
+}
+
+// selfPinnedClause keeps the appended sentence grammatical for either arity;
+// the message names every self-pinned stage because any one of them is
+// sufficient to take the lane off the engine.
+func selfPinnedClause(stages []string) string {
+	if len(stages) == 1 {
+		return "stage " + stages[0] + " is pinned to self"
+	}
+	return "stages " + strings.Join(stages, ", ") + " are pinned to self"
 }
