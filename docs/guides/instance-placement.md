@@ -60,6 +60,9 @@ workcopies:
 Goobers appends the gaggle name and repository key beneath this base. A gaggle
 may override the instance default in its own `spec.workcopies.root`; this keeps
 separate gaggles isolated even when they select the same short base path.
+`goobers validate` rejects a relative root, and rejects two gaggles whose roots
+resolve to the same directory or nest one inside the other, rather than letting
+the daemon fail at startup.
 
 Changing either root does not move existing mirrors or worktrees; Goobers
 clones clean copies at the new location. Stop Goobers, confirm that no run is
