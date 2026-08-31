@@ -1440,7 +1440,7 @@ func appendBlockedResweepCandidates(
 	opts backlogResweepOptions,
 	result *backlogResweepResult,
 ) ([]providers.WorkItem, int) {
-	items, nextCursor, err := listBacklogScanWindow(
+	items, blockedWindow, err := listBacklogScanWindow(
 		ctx,
 		env.issueProvider,
 		env.repo,
@@ -1512,7 +1512,7 @@ func appendBlockedResweepCandidates(
 		result.modeByID[item.ID] = "dependency-recheck"
 		budget--
 	}
-	result.state.BlockedCursor = nextCursor.Cursor
+	result.state.BlockedCursor = blockedWindow.Cursor.Cursor
 	return items, 0
 }
 
@@ -1545,7 +1545,7 @@ func appendReadyResweepCandidates(
 	opts backlogResweepOptions,
 	result *backlogResweepResult,
 ) ([]providers.WorkItem, backlogScanCursor, int) {
-	items, nextCursor, err := listBacklogScanWindow(
+	items, readyWindow, err := listBacklogScanWindow(
 		ctx,
 		env.issueProvider,
 		env.repo,
@@ -1557,7 +1557,7 @@ func appendReadyResweepCandidates(
 		false,
 	)
 	if err != nil {
-		return nil, nextCursor, failProviderStage(env.stderr, "list ready items for re-sweep", err, "claimed-items.json")
+		return nil, readyWindow.Cursor, failProviderStage(env.stderr, "list ready items for re-sweep", err, "claimed-items.json")
 	}
 	filtered := items[:0]
 	for _, item := range items {
@@ -1581,7 +1581,7 @@ func appendReadyResweepCandidates(
 		matched, matchErr := opts.fieldFilter.Matches(item.Fields)
 		if matchErr != nil {
 			pf(env.stderr, "error: evaluate fieldPredicate for re-sweep item %s: %v\n", item.ID, matchErr)
-			return nil, nextCursor, 1
+			return nil, readyWindow.Cursor, 1
 		}
 		if !matched {
 			env.debugf("excluded %s: field predicate not matched", item.ID)
@@ -1593,7 +1593,7 @@ func appendReadyResweepCandidates(
 	items = filtered
 	if err := sortBacklogResweepCandidates(items, opts.selectionPriority, opts.fieldOrder, result.state.LastSweptAt); err != nil {
 		pf(env.stderr, "error: order backlog re-sweep: %v\n", err)
-		return nil, nextCursor, 1
+		return nil, readyWindow.Cursor, 1
 	}
 	budget := min(opts.policy.maxItems, opts.maxItems-len(result.eligible))
 	if len(items) > budget {
@@ -1611,7 +1611,7 @@ func appendReadyResweepCandidates(
 			result.modeByID[item.ID] = "resweep"
 		}
 	}
-	return items, nextCursor, 0
+	return items, readyWindow.Cursor, 0
 }
 
 func reportBacklogEligibility(
@@ -1756,10 +1756,15 @@ type backlogEligibilityScan struct {
 	// blocked.json and its scan cursor through: the instance's own files under
 	// claims.lock locally, the daemon's copy over the scheduler-state plane in
 	// a stage pod (#3878).
-	state            stateclient.Store
-	cursorKey        string
-	cursor           backlogScanCursor
-	nextCursor       backlogScanCursor
+	state      stateclient.Store
+	cursorKey  string
+	cursor     backlogScanCursor
+	nextCursor backlogScanCursor
+	// window records how much of the result set this scan actually covered,
+	// so an empty eligible set can be reported as "the backlog is drained"
+	// or "this window ran out of budget" rather than being indistinguishable
+	// (#4036).
+	window           backlogScanWindow
 	observedRecords  map[string]blockedRecord
 	remainingRecords map[string]blockedRecord
 	verifiedSkips    map[string]blockedEligibilitySkip
@@ -1797,13 +1802,18 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 			return result, 1
 		}
 	}
-	items, nextCursor, err := listBacklogScanWindow(
+	items, window, err := listBacklogScanWindow(
 		ctx, env.issueProvider, env.backlogRepo, labels, queryAssignee, opts.fieldFilter, opts.scanLimit, result.cursor, exhaustiveScan,
 	)
 	if err != nil {
 		return result, failProviderStage(env.stderr, "list work items", err, "claimed-item.json")
 	}
-	result.nextCursor = nextCursor
+	result.window = window
+	result.nextCursor = window.Cursor
+	env.debugf(
+		"scan examined %d candidate(s) from cursor %q (%d of a %d-candidate budget spent, truncated=%t, resume cursor %q)",
+		window.Examined, result.cursor.Cursor, window.Spent, opts.scanLimit, window.Truncated, window.Cursor.Cursor,
+	)
 	for _, item := range items {
 		env.debugf("candidate %s reached eligibility evaluation", item.ID)
 		if opts.trustLabel != "" && !item.HasLabel(opts.trustLabel) {
@@ -1906,7 +1916,31 @@ func scanBacklogEligibility(ctx context.Context, env backlogQueryEnv, opts backl
 		pf(env.stderr, "error: apply fieldOrder: %v\n", err)
 		return result, 1
 	}
+	warnBacklogScanCoverage(env, opts, result)
 	return result, 0
+}
+
+// warnBacklogScanCoverage emits the invariant #4036 asked for: a cycle that
+// finds nothing to do must say whether it looked at the whole backlog or only
+// part of it.
+//
+// "no eligible item to claim" was previously identical for both, so a live
+// instance whose scan covered 60 of 218 approved items read as converged for
+// days. listBacklogScanWindow now wraps rather than stopping short at the end
+// of the result set, so a truncated window means only one thing — the
+// candidate scan budget genuinely ran out — and that is worth an operator's
+// attention precisely when nothing came back eligible.
+func warnBacklogScanCoverage(env backlogQueryEnv, opts backlogScanOptions, scan backlogEligibilityScan) {
+	if len(scan.eligible) > 0 || !scan.window.Truncated {
+		return
+	}
+	pf(
+		env.stderr,
+		"warning: backlog scan found no eligible item after examining %d candidate(s), "+
+			"and stopped on its %d-candidate scan budget rather than the end of the backlog: "+
+			"unexamined items remain, and the next scan resumes at cursor %q\n",
+		scan.window.Examined, opts.scanLimit, scan.nextCursor.Cursor,
+	)
 }
 
 func labelExclusionReason(item providers.WorkItem, opts backlogScanOptions) string {
@@ -2424,6 +2458,46 @@ func advanceBacklogScanCursor(
 		})
 }
 
+// backlogScanWindow describes what one listBacklogScanWindow call actually
+// covered, so a caller can tell "the backlog is drained" apart from "this
+// window stopped early" (#4036). Before this existed, a scan that examined 60
+// of 218 candidates and a scan that examined all 218 produced byte-identical
+// output — an empty eligible set and a reset cursor — which is why a stalled
+// backlog-curation loop read as a converged one for days.
+type backlogScanWindow struct {
+	// Cursor is where the next scan resumes. The zero cursor means this scan
+	// reached the end of the oldest-first result set, so the next one starts
+	// over from the beginning.
+	Cursor backlogScanCursor
+	// Examined counts the distinct candidates this window covered — the
+	// "of 218" the stage previously had no way to report.
+	Examined int
+	// Spent counts the raw candidates charged against the scan budget,
+	// including any a wrap segment re-read before it caught up with the
+	// pre-wrap segment. It is Examined's accounting counterpart: what the
+	// scan cost, rather than what it saw.
+	Spent int
+	// Truncated reports that the scan stopped because it spent its candidate
+	// budget rather than because it reached the end of the result set: items
+	// exist that this window never looked at. Its converse is the useful
+	// half — !Truncated means this window covered the WHOLE result set, so an
+	// empty eligible set alongside it really is a drained backlog.
+	Truncated bool
+}
+
+// listBacklogScanWindow reads up to limit raw candidates from the provider,
+// starting at cursor and following the provider's own pagination.
+//
+// A scan that reaches the end of the result set with budget still unspent
+// wraps once to the beginning and keeps going (#4036). Without the wrap, a
+// cursor resting near the end of the set made a tick examine only the short
+// tail after it — 60 of 218 live — and then, because the provider correctly
+// reported no next page, report exhaustion with a reset cursor and no way for
+// the caller to notice the other 158 candidates. Wrapping preserves the
+// oldest-first fairness the cursor exists for (a tick still resumes exactly
+// where the last one stopped, and the items it already covered are simply
+// skipped as duplicates) while restoring the property the scan budget was
+// always meant to give: a window is short only because the budget ran out.
 func listBacklogScanWindow(
 	ctx context.Context,
 	provider providers.BacklogProvider,
@@ -2434,16 +2508,77 @@ func listBacklogScanWindow(
 	limit int,
 	cursor backlogScanCursor,
 	exhaustive bool,
-) ([]providers.WorkItem, backlogScanCursor, error) {
+) ([]providers.WorkItem, backlogScanWindow, error) {
+	window := backlogScanWindow{Cursor: cursor}
 	if limit <= 0 && !exhaustive {
-		return nil, cursor, nil
+		return nil, window, nil
 	}
-	items := make([]providers.WorkItem, 0, limit)
-	maxPages := (limit + backlogScanPageSize - 1) / backlogScanPageSize
+	scan := backlogScanState{
+		items:  make([]providers.WorkItem, 0, limit),
+		seen:   make(map[string]bool, limit),
+		budget: limit,
+	}
+	position, exhausted, err := scan.run(ctx, provider, repo, labels, assignee, fieldFilter, cursor, exhaustive, false)
+	if err != nil {
+		return nil, window, err
+	}
+	// One wrap, and only from a mid-set start: a scan that began at the zero
+	// cursor and ran out of set has genuinely seen everything, and a second
+	// wrap could only re-read what the first already covered.
+	if exhausted && !exhaustive && cursor.Cursor != "" && scan.budget > 0 {
+		position, exhausted, err = scan.run(
+			ctx, provider, repo, labels, assignee, fieldFilter, backlogScanCursor{}, false, true,
+		)
+		if err != nil {
+			return nil, window, err
+		}
+	}
+	window.Examined = len(scan.items)
+	window.Spent = scan.spent
+	window.Truncated = !exhausted
+	window.Cursor = position
+	if exhausted {
+		window.Cursor = backlogScanCursor{}
+	}
+	return scan.items, window, nil
+}
+
+// backlogScanState carries one listBacklogScanWindow call's accumulated
+// results across the (at most two) cursor segments it reads: the segment from
+// the stored cursor to the end of the result set, and the wrap segment from
+// the beginning. Both share the single candidate budget, so the wrap can
+// never make a scan read more than the caller asked for.
+type backlogScanState struct {
+	items  []providers.WorkItem
+	seen   map[string]bool
+	budget int
+	spent  int
+}
+
+// run reads pages from start until the budget is spent, the page cap is hit,
+// or the provider reports no next page. It returns where it stopped and
+// whether it stopped because the result set ended.
+func (s *backlogScanState) run(
+	ctx context.Context,
+	provider providers.BacklogProvider,
+	repo providers.RepositoryRef,
+	labels []string,
+	assignee string,
+	fieldFilter *fieldpredicate.Predicate,
+	start backlogScanCursor,
+	exhaustive bool,
+	stopOnOverlap bool,
+) (backlogScanCursor, bool, error) {
+	cursor := start
+	// The +1 covers a resumed first page that begins part-way into a
+	// provider page and so yields fewer than backlogScanPageSize candidates:
+	// the bound that matters is the candidate budget, which the loop
+	// decrements exactly, not the round-trip count.
+	maxPages := (s.budget+backlogScanPageSize-1)/backlogScanPageSize + 1
 	for page := 0; exhaustive || page < maxPages; page++ {
 		pageLimit := backlogScanPageSize
 		if !exhaustive {
-			pageLimit = min(pageLimit, limit)
+			pageLimit = min(pageLimit, s.budget)
 		}
 		pageInfo := &providers.ListWorkItemsPageInfo{}
 		pageItems, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
@@ -2458,7 +2593,7 @@ func listBacklogScanWindow(
 			OldestFirst:    true,
 		})
 		if err != nil {
-			return nil, cursor, err
+			return cursor, false, err
 		}
 		// CandidateCount may legitimately exceed pageLimit (#2067): a
 		// provider now scans more raw candidates than pageLimit in one
@@ -2468,21 +2603,41 @@ func listBacklogScanWindow(
 		// have truncated on — the exact under-matching bug #2067 fixed.
 		// Only a negative count is still a real provider bug.
 		if pageInfo.CandidateCount < 0 {
-			return nil, cursor, fmt.Errorf(
+			return cursor, false, fmt.Errorf(
 				"provider returned invalid work-item candidate count %d",
 				pageInfo.CandidateCount,
 			)
 		}
-		items = append(items, pageItems...)
+		s.spent += pageInfo.CandidateCount
+		// Dedupe by item ID: a wrap segment overlaps whatever the first
+		// segment already covered once the two meet, and a caller must see
+		// each candidate once.
+		overlapped := false
+		for _, item := range pageItems {
+			if s.seen[item.ID] {
+				overlapped = true
+				continue
+			}
+			s.seen[item.ID] = true
+			s.items = append(s.items, item)
+		}
 		if !pageInfo.HasNext {
-			return items, backlogScanCursor{}, nil
+			return backlogScanCursor{}, true, nil
+		}
+		// A wrap segment that reaches an item the pre-wrap segment already
+		// covered has closed the loop: every candidate in the result set has
+		// now been examined once, so stop instead of burning the rest of the
+		// budget re-reading the tail — and report full coverage, because
+		// that is exactly what it is.
+		if stopOnOverlap && overlapped {
+			return backlogScanCursor{}, true, nil
 		}
 		if pageInfo.CandidateCount == 0 || pageInfo.NextCursor == "" {
-			return nil, cursor, fmt.Errorf("provider returned a non-advancing work-item cursor")
+			return cursor, false, fmt.Errorf("provider returned a non-advancing work-item cursor")
 		}
 		cursor.Cursor = pageInfo.NextCursor
 		if !exhaustive {
-			// limit is a raw-candidate scan budget, not a match target
+			// budget is a raw-candidate scan budget, not a match target
 			// (scanLimit is floored to backlogScanCeiling by the caller
 			// specifically so a rejecting filter still gets a full window
 			// examined). Decrementing by the actual CandidateCount stays
@@ -2490,13 +2645,13 @@ func listBacklogScanWindow(
 			// total-candidate budget is still consumed, just via fewer,
 			// larger provider calls instead of many pageLimit-sized ones —
 			// not an under-scan, just fewer round trips to reach it.
-			limit -= pageInfo.CandidateCount
-			if limit <= 0 {
-				break
+			s.budget -= pageInfo.CandidateCount
+			if s.budget <= 0 {
+				return cursor, false, nil
 			}
 		}
 	}
-	return items, cursor, nil
+	return cursor, false, nil
 }
 
 // runBacklogQueryRelease implements `backlog-query --release` (issues
