@@ -269,6 +269,49 @@ func TestBacklogQueryReleasesLedgerClaimAfterLosingProviderRace(t *testing.T) {
 	}
 }
 
+// TestBacklogQueryRetiresSurrenderedProviderClaim covers the stranded-marker
+// repair: a run that surrendered its ledger lease but died before its provider
+// release landed leaves a durable breadcrumb, and every later run then wins the
+// ledger and loses the provider confirm forever. MEASURED live: Goobers-Site
+// 168/177 were ready and unclaimable for eleven days behind exactly this.
+func TestBacklogQueryRetiresSurrenderedProviderClaim(t *testing.T) {
+	root := initDemo(t)
+	ledgerPath := filepath.Join(root, "scheduler", "claims.json")
+	seed, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, holder, err := seed.Claim("7", "dead-run", "implementation", time.Hour); err != nil || !ok {
+		t.Fatalf("seed claim: ok=%v holder=%q err=%v", ok, holder, err)
+	}
+	if err := seed.Release("7", "dead-run"); err != nil {
+		t.Fatalf("seed release: %v", err)
+	}
+
+	server := newFakeGitHubServer(t, "your-org", "your-repo")
+	server.addIssue(7, "Stranded item", "goobers:approved")
+	server.addComment(7, "goobers-claim: run=dead-run\n\nClaimed by Goobers run `dead-run`.")
+
+	providerCmdEnv(t, server, "GOOBERS_CRED_GITHUB_ISSUES_WRITE", "recovering-run")
+	t.Setenv("GOOBERS_INPUT_TRUSTLABEL", "goobers:approved")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
+	if code != 0 || !strings.Contains(stdout, "claimed 7") {
+		t.Fatalf("retire: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "retired the surrendered provider claim on item 7 left by run dead-run") {
+		t.Fatalf("stderr = %q, want the retirement notice", stderr)
+	}
+	ledger, err := localscheduler.OpenClaimLedger(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, held := ledger.Lookup("7"); !held || entry.RunID != "recovering-run" {
+		t.Fatalf("ledger entry for item 7 = %+v, held=%v, want held by recovering-run", entry, held)
+	}
+}
+
 // TestBacklogQueryPlainScanReportsNoWorkForEmptyPumpTick locks in the #233
 // gate for list/scan pumps: a plain backlog-query (no --claim) that declares a
 // resultFile and finds nothing must emit ResultNoWork (noWork:true in the
