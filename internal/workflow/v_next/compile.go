@@ -286,13 +286,25 @@ func canonicalPlacement(required []string) []string {
 	return distinct
 }
 
+// runScriptProblems reports defects in a task's run declaration: command and
+// script declared together, and a command whose executable element is empty or
+// whitespace-only (which would otherwise fail only at exec time, #3661).
 func runScriptProblems(def Definition) []string {
 	var problems []string
 	for _, task := range def.Spec.Tasks {
-		if task.Run != nil && task.Run.Command != nil && task.Run.Script != "" {
+		if task.Run == nil {
+			continue
+		}
+		if task.Run.Command != nil && task.Run.Script != "" {
 			problems = append(problems, fmt.Sprintf(
 				"task %q: run.command and run.script are mutually exclusive",
 				task.Name,
+			))
+		}
+		if len(task.Run.Command) > 0 && strings.TrimSpace(task.Run.Command[0]) == "" {
+			problems = append(problems, fmt.Sprintf(
+				"task %q: run.command[0] must name a non-whitespace executable, got %q",
+				task.Name, task.Run.Command[0],
 			))
 		}
 	}
