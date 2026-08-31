@@ -565,7 +565,7 @@ func (adoMergeQueuePollTransport) Timeout(_ context.Context, _ providers.Reposit
 }
 
 func (adoMergeQueuePollTransport) Dequeue(context.Context, providers.RepositoryRef, string, string) error {
-	return fmt.Errorf("Azure DevOps does not support merge queue dequeue")
+	return fmt.Errorf("azure devops does not support merge queue dequeue")
 }
 
 func (adoMergeQueuePollTransport) RecordTimeout(providers.RepositoryRef, string) error {

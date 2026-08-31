@@ -609,19 +609,8 @@ func writeSiblingContextResult(resultFile string, out map[string]interface{}, su
 	return 0
 }
 
-// gatherSiblingContextFeatures makes ADO's intentionally absent evidence
-// explicit. The shared result protocol is preserved without pretending that
-// sibling scans, ref checks, or scope-label mutations ran.
-type gatherSiblingContextFeatures struct {
-	siblingEvidence bool
-	refCheckState   bool
-	scopeLabels     bool
-	verdictCache    bool
-}
-
 type gatherSiblingContextAdapter struct {
-	features gatherSiblingContextFeatures
-	poll     func(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error)
+	poll func(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error)
 }
 
 // newADOGatherSiblingContextAdapter is deliberately construction-only: ADO's
@@ -633,8 +622,7 @@ func newADOGatherSiblingContextAdapter(root string, repo providers.RepositoryRef
 		return gatherSiblingContextAdapter{}, err
 	}
 	return gatherSiblingContextAdapter{
-		features: gatherSiblingContextFeatures{},
-		poll:     provider.PollPullRequest,
+		poll: provider.PollPullRequest,
 	}, nil
 }
 
