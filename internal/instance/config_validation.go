@@ -3,7 +3,6 @@ package instance
 import (
 	"fmt"
 	"net"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runnercap"
+	"github.com/goobers/goobers/internal/workcopyroot"
 )
 
 func validateInOrder(validators ...func() error) error {
@@ -27,10 +27,10 @@ func validateInOrder(validators ...func() error) error {
 }
 
 func (c *WorkcopiesConfig) validate() error {
-	if c != nil && c.Root != "" && !filepath.IsAbs(c.Root) {
-		return fmt.Errorf("workcopies.root must be an absolute path: %q", c.Root)
+	if c == nil {
+		return nil
 	}
-	return nil
+	return workcopyroot.Validate("workcopies.root", c.Root)
 }
 
 func (c APIConfig) validate(address string) error {
