@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -71,6 +72,7 @@ func (s *fakeSocket) Close(websocket.StatusCode, string) error {
 
 func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	store, publicKey := connectorTestStorage(t)
+	store.record.Association.LastHeartbeatAt = time.Now().Add(-time.Hour)
 	challenge := Challenge{
 		Type:            "challenge",
 		ProtocolVersion: ProtocolVersion,
@@ -109,6 +111,23 @@ func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	}
 	if hello.Type != "hello" || hello.ACL.PolicyVersion != ProtocolVersion || hello.GoobersVersion != "v1.2.3" {
 		t.Fatalf("hello = %+v", hello)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		record, err := store.Load("root")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.Association.Connected {
+			if !record.Association.LastHeartbeatAt.IsZero() {
+				t.Fatalf("new connection retained old heartbeat time %s", record.Association.LastHeartbeatAt)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("connector did not record connected state")
+		}
+		time.Sleep(time.Millisecond)
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(hello.Signature)
 	if err != nil {
@@ -153,6 +172,73 @@ func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 	}
 	if record.Association.HeartbeatSeconds != 30 {
 		t.Fatalf("heartbeat seconds = %d, want 30", record.Association.HeartbeatSeconds)
+	}
+}
+
+func TestNegotiatedHeartbeatIntervalRejectsUnreasonableValues(t *testing.T) {
+	for _, seconds := range []int{0, -1, int(maxNegotiatedHeartbeatInterval/time.Second) + 1} {
+		if _, err := negotiatedHeartbeatInterval(seconds); err == nil {
+			t.Fatalf("negotiatedHeartbeatInterval(%d) succeeded", seconds)
+		}
+	}
+	if got, err := negotiatedHeartbeatInterval(30); err != nil || got != 30*time.Second {
+		t.Fatalf("negotiatedHeartbeatInterval(30) = %s, %v", got, err)
+	}
+}
+
+func TestConnectorReconnectsAfterMissedHeartbeatAcknowledgements(t *testing.T) {
+	store, _ := connectorTestStorage(t)
+	first := newFakeSocket(
+		Challenge{Type: messageTypeChallenge, ProtocolVersion: ProtocolVersion, FleetID: "fleet-1", ConnectionID: "connection-1", Nonce: "nonce-1"},
+		HelloAck{Type: messageTypeHelloAck, ConnectionID: "connection-1", HeartbeatSeconds: 30},
+	)
+	second := newFakeSocket(
+		Challenge{Type: messageTypeChallenge, ProtocolVersion: ProtocolVersion, FleetID: "fleet-1", ConnectionID: "connection-2", Nonce: "nonce-2"},
+		HelloAck{Type: messageTypeHelloAck, ConnectionID: "connection-2", HeartbeatSeconds: 30},
+		Revoke{Type: messageTypeRevoke, Reason: "done"},
+	)
+	dials := 0
+	connector := NewConnector(store, "root", "dev")
+	connector.HeartbeatOverride = 5 * time.Millisecond
+	connector.Backoff = func(int) time.Duration { return 0 }
+	connector.Dial = func(context.Context, string, *websocket.DialOptions) (Socket, *http.Response, error) {
+		dials++
+		if dials == 1 {
+			return first, nil, nil
+		}
+		return second, nil, nil
+	}
+
+	if err := connector.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if dials != 2 {
+		t.Fatalf("dials = %d, want reconnect after missed acknowledgements", dials)
+	}
+}
+
+func TestConnectorStopsWhenEstablishedCredentialExpires(t *testing.T) {
+	store, _ := connectorTestStorage(t)
+	store.record.Association.CredentialExpiresAt = time.Now().Add(30 * time.Millisecond)
+	socket := newFakeSocket(
+		Challenge{Type: messageTypeChallenge, ProtocolVersion: ProtocolVersion, FleetID: "fleet-1", ConnectionID: "connection", Nonce: "nonce"},
+		HelloAck{Type: messageTypeHelloAck, ConnectionID: "connection", HeartbeatSeconds: 30},
+	)
+	connector := NewConnector(store, "root", "dev")
+	connector.Dial = func(context.Context, string, *websocket.DialOptions) (Socket, *http.Response, error) {
+		return socket, nil, nil
+	}
+
+	err := connector.Run(context.Background())
+	if !errors.Is(err, errCredentialExpired) {
+		t.Fatalf("connector error = %v, want credential expiry", err)
+	}
+	record, loadErr := store.Load("root")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if record.Association.Connected || !strings.Contains(record.Association.LastError, "credential expired") {
+		t.Fatalf("association after expiry = %+v", record.Association)
 	}
 }
 

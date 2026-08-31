@@ -321,15 +321,19 @@ func requireFleetInstanceRoot(root string) error {
 	return nil
 }
 
+// selectFleetACL applies default-deny enrollment policy. Explicit flags win;
+// otherwise an interactive user may grant the advertised local administrator.
+// Declining that grant falls through to a separate confirmation before an
+// empty ACL can be published.
 func selectFleetACL(discovery fleet.Discovery, grant, noGrant, interactive bool, stdin io.Reader, stdout io.Writer) (fleet.ACL, error) {
-	acl := fleet.ACL{PolicyVersion: fleet.ProtocolVersion, Grants: []fleet.Grant{}}
+	acl := fleet.ACL{PolicyVersion: fleet.DefaultACLPolicyVersion, Grants: []fleet.Grant{}}
 	principal := discovery.LocalAdministratorPrincipal
 	if grant {
 		if principal == nil {
 			return fleet.ACL{}, fmt.Errorf("--grant-local-admin was specified but Fleet discovery did not advertise a local administrator principal")
 		}
 		return fleet.ACL{
-			PolicyVersion: fleet.ProtocolVersion,
+			PolicyVersion: fleet.DefaultACLPolicyVersion,
 			Grants: []fleet.Grant{{
 				Principal:    *principal,
 				Capabilities: []string{"instance:read"},
@@ -428,12 +432,18 @@ func fleetConnectionState(association fleet.Association, now time.Time) string {
 	case !association.Connected:
 		return "disconnected"
 	}
-	staleAfter := 3 * time.Duration(association.HeartbeatSeconds) * time.Second
+	// Three missed acknowledgements make the connection stale. Compute through
+	// division first so corrupted persisted values cannot overflow Duration.
+	staleAfter := minimumFleetStaleAfter
+	maxSafeSeconds := int64((time.Duration(1<<63-1) / time.Second) / 3)
+	if association.HeartbeatSeconds > 0 && int64(association.HeartbeatSeconds) <= maxSafeSeconds {
+		staleAfter = 3 * time.Duration(association.HeartbeatSeconds) * time.Second
+	}
 	if staleAfter < minimumFleetStaleAfter {
 		staleAfter = minimumFleetStaleAfter
 	}
 	lastActivity := association.LastHeartbeatAt
-	if lastActivity.IsZero() {
+	if lastActivity.Before(association.LastConnectedAt) {
 		lastActivity = association.LastConnectedAt
 	}
 	if lastActivity.IsZero() || now.After(lastActivity.Add(staleAfter)) {

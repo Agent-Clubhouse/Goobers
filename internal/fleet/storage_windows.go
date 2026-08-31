@@ -16,6 +16,8 @@ func platformStorageBaseDir() (string, error) {
 	return knownFolderPath(windows.FOLDERID_LocalAppData, windows.KF_FLAG_DEFAULT)
 }
 
+// protect encrypts secrets for the current Windows user with DPAPI and
+// suppresses any UI prompt.
 func protect(plaintext []byte) ([]byte, error) {
 	return cryptData(plaintext, true)
 }

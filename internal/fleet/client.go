@@ -1,6 +1,10 @@
-// Package fleet implements the Goobers Fleet enrollment and connection
-// protocol: discovering a Fleet service, joining it, and persisting the
-// resulting durable association, private key, and credential.
+// Package fleet implements Goobers Fleet discovery, enrollment, durable
+// identity storage, and the authenticated outbound connection protocol.
+//
+// A connection exchanges challenge, hello, and hello-ack messages before
+// entering a heartbeat/heartbeat-ack loop. Fleet may terminate the association
+// with a revoke message. Unknown inbound message types close the connection so
+// protocol changes are explicit rather than silently ignored.
 package fleet
 
 import (
@@ -143,7 +147,7 @@ func (c Client) JoinDiscovered(ctx context.Context, storage Storage, discovery D
 		now = c.Now()
 	}
 	association := Association{
-		SchemaVersion:          ProtocolVersion,
+		SchemaVersion:          AssociationSchemaVersion,
 		InstanceID:             instanceID,
 		DisplayName:            options.DisplayName,
 		FleetID:                response.FleetID,
@@ -193,6 +197,9 @@ func validateDiscovery(discovery Discovery) error {
 	return nil
 }
 
+// validateTransportURI requires the secure scheme except for loopback
+// development hosts. A suffix matches the end of the path so Fleet services
+// may be mounted beneath a deployment-specific base path.
 func validateTransportURI(raw, secureScheme, loopbackScheme, suffix string) (*url.URL, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || !parsed.IsAbs() || parsed.Host == "" {

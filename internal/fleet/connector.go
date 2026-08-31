@@ -16,6 +16,13 @@ import (
 
 var errRevoked = errors.New("fleet: registration revoked")
 var errAssociationChanged = errors.New("fleet: association changed")
+var errCredentialExpired = errors.New("fleet: credential expired")
+
+const (
+	maxNegotiatedHeartbeatInterval = time.Hour
+	missedHeartbeatLimit           = 3
+	handshakeTimeout               = 30 * time.Second
+)
 
 // Socket is the WebSocket surface used by Connector.
 type Socket interface {
@@ -31,9 +38,13 @@ type DialFunc func(context.Context, string, *websocket.DialOptions) (Socket, *ht
 // connection until its context is canceled, association is removed, or
 // registration is revoked.
 type Connector struct {
-	Storage           Storage
-	InstanceRoot      string
-	GoobersVersion    string
+	// Storage and InstanceRoot identify the durable association to maintain.
+	Storage        Storage
+	InstanceRoot   string
+	GoobersVersion string
+	// Dial, Now, Backoff, Wait, and HeartbeatOverride are test seams. Nil or
+	// zero values select production behavior. HeartbeatOverride changes only
+	// local scheduling; the server's negotiated value must still be valid.
 	Dial              DialFunc
 	Now               func() time.Time
 	Backoff           func(int) time.Duration
@@ -50,8 +61,12 @@ func NewConnector(storage Storage, instanceRoot, goobersVersion string) *Connect
 	}
 }
 
-// Run connects and reconnects until the context is canceled, the association
-// is removed, or the Fleet service revokes the registration.
+// Run retries transient connection failures until the connection is
+// permanently finished. Context cancellation, fleet leave, service-side
+// revocation, and registration replacement are normal terminations and return
+// nil. Durable storage failures and credential expiry return an error because
+// the connector cannot recover without local intervention. Transient failures
+// are redacted, recorded in Association.LastError, and retried with backoff.
 func (c *Connector) Run(ctx context.Context) error {
 	if c.Storage == nil {
 		return fmt.Errorf("fleet: connector storage is required")
@@ -79,11 +94,15 @@ func (c *Connector) Run(ctx context.Context) error {
 		}
 		if !record.Association.CredentialExpiresAt.IsZero() &&
 			!record.Association.CredentialExpiresAt.After(c.now()) {
-			err := fmt.Errorf("fleet: credential expired at %s", record.Association.CredentialExpiresAt.UTC().Format(time.RFC3339))
+			err := credentialExpiredError(record.Association.CredentialExpiresAt)
 			_ = c.recordDisconnected(record.Association.RegistrationID, err)
 			return err
 		}
 		err = c.connectOnce(ctx, record)
+		if errors.Is(err, errCredentialExpired) {
+			_ = c.recordDisconnected(record.Association.RegistrationID, err)
+			return err
+		}
 		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, ErrNotAssociated) ||
 			errors.Is(err, errAssociationChanged) || errors.Is(err, errRevoked) {
 			return nil
@@ -93,9 +112,14 @@ func (c *Connector) Run(ctx context.Context) error {
 		delay := c.backoff(attempt)
 		attempt++
 		if err := c.wait(ctx, delay); err != nil {
+			// wait returns an error only when the connector context is done.
 			return nil
 		}
 	}
+}
+
+func credentialExpiredError(expiresAt time.Time) error {
+	return fmt.Errorf("%w at %s", errCredentialExpired, expiresAt.UTC().Format(time.RFC3339))
 }
 
 func redactCredential(err error, credential string) error {
@@ -128,8 +152,10 @@ func (c *Connector) connectOnce(ctx context.Context, record Record) error {
 	}
 	defer func() { _ = socket.Close(websocket.StatusNormalClosure, "") }()
 
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancelHandshake()
 	var challenge Challenge
-	if err := readTypedMessage(ctx, socket, "challenge", &challenge); err != nil {
+	if err := readTypedMessage(handshakeCtx, socket, messageTypeChallenge, &challenge); err != nil {
 		return err
 	}
 	if challenge.ProtocolVersion != ProtocolVersion {
@@ -152,8 +178,8 @@ func (c *Connector) connectOnce(ctx context.Context, record Record) error {
 	if err != nil {
 		return err
 	}
-	if err := writeMessage(ctx, socket, Hello{
-		Type:                   "hello",
+	if err := writeMessage(handshakeCtx, socket, Hello{
+		Type:                   messageTypeHello,
 		ProtocolVersion:        ProtocolVersion,
 		InstanceID:             record.Association.InstanceID,
 		RegistrationID:         record.Association.RegistrationID,
@@ -168,14 +194,16 @@ func (c *Connector) connectOnce(ctx context.Context, record Record) error {
 		return err
 	}
 	var ack HelloAck
-	if err := readTypedMessage(ctx, socket, "hello-ack", &ack); err != nil {
+	if err := readTypedMessage(handshakeCtx, socket, messageTypeHelloAck, &ack); err != nil {
 		return err
 	}
+	cancelHandshake()
 	if ack.ConnectionID != challenge.ConnectionID {
 		return fmt.Errorf("fleet: hello acknowledgement connection ID %q does not match challenge %q", ack.ConnectionID, challenge.ConnectionID)
 	}
-	if ack.HeartbeatSeconds <= 0 && c.HeartbeatOverride <= 0 {
-		return fmt.Errorf("fleet: hello acknowledgement heartbeatSeconds must be positive")
+	heartbeatInterval, err := negotiatedHeartbeatInterval(ack.HeartbeatSeconds)
+	if err != nil {
+		return err
 	}
 	connectedAt := c.now()
 	if err := c.Storage.Update(c.InstanceRoot, func(association *Association) error {
@@ -186,6 +214,9 @@ func (c *Connector) connectOnce(ctx context.Context, record Record) error {
 		association.ConnectionID = challenge.ConnectionID
 		association.HeartbeatSeconds = ack.HeartbeatSeconds
 		association.LastConnectedAt = connectedAt
+		// Heartbeats belong to one connection. A timestamp retained from the
+		// previous connection must not make this new connection look stale.
+		association.LastHeartbeatAt = time.Time{}
 		association.LastError = ""
 		return nil
 	}); err != nil {
@@ -193,9 +224,15 @@ func (c *Connector) connectOnce(ctx context.Context, record Record) error {
 	}
 	defer func() { _ = c.recordDisconnected(record.Association.RegistrationID, nil) }()
 
-	heartbeatInterval := time.Duration(ack.HeartbeatSeconds) * time.Second
 	if c.HeartbeatOverride > 0 {
 		heartbeatInterval = c.HeartbeatOverride
+	}
+	var credentialExpiry <-chan time.Time
+	var credentialTimer *time.Timer
+	if !record.Association.CredentialExpiresAt.IsZero() {
+		credentialTimer = time.NewTimer(record.Association.CredentialExpiresAt.Sub(c.now()))
+		credentialExpiry = credentialTimer.C
+		defer credentialTimer.Stop()
 	}
 	readCtx, cancelRead := context.WithCancel(ctx)
 	defer cancelRead()
@@ -233,16 +270,19 @@ func (c *Connector) connectOnce(ctx context.Context, record Record) error {
 	}()
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
+	outstandingHeartbeats := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-credentialExpiry:
+			return credentialExpiredError(record.Association.CredentialExpiresAt)
 		case message := <-messages:
 			if message.err != nil {
 				return fmt.Errorf("fleet: read connection: %w", message.err)
 			}
 			switch message.kind {
-			case "heartbeat-ack":
+			case messageTypeHeartbeatAck:
 				var heartbeatAck HeartbeatAck
 				if err := json.Unmarshal(message.data, &heartbeatAck); err != nil {
 					return fmt.Errorf("fleet: decode heartbeat acknowledgement: %w", err)
@@ -261,7 +301,8 @@ func (c *Connector) connectOnce(ctx context.Context, record Record) error {
 				}); err != nil {
 					return err
 				}
-			case "revoke":
+				outstandingHeartbeats = 0
+			case messageTypeRevoke:
 				var revoke Revoke
 				if err := json.Unmarshal(message.data, &revoke); err != nil {
 					return fmt.Errorf("fleet: decode revoke: %w", err)
@@ -284,6 +325,11 @@ func (c *Connector) connectOnce(ctx context.Context, record Record) error {
 				return fmt.Errorf("fleet: unexpected message type %q", message.kind)
 			}
 		case <-ticker.C:
+			if outstandingHeartbeats >= missedHeartbeatLimit {
+				return fmt.Errorf(
+					"fleet: heartbeat acknowledgement timed out after %d intervals",
+					missedHeartbeatLimit)
+			}
 			current, err := c.Storage.Load(c.InstanceRoot)
 			if err != nil {
 				return err
@@ -297,15 +343,29 @@ func (c *Connector) connectOnce(ctx context.Context, record Record) error {
 				return errAssociationChanged
 			}
 			if err := writeMessage(ctx, socket, Heartbeat{
-				Type:         "heartbeat",
+				Type:         messageTypeHeartbeat,
 				ConnectionID: challenge.ConnectionID,
 				SentAt:       c.now(),
 				ACLVersion:   current.Association.ACL.PolicyVersion,
 			}); err != nil {
 				return err
 			}
+			outstandingHeartbeats++
 		}
 	}
+}
+
+func negotiatedHeartbeatInterval(seconds int) (time.Duration, error) {
+	if seconds <= 0 {
+		return 0, fmt.Errorf("fleet: hello acknowledgement heartbeatSeconds must be positive")
+	}
+	maxSeconds := int(maxNegotiatedHeartbeatInterval / time.Second)
+	if seconds > maxSeconds {
+		return 0, fmt.Errorf(
+			"fleet: hello acknowledgement heartbeatSeconds must not exceed %d",
+			maxSeconds)
+	}
+	return time.Duration(seconds) * time.Second, nil
 }
 
 type inboundMessage struct {
@@ -358,6 +418,8 @@ func (c *Connector) recordDisconnected(registrationID string, connectionErr erro
 		if connectionErr != nil {
 			association.LastError = connectionErr.Error()
 		}
+		// A nil error deliberately preserves the last transient failure until
+		// the next successful authentication or heartbeat acknowledgement.
 		return nil
 	})
 }

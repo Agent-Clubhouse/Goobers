@@ -5,8 +5,23 @@ import (
 	"time"
 )
 
-// ProtocolVersion is the Fleet protocol version implemented by this client.
-const ProtocolVersion = "1"
+const (
+	// ProtocolVersion is the Fleet wire protocol version implemented by this client.
+	ProtocolVersion = "1"
+	// AssociationSchemaVersion identifies the durable association.json format.
+	// It changes only when the local storage schema becomes incompatible.
+	AssociationSchemaVersion = "1"
+	// DefaultACLPolicyVersion is the initial revision of an instance-owned ACL.
+	// ACL revisions advance independently of wire and storage schema versions.
+	DefaultACLPolicyVersion = "1"
+
+	messageTypeChallenge    = "challenge"
+	messageTypeHello        = "hello"
+	messageTypeHelloAck     = "hello-ack"
+	messageTypeHeartbeat    = "heartbeat"
+	messageTypeHeartbeatAck = "heartbeat-ack"
+	messageTypeRevoke       = "revoke"
+)
 
 // ErrNotAssociated indicates that no Fleet association exists for an
 // instance.
@@ -28,6 +43,8 @@ type Grant struct {
 // ACL is an access control list of Grants for an instance's Fleet
 // association.
 type ACL struct {
+	// PolicyVersion identifies the instance-owned ACL revision projected to
+	// Fleet. It is not a wire protocol or local storage schema version.
 	PolicyVersion string  `json:"policyVersion"`
 	Grants        []Grant `json:"grants"`
 }
@@ -57,47 +74,55 @@ type EnrollmentRequest struct {
 // EnrollmentResponse is returned by a Fleet service after a successful
 // enrollment.
 type EnrollmentResponse struct {
-	FleetID                string    `json:"fleetId"`
-	RegistrationID         string    `json:"registrationId"`
-	RegistrationGeneration int64     `json:"registrationGeneration"`
-	CanonicalURI           string    `json:"canonicalUri"`
-	ConnectionEndpoint     string    `json:"connectionEndpoint"`
-	Credential             string    `json:"credential"`
-	CredentialExpiresAt    time.Time `json:"credentialExpiresAt"`
-	ProtocolVersion        string    `json:"protocolVersion"`
+	FleetID                string `json:"fleetId"`
+	RegistrationID         string `json:"registrationId"`
+	RegistrationGeneration int64  `json:"registrationGeneration"`
+	CanonicalURI           string `json:"canonicalUri"`
+	ConnectionEndpoint     string `json:"connectionEndpoint"`
+	Credential             string `json:"credential"`
+	// CredentialExpiresAt is when Credential stops being usable. The zero
+	// value explicitly means non-expiring and is allowed only for local
+	// development Fleet services until credential renewal is implemented.
+	CredentialExpiresAt time.Time `json:"credentialExpiresAt"`
+	ProtocolVersion     string    `json:"protocolVersion"`
 }
 
 // Association is an instance's durable Fleet registration and connection
 // state.
 type Association struct {
-	SchemaVersion          string    `json:"schemaVersion"`
-	InstanceID             string    `json:"instanceId"`
-	DisplayName            string    `json:"displayName"`
-	FleetID                string    `json:"fleetId"`
-	RegistrationID         string    `json:"registrationId"`
-	RegistrationGeneration int64     `json:"registrationGeneration"`
-	CanonicalURI           string    `json:"canonicalUri"`
-	ConnectionEndpoint     string    `json:"connectionEndpoint"`
-	CredentialExpiresAt    time.Time `json:"credentialExpiresAt"`
-	ProtocolVersion        string    `json:"protocolVersion"`
-	ACL                    ACL       `json:"acl"`
-	JoinedAt               time.Time `json:"joinedAt"`
-	Revoked                bool      `json:"revoked"`
-	RevokeReason           string    `json:"revokeReason,omitempty"`
-	Connected              bool      `json:"connected"`
-	ConnectionID           string    `json:"connectionId,omitempty"`
-	HeartbeatSeconds       int       `json:"heartbeatSeconds,omitempty"`
-	LastConnectedAt        time.Time `json:"lastConnectedAt,omitempty"`
-	LastHeartbeatAt        time.Time `json:"lastHeartbeatAt,omitempty"`
-	LastError              string    `json:"lastError,omitempty"`
+	// SchemaVersion identifies the association.json storage schema and is
+	// independent of ProtocolVersion.
+	SchemaVersion          string `json:"schemaVersion"`
+	InstanceID             string `json:"instanceId"`
+	DisplayName            string `json:"displayName"`
+	FleetID                string `json:"fleetId"`
+	RegistrationID         string `json:"registrationId"`
+	RegistrationGeneration int64  `json:"registrationGeneration"`
+	CanonicalURI           string `json:"canonicalUri"`
+	ConnectionEndpoint     string `json:"connectionEndpoint"`
+	// CredentialExpiresAt uses the same zero-means-non-expiring semantics as
+	// EnrollmentResponse.CredentialExpiresAt.
+	CredentialExpiresAt time.Time `json:"credentialExpiresAt"`
+	ProtocolVersion     string    `json:"protocolVersion"`
+	ACL                 ACL       `json:"acl"`
+	JoinedAt            time.Time `json:"joinedAt"`
+	Revoked             bool      `json:"revoked"`
+	RevokeReason        string    `json:"revokeReason,omitempty"`
+	Connected           bool      `json:"connected"`
+	ConnectionID        string    `json:"connectionId,omitempty"`
+	HeartbeatSeconds    int       `json:"heartbeatSeconds,omitempty"`
+	LastConnectedAt     time.Time `json:"lastConnectedAt,omitempty"`
+	LastHeartbeatAt     time.Time `json:"lastHeartbeatAt,omitempty"`
+	LastError           string    `json:"lastError,omitempty"`
 }
 
 // Record bundles an Association with its private key and bearer credential
 // for storage.
 type Record struct {
 	Association Association
-	PrivateKey  []byte
-	Credential  string
+	// PrivateKey is an ECDSA P-256 private key encoded as PKCS#8 DER.
+	PrivateKey []byte
+	Credential string
 }
 
 // Challenge is sent by a Fleet service over a connection to be signed with

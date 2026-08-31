@@ -12,6 +12,10 @@ var newDaemonFleetConnector = func(storage fleet.Storage, root string) interface
 	return fleet.NewConnector(storage, root, version.Get().Version)
 }
 
+// startDaemonFleetConnector returns started=false when the instance has no
+// active Fleet association. When started=true, callers must receive from done
+// during shutdown. The connector itself distinguishes normal leave/revoke
+// termination from unrecoverable storage or credential errors.
 func startDaemonFleetConnector(ctx context.Context, root string) (<-chan error, bool, error) {
 	storage, err := newFleetStorage()
 	if err != nil {

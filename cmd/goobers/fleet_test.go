@@ -277,6 +277,25 @@ func TestFleetConnectionStateHeartbeatFreshness(t *testing.T) {
 			want: "connected",
 		},
 		{
+			name: "new connection supersedes old heartbeat",
+			association: fleet.Association{
+				Connected:        true,
+				HeartbeatSeconds: 10,
+				LastConnectedAt:  now.Add(-time.Second),
+				LastHeartbeatAt:  now.Add(-time.Hour),
+			},
+			want: "connected",
+		},
+		{
+			name: "corrupt interval cannot overflow stale calculation",
+			association: fleet.Association{
+				Connected:        true,
+				HeartbeatSeconds: int(^uint(0) >> 1),
+				LastConnectedAt:  now.Add(-time.Second),
+			},
+			want: "connected",
+		},
+		{
 			name: "missing activity is stale",
 			association: fleet.Association{
 				Connected:        true,

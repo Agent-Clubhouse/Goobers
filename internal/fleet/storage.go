@@ -19,6 +19,14 @@ import (
 )
 
 const (
+	// Each instance directory is a crash-safe state machine:
+	//   absent directory: never associated
+	//   disabled marker present: not associated, regardless of other files
+	//   association metadata present without disabled: active association
+	//
+	// Save and Delete publish the disabled marker before creating or removing
+	// secrets. Save removes it only after metadata, key, and credential are
+	// durable, so an interrupted operation cannot expose a partial association.
 	associationFileName = "association.json"
 	privateKeyFileName  = "private-key.bin"
 	credentialFileName  = "credential.bin"
@@ -27,7 +35,8 @@ const (
 )
 
 // Storage persists a Fleet association, private key, and credential for an
-// instance, keyed by the instance's root directory.
+// instance, keyed by the instance's root directory. Windows protects secrets
+// with current-user DPAPI; Unix relies on a 0700 directory and 0600 files.
 type Storage interface {
 	LoadAssociation(instanceRoot string) (Association, error)
 	Load(instanceRoot string) (Record, error)
@@ -66,6 +75,7 @@ func defaultStorageBaseDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fleet: resolve user storage directory: %w", err)
 	}
+	// Never place Fleet credentials in a directory that appears cloud-synced.
 	if strings.Contains(strings.ToLower(base), "onedrive") {
 		base, err = os.UserCacheDir()
 		if err != nil {
@@ -76,7 +86,9 @@ func defaultStorageBaseDir() (string, error) {
 }
 
 // CanonicalInstanceRoot resolves instanceRoot to an absolute, symlink-free,
-// platform-normalized path suitable for use as a Storage key.
+// platform-normalized path suitable for use as a Storage key. Moving or
+// renaming an instance gives it a new storage identity. Windows paths are
+// case-folded because the platform treats case variants as the same root.
 func CanonicalInstanceRoot(instanceRoot string) (string, error) {
 	absolute, err := filepath.Abs(instanceRoot)
 	if err != nil {
@@ -174,7 +186,7 @@ func (s *FileStorage) loadAssociation(dir string) (Association, error) {
 	if err := json.Unmarshal(metadata, &association); err != nil {
 		return Association{}, fmt.Errorf("fleet: decode association metadata: %w", err)
 	}
-	if association.SchemaVersion != ProtocolVersion {
+	if association.SchemaVersion != AssociationSchemaVersion {
 		return Association{}, fmt.Errorf("fleet: unsupported association schema version %q", association.SchemaVersion)
 	}
 	return association, nil
@@ -189,7 +201,7 @@ func (s *FileStorage) Save(instanceRoot string, record Record) error {
 	if len(record.PrivateKey) == 0 {
 		return fmt.Errorf("fleet: private key must not be empty")
 	}
-	record.Association.SchemaVersion = ProtocolVersion
+	record.Association.SchemaVersion = AssociationSchemaVersion
 	return s.withDirectoryLock(instanceRoot, true, func(dir string) error {
 		disabledPath := filepath.Join(dir, disabledFileName)
 		if _, err := os.Stat(filepath.Join(dir, associationFileName)); err == nil {
@@ -282,7 +294,9 @@ func (s *FileStorage) Update(instanceRoot string, update func(*Association) erro
 }
 
 // Delete removes the Fleet association, private key, and credential for
-// instanceRoot. It returns ErrNotAssociated if no association exists.
+// instanceRoot. It leaves the directory and disabled tombstone in place so a
+// later join can safely reuse the same canonical instance identity. It returns
+// ErrNotAssociated if no association exists.
 func (s *FileStorage) Delete(instanceRoot string) error {
 	return s.withDirectoryLock(instanceRoot, false, func(dir string) error {
 		if _, err := os.Stat(filepath.Join(dir, associationFileName)); errors.Is(err, fs.ErrNotExist) {
