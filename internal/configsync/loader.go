@@ -17,7 +17,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -31,6 +30,7 @@ import (
 	"github.com/goobers/goobers/internal/configtree"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/yamldoc"
 )
 
 // DefaultNamespace is the control-plane namespace rendered CRs are placed in;
@@ -83,7 +83,13 @@ func NewLoader(namespace string) (*Loader, error) {
 	return &Loader{Namespace: namespace, validator: v}, nil
 }
 
-var docSep = regexp.MustCompile(`(?m)^---\s*$`)
+// rawDoc is one parsed YAML document with its kind/name.
+type rawDoc struct {
+	kind       string
+	name       string
+	dslVersion string
+	yaml       []byte
+}
 
 // Load validates the config repo at root, then parses + renders its desired-state
 // CRs. ignoreDirs are paths excluded from both validation and parsing — pass the
@@ -217,22 +223,6 @@ func copyTree(src, dst string, skip map[string]bool) error {
 	})
 }
 
-// rawDoc is one parsed YAML document with its kind/name.
-type rawDoc struct {
-	kind       string
-	name       string
-	dslVersion string
-	yaml       []byte
-}
-
-type docMeta struct {
-	Kind       string `json:"kind"`
-	DSLVersion string `json:"dslVersion"`
-	Metadata   struct {
-		Name string `json:"name"`
-	} `json:"metadata"`
-}
-
 // readDocs walks root and returns every YAML document with its kind/name.
 func readDocs(root string) ([]rawDoc, error) {
 	var docs []rawDoc
@@ -258,17 +248,10 @@ func readDocs(root string) ([]rawDoc, error) {
 			return err
 		}
 
-		for _, seg := range docSep.Split(string(raw), -1) {
-			if strings.TrimSpace(seg) == "" {
-				continue
-			}
-			var meta docMeta
-			if err := yaml.Unmarshal([]byte(seg), &meta); err != nil || meta.Kind == "" {
-				// Validation already reported malformed docs; skip here.
-				continue
-			}
+		parsedDocs := yamldoc.SplitDocuments(raw)
+		for _, pd := range parsedDocs {
 			docs = append(docs, rawDoc{
-				kind: meta.Kind, name: meta.Metadata.Name, dslVersion: meta.DSLVersion, yaml: []byte(seg),
+				kind: pd.Meta.Kind, name: pd.Meta.Name, dslVersion: pd.Meta.DSLVersion, yaml: pd.Content,
 			})
 		}
 		return nil
