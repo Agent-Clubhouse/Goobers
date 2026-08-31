@@ -435,7 +435,14 @@ type StageAttempt struct {
 	// attempt's agent-invocation span, when the telemetry rollup has ingested
 	// it. Empty when telemetry is unavailable or the attempt has no matching
 	// span yet.
-	Model          string               `json:"model,omitempty"`
+	Model string `json:"model,omitempty"`
+	// Placement is the runner.* placement provenance journaled for this
+	// attempt (goobernetes-architecture.md §7) — which runner/node/OS/image/
+	// pod executed it and when it queued/started — when the executing
+	// substrate recorded it. Nil for every journal written before placement
+	// provenance existed: absent provenance must read exactly as today
+	// (zero-declaration invariance, architecture §11 item 1).
+	Placement      *journal.Placement   `json:"placement,omitempty"`
 	StartedSeq     uint64               `json:"startedSeq,omitempty"`
 	FinishedSeq    uint64               `json:"finishedSeq,omitempty"`
 	StartedAt      *time.Time           `json:"startedAt,omitempty"`
@@ -1598,7 +1605,19 @@ func summarizeRunForStage(
 		event := record.Event
 		if event.Seq > lastSeq {
 			lastSeq = event.Seq
-			lastActivityAt = event.Time
+			// Seq is structural (journal.MonotonicSeq) and always advances on
+			// the newest event regardless of its Time, but lastActivityAt only
+			// advances when that event actually carries one: an unstamped
+			// event (#3774 — a pod-side writer defect, now fixed at the
+			// source but still possible from an older journal) must not
+			// clobber a real, previously-observed lastActivityAt with the
+			// zero time, which is exactly the value runIsStale treats as
+			// undeterminable rather than as fresh activity. Mirrors
+			// readmodel.ProjectRun's identical guard so GetRun and ListRuns
+			// agree on this field for the same run.
+			if !event.Time.IsZero() {
+				lastActivityAt = event.Time
+			}
 		}
 		if !event.KnownSchema() {
 			continue
@@ -1725,6 +1744,19 @@ func summarizeRunForStage(
 		}
 	}
 
+	// PhaseFromEvents is the journal's authoritative reconstruction rule. Keep
+	// the summary fold responsible for presentation fields, but do not duplicate
+	// terminal-state semantics here: older runs may end at an executed terminal
+	// gate when cleanup fails before run.finished is appended.
+	reconstructed := journal.PhaseFromEvents(recordEvents(run.records))
+	if phase == journal.PhaseRunning && reconstructed != journal.PhaseRunning {
+		phase = reconstructed
+		finishedAt = terminalGateTime(run.records, reconstructed)
+		if !strings.HasPrefix(currentStage, "Workspace reset suggested:") {
+			currentStage = ""
+		}
+	}
+
 	if phase == journal.PhaseRunning {
 		if state, err := run.reader.State(); err == nil && state.LastSeq >= lastSeq && state.MachineState != "" {
 			currentStage = state.MachineState
@@ -1829,6 +1861,26 @@ func summarizeRunForStage(
 
 func operatorTrajectory(stage string, phase journal.RunPhase) string {
 	return readmodel.OperatorTrajectory(stage, phase)
+}
+
+func terminalGateTime(records []journal.EventRecord, phase journal.RunPhase) *time.Time {
+	wantTarget := ""
+	switch phase {
+	case journal.PhaseAborted:
+		wantTarget = journal.TargetAbort
+	case journal.PhaseEscalated:
+		wantTarget = journal.TargetEscalate
+	default:
+		return nil
+	}
+	for i := len(records) - 1; i >= 0; i-- {
+		event := records[i].Event
+		if event.Type == journal.EventGateEvaluated && event.Target == wantTarget {
+			finished := event.Time
+			return &finished
+		}
+	}
+	return nil
 }
 
 func matchesRunOutcome(phase journal.RunPhase, outcome OutcomeFilter) bool {
@@ -2425,6 +2477,21 @@ func projectEvent(record journal.EventRecord, artifacts artifactIndex) RunEvent 
 	}
 	if metadata, ok := artifacts.bySeq[event.Seq]; ok {
 		projected.Artifact = &metadata
+	} else if event.Ref != nil {
+		// An event that is not itself an artifact.recorded but REFERENCES one
+		// — gate.evaluated naming its verdict is the load-bearing case — still
+		// has to say which artifact, or a consumer of the projection cannot
+		// reach the content the event is about (#3880: apply-verdict and
+		// elect-lander read exactly this ref over the run-scoped read route).
+		//
+		// Resolved through the index rather than copied from the event, so it
+		// keeps both of the projection's properties: no journal-relative path
+		// crosses the boundary, and a redacted artifact resolves to the
+		// replacement digest rather than one that no longer exists.
+		if metadata, ok := artifacts.byDigest[artifacts.currentDigest(event.Ref.Digest)]; ok {
+			resolved := metadata.metadata
+			projected.Artifact = &resolved
+		}
 	}
 	projected.Name = event.Name
 	projected.ExternalRef = event.ExternalRef
@@ -2689,6 +2756,12 @@ func collectStageAttempts(
 			visits[event.Stage] = visit
 		case journal.EventStageStarted:
 			attempts = append(attempts, newStageAttempt(runID, event, visits, true))
+		case journal.EventRunnerPlacement:
+			if i := matchingOpenAttempt(attempts, event.Attempt, event.AttemptClass, event.Branch); i >= 0 {
+				if placement, ok := journal.PlacementFromEvent(event); ok {
+					attempts[i].Placement = &placement
+				}
+			}
 		case journal.EventArtifactRecorded:
 			if event.Ref == nil {
 				continue
@@ -3001,7 +3074,15 @@ func runIsStale(run RunSummary, observedAt, lastTickAt time.Time, timeout time.D
 		return false
 	}
 	if run.LastActivityAt.IsZero() {
-		return true
+		// A zero LastActivityAt is undeterminable, not stale (#3774,
+		// consistent with #3775/#3776's rule for the run-stalled watchdog):
+		// it means no timestamped event has been observed yet, not that
+		// activity stopped timeout ago. Reporting Stale here for a run that
+		// may have real, recent, merely-unstamped activity (the #3774 writer
+		// defect this projector's LastActivity now guards against
+		// separately) would show the portal's badge disagreeing with the
+		// watchdog that no longer fires on the same zero.
+		return false
 	}
 	return observedAt.Sub(run.LastActivityAt) > timeout
 }

@@ -162,7 +162,7 @@ func projectFacts(selector, purposeSelector string, declared, resolved map[strin
 // resolutionFeatures returns the DSL feature projections explain resolves
 // against: every loadable (non-unsupported) DSL version, NEWEST FIRST, so a
 // selector explains at the newest version that carries it (#3291). Resolving
-// only at CurrentDSLVersion — the deprecated 1.4 — made every newer-version
+// only at CurrentDSLVersion — the dropped 1.4 — made every newer-version
 // feature, and via selectorLifecycle's ancestor walk its entire dotted
 // subtree, report "unavailable" while the coverage test skipped exactly that
 // error. Newest-first matters for the returned lifecycle too: a feature
@@ -286,7 +286,7 @@ func selectorAllowedValues(parts []selectorPart, values []any) ([]any, error) {
 			return nil, fmt.Errorf("run.workspace schema value %q has no feature mapping", workspace)
 		}
 		// A value is explainable when ANY loadable DSL version carries its
-		// feature (#3291) — filtering at the deprecated CurrentDSLVersion
+		// feature (#3291) — filtering at the dropped CurrentDSLVersion
 		// hid repo-readonly, a valid 2.0 value, from explain's output.
 		for _, features := range sets {
 			if _, ok := lookupFeature(features, featureID); ok {
@@ -949,7 +949,7 @@ func (r *registry) resolveProperty(doc *schemaDocument, node map[string]any, nam
 			return childDoc, child, resolved, containsString(node["required"], name), true, err
 		}
 	}
-	for _, keyword := range []string{"oneOf", "anyOf"} {
+	for _, keyword := range []string{"allOf", "oneOf", "anyOf"} {
 		alternatives, _ := node[keyword].([]any)
 		for _, value := range alternatives {
 			alternative, ok := value.(map[string]any)

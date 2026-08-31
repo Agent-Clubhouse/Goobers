@@ -139,7 +139,7 @@ func TestConfiguredRunnerReleasesClaimsAtTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	const runID = "terminal-claim-run"
 	ledgerPath := filepath.Join(l.SchedulerDir(), claimLedgerFileName)
@@ -247,7 +247,7 @@ func TestTerminalClaimReleaseTimeoutDefersToRecoverySweep(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = log.Close() }()
-	released, err := recoverClaims(l, log, time.Now(), nil)
+	released, err := recoverClaims(l, log, time.Now(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestRecoverClaimsSkipsCorruptHolderJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	released, err := recoverClaims(l, log, time.Now(), nil)
+	released, err := recoverClaims(l, log, time.Now(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +422,7 @@ func TestRecoverClaimsResolvesBacklogReconcileClaimsByOwningRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	released, err := recoverClaims(l, log, time.Now(), nil)
+	released, err := recoverClaims(l, log, time.Now(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

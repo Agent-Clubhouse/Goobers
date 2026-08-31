@@ -55,6 +55,8 @@ const exemptions = [
 
 const testOnlyExports = {
   "src/api/errors.ts": ["UnsupportedApiVersionError", "UnsupportedSchemaVersionError"],
+  "src/api/contract.generated.ts": ["configAuthoringErrorCodes", "configAuthoringRoutes"],
+  "src/api/types.ts": ["CONFIG_AUTHORING_SCHEMA_VERSION"],
   "src/api/queryFamily.ts": ["emptyStats", "positionOf", "comparePosition"],
   "src/api/surfaceActions.ts": ["uiSurfaceActions"],
   "src/attentionCollapse.ts": [
@@ -65,6 +67,7 @@ const testOnlyExports = {
     "attentionDismissalsStorageKey",
     "readStoredAttentionDismissals",
   ],
+  "src/components/GaggleWorkflowExplorer.tsx": ["WorkflowPicker"],
   "src/components/RunStageInspector.tsx": ["TranscriptView"],
   "src/dataCache.ts": ["DATA_CACHE_TTL_MS"],
   "src/insightData.ts": [
@@ -72,6 +75,7 @@ const testOnlyExports = {
     "insightPreviousWindowFilters",
     "insightWindowFilters",
     "insightErrorSignatureFilters",
+    "selectInsightCostTrendBuckets",
   ],
   "src/liveData.tsx": [
     "LiveDataController",
@@ -105,6 +109,52 @@ for (const [file, symbols] of Object.entries(testOnlyExports)) {
       file,
       symbol,
       reason: "Exported as a focused unit-test seam; production uses it within this module.",
+    });
+  }
+}
+
+const canonicalMascotExports = {
+  "src/site-mascot/src/mascot/core/director.js": ["scroll", "enter", "event"],
+  "src/site-mascot/src/mascot/core/stage-look.js": ["CANON_LIGHTS"],
+  "src/site-mascot/src/mascot/core/procedural-rig.js": ["ProceduralRig"],
+  "src/site-mascot/demo/src/cast.js": [
+    "NAMES",
+    "DEFAULT_GLYPH",
+    "DEFAULT_COLOR",
+    "CANON",
+  ],
+  "src/site-mascot/demo/src/canon-export-budget.js": [
+    "EXPECTED_MORPH_TARGETS",
+    "MAX_TRIANGLES",
+    "MAX_BYTES",
+    "countTriangles",
+    "validateRig",
+  ],
+  "src/site-mascot/demo/src/goober-model.js": [
+    "skinMaterial",
+    "deriveShades",
+    "BODY_DEPTH",
+    "BODY_EDGE",
+    "crossDepth",
+    "bodyRadiusAt",
+    "bodyGeometry",
+    "conformToBody",
+  ],
+  "src/site-mascot/demo/src/spatial.js": [
+    "PERSONAL_RADIUS",
+    "CONTACT_DIST",
+    "separationOffsets",
+    "applySeparation",
+  ],
+};
+
+for (const [file, symbols] of Object.entries(canonicalMascotExports)) {
+  for (const symbol of symbols) {
+    exemptions.push({
+      type: "exports",
+      file,
+      symbol,
+      reason: "Retained to keep the vendored canonical Goobers-Site mascot runtime API intact.",
     });
   }
 }

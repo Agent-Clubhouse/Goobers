@@ -21,7 +21,8 @@ package v1alpha1
 // unknown fields are a validation error, and additive changes bump this version.
 // v1alpha7 adds input-integrity grades to invocations, backlog items, context
 // pointers, and artifacts. v1alpha8 adds InvocationEnvelope.CheckoutCones (#649).
-const StageContractVersion = "v1alpha8"
+// v1alpha9 adds runner-authored nested-agent authority and ownership fields.
+const StageContractVersion = "v1alpha9"
 
 // ---------------------------------------------------------------------------
 // Invocation envelope — what the runner hands a stage when the workflow advances.
@@ -43,6 +44,9 @@ const StageContractVersion = "v1alpha8"
 type InvocationEnvelope struct {
 	// TaskID identifies this stage instance within the run.
 	TaskID string `json:"taskId"`
+	// Attempt identifies the scheduler attempt so adapter provenance remains
+	// retry-safe across local and distributed runners.
+	Attempt int32 `json:"attempt,omitempty"`
 	// WorkflowID identifies the workflow definition being executed.
 	WorkflowID string `json:"workflowId"`
 	// RunID identifies this run (the OpenTelemetry trace id for the run).
@@ -75,8 +79,29 @@ type InvocationEnvelope struct {
 	// the envelope, so without this the agentic seam cannot know WHICH goober
 	// to construct: invoke.Goober.Invoke(ctx, env) is the whole signature.
 	Goober string `json:"goober,omitempty"`
+	// GooberDigest is the content digest of the goober kit this run was
+	// admitted against (workflow.ComputeGooberDigest over the participating
+	// goobers' resolved specs, instruction bodies and skill packages), pinned
+	// at run start and carried unchanged on every attempt of every stage.
+	//
+	// It is a SELECTOR, not decoration (#3884). The local runner resolves its
+	// kit in the same process that recorded the digest, so it cannot drift;
+	// a Temporal worker resolves the kit from its OWN config tree, which
+	// reloads independently, so without this field on the wire attempt N+1 of
+	// a run could silently execute different instructions than attempt N —
+	// the I-51 staleness class, one layer up. The worker matches this value
+	// against the digest its snapshot resolves for (Gaggle, WorkflowID) and
+	// refuses the attempt when it cannot serve it, rather than substituting
+	// whatever it currently has.
+	//
+	// Empty means unpinned: every envelope built before this field existed,
+	// and every run started without a digest. Unpinned attempts resolve the
+	// worker's current tree exactly as before, byte for byte.
+	GooberDigest string `json:"gooberDigest,omitempty"`
 	// Goal is the stage's goal statement.
 	Goal string `json:"goal"`
+	// OwnershipBoundary is the work this invocation owns and may mutate.
+	OwnershipBoundary string `json:"ownershipBoundary,omitempty"`
 	// InstructionAddendum is an operator-supplied, one-off addition to the
 	// agent's instructions for this invocation. It is never part of the workflow
 	// definition and is empty for ordinary invocations.
@@ -122,12 +147,45 @@ type InvocationEnvelope struct {
 	// (e.g. "github:issues:write", "repo:push"). Undeclared use fails closed:
 	// credentials for capabilities not listed here are never materialized (§5).
 	Capabilities []string `json:"capabilities,omitempty"`
+	// PolicyActions are the externally mutating actions authorized for this stage.
+	PolicyActions []string `json:"policyActions,omitempty"`
+	// ParentPlatformPolicy is the authority inherited by a nested child.
+	// It is required whenever NestedAgentPolicy is present and is authored by
+	// the runner, never copied from the requested child policy.
+	ParentPlatformPolicy *PlatformPolicy `json:"parentPlatformPolicy,omitempty"`
 	// Limits bound this stage's execution (duration/tokens/cost).
 	Limits Limits `json:"limits"`
 	// Inputs are the stage's static config from its definition (plus any values
 	// the compiler resolved for it). This is the stage's own config, not another
 	// stage's runtime state.
 	Inputs map[string]interface{} `json:"inputs,omitempty"`
+	// NestedAgentPolicy is the admitted child authority for agentic stages.
+	// It is carried in the mandatory execution envelope so adapters cannot
+	// implement nested-agent behavior from prompt text alone.
+	NestedAgentPolicy *NestedAgentPolicy `json:"nestedAgentPolicy,omitempty"`
+}
+
+// ContinuationRequest creates a new run journal linked to a terminal source
+// run. It intentionally describes creation only; execution from Target is a
+// later workflow slice.
+type ContinuationRequest struct {
+	From                string              `json:"from"`
+	ExpectedTerminalSeq uint64              `json:"expectedTerminalSeq"`
+	Target              string              `json:"target"`
+	Operator            string              `json:"operator"`
+	Inputs              []ContinuationInput `json:"inputs,omitempty"`
+	// ContextPointers are the explicitly selected source artifacts. No other
+	// source-run context is implicitly inherited.
+	ContextPointers []ContextPointer `json:"contextPointers,omitempty"`
+}
+
+// ContinuationInput is an injected immutable input reference. Content is
+// supplied by the API caller and snapshotted by the journal creator.
+type ContinuationInput struct {
+	Name      string    `json:"name"`
+	Content   string    `json:"content"`
+	Source    string    `json:"source"`
+	Integrity Integrity `json:"integrity"`
 }
 
 // AdditionalWorkspace is one read-only reference-repo checkout handed to a stage
@@ -361,6 +419,36 @@ func (c FindingClass) RequiresCodeChange() bool {
 	return false
 }
 
+// LearningClassification names the durable action family a repeated finding
+// belongs to. It is optional on a fresh verdict; the runner derives a
+// conservative default when the reviewer does not supply one.
+type LearningClassification string
+
+const (
+	// LearningInstruction routes a finding to instruction remediation.
+	LearningInstruction LearningClassification = "instruction"
+	// LearningSkill routes a finding to skill remediation.
+	LearningSkill LearningClassification = "skill"
+	// LearningWorkflow routes a finding to workflow remediation.
+	LearningWorkflow LearningClassification = "workflow"
+	// LearningGate routes a finding to gate remediation.
+	LearningGate LearningClassification = "gate"
+	// LearningValidation routes a finding to targeted validation remediation.
+	LearningValidation LearningClassification = "validation"
+	// LearningCodeDefect routes a finding to an unapproved code issue.
+	LearningCodeDefect LearningClassification = "code-defect"
+)
+
+// IsValid reports whether c is a supported durable-learning classification.
+func (c LearningClassification) IsValid() bool {
+	switch c {
+	case LearningInstruction, LearningSkill, LearningWorkflow, LearningGate,
+		LearningValidation, LearningCodeDefect:
+		return true
+	}
+	return false
+}
+
 // Verdict is the structured result a gate evaluator — or, at PR altitude,
 // the merge-review workflow (issue #358) — produces. An in-run gate maps
 // Decision to a branch; merge-review maps it to a label
@@ -412,15 +500,17 @@ type Verdict struct {
 	// always still names the run a human or `goobers trace` would need to
 	// inspect to see the real reviewer reasoning behind it.
 	SourceRunID string `json:"sourceRunId,omitempty"`
-	// OverlapCluster records whether this PR shared a deterministic file
-	// overlap with at least one other open PR (#989/#990) at the moment this
-	// verdict was published — PR-altitude only, always false for an in-run
-	// gate Verdict. See Elected.
+	// OverlapCluster records whether this PR had at least one other open PR
+	// in its sibling-serialization cluster (#989/#990) at the moment this
+	// verdict was published — the deterministic file-overlap set under the
+	// default `election` strategy, and that set unioned with the reviewer's
+	// named cross-PR blockers under `ordering` (#2741). PR-altitude only,
+	// always false for an in-run gate Verdict. See Elected.
 	OverlapCluster bool `json:"overlapCluster,omitempty"`
 	// Elected records whether this PR was the single-lander election's
-	// deterministic winner (PRL-021) for its overlap cluster at the moment
-	// this verdict was published — always false when OverlapCluster is
-	// false. A published `pass` with OverlapCluster true and Elected false
+	// deterministic winner (PRL-021) for that same serialization cluster at
+	// the moment this verdict was published — always false when OverlapCluster
+	// is false. A published `pass` with OverlapCluster true and Elected false
 	// is not a landing authority: merge-pr's election conjunct (#1071)
 	// refuses to land it, so GitHub's native merge queue can never crown a
 	// cluster member on its own.
@@ -429,6 +519,18 @@ type Verdict struct {
 
 // Finding is a single issue raised by an evaluator.
 type Finding struct {
+	// ID is the stable identity of this finding across repasses. Reviewers
+	// copy it from an injected learning episode when the same finding remains
+	// unresolved; the runner assigns one on the first occurrence.
+	ID string `json:"id,omitempty"`
+	// LearningSignature is the normalized cross-run clustering key. The
+	// runner derives one when absent.
+	LearningSignature string `json:"learningSignature,omitempty"`
+	// LearningClassification selects the governed durable action family.
+	LearningClassification LearningClassification `json:"learningClassification,omitempty"`
+	// EvidenceDigest is finding-specific evidence for reopening a finding
+	// that a prior repass resolved. Reusing old evidence is suppressed.
+	EvidenceDigest string `json:"evidenceDigest,omitempty"`
 	// Severity ranks the finding.
 	Severity Severity `json:"severity"`
 	// Message describes the issue.
@@ -457,6 +559,9 @@ type Finding struct {
 // an unusable record.
 func (f Finding) IsValid() bool {
 	if f.Class != "" && !f.Class.IsValid() {
+		return false
+	}
+	if f.LearningClassification != "" && !f.LearningClassification.IsValid() {
 		return false
 	}
 	if f.Class == FindingCrossPRBlocked && len(f.BlockingPRs) == 0 {

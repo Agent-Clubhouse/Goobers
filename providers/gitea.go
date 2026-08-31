@@ -417,14 +417,8 @@ func (p *GiteaProvider) Commit(ctx context.Context, req CommitRequest) (CommitRe
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return CommitResult{}, err
 	}
-	if req.Branch == "" {
-		return CommitResult{}, fmt.Errorf("branch is required")
-	}
-	if req.Message == "" {
-		return CommitResult{}, fmt.Errorf("message is required")
-	}
-	if len(req.Files) == 0 {
-		return CommitResult{}, fmt.Errorf("at least one file is required")
+	if err := validateCommitRequest(req); err != nil {
+		return CommitResult{}, err
 	}
 	runner, ok := p.Runner.(environmentCommandRunner)
 	if !ok {
@@ -447,8 +441,8 @@ func (p *GiteaProvider) Commit(ctx context.Context, req CommitRequest) (CommitRe
 		return CommitResult{}, fmt.Errorf("git clone: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	for _, file := range req.Files {
-		if file.Path == "" {
-			return CommitResult{}, fmt.Errorf("file path is required")
+		if err := validateCommitFile(file); err != nil {
+			return CommitResult{}, err
 		}
 		abs := filepath.Join(workDir, filepath.FromSlash(file.Path))
 		exists := false
@@ -652,7 +646,7 @@ func (p *GiteaProvider) RequestReview(ctx context.Context, req ReviewRequest) er
 		return err
 	}
 	if req.PullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "requested_reviewers")
 	if err != nil {
@@ -684,7 +678,7 @@ func (p *GiteaProvider) PollPullRequest(ctx context.Context, req PullRequestPoll
 		return PullRequestPollResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestPollResult{}, fmt.Errorf("pull id is required")
+		return PullRequestPollResult{}, errPullIDRequired
 	}
 	pr, err := p.getPull(ctx, req.Repository, req.PullID)
 	if err != nil {
@@ -765,7 +759,7 @@ func (p *GiteaProvider) PullRequestMergeable(ctx context.Context, repo Repositor
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	pr, err := p.getPull(ctx, repo, pullID)
 	if err != nil {
@@ -912,7 +906,7 @@ func (p *GiteaProvider) ClosePullRequest(ctx context.Context, req ClosePullReque
 		return ClosePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return ClosePullRequestResult{}, fmt.Errorf("pull id is required")
+		return ClosePullRequestResult{}, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
 	if err != nil {
@@ -963,7 +957,7 @@ func (p *GiteaProvider) MergePullRequest(ctx context.Context, req MergePullReque
 		return MergePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return MergePullRequestResult{}, fmt.Errorf("pull id is required")
+		return MergePullRequestResult{}, errPullIDRequired
 	}
 	if req.MergeMethod != "" && !req.MergeMethod.IsValid() {
 		return MergePullRequestResult{}, fmt.Errorf("unsupported merge method %q", req.MergeMethod)
@@ -1096,7 +1090,7 @@ func (p *GiteaProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, 
 		return PullRequestSummary{}, err
 	}
 	if pullID == "" {
-		return PullRequestSummary{}, fmt.Errorf("pull id is required")
+		return PullRequestSummary{}, errPullIDRequired
 	}
 	pr, err := p.getPull(ctx, repo, pullID)
 	if err != nil {
@@ -1247,6 +1241,42 @@ func (p *GiteaProvider) BranchTipSHA(ctx context.Context, repo RepositoryRef, br
 	return b.Commit.ID, nil
 }
 
+// RepositoryFileContent returns one file's contents at ref. Gitea serves raw
+// bytes from repos/{owner}/{repo}/raw/{path}?ref={ref} rather than GitHub's
+// base64-in-JSON contents payload, so this reads the body directly instead of
+// going through do/readJSONResponse. A read, so it emits no mutation event.
+func (p *GiteaProvider) RepositoryFileContent(ctx context.Context, repo RepositoryRef, path, ref string) ([]byte, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
+	if err := requireOwnerRepo(repo); err != nil {
+		return nil, err
+	}
+	if path == "" {
+		return nil, fmt.Errorf("file path is required")
+	}
+	if ref == "" {
+		return nil, fmt.Errorf("ref is required")
+	}
+	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "raw", path)
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err = addQuery(endpoint, url.Values{"ref": []string{ref}})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.send(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	content, _, err := readPage(resp, http.MethodGet, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return content, nil
+}
+
 // PullRequestFiles lists the files a pull request touches. Gitea returns no
 // patch text, so ChangedFile.Patch stays empty (permitted by the field's
 // contract). A read, so it emits no mutation event.
@@ -1258,7 +1288,7 @@ func (p *GiteaProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "files")
 	if err != nil {
@@ -1418,7 +1448,7 @@ func (p *GiteaProvider) SubmitPullRequestReview(ctx context.Context, req PullReq
 		return PullRequestReviewResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestReviewResult{}, fmt.Errorf("pull id is required")
+		return PullRequestReviewResult{}, errPullIDRequired
 	}
 	if req.CommitSHA == "" {
 		return PullRequestReviewResult{}, fmt.Errorf("commit sha is required")
@@ -1483,7 +1513,7 @@ func (p *GiteaProvider) UpdateBranch(ctx context.Context, req UpdateBranchReques
 		return UpdateBranchResult{}, err
 	}
 	if req.PullID == "" {
-		return UpdateBranchResult{}, fmt.Errorf("pull id is required")
+		return UpdateBranchResult{}, errPullIDRequired
 	}
 	if req.ExpectedHeadSHA == "" {
 		return UpdateBranchResult{}, fmt.Errorf("expected head SHA is required")
@@ -1532,7 +1562,7 @@ func (p *GiteaProvider) PublishPullRequestStatus(ctx context.Context, req PullRe
 		return PullRequestStatusResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestStatusResult{}, fmt.Errorf("pull id is required")
+		return PullRequestStatusResult{}, errPullIDRequired
 	}
 	if req.Name == "" {
 		return PullRequestStatusResult{}, fmt.Errorf("status name is required")

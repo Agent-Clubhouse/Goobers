@@ -8,14 +8,14 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/providers"
 )
@@ -215,12 +215,17 @@ func runBacklogHealth(args []string, stdout, stderr io.Writer) int {
 	}
 
 	observedAt := time.Now().UTC()
-	ledger, err := localscheduler.OpenClaimLedger(filepath.Join(layoutFor(root).SchedulerDir(), claimLedgerFileName))
+	ledger, err := openStageClaimLedger(layoutFor(root))
 	if err != nil {
 		pf(stderr, "error: inspect ready-pool claims: %v\n", err)
 		return 1
 	}
-	items = unclaimedReadyItems(items, ledger, providerGaggle(), string(backlogRepo.Provider), observedAt)
+	claims, err := ledger.ListNamespace(ctx, providerGaggle(), string(backlogRepo.Provider))
+	if err != nil {
+		pf(stderr, "error: inspect ready-pool claims: %v\n", err)
+		return 1
+	}
+	items = unclaimedReadyItems(items, claims, providerGaggle(), string(backlogRepo.Provider), observedAt)
 	report := measureReadyPool(items, readyLabel, observedAt)
 	report.ReadyTransitions = transitions
 	report.Scan = &scan
@@ -317,6 +322,25 @@ func backlogHealthTransitions(
 // reported as deferred and leaves the cursor untouched: a partial walk has a gap
 // below its oldest transition, so advancing the mark from it would silently lose
 // every transition in that gap forever.
+//
+// The ledger is reached through the scheduler-state seam (#3948): the
+// instance's own file under its own lock locally, the daemon's C2 plane from a
+// stage pod. Two consequences worth stating, because both are deliberate:
+//
+//   - A read that FAILS is fatal now, where an unreadable file used to fall
+//     through to a full scan. On the plane the same failure means the write
+//     cannot land either, and a 400-page walk that cannot be persisted is
+//     exactly the shared-credential burn #3392 exists to stop. A file that is
+//     merely malformed or mis-keyed still self-heals, unchanged — that is a
+//     decode outcome, not a read failure.
+//   - The forced rescan REPLACES the stale ledger in the same compare-and-swap
+//     that persists the rescan, instead of deleting the file first. The plane
+//     has no delete, and a reset that is not atomic with the rescan is the
+//     window the CAS exists to close. On success the end state is identical;
+//     if the rescan instead fails or defers, the stale ledger survives and the
+//     next cycle re-detects the same mismatch and forces the same rescan —
+//     self-healing is a property of the ledger against the live ready pool,
+//     never of the file's absence.
 func resumedBacklogHealthTransitions(
 	ctx context.Context,
 	scanner labelTransitionScanner,
@@ -326,8 +350,16 @@ func resumedBacklogHealthTransitions(
 	opts backlogHealthScanOptions,
 ) ([]providers.WorkItemLabelTransition, backlogHealthScan, error) {
 	gaggle := providerGaggle()
-	path := layoutFor(root).BacklogHealthCursorPath(
-		gaggle, string(repo.Provider), backlogHealthCursorKey(repo), label)
+	// Fail closed on a partial plane configuration: Select refuses an endpoint
+	// without a bearer or a gaggle rather than falling back to a scheduler
+	// -state file a pod does not have.
+	store, err := openStageStateStore(layoutFor(root))
+	if err != nil {
+		return nil, backlogHealthScan{}, &backlogReadyLedgerError{
+			what: "open the ready-transition ledger", err: err,
+		}
+	}
+	key := backlogHealthCursorKey(gaggle, repo, label)
 
 	var (
 		cursor backlogHealthCursor
@@ -335,13 +367,14 @@ func resumedBacklogHealthTransitions(
 	)
 	if opts.forceFull {
 		reason = backlogHealthScanLedgerMismatch
-		if err := discardBacklogHealthCursor(path); err != nil {
+	} else {
+		value, err := store.Get(ctx, key)
+		if err != nil {
 			return nil, backlogHealthScan{}, &backlogReadyLedgerError{
-				what: "reset ready-transition ledger", err: err,
+				what: "read ready-transition ledger " + key, err: err,
 			}
 		}
-	} else {
-		cursor, reason = readBacklogHealthCursor(path, gaggle, repo, label)
+		cursor, reason = decodeBacklogHealthCursor(value, gaggle, repo, label)
 	}
 
 	request := providers.LabelTransitionScan{MinQuotaFraction: opts.quotaFloor}
@@ -377,21 +410,87 @@ func resumedBacklogHealthTransitions(
 		// leave the cursor absent rather than persisting an unusable one.
 		return merged, report, nil
 	}
-	if err := writeBacklogHealthCursor(path, backlogHealthCursor{
-		Schema:           backlogHealthCursorSchema,
-		Gaggle:           gaggle,
-		Provider:         string(repo.Provider),
-		Repository:       backlogHealthCursorKey(repo),
-		Label:            label,
-		HighWaterEventID: highWater,
-		ScannedAt:        time.Now().UTC(),
-		Transitions:      merged,
-	}); err != nil {
+	persisted, persistedHighWater, err := persistBacklogHealthLedger(
+		ctx, store, key, gaggle, repo, label,
+		cursor, result.Transitions, result.HighEventID, opts.forceFull)
+	if err != nil {
 		return nil, report, &backlogReadyLedgerError{
-			what: "persist ready-transition ledger " + path, err: err,
+			what: "persist ready-transition ledger " + key, err: err,
 		}
 	}
-	return merged, report, nil
+	// Report what was PERSISTED, not what this process computed in isolation:
+	// under the plane a concurrent cycle's transitions are folded in by the
+	// same compare-and-swap, and the artifact must describe the ledger that
+	// now exists.
+	report.LedgerSize, report.ToEventID = len(persisted), persistedHighWater
+	return persisted, report, nil
+}
+
+// persistBacklogHealthLedger folds this scan's transitions into the durable
+// ledger as ONE atomic read-modify-write and returns what was persisted.
+//
+// On the file backend fn runs inside the key's lock and exactly once. On the
+// plane it runs between the read and a write carrying the read's ETag, and is
+// re-run against the new value if that write is refused — so it must be, and
+// is, safe to run more than once: it derives the whole ledger from its
+// arguments plus the value it was handed, and merges by provider event id,
+// which is idempotent. That is what lets a runner-driven cycle and a
+// pod-executed one advance one ledger instead of each keeping a private copy.
+//
+// replace is the forced rescan: the stale ledger is discarded rather than
+// merged, because the reason this rescan is running at all is that the ledger
+// could not explain the live ready pool.
+func persistBacklogHealthLedger(
+	ctx context.Context,
+	store stateclient.Store,
+	key, gaggle string,
+	repo providers.RepositoryRef,
+	label string,
+	base backlogHealthCursor,
+	fresh []providers.WorkItemLabelTransition,
+	highEventID int64,
+	replace bool,
+) ([]providers.WorkItemLabelTransition, int64, error) {
+	var (
+		merged    []providers.WorkItemLabelTransition
+		highWater int64
+	)
+	err := store.Update(ctx, key, stateLockOperationBacklogHealthCursor,
+		func(value stateclient.Value) ([]byte, bool, error) {
+			ledger, mark := base.Transitions, base.HighWaterEventID
+			if replace {
+				ledger, mark = nil, 0
+			} else if current, reason := decodeBacklogHealthCursor(
+				value, gaggle, repo, label); reason == "" {
+				ledger = mergeLabelTransitions(ledger, current.Transitions)
+				if current.HighWaterEventID > mark {
+					mark = current.HighWaterEventID
+				}
+			}
+			merged = mergeLabelTransitions(ledger, fresh)
+			highWater = mark
+			if highEventID > highWater {
+				highWater = highEventID
+			}
+			data, err := encodeBacklogHealthCursor(backlogHealthCursor{
+				Schema:           backlogHealthCursorSchema,
+				Gaggle:           gaggle,
+				Provider:         string(repo.Provider),
+				Repository:       backlogHealthCursorRepositoryKey(repo),
+				Label:            label,
+				HighWaterEventID: highWater,
+				ScannedAt:        time.Now().UTC(),
+				Transitions:      merged,
+			})
+			if err != nil {
+				return nil, false, err
+			}
+			return data, true, nil
+		})
+	if err != nil {
+		return nil, 0, err
+	}
+	return merged, highWater, nil
 }
 
 func backlogHealthItemTransitions(
@@ -532,29 +631,18 @@ func applyImplementationFeedback(
 		return writeImplementationFeedbackReport(report, stdout, stderr)
 	}
 
-	dbPath := layoutFor(root).TelemetryDB()
-	info, err := os.Stat(dbPath)
+	// The evidence read: the daemon's gaggle-scoped telemetry plane in a stage
+	// pod, the instance's own rollup otherwise (decision 005 R4 / finding 002
+	// C3). No evidence at all — an instance that has never finished an
+	// implementation run — leaves the report empty, exactly as a missing
+	// rollup file did before the plane existed.
+	outcomes, err := stageImplementationOutcomes(ctx, root, earliestReadyAt)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return writeImplementationFeedbackReport(report, stdout, stderr)
-		}
-		pf(stderr, "error: inspect telemetry rollup %s: %v\n", dbPath, err)
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if info.Size() == 0 {
+	if len(outcomes) == 0 {
 		return writeImplementationFeedbackReport(report, stdout, stderr)
-	}
-	db, err := rollup.Open(dbPath)
-	if err != nil {
-		pf(stderr, "error: open telemetry rollup %s: %v\n", dbPath, err)
-		return 1
-	}
-	defer func() { _ = db.Close() }()
-
-	outcomes, err := db.ImplementationOutcomes(ctx, providerGaggle(), earliestReadyAt)
-	if err != nil {
-		pf(stderr, "error: query implementation outcomes: %v\n", err)
-		return 1
 	}
 	mutationAttempted := false
 	for _, item := range items {
@@ -628,15 +716,15 @@ func reCurateImplementationFeedbackItem(
 	if !implementationFeedbackEligibleWithoutReadyAt(current, trustLabel, readyLabel) {
 		return nil, false, nil
 	}
-	transitions, err := backlogHealthItemTransitions(ctx, issueProvider, repo, current, readyLabel)
+	current, eligible, err := resolveImplementationFeedbackReadyAt(
+		ctx, issueProvider, repo, current, readyLabel,
+	)
 	if err != nil {
-		return nil, false, fmt.Errorf("re-read ready-label transitions: %w", err)
+		return nil, false, err
 	}
-	live := []providers.WorkItem{current}
-	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err != nil {
-		return nil, false, fmt.Errorf("resolve current ready cohort: %w", err)
+	if !eligible {
+		return nil, false, nil
 	}
-	current = live[0]
 	count, evidence := consecutiveImplementationFailures(outcomes, itemID, *current.ReadyAt)
 	if count < threshold {
 		return nil, false, nil
@@ -670,6 +758,37 @@ func reCurateImplementationFeedbackItem(
 		ConsecutiveFailures: count,
 		Evidence:            evidence,
 	}, true, nil
+}
+
+func resolveImplementationFeedbackReadyAt(
+	ctx context.Context,
+	issueProvider backlogHealthProvider,
+	repo providers.RepositoryRef,
+	current providers.WorkItem,
+	readyLabel string,
+) (providers.WorkItem, bool, error) {
+	readTransitions := func() ([]providers.WorkItemLabelTransition, error) {
+		return backlogHealthItemTransitions(ctx, issueProvider, repo, current, readyLabel)
+	}
+
+	transitions, err := readTransitions()
+	if err != nil {
+		return providers.WorkItem{}, false, fmt.Errorf("re-read ready-label transitions: %w", err)
+	}
+	live := []providers.WorkItem{current}
+	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err == nil {
+		return live[0], true, nil
+	}
+
+	transitions, err = readTransitions()
+	if err != nil {
+		return providers.WorkItem{}, false, fmt.Errorf("re-read ready-label transitions: %w", err)
+	}
+	live = []providers.WorkItem{current}
+	if err := annotateBacklogReadyTimes(repo.Provider, live, readyLabel, transitions); err != nil {
+		return providers.WorkItem{}, false, nil
+	}
+	return live[0], true, nil
 }
 
 func implementationFeedbackEligibleWithoutReadyAt(
@@ -876,26 +995,17 @@ func annotateBacklogReadyTimes(
 
 func unclaimedReadyItems(
 	items []providers.WorkItem,
-	ledger *localscheduler.ClaimLedger,
+	claims claimsclient.Listing,
 	gaggle, provider string,
 	observedAt time.Time,
 ) []providers.WorkItem {
-	if ledger == nil {
-		return items
-	}
 	available := items[:0]
 	for _, item := range items {
-		var (
-			entry localscheduler.ClaimEntry
-			ok    bool
-		)
-		if gaggle == "" {
-			entry, ok = ledger.Lookup(item.ID)
-		} else {
-			entry, ok = ledger.LookupScoped(localscheduler.ClaimKey{
-				Gaggle: gaggle, Provider: provider, ExternalID: item.ID,
-			})
+		key := claimsclient.Key{ExternalID: item.ID}
+		if gaggle != "" {
+			key = claimsclient.Key{Gaggle: gaggle, Provider: provider, ExternalID: item.ID}
 		}
+		entry, ok := claims.Lookup(key)
 		if ok && entry.ExpiresAt.After(observedAt) {
 			continue
 		}

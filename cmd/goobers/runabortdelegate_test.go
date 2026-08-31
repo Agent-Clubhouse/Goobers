@@ -27,7 +27,7 @@ import (
 // daemon's lock.
 const slowDeterministicWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
-dslVersion: "1.4"
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:

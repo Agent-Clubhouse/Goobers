@@ -263,8 +263,12 @@ func TestFindEdge(t *testing.T) {
 	if _, ok := FindEdge("1.4", "2.0"); !ok {
 		t.Fatal("FindEdge(1.4, 2.0) = not found, want the registered DVL-5 edge")
 	}
-	if _, ok := FindEdge("2.0", "3.0"); ok {
-		t.Fatal("FindEdge(2.0, 3.0) = found, want no registered edge")
+	if _, ok := FindEdge("2.0", "3.0"); !ok {
+		t.Fatal("FindEdge(2.0, 3.0) = not found, want the registered Goobernetes edge")
+	}
+	// The migrator remains one-step: no direct 1.4→3.0 edge exists.
+	if _, ok := FindEdge("1.4", "3.0"); ok {
+		t.Fatal("FindEdge(1.4, 3.0) = found, want no direct edge (chain 1.4→2.0→3.0)")
 	}
 }
 

@@ -311,8 +311,8 @@ func TestStageInvokesGoobersCLI(t *testing.T) {
 		{"empty", nil, false},
 	}
 	for _, c := range cases {
-		if got := stageInvokesGoobersCLI(c.cmd); got != c.want {
-			t.Errorf("%s: stageInvokesGoobersCLI(%v) = %v, want %v", c.name, c.cmd, got, c.want)
+		if got := StageInvokesGoobersCLI(c.cmd); got != c.want {
+			t.Errorf("%s: StageInvokesGoobersCLI(%v) = %v, want %v", c.name, c.cmd, got, c.want)
 		}
 	}
 }
@@ -343,8 +343,8 @@ func TestStageInvokesProviderBuiltin(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := stageInvokesProviderBuiltin(tc.cmd); got != tc.want {
-				t.Fatalf("stageInvokesProviderBuiltin(%v) = %v, want %v", tc.cmd, got, tc.want)
+			if got := StageInvokesProviderBuiltin(tc.cmd); got != tc.want {
+				t.Fatalf("StageInvokesProviderBuiltin(%v) = %v, want %v", tc.cmd, got, tc.want)
 			}
 		})
 	}
@@ -366,4 +366,37 @@ func hasEnvPrefix(env []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// A stage that knows better than the daemon must still be able to say so.
+// procenv derives GOMAXPROCS from the container CPU quota for every stage
+// (#3963), but buildStageEnv composes the declared environment AFTER the
+// ambient one, and os/exec resolves a duplicated name to its LAST occurrence —
+// so a stage or instance that declares its own value keeps it. Asserted here
+// because the ordering, not the value, is what preserves that promise.
+func TestBuildStageEnvLetsADeclaredGOMAXPROCSWinOverTheAmbientOne(t *testing.T) {
+	t.Setenv(procenv.GOMAXPROCS, "8")
+
+	env, err := buildStageEnv(context.Background(), nil, nil, nil, "run", "gaggle", "wf", "", "", "", false, nil,
+		map[string]string{procenv.GOMAXPROCS: "1"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ambient, declared := -1, -1
+	for i, kv := range env {
+		switch kv {
+		case procenv.GOMAXPROCS + "=8":
+			ambient = i
+		case procenv.GOMAXPROCS + "=1":
+			declared = i
+		}
+	}
+	if ambient < 0 || declared < 0 {
+		t.Fatalf("buildStageEnv = %v, want both the ambient and the declared %s present", env, procenv.GOMAXPROCS)
+	}
+	if declared < ambient {
+		t.Fatalf("declared %s is at index %d, ambient at %d — the declared value must come last to win",
+			procenv.GOMAXPROCS, declared, ambient)
+	}
 }

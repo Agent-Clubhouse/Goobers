@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // ErrUndeclaredCapability is returned when a caller asks for a credential
@@ -139,22 +140,55 @@ func (i *Injector) Materialize(ctx context.Context, declared []string) (*Set, er
 	}
 	addKeys(declared)
 	addKeys(i.credentialKeys)
+	return i.materialize(ctx, keys)
+}
+
+// MaterializeRestricted resolves exactly the credential keys admitted by an
+// execution policy. Unlike Materialize, it does not implicitly add goober-level
+// credential keys, so a nested child cannot inherit credentials omitted from
+// its effective policy.
+func (i *Injector) MaterializeRestricted(ctx context.Context, admitted []string) (*Set, error) {
+	keys := make([]string, 0, len(admitted))
+	seen := make(map[string]bool, len(admitted))
+	for _, key := range admitted {
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		keys = append(keys, key)
+	}
+	return i.materialize(ctx, keys)
+}
+
+func (i *Injector) materialize(ctx context.Context, keys []string) (*Set, error) {
 	s := &Set{
 		declared: make(map[string]bool, len(keys)),
 		tokens:   make(map[string]string, len(keys)),
+		expiries: make(map[string]time.Time, len(keys)),
 	}
+	expiring, _ := i.resolver.(ExpiringResolver)
 	for _, key := range keys {
 		s.declared[key] = true
 		ref, ok := i.grants[key]
 		if !ok {
 			continue
 		}
-		token, err := i.resolver.Resolve(ctx, ref)
+		var token string
+		var expiresAt time.Time
+		var err error
+		if expiring != nil {
+			token, expiresAt, err = expiring.ResolveWithExpiry(ctx, ref)
+		} else {
+			token, err = i.resolver.Resolve(ctx, ref)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("credentials: materialize credential key %q: %w", key, err)
 		}
 		i.registrar.Register([]byte(token))
 		s.tokens[key] = token
+		if !expiresAt.IsZero() {
+			s.expiries[key] = expiresAt
+		}
 	}
 	return s, nil
 }
@@ -165,6 +199,10 @@ func (i *Injector) Materialize(ctx context.Context, declared []string) (*Set, er
 type Set struct {
 	declared map[string]bool
 	tokens   map[string]string
+	// expiries carries each materialized value's stated expiry when the
+	// backing source reported one (ExpiringResolver). Absent entries mean the
+	// source stated none — a static token whose life is unknowable here.
+	expiries map[string]time.Time
 }
 
 // Token returns the credential for capability, fail closed: it is an error
@@ -183,6 +221,15 @@ func (s *Set) Token(ctx context.Context, capability string) (string, error) {
 		return "", fmt.Errorf("%w: %q", ErrNoCredentialForCapability, capability)
 	}
 	return tok, nil
+}
+
+// Expiry reports the stated expiry of the credential materialized for
+// capability. ok is false when no credential was materialized for it or when
+// the backing source stated no expiry (DS10: only sources that know a value's
+// life report one; nothing is invented).
+func (s *Set) Expiry(capability string) (time.Time, bool) {
+	expiresAt, ok := s.expiries[capability]
+	return expiresAt, ok
 }
 
 // For returns a capability-scoped token source: a value whose Token(ctx)

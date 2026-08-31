@@ -2,7 +2,7 @@
 
 > The interface every stage executor and the runner speak. Substrate-neutral:
 > identical at every tier (ARCHITECTURE.md §5, §2 invariant 4). Current implemented
-> version: `v1alpha8` (`api/v1alpha1.StageContractVersion`).
+> version: `v1alpha9` (`api/v1alpha1.StageContractVersion`).
 
 A **stage** (this doc's "stage" is the workflow/task types' "task" — the terms
 are equivalent, ARCHITECTURE.md §5) is a unit the runner executes: a
@@ -108,6 +108,11 @@ The runner hands the stage an `InvocationEnvelope`:
   producers' artifact and verdict pointers into this task's invocation. When
   omitted, the task receives every accumulated pointer for compatibility. The
   compiler rejects unknown sources; routing never changes a pointer's integrity.
+  System-generated pointers have no producing task or gate and are therefore
+  outside the filter: the `learning.episode[<seq>]` correction a repassing gate
+  injects for the stage it re-enters survives `contextFrom` unconditionally,
+  because no source name could ever select it. It is still graded like any
+  other pointer against `minimumIntegrity`.
 - `capabilities[]` — the capability grants the stage's definition declares (e.g.
   `github:issues:write`). **Capability admission fails closed**: credentials for a
   capability not listed here are never materialized (§5).
@@ -118,6 +123,16 @@ The runner hands the stage an `InvocationEnvelope`:
   render this map into the invocation prompt as data.
   A parallel join additionally receives `inputs.branchCompleteness`, with one
   terminal status and artifact count per declared branch in declaration order.
+- `nestedAgentPolicy` — optional versioned policy for a mechanically launched
+  child agent. When present, the runner also supplies `attempt`,
+  `ownershipBoundary`, `policyActions`, and a runner-authored
+  `parentPlatformPolicy`. Admission intersects that authority with the stage
+  policy, selected profile/model, and adapter capability. Missing parent
+  authority or an adapter without a policy-enforcing child-launch path fails
+  before any harness process starts. Fresh context drops optional parent item,
+  inputs, addenda, and context pointers; inherited context retains them;
+  explicit context carries only named pointers and selected envelope sections.
+  The immutable child execution policy is delivered in every mode.
 - `item`, `repoRef`, `limits` — the triggering backlog item, target repo, and
   execution bounds. `repoRef` carries repository identity and connection
   fields only: config-side declarations such as `project.checkout` (B2, #649)
@@ -146,6 +161,12 @@ The stage returns a `ResultEnvelope`:
   existing journal span and is diagnostic only; it is not added to
   `artifacts[]` or passed to downstream stages. Legacy results omit it.
 - `outputs` — small declared **scalar** values only.
+  A deterministic bandit assignment may publish the reserved fact
+  `randomizedIntervention=true`,
+  `randomizedInterventionSource=bandit-assignment`, and `arm=control|treatment`.
+  The read model requires all three values before treating an observation as
+  randomized. An `arm` (or generic `randomized`) output by itself remains
+  observational and is never promotion-eligible.
 - `error` — structured failure detail (`code`, `message`, `retryable`); **required
   when `status == failure`**.
 - `summary`, `metrics` — human and telemetry detail. Agentic usage uses
@@ -874,7 +895,7 @@ from the diff alone.
 
 ## Versioning & unknown-field policy
 
-- The contract version is `v1alpha8` (`StageContractVersion`). The Go types retain
+- The contract version is `v1alpha9` (`StageContractVersion`). The Go types retain
   the stable `api/v1alpha1` import path; the constant and `api/schemas` set identify
   the current wire contract. Version `v1alpha2` added the optional `triggerRef`
   invocation field for bounded scheduler trigger provenance; `v1alpha3` adds the
@@ -887,7 +908,9 @@ from the diff alone.
   input-integrity grades to invocation items, context pointers, and artifact
   pointers, plus the stage's declared minimum; `v1alpha8` adds the optional
   `checkoutCones` invocation field declaring a stage's sparse-checkout cones
-  (project.checkout.sparse, #649).
+  (project.checkout.sparse, #649); `v1alpha9` adds attempt, ownership,
+  policy-action, nested-policy, and runner-authored parent-authority fields for
+  mechanically enforced nested agents.
 - Schemas are **closed**: unknown fields are a validation error. This is
   deliberate — it is what makes reach-through impossible and keeps the seam tight.
 - Additive or breaking changes bump the contract version rather than loosening a

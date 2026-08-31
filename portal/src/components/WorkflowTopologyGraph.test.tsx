@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { WorkflowGraph } from "../api/types";
+import type { GraphAnalytics, WorkflowGraph } from "../api/types";
 import {
   MAX_GRAPH_ZOOM,
   MIN_GRAPH_ZOOM,
@@ -54,6 +54,24 @@ describe("workflow topology graph", () => {
     expect(screen.getAllByRole("note")).toHaveLength(
       graph.edges.filter((edge) => edge.terminal).length,
     );
+  });
+
+  it("renders a fitted non-interactive preview without viewer controls", async () => {
+    render(<WorkflowTopologyGraph graph={cyclicGraph} preview />);
+
+    const viewport = screen.getByRole("group", {
+      name: "implementation execution graph",
+    });
+    expect(viewport).toHaveAttribute("data-preview", "true");
+    expect(viewport).toHaveAttribute("data-responsive-layout", "fit");
+    expect(viewport).not.toHaveAttribute("tabindex");
+    expect(screen.queryByRole("group", { name: "Graph view controls" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Graph legend")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /configured$/i })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("img", { name: /configured$/i })).toHaveLength(
+      cyclicGraph.nodes.length,
+    );
+    await waitFor(() => expect(viewport).not.toHaveAttribute("data-zoom", "1.000"));
   });
 
   it("exposes node semantics, branch labels, terminals, and an equivalent topology list", () => {
@@ -497,6 +515,27 @@ function terminalGraph(): WorkflowGraph {
 }
 
 describe("workflow topology graph traversed edges (#1430)", () => {
+  it("surfaces graph analytics on nodes with accessible labels", () => {
+    const analytics: GraphAnalytics = {
+      centrality: [{ node: "implement", score: 2.5 }],
+      criticalPath: { nodes: ["query", "implement"], weight: 12 },
+      cycles: [["implement", "review"]],
+      confidence: "partial",
+      caveat: "fallback weights excluded",
+    };
+    render(
+      <WorkflowTopologyGraph
+        analytics={analytics}
+        graph={cyclicGraph}
+        onSelectStage={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /implement.*centrality 2\.50.*critical path.*cycle detected/i })).toBeInTheDocument();
+    expect(screen.getByText("Blame 2.50")).toBeInTheDocument();
+    expect(screen.getAllByText("Cycle detected")).toHaveLength(2);
+  });
+
   it("emphasizes only the edges actually crossed, not every edge whose endpoints were visited", () => {
     const { container } = render(
       <WorkflowTopologyGraph

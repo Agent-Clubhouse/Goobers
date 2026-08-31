@@ -59,8 +59,8 @@ type check struct {
 const (
 	// groupChecks is the fast fan-in: formatting, module hygiene, the
 	// no-phone-home guard, vet, command builds, config validation, and the portal
-	// build/test/contract chain — everything except the three heavyweight steps
-	// below.
+	// audit/build/test/contract chain — everything except the three heavyweight
+	// steps below.
 	groupChecks = "checks"
 	// groupLint is golangci-lint (staticcheck/govet/revive/...) on its own runner.
 	groupLint = "lint"
@@ -670,6 +670,13 @@ func portalPreparationChecks(tools toolchain) []check {
 			label:        "portal-install",
 			command:      tools.npmCommand,
 			args:         []string{"--prefix", "portal", "ci", "--no-audit", "--no-fund"},
+			windowsBatch: true,
+			group:        groupChecks,
+		},
+		{
+			label:        "portal-audit",
+			command:      tools.npmCommand,
+			args:         []string{"--prefix", "portal", "audit", "--audit-level=low"},
 			windowsBatch: true,
 			group:        groupChecks,
 		},

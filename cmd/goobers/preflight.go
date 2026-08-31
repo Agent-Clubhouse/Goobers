@@ -5,8 +5,40 @@ import (
 	"fmt"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/harness"
+	"github.com/goobers/goobers/internal/instance"
 )
+
+// agentModelCredentialResolver builds a resolver for the instance's
+// configured agent:model credential (file/keychain/store), for handing to a
+// harness's Preflight sign-in probe — which has no RunRequest and so cannot
+// reach the normal per-stage credentialEnv resolution path (#3341: without
+// this, a file/keychain-sourced agent:model PAT is invisible to the sign-in
+// probe, which then silently falls back to whatever the CLI has cached from
+// its own prior interactive login — a different, possibly wrong, account).
+// Returns nil, nil when no agent:model grant is configured, leaving preflight
+// to reflect only ambient env or the CLI's own cached login, unchanged from
+// before this resolver existed.
+func agentModelCredentialResolver(cfg *instance.Config, stores credentials.StoreResolver) (func(ctx context.Context) (string, error), error) {
+	for _, grant := range cfg.Credentials {
+		if grant.Capability != string(capability.AgentModel) {
+			continue
+		}
+		resolver, err := credentials.NewResolverWithStores(
+			[]credentials.TokenRef{grant.Token.CredentialTokenRef(string(capability.AgentModel))},
+			stores,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context) (string, error) {
+			return resolver.Resolve(ctx, string(capability.AgentModel))
+		}, nil
+	}
+	return nil, nil
+}
 
 // preflightHarnesses is the seam buildSchedulerSetup calls to preflight agentic
 // harnesses at startup (#238). It defaults to the real preflightAgenticHarnesses;
@@ -33,7 +65,7 @@ type harnessPreflightInfo map[apiv1.Harness]harness.PreflightInfo
 // environment as a dispatched run and the operator's harnessCommand override
 // (#2483); each preflight is bounded by harnessPreflightTimeout so a hung CLI
 // or network can't hang startup.
-func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, envPassthrough []string, harnessCommand map[string][]string) (harnessPreflightInfo, error) {
+func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []apiv1.Workflow, envPassthrough []string, harnessCommand map[string][]string, modelCredential func(ctx context.Context) (string, error)) (harnessPreflightInfo, error) {
 	seen := map[apiv1.Harness]bool{}
 	info := make(harnessPreflightInfo)
 	preflight := func(wfName, stageName, gooberName string) error {
@@ -49,7 +81,7 @@ func preflightAgenticHarnesses(goobers map[string]apiv1.GooberSpec, workflows []
 			return nil
 		}
 		seen[h] = true
-		adapter, err := harnessAdapterFor(h, envPassthrough, harnessCommand)
+		adapter, err := harnessAdapterFor(h, envPassthrough, harnessCommand, modelCredential)
 		if err != nil {
 			return fmt.Errorf("workflow %q stage %q: %w", wfName, stageName, err)
 		}

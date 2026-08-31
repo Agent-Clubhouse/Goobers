@@ -46,9 +46,12 @@ reference sets no fixed capacity, VM SKU, spot policy, or scale-to-zero default.
 
 ## Conventions
 
-- **`CHANGE-ME`** marks every value the customer must replace (registry, hosts, CIDRs,
-  storage class, identity client ids). Nothing here references a real registry or tenant;
-  documentation CIDRs (`198.51.100.0/24`, `203.0.113.0/24`) stand in for real endpoints.
+- **`CHANGE-ME`** marks every value the customer must replace (registry, hosts,
+  storage class, identity client ids). Nothing here references a real registry or tenant.
+  Stage egress CIDRs are NOT hand-edited here any more: they are rendered per runner
+  class by `goobers netpol-render` from `instance.yaml egress.allowlist` (issue #3568,
+  decision 016 — the rendered output is the only authoritative copy, and the render
+  refuses unfilled documentation-CIDR placeholders instead of shipping stubs).
 - **Image**: containers reference the image name `goobers`; the kustomize `images:`
   transformer in each kustomization rewrites it to your registry. Build the image with
   `make image` (packaging/docker/Dockerfile) and push it to a registry the cluster can
@@ -116,9 +119,12 @@ verifies a target cluster against the same shape-doc requirements these manifest
 ## Stamping a new gaggle
 
 Copy one of `gaggle-namespace/examples/*`, set `namespace:` to the gaggle's namespace
-name and the `goobers.dev/gaggle` label pair, then replace the CHANGE-ME egress CIDRs
-and workload-identity annotation for that gaggle (§3: one namespace and one federated
-identity per gaggle; GAG-012, SEC-001/002).
+name and the `goobers.dev/gaggle` label pair, then replace the CHANGE-ME
+workload-identity annotation for that gaggle (§3: one namespace and one federated
+identity per gaggle; GAG-012, SEC-001/002). Stage egress grants are per runner class:
+render them with `goobers netpol-render --out <dir>` (filled from `instance.yaml
+egress.allowlist`) and apply them alongside the base — the base itself carries only
+the class-independent floor (default-deny-all + allow-dns).
 
 ## Operating notes from a real cluster
 
@@ -230,6 +236,83 @@ Either way, verify by execution, not by reading the manifest: edit the
 ConfigMap, wait past the resync/reload interval, and confirm the running process
 (or the mounted file's content — `kubectl exec … -- cat <path>`) actually
 changed. The manifest that broke reload here read exactly like a working one.
+
+### The worker reloads its own config tree
+
+`goobers worker --instance <root>` re-reads `<root>/config` every
+`--config-reload-interval` (default 10s, `0` disables) and atomically replaces
+the gaggle, credential, and agentic-kit seams whose config changed, so a
+definitions edit reaches the **next** stage that worker serves without a pod
+restart (#3912). It is the same content-digest reload the daemon runs
+(`configDirectoryDigest`), including the read-validate-reread stability check
+that keeps a half-written tree from ever becoming the tree in force.
+
+The properties worth knowing when operating it:
+
+- **An in-flight attempt keeps the kit it was handed.** Seams are replaced by
+  publishing a new immutable snapshot, never by mutating a live one, so a
+  reload landing mid-stage cannot change that stage's instructions or
+  credentials underneath it. Attempt *N+1* gets the new tree.
+- **Only the gaggles whose inputs changed are rebuilt.** An untouched gaggle's
+  seams are carried across the reload by pointer — no repeated harness
+  preflight, no re-resolved credentials.
+- **A tree that does not parse is rejected, loudly, and changes nothing.** The
+  worker logs the named failure once (and again only if the failure changes),
+  keeps serving its last-known-good tree, and applies the repair when it lands.
+  It never silently falls back to a partially-loaded tree.
+
+This closes the product-side half of Infra LEDGER **I-51**, where a worker sat
+one Workflows revision behind the daemon for 32 minutes and every stage it
+served resolved credentials against the stale gaggle. What it does **not** do is
+make bytes appear under a mount that never updates: a `config/` directory
+copied once into an `emptyDir` by an initContainer is frozen for the life of the
+pod, and the reloader will poll it forever finding nothing — exactly the
+`subPath` trap above, in a different costume. Give the worker a config tree that
+actually changes (a whole-ConfigMap or projected volume, a synced PVC, a sidecar
+that writes into the mounted directory), then verify by execution: edit the
+tree, wait past the interval, and confirm the worker logged
+`worker config reload: applied config tree sha256:…`.
+
+### The worker refuses a kit its run was not admitted against
+
+Reload alone is not a pin: it removes the stale window, but on its own a reload
+landing between two attempts of the same run would hand attempt *N+1* a
+different curator than attempt *N*. #3884 closes that. Every stage envelope an
+engine run dispatches carries the run's `gooberDigest`, and the worker serves
+the config tree whose goober digest **equals** that pin, or serves nothing.
+
+- **A pin the worker cannot serve is refused, by name.** The attempt fails with
+  `gate_pin_missing` (no held tree matches) or `run_pin_unverifiable` (no tree
+  could be compiled into a digest at all, so a match cannot be proven either
+  way). The message names the gaggle, workflow, expected digest and the digests
+  the worker can serve — **digests only**, never instructions, skills or
+  credentials, so it is safe in any log an operator reads.
+- **The refusal is retriable.** It is classified as an infrastructure failure,
+  so it spends the run's infrastructure-retry budget, not its policy budget.
+  Roll the worker's config tree forward, let the reload apply, and the next
+  retry resolves the pin and proceeds. That is the intended repair, and it is
+  the reason the refusal is not fatal.
+- **Recently superseded trees are retained, within a bound.** The worker keeps
+  up to `--config-history-depth` (default 3, `0` disables) superseded snapshots,
+  newest first, so a reload can *add* a satisfiable digest without *removing*
+  one an in-flight run still needs. Snapshots are self-contained: instructions
+  and skill packages are captured when the tree is read, never re-read from
+  disk later, because a retained snapshot that went back to disk would resolve
+  the current tree while claiming to be the old one.
+- **Past the bound it fails closed, and a restart holds nothing.** Evicted trees
+  refuse with `gate_pin_missing`; a restarted worker has no history at all and
+  refuses every stale pin. Retention keeps in-flight runs alive across a reload;
+  it is never a correctness guarantee a run may lean on.
+- **Deterministic stages stay unpinned.** `gooberDigest` is goober-kit identity
+  — instructions, skills, model, harness, MCP, tools — and a deterministic stage
+  executes none of it. It runs on the current tree, which is what the reload
+  above is for.
+
+Set the bound to match how long your stages actually take:
+`--config-history-depth 0` if you want every superseded pin to refuse
+immediately, higher if you routinely roll config forward while multi-hour runs
+are in flight. Each retained tree costs one snapshot's worth of instructions and
+skill files in memory, so keep it small.
 
 ### Images
 

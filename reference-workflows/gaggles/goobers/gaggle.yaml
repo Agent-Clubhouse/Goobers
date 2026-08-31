@@ -20,7 +20,6 @@ spec:
     owner: Agent-Clubhouse
     name: Goobers
     branch: main
-    connectionRef: goobers-repo-token
   # The singleton backlog this gaggle draws work from (GAG-004): this repo's
   # own GitHub issues.
   backlog:
@@ -28,6 +27,5 @@ spec:
     project: Agent-Clubhouse/Goobers
     labels:
       - goobers
-    connectionRef: goobers-repo-token
   isolation:
     namespace: gaggle-goobers-reference-workflows

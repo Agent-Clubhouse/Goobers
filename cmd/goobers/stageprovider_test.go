@@ -26,6 +26,47 @@ func TestNewProviderForStageDispatchesGitHub(t *testing.T) {
 	}
 }
 
+func TestNewMergeReviewProviderDispatchesADO(t *testing.T) {
+	previous := stageProviderFactories[providers.ProviderADO]
+	t.Cleanup(func() { stageProviderFactories[providers.ProviderADO] = previous })
+	stageProviderFactories[providers.ProviderADO] = func(cfg stageProviderConfig) (providers.Provider, error) {
+		return providers.NewADOProvider(cfg.repo.Owner, cfg.repo.Project, "ado-token"), nil
+	}
+
+	provider, err := newMergeReviewProvider(t.TempDir(), providers.RepositoryRef{
+		Provider: providers.ProviderADO,
+		Owner:    "contoso",
+		Project:  "project",
+		Name:     "repo",
+	}, false)
+	if err != nil {
+		t.Fatalf("newMergeReviewProvider: %v", err)
+	}
+	if provider.Kind() != providers.ProviderADO {
+		t.Fatalf("provider kind = %q, want %q", provider.Kind(), providers.ProviderADO)
+	}
+}
+
+func TestNewMergeReviewProviderAsDispatchesADOOperationProvider(t *testing.T) {
+	previous := stageProviderFactories[providers.ProviderADO]
+	t.Cleanup(func() { stageProviderFactories[providers.ProviderADO] = previous })
+	stageProviderFactories[providers.ProviderADO] = func(cfg stageProviderConfig) (providers.Provider, error) {
+		return providers.NewADOProvider(cfg.repo.Owner, cfg.repo.Project, "ado-token"), nil
+	}
+
+	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](
+		t.TempDir(),
+		providers.RepositoryRef{Provider: providers.ProviderADO, Owner: "contoso", Project: "project", Name: "repo"},
+		false,
+	)
+	if err != nil {
+		t.Fatalf("newMergeReviewProviderAs: %v", err)
+	}
+	if provider.Kind() != providers.ProviderADO {
+		t.Fatalf("provider kind = %q, want %q", provider.Kind(), providers.ProviderADO)
+	}
+}
+
 func TestStageProviderRegistryIncludesBuiltInProviders(t *testing.T) {
 	for _, kind := range []providers.ProviderKind{
 		providers.ProviderGitHub,

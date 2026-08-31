@@ -33,6 +33,22 @@ var usageReporter = func() {
 			want: "hardcoded network destination",
 		},
 		{
+			name: "nested assignment in package-level initializer",
+			source: `package sample
+import "net/http"
+var response = func() *http.Response {
+	endpoint := ""
+	func() {
+		destination := "https://telemetry.example.invalid/collect"
+		endpoint = destination
+	}()
+	result, _ := http.Get(endpoint)
+	return result
+}()
+`,
+			want: "hardcoded network destination",
+		},
+		{
 			name: "constant destination",
 			source: `package sample
 import "google.golang.org/grpc"

@@ -1,13 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FixtureDaemonClient } from "./api/fixtureClient";
-import type { UpdateModel } from "./api/types";
+import type { RunSummary, UpdateModel } from "./api/types";
 import { DATA_CACHE_TTL_MS, SessionDataCache } from "./dataCache";
 import {
   INVENTORY_CACHE_TTL_MS,
+  incompleteRunPhasesMessage,
   loadOperationalOverview,
   loadOperationalSnapshot,
 } from "./operationalData";
-import { largeJournalFixtures, populatedDaemonFixtures } from "./test/daemonFixtures";
+import {
+  emptyDaemonFixtures,
+  largeJournalFixtures,
+  populatedDaemonFixtures,
+} from "./test/daemonFixtures";
 
 describe("loadOperationalSnapshot", () => {
   it("fetches latest workflow outcomes in one request regardless of workflow count", async () => {
@@ -270,6 +275,61 @@ describe("loadOperationalOverview", () => {
     expect(refreshed.sectionErrors?.runs).toBeInstanceOf(Error);
   });
 
+  // #3658: the surviving phases are real data, but the phase that failed was
+  // silently rendered as an empty group — indistinguishable from a gaggle with
+  // nothing in that phase.
+  it("names the phases it could not read instead of reporting them empty (#3658)", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const real = client.listRuns.bind(client);
+    vi.spyOn(client, "listRuns").mockImplementation(async (request, options) => {
+      if (request?.phase === "completed") {
+        throw new Error("The daemon request timed out after 10000ms.");
+      }
+      return real(request, options);
+    });
+
+    const overview = await loadOperationalOverview(client);
+
+    expect(overview.sectionErrors?.runs).toBeUndefined();
+    expect(overview.groups.incomplete?.phases).toEqual(["completed"]);
+    expect(overview.groups.incomplete?.error.message).toContain("timed out");
+    expect(incompleteRunPhasesMessage(overview.groups.incomplete!)).toContain("completed");
+  });
+
+  it("reports no incomplete phases when every phase query succeeds (#3658)", async () => {
+    const overview = await loadOperationalOverview(
+      new FixtureDaemonClient(populatedDaemonFixtures()),
+    );
+
+    expect(overview.groups.incomplete).toBeUndefined();
+  });
+
+  it("keeps the previous runs of a phase that fails on refresh (#3658)", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const previous = await loadOperationalOverview(client);
+    const previousCompleted = previous.groups.recent.filter((run) => run.phase === "completed");
+    expect(previousCompleted.length).toBeGreaterThan(0);
+    const real = client.listRuns.bind(client);
+    vi.spyOn(client, "listRuns").mockImplementation(async (request, options) => {
+      if (request?.phase === "completed") {
+        throw new Error("daemon unavailable");
+      }
+      return real(request, options);
+    });
+
+    const refreshed = await loadOperationalOverview(client, undefined, {
+      previous,
+      models: new Set(["run"]),
+    });
+
+    expect(refreshed.groups.recent.filter((run) => run.phase === "completed")).toEqual(
+      previousCompleted,
+    );
+    expect(refreshed.groups.incomplete?.phases).toEqual(["completed"]);
+    // The phases that did read successfully are still refreshed, not frozen.
+    expect(refreshed.groups.active.length).toBe(previous.groups.active.length);
+  });
+
   it("still fails the whole load when nothing at all could be read (#1709)", async () => {
     const client = new FixtureDaemonClient(populatedDaemonFixtures());
     const boom = new Error("daemon unavailable");
@@ -328,5 +388,133 @@ describe("operational inventory cache", () => {
       cache.dispose();
       vi.useRealTimers();
     }
+  });
+});
+
+// #1199: escalation is a permanent terminal phase with no time filter, so a
+// single old, still-unresolved escalation used to sit on the attention list
+// forever until 20 newer failures/escalations pushed it off. The fix filters
+// and orders escalated/failed candidates by last journal activity (not
+// start) within a 24h window, before the existing count cap applies.
+describe("loadOperationalOverview attention recency window (#1199)", () => {
+  const NOW = Date.parse("2026-08-01T12:00:00Z");
+  const STALE_STARTED_AT = "2026-01-01T00:00:00Z";
+
+  function attentionRun(
+    id: string,
+    phase: "escalated" | "failed",
+    lastActivityAt: string,
+  ): RunSummary {
+    return {
+      id,
+      workflow: "implementation",
+      workflowVersion: 7,
+      gaggle: "core",
+      trigger: { kind: "item", ref: id.slice(-3) },
+      phase,
+      terminal: true,
+      startedAt: STALE_STARTED_AT,
+      finishedAt: lastActivityAt,
+      durationMillis: Date.parse(lastActivityAt) - Date.parse(STALE_STARTED_AT),
+      lastActivityAt,
+      stale: false,
+      lastSeq: 1,
+      repassCount: 0,
+      retryCount: 0,
+      policyRetryCount: 0,
+      infraRetryCount: 0,
+      noWork: false,
+    };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps a run whose last activity is just under the 24h boundary", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const justUnder = new Date(NOW - (24 * 60 * 60 * 1000 - 1)).toISOString();
+    fixtures.runs = { runs: [attentionRun("01JZ000JUSTUNDER", "escalated", justUnder)] };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.attention.map((run) => run.id)).toEqual(["01JZ000JUSTUNDER"]);
+  });
+
+  it("ages out a run whose last activity is just over the 24h boundary", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const justOver = new Date(NOW - (24 * 60 * 60 * 1000 + 1)).toISOString();
+    fixtures.runs = { runs: [attentionRun("01JZ000JUSTOVER", "failed", justOver)] };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.attention).toEqual([]);
+  });
+
+  it("keeps a run active regardless of how long ago it started, as long as it was touched recently", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const recentActivity = new Date(NOW - 60_000).toISOString();
+    fixtures.runs = {
+      // startedAt (STALE_STARTED_AT) is months old; only lastActivityAt is recent.
+      runs: [attentionRun("01JZ000STILLACTIVE", "escalated", recentActivity)],
+    };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.attention.map((run) => run.id)).toEqual(["01JZ000STILLACTIVE"]);
+  });
+
+  it("reads as empty, not an error, when every escalation/failure has aged out", async () => {
+    const fixtures = emptyDaemonFixtures();
+    const longAgo = new Date(NOW - 7 * 24 * 60 * 60 * 1000).toISOString();
+    fixtures.runs = {
+      runs: [
+        attentionRun("01JZ000OLDESCALATE", "escalated", longAgo),
+        attentionRun("01JZ000OLDFAILED", "failed", longAgo),
+      ],
+    };
+
+    const overview = await loadOperationalOverview(new FixtureDaemonClient(fixtures));
+
+    expect(overview.groups.attention).toEqual([]);
+    expect(overview.sectionErrors?.runs).toBeUndefined();
+  });
+
+  it("reports the runs section as failed, not silently empty, when the read model refuses orderByActivity", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const real = client.listRuns.bind(client);
+    const refusal = new Error("orderByActivity requires the bounded read model");
+    vi.spyOn(client, "listRuns").mockImplementation(async (request, options) => {
+      if (request?.phase === "escalated" || request?.phase === "failed") {
+        throw refusal;
+      }
+      return real(request, options);
+    });
+
+    const overview = await loadOperationalOverview(client);
+
+    // The other three phases succeeding must not mask the attention group's
+    // refusal — that would render an attention list empty for the same
+    // reason as a genuinely idle instance, hiding real escalations.
+    expect(overview.sectionErrors?.runs).toBe(refusal);
+    expect(overview.groups).toEqual({ active: [], attention: [], recent: [] });
+  });
+
+  it("filters and orders escalated/failed queries by last activity within the window", async () => {
+    const client = new FixtureDaemonClient(emptyDaemonFixtures());
+    const listRuns = vi.spyOn(client, "listRuns");
+
+    await loadOperationalOverview(client);
+
+    const escalatedCall = listRuns.mock.calls.find(([request]) => request?.phase === "escalated");
+    const failedCall = listRuns.mock.calls.find(([request]) => request?.phase === "failed");
+    const expectedSince = new Date(NOW - 24 * 60 * 60 * 1000).toISOString();
+    expect(escalatedCall?.[0]).toMatchObject({ orderByActivity: true, since: expectedSince });
+    expect(failedCall?.[0]).toMatchObject({ orderByActivity: true, since: expectedSince });
   });
 });

@@ -28,6 +28,15 @@ type wireFixtures struct {
 	TelemetryStats           readservice.TelemetryStatsResult           `json:"telemetryStats"`
 	TelemetryErrorSignatures readservice.TelemetryErrorSignaturesResult `json:"telemetryErrorSignatures"`
 	TelemetryErrors          readservice.TelemetryErrorsPage            `json:"telemetryErrors"`
+	ConfigSources            ConfigSourcePage                           `json:"configSources"`
+	ConfigDocuments          ConfigDocumentPage                         `json:"configDocuments"`
+	ConfigDocumentRequest    ConfigDocumentRequest                      `json:"configDocumentRequest"`
+	ConfigDocument           ConfigDocument                             `json:"configDocument"`
+	ConfigPreviewRequest     ConfigChangePreviewRequest                 `json:"configPreviewRequest"`
+	ConfigPreview            ConfigChangePreview                        `json:"configPreview"`
+	ConfigWriteRequest       ConfigWriteRequest                         `json:"configWriteRequest"`
+	ConfigWriteOutcome       ConfigWriteOutcome                         `json:"configWriteOutcome"`
+	ConfigAuthoringError     ConfigAuthoringErrorEnvelope               `json:"configAuthoringError"`
 	EventInvalidation        Invalidation                               `json:"eventInvalidation"`
 	ErrorEnvelope            ErrorEnvelope                              `json:"errorEnvelope"`
 }
@@ -50,6 +59,15 @@ var wireFixtureTypes = []struct {
 	{name: "telemetryStats", scriptType: "TelemetryStatsResult"},
 	{name: "telemetryErrorSignatures", scriptType: "TelemetryErrorSignaturesResult"},
 	{name: "telemetryErrors", scriptType: "TelemetryErrorsPage"},
+	{name: "configSources", scriptType: "ConfigSourcePage"},
+	{name: "configDocuments", scriptType: "ConfigDocumentPage"},
+	{name: "configDocumentRequest", scriptType: "ConfigDocumentRequest"},
+	{name: "configDocument", scriptType: "ConfigDocument"},
+	{name: "configPreviewRequest", scriptType: "ConfigChangePreviewRequest"},
+	{name: "configPreview", scriptType: "ConfigChangePreview"},
+	{name: "configWriteRequest", scriptType: "ConfigWriteRequest"},
+	{name: "configWriteOutcome", scriptType: "ConfigWriteOutcome"},
+	{name: "configAuthoringError", scriptType: "ConfigAuthoringErrorEnvelope"},
 	{name: "eventInvalidation", scriptType: "ModelInvalidation"},
 	{name: "errorEnvelope", scriptType: "ApiErrorEnvelope"},
 }
@@ -210,6 +228,44 @@ func newWireFixtures() wireFixtures {
 		Attempt:      2,
 		AttemptClass: string(journal.AttemptPolicy),
 		RecordedSeq:  8,
+	}
+	configSource := ConfigSourceDescriptor{
+		ID:          "source:primary",
+		DisplayName: "Primary configuration",
+		Kind:        ConfigSourceGit,
+		Revision:    "sha256:config-source",
+		Capabilities: ConfigSourceCapabilities{
+			Read:        true,
+			Validate:    true,
+			ReviewWrite: true,
+		},
+	}
+	configDocumentDescriptor := ConfigDocumentDescriptor{
+		Path:      "gaggles/core/workflows/implementation.yaml",
+		MediaType: "application/yaml",
+		ETag:      "sha256:workflow-document",
+		Editable:  true,
+		Definition: &ConfigDefinitionReference{
+			Kind:   ConfigDocumentWorkflow,
+			Name:   "implementation",
+			Gaggle: "core",
+		},
+	}
+	configChangeSet := ConfigChangeSet{
+		BaseRevision: configSource.Revision,
+		Changes: []ConfigDocumentChange{
+			{
+				Path:      configDocumentDescriptor.Path,
+				Operation: ConfigChangeUpsert,
+				BaseETag:  configDocumentDescriptor.ETag,
+				Content:   stringPointer("apiVersion: goobers.dev/v1alpha1\nkind: Workflow\n"),
+			},
+			{
+				Path:      "gaggles/core/goobers/reviewer.yaml",
+				Operation: ConfigChangeUpsert,
+				Content:   stringPointer("apiVersion: goobers.dev/v1alpha1\nkind: Goober\n"),
+			},
+		},
 	}
 
 	return wireFixtures{
@@ -462,6 +518,16 @@ func newWireFixtures() wireFixtures {
 					DurationMillis: 120000,
 					Outputs:        map[string]any{"summary": "implemented"},
 					Artifacts:      []readservice.ArtifactMetadata{artifact},
+					Placement: &journal.Placement{
+						Runner:       "self",
+						Node:         "aks-linux-0001",
+						Host:         "goobers-stage-implement-4x2vq",
+						OS:           "linux",
+						Image:        "ghcr.io/goobers/goobers-base:v0.2.0",
+						Pod:          "goobers-stage-implement-4x2vq",
+						QueuedAt:     &startedAt,
+						PodStartedAt: &startedAt,
+					},
 				},
 				{
 					ID:             "sta_visit_2_attempt_1",
@@ -619,6 +685,103 @@ func newWireFixtures() wireFixtures {
 			}},
 			NextCursor: "next-error",
 		},
+		ConfigSources: ConfigSourcePage{
+			APIVersion:    "v1",
+			SchemaVersion: AuthoringSchemaVersion,
+			Items: []ConfigSourceDescriptor{
+				{
+					ID:          "source:local",
+					DisplayName: "Local configuration",
+					Kind:        ConfigSourceLocal,
+					Revision:    "sha256:local-source",
+					Capabilities: ConfigSourceCapabilities{
+						Read:        true,
+						Validate:    true,
+						DirectWrite: true,
+					},
+				},
+				configSource,
+				{
+					ID:          "source:managed",
+					DisplayName: "Managed configuration",
+					Kind:        ConfigSourceProvider,
+					Revision:    "managed:42",
+					Capabilities: ConfigSourceCapabilities{
+						Read: true,
+					},
+				},
+			},
+		},
+		ConfigDocuments: ConfigDocumentPage{
+			APIVersion:    "v1",
+			SchemaVersion: AuthoringSchemaVersion,
+			SourceID:      configSource.ID,
+			Revision:      configSource.Revision,
+			Items:         []ConfigDocumentDescriptor{configDocumentDescriptor},
+		},
+		ConfigDocumentRequest: ConfigDocumentRequest{
+			Path: configDocumentDescriptor.Path,
+		},
+		ConfigDocument: ConfigDocument{
+			APIVersion:    "v1",
+			SchemaVersion: AuthoringSchemaVersion,
+			SourceID:      configSource.ID,
+			Revision:      configSource.Revision,
+			Document:      configDocumentDescriptor,
+			Content:       "apiVersion: goobers.dev/v1alpha1\nkind: Workflow\n",
+		},
+		ConfigPreviewRequest: ConfigChangePreviewRequest{
+			ChangeSet: configChangeSet,
+		},
+		ConfigPreview: ConfigChangePreview{
+			APIVersion:    "v1",
+			SchemaVersion: AuthoringSchemaVersion,
+			SourceID:      configSource.ID,
+			BaseRevision:  configSource.Revision,
+			PreviewID:     "preview:123",
+			Eligible:      true,
+			Diagnostics: []ConfigDiagnostic{{
+				Code:     "CFG001",
+				Severity: ConfigDiagnosticWarning,
+				Message:  "fixture warning",
+				Scope:    "Workflow/implementation",
+				Location: &ConfigDiagnosticLocation{
+					Path:   configDocumentDescriptor.Path,
+					Line:   2,
+					Column: 1,
+				},
+			}},
+			Diff: ConfigDiff{
+				Format:  "unified",
+				Content: "--- a/gaggles/core/workflows/implementation.yaml\n+++ b/gaggles/core/workflows/implementation.yaml\n",
+			},
+		},
+		ConfigWriteRequest: ConfigWriteRequest{
+			PreviewID: "preview:123",
+			ChangeSet: configChangeSet,
+			Strategy:  ConfigWriteReview,
+			Summary:   "Update implementation workflow",
+		},
+		ConfigWriteOutcome: ConfigWriteOutcome{
+			APIVersion:       "v1",
+			SchemaVersion:    AuthoringSchemaVersion,
+			SourceID:         configSource.ID,
+			BaseRevision:     configSource.Revision,
+			Strategy:         ConfigWriteReview,
+			ChangedDocuments: []string{configDocumentDescriptor.Path, "gaggles/core/goobers/reviewer.yaml"},
+			Review: &ConfigReviewReference{
+				ID:     "review:42",
+				URL:    "https://example.invalid/reviews/42",
+				Branch: "goobers/config-preview-123",
+				Commit: "0123456789abcdef",
+			},
+		},
+		ConfigAuthoringError: ConfigAuthoringErrorEnvelope{
+			Error: ConfigAuthoringError{
+				Code:    CodeConfigStaleRevision,
+				Message: "the configuration source changed; reload and retry",
+			},
+		},
 		EventInvalidation: Invalidation{
 			Cursor: "fixture:9",
 			Models: []string{"instance", "run", "workflow"},
@@ -638,5 +801,9 @@ func newWireFixtures() wireFixtures {
 }
 
 func int64Pointer(value int64) *int64 {
+	return &value
+}
+
+func stringPointer(value string) *string {
 	return &value
 }

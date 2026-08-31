@@ -203,6 +203,13 @@ spec:
         # second sync or a duplicate workflow stage.
         command: ["make", "ci", "test-integration-strict"]
         # Pull in build/test behavior fixes that landed after this run branched.
+        # A sibling that edited the same line-oriented list (a manifest script
+        # line) makes this merge conflict mechanically rather than
+        # substantively; the runner resolves that provably safe class in place
+        # and proceeds to CI, and reports anything it cannot resolve under the
+        # distinct base_sync_conflict cause, which local-gate routes down its
+        # infra branch — never into an implementation repass that can only
+        # re-derive the identical diff (#3096).
         syncBase: true
       inputs:
         # `make ci` shells out to the hermetic tier's `go test -race -timeout

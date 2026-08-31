@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
 
 // FindingKind classifies a candidate finding's detection family (TUT-010).
@@ -45,14 +47,33 @@ const (
 	// CoverageRequest with zero stage attempts in the request's window
 	// (TUT-010 coverage-gaps family).
 	FindingStageUnreached FindingKind = "stage-unreached"
+	// FindingCreditAssignment flags a graph node whose adverse-outcome
+	// attribution clears the evidence floor for nomination.
+	FindingCreditAssignment FindingKind = "credit-assignment"
+	// FindingLearningEpisode flags a repeated finding-level learning
+	// signature across distinct runs and carries exactly one governed action.
+	FindingLearningEpisode FindingKind = "learning-episode"
 )
 
-// JournalPointer names a flagged run whose journal a diagnosis step can
-// resolve for evidence. T2 only needs to name the run; T3 builds the
-// agentic read surface that actually resolves it (cross-run journal:read,
-// #121-extended).
+// JournalPointer names an exact event in a run journal that a diagnosis step
+// can resolve for evidence. Seq is optional for older projections that only
+// retained the run identifier.
 type JournalPointer struct {
 	RunID string `json:"runId"`
+	Seq   uint64 `json:"seq,omitempty"`
+}
+
+// CreditGoverningTargetTreatment is the required treatment when repo
+// inspection shows that a credit-assignment target governs its own evaluator.
+const CreditGoverningTargetTreatment = "label-goobers:needs-human-and-preserve-evaluator"
+
+// NominationGuardrails carries machine-readable requirements that the
+// work-nomination stage must satisfy before filing a credit-based issue.
+type NominationGuardrails struct {
+	DedupeKey                  string `json:"dedupe_key"`
+	RequiresUpstreamCauseCheck bool   `json:"requires_upstream_cause_check"`
+	RequiresHumanReview        bool   `json:"requires_human_review"`
+	GoverningTargetTreatment   string `json:"governing_target_treatment"`
 }
 
 // Finding is one detected candidate — Subject names what was flagged (a
@@ -62,11 +83,17 @@ type JournalPointer struct {
 // first; empty for a coverage gap, since the whole point is that no run
 // exists to point at).
 type Finding struct {
-	Kind        FindingKind        `json:"kind"`
-	Subject     string             `json:"subject"`
-	Metrics     map[string]float64 `json:"metrics"`
-	Threshold   float64            `json:"threshold"`
-	FlaggedRuns []JournalPointer   `json:"flagged_runs"`
+	Kind              FindingKind                  `json:"kind"`
+	Subject           string                       `json:"subject"`
+	Metrics           map[string]float64           `json:"metrics"`
+	Threshold         float64                      `json:"threshold"`
+	FlaggedRuns       []JournalPointer             `json:"flagged_runs"`
+	Signature         string                       `json:"signature,omitempty"`
+	Classification    apiv1.LearningClassification `json:"classification,omitempty"`
+	RecommendedAction string                       `json:"recommendedAction,omitempty"`
+	// NominationGuardrails is required for credit-assignment findings and
+	// omitted for detection families that do not enter the self-healing loop.
+	NominationGuardrails *NominationGuardrails `json:"nomination_guardrails,omitempty"`
 }
 
 // Thresholds are the config-tunable detection knobs a telemetry-query
@@ -95,6 +122,15 @@ type Thresholds struct {
 	// MaxFlaggedRuns bounds how many example runs each finding carries.
 	// Default 10.
 	MaxFlaggedRuns int
+	// MinCreditRuns is the minimum number of runs routed through a node before
+	// attribution can produce a nomination. Default 5.
+	MinCreditRuns int
+	// MinCreditFailureShare is the minimum failure share for an attributed
+	// node. Default 0.3.
+	MinCreditFailureShare float64
+	// MinLearningEpisodeRuns requires the same finding signature to appear in
+	// at least this many distinct runs before a durable action is nominated.
+	MinLearningEpisodeRuns int
 }
 
 // DefaultThresholds returns the sane-defaults Thresholds a Tutor goober
@@ -108,6 +144,9 @@ func DefaultThresholds() Thresholds {
 		MinGateEvaluations:     5,
 		MaxGateEscalationRate:  0.2,
 		MaxFlaggedRuns:         10,
+		MinCreditRuns:          5,
+		MinCreditFailureShare:  0.3,
+		MinLearningEpisodeRuns: 2,
 	}
 }
 
@@ -133,8 +172,8 @@ type DetectRequest struct {
 
 // Detect runs every detection family Detect supports — failure patterns
 // (stage failure rate, error-code clustering, recurring CI check failures), gate noise
-// (never-fails, repass churn), and coverage gaps (untriggered workflows,
-// unreached stages) — against req's window/filter and Thresholds, and
+// (never-fails, repass churn), durable learning clusters, and coverage gaps
+// (untriggered workflows, unreached stages) — against req's window/filter and Thresholds, and
 // returns candidate Findings sorted by (Kind, Subject, Stage) for a
 // deterministic result given a fixed telemetry.db snapshot. The waste
 // family (duration/token/cost percentiles, retry waste) is deferred to
@@ -177,6 +216,12 @@ func (db *DB) Detect(ctx context.Context, req DetectRequest) ([]Finding, error) 
 	}
 	findings = append(findings, gateFindings...)
 
+	learningFindings, err := db.detectLearningEpisodes(ctx, req.StatsRequest, th)
+	if err != nil {
+		return nil, err
+	}
+	findings = append(findings, learningFindings...)
+
 	if len(req.Coverage.Workflows) > 0 {
 		coverageFindings, err := db.detectCoverageGaps(req.Coverage)
 		if err != nil {
@@ -190,8 +235,55 @@ func (db *DB) Detect(ctx context.Context, req DetectRequest) ([]Finding, error) 
 		if a.Kind != b.Kind {
 			return a.Kind < b.Kind
 		}
-		return a.Subject < b.Subject
+		if a.Subject != b.Subject {
+			return a.Subject < b.Subject
+		}
+		if a.Classification != b.Classification {
+			return a.Classification < b.Classification
+		}
+		return a.RecommendedAction < b.RecommendedAction
 	})
+	return findings, nil
+}
+
+func (db *DB) detectLearningEpisodes(ctx context.Context, req StatsRequest, th Thresholds) ([]Finding, error) {
+	minRuns := th.MinLearningEpisodeRuns
+	if minRuns <= 0 {
+		minRuns = DefaultThresholds().MinLearningEpisodeRuns
+	}
+	clusters, err := db.LearningClusters(ctx, LearningEpisodeRequest{
+		Gaggle: req.Gaggle, Workflow: req.Workflow, Since: req.Since,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rollup: detect learning episodes: %w", err)
+	}
+	var findings []Finding
+	for _, cluster := range clusters {
+		if cluster.RunCount < minRuns {
+			continue
+		}
+		// LearningEpisodes is chronological; candidate evidence is newest
+		// first, matching the Finding.FlaggedRuns contract.
+		pointers := make([]JournalPointer, len(cluster.Episodes))
+		for i := range cluster.Episodes {
+			pointers[len(cluster.Episodes)-1-i] = cluster.Episodes[i]
+		}
+		if len(pointers) > th.MaxFlaggedRuns {
+			pointers = pointers[:th.MaxFlaggedRuns]
+		}
+		findings = append(findings, Finding{
+			Kind: FindingLearningEpisode, Subject: cluster.Signature,
+			Metrics: map[string]float64{
+				"episodes":     float64(cluster.Count),
+				"distinctRuns": float64(cluster.RunCount),
+			},
+			Threshold:         float64(minRuns),
+			FlaggedRuns:       pointers,
+			Signature:         cluster.Signature,
+			Classification:    cluster.Classification,
+			RecommendedAction: cluster.RecommendedAction,
+		})
+	}
 	return findings, nil
 }
 
@@ -395,7 +487,9 @@ type gateAggregate struct {
 func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Thresholds) ([]Finding, error) {
 	where, args := statsWhere("r.workflow", "r.gaggle", "g.occurred_at", req)
 	query := fmt.Sprintf(`
-		SELECT g.gate, g.verdict, g.runner_json FROM gate_verdicts g
+		SELECT g.gate, g.verdict, g.runner_json, c.classification
+		FROM gate_verdicts g
+		LEFT JOIN gate_classifications c ON c.run_id = g.run_id AND c.seq = g.seq
 		JOIN runs r ON r.run_id = g.run_id
 		%s`, where)
 	rows, err := db.readDB().QueryContext(ctx, query, args...)
@@ -408,8 +502,8 @@ func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Threshol
 	var order []string
 	for rows.Next() {
 		var gate string
-		var verdict, runnerJSON sql.NullString
-		if err := rows.Scan(&gate, &verdict, &runnerJSON); err != nil {
+		var verdict, runnerJSON, classification sql.NullString
+		if err := rows.Scan(&gate, &verdict, &runnerJSON, &classification); err != nil {
 			return nil, fmt.Errorf("rollup: scan gate_verdict: %w", err)
 		}
 		a, ok := agg[gate]
@@ -422,7 +516,11 @@ func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Threshol
 		if verdict.String != gateOutcomePass {
 			a.nonPass++
 		}
-		if runnerJSON.Valid && gateEscalated(runnerJSON.String) {
+		if classification.Valid {
+			if classification.String == "repass-escalation" || classification.String == "unchanged-repass" {
+				a.escalated++
+			}
+		} else if runnerJSON.Valid && gatePolicyEscalated(runnerJSON.String) {
 			a.escalated++
 		}
 	}
@@ -473,16 +571,21 @@ func (db *DB) detectGateNoise(ctx context.Context, req StatsRequest, th Threshol
 	return out, nil
 }
 
-// gateEscalated reports whether a gate_verdicts.runner_json blob carries
-// "escalated":true (#89's repass-budget-exhausted signal).
-func gateEscalated(runnerJSON string) bool {
+// gatePolicyEscalated excludes infrastructure retry exhaustion from repass
+// churn. Older journals have no reason annotation and retain the historical
+// escalated behavior.
+func gatePolicyEscalated(runnerJSON string) bool {
 	var m struct {
-		Escalated bool `json:"escalated"`
+		Escalated bool   `json:"escalated"`
+		Reason    string `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(runnerJSON), &m); err != nil {
 		return false
 	}
-	return m.Escalated
+	if !m.Escalated {
+		return false
+	}
+	return m.Reason != "INFRASTRUCTURE_REPASS_BUDGET_EXHAUSTED"
 }
 
 // gateRuns returns the runs (newest first, bounded by limit) where gate
@@ -495,7 +598,9 @@ func (db *DB) gateRuns(ctx context.Context, req StatsRequest, gate, mode string,
 		clause = strings.TrimPrefix(where, "WHERE ") + " AND " + clause
 	}
 	query := fmt.Sprintf(`
-		SELECT g.run_id, g.occurred_at, g.runner_json FROM gate_verdicts g
+		SELECT g.run_id, g.occurred_at, g.runner_json, c.classification
+		FROM gate_verdicts g
+		LEFT JOIN gate_classifications c ON c.run_id = g.run_id AND c.seq = g.seq
 		JOIN runs r ON r.run_id = g.run_id
 		WHERE %s
 		ORDER BY g.occurred_at DESC, g.run_id DESC`, clause)
@@ -509,12 +614,18 @@ func (db *DB) gateRuns(ctx context.Context, req StatsRequest, gate, mode string,
 	var out []JournalPointer
 	for rows.Next() {
 		var runID, occurredAt sql.NullString
-		var runnerJSON sql.NullString
-		if err := rows.Scan(&runID, &occurredAt, &runnerJSON); err != nil {
+		var runnerJSON, classification sql.NullString
+		if err := rows.Scan(&runID, &occurredAt, &runnerJSON, &classification); err != nil {
 			return nil, fmt.Errorf("rollup: scan gate run: %w", err)
 		}
-		if mode == "escalated" && (!runnerJSON.Valid || !gateEscalated(runnerJSON.String)) {
-			continue
+		if mode == "escalated" {
+			if classification.Valid {
+				if classification.String != "repass-escalation" && classification.String != "unchanged-repass" {
+					continue
+				}
+			} else if !runnerJSON.Valid || !gatePolicyEscalated(runnerJSON.String) {
+				continue
+			}
 		}
 		if seen[runID.String] {
 			continue

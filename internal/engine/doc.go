@@ -33,14 +33,6 @@
 // closing them is follow-on work, not a reason to weaken the conformance
 // surface to make a fixture pass:
 //
-//   - Transient worktree-provision failures (worktree.IsTransientProvisionError)
-//     are not reclassified to invoke.InfrastructureFailure on this path
-//     (workerhost.WorktreeWorkspaces.Provision → classifySeamError), so a clone/
-//     fetch flake burns the policy budget instead of the infra budget the local
-//     runner (#572) gives it.
-//   - taskOutcome does not honor the #415 non-retryable escalation bypass
-//     (ISSUE_OVER_SCOPE / NEEDS_DECOMPOSITION route straight to escalation on
-//     the local runner, bypassing the Next gate).
 //   - Cumulative agentic usage budgets (limits.maxTokens / maxCostUSD) are not
 //     enforced here — the local runner fails closed via enforceStageBudget.
 //     Moot until the agentic executor seam is wired (stages needing it fail
@@ -48,6 +40,154 @@
 //   - The context-manifest artifact is journaled even when workspace
 //     provisioning failed; the gate-evaluator has no per-attempt deadline; and
 //     InputsFrom failures produce no stage-attributed events.
+//
+// Plan item E4-E9 (#3882) closed the implementation-lane entries this ledger
+// used to carry — the transient worktree-provision reclassification and the
+// learning-episode injection gap the parity harness itself surfaced — along
+// with the seven finding-002 inventory rows beside them: the cached verdict,
+// the reviewer diff artifact with its dedup and empty-diff fast-fails, the
+// repass cause and remediation-evidence obligation, the onTimeout salvage
+// marker, the CONTEXT_NOT_INSPECTED re-dispatch, the base-sync conflict
+// detail, and the #3366 unpushed-diff capture. Each is now pinned by a row of
+// the parity table for the same reason E2's are.
+//
+// The transient worktree-provision entry that ledger closed is now PINNED
+// rather than only asserted (#2878). E4-E9 landed the classification —
+// classifySeamError and provisionWorkspace hand a transient connection,
+// timeout or remote-5xx provisioning failure to the bounded infrastructure
+// path, and leave an auth failure or a missing base ref non-retryable — but
+// nothing outside a unit test over classifySeamError proved the WALK behaved
+// like the local runner's #572 behaviour, and a closed divergence that is only
+// asserted at the classifier reopens the moment the retry loop around it
+// changes. provisionparity_test.go walks one fixture through both drivers
+// against a real git remote that fails with a scripted HTTP status, and
+// compares the attempt classes, the attempt count at the shared bound, the
+// preserved cause and the executor call count. It is an EXTERNAL test package
+// because it drives the engine through the production provisioner
+// (workerhost.WorktreeWorkspaces), which imports this one; and it is not a
+// parity-table row because the table's two sides share a fixture, not a
+// remote, and neither of its provisioner seams can fail on demand.
+//
+// Plan item E10's residual (#3929) removed a divergence of a different kind:
+// one this package created for itself. Both drivers must decide whether a
+// gate's retry route earns a learning episode, and the engine answered it with
+// its own re-derived gateSendsBack predicate over its upstream map while the
+// runner answered it not at all (it injected on every retry route). #3917
+// caught the disagreement on a FORWARD branch — a gate routing onward to a
+// stage that has never run — and registered it as an expected parity failure.
+//
+// The ruling is that neither derivation was the question: the gate already
+// computes, charges and journals a repass attempt, and an episode belongs to a
+// TRUE REPASS, which is exactly repassAttempt >= 1. That predicate now lives
+// once, in runner.LearningEpisodeAppliesToRepass, and both drivers call it;
+// gateSendsBack is deleted. Deriving a fact twice is how two drivers drift, so
+// the shared helper is the fix rather than an incidental tidy-up.
+//
+// #3942 closed that ruling's own residual, which was a divergence from the
+// RULING rather than between the drivers. Both sides evaluated the predicate
+// inside the retry-decision arm, so the injection silently also required the
+// retry CLASSIFIER (runner.RetryFailureClassForGateResult) to accept the
+// failure — an automated status-equals gate over nonzero_exit/
+// base_sync_conflict, or any gate resolving infra. An AGENTIC reviewer's
+// needs-changes is none of those, so the canonical repass of the whole system
+// was the one true repass that never received a correction, and both drivers
+// declined it in agreement (which is why no parity row was red). The predicate
+// is now runner.LearningEpisodeAppliesToBranch, which asks the injection
+// question directly — non-pass, non-escalated, target is a real stage,
+// repassAttempt >= 1 — and both drivers call it OUTSIDE the classifier's
+// answer. Routing and classification are unchanged: a branch the classifier
+// declines still carries no retry-decision annotation and still travels the
+// ordinary advance path.
+// #3931 removed a third kind: not a divergence between the drivers, but a
+// defect they SHARED, and therefore one the parity table graded green.
+//
+// An episode's nextAttempt — the attempt the correction is addressed to — was
+// derived as the failing stage's attempt plus one, on both sides, through the
+// shared builder. That is right only when the gate sends work back to the
+// stage that failed. Every shipped nontrivial send-back separates them:
+// implementation.yaml's `local-gate: fail -> implement` grades a `local-ci`
+// subject, `ci-gate: fail -> remediate-ci` grades `ci-poll`. There the subject
+// runs once per cycle while the target accumulates re-entries, so the
+// correction was addressed to an attempt of the target that had already
+// happened with different content. The episode now carries the TARGET's own
+// next attempt, derived from the target's entry history
+// (runner.ResolveLearningEpisodeAddressing), while SourceAttempt keeps naming
+// the subject — the two answer different questions and had been conflated.
+//
+// The lesson for this ledger is about fixtures rather than about attempts. The
+// defect survived three E10 rows and a ruling because every one of them was a
+// TRIVIAL send-back, where the two derivations produce the same number and no
+// assertion can tell them apart. A parity table cannot see a shared defect at
+// all, and a degenerate fixture cannot see a defect either way; the fix is a
+// non-degenerate row (E10-learning-episode-send-back), not a stronger
+// assertion on a degenerate one.
+//
+// nextAttempt is inside the episode's bytes, so the change moves the artifact's
+// content digest. It does NOT move learning.EpisodeID, which is addressed over
+// SourceRunID, SourceSeq and finding identities alone — the join key every
+// cross-run consumer correlates on is stable, which is what bounded the
+// migration to one Temporal workflow version rather than a data migration. The
+// engine's switch is gated on workflow.GetVersion("learning-episode-target-
+// attempt"); the runner's is not, because the runner re-reads recorded
+// artifacts where the engine re-derives them on replay.
+//
+// #3932 was a divergence internal to the local runner, invisible here for a
+// structural reason worth recording: ruling R9 refuses spec.parallels at run
+// start on the engine, so no parity row can reach it. The runner has two walks
+// that take a gate branch — stepGate and, at maxConcurrentBranches > 1,
+// runBranch — and the second carried a hand-copied HALF of the first, the
+// verdict pointer without the learning episode. A scheduling bound decided
+// whether a repass received its correction. Both now share one producer
+// (runner.recordGateRetryInjection) and one predicate, and the equivalence of
+// the two widths is asserted directly. Divergence-by-duplication is the same
+// shape as #3929's, one layer down: the fix is a shared producer, not a second
+// correct copy.
+//
+// One boundary note, because it was gotten wrong twice: the learning-episode
+// PRODUCER on the generic retry arm (learningEpisode here, recordLearningInjection
+// in the runner) is lane-agnostic, not implementation-lane, and was filed as
+// E10 (#3913). It landed here with E4-E9 ahead of that split; #3913 therefore
+// kept the halves the behaviour did not carry — the E10 parity rows, the
+// dedicated replay proof that the digest a REPLAY re-derives is the digest the
+// original walk produced, and the shared-helper suite — rather than a second
+// copy of the behaviour. Removing the producer to "restore" the boundary breaks
+// those rows; the boundary lives in the inventory and the rows, not in a
+// second implementation.
+//
+// Plan item E11 (#3930) closed the same kind of divergence one layer down, in
+// the repass BUDGET itself. The runner's gate.Evaluator has always kept two
+// budgets — a policy one bounded by MaxRepasses and an infrastructure one
+// bounded by DefaultMaxInfrastructureRepasses — each held per gate AND per
+// branch target, each resetting the other when the outcome class flips. The
+// engine kept one. An infrastructure outcome here was therefore charged to the
+// policy counter, measured against the policy bound, and never cross-reset, so
+// the two drivers escalated the same definition over the same failures at
+// different points: an infra-only gate escalated on the engine's fourth
+// evaluation and the runner's third.
+//
+// The parity harness could not see it because journal.ConformanceView drops the
+// whole Runner annotation namespace, which is where repassAttempt, gateAttempt
+// and repassTarget live — the counters ARE the divergence, and the surface the
+// table diffs by default is blind to them. The E11 rows (parity_row_infra_repass_budget_test.go)
+// therefore read those annotations back off both journals and compare them
+// evaluation by evaluation, in addition to the shared surfaces.
+//
+// The ruling is the same as E10's: the transition is one rule, so it lives once.
+// gate.RepassBudget.Charge is that rule — the four counters, the cross-resets,
+// the class-dependent bound and the escalation verdict — and trackRepass and
+// resolveGateOutcome are now both callers. The engine's copy is workflow-local
+// state rebuilt from the recorded outcome sequence, so a replay re-derives it
+// exactly; histories written before the counters existed rebuild them at their
+// zero values, which is a full infrastructure budget and the policy count the
+// old journal really recorded.
+//
+// Plan item E2 (#3874) closed four of the entries this ledger used to carry:
+// the #415 non-retryable escalation bypass, the retry-decision annotation and
+// its knownOutcome shortcut, RunResult.NoWork, and stage-qualified inputsFrom
+// resolution. Each is now pinned by a row of the runner-vs-engine parity table
+// (internal/engine/parity_row_*_test.go) rather than by prose here, which is
+// the point of that table: a closed divergence that is only asserted in a
+// comment reopens silently.
 //
 // The #629 remnant closed the provider-mutation ref.touched gap and moved result
 // and verdict scrubbing to the activity boundary, before Temporal records the

@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/mcpio"
 )
 
 // exportOutbox durably exports a stage's declared apiv1.Task.Outbox paths
@@ -119,6 +120,9 @@ func mirrorOutbox(runDir, configuredRoot string, refs []journal.Ref) error {
 }
 
 func expandOutboxMirrorRoot(configured string) (string, error) {
+	if err := apiv1.ValidateOutboxMirrorRoot(configured); err != nil {
+		return "", err
+	}
 	root := configured
 	if strings.HasPrefix(root, "~/") {
 		home, err := os.UserHomeDir()
@@ -226,19 +230,11 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 				return nil, fmt.Errorf("declared outbox path %q: %w", entry, err)
 			}
 		case info.IsDir():
-			walkErr := filepath.WalkDir(full, func(p string, d fs.DirEntry, err error) error {
-				if err != nil {
-					return err
-				}
-				if d.Type()&fs.ModeSymlink != 0 {
-					return nil
-				}
-				if d.IsDir() {
-					return nil
-				}
-				if !d.Type().IsRegular() {
-					return nil
-				}
+			opts := mcpio.DefaultWalkFilesOptions()
+			// Hidden directories are part of the declared workspace content and
+			// must not be silently pruned from exported outbox payloads.
+			opts.SkipHiddenDirs = false
+			walkErr := mcpio.WalkFiles(full, func(p string, d fs.DirEntry) error {
 				rel, err := filepath.Rel(resolvedRoot, p)
 				if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
 					return fmt.Errorf("resolve outbox file %q relative to workspace: %w", p, err)
@@ -248,7 +244,7 @@ func collectOutboxFiles(workspaceRoot string, declared []string) ([]journal.Outb
 					return fmt.Errorf("stat outbox file %q: %w", p, err)
 				}
 				return addFile(filepath.ToSlash(rel), p, fi.Size())
-			})
+			}, opts)
 			if walkErr != nil {
 				return nil, fmt.Errorf("declared outbox path %q: %w", entry, walkErr)
 			}

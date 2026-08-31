@@ -185,15 +185,10 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	selectedNumberStr := providerInput("selectedNumber", "")
 	if selectedNumberStr == "" {
@@ -226,6 +221,16 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	// cluster member from live cross-PR data and are resolved below, once the
 	// open-PR set is in hand. An unknown name falls back to fifo.
 	policyName := providerInput("electionPolicy", defaultElectionPolicy)
+
+	// #2741: the sibling-serialization strategy — which cluster this stage
+	// serializes against — is selectable independently of the ordering policy.
+	// MUST match apply-verdict's siblingSerialization so both stages resolve
+	// the same cluster.
+	serializationInput := providerInput("siblingSerialization", defaultSiblingSerialization)
+	serialization, knownSerialization := resolveSiblingSerialization(serializationInput)
+	if !knownSerialization {
+		pf(stderr, "warning: unknown sibling-serialization strategy %q — falling back to %q\n", serializationInput, serialization)
+	}
 
 	// writeResult emits the routing decision plus the pass-through outputs the
 	// two possible successor stages resolve their inputsFrom against.
@@ -260,13 +265,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	l := layoutFor(root)
-	runsDir, err := runsDirForRun(l, runID)
-	if err != nil {
-		pf(stderr, "error: locate run journal: %v\n", err)
-		return 1
-	}
-	verdict, err := readLatestGateVerdict(runsDir, runID, *gateName)
+	verdict, err := readLatestGateVerdict(root, runID, *gateName)
 	if err != nil {
 		pf(stderr, "error: read %s verdict from journal: %v\n", *gateName, err)
 		return 1
@@ -281,6 +280,7 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 	// parked even if the reviewer under-named or missed the blocking siblings;
 	// a verdict carrying a real defect is left unchanged (never electable).
 	effectiveFindings := withOverlapBackstop(verdict.Findings, overlappingSiblings)
+	serializedCluster := serializationCluster(serialization, effectiveFindings, overlappingSiblings, selectedNumber)
 
 	// The election needs the live open-PR set for two things: the elected
 	// verdict's SHA-pin re-check below, and (#950) knowing which cluster members
@@ -293,8 +293,12 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
-		withStageProviderCapability(capability.GitHubPRWrite),
+	stageCapability := capability.GitHubPRWrite
+	if repo.Provider == providers.ProviderADO {
+		stageCapability = capability.ADOPRWrite
+	}
+	provider, err := newMergeReviewRemediationProvider(root, repo,
+		withStageProviderCapability(stageCapability),
 		withStageProviderCache(),
 	)
 	if err != nil {
@@ -344,13 +348,17 @@ func runElectLander(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "warning: could not resolve merge-demotion state (%v) — proceeding without it\n", derr)
 		demoted = nil
 	}
-	ineligible, ierr := electionIneligibleSet(ctx, provider, repo, prs)
-	if ierr != nil {
-		return failProviderStage(stderr, "resolve lander eligibility", ierr, resultFile)
+	// The FIFO lander election (#950) is a GitHub merge-queue concept with no
+	// Gitea equivalent; skip it on other forges rather than fail closed.
+	if githubProvider, githubSelected := provider.(*providers.GitHubProvider); githubSelected {
+		ineligible, ierr := electionIneligibleSet(ctx, githubProvider, repo, prs)
+		if ierr != nil {
+			return failProviderStage(stderr, "resolve lander eligibility", ierr, resultFile)
+		}
+		demoted = unionPRSets(demoted, ineligible)
 	}
-	demoted = unionPRSets(demoted, ineligible)
 
-	if reason := noLanderEscalationReason(verdict.Decision, effectiveFindings, selectedNumber, overlappingSiblings, policy, demoted, resolvedPolicy); reason != "" {
+	if reason := noLanderEscalationReason(verdict.Decision, effectiveFindings, selectedNumber, serializedCluster, policy, demoted, resolvedPolicy); reason != "" {
 		pf(stdout, "%s — routing to apply-verdict for explicit escalation\n", reason)
 		return writeResult(false)
 	}

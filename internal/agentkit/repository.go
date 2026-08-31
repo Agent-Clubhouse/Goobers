@@ -31,9 +31,6 @@ const (
 	instructionReferenceEnd   = "<!-- goobers:agent-toolkit:end -->"
 )
 
-// ErrRepositoryMarkerMissing identifies a target that can become installable through explicit Git initialization.
-var ErrRepositoryMarkerMissing = errors.New(".git is missing")
-
 type updateTransaction struct {
 	Version int      `json:"version"`
 	Changes []Change `json:"changes"`
@@ -97,7 +94,8 @@ type repositoryFile struct {
 	exists bool
 }
 
-// OpenRepository validates an unambiguous, symlink-free repository root.
+// OpenRepository validates an unambiguous, symlink-free toolkit root. The
+// folder may be versioned with Git, but a repository marker is not required.
 func OpenRepository(target string) (*Repository, error) {
 	if strings.TrimSpace(target) == "" {
 		return nil, fmt.Errorf("agent toolkit target path must not be empty")
@@ -117,17 +115,6 @@ func OpenRepository(target string) (*Repository, error) {
 	}
 	if !info.IsDir() {
 		return nil, fmt.Errorf("agent toolkit target %s is not a directory", absolute)
-	}
-	gitMarker := filepath.Join(absolute, ".git")
-	gitInfo, err := os.Lstat(gitMarker)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("agent toolkit target %s is not a repository root: %w", absolute, ErrRepositoryMarkerMissing)
-		}
-		return nil, fmt.Errorf("inspect repository marker: %w", err)
-	}
-	if gitInfo.Mode()&os.ModeSymlink != 0 || (!gitInfo.IsDir() && !gitInfo.Mode().IsRegular()) {
-		return nil, fmt.Errorf("repository marker %s is unsafe", gitMarker)
 	}
 	return &Repository{root: absolute}, nil
 }

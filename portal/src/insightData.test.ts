@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   insightErrorSignatureFilters,
   insightPreviousWindowFilters,
+  selectInsightCostTrendBuckets,
   insightTrendBuckets,
   insightWindowFilters,
 } from "./insightData";
@@ -33,6 +34,7 @@ describe("Insight time windows", () => {
       limit: 20,
     });
   });
+
 });
 
 describe("Insight cost trend buckets", () => {
@@ -68,5 +70,17 @@ describe("Insight cost trend buckets", () => {
 
   it("has no preceding window for an unbounded window", () => {
     expect(insightPreviousWindowFilters("all", new Date("2026-07-22T12:00:00Z"))).toBeUndefined();
+  });
+
+  it("preserves current buckets when the response includes a separate previous entry", () => {
+    const trend = Array.from({ length: 15 }, (_, index) => ({
+      since: `bucket-${index}`,
+      until: `bucket-${index + 1}`,
+      usage: [],
+    }));
+
+    expect(selectInsightCostTrendBuckets(trend, 7, true)).toEqual(
+      trend.slice(7, 14),
+    );
   });
 });

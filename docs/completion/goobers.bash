@@ -6,7 +6,7 @@ _goobers_completion()
     dynamic=0
 
     if (( COMP_CWORD == 1 )); then
-        candidates="version init connect examples scaffold validate up down service dashboard getting-started run signal workflow status stats trace escalations completion help --version -h --help"
+        candidates="version init connect examples scaffold validate up down service dashboard run signal workflow status stats trace escalations completion help --version -h --help"
         COMPREPLY=( $(compgen -W "${candidates}" -- "${cur}") )
         return
     fi
@@ -21,7 +21,7 @@ _goobers_completion()
             flags+=" --json"
             ;;
         init)
-            flags+=" --demo --insecure --guided --template --source-tree --json"
+            flags+=" --guided --port --no-open --workdir --demo --insecure --template --source-tree --json"
             ;;
         connect)
             flags+=" --token-env --seed --replace --json"
@@ -32,7 +32,6 @@ _goobers_completion()
         onboarding)
             case "${COMP_WORDS[2]:-}" in
                 stub-agent-instructions) flags+=" --source-tree --harness --json" ;;
-                stub-sample) flags+=" --destination --work-tracking --token-env --force --json" ;;
             esac
             ;;
         scaffold)
@@ -65,7 +64,10 @@ _goobers_completion()
             flags+=" --to --write"
             ;;
         doctor)
-            flags+=" --k8s --repo --kubeconfig --context --report --oidc-issuer --registry --egress --timeout"
+            flags+=" --k8s --repo --av-exclusions --work-root --kubeconfig --context --report --oidc-issuer --registry --egress --timeout"
+            ;;
+        netpol-render)
+            flags+=" --out --check --baseline --write-baseline --timeout --print-blob-endpoint"
             ;;
         config)
             case "${COMP_WORDS[2]:-}" in
@@ -91,22 +93,22 @@ _goobers_completion()
             esac
             ;;
         engine-start)
-            flags+=" --gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key"
+            flags+=" --gaggle --temporal-hostport --temporal-namespace --task-queue --dedupe-key --direct --live-journal"
+            ;;
+        engine-queues)
+            flags+=" --temporal-hostport --temporal-namespace --task-queue --timeout --json"
             ;;
         engine-project)
             flags+=" --gaggle --temporal-hostport --temporal-namespace"
             ;;
         worker)
-            flags+=" --instance --blob-store --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
+            flags+=" --instance --blob-store --daemon-api --dispatch-namespace --config-reload-interval --config-history-depth --task-queue --temporal-hostport --temporal-namespace --drain-timeout --work-root"
             ;;
         dashboard)
             flags+=" --port --listen --no-open --dev-assets --wait-for-daemon"
             ;;
-        getting-started)
-            flags+=" --port --no-open --workdir"
-            ;;
         run)
-            flags+=" --gaggle --github-progress --no-wait"
+            flags+=" --gaggle --github-progress --pr --no-wait"
             ;;
         approve)
             flags+=" --decision --actor"
@@ -157,6 +159,12 @@ _goobers_completion()
         trace)
             flags+=" --json --follow --summary --verdicts --transcripts --transcript"
             ;;
+        e2e)
+            case "${COMP_WORDS[2]:-}" in
+                verify) flags+=" --run --gaggle --expected --out --print-runner-class" ;;
+                kill-inject) flags+=" --run --stage --stage-class --namespace --poll-timeout --out" ;;
+            esac
+            ;;
         escalations)
             flags+=" --json"
             case "${COMP_WORDS[2]:-}" in
@@ -184,6 +192,9 @@ _goobers_completion()
         backlog-query)
             flags+=" --claim --debug --release --read-only --reconcile"
             ;;
+        file-issues)
+            flags+=" --check"
+            ;;
         reconcile-branches)
             flags+=" --delete --max --min-age --after"
             ;;
@@ -194,7 +205,7 @@ _goobers_completion()
             flags+=" --max --lookback"
             ;;
         telemetry-query)
-            flags+=" --window --aggregate --threshold --format --gaggle --workflow"
+            flags+=" --window --aggregate --learning-action --threshold --format --gaggle --workflow"
             ;;
         docs-churn)
             flags+=" --repo --workflow --gaggle --since --buffer-multiplier --format"
@@ -233,7 +244,7 @@ _goobers_completion()
     case "${command}" in
         onboarding)
             if (( COMP_CWORD == 2 )); then
-                candidates="stub-agent-instructions stub-sample"
+                candidates="stub-agent-instructions"
             fi
             ;;
         examples)
@@ -315,6 +326,11 @@ _goobers_completion()
             if (( COMP_CWORD == 2 )); then
                 dynamic=1
                 candidates="$(command goobers __complete runs 2>/dev/null)"
+            fi
+            ;;
+        e2e)
+            if (( COMP_CWORD == 2 )); then
+                candidates="verify kill-inject"
             fi
             ;;
         escalations)

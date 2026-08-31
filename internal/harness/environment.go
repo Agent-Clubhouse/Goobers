@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
+	capabilitypkg "github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/telemetry"
@@ -22,14 +25,55 @@ type credentialEnvConfig struct {
 	extraEnvAllowlist              []string
 	instanceRoot                   string
 	selfBin                        string
+	// ephemeralTmp, when non-nil, is this attempt's private temp area — the
+	// self-runner binding of `tmp:ephemeral` (internal/ephemeraltmp). It is
+	// applied to the ambient allowlist FIRST, before anything below adds to
+	// the environment, for two reasons: nothing added below is a temp path, so
+	// applying it early costs nothing; and both adapters override TMPDIR again
+	// afterwards for their own in-workspace runtime confinement (Claude
+	// unconditionally, Copilot under an enforced sandbox), which must keep
+	// winning — that confinement is already attempt-private and rides
+	// workspace cleanup, and pointing it at a directory outside the sandbox's
+	// writable roots would break the stage. What the binding still delivers in
+	// that case is the half the adapters never covered: the temp-nested build
+	// caches (GOCACHE and friends) the agent's own `go build`/`npm`/`cargo`
+	// invocations write, which is where the unbounded growth actually came
+	// from.
+	ephemeralTmp *ephemeraltmp.Scope
 }
 
 func baseEnv(extra []string) []string {
 	return procenv.BaseEnvWith(extra)
 }
 
+// establishEphemeralTmp carves this attempt's private temp area when the
+// runner enforces `tmp:ephemeral`, and returns nil when it does not. The
+// caller reclaims it (defer) on every exit path.
+//
+// Failure is a hard stop, not a downgrade: the solver has already told the
+// operator that runner `self` enforces this effect, so running the harness
+// against ambient temp instead would be a confident PASS on unenforced
+// substrate (docs/design/goobernetes-restrictions.md D4).
+func establishEphemeralTmp(adapterName string, enabled bool, root string) (*ephemeraltmp.Scope, error) {
+	if !enabled {
+		return nil, nil
+	}
+	scope, err := ephemeraltmp.Establish(root)
+	if err != nil {
+		return nil, fmt.Errorf("harness: %s: bind tmp:ephemeral: %w", adapterName, err)
+	}
+	return scope, nil
+}
+
 func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunRequest) ([]string, error) {
 	env := baseEnv(cfg.extraEnvAllowlist)
+	if cfg.ephemeralTmp != nil {
+		scoped, err := cfg.ephemeralTmp.Apply(env)
+		if err != nil {
+			return nil, fmt.Errorf("harness: %s: bind tmp:ephemeral: %w", cfg.adapterName, err)
+		}
+		env = scoped
+	}
 	telemetryDir := req.TelemetryDir
 	if telemetryDir == "" {
 		telemetryDir = telemetry.PrepareStageTelemetryDir(req.Workspace)
@@ -72,6 +116,25 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 			env = append(env, executor.AdditionalReposEnvVar+"="+strings.Join(names, ","))
 		}
 	}
+	storedCopilotAuth := false
+	modelCapability := string(capabilitypkg.AgentModel)
+	if slices.Contains(req.Envelope.Capabilities, modelCapability) &&
+		cfg.optionalCredentialCapabilities[modelCapability] &&
+		cfg.envCapabilities[modelCapability] == "COPILOT_GITHUB_TOKEN" {
+		if req.Credentials == nil {
+			return nil, fmt.Errorf("harness: %s: resolve %s: no credential set", cfg.adapterName, modelCapability)
+		}
+		if _, err := req.Credentials.Token(ctx, modelCapability); err != nil {
+			if errors.Is(err, credentials.ErrNoCredentialForCapability) {
+				storedCopilotAuth = true
+			} else {
+				return nil, fmt.Errorf("harness: %s: resolve %s: %w", cfg.adapterName, modelCapability, err)
+			}
+		}
+	}
+	if storedCopilotAuth {
+		env = withoutEnvVars(env, "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+	}
 	for _, capability := range req.Envelope.Capabilities {
 		envVar, ok := cfg.envCapabilities[capability]
 		if !ok {
@@ -100,7 +163,46 @@ func buildCredentialEnv(ctx context.Context, cfg credentialEnvConfig, req RunReq
 			}
 			return nil, fmt.Errorf("harness: %s: resolve %s: %w", cfg.adapterName, capability, err)
 		}
+		if storedCopilotAuth && isCopilotModelFallbackEnv(envVar) {
+			if capability == string(capabilitypkg.RepoPush) {
+				// Shipped authoring workflows commit locally and publish through
+				// a later deterministic push stage. Keep that stage's scoped
+				// credential in the materialized Set, but never expose it as
+				// GH_TOKEN to a Copilot subprocess using stored model auth.
+				continue
+			}
+			return nil, fmt.Errorf(
+				"harness: %s: stored Copilot login cannot be used with capability %s because it injects %s; configure a distinct agent:model credential",
+				cfg.adapterName,
+				capability,
+				envVar,
+			)
+		}
 		env = append(env, envVar+"="+token)
 	}
 	return env, nil
+}
+
+func withoutEnvVars(env []string, names ...string) []string {
+	filtered := env[:0]
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		reserved := false
+		for _, candidate := range names {
+			if strings.EqualFold(name, candidate) {
+				reserved = true
+				break
+			}
+		}
+		if !reserved {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func isCopilotModelFallbackEnv(name string) bool {
+	return strings.EqualFold(name, "COPILOT_GITHUB_TOKEN") ||
+		strings.EqualFold(name, "GH_TOKEN") ||
+		strings.EqualFold(name, "GITHUB_TOKEN")
 }

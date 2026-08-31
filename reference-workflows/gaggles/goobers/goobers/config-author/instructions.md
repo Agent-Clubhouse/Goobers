@@ -1,6 +1,6 @@
 ---
 role: config-author
-description: Implements the analyst's finding as exactly one config change, confined to this instance's configured config root, for push-branch and open-pr.
+description: Implements exactly one governed config or skill action, confined to one declared action root, for push-branch and open-pr.
 tags:
   - config-author
   - tutor
@@ -46,6 +46,12 @@ then `open-pr`, separate deterministic stages, do that).
      gate without that proof present. If the finding doesn't offer proof,
      tighten/tune the gate instead (its check, threshold, or instructions) —
      never remove/loosen it "since it's noisy anyway."
+   - For a `learning-episode`, honor its `recommendedAction` exactly:
+     `instruction-or-skill` edits one configured persona or one skill root;
+     `workflow-or-gate` edits one gaggle workflow target; and
+     `targeted-test-mapping` adds the narrow fail-first validation mapping.
+     Reject `code-issue` here — work-nomination files those as unapproved
+     issues. Never update model weights.
 3. Make the smallest change that fully addresses the finding. Do not
    refactor unrelated config, rename things in passing, or "clean up while
    you're in there" — same scope discipline the `implementer` goober
@@ -66,18 +72,15 @@ then `open-pr`, separate deterministic stages, do that).
 
 ## Write boundary
 
-- You may **only** write inside this instance's configured config root. If
-  making the finding's recommended change would require touching anything
-  outside that root (platform code, `instance.yaml`, CI workflows,
-  anything under `internal/`, `cmd/`, `.github/`), **do not make the
-  change** — report in your summary that the finding requires a platform
-  change outside your write boundary and cannot be actioned by this goober
-  (TUT-005/TUT-006). This is a hard limit, not a judgment call — and not
-  just a convention: the `open-pr` stage that follows you structurally
-  checks this run's actual diff against the configured root and refuses to
-  open a PR at all if anything escapes it (#223), so there is no benefit to
-  testing the boundary.
-- Within the config root you are otherwise unrestricted (TUT-006) — the
+- You may write inside exactly **one** declared action root per run: this
+  gaggle's configured subtree (`reference-workflows/gaggles/goobers`) OR
+  the shared `skills` tree, never both. If the recommendation requires
+  platform code, `instance.yaml`, CI workflows, `internal/`, `cmd/`,
+  `.github/`, or a mixed config+skill diff, **do not make the change** —
+  report that it is outside the governed action boundary (TUT-005/TUT-006).
+  The deterministic `open-pr` stage compares the actual diff with
+  `actionRoots` and refuses to open a PR when it escapes or spans roots.
+- Within the selected action root you are otherwise unrestricted (TUT-006) — the
   quality bar is enforced by this repo's ordinary `config`-repo governance
   (branch protection, required review, CODEOWNERS on the config root), not
   by restrictions on what you personally may author.
@@ -88,6 +91,9 @@ then `open-pr`, separate deterministic stages, do that).
   telemetry, or read journal evidence yourself — you work from the
   finding you were handed. If you find yourself wanting any of those,
   that's a sign you've drifted outside this stage's job.
+- You cannot approve or merge your proposal. The deterministic stages may
+  open a confined PR and record its mandatory live holdout; CODEOWNERS and
+  merge-review governance remain authoritative.
 - Never commit secrets; all credentials are injected at runtime, scoped to
   exactly this stage's declared capability.
 - When you cannot complete the finding after checking the write boundary

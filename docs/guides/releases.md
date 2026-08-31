@@ -40,6 +40,31 @@ git tag vMAJOR.MINOR.PATCH
 git push origin vMAJOR.MINOR.PATCH
 ```
 
+### Pre-release tags
+
+A tag may also carry a SemVer 2.0.0 pre-release suffix —
+`vMAJOR.MINOR.PATCH-<identifier>[.<identifier>...]`, e.g. `v1.3.0-beta.2` or
+`v1.3.0-rc.1`. Pushing one runs the **identical** full pipeline as a stable
+tag: the same packaging matrix, the same macOS notarization and Windows
+Authenticode signing, and the same curated-release-note requirement at
+`.github/release-notes/<tag>.md` (the literal tag string, dash and all, e.g.
+`v1.3.0-beta.2.md`).
+
+The only behavioral difference is at publication: the workflow detects the
+`-` in the tag and passes `--prerelease` to `gh release create`/`gh release
+edit`, so GitHub flags it as a pre-release and it never becomes the repo's
+"Latest release". The feature-registry and DSL-support-matrix baseline a
+pre-release ships still diffs against the **last stable** release (never
+another pre-release), so `goobers features`/support-matrix deltas stay
+anchored to real release lines.
+
+This is unrelated to the DSL feature/support-matrix registry's own
+`vMAJOR.MINOR.PATCH` version requirement (`internal/supportmatrix`,
+`internal/workflow/v_3_0`, `internal/workflow/v_next`) — that tracks which
+*stable* release a DSL feature or version shipped or was deprecated in, and
+intentionally does not accept pre-release identifiers. A pre-release tag
+never appears in that lineage.
+
 ## Install a pinned release
 
 On Linux or macOS, run the installer attached to the current `v0.1.0` release:
@@ -61,16 +86,9 @@ archive's `README.md`, `docs/` tree, and `onboarding/` payload to the versioned
 root with `GOOBERS_DOCS_DIR`), so installing a newer release does not replace
 earlier documentation, templates, or sample. Installation ends there: the
 default run configures nothing and prints the next steps — the credential-free
-demo and guided setup — so the install result never depends on setup choices.
-To chain guided setup in the same run, opt in with
-`--guided [instance-path]` (default `./goobers-instance`): the installer then
-runs the release binary's `goobers init --guided` flow, which separately
-selects a checked-in config source and target application repository, prompts
-for credential references and canonical workflows, and validates both source
-and instance. Use a fresh instance path; a new source path must also be empty,
-while an adopted source is validated and left unchanged. A failed or canceled
-guided setup is reported separately from the successful install and sets the
-script's exit status.
+demo and `goobers init --guided` — so the install result never depends on
+setup choices. The legacy installer `--guided` option exits before download
+with migration guidance and does not configure an instance.
 
 The helper intentionally delegates all config generation and validation to the
 installed binary. The release-pinned README and platform-neutral quickstart

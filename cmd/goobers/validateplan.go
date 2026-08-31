@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/decomposition"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 )
 
 const validatePlanHelp = "Usage: goobers validate-plan [path]\n\n" +
@@ -49,15 +49,10 @@ func runValidatePlan(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	plan, err := readDecompositionInput[decomposition.Plan](root, providerInput("planFile", "plan.json"), "plan.json", "design-slices", "/plan.json")
 	if err != nil {
@@ -160,16 +155,20 @@ func readDecompositionInput[T any](root, path, defaultPath, stage, artifactSuffi
 	if err == nil || path != defaultPath || !errors.Is(err, os.ErrNotExist) {
 		return value, err
 	}
-	runID := os.Getenv("GOOBERS_RUN_ID")
+	runID := os.Getenv(executor.RunIDEnvVar)
 	if runID == "" {
 		return value, err
 	}
-	runDir, runErr := runDirFor(layoutFor(root), runID)
+	reader, runErr := stageRunJournal(root, runID)
 	if runErr != nil {
-		return value, err
-	}
-	reader, runErr := journal.OpenRead(runDir)
-	if runErr != nil {
+		// A run with no journal on this host is the pre-seam tolerance: the
+		// optional input simply is not available, and the caller gets the
+		// original missing-file error. Anything else — an unreadable journal,
+		// a refused or failed plane read — is surfaced, never swallowed into
+		// "the input wasn't there".
+		if errors.Is(runErr, journalclient.ErrRunNotFound) {
+			return value, err
+		}
 		return value, fmt.Errorf("open run journal for %s input: %w", stage, runErr)
 	}
 	events, runErr := reader.Events()
@@ -190,23 +189,18 @@ func readDecompositionInput[T any](root, path, defaultPath, stage, artifactSuffi
 	return value, nil
 }
 
+// decompositionStageArtifact finds the artifact a run's journal records for
+// stage's newest successful finish under a name ending in nameSuffix.
+//
+// One spelling of that rule, in journalclient, shared with the typed
+// artifact-content fetch (Goobers#3996): the resolution that decides WHICH
+// artifact a stage may read must not exist twice, or the plane route and the
+// on-disk route can come to disagree about what "the signals stage's stdout"
+// means.
 func decompositionStageArtifact(events []journal.Event, stage, nameSuffix string) (journal.Ref, bool) {
-	artifacts := make(map[string]journal.Ref)
-	for _, event := range events {
-		if event.Type == journal.EventArtifactRecorded && event.Ref != nil && strings.HasSuffix(event.Name, nameSuffix) {
-			artifacts[event.Ref.Digest] = *event.Ref
-		}
+	resolved, ok := journalclient.ResolveStageArtifact(events, stage, nameSuffix)
+	if !ok {
+		return journal.Ref{}, false
 	}
-	for i := len(events) - 1; i >= 0; i-- {
-		event := events[i]
-		if event.Type != journal.EventStageFinished || event.Stage != stage || event.Status != string(apiv1.ResultSuccess) {
-			continue
-		}
-		for _, ref := range event.Artifacts {
-			if artifact, ok := artifacts[ref.Digest]; ok {
-				return artifact, true
-			}
-		}
-	}
-	return journal.Ref{}, false
+	return resolved.Ref, true
 }

@@ -91,6 +91,7 @@ type LocalSources struct {
 	// disk from the HTTP list path is how all 40,665 run directories on the
 	// live instance came to hold a .lock file.
 	ReadModel          readmodel.Reader
+	RetentionStats     func() readmodel.RetentionStats
 	WorkItemLookup     WorkItemLookup
 	PullRequestLookup  PullRequestLookup
 	SchedulerHeartbeat func() (time.Time, error)
@@ -129,9 +130,18 @@ type Local struct {
 	// AttachIntakeDepth.
 	intakeDepth intakeDepth
 
+	// projectionHealth reports the projector's apply failures and last drain.
+	// Optional; see AttachProjectionHealth.
+	projectionHealth func() ProjectionHealth
+
 	// readMode records how this service answers bounded reads (#1933). Empty
 	// means projected, which keeps every existing construction unchanged.
 	readMode ReadMode
+
+	// instanceLog retains the instance-journal fold behind SchedulerStatus and
+	// TimeToFirstPR so those requests read the journal's growth since the last
+	// request instead of its whole history (#3050).
+	instanceLog instanceFold
 }
 
 type definitionSnapshot struct {

@@ -84,9 +84,12 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"init": {
+		{name: "guided", desc: "Open browser-based setup, including placement choices"},
+		{name: "port", takesArg: true, desc: "With --guided, server port or auto"},
+		{name: "no-open", desc: "With --guided, print the URL without opening a browser"},
+		{name: "workdir", takesArg: true, desc: "With --guided, temporary browser setup state"},
 		{name: "demo", desc: "Seed a credential-free runnable demo workflow"},
 		{name: "insecure", desc: "Allow an unisolated Windows demo"},
-		{name: "guided", desc: "Prompt for repository, credentials, and workflows"},
 		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate}, desc: "Seed a named onboarding template"},
 		{name: "source-tree", takesArg: true, desc: "Seed the template as a checked-in config source"},
 		{name: "json", desc: "Emit the config-source action result as JSON"},
@@ -100,13 +103,6 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"preflight": {
 		{name: "distro", takesArg: true, desc: "Select the WSL distro to check"},
 		{name: "launch-wsl", desc: "Run the trailing Goobers command inside WSL"},
-	},
-	"onboarding stub-sample": {
-		{name: "destination", takesArg: true, desc: "Sample destination"},
-		{name: "work-tracking", takesArg: true, desc: "GitHub owner/repo to seed"},
-		{name: "token-env", takesArg: true, desc: "Issue token environment variable"},
-		{name: "force", desc: "Replace conflicting regular files"},
-		{name: "json", desc: "Emit the versioned action envelope"},
 	},
 	"onboarding stub-agent-instructions": {
 		{name: "source-tree", takesArg: true, desc: "Config source repository root"},
@@ -174,6 +170,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"doctor": {
 		{name: "k8s", desc: "Preflight a Kubernetes cluster"},
 		{name: "repo", desc: "Compare repository forge policy with GitHub"},
+		{name: "av-exclusions", desc: "List the directories Goobers writes then reads and verify antivirus exclusions (advisory)"},
+		{name: "work-root", takesArg: true, desc: "Worker work root to enumerate (--av-exclusions)"},
 		{name: "kubeconfig", takesArg: true, desc: "Kubeconfig path"},
 		{name: "context", takesArg: true, desc: "Kubeconfig context"},
 		{name: "report", takesArg: true, values: []string{"text", "json"}, desc: "Report format"},
@@ -181,6 +179,14 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "registry", takesArg: true, desc: "Container registry host"},
 		{name: "egress", takesArg: true, desc: "Outbound host and port targets"},
 		{name: "timeout", takesArg: true, desc: "Per-probe timeout"},
+	},
+	"netpol-render": {
+		{name: "out", takesArg: true, desc: "Directory to write the rendered manifest set into"},
+		{name: "check", desc: "Validate provenance markers, the coverage ratchet, and output freshness"},
+		{name: "baseline", takesArg: true, desc: "Coverage baseline file"},
+		{name: "write-baseline", desc: "Freeze the current per-class coverage into the baseline"},
+		{name: "timeout", takesArg: true, desc: "Per-fetch timeout for provenance checks"},
+		{name: "print-blob-endpoint", desc: "Print the blob endpoint (namespace, pod labels, port) as JSON and exit"},
 	},
 	"self-update": {
 		{name: "policy", takesArg: true, values: []string{"manual", "on-release", "on-main"}, desc: "Update policy"},
@@ -197,7 +203,16 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
 		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
-		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key"},
+		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key (requires --direct)"},
+		{name: "direct", desc: "Dispatch straight to Temporal instead of through the running daemon"},
+		{name: "live-journal", desc: "Author the run journal live through the daemon's journal plane"},
+	},
+	"engine-queues": {
+		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
+		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
+		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
+		{name: "timeout", takesArg: true, desc: "Bound on the whole describe"},
+		{name: "json", desc: "Emit JSON"},
 	},
 	"engine-project": {
 		{name: "gaggle", takesArg: true, desc: "Gaggle owning the run"},
@@ -207,6 +222,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"worker": {
 		{name: "instance", takesArg: true, desc: "Instance root; wires the real executors"},
 		{name: "blob-store", takesArg: true, desc: "Directory backing the fleet artifact store"},
+		{name: "daemon-api", takesArg: true, desc: "Daemon write API base URL for live journal emission"},
+		{name: "dispatch-namespace", takesArg: true, desc: "Namespace for mode-3 stage pods; wires the dispatcher seam"},
+		{name: "config-reload-interval", takesArg: true, desc: "How often to re-read the instance config tree and rebuild changed gaggle seams (0 disables)"},
+		{name: "config-history-depth", takesArg: true, desc: "How many superseded config trees to retain so an in-flight run pinned to one is still served its own goober kit (0 disables)"},
 		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
@@ -226,14 +245,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
 		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
 	},
-	"getting-started": {
-		{name: "port", takesArg: true, desc: "Server port, or auto"},
-		{name: "no-open", desc: "Print the URL without opening a browser"},
-		{name: "workdir", takesArg: true, desc: "Directory holding the tutorial sample and instance"},
-	},
 	"run": {
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},
 		{name: "github-progress", desc: "Publish live progress to a GitHub Check Run"},
+		{name: "pr", takesArg: true, desc: "Target an exact pull request for merge-review"},
 		{name: "no-wait", desc: "Return after the run is dispatched"},
 	},
 	"approve": {
@@ -317,6 +332,21 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "transcripts", desc: "Show every recorded agent-stage transcript"},
 		{name: "transcript", takesArg: true, desc: "Show recorded transcript data for one stage"},
 	},
+	"e2e verify": {
+		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id to verify"},
+		{name: "gaggle", takesArg: true, desc: "Require the run belong to this gaggle"},
+		{name: "expected", takesArg: true, desc: "Topology expectations JSON file"},
+		{name: "out", takesArg: true, desc: "Write the evidence bundle here instead of stdout"},
+		{name: "print-runner-class", takesArg: true, desc: "Print the runner-class label value for a restriction set and exit"},
+	},
+	"e2e kill-inject": {
+		{name: "run", takesArg: true, valueKind: "runs", desc: "Run id whose stage attempt to kill"},
+		{name: "stage", takesArg: true, desc: "The real workflow stage name to target"},
+		{name: "stage-class", takesArg: true, desc: "Which S6 stage class this stage plays: builtin, agentic, or local-ci"},
+		{name: "namespace", takesArg: true, desc: "Kubernetes namespace the target pod runs in"},
+		{name: "poll-timeout", takesArg: true, desc: "Bound on each polling phase"},
+		{name: "out", takesArg: true, desc: "Write the injection record here instead of stdout"},
+	},
 	"escalations": {
 		{name: "json", desc: "Emit JSON"},
 	},
@@ -392,9 +422,10 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"telemetry-query": {
 		{name: "window", takesArg: true, desc: "Lookback window (e.g. 24h)"},
-		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "ci-check-failure", "gate-noise"}, desc: "Aggregate to detect"},
+		{name: "aggregate", takesArg: true, values: []string{"all", "stage-failure-rate", "error-signature", "ci-check-failure", "gate-noise", "workflow-untriggered", "stage-unreached", "credit-assignment", "learning-episode"}, desc: "Aggregate to detect"},
+		{name: "learning-action", takesArg: true, values: []string{"instruction-or-skill", "workflow-or-gate", "targeted-test-mapping", "code-issue"}, desc: "Governed learning action to include"},
 		{name: "threshold", takesArg: true, desc: "Threshold override k=v"},
-		{name: "format", takesArg: true, values: []string{"candidate-findings"}, desc: "Artifact format"},
+		{name: "format", takesArg: true, values: []string{"candidate-findings", "effective-version-efficacy", "tutor-live-verification"}, desc: "Artifact format"},
 		{name: "gaggle", takesArg: true, desc: "Gaggle to query"},
 		{name: "workflow", takesArg: true, valueKind: "workflows", desc: "Workflow keying the query"},
 	},
@@ -435,6 +466,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	},
 	"respond-to-findings": {
 		{name: "check", desc: "Validate without publishing responses"},
+	},
+	"file-issues": {
+		{name: "check", desc: "Validate and scan without creating issues"},
 	},
 	"mcp-io": {
 		{name: "config", takesArg: true, desc: "MCP server configuration path"},

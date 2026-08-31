@@ -54,6 +54,19 @@ type scriptedExec struct {
 	mu     sync.Mutex
 	script map[string][]scriptedCall
 	calls  map[string]int
+	// verdicts scripts the AGENTIC REVIEWER seam per gate name, added for
+	// #3882's parity rows. Absent means the reviewer is not supposed to run,
+	// and Review says so with an error rather than a zero verdict — which is
+	// what turns "the port dispatched a reviewer it should have
+	// short-circuited" into a loud failure on both lanes instead of a silent
+	// extra model call.
+	verdicts    map[string][]apiv1.Verdict
+	reviewCalls map[string]int
+	// addenda records the instruction addendum each stage's LAST dispatch
+	// carried. It is what lets the #3883 HITL tests prove that an operator's
+	// rerun addendum actually reached the re-dispatched stage's envelope
+	// rather than merely being journaled.
+	addenda map[string]string
 }
 
 func newScriptedExec(script map[string][]scriptedCall) *scriptedExec {
@@ -85,11 +98,41 @@ func (s *scriptedExec) Run(_ context.Context, env apiv1.InvocationEnvelope, _ ap
 }
 
 func (s *scriptedExec) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	s.recordAddendum(env)
 	return s.next(env.TaskID)
 }
 
-func (s *scriptedExec) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
-	return apiv1.Verdict{}, errors.New("conformance fixtures use automated gates; agentic review is a local-runner-only surface until #629's diff evidence lands")
+func (s *scriptedExec) recordAddendum(env apiv1.InvocationEnvelope) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.addenda == nil {
+		s.addenda = map[string]string{}
+	}
+	s.addenda[env.TaskID[strings.Index(env.TaskID, ":")+1:]] = env.InstructionAddendum
+}
+
+// Review answers from the scripted verdicts, keyed by gate name. The last
+// scripted verdict for a gate repeats.
+func (s *scriptedExec) Review(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	gate := env.TaskID[strings.Index(env.TaskID, ":")+1:]
+	script := s.verdicts[gate]
+	if len(script) == 0 {
+		return apiv1.Verdict{}, fmt.Errorf(
+			"scriptedExec: gate %q dispatched a reviewer, but this fixture scripts none — "+
+				"either the fixture is meant to short-circuit the reviewer and no longer does, "+
+				"or it needs a scripted verdict", gate)
+	}
+	if s.reviewCalls == nil {
+		s.reviewCalls = map[string]int{}
+	}
+	n := s.reviewCalls[gate]
+	s.reviewCalls[gate] = n + 1
+	if n >= len(script) {
+		n = len(script) - 1
+	}
+	return script[n], nil
 }
 
 // flakyAutomated wraps a real automated evaluator, failing the first
@@ -160,6 +203,20 @@ func statusGate(name string, branches map[string]string) apiv1.Gate {
 	}
 }
 
+// failureClassGate is the OTHER automated evaluator a shipped lane puts over a
+// failed stage: gate.DefaultChecks' "failure-class", which separates a
+// retryable/infrastructure failure (gate.OutcomeInfra) from a real one. It is
+// the only check that can produce an infra outcome, and therefore the only one
+// that reaches retryFailureClassForGateResult's second, journal.AttemptInfra
+// arm — see parity_row_learning_episode_infra_test.go.
+func failureClassGate(name string, branches map[string]string) apiv1.Gate {
+	return apiv1.Gate{
+		Name: name, Evaluator: apiv1.EvaluatorAutomated,
+		Automated: &apiv1.AutomatedGate{Check: "failure-class"},
+		Branches:  branches,
+	}
+}
+
 func fixtureSpec(start string, tasks []apiv1.Task, gates []apiv1.Gate) apiv1.WorkflowSpec {
 	return apiv1.WorkflowSpec{
 		Gaggle:   "web",
@@ -174,6 +231,17 @@ func fail(code, message string) scriptedCall {
 	return scriptedCall{result: apiv1.ResultEnvelope{
 		Status: apiv1.ResultFailure,
 		Error:  &apiv1.ErrorInfo{Code: code, Message: message},
+	}}
+}
+
+// failRetryable is a failure the producer itself marked retryable. It is what
+// gate.AutomatedInputs flattens into errorRetryable, which is what the
+// "failure-class" check reads to answer gate.OutcomeInfra — the signal a real
+// lane uses to say "the work did not fail, the machinery did".
+func failRetryable(code, message string) scriptedCall {
+	return scriptedCall{result: apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: code, Message: message, Retryable: true},
 	}}
 }
 

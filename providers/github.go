@@ -52,6 +52,20 @@ type GitHubProvider struct {
 	// the first time claiming ran under App auth (#3343). Bot logins are the
 	// App slug plus "[bot]".
 	configuredLogin string
+	// loginSelfReportRefusal, when set, is the reason AuthenticatedLogin must
+	// refuse INSTEAD of falling back to GET /user — a fail-closed identity
+	// posture for a caller that knows the login should have been declared and
+	// was not resolved (Goobers#3914: a stage pod whose dispatcher stamped no
+	// bot login at all).
+	//
+	// It exists because the GET /user fallback is not a neutral default under
+	// App auth: an installation token cannot call that endpoint, so the
+	// fallback is a request that CANNOT succeed, and it fails far away with
+	// "Resource not accessible by integration" — an error naming the forge for
+	// a fault that is entirely local. Refusing before the request states the
+	// actual cause and, under a PAT, is never reached (a caller only sets this
+	// when identity resolution itself was unavailable).
+	loginSelfReportRefusal string
 	// now and sleep are injectable for deterministic rate-limit tests.
 	now    func() time.Time
 	sleep  func(context.Context, time.Duration) error
@@ -64,6 +78,22 @@ type GitHubProvider struct {
 func WithConfiguredLogin(login string) func(*GitHubProvider) {
 	return func(p *GitHubProvider) {
 		p.configuredLogin = strings.TrimSpace(login)
+	}
+}
+
+// WithLoginSelfReportRefused makes AuthenticatedLogin FAIL rather than fall
+// back to GET /user, carrying reason as the diagnosis (Goobers#3914).
+//
+// For the caller that cannot resolve the provider identity and knows the
+// fallback is not a safe default: a goobers-CLI stage in a pod, where the
+// instance config is unreadable and the dispatcher stamped no login. Under
+// GitHub App auth GET /user is a request that cannot succeed, and a stage that
+// makes it anyway reports a forge permission error for a platform wiring
+// fault. WithConfiguredLogin wins if both are set — a resolved identity is
+// never overridden by a refusal.
+func WithLoginSelfReportRefused(reason string) func(*GitHubProvider) {
+	return func(p *GitHubProvider) {
+		p.loginSelfReportRefusal = strings.TrimSpace(reason)
 	}
 }
 
@@ -525,6 +555,7 @@ func githubGitPushRateLimitError(repo RepositoryRef, output []byte) *RateLimitEr
 		return nil
 	}
 	return &RateLimitError{
+		Provider:  ProviderGitHub,
 		Endpoint:  fmt.Sprintf("git push %s/%s", repo.Owner, repo.Name),
 		Status:    status,
 		Secondary: secondary,
@@ -589,20 +620,14 @@ func (p *GitHubProvider) Commit(ctx context.Context, req CommitRequest) (CommitR
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return CommitResult{}, err
 	}
-	if req.Branch == "" {
-		return CommitResult{}, fmt.Errorf("branch is required")
-	}
-	if req.Message == "" {
-		return CommitResult{}, fmt.Errorf("message is required")
-	}
-	if len(req.Files) == 0 {
-		return CommitResult{}, fmt.Errorf("at least one file is required")
+	if err := validateCommitRequest(req); err != nil {
+		return CommitResult{}, err
 	}
 
 	var last githubContentResponse
 	for _, file := range req.Files {
-		if file.Path == "" {
-			return CommitResult{}, fmt.Errorf("file path is required")
+		if err := validateCommitFile(file); err != nil {
+			return CommitResult{}, err
 		}
 		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "contents", file.Path)
 		if err != nil {
@@ -826,7 +851,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		return PullRequestPollResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestPollResult{}, fmt.Errorf("pull id is required")
+		return PullRequestPollResult{}, errPullIDRequired
 	}
 	prEndpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
 	if err != nil {
@@ -906,7 +931,7 @@ func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequ
 		return ClosePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return ClosePullRequestResult{}, fmt.Errorf("pull id is required")
+		return ClosePullRequestResult{}, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
 	if err != nil {
@@ -966,7 +991,7 @@ func (p *GitHubProvider) UpdateBranch(ctx context.Context, req UpdateBranchReque
 		return UpdateBranchResult{}, err
 	}
 	if req.PullID == "" {
-		return UpdateBranchResult{}, fmt.Errorf("pull id is required")
+		return UpdateBranchResult{}, errPullIDRequired
 	}
 	if req.ExpectedHeadSHA == "" {
 		return UpdateBranchResult{}, fmt.Errorf("expected head SHA is required")
@@ -1030,7 +1055,7 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 		return MergePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return MergePullRequestResult{}, fmt.Errorf("pull id is required")
+		return MergePullRequestResult{}, errPullIDRequired
 	}
 	if req.MergeMethod != "" && !req.MergeMethod.IsValid() {
 		return MergePullRequestResult{}, fmt.Errorf("unsupported merge method %q", req.MergeMethod)
@@ -1263,7 +1288,7 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 		return EnqueuePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return EnqueuePullRequestResult{}, fmt.Errorf("pull id is required")
+		return EnqueuePullRequestResult{}, errPullIDRequired
 	}
 	number, err := strconv.Atoi(req.PullID)
 	if err != nil {
@@ -1362,7 +1387,7 @@ func (p *GitHubProvider) DequeuePullRequest(ctx context.Context, req DequeuePull
 		return err
 	}
 	if req.PullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	if req.PullRequestNodeID == "" {
 		return fmt.Errorf("pull request node id is required")
@@ -1438,7 +1463,7 @@ func (p *GitHubProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQ
 		return PollMergeQueueEntryResult{}, err
 	}
 	if req.PullID == "" {
-		return PollMergeQueueEntryResult{}, fmt.Errorf("pull id is required")
+		return PollMergeQueueEntryResult{}, errPullIDRequired
 	}
 	number, err := strconv.Atoi(req.PullID)
 	if err != nil {
@@ -1521,7 +1546,7 @@ func (p *GitHubProvider) GetPullRequest(ctx context.Context, repo RepositoryRef,
 		return PullRequestSummary{}, err
 	}
 	if pullID == "" {
-		return PullRequestSummary{}, fmt.Errorf("pull id is required")
+		return PullRequestSummary{}, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID)
 	if err != nil {
@@ -1672,7 +1697,7 @@ func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRe
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "files")
 	if err != nil {
@@ -1795,7 +1820,7 @@ func (p *GitHubProvider) PullRequestMergeable(ctx context.Context, repo Reposito
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID)
 	if err != nil {
@@ -2182,7 +2207,7 @@ func (p *GitHubProvider) RequestReview(ctx context.Context, req ReviewRequest) e
 		return err
 	}
 	if req.PullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "requested_reviewers")
 	if err != nil {
@@ -2211,7 +2236,7 @@ func (p *GitHubProvider) SubmitPullRequestReview(ctx context.Context, req PullRe
 		return PullRequestReviewResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestReviewResult{}, fmt.Errorf("pull id is required")
+		return PullRequestReviewResult{}, errPullIDRequired
 	}
 	if req.CommitSHA == "" {
 		return PullRequestReviewResult{}, fmt.Errorf("commit sha is required")
@@ -2324,17 +2349,27 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		} else {
 			offset = (page - 1) * pageSize
 		}
+		skipped := 0
 		if req.Cursor != "" {
 			offset, err = strconv.Atoi(req.Cursor)
 			if err != nil || offset < 0 {
 				return nil, fmt.Errorf("invalid GitHub work-item cursor %q", req.Cursor)
 			}
-			for pageSize > 1 && offset%pageSize != 0 {
-				pageSize--
-			}
-			values.Set("per_page", strconv.Itoa(pageSize))
+			// Resume at an arbitrary offset by reading the FULL-WIDTH page
+			// that contains it and dropping the records before it, rather
+			// than shrinking per_page until it divides the offset evenly
+			// (#4036). That shrink made the resumed window's width a
+			// property of the offset's factorization: offset 158 read a
+			// 79-record page, and a prime offset collapsed per_page to 1 —
+			// so a scan budgeted for backlogScanCeiling candidates examined
+			// a small fraction of them and then, because the short page was
+			// not itself capped, reported the result set exhausted. Full
+			// pages keep "one page = up to per_page candidates" true for
+			// every offset, which is what the caller's page budget assumes.
 			page = offset/pageSize + 1
+			skipped = offset % pageSize
 		}
+		values.Set("per_page", strconv.Itoa(pageSize))
 		values.Set("page", strconv.Itoa(page))
 		endpoint, err = addQuery(endpoint, values)
 		if err != nil {
@@ -2343,6 +2378,13 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 		var issues []githubIssue
 		if err := p.do(ctx, http.MethodGet, endpoint, nil, &issues); err != nil {
 			return nil, err
+		}
+		// fetched is the raw page width, which is what says whether GitHub
+		// itself capped this read; issues is narrowed to the candidates at or
+		// after the resume offset, which is what this call actually inspects.
+		fetched := len(issues)
+		if skipped > 0 {
+			issues = issues[min(skipped, fetched):]
 		}
 		items, scanned, err := issuesToWorkItems(issues, req)
 		if err != nil {
@@ -2356,9 +2398,11 @@ func (p *GitHubProvider) ListWorkItems(ctx context.Context, req ListWorkItemsReq
 			// issues behind — and even scanning every fetched issue without
 			// reaching Limit matches still leaves more to look at when the
 			// fetch itself hit pageSize (GitHub may hold further candidates
-			// beyond what this round asked for).
+			// beyond what this round asked for) — measured on the raw page
+			// width, before the resume offset's leading records were
+			// dropped, since those were still fetched.
 			scannedEverything := scanned == len(issues)
-			fetchWasCapped := len(issues) == pageSize
+			fetchWasCapped := fetched == pageSize
 			req.PageInfo.CandidateCount = len(issues)
 			req.PageInfo.HasNext = !scannedEverything || fetchWasCapped
 			req.PageInfo.NextCursor = ""
@@ -2473,7 +2517,7 @@ func (p *GitHubProvider) ListWorkItemChildren(ctx context.Context, repo Reposito
 		return nil, err
 	}
 	if id == "" {
-		return nil, fmt.Errorf("issue id is required")
+		return nil, errIssueIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "sub_issues")
 	if err != nil {
@@ -2575,7 +2619,7 @@ func (p *GitHubProvider) ListWorkItemBlockers(ctx context.Context, repo Reposito
 		return nil, err
 	}
 	if id == "" {
-		return nil, fmt.Errorf("issue id is required")
+		return nil, errIssueIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "dependencies", "blocked_by")
 	if err != nil {
@@ -2604,7 +2648,7 @@ func (p *GitHubProvider) HasOpenWorkItemBlocker(ctx context.Context, repo Reposi
 		return false, err
 	}
 	if id == "" {
-		return false, fmt.Errorf("issue id is required")
+		return false, errIssueIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "dependencies", "blocked_by")
 	if err != nil {
@@ -2922,38 +2966,7 @@ func (p *GitHubProvider) Subscribe(ctx context.Context, sub TriggerSubscription)
 	if sub.Kind != TriggerPolling {
 		return nil, fmt.Errorf("github provider supports polling subscriptions in-process; webhook delivery is configured externally")
 	}
-	interval := sub.PollInterval
-	if interval <= 0 {
-		interval = time.Minute
-	}
-	events := make(chan WorkItemEvent, 1)
-	go func() {
-		defer close(events)
-		seen := map[string]time.Time{}
-		for {
-			items, err := p.ListWorkItems(ctx, ListWorkItemsRequest{Repository: sub.Repository, State: "open", Limit: 100})
-			if err == nil {
-				for _, item := range items {
-					if !shouldEmitWorkItem(seen, item) {
-						continue
-					}
-					select {
-					case <-ctx.Done():
-						return
-					case events <- WorkItemEvent{Provider: ProviderGitHub, Kind: TriggerPolling, Item: item, Action: "available"}:
-					}
-				}
-			}
-			timer := time.NewTimer(interval)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-			}
-		}
-	}()
-	return events, nil
+	return subscribeToWorkItems(ctx, sub, ProviderGitHub, "open", p.ListWorkItems), nil
 }
 
 func (p *GitHubProvider) contentSHA(ctx context.Context, endpoint string) (string, bool, error) {

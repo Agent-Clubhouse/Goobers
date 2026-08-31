@@ -70,6 +70,13 @@ func run(args []string, stdout, stderr *os.File) int {
 	if *apply {
 		if err := applyFn(context.Background(), set); err != nil {
 			_, _ = fmt.Fprintf(stderr, "config-sync: apply failed: %v\n", err)
+			var applyErr *configsync.ApplyError
+			if errors.As(err, &applyErr) {
+				_, _ = fmt.Fprintf(stderr, "config-sync: generation %s was not published; the previous generation stays authoritative\n", applyErr.Generation)
+				for _, mutation := range applyErr.Mutations {
+					_, _ = fmt.Fprintf(stderr, "  %s\n", mutation)
+				}
+			}
 			return 1
 		}
 		_, _ = fmt.Fprintf(stdout, "applied %d objects to namespace %s\n", len(set.Objects), set.Namespace)

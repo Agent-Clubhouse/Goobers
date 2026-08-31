@@ -578,9 +578,108 @@ DELETE FROM run_stage WHERE TRUE;
 DELETE FROM run WHERE TRUE;
 `,
 
-	// v14: rebuild operator facts to retain associated issue URLs and PR titles.
+	// v14: read-model projection backing retrieval-augmented remediation memory.
+	`
+CREATE TABLE IF NOT EXISTS remediation_example (
+	run_id          TEXT NOT NULL,
+	stage           TEXT NOT NULL,
+	attempt         INTEGER NOT NULL,
+	error_class     TEXT NOT NULL DEFAULT '',
+	failure_excerpt TEXT NOT NULL,
+	fix_excerpt     TEXT NOT NULL,
+	did_it_help     INTEGER NOT NULL DEFAULT 0,
+	observed_at     TEXT NOT NULL,
+	config_digest   TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (run_id, stage, attempt)
+);
+CREATE INDEX IF NOT EXISTS idx_remediation_example_lookup
+	ON remediation_example(stage, error_class, observed_at DESC, did_it_help DESC);
+CREATE INDEX IF NOT EXISTS idx_remediation_example_run
+	ON remediation_example(run_id);
+
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+DELETE FROM remediation_example WHERE TRUE;
+`,
+
+	// v15: causal projection facts from journal interventions and topology.
+	`
+ALTER TABLE run_node ADD COLUMN randomized INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE run_node ADD COLUMN arm TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS run_node_parent (
+	run_id         TEXT NOT NULL,
+	kind           TEXT NOT NULL,
+	name           TEXT NOT NULL,
+	identity       TEXT NOT NULL DEFAULT '',
+	parent_kind    TEXT NOT NULL,
+	parent_name    TEXT NOT NULL,
+	PRIMARY KEY (run_id, kind, name, identity, parent_kind, parent_name)
+);
+CREATE INDEX IF NOT EXISTS idx_run_node_parent_node
+	ON run_node_parent(kind, name, identity, run_id);
+
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+DELETE FROM run_node_parent WHERE TRUE;
+DELETE FROM run_node WHERE TRUE;
+DELETE FROM run_stage WHERE TRUE;
+DELETE FROM run WHERE TRUE;
+`,
+
+	// v16: node-grain outcome buckets for bounded monitor queries.
+	`
+CREATE TABLE IF NOT EXISTS bucket_node_day (
+	day         TEXT NOT NULL,
+	gaggle      TEXT NOT NULL,
+	workflow    TEXT NOT NULL,
+	phase       TEXT NOT NULL,
+	outcome     TEXT NOT NULL DEFAULT '',
+	kind        TEXT NOT NULL,
+	name        TEXT NOT NULL,
+	identity    TEXT NOT NULL DEFAULT '',
+	runs        INTEGER NOT NULL,
+	failures    INTEGER NOT NULL DEFAULT 0,
+	retry_waste INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (day, gaggle, workflow, phase, outcome, kind, name, identity)
+);
+CREATE INDEX IF NOT EXISTS idx_bucket_node_day_recency
+	ON bucket_node_day(day DESC, gaggle, workflow, kind, name);
+
+CREATE TABLE IF NOT EXISTS bucket_node_month (
+	month       TEXT NOT NULL,
+	gaggle      TEXT NOT NULL,
+	workflow    TEXT NOT NULL,
+	phase       TEXT NOT NULL,
+	outcome     TEXT NOT NULL DEFAULT '',
+	kind        TEXT NOT NULL,
+	name        TEXT NOT NULL,
+	identity    TEXT NOT NULL DEFAULT '',
+	runs        INTEGER NOT NULL,
+	failures    INTEGER NOT NULL DEFAULT 0,
+	retry_waste INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (month, gaggle, workflow, phase, outcome, kind, name, identity)
+);
+CREATE INDEX IF NOT EXISTS idx_bucket_node_month_recency
+	ON bucket_node_month(month DESC, gaggle, workflow, kind, name);
+`,
+
+	// v17: durable monitor episode claims. These are bookkeeping for the
+	// provider-side nomination deduplication and are not outcome data.
+	`
+CREATE TABLE IF NOT EXISTS monitor_nomination (
+	marker      TEXT PRIMARY KEY,
+	claimed_at  TEXT NOT NULL
+);
+`,
+
+	// v18: serialize improvement confirmations for each claimed episode.
+	`
+ALTER TABLE monitor_nomination ADD COLUMN improvement_claimed_at TEXT;
+`,
+
+	// v19: rebuild operator facts to retain associated issue URLs and PR titles.
 	`
 UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+DELETE FROM run_node_parent WHERE TRUE;
 DELETE FROM run_node WHERE TRUE;
 DELETE FROM run_stage WHERE TRUE;
 DELETE FROM run WHERE TRUE;

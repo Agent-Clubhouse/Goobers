@@ -6,13 +6,19 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/readprobe"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/providers"
 )
@@ -573,6 +579,79 @@ func TestSchedulerStatusProjectsLatestProviderQuotaPause(t *testing.T) {
 	}
 }
 
+func TestSchedulerStatusProjectsRefillOccupancyAndBlockingCondition(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{
+		Type:     journal.EventTickSkipped,
+		Gaggle:   "goobers",
+		Workflow: "implementation",
+		Reason:   "refill blocked: " + localscheduler.ReasonBudget,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	definitions := testDefinitions()
+	definitions.Workflows = []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:    "goobers",
+			Triggers:  []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:     "stage",
+			Tasks:     []apiv1.Task{{Name: "stage", Type: apiv1.TaskDeterministic, Goal: "noop", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}},
+			Readiness: apiv1.ReadinessConditions{DesiredConcurrentRuns: 2, MaxConcurrentRuns: 4},
+		},
+	}}
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Definitions: definitions,
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.RefillOccupancy) != 1 {
+		t.Fatalf("RefillOccupancy = %+v", status.RefillOccupancy)
+	}
+	occupancy := status.RefillOccupancy[0]
+	if occupancy.Gaggle != "goobers" || occupancy.Workflow != "implementation" ||
+		occupancy.DesiredRuns != 2 || occupancy.ActiveRuns != 0 ||
+		!occupancy.AdmissionBlocked || occupancy.BlockingCondition != localscheduler.ReasonBudget {
+		t.Fatalf("occupancy = %+v", occupancy)
+	}
+
+	log, _, err = journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(journal.Event{
+		Type:     journal.EventTriggerFired,
+		Gaggle:   "goobers",
+		Workflow: "implementation",
+		Reason:   "refill occupancy",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+	status, err = service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.RefillOccupancy[0].AdmissionBlocked {
+		t.Fatalf("successful refill attempt retained stale blocker: %+v", status.RefillOccupancy[0])
+	}
+}
+
 func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T) {
 	layout := instance.NewLayout(t.TempDir())
 	machine := fixtureMachine(t)
@@ -697,6 +776,7 @@ func TestSchedulerStatusProjectsLatestDaemonRestartAndRecoveredRuns(t *testing.T
 			t.Fatal(err)
 		}
 	}
+
 	if err := genuine.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -780,6 +860,143 @@ func TestListStatusRunsSkipsMalformedHistoricalRuns(t *testing.T) {
 	}
 	if len(runs) != 1 || runs[0].ID != "healthy-run" {
 		t.Fatalf("ListStatusRuns = %+v, want only healthy-run", runs)
+	}
+}
+
+func TestListStatusRunsTreatsExecutedTerminalGateAsTerminal(t *testing.T) {
+	service, layout, machine := fixtureService(t)
+	startedAt := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	run, clock := createFixtureRun(
+		t,
+		layout,
+		machine,
+		"terminal-gate-run",
+		"implementation",
+		"goobers",
+		startedAt,
+		journal.Trigger{Kind: journal.TriggerManual},
+		false,
+	)
+	clock.now = startedAt.Add(time.Minute)
+	if err := run.Append(journal.Event{Type: journal.EventGateStarted, Gate: "merge-gate"}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = startedAt.Add(2 * time.Minute)
+	if err := run.Append(journal.Event{
+		Type: journal.EventGateEvaluated, Gate: "merge-gate", Verdict: "fail", Target: journal.TargetAbort,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = startedAt.Add(3 * time.Minute)
+	if err := run.Append(journal.Event{Type: journal.EventRefTouched}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	runs, err := service.ListStatusRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("ListStatusRuns returned %d runs, want 1", len(runs))
+	}
+	got := runs[0]
+	if got.Phase != journal.PhaseAborted || !got.Terminal || got.FinishedAt == nil {
+		t.Fatalf("summary = phase %q terminal %v finished %v, want aborted terminal",
+			got.Phase, got.Terminal, got.FinishedAt)
+	}
+	wantFinished := startedAt.Add(2 * time.Minute)
+	if !got.FinishedAt.Equal(wantFinished) {
+		t.Fatalf("finished_at = %v, want gate time %v", got.FinishedAt, wantFinished)
+	}
+}
+
+func TestSchedulerStatusRetentionDefaultsAndOptOut(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	cfgDefault := &instance.Config{}
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Config:      cfgDefault,
+		Definitions: testDefinitions(),
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Retention == nil || status.Retention.Window != instance.DefaultProjectionFullFidelityDays {
+		t.Fatalf("default retention status = %+v, want window %d", status.Retention, instance.DefaultProjectionFullFidelityDays)
+	}
+
+	root := t.TempDir()
+	path := filepath.Join(root, instance.ConfigFileName)
+	if err := os.WriteFile(path, []byte(`
+apiVersion: goobers.dev/v1alpha1
+kind: Instance
+repos:
+  - provider: github
+    owner: acme
+    name: web
+    token:
+      env: GITHUB_TOKEN
+retention:
+  projectionFullFidelityDays: 0
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgOptOut, err := instance.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	optOutService, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Config:      cfgOptOut,
+		Definitions: testDefinitions(),
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err = optOutService.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Retention == nil || status.Retention.Window != 0 {
+		t.Fatalf("opt-out retention status = %+v, want window 0", status.Retention)
+	}
+}
+
+func TestSchedulerStatusProjectsRetentionLoopDiagnostics(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	lastPassAt := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	service, err := NewLocal(LocalSources{
+		Layout:      layout,
+		Config:      &instance.Config{},
+		Definitions: testDefinitions(),
+		RetentionStats: func() readmodel.RetentionStats {
+			return readmodel.RetentionStats{
+				Passes:     7,
+				AgedOut:    3,
+				LastPassAt: lastPassAt,
+			}
+		},
+	}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Retention == nil ||
+		status.Retention.Passes != 7 ||
+		status.Retention.AgedOut != 3 ||
+		status.Retention.LastPassAt == nil ||
+		!status.Retention.LastPassAt.Equal(lastPassAt) {
+		t.Fatalf("retention diagnostics = %+v, want passes/agedOut/lastPassAt projected", status.Retention)
 	}
 }
 
@@ -1070,5 +1287,145 @@ func TestSchedulerStatusPropagatesReadAndContextFailures(t *testing.T) {
 	cancel()
 	if _, err := service.SchedulerStatus(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("SchedulerStatus canceled error = %v, want context.Canceled", err)
+	}
+}
+
+// TestSchedulerStatusFoldsIncrementallyWithoutDrift pins the incremental fold
+// against the answer a service that read the whole journal would give: the
+// bounded read is only safe if a long-lived service and a fresh one project the
+// same scheduler state (#3050).
+func TestSchedulerStatusFoldsIncrementallyWithoutDrift(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	definitions := testDefinitions()
+	definitions.Workflows = []apiv1.Workflow{{
+		ObjectMeta: metav1.ObjectMeta{Name: "implementation"},
+		Spec: apiv1.WorkflowSpec{
+			Gaggle:    "goobers",
+			Triggers:  []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Start:     "stage",
+			Tasks:     []apiv1.Task{{Name: "stage", Type: apiv1.TaskDeterministic, Goal: "noop", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}},
+			Readiness: apiv1.ReadinessConditions{DesiredConcurrentRuns: 2, MaxConcurrentRuns: 4},
+		},
+	}}
+	appendSchedulerEvents(t, layout,
+		journal.Event{Type: journal.EventDaemonStarted},
+		journal.Event{Type: journal.EventWorkflowRefused, Gaggle: "goobers", Workflow: "retired", Reason: "no runner"},
+		journal.Event{
+			Type:   journal.EventTickSkipped,
+			Reason: localscheduler.ReasonProviderQuota + ": resumes at " + time.Date(2026, 8, 20, 4, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		},
+	)
+	service, err := NewLocal(LocalSources{Layout: layout, Definitions: definitions}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SchedulerStatus(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	appendSchedulerEvents(t, layout,
+		journal.Event{Type: journal.EventConfigReloaded},
+		journal.Event{Type: journal.EventWorkflowRefused, Gaggle: "goobers", Workflow: "implementation", Reason: "no runner matches"},
+		journal.Event{Type: journal.EventDaemonDirtyRestart, Reason: "process exited unexpectedly"},
+		journal.Event{Type: journal.EventDaemonStarted},
+		journal.Event{Type: journal.EventPollShed, Gaggle: "goobers", Workflow: "implementation"},
+	)
+	incremental, err := service.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replayed, err := NewLocal(LocalSources{Layout: layout, Definitions: definitions}, func() bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := replayed.SchedulerStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(incremental, full) {
+		t.Fatalf("incremental fold = %+v, full replay = %+v", incremental, full)
+	}
+	if len(incremental.RefusedWorkflows) != 0 {
+		t.Fatalf("RefusedWorkflows = %+v, want the restart to have cleared them", incremental.RefusedWorkflows)
+	}
+	if incremental.DaemonRestart == nil || incremental.DaemonRestart.Reason != "process exited unexpectedly" {
+		t.Fatalf("DaemonRestart = %+v", incremental.DaemonRestart)
+	}
+	if len(incremental.RefillOccupancy) != 1 || !incremental.RefillOccupancy[0].AdmissionBlocked ||
+		incremental.RefillOccupancy[0].BlockingCondition != localscheduler.ReasonProviderQuota {
+		t.Fatalf("RefillOccupancy = %+v", incremental.RefillOccupancy)
+	}
+}
+
+// TestStatusPathsCostDoesNotGrowWithInstanceJournalHistory is the work fence:
+// a repeat scheduler-status or time-to-first-PR request must read a bounded
+// journal tail, so ten times the recorded history costs the same request bytes
+// rather than ten times as many (#3050).
+func TestStatusPathsCostDoesNotGrowWithInstanceJournalHistory(t *testing.T) {
+	padding := strings.Repeat("y", 4<<10)
+	measure := func(t *testing.T, count int) uint64 {
+		t.Helper()
+		layout := instance.NewLayout(t.TempDir())
+		history := make([]journal.Event, 0, count+1)
+		history = append(history, journal.Event{Type: journal.EventInitCompleted})
+		for range count {
+			history = append(history, journal.Event{Type: journal.EventTickSkipped, Reason: padding})
+		}
+		appendSchedulerEvents(t, layout, history...)
+		service, err := NewLocal(LocalSources{
+			Layout:      layout,
+			Definitions: testDefinitions(),
+		}, func() bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.SchedulerStatus(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.TimeToFirstPR(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+
+		readprobe.Enable()
+		t.Cleanup(readprobe.Disable)
+		before := readprobe.Take()
+		if _, err := service.SchedulerStatus(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.TimeToFirstPR(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		work := readprobe.Take().Sub(before)
+		readprobe.Disable()
+		if work.InstanceTailReads != 2 {
+			t.Fatalf("InstanceTailReads = %d, want one bounded read per request", work.InstanceTailReads)
+		}
+		return work.InstanceTailBytes
+	}
+
+	short := measure(t, 64)
+	long := measure(t, 640)
+	if short != long {
+		t.Fatalf(
+			"repeat request read %d journal bytes against a short history and %d against a ten-times-longer one",
+			short, long,
+		)
+	}
+}
+
+func appendSchedulerEvents(t *testing.T, layout instance.Layout, events ...journal.Event) {
+	t.Helper()
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if err := log.Append(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

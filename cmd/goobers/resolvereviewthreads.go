@@ -46,15 +46,10 @@ func runResolveReviewThreads(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 	runID, _, err := providerRunContext()
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -186,11 +181,7 @@ func readReviewThreadResolutionInputs(root, runID string) (apiv1.RemediationBrie
 	if err != nil {
 		return apiv1.RemediationBrief{}, "", "", false, err
 	}
-	runDir, err := runDirFor(layoutFor(root), runID)
-	if err != nil {
-		return apiv1.RemediationBrief{}, "", "", false, err
-	}
-	rd, err := journal.OpenRead(runDir)
+	rd, err := stageRunJournal(root, runID)
 	if err != nil {
 		return apiv1.RemediationBrief{}, "", "", false, err
 	}

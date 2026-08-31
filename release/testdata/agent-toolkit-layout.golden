@@ -131,6 +131,7 @@ payload/.goobers/agent-toolkit/skills/goobers-dsl-author/references/dsl-referenc
 payload/.goobers/agent-toolkit/skills/goobers-dsl-author/references/repository-authoring.md
 payload/.goobers/agent-toolkit/skills/goobers-dsl-author/references/terminology.md
 payload/.goobers/agent-toolkit/skills/goobers-environment-resolver/SKILL.md
+payload/.goobers/agent-toolkit/skills/goobers-getting-started/SKILL.md
 payload/.goobers/agent-toolkit/skills/goobers-run-operator/SKILL.md
 payload/.goobers/agent-toolkit/skills/goobers-run-operator/references/question-corpus.json
 payload/.goobers/agent-toolkit/skills/goobers-workflow-upgrade/SKILL.md

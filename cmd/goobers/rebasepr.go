@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,17 +9,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
-
-	"sigs.k8s.io/yaml"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/mergeresolve"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -72,15 +68,10 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	resultFile := providerInput("resultFile", "rebase-result.json")
 	selectedNumber := providerInput("selectedNumber", "")
@@ -797,30 +788,33 @@ func rebaseFetchHeadArgs(dir string) []string {
 	return []string{"rebase", "FETCH_HEAD"}
 }
 
-type rebaseConflictStatus uint8
+// The conflict vocabulary and the adjacent-line resolution rules are shared
+// with the implementation workflow's pre-CI base synchronization
+// (internal/worktree's syncBase merge, #3096) — one implementation of what is
+// provably safe to resolve mechanically, not two that can drift apart.
+type rebaseConflictStatus = mergeresolve.Status
 
 const (
-	rebaseConflictAbsent rebaseConflictStatus = iota
-	rebaseConflictUnsafe
-	rebaseConflictResolved
+	rebaseConflictAbsent   = mergeresolve.StatusAbsent
+	rebaseConflictUnsafe   = mergeresolve.StatusUnsafe
+	rebaseConflictResolved = mergeresolve.StatusResolved
 )
 
-type rebaseConflictStage struct {
-	mode string
-	oid  string
-}
-
-type rebaseConflictFile struct {
-	path   string
-	stages map[int]rebaseConflictStage
-}
-
-type rebaseResolution struct {
-	path string
-	data []byte
-}
-
 const portalDistPath = "cmd/goobers/portal-dist"
+
+// execGit adapts this command's plain exec-based git invocation to the shared
+// resolver's runner seam.
+func execGit(dir string) mergeresolve.Git {
+	return func(args ...string) ([]byte, error) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		if err != nil {
+			return nil, gitOutputError("git "+strings.Join(args, " "), err)
+		}
+		return out, nil
+	}
+}
 
 func resolvePortalDistConflicts(dir string) (rebaseConflictStatus, error) {
 	files, err := unmergedConflictFiles(dir)
@@ -831,7 +825,7 @@ func resolvePortalDistConflicts(dir string) (rebaseConflictStatus, error) {
 		return rebaseConflictAbsent, nil
 	}
 	for _, file := range files {
-		if !strings.HasPrefix(file.path, portalDistPath+"/") {
+		if !strings.HasPrefix(file.Path, portalDistPath+"/") {
 			return rebaseConflictAbsent, nil
 		}
 	}
@@ -856,86 +850,8 @@ func resolvePortalDistConflicts(dir string) (rebaseConflictStatus, error) {
 	return rebaseConflictResolved, nil
 }
 
-// resolveAdjacentLineConflicts inspects Git's three index stages rather than
-// conflict-marker text so repository merge-marker configuration cannot widen
-// what is considered safe.
 func resolveAdjacentLineConflicts(dir string) (rebaseConflictStatus, error) {
-	files, err := unmergedConflictFiles(dir)
-	if err != nil {
-		return rebaseConflictAbsent, err
-	}
-	if len(files) == 0 {
-		return rebaseConflictAbsent, nil
-	}
-
-	resolutions := make([]rebaseResolution, 0, len(files))
-	for _, file := range files {
-		ancestor, hasAncestor := file.stages[1]
-		upstream, hasUpstream := file.stages[2]
-		incoming, hasIncoming := file.stages[3]
-		if !hasAncestor || !hasUpstream || !hasIncoming ||
-			ancestor.mode != upstream.mode || ancestor.mode != incoming.mode ||
-			(ancestor.mode != "100644" && ancestor.mode != "100755") {
-			return rebaseConflictUnsafe, nil
-		}
-		standardText, err := hasStandardTextMergeAttributes(dir, file.path)
-		if err != nil {
-			return rebaseConflictUnsafe, fmt.Errorf("check merge attributes for %q: %w", file.path, err)
-		}
-		if !standardText {
-			return rebaseConflictUnsafe, nil
-		}
-
-		ancestorData, err := readGitBlob(dir, ancestor.oid)
-		if err != nil {
-			return rebaseConflictUnsafe, fmt.Errorf("read ancestor for %q: %w", file.path, err)
-		}
-		upstreamData, err := readGitBlob(dir, upstream.oid)
-		if err != nil {
-			return rebaseConflictUnsafe, fmt.Errorf("read base branch version for %q: %w", file.path, err)
-		}
-		incomingData, err := readGitBlob(dir, incoming.oid)
-		if err != nil {
-			return rebaseConflictUnsafe, fmt.Errorf("read PR version for %q: %w", file.path, err)
-		}
-		merged, ok := mergeAdjacentLineInsertions(file.path, ancestorData, upstreamData, incomingData)
-		if !ok {
-			return rebaseConflictUnsafe, nil
-		}
-		resolutions = append(resolutions, rebaseResolution{path: file.path, data: merged})
-	}
-
-	for _, resolution := range resolutions {
-		path, err := worktreeConflictPath(dir, resolution.path)
-		if err != nil {
-			return rebaseConflictUnsafe, err
-		}
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
-		if err != nil {
-			return rebaseConflictUnsafe, fmt.Errorf("open conflict path %q: %w", resolution.path, err)
-		}
-		if _, err := file.Write(resolution.data); err != nil {
-			_ = file.Close()
-			return rebaseConflictUnsafe, fmt.Errorf("write conflict path %q: %w", resolution.path, err)
-		}
-		if err := file.Close(); err != nil {
-			return rebaseConflictUnsafe, fmt.Errorf("close conflict path %q: %w", resolution.path, err)
-		}
-
-		add := exec.Command("git", "--literal-pathspecs", "add", "--", resolution.path)
-		add.Dir = dir
-		if addOut, err := add.CombinedOutput(); err != nil {
-			return rebaseConflictUnsafe, fmt.Errorf("stage resolved path %q: %w: %s", resolution.path, err, strings.TrimSpace(string(addOut)))
-		}
-	}
-	remaining, err := unmergedConflictFiles(dir)
-	if err != nil {
-		return rebaseConflictUnsafe, err
-	}
-	if len(remaining) != 0 {
-		return rebaseConflictUnsafe, fmt.Errorf("stage resolved conflicts: %d paths remain unmerged", len(remaining))
-	}
-	return rebaseConflictResolved, nil
+	return mergeresolve.ResolveAdjacentLineConflicts(dir, execGit(dir))
 }
 
 func unmergedConflictStatus(dir string) (rebaseConflictStatus, error) {
@@ -949,319 +865,8 @@ func unmergedConflictStatus(dir string) (rebaseConflictStatus, error) {
 	return rebaseConflictUnsafe, nil
 }
 
-func unmergedConflictFiles(dir string) ([]rebaseConflictFile, error) {
-	cmd := exec.Command("git", "ls-files", "--unmerged", "-z")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("list unmerged paths: %w", err)
-	}
-
-	var files []rebaseConflictFile
-	byPath := make(map[string]int)
-	for _, record := range bytes.Split(out, []byte{0}) {
-		if len(record) == 0 {
-			continue
-		}
-		header, pathBytes, ok := bytes.Cut(record, []byte{'\t'})
-		if !ok {
-			return nil, fmt.Errorf("parse unmerged index entry %q", record)
-		}
-		fields := strings.Fields(string(header))
-		if len(fields) != 3 {
-			return nil, fmt.Errorf("parse unmerged index header %q", header)
-		}
-		stage, err := strconv.Atoi(fields[2])
-		if err != nil || stage < 1 || stage > 3 {
-			return nil, fmt.Errorf("parse unmerged index stage %q", fields[2])
-		}
-		path := string(pathBytes)
-		index, ok := byPath[path]
-		if !ok {
-			index = len(files)
-			byPath[path] = index
-			files = append(files, rebaseConflictFile{path: path, stages: make(map[int]rebaseConflictStage, 3)})
-		}
-		if _, duplicate := files[index].stages[stage]; duplicate {
-			return nil, fmt.Errorf("duplicate unmerged index stage %d for %q", stage, path)
-		}
-		files[index].stages[stage] = rebaseConflictStage{mode: fields[0], oid: fields[1]}
-	}
-	return files, nil
-}
-
-func hasStandardTextMergeAttributes(dir, path string) (bool, error) {
-	cmd := exec.Command(
-		"git", "check-attr", "-z",
-		"binary", "text", "diff", "merge",
-		"filter", "ident", "working-tree-encoding",
-		"--", path,
-	)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return false, err
-	}
-	parts := bytes.Split(out, []byte{0})
-	if len(parts) == 0 || len(parts[len(parts)-1]) != 0 {
-		return false, fmt.Errorf("malformed git check-attr output")
-	}
-	parts = parts[:len(parts)-1]
-	if len(parts)%3 != 0 {
-		return false, fmt.Errorf("malformed git check-attr output")
-	}
-
-	values := make(map[string]string, 4)
-	for i := 0; i < len(parts); i += 3 {
-		if string(parts[i]) != path {
-			return false, fmt.Errorf("unexpected path %q in git check-attr output", parts[i])
-		}
-		values[string(parts[i+1])] = string(parts[i+2])
-	}
-	if values["binary"] != "unspecified" && values["binary"] != "unset" {
-		return false, nil
-	}
-	switch values["text"] {
-	case "unspecified", "set", "auto":
-	default:
-		return false, nil
-	}
-	switch values["diff"] {
-	case "unspecified", "set":
-	default:
-		return false, nil
-	}
-	switch values["merge"] {
-	case "unspecified", "set", "text":
-	default:
-		return false, nil
-	}
-	for _, attribute := range []string{"filter", "ident", "working-tree-encoding"} {
-		if values[attribute] != "unspecified" && values[attribute] != "unset" {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-func readGitBlob(dir, oid string) ([]byte, error) {
-	cmd := exec.Command("git", "cat-file", "blob", oid)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func worktreeConflictPath(dir, name string) (string, error) {
-	clean := filepath.Clean(filepath.FromSlash(name))
-	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("unsafe conflict path %q", name)
-	}
-	return filepath.Join(dir, clean), nil
-}
-
-func mergeAdjacentLineInsertions(path string, ancestor, upstream, incoming []byte) ([]byte, bool) {
-	if len(ancestor) == 0 ||
-		bytes.IndexByte(ancestor, 0) >= 0 ||
-		bytes.IndexByte(upstream, 0) >= 0 ||
-		bytes.IndexByte(incoming, 0) >= 0 ||
-		!utf8.Valid(ancestor) ||
-		!utf8.Valid(upstream) ||
-		!utf8.Valid(incoming) {
-		return nil, false
-	}
-
-	ancestorLines := splitFileLines(ancestor)
-	upstreamLines := splitFileLines(upstream)
-	incomingLines := splitFileLines(incoming)
-	upstreamAt, upstreamLine, ok := singleInsertedLine(ancestorLines, upstreamLines)
-	if !ok {
-		return nil, false
-	}
-	incomingAt, incomingLine, ok := singleInsertedLine(ancestorLines, incomingLines)
-	if !ok || upstreamAt != incomingAt ||
-		!strings.HasSuffix(upstreamLine, "\n") ||
-		!strings.HasSuffix(incomingLine, "\n") ||
-		strings.TrimSpace(upstreamLine) == "" ||
-		strings.TrimSpace(upstreamLine) == strings.TrimSpace(incomingLine) ||
-		leadingWhitespace(upstreamLine) != leadingWhitespace(incomingLine) ||
-		!hasVerifiedMarkerListSyntax(path, ancestor, upstream, incoming, upstreamLine) ||
-		!sameAdjacentList(ancestorLines, upstreamAt, upstreamLine, incomingLine) {
-		return nil, false
-	}
-
-	merged := make([]string, 0, len(ancestorLines)+2)
-	merged = append(merged, ancestorLines[:upstreamAt]...)
-	merged = append(merged, upstreamLine, incomingLine)
-	merged = append(merged, ancestorLines[upstreamAt:]...)
-	return []byte(strings.Join(merged, "")), true
-}
-
-func hasVerifiedMarkerListSyntax(path string, ancestor, upstream, incoming []byte, insertedLine string) bool {
-	kind := listEntryKind(insertedLine)
-	if kind == "" {
-		return false
-	}
-	if strings.HasPrefix(kind, "quoted ") {
-		return true
-	}
-	if kind != "- " {
-		return false
-	}
-	ext := strings.ToLower(filepath.Ext(path))
-	if ext != ".yaml" && ext != ".yml" {
-		return false
-	}
-	for _, data := range [][]byte{ancestor, upstream, incoming} {
-		var document any
-		if err := yaml.Unmarshal(data, &document); err != nil {
-			return false
-		}
-	}
-	return true
-}
-
-func splitFileLines(data []byte) []string {
-	lines := strings.SplitAfter(string(data), "\n")
-	if lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return lines
-}
-
-func singleInsertedLine(ancestor, side []string) (int, string, bool) {
-	if len(side) != len(ancestor)+1 {
-		return 0, "", false
-	}
-
-	prefix := 0
-	for prefix < len(ancestor) && ancestor[prefix] == side[prefix] {
-		prefix++
-	}
-	suffix := 0
-	for suffix < len(ancestor) &&
-		ancestor[len(ancestor)-1-suffix] == side[len(side)-1-suffix] {
-		suffix++
-	}
-	insertAt := len(ancestor) - suffix
-	if insertAt != prefix {
-		return 0, "", false
-	}
-	return insertAt, side[insertAt], true
-}
-
-func leadingWhitespace(line string) string {
-	return line[:len(line)-len(strings.TrimLeft(line, " \t"))]
-}
-
-func sameAdjacentList(ancestor []string, insertAt int, upstream, incoming string) bool {
-	kind := listEntryKind(upstream)
-	if kind == "" || listEntryKind(incoming) != kind {
-		return false
-	}
-	indent := leadingWhitespace(upstream)
-	if strings.HasPrefix(kind, "quoted ") {
-		if !hasQuotedListContainer(ancestor, insertAt, indent) {
-			return false
-		}
-	} else if !hasMarkerListContainer(ancestor, insertAt, indent) {
-		return false
-	}
-	for _, neighbor := range []int{insertAt - 1, insertAt} {
-		if neighbor >= 0 && neighbor < len(ancestor) &&
-			leadingWhitespace(ancestor[neighbor]) == indent &&
-			listEntryKind(ancestor[neighbor]) == kind {
-			return true
-		}
-	}
-	return false
-}
-
-func hasMarkerListContainer(ancestor []string, insertAt int, entryIndent string) bool {
-	if entryIndent == "" {
-		return false
-	}
-	for i := insertAt - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(ancestor[i])
-		if trimmed == "" {
-			continue
-		}
-		indent := leadingWhitespace(ancestor[i])
-		if len(indent) >= len(entryIndent) {
-			continue
-		}
-		return strings.HasPrefix(entryIndent, indent) && strings.HasSuffix(trimmed, ":")
-	}
-	return false
-}
-
-func hasQuotedListContainer(ancestor []string, insertAt int, entryIndent string) bool {
-	openerIndent := ""
-	foundOpener := false
-	for i := insertAt - 1; i >= 0; i-- {
-		indent := leadingWhitespace(ancestor[i])
-		if len(indent) >= len(entryIndent) || strings.TrimSpace(ancestor[i]) == "" {
-			continue
-		}
-		if !strings.HasSuffix(strings.TrimSpace(ancestor[i]), "[") {
-			return false
-		}
-		openerIndent = indent
-		foundOpener = true
-		break
-	}
-	if !foundOpener {
-		return false
-	}
-
-	for i := insertAt; i < len(ancestor); i++ {
-		indent := leadingWhitespace(ancestor[i])
-		if len(indent) >= len(entryIndent) || strings.TrimSpace(ancestor[i]) == "" {
-			continue
-		}
-		trimmed := strings.TrimSpace(ancestor[i])
-		return indent == openerIndent && (trimmed == "]" || trimmed == "],")
-	}
-	return false
-}
-
-func listEntryKind(line string) string {
-	line = strings.TrimSpace(line)
-	for _, marker := range []string{"- ", "* ", "+ "} {
-		if strings.HasPrefix(line, marker) {
-			return marker
-		}
-	}
-	for i := 0; i < len(line); i++ {
-		if line[i] < '0' || line[i] > '9' {
-			if i > 0 && len(line) > i+1 &&
-				(line[i] == '.' || line[i] == ')') && line[i+1] == ' ' {
-				return "ordered"
-			}
-			break
-		}
-	}
-	if len(line) >= 3 && line[len(line)-1] == ',' {
-		quote := line[0]
-		switch quote {
-		case '"', '\'', '`':
-			for i := 1; i < len(line); i++ {
-				if quote != '`' && line[i] == '\\' {
-					i++
-					continue
-				}
-				if line[i] == quote {
-					if i == len(line)-2 {
-						return "quoted " + string(quote)
-					}
-					return ""
-				}
-			}
-		}
-	}
-	return ""
+func unmergedConflictFiles(dir string) ([]mergeresolve.File, error) {
+	return mergeresolve.UnmergedFiles(execGit(dir))
 }
 
 func abortRebase(dir string) error {

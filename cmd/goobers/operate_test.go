@@ -117,6 +117,7 @@ func TestRunToleratesFailedNotifyStageAndTracesIt(t *testing.T) {
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	workflow := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:

@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -71,6 +72,19 @@ func detectCICommandDefault(dir string) (stack string, command []string, require
 					return signal.stack, signal.command, signal.capability
 				}
 			}
+		}
+	}
+	for _, guidance := range []string{"AGENTS.md", "README.md", "CONTRIBUTING.md"} {
+		data, err := os.ReadFile(filepath.Join(dir, guidance))
+		if err != nil {
+			continue
+		}
+		text := strings.ToLower(string(data))
+		switch {
+		case strings.Contains(text, "dev bi ut"):
+			return ".NET / DevTool", []string{"dev", "bi", "ut"}, "devtool"
+		case strings.Contains(text, "dev buildincremental"):
+			return ".NET / DevTool", []string{"dev", "buildincremental"}, "devtool"
 		}
 	}
 	return "", nil, ""

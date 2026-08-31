@@ -93,6 +93,12 @@ spec:
                       description: |-
                         ConnectionRef names the connection (and thus credentials) used to reach
                         this repo. It resolves to a Connection declared in the Manifest.
+
+                        It is not a runtime credential selector (#3296): the local runner
+                        resolves each access's credential from instance.yaml repos[] by
+                        repository identity, never from the named connection, so the connection
+                        named here has no effect on which token backs the access — validate
+                        reports REF012 wherever it is declared.
                       type: string
                     name:
                       description: Name of the repository.
@@ -131,8 +137,14 @@ spec:
                       omitted for github/ado.
                     type: string
                   connectionRef:
-                    description: ConnectionRef names the connection (credentials)
-                      used to reach the backlog.
+                    description: |-
+                      ConnectionRef names the connection (credentials) used to reach the backlog.
+
+                      It is not a runtime credential selector (#3296): a gaggle's backlog
+                      capabilities are backed by the same repo-identity-selected credential as
+                      the rest of its stages, so naming a backlog-specific connection here does
+                      not route the backlog through a different credential. validate reports
+                      REF012 wherever it is declared.
                     type: string
                   fieldPredicate:
                     description: |-
@@ -263,6 +275,12 @@ spec:
                     description: |-
                       ConnectionRef names the connection (and thus credentials) used to reach
                       this repo. It resolves to a Connection declared in the Manifest.
+
+                      It is not a runtime credential selector (#3296): the local runner
+                      resolves each access's credential from instance.yaml repos[] by
+                      repository identity, never from the named connection, so the connection
+                      named here has no effect on which token backs the access — validate
+                      reports REF012 wherever it is declared.
                     type: string
                   name:
                     description: Name of the repository.
@@ -344,6 +362,44 @@ spec:
                       silent before the watchdog escalates it. It uses Go duration syntax.
                     minLength: 1
                     type: string
+                type: object
+              runsOn:
+                description: |-
+                  RunsOn is the gaggle-level placement floor (DSL 3.0, dsl-3.0.md §2): OS,
+                  toolchain capability tags, and required runner restrictions that merge
+                  into every stage of every workflow in this gaggle — capabilities and
+                  restrictions union with the stage's own; an OS conflict between gaggle
+                  and stage is a compile error, never a silent override. No quantities at
+                  gaggle level. It is the 3.0 successor of RequiredCapabilities above and
+                  activates only for gaggles whose workflows are pinned to DSL 3.0; the
+                  3.0 interpreter refuses a gaggle that still declares
+                  RequiredCapabilities, and earlier interpreters refuse this field.
+                properties:
+                  capabilities:
+                    description: |-
+                      Capabilities union into every stage's runsOn.capabilities. Same open
+                      tag grammar (internal/runnercap); os=* tokens are rejected (CAP004).
+                    items:
+                      type: string
+                    maxItems: 32
+                    type: array
+                  os:
+                    description: |-
+                      OS every stage of this gaggle requires. Enum, same vocabulary as a
+                      stage's runsOn.os.
+                    enum:
+                    - linux
+                    - windows
+                    - macOS
+                    type: string
+                  restrictions:
+                    description: |-
+                      Restrictions union into every stage's runsOn.restrictions. Closed v1
+                      effect list; unknown tokens are rejected with a suggestion (CAP005).
+                    items:
+                      type: string
+                    maxItems: 8
+                    type: array
                 type: object
               sandbox:
                 description: |-
@@ -434,6 +490,12 @@ spec:
                           description: |-
                             ConnectionRef names the connection (and thus credentials) used to reach
                             this repo. It resolves to a Connection declared in the Manifest.
+
+                            It is not a runtime credential selector (#3296): the local runner
+                            resolves each access's credential from instance.yaml repos[] by
+                            repository identity, never from the named connection, so the connection
+                            named here has no effect on which token backs the access — validate
+                            reports REF012 wherever it is declared.
                           type: string
                         name:
                           description: Name of the repository.

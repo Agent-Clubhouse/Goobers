@@ -187,10 +187,8 @@ func boundContract(contract *Contract) {
 		}
 		switch {
 		case len(contract.Events) > 1:
+			contract.TruncatedBefore = contract.Events[1].Seq
 			contract.Events = append(contract.Events[:1], contract.Events[2:]...)
-			if len(contract.Events) > 1 {
-				contract.TruncatedBefore = contract.Events[1].Seq
-			}
 		case contract.Graph != nil:
 			contract.Graph = nil
 		case len(contract.Events) == 1:

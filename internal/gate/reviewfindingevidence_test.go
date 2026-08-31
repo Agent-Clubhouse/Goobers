@@ -58,6 +58,9 @@ func TestEvaluatorDisprovesTransportEscapedRawStringFinding(t *testing.T) {
 	if result.Verdict == nil || result.Verdict.Decision != apiv1.VerdictPass || len(result.Verdict.Findings) != 0 {
 		t.Fatalf("normalized verdict = %+v, want pass with the false finding removed", result.Verdict)
 	}
+	if len(result.DisprovenFindings) != 1 || result.DisprovenFindings[0].ID == "" {
+		t.Fatalf("disproven finding contract = %+v", result.DisprovenFindings)
+	}
 	if !strings.Contains(result.Verdict.Rationale, "encoding/json.Valid") {
 		t.Fatalf("rationale = %q, want deterministic parse evidence", result.Verdict.Rationale)
 	}
@@ -65,6 +68,10 @@ func TestEvaluatorDisprovesTransportEscapedRawStringFinding(t *testing.T) {
 	events := readGateEvents(t, run)
 	if len(events) != 1 || events[0].Runner["reason"] != ReasonFindingDisproven {
 		t.Fatalf("gate events = %+v, want journaled disproval reason", events)
+	}
+	records, ok := events[0].Runner["disprovenLearningFindings"].([]any)
+	if !ok || len(records) != 1 {
+		t.Fatalf("disproven learning records = %#v", events[0].Runner["disprovenLearningFindings"])
 	}
 }
 
@@ -176,7 +183,7 @@ func TestReviewerFindingDisprovalRequiresUnambiguousExactSource(t *testing.T) {
 			normalized, allDisproven := disproveReviewerFindings(
 				verdict,
 				[]apiv1.ContextPointer{pointer},
-				run.Dir(),
+				ArtifactBytesFromRoot(run.Dir()),
 				"review",
 			)
 			if allDisproven || normalized.Decision != apiv1.VerdictNeedsChanges || len(normalized.Findings) != 1 {
@@ -208,7 +215,7 @@ func TestReviewerFindingDisprovalPreservesSemanticJSONFinding(t *testing.T) {
 	normalized, allDisproven := disproveReviewerFindings(
 		verdict,
 		[]apiv1.ContextPointer{pointer},
-		run.Dir(),
+		ArtifactBytesFromRoot(run.Dir()),
 		"review",
 	)
 	if allDisproven || normalized.Decision != apiv1.VerdictNeedsChanges || len(normalized.Findings) != 1 {
@@ -247,7 +254,7 @@ func TestReviewerFindingDisprovalIgnoresNonAuthoritativeDiff(t *testing.T) {
 	normalized, allDisproven := disproveReviewerFindings(
 		verdict,
 		[]apiv1.ContextPointer{authoritative, other},
-		run.Dir(),
+		ArtifactBytesFromRoot(run.Dir()),
 		"review",
 	)
 	if allDisproven || normalized.Decision != apiv1.VerdictNeedsChanges || len(normalized.Findings) != 1 {

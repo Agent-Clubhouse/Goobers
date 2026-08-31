@@ -2,16 +2,186 @@
   "schemaVersion": "goobers.dev/features/v1",
   "version": "dev",
   "commit": "none",
-  "dslVersion": "1.4",
+  "dslVersion": "2.0",
   "features": [
+    {
+      "name": "gaggle.spec.additionalRepos",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.additionalRepos.baseUrl",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.additionalRepos.checkout.sparse",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.additionalRepos.provider.ado",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.additionalRepos.provider.gitea",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.additionalRepos.provider.github",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.backlog",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.backlog.baseUrl",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.backlog.fieldPredicate",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.backlog.labelPredicate",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.backlog.labels",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.backlog.provider.ado",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.backlog.provider.gitea",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.backlog.provider.github",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.branchNamespace",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.ciCommand",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.displayName",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.isolation.identityRef",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.isolation.namespace",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.outboxMirrorPath",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.project",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.project.baseUrl",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
     {
       "name": "gaggle.spec.project.checkout.sparse",
       "stability": "ga",
       "sinceVersion": "dev"
     },
     {
+      "name": "gaggle.spec.project.provider.ado",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.project.provider.gitea",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.project.provider.github",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.requireLabels",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.requiredCapabilities",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.runControls",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.runControls.maxRepasses",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.runControls.maxRunDuration",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.runControls.stalledRunTimeout",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gaggle.spec.sandbox",
       "stability": "preview",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.selfIdentity",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.siblings",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gaggle.spec.workcopies.root",
+      "stability": "ga",
       "sinceVersion": "dev"
     },
     {
@@ -51,6 +221,11 @@
     },
     {
       "name": "gate.evaluator.agentic.timeoutSeconds",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "gate.evaluator.agentic.workspace",
       "stability": "ga",
       "sinceVersion": "dev"
     },
@@ -180,12 +355,22 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "gate.maxRepasses",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "gate.name",
       "stability": "ga",
       "sinceVersion": "dev"
     },
     {
       "name": "goober.spec.capabilities",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.conditionalPolicyActions",
       "stability": "ga",
       "sinceVersion": "dev"
     },
@@ -226,6 +411,11 @@
     },
     {
       "name": "goober.spec.model",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "goober.spec.policyActions",
       "stability": "ga",
       "sinceVersion": "dev"
     },
@@ -290,6 +480,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "stage.run.script",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "stage.run.syncBase",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -306,6 +501,16 @@
     },
     {
       "name": "stage.shell",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.workspace",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "stage.workspace.repo-readonly",
       "stability": "ga",
       "sinceVersion": "dev"
     },
@@ -340,6 +545,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.experiment",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "task.goal",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -363,6 +573,11 @@
       "name": "task.inputsFrom",
       "stability": "ga",
       "sinceVersion": "dev"
+    },
+    {
+      "name": "task.inputsFrom.stageQualified",
+      "stability": "ga",
+      "sinceVersion": "v0.2.0"
     },
     {
       "name": "task.limits",
@@ -395,6 +610,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.nestedAgentPolicy",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "task.next",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -410,7 +630,22 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "task.outbox",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.outboxMirrorPath",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "task.policyActions",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "task.requiredCapabilities",
       "stability": "ga",
       "sinceVersion": "dev"
     },
@@ -460,12 +695,37 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "trigger.idleBackoff",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.idleBackoff.ceiling",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.idleBackoff.enabled",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.idleBackoff.floor",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "trigger.labelPredicate",
       "stability": "ga",
       "sinceVersion": "dev"
     },
     {
       "name": "trigger.manual",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "trigger.priority",
       "stability": "ga",
       "sinceVersion": "dev"
     },
@@ -490,6 +750,11 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.docsRoots",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.gaggle",
       "stability": "ga",
       "sinceVersion": "dev"
@@ -500,7 +765,52 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.outboxMirrorPath",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.branchTimeoutSeconds",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.branches",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.failurePolicy",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.join",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.maxConcurrentBranches",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.parallels.onFailure",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.readiness",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.readiness.desiredConcurrentRuns",
       "stability": "ga",
       "sinceVersion": "dev"
     },
@@ -530,7 +840,27 @@
       "sinceVersion": "dev"
     },
     {
+      "name": "workflow.spec.requires.capabilities",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
       "name": "workflow.spec.runControls",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.runControls.maxRepasses",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.runControls.maxRunDuration",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.runControls.stalledRunTimeout",
       "stability": "ga",
       "sinceVersion": "dev"
     },
@@ -546,6 +876,21 @@
     },
     {
       "name": "workflow.spec.triggers",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.tutorScope",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.tutorScope.target",
+      "stability": "ga",
+      "sinceVersion": "dev"
+    },
+    {
+      "name": "workflow.spec.tutorScope.tier",
       "stability": "ga",
       "sinceVersion": "dev"
     },

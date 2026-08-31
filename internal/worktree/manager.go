@@ -787,11 +787,31 @@ func flattenedSymlinks(root string, symlinkPaths []string, lstat func(string) (o
 //     config can re-enable either. Behavior-neutral for every legitimate
 //     flow: hooks are never cloned into a mirror and Goobers never configures
 //     fsmonitor.
+//   - `maintenance.autoDetach=false` and `gc.autoDetach=false` (#3990/#4000):
+//     housekeeping stays in the FOREGROUND, so it is over before the git
+//     process this package waited on exits. Every fetch into a managed mirror
+//     — including the bundle fetch ApplyBundle performs — ends with
+//     `git maintenance run --auto`, which git DETACHES by default. The orphan
+//     outlives its parent and keeps creating and deleting files under the
+//     mirror's git dir (`gc.log`, `maintenance.lock`, `objects/pack/tmp_*`)
+//     while this package's next step believes the mirror is quiescent, so a
+//     teardown that walks the same tree — Reap/FinalizeRun in production,
+//     t.TempDir's RemoveAll in tests — races a live writer and fails with
+//     "directory not empty". Detaching buys nothing here: the daemon already
+//     serializes mirror work behind the per-repo lock, and a fetch that
+//     returns while housekeeping is still running only moves that work onto
+//     an unsupervised process whose failures nobody reads. Maintenance still
+//     runs on exactly the same schedule (`gc.auto`/`maintenance.auto` are
+//     untouched), so mirror hygiene is unchanged. `gc.autoDetach` is git's
+//     older name for the same switch and is the fallback the newer key defers
+//     to; setting both covers every git version we support.
 func hardenedGitArgs(args []string) []string {
 	return append([]string{
 		"-c", "safe.bareRepository=all",
 		"-c", "core.hooksPath=" + os.DevNull,
 		"-c", "core.fsmonitor=false",
+		"-c", "maintenance.autoDetach=false",
+		"-c", "gc.autoDetach=false",
 	}, args...)
 }
 

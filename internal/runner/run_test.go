@@ -24,6 +24,7 @@ import (
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/remediation"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/workflow"
@@ -5352,6 +5353,62 @@ func TestInfrastructureRepassSeedsStaySeparateFromPolicyBudget(t *testing.T) {
 	}
 }
 
+// TestInfrastructureSeedsAreZeroForPreInfrastructureHistories is the
+// backwards-compatibility half of #3930: a run resumed from a journal written
+// BEFORE the infrastructure counters existed must start with those counters at
+// zero — a full infrastructure budget — rather than panicking on a nil map or
+// inheriting a policy number that was never about infrastructure.
+//
+// The fixture is what such a journal looks like: gate.evaluated events with a
+// verdict of fail/pass only, and (for the oldest of them) no repassTarget
+// annotation at all, because the seeds' own key was added later. Both
+// infrastructure seeds must come back empty, and the policy seeds must come
+// back with what the old journal really did record — the resume continues the
+// budget the old run was spending, and starts the one it never had.
+func TestInfrastructureSeedsAreZeroForPreInfrastructureHistories(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultSuccess)},
+		// The oldest shape: no repassTarget, so the seed falls back to Target.
+		{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: gate.OutcomeFail, Target: "implement",
+			Runner: map[string]any{"repassAttempt": 1.0}},
+		{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: gate.OutcomeFail, Target: "implement",
+			Runner: map[string]any{"repassAttempt": 2.0, "gateAttempt": 2.0, "repassTarget": "implement"}},
+	}
+	if got := infrastructureTargetRepassSeed(events); len(got) != 0 {
+		t.Fatalf("infrastructure repass seed from a pre-infrastructure journal = %v, want empty — the resumed run "+
+			"has spent none of that budget", got)
+	}
+	if got := gateInfrastructureSeed(events)["local-gate"]; got != 0 {
+		t.Fatalf("infrastructure gate seed from a pre-infrastructure journal = %d, want 0", got)
+	}
+	if got := targetRepassSeed(events)["implement"]; got != 2 {
+		t.Fatalf("policy repass seed = %d, want 2 — the counters the old journal DID record still continue", got)
+	}
+	// The zero values really are usable: charging the resumed budget grants the
+	// full infrastructure retry allowance and leaves the policy budget where
+	// the old run left it.
+	budget := gate.RepassBudget{
+		Attempts:                     gateRepassSeed(events),
+		InfrastructureAttempts:       gateInfrastructureSeed(events),
+		RepassAttempts:               targetRepassSeed(events),
+		InfrastructureRepassAttempts: infrastructureTargetRepassSeed(events),
+	}
+	g := apiv1.Gate{Name: "local-gate", Branches: map[string]string{
+		gate.OutcomePass: "open-pr", gate.OutcomeFail: "implement", gate.OutcomeInfra: "local-ci",
+	}}
+	for attempt := 1; attempt <= gate.DefaultMaxInfrastructureRepasses; attempt++ {
+		charge := budget.Charge(g, gate.OutcomeInfra, "local-ci", true, gate.DefaultMaxRepasses)
+		if charge.Attempt != attempt || charge.Exceeded {
+			t.Fatalf("infrastructure repass %d on a resumed pre-infrastructure budget = %+v, want a full budget",
+				attempt, charge)
+		}
+	}
+	if charge := budget.Charge(g, gate.OutcomeFail, "implement", true, gate.DefaultMaxRepasses); charge.Attempt != 3 {
+		t.Fatalf("policy repass on a resumed pre-infrastructure budget = %+v, want the old journal's count continued",
+			charge)
+	}
+}
+
 // TestGateDiffSeedNilForNoGateEvents proves the nil-safe zero value a fresh
 // run needs: a journal with no gate.evaluated events at all (or none
 // carrying a diffDigest) yields a nil map, matching Evaluator.LastDiffDigest's
@@ -6781,8 +6838,9 @@ func agenticImplementNeedsHumanGateMachine(t *testing.T) *workflow.Machine {
 
 // newAgenticGateRunner mirrors newTestRunnerWithDeterministic but wires a fake
 // agentic reviewer and a GateGooberCapabilities map, for #294's gate-envelope
-// capability sourcing.
-func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, reviewer invoke.Goober, gateCaps map[string][]string) *Runner {
+// capability sourcing. The second return is the runner's runs directory, for
+// tests that inspect the journal a Start writes.
+func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, reviewer invoke.Goober, gateCaps map[string][]string) (*Runner, string) {
 	t.Helper()
 	instanceRoot := t.TempDir()
 	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
@@ -6809,7 +6867,7 @@ func newAgenticGateRunner(t *testing.T, byTask map[string]stubTaskResult, review
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return r
+	return r, filepath.Join(instanceRoot, "runs")
 }
 
 // TestRunnerAgenticGateSourcesGooberCapabilities is #294: an agentic gate
@@ -6835,7 +6893,7 @@ func TestRunnerAgenticGateSourcesGooberCapabilities(t *testing.T) {
 
 	t.Run("sources the reviewer goober's declared capabilities", func(t *testing.T) {
 		reviewer := &capturingReviewer{}
-		r := newAgenticGateRunner(t, byTask, reviewer, map[string][]string{"reviewer": {"agent:model"}})
+		r, runsDir := newAgenticGateRunner(t, byTask, reviewer, map[string][]string{"reviewer": {"agent:model"}})
 		if res := start(t, r); res.Phase != journal.PhaseCompleted {
 			t.Fatalf("phase = %q, want completed", res.Phase)
 		}
@@ -6845,11 +6903,32 @@ func TestRunnerAgenticGateSourcesGooberCapabilities(t *testing.T) {
 		if got := reviewer.gotCaps; len(got) != 1 || got[0] != "agent:model" {
 			t.Fatalf("gate envelope capabilities = %v, want [agent:model]", got)
 		}
+
+		// PR #3528 finding-1 producer half, local tier: Start journals the
+		// map as the trusted gate-goober-capabilities input, readable through
+		// PinnedGateGooberCapabilities — the run's pin, not the
+		// currently-served config, is what post-start consumers (the daemon
+		// credential plane) resolve an agentic gate's reviewer grants from.
+		rd, err := journal.OpenRead(filepath.Join(runsDir, "run-agentic-gate"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := rd.Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pinned, found, err := PinnedGateGooberCapabilities(rd, identity)
+		if err != nil || !found {
+			t.Fatalf("PinnedGateGooberCapabilities = (%v, %t, %v), want the pinned map", pinned, found, err)
+		}
+		if got := pinned["reviewer"]; len(got) != 1 || got[0] != "agent:model" {
+			t.Fatalf("pinned reviewer capabilities = %v, want [agent:model]", got)
+		}
 	})
 
 	t.Run("no mapping means no capabilities (fail-closed)", func(t *testing.T) {
 		reviewer := &capturingReviewer{}
-		r := newAgenticGateRunner(t, byTask, reviewer, nil)
+		r, _ := newAgenticGateRunner(t, byTask, reviewer, nil)
 		_ = start(t, r)
 		if !reviewer.called {
 			t.Fatal("reviewer was never invoked")
@@ -6914,6 +6993,37 @@ func TestRunnerAgenticGateAttachesReviewerDiffEvidence(t *testing.T) {
 	}
 	if diffPtr.Artifact == nil || diffPtr.Artifact.Digest == "" {
 		t.Fatalf("diff evidence pointer has no digested artifact: %+v", diffPtr)
+	}
+
+	// #3135: the run journal records whether the evidence handed to the agent
+	// was transformed on the way, and the digest of the pre-scrub bytes, so a
+	// finding about a redacted region can be correlated with the authoritative
+	// diff of the commits.
+	rd, err := journal.OpenRead(filepath.Join(instanceRoot, "runs", "run-diff-evidence"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var redaction map[string]any
+	for _, e := range events {
+		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == ReviewerDiffRedactionKind {
+			redaction = e.Runner
+		}
+	}
+	if redaction == nil {
+		t.Fatal("no reviewer-diff redaction annotation was journaled")
+	}
+	if got := redaction["digest"]; got != diffPtr.Artifact.Digest {
+		t.Fatalf("annotation digest = %v, want the evidence digest %q", got, diffPtr.Artifact.Digest)
+	}
+	if redaction["redacted"] != false {
+		t.Fatalf("a diff with no secret material was reported as redacted: %+v", redaction)
+	}
+	if got := redaction["sourceDigest"]; got != diffPtr.Artifact.Digest {
+		t.Fatalf("unredacted evidence must carry the source digest %q, got %v", diffPtr.Artifact.Digest, got)
 	}
 }
 
@@ -8022,6 +8132,97 @@ type remediationEvidenceDeterministic struct {
 	ciCalls int
 }
 
+type addendumCapturingGoober struct {
+	addendum string
+}
+
+func (g *addendumCapturingGoober) Invoke(_ context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	g.addendum = env.InstructionAddendum
+	return apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}, nil
+}
+
+func (g *addendumCapturingGoober) Review(context.Context, apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	return apiv1.Verdict{Decision: apiv1.VerdictPass}, nil
+}
+
+func remediationAugmentMachine(t *testing.T) *workflow.Machine {
+	t.Helper()
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "acme-web", Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+		Start: "detect",
+		Tasks: []apiv1.Task{
+			{
+				Name: "detect", Type: apiv1.TaskDeterministic, Goal: "classify failure",
+				Run: &apiv1.DeterministicRun{Command: []string{"true"}}, Next: "implement",
+			},
+			{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "implement fix", Next: workflow.TerminalComplete},
+		},
+	}
+	machine, err := workflow.Compile(workflow.Definition{Name: "remediation-augment", Version: 1, Spec: spec}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatalf("compile remediation augment machine: %v", err)
+	}
+	return machine
+}
+
+func TestRunnerAugmentsAgenticStageWithRetrievedRemediationExamples(t *testing.T) {
+	instanceRoot := t.TempDir()
+	wtMgr, err := worktree.NewManager(filepath.Join(instanceRoot, "workcopies"))
+	if err != nil {
+		t.Fatalf("new worktree manager: %v", err)
+	}
+	fixtureRepo := newFixtureRepo(t)
+	capturingGoober := &addendumCapturingGoober{}
+	r, err := New(Config{
+		NewDeterministic: func(rec ArtifactRecorder, _ SecretRegistrar) (invoke.Deterministic, error) {
+			return &stubDeterministic{
+				rec: rec,
+				byTask: map[string]stubTaskResult{
+					"run-remediation-addendum:detect": {
+						status: apiv1.ResultSuccess, summary: "compiler failure: undefined symbol",
+					},
+				},
+			}, nil
+		},
+		NewAgentic: func(name string, _ ArtifactRecorder, _ SecretRegistrar) (invoke.Goober, error) {
+			if name == "coder" {
+				return capturingGoober, nil
+			}
+			return &fixedVerdictReviewer{verdict: apiv1.Verdict{Decision: apiv1.VerdictPass}}, nil
+		},
+		Automated: gate.NewAutomatedEvaluator(), Worktrees: wtMgr, RunsDir: filepath.Join(instanceRoot, "runs"),
+		RepoCloneURL: func(apiv1.RepoRef) (string, error) { return fixtureRepo, nil },
+		Remediation: remediation.NewIndex([]remediation.Record{{
+			ID:             "past:implement:2",
+			Stage:          "implement",
+			ErrorClass:     "",
+			FailureExcerpt: "undefined symbol",
+			FixExcerpt:     "add the missing import",
+			DidItHelp:      true,
+			OutcomeKnown:   true,
+			Integrity:      "trusted",
+		}}, nil),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	result, err := r.Start(context.Background(), StartInput{
+		RunID: "run-remediation-addendum", Machine: remediationAugmentMachine(t),
+		Gaggle: "acme-web", Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", result.Phase)
+	}
+	if !strings.Contains(capturingGoober.addendum, "Outcome-verified historical remediation examples") ||
+		!strings.Contains(capturingGoober.addendum, "add the missing import") {
+		t.Fatalf("instruction addendum = %q", capturingGoober.addendum)
+	}
+}
+
 func (d *remediationEvidenceDeterministic) Run(_ context.Context, env apiv1.InvocationEnvelope, _ apiv1.DeterministicRun) (apiv1.ResultEnvelope, error) {
 	d.t.Helper()
 	if !strings.HasSuffix(env.TaskID, ":local-ci") {
@@ -8584,5 +8785,102 @@ func TestRunnerLegitimateChangedRepassConverges(t *testing.T) {
 				t.Fatalf("review gate event has duplicateDiff=true; want false (content changed legitimately)")
 			}
 		}
+	}
+}
+
+// TestRunnerInvokesExistingFixHandlerOnImplementNoWork proves the runner
+// invokes the ExistingFix handler when implement returns no-work with
+// existingFixCommit set (issue #3236) — preventing a permanent reclaim loop.
+func TestRunnerInvokesExistingFixHandlerOnImplementNoWork(t *testing.T) {
+	machine := taskReservedNextFixtureMachine(t, workflow.TargetAbort)
+	runID := "run-existing-fix"
+	byTask := map[string]stubTaskResult{
+		runID + ":implement": {
+			status:  apiv1.ResultNoWork,
+			summary: "nothing to do",
+			outputs: map[string]interface{}{"existingFixCommit": "abc123def456"},
+		},
+	}
+
+	var handlerCalled bool
+	var handlerOutcome ExistingFixOutcome
+	handler := func(ctx context.Context, o ExistingFixOutcome) error {
+		handlerCalled = true
+		handlerOutcome = o
+		return nil
+	}
+
+	r, _ := newTestRunner(t, byTask, nil)
+	r.cfg.ExistingFix = handler
+
+	item := &apiv1.BacklogItem{ID: "123", Title: "Test issue"}
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Item:    item,
+		Trigger: journal.Trigger{Kind: journal.TriggerManual},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if !handlerCalled {
+		t.Fatalf("ExistingFix handler was not called")
+	}
+	if handlerOutcome.ItemID != "123" {
+		t.Fatalf("handler ItemID = %q, want 123", handlerOutcome.ItemID)
+	}
+	if handlerOutcome.Commit != "abc123def456" {
+		t.Fatalf("handler Commit = %q, want abc123def456", handlerOutcome.Commit)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
+	}
+}
+
+func TestRunnerResolvesExistingFixItemFromClaimLedger(t *testing.T) {
+	machine := taskReservedNextFixtureMachine(t, workflow.TargetAbort)
+	runID := "run-existing-fix-claimed"
+	byTask := map[string]stubTaskResult{
+		runID + ":implement": {
+			status:  apiv1.ResultNoWork,
+			summary: "nothing to do",
+			outputs: map[string]interface{}{"existingFixCommit": "abc123def456"},
+		},
+	}
+
+	var got ExistingFixOutcome
+	r, _ := newTestRunner(t, byTask, nil)
+	r.cfg.ClaimedItems = func(resolvedRunID string) ([]string, error) {
+		if resolvedRunID != runID {
+			t.Fatalf("ClaimedItems run id = %q, want %q", resolvedRunID, runID)
+		}
+		return []string{"456"}, nil
+	}
+	r.cfg.ExistingFix = func(_ context.Context, o ExistingFixOutcome) error {
+		got = o
+		return nil
+	}
+
+	res, err := r.Start(context.Background(), StartInput{
+		RunID:   runID,
+		Machine: machine,
+		Gaggle:  "acme-web",
+		Trigger: journal.Trigger{Kind: journal.TriggerSchedule},
+		RepoRef: apiv1.RepoRef{Provider: apiv1.ProviderGitHub, Owner: "acme", Name: "web", Branch: "main"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got.ItemID != "456" {
+		t.Fatalf("handler ItemID = %q, want 456", got.ItemID)
+	}
+	if got.Commit != "abc123def456" {
+		t.Fatalf("handler Commit = %q, want abc123def456", got.Commit)
+	}
+	if res.Phase != journal.PhaseCompleted {
+		t.Fatalf("phase = %q, want completed", res.Phase)
 	}
 }

@@ -3,17 +3,18 @@ package instance
 import (
 	"fmt"
 	"net"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runnercap"
+	"github.com/goobers/goobers/internal/workcopyroot"
 )
 
 func validateInOrder(validators ...func() error) error {
@@ -26,10 +27,10 @@ func validateInOrder(validators ...func() error) error {
 }
 
 func (c *WorkcopiesConfig) validate() error {
-	if c != nil && c.Root != "" && !filepath.IsAbs(c.Root) {
-		return fmt.Errorf("workcopies.root must be an absolute path: %q", c.Root)
+	if c == nil {
+		return nil
 	}
-	return nil
+	return workcopyroot.Validate("workcopies.root", c.Root)
 }
 
 func (c APIConfig) validate(address string) error {
@@ -54,10 +55,18 @@ func (c APIConfig) validate(address string) error {
 			return fmt.Errorf("api.auth.oidc: %w", err)
 		}
 	}
-	if !isLoopbackHost(host) && (c.TLS == nil || c.Auth == nil) {
+	// Off-loopback requires ENCRYPTION unconditionally, and an AUTHENTICATOR —
+	// but OIDC is not the only way to have one. Since #3702 a daemon with no
+	// human API surface serves the pod plane behind podauth chained in front of
+	// DenyAllAuthenticator, which never admits an unauthenticated request. The
+	// guard's intent (SEC-043/#640: nothing unauthenticated off-loopback) is
+	// preserved; requiring OIDC specifically made the MOST restrictive posture
+	// the only one that could not be expressed, since an operator wanting zero
+	// human access had to stand up an issuer to get it.
+	if !isLoopbackHost(host) && c.TLS == nil {
 		return fmt.Errorf("api.listen: host %q is not loopback: exposing the daemon API off-loopback requires "+
-			"both api.tls (certFile + keyFile) and api.auth.oidc so the listener is encrypted and authenticated; "+
-			"there is no insecure override — bind a loopback address instead (SEC-043, #640)", host)
+			"api.tls (certFile + keyFile) so the listener is encrypted; there is no insecure override — "+
+			"bind a loopback address instead (SEC-043, #640)", host)
 	}
 	return nil
 }
@@ -241,6 +250,22 @@ func (c *Config) validateRepos(stores map[string]bool) error {
 	return nil
 }
 
+func (c *Config) validateGitHubCLIIdentityRefs() error {
+	if c.SelfIdentity == "" {
+		return nil
+	}
+	for i, repo := range c.Repos {
+		if repo.Provider != string(apiv1.ProviderGitHub) || repo.Token.GitHubCLI == nil {
+			continue
+		}
+		if !strings.EqualFold(repo.Token.GitHubCLI.User, c.SelfIdentity) {
+			return fmt.Errorf("repos[%d] (%s/%s): token.githubCLI.user %q does not match selfIdentity %q",
+				i, repo.Owner, repo.Name, repo.Token.GitHubCLI.User, c.SelfIdentity)
+		}
+	}
+	return nil
+}
+
 func (r RepoRef) validate(i int, stores map[string]bool, envPassthrough []string) error {
 	return validateInOrder(
 		func() error { return r.validateIdentity(i) },
@@ -316,7 +341,7 @@ func (c *RepoWorkspaceConfig) validate(i int, r RepoRef) error {
 
 func (r RepoRef) validateToken(i int, stores map[string]bool) error {
 	if r.Token.sourceCount() > 1 {
-		return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store — "+
+		return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store, or githubCLI — "+
 			"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
 	}
 	return validateStoreRef(fmt.Sprintf("repos[%d] (%s/%s): token", i, r.Owner, r.Name), r.Token, stores)
@@ -349,7 +374,7 @@ func (r RepoRef) validateGitHub(i int, stores map[string]bool, envPassthrough []
 			return fmt.Errorf("repos[%d] (%s/%s): auth.appId, auth.installationId, and auth.privateKey are only valid for auth kind %q", i, r.Owner, r.Name, GitHubAuthApp)
 		}
 		if !r.Token.Configured() {
-			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store — "+
+			return fmt.Errorf("repos[%d] (%s/%s): token must reference exactly one of env, file, keychain, or store, or githubCLI — "+
 				"inline secret values are never permitted (CFG-009, SEC-010)", i, r.Owner, r.Name)
 		}
 		return nil
@@ -463,6 +488,104 @@ func (c *Config) validateDaemonIdentity(stores map[string]bool) error {
 	}
 	if err := c.DaemonIdentity.validate(c.Runner.EnvPassthrough, stores); err != nil {
 		return fmt.Errorf("daemonIdentity: %w", err)
+	}
+	if err := c.validateDaemonIdentityOwnerCoverage(); err != nil {
+		return err
+	}
+	return c.validateDaemonIdentitySameAppInstallations()
+}
+
+// validateDaemonIdentityOwnerCoverage rejects a single-installation GitHub App
+// daemon identity on an instance whose GitHub repos span more than one owner
+// (#3414, F1 of the multi-owner design).
+//
+// A GitHub App installation belongs to exactly one owner, so a single
+// installationId can mint for at most one of them. Every such config is already
+// runtime-fatal — it fails with a 422 at the first cross-owner mint (#3341) —
+// which means rejecting it at load can only hit configs that never worked. That
+// is why this is an error rather than a warning: it is strictly-better
+// enforcement, and it converts a confusing mid-run failure into a startup
+// message.
+//
+// The uncovered owners cannot be named individually, because an installationId
+// is opaque and config alone cannot say which owner it belongs to. So the
+// message names every owner in play and states the arithmetic.
+func (c *Config) validateDaemonIdentityOwnerCoverage() error {
+	if !c.DaemonIdentity.GitHubApp() {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var owners []string
+	for i := range c.Repos {
+		repo := &c.Repos[i]
+		if repo.Provider != string(apiv1.ProviderGitHub) || repo.Owner == "" {
+			continue
+		}
+		if !seen[repo.Owner] {
+			seen[repo.Owner] = true
+			owners = append(owners, repo.Owner)
+		}
+	}
+	sort.Strings(owners)
+
+	// #3415's per-owner form: every owner the instance acts on must be bound,
+	// because a missing binding fails the same way the single-installation
+	// form does — a 422 at first use, mid-run, rather than at load.
+	if len(c.DaemonIdentity.Installations) > 0 {
+		var uncovered []string
+		for _, owner := range owners {
+			if _, ok := c.DaemonIdentity.InstallationForOwner(owner); !ok {
+				uncovered = append(uncovered, owner)
+			}
+		}
+		if len(uncovered) == 0 {
+			return nil
+		}
+		return fmt.Errorf(
+			"daemonIdentity.installations: no installation bound for %d owner(s) this instance targets (%s) — "+
+				"the daemon identity backs the daemon-mutation capability set for every repo, so an unbound "+
+				"owner fails at first use; add a binding for each or remove those repos",
+			len(uncovered), strings.Join(uncovered, ", "))
+	}
+
+	if c.DaemonIdentity.InstallationID == "" || len(owners) < 2 {
+		return nil
+	}
+	return fmt.Errorf(
+		"daemonIdentity: kind %q with a single installationId cannot cover repos across %d owners (%s) — "+
+			"a GitHub App installation belongs to exactly one owner, so at most one of these can mint and "+
+			"the rest fail at first use; use installations: to bind one per owner (#3415), or split the instance",
+		GitHubAuthApp, len(owners), strings.Join(owners, ", "))
+}
+
+// validateDaemonIdentitySameAppInstallations rejects a repo that authenticates
+// as the SAME GitHub App as the daemon identity but declares a different
+// installationId (#3414).
+//
+// GitHub allows one installation per (App, owner) pair, so if both halves of
+// the config name the same App and disagree on the installation, one of them is
+// wrong. This deliberately does not presume which: the message reports the
+// disagreement and leaves the choice to the operator, because either half could
+// be the stale one.
+func (c *Config) validateDaemonIdentitySameAppInstallations() error {
+	if !c.DaemonIdentity.GitHubApp() || c.DaemonIdentity.AppID == "" || c.DaemonIdentity.InstallationID == "" {
+		return nil
+	}
+	for i := range c.Repos {
+		repo := &c.Repos[i]
+		if repo.Provider != string(apiv1.ProviderGitHub) || repo.Auth == nil || repo.Auth.Kind != GitHubAuthApp {
+			continue
+		}
+		if repo.Auth.AppID != c.DaemonIdentity.AppID {
+			continue
+		}
+		if repo.Auth.InstallationID == "" || repo.Auth.InstallationID == c.DaemonIdentity.InstallationID {
+			continue
+		}
+		return fmt.Errorf(
+			"repos[%d] (%s/%s): auth.installationId %q disagrees with daemonIdentity.installationId %q for the same appId %q — "+
+				"GitHub allows one installation per App per owner, so one of these is wrong",
+			i, repo.Owner, repo.Name, repo.Auth.InstallationID, c.DaemonIdentity.InstallationID, c.DaemonIdentity.AppID)
 	}
 	return nil
 }

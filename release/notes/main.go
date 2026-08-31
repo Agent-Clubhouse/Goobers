@@ -15,7 +15,14 @@ import (
 )
 
 var (
-	stableTagPattern   = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+	stableTagPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+	// tagPattern additionally accepts a SemVer 2.0.0 pre-release suffix
+	// (e.g. "v1.2.3-beta.2", "v1.2.3-rc.1") for tags this generator can
+	// render notes for. previousTag still filters candidates with
+	// stableTagPattern: the "changes since" anchor and the release
+	// workflow's feature/support-matrix baseline always diff against the
+	// last stable release, never another pre-release.
+	tagPattern         = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$`)
 	conventionalCommit = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9-]*)(?:\(([^)]+)\))?(!)?:[[:space:]]+(.+)$`)
 	breakingFooter     = regexp.MustCompile(`(?m)^BREAKING(?: CHANGE|-CHANGE):[ \t]*(.+)$`)
 )
@@ -67,7 +74,7 @@ func run(
 ) error {
 	fs := flag.NewFlagSet("notes", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	tag := fs.String("tag", "", "stable release tag (vMAJOR.MINOR.PATCH)")
+	tag := fs.String("tag", "", "release tag (vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease)")
 	featureNotes := fs.String("feature-notes", "", "generated feature-policy notes to append")
 	output := fs.String("output", "", "write notes to this file instead of stdout")
 	if err := fs.Parse(args); err != nil {
@@ -268,8 +275,8 @@ func combineFeatureNotes(changelog, generated string) (string, error) {
 }
 
 func generate(tag string, git gitClient, readFile func(string) ([]byte, error)) (string, error) {
-	if !stableTagPattern.MatchString(tag) {
-		return "", fmt.Errorf("tag %q is not a stable semantic version (want vMAJOR.MINOR.PATCH)", tag)
+	if !tagPattern.MatchString(tag) {
+		return "", fmt.Errorf("tag %q is not a valid release tag (want vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease)", tag)
 	}
 	if _, err := git.output("rev-parse", "--verify", "refs/tags/"+tag+"^{commit}"); err != nil {
 		return "", fmt.Errorf("resolve release tag %s: %w", tag, err)

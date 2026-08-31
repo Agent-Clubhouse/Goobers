@@ -1092,3 +1092,16 @@ func TestMergeQueuePollRecordsOptOutDequeueTimeoutForReconciliation(t *testing.T
 		t.Fatal("post-merge reconcile entry has no TimedOutAt stamp")
 	}
 }
+
+func TestMergeQueuePollRefusesUnsupportedGiteaProviderBeforeGitHubDispatch(t *testing.T) {
+	root := initDemo(t)
+	configureRemediationGitea(t, root, "https://gitea.example.test")
+	t.Chdir(t.TempDir())
+	code, _, stderr := runArgs(t, "merge-queue-poll", root)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr, `does not support repository provider "gitea"`) {
+		t.Fatalf("stderr = %q, want explicit unsupported-provider error", stderr)
+	}
+}

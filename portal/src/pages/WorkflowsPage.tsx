@@ -67,7 +67,7 @@ function WorkflowInventory({
           <div>
             <h2>No gaggles configured</h2>
             <p>No configuration is available to the Portal yet. Initialize the instance to begin.</p>
-            <RecoveryCommand command="goobers init --guided <instance>" />
+            <RecoveryCommand command="goobers init --guided" />
           </div>
         </section>
       ) : (
@@ -180,8 +180,14 @@ function GaggleSection({
                   </span>
                   <span>{formatTriggers(workflow)}</span>
                   <span>
-                    {workflow.concurrency.activeRuns} active /{" "}
-                    {workflow.concurrency.maxConcurrentRuns} max
+                    {workflow.concurrency.activeRuns} active
+                    {workflow.concurrency.desiredRuns !== undefined
+                      ? ` / ${workflow.concurrency.desiredRuns} desired`
+                      : ""}{" "}
+                    / {workflow.concurrency.maxConcurrentRuns} max
+                    {workflow.concurrency.admissionBlocked && (
+                      <small>Blocked: {workflow.concurrency.blockingCondition}</small>
+                    )}
                   </span>
                   <span className="outcome-cell">
                     {outcome ? (

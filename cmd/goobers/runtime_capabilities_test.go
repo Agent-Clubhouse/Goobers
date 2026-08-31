@@ -60,9 +60,39 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		t.Fatalf("API actions = %d, want one for each of %d registered routes", len(apiActions), len(apicontract.V1Routes()))
 	}
 	// Every route is read-only except the tier-2 intervention mutations
-	// (approve/override/rerun, HITL-7/#469) and the local-only run reveal
-	// maintenance action.
+	// (approve/override/rerun, HITL-7/#469), the maintenance actions (the
+	// local-only run reveal, and HITL escalation resolution — operator
+	// recovery of a terminal run, kept outside the parity contract like
+	// `run abort`), and the write planes' workflow-execution routes
+	// (claims + trigger ingestion, #3509 §7; credential resolve, #3511 §11;
+	// blob PUT, decision 010/012 §2a; surrender put, #3699 — each a stage pod
+	// advancing its own execution, the same machine-seam class as the claims
+	// plane). claims/list is here too: it reads the claims plane, but a pod
+	// principal calls it to select an item BEFORE acquiring — the same
+	// machine-seam-in-flight class as the mutations, not a human-facing
+	// read-only-navigation view. Blob GET needs no entry: it is a genuine
+	// read (RouteBlobGet's ActionClass is read-only-navigation) and falls
+	// through to the default case below. The scheduler-state plane (#3878)
+	// follows the blob plane exactly: gaggleStatePut is a pod compare-and-
+	// swapping its gaggle's scheduler state, and gaggleStateGet is the
+	// genuine read half that needs no entry.
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
+	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true}
+	workflowExecutionRoutes := map[apicontract.ActionID]bool{
+		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true,
+		// claims/recover (#4016): a stage pod asking the daemon to run the
+		// stale-claim sweep it cannot run itself (the sweep reads run journals
+		// under the instance root and honours interventions and the recovery
+		// gate). Same machine-seam class as the rest of the claims plane.
+		"claimRecover":  true,
+		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "blobPut": true,
+		"stageSurrender": true, "gaggleStatePut": true,
+		// The cross-run journal read plane (#3880): POSTs because each carries
+		// a request body naming the asking run, the gaggle and the window, and
+		// machine-seam-in-flight because a stage pod calls them mid-run to
+		// decide what to do next — the same class as claims/list.
+		"journalRunPhase": true, "journalConflictTouches": true, "journalUnpushedWork": true,
+	}
 	for _, action := range apiActions {
 		if runtimeMutationRoutes[action.ID] {
 			if action.Class != apicontract.ActionRuntimeMutation {
@@ -70,9 +100,15 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 			}
 			continue
 		}
-		if action.ID == "runReveal" {
+		if maintenanceRoutes[action.ID] {
 			if action.Class != apicontract.ActionMaintenance {
 				t.Fatalf("API action %q class = %q, want maintenance", action.ID, action.Class)
+			}
+			continue
+		}
+		if workflowExecutionRoutes[action.ID] {
+			if action.Class != apicontract.ActionWorkflowExecution {
+				t.Fatalf("API action %q class = %q, want workflow-execution", action.ID, action.Class)
 			}
 			continue
 		}

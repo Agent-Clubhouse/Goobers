@@ -200,7 +200,7 @@ func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := rollup.RebuildAll(context.Background(), l.TelemetryDB(), runDirs, l.SchedulerDir()); err != nil {
+		if err := rebuildRollup(context.Background(), l, runDirs); err != nil {
 			return nil, err
 		}
 		// Rebuild the run read model alongside the analytics store (design §6.5:
@@ -219,6 +219,27 @@ func openRollup(l instance.Layout, rebuild bool) (*rollup.DB, error) {
 		}
 	}
 	return rollup.Open(l.TelemetryDB())
+}
+
+// rebuildRollup replaces telemetry.db from journals under the instance lock.
+//
+// RebuildAll renames a completed staging database over telemetry.db. On Unix
+// that unlinks the inode a live daemon still holds open, so every rollup write
+// the daemon makes afterwards lands in a file nothing will ever read again
+// (#3653). The run-root maintenance locks RebuildAll takes do not exclude the
+// daemon — only up.lock does — so the lock is taken here, before any staging
+// work begins, and the rebuild is refused outright while `goobers up` owns the
+// database.
+func rebuildRollup(ctx context.Context, l instance.Layout, runDirs []string) error {
+	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		return fmt.Errorf(
+			"rebuild telemetry while the daemon owns the database (stop `goobers up` on this instance root, then retry): %w",
+			err,
+		)
+	}
+	defer release()
+	return rollup.RebuildAll(ctx, l.TelemetryDB(), runDirs, l.SchedulerDir())
 }
 
 // rebuildReadModel rebuilds read.db from journals.

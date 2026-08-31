@@ -236,3 +236,27 @@ func TestUsageMeasurementFailureIsObservedWithoutFailingTeardown(t *testing.T) {
 		t.Fatalf("worktree survived teardown: %v", err)
 	}
 }
+
+func TestApparentDiskUsageCountsSymlinkEntries(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("target contents"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := apparentDiskUsage(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != info.Size() {
+		t.Fatalf("apparentDiskUsage = %d, want symlink size %d", got, info.Size())
+	}
+}

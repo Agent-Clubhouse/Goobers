@@ -10,9 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/stateclient"
+	webhookhttp "github.com/goobers/goobers/internal/webhook"
 )
 
 // rundelegate.go implements #343: when a short-lived `goobers run` process
@@ -44,9 +47,11 @@ const pendingTriggersDir = "pending-triggers"
 type triggerRequest struct {
 	Workflow  string    `json:"workflow"`
 	Gaggle    string    `json:"gaggle,omitempty"`
+	PR        int       `json:"pr,omitempty"`
 	SourceRun string    `json:"sourceRun,omitempty"`
 	Priority  bool      `json:"priority,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
+	Deadline  time.Time `json:"deadline,omitempty"`
 }
 
 // triggerResponse is what the daemon writes back once it has acted on a
@@ -75,11 +80,24 @@ const (
 // use. Before this was atomic, os.CreateTemp minted the request file already
 // named *.request.json, so a sweep landing between create and write read empty
 // bytes and failed the delegation.
-func writeTriggerRequest(schedulerDir, gaggle, workflow string) (requestID string, err error) {
+func writeTriggerRequestContext(ctx context.Context, schedulerDir, gaggle, workflow string) (requestID string, err error) {
+	createdAt, deadline := triggerRequestLifetime(ctx, triggerDelegationTimeout)
 	return writeTriggerRequestPayload(schedulerDir, triggerRequest{
 		Workflow:  workflow,
 		Gaggle:    gaggle,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: createdAt,
+		Deadline:  deadline,
+	})
+}
+
+func writeTargetedTriggerRequestContext(ctx context.Context, schedulerDir, gaggle, workflow string, pr int) (requestID string, err error) {
+	createdAt, deadline := triggerRequestLifetime(ctx, triggerDelegationTimeout)
+	return writeTriggerRequestPayload(schedulerDir, triggerRequest{
+		Workflow:  workflow,
+		Gaggle:    gaggle,
+		PR:        pr,
+		CreatedAt: createdAt,
+		Deadline:  deadline,
 	})
 }
 
@@ -91,13 +109,24 @@ func writePriorityTriggerRequest(schedulerDir, gaggle, workflow, sourceRun strin
 	if gaggle == "" || workflow == "" || sourceRun == "" {
 		return "", errors.New("delegate: priority trigger requires gaggle, workflow, and source run")
 	}
+	createdAt, deadline := triggerRequestLifetime(context.Background(), priorityTriggerTimeout)
 	return writeTriggerRequestPayload(schedulerDir, triggerRequest{
 		Workflow:  workflow,
 		Gaggle:    gaggle,
 		SourceRun: sourceRun,
 		Priority:  true,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: createdAt,
+		Deadline:  deadline,
 	})
+}
+
+func triggerRequestLifetime(ctx context.Context, timeout time.Duration) (time.Time, time.Time) {
+	createdAt := delegationNow().UTC()
+	deadline := createdAt.Add(timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline.UTC()
+	}
+	return createdAt, deadline
 }
 
 func writeTriggerRequestPayload(schedulerDir string, req triggerRequest) (requestID string, err error) {
@@ -146,7 +175,7 @@ func writeTriggerRequestPayload(schedulerDir string, req triggerRequest) (reques
 // observing up.lock held and writing its request).
 func pollTriggerResponse(ctx context.Context, schedulerDir, requestID string, timeout time.Duration) (runID string, err error) {
 	respPath := filepath.Join(schedulerDir, pendingTriggersDir, requestID+responseSuffix)
-	deadline := time.Now().Add(timeout)
+	deadline := delegationNow().Add(timeout)
 	for {
 		if data, rerr := os.ReadFile(respPath); rerr == nil {
 			// The writer (sweepPendingTriggers / a test responder) publishes via
@@ -166,7 +195,7 @@ func pollTriggerResponse(ctx context.Context, schedulerDir, requestID string, ti
 				return resp.RunID, nil
 			}
 		}
-		if time.Now().After(deadline) {
+		if delegationNow().After(deadline) {
 			return "", fmt.Errorf("delegate: timed out after %s waiting for the live `goobers up` daemon to pick up the trigger request "+
 				"(request left at %s — is the daemon still running and healthy?)", timeout, filepath.Join(schedulerDir, pendingTriggersDir, requestID+requestSuffix))
 		}
@@ -187,6 +216,8 @@ var delegationPollInterval = 100 * time.Millisecond
 // (up.go) by a wide margin under any normal daemon load.
 var triggerDelegationTimeout = 30 * time.Second
 
+var delegationNow = time.Now
+
 // priorityTriggerTimeout keeps an internally-requested re-tick alive while the
 // source workflow's concurrent runs finish. Unlike an interactive delegation,
 // no client is waiting on a 30-second response deadline.
@@ -197,6 +228,14 @@ func triggerRequestTimeout(req triggerRequest) time.Duration {
 		return priorityTriggerTimeout
 	}
 	return triggerDelegationTimeout
+}
+
+func triggerRequestDeadline(req triggerRequest) time.Time {
+	maxDeadline := req.CreatedAt.Add(triggerRequestTimeout(req))
+	if !req.Deadline.IsZero() && req.Deadline.Before(maxDeadline) {
+		return req.Deadline
+	}
+	return maxDeadline
 }
 
 // sweepPendingTriggers is the daemon-side half of #343's delegation
@@ -266,27 +305,40 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 			sched.RecordTriggerRefusal(req.Workflow, resp.Error)
 		} else {
 			sweepTime := now()
-			requestTimeout := triggerRequestTimeout(req)
-			if sweepTime.Sub(req.CreatedAt) > requestTimeout {
+			requestDeadline := triggerRequestDeadline(req)
+			requestLifetime := requestDeadline.Sub(req.CreatedAt)
+			if !sweepTime.Before(requestDeadline) {
 				resp.Error = fmt.Sprintf(
-					"delegate: stale trigger request %s was created at %s, more than %s ago; refusing to dispatch",
-					requestID, req.CreatedAt.Format(time.RFC3339Nano), requestTimeout,
+					"delegate: stale trigger request %s reached its %s deadline (created at %s, lifetime %s); refusing to dispatch",
+					requestID, requestDeadline.Format(time.RFC3339Nano), req.CreatedAt.Format(time.RFC3339Nano), requestLifetime,
 				)
 				sched.RecordTriggerRefusal(req.Workflow, resp.Error)
 			} else {
+				requestCtx, cancelRequest := context.WithDeadline(ctx, requestDeadline)
 				var runID string
 				var terr error
 				if req.Priority {
-					runID, terr = sched.TriggerPriority(ctx, localscheduler.WorkflowIdentity{
+					runID, terr = sched.TriggerPriorityWithDispatchContext(requestCtx, ctx, localscheduler.WorkflowIdentity{
 						Gaggle: req.Gaggle, Workflow: req.Workflow,
 					}, req.SourceRun, sweepTime)
 				} else if req.Gaggle != "" {
-					runID, terr = sched.TriggerExact(ctx, localscheduler.WorkflowIdentity{
-						Gaggle: req.Gaggle, Workflow: req.Workflow,
-					}, sweepTime)
+					identity := localscheduler.WorkflowIdentity{Gaggle: req.Gaggle, Workflow: req.Workflow}
+					if req.PR > 0 {
+						runID, terr = sched.TriggerSignalExactWithDispatchContext(requestCtx, ctx, identity, webhookhttp.SignalName("pull_request"),
+							webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: req.PR}), sweepTime)
+					} else {
+						runID, terr = sched.TriggerExactWithDispatchContext(requestCtx, ctx, identity, sweepTime)
+					}
 				} else {
-					runID, terr = sched.Trigger(ctx, req.Workflow, sweepTime)
+					if req.PR > 0 {
+						runID, terr = sched.TriggerSignalWithDispatchContext(requestCtx, ctx, req.Workflow,
+							webhookhttp.SignalName("pull_request"),
+							webhookhttp.TriggerRef(webhookhttp.Delivery{Event: "pull_request", PullNumber: req.PR}), sweepTime)
+					} else {
+						runID, terr = sched.TriggerWithDispatchContext(requestCtx, ctx, req.Workflow, sweepTime)
+					}
 				}
+				cancelRequest()
 				var rejected *localscheduler.TriggerRejectedError
 				switch {
 				case terr != nil && errors.As(terr, &rejected) && rejected.Transient():
@@ -332,4 +384,29 @@ func sweepPendingTriggers(ctx context.Context, schedulerDir string, sched *local
 		}
 	}
 	return sweepErr
+}
+
+// dispatchPriorityTrigger routes apply-verdict's crowned-lander re-tick to
+// whichever half of the trigger seam this stage can actually reach (#3878).
+//
+// A stage pod has no pending-triggers directory the daemon sweeps — the one it
+// can see is its own container's, so the file drop below is written and then
+// discarded with the pod. When the scheduler plane is selected, the re-tick
+// goes to the daemon's trigger route instead, under the same pod principal and
+// the same gaggle containment the scheduler-state route applies. Everywhere
+// else (a self runner, a local mode) the file drop is still the right and only
+// mechanism.
+func dispatchPriorityTrigger(ctx context.Context, l instance.Layout, gaggle, workflow, sourceRun string) (string, error) {
+	if gaggle == "" || workflow == "" || sourceRun == "" {
+		return "", errors.New("delegate: priority trigger requires gaggle, workflow, and source run")
+	}
+	store, err := openStageStateStore(l)
+	if err != nil {
+		return "", err
+	}
+	triggerer, ok := store.(stateclient.PriorityTriggerer)
+	if !ok || !statePlaneSelected() {
+		return writePriorityTriggerRequest(l.SchedulerDir(), gaggle, workflow, sourceRun)
+	}
+	return triggerer.PriorityTrigger(ctx, workflow, sourceRun)
 }

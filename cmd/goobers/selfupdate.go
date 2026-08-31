@@ -100,7 +100,7 @@ func runSelfUpdateWith(
 		Branch:            *branch,
 		Target:            *target,
 		Token:             os.Getenv(executor.CredentialEnvVar(string(capability.ContentsRead))),
-		RunID:             os.Getenv("GOOBERS_RUN_ID"),
+		RunID:             os.Getenv(executor.RunIDEnvVar),
 		HealthTicks:       *healthTicks,
 		HealthTimeout:     *healthTimeout,
 		HeartbeatInterval: heartbeatInterval,
@@ -137,7 +137,7 @@ func (e selfUpdateEscalator) Escalate(ctx context.Context, request selfupdate.Re
 	var configured *instance.RepoRef
 	for index := range cfg.Repos {
 		repo := &cfg.Repos[index]
-		if repo.Provider == "github" && repo.Owner == request.Owner && repo.Name == request.Repository {
+		if repo.Provider == string(providers.ProviderGitHub) && repo.Owner == request.Owner && repo.Name == request.Repository {
 			configured = repo
 			break
 		}

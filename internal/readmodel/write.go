@@ -21,10 +21,10 @@ import (
 // change row published before the fact it describes would tell a client to
 // refetch data that is not there yet.
 //
-// Idempotent on last_seq: re-applying a projection whose sequence is not newer
-// is a no-op. That is what makes the post-commit acknowledgement in §4.3 safe —
-// a crash between committing the projection and acknowledging the watermark
-// simply reprocesses, harmlessly.
+// Idempotent on last_seq and terminal state: re-applying an unchanged projection
+// is a no-op, while a newer projector may correct the interpretation of the same
+// journal prefix. That distinction matters across binary upgrades: source
+// position identifies the input, not the version of the pure projection code.
 func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	// Merged before the transaction opens, so an unrelated store's latency never
 	// lands on the read model's single writer (measurement.go).
@@ -49,23 +49,26 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	if err != nil {
 		return err
 	}
-	// A projection at or behind the stored source position is a no-op, and a
-	// no-op must not emit a change. Publishing one would wake every connected
-	// client to refetch a row that did not move.
+	// A projection behind the stored source position is a no-op, and a no-op must
+	// not emit a change. Publishing one would wake every connected client to
+	// refetch a row that did not move.
 	//
-	// AT the stored position counts, not just behind it. The projection is a
-	// pure function of the journal prefix (§3.2), so the same last_seq yields
-	// byte-identical output — re-applying it cannot change the row, and the only
-	// effect of letting it through is a spurious change row. That is not a rare
-	// case: a resumed build, a repair sweep, and a rebuild all re-project runs
-	// they have already seen, so under `<` every resumed build would replay its
-	// entire completed prefix into the live feed.
+	// At the stored position, phase and terminality are compared too. They are
+	// derived facts and can legitimately change when a newer binary fixes its
+	// projection rules without changing the immutable journal. An identical
+	// replay still stops here, preserving idempotence and avoiding a spurious
+	// change row; a corrected terminal interpretation proceeds and publishes the
+	// transition once.
 	//
 	// Found by the backend-neutral conformance contract (#1921) on its first
 	// run, which is the argument for having written it: nothing in the Wave 2
 	// tests exercised a same-position replay, and the failure is invisible until
 	// a client is connected to watch it.
-	if existed && p.Run.LastSeq <= previous.LastSeq {
+	if existed && p.Run.LastSeq < previous.LastSeq {
+		return nil
+	}
+	if existed && p.Run.LastSeq == previous.LastSeq &&
+		p.Run.Phase == previous.Phase && p.Run.Terminal == previous.Terminal {
 		return nil
 	}
 
@@ -87,8 +90,24 @@ func (s *Store) UpsertRun(ctx context.Context, p Projection) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM run_node WHERE run_id = ?`, p.Run.RunID); err != nil {
 		return fmt.Errorf("readmodel: clear nodes for %s: %w", p.Run.RunID, err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM run_node_parent WHERE run_id = ?`, p.Run.RunID); err != nil {
+		return fmt.Errorf("readmodel: clear node parents for %s: %w", p.Run.RunID, err)
+	}
 	for _, node := range p.Nodes {
 		if err := insertNodeRow(ctx, tx, node); err != nil {
+			return err
+		}
+	}
+	for _, parent := range p.NodeParents {
+		if err := insertNodeParentRow(ctx, tx, parent); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM remediation_example WHERE run_id = ?`, p.Run.RunID); err != nil {
+		return fmt.Errorf("readmodel: clear remediation examples for %s: %w", p.Run.RunID, err)
+	}
+	for _, example := range p.Remediation {
+		if err := insertRemediationExampleRow(ctx, tx, example); err != nil {
 			return err
 		}
 	}
@@ -126,8 +145,8 @@ func readRunRowTx(ctx context.Context, tx *sql.Tx, runID string) (RunRow, bool, 
 	var out RunRow
 	var terminal int
 	err := tx.QueryRowContext(ctx,
-		`SELECT run_id, terminal, last_seq FROM run WHERE run_id = ?`, runID).
-		Scan(&out.RunID, &terminal, &out.LastSeq)
+		`SELECT run_id, phase, terminal, last_seq FROM run WHERE run_id = ?`, runID).
+		Scan(&out.RunID, &out.Phase, &terminal, &out.LastSeq)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return RunRow{}, false, nil
@@ -249,12 +268,42 @@ func insertStageRow(
 func insertNodeRow(ctx context.Context, tx *sql.Tx, node NodeRow) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO run_node (
-			run_id, kind, name, identity, attempts, retry_waste_attempts
-		) VALUES (?, ?, ?, ?, ?, ?)`,
-		node.RunID, node.Kind, node.Name, node.Identity, node.Attempts, node.RetryWasteAttempts,
+			run_id, kind, name, identity, randomized, arm, attempts, retry_waste_attempts
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		node.RunID, node.Kind, node.Name, node.Identity,
+		boolInt(node.Randomized), node.Arm, node.Attempts, node.RetryWasteAttempts,
 	)
 	if err != nil {
 		return fmt.Errorf("readmodel: insert node %s/%s: %w", node.RunID, node.Name, err)
+	}
+	return nil
+}
+
+func insertRemediationExampleRow(ctx context.Context, tx *sql.Tx, example RemediationExampleRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO remediation_example (
+			run_id, stage, attempt, error_class, failure_excerpt, fix_excerpt, did_it_help, observed_at, config_digest
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		example.RunID, example.Stage, example.Attempt, example.ErrorClass,
+		example.FailureExcerpt, example.FixExcerpt, boolInt(example.DidItHelp),
+		nullTimeValue(example.ObservedAt), example.ConfigDigest,
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: insert remediation example %s/%s/%d: %w",
+			example.RunID, example.Stage, example.Attempt, err)
+	}
+	return nil
+}
+
+func insertNodeParentRow(ctx context.Context, tx *sql.Tx, parent NodeParentRow) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO run_node_parent (
+			run_id, kind, name, identity, parent_kind, parent_name
+		) VALUES (?, ?, ?, ?, ?, ?)`,
+		parent.RunID, parent.Kind, parent.Name, parent.Identity, parent.ParentKind, parent.ParentName,
+	)
+	if err != nil {
+		return fmt.Errorf("readmodel: insert node parent %s/%s: %w", parent.RunID, parent.Name, err)
 	}
 	return nil
 }

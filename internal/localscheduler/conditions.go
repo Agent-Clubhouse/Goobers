@@ -15,6 +15,13 @@ const (
 	ReasonBudget              = "conditions: budget"
 	ReasonDailyBudget         = "conditions: daily-budget"
 	ReasonOpenPRCap           = "conditions: open-pr-cap"
+	// ReasonMemoryPressure prefixes the refusal of a new run because the
+	// daemon's own memory cgroup is near its limit (#3949). Like
+	// ReasonProviderQuota it is a stable, grep-able prefix with the
+	// measurement appended, so the journal records not just that a run was
+	// held back but what the cgroup looked like when it was. The condition is
+	// transient: it clears on its own as runs finish and the kernel reclaims.
+	ReasonMemoryPressure = "conditions: memory-pressure"
 	// ReasonMissingCapability prefixes a schedule-time capability-match skip's
 	// Reason (RRQ-1/#1101). Like ReasonProviderQuota it is a stable, grep-able
 	// prefix, not a fixed string: dispatch appends the missing capability names
@@ -24,6 +31,14 @@ const (
 	// config (a runner's claimed set is static), so it must not be treated as
 	// transient.
 	ReasonMissingCapability = "conditions: missing-capability"
+	// ReasonPlacementUnsatisfiable prefixes the refusal of a workflow the
+	// boot-time constraint solve marked unplaceable on the declared runners:
+	// inventory (dsl-3.0.md §5 checkpoint 3, #2860: the workflow is refused
+	// per-run with a named diagnostic; the daemon and every other workflow
+	// keep serving). Like ReasonMissingCapability it is a stable prefix with
+	// the solver's diagnostic appended, and the refusal is permanent for the
+	// pinned inventory (restart-only, accept-and-pin — decision record D9).
+	ReasonPlacementUnsatisfiable = "conditions: placement-unsatisfiable"
 	// ReasonProviderQuota prefixes a provider-quota skip's Reason (#712).
 	// Unlike the other Reason consts above (fixed strings), Admit appends the
 	// resume time after this prefix — the acceptance criteria's own phrasing
@@ -101,6 +116,11 @@ type Conditions struct {
 	// contract. Read under c.mu in Admit; its own Exhausted is a cheap
 	// in-memory read with its own lock — no network call ever runs under c.mu.
 	providerQuota ProviderQuotaGate
+	// memory backs the cgroup-aware admission gate (#3949): nil means no gate
+	// is wired, so it is never enforced (fail-open), like openPRs and
+	// providerQuota above. Read under c.mu in Admit; its UnderPressure is a
+	// cached in-memory read with its own lock — no file read per admission.
+	memory MemoryGate
 }
 
 // NewConditions returns an empty Conditions tracker.
@@ -133,6 +153,14 @@ func (c *Conditions) SetOpenPRCounter(counter OpenPRCounter) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.openPRs = counter
+}
+
+// SetMemoryGate wires the cgroup-aware admission gate (#3949). Call once at
+// setup, before Admit is first used. Nil (the default) leaves it unenforced.
+func (c *Conditions) SetMemoryGate(gate MemoryGate) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.memory = gate
 }
 
 // SetProviderQuota wires the gate that backs the provider-quota circuit
@@ -252,6 +280,29 @@ func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider a
 		}
 	}
 
+	// #3439: an instance-config per-workflow budget override of exactly zero
+	// means "stop this workflow from starting" — api/schemas/instance.schema.json
+	// says so for both maps ("Zero stops it from starting"). The overrides below
+	// are applied only when > 0, so a zero override was indistinguishable from
+	// an absent one and fell through to the workflow's own value or the
+	// scheduler default of 10. An operator writing `workflowBudgets: {wf: 0}` to
+	// pause a workflow got ten runs an hour instead: the documented behaviour and
+	// the actual behaviour were opposites, and the config validated clean, so the
+	// only way to discover it was to watch the workflow run.
+	//
+	// Handled here rather than by relaxing the `> 0` guards because zero is not a
+	// budget value in this scheme — it is a stop, and the two maps express it at
+	// different windows. Note this is deliberately NOT the same question as the
+	// workflow's own maxRunsPerHour/maxRunsPerDay fields, whose schema documents
+	// zero as "fall back to the default of 10" and "disables the daily cap"
+	// respectively; those already agree with the code and are left alone (#3360).
+	if override, ok := c.workflowBudgets[identity.Workflow]; ok && override == 0 {
+		return false, ReasonBudget
+	}
+	if override, ok := c.dayBudgets[identity.Workflow]; ok && override == 0 {
+		return false, ReasonDailyBudget
+	}
+
 	maxRunsPerHour := r.MaxRunsPerHour
 	if override, ok := c.workflowBudgets[identity.Workflow]; ok && override > 0 {
 		maxRunsPerHour = int32(override)
@@ -296,6 +347,24 @@ func (c *Conditions) AdmitProviderWorkflow(identity WorkflowIdentity, provider a
 	// so a pool refusal means this workflow was otherwise dispatchable.
 	if c.instanceMaxParallel > 0 && c.totalActive >= c.instanceMaxParallel {
 		return false, ReasonInstanceMaxParallel
+	}
+	// Last, and only for new starts: the container-wide memory check (#3949).
+	// It runs after the configured caps because it is not policy — it is the
+	// physical resource every admitted run shares. Refusing here means the
+	// operator's own limits would have allowed this run and the machine would
+	// not. Deliberately not applied in ReserveContinuation: an already-started
+	// run holds checkpoints and disk, and refusing to resume it strands that
+	// work without freeing the memory an in-flight run has already charged.
+	// Shedding *new* load while letting existing runs drain is what actually
+	// lowers the ceiling.
+	if c.memory != nil {
+		if pressured, detail := c.memory.UnderPressure(); pressured {
+			reason := ReasonMemoryPressure
+			if detail != "" {
+				reason += ": " + detail
+			}
+			return false, reason
+		}
 	}
 	c.starts[identity] = append(starts, now)
 

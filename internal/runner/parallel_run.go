@@ -31,6 +31,15 @@ func (j *branchJournal) Append(ev journal.Event) error {
 	return j.run.Append(ev)
 }
 
+func (j *branchJournal) AppendIfAbsent(ev journal.Event, match func(journal.Event) bool) (bool, error) {
+	if ev.Branch == 0 {
+		ev.Branch = j.branch
+	}
+	return j.run.AppendIfAbsent(ev, func(existing journal.Event) bool {
+		return existing.Branch == j.branch && match(existing)
+	})
+}
+
 func (j *branchJournal) RecordArtifact(name string, data []byte) (journal.Ref, error) {
 	return j.run.RecordBranchArtifact(j.branch, name, data)
 }
@@ -202,6 +211,7 @@ func (r *Runner) runConcurrentParallel(
 		baseLastStage, baseLastResult, _ = lastFinishedSubject(rootEvents)
 		workspaceBranch = lastWorkspaceBranch(rootEvents, in.Machine, r.branchNamespaceFor(in.Gaggle))
 	}
+	branchEvents := newParallelBranchEventIndex(events, p.Name)
 
 	limit := int(p.MaxConcurrentBranches)
 	if limit > len(p.Branches) {
@@ -216,7 +226,7 @@ func (r *Runner) runConcurrentParallel(
 	terminalTriggered := false
 	for i := range p.Branches {
 		branch := par.branchSnapshot(i)
-		history := parallelBranchEvents(events, p.Name, branch.id)
+		history := branchEvents.events(branch.id)
 		if branch.settled {
 			lastStage, lastResult, _ := lastFinishedSubject(history)
 			terminalTarget, terminalTask, terminalGate := parallelBranchTerminal(history, in.Machine)
@@ -270,7 +280,7 @@ func (r *Runner) runConcurrentParallel(
 			results <- r.runParallelBranch(
 				branchCtx, jr, par, in, branch, basePointers, baseLastStage,
 				baseLastResult, baseCompleted, workspaceBranch, reg,
-				parallelBranchEvents(events, p.Name, branch.id), stepBudget,
+				branchEvents.events(branch.id), stepBudget,
 			)
 		}()
 		return nil
@@ -298,7 +308,7 @@ func (r *Runner) runConcurrentParallel(
 				index:     index,
 				status:    journal.BranchCancelled,
 				pointers:  branch.pointers,
-				completed: branchStageOutputs(baseCompleted, parallelBranchEvents(events, p.Name, branch.id), in.Machine),
+				completed: branchStageOutputs(baseCompleted, branchEvents.events(branch.id), in.Machine),
 				artifacts: branch.artifacts,
 				produced:  branch.produced,
 				failed:    branch.failed,
@@ -753,23 +763,45 @@ func (r *Runner) runParallelBranch(
 				result.status, result.err = journal.BranchFailed, err
 				return result
 			}
+			// #3932: this branch's gate arm is PRODUCED by the same helper the
+			// sequential walk uses (recordGateBranchInjection), on both the
+			// retry route and the advance route.
+			//
+			// runBranch used to carry a hand-copied half of it — the verdict
+			// pointer without the learning episode — which made
+			// maxConcurrentBranches, a scheduling bound, decide whether a
+			// repass received its correction. Both routes go through the
+			// helper because #3943 established that a stage-re-entering branch
+			// arrives by EITHER: an agentic reviewer's needs-changes is a true
+			// repass the retry classifier declines, so it advances rather than
+			// retries. Wiring only the retry route would have rebuilt the same
+			// divergence for the branch that matters most.
+			//
+			// Only the ROUTING is local: pointers land in the branch's own
+			// accumulator, and a recorded artifact is charged to the branch's
+			// artifact/produced accounting, which is what a join's
+			// completeness record reports.
+			injectTarget := gr.Target
 			if retry {
-				if !replayed && gr.VerdictArtifact != nil {
-					result.pointers = append(result.pointers, apiv1.ContextPointer{
-						Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
-					})
+				injectTarget = retryTarget
+			}
+			injection, err := recordGateBranchInjection(
+				branchJournal, in, g.Name, injectTarget, gr, result.lastStage, result.lastResult, replayed,
+			)
+			if err != nil {
+				result.status, result.err = journal.BranchFailed, err
+				return result
+			}
+			for _, pointer := range injection.pointers() {
+				result.pointers = append(result.pointers, pointer)
+				if pointer.Artifact != nil {
 					result.artifacts++
-					result.produced = true
 				}
+				result.produced = true
+			}
+			if retry {
 				state = retryTarget
 				continue
-			}
-			if !replayed && gr.VerdictArtifact != nil {
-				result.pointers = append(result.pointers, apiv1.ContextPointer{
-					Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
-				})
-				result.artifacts++
-				result.produced = true
 			}
 			if ctx.Err() != nil {
 				result.status = journal.BranchCancelled
@@ -902,20 +934,24 @@ func parallelRootEvents(events []journal.Event, parallel string) ([]journal.Even
 	return nil, false
 }
 
-func parallelBranchEvents(events []journal.Event, parallel string, branch int) []journal.Event {
-	start := 0
-	for i, event := range events {
+type parallelBranchEventIndex struct {
+	byBranch map[int][]journal.Event
+}
+
+func newParallelBranchEventIndex(events []journal.Event, parallel string) parallelBranchEventIndex {
+	index := parallelBranchEventIndex{byBranch: make(map[int][]journal.Event)}
+	for _, event := range events {
 		if event.Type == journal.EventParallelStarted && event.Parallel == parallel {
-			start = i + 1
+			index.byBranch = make(map[int][]journal.Event)
+			continue
 		}
+		index.byBranch[event.Branch] = append(index.byBranch[event.Branch], event)
 	}
-	out := make([]journal.Event, 0)
-	for _, event := range events[start:] {
-		if event.Branch == branch {
-			out = append(out, event)
-		}
-	}
-	return out
+	return index
+}
+
+func (i parallelBranchEventIndex) events(branch int) []journal.Event {
+	return i.byBranch[branch]
 }
 
 func lastParallelBoundary(events []journal.Event) (journal.Event, bool) {

@@ -72,6 +72,30 @@ spec:
           # stage fails closed on an integrity fault. Point it at a
           # ReadWriteMany volume (see the blobs volume below) or omit it and
           # accept single-worker runs.
+          #
+          # --config-reload-interval is how often the worker re-reads
+          # --instance's config/ tree and rebuilds the gaggle, credential, and
+          # agentic-kit seams whose config changed (#3912). It defaults to 10s
+          # and is left implicit here. Set it to 0 only to deliberately freeze
+          # a worker on its boot-time tree. NOTE the reload only sees content
+          # that actually changes underneath the mount: a config/ directory
+          # seeded once by an initContainer copy into an emptyDir never
+          # changes, for the same reason a subPath ConfigMap mount never does
+          # (../README.md, "subPath ConfigMap mounts never receive updates").
+          # Here the tree lives on the journal PVC, so whatever writes it is
+          # what the worker converges on.
+          #
+          # --config-history-depth is how many SUPERSEDED config trees the
+          # worker keeps after a reload, so an in-flight run pinned to one is
+          # still served the goober kit it was admitted against (#3884). It
+          # defaults to 3 and is left implicit here. An agentic stage whose
+          # run.yaml gooberDigest matches no retained tree is REFUSED by name
+          # (gate_pin_missing) rather than silently served the current goober;
+          # the refusal is retriable, so rolling this worker's tree forward and
+          # letting the reload above apply is the repair. Set it to 0 to refuse
+          # every superseded pin immediately, or higher if you roll config
+          # forward while multi-hour runs are in flight — each retained tree
+          # costs one snapshot of instructions and skill files in memory.
           args:
             - "worker"
             - "--task-queue"

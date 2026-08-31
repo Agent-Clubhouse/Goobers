@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/providers"
@@ -72,15 +73,38 @@ func TestStageFailureIsTransparent(t *testing.T) {
 	}
 }
 
-// TestTransientPollCode proves a retryable ci-poll failure names its own
-// cause: a rate-limited poll and a flaky 5xx are the same retry decision but
-// different operator problems.
-func TestTransientPollCode(t *testing.T) {
+// TestCIPollFailureCode proves a ci-poll failure names its own cause: a
+// rate-limited poll and a flaky 5xx are the same retry decision but different
+// operator problems. Exported (#3881) because the POD path names the failure
+// with this same function; a second spelling on that side would journal one
+// stage under two codes depending on where it ran.
+func TestCIPollFailureCode(t *testing.T) {
 	rateLimited := fmt.Errorf("poll checks: %w", &providers.RateLimitError{})
-	if got := transientPollCode(rateLimited); got != providers.ErrorCodeRateLimited {
-		t.Fatalf("transientPollCode(rate limit) = %q, want %q", got, providers.ErrorCodeRateLimited)
+	if got := CIPollFailureCode(rateLimited); got != providers.ErrorCodeRateLimited {
+		t.Fatalf("CIPollFailureCode(rate limit) = %q, want %q", got, providers.ErrorCodeRateLimited)
 	}
-	if got := transientPollCode(errors.New("status 503: unavailable")); got != "poll_provider_error" {
-		t.Fatalf("transientPollCode(5xx) = %q, want poll_provider_error", got)
+	if got := CIPollFailureCode(errors.New("status 503: unavailable")); got != CIPollProviderErrorCode {
+		t.Fatalf("CIPollFailureCode(5xx) = %q, want %q", got, CIPollProviderErrorCode)
+	}
+}
+
+// TestCIPollRateLimitReset pins the OTHER half of what a pod ci-poll must
+// report (decision 005 C5): the reset instant, RFC3339, so the daemon's live
+// RateLimited observer can record the exhausted window against
+// ProviderQuotaState. A rate limit that carried no reset header reports
+// nothing rather than the zero time — the consumers skip a missing reset, and
+// would park the scheduler at the epoch on a zero one.
+func TestCIPollRateLimitReset(t *testing.T) {
+	reset := time.Date(2026, 8, 29, 18, 30, 0, 0, time.UTC)
+	err := fmt.Errorf("poll checks: %w", &providers.RateLimitError{Reset: reset})
+	got, ok := CIPollRateLimitReset(err)
+	if !ok || got != "2026-08-29T18:30:00Z" {
+		t.Fatalf("CIPollRateLimitReset(rate limit) = %q, %t; want 2026-08-29T18:30:00Z, true", got, ok)
+	}
+	if _, ok := CIPollRateLimitReset(fmt.Errorf("wrapped: %w", &providers.RateLimitError{})); ok {
+		t.Fatal("a rate limit with no reset header reported one")
+	}
+	if _, ok := CIPollRateLimitReset(errors.New("status 503: unavailable")); ok {
+		t.Fatal("a non-rate-limit error reported a reset")
 	}
 }

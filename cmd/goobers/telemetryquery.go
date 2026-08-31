@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,18 +18,26 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/learning"
+	"github.com/goobers/goobers/internal/readmodel"
+	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/telemetryclient"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 const candidateFindingsSchemaVersion = "goobers.dev/candidate-findings/v1"
 
 type candidateFindingsArtifact struct {
-	Schema   string           `json:"schema"`
-	Window   string           `json:"window"`
-	Since    time.Time        `json:"since"`
-	Findings []rollup.Finding `json:"findings"`
-	NoWork   bool             `json:"noWork,omitempty"`
-	Note     string           `json:"note,omitempty"`
+	Schema              string                        `json:"schema"`
+	Window              string                        `json:"window"`
+	Since               time.Time                     `json:"since"`
+	Findings            []rollup.Finding              `json:"findings"`
+	CausalCredit        []readmodel.CausalNodeCredit  `json:"causalCredit,omitempty"`
+	PromotionSignals    []readservice.PromotionSignal `json:"promotionSignals,omitempty"`
+	PromotionCandidates []readservice.PromotionSignal `json:"promotionCandidates"`
+	NoWork              bool                          `json:"noWork,omitempty"`
+	Note                string                        `json:"note,omitempty"`
 }
 
 const (
@@ -94,6 +104,8 @@ const (
 	telemetryAggregateGateNoise           telemetryAggregate = "gate-noise"
 	telemetryAggregateWorkflowUntriggered telemetryAggregate = "workflow-untriggered"
 	telemetryAggregateStageUnreached      telemetryAggregate = "stage-unreached"
+	telemetryAggregateCreditAssignment    telemetryAggregate = "credit-assignment"
+	telemetryAggregateLearningEpisode     telemetryAggregate = "learning-episode"
 )
 
 type telemetryAggregateValues []telemetryAggregate
@@ -104,6 +116,33 @@ func (v *telemetryAggregateValues) String() string {
 		values[i] = string(aggregate)
 	}
 	return strings.Join(values, ",")
+}
+
+type telemetryLearningActionValues []string
+
+func (v *telemetryLearningActionValues) String() string {
+	return strings.Join(*v, ",")
+}
+
+func (v *telemetryLearningActionValues) Set(raw string) error {
+	switch raw {
+	case learning.ActionInstructionOrSkill, learning.ActionWorkflowOrGate,
+		learning.ActionTargetedTest, learning.ActionCodeIssue:
+	default:
+		return fmt.Errorf(
+			"unknown learning action %q (allowed: %s, %s, %s, %s)",
+			raw, learning.ActionInstructionOrSkill, learning.ActionWorkflowOrGate,
+			learning.ActionTargetedTest, learning.ActionCodeIssue,
+		)
+	}
+	if !slices.Contains(*v, raw) {
+		*v = append(*v, raw)
+	}
+	return nil
+}
+
+func (v telemetryLearningActionValues) includes(action string) bool {
+	return len(v) == 0 || slices.Contains(v, action)
 }
 
 func (v *telemetryAggregateValues) Set(raw string) error {
@@ -123,8 +162,12 @@ func (v *telemetryAggregateValues) Set(raw string) error {
 		aggregate = telemetryAggregateWorkflowUntriggered
 	case string(telemetryAggregateStageUnreached):
 		aggregate = telemetryAggregateStageUnreached
+	case string(telemetryAggregateCreditAssignment):
+		aggregate = telemetryAggregateCreditAssignment
+	case string(telemetryAggregateLearningEpisode), "learning-episodes":
+		aggregate = telemetryAggregateLearningEpisode
 	default:
-		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached)", raw)
+		return fmt.Errorf("unknown aggregate %q (allowed: all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached, credit-assignment, learning-episode)", raw)
 	}
 	for _, existing := range *v {
 		if existing == aggregate {
@@ -165,6 +208,14 @@ func (v telemetryAggregateValues) includes(kind rollup.FindingKind) bool {
 			}
 		case telemetryAggregateStageUnreached:
 			if kind == rollup.FindingStageUnreached {
+				return true
+			}
+		case telemetryAggregateCreditAssignment:
+			if kind == rollup.FindingCreditAssignment {
+				return true
+			}
+		case telemetryAggregateLearningEpisode:
+			if kind == rollup.FindingLearningEpisode {
 				return true
 			}
 		}
@@ -246,17 +297,36 @@ func (v *telemetryThresholdValue) Set(raw string) error {
 			return err
 		}
 		v.thresholds.MaxFlaggedRuns = n
+	case "min-credit-runs", "minCreditRuns":
+		n, err := parsePositiveInt()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MinCreditRuns = n
+	case "min-credit-failure-share", "minCreditFailureShare":
+		rate, err := parseRate()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MinCreditFailureShare = rate
+	case "min-learning-episode-runs", "minLearningEpisodeRuns":
+		n, err := parsePositiveInt()
+		if err != nil {
+			return err
+		}
+		v.thresholds.MinLearningEpisodeRuns = n
 	default:
 		return fmt.Errorf("unknown threshold %q", key)
 	}
 	return nil
 }
 
-const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]\n\n" +
+const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>] [--aggregate <name>]... [--learning-action <name>]... [--threshold <k=v>]... [--format candidate-findings|effective-version-efficacy|tutor-live-verification] [--gaggle <name>] [--workflow <name>] [path]\n\n" +
 	"Query the instance telemetry rollup for threshold-crossing failure and gate\n" +
 	"patterns. The built-in connector stage writes a versioned candidate-findings\n" +
 	"artifact to GOOBERS_INPUT_resultFile when declared, or to stdout otherwise.\n" +
-	"With no --aggregate, all supported aggregates are evaluated. Threshold rates\n" +
+	"With no --aggregate, all supported aggregates are evaluated. --learning-action\n" +
+	"filters learning-episode findings to governed action families. Threshold rates\n" +
 	"are fractions from 0 through 1; count thresholds are positive integers.\n\n" +
 	"--format effective-version-efficacy (requires --workflow) instead assesses\n" +
 	"the workflow's most recent EffectiveVersion transition — the version-\n" +
@@ -267,6 +337,16 @@ const telemetryQueryHelp = "Usage: goobers telemetry-query [--window <duration>]
 	"merge time and first observed post-merge configuration transition. Exact\n" +
 	"EffectiveVersion cohorts verify transitions and additions; a removal is\n" +
 	"verified when the workflow is absent from the live reconciled config.\n\n" +
+	"In a dispatched stage pod (GOOBERS_TELEMETRY_ENDPOINT + its bearer +\n" +
+	"GOOBERS_GAGGLE) the query is answered by the daemon's bounded\n" +
+	"defect-aggregate plane instead of a local rollup file. That plane serves\n" +
+	"only --aggregate stage-failure-rate, error-signature, gate-noise and\n" +
+	"credit-assignment with --format candidate-findings, error signatures are\n" +
+	"normalized by the daemon before they cross, and the read is contained to\n" +
+	"the stage's own gaggle. Anything outside that — another --format, another\n" +
+	"aggregate, --learning-action, a path argument, or a threshold governing an\n" +
+	"unserved family — is refused rather than answered narrowly. Off the plane,\n" +
+	"the resolved root must be a real goobers instance.\n\n" +
 	"Exit codes: 0 = OK (including a clean no-work result), 1 = business error,\n" +
 	"2 = usage/IO error.\n"
 
@@ -281,10 +361,12 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	gaggle := fs.String("gaggle", "", "gaggle to query (default $GOOBERS_GAGGLE)")
 	workflow := fs.String("workflow", "", "workflow name (required for --format effective-version-efficacy)")
 	var aggregates telemetryAggregateValues
-	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached)")
+	fs.Var(&aggregates, "aggregate", "aggregate to detect; repeat for multiple (all, stage-failure-rate, error-signature, ci-check-failure, gate-noise, workflow-untriggered, stage-unreached, credit-assignment, learning-episode)")
+	var learningActions telemetryLearningActionValues
+	fs.Var(&learningActions, "learning-action", "learning action to include; repeat for multiple (instruction-or-skill, workflow-or-gate, targeted-test-mapping, code-issue)")
 	thresholds := rollup.DefaultThresholds()
 	fs.Var(&telemetryThresholdValue{thresholds: &thresholds}, "threshold",
-		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-ci-check-failure-runs, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs)")
+		"threshold override k=v; repeat for multiple (min-samples, max-failure-rate, min-error-signature-count, min-ci-check-failure-runs, min-gate-evaluations, max-gate-escalation-rate, max-flagged-runs, min-credit-runs, min-credit-failure-share, min-learning-episode-runs)")
 	fs.Usage = helpUsage(stderr, "telemetry-query")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -318,10 +400,53 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 	}
 
 	since := time.Now().UTC().Add(-*window)
+
+	// Plane selection happens BEFORE any filesystem work (Goobers#4001).
+	//
+	// This command used to be refused at dispatch precisely because the step
+	// below — providerStageRoot — falls back to "." inside a pod, where "."
+	// is an isolated worktree with no rollup, and the command would then have
+	// emitted a perfectly well-formed artifact saying nothing is wrong. A
+	// nomination lane reading that would stop nominating and never say why.
+	// Selecting the plane first is what makes the fallback unreachable for a
+	// dispatched pod; the guard after it is what keeps the fallback loud for
+	// everyone else.
+	//
+	// telemetryclient.Select fails CLOSED on partial configuration: an
+	// endpoint without a token, or without a gaggle, is an error here rather
+	// than a silent demotion to the local path that would read the wrong
+	// instance.
+	planeClient, planeSelected, planeErr := telemetryclient.Select(os.Getenv)
+	if planeErr != nil {
+		pf(stderr, "error: telemetry aggregate plane is configured but unusable: %v\n", planeErr)
+		return 2
+	}
+	if planeSelected {
+		return runTelemetryQueryOverPlane(planeClient, telemetryQueryPlaneRequest{
+			window:          *window,
+			since:           since,
+			format:          *format,
+			gaggle:          strings.TrimSpace(*gaggle),
+			workflow:        strings.TrimSpace(*workflow),
+			pathArg:         pathArg,
+			aggregates:      aggregates,
+			learningActions: learningActions,
+			thresholds:      thresholds,
+		}, stdout, stderr)
+	}
+
 	root := providerStageRoot(pathArg)
+	// The local path reads an instance root off disk, so it must HAVE one.
+	// Without this the "." fallback silently answers for a directory that is
+	// not an instance — the exact failure decision 005 R4's dispatch refusal
+	// was standing in for. It is checked here rather than in the executor so
+	// that it holds for every caller, not only dispatched stages.
+	if err := requireTelemetryQueryInstanceRoot(root, pathArg, stderr); err != nil {
+		return 2
+	}
 	queryGaggle := strings.TrimSpace(*gaggle)
 	if queryGaggle == "" {
-		queryGaggle = strings.TrimSpace(os.Getenv("GOOBERS_GAGGLE"))
+		queryGaggle = strings.TrimSpace(os.Getenv(executor.GaggleEnvVar))
 	}
 	if queryGaggle == "" && strings.TrimSpace(*workflow) != "" {
 		var err error
@@ -412,7 +537,22 @@ func runTelemetryQuery(args []string, stdout, stderr io.Writer) int {
 		return writeJSONArtifact(result, stdout, stderr)
 	}
 
-	result, err := detectCandidateFindings(db, *window, since, queryGaggle, aggregates, thresholds)
+	var creditStore *readmodel.Store
+	if _, statErr := os.Stat(l.ReadDB()); statErr == nil {
+		creditStore, err = readmodel.Open(l.ReadDB())
+		if err != nil {
+			pf(stderr, "error: open run read model %s: %v\n", l.ReadDB(), err)
+			return 1
+		}
+		defer func() { _ = creditStore.Close() }()
+	} else if !os.IsNotExist(statErr) {
+		pf(stderr, "error: inspect run read model %s: %v\n", l.ReadDB(), statErr)
+		return 1
+	}
+	result, err := detectCandidateFindingsWithCausalCredit(
+		db, creditStore, *window, since, root, queryGaggle, *workflow,
+		aggregates, learningActions, thresholds,
+	)
 	if err != nil {
 		pf(stderr, "error: query candidate findings: %v\n", err)
 		return 1
@@ -444,14 +584,21 @@ func resolveTelemetryQueryGaggle(root, workflowName string) (string, error) {
 	return "", nil
 }
 
-func detectCandidateFindings(
+func detectCandidateFindingsWithCausalCredit(
 	db *rollup.DB,
+	creditStore *readmodel.Store,
 	window time.Duration,
 	since time.Time,
+	root string,
 	gaggle string,
+	workflowName string,
 	aggregates telemetryAggregateValues,
+	learningActions telemetryLearningActionValues,
 	thresholds rollup.Thresholds,
 ) (candidateFindingsArtifact, error) {
+	if thresholds == (rollup.Thresholds{}) {
+		thresholds = rollup.DefaultThresholds()
+	}
 	findings, err := db.Detect(context.Background(), rollup.DetectRequest{
 		StatsRequest: rollup.StatsRequest{Gaggle: gaggle, Since: since},
 		Thresholds:   thresholds,
@@ -459,10 +606,68 @@ func detectCandidateFindings(
 	if err != nil {
 		return candidateFindingsArtifact{}, err
 	}
+	correlationalValues := map[string]float64{}
+	if creditStore != nil && (len(aggregates) == 0 || aggregates.includes(rollup.FindingCreditAssignment)) {
+		credits, creditErr := creditStore.CreditAssignment(context.Background(), readmodel.CreditOptions{
+			Gaggle: gaggle, Since: since,
+		})
+		if creditErr != nil {
+			return candidateFindingsArtifact{}, fmt.Errorf("credit assignment: %w", creditErr)
+		}
+		for _, credit := range credits {
+			if credit.RoutedRuns < thresholds.MinCreditRuns {
+				continue
+			}
+			failureShare := float64(credit.FailureRuns) / float64(credit.RoutedRuns)
+			if failureShare < thresholds.MinCreditFailureShare {
+				continue
+			}
+			node := credit.Kind + ":" + credit.Stage
+			if previous, ok := correlationalValues[node]; !ok || failureShare > previous {
+				correlationalValues[node] = failureShare
+			}
+			runIDs, runErr := creditStore.CreditAssignmentRunIDs(context.Background(), readmodel.CreditOptions{
+				Gaggle: gaggle, Since: since,
+			}, credit, thresholds.MaxFlaggedRuns)
+			if runErr != nil {
+				return candidateFindingsArtifact{}, fmt.Errorf("credit assignment evidence: %w", runErr)
+			}
+			flaggedRuns := make([]rollup.JournalPointer, 0, len(runIDs))
+			for _, runID := range runIDs {
+				flaggedRuns = append(flaggedRuns, rollup.JournalPointer{RunID: runID})
+			}
+			subject := credit.Workflow + "/" + credit.Kind + "/" + credit.Stage
+			if credit.Identity != "" {
+				subject += "/" + credit.Identity
+			}
+			findings = append(findings, rollup.Finding{
+				Kind: rollup.FindingCreditAssignment, Subject: subject,
+				FlaggedRuns: flaggedRuns,
+				Metrics: map[string]float64{
+					"routedRuns":         float64(credit.RoutedRuns),
+					"failureRuns":        float64(credit.FailureRuns),
+					"failureShare":       failureShare,
+					"escalationRuns":     float64(credit.EscalationRuns),
+					"retryWasteAttempts": float64(credit.RetryWasteAttempts),
+				},
+				Threshold: thresholds.MinCreditFailureShare,
+				NominationGuardrails: &rollup.NominationGuardrails{
+					DedupeKey:                  creditAssignmentDedupeKey(credit),
+					RequiresUpstreamCauseCheck: true,
+					RequiresHumanReview:        creditTargetRequiresHumanReview(credit.Kind),
+					GoverningTargetTreatment:   rollup.CreditGoverningTargetTreatment,
+				},
+			})
+		}
+	}
 
 	filtered := make([]rollup.Finding, 0, len(findings))
 	for _, finding := range findings {
 		if !aggregates.includes(finding.Kind) {
+			continue
+		}
+		if finding.Kind == rollup.FindingLearningEpisode &&
+			!learningActions.includes(finding.RecommendedAction) {
 			continue
 		}
 		if finding.FlaggedRuns == nil {
@@ -474,7 +679,93 @@ func detectCandidateFindings(
 	if len(filtered) == 0 {
 		note = telemetryQueryNoFindingsNote
 	}
-	return newCandidateFindingsArtifact(window, since, filtered, note), nil
+	result := newCandidateFindingsArtifact(window, since, filtered, note)
+	if creditStore == nil {
+		return result, nil
+	}
+
+	graph, err := candidateWorkflowGraph(root, gaggle, workflowName)
+	if err != nil {
+		return candidateFindingsArtifact{}, err
+	}
+	result.CausalCredit, err = creditStore.CausalCredit(context.Background(), readmodel.CausalOptions{
+		Gaggle: gaggle, Workflow: workflowName, Since: since, WorkflowGraph: graph,
+	})
+	if err != nil {
+		return candidateFindingsArtifact{}, fmt.Errorf("query causal credit: %w", err)
+	}
+	causalByNode := make(map[string]readmodel.CausalNodeCredit, len(result.CausalCredit))
+	for _, estimate := range result.CausalCredit {
+		causalByNode[estimate.Node] = estimate
+	}
+	nodes := make([]string, 0, len(correlationalValues))
+	for node := range correlationalValues {
+		nodes = append(nodes, node)
+	}
+	sort.Strings(nodes)
+	for _, node := range nodes {
+		fallback := correlationalValues[node]
+		estimate, identified := causalByNode[node]
+		if identified && estimate.PromotionEligible && estimate.IntervalAvailable &&
+			estimate.Identification != readmodel.CausalUnidentifiable {
+			result.PromotionSignals = append(result.PromotionSignals, readservice.PromotionSignal{
+				Node: node, Value: estimate.Effect, Lower: estimate.Lower, Upper: estimate.Upper,
+				Source: estimate.PromotionSource, Caveat: estimate.Caveat, PromotionEligible: true,
+			})
+			continue
+		}
+		caveat := "no identified causal intervention; correlational rollup retained"
+		if identified && estimate.Caveat != "" {
+			caveat = estimate.Caveat
+		}
+		result.PromotionSignals = append(result.PromotionSignals, readservice.PromotionSignal{
+			Node: node, Value: fallback, Source: "correlational-fallback", Caveat: caveat,
+		})
+	}
+	result.PromotionCandidates = readservice.EligiblePromotionSignals(result.PromotionSignals)
+	return result, nil
+}
+
+func candidateWorkflowGraph(root, gaggle, workflowName string) (*workflow.Graph, error) {
+	if root == "" || workflowName == "" {
+		return nil, nil
+	}
+	definitions, report, err := instance.LoadConfigDir(instance.NewLayout(root).ConfigDir())
+	if err != nil {
+		return nil, fmt.Errorf("load workflow graph: %w (report: %+v)", err, report)
+	}
+	for _, definition := range definitions.Workflows {
+		if definition.Spec.Gaggle != gaggle || definition.Name != workflowName {
+			continue
+		}
+		compiled, err := workflow.Compile(workflow.Definition{Spec: definition.Spec})
+		if err != nil {
+			return nil, fmt.Errorf("compile workflow graph %q: %w", workflowName, err)
+		}
+		graph := compiled.Graph()
+		return &graph, nil
+	}
+	return nil, nil
+}
+
+func creditAssignmentDedupeKey(credit readmodel.NodeCredit) string {
+	canonical := strings.Join([]string{
+		credit.Gaggle,
+		credit.Workflow,
+		credit.Kind,
+		credit.Stage,
+		credit.Identity,
+	}, "\x00")
+	return fmt.Sprintf("credit-assignment:sha256:%x", sha256.Sum256([]byte(canonical)))
+}
+
+func creditTargetRequiresHumanReview(kind string) bool {
+	switch strings.ToLower(kind) {
+	case "gate", "prompt", "workflow":
+		return true
+	default:
+		return false
+	}
 }
 
 func newCandidateFindingsArtifact(window time.Duration, since time.Time, findings []rollup.Finding, note string) candidateFindingsArtifact {
@@ -482,12 +773,13 @@ func newCandidateFindingsArtifact(window time.Duration, since time.Time, finding
 		findings = []rollup.Finding{}
 	}
 	return candidateFindingsArtifact{
-		Schema:   candidateFindingsSchemaVersion,
-		Window:   window.String(),
-		Since:    since,
-		Findings: findings,
-		NoWork:   len(findings) == 0,
-		Note:     note,
+		Schema:              candidateFindingsSchemaVersion,
+		Window:              window.String(),
+		Since:               since,
+		Findings:            findings,
+		PromotionCandidates: []readservice.PromotionSignal{},
+		NoWork:              len(findings) == 0,
+		Note:                note,
 	}
 }
 
@@ -524,4 +816,219 @@ func writeJSONArtifactWithSchema(result any, schemaFile string, stdout, stderr i
 		return 2
 	}
 	return 0
+}
+
+// telemetryQueryPlaneRequest is one parsed invocation, as the plane path sees
+// it. It exists so the refusals below can be checked against the WHOLE
+// request at once, before anything is sent: a request the plane can only
+// half-serve must be refused outright, not served partially.
+type telemetryQueryPlaneRequest struct {
+	window          time.Duration
+	since           time.Time
+	format          string
+	gaggle          string
+	workflow        string
+	pathArg         string
+	aggregates      telemetryAggregateValues
+	learningActions telemetryLearningActionValues
+	thresholds      rollup.Thresholds
+}
+
+// runTelemetryQueryOverPlane answers a candidate-findings query from the
+// daemon's bounded aggregate route instead of the local rollup file
+// (Goobers#4001).
+//
+// The artifact it writes is the same document the local path writes, through
+// the same writer and against the same schema. The two differences are the
+// ones the ruling asks for: error-signature subjects arrive normalized, and
+// anything outside the admitted four families is refused here rather than
+// silently omitted from the answer.
+func runTelemetryQueryOverPlane(
+	client *telemetryclient.HTTP,
+	request telemetryQueryPlaneRequest,
+	stdout, stderr io.Writer,
+) int {
+	aggregates, err := telemetryQueryPlaneAggregates(request)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), telemetryclient.DefaultTimeout)
+	defer cancel()
+	response, err := client.DefectAggregates(ctx, telemetryclient.DefectAggregateRequest{
+		Gaggle:     request.gaggle,
+		Workflow:   request.workflow,
+		Since:      request.since,
+		Aggregates: aggregates,
+		Thresholds: telemetryQueryPlaneThresholds(request.thresholds),
+	})
+	if err != nil {
+		pf(stderr, "error: query candidate findings over the telemetry aggregate plane: %v\n", err)
+		return 1
+	}
+	return writeCandidateFindingsArtifact(
+		candidateFindingsFromPlane(request.window, request.since, response), stdout, stderr)
+}
+
+// telemetryQueryPlaneAggregates resolves the requested families, refusing
+// every invocation the plane cannot answer FAITHFULLY.
+//
+// Each refusal below exists because the alternative is a well-formed artifact
+// that is quietly missing something the caller asked for — the failure mode
+// the dispatch refusal was protecting against, reintroduced one flag at a
+// time.
+func telemetryQueryPlaneAggregates(request telemetryQueryPlaneRequest) ([]telemetryclient.Aggregate, error) {
+	if request.pathArg != "" {
+		return nil, fmt.Errorf(
+			"telemetry-query reads the daemon's telemetry aggregate plane in a dispatched stage; "+
+				"the instance path argument %q has no meaning there — drop it, or unset %s to read a local instance",
+			request.pathArg, telemetryclient.EnvEndpoint)
+	}
+	if request.format != telemetryQueryCandidateFormat {
+		return nil, fmt.Errorf(
+			"--format %s is not served by the telemetry aggregate plane; only %s is. "+
+				"Run it against a local instance root instead",
+			request.format, telemetryQueryCandidateFormat)
+	}
+	if len(request.learningActions) > 0 {
+		return nil, fmt.Errorf(
+			"--learning-action filters the learning-episode family, which the telemetry aggregate " +
+				"plane does not serve; run it against a local instance root instead")
+	}
+	if unexpressible := telemetryQueryUnexpressibleThresholds(request.thresholds); len(unexpressible) > 0 {
+		return nil, fmt.Errorf(
+			"--threshold %s governs a family the telemetry aggregate plane does not serve, "+
+				"so it cannot be honoured here; run it against a local instance root instead",
+			strings.Join(unexpressible, ", "))
+	}
+	if len(request.aggregates) == 0 {
+		return nil, fmt.Errorf(
+			"telemetry-query with no --aggregate means every family, and the telemetry aggregate "+
+				"plane serves only %s. Name the aggregates you want",
+			telemetryclient.JoinAggregates(telemetryclient.AdmittedAggregates()))
+	}
+	var aggregates []telemetryclient.Aggregate
+	for _, requested := range request.aggregates {
+		aggregate, err := telemetryclient.ParseAggregate(string(requested))
+		if err != nil {
+			return nil, fmt.Errorf("%w; run it against a local instance root instead", err)
+		}
+		if !slices.Contains(aggregates, aggregate) {
+			aggregates = append(aggregates, aggregate)
+		}
+	}
+	return aggregates, nil
+}
+
+// telemetryQueryUnexpressibleThresholds names the overrides the caller set
+// that the plane's bounded threshold set cannot carry. Detected by comparing
+// against the defaults, which is exactly what "the caller changed it" means
+// for a flag that is folded into a struct at parse time.
+func telemetryQueryUnexpressibleThresholds(thresholds rollup.Thresholds) []string {
+	defaults := rollup.DefaultThresholds()
+	var unexpressible []string
+	if thresholds.MinCICheckFailureRuns != defaults.MinCICheckFailureRuns {
+		unexpressible = append(unexpressible, "min-ci-check-failure-runs")
+	}
+	if thresholds.MinLearningEpisodeRuns != defaults.MinLearningEpisodeRuns {
+		unexpressible = append(unexpressible, "min-learning-episode-runs")
+	}
+	return unexpressible
+}
+
+// telemetryQueryPlaneThresholds narrows the CLI's threshold struct onto the
+// bounded subset the plane accepts. The values are sent even when they equal
+// the defaults so that the daemon derives against the caller's numbers rather
+// than its own, which is what keeps a plane answer and a local answer
+// comparable.
+func telemetryQueryPlaneThresholds(thresholds rollup.Thresholds) telemetryclient.Thresholds {
+	return telemetryclient.Thresholds{
+		MinSamples:             thresholds.MinSamples,
+		MaxFailureRate:         thresholds.MaxFailureRate,
+		MinErrorSignatureCount: thresholds.MinErrorSignatureCount,
+		MinGateEvaluations:     thresholds.MinGateEvaluations,
+		MaxGateEscalationRate:  thresholds.MaxGateEscalationRate,
+		MaxFlaggedRuns:         thresholds.MaxFlaggedRuns,
+		MinCreditRuns:          thresholds.MinCreditRuns,
+		MinCreditFailureShare:  thresholds.MinCreditFailureShare,
+	}
+}
+
+// candidateFindingsFromPlane places a plane answer into the artifact this
+// command already emits. Window and Since are the CALLER's, not the server's,
+// so the artifact keeps describing the query the caller actually made.
+func candidateFindingsFromPlane(
+	window time.Duration,
+	since time.Time,
+	response telemetryclient.DefectAggregateResponse,
+) candidateFindingsArtifact {
+	findings := make([]rollup.Finding, 0, len(response.Findings))
+	for _, finding := range response.Findings {
+		findings = append(findings, rollupFinding(finding))
+	}
+	artifact := newCandidateFindingsArtifact(window, since, findings, response.Note)
+	for _, estimate := range response.CausalCredit {
+		artifact.CausalCredit = append(artifact.CausalCredit, readmodel.CausalNodeCredit{
+			Node:              estimate.Node,
+			Effect:            estimate.Effect,
+			Lower:             estimate.Lower,
+			Upper:             estimate.Upper,
+			Identification:    readmodel.CausalIdentification(estimate.Identification),
+			Caveat:            estimate.Caveat,
+			TreatedBefore:     estimate.TreatedBefore,
+			TreatedAfter:      estimate.TreatedAfter,
+			ControlBefore:     estimate.ControlBefore,
+			ControlAfter:      estimate.ControlAfter,
+			IntervalAvailable: estimate.IntervalAvailable,
+			PromotionEligible: estimate.PromotionEligible,
+			PromotionSource:   estimate.PromotionSource,
+		})
+	}
+	for _, signal := range response.PromotionSignals {
+		artifact.PromotionSignals = append(artifact.PromotionSignals, readservicePromotionSignal(signal))
+	}
+	for _, signal := range response.PromotionCandidates {
+		artifact.PromotionCandidates = append(artifact.PromotionCandidates, readservicePromotionSignal(signal))
+	}
+	if artifact.Note == "" && len(findings) == 0 {
+		artifact.Note = telemetryQueryNoFindingsNote
+	}
+	if response.Truncated {
+		// Loud, and in the artifact rather than only on stderr: a consumer
+		// reading the JSON is the one that would otherwise under-report.
+		artifact.Note = strings.TrimSpace(artifact.Note + " (answer truncated at the plane's cardinality ceiling)")
+	}
+	return artifact
+}
+
+// requireTelemetryQueryInstanceRoot refuses a local read whose root is not an
+// instance (Goobers#4001).
+//
+// Before the plane existed, `telemetry-query` was refused at dispatch because
+// a stage pod's root resolves to its own worktree, where this command would
+// have found no configuration, no rollup, and reported no defects at all. The
+// plane removes the reason for that dispatch refusal; this keeps the
+// underlying mistake from becoming silent for anyone else who points the
+// command at a directory that is not an instance.
+func requireTelemetryQueryInstanceRoot(root, pathArg string, stderr io.Writer) error {
+	configFile := instance.NewLayout(root).ConfigFile()
+	if _, err := os.Stat(configFile); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		pf(stderr, "error: inspect instance configuration %s: %v\n", configFile, err)
+		return err
+	}
+	source := "the current directory"
+	switch {
+	case pathArg != "":
+		source = fmt.Sprintf("the path argument %q", pathArg)
+	case strings.TrimSpace(os.Getenv(executor.InstanceRootEnvVar)) != "":
+		source = fmt.Sprintf("$%s", executor.InstanceRootEnvVar)
+	}
+	pf(stderr, "error: %s resolves to %s, which is not a goobers instance (no %s). "+
+		"telemetry-query reads an instance's own telemetry rollup: point it at an instance root, "+
+		"or set %s/%s/%s so it reads the daemon's telemetry aggregate plane instead\n",
+		source, root, configFile,
+		telemetryclient.EnvEndpoint, telemetryclient.EnvToken, telemetryclient.EnvGaggle)
+	return fmt.Errorf("telemetry-query: %s is not a goobers instance", root)
 }

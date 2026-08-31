@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,6 +146,48 @@ func TestProjectionIsDeterministic(t *testing.T) {
 	}
 }
 
+// TestProjectRunSkipsUnstampedEventsWhenAdvancingLastActivity is #3774's
+// readmodel-side surface fix: a pod-side writer defect (fixed separately, at
+// its call sites) could durably persist an event with a zero Time — the
+// newest such event must not clobber LastActivity with the zero, which the
+// run-stalled watchdog (#3775/#3776) and runIsStale both now treat as
+// undeterminable rather than as "just happened". Mirrors newestTimestamped's
+// skip rule (internal/runner/stalled.go), applied here incrementally as
+// ProjectRun folds over the event stream.
+func TestProjectRunSkipsUnstampedEventsWhenAdvancingLastActivity(t *testing.T) {
+	identity := testIdentity()
+	stamped := projectBase.Add(time.Minute)
+	events := []journal.Event{
+		ev(1, 0, journal.EventRunStarted, nil),
+		ev(2, time.Minute, journal.EventStageStarted, func(e *journal.Event) { e.Stage = "implement-on-pod" }),
+		// The newest event, unstamped — the shape #3774's writer defect
+		// produced for agent.lifecycle/agent.message.
+		ev(3, 2*time.Minute, journal.EventAgentLifecycle, func(e *journal.Event) {
+			e.Stage = "implement-on-pod"
+			e.Time = time.Time{}
+		}),
+	}
+	row := ProjectRun(identity, Projection{}, events).Run
+	if row.LastSeq != 3 {
+		t.Fatalf("LastSeq = %d, want 3 (Seq is structural and always advances)", row.LastSeq)
+	}
+	if row.LastActivity.IsZero() {
+		t.Fatal("LastActivity is zero (#3774): an unstamped newest event must not clobber a real, previously-observed LastActivity")
+	}
+	if !row.LastActivity.Equal(stamped) {
+		t.Fatalf("LastActivity = %s, want %s (the newest STAMPED event's time)", row.LastActivity, stamped)
+	}
+
+	// A wholly unstamped run (no timestamped event at all) has no LastActivity
+	// to report — undeterminable, not "just happened".
+	unstampedOnly := []journal.Event{
+		ev(1, 0, journal.EventAgentLifecycle, func(e *journal.Event) { e.Time = time.Time{} }),
+	}
+	if got := ProjectRun(identity, Projection{}, unstampedOnly).Run.LastActivity; !got.IsZero() {
+		t.Fatalf("LastActivity = %s for a wholly unstamped run, want the zero time", got)
+	}
+}
+
 func TestProjectionKeepsEarliestClaimedIssueIdentity(t *testing.T) {
 	identity := testIdentity()
 	identity.Trigger = journal.Trigger{Kind: journal.TriggerItem, Ref: "trigger-item"}
@@ -232,6 +275,186 @@ func TestProjectionMatchesTheRunContract(t *testing.T) {
 	}
 	if !p.Stages[0].HadSuccess || !p.Stages[0].HadFailure {
 		t.Errorf("attempt status set = %+v, want both success and failure", p.Stages[0])
+	}
+}
+
+func TestProjectionTreatsExecutedTerminalGateAsTerminalWithoutRunFinished(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+		want   journal.RunPhase
+	}{
+		{name: "abort", target: journal.TargetAbort, want: journal.PhaseAborted},
+		{name: "escalate", target: journal.TargetEscalate, want: journal.PhaseEscalated},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []journal.Event{
+				ev(1, time.Second, journal.EventRunStarted, nil),
+				ev(2, 2*time.Second, journal.EventGateStarted, func(e *journal.Event) {
+					e.Gate = "terminal-gate"
+				}),
+				ev(3, 3*time.Second, journal.EventGateEvaluated, func(e *journal.Event) {
+					e.Gate, e.Target = "terminal-gate", tc.target
+				}),
+				// Terminal cleanup may append diagnostics after the gate while
+				// still failing before run.finished.
+				ev(4, 4*time.Second, journal.EventRefTouched, nil),
+			}
+
+			whole := ProjectRun(testIdentity(), Projection{}, events)
+			if whole.Run.Phase != tc.want || !whole.Run.Terminal {
+				t.Fatalf("projection = phase %q terminal %v, want %q terminal",
+					whole.Run.Phase, whole.Run.Terminal, tc.want)
+			}
+			wantFinished := projectBase.Add(3 * time.Second)
+			if whole.Run.FinishedAt == nil || !whole.Run.FinishedAt.Equal(wantFinished) {
+				t.Fatalf("finished_at = %v, want terminal gate time %v", whole.Run.FinishedAt, wantFinished)
+			}
+
+			// The fix must preserve rebuild/incremental equivalence even when
+			// the split falls between gate.started and gate.evaluated.
+			for split := 0; split <= len(events); split++ {
+				first := ProjectRun(testIdentity(), Projection{}, events[:split])
+				incremental := ProjectRun(testIdentity(), first, events[split:])
+				if !reflect.DeepEqual(incremental.Run, whole.Run) {
+					t.Fatalf("split at %d differs:\n incremental = %+v\n whole = %+v",
+						split, incremental.Run, whole.Run)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectionKeepsPendingHumanTerminalDecisionRunning(t *testing.T) {
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventRunStarted, nil),
+		ev(2, 2*time.Second, journal.EventGatePaused, func(e *journal.Event) {
+			e.Gate = "approval"
+		}),
+		ev(3, 3*time.Second, journal.EventGateEvaluated, func(e *journal.Event) {
+			e.Gate, e.Target, e.Actor = "approval", journal.TargetAbort, "maintainer"
+		}),
+	}
+
+	projection := ProjectRun(testIdentity(), Projection{}, events)
+	if projection.Run.Phase != journal.PhaseRunning || projection.Run.Terminal || projection.Run.FinishedAt != nil {
+		t.Fatalf("pending human decision projected as phase %q terminal %v finished %v, want running",
+			projection.Run.Phase, projection.Run.Terminal, projection.Run.FinishedAt)
+	}
+}
+
+func TestProjectRemediationExamplesRequiresExplicitOutcome(t *testing.T) {
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventError, func(e *journal.Event) {
+			e.Stage = "implement"
+			e.Error = &journal.ErrorDetail{Code: "compile", Message: "undefined symbol"}
+		}),
+		ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "implement", "success"
+			e.Outputs = map[string]any{"fix": "add import"}
+		}),
+		ev(3, 3*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseCompleted)
+		}),
+	}
+	run := ProjectRun(testIdentity(), Projection{}, events).Run
+	projection := Projection{Run: run, Remediation: projectRemediationExamples(testIdentity(), run, events)}
+	if len(projection.Remediation) != 0 {
+		t.Fatalf("remediation examples = %+v, want none without target outcome", projection.Remediation)
+	}
+}
+
+func TestProjectRemediationExamplesScrubsAndRejectsExcludedContent(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("x", 40)
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventError, func(e *journal.Event) {
+			e.Stage = "implement"
+			e.Error = &journal.ErrorDetail{Code: "compile", Message: secret}
+		}),
+		ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+			e.Stage, e.Status = "implement", "success"
+			e.Outputs = map[string]any{"fix": secret, "didItHelp": true}
+		}),
+		ev(3, 3*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+			e.Status = string(journal.PhaseCompleted)
+		}),
+	}
+	run := ProjectRun(testIdentity(), Projection{}, events).Run
+	projection := Projection{Run: run, Remediation: projectRemediationExamples(testIdentity(), run, events)}
+	if len(projection.Remediation) != 1 {
+		t.Fatalf("remediation examples = %+v, want one", projection.Remediation)
+	}
+	example := projection.Remediation[0]
+	if strings.Contains(example.FailureExcerpt, secret) || strings.Contains(example.FixExcerpt, secret) {
+		t.Fatalf("secret persisted in remediation example: %+v", example)
+	}
+
+	events[1].Outputs["contentExcluded"] = true
+	run = ProjectRun(testIdentity(), Projection{}, events).Run
+	projection = Projection{Run: run, Remediation: projectRemediationExamples(testIdentity(), run, events)}
+	if len(projection.Remediation) != 0 {
+		t.Fatalf("excluded remediation examples = %+v, want none", projection.Remediation)
+	}
+}
+
+func TestProjectRemediationExamplesRejectsContentExclusionSignals(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*journal.Event, *journal.Event)
+	}{
+		{
+			name: "blockedBy output",
+			setup: func(_, finished *journal.Event) {
+				finished.Outputs["blockedBy"] = "content-exclusion-policy"
+			},
+		},
+		{
+			name: "error code",
+			setup: func(failure, _ *journal.Event) {
+				failure.Error.Code = "CONTENT_EXCLUSION"
+			},
+		},
+		{
+			name: "error message",
+			setup: func(failure, _ *journal.Event) {
+				failure.Error.Message = "excluded by your organization"
+			},
+		},
+		{
+			name: "stage output text",
+			setup: func(_, finished *journal.Event) {
+				finished.Outputs["details"] = "the repository owner blocked this content exclusion"
+			},
+		},
+		{
+			name: "copilot disabled marker",
+			setup: func(_, finished *journal.Event) {
+				finished.Outputs["details"] = "Copilot is disabled for this file"
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []journal.Event{
+				ev(1, time.Second, journal.EventError, func(e *journal.Event) {
+					e.Stage = "implement"
+					e.Error = &journal.ErrorDetail{Code: "compile", Message: "undefined symbol"}
+				}),
+				ev(2, 2*time.Second, journal.EventStageFinished, func(e *journal.Event) {
+					e.Stage, e.Status = "implement", "success"
+					e.Outputs = map[string]any{"didItHelp": true}
+				}),
+				ev(3, 3*time.Second, journal.EventRunFinished, func(e *journal.Event) {
+					e.Status = string(journal.PhaseCompleted)
+				}),
+			}
+			tc.setup(&events[0], &events[1])
+			run := ProjectRun(testIdentity(), Projection{}, events).Run
+			if examples := projectRemediationExamples(testIdentity(), run, events); len(examples) != 0 {
+				t.Fatalf("remediation examples = %+v, want none", examples)
+			}
+		})
 	}
 }
 
@@ -476,6 +699,53 @@ func TestUpsertIsIdempotentAndNeverRewinds(t *testing.T) {
 	}
 	if got.LastSeq != 7 {
 		t.Errorf("last_seq = %d after applying an older projection, want 7", got.LastSeq)
+	}
+}
+
+func TestUpsertCorrectsTerminalProjectionAtSameJournalPosition(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), FileName))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	identity := testIdentity()
+	events := []journal.Event{
+		ev(1, time.Second, journal.EventRunStarted, nil),
+		ev(2, 2*time.Second, journal.EventGateStarted, func(e *journal.Event) {
+			e.Gate = "terminal-gate"
+		}),
+		ev(3, 3*time.Second, journal.EventGateEvaluated, func(e *journal.Event) {
+			e.Gate, e.Target = "terminal-gate", journal.TargetAbort
+		}),
+	}
+	corrected := ProjectRun(identity, Projection{}, events)
+	stale := corrected
+	stale.Run.Phase = journal.PhaseRunning
+	stale.Run.Terminal = false
+	stale.Run.FinishedAt = nil
+	if err := store.UpsertRun(ctx, stale); err != nil {
+		t.Fatalf("upsert stale interpretation: %v", err)
+	}
+	if err := store.UpsertRun(ctx, corrected); err != nil {
+		t.Fatalf("upsert corrected interpretation: %v", err)
+	}
+
+	got, ok, err := store.GetRun(ctx, identity.RunID)
+	if err != nil || !ok {
+		t.Fatalf("get corrected run: ok=%v err=%v", ok, err)
+	}
+	if got.Phase != journal.PhaseAborted || !got.Terminal || got.FinishedAt == nil {
+		t.Fatalf("corrected projection = phase %q terminal %v finished %v, want aborted terminal",
+			got.Phase, got.Terminal, got.FinishedAt)
+	}
+	changes, err := store.Changes(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("changes: %v", err)
+	}
+	if len(changes) != 2 || changes[1].Kind != ChangeRunFinished {
+		t.Fatalf("changes = %+v, want created then finished", changes)
 	}
 }
 

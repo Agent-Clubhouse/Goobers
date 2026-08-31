@@ -2,7 +2,9 @@ package providers
 
 import (
 	"fmt"
+	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
@@ -30,7 +32,9 @@ const (
 	LabelApproved   = "goobers:approved"
 	LabelClaimed    = "goobers:claimed"
 	LabelReady      = "goobers:ready"
+	LabelCritical   = "goobers:critical"
 	LabelNeedsHuman = "goobers:needs-human"
+	LabelNominated  = "goobers:nominated"
 	LabelAutoClose  = "goobers:auto-close"
 	LabelStale      = "stale"
 	LabelTracking   = "tracking"
@@ -160,6 +164,46 @@ type RepositoryRef struct {
 	Name     string       `json:"name"`
 	ID       string       `json:"id,omitempty"`
 	URL      string       `json:"url,omitempty"`
+}
+
+// CanonicalKey returns the provider-complete identity of a repository, for use
+// as the key of durable records. Owner and name alone are not an identity:
+// they repeat across providers, across Azure DevOps projects, and across
+// self-hosted service URLs, so keying durable state on them alone lets one
+// repository suppress or satisfy another's records (#3649). Every field that
+// distinguishes one provider repository from another therefore participates,
+// with the service URL reduced to its host so that equivalent spellings of the
+// same service agree.
+func (r RepositoryRef) CanonicalKey() string {
+	return strings.Join([]string{
+		normalizeRepositoryIdentity(string(r.Provider)),
+		repositoryServiceHost(r.URL),
+		normalizeRepositoryIdentity(r.Project),
+		normalizeRepositoryIdentity(r.Owner),
+		normalizeRepositoryIdentity(r.Name),
+		normalizeRepositoryIdentity(r.ID),
+	}, "|")
+}
+
+// SameRepository reports whether two references identify the same provider
+// repository under the canonical identity.
+func SameRepository(left, right RepositoryRef) bool {
+	return left.CanonicalKey() == right.CanonicalKey()
+}
+
+func normalizeRepositoryIdentity(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func repositoryServiceHost(rawURL string) string {
+	raw := strings.TrimSpace(rawURL)
+	if raw == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(raw); err == nil && parsed.Host != "" {
+		return strings.ToLower(parsed.Host)
+	}
+	return strings.ToLower(raw)
 }
 
 // CreateRepositoryRequest describes a new provider repository.

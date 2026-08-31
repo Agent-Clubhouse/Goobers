@@ -15,6 +15,15 @@ import type {
   TelemetryStatsResult,
   TelemetryErrorSignaturesResult,
   TelemetryErrorsPage,
+  ConfigSourcePage,
+  ConfigDocumentPage,
+  ConfigDocumentRequest,
+  ConfigDocument,
+  ConfigChangePreviewRequest,
+  ConfigChangePreview,
+  ConfigWriteRequest,
+  ConfigWriteOutcome,
+  ConfigAuthoringErrorEnvelope,
   ModelInvalidation,
   ApiErrorEnvelope,
 } from "./types";
@@ -34,6 +43,15 @@ export interface GoWireFixtures {
   telemetryStats: TelemetryStatsResult;
   telemetryErrorSignatures: TelemetryErrorSignaturesResult;
   telemetryErrors: TelemetryErrorsPage;
+  configSources: ConfigSourcePage;
+  configDocuments: ConfigDocumentPage;
+  configDocumentRequest: ConfigDocumentRequest;
+  configDocument: ConfigDocument;
+  configPreviewRequest: ConfigChangePreviewRequest;
+  configPreview: ConfigChangePreview;
+  configWriteRequest: ConfigWriteRequest;
+  configWriteOutcome: ConfigWriteOutcome;
+  configAuthoringError: ConfigAuthoringErrorEnvelope;
   eventInvalidation: ModelInvalidation;
   errorEnvelope: ApiErrorEnvelope;
 }
@@ -680,6 +698,16 @@ export const goWireFixtures = {
         "number": 2,
         "class": "policy",
         "status": "success",
+        "placement": {
+          "runner": "self",
+          "node": "aks-linux-0001",
+          "host": "goobers-stage-implement-4x2vq",
+          "os": "linux",
+          "image": "ghcr.io/goobers/goobers-base:v0.2.0",
+          "pod": "goobers-stage-implement-4x2vq",
+          "queuedAt": "2026-07-18T12:32:56Z",
+          "podStartedAt": "2026-07-18T12:32:56Z"
+        },
         "startedSeq": 4,
         "finishedSeq": 8,
         "startedAt": "2026-07-18T12:32:56Z",
@@ -849,9 +877,11 @@ export const goWireFixtures = {
         "failureRuns": 1,
         "failureShare": 0.25,
         "escalationRuns": 1,
-        "retryWasteAttempts": 2
+        "retryWasteAttempts": 2,
+        "identification": ""
       }
     ],
+    "causalCredit": null,
     "curation": {
       "everRecorded": false,
       "runs": 0,
@@ -904,6 +934,176 @@ export const goWireFixtures = {
       }
     ],
     "nextCursor": "next-error"
+  },
+  "configSources": {
+    "apiVersion": "v1",
+    "schemaVersion": "v1alpha1",
+    "items": [
+      {
+        "id": "source:local",
+        "displayName": "Local configuration",
+        "kind": "local",
+        "revision": "sha256:local-source",
+        "capabilities": {
+          "read": true,
+          "validate": true,
+          "directWrite": true,
+          "reviewWrite": false
+        }
+      },
+      {
+        "id": "source:primary",
+        "displayName": "Primary configuration",
+        "kind": "git",
+        "revision": "sha256:config-source",
+        "capabilities": {
+          "read": true,
+          "validate": true,
+          "directWrite": false,
+          "reviewWrite": true
+        }
+      },
+      {
+        "id": "source:managed",
+        "displayName": "Managed configuration",
+        "kind": "provider",
+        "revision": "managed:42",
+        "capabilities": {
+          "read": true,
+          "validate": false,
+          "directWrite": false,
+          "reviewWrite": false
+        }
+      }
+    ]
+  },
+  "configDocuments": {
+    "apiVersion": "v1",
+    "schemaVersion": "v1alpha1",
+    "sourceId": "source:primary",
+    "revision": "sha256:config-source",
+    "items": [
+      {
+        "path": "gaggles/core/workflows/implementation.yaml",
+        "mediaType": "application/yaml",
+        "etag": "sha256:workflow-document",
+        "editable": true,
+        "definition": {
+          "kind": "workflow",
+          "name": "implementation",
+          "gaggle": "core"
+        }
+      }
+    ]
+  },
+  "configDocumentRequest": {
+    "path": "gaggles/core/workflows/implementation.yaml"
+  },
+  "configDocument": {
+    "apiVersion": "v1",
+    "schemaVersion": "v1alpha1",
+    "sourceId": "source:primary",
+    "revision": "sha256:config-source",
+    "document": {
+      "path": "gaggles/core/workflows/implementation.yaml",
+      "mediaType": "application/yaml",
+      "etag": "sha256:workflow-document",
+      "editable": true,
+      "definition": {
+        "kind": "workflow",
+        "name": "implementation",
+        "gaggle": "core"
+      }
+    },
+    "content": "apiVersion: goobers.dev/v1alpha1\nkind: Workflow\n"
+  },
+  "configPreviewRequest": {
+    "changeSet": {
+      "baseRevision": "sha256:config-source",
+      "changes": [
+        {
+          "path": "gaggles/core/workflows/implementation.yaml",
+          "operation": "upsert",
+          "baseEtag": "sha256:workflow-document",
+          "content": "apiVersion: goobers.dev/v1alpha1\nkind: Workflow\n"
+        },
+        {
+          "path": "gaggles/core/goobers/reviewer.yaml",
+          "operation": "upsert",
+          "content": "apiVersion: goobers.dev/v1alpha1\nkind: Goober\n"
+        }
+      ]
+    }
+  },
+  "configPreview": {
+    "apiVersion": "v1",
+    "schemaVersion": "v1alpha1",
+    "sourceId": "source:primary",
+    "baseRevision": "sha256:config-source",
+    "previewId": "preview:123",
+    "eligible": true,
+    "diagnostics": [
+      {
+        "code": "CFG001",
+        "severity": "warning",
+        "message": "fixture warning",
+        "scope": "Workflow/implementation",
+        "location": {
+          "path": "gaggles/core/workflows/implementation.yaml",
+          "line": 2,
+          "column": 1
+        }
+      }
+    ],
+    "diff": {
+      "format": "unified",
+      "content": "--- a/gaggles/core/workflows/implementation.yaml\n+++ b/gaggles/core/workflows/implementation.yaml\n",
+      "truncated": false
+    }
+  },
+  "configWriteRequest": {
+    "previewId": "preview:123",
+    "changeSet": {
+      "baseRevision": "sha256:config-source",
+      "changes": [
+        {
+          "path": "gaggles/core/workflows/implementation.yaml",
+          "operation": "upsert",
+          "baseEtag": "sha256:workflow-document",
+          "content": "apiVersion: goobers.dev/v1alpha1\nkind: Workflow\n"
+        },
+        {
+          "path": "gaggles/core/goobers/reviewer.yaml",
+          "operation": "upsert",
+          "content": "apiVersion: goobers.dev/v1alpha1\nkind: Goober\n"
+        }
+      ]
+    },
+    "strategy": "review",
+    "summary": "Update implementation workflow"
+  },
+  "configWriteOutcome": {
+    "apiVersion": "v1",
+    "schemaVersion": "v1alpha1",
+    "sourceId": "source:primary",
+    "baseRevision": "sha256:config-source",
+    "strategy": "review",
+    "changedDocuments": [
+      "gaggles/core/workflows/implementation.yaml",
+      "gaggles/core/goobers/reviewer.yaml"
+    ],
+    "review": {
+      "id": "review:42",
+      "url": "https://example.invalid/reviews/42",
+      "branch": "goobers/config-preview-123",
+      "commit": "0123456789abcdef"
+    }
+  },
+  "configAuthoringError": {
+    "error": {
+      "code": "config_stale_revision",
+      "message": "the configuration source changed; reload and retry"
+    }
   },
   "eventInvalidation": {
     "cursor": "fixture:9",

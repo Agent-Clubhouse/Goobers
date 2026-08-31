@@ -134,6 +134,28 @@ func TestBoundContractPreservesLatestEvents(t *testing.T) {
 	}
 }
 
+func TestBoundContractMarksTruncationWhenTwoEventsBecomeOne(t *testing.T) {
+	events := []journal.Event{
+		{
+			Seq:   1,
+			Type:  journal.EventError,
+			Error: &journal.ErrorDetail{Code: "large", Message: strings.Repeat("x", 30_000)},
+		},
+		{
+			Seq:   2,
+			Type:  journal.EventError,
+			Error: &journal.ErrorDetail{Code: "large", Message: strings.Repeat("y", 30_000)},
+		},
+	}
+	contract := Contract{Schema: Schema, Revision: 2, Events: events}
+
+	boundContract(&contract)
+
+	if len(contract.Events) != 1 || contract.Events[0].Seq != 1 || contract.TruncatedBefore != 2 {
+		t.Fatalf("two-event truncation = %#v", contract)
+	}
+}
+
 func TestConclusionMapping(t *testing.T) {
 	tests := map[journal.RunPhase]string{
 		journal.PhaseCompleted: "success",

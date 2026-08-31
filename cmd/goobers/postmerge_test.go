@@ -842,3 +842,74 @@ func TestReferencedIssueNumbers(t *testing.T) {
 		})
 	}
 }
+
+// TestPostMergeADODispatchesAndClosesWorkItem is the end-to-end acceptance
+// for post-merge's ADO branch: routed to an ADO repo, it dispatches to ADO
+// and processes the merged PR.
+func TestPostMergeADODispatchesAndClosesWorkItem(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	mux := http.NewServeMux()
+	// Handle PR poll endpoint
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/git/repositories/"+repo.Name+"/pullrequests/359", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"pullRequestId": 359,
+			"status":        "completed",
+			"mergeStatus":   "succeeded",
+			"description":   "Implements PBI 1456\n\nFixes #1456",
+			"sourceRefName": "refs/heads/goobers/tb-ado-implementation/1456",
+			"targetRefName": "refs/heads/main",
+			"repository": map[string]interface{}{
+				"id": "repo-guid", "name": repo.Name,
+				"project": map[string]string{"id": "proj-guid", "name": repo.Project},
+			},
+		})
+	})
+	// Handle policy evaluations
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/policy/evaluations", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"value": []interface{}{},
+		})
+	})
+	// Handle work-item queries (even if we don't fully execute the close, the call should reach ADO)
+	mux.HandleFunc("/"+repo.Owner+"/"+repo.Project+"/_apis/wit/workitems/1456", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id": 1456, "rev": 1, "fields": map[string]string{
+					"System.Title":        "PBI 1456",
+					"System.State":        "Active",
+					"System.WorkItemType": "UserStory",
+				},
+			})
+		}
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	previous := newADOProviderForStage
+	newADOProviderForStage = func(_ string, routed providers.RepositoryRef) (*providers.ADOProvider, error) {
+		return providers.NewADOProvider(routed.Owner, routed.Project, "ado-token", func(p *providers.ADOProvider) {
+			p.BaseURL = server.URL
+		}), nil
+	}
+	t.Cleanup(func() { newADOProviderForStage = previous })
+
+	t.Setenv(executor.RepoProviderEnvVar, string(repo.Provider))
+	t.Setenv(executor.RepoOwnerEnvVar, repo.Owner)
+	t.Setenv(executor.RepoProjectEnvVar, repo.Project)
+	t.Setenv(executor.RepoNameEnvVar, repo.Name)
+	t.Setenv("GOOBERS_WORKFLOW", "merge-review")
+	t.Setenv("GOOBERS_INPUT_PULLNUMBER", "359")
+	t.Setenv(executor.CredentialEnvVar(string(capability.ADOPRWrite)), "ado-token")
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	code, stdout, stderr := runArgs(t, "post-merge", root)
+	t.Logf("post-merge: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("post-merge: code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "(ado)") {
+		t.Fatalf("stdout = %q, want ADO post-merge path reached", stdout)
+	}
+}

@@ -156,6 +156,10 @@ func TestAuthoringCommandsSupportSourceFreeValidation(t *testing.T) {
 	workflowSpec["tasks"] = []any{
 		runExplainJSON(t, "workflow.spec.tasks[]").Example,
 	}
+	// dslVersion is not in the schema's `required` set, but since the §8.3
+	// cutover (#3507) dropped DSL 1.4 an omitted pin is a hard error, not a
+	// default — so an offline-authored workflow must pin a loadable version.
+	workflow["dslVersion"] = supportmatrix.NextDSLVersion
 	writeJSONDocument(t, filepath.Join(root, "config", "gaggles", "example", "workflows", workflowName+".yaml"), workflow)
 	code, stdout, stderr := runArgs(t, "validate", root)
 	if code != 0 || !strings.Contains(stdout, "2 goober(s), 2 workflow(s)") {
@@ -240,10 +244,31 @@ func writeJSONDocument(t *testing.T, path string, document map[string]any) {
 func assertAuthoringStamp(t *testing.T, stamp authoringStamp, schemaVersion string) {
 	t.Helper()
 	info := buildversion.Get()
+	// The stamp names the newest supported version, never the dropped
+	// CurrentDSLVersion (#3565).
+	wantDSLVersion, ok := supportmatrix.GetDSL().NewestSupported()
+	if !ok {
+		t.Fatal("support matrix declares no supported DSL version")
+	}
 	if stamp.SchemaVersion != schemaVersion ||
 		stamp.Version != info.Version ||
 		stamp.Commit != info.Commit ||
-		stamp.DSLVersion != supportmatrix.CurrentDSLVersion {
-		t.Fatalf("authoring stamp = %+v, build = %+v", stamp, info)
+		stamp.DSLVersion != wantDSLVersion {
+		t.Fatalf("authoring stamp = %+v, build = %+v, want dslVersion %s", stamp, info, wantDSLVersion)
+	}
+}
+
+func TestAuthoringStampNamesNewestSupportedDSLVersion(t *testing.T) {
+	stamp := newAuthoringStamp(explainOutputVersion)
+	if stamp.DSLVersion == supportmatrix.CurrentDSLVersion {
+		t.Fatalf("authoring stamp names the dropped DSL version %q", stamp.DSLVersion)
+	}
+	support, ok := supportmatrix.GetDSL().Lookup(stamp.DSLVersion)
+	if !ok || support.Level != supportmatrix.LevelSupported {
+		t.Fatalf("authoring stamp dslVersion %q is not a supported version (%+v, found=%t)", stamp.DSLVersion, support, ok)
+	}
+	newest, ok := supportmatrix.GetDSL().NewestSupported()
+	if !ok || stamp.DSLVersion != newest {
+		t.Fatalf("authoring stamp dslVersion = %q, want newest supported %q", stamp.DSLVersion, newest)
 	}
 }

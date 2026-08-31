@@ -51,6 +51,7 @@ func initTerminalPhaseDemo(t *testing.T, phase journal.RunPhase, signal bool) st
 	}
 	workflow := fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -235,7 +236,7 @@ func TestRunAndSignalHelpDocumentsTerminalExitCodes(t *testing.T) {
 	}
 
 	_, stdout, _ := runArgs(t, "help")
-	if !strings.Contains(stdout, "3 = escalated") {
+	if !strings.Contains(stdout, "3  Escalated run or signal") {
 		t.Fatalf("top-level help does not document escalation exit code: %q", stdout)
 	}
 }

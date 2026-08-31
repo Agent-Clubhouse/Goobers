@@ -18,11 +18,14 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/bandit"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/mcpio"
+	"github.com/goobers/goobers/internal/remediation"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/toolchain"
@@ -124,7 +127,7 @@ func appendRemediationEvidenceRequirement(jr executionJournal, stage, gateName s
 	return jr.Append(journal.Event{
 		Type: journal.EventRunnerAnnotation, Stage: stage, Gate: gateName,
 		Runner: map[string]any{
-			"kind":                            "remediation-evidence-required",
+			"kind":                            RemediationEvidenceRequiredKind,
 			"triggeringGate":                  cause.Gate,
 			"triggeringStage":                 cause.Stage,
 			"requiredFailureEvidencePointers": requiredContextPointerNames(pointers),
@@ -133,30 +136,53 @@ func appendRemediationEvidenceRequirement(jr executionJournal, stage, gateName s
 	})
 }
 
-type actionableEvidence struct {
+// ActionableEvidence is one required failure-evidence pointer's obligation.
+// Exported alongside RemediationEvidenceRequirements; actionableEvidence stays
+// as the in-package name so every existing reference and every recorded
+// annotation payload are unchanged.
+type ActionableEvidence struct {
 	Pointer    string             `json:"pointer"`
-	Ranges     []receiptLineRange `json:"ranges,omitempty"`
+	Ranges     []ReceiptLineRange `json:"ranges,omitempty"`
 	Signatures []string           `json:"signatures,omitempty"`
 }
+
+type actionableEvidence = ActionableEvidence
 
 func remediationEvidenceRequirements(jr executionJournal, pointers []apiv1.ContextPointer) []actionableEvidence {
 	rd, err := journal.OpenRead(jr.Dir())
 	if err != nil {
 		return nil
 	}
-	requirements := make([]actionableEvidence, 0, len(pointers))
+	return RemediationEvidenceRequirements(pointers, func(ptr apiv1.ArtifactPointer) ([]byte, error) {
+		return rd.ArtifactBytes(journal.Ref{
+			Path: ptr.Path, Digest: ptr.Digest, Size: ptr.Size, Integrity: ptr.Integrity,
+		})
+	})
+}
+
+// RemediationEvidenceRequirements derives, for each required failure-evidence
+// pointer, the check annotations a remediation attempt is obliged to have
+// actually read: the normalized signatures, and the line ranges those
+// signatures occupy in the evidence artifact.
+//
+// This IS the #3375 obligation. The receipt check on the far side compares an
+// attempt's claimed reads against these entries, so it decides whether a
+// remediation gets re-dispatched or escalates the run. Exported for #3882 so
+// the engine derives the identical obligation from the identical bytes rather
+// than a lookalike: two derivations here would mean the two lanes demand
+// different reads of the same failure.
+func RemediationEvidenceRequirements(
+	pointers []apiv1.ContextPointer,
+	resolve gate.ArtifactBytes,
+) []ActionableEvidence {
+	requirements := make([]ActionableEvidence, 0, len(pointers))
 	for _, pointer := range pointers {
-		requirement := actionableEvidence{Pointer: pointer.Name}
-		if pointer.Artifact == nil {
+		requirement := ActionableEvidence{Pointer: pointer.Name}
+		if pointer.Artifact == nil || resolve == nil {
 			requirements = append(requirements, requirement)
 			continue
 		}
-		data, err := rd.ArtifactBytes(journal.Ref{
-			Path:      pointer.Artifact.Path,
-			Digest:    pointer.Artifact.Digest,
-			Size:      pointer.Artifact.Size,
-			Integrity: pointer.Artifact.Integrity,
-		})
+		data, err := resolve(*pointer.Artifact)
 		if err != nil {
 			requirements = append(requirements, requirement)
 			continue
@@ -220,6 +246,7 @@ type journalAppender interface {
 
 type executionJournal interface {
 	journalAppender
+	AppendIfAbsent(journal.Event, func(journal.Event) bool) (bool, error)
 	Dir() string
 	RecordArtifact(name string, data []byte) (journal.Ref, error)
 	RecordStageArtifact(stage string, attempt int, class journal.AttemptClass, name string, data []byte) (journal.Ref, error)
@@ -240,9 +267,8 @@ func (h stageHeartbeat) Stop() error {
 
 // SpanStarter is the slice of the telemetry client the runner needs to open
 // run/task/gate spans (issue #126). *telemetry.Client satisfies it
-// structurally, mirroring internal/scheduler.SpanStarter's narrow-interface
-// pattern for the same reason: no import cycle, and the runner never depends
-// on telemetry's full surface.
+// structurally — the narrow-interface pattern keeps the import direction
+// clean, and the runner never depends on telemetry's full surface.
 type SpanStarter interface {
 	StartRun(ctx context.Context, attrs telemetry.RunAttributes) (context.Context, telemetry.Span, error)
 	StartTask(ctx context.Context, attrs telemetry.TaskAttributes) (context.Context, telemetry.Span, error)
@@ -360,6 +386,26 @@ type FailedOutcome struct {
 // item.
 type FailedHandler func(ctx context.Context, o FailedOutcome) error
 
+// ExistingFixOutcome describes a run terminating with no-work from the
+// implement stage because the fix for the claimed issue already exists on
+// main (issue #3236) — the value Config.ExistingFix receives.
+type ExistingFixOutcome struct {
+	RunID string
+	// ItemID is the backlog item id whose fix already exists.
+	ItemID string
+	// RepoRef is the target repository.
+	RepoRef apiv1.RepoRef
+	// Commit is the SHA of the commit that fixes the issue.
+	Commit string
+}
+
+// ExistingFixHandler is Config.ExistingFix's shape. Implementations are
+// instance-level (composition-root) policy: strip goobers:ready and
+// goobers:critical labels from the item to prevent reclaim, and optionally
+// close the issue, when a no-work completion indicates the fix already exists
+// on main (issue #3236).
+type ExistingFixHandler func(ctx context.Context, o ExistingFixOutcome) error
+
 // AgentProvenance identifies the configured model and preflighted harness
 // version for spans emitted before an agent executor is resolved or invoked.
 type AgentProvenance struct {
@@ -464,6 +510,13 @@ type Config struct {
 	// error is journaled (failed_handling_failed), never fatal to reaching the
 	// terminal phase.
 	Failed FailedHandler
+	// ExistingFix handles the instance-level consequence of the implement stage
+	// returning no-work with existingFixCommit set (issue #3236): stripping
+	// goobers:ready and goobers:critical labels to prevent reclaim when the fix
+	// for a reopened issue already exists on main. Called before the run's
+	// terminal run.finished event. Optional — nil is a no-op; a handler error is
+	// journaled, never fatal to reaching the terminal phase.
+	ExistingFix ExistingFixHandler
 	// GateGooberCapabilities resolves an agentic gate's reviewer goober name to
 	// the capabilities its definition declares. An agentic GATE has no
 	// stage-level capabilities of its own (apiv1.AgenticGate is just a Goober
@@ -485,6 +538,13 @@ type Config struct {
 	// PinnedWorkspace runs every repository-backed stage in one persistent
 	// checkout protected by a whole-run lease.
 	PinnedWorkspace bool
+	// RunnersDeclared reports that this instance declares a runners: inventory
+	// (instance.Config.Runners is non-empty). It gates placement provenance:
+	// an instance that declares no runners — and sets no GOOBERS_RUNNER_*
+	// identity env — journals no runner.placement events at all, so its
+	// journals stay byte-identical to before placement provenance existed
+	// (goobernetes-architecture.md §11 item 1). See placement.go.
+	RunnersDeclared bool
 	// PinnedCleanPolicy is none, ignored-safe, or full. Empty means none.
 	PinnedCleanPolicy string
 	// ScratchDir contains disposable workspaces for deterministic commands that
@@ -492,6 +552,9 @@ type Config struct {
 	ScratchDir string
 	// RunsDir is the journal's run directory (<instance-root>/runs).
 	RunsDir string
+	// Remediation is the read-only, read-model-backed institutional-memory
+	// index used to augment agentic remediation instructions.
+	Remediation *remediation.Index
 	// JournalAdvanced reports each durable journal append to derived readers.
 	// Optional; the callback owns failure reporting and must not fail the run.
 	JournalAdvanced func(runID string, seq uint64)
@@ -550,6 +613,164 @@ type Config struct {
 	BacklogQueryRequireLabels string
 }
 
+func banditConfig(machine *workflow.Machine, task apiv1.Task) (bandit.Config, bool, error) {
+	if task.Experiment == nil {
+		return bandit.Config{}, false, nil
+	}
+	e := task.Experiment
+	arms := make([]bandit.Arm, len(e.Arms))
+	for i, arm := range e.Arms {
+		arms[i] = bandit.Arm{Name: arm.Name, Variant: arm.Variant, GateLevel: arm.GateLevel}
+	}
+	defaultArm, err := defaultBanditArm(arms)
+	if err != nil {
+		return bandit.Config{}, false, fmt.Errorf("task %q experiment: %w", task.Name, err)
+	}
+	if e.DefaultGateLevel != 0 && e.DefaultGateLevel != defaultArm.GateLevel {
+		return bandit.Config{}, false, fmt.Errorf("task %q experiment defaultGateLevel (%d) must match default arm %q gateLevel (%d)",
+			task.Name, e.DefaultGateLevel, defaultArm.Name, defaultArm.GateLevel)
+	}
+
+	// Validate that the task transitions to an actual gate in the workflow.
+	if task.Next == "" {
+		return bandit.Config{}, false, fmt.Errorf("task %q with experiment must transition to a gate (Next field is empty)", task.Name)
+	}
+	gate, ok := machine.Gate(task.Next)
+	if !ok {
+		return bandit.Config{}, false, fmt.Errorf("task %q experiment: task transitions to %q but no such gate exists in workflow", task.Name, task.Next)
+	}
+
+	actualGateLevel, err := banditGateLevel(gate)
+	if err != nil {
+		return bandit.Config{}, false, fmt.Errorf("task %q experiment: %w", task.Name, err)
+	}
+	if defaultArm.GateLevel != actualGateLevel {
+		return bandit.Config{}, false, fmt.Errorf("task %q experiment control arm %q gateLevel (%d) must match actual gate %q level (%d)",
+			task.Name, defaultArm.Name, defaultArm.GateLevel, gate.Name, actualGateLevel)
+	}
+
+	// Validate that all arms have a gate level not lower than the actual gate.
+	for _, arm := range arms {
+		if arm.GateLevel < actualGateLevel {
+			return bandit.Config{}, false, fmt.Errorf("task %q experiment arm %q has gateLevel %d but actual gate %q has level %d (experimental arms must not weaken the gate)",
+				task.Name, arm.Name, arm.GateLevel, gate.Name, actualGateLevel)
+		}
+	}
+
+	return bandit.Config{Stage: task.Name, Seed: e.Seed, Arms: arms,
+		ExplorationBudget: e.ExplorationBudget, MinSamples: e.MinSamples,
+		MaxFailureRate: e.MaxFailureRate, MinLift: e.MinLift, Confidence: e.Confidence,
+		TrainWindow: e.TrainWindow, EvalWindow: e.EvalWindow,
+		DefaultGateLevel: defaultArm.GateLevel}, true, nil
+}
+
+func banditGateLevel(gate apiv1.Gate) (int, error) {
+	switch gate.Evaluator {
+	case apiv1.EvaluatorAutomated:
+		return 1, nil
+	case apiv1.EvaluatorAgentic:
+		return 2, nil
+	case apiv1.EvaluatorHuman:
+		return 3, nil
+	default:
+		return 0, fmt.Errorf("gate %q has unsupported evaluator %q", gate.Name, gate.Evaluator)
+	}
+}
+
+func defaultBanditArm(arms []bandit.Arm) (bandit.Arm, error) {
+	if len(arms) == 0 {
+		return bandit.Arm{}, fmt.Errorf("bandit requires at least one arm")
+	}
+	defaultArm := arms[0]
+	for _, arm := range arms {
+		if arm.Name == "control" {
+			defaultArm = arm
+			break
+		}
+	}
+	return defaultArm, nil
+}
+
+func loadBanditObservations(runsDir string, stage string) ([]bandit.Observation, error) {
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		return nil, fmt.Errorf("read experiment journals: %w", err)
+	}
+	var observations []bandit.Observation
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		reader, err := journal.OpenReadOnly(filepath.Join(runsDir, entry.Name()))
+		if err != nil {
+			if errors.Is(err, journal.ErrNotRunDirectory) {
+				continue
+			}
+			return nil, fmt.Errorf("open experiment journal %q: %w", entry.Name(), err)
+		}
+		events, err := reader.Events()
+		if err != nil {
+			return nil, fmt.Errorf("read experiment journal %q: %w", entry.Name(), err)
+		}
+		for _, event := range events {
+			if event.Type != journal.EventBanditObservation || event.Stage != stage {
+				continue
+			}
+			data, err := json.Marshal(event.Outputs)
+			if err != nil {
+				return nil, fmt.Errorf("encode experiment observation: %w", err)
+			}
+			var observation bandit.Observation
+			if err := json.Unmarshal(data, &observation); err != nil {
+				return nil, fmt.Errorf("decode experiment observation: %w", err)
+			}
+			observations = append(observations, observation)
+		}
+	}
+	bandit.SortObservations(observations)
+	return observations, nil
+}
+
+func banditObservationWindow(config bandit.Config, observations []bandit.Observation) string {
+	train := 0
+	for _, observation := range observations {
+		if observation.Stage == config.Stage && observation.Window == "train" {
+			train++
+		}
+	}
+	if train < config.TrainWindow {
+		return "train"
+	}
+	return "eval"
+}
+
+func configuredExperiment(task apiv1.Task) bool {
+	return task.Experiment != nil
+}
+
+func recordBanditOutcome(config bandit.Config, in StartInput, assignment bandit.Assignment, window string, result apiv1.ResultEnvelope, out bandit.Journal) (bandit.Observation, error) {
+	success := result.Status == apiv1.ResultSuccess
+	reward := 0.0
+	if success {
+		reward = 1
+	}
+	observation := bandit.Observation{
+		Stage: config.Stage, RunID: in.RunID, Arm: assignment.Arm,
+		Reward: reward, RewardSet: true, Success: success,
+		Window: window, Assigned: assignment.Seed,
+	}
+	return observation, config.RecordObservation(observation, out)
+}
+
+func recordBanditResult(config bandit.Config, in StartInput, assignment bandit.Assignment, window string, historical []bandit.Observation, result apiv1.ResultEnvelope, out bandit.Journal) error {
+	observation, err := recordBanditOutcome(config, in, assignment, window, result, out)
+	if err != nil {
+		return err
+	}
+	_, _, err = config.EvaluateAndRecord(append(historical, observation), out)
+	return err
+}
+
 // Runner advances a compiled workflow.Machine stage-by-stage, durably
 // recording every transition to the run journal, and dispatching tasks
 // through the pre-existing internal/invoke seam. It is the substrate-neutral
@@ -582,6 +803,13 @@ func New(cfg Config) (*Runner, error) {
 	}
 	if cfg.RepoCloneURL == nil {
 		cfg.RepoCloneURL = defaultRepoCloneURL
+	}
+	if cfg.Remediation == nil {
+		index, err := remediation.LoadIndex(cfg.RunsDir, nil)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		cfg.Remediation = index
 	}
 	toolchains := cfg.ToolchainVerifier
 	if toolchains == nil {
@@ -621,6 +849,11 @@ type StartInput struct {
 	Trigger journal.Trigger
 	// RepoRef is the target repository every stage worktree branches from.
 	RepoRef apiv1.RepoRef
+	// WorkspaceBranch and WorkspaceBranchSHA allow a continuation to retain an
+	// already-created branch and pin the commit observed before execution.
+	WorkspaceBranch    string
+	WorkspaceBranchSHA string
+	ContextPointers    []apiv1.ContextPointer
 	// Item is the originating backlog item, snapshotted immutably into the
 	// journal at run start. Nil for a schedule/signal-triggered producer run.
 	Item *apiv1.BacklogItem
@@ -746,6 +979,19 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		inputs["item"] = b
 		inputIntegrity["item"] = in.Item.Integrity
 	}
+	// Pin the reviewer-goober capability map (#294) alongside the definition:
+	// an agentic gate's reviewer grants are instance policy, not part of the
+	// workflow definition, so post-start consumers (the daemon credential
+	// plane, PR #3528) read them from this snapshot via
+	// PinnedGateGooberCapabilities rather than the currently-served config.
+	if len(r.cfg.GateGooberCapabilities) > 0 {
+		gateCaps, err := json.Marshal(r.cfg.GateGooberCapabilities)
+		if err != nil {
+			return Result{}, fmt.Errorf("runner: marshal pinned gate-goober capabilities: %w", err)
+		}
+		inputs[journal.PinnedGateGooberCapabilitiesInputName] = gateCaps
+		inputIntegrity[journal.PinnedGateGooberCapabilitiesInputName] = apiv1.IntegrityTrusted
+	}
 
 	// registrar/scrubber are fresh per run (never shared — a run's secrets
 	// have no business outliving it in an in-memory registry). Chaining the
@@ -758,14 +1004,18 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 	registrar, scrubber := journal.DefaultScrubber()
 	pinnedControls := in.RunControls
 	jr, err := journal.Create(r.cfg.RunsDir, journal.RunIdentity{
-		RunID:           in.RunID,
-		Workflow:        in.Machine.Def.Name,
-		WorkflowVersion: in.Machine.Def.Version,
-		WorkflowDigest:  in.Machine.Digest(),
-		GooberDigest:    in.GooberDigest,
-		Gaggle:          in.Gaggle,
-		RunControls:     &pinnedControls,
-		Trigger:         in.Trigger,
+		RunID:               in.RunID,
+		Workflow:            in.Machine.Def.Name,
+		WorkflowVersion:     in.Machine.Def.Version,
+		WorkflowDigest:      in.Machine.Digest(),
+		GooberDigest:        in.GooberDigest,
+		Gaggle:              in.Gaggle,
+		RunControls:         &pinnedControls,
+		Trigger:             in.Trigger,
+		WorkspaceBranch:     in.WorkspaceBranch,
+		WorkspaceBranchSHA:  in.WorkspaceBranchSHA,
+		WorkspaceRepository: repoRefPtr(in.RepoRef),
+		ContextPointers:     append([]apiv1.ContextPointer(nil), in.ContextPointers...),
 	}, inputs, journal.WithScrubber(scrubber), journal.WithInputIntegrity(inputIntegrity), journal.WithAppendObserver(r.cfg.JournalAdvanced))
 	if err != nil {
 		return Result{}, fmt.Errorf("runner: create journal for run %q: %w", in.RunID, err)
@@ -821,6 +1071,8 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		}
 
 		ws := newWalkState(jr, in, registrar, in.Machine.Def.Spec.Start)
+		ws.pointers = append(ws.pointers, in.ContextPointers...)
+		ws.workspaceBranch = in.WorkspaceBranch
 		if machineUsesRepo(in.Machine) && !deferRunBranchProvenance(in.Trigger.Kind) {
 			if err := r.recordRunBranch(jr, in); err != nil {
 				span.Fail(err)
@@ -871,7 +1123,7 @@ func runSpanOutcome(phase journal.RunPhase) (string, bool) {
 
 // startRunSpan opens the run's root span, if telemetry is configured. A zero
 // telemetry.Span is safe to use (its methods no-op), so callers need no nil
-// checks — mirrors internal/scheduler.Scheduler.startSpan. The returned ctx
+// checks. The returned ctx
 // carries the run's trace id (RunID, per telemetry.Client.StartRun) so every
 // task/gate span opened while walking this run joins the same trace.
 func (r *Runner) startRunSpan(ctx context.Context, in StartInput) (context.Context, telemetry.Span) {
@@ -974,23 +1226,29 @@ type resumeRetryAccounting struct {
 // that can drift (the #624 shared-constant pattern).
 const BaseSyncConflictErrorCode = "base_sync_conflict"
 
+// RetryDecisionKind and RetryFailureClassKey are the runner.annotation shape
+// routeRetryDecision writes when a gate's fail branch re-enters an
+// already-completed stage, and priorRepassCause reads back to tell an
+// infrastructure repass from a content one. Exported for the same reason
+// BaseSyncConflictErrorCode is (the #624 shared-constant pattern): the Temporal
+// engine writes the identical annotation on its own gate repass route, and a
+// string copy on that side would drift silently — the reader keys on the exact
+// kind and class key, so a divergence is invisible until an infra repass is
+// misclassified as content.
+const (
+	RetryDecisionKind    = "stage.retry.decision"
+	RetryFailureClassKey = "retryFailureClass"
+)
+
 const (
 	interruptedAttemptErrorCode = "interrupted"
 	interruptedAttemptMarkerKey = "interruptedAttempt"
-	retryFailureClassKey        = "retryFailureClass"
+	retryFailureClassKey        = RetryFailureClassKey
 	infraCommittedWorkKey       = "infraFailedAttemptCommittedWork"
-	retryDecisionKind           = "stage.retry.decision"
+	retryDecisionKind           = RetryDecisionKind
 	toleratedFailureErrorCode   = "stage_failure_tolerated"
 	baseSyncConflictErrorCode   = BaseSyncConflictErrorCode
 )
-
-type baseSyncConflictArtifact struct {
-	Code             string   `json:"code"`
-	Message          string   `json:"message"`
-	Branch           string   `json:"branch"`
-	BaseRef          string   `json:"baseRef"`
-	ConflictingFiles []string `json:"conflictingFiles"`
-}
 
 // walkState owns the execution frame carried between workflow steps. Resume
 // reconstructs the same frame from the journal that Start initializes empty.
@@ -1129,12 +1387,17 @@ func (r *Runner) branchNamespaceFor(gaggle string) string {
 }
 
 func (r *Runner) recordRunBranch(jr journalAppender, in StartInput) error {
+	branch := in.WorkspaceBranch
+	if branch == "" {
+		branch = providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID)
+	}
 	return jr.Append(journal.Event{
 		Type: journal.EventRefTouched,
 		ExternalRef: &journal.ExternalRef{
-			Provider: string(in.RepoRef.Provider),
-			Kind:     "branch",
-			ID:       providers.BranchNameIn(r.branchNamespaceFor(in.Gaggle), in.Machine.Def.Name, in.RunID),
+			Provider:  string(in.RepoRef.Provider),
+			Kind:      "branch",
+			ID:        branch,
+			CommitSHA: in.WorkspaceBranchSHA,
 		},
 	})
 }
@@ -1553,6 +1816,7 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 			if !advance {
 				return res, nil
 			}
+			var injected *apiv1.ContextPointer
 			if gr.VerdictArtifact != nil {
 				// #412: the next dispatch — a repass back to the stage that
 				// produced the subject this gate just evaluated, most
@@ -1566,11 +1830,34 @@ func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 				pointer := apiv1.ContextPointer{
 					Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
 				}
+				injected = &pointer
 				if ws.parallel != nil {
 					ws.parallel.recordCurrentPointer(pointer)
 				} else {
 					ws.pointers = append(ws.pointers, pointer)
 				}
+			}
+			// The ADVANCE path's half of the learning injection, under the
+			// same canonical predicate stepGate's retry arm uses.
+			//
+			// A gate branch is a correctable re-entry independently of
+			// whether retryFailureClassForGateResult classified the subject's
+			// failure, and the branch that matters most does not classify: an
+			// agentic reviewer resolving needs-changes back into its
+			// implementer is not an automated status-equals check over
+			// nonzero_exit/base_sync_conflict, and is not `infra`, so
+			// routeRetryDecision declined it and the run arrived here with
+			// retry == false. Before this, the main implementation lane's
+			// reviewer→implement loop was therefore the one true repass in
+			// the system that never received a correction.
+			//
+			// Routing is untouched: `next` is gr.Target (the predicate
+			// excludes every reserved terminal, which is exactly the set
+			// gateTransition consumes rather than advancing to), and no
+			// retry-decision annotation is written here — that stays the
+			// classifier's to own.
+			if terminal, failed, err := r.injectLearningEpisode(ctx, ws, g, next, gr, injected); failed {
+				return terminal, err
 			}
 			if ws.parallel != nil && next == workflow.TargetJoin && ws.lastResult.Status == apiv1.ResultFailure && !gateClearsFailure(gr, g) {
 				ws.parallel.markCurrentFailed()
@@ -1820,11 +2107,7 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 				}
 				return escalation, false, Result{}, false, nil
 			}
-			ws.retryInstructionAddendum = fmt.Sprintf(
-				"Your unchanged remediation result was rejected by the runner: %s. Inspect every required "+
-					"failure-evidence pointer with list_inputs and read_input or grep_input, then explain why the "+
-					"failure is non-actionable if no source change is needed. This was rejection %d of %d — after "+
-					"the last one this gate escalates the run instead of dispatching you again.",
+			ws.retryInstructionAddendum = RemediationEvidenceRejectionAddendum(
 				evidenceErr.info.Message, rejections, maxRemediationEvidenceRejections)
 			ws.state = ws.lastStage
 			return gr, true, Result{}, false, nil
@@ -1840,19 +2123,351 @@ func (r *Runner) stepGate(ctx context.Context, ws *walkState, g apiv1.Gate) (gat
 		return gr, false, terminal, true, failErr
 	}
 	if retry {
+		var injected *apiv1.ContextPointer
 		if gr.VerdictArtifact != nil {
 			pointer := apiv1.ContextPointer{
 				Name: g.Name + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
 			}
+			injected = &pointer
 			if ws.parallel != nil {
 				ws.parallel.recordCurrentPointer(pointer)
 			} else {
 				ws.pointers = append(ws.pointers, pointer)
 			}
 		}
+		// #3929: the episode — and ONLY the episode — is gated on the branch
+		// being a true repass. Everything else in this block is the retry
+		// decision itself and is unconditional: the annotation is already
+		// written (routeRetryDecision, with repassAttempt 0 on a forward
+		// branch), the verdict pointer still travels, and ws.state still
+		// takes the branch. A gate that routes ONWARD sends work to a stage
+		// that has not run, which has produced nothing to correct.
+		//
+		// The predicate is the canonical one every driver and every walk
+		// shares, and it is deliberately NOT "retry": a branch the retry
+		// classifier declines — an agentic reviewer's needs-changes, above
+		// all — reaches the same re-entry through the advance path in walk().
+		// It is applied inside recordGateBranchEpisode (#3932) rather than
+		// here, so the concurrent branch walker cannot answer it differently.
+		if terminal, failed, err := r.injectLearningEpisode(ctx, ws, g, retryTarget, gr, injected); failed {
+			return gr, false, terminal, true, err
+		}
 		ws.state = retryTarget
 	}
 	return gr, retry, Result{}, false, nil
+}
+
+// gateBranchInjection is what a gate branch that re-enters a stage produces
+// for the walk that took it: the reviewer's verdict pointer, and the learning
+// episode's pointer when the branch is one the shared predicate admits.
+//
+// It exists for the CONCURRENT branch walker, which has no walkState to hand
+// injectLearningEpisode and so cannot use that method's routing. Both walkers
+// therefore share the production (recordGateBranchEpisode) while each routes
+// into its own accumulator: the sequential walk into ws.pointers or the active
+// branch, runBranch into result.pointers with its artifact/produced accounting.
+type gateBranchInjection struct {
+	verdict *apiv1.ContextPointer
+	episode *apiv1.ContextPointer
+}
+
+// pointers returns the pointers to accumulate, verdict first — the order the
+// sequential walk has always appended them in, and therefore the order a
+// re-entered stage's envelope carries them in.
+func (i gateBranchInjection) pointers() []apiv1.ContextPointer {
+	out := make([]apiv1.ContextPointer, 0, 2)
+	if i.verdict != nil {
+		out = append(out, *i.verdict)
+	}
+	if i.episode != nil {
+		out = append(out, *i.episode)
+	}
+	return out
+}
+
+// recordGateBranchInjection is the CONCURRENT branch walker's whole gate-branch
+// arm, produced once so it cannot drift from the sequential walk's (#3932).
+//
+// The local runner has two walks that evaluate a gate and take its branch:
+// stepGate/walk, which serve the sequential walk and every branch of a
+// sequentially-executed parallel, and runBranch, which serves the concurrent
+// walk when maxConcurrentBranches > 1. runBranch carried a hand-copied HALF of
+// the arm — the verdict pointer and not the learning episode — so
+// maxConcurrentBranches, a scheduling bound tuned for machine capacity and
+// routinely different between a laptop, CI and a deployment, decided whether a
+// repass received its correction, its context pointer and its derived-integrity
+// downgrade. Nothing in the DSL says that bound is semantic, and it is not.
+//
+// The two arms are kept identical by construction rather than by review: this
+// helper produces both halves, and the episode half is the shared
+// recordGateBranchEpisode the sequential walk reaches through
+// injectLearningEpisode. A walker cannot acquire a different predicate or a
+// different episode without changing the one place both read.
+//
+// replayed is the resume guard runBranch already applied to the verdict
+// pointer: a branch resuming across a gate.evaluated boundary re-derives the
+// gate result from history rather than evaluating it, and its previously
+// recorded pointers are rebuilt by pendingParallel. Recording the artifact
+// again would double-count it and file a second annotation for one injection.
+// The sequential walk has no such boundary.
+func recordGateBranchInjection(
+	jr executionJournal,
+	in StartInput,
+	gateName, target string,
+	gr gate.Result,
+	sourceStage string,
+	sourceResult apiv1.ResultEnvelope,
+	replayed bool,
+) (gateBranchInjection, error) {
+	var out gateBranchInjection
+	if replayed {
+		return out, nil
+	}
+	if gr.VerdictArtifact != nil {
+		out.verdict = &apiv1.ContextPointer{
+			Name: gateName + ".verdict", Integrity: gr.VerdictArtifact.Integrity, Artifact: gr.VerdictArtifact,
+		}
+	}
+	episode, err := recordGateBranchEpisode(jr, in, gateName, target, gr, sourceStage, sourceResult, out.verdict)
+	if err != nil {
+		return gateBranchInjection{}, err
+	}
+	out.episode = episode
+	return out, nil
+}
+
+// recordGateBranchEpisode is THE learning-injection producer: one predicate and
+// one construction, reached by every arm that can re-enter a stage.
+//
+// #3929 ruled which branches owe an episode and #3943 spelled the ruling as
+// LearningEpisodeAppliesToBranch, shared with the engine. #3932's point is that
+// the ruling has to be APPLIED in one place too: the runner reaches a
+// stage-re-entering branch from four arms — stepGate's retry arm, walk()'s
+// advance path, and runBranch's own two — and a predicate re-read per arm is a
+// predicate that will eventually differ per arm. It already had.
+//
+// Returns a nil pointer, and journals nothing, for a branch the predicate
+// declines. That is a disposition (a forward branch, a terminal, an escalation)
+// rather than a correction: a stage that has not run has produced nothing to
+// correct.
+func recordGateBranchEpisode(
+	jr executionJournal,
+	in StartInput,
+	gateName, target string,
+	gr gate.Result,
+	sourceStage string,
+	sourceResult apiv1.ResultEnvelope,
+	verdictPointer *apiv1.ContextPointer,
+) (*apiv1.ContextPointer, error) {
+	if !LearningEpisodeAppliesToBranch(LearningEpisodeBranchFor(gr)) {
+		return nil, nil
+	}
+	return recordLearningInjection(jr, in, gateName, target, gr, sourceStage, sourceResult, verdictPointer)
+}
+
+// injectLearningEpisode commits the repass correction and hands the re-entered
+// stage a pointer to it, scoping that pointer to the active parallel branch
+// when one is running.
+//
+// It is a method with two call sites — stepGate's retry arm and walk()'s
+// advance path — because the branches that owe an episode are split across
+// them by a condition that has nothing to do with the episode: whether
+// retryFailureClassForGateResult happens to classify the failure. Both pass
+// the same already-appended "<gate>.verdict" pointer as the episode's
+// evidence, so the artifact bytes do not depend on which arm the branch
+// travelled.
+//
+// Neither call site reads the LearningEpisodeAppliesToBranch predicate itself
+// (#3932): it lives inside recordGateBranchEpisode, with the construction, so
+// that the concurrent branch walker — which has no walkState and so cannot use
+// this method at all — cannot acquire a different answer to the same question.
+// This method is the ROUTING half; the production is shared.
+//
+// The bool reports that the run has TERMINATED (the caller must return the
+// accompanying Result and error): a correction that cannot be journaled must
+// not silently route the run.
+func (r *Runner) injectLearningEpisode(
+	ctx context.Context, ws *walkState, g apiv1.Gate, target string,
+	gr gate.Result, verdictPointer *apiv1.ContextPointer,
+) (Result, bool, error) {
+	episode, err := recordGateBranchEpisode(
+		ws.jr, ws.in, g.Name, target, gr, ws.lastStage, ws.lastResult, verdictPointer,
+	)
+	if err != nil {
+		terminal, failErr := r.failTerminal(ctx, ws.in.RunID, ws.jr, ws.in.RepoRef, g.Name, ws.steps,
+			fmt.Errorf("runner: journal learning episode injection for gate %q: %w", g.Name, err))
+		return terminal, true, failErr
+	}
+	if episode != nil {
+		if ws.parallel != nil {
+			ws.parallel.recordCurrentPointer(*episode)
+		} else {
+			ws.pointers = append(ws.pointers, *episode)
+		}
+	}
+	return Result{}, false, nil
+}
+
+func recordLearningInjection(
+	jr executionJournal,
+	in StartInput,
+	gateName, target string,
+	result gate.Result,
+	sourceStage string,
+	sourceResult apiv1.ResultEnvelope,
+	pointer *apiv1.ContextPointer,
+) (*apiv1.ContextPointer, error) {
+	if jr == nil {
+		return nil, nil
+	}
+	addressing := learningEpisodeAddressing(jr.Dir(), gateName, sourceStage, target, result.Verdict != nil)
+	sourceSeq, sourceAttempt := addressing.SourceSeq, addressing.SourceAttempt
+	if sourceAttempt == 0 {
+		sourceAttempt = result.Attempt
+	}
+	// The episode's BYTES are built by the shared builder (parity3882.go), not
+	// here: the artifact's digest is conformance-normative, so the engine's own
+	// injection has to produce the identical struct rather than a second
+	// hand-assembled copy of it.
+	episode := BuildLearningEpisode(LearningEpisodeInput{
+		RunID:             in.RunID,
+		Workflow:          in.Machine.Def.Name,
+		WorkflowDigest:    in.Machine.Digest(),
+		GooberDigest:      in.GooberDigest,
+		Gate:              gateName,
+		Stage:             sourceStage,
+		SourceSeq:         sourceSeq,
+		SourceAttempt:     sourceAttempt,
+		TargetNextAttempt: addressing.TargetNextAttempt,
+		Verdict:           result.Verdict,
+		SourceResult:      sourceResult,
+		VerdictPointer:    pointer,
+	})
+	data, err := json.Marshal(episode)
+	if err != nil {
+		return nil, fmt.Errorf("encode learning episode: %w", err)
+	}
+	name := LearningEpisodeArtifactName(gateName, sourceSeq)
+	ref, err := jr.RecordArtifact(name, data)
+	if err != nil {
+		return nil, fmt.Errorf("record learning episode: %w", err)
+	}
+	episodePointer := &apiv1.ContextPointer{
+		Name:      LearningEpisodePointerName(sourceSeq),
+		Integrity: ref.Integrity,
+		Artifact: &apiv1.ArtifactPointer{
+			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
+			MediaType: "application/json", Integrity: ref.Integrity,
+		},
+	}
+	runner := LearningEpisodeAnnotation(episode, target, ref.Path, ref.Digest)
+	if err := jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		// #3931: Stage is the TARGET and so is Attempt. A stage-scoped event's
+		// Attempt is that stage's attempt number, and the injection is
+		// evidence for the invocation it FEEDS — which, on a nontrivial
+		// send-back, is not the subject's attempt plus one.
+		Stage:     target,
+		Attempt:   episode.NextAttempt,
+		Name:      name,
+		Ref:       &ref,
+		Integrity: ref.Integrity,
+		Runner:    runner,
+	}); err != nil {
+		return nil, err
+	}
+	return episodePointer, nil
+}
+
+func learningEpisodeAddressing(runDir, gateName, sourceStage, target string, reviewer bool) LearningEpisodeAddressing {
+	rd, err := journal.OpenRead(runDir)
+	if err != nil {
+		return LearningEpisodeAddressing{}
+	}
+	events, err := rd.Events()
+	if err != nil {
+		return LearningEpisodeAddressing{}
+	}
+	return ResolveLearningEpisodeAddressing(events, gateName, sourceStage, target, reviewer)
+}
+
+func learningFindingsForRepass(gateName, stage string, verdict *apiv1.Verdict, result apiv1.ResultEnvelope) []apiv1.Finding {
+	if verdict != nil && len(verdict.Findings) > 0 {
+		findings := append([]apiv1.Finding(nil), verdict.Findings...)
+		for i := range findings {
+			learning.NormalizeFinding(&findings[i], gateName, findings[i].EvidenceDigest)
+		}
+		return findings
+	}
+	message := strings.TrimSpace(result.Summary)
+	if result.Error != nil {
+		if result.Error.Message != "" {
+			message = result.Error.Message
+		}
+		if message == "" {
+			message = result.Error.Code
+		}
+	}
+	if message == "" {
+		message = "validation failed"
+	}
+	finding := apiv1.Finding{
+		Severity:               apiv1.SeverityError,
+		Message:                message,
+		Location:               stage,
+		LearningClassification: apiv1.LearningValidation,
+	}
+	learning.NormalizeFinding(&finding, stage, learningEvidenceDigest(result.Artifacts))
+	return []apiv1.Finding{finding}
+}
+
+func learningEvidence(pointer *apiv1.ContextPointer, verdict *apiv1.Verdict, result apiv1.ResultEnvelope) []apiv1.ArtifactPointer {
+	var evidence []apiv1.ArtifactPointer
+	if pointer != nil && pointer.Artifact != nil {
+		evidence = append(evidence, *pointer.Artifact)
+	}
+	if verdict != nil {
+		evidence = append(evidence, verdict.Evidence...)
+	}
+	evidence = append(evidence, result.Artifacts...)
+	seen := map[string]bool{}
+	out := evidence[:0]
+	for _, artifact := range evidence {
+		key := artifact.Digest + "\x00" + artifact.Path
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, artifact)
+	}
+	return out
+}
+
+func learningEvidenceDigest(artifacts []apiv1.ArtifactPointer) string {
+	digests := make([]string, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.Digest != "" {
+			digests = append(digests, artifact.Digest)
+		}
+	}
+	slices.Sort(digests)
+	if len(digests) == 0 {
+		return ""
+	}
+	return apiv1.Digest([]byte(strings.Join(digests, "\n")))
+}
+
+func runnerInt(value any) (int, bool) {
+	switch n := value.(type) {
+	case int:
+		return n, true
+	case float64:
+		return int(n), true
+	case json.Number:
+		value, err := n.Int64()
+		return int(value), err == nil
+	}
+	return 0, false
 }
 
 // closeParallelForLoudExit journals the current branch's terminal settlement,
@@ -2567,7 +3182,7 @@ func dependencyContextInspectionError(cause, validation string, result apiv1.Res
 func (r *Runner) validateDependencyNotMet(jr executionJournal, _ string, result apiv1.ResultEnvelope, requiredPointers []apiv1.ContextPointer) *apiv1.ErrorInfo {
 	if result.Transcript == nil {
 		return &apiv1.ErrorInfo{
-			Code: "CONTEXT_NOT_INSPECTED",
+			Code: ContextNotInspectedCode,
 			Message: dependencyContextInspectionError(
 				"cannot inspect required context: result transcript pointer is missing",
 				pointerValidationErrorMessage(requiredContextPointerNames(requiredPointers), false),
@@ -2576,15 +3191,11 @@ func (r *Runner) validateDependencyNotMet(jr executionJournal, _ string, result 
 		}
 	}
 	requiredNames := requiredContextPointerNames(requiredPointers)
-	requiredSet := make(map[string]struct{}, len(requiredNames))
-	for _, name := range requiredNames {
-		requiredSet[name] = struct{}{}
-	}
 
 	rd, err := journal.OpenRead(jr.Dir())
 	if err != nil {
 		return &apiv1.ErrorInfo{
-			Code: "CONTEXT_NOT_INSPECTED",
+			Code: ContextNotInspectedCode,
 			Message: dependencyContextInspectionError(
 				fmt.Sprintf("cannot inspect required context: open run journal %q: %v", jr.Dir(), err),
 				pointerValidationErrorMessage(requiredNames, false),
@@ -2601,7 +3212,7 @@ func (r *Runner) validateDependencyNotMet(jr executionJournal, _ string, result 
 	transcript, err := rd.SpanBytes(transcriptRef)
 	if err != nil {
 		return &apiv1.ErrorInfo{
-			Code: "CONTEXT_NOT_INSPECTED",
+			Code: ContextNotInspectedCode,
 			Message: dependencyContextInspectionError(
 				fmt.Sprintf("cannot inspect required context: read transcript %q: %v", transcriptRef.Path, err),
 				pointerValidationErrorMessage(requiredNames, false),
@@ -2609,39 +3220,29 @@ func (r *Runner) validateDependencyNotMet(jr executionJournal, _ string, result 
 			),
 		}
 	}
-	sawListInputs, inspected := parseTranscriptInputInspection(transcript, requiredSet)
-	missing := make([]string, 0, len(requiredNames))
-	for _, name := range requiredNames {
-		if !inspected[name] {
-			missing = append(missing, name)
-		}
-	}
-	if sawListInputs && len(missing) == 0 {
-		return nil
-	}
-	return &apiv1.ErrorInfo{
-		Code:    "CONTEXT_NOT_INSPECTED",
-		Message: dependencyValidationMessage(pointerValidationErrorMessage(missing, sawListInputs), result),
-	}
+	// The verdict itself is the PURE function both runners share
+	// (parity3882.go): this method's job is resolving the transcript bytes,
+	// which is the only part that differs between a run directory and a
+	// worker's span store.
+	return ValidateDependencyNotMetTranscript(transcript, requiredPointers, result)
 }
 
 func (r *Runner) validateDependencyResult(jr executionJournal, stage string, result apiv1.ResultEnvelope, invocationPointers []apiv1.ContextPointer) apiv1.ResultEnvelope {
-	if result.Status != apiv1.ResultBlocked || result.Error == nil ||
-		result.Error.Code != "DEPENDENCY_NOT_MET" || len(invocationPointers) == 0 {
+	if !AppliesDependencyValidation(result, invocationPointers) {
 		return result
 	}
-	if validationErr := r.validateDependencyNotMet(jr, stage, result, invocationPointers); validationErr != nil {
-		result.Error = validationErr
-		result.Outputs = nil
-		result.Artifacts = nil
-	}
-	return result
+	return RejectDependencyResult(result, r.validateDependencyNotMet(jr, stage, result, invocationPointers))
 }
 
-type receiptLineRange struct {
+// ReceiptLineRange is one inclusive line span of an evidence artifact an
+// attempt is obliged to have read (or claims to have read). Exported with the
+// obligation it belongs to; receiptLineRange remains the in-package name.
+type ReceiptLineRange struct {
 	Start int `json:"start"`
 	End   int `json:"end"`
 }
+
+type receiptLineRange = ReceiptLineRange
 
 func parseReceiptInputInspection(jr executionJournal, stage string, required map[string]string, actionable map[string]actionableEvidence) (bool, map[string]bool, error) {
 	rd, err := journal.OpenRead(jr.Dir())
@@ -2836,7 +3437,7 @@ func remediationEvidenceRequirementsFromJournal(jr executionJournal, stage strin
 	}
 	requirements := make(map[string]actionableEvidence)
 	for _, event := range events {
-		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != "remediation-evidence-required" ||
+		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != RemediationEvidenceRequiredKind ||
 			event.Stage != stage {
 			continue
 		}
@@ -2923,11 +3524,10 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 	}
 
 	if result.Status == apiv1.ResultBlocked && result.Error != nil &&
-		result.Error.Code == "CONTEXT_NOT_INSPECTED" {
+		result.Error.Code == ContextNotInspectedCode {
 		// runTask validates before stage.finished is journaled, so the retry
 		// reason survives a crash and is available as the prior result.
-		ws.retryInstructionAddendum = "Your previous result was rejected by the runner: " + result.Error.Message +
-			". Inspect every provided context pointer with list_inputs and read_input or grep_input before returning DEPENDENCY_NOT_MET."
+		ws.retryInstructionAddendum = ContextNotInspectedAddendum(result.Error.Message)
 		return t.Name, Result{}, true, nil
 	}
 
@@ -3102,6 +3702,47 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		// query-backlog -> curate/implement wiring (Next names a real,
 		// non-reserved state) still terminates cleanly on an empty tick
 		// without the workflow author having to special-case it in the DSL.
+
+		// Issue #3236: when implement returns no-work with existingFixCommit,
+		// notify the handler before completing so labels can be stripped to
+		// prevent reclaim.
+		if t.Name == "implement" && r.cfg.ExistingFix != nil && result.Outputs != nil {
+			if commit, ok := result.Outputs["existingFixCommit"].(string); ok && commit != "" {
+				var itemID string
+				if item != nil {
+					itemID = item.ID
+				} else if r.cfg.ClaimedItems != nil {
+					ids, resolveErr := r.cfg.ClaimedItems(runID)
+					if resolveErr != nil {
+						if aerr := jr.Append(journal.Event{
+							Type: journal.EventError, Stage: t.Name,
+							Error: &journal.ErrorDetail{Code: "existingfix_item_resolution_failed", Message: resolveErr.Error()},
+						}); aerr != nil {
+							res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal existingfix item-resolution error for %q: %w", t.Name, aerr))
+							return "", res, false, err
+						}
+					} else if len(ids) > 0 {
+						itemID = ids[0]
+					}
+				}
+				o := ExistingFixOutcome{
+					RunID:   runID,
+					ItemID:  itemID,
+					RepoRef: repoRef,
+					Commit:  commit,
+				}
+				if herr := r.cfg.ExistingFix(stalledAttemptContext(ctx), o); herr != nil {
+					if aerr := jr.Append(journal.Event{
+						Type: journal.EventError, Stage: t.Name,
+						Error: &journal.ErrorDetail{Code: "existingfix_handling_failed", Message: herr.Error()},
+					}); aerr != nil {
+						res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal existingfix handler error for %q: %w", t.Name, aerr))
+						return "", res, false, err
+					}
+				}
+			}
+		}
+
 		res, err = r.finish(runID, jr, journal.PhaseCompleted, t.Name, steps)
 		res.NoWork = steps == 1
 		return "", res, false, err
@@ -3176,21 +3817,32 @@ func (r *Runner) finish(runID string, jr *journal.Run, phase journal.RunPhase, f
 // finishTakeover performs terminal cleanup for an already-claimed watchdog
 // takeover, or for a recovered run with no live owner.
 func (r *Runner) finishTakeover(runID string, jr *journal.Run, phase journal.RunPhase, finalState string, steps int) (Result, error) {
-	if err := r.recordPinnedOutcome(runID, phase, jr); err != nil {
-		return Result{}, err
-	}
-	if err := r.prepareTerminal(runID, phase, jr); err != nil {
-		return Result{}, err
-	}
+	// Pinned-workspace bookkeeping is diagnostic state, not the run's terminal
+	// record. A local I/O failure here must be surfaced, but it must not strand
+	// the run before run.finished and FinalizeTerminal release its claims.
+	pinnedOutcomeErr := r.recordPinnedOutcome(runID, phase, jr)
+	// PrepareTerminal is BEST EFFORT and must never prevent the run from being
+	// recorded terminal. It performs external forge cleanup (branch delete,
+	// goobers:run-aborted labeling), so it fails on any forge outage or
+	// credential fault. Returning early on that error used to skip the
+	// run.finished append entirely, which leaves the run reconstructing as
+	// PhaseRunning forever. Claim recovery depends on that phase, so a terminal
+	// run must be recorded before external cleanup errors are returned.
+	//
+	// The preparer journals its own failure facts (branch_delete_failed /
+	// run_abort_label_failed), so the diagnostic survives; the error is
+	// returned to the caller AFTER terminalization so nothing is silently
+	// swallowed.
+	prepareErr := r.prepareTerminal(runID, phase, jr)
 	if err := jr.Append(journal.Event{Type: journal.EventRunFinished, Status: string(phase)}); err != nil {
-		return Result{}, fmt.Errorf("runner: journal run.finished: %w", err)
+		return Result{}, errors.Join(pinnedOutcomeErr, prepareErr, fmt.Errorf("runner: journal run.finished: %w", err))
 	}
 	res := Result{Phase: phase, FinalState: finalState, Steps: steps}
-	r.notifyTerminal(runID, phase, finalState)
+	notifyErr := r.notifyTerminal(jr, runID, phase, finalState)
 	if err := r.FinalizeTerminal(runID, phase); err != nil {
-		return res, err
+		return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr, err)
 	}
-	return res, nil
+	return res, errors.Join(pinnedOutcomeErr, prepareErr, notifyErr)
 }
 
 func (r *Runner) recordPinnedOutcome(runID string, phase journal.RunPhase, jr *journal.Run) error {
@@ -3218,10 +3870,27 @@ func (r *Runner) recordPinnedOutcome(runID string, phase journal.RunPhase, jr *j
 	})
 }
 
-func (r *Runner) notifyTerminal(runID string, phase journal.RunPhase, finalState string) {
-	if r.cfg.NotifyTerminal != nil {
-		_ = r.cfg.NotifyTerminal(runID, phase, finalState)
+// notifyTerminal invokes the configured TerminalNotifier. A notifier failure —
+// e.g. the instance circuit breaker failing to apply goobers:needs-human — is
+// journaled (terminal_notification_failed) and swallowed rather than discarded
+// (#3646): the run must still reach its terminal phase, but the failed
+// protection has to leave durable, actionable evidence. Only a journal-write
+// failure is returned (a journal that cannot be written is fatal, §2.6).
+func (r *Runner) notifyTerminal(jr *journal.Run, runID string, phase journal.RunPhase, finalState string) error {
+	if r.cfg.NotifyTerminal == nil {
+		return nil
 	}
+	err := r.cfg.NotifyTerminal(runID, phase, finalState)
+	if err == nil {
+		return nil
+	}
+	if aerr := jr.Append(journal.Event{
+		Type:  journal.EventError,
+		Error: &journal.ErrorDetail{Code: "terminal_notification_failed", Message: err.Error()},
+	}); aerr != nil {
+		return fmt.Errorf("runner: journal terminal-notification failure for run %q: %w", runID, aerr)
+	}
+	return nil
 }
 
 func (r *Runner) prepareTerminal(runID string, phase journal.RunPhase, jr *journal.Run) error {
@@ -3302,8 +3971,29 @@ func (r *Runner) startStageHeartbeat(ctx context.Context, jr journalAppender, st
 			select {
 			case <-stop:
 				return
-			case <-ctx.Done():
-				return
+			// Deliberately NOT selecting on ctx.Done() (#3455). A graceful
+			// drain cancels this context and then waits up to the full
+			// termination grace period for the stage to finish — so the stage
+			// keeps running, sometimes for many minutes, while the heartbeat
+			// that proves it is alive would stop at the instant of
+			// cancellation. Observed on a live rollout: seven minutes of
+			// journal silence on a 60-second cadence while `go test -race`
+			// burned two cores and 1,523 processes in the same container.
+			//
+			// That silence is not cosmetic. The drain's own progress line
+			// tells the operator to "send SIGINT/SIGTERM again to force
+			// shutdown", and a second signal kills the very stage the grace
+			// period exists to protect. The heartbeat going quiet is caused by
+			// the shutdown, and the instinctive response to it accelerates the
+			// shutdown. A staleness-based watcher makes the same mistake
+			// automatically.
+			//
+			// The stop channel is the correct and sufficient terminator: it is
+			// closed by stageHeartbeat.Stop, which finishTaskDispatch calls on
+			// every path once the stage actually ends — including when the
+			// stage ends *because* of the cancellation. So this keeps
+			// reporting for exactly as long as there is something alive to
+			// report on, and no longer.
 			case <-ticker.Ticks():
 				if !progressed.Swap(false) {
 					continue
@@ -3341,6 +4031,7 @@ func (g gateHeartbeatGoober) Invoke(ctx context.Context, env apiv1.InvocationEnv
 }
 
 func (g gateHeartbeatGoober) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	env.Attempt = int32(g.attempt)
 	ctx, heartbeat := g.runner.startStageHeartbeat(ctx, g.journal, g.stage, g.attempt, journal.AttemptPolicy)
 	verdict, reviewErr := g.goober.Review(ctx, env)
 	heartbeatErr := heartbeat.Stop()
@@ -3507,6 +4198,26 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 			span.Fail(err)
 			return apiv1.ResultEnvelope{}, nil, err
 		}
+		// Placement provenance (goobernetes-architecture.md §7): journal
+		// where this attempt executes, under runner.* — authoritative but
+		// never conformance surface. Modes 1–2 record the self runner; the
+		// mode-3 dispatcher fills node/pod/queue-wait through this same
+		// event shape (#3513), never a second mechanism.
+		//
+		// Emission is GATED on the deployment having declared placement at all
+		// (a runners: inventory, or any GOOBERS_RUNNER_* identity env). §11
+		// item 1 is zero-declaration invariance: an untouched single-host
+		// install must keep producing the same journals it produced before
+		// this feature existed, and an unconditional per-attempt event would
+		// change every one of them. A journal that cannot be written is fatal
+		// (§2.6), same as stage.started above.
+		if r.recordsPlacement() {
+			if err := jr.Append(journal.PlacementEvent(t.Name, int(attempt), class, selfPlacement())); err != nil {
+				err = fmt.Errorf("runner: journal placement for %q: %w", t.Name, err)
+				span.Fail(err)
+				return apiv1.ResultEnvelope{}, nil, err
+			}
+		}
 
 		attemptCtx, heartbeat := r.startStageHeartbeat(attemptCtx, jr, t.Name, int(attempt), class)
 		attemptAddendum := instructionAddendum
@@ -3514,7 +4225,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
 		}
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch, &infraFailedAttemptCommittedWork)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch, branchRecorded, &infraFailedAttemptCommittedWork)
 		if t.Type == apiv1.TaskAgentic {
 			attemptUsage, usageReported := usage.snapshot()
 			accumulateStageUsage(cumulativeUsage, attemptUsage)
@@ -3528,16 +4239,6 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 					dispatchErr = nil
 				}
 			}
-		}
-		// A branchless no-work result with no provider mutations touched no
-		// external ref. Delay branch provenance until an attempt proves otherwise.
-		if !*branchRecorded && machineUsesRepo(in.Machine) &&
-			(dispatchErr != nil || result.Status != apiv1.ResultNoWork || len(mutations) > 0) {
-			if err := r.recordRunBranch(jr, in); err != nil {
-				span.Fail(err)
-				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, err)
-			}
-			*branchRecorded = true
 		}
 		if err := finishTaskDispatch(jr, heartbeat, t.Name, int(attempt), class, mutations, removeErr); err != nil {
 			span.Fail(err)
@@ -3713,6 +4414,22 @@ func retryFailureClassForGateResult(g apiv1.Gate, result apiv1.ResultEnvelope, o
 	return class, knownOutcome, retryable
 }
 
+// RetryFailureClass exports retryFailureClass for the Temporal engine, which
+// applies the identical known-outcome shortcut and retry-decision classification
+// on its own gate arm. Shared rather than mirrored (the #624 shared-constant
+// pattern) because the recognized code set (nonzero_exit / base_sync_conflict)
+// and the status-equals default are runner-owned policy: a copy would decide to
+// dispatch a checker on one runner and skip it on the other.
+func RetryFailureClass(g apiv1.Gate, result apiv1.ResultEnvelope) (journal.AttemptClass, string, bool) {
+	return retryFailureClass(g, result)
+}
+
+// RetryFailureClassForGateResult exports retryFailureClassForGateResult, which
+// folds an infrastructure gate outcome into the same classification.
+func RetryFailureClassForGateResult(g apiv1.Gate, result apiv1.ResultEnvelope, outcome string) (journal.AttemptClass, string, bool) {
+	return retryFailureClassForGateResult(g, result, outcome)
+}
+
 func routeRetryDecision(jr executionJournal, result gate.Result, stage string, subject apiv1.ResultEnvelope, class journal.AttemptClass, retryable bool) (string, bool, error) {
 	if !retryable || result.Outcome == gate.OutcomePass || result.Escalated {
 		return "", false, nil
@@ -3861,7 +4578,7 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string, branchRecorded *bool, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
 	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
@@ -3869,6 +4586,25 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 	}
 	taskInputs = defaultBacklogQueryAssignedTo(t, taskInputs, r.cfg.BacklogQueryAssignedTo)
 	taskInputs = defaultBacklogQueryRequireLabels(t, taskInputs, r.cfg.BacklogQueryRequireLabels)
+	var experiment bandit.Config
+	var assignment bandit.Assignment
+	var experimentObservations []bandit.Observation
+	var experimentWindow string
+	if configured, ok, banditConfigErr := banditConfig(in.Machine, t); banditConfigErr != nil {
+		return apiv1.ResultEnvelope{}, nil, banditConfigErr, nil
+	} else if ok {
+		experiment = configured
+		experimentObservations, err = loadBanditObservations(r.cfg.RunsDir, t.Name)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, nil, err, nil
+		}
+		assignment, err = experiment.AssignAndRecord(in.RunID, experimentObservations, jr)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, nil, fmt.Errorf("assign experiment for task %q: %w", t.Name, err), nil
+		}
+		experimentWindow = banditObservationWindow(experiment, experimentObservations)
+		taskInputs = assignment.Apply(taskInputs)
+	}
 	taskLimits, err := workflow.TaskLimits(in.Machine, t)
 	if err != nil {
 		return apiv1.ResultEnvelope{}, nil, fmt.Errorf("project stage %q limits: %w", t.Name, err), nil
@@ -3889,13 +4625,13 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 			if marshalErr != nil {
 				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("marshal base synchronization conflict for stage %q: %w", t.Name, marshalErr), nil
 			}
-			ref, recordErr := jr.RecordStageArtifact(t.Name, attempt, class, t.Name+"/base-sync-conflict.json", data)
+			ref, recordErr := jr.RecordStageArtifact(t.Name, attempt, class, BaseSyncConflictArtifactName(t.Name), data)
 			if recordErr != nil {
 				return apiv1.ResultEnvelope{}, nil, fmt.Errorf("record base synchronization conflict for stage %q: %w", t.Name, recordErr), nil
 			}
 			return apiv1.ResultEnvelope{
 				Status:  apiv1.ResultFailure,
-				Summary: "base synchronization conflicted; the implementation branch was preserved for remediation",
+				Summary: BaseSyncConflictSummary,
 				Artifacts: []apiv1.ArtifactPointer{{
 					Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
 					MediaType: "application/json", Integrity: ref.Integrity,
@@ -3928,7 +4664,27 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		return apiv1.ResultEnvelope{}, nil, coded, nil
 	}
 	env.MinimumIntegrity = t.MinimumIntegrity
+	env.Attempt = int32(attempt)
+	env.OwnershipBoundary = "task:" + t.Name
+	env.PolicyActions = append([]string(nil), t.PolicyActions...)
+	env.NestedAgentPolicy = t.NestedAgentPolicy
+	if t.NestedAgentPolicy != nil {
+		parent := apiv1.StagePlatformAuthority(env, "result")
+		env.ParentPlatformPolicy = &parent
+	}
 	env.InstructionAddendum = instructionAddendum
+	if t.Type == apiv1.TaskAgentic {
+		errorClass := ""
+		failureExcerpt := instructionAddendum + " " + upstreamResult.Summary
+		if upstreamResult.Error != nil {
+			errorClass = upstreamResult.Error.Code
+			failureExcerpt += " " + upstreamResult.Error.Message
+		}
+		env = remediation.AugmentInvocation(env, r.cfg.Remediation, remediation.Query{
+			Stage: t.Name, ErrorClass: errorClass, FailureExcerpt: failureExcerpt,
+			ConfigDigest: in.Machine.Digest(),
+		}, remediation.Options{})
+	}
 	telemetryDir := telemetry.ResetStageTelemetryDir(env.Workspace)
 	var agentInvocation *gooberInvocation
 	defer func() {
@@ -3937,6 +4693,23 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 		if agentInvocation != nil && agentInvocation.materializedAssets() {
 			if validationErr := workspace.ValidateReservedPaths(context.WithoutCancel(ctx)); validationErr != nil {
 				err = errors.Join(err, fmt.Errorf("stage %q: %w", t.Name, validationErr))
+			}
+		}
+		if workspace.worktree != nil && workspace.worktree.Branch != "" &&
+			!*branchRecorded && machineUsesRepo(in.Machine) &&
+			(err != nil || result.Status != apiv1.ResultNoWork || len(mutations) > 0) {
+			branchSHA, headErr := workspace.worktree.HeadSHA(context.WithoutCancel(ctx))
+			if headErr != nil {
+				err = errors.Join(err, fmt.Errorf("resolve workspace branch %q: %w", workspace.worktree.Branch, headErr))
+			} else {
+				branchInput := in
+				branchInput.WorkspaceBranch = workspace.worktree.Branch
+				branchInput.WorkspaceBranchSHA = branchSHA
+				if recordErr := r.recordRunBranch(jr, branchInput); recordErr != nil {
+					err = errors.Join(err, fmt.Errorf("runner: journal run branch for %q: %w", in.RunID, recordErr))
+				} else {
+					*branchRecorded = true
+				}
 			}
 		}
 		removeErr = workspace.Remove(ctx)
@@ -4006,6 +4779,11 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 				err = outboxErr
 			}
 		}
+		if configuredExperiment(t) {
+			if recordErr := recordBanditResult(experiment, in, assignment, experimentWindow, experimentObservations, result, jr); recordErr != nil {
+				return result, mutations, errors.Join(err, recordErr), nil
+			}
+		}
 		return result, mutations, err, nil
 	case apiv1.TaskAgentic:
 		ag, err := ex.agentic(t.Goober)
@@ -4044,6 +4822,11 @@ func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in Start
 				err = errors.Join(err, fmt.Errorf("inspect commits created by infrastructure-failed attempt: %w", inspectErr))
 			} else {
 				*infraFailedAttemptCommittedWork = *infraFailedAttemptCommittedWork || committedWork
+			}
+		}
+		if configuredExperiment(t) {
+			if recordErr := recordBanditResult(experiment, in, assignment, experimentWindow, experimentObservations, result, jr); recordErr != nil {
+				return result, mutations, errors.Join(err, recordErr), nil
 			}
 		}
 		// #3366: persist the run branch's committed-but-not-yet-published diff
@@ -4122,18 +4905,10 @@ func (r *Runner) salvageTimeout(ctx context.Context, jr executionJournal, in Sta
 	// digest): a small marker so a salvaged completion is distinguishable in the
 	// journal from an ordinary one. Best-effort — a recording failure must not
 	// turn a salvageable timeout back into a total loss.
-	if marker, mErr := json.Marshal(map[string]interface{}{
-		"salvagedOnTimeout": true,
-		"diffBytes":         len(diff),
-		"cause":             cause.Error(),
-	}); mErr == nil {
-		_, _ = jr.RecordStageArtifact(t.Name, attempt, class, t.Name+"/salvage-on-timeout.json", marker)
+	if marker, mErr := SalvageOnTimeoutMarker(len(diff), cause.Error()); mErr == nil {
+		_, _ = jr.RecordStageArtifact(t.Name, attempt, class, SalvageOnTimeoutArtifactName(t.Name), marker)
 	}
-	return apiv1.ResultEnvelope{
-		Status:  apiv1.ResultSuccess,
-		Summary: "salvaged committed diff after agentic session timeout (#724); local-ci verifies it authoritatively",
-		Outputs: map[string]interface{}{"salvagedOnTimeout": true},
-	}, true
+	return SalvagedResult(), true
 }
 
 // Unpushed-diff artifact names (#3366): the well-known per-stage artifact pair
@@ -4161,18 +4936,35 @@ const (
 // local↔Temporal conformance comparison. Deliberately absent for that reason:
 // a recordedAt timestamp — the artifact.recorded event carries its own Time,
 // which conformance excludes, and that is what discovery orders candidates by.
-type unpushedDiffMetadata struct {
-	Schema    string                `json:"schema"`
-	RunID     string                `json:"runId"`
-	Workflow  string                `json:"workflow,omitempty"`
-	Stage     string                `json:"stage"`
-	Attempt   int                   `json:"attempt"`
-	ItemIDs   []string              `json:"itemIds,omitempty"`
-	ItemURL   string                `json:"itemUrl,omitempty"`
-	Branch    string                `json:"branch,omitempty"`
-	BaseRef   string                `json:"baseRef"`
-	DiffBytes int                   `json:"diffBytes"`
-	Diff      apiv1.ArtifactPointer `json:"diff"`
+// The struct itself lives in parity3882.go as UnpushedDiffMetadata, with
+// unpushedDiffMetadata kept as an alias, so the engine records byte-identical
+// sidecars from one definition.
+
+// unpushedDiffCaptureTimeout bounds the post-attempt diff capture (#3644).
+// The capture deliberately outlives its attempt's cancellation, so it needs a
+// bound of its own: `git diff base...HEAD` on a blobless partial clone is a
+// promisor fetch, and a stalled remote or credential helper would otherwise
+// hold terminalization and workspace teardown open indefinitely. Generous
+// enough that a healthy capture (including a legitimate blob hydration over a
+// slow link) always finishes inside it. A var, not a const, only so tests can
+// shorten it.
+var unpushedDiffCaptureTimeout = 2 * time.Minute
+
+// unpushedDiffCaptureFailure turns a capture failure into the message
+// journaled under unpushed_diff_record_failed. A bound overrun is reported as
+// what it is — the capture, not the run's work, was abandoned — and names the
+// branch that still carries the commits, so a human recovering the stranded
+// work knows exactly where to look (git's own error for a killed process,
+// "signal: killed", says none of that).
+func unpushedDiffCaptureFailure(ctx context.Context, cause error, branch string) error {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) && !errors.Is(cause, context.DeadlineExceeded) {
+		return cause
+	}
+	return fmt.Errorf(
+		"unpushed-diff capture exceeded its %s bound (a partial clone's diff can hydrate blobs from the remote — check remote and credential-helper reachability); "+
+			"branch %q retains the committed work for recovery: %w",
+		unpushedDiffCaptureTimeout, branch, cause,
+	)
 }
 
 // recordUnpushedDiff persists the run branch's cumulative committed diff vs.
@@ -4195,12 +4987,23 @@ func (r *Runner) recordUnpushedDiff(ctx context.Context, jr executionJournal, ex
 	// Deliberately cancellation-immune: a stalled-run watchdog cancelling the
 	// attempt mid-dispatch is itself one of #3366's trigger classes (infra
 	// restart mid-run), and that is precisely when the diff most needs
-	// capturing. The git reads here are local and bounded.
-	ctx = context.WithoutCancel(ctx)
+	// capturing. Cancellation-immune is not unbounded, though (#3644): on a
+	// blobless partial clone these git reads can hydrate missing blobs from
+	// the remote, so an unreachable remote or a wedged credential helper would
+	// otherwise pin terminalization and workspace teardown open forever. Bound
+	// the capture instead — the branch still holds the work, so abandoning a
+	// capture that overruns costs recoverability of one artifact, never the
+	// run's liveness.
+	captureCtx, cancelCapture := context.WithTimeout(context.WithoutCancel(ctx), unpushedDiffCaptureTimeout)
+	defer cancelCapture()
+	ctx = captureCtx
 	journalFailure := func(cause error) {
 		_ = jr.Append(journal.Event{
 			Type: journal.EventError, Stage: t.Name, Attempt: attempt, AttemptClass: class,
-			Error: &journal.ErrorDetail{Code: "unpushed_diff_record_failed", Message: cause.Error()},
+			Error: &journal.ErrorDetail{
+				Code:    "unpushed_diff_record_failed",
+				Message: unpushedDiffCaptureFailure(captureCtx, cause, workspace.worktree.Branch).Error(),
+			},
 		})
 	}
 	// Cheap local guard before Diff: on a blobless mirror Diff is a remote
@@ -4227,7 +5030,7 @@ func (r *Runner) recordUnpushedDiff(ctx context.Context, jr executionJournal, ex
 	if s, ok := ex.reg.(journal.Scrubber); ok {
 		diff = s.Scrub(diff)
 	}
-	ref, err := jr.RecordStageArtifact(t.Name, attempt, class, t.Name+"/"+unpushedDiffPatchName, diff)
+	ref, err := jr.RecordStageArtifact(t.Name, attempt, class, UnpushedDiffPatchArtifactName(t.Name), diff)
 	if err != nil {
 		journalFailure(err)
 		return
@@ -4243,7 +5046,7 @@ func (r *Runner) recordUnpushedDiff(ctx context.Context, jr executionJournal, ex
 		DiffBytes: len(diff),
 		Diff: apiv1.ArtifactPointer{
 			Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
-			MediaType: "text/x-diff", Integrity: ref.Integrity,
+			MediaType: ReviewerDiffMediaType, Integrity: ref.Integrity,
 		},
 	}
 	if in.Machine != nil {
@@ -4257,7 +5060,7 @@ func (r *Runner) recordUnpushedDiff(ctx context.Context, jr executionJournal, ex
 		journalFailure(err)
 		return
 	}
-	if _, err := jr.RecordStageArtifact(t.Name, attempt, class, t.Name+"/"+unpushedDiffMetaName, data); err != nil {
+	if _, err := jr.RecordStageArtifact(t.Name, attempt, class, UnpushedDiffMetaArtifactName(t.Name), data); err != nil {
 		journalFailure(err)
 	}
 }
@@ -4436,6 +5239,16 @@ func isNonRetryableEscalation(e *apiv1.ErrorInfo) bool {
 	return e != nil && !e.Retryable && escalateErrorCodes[e.Code]
 }
 
+// IsNonRetryableEscalation exports isNonRetryableEscalation for the Temporal
+// engine's own #415 route (the #624 shared-constant pattern). escalateErrorCodes
+// is runner-owned POLICY, not a schema enum, so a copied code set on the engine
+// side would drift the moment a new disposition is recognized here — and the
+// symptom would be an item silently re-entering the reviewer→implement loop on
+// one runner and escalating on the other.
+func IsNonRetryableEscalation(e *apiv1.ErrorInfo) bool {
+	return isNonRetryableEscalation(e)
+}
+
 // taskEscalationTarget lets a workflow intercept a non-retryable task
 // disposition through the escalation control branch on its Next gate. The gate
 // evaluator is deliberately bypassed; absent that control branch, the existing
@@ -4573,7 +5386,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 		// evidence-pointer mechanism (env.ContextPointers), resolved into the
 		// reviewer's workspace like any other evidence pointer.
 		if g.Evaluator == apiv1.EvaluatorAgentic {
-			ptr, derr := r.recordReviewerDiff(ctx, ex, in, g.Name, wt)
+			ptr, derr := r.recordReviewerDiff(ctx, jr, ex, in, g.Name, wt)
 			if derr != nil {
 				err = fmt.Errorf("runner: gate %q: reviewer diff evidence: %w", g.Name, derr)
 				span.Fail(err)
@@ -4613,11 +5426,8 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 	// call — possibly to nil — mirroring Reviewer's own rebind contract
 	// just below, so a hit for one gate can never leak into the next.
 	var cachedVerdict *apiv1.Verdict
-	if raw, ok := subjectResult.Outputs["cachedVerdictJson"].(string); instructionAddendum == "" && ok && raw != "" {
-		var v apiv1.Verdict
-		if jerr := json.Unmarshal([]byte(raw), &v); jerr == nil {
-			cachedVerdict = &v
-		}
+	if instructionAddendum == "" {
+		cachedVerdict = CachedVerdictFromOutputs(subjectResult.Outputs)
 	}
 	gateEval.CachedVerdict = cachedVerdict
 	gateEval.RepassCause, err = priorRepassCause(jr, subjectStage)
@@ -4637,7 +5447,7 @@ func (r *Runner) evaluateGate(ctx context.Context, jr executionJournal, gateEval
 					if appendErr := jr.Append(journal.Event{
 						Type: journal.EventRunnerAnnotation, Stage: subjectStage, Gate: g.Name,
 						Runner: map[string]any{
-							"kind":                            "remediation-evidence-validation",
+							"kind":                            RemediationEvidenceValidationKind,
 							"code":                            validationErr.Code,
 							"triggeringGate":                  gateEval.RepassCause.Gate,
 							"triggeringStage":                 gateEval.RepassCause.Stage,
@@ -4738,6 +5548,27 @@ func priorRepassCause(jr executionJournal, subjectStage string) (*gate.RepassCau
 	if err != nil {
 		return nil, err
 	}
+	return PriorRepassCause(events, subjectStage, reader.ArtifactBytes)
+}
+
+// PriorRepassCause is the pure half: the backward scan over an already-read
+// event log that classifies WHY a stage is being re-entered, given a way to
+// resolve a gate.evaluated event's verdict artifact.
+//
+// Exported and split from the reader above for #3882: the engine holds its
+// journal as workflow state (a JournalProjection whose artifact bytes are
+// inline), not as a directory it can journal.OpenRead, so the only thing the
+// two lanes can share is this function over an event slice. The classification
+// itself — reviewer rationale beats gate outcome, a preceding failed
+// stage.finished beats both, and the infrastructure verdict comes from the
+// retry-decision annotation rather than the attempt class — is normative: it
+// becomes the RepassCause the reviewer sees, so a second implementation of it
+// would let the two lanes hand the same reviewer different histories.
+func PriorRepassCause(
+	events []journal.Event,
+	subjectStage string,
+	artifactBytes func(journal.Ref) ([]byte, error),
+) (*gate.RepassCause, error) {
 	for i := len(events) - 1; i >= 0; i-- {
 		event := events[i]
 		if event.Type != journal.EventGateEvaluated || event.Target != subjectStage {
@@ -4745,7 +5576,10 @@ func priorRepassCause(jr executionJournal, subjectStage string) (*gate.RepassCau
 		}
 		cause := &gate.RepassCause{Kind: "gate", Gate: event.Gate, Outcome: event.Verdict}
 		if event.Ref != nil {
-			data, err := reader.ArtifactBytes(*event.Ref)
+			if artifactBytes == nil {
+				return nil, fmt.Errorf("read prior verdict for gate %q: no artifact resolver", event.Gate)
+			}
+			data, err := artifactBytes(*event.Ref)
 			if err != nil {
 				return nil, fmt.Errorf("read prior verdict for gate %q: %w", event.Gate, err)
 			}
@@ -4818,7 +5652,7 @@ func priorRepassCause(jr executionJournal, subjectStage string) (*gate.RepassCau
 // same content-addressed integrity as any other artifact. Returns (nil, nil)
 // when the gate has no repository worktree or the branch carries no change vs.
 // base (nothing to attach).
-func (r *Runner) recordReviewerDiff(ctx context.Context, ex *executors, in StartInput, gateName string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
+func (r *Runner) recordReviewerDiff(ctx context.Context, jr executionJournal, ex *executors, in StartInput, gateName string, wt *worktree.Worktree) (*apiv1.ContextPointer, error) {
 	if wt == nil {
 		return nil, nil
 	}
@@ -4837,18 +5671,50 @@ func (r *Runner) recordReviewerDiff(ctx context.Context, ex *executors, in Start
 	// captured before the diff lands in the journal, mirroring the harness's own
 	// artifact scrubbing (internal/harness.Executor.liftArtifactFile). The run's
 	// SecretRegistrar is the RegistryScrubber that also implements journal.Scrubber.
+	source := diff
 	if s, ok := ex.reg.(journal.Scrubber); ok {
 		diff = s.Scrub(diff)
 	}
-	ref, err := ex.rec.RecordArtifact(in.RunID+":"+gateName+"/reviewer-diff.patch", diff)
+	ref, err := ex.rec.RecordArtifact(ReviewerDiffArtifactName(in.RunID, gateName), diff)
 	if err != nil {
 		return nil, fmt.Errorf("record reviewer diff artifact: %w", err)
 	}
+	if err := appendReviewerDiffRedaction(jr, gateName, source, diff, ref); err != nil {
+		return nil, err
+	}
 	ptr := apiv1.ArtifactPointer{
 		Path: ref.Path, Digest: ref.Digest, Size: ref.Size,
-		MediaType: "text/x-diff", Integrity: ref.Integrity,
+		MediaType: ReviewerDiffMediaType, Integrity: ref.Integrity,
 	}
-	return &apiv1.ContextPointer{Name: gateName + ".diff", Integrity: ref.Integrity, Artifact: &ptr}, nil
+	return &apiv1.ContextPointer{Name: ReviewerDiffPointerName(gateName), Integrity: ref.Integrity, Artifact: &ptr}, nil
+}
+
+// ReviewerDiffRedactionKind is the runner-annotation kind that records whether
+// a reviewer gate's diff evidence was transformed by the run's scrubber before
+// it reached the agent (#3135). Redaction is necessary but it makes what the
+// reviewer reads differ from what the branch actually contains, so the run
+// journal carries the correlation handle: the digest of the diff as computed
+// from the commits (sourceDigest) alongside the digest of the bytes the
+// reviewer was handed. Equal digests mean the evidence is verbatim; different
+// digests mean a finding about the redacted region must be checked against the
+// branch before it is treated as a defect.
+const ReviewerDiffRedactionKind = "reviewer-diff-redaction"
+
+func appendReviewerDiffRedaction(jr executionJournal, gateName string, source, scrubbed []byte, ref journal.Ref) error {
+	if jr == nil {
+		return nil
+	}
+	return jr.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation, Gate: gateName,
+		Runner: map[string]any{
+			"kind":         ReviewerDiffRedactionKind,
+			"redacted":     !bytes.Equal(source, scrubbed),
+			"sourceDigest": journal.Digest(source),
+			"sourceBytes":  len(source),
+			"digest":       ref.Digest,
+			"bytes":        len(scrubbed),
+		},
+	})
 }
 
 // startGateSpan opens a gate span under the run's trace, if telemetry is
@@ -5037,6 +5903,7 @@ func (r *Runner) buildEnvelope(ctx context.Context, in StartInput, stageName, go
 		BranchNamespace:      r.branchNamespaceFor(in.Gaggle),
 		BaseBranch:           baseBranch,
 		Goal:                 goal,
+		GooberDigest:         in.GooberDigest,
 		Workspace:            workspace.path,
 		RepoRef:              in.RepoRef.EnvelopeRef(),
 		AdditionalWorkspaces: additionalWorkspaces(workspace),
@@ -5057,6 +5924,10 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 	if mode == apiv1.WorkspaceScratch && in.pinnedWorkspace != nil {
 		in.pinnedStage.Lock()
 		if err := r.preparePinnedStage(ctx, in, syncBase, workspaceBranch); err != nil {
+			in.pinnedStage.Unlock()
+			return nil, err
+		}
+		if err := verifyWorkspaceBranchSHA(ctx, in, in.pinnedWorkspace, workspaceBranch); err != nil {
 			in.pinnedStage.Unlock()
 			return nil, err
 		}
@@ -5146,6 +6017,10 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 				in.pinnedStage.Unlock()
 				return nil, err
 			}
+			if err := verifyWorkspaceBranchSHA(ctx, in, in.pinnedWorkspace, workspaceBranch); err != nil {
+				in.pinnedStage.Unlock()
+				return nil, err
+			}
 			additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
 			if err != nil {
 				in.pinnedStage.Unlock()
@@ -5184,6 +6059,10 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 		if err != nil {
 			return nil, fmt.Errorf("create worktree: %w", err)
 		}
+		if err := verifyWorkspaceBranchSHA(ctx, in, wt, workspaceBranch); err != nil {
+			_ = wt.Remove(ctx, worktree.RemoveOptions{})
+			return nil, err
+		}
 		additional, err := r.provisionAdditionalCheckouts(ctx, in, stageName)
 		if err != nil {
 			// Best-effort teardown of the primary worktree so a failed
@@ -5191,10 +6070,31 @@ func (r *Runner) createStageWorkspace(ctx context.Context, in StartInput, stageN
 			_ = wt.Remove(ctx, worktree.RemoveOptions{})
 			return nil, err
 		}
+
 		return &stageWorkspace{path: wt.Path, worktree: wt, additional: additional, sparse: sparse}, nil
 	default:
 		return nil, fmt.Errorf("unknown workspace mode %q", mode)
 	}
+}
+
+func repoRefPtr(ref apiv1.RepoRef) *apiv1.RepoRef {
+	repository := ref
+	return &repository
+}
+
+func verifyWorkspaceBranchSHA(ctx context.Context, in StartInput, wt *worktree.Worktree, branch string) error {
+	expected := strings.TrimSpace(in.WorkspaceBranchSHA)
+	if strings.TrimSpace(branch) == "" || expected == "" {
+		return nil
+	}
+	actual, err := wt.HeadSHA(ctx)
+	if err != nil {
+		return fmt.Errorf("verify workspace branch %q commit: %w", branch, err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(actual), expected) {
+		return fmt.Errorf("workspace branch %q advanced to %q, expected %q", branch, strings.TrimSpace(actual), expected)
+	}
+	return nil
 }
 
 func (r *Runner) preparePinnedStage(ctx context.Context, in StartInput, syncBase bool, workspaceBranch string) error {

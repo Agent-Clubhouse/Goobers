@@ -46,6 +46,7 @@ spec:
 ---
 apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: pr-flow
 spec:
@@ -113,7 +114,7 @@ func TestPRLifecycleBaseDriftFlagged(t *testing.T) {
 // since #2087, omitting base entirely resolves correctly at runtime via
 // providerBaseBranch() for ANY gaggle branch, so a task that declares no
 // base input at all is never flagged — regardless of the gaggle's branch.
-// This is the case a canonical `goobers init --guided` config actually hits
+// This is the case a canonical Getting Started config actually hits
 // (TestInitGuidedSelectedCanonicalWorkflows seeds a non-"main"-branch
 // gaggle whose generated implementation.yaml never sets base), so silence
 // here must stay silence, not a warning.

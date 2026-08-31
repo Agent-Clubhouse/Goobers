@@ -70,7 +70,7 @@ func TestRunHelp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "goobers init") {
+	if !strings.Contains(stdout, "\n  init") {
 		t.Fatalf("expected help text, got %q", stdout)
 	}
 }
@@ -219,6 +219,7 @@ func TestValidateRejectsUnknownAutomatedCheckName(t *testing.T) {
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	broken := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -269,6 +270,7 @@ func TestValidateRejectsInvalidOutputMatchesPattern(t *testing.T) {
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	broken := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -318,6 +320,7 @@ func TestValidateWarnsForClaimStageWithoutResultFile(t *testing.T) {
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	workflow := `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:

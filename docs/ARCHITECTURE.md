@@ -173,6 +173,13 @@ Rules:
   resolver-issued credentials) plus pattern-based scanning for secret-shaped
   material — and scrubbing happens **before digesting**, so digests commit to the
   scrubbed bytes. Misses are remediated via `goobers journal redact` (above).
+  A redaction removes the credential **value**, not the syntax around it: an
+  authorization expression keeps its scheme and its value alone becomes
+  `<redacted-token>`, because scrubbed diffs are the evidence agentic review
+  gates reason about and a whole-match marker made correct code read as
+  malformed. Reviewer diff evidence is journaled with whether it was
+  transformed and the digest of the pre-scrub bytes, so a finding about a
+  redacted region can be correlated with the authoritative diff.
 - The journal is **human-readable first** (`cat`, `jq`, `grep` are legitimate debug
   tools at tier 1) and machine-projectable second (telemetry rollups, portal).
 - **Instance-level events have a journal too:** scheduler decisions (trigger fired,
@@ -431,10 +438,10 @@ implementation of a seam the local runner also implements. "This is where it goe
 | `internal/engine` compile/state machine | **Extract** the substrate-neutral core (compile, states, gates) for the local runner; the Temporal workflow function around it becomes the V2 adapter |
 | `providers/` | **Keep & extend** — GitHub issues/PR operations are V0 workload |
 | `internal/telemetry` | **Keep** — add journal/SQLite exporter |
-| `internal/operator`, `cmd/operator`, `internal/configsync` (CRD apply path), `cmd/scheduler` | **Quarantine** — tier-3 components; status-bannered, kept compiling, revived in V2 |
+| `internal/operator`, `cmd/operator`, `internal/configsync` (CRD apply path) | **Quarantine** — tier-3 components; status-bannered, kept compiling, revived in V2. The tier-3 scheduler fork (`internal/scheduler`, `cmd/scheduler`) was **deleted** per goobernetes-architecture.md D5/§4 (#2055 resolved: supersede) — `internal/localscheduler` is the one scheduler |
 | `infra/` (Bicep, ArgoCD, Temporal) | **Quarantine** — tier-3 provisioning, revived in V2 |
 | `portal/` | **Keep** — retarget from mock client to reading run journals (V1) |
-| `cmd/goober-runtime` | **Superseded** by the local runner's stage execution; folds into the `goobers` binary |
+| `cmd/goober-runtime` | **Retired** (deleted) per goobernetes-architecture.md D5/§4 — superseded by the local runner's stage execution in the `goobers` binary |
 
 ## 12. Roadmap
 

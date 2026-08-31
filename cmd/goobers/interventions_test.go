@@ -997,7 +997,7 @@ func TestRunInterventionProtectsReacquiredClaimsBeforeJournalResume(t *testing.T
 	}
 	done := make(chan recoveryResult, 1)
 	go func() {
-		released, err := recoverClaims(service.layout, service.instanceLog, time.Now(), service.interventionActive)
+		released, err := recoverClaims(service.layout, service.instanceLog, time.Now(), service.interventionActive, nil)
 		done <- recoveryResult{released: released, err: err}
 	}()
 

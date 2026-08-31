@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import { App } from "../App";
@@ -9,6 +9,8 @@ import type {
   EventStreamRequest,
   RequestOptions,
   TelemetryError,
+  TelemetryErrorsOptions,
+  TelemetryErrorsPage,
 } from "../api/types";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
 
@@ -175,5 +177,117 @@ describe("errors history pagination under live events", () => {
     });
 
     expect(errorLinks()).toHaveLength(11);
+  });
+});
+
+/**
+ * A client whose error listings are released by the test, one signature at a
+ * time, so a response for an abandoned scope can be delivered AFTER the
+ * response for the current one. The release deliberately ignores the request's
+ * abort signal: the defect is about a response that had already resolved when
+ * the scope changed, which no abort can call back.
+ */
+class DeferredErrorsClient extends PushableClient {
+  private readonly gates: {
+    code: string | undefined;
+    resolve: () => void;
+    signal: AbortSignal | undefined;
+  }[] = [];
+
+  override async listTelemetryErrors(
+    request?: TelemetryErrorsOptions,
+    options?: RequestOptions,
+  ): Promise<TelemetryErrorsPage> {
+    await new Promise<void>((resolve) => {
+      this.gates.push({ code: request?.code, resolve, signal: options?.signal });
+    });
+    return super.listTelemetryErrors(request);
+  }
+
+  pending(code: string): { signal: AbortSignal | undefined }[] {
+    return this.gates.filter((gate) => gate.code === code);
+  }
+
+  release(code: string): void {
+    for (const gate of this.gates.filter((candidate) => candidate.code === code)) {
+      this.gates.splice(this.gates.indexOf(gate), 1);
+      gate.resolve();
+    }
+  }
+}
+
+function scopedError(code: string, index: number): TelemetryError {
+  return {
+    runId: "01JZ400FAILED",
+    workflow: "implementation",
+    stage: "implement",
+    attempt: 1,
+    code,
+    errorClass: "unknown",
+    message: `${code} occurrence ${index}.`,
+    occurredAt: new Date(Date.parse("2026-07-18T04:00:00Z") - index * 1_000).toISOString(),
+  };
+}
+
+async function releasePending(client: DeferredErrorsClient, code: string): Promise<void> {
+  await waitFor(() => expect(client.pending(code).length).toBeGreaterThan(0));
+  await act(async () => {
+    client.release(code);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  });
+}
+
+function errorMessages(): string[] {
+  return Array.from(
+    screen.getByRole("region", { name: "Matching error history" }).querySelectorAll("small"),
+    (message) => message.textContent ?? "",
+  );
+}
+
+// #3656: the background refresh held its abort controller privately, so a slow
+// response for the previous signature could merge into the list after the
+// operator had already drilled into a different one.
+describe("errors history across a scope change", () => {
+  it("aborts and rejects a refresh that outlives the signature it was started for", async () => {
+    const fixtures = populatedDaemonFixtures();
+    fixtures.telemetryErrors = {
+      items: [scopedError("harness.crash", 0), scopedError("provider.rate_limited", 1)],
+    };
+    const client = new DeferredErrorsClient(fixtures);
+    window.location.hash = "#/errors?code=harness.crash";
+    render(<App client={client} />);
+
+    await releasePending(client, "harness.crash");
+    await screen.findByText("harness.crash occurrence 0.");
+    expect(errorMessages()).toEqual(["harness.crash occurrence 0."]);
+
+    // A live event starts a background refresh for this signature, which then
+    // takes its time.
+    await act(async () => {
+      client.push(runEvent("session:live-1"));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    expect(client.pending("harness.crash")).toHaveLength(1);
+    const stale = client.pending("harness.crash")[0];
+
+    // The operator drills into a different signature while it is in flight.
+    await act(async () => {
+      window.location.hash = "#/errors?code=provider.rate_limited";
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(stale.signal?.aborted).toBe(true);
+
+    await releasePending(client, "provider.rate_limited");
+    await screen.findByText("provider.rate_limited occurrence 1.");
+    expect(errorMessages()).toEqual(["provider.rate_limited occurrence 1."]);
+
+    // The stale response lands anyway — an abort cannot unschedule a promise
+    // that had already resolved — and must be dropped, not merged.
+    await act(async () => {
+      client.release("harness.crash");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    expect(errorMessages()).toEqual(["provider.rate_limited occurrence 1."]);
   });
 });

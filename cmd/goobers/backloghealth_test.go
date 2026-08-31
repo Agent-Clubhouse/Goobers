@@ -13,6 +13,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -141,7 +142,8 @@ func TestMeasureReadyPoolDepthAndAge(t *testing.T) {
 	if ok, _, err := ledger.Claim("1", "run-1", "implementation", time.Hour); err != nil || !ok {
 		t.Fatalf("claim item 1: ok=%v err=%v", ok, err)
 	}
-	available := unclaimedReadyItems(append([]providers.WorkItem(nil), items...), ledger, "", "github", now)
+	claims := claimsclient.Listing{Entries: ledger.Snapshot(), History: ledger.HistorySnapshot()}
+	available := unclaimedReadyItems(append([]providers.WorkItem(nil), items...), claims, "", "github", now)
 	if got := measureReadyPool(available, "goobers:ready", now).ReadyPoolDepth; got != 1 {
 		t.Fatalf("unclaimed ready depth = %d, want 1", got)
 	}
@@ -170,6 +172,48 @@ func TestAnnotateReadyTimesSkipsClosedItems(t *testing.T) {
 	if err := annotateReadyTimes(items[1:], providers.LabelReady, nil); err == nil {
 		t.Fatal("annotateReadyTimes accepted open ready item without an active label-add event")
 	}
+}
+
+func TestResolveImplementationFeedbackReadyAtSkipsUnexplainedReadyItem(t *testing.T) {
+	provider := &implementationFeedbackTransitionProvider{
+		transitions: [][]providers.WorkItemLabelTransition{nil, nil},
+	}
+	item := providers.WorkItem{
+		ID:     "ready-without-history",
+		State:  "open",
+		Labels: []string{providers.LabelReady},
+	}
+
+	_, eligible, err := resolveImplementationFeedbackReadyAt(
+		context.Background(),
+		provider,
+		providers.RepositoryRef{Provider: providers.ProviderGitHub},
+		item,
+		providers.LabelReady,
+	)
+	if err != nil {
+		t.Fatalf("resolveImplementationFeedbackReadyAt: %v", err)
+	}
+	if eligible {
+		t.Fatal("unexplained ready item was eligible")
+	}
+	if provider.calls != 2 {
+		t.Fatalf("transition reads = %d, want fallback read", provider.calls)
+	}
+}
+
+type implementationFeedbackTransitionProvider struct {
+	providers.BacklogProvider
+	transitions [][]providers.WorkItemLabelTransition
+	calls       int
+}
+
+func (p *implementationFeedbackTransitionProvider) ListWorkItemLabelTransitionsForItem(
+	context.Context, providers.RepositoryRef, string, string,
+) ([]providers.WorkItemLabelTransition, error) {
+	result := p.transitions[p.calls]
+	p.calls++
+	return result, nil
 }
 
 func TestBacklogHealthCommandWritesFlatSnapshot(t *testing.T) {

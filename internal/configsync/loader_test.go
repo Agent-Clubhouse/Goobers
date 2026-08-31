@@ -113,7 +113,10 @@ spec:
   gaggles: [web]
 `)
 	writeFile(t, filepath.Join(dir, "gaggles", "web"), "gaggle.yaml", gaggleYAML("web"))
-	workflow := strings.Replace(workflowYAML("web", "deploy"), "kind: Workflow\n", "kind: Workflow\ndslVersion: \"1.4\"\n", 1)
+	// Pin a NON-default loadable version (3.0, opted-in via the manifest above)
+	// to prove the loader retains the workflow's own dslVersion rather than
+	// normalizing it. 1.4 no longer works here — it is dropped (#3507).
+	workflow := strings.Replace(workflowYAML("web", "deploy"), `dslVersion: "2.0"`, `dslVersion: "3.0"`, 1)
 	writeFile(t, filepath.Join(dir, "gaggles", "web"), "workflow.yaml", workflow)
 
 	l, err := NewLoader("")
@@ -128,8 +131,8 @@ spec:
 	if len(workflows) != 1 {
 		t.Fatalf("rendered workflows = %d, want 1", len(workflows))
 	}
-	if got := workflows[0].(*v1alpha1.Workflow).DSLVersion; got != "1.4" {
-		t.Fatalf("dslVersion = %q, want 1.4", got)
+	if got := workflows[0].(*v1alpha1.Workflow).DSLVersion; got != "3.0" {
+		t.Fatalf("dslVersion = %q, want 3.0", got)
 	}
 }
 
@@ -148,7 +151,7 @@ spec:
   gaggles: [web]
 `)
 	writeFile(t, filepath.Join(dir, "gaggles", "web"), "gaggle.yaml", gaggleYAML("web"))
-	workflow := strings.Replace(workflowYAML("web", "deploy"), "kind: Workflow\n", "kind: Workflow\ndslVersion: \"9.9\"\n", 1)
+	workflow := strings.Replace(workflowYAML("web", "deploy"), `dslVersion: "2.0"`, `dslVersion: "9.9"`, 1)
 	writeFile(t, filepath.Join(dir, "gaggles", "web"), "workflow.yaml", workflow)
 
 	l, err := NewLoader("")
@@ -385,6 +388,31 @@ func TestLoad_NoManifest(t *testing.T) {
 	}
 }
 
+func TestReadDocsIncludesSymlinkedYAML(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "linked.yaml")
+	if err := os.WriteFile(target, []byte(gaggleYAML("linked")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "linked.yaml")); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+
+	docs, err := readDocs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 1 || docs[0].kind != "Gaggle" || docs[0].name != "linked" {
+		t.Fatalf("readDocs = %+v, want linked Gaggle", docs)
+	}
+}
+
+func TestReadDocsMissingRootReturnsError(t *testing.T) {
+	if _, err := readDocs(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("readDocs missing root succeeded, want an error")
+	}
+}
+
 // --- helpers ---
 
 func writeFile(t *testing.T, dir, name, content string) {
@@ -412,6 +440,7 @@ spec:
 func workflowYAML(gaggle, name string) string {
 	return `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: ` + name + `
 spec:

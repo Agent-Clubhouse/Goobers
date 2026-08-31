@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/providersnapshot"
 	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -88,15 +90,22 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 			// the first repo's PRs.
 			repo = instance.RepoRef{Owner: project.Owner, Name: project.Name, Provider: string(project.Provider)}
 		}
-		if repo.Provider == "ado" {
+		if repo.Provider == string(providers.ProviderADO) {
 			// The cap counts GitHub PR heads; an ADO-projected gaggle has no
 			// list to poll, so its count stays "unknown" (Admit fails open).
 			continue
 		}
-		key := repo.Owner + "/" + repo.Name
+		// ListOpenPullRequests is currently a GitHub-only surface. Validate the
+		// repository selected for this capped gaggle, not cfg.Repos[0]: mixed-
+		// provider instances may bind different workflows to different forges.
+		if repo.Provider != "" && repo.Provider != string(providers.ProviderGitHub) {
+			return nil, fmt.Errorf("workflow readiness.maxOpenPRs for gaggle %q is only supported on github repositories, not %q", gaggle, repo.Provider)
+		}
+		credentialRef := repo.Owner + "/" + repo.Name
+		key := repo.Provider + ":" + credentialRef
 		refresher := byRepo[key]
 		if refresher == nil {
-			lister := &resolvingOpenPRLister{ref: key, resolver: resolver, reg: reg, schedulerDir: schedulerDir}
+			lister := &resolvingOpenPRLister{ref: credentialRef, resolver: resolver, reg: reg, schedulerDir: schedulerDir}
 			repoRef := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repo.Owner, Name: repo.Name}
 			// Exclude human-parked PRs from the cap (#986): goobers:merge-escalated is
 			// the daemon's "parked pending a human" signal on a PR — it cannot be
@@ -120,21 +129,81 @@ func buildOpenPRRefresher(cfg *instance.Config, workflows []apiv1.Workflow, gagg
 // escalationCommenter above), honoring credentials.Resolver's re-read-on-
 // resolve rotation contract rather than capturing one at daemon startup.
 type backlogCounter struct {
-	mu             sync.Mutex
-	ref            string
-	repo           providers.RepositoryRef
-	labels         []string
-	labelPredicate *labelpredicate.Predicate
-	fieldPredicate *fieldpredicate.Predicate
-	resolver       credentials.Resolver
-	reg            runner.SecretRegistrar
-	schedulerDir   string
-	quota          *localscheduler.ProviderQuotaState
-	cursor         string
+	mu              sync.Mutex
+	ref             string
+	repo            providers.RepositoryRef
+	labels          []string
+	labelPredicate  *labelpredicate.Predicate
+	fieldPredicate  *fieldpredicate.Predicate
+	respectAssignee bool
+	assignedTo      string
+	resolver        credentials.Resolver
+	reg             runner.SecretRegistrar
+	schedulerDir    string
+	// root is the instance root the Gitea arm resolves its forge BaseURL from.
+	// The counter polls the repo's declared provider, not GitHub unconditionally:
+	// a Gitea instance with a type=backlog-item trigger otherwise counted its
+	// backlog against api.github.com and every tick failed 401, permanently
+	// wedging that workflow's fan-out at zero eligible items.
+	root   string
+	quota  *localscheduler.ProviderQuotaState
+	cursor string
+	// giteaBaseURL is static instance configuration. Cache it after the first
+	// successful resolution while continuing to resolve the credential on every
+	// poll so token rotation remains effective.
+	giteaBaseURL string
+}
+
+// backlogCountProvider is the single read the counter needs. Both backends
+// implement it, so the counter stays provider-neutral once resolved.
+type backlogCountProvider interface {
+	ListWorkItems(ctx context.Context, req providers.ListWorkItemsRequest) ([]providers.WorkItem, error)
+}
+
+// newCounterProvider dispatches on the counted repo's own provider kind. The
+// GitHub arm keeps the conditional-GET snapshot read cache and the scheduler's
+// quota accounting (both GitHub HTTPClient decorators); the Gitea arm stays
+// uncached and unmetered, matching every other Gitea arm in the tree, and
+// refunds any prepaid poll reservation immediately since it consumes no GitHub
+// quota.
+func (b *backlogCounter) newCounterProvider(ctx context.Context) (backlogCountProvider, func(), error) {
+	if b.repo.Provider == providers.ProviderGitea {
+		token, err := b.resolver.Resolve(ctx, b.ref)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		b.reg.Register([]byte(token))
+		baseURL, err := b.giteaCounterBaseURL()
+		if err != nil {
+			return nil, func() {}, err
+		}
+		telemetryOpt := providers.WithGiteaRateLimitObserver(
+			telemetry.NewStageRateLimitObserver(os.Getenv(telemetry.StageTelemetryEnv)),
+		)
+		return providers.NewGiteaProvider(baseURL, token, telemetryOpt), func() {}, nil
+	}
+	return newCounterGitHubProvider(ctx, b.ref, b.schedulerDir, b.resolver, b.reg, b.quota)
+}
+
+func (b *backlogCounter) giteaCounterBaseURL() (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.giteaBaseURL != "" {
+		return b.giteaBaseURL, nil
+	}
+	repo, err := giteaRepoRefForStage(b.root, b.repo)
+	if err != nil {
+		return "", err
+	}
+	if repo.BaseURL == "" {
+		return "", fmt.Errorf("gitea repo %s/%s has no baseUrl configured", b.repo.Owner, b.repo.Name)
+	}
+	b.giteaBaseURL = repo.BaseURL
+	return b.giteaBaseURL, nil
 }
 
 func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
-	provider, cleanup, err := newCounterGitHubProvider(ctx, b.ref, b.schedulerDir, b.resolver, b.reg, b.quota)
+	provider, cleanup, err := b.newCounterProvider(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("resolve backlog-count token for %s: %w", b.ref, err)
 	}
@@ -148,6 +217,12 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 	pageInfo := &providers.ListWorkItemsPageInfo{}
 	items, err := provider.ListWorkItems(ctx, providers.ListWorkItemsRequest{
 		Repository: b.repo, Labels: b.labels, State: "open", Limit: pageSize,
+		Assignee: func() string {
+			if b.respectAssignee && b.assignedTo != "" {
+				return b.assignedTo
+			}
+			return ""
+		}(),
 		Cursor: cursor, PageInfo: pageInfo, OldestFirst: true,
 	})
 	if err != nil {
@@ -162,6 +237,9 @@ func (b *backlogCounter) EligibleCount(ctx context.Context) (int, error) {
 	b.mu.Unlock()
 	count := 0
 	for _, item := range items {
+		if b.respectAssignee && item.Assignee != b.assignedTo {
+			continue
+		}
 		matched, err := b.labelPredicate.Matches(item.Labels)
 		if err != nil {
 			return 0, fmt.Errorf("evaluate backlog label predicate: %w", err)
@@ -233,7 +311,33 @@ func (b *backlogCounter) ProviderQuotaGuarded() bool {
 // Returns nil (not error) when wf declares no backlog-item trigger, or when
 // no repo is configured — mirrors buildCIPollExecutor/buildEscalationNotifier's
 // "irrelevant to this workflow" fail-open-to-nil shape, not a real error.
-func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState) (localscheduler.BacklogCounter, error) {
+// backlogCounterRepoRef resolves the counted repository, carrying the repo's
+// OWN declared provider kind rather than an unconditional GitHub. The kind is
+// what newCounterProvider dispatches on, so hard-coding it here sent a Gitea
+// instance's backlog count to api.github.com.
+func backlogCounterRepoRef(cfg *instance.Config, repoRef apiv1.RepoRef) providers.RepositoryRef {
+	provider := providers.ProviderKind(repoRef.Provider)
+	if configured, ok := configuredRepoForProject(cfg, repoRef); ok && configured.Provider != "" {
+		provider = providers.ProviderKind(configured.Provider)
+	} else if cfg != nil {
+		// Older/defaulted gaggle refs may omit Provider. Match their concrete
+		// binding by repository identity instead of inheriting cfg.Repos[0].
+		for _, configured := range cfg.Repos {
+			if configured.Owner == repoRef.Owner && configured.Project == repoRef.Project && configured.Name == repoRef.Name {
+				if configured.Provider != "" {
+					provider = providers.ProviderKind(configured.Provider)
+				}
+				break
+			}
+		}
+	}
+	if provider == "" {
+		provider = providers.ProviderGitHub
+	}
+	return providers.RepositoryRef{Provider: provider, Owner: repoRef.Owner, Name: repoRef.Name}
+}
+
+func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Workflow, repoRef apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, schedulerDir string, quota *localscheduler.ProviderQuotaState, root string) (localscheduler.BacklogCounter, error) {
 	if len(cfg.Repos) == 0 {
 		return nil, nil
 	}
@@ -271,16 +375,97 @@ func buildBacklogCounter(cfg *instance.Config, gaggle apiv1.Gaggle, wf *apiv1.Wo
 		// below targets repoRef, so its token must resolve from the same
 		// owner/name binding — matching buildScheduleDemandCounter.
 		ref:            repoRef.Owner + "/" + repoRef.Name,
-		repo:           providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		repo:           backlogCounterRepoRef(cfg, repoRef),
 		labels:         labels,
 		labelPredicate: predicate,
 		fieldPredicate: fieldPredicate,
 		resolver:       resolver,
 		reg:            reg,
 		schedulerDir:   schedulerDir,
+		root:           root,
 	}
 	if quota != nil {
 		counter.quota = quota
+	}
+	return counter, nil
+}
+
+// buildRefillDemandCounter derives read-only eligibility from the workflow's
+// starting backlog-query stage. This lets an explicitly configured desired
+// occupancy refill a schedule/manual/webhook workflow without turning its
+// ordinary triggers into backlog fan-out.
+func buildRefillDemandCounter(
+	cfg *instance.Config,
+	gaggle apiv1.Gaggle,
+	wf *apiv1.Workflow,
+	repoRef apiv1.RepoRef,
+	resolver credentials.Resolver,
+	reg runner.SecretRegistrar,
+	schedulerDir, selfIdentity string,
+	quota *localscheduler.ProviderQuotaState,
+) (localscheduler.BacklogCounter, error) {
+	if wf.Spec.Readiness.DesiredConcurrentRuns <= 0 || len(cfg.Repos) == 0 {
+		return nil, nil
+	}
+	for _, trigger := range wf.Spec.Triggers {
+		if trigger.Type == apiv1.TriggerBacklogItem {
+			// Backlog-item workflows already poll and fan out from their
+			// provider eligibility; a second refill poll would duplicate it.
+			return nil, nil
+		}
+	}
+
+	var task *apiv1.Task
+	for i := range wf.Spec.Tasks {
+		candidate := &wf.Spec.Tasks[i]
+		if candidate.Name == wf.Spec.Start &&
+			candidate.Run != nil &&
+			len(candidate.Run.Command) >= 2 &&
+			candidate.Run.Command[0] == "goobers" &&
+			candidate.Run.Command[1] == "backlog-query" {
+			task = candidate
+			break
+		}
+	}
+	if task == nil {
+		return nil, nil
+	}
+
+	requireLabels := append([]string(nil), gaggle.Spec.RequireLabels...)
+	if configured, ok := task.Inputs["requireLabels"]; ok {
+		requireLabels = splitLabelList(configured)
+	}
+	if trust := task.Inputs["trustLabel"]; trust != "" {
+		requireLabels = append(requireLabels, trust)
+	}
+	excludeLabels := append(splitLabelList(task.Inputs["excludeLabels"]), providers.LabelClaimed)
+	requireLabels = uniqueSortedLabels(requireLabels)
+	excludeLabels = uniqueSortedLabels(excludeLabels)
+	predicate, err := labelpredicate.Compile(task.Inputs["labelPredicate"], requireLabels, excludeLabels)
+	if err != nil {
+		return nil, fmt.Errorf("workflow %q refill label predicate: %w", wf.Name, err)
+	}
+	fieldPredicate, err := fieldpredicate.Compile(task.Inputs["fieldPredicate"])
+	if err != nil {
+		return nil, fmt.Errorf("workflow %q refill field predicate: %w", wf.Name, err)
+	}
+	assignedTo, assignedToConfigured := task.Inputs["assignedTo"]
+	respectAssignee := task.Inputs["respectAssignee"] == "true"
+	if respectAssignee && !assignedToConfigured {
+		assignedTo = selfIdentity
+	}
+	counter := &backlogCounter{
+		ref:             repoRef.Owner + "/" + repoRef.Name,
+		repo:            providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: repoRef.Owner, Name: repoRef.Name},
+		labels:          requireLabels,
+		labelPredicate:  predicate,
+		fieldPredicate:  fieldPredicate,
+		respectAssignee: respectAssignee,
+		assignedTo:      assignedTo,
+		resolver:        resolver,
+		reg:             reg,
+		schedulerDir:    schedulerDir,
+		quota:           quota,
 	}
 	return counter, nil
 }

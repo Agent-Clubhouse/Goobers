@@ -8,10 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/readmodel"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
+	"github.com/goobers/goobers/internal/workflow"
 )
 
 var (
@@ -26,6 +31,39 @@ type TelemetryReader interface {
 	TelemetryStats(context.Context, TelemetryStatsRequest) (TelemetryStatsResult, error)
 	TelemetryErrorSignatures(context.Context, TelemetryErrorSignaturesRequest) (TelemetryErrorSignaturesResult, error)
 	TelemetryErrors(context.Context, TelemetryErrorsRequest) (TelemetryErrorsPage, error)
+	TelemetryImplementationOutcomes(context.Context, TelemetryImplementationOutcomesRequest) (TelemetryImplementationOutcomesResult, error)
+}
+
+// TelemetryImplementationOutcomesRequest selects the terminal implementation
+// runs that claimed a backlog item. Gaggle is the containment key the pod
+// read is scoped by (decision 005 R4); Since bounds the window to the
+// caller's earliest interesting ready-at, so the projection never returns the
+// whole of history.
+type TelemetryImplementationOutcomesRequest struct {
+	Gaggle string
+	Since  time.Time
+}
+
+// TelemetryImplementationOutcomesResult is the projected evidence set.
+type TelemetryImplementationOutcomesResult struct {
+	Items []TelemetryImplementationOutcome `json:"items"`
+}
+
+// TelemetryImplementationOutcome is one terminal implementation run and the
+// backlog item it claimed. Field-for-field the rollup's own projection: the
+// wire shape is restated here rather than aliased so the read contract does
+// not become a re-export of the rollup schema.
+type TelemetryImplementationOutcome struct {
+	RunID        string    `json:"runId"`
+	ItemID       string    `json:"itemId"`
+	Status       string    `json:"status"`
+	StartedAt    time.Time `json:"startedAt"`
+	FinishedAt   time.Time `json:"finishedAt"`
+	Stage        string    `json:"stage,omitempty"`
+	ErrorCode    string    `json:"errorCode,omitempty"`
+	ErrorMessage string    `json:"errorMessage,omitempty"`
+	Gate         string    `json:"gate,omitempty"`
+	Verdict      string    `json:"verdict,omitempty"`
 }
 
 // TelemetryStatsRequest filters workflow/stage aggregates and selects optional
@@ -41,33 +79,88 @@ type TelemetryStatsRequest struct {
 	GroupByHarnessVersion bool
 	Since                 time.Time
 	Until                 time.Time
+	TrendSince            time.Time
+	TrendUntil            time.Time
+	TrendBuckets          int
+	TrendPreviousSince    time.Time
+	TrendPreviousUntil    time.Time
 }
 
 // TelemetryStatsResult contains deterministic workflow and stage aggregates.
 type TelemetryStatsResult struct {
-	Gaggles          []TelemetryGaggleStats `json:"gaggles"`
-	Runs             []TelemetryRunStats    `json:"runs"`
-	Stages           []TelemetryStageStats  `json:"stages"`
-	Usage            []TelemetryUsageStats  `json:"usage"`
-	Models           []TelemetryModelStats  `json:"models"`
-	CreditAssignment []NodeCredit           `json:"creditAssignment"`
-	Curation         TelemetryCurationStats `json:"curation"`
-	ReadyPool        TelemetryReadyPool     `json:"readyPool"`
+	Gaggles          []TelemetryGaggleStats       `json:"gaggles"`
+	Runs             []TelemetryRunStats          `json:"runs"`
+	Stages           []TelemetryStageStats        `json:"stages"`
+	Usage            []TelemetryUsageStats        `json:"usage"`
+	Models           []TelemetryModelStats        `json:"models"`
+	CreditAssignment []NodeCredit                 `json:"creditAssignment"`
+	CausalCredit     []readmodel.CausalNodeCredit `json:"causalCredit"`
+	GraphAnalytics   *readmodel.GraphAnalytics    `json:"graphAnalytics,omitempty"`
+	PromotionSignals []PromotionSignal            `json:"promotionSignals,omitempty"`
+	// PromotionCandidates is the machine-filtered input for automated
+	// promotion. Correlational fallbacks remain visible in PromotionSignals
+	// but never cross this boundary.
+	PromotionCandidates []PromotionSignal      `json:"promotionCandidates,omitempty"`
+	Curation            TelemetryCurationStats `json:"curation"`
+	ReadyPool           TelemetryReadyPool     `json:"readyPool"`
+	Trend               []TelemetryTrendBucket `json:"trend,omitempty"`
+	TrendPrevious       *TelemetryTrendBucket  `json:"trendPrevious,omitempty"`
+}
+
+// TelemetryTrendBucket contains usage aggregated over one bounded time window.
+type TelemetryTrendBucket struct {
+	Since string                `json:"since"`
+	Until string                `json:"until"`
+	Usage []TelemetryUsageStats `json:"usage"`
+}
+
+// PromotionSignal is the bounded evidence interface for automated promotion.
+type PromotionSignal struct {
+	Node              string  `json:"node"`
+	Value             float64 `json:"value"`
+	Lower             float64 `json:"lower,omitempty"`
+	Upper             float64 `json:"upper,omitempty"`
+	Source            string  `json:"source"`
+	Caveat            string  `json:"caveat"`
+	PromotionEligible bool    `json:"promotionEligible"`
+}
+
+// EligiblePromotionSignals returns only identified causal signals with a
+// confidence interval. Promotion consumers must use this boundary instead of
+// interpreting fallback signals themselves.
+func EligiblePromotionSignals(signals []PromotionSignal) []PromotionSignal {
+	eligible := make([]PromotionSignal, 0, len(signals))
+	for _, signal := range signals {
+		if signal.PromotionEligible &&
+			signal.Source != "correlational-fallback" &&
+			!math.IsNaN(signal.Value) && !math.IsInf(signal.Value, 0) &&
+			!math.IsNaN(signal.Lower) && !math.IsInf(signal.Lower, 0) &&
+			!math.IsNaN(signal.Upper) && !math.IsInf(signal.Upper, 0) &&
+			signal.Lower <= signal.Value && signal.Value <= signal.Upper {
+			eligible = append(eligible, signal)
+		}
+	}
+	return eligible
 }
 
 // NodeCredit ranks one workflow node's accumulated contribution to adverse
 // outcomes over the requested telemetry window.
 type NodeCredit struct {
-	Gaggle             string  `json:"gaggle"`
-	Workflow           string  `json:"workflow"`
-	Kind               string  `json:"kind"`
-	Stage              string  `json:"stage"`
-	Identity           string  `json:"identity,omitempty"`
-	RoutedRuns         int     `json:"routedRuns"`
-	FailureRuns        int     `json:"failureRuns"`
-	FailureShare       float64 `json:"failureShare"`
-	EscalationRuns     int     `json:"escalationRuns"`
-	RetryWasteAttempts int     `json:"retryWasteAttempts"`
+	Gaggle             string   `json:"gaggle"`
+	Workflow           string   `json:"workflow"`
+	Kind               string   `json:"kind"`
+	Stage              string   `json:"stage"`
+	Identity           string   `json:"identity,omitempty"`
+	RoutedRuns         int      `json:"routedRuns"`
+	FailureRuns        int      `json:"failureRuns"`
+	FailureShare       float64  `json:"failureShare"`
+	EscalationRuns     int      `json:"escalationRuns"`
+	RetryWasteAttempts int      `json:"retryWasteAttempts"`
+	Effect             *float64 `json:"effect,omitempty"`
+	Lower              *float64 `json:"lower,omitempty"`
+	Upper              *float64 `json:"upper,omitempty"`
+	Identification     string   `json:"identification"`
+	Caveat             string   `json:"caveat,omitempty"`
 }
 
 // TelemetryCurationStats is the windowed action rollup for backlog curation.
@@ -300,8 +393,10 @@ type TelemetryError struct {
 
 type telemetryStore interface {
 	Stats(context.Context, rollup.StatsRequest) (rollup.StatsResult, error)
+	TrendStats(context.Context, rollup.TrendRequest) ([]rollup.TrendResult, error)
 	TopErrorSignatures(context.Context, rollup.StatsRequest, int) ([]rollup.ErrorSignature, error)
 	Errors(context.Context, rollup.ErrorsRequest) ([]rollup.ErrorEvent, error)
+	ImplementationOutcomes(context.Context, string, time.Time) ([]rollup.ImplementationOutcome, error)
 }
 
 // Telemetry projects the telemetry rollup into the shared read contract.
@@ -317,9 +412,45 @@ func NewTelemetry(db *rollup.DB) (*Telemetry, error) {
 	return &Telemetry{store: db}, nil
 }
 
+func projectTelemetryUsage(stat rollup.UsageStats) TelemetryUsageStats {
+	item := TelemetryUsageStats{
+		Scope: stat.Scope, Gaggle: stat.Gaggle, Workflow: stat.Workflow, Stage: stat.Stage,
+		Branch: stat.Branch, Model: stat.Model, HarnessVersion: stat.HarnessVersion,
+		TotalAttempts: stat.TotalAttempts, TokenSamples: stat.TokenSamples,
+		PremiumRequestSamples: stat.PremiumRequestSamples, CostSamples: stat.CostSamples,
+		RetryWasteAttempts: stat.RetryWasteAttempts,
+	}
+	if stat.HasTokens {
+		item.P50Tokens = int64Pointer(stat.P50Tokens)
+		item.P95Tokens = int64Pointer(stat.P95Tokens)
+	}
+	if stat.HasPremiumRequests {
+		item.P50CopilotPremiumRequests = float64Pointer(stat.P50CopilotPremiumRequests)
+		item.P95CopilotPremiumRequests = float64Pointer(stat.P95CopilotPremiumRequests)
+	}
+	if stat.HasCost {
+		item.CostUSD = float64Pointer(stat.CostUSD)
+		item.P50CostUSD = float64Pointer(stat.P50CostUSD)
+		item.P95CostUSD = float64Pointer(stat.P95CostUSD)
+	}
+	if stat.HasRetryWasteTokens {
+		item.RetryWasteTokens = int64Pointer(stat.RetryWasteTokens)
+	}
+	if stat.HasRetryWasteCost {
+		item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
+	}
+	return item
+}
+
 // TelemetryStats returns workflow and stage aggregates in stable name order.
 func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (TelemetryStatsResult, error) {
 	if err := validateWindow(req.Since, req.Until); err != nil {
+		return TelemetryStatsResult{}, err
+	}
+	if err := validateOptionalTrendWindow(req.TrendSince, req.TrendUntil, "trend"); err != nil {
+		return TelemetryStatsResult{}, err
+	}
+	if err := validateOptionalTrendWindow(req.TrendPreviousSince, req.TrendPreviousUntil, "trend previous"); err != nil {
 		return TelemetryStatsResult{}, err
 	}
 	if req.Branch != nil && *req.Branch < 0 {
@@ -483,40 +614,7 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 		result.Stages = append(result.Stages, item)
 	}
 	for _, stat := range stats.Usage {
-		item := TelemetryUsageStats{
-			Scope:                 stat.Scope,
-			Gaggle:                stat.Gaggle,
-			Workflow:              stat.Workflow,
-			Stage:                 stat.Stage,
-			Branch:                stat.Branch,
-			Model:                 stat.Model,
-			HarnessVersion:        stat.HarnessVersion,
-			TotalAttempts:         stat.TotalAttempts,
-			TokenSamples:          stat.TokenSamples,
-			PremiumRequestSamples: stat.PremiumRequestSamples,
-			CostSamples:           stat.CostSamples,
-			RetryWasteAttempts:    stat.RetryWasteAttempts,
-		}
-		if stat.HasTokens {
-			item.P50Tokens = int64Pointer(stat.P50Tokens)
-			item.P95Tokens = int64Pointer(stat.P95Tokens)
-		}
-		if stat.HasPremiumRequests {
-			item.P50CopilotPremiumRequests = float64Pointer(stat.P50CopilotPremiumRequests)
-			item.P95CopilotPremiumRequests = float64Pointer(stat.P95CopilotPremiumRequests)
-		}
-		if stat.HasCost {
-			item.CostUSD = float64Pointer(stat.CostUSD)
-			item.P50CostUSD = float64Pointer(stat.P50CostUSD)
-			item.P95CostUSD = float64Pointer(stat.P95CostUSD)
-		}
-		if stat.HasRetryWasteTokens {
-			item.RetryWasteTokens = int64Pointer(stat.RetryWasteTokens)
-		}
-		if stat.HasRetryWasteCost {
-			item.RetryWasteCostUSD = float64Pointer(stat.RetryWasteCostUSD)
-		}
-		result.Usage = append(result.Usage, item)
+		result.Usage = append(result.Usage, projectTelemetryUsage(stat))
 	}
 	for _, stat := range stats.Models {
 		item := TelemetryModelStats{
@@ -540,6 +638,135 @@ func (s *Telemetry) TelemetryStats(ctx context.Context, req TelemetryStatsReques
 			item.CostUSD = float64Pointer(stat.CostUSD)
 		}
 		result.Models = append(result.Models, item)
+	}
+	var trends []rollup.TrendResult
+	if req.TrendBuckets > 0 {
+		if req.TrendSince.IsZero() || req.TrendUntil.IsZero() {
+			return TelemetryStatsResult{}, fmt.Errorf("%w: invalid trend window", ErrInvalidTelemetryRequest)
+		}
+		total := req.TrendUntil.Sub(req.TrendSince)
+		buckets := time.Duration(req.TrendBuckets)
+		if total < buckets {
+			return TelemetryStatsResult{}, fmt.Errorf("%w: trend window is too short for requested buckets", ErrInvalidTelemetryRequest)
+		}
+		result.Trend = make([]TelemetryTrendBucket, 0, req.TrendBuckets)
+		windows := make([]rollup.TrendWindow, 0, req.TrendBuckets+1)
+		boundary := func(index int) time.Duration {
+			i := time.Duration(index)
+			return total/buckets*i + total%buckets*i/buckets
+		}
+		for index := 0; index < req.TrendBuckets; index++ {
+			since := req.TrendSince.Add(boundary(index))
+			until := req.TrendSince.Add(boundary(index + 1))
+			if index == req.TrendBuckets-1 {
+				until = req.TrendUntil
+			}
+			windows = append(windows, rollup.TrendWindow{Since: since, Until: until})
+			result.Trend = append(result.Trend, TelemetryTrendBucket{
+				Since: since.UTC().Format(time.RFC3339Nano),
+				Until: until.UTC().Format(time.RFC3339Nano),
+			})
+		}
+		if !req.TrendPreviousSince.IsZero() || !req.TrendPreviousUntil.IsZero() {
+			windows = append(windows, rollup.TrendWindow{Since: req.TrendPreviousSince, Until: req.TrendPreviousUntil})
+		}
+		var err error
+		trends, err = s.store.TrendStats(ctx, rollup.TrendRequest{
+			Stats: rollup.StatsRequest{
+				Gaggle: req.Gaggle, Workflow: req.Workflow, Branch: req.Branch,
+				Model: req.Model, HarnessVersion: req.HarnessVersion,
+				GroupByBranch: req.GroupByBranch, GroupByModel: req.GroupByModel,
+				GroupByHarnessVersion: req.GroupByHarnessVersion,
+			},
+			Windows: windows,
+		})
+		if err != nil {
+			return TelemetryStatsResult{}, err
+		}
+		if len(trends) != len(windows) {
+			return TelemetryStatsResult{}, fmt.Errorf("telemetry: trend store returned %d windows, want %d", len(trends), len(windows))
+		}
+		for index := range result.Trend {
+			for _, stat := range trends[index].Usage {
+				result.Trend[index].Usage = append(result.Trend[index].Usage, projectTelemetryUsage(stat))
+			}
+		}
+	}
+	if !req.TrendPreviousSince.IsZero() || !req.TrendPreviousUntil.IsZero() {
+		if len(trends) == 0 {
+			var err error
+			trends, err = s.store.TrendStats(ctx, rollup.TrendRequest{
+				Stats: rollup.StatsRequest{
+					Gaggle:                req.Gaggle,
+					Workflow:              req.Workflow,
+					Branch:                req.Branch,
+					Model:                 req.Model,
+					HarnessVersion:        req.HarnessVersion,
+					GroupByBranch:         req.GroupByBranch,
+					GroupByModel:          req.GroupByModel,
+					GroupByHarnessVersion: req.GroupByHarnessVersion,
+				},
+				Windows: []rollup.TrendWindow{{Since: req.TrendPreviousSince, Until: req.TrendPreviousUntil}},
+			})
+			if err != nil {
+				return TelemetryStatsResult{}, err
+			}
+			if len(trends) != 1 {
+				return TelemetryStatsResult{}, fmt.Errorf("telemetry: trend store returned %d previous windows, want 1", len(trends))
+			}
+		}
+		result.TrendPrevious = &TelemetryTrendBucket{
+			Since: req.TrendPreviousSince.UTC().Format(time.RFC3339Nano),
+			Until: req.TrendPreviousUntil.UTC().Format(time.RFC3339Nano),
+		}
+		for _, stat := range trends[len(trends)-1].Usage {
+			result.TrendPrevious.Usage = append(result.TrendPrevious.Usage, projectTelemetryUsage(stat))
+		}
+	}
+	return result, nil
+}
+
+func validateOptionalTrendWindow(since, until time.Time, name string) error {
+	if since.IsZero() && until.IsZero() {
+		return nil
+	}
+	if since.IsZero() || until.IsZero() || !since.Before(until) {
+		return fmt.Errorf("%w: invalid %s window", ErrInvalidTelemetryRequest, name)
+	}
+	return nil
+}
+
+// TelemetryImplementationOutcomes returns the terminal implementation runs
+// that claimed a backlog item, newest-window-first as the rollup orders them.
+// A gaggle is not required here — the CLI's local read has always been
+// allowed to run ungaggled — because the pod containment that decision 005 R4
+// authorizes lives at the HTTP boundary, where the caller's identity is
+// visible; this projection stays a pure filter.
+func (s *Telemetry) TelemetryImplementationOutcomes(ctx context.Context, req TelemetryImplementationOutcomesRequest) (TelemetryImplementationOutcomesResult, error) {
+	if err := ctx.Err(); err != nil {
+		return TelemetryImplementationOutcomesResult{}, err
+	}
+	outcomes, err := s.store.ImplementationOutcomes(ctx, req.Gaggle, req.Since)
+	if err != nil {
+		return TelemetryImplementationOutcomesResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return TelemetryImplementationOutcomesResult{}, err
+	}
+	result := TelemetryImplementationOutcomesResult{Items: make([]TelemetryImplementationOutcome, 0, len(outcomes))}
+	for _, outcome := range outcomes {
+		result.Items = append(result.Items, TelemetryImplementationOutcome{
+			RunID:        outcome.RunID,
+			ItemID:       outcome.ItemID,
+			Status:       outcome.Status,
+			StartedAt:    outcome.StartedAt,
+			FinishedAt:   outcome.FinishedAt,
+			Stage:        outcome.Stage,
+			ErrorCode:    outcome.ErrorCode,
+			ErrorMessage: outcome.ErrorMessage,
+			Gate:         outcome.Gate,
+			Verdict:      outcome.Verdict,
+		})
 	}
 	return result, nil
 }
@@ -679,8 +906,287 @@ func (s *Local) TelemetryStats(ctx context.Context, req TelemetryStatsRequest) (
 			RetryWasteAttempts: credit.RetryWasteAttempts,
 		})
 	}
+	causal, err := s.sources.ReadModel.CausalCredit(ctx, readmodel.CausalOptions{
+		Gaggle:        req.Gaggle,
+		Workflow:      req.Workflow,
+		Since:         req.Since,
+		Until:         req.Until,
+		WorkflowGraph: getWorkflowGraphForQuery(s.definitionsForQuery(), req.Gaggle, req.Workflow),
+	})
+	if err != nil {
+		return TelemetryStatsResult{}, err
+	}
+	result.CausalCredit = causal
+	causalByNode := make(map[string]readmodel.CausalNodeCredit, len(causal))
+	for _, estimate := range causal {
+		causalByNode[estimate.Node] = estimate
+	}
+	result.PromotionSignals = make([]PromotionSignal, 0, len(result.CreditAssignment))
+	for i := range result.CreditAssignment {
+		credit := &result.CreditAssignment[i]
+		estimate, ok := causalByNode[credit.Kind+":"+credit.Stage]
+		if !ok || estimate.Identification == readmodel.CausalUnidentifiable {
+			credit.Identification = "correlational-fallback"
+			credit.Caveat = "no identified causal intervention; correlational rollup retained"
+			result.PromotionSignals = append(result.PromotionSignals, PromotionSignal{
+				Node: credit.Kind + ":" + credit.Stage, Value: credit.FailureShare,
+				Source: "correlational-fallback", Caveat: credit.Caveat,
+			})
+			continue
+		}
+		credit.Identification = string(estimate.Identification)
+		credit.Caveat = estimate.Caveat
+		if estimate.IntervalAvailable && estimate.PromotionEligible {
+			credit.Effect = float64Ptr(estimate.Effect)
+			credit.Lower = float64Ptr(estimate.Lower)
+			credit.Upper = float64Ptr(estimate.Upper)
+			result.PromotionSignals = append(result.PromotionSignals, PromotionSignal{
+				Node: credit.Kind + ":" + credit.Stage, Value: estimate.Effect,
+				Lower: estimate.Lower, Upper: estimate.Upper,
+				Source: estimate.PromotionSource, Caveat: estimate.Caveat,
+				PromotionEligible: true,
+			})
+		} else {
+			credit.Identification = "correlational-fallback"
+			credit.Caveat = "causal estimate has no promotion-eligible confidence interval; correlational rollup retained"
+			result.PromotionSignals = append(result.PromotionSignals, PromotionSignal{
+				Node: credit.Kind + ":" + credit.Stage, Value: credit.FailureShare,
+				Source: "correlational-fallback", Caveat: credit.Caveat,
+			})
+		}
+	}
+	result.PromotionCandidates = EligiblePromotionSignals(result.PromotionSignals)
+	if graph := getWorkflowGraphForQuery(s.definitionsForQuery(), req.Gaggle, req.Workflow); graph != nil {
+		runtimeGraph, err := s.runtimeAnalyticsGraph(ctx, req, graph)
+		if err != nil {
+			return TelemetryStatsResult{}, err
+		}
+		analyticsGraph := readmodel.AnalyticsGraph{
+			Nodes: make([]readmodel.AnalyticsNode, 0, len(runtimeGraph.Nodes)),
+			Edges: make([]readmodel.AnalyticsEdge, 0, len(runtimeGraph.Edges)),
+		}
+		failureByNode, trustedFailure, creditNodes := normalizedPromotionFailure(
+			result.CreditAssignment, result.PromotionCandidates,
+		)
+		latencyByNode := make(map[string]float64, len(result.Stages))
+		for _, stage := range result.Stages {
+			if stage.Workflow == req.Workflow && stage.AvgDurationMs != nil {
+				latencyByNode[stage.Stage] = *stage.AvgDurationMs
+			}
+		}
+		for _, node := range runtimeGraph.Nodes {
+			analyticsGraph.Nodes = append(analyticsGraph.Nodes, readmodel.AnalyticsNode{
+				ID: node.ID, Failure: failureByNode[node.ID], Latency: latencyByNode[node.ID],
+			})
+		}
+		for _, edge := range runtimeGraph.Edges {
+			analyticsGraph.Edges = append(analyticsGraph.Edges, readmodel.AnalyticsEdge{
+				Source: edge.Source, Target: edge.Target,
+			})
+		}
+		analytics, err := readmodel.AnalyzeGraph(analyticsGraph)
+		if err != nil {
+			return TelemetryStatsResult{}, err
+		}
+		if len(trustedFailure) == 0 {
+			analytics.Centrality = nil
+			analytics.CriticalPath = readmodel.CriticalPath{}
+			analytics.Confidence = "untrusted"
+			analytics.Caveat = "centrality and critical path are withheld because no promotion-eligible causal confidence interval is available"
+		} else if !sameAnalyticsNodes(trustedFailure, creditNodes) {
+			analytics.Confidence = "partial"
+			analytics.Caveat = "centrality uses only promotion-eligible causal weights; correlational fallbacks are excluded"
+		} else {
+			analytics.Confidence = "bounded"
+		}
+		result.GraphAnalytics = &analytics
+	}
 	return result, nil
 }
+
+// normalizedPromotionFailure reconciles identity-level credits with the
+// stage-level causal signals used by the graph.
+func normalizedPromotionFailure(credits []NodeCredit, signals []PromotionSignal) (map[string]float64, map[string]bool, map[string]bool) {
+	creditNodes := make(map[string]bool, len(credits))
+	for _, credit := range credits {
+		creditNodes[normalizeAnalyticsNode(credit.Kind+":"+credit.Stage)] = true
+	}
+
+	type aggregate struct {
+		total float64
+		count int
+	}
+	aggregates := make(map[string]aggregate, len(signals))
+	for _, signal := range signals {
+		node := normalizeAnalyticsNode(signal.Node)
+		item := aggregates[node]
+		item.total += signal.Value
+		item.count++
+		aggregates[node] = item
+	}
+	failureByNode := make(map[string]float64, len(aggregates))
+	trustedFailure := make(map[string]bool, len(aggregates))
+	for node, item := range aggregates {
+		if item.count == 0 {
+			continue
+		}
+		failureByNode[node] = item.total / float64(item.count)
+		trustedFailure[node] = true
+	}
+	return failureByNode, trustedFailure, creditNodes
+}
+
+func sameAnalyticsNodes(left, right map[string]bool) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for node := range left {
+		if !right[node] {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeAnalyticsNode(node string) string {
+	node = strings.TrimPrefix(node, "stage:")
+	return strings.TrimPrefix(node, "gate:")
+}
+
+func (s *Local) definitionsForQuery() *instance.ConfigSet {
+	if snapshot := s.definitions.Load(); snapshot != nil {
+		return snapshot.set
+	}
+	return s.sources.Definitions
+}
+
+// runtimeAnalyticsGraph overlays the declared topology with the transitions
+// actually observed across runs. The declared workflow is a DAG, while repass
+// and cross-run review/CI transitions are allowed to form SCCs.
+func (s *Local) runtimeAnalyticsGraph(ctx context.Context, req TelemetryStatsRequest, declared *workflow.Graph) (readmodel.AnalyticsGraph, error) {
+	graph := readmodel.AnalyticsGraph{}
+	if declared != nil {
+		for _, node := range declared.Nodes {
+			graph.Nodes = append(graph.Nodes, readmodel.AnalyticsNode{ID: node.ID})
+		}
+		for _, edge := range declared.Edges {
+			if edge.Target != "" && edge.Terminal == "" {
+				graph.Edges = append(graph.Edges, readmodel.AnalyticsEdge{Source: edge.Source, Target: edge.Target})
+			}
+		}
+	}
+	ids, err := s.RunIDs(ctx)
+	if err != nil {
+		return readmodel.AnalyticsGraph{}, err
+	}
+	known := make(map[string]bool, len(graph.Nodes))
+	for _, node := range graph.Nodes {
+		known[node.ID] = true
+	}
+	edges := make(map[string]bool, len(graph.Edges))
+	for _, edge := range graph.Edges {
+		edges[edge.Source+"\x00"+edge.Target] = true
+	}
+	type runtimeRun struct {
+		detail RunDetail
+	}
+	runs := make([]runtimeRun, 0, len(ids))
+	for _, id := range ids {
+		detail, err := s.GetRun(ctx, id)
+		if err != nil {
+			return readmodel.AnalyticsGraph{}, fmt.Errorf("read analytics run %q: %w", id, err)
+		}
+		if detail.Gaggle != req.Gaggle || detail.Workflow != req.Workflow ||
+			(!req.Since.IsZero() && detail.StartedAt.Before(req.Since)) ||
+			(!req.Until.IsZero() && !detail.StartedAt.Before(req.Until)) {
+			continue
+		}
+		runs = append(runs, runtimeRun{detail: detail})
+		for _, transition := range detail.Transitions {
+			if transition.Source == "" || transition.Target == "" || transition.Terminal ||
+				transition.Target == workflow.TargetAbort || transition.Target == workflow.TargetEscalate {
+				continue
+			}
+			for _, node := range []string{transition.Source, transition.Target} {
+				if !known[node] {
+					known[node] = true
+					graph.Nodes = append(graph.Nodes, readmodel.AnalyticsNode{ID: node})
+				}
+			}
+			key := transition.Source + "\x00" + transition.Target
+			if !edges[key] {
+				edges[key] = true
+				graph.Edges = append(graph.Edges, readmodel.AnalyticsEdge{Source: transition.Source, Target: transition.Target})
+			}
+		}
+	}
+	sort.SliceStable(runs, func(i, j int) bool {
+		if runs[i].detail.StartedAt.Equal(runs[j].detail.StartedAt) {
+			return runs[i].detail.ID < runs[j].detail.ID
+		}
+		return runs[i].detail.StartedAt.Before(runs[j].detail.StartedAt)
+	})
+	previousByIssue := make(map[string]RunDetail)
+	for _, run := range runs {
+		current := run.detail
+		if current.Operator.Issue == nil || current.Operator.Issue.Number == "" {
+			continue
+		}
+		previous, seen := previousByIssue[current.Operator.Issue.Number]
+		previousByIssue[current.Operator.Issue.Number] = current
+		if !seen || len(previous.Transitions) == 0 || len(current.Transitions) == 0 {
+			continue
+		}
+		source := previous.Transitions[len(previous.Transitions)-1].Target
+		if source == "" {
+			source = previous.Transitions[len(previous.Transitions)-1].Source
+		}
+		target := current.Transitions[0].Source
+		if target == "" {
+			target = current.Transitions[0].Target
+		}
+		if source == "" || target == "" ||
+			workflow.IsReservedTarget(source) || workflow.IsReservedTarget(target) {
+			continue
+		}
+		for _, node := range []string{source, target} {
+			if !known[node] {
+				known[node] = true
+				graph.Nodes = append(graph.Nodes, readmodel.AnalyticsNode{ID: node})
+			}
+		}
+		key := source + "\x00" + target
+		if !edges[key] {
+			edges[key] = true
+			graph.Edges = append(graph.Edges, readmodel.AnalyticsEdge{Source: source, Target: target})
+		}
+	}
+	return graph, nil
+}
+
+// getWorkflowGraphForQuery returns the compiled workflow graph for a given gaggle/workflow pair.
+// Returns nil if the workflow is not found or cannot be compiled.
+func getWorkflowGraphForQuery(definitions *instance.ConfigSet, gaggle, workflowName string) *workflow.Graph {
+	if definitions == nil || workflowName == "" {
+		return nil
+	}
+	for _, w := range definitions.Workflows {
+		if w.Spec.Gaggle == gaggle && w.Name == workflowName {
+			def := workflow.Definition{
+				Spec: w.Spec,
+			}
+			machine, err := workflow.Compile(def)
+			if err != nil {
+				return nil
+			}
+			graph := machine.Graph()
+			return &graph
+		}
+	}
+	return nil
+}
+
+func float64Ptr(value float64) *float64 { return &value }
 
 // TelemetryErrorSignatures implements TelemetryReader for the daemon's full local service.
 func (s *Local) TelemetryErrorSignatures(ctx context.Context, req TelemetryErrorSignaturesRequest) (TelemetryErrorSignaturesResult, error) {
@@ -696,6 +1202,15 @@ func (s *Local) TelemetryErrors(ctx context.Context, req TelemetryErrorsRequest)
 		return TelemetryErrorsPage{}, ErrTelemetryUnavailable
 	}
 	return s.telemetry.TelemetryErrors(ctx, req)
+}
+
+// TelemetryImplementationOutcomes implements TelemetryReader for the daemon's
+// full local service.
+func (s *Local) TelemetryImplementationOutcomes(ctx context.Context, req TelemetryImplementationOutcomesRequest) (TelemetryImplementationOutcomesResult, error) {
+	if s.telemetry == nil {
+		return TelemetryImplementationOutcomesResult{}, ErrTelemetryUnavailable
+	}
+	return s.telemetry.TelemetryImplementationOutcomes(ctx, req)
 }
 
 func validateWindow(since, until time.Time) error {

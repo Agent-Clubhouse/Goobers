@@ -79,6 +79,7 @@ func TestRemoveRunDeletesCreditNodes(t *testing.T) {
 	if err := store.RemoveRun(ctx, "removed"); err != nil {
 		t.Fatal(err)
 	}
+
 	var nodes int
 	if err := store.reader.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM run_node WHERE run_id = ?`, "removed").Scan(&nodes); err != nil {
@@ -86,6 +87,29 @@ func TestRemoveRunDeletesCreditNodes(t *testing.T) {
 	}
 	if nodes != 0 {
 		t.Fatalf("run_node rows after removal = %d, want 0", nodes)
+	}
+}
+
+func TestCreditAssignmentRunIDsReturnsNewestEvidenceForNode(t *testing.T) {
+	store := openTestStore(t)
+	start := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	node := NodeRow{Kind: "stage", Name: "review", Identity: "sha256:reviewer"}
+	seedCreditRun(t, store, "older", start, journal.PhaseCompleted, "fail", "@abort",
+		[]NodeRow{{RunID: "older", Kind: node.Kind, Name: node.Name, Identity: node.Identity}})
+	seedCreditRun(t, store, "newer", start.Add(time.Hour), journal.PhaseCompleted, "fail", "@abort",
+		[]NodeRow{{RunID: "newer", Kind: node.Kind, Name: node.Name, Identity: node.Identity}})
+
+	got, err := store.CreditAssignmentRunIDs(context.Background(), CreditOptions{
+		Gaggle: "core", Since: start.Add(-time.Minute),
+	}, NodeCredit{
+		Gaggle: "core", Workflow: "implementation", Kind: node.Kind,
+		Stage: node.Name, Identity: node.Identity,
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "newer" {
+		t.Fatalf("evidence run ids = %v, want [newer]", got)
 	}
 }
 

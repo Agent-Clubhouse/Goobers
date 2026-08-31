@@ -106,7 +106,18 @@ const (
 	DegradedIntakeWriteFailure = "intake_write_failure"
 	DegradedProjectionLag      = "projection_lag"
 	DegradedSweepStale         = "sweep_stale"
+	// DegradedProjectFailure reports that the projector could not apply one or
+	// more runs. Unlike lag, this is not a matter of waiting: those runs are
+	// absent from the projection until repair rediscovers them.
+	DegradedProjectFailure = "project_failure"
 )
+
+// MissingProjectedRuns names the partition a projection gap omits.
+//
+// One stable name rather than a name per run: the response cannot enumerate
+// runs it does not have, and the operator question ("is the list missing
+// anything?") is answered by the partition, not by the identities.
+const MissingProjectedRuns = "projected-runs"
 
 // sweepStaleAfter is how long since a completed sweep cycle before that itself
 // becomes a degraded condition.
@@ -123,6 +134,13 @@ type ReadStateInput struct {
 	OldestPendingAt      time.Time
 	IntakeWriteFailures  int
 	ProjectionLagSeconds float64
+	// ProjectFailures counts runs the projector tried and failed to apply and
+	// has NOT projected since. Each one is a KNOWN gap in the projection, which
+	// is what makes the response partial rather than merely lagging. It must be
+	// the open set rather than a lifetime total: a gap the repair sweep has
+	// closed is no longer a gap, and a signal that never clears stops carrying
+	// information.
+	ProjectFailures int
 }
 
 // ReadState builds the envelope.
@@ -181,6 +199,32 @@ func (s *Store) ReadState(ctx context.Context, input ReadStateInput) (ReadState,
 	}
 	if input.PendingIntake > 0 {
 		out.Degraded = append(out.Degraded, DegradedProjectionLag)
+	}
+	if input.ProjectFailures > 0 {
+		out.Degraded = append(out.Degraded, DegradedProjectFailure)
+	}
+	// A known gap makes the answer partial, not merely stale: runs the projector
+	// failed to apply, and runs whose watermark was never recorded, are absent
+	// from every list until repair rediscovers them. Reporting "complete" here
+	// is what let a silently truncated runs list look healthy.
+	//
+	// Both terms are open counts, so this clears itself: once the failing runs
+	// project and the watermark writes succeed, completeness returns to
+	// "complete". IntakeWriteFailures currently has no producer in readservice —
+	// it is carried for callers that track watermark write errors themselves, so
+	// in the daemon today the gap is the projector's open failures alone.
+	if gap := input.ProjectFailures + input.IntakeWriteFailures; gap > 0 {
+		out.Completeness = CompletenessPartial
+		out.Missing = append(out.Missing, MissingPartition{
+			Name: MissingProjectedRuns,
+			Reason: fmt.Sprintf(
+				"%d run(s) are not projected: %d failed to apply, %d have no recorded watermark; the repair sweep will rediscover them",
+				gap, input.ProjectFailures, input.IntakeWriteFailures),
+			// The repair sweep is the mechanism that closes this, so its own
+			// staleness threshold is the honest deadline: past it, the gap is a
+			// defect rather than work in progress.
+			ExpectedBy: now.Add(sweepStaleAfter),
+		})
 	}
 	return out, nil
 }

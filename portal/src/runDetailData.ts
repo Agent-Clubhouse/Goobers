@@ -56,7 +56,7 @@ interface JournalVisitState {
 }
 
 export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuery {
-  const { cache, freshness, subscribe } = useLiveData();
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
   const cacheKey = dataCacheKey("run-detail", runId);
   const [state, setState] = useState<QueryState<RunDetailSnapshot>>(() => {
     const cached = cache.get<RunDetailSnapshot>(cacheKey);
@@ -85,7 +85,11 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
           request.current = undefined;
         }
         cache.set(cacheKey, data, dependencies, cacheRevision);
-        setState({ status: "ready", data });
+        // The stream can drop while this request is in flight; the freshness
+        // effect below only fires on a freshness change, so publishing an
+        // unconditional "ready" here would leave the page claiming live data
+        // until the next transition (#3657).
+        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
         return true;
       },
       (error: unknown) => {
@@ -105,7 +109,7 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
         return false;
       },
     );
-  }, [cache, cacheKey, client, runId]);
+  }, [cache, cacheKey, client, isFresh, runId]);
 
   useEffect(() => {
     const cached = cache.get<RunDetailSnapshot>(cacheKey);
@@ -115,7 +119,9 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
       (_models, reason) => {
         const current = reason === "initial" ? cache.get<RunDetailSnapshot>(cacheKey) : undefined;
         if (current) {
-          setState({ status: "ready", data: current });
+          setState(
+            isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
+          );
           return true;
         }
         return refresh();
@@ -127,7 +133,7 @@ export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuer
       request.current?.abort();
       request.current = undefined;
     };
-  }, [cache, cacheKey, refresh, subscribe]);
+  }, [cache, cacheKey, isFresh, refresh, subscribe]);
 
   // Freshness downgrade (#1714).
   //
@@ -477,6 +483,22 @@ export function isMajorJournalEvent(event: RunEvent): boolean {
   );
 }
 
+// isFailureJournalEvent flags the events an operator scanning the ledger
+// needs to notice first: an explicit error record, a stage attempt that
+// failed or was blocked, or a phase/escalation marker. Reuses the same
+// status/type vocabulary runFailure and keyMomentKind already read off
+// RunEvent, so "what counts as a failure" stays defined in one place.
+export function isFailureJournalEvent(event: RunEvent): boolean {
+  return (
+    event.type === "error" ||
+    event.status === "failure" ||
+    event.status === "blocked" ||
+    event.status === "failed" ||
+    event.status === "escalated" ||
+    event.escalated === true
+  );
+}
+
 export function evidenceDecision(
   events: RunEvent[],
   evidence: RunEvent,
@@ -744,6 +766,7 @@ export function eventHeading(event: RunEvent): string {
     redaction: "Journal content redacted",
     repaired: "Journal repaired",
     "runner.annotation": "Runner annotation",
+    "runner.placement": "Placement recorded",
     "span.recorded": "Span recorded",
     "parallel.started": "Parallel started",
     "parallel.finished": "Parallel finished",
@@ -815,6 +838,25 @@ export function eventSummary(
     }
     case "error":
       return event.error?.message || event.error?.code || "An error was recorded.";
+    case "runner.placement": {
+      const runner = typeof event.runner?.runner === "string" ? event.runner.runner : "";
+      if (!runner) {
+        return "Placement provenance was recorded for this attempt.";
+      }
+      // node is a real cluster node; host is the executing process's own
+      // hostname (the POD name inside a pod). Name whichever one the substrate
+      // actually knew, preferring the node — never labelling a host as a node.
+      const placementNode = typeof event.runner?.node === "string" ? event.runner.node : "";
+      const where = [placementNode ? "node" : "host", "os", "pod"]
+        .map((key) => {
+          const value = event.runner?.[key];
+          return typeof value === "string" && value ? `${key} ${value}` : "";
+        })
+        .filter(Boolean)
+        .join(", ");
+      const stage = node ? `${humanize(node)} attempt` : "The attempt";
+      return `${stage} executed on runner ${runner}${where ? ` (${where})` : ""}.`;
+    }
     case "parallel.started":
       return event.parallel ? `Parallel ${event.parallel} started.` : "A parallel state started.";
     case "branch.started":

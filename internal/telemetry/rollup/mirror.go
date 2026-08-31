@@ -20,34 +20,36 @@ import "time"
 // (scheduler/events.jsonl) — a run's own events.jsonl never sets them, since a
 // run event's identity is implicit from its directory.
 type journalEvent struct {
-	Schema          string              `json:"schema"`
-	Seq             uint64              `json:"seq"`
-	Type            string              `json:"type"`
-	Branch          int                 `json:"branch"`
-	Time            time.Time           `json:"time"`
-	Stage           string              `json:"stage,omitempty"`
-	Attempt         int                 `json:"attempt,omitempty"`
-	AttemptClass    string              `json:"attemptClass,omitempty"`
-	Gate            string              `json:"gate,omitempty"`
-	Verdict         string              `json:"verdict,omitempty"`
-	Target          string              `json:"target,omitempty"`
-	Escalated       bool                `json:"escalated,omitempty"`
-	Status          string              `json:"status,omitempty"`
-	Outputs         map[string]any      `json:"outputs,omitempty"`
-	Artifacts       []journalRef        `json:"artifacts,omitempty"`
-	Actor           string              `json:"actor,omitempty"`
-	WorkflowVersion int                 `json:"workflowVersion,omitempty"`
-	WorkflowDigest  string              `json:"workflowDigest,omitempty"`
-	Ref             *journalRef         `json:"ref,omitempty"`
-	Name            string              `json:"name,omitempty"`
-	DataSchema      string              `json:"dataSchema,omitempty"`
-	ExternalRef     *journalExternalRef `json:"externalRef,omitempty"`
-	Error           *journalErrorDetail `json:"error,omitempty"`
-	Redaction       *journalRedaction   `json:"redaction,omitempty"`
-	Runner          map[string]any      `json:"runner,omitempty"`
-	Workflow        string              `json:"workflow,omitempty"`
-	RunID           string              `json:"runId,omitempty"`
-	Reason          string              `json:"reason,omitempty"`
+	Schema            string              `json:"schema"`
+	Seq               uint64              `json:"seq"`
+	Type              string              `json:"type"`
+	Branch            int                 `json:"branch"`
+	Time              time.Time           `json:"time"`
+	Stage             string              `json:"stage,omitempty"`
+	Attempt           int                 `json:"attempt,omitempty"`
+	AttemptClass      string              `json:"attemptClass,omitempty"`
+	Gate              string              `json:"gate,omitempty"`
+	Verdict           string              `json:"verdict,omitempty"`
+	Target            string              `json:"target,omitempty"`
+	Escalated         bool                `json:"escalated,omitempty"`
+	Status            string              `json:"status,omitempty"`
+	Outputs           map[string]any      `json:"outputs,omitempty"`
+	Artifacts         []journalRef        `json:"artifacts,omitempty"`
+	Actor             string              `json:"actor,omitempty"`
+	WorkflowVersion   int                 `json:"workflowVersion,omitempty"`
+	WorkflowDigest    string              `json:"workflowDigest,omitempty"`
+	Ref               *journalRef         `json:"ref,omitempty"`
+	Name              string              `json:"name,omitempty"`
+	DataSchema        string              `json:"dataSchema,omitempty"`
+	ExternalRef       *journalExternalRef `json:"externalRef,omitempty"`
+	Error             *journalErrorDetail `json:"error,omitempty"`
+	Redaction         *journalRedaction   `json:"redaction,omitempty"`
+	Runner            map[string]any      `json:"runner,omitempty"`
+	Workflow          string              `json:"workflow,omitempty"`
+	RunID             string              `json:"runId,omitempty"`
+	Reason            string              `json:"reason,omitempty"`
+	SourceRunID       string              `json:"sourceRunId,omitempty"`
+	SourceTerminalSeq uint64              `json:"sourceTerminalSeq,omitempty"`
 }
 
 // Event type values accepted from run and instance journals.

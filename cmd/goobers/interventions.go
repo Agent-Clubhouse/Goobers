@@ -31,10 +31,14 @@ type runInterventionService struct {
 	runnerRegistry *daemonRunnerRegistry
 	instanceLog    *journal.InstanceLog
 	errorLog       *log.Logger
-	scheduler      atomic.Pointer[localscheduler.Scheduler]
-	wg             *sync.WaitGroup
-	activeMu       sync.Mutex
-	active         map[string]struct{}
+	// hitl delivers operator intents to engine-driven runs (#3883). When it
+	// is nil — a daemon with no engine client — engine-driven runs keep the
+	// #3847 refusal exactly as they had it.
+	hitl      atomic.Pointer[hitlDeliverer]
+	scheduler atomic.Pointer[localscheduler.Scheduler]
+	wg        *sync.WaitGroup
+	activeMu  sync.Mutex
+	active    map[string]struct{}
 }
 
 type interventionDefinitionSet struct {
@@ -95,6 +99,15 @@ type resolvedInterventionRun struct {
 	phase        journal.RunPhase
 	events       []journal.Event
 	terminalSeq  uint64
+	// engineDriven marks a run the Temporal engine owns. Its runner and
+	// machine fields are deliberately nil: nothing on the runner path is
+	// legitimate for it, and leaving them nil makes that unmistakable.
+	engineDriven bool
+	// generation is the engine's compare-and-set token — the number of
+	// terminals the run has produced. It is the ExpectedTerminalGeneration an
+	// operator intent must quote, and plays the role terminalSeq plays for
+	// runner-driven runs.
+	generation uint64
 }
 
 func newRunInterventionService(layout instance.Layout, setup *schedulerSetup, wg *sync.WaitGroup, errorLog *log.Logger) *runInterventionService {
@@ -106,6 +119,30 @@ func newRunInterventionService(layout instance.Layout, setup *schedulerSetup, wg
 		errorLog:       errorLog,
 		wg:             wg,
 	}
+}
+
+// AttachHITLDeliverer hands the service the engine-run delivery seam. It is
+// attached after boot, once the engine client and its workflow-id resolver
+// exist, for the same reason the scheduler is: the intervention service is
+// constructed before either.
+func (s *runInterventionService) AttachHITLDeliverer(deliverer hitlDeliverer) {
+	if s == nil || deliverer == nil {
+		return
+	}
+	s.hitl.Store(&deliverer)
+}
+
+// hitlDelivery returns the attached deliverer, or nil when this daemon has no
+// engine client and engine-driven runs must keep the #3847 refusal.
+func (s *runInterventionService) hitlDelivery() hitlDeliverer {
+	if s == nil {
+		return nil
+	}
+	deliverer := s.hitl.Load()
+	if deliverer == nil {
+		return nil
+	}
+	return *deliverer
 }
 
 func (s *runInterventionService) AttachScheduler(scheduler *localscheduler.Scheduler) {
@@ -126,6 +163,15 @@ func (s *runInterventionService) approve(admission, execution context.Context, i
 	resolved, err := s.resolve(input.RunID)
 	if err != nil {
 		return httpapi.InterventionResult{}, err
+	}
+	// An engine-driven run is answered by its workflow, not by the runner
+	// machinery below. The branch is taken before replayIntervention because
+	// deduplication for engine runs is the protocol's, keyed on the intent's
+	// request id and settled durably inside the workflow — scanning this
+	// daemon's journal snapshot for a runner-written marker would be both
+	// wrong and racy against the workflow's own writer.
+	if resolved.engineDriven {
+		return s.deliverHITL(execution, hitlActionApprove, resolved, input)
 	}
 	if result, replayed, err := replayIntervention(resolved, "approve", input); replayed || err != nil {
 		return result, err
@@ -222,6 +268,9 @@ func (s *runInterventionService) override(admission, execution context.Context, 
 	if err != nil {
 		return httpapi.InterventionResult{}, err
 	}
+	if resolved.engineDriven {
+		return s.deliverHITL(execution, hitlActionOverride, resolved, input)
+	}
 	if result, replayed, err := replayIntervention(resolved, "override", input); replayed || err != nil {
 		return result, err
 	}
@@ -279,6 +328,9 @@ func (s *runInterventionService) rerunStage(admission, execution context.Context
 	if err != nil {
 		return httpapi.InterventionResult{}, err
 	}
+	if resolved.engineDriven {
+		return s.deliverHITL(execution, hitlActionRerun, resolved, input)
+	}
 	if result, replayed, err := replayIntervention(resolved, "rerun", input); replayed || err != nil {
 		return result, err
 	}
@@ -299,6 +351,156 @@ func (s *runInterventionService) rerunStage(admission, execution context.Context
 		return httpapi.InterventionResult{}, interventionExecutionError("rerun stage", err)
 	}
 	return interventionResult(resolved)
+}
+
+// escalationResolutionMarker tags the HITL plane's deny resolution event: an
+// escalated run resolved as "stays denied" keeps its terminal phase, so the
+// resolution exists only as this journal record, appended by the run's own
+// journal writer (journal.Recover — the same writer recordInterventionMarker
+// uses). approve/redirect resolutions journal through the resume machinery
+// instead and need no marker of their own.
+const escalationResolutionMarker = "escalation.resolution"
+
+// scanEscalationResolution looks for an escalation.resolution marker under
+// key. replayed reports a marker whose payload fingerprint matches; a reused
+// key with a different payload is refused.
+func scanEscalationResolution(events []journal.Event, key, fingerprint string) (replayed bool, err error) {
+	for _, event := range events {
+		if event.Type != journal.EventRunnerAnnotation || event.Runner["kind"] != escalationResolutionMarker {
+			continue
+		}
+		recordedKey, _ := event.Runner["idempotencyKey"].(string)
+		if recordedKey != key {
+			continue
+		}
+		recorded, _ := event.Runner["fingerprint"].(string)
+		if recorded != fingerprint {
+			return false, interventionConflict(
+				"idempotency_key_reused",
+				"Idempotency-Key was already used for a different resolution",
+			)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// AcceptDenyEscalation resolves an escalated (or failed) run as denied: the
+// escalation was reviewed and the run deliberately stays terminal. The
+// resolution event — actor, rationale, idempotency key — is journaled; a
+// replay of the same Idempotency-Key returns the current result without a
+// second event, and a reused key with a different payload is refused.
+func (s *runInterventionService) AcceptDenyEscalation(admission, execution context.Context, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+	if err := admission.Err(); err != nil {
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "request_budget_exceeded", "the resolution was not accepted within the request budget", err,
+		)
+	}
+	if err := execution.Err(); err != nil {
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "daemon_stopping", "the daemon is stopping", err,
+		)
+	}
+	if input.IdempotencyKey == "" {
+		return httpapi.InterventionResult{}, interventionBadRequest("idempotency_key_required", "Idempotency-Key is required")
+	}
+	rationale := strings.TrimSpace(input.Rationale)
+	if rationale == "" {
+		return httpapi.InterventionResult{}, interventionBadRequest("rationale_required", "deny rationale is required")
+	}
+	resolved, err := s.resolve(input.RunID)
+	if err != nil {
+		return httpapi.InterventionResult{}, err
+	}
+	if resolved.engineDriven {
+		return s.deliverHITL(execution, hitlActionDeny, resolved, input)
+	}
+	return s.denyEscalation(resolved, input)
+}
+
+// denyEscalation is AcceptDenyEscalation after run resolution: scan for a
+// replay, then journal the resolution under the run's active-intervention
+// slot. Split out so the replay/append race is testable with a genuinely
+// stale resolved snapshot.
+func (s *runInterventionService) denyEscalation(resolved resolvedInterventionRun, input httpapi.InterventionRequest) (httpapi.InterventionResult, error) {
+	rationale := strings.TrimSpace(input.Rationale)
+	fingerprint, err := interventionFingerprint("deny", input)
+	if err != nil {
+		return httpapi.InterventionResult{}, fmt.Errorf("fingerprint escalation resolution: %w", err)
+	}
+	replayed, err := scanEscalationResolution(resolved.events, input.IdempotencyKey, fingerprint)
+	if err != nil {
+		return httpapi.InterventionResult{}, err
+	}
+	if replayed {
+		return currentInterventionResult(resolved)
+	}
+	if resolved.phase != journal.PhaseEscalated && resolved.phase != journal.PhaseFailed {
+		return httpapi.InterventionResult{}, interventionConflict(
+			"run_not_escalated",
+			fmt.Sprintf("run %q is %s; only escalated or failed runs can be denied", input.RunID, resolved.phase),
+		)
+	}
+	releaseActive, exclusive := s.trackActiveIntervention(resolved.runID)
+	if !exclusive {
+		return httpapi.InterventionResult{}, interventionConflict("intervention_in_progress", "another intervention is already active for this run")
+	}
+	defer releaseActive()
+
+	// Re-scan now that the slot is held (the recheck-under-writer pattern
+	// ClaimNotificationDelivery demonstrates): the scan above ran on a journal
+	// snapshot taken before the slot was acquired, so a concurrent same-key
+	// deny may have appended the resolution in between — approve/override are
+	// backstopped by ResumeFromTerminal's ExpectedTerminalSeq CAS, but deny's
+	// only writer-side guard is this recheck.
+	current, err := journal.OpenRead(resolved.runDir)
+	if err == nil {
+		var events []journal.Event
+		if events, err = current.Events(); err == nil {
+			replayed, err = scanEscalationResolution(events, input.IdempotencyKey, fingerprint)
+		}
+	}
+	if err != nil {
+		var interventionErr *httpapi.InterventionError
+		if errors.As(err, &interventionErr) {
+			return httpapi.InterventionResult{}, err
+		}
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "escalation_failed", "escalation resolution could not be journaled",
+			fmt.Errorf("re-scan run before journaling escalation resolution: %w", err),
+		)
+	}
+	if replayed {
+		return currentInterventionResult(resolved)
+	}
+
+	_, scrubber := journal.DefaultScrubber()
+	run, _, err := journal.Recover(resolved.runDir, journal.WithScrubber(scrubber))
+	if err != nil {
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "escalation_failed", "escalation resolution could not be journaled",
+			fmt.Errorf("recover run to journal escalation resolution: %w", err),
+		)
+	}
+	appendErr := run.Append(journal.Event{
+		Type: journal.EventRunnerAnnotation,
+		Runner: map[string]any{
+			"kind":           escalationResolutionMarker,
+			"resolution":     "deny",
+			"idempotencyKey": input.IdempotencyKey,
+			"fingerprint":    fingerprint,
+			"actor":          input.Actor,
+			"rationale":      rationale,
+		},
+	})
+	closeErr := run.Close()
+	if err := errors.Join(appendErr, closeErr); err != nil {
+		return httpapi.InterventionResult{}, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "escalation_failed", "escalation resolution could not be journaled",
+			fmt.Errorf("journal escalation resolution: %w", err),
+		)
+	}
+	return currentInterventionResult(resolved)
 }
 
 func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun, error) {
@@ -361,6 +563,30 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 			http.StatusInternalServerError, "run_identity_mismatch", "run identity does not match its runtime scope", nil,
 		)
 	}
+	// Every intervention this service performs — approve, override, rerun,
+	// deny — either calls Runner.Resume/ResumeFromTerminal or appends to the
+	// run's journal directly. All four are wrong for a run the engine drives:
+	// the runner resolved below has never executed a stage of it, and its
+	// journal has a live writer on the other side of a Temporal workflow.
+	//
+	// #3883 gives those four verbs a second destination. An engine-driven run
+	// resolves HERE and returns early, carrying only the facts an operator
+	// intent needs — the run's identity and the terminal generation it is
+	// being issued against. It deliberately does NOT resolve a runner, a
+	// machine, or a goober digest: none of them may be touched for this run,
+	// and a nil field is a louder guarantee of that than a comment.
+	//
+	// A daemon with no deliverer attached (no engine client configured) keeps
+	// the #3847 refusal verbatim, so its behaviour is unchanged.
+	if identity.EngineDriven() {
+		if s.hitlDelivery() == nil {
+			return resolvedInterventionRun{}, interventionConflict(
+				"run_engine_driven",
+				engineDrivenRefusal(identity.RunID, "an operator intervention").Error(),
+			)
+		}
+		return s.resolveEngineDriven(runID, found.dir, identity.Gaggle, identity.Workflow, reader)
+	}
 	key := localscheduler.WorkflowIdentity{Gaggle: identity.Gaggle, Workflow: identity.Workflow}
 	machine := definitions.machines[key]
 	if machine == nil {
@@ -422,6 +648,36 @@ func (s *runInterventionService) resolve(runID string) (resolvedInterventionRun,
 		phase:        phase,
 		events:       events,
 		terminalSeq:  terminalSeq,
+	}, nil
+}
+
+// resolveEngineDriven builds the resolved run an operator intent is issued
+// against. It reads phase and events for the SAME reason the runner path does
+// — to report the run back to the operator and to compute the compare-and-set
+// token — and for no other: every decision about whether the intent may land
+// is the workflow's to make.
+func (s *runInterventionService) resolveEngineDriven(runID, runDir, gaggle, workflowName string, reader *journal.Reader) (resolvedInterventionRun, error) {
+	phase, err := reader.Phase()
+	if err != nil {
+		return resolvedInterventionRun{}, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "run_read_failed", "run phase could not be read", err,
+		)
+	}
+	events, err := reader.Events()
+	if err != nil {
+		return resolvedInterventionRun{}, httpapi.NewInterventionError(
+			http.StatusInternalServerError, "run_read_failed", "run events could not be read", err,
+		)
+	}
+	return resolvedInterventionRun{
+		runID:        runID,
+		runDir:       runDir,
+		gaggle:       gaggle,
+		workflow:     workflowName,
+		phase:        phase,
+		events:       events,
+		engineDriven: true,
+		generation:   terminalGeneration(events),
 	}, nil
 }
 

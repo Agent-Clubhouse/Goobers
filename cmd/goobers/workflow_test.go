@@ -9,6 +9,7 @@ import (
 
 const workflowShowFixture = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -88,6 +89,7 @@ func TestWorkflowShowSurfacesValidationWarnings(t *testing.T) {
 // evaluator-specific text.
 const workflowDOTFixture = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:
@@ -187,7 +189,7 @@ func TestWorkflowUsage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("help code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "goobers workflow show [--dot] <name> [path]") {
+	if !strings.Contains(stdout, "\n  workflow show") {
 		t.Fatalf("help stdout = %q", stdout)
 	}
 }

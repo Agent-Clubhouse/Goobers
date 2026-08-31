@@ -13,6 +13,7 @@ import (
 	"time"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	platformlock "github.com/goobers/goobers/internal/platform/lock"
 	"github.com/goobers/goobers/providers"
@@ -42,6 +43,7 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 	server.addIssue(22, "Bot-active stale item", "goobers:approved", providers.LabelReady, providers.LabelStale)
 
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	newStaleTerminalRun(t, layoutFor(root), "historical-run", "default-implement", journal.PhaseCompleted, "local-ci")
 	server.mu.Lock()
 	server.issues[13].body = "- [ ] #14"
 	server.issues[15].body = "- [x] #16"
@@ -59,6 +61,12 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if ok, _, err := ledger.ClaimScoped(
+		localscheduler.ClaimKey{Gaggle: "goobers", Provider: string(providers.ProviderGitHub), ExternalID: "7"},
+		"historical-run", "default-implement", time.Hour,
+	); err != nil || !ok {
+		t.Fatalf("seed terminal orphan claim: ok=%v err=%v", ok, err)
 	}
 	claimKey := localscheduler.ClaimKey{Gaggle: "goobers", Provider: string(providers.ProviderGitHub), ExternalID: "8"}
 	if ok, _, err := ledger.ClaimScoped(claimKey, "live-run", "implementation", time.Hour); err != nil || !ok {
@@ -111,6 +119,37 @@ func TestReconcileBacklogMetadataRepairsDriftAndLeavesCorrectLabelsUntouched(t *
 		if !strings.Contains(comments[len(comments)-1], "Goobers backlog reconciliation corrected metadata drift") {
 			t.Fatalf("issue %d comments = %q, want reconciliation explanation", id, comments)
 		}
+	}
+	server.mu.Lock()
+	comments := append([]string(nil), server.issues[7].comments...)
+	server.mu.Unlock()
+	var releasedOrphan bool
+	for _, comment := range comments {
+		if strings.Contains(comment, "goobers-claim-release: run=historical-run") {
+			releasedOrphan = true
+			break
+		}
+	}
+	if !releasedOrphan {
+		t.Fatalf("issue 7 comments = %q, want release marker for historical-run", comments)
+	}
+	claim, err := provider.ClaimWorkItem(context.Background(), providers.ClaimWorkItemRequest{
+		Repository: repo,
+		ID:         "7",
+		RunID:      "later-run",
+	})
+	if err != nil {
+		t.Fatalf("claim recovered issue 7: %v", err)
+	}
+	if !claim.Claimed || claim.ClaimedBy != "later-run" {
+		t.Fatalf("reclaimed issue 7 = %+v, want later-run to win", claim)
+	}
+	if _, err := provider.ReleaseWorkItemClaim(context.Background(), providers.ClaimWorkItemRequest{
+		Repository: repo,
+		ID:         "7",
+		RunID:      "later-run",
+	}); err != nil {
+		t.Fatalf("release follow-up claim: %v", err)
 	}
 	server.mu.Lock()
 	beforeComments := make(map[int]int, len(server.issues))
@@ -175,6 +214,9 @@ func TestRenamedCurationClaimWithDefaultCardinalityWritesEnrichedObject(t *testi
 	t.Setenv("GOOBERS_INPUT_CURATION", "true")
 	resultFile := filepath.Join(t.TempDir(), "claimed-item.json")
 	t.Setenv("GOOBERS_INPUT_RESULTFILE", resultFile)
+	// The claim mutation appends to the worktree-relative mutation sidecar
+	// (mutationsSidecarFile), so this must not run in the package directory.
+	t.Chdir(t.TempDir())
 
 	code, stdout, stderr := runArgs(t, "backlog-query", "--claim", root)
 	if code != 0 {

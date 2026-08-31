@@ -179,32 +179,3 @@ func writePortalExtensionReport(w io.Writer, report portalextension.Report) {
 	writeAgentKitPathList(w, "missing files", report.Missing)
 	writeAgentKitPathList(w, "unexpected files", report.Unexpected)
 }
-
-func offerGuidedPortalExtension(p guidedPrompter) error {
-	if !detectCopilotAppForInit() {
-		return nil
-	}
-	pln(p.out, "")
-	pln(p.out, "GitHub Copilot app detected.")
-	answer, err := p.ask("Install the release-matched Goobers Portal canvas extension? (yes/no)", "yes", validYesNo)
-	if err != nil {
-		return err
-	}
-	if !isYes(answer) {
-		pln(p.out, "Portal installation declined. Install it later with: goobers portal-extension install")
-		return nil
-	}
-	result, err := installPortalForInit()
-	if err != nil {
-		pf(p.out, "Portal extension installation was skipped: %v\n", err)
-		pln(p.out, "Install or update it later with: goobers portal-extension install")
-		pln(p.out, "For an existing managed installation, run: goobers portal-extension update")
-		return nil
-	}
-	if result.Installed {
-		pf(p.out, "Installed Goobers Portal at %s. Reload extensions in the Copilot app to activate it.\n", result.Path)
-	} else {
-		pf(p.out, "Goobers Portal is already current at %s.\n", result.Path)
-	}
-	return nil
-}

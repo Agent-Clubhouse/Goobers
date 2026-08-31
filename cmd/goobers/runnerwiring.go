@@ -21,6 +21,7 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
+	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/workflow"
@@ -100,6 +101,8 @@ type runnerCompositionInput struct {
 	SandboxPosture       instance.SandboxPosture
 	ProviderQuota        *localscheduler.ProviderQuotaState
 }
+
+var runnerLookPath = exec.LookPath
 
 func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.Manager, error) {
 	l := input.Layout
@@ -216,7 +219,11 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 	}
 
 	envCaps := buildEnvCapabilities()
-	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, instanceRoot, selfBin, false)
+	adapterRegistry, err := buildHarnessRegistry(envCaps, cfg.Runner.EnvPassthrough, cfg.Runner.HarnessCommand, instanceRoot, selfBin, false, nil,
+		// Same runner property the deterministic executor binds: a self
+		// entry declaring tmp:ephemeral must be true of agentic stages too,
+		// or the declaration is only half enforced.
+		cfg.SelfRunnerEnforces(instance.RunnerRestrictionTmpEphemeral))
 	if err != nil {
 		return runner.Config{}, nil, err
 	}
@@ -278,7 +285,12 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 				SandboxPosture: sandboxPosture, ArtifactRecorder: rec, SecretRegistrar: reg, AgenticAdapter: newAgenticAdapter,
 			})
 		},
-		Automated:         gate.NewAutomatedEvaluator(),
+		Automated: gate.NewAutomatedEvaluator(),
+		// Placement provenance is recorded only once this instance declares a
+		// runners: inventory (or supplies GOOBERS_RUNNER_* identity env) —
+		// zero-declaration installs keep byte-identical journals
+		// (goobernetes-architecture.md §11 item 1).
+		RunnersDeclared:   len(cfg.Runners) > 0,
 		Worktrees:         wtMgr,
 		PinnedWorkspace:   pinned,
 		PinnedCleanPolicy: configuredProject.WorkspaceCleanPolicy(),
@@ -312,6 +324,9 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// fault (e.g. a copilot-cli session timeout) stops silently returning the
 		// item to ready with no record; nil for a repo-less instance.
 		Failed: buildFailedHandler(l, cfg, resolver, sharedReg),
+		// Wire the existing-fix handler (#3236): when implement returns no-work
+		// with existingFixCommit set, strip goobers:ready to prevent reclaim.
+		ExistingFix: buildExistingFixHandler(l, cfg, resolver, sharedReg),
 		// Circuit breaker for escalated/aborted terminals: buildFailedHandler
 		// covers PhaseFailed; this covers the remaining non-completed terminals
 		// so that a repeating escalation loop doesn't churn indefinitely.
@@ -320,7 +335,7 @@ func buildRunnerConfig(input runnerCompositionInput) (runner.Config, *worktree.M
 		// a real daemon run. Left nil in every runner-package test and any
 		// embedder that doesn't want it (Config.LookPathFunc's doc comment) —
 		// this is the one place that actually wants a host PATH check.
-		LookPathFunc: exec.LookPath,
+		LookPathFunc: runnerLookPath,
 	}
 	if tel != nil {
 		rc.Telemetry = tel
@@ -360,6 +375,25 @@ func pathLengthManagerLimits(cfg *instance.Config, cloneURL func(apiv1.RepoRef) 
 	return limits, nil
 }
 
+// resolveWorkflowRunControls collapses one workflow's run-control inheritance
+// (#1671) into an effective policy: instance runConditions, then the matched
+// repo's override, then the gaggle's spec, then the workflow's own spec.
+//
+// Every starter must resolve through this one function. The daemon's
+// scheduler entry did this inline while `goobers engine-start` did it nowhere,
+// so the same workflow pinned a different watchdog budget depending on which
+// starter dispatched it (#3820) — a run identity must not depend on that.
+func resolveWorkflowRunControls(cfg *instance.Config, project apiv1.RepoRef, gaggle apiv1.Gaggle, workflowCfg apiv1.Workflow) (runcontrol.Effective, error) {
+	var instanceControls apiv1.RunControls
+	if cfg != nil {
+		instanceControls = cfg.RunConditions.RunControls()
+	}
+	if repo, ok := configuredRepoForProject(cfg, project); ok {
+		instanceControls = repo.EffectiveRunControls(instanceControls)
+	}
+	return runcontrol.Resolve(instanceControls, gaggle.Spec.RunControls, workflowCfg.Spec.RunControls)
+}
+
 func configuredRepoForProject(cfg *instance.Config, project apiv1.RepoRef) (instance.RepoRef, bool) {
 	if cfg == nil {
 		return instance.RepoRef{}, false
@@ -397,7 +431,7 @@ func adoRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.Rep
 		organization, projectName, _ = strings.Cut(project.Owner, "/")
 	}
 	for _, repo := range cfg.Repos {
-		if repo.Provider == "ado" && repo.Owner == organization && repo.Project == projectName && repo.Name == project.Name {
+		if repo.Provider == string(providers.ProviderADO) && repo.Owner == organization && repo.Project == projectName && repo.Name == project.Name {
 			return repo, true
 		}
 	}
@@ -418,7 +452,7 @@ func githubRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.
 		return instance.RepoRef{}, false
 	}
 	for _, repo := range cfg.Repos {
-		if repo.Provider == "github" && repo.Owner == project.Owner && repo.Name == project.Name {
+		if repo.Provider == string(providers.ProviderGitHub) && repo.Owner == project.Owner && repo.Name == project.Name {
 			return repo, true
 		}
 	}
@@ -453,7 +487,7 @@ func githubWorktreeGitEnvironment(workcopiesDir string, repo instance.RepoRef, r
 		if err != nil {
 			return nil, err
 		}
-		resolve = mint
+		resolve = mint.DropExpiry()
 	case repo.Token.Configured():
 		// A static token ref (env|file|store) resolves through stores; a
 		// store-backed ref can never fall into the unauthenticated arm because
@@ -504,7 +538,7 @@ func giteaRepoForGaggle(cfg *instance.Config, project apiv1.RepoRef) (instance.R
 		return instance.RepoRef{}, false
 	}
 	for _, repo := range cfg.Repos {
-		if repo.Provider == "gitea" && repo.Owner == project.Owner && repo.Name == project.Name {
+		if repo.Provider == string(providers.ProviderGitea) && repo.Owner == project.Owner && repo.Name == project.Name {
 			return repo, true
 		}
 	}
@@ -630,7 +664,9 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	// goober declares spec.Model — so the launcher override must apply here too,
 	// or admission probes the wrong runtime (bare copilot on a wrapper-only
 	// host, or a divergent bare install beside the wrapper).
-	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", deferModelDiscovery)
+	//
+	// It never executes a stage, so it binds no runner restriction.
+	adapterRegistry, err := buildHarnessRegistry(nil, envPassthrough, harnessCommand, "", "", deferModelDiscovery, nil, false)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -640,10 +676,15 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 	}
 	// Gaggle-level runner requirements feed push-boundary admission (#2861):
 	// each stage's effective requirement set is its gaggle's
-	// RequiredCapabilities union its own.
+	// RequiredCapabilities union its own. The DSL 3.0 successor surface — the
+	// gaggle runsOn floor — feeds the 3.0 interpreter's merge rule the same
+	// way (dsl-3.0.md §2), and pairing it with a pre-3.0 workflow is a
+	// compile error the router raises.
 	gaggleRequiredCapabilities := make(map[string][]string, len(set.Gaggles))
+	gaggleRunsOn := make(map[string]*apiv1.GaggleRunsOn, len(set.Gaggles))
 	for i := range set.Gaggles {
 		gaggleRequiredCapabilities[set.Gaggles[i].Name] = set.Gaggles[i].Spec.RequiredCapabilities
+		gaggleRunsOn[set.Gaggles[i].Name] = set.Gaggles[i].Spec.RunsOn
 	}
 	machines := make(map[localscheduler.WorkflowIdentity]*workflow.Machine, len(set.Workflows))
 	for i := range set.Workflows {
@@ -657,6 +698,7 @@ func compiledMachinesWithWarnings(set *instance.ConfigSet, goobers map[string]ap
 			workflow.WithKnownHarnesses(adapterRegistry.Names()),
 			workflow.WithPreviewFeatures(allowPreview),
 			workflow.WithGaggleRequiredCapabilities(gaggleRequiredCapabilities[wf.Spec.Gaggle]),
+			workflow.WithGaggleRunsOn(gaggleRunsOn[wf.Spec.Gaggle]),
 		)
 		if err != nil {
 			return nil, nil, nil, &workflowCompileError{Gaggle: wf.Spec.Gaggle, Workflow: wf.Name, Err: err}

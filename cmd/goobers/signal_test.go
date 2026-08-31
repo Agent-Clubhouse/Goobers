@@ -16,6 +16,7 @@ import (
 // something to dispatch.
 const signalTriggeredWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: default-implement
 spec:

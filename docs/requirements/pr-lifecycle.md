@@ -157,7 +157,15 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   pure, deterministic function of `{selected PR, blocker set, policy}` so every
   cluster member independently computes the **same** winner — exactly one
   member is crowned, with no central coordination. A verdict carrying any real
-  defect (any finding other than `cross-pr-blocked`) is **never electable**.
+  defect is **never electable**. Findings whose only remedy is the ordering
+  decision itself do **not** count as defects (#3237): a `conflict` finding
+  whose location names only PRs in the PRL-011 overlap set is normalized to
+  `cross-pr-blocked`, and a finding that merely restates the acknowledgeable
+  `goobers:scope-gate` park (#1313 — operator-acknowledgeable via
+  `goobers:scope-gate-ack`, and enforced deterministically on the merge path)
+  gates the merge, not the election —
+  otherwise the winner is disqualified by the very overlap that made it the
+  winner and the cluster has no lander at all.
 - **PRL-022 (MUST, Shipped):** The election policy MUST be a **workflow-
   configurable seam** (#834): `fifo` (lowest PR number — default) and `newest`
   ship as pure policies; cluster-data policies (`most-blockers`,
@@ -169,6 +177,21 @@ and a conjunctive safety gate, while a human can look in, override, and pause.
   `apply-verdict` MUST be configured with the **same** policy and MUST derive
   identical decisions from identical inputs (a pinned test enforces
   agreement).
+- **PRL-084 (MUST, Shipped):** Sibling **serialization** MUST be a selectable
+  strategy surface (#2741), orthogonal to the election policy of PRL-022:
+  the policy decides *who goes first* within a cluster, the strategy decides
+  *which siblings form the cluster*. `election` (default) serializes only over
+  the deterministic overlap set the election machinery threads as
+  `overlappingSiblings`; `ordering` additionally serializes over the
+  reviewer-named cross-PR blockers, so a merge-review workflow that omits
+  `elect-lander`/`elect-gate` still resolves a deterministic lander instead of
+  inheriting a permanent `needs-changes` loop with no ordering mechanism at
+  all. An unknown strategy name falls back to `election` with a logged warning,
+  never a pipeline failure, and `elect-lander` and `apply-verdict` MUST be
+  configured with the **same** strategy. The published `overlapCluster`/
+  `elected` evidence MUST describe the cluster the configured strategy
+  yielded, so merge-pr's election conjunct (PRL-021/#1071) stays fail-closed
+  for an `ordering` cluster that has no deterministic overlap set at all.
 - **PRL-023 (MUST, Shipped):** Election means "those siblings stop counting as
   blockers", **not** a separate merge authority: the crowned lander's verdict
   is resolved into a **derived, published `pass`** (rationale stating the

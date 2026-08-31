@@ -103,8 +103,8 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
 	if *limit < 1 || *limit > maxBranchReconcileBatch {
@@ -126,11 +126,6 @@ func runReconcileBranches(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 	repo, err := providerRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -578,8 +573,8 @@ func appendBranchReconcileEvent(log *journal.InstanceLog, branch providers.Branc
 }
 
 func isProviderRateLimit(err error) bool {
-	var rateLimit *providers.RateLimitError
-	return errors.As(err, &rateLimit)
+	_, ok := providers.AsRateLimitError(err)
+	return ok
 }
 
 func writeBranchReconcileResult(report branchReconcileReport, dryRun bool, limit int, minimumAge time.Duration) error {

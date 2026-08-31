@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 )
 
@@ -173,7 +174,17 @@ type initializeParams struct {
 type negotiationResult struct {
 	requested string
 	agreed    string
+	// malformed reports that requested does not have the YYYY-MM-DD shape
+	// every published MCP revision uses. It never changes what the server
+	// answers — see negotiateProtocolVersion — it only makes the session say
+	// so, which is the distinction #3462 found missing.
+	malformed bool
 }
+
+// protocolVersionShape matches the date form every published MCP revision
+// uses. It is a diagnostic classifier, deliberately NOT an admission test:
+// see negotiateProtocolVersion for why nothing is rejected on this basis.
+var protocolVersionShape = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 // negotiateProtocolVersion implements the MCP lifecycle's version
 // negotiation: if the server supports the requested protocol version it MUST
@@ -197,6 +208,26 @@ type negotiationResult struct {
 // -32602 is reserved for an initialize that carries no usable
 // protocolVersion at all — absent, empty, or not a JSON string — where there
 // is genuinely nothing to negotiate from and no answer would be honest.
+//
+// #3462 observed that this also negotiates a syntactically malformed version
+// ("not-a-version" is answered, not rejected) while the surrounding prose read
+// as though malformed input were rejected, and proposed tightening: validate
+// the YYYY-MM-DD shape and restore -32602 for values that fail it.
+//
+// That tightening is deliberately NOT what this does, because it reintroduces
+// the exact mechanism of the outage above. Rejecting on a *format assumption*
+// is fail-closed on an unfamiliar version string, one indirection removed: the
+// day MCP publishes a revision that is not a bare date, a shape check turns
+// every session into a dropped server again, and the failure is once more
+// silent on our side. The costs are wildly asymmetric — a false reject is a
+// total, days-long toolset outage (proven twice), while a false accept is a
+// confusing log line — so this biases hard toward answering.
+//
+// What #3462 actually needs is the ability to tell "a version I don't know"
+// apart from "a client not speaking this protocol", and that is a reporting
+// problem, not an admission problem. So the shape is classified, recorded on
+// the result, and reported loudly by logNegotiation — while the answer stays
+// the same. Every non-empty string is still negotiated.
 func negotiateProtocolVersion(raw json.RawMessage) (negotiationResult, *rpcError) {
 	var params initializeParams
 	if len(raw) == 0 {
@@ -208,14 +239,20 @@ func negotiateProtocolVersion(raw json.RawMessage) (negotiationResult, *rpcError
 	if params.ProtocolVersion == "" {
 		return negotiationResult{}, &rpcError{Code: -32602, Message: "initialize requires protocolVersion"}
 	}
+	malformed := !protocolVersionShape.MatchString(params.ProtocolVersion)
 	for _, supported := range supportedProtocolVersions {
 		if params.ProtocolVersion == supported {
-			return negotiationResult{requested: params.ProtocolVersion, agreed: supported}, nil
+			return negotiationResult{
+				requested: params.ProtocolVersion,
+				agreed:    supported,
+				malformed: malformed,
+			}, nil
 		}
 	}
 	return negotiationResult{
 		requested: params.ProtocolVersion,
 		agreed:    supportedProtocolVersions[0],
+		malformed: malformed,
 	}, nil
 }
 
@@ -238,6 +275,25 @@ func (s *Server) logNegotiation(stderr io.Writer, result negotiationResult) {
 		return
 	}
 	s.loggedNegotiation = true
+	if result.malformed {
+		// #3462: the answer is unchanged — a client sending garbage still gets
+		// a working session — but a version that isn't even date-shaped is
+		// evidence of a client not speaking this protocol, which is a
+		// different problem from one asking for a revision we lack. Saying so
+		// here is what keeps the two distinguishable without any session
+		// being refused over it.
+		// The "requested=X agreed=Y" prefix is identical across every
+		// negotiation outcome on purpose: it is the part anything reading
+		// these logs matches on, so the warning is appended to it rather than
+		// replacing it.
+		_, _ = fmt.Fprintf(stderr,
+			"mcpio: MCP protocol version negotiated: requested=%s agreed=%s"+
+				" (WARNING: requested version is not a YYYY-MM-DD revision;"+
+				" negotiating anyway, but this usually means the client is not"+
+				" speaking MCP correctly rather than asking for a newer revision)\n",
+			result.requested, result.agreed)
+		return
+	}
 	if result.agreed == result.requested {
 		_, _ = fmt.Fprintf(stderr,
 			"mcpio: MCP protocol version negotiated: requested=%s agreed=%s\n",

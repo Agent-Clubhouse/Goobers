@@ -526,3 +526,47 @@ func TestReadInputRefusesToTraverseANestedSymlinkedAncestor(t *testing.T) {
 		t.Fatal("expected read_input to refuse to traverse a symlinked ancestor")
 	}
 }
+
+// #3462: a protocolVersion that is not a YYYY-MM-DD revision must still be
+// ANSWERED — refusing on a format assumption is the #3457 outage one
+// indirection removed, and would recur the day MCP publishes a revision that
+// isn't a bare date. But the session must say so, because "this client isn't
+// speaking MCP" and "this client wants a revision I lack" are different
+// problems with different fixes, and #3462 found them indistinguishable.
+func TestMalformedProtocolVersionIsNegotiatedButReported(t *testing.T) {
+	server, _ := newTestServer(t)
+	result, rpcErr := negotiateProtocolVersion(json.RawMessage(`{"protocolVersion":"not-a-version"}`))
+	if rpcErr != nil {
+		t.Fatalf("rpcErr = %+v, want nil: a malformed version must never fail the handshake", rpcErr)
+	}
+	if result.agreed != supportedProtocolVersions[0] {
+		t.Fatalf("agreed = %q, want %q", result.agreed, supportedProtocolVersions[0])
+	}
+	if !result.malformed {
+		t.Fatal("malformed = false, want true for \"not-a-version\"")
+	}
+	var stderr bytes.Buffer
+	server.logNegotiation(&stderr, result)
+	logged := stderr.String()
+	if !strings.Contains(logged, "WARNING") || !strings.Contains(logged, "not-a-version") {
+		t.Fatalf("negotiation log = %q, want a warning naming the requested value", logged)
+	}
+}
+
+// The complement, and the case that must NOT be noisy: an unknown but
+// well-formed revision is ordinary forward compatibility, not a broken client.
+func TestUnknownWellFormedVersionIsNotReportedMalformed(t *testing.T) {
+	server, _ := newTestServer(t)
+	result, rpcErr := negotiateProtocolVersion(json.RawMessage(`{"protocolVersion":"2026-11-25"}`))
+	if rpcErr != nil {
+		t.Fatalf("rpcErr = %+v, want nil", rpcErr)
+	}
+	if result.malformed {
+		t.Fatal("malformed = true, want false for a well-formed future revision")
+	}
+	var stderr bytes.Buffer
+	server.logNegotiation(&stderr, result)
+	if strings.Contains(stderr.String(), "WARNING") {
+		t.Fatalf("negotiation log = %q, want no warning for a well-formed unknown revision", stderr.String())
+	}
+}

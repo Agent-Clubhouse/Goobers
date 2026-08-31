@@ -96,12 +96,13 @@ jobs:
     name: dead-code analysis
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -133,18 +134,22 @@ jobs:
   checks:
     name: checks
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
 
+      - name: Verify GitHub Actions are pinned
+        run: go run ./test/actionpins
+
       - name: Set up Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
           cache: npm
@@ -184,7 +189,7 @@ jobs:
       # Keyed on the lock file, because that pins the @playwright/test version
       # and hence the single chromium revision it can ever mean.
       - name: Cache Playwright browsers
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('portal/package-lock.json') }}
@@ -226,12 +231,13 @@ jobs:
   deploy-reference:
     name: deploy reference manifests
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -256,12 +262,13 @@ jobs:
       matrix:
         goos: [linux, darwin, windows]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -317,12 +324,13 @@ jobs:
     name: darwin gate (build · vet)
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -365,14 +373,15 @@ jobs:
       matrix:
         shard: ["1/3", "2/3", "3/3"]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -390,26 +399,144 @@ jobs:
           done
           echo "::error::go mod download failed after 3 attempts"
           exit 1
+
+      # TestFeatureRegistryAgainstLatestRelease (internal/workflow/v_next and
+      # v_3_0) checks out the latest release tag into a temp worktree and runs
+      # `go run` there to snapshot its feature registry, against that tag's own
+      # go.mod/go.sum — not the current checkout's. The hermetic runner this job
+      # invokes below sets GOPROXY=off, so any module the release tag needs that
+      # the current go.mod does not pull (e.g. an older major version of a
+      # since-bumped dependency) is unreachable once the sandbox activates.
+      # Priming it here, over the network, before that happens, lands it in the
+      # same GOMODCACHE the release-tag worktree will read from offline. #3973
+      # surfaced this: it bumped a module whose current version no longer
+      # overlaps what the latest release tag pinned.
+      #
+      # The prerelease filter keeps this selection identical to the test's
+      # (latestReleaseTag -> parseReleaseVersion, which requires a canonical
+      # vMAJOR.MINOR.PATCH and so skips a tag like v0.4.0-beta.1). Git's
+      # version sort ranks that beta ABOVE the release the test will pick, so
+      # without the filter this step primes one tag's modules while the test
+      # reads another's — #4045: every branch went red within minutes of the
+      # first beta tag being pushed.
+      - name: Prime module cache for latest release tag
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          latest_tag=$(git tag --list 'v*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$latest_tag" ]; then
+            echo "::warning::no version-shaped release tag found; skipping release-tag module priming"
+            exit 0
+          fi
+          echo "priming module cache for release tag: $latest_tag"
+          release_tree="$(mktemp -d)/release"
+          git worktree add --detach -q "$release_tree" "$latest_tag"
+          status=1
+          for attempt in 1 2 3; do
+            if (cd "$release_tree" && go mod download); then
+              status=0
+              break
+            fi
+            echo "::warning::go mod download (release tag $latest_tag) attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          git worktree remove --force "$release_tree"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::go mod download for release tag $latest_tag failed after 3 attempts"
+            exit 1
+          fi
 
       - name: Unit suite (-race, shard ${{ matrix.shard }})
         env:
           GOOBERS_CI_SHARD: ${{ matrix.shard }}
         run: go run ./test/ci group unit
 
-  # macOS runs the whole behavioural unit suite (no -race) in one process, so it
-  # owns the per-test timing budget artifact and the informational coverage
-  # profile. Race coverage is provided by the Linux shards above.
-  unit-macos:
-    name: unit behavioral suite (macos)
-    runs-on: macos-latest
+  # Linux runs the whole behavioural unit suite (no -race) separately from the
+  # race shards so its coverage profile includes Linux-only files.
+  unit-linux-coverage:
+    name: unit coverage gate (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then exit 0; fi
+            echo "::warning::go mod download attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::go mod download failed after 3 attempts"
+          exit 1
+
+      # See the identically-named step in the `unit` job above for why this is
+      # needed: TestFeatureRegistryAgainstLatestRelease builds the latest
+      # release tag's own go.mod/go.sum inside a temp worktree, and this job's
+      # hermetic runner sets GOPROXY=off before that test runs.
+      - name: Prime module cache for latest release tag
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          latest_tag=$(git tag --list 'v*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$latest_tag" ]; then
+            echo "::warning::no version-shaped release tag found; skipping release-tag module priming"
+            exit 0
+          fi
+          echo "priming module cache for release tag: $latest_tag"
+          release_tree="$(mktemp -d)/release"
+          git worktree add --detach -q "$release_tree" "$latest_tag"
+          status=1
+          for attempt in 1 2 3; do
+            if (cd "$release_tree" && go mod download); then
+              status=0
+              break
+            fi
+            echo "::warning::go mod download (release tag $latest_tag) attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          git worktree remove --force "$release_tree"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::go mod download for release tag $latest_tag failed after 3 attempts"
+            exit 1
+          fi
+
+      - name: Unit suite and Linux coverage profile
+        env:
+          GOOBERS_CI_RACE: "0"
+        run: go run ./test/ci group unit
+
+      - name: Enforce the repository coverage threshold
+        run: make cover-gate
+
+  # macOS runs the whole behavioural unit suite (no -race) in one process, so it
+  # owns the per-test timing budget artifact and a second OS-specific coverage
+  # profile. Race coverage is provided by the Linux shards above.
+  unit-macos:
+    name: unit behavioral suite (macos)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -428,10 +555,42 @@ jobs:
           echo "::error::go mod download failed after 3 attempts"
           exit 1
 
+      # See the identically-named step in the `unit` job for why this is
+      # needed: TestFeatureRegistryAgainstLatestRelease builds the latest
+      # release tag's own go.mod/go.sum inside a temp worktree, and this job's
+      # hermetic runner sets GOPROXY=off before that test runs.
+      - name: Prime module cache for latest release tag
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          latest_tag=$(git tag --list 'v*' --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$latest_tag" ]; then
+            echo "::warning::no version-shaped release tag found; skipping release-tag module priming"
+            exit 0
+          fi
+          echo "priming module cache for release tag: $latest_tag"
+          release_tree="$(mktemp -d)/release"
+          git worktree add --detach -q "$release_tree" "$latest_tag"
+          status=1
+          for attempt in 1 2 3; do
+            if (cd "$release_tree" && go mod download); then
+              status=0
+              break
+            fi
+            echo "::warning::go mod download (release tag $latest_tag) attempt $attempt/3 failed; retrying"
+            sleep $((attempt * 5))
+          done
+          git worktree remove --force "$release_tree"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::go mod download for release tag $latest_tag failed after 3 attempts"
+            exit 1
+          fi
+
       - name: Find previous main timing run
         id: previous-timing
         continue-on-error: true
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
             const {data} = await github.rest.actions.listWorkflowRuns({
@@ -451,7 +610,7 @@ jobs:
       - name: Download previous timing artifact
         if: ${{ steps.previous-timing.outputs.result != '' }}
         continue-on-error: true
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: test-timings-${{ runner.os }}
           path: previous-test-timings
@@ -495,7 +654,7 @@ jobs:
       - name: Upload test timing
         if: ${{ !cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: test-timings-${{ runner.os }}
           path: test-timings/unit-${{ runner.os }}.json
@@ -504,7 +663,7 @@ jobs:
       - name: Upload coverage profile
         if: ${{ !cancelled() }}
         continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: coverage-${{ runner.os }}
           path: coverage.out
@@ -528,14 +687,15 @@ jobs:
             race: "0"
             timeout: "40m"
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -564,18 +724,19 @@ jobs:
     name: declared-dependency integration
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Set up Java
-        uses: actions/setup-java@v5.7.0
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin
           java-version: "21"
@@ -611,7 +772,7 @@ jobs:
 
       - name: Restore declared-dependency apt archives
         id: declared-apt-cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.DECLARED_APT_ARCHIVE_DIR }}
           # No restore-keys on purpose: a prefix match would hand this job the
@@ -682,7 +843,7 @@ jobs:
       # failed attempt can never be published under the key every later run reads.
       - name: Save declared-dependency apt archives
         if: ${{ success() && steps.declared-apt-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.DECLARED_APT_ARCHIVE_DIR }}
           key: ${{ steps.declared-apt-key.outputs.key }}
@@ -750,7 +911,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Resolve declared-dependency cache key
         id: declared-apt-key
@@ -766,7 +927,7 @@ jobs:
 
       - name: Restore declared-dependency apt archives
         id: declared-apt-cache
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.DECLARED_APT_ARCHIVE_DIR }}
           key: ${{ steps.declared-apt-key.outputs.key }}
@@ -804,7 +965,7 @@ jobs:
 
       - name: Save declared-dependency apt archives
         if: ${{ success() && steps.declared-apt-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.DECLARED_APT_ARCHIVE_DIR }}
           key: ${{ steps.declared-apt-key.outputs.key }}
@@ -816,7 +977,7 @@ jobs:
       # same java-version, same checked-out pom — publishes the entry every PR's
       # `integration` job already looks for.
       - name: Set up Java
-        uses: actions/setup-java@v5.7.0
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: temurin
           java-version: "21"
@@ -913,14 +1074,15 @@ jobs:
   windows-smoke:
     name: windows gate (build · vet · runtime smoke)
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       # Platform-scoped Go cache (setup-go keys by runner OS/arch), so the
       # windows leg neither shares nor evicts the ubuntu/macos caches.
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -957,7 +1119,7 @@ jobs:
       # `go build`), so this regressed silently. Installing `make` via
       # Chocolatey (pre-installed on GitHub-hosted Windows runners)
       # reproduces the real failure mode exactly, rather than assuming some
-      # possibly-different make is already on PATH. scheduler is a
+      # possibly-different make is already on PATH. operator is a
       # portal-free command (unlike goobers, whose build-goobers target also
       # runs a full npm portal rebuild), so this stays a cheap, direct guard
       # on the Makefile's own cross-platform shell portability rather than a
@@ -967,7 +1129,7 @@ jobs:
         run: choco install make --no-progress -y
 
       - name: make build (windows)
-        run: make build-scheduler
+        run: make build-operator
 
       - name: Windows platform runtime
         run: go test ./internal/platform/durability ./internal/platform/proc ./internal/platform/secfile
@@ -1088,7 +1250,7 @@ jobs:
 
       - name: Upload Windows validation evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: windows-validation-evidence
           path: bin/windows-validation-evidence/
@@ -1098,12 +1260,13 @@ jobs:
     name: Go vulnerability scan
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -1119,12 +1282,12 @@ jobs:
     # checks/lint/unit/shipped/deadcode slices wholesale and doubled the
     # CI-setup network exposure (#3139/#3322) for zero coverage.
     #
-    # e2e, envtest and coverage were wired in here by #3207 (having been added
+    # e2e and envtest were wired in here by #3207 (having been added
     # as jobs the day before by #3152), and conformance long predates both. All
     # four are now GONE — not un-required, but deleted as jobs, because each was
     # an unsharded re-run of a suite another required job already runs. Their
-    # distinct value moved rather than lapsed: the coverage threshold onto
-    # unit-macos, the envtest control plane onto integration, and the
+    # distinct value moved rather than lapsed: the coverage thresholds onto
+    # unit-linux-coverage and unit-macos, the envtest control plane onto integration, and the
     # conformance and e2e tests were already executing unfiltered in the unit
     # shards. Nothing that this aggregate used to enforce stopped being enforced.
     #
@@ -1134,8 +1297,9 @@ jobs:
     # worlds the issue documented, and ten recent runs (40 job instances)
     # showed no flakiness in any of the three that would argue against
     # requiring them.
-    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
+    needs: [checks, deploy-reference, lint, darwin-build, unit, unit-linux-coverage, unit-macos, shipped, deadcode, windows-smoke, vulnerability-scan, integration, sandbox, linux-validation]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Verify required gates
         env:
@@ -1144,6 +1308,7 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           DARWIN_BUILD_RESULT: ${{ needs.darwin-build.result }}
           UNIT_RESULT: ${{ needs.unit.result }}
+          UNIT_LINUX_COVERAGE_RESULT: ${{ needs.unit-linux-coverage.result }}
           UNIT_MACOS_RESULT: ${{ needs.unit-macos.result }}
           SHIPPED_RESULT: ${{ needs.shipped.result }}
           DEADCODE_RESULT: ${{ needs.deadcode.result }}
@@ -1169,6 +1334,7 @@ jobs:
           check "lint (golangci-lint, linux+darwin+windows)" "$LINT_RESULT"
           check "darwin build/vet gate"              "$DARWIN_BUILD_RESULT"
           check "unit -race suite (linux shards)"    "$UNIT_RESULT"
+          check "unit coverage gate (linux)"         "$UNIT_LINUX_COVERAGE_RESULT"
           # unit-macos also carries the coverage threshold gate (cover-gate).
           check "unit behavioral suite + coverage (macos)" "$UNIT_MACOS_RESULT"
           check "shipped-workflow contracts"         "$SHIPPED_RESULT"
@@ -1193,10 +1359,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -1247,12 +1413,13 @@ jobs:
     name: linux node validation (#636/#639)
     if: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
           cache: true
@@ -1263,7 +1430,7 @@ jobs:
 
       - name: Upload Linux validation evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: linux-validation-evidence
           path: bin/linux-validation-evidence/
@@ -1292,19 +1459,21 @@ jobs:
           needs.deploy-reference.result == 'failure' ||
           needs.lint.result == 'failure' ||
           needs.unit.result == 'failure' ||
+          needs.unit-linux-coverage.result == 'failure' ||
           needs.unit-macos.result == 'failure' ||
           needs.shipped.result == 'failure' ||
           needs.windows-smoke.result == 'failure'
         )
       }}
-    needs: [checks, deploy-reference, lint, unit, unit-macos, shipped, windows-smoke]
+    needs: [checks, deploy-reference, lint, unit, unit-linux-coverage, unit-macos, shipped, windows-smoke]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       issues: write
     steps:
       - name: File or update critical main failure
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         with:
           script: |
             const title = "CI: main branch validation failed";

@@ -30,6 +30,14 @@ const (
 	claimAdminCodeChanged      = "claim_changed"
 	claimAdminOperationList    = "list"
 	claimAdminOperationRelease = "release"
+	// claimAdminOperationRecover is the whole-instance stale-claim SWEEP,
+	// delegated rather than executed (Goobers#4029). Unlike list and release
+	// it never runs in the requesting process: the sweep's inputs — the
+	// active-intervention set and the restart-time recovery gate — are
+	// in-memory daemon state, so a request for it is only ever answered by
+	// the daemon's own recoverExpiredClaims closure in
+	// sweepPendingClaimAdminRequests, never by executeClaimAdminRequest.
+	claimAdminOperationRecover = "recover"
 	claimAdminActorCLI         = "cli"
 )
 
@@ -50,8 +58,13 @@ type claimAdminRequest struct {
 type claimAdminResponse struct {
 	Entries  []localscheduler.ClaimEntry `json:"entries,omitempty"`
 	Released *localscheduler.ClaimEntry  `json:"released,omitempty"`
-	Code     string                      `json:"code,omitempty"`
-	Error    string                      `json:"error,omitempty"`
+	// Recovered carries what a delegated claimAdminOperationRecover sweep
+	// released. Separate from Entries (a list result) and Released (one
+	// force-released lease) so a reader never has to know which operation
+	// produced the response to read it correctly.
+	Recovered []localscheduler.ClaimEntry `json:"recovered,omitempty"`
+	Code      string                      `json:"code,omitempty"`
+	Error     string                      `json:"error,omitempty"`
 }
 
 const claimsHelp = "Usage: goobers claims <command> [flags] [path]\n\n" +
@@ -405,6 +418,36 @@ func executeClaimAdminRequest(schedulerDir string, log *journal.InstanceLog, req
 	return resp, err
 }
 
+// daemonStaleClaimSweep is the daemon's OWN stale-claim sweep — up.go's
+// recoverExpiredClaims, which closes over the active-intervention predicate
+// and the restart-time recovery gate. It is injected into the delegation
+// sweeper for the same reason daemonClaimService takes it (writeplanes.go):
+// those two inputs are in-memory daemon state that no other assembly can
+// reconstruct, so a server without the closure answers "unavailable" instead
+// of quietly running a weaker sweep.
+type daemonStaleClaimSweep func(now time.Time) ([]localscheduler.ClaimEntry, error)
+
+// executeDelegatedStaleClaimSweep answers one claimAdminOperationRecover
+// request. It is deliberately NOT part of executeClaimAdminRequest: that
+// function's whole body runs inside withClaimLock, and the sweep takes the
+// claims lock itself — routing recovery through it would deadlock the daemon
+// against its own flock.
+//
+// A claims-lock timeout is swallowed exactly as the daemon's own startup and
+// ticker call sites swallow it, and as daemonClaimService.Recover does on the
+// plane: a sweep that could not get the lock this pass is deferred work, not
+// a failure to report to the delegating stage.
+func executeDelegatedStaleClaimSweep(sweep daemonStaleClaimSweep, now time.Time) (claimAdminResponse, error) {
+	if sweep == nil {
+		return claimAdminResponse{}, errors.New("claims delegate: this daemon does not run claim recovery")
+	}
+	released, err := sweep(now)
+	if err != nil && !isJournaledClaimsLockTimeout(err) {
+		return claimAdminResponse{}, err
+	}
+	return claimAdminResponse{Recovered: released}, nil
+}
+
 func filterClaimEntries(entries []localscheduler.ClaimEntry, req claimAdminRequest) []localscheduler.ClaimEntry {
 	filtered := make([]localscheduler.ClaimEntry, 0, len(entries))
 	for _, entry := range entries {
@@ -513,7 +556,12 @@ func pollClaimAdminResponse(ctx context.Context, schedulerDir, requestID string,
 	}
 }
 
-func sweepPendingClaimAdminRequests(schedulerDir string, log *journal.InstanceLog, now func() time.Time) error {
+func sweepPendingClaimAdminRequests(
+	schedulerDir string,
+	log *journal.InstanceLog,
+	now func() time.Time,
+	recover daemonStaleClaimSweep,
+) error {
 	reqDir := filepath.Join(schedulerDir, pendingClaimsDir)
 	entries, exists, err := readDirectory(reqDir)
 	if !exists {
@@ -564,6 +612,11 @@ func sweepPendingClaimAdminRequests(schedulerDir string, log *journal.InstanceLo
 				resp.Error = "claims delegate: request has no creation time"
 			case now().Sub(req.CreatedAt) > claimAdminDelegationTimeout:
 				resp.Error = fmt.Sprintf("claims delegate: stale request %s; refusing to execute", requestID)
+			case req.Operation == claimAdminOperationRecover:
+				resp, err = executeDelegatedStaleClaimSweep(recover, now())
+				if err != nil {
+					resp.Error = err.Error()
+				}
 			default:
 				resp, err = executeClaimAdminRequest(schedulerDir, log, req)
 				if err != nil {

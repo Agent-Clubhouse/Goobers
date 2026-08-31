@@ -17,6 +17,7 @@ import (
 
 const multiGaggleWorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
+dslVersion: "2.0"
 metadata:
   name: deploy
 spec:
@@ -156,7 +157,7 @@ func TestDaemonDispatchesAndDrainsAllManifestGaggles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	if len(setup.Runners) != 2 || len(setup.Entries) != 2 {
 		t.Fatalf("daemon setup = %d runners and %d workflows, want 2 of each", len(setup.Runners), len(setup.Entries))

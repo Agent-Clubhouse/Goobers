@@ -52,7 +52,7 @@ func (f *fakeDelegateStarter) lastRequest() localscheduler.StartRequest {
 	return f.requests[len(f.requests)-1]
 }
 
-func newTestDelegateScheduler(t *testing.T, entries []localscheduler.WorkflowEntry) (*localscheduler.Scheduler, string) {
+func newTestDelegateScheduler(t *testing.T, entries []localscheduler.WorkflowEntry, opts ...localscheduler.Option) (*localscheduler.Scheduler, string) {
 	t.Helper()
 	dir := t.TempDir()
 	log, _, err := journal.OpenInstanceLog(dir)
@@ -60,7 +60,7 @@ func newTestDelegateScheduler(t *testing.T, entries []localscheduler.WorkflowEnt
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = log.Close() })
-	return localscheduler.New(entries, log), dir
+	return localscheduler.New(entries, log, opts...), dir
 }
 
 // TestSweepDispatchesPendingRequest is #343's core protocol acceptance: a
@@ -92,7 +92,7 @@ func TestSweepDispatchesPendingRequest(t *testing.T) {
 		Starter:   starter,
 	}})
 
-	requestID, err := writeTriggerRequest(schedulerDir, "", "implement")
+	requestID, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -129,6 +129,245 @@ func TestSweepDispatchesPendingRequest(t *testing.T) {
 	}
 }
 
+func TestRunDelegatedTargetedPullRequestDispatchesExactReference(t *testing.T) {
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	ctx, cancel := context.WithTimeout(context.Background(), testResponseWait)
+	defer cancel()
+
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	sched := localscheduler.New([]localscheduler.WorkflowEntry{{
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}}, log, localscheduler.WithTargetedPRValidator(func(_ context.Context, _ localscheduler.WorkflowEntry, number int) error {
+		if number != 3261 {
+			return fmt.Errorf("pull request number = %d, want 3261", number)
+		}
+		return nil
+	}))
+
+	var stdout, stderr bytes.Buffer
+	codeDone := make(chan int, 1)
+	go func() {
+		codeDone <- runDelegatedTrigger(ctx, l, runTarget{Workflow: "merge-review", PR: 3261}, root, true, &stdout, &stderr)
+	}()
+
+	requestDir := filepath.Join(l.SchedulerDir(), pendingTriggersDir)
+	var requestPath string
+	for requestPath == "" {
+		entries, readErr := os.ReadDir(requestDir)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			t.Fatal(readErr)
+		}
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), requestSuffix) {
+				requestPath = filepath.Join(requestDir, entry.Name())
+				break
+			}
+		}
+		if requestPath != "" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
+	}
+	var data []byte
+	for len(data) == 0 {
+		data, err = os.ReadFile(requestPath)
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(err)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	var req triggerRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Workflow != "merge-review" || req.PR != 3261 {
+		t.Fatalf("request = %+v, want merge-review PR 3261", req)
+	}
+	if err := sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	var code int
+	select {
+	case code = <-codeDone:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	sched.Wait()
+	trigger := starter.lastRequest().Trigger
+	if trigger.Kind != journal.TriggerSignal || trigger.Ref != "github-webhook:pull_request#3261" {
+		t.Fatalf("trigger = %+v, want exact targeted pull-request reference", trigger)
+	}
+	if !strings.Contains(stdout.String(), "created run ") {
+		t.Fatalf("stdout = %q, want delegated run id", stdout.String())
+	}
+}
+
+func TestDelegatedTargetValidationDeadlinePreventsLateDispatch(t *testing.T) {
+	oldTimeout := triggerDelegationTimeout
+	oldPollInterval := delegationPollInterval
+	oldNow := delegationNow
+	triggerDelegationTimeout = 500 * time.Millisecond
+	delegationPollInterval = time.Millisecond
+	nowMu := sync.Mutex{}
+	now := time.Now()
+	delegationNow = func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		return now
+	}
+	t.Cleanup(func() {
+		triggerDelegationTimeout = oldTimeout
+		delegationPollInterval = oldPollInterval
+		delegationNow = oldNow
+	})
+
+	root := t.TempDir()
+	l := instance.NewLayout(root)
+	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	starter := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
+	validationStarted := make(chan struct{})
+	releaseValidation := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseValidation) }) }
+	t.Cleanup(release)
+	sched := localscheduler.New([]localscheduler.WorkflowEntry{{
+		Workflow: "merge-review",
+		Signals:  []string{"github-webhook:pull_request"},
+		Starter:  starter,
+	}}, log,
+		localscheduler.WithClock(delegationNow, time.After),
+		localscheduler.WithTargetedPRValidator(func(_ context.Context, _ localscheduler.WorkflowEntry, _ int) error {
+			select {
+			case <-validationStarted:
+			default:
+				close(validationStarted)
+			}
+			<-releaseValidation
+			// Deliberately ignore cancellation. TriggerSignalExact must still check
+			// the request context before dispatching.
+			return nil
+		}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	codeDone := make(chan int, 1)
+	go func() {
+		codeDone <- runDelegatedTrigger(ctx, l, runTarget{Workflow: "merge-review", PR: 3261}, root, true, &stdout, &stderr)
+	}()
+
+	requestDir := filepath.Join(l.SchedulerDir(), pendingTriggersDir)
+	var requestPath string
+	for requestPath == "" {
+		entries, readErr := os.ReadDir(requestDir)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			t.Fatal(readErr)
+		}
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), requestSuffix) {
+				requestPath = filepath.Join(requestDir, entry.Name())
+				break
+			}
+		}
+		if requestPath == "" {
+			select {
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
+	var requestData []byte
+	for len(requestData) == 0 {
+		requestData, err = os.ReadFile(requestPath)
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(err)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	var req triggerRequest
+	if err := json.Unmarshal(requestData, &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.Deadline.IsZero() || !req.Deadline.After(req.CreatedAt) {
+		t.Fatalf("request lifetime = created %s deadline %s, want a serialized client deadline", req.CreatedAt, req.Deadline)
+	}
+
+	sweepDone := make(chan error, 1)
+	go func() {
+		sweepDone <- sweepPendingTriggers(context.Background(), l.SchedulerDir(), sched, delegationNow)
+	}()
+	select {
+	case <-validationStarted:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	nowMu.Lock()
+	now = now.Add(triggerDelegationTimeout + time.Millisecond)
+	nowMu.Unlock()
+
+	var code int
+	select {
+	case code = <-codeDone:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if code != 1 || !strings.Contains(stderr.String(), "timed out") {
+		t.Fatalf("delegated CLI result: code = %d, stdout = %q, stderr = %q; want bounded timeout", code, stdout.String(), stderr.String())
+	}
+
+	release()
+	select {
+	case err := <-sweepDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	sched.Wait()
+	if starter.count() != 0 {
+		t.Fatalf("starter calls = %d, want no dispatch after the client deadline", starter.count())
+	}
+	if _, err := os.Stat(requestPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("consumed request stat error = %v, want no replayable request", err)
+	}
+	if err := sweepPendingTriggers(context.Background(), l.SchedulerDir(), sched, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	if starter.count() != 0 {
+		t.Fatalf("starter calls after second sweep = %d, want no duplicate late dispatch", starter.count())
+	}
+}
+
 func TestSweepDispatchesGaggleQualifiedRequest(t *testing.T) {
 	alpha := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
 	beta := &fakeDelegateStarter{result: localscheduler.StartResult{Phase: journal.PhaseCompleted}}
@@ -137,7 +376,7 @@ func TestSweepDispatchesGaggleQualifiedRequest(t *testing.T) {
 		{Gaggle: "beta", Workflow: "deploy", Starter: beta},
 	})
 
-	requestID, err := writeTriggerRequest(schedulerDir, "beta", "deploy")
+	requestID, err := writeTriggerRequestContext(context.Background(), schedulerDir, "beta", "deploy")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -152,7 +391,7 @@ func TestSweepDispatchesGaggleQualifiedRequest(t *testing.T) {
 		t.Fatalf("starter calls: alpha=%d beta=%d, want alpha=0 beta=1", alpha.count(), beta.count())
 	}
 
-	requestID, err = writeTriggerRequest(schedulerDir, "gamma", "deploy")
+	requestID, err = writeTriggerRequestContext(context.Background(), schedulerDir, "gamma", "deploy")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest unknown gaggle: %v", err)
 	}
@@ -223,7 +462,7 @@ func TestSweepConsumesRequestFileOnce(t *testing.T) {
 		Starter:   starter,
 	}})
 
-	if _, err := writeTriggerRequest(schedulerDir, "", "implement"); err != nil {
+	if _, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "implement"); err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
 	if err := sweepPendingTriggers(context.Background(), schedulerDir, sched, time.Now); err != nil {
@@ -348,7 +587,7 @@ func TestSweepCollectsExpiredOrphanResponse(t *testing.T) {
 func TestSweepUnknownWorkflowRespondsWithError(t *testing.T) {
 	sched, schedulerDir := newTestDelegateScheduler(t, nil)
 
-	requestID, err := writeTriggerRequest(schedulerDir, "", "no-such-workflow")
+	requestID, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "no-such-workflow")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -371,7 +610,7 @@ func TestSweepUnknownWorkflowRespondsWithError(t *testing.T) {
 // between this process observing up.lock held and writing its request.
 func TestPollTriggerResponseTimesOutWithNoSweeper(t *testing.T) {
 	schedulerDir := t.TempDir()
-	requestID, err := writeTriggerRequest(schedulerDir, "", "implement")
+	requestID, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -768,7 +1007,7 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 		Starter:   blocking,
 	}})
 
-	occupyID, err := writeTriggerRequest(schedulerDir, "", "implement")
+	occupyID, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -784,7 +1023,7 @@ func TestSweepRequeuesTriggerRefusedForCapacity(t *testing.T) {
 		t.Fatal("occupying run never entered Start; its slot is not held")
 	}
 
-	contendedID, err := writeTriggerRequest(schedulerDir, "", "implement")
+	contendedID, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -912,7 +1151,7 @@ func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
 	}})
 
 	// Spend the hourly budget.
-	firstID, err := writeTriggerRequest(schedulerDir, "", "implement")
+	firstID, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}
@@ -937,7 +1176,7 @@ func TestSweepFailsFastOnNonTransientRefusal(t *testing.T) {
 	// spent hourly budget.
 	sched.Wait()
 
-	secondID, err := writeTriggerRequest(schedulerDir, "", "implement")
+	secondID, err := writeTriggerRequestContext(context.Background(), schedulerDir, "", "implement")
 	if err != nil {
 		t.Fatalf("writeTriggerRequest: %v", err)
 	}

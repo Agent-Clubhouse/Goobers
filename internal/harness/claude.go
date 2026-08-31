@@ -19,6 +19,37 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
+// dropForeignAnthropicAPIKey strips an ANTHROPIC_API_KEY entry from env
+// whose value isn't shaped like a real Anthropic API key (which always
+// starts with "sk-ant-"). This instance's credentialGrant schema allows only
+// one agent:model grant per instance, with no per-harness scoping — so a
+// grant configured to back Copilot's headless model auth (a GitHub PAT,
+// injected as COPILOT_GITHUB_TOKEN for that adapter) is ALSO resolved and
+// injected here as ANTHROPIC_API_KEY purely because both adapters declare
+// the same capability name. A GitHub PAT is never a valid Anthropic key, so
+// without this guard every claude-code invocation on a mixed-harness
+// instance authenticates with a guaranteed-invalid key and fails instantly
+// with a 401 "Invalid API key" — surfaced nowhere but the process's own
+// (otherwise-uncaptured) transcript, since seedClaudeCredentials treats any
+// non-empty ANTHROPIC_API_KEY as "caller already handled auth" and skips
+// seeding the user's real stored Claude Code session as a fallback. Dropping
+// a foreign-shaped key here restores that fallback — the same behavior as
+// if no agent:model credential were configured for this capability at all,
+// which is what Copilot-only credential configuration actually means for a
+// harness that isn't Copilot. A genuinely valid Anthropic key (sk-ant-...)
+// configured for this capability still passes through unchanged.
+func dropForeignAnthropicAPIKey(env []string) []string {
+	filtered := env[:0:0]
+	for _, kv := range env {
+		name, value, ok := strings.Cut(kv, "=")
+		if ok && name == "ANTHROPIC_API_KEY" && !strings.HasPrefix(value, "sk-ant-") {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
+}
+
 var defaultClaudeExtraArgs = []string{
 	"--output-format", "stream-json",
 	"--verbose",
@@ -101,6 +132,15 @@ type ClaudeAdapter struct {
 	ExtraEnvAllowlist              []string
 	InstanceRoot                   string
 	SelfBin                        string
+	// EphemeralTmp binds `tmp:ephemeral` on the self runner for this
+	// adapter's subprocess — see CopilotAdapter.EphemeralTmp for the full
+	// contract; the two adapters share it so a self entry declaring the
+	// effect is true of every agentic stage, not just the ones that happen to
+	// run under one harness.
+	EphemeralTmp bool
+	// EphemeralTmpRoot overrides the temp root the per-attempt directory is
+	// carved out of. Empty means the daemon's own temp root.
+	EphemeralTmpRoot string
 }
 
 // Name returns the adapter's diagnostic identity.
@@ -236,13 +276,23 @@ func (c *ClaudeAdapter) runner() ProcessRunner {
 }
 
 // Run executes one non-interactive Claude Code session.
-func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error) {
+func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, runErr error) {
+	if err := validateStandardExecution(req); err != nil {
+		return Outcome{}, err
+	}
 	if len(c.Command) == 0 {
 		return Outcome{}, fmt.Errorf("harness: claude-code: no command configured")
 	}
 	if req.Workspace == "" {
 		return Outcome{}, fmt.Errorf("harness: claude-code: RunRequest.Workspace is empty")
 	}
+	// The self-runner tmp:ephemeral binding for this attempt, reclaimed on
+	// every exit path below.
+	ephemeralTmp, err := establishEphemeralTmp(c.Name(), c.EphemeralTmp, c.EphemeralTmpRoot)
+	if err != nil {
+		return Outcome{}, err
+	}
+	defer func() { _ = ephemeralTmp.Reclaim() }()
 	req = withAutoGoobersIOClaude(req, c.SelfBin)
 	options, err := normalizeClaudeConfig(req.Model, req.HarnessOptions)
 	if err != nil {
@@ -257,7 +307,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 	if err := os.MkdirAll(filepath.Dir(debugPath), 0o755); err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: prepare prompt dir: %w", err)
 	}
-	if err := os.WriteFile(debugPath, []byte(prompt), 0o644); err != nil {
+	if err := os.WriteFile(debugPath, []byte(prompt), 0o600); err != nil {
 		return Outcome{}, fmt.Errorf("harness: claude-code: write prompt: %w", err)
 	}
 
@@ -303,11 +353,13 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		extraEnvAllowlist:              c.ExtraEnvAllowlist,
 		instanceRoot:                   c.InstanceRoot,
 		selfBin:                        c.SelfBin,
+		ephemeralTmp:                   ephemeralTmp,
 	}, req)
 	if err != nil {
 		return Outcome{}, err
 	}
 	env = append(env, mcpEnvAdditions...)
+	env = dropForeignAnthropicAPIKey(env)
 
 	// Isolate this run from the invoking user's ambient ~/.claude: an
 	// unsandboxed run must not inherit the host's personal settings, hooks,
@@ -341,11 +393,20 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		sessionSelectorArg += shift
 	}
 
+	agentTelemetry, err := beginAdapterAgentTelemetry(
+		req, "claude", req.Model, req.Model,
+		requestedHarnessOption(req, "effort"), options["effort"],
+	)
+	if err != nil {
+		return Outcome{}, fmt.Errorf("harness: claude-code: start agent telemetry: %w", err)
+	}
+	defer agentTelemetry.finish(&out, &runErr)
+
 	runner := c.runner()
 	started := time.Now()
 	initialCapture := &claudeTerminalCapture{}
 	captures := []*claudeTerminalCapture{initialCapture}
-	result, runErr := runner.Run(ctx, ProcessRequest{
+	result, processErr := runner.Run(ctx, ProcessRequest{
 		Command:            argv,
 		Dir:                req.Workspace,
 		Env:                env,
@@ -353,11 +414,12 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		MaxTranscriptBytes: req.MaxTranscriptBytes,
 		StdoutCapture:      initialCapture,
 	})
+	runErr = processErr
 	invocationResults := []ProcessResult{result}
 	prompts := []string{prompt}
 	var payload []byte
 	var completionErr error
-	if runErr == nil {
+	if processErr == nil {
 		payload, completionErr = readCompletion(req.Workspace, req.CompletionPath)
 		if errors.Is(completionErr, ErrNoCompletion) {
 			totalTimeout := req.Timeout
@@ -396,7 +458,7 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		}
 	}
 
-	out := Outcome{
+	out = Outcome{
 		Transcript:             result.Transcript,
 		TranscriptTruncated:    result.TranscriptTruncated,
 		TranscriptDroppedBytes: result.TranscriptDroppedBytes,
@@ -422,6 +484,9 @@ func (c *ClaudeAdapter) Run(ctx context.Context, req RunRequest) (Outcome, error
 		// visible — the session otherwise proceeds silently without those
 		// tools, and the resulting stage failure wears an unrelated costume.
 		out.MCPServerFailures = claudeMCPServerFailures(req, native)
+		if err := agentTelemetry.emit(projectAgentEvents(native.data, req)...); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("harness: claude-code: project agent telemetry: %w", err))
+		}
 	}
 	if runErr != nil {
 		return out, runErr

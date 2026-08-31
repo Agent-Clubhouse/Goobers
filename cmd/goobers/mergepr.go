@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/claimsclient"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/mergepolicy"
 	"github.com/goobers/goobers/providers"
 )
@@ -93,15 +94,10 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -115,12 +111,11 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	isADO := repo.Provider == providers.ProviderADO
 	isGitHub := repo.Provider == providers.ProviderGitHub
 
-	// prProvider is the concrete *GitHubProvider the GitHub-only helpers
-	// (classifyRemoteTutorChanges, cleanupMergedBranch) require; it stays nil on
-	// non-GitHub providers, where both helpers are gated OFF. dispatcher is the provider-neutral
-	// landing seam (CONF-1 #2074) every poll/compare/detect/enqueue/merge call
-	// flows through, so every registered provider runs one shared code path.
-	var providerCapability = capability.GitHubPRMerge
+	// prProvider is the provider-neutral forge surface the non-ADO helpers
+	// require. dispatcher is the provider-neutral landing seam (CONF-1 #2074)
+	// every poll/compare/detect/enqueue/merge call flows through, so every
+	// registered provider runs one shared code path.
+	providerCapability := capability.GitHubPRMerge
 	if isADO {
 		// Merge/completion authority on ADO rides on the dedicated
 		// capability.ADOPRComplete ("ado:pr:complete") — the ADO counterpart to
@@ -136,7 +131,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		}
 		providerCapability = capability.ADOPRComplete
 	}
-	stageProvider, err := newProviderForStage(root, repo, false,
+	stageProvider, err := newMergeReviewProvider(root, repo, false,
 		withStageProviderCapability(providerCapability),
 		withStageProviderCache(),
 		withStageProviderMutations("pr"),
@@ -146,12 +141,12 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	dispatcher := providers.NewDispatcher(stageProvider)
-	var prProvider *providers.GitHubProvider
-	if isGitHub {
+	var prProvider mergeProvider
+	if !isADO {
 		var ok bool
-		prProvider, ok = stageProvider.(*providers.GitHubProvider)
+		prProvider, ok = stageProvider.(mergeProvider)
 		if !ok {
-			pf(stderr, "error: repository provider %q does not support GitHub-only merge helpers\n", repo.Provider)
+			pf(stderr, "error: repository provider %q does not support merge lifecycle helpers\n", repo.Provider)
 			return 1
 		}
 	}
@@ -193,6 +188,23 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
+	// #2746: ADO PollPullRequest never populates CommentsSince, so the in-lock
+	// poll carries no verdict and the merge commit used to degrade to title +
+	// "Closes #N" — losing the reviewer attribution and rationale the
+	// GitHub/Gitea path records. Recover the verdict apply-verdict posted to the
+	// PR thread HERE, BEFORE the merge lock: fetching it inside the lock would
+	// add a provider round-trip to the poll->decide->merge window and reopen the
+	// head-move race #719 closes. Recovering early is safe because the verdict
+	// is SHA-pinned — adoMergeCommitMessage only uses it when the pin still
+	// equals the LOCKED poll's live head/base, so a head that moved between this
+	// read and the lock simply falls back to the non-verdict assembly (the same
+	// pin check pinnedPassVerdict applies on GitHub). A provider failure here is
+	// never fatal: the audit metadata degrades, the merge conjuncts do not.
+	var adoVerdict *adoRecoveredVerdict
+	if isADO && strings.TrimSpace(commitMessage) == "" {
+		adoVerdict = recoverADOPassVerdict(ctx, stageProvider, repo, pullNumber, stderr)
+	}
+
 	// #719: with merge-review's readiness allowing several concurrent runs
 	// to review DIFFERENT PRs at once (distinct-PR concurrency is already
 	// claim-ledger-safe, per pr-select), only ONE PR may be inside the
@@ -206,8 +218,23 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	// completed, which serializing the whole window (not just the final
 	// MergePullRequest call) guarantees. Branch cleanup after a successful
 	// merge is independent per-PR state and does NOT need to be serialized.
+	//
+	// Over the claims plane (a stage pod, which has no instance flock) the
+	// same window is a lease on the synthetic item merge-lock/<owner>/<repo>
+	// held by this run: acquire polls until held, the lease is renewed while
+	// the window runs, and a crashed holder's lease lapses on its own instead
+	// of leaking a flock (finding 002 C1). Same-host stages keep the flock.
 	l := layoutFor(root)
-	lockPath := filepath.Join(l.SchedulerDir(), mergeLockFileName)
+	ledger, err := openStageClaimLedger(l)
+	if err != nil {
+		pf(stderr, "error: open claim ledger: %v\n", err)
+		return 1
+	}
+	mergeLock := claimsclient.MergeLock{
+		Key:      claimsclient.MergeLockKey(providerGaggle(), string(repo.Provider), repo.Owner, repo.Name),
+		RunID:    os.Getenv(executor.RunIDEnvVar),
+		Workflow: os.Getenv(executor.WorkflowEnvVar),
+	}
 
 	var poll providers.PullRequestPollResult
 	var pollErr error
@@ -218,7 +245,7 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	var commitErr error
 	var policyErr error
 	var optedOutReason string
-	lockErr := withFileLock(lockPath, func() error {
+	lockErr := ledger.MergeLock(ctx, mergeLock, func(ctx context.Context) error {
 		// Independent, live re-check (D6) — never trust a caller-supplied
 		// "still valid" claim for CI/draft/SHA-pin; always re-poll the PR's
 		// actual current state right before deciding, now guaranteed to be
@@ -319,17 +346,17 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 		if strings.TrimSpace(mergeCommitMessage) == "" {
 			switch {
 			case isADO:
-				// THE single hard blocker (merge-wiring-plan §1a/§2/§8): ADO
-				// PollPullRequest returns an empty CommentsSince (there is no
+				// ADO PollPullRequest returns an empty CommentsSince (there is no
 				// merge-review sticky-verdict comment surface on ADO), so
 				// structuredMergeCommitMessage's pinnedPassVerdict lookup ALWAYS
 				// fails on ADO — a clean pass with a green Build policy would set
-				// commitErr and hard-return 1 below, never landing. Build the
-				// commit directly from the PR's own title + closing refs (the same
-				// non-verdict assembly structuredMergeCommitMessage does at
-				// mergepr.go:443-453), bypassing the verdict comment. verdictAuthor
-				// is not required on ADO (no comment to attribute).
-				commitTitle, mergeCommitMessage, commitErr = adoMergeCommitMessage(poll)
+				// commitErr and hard-return 1 below, never landing. Build the commit
+				// from the PR's own title + closing refs, enriched with the verdict
+				// recovered from the PR thread before the lock when its SHA-pin
+				// still matches this poll's live head/base (#2746). verdictAuthor is
+				// not required on ADO — the recovery resolves the trusted author
+				// itself.
+				commitTitle, mergeCommitMessage, commitErr = adoMergeCommitMessage(poll, adoVerdict)
 				if commitErr != nil {
 					return nil
 				}
@@ -432,14 +459,14 @@ func runMergePR(args []string, stdout, stderr io.Writer) int {
 	}
 
 	var cleanup *mergeBranchCleanup
-	// Branch cleanup is GitHub-only: cleanupMergedBranch takes the concrete
-	// *GitHubProvider and ADO PollPullRequest never populates HeadRepository, so
-	// on ADO it could only ever fail "did not report a head repository". Gate OFF
+	// Branch cleanup is unavailable on ADO: its PollPullRequest does not populate
+	// HeadRepository, so it could only fail "did not report a head repository".
+	// Gate OFF
 	// (no-op); ADO source-branch deletion rides on the enqueue/merge
 	// deleteSourceBranch flag, out of scope for this epic (merge-wiring-plan
-	// §1a/§8).
-	if isGitHub && landResult.Outcome == mergepolicy.OutcomeMerged {
-		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, prProvider)
+	// §1a/§8). GitHub and Gitea use the shared provider-neutral cleanup path.
+	if !isADO && landResult.Outcome == mergepolicy.OutcomeMerged {
+		outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, prProvider)
 		cleanup = &outcome
 		if outcome.Error != "" {
 			pf(stderr, "warning: merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
@@ -516,28 +543,122 @@ func structuredMergeCommitMessage(poll providers.PullRequestPollResult, verdictA
 	return title, strings.Join(parts, "\n\n"), nil
 }
 
+// adoRecoveredVerdict is the pass verdict merge-pr recovered from an Azure
+// DevOps pull request's threads, together with the trusted author it was
+// verified against — the reviewer attribution the merge commit records.
+type adoRecoveredVerdict struct {
+	Verdict apiv1.Verdict
+	Author  string
+}
+
+// adoThreadVerdictReader is the ADO read surface the pre-lock verdict recovery
+// needs: the authenticated identity to trust a thread against, and the PR's
+// thread comments (the ADO analog of GitHub's PR comments — apply-verdict posts
+// the verdict there, ListComments would address work-item comments instead).
+type adoThreadVerdictReader interface {
+	AuthenticatedLogin(ctx context.Context) (string, error)
+	ListPullRequestThreadComments(ctx context.Context, repo providers.RepositoryRef, pullID string) ([]providers.Comment, error)
+}
+
+// recoverADOPassVerdict reads the latest trusted merge-review pass verdict
+// apply-verdict posted to the ADO pull request's threads (#2746). It is called
+// BEFORE the merge lock is taken, so it never adds a round-trip to the
+// poll->decide->merge window (#719); adoMergeCommitMessage re-validates the
+// verdict's SHA-pin against the locked poll before using it.
+//
+// It returns nil — never an error — when no such verdict exists or the provider
+// call fails: the recovered verdict enriches the merge commit's audit trail, so
+// losing it degrades to the PR's own title + closing refs rather than blocking
+// an otherwise-mergeable pull request.
+func recoverADOPassVerdict(
+	ctx context.Context,
+	provider providers.Provider,
+	repo providers.RepositoryRef,
+	pullID string,
+	stderr io.Writer,
+) *adoRecoveredVerdict {
+	reader, ok := provider.(adoThreadVerdictReader)
+	if !ok {
+		return nil
+	}
+	author, err := reader.AuthenticatedLogin(ctx)
+	if err != nil {
+		pf(stderr, "warning: resolve merge-review verdict author for pr #%s: %v\n", pullID, err)
+		return nil
+	}
+	comments, err := reader.ListPullRequestThreadComments(ctx, repo, pullID)
+	if err != nil {
+		pf(stderr, "warning: list thread comments on pr #%s: %v\n", pullID, err)
+		return nil
+	}
+	var recovered *adoRecoveredVerdict
+	for _, comment := range comments {
+		if !isTrustedMergeReviewStatusComment(comment.Author, comment.Body, author) {
+			continue
+		}
+		candidate, ok := parseVerdictComment(comment.Body)
+		if !ok || candidate.Decision != apiv1.VerdictPass {
+			continue
+		}
+		// Comments arrive oldest first, so the last trusted pass wins — the
+		// verdict from the most recent review of this pull request.
+		recovered = &adoRecoveredVerdict{Verdict: candidate, Author: author}
+	}
+	return recovered
+}
+
 // adoMergeCommitMessage builds the land's commit title and body for an Azure
-// DevOps pull request directly from the PR's own fields, bypassing the
-// merge-review sticky-comment verdict lookup structuredMergeCommitMessage
-// depends on. ADO PollPullRequest returns an empty CommentsSince (ADO has no
-// merge-review sticky-verdict comment surface — merge-wiring-plan §2), so the
-// verdict-rationale assembly is unavailable there; the title and "Closes #N"
-// closing refs are exactly the non-verdict parts the GitHub assembly already
-// produces (mergepr.go:443-453). This is the fix for the single hard blocker:
-// without it, structuredMergeCommitMessage always errors on ADO and a clean
-// green-Build-policy pass hard-fails the stage instead of landing
-// (merge-wiring-plan §1a/§8). Errors only on the same empty-title condition the
-// GitHub assembly rejects, so an ADO PR with no title is still a business error.
-func adoMergeCommitMessage(poll providers.PullRequestPollResult) (string, string, error) {
+// DevOps pull request. ADO PollPullRequest returns an empty CommentsSince (ADO
+// has no merge-review sticky-verdict comment surface — merge-wiring-plan §2), so
+// structuredMergeCommitMessage's in-poll verdict lookup always fails there;
+// without this bypass a clean green-Build-policy pass hard-fails the stage
+// instead of landing (merge-wiring-plan §1a/§8).
+//
+// recovered is the pass verdict merge-pr read from the PR's threads before
+// taking the merge lock (#2746), or nil when there was none. It contributes the
+// reviewer's summary, rationale, and attribution — the audit trail the
+// GitHub/Gitea commit body carries — but ONLY while its SHA-pin still equals
+// this LOCKED poll's live head/base, exactly the pin pinnedPassVerdict enforces
+// on GitHub: a verdict computed against a state the PR has since moved past
+// must not be recorded as the reason this commit landed. A stale, absent, or
+// unrecoverable verdict falls back to the PR's own title + "Closes #N" closing
+// refs, so the merge still lands. Errors only on the same empty-title condition
+// the GitHub assembly rejects.
+func adoMergeCommitMessage(poll providers.PullRequestPollResult, recovered *adoRecoveredVerdict) (string, string, error) {
 	title := strings.TrimSpace(poll.Title)
 	if title == "" {
 		return "", "", fmt.Errorf("pull request title is empty")
 	}
 	var parts []string
+	attribution := ""
+	if recovered != nil && adoVerdictPinMatches(recovered.Verdict, poll) {
+		summary := strings.TrimSpace(recovered.Verdict.Summary)
+		rationale := strings.TrimSpace(recovered.Verdict.Rationale)
+		if summary != "" {
+			parts = append(parts, summary)
+		}
+		if rationale != "" && rationale != summary {
+			parts = append(parts, rationale)
+		}
+		if author := strings.TrimSpace(recovered.Author); author != "" {
+			attribution = "Reviewed-by: " + author
+		}
+	}
 	for _, issue := range closingIssueNumbers(poll.Body) {
 		parts = append(parts, "Closes #"+issue)
 	}
+	if attribution != "" {
+		parts = append(parts, attribution)
+	}
 	return title, strings.Join(parts, "\n\n"), nil
+}
+
+// adoVerdictPinMatches reports whether a recovered ADO verdict is pinned to the
+// pull request's current head AND base — the same staleness test
+// pinnedPassVerdict applies to the GitHub sticky comment.
+func adoVerdictPinMatches(verdict apiv1.Verdict, poll providers.PullRequestPollResult) bool {
+	return verdict.HeadSHA != "" && verdict.HeadSHA == poll.HeadSHA &&
+		verdict.BaseSHA != "" && verdict.BaseSHA == poll.BaseSHA
 }
 
 type mergeBranchCleanup struct {
@@ -546,7 +667,7 @@ type mergeBranchCleanup struct {
 	Error      string
 }
 
-func cleanupMergedBranch(ctx context.Context, headRepository *providers.RepositoryRef, headBranch string, prProvider *providers.GitHubProvider) mergeBranchCleanup {
+func cleanupMergedBranch(ctx context.Context, root string, headRepository *providers.RepositoryRef, headBranch string, prProvider mergeProvider) mergeBranchCleanup {
 	out := mergeBranchCleanup{HeadBranch: headBranch}
 	fail := func(err error) mergeBranchCleanup {
 		out.Status = "failed"
@@ -573,12 +694,19 @@ func cleanupMergedBranch(ctx context.Context, headRepository *providers.Reposito
 		return out
 	}
 
-	branchProvider, err := newProviderForStageAs[*providers.GitHubProvider](providerStageRoot(""), *headRepository, false,
+	// Build the delete through a branch-scoped recorder so the journal records
+	// kind="branch", distinct from the merge that preceded it. Provider dispatch
+	// is retained for Gitea instead of falling back to api.github.com.
+	branchStageProvider, err := newProviderForStage(root, *headRepository, false,
 		withStageProviderCapability(capability.GitHubBranchDelete),
 		withStageProviderMutations("branch"),
 	)
 	if err != nil {
 		return fail(err)
+	}
+	branchProvider, ok := branchStageProvider.(providers.BranchDeleter)
+	if !ok {
+		return fail(fmt.Errorf("repository provider %q does not support branch deletion", headRepository.Provider))
 	}
 	if _, err := branchProvider.DeleteBranch(ctx, providers.DeleteBranchRequest{Repository: *headRepository, Name: headBranch}); err != nil {
 		return fail(fmt.Errorf("delete branch %q: %w", headBranch, err))

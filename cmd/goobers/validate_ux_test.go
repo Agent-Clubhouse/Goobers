@@ -384,10 +384,15 @@ func TestValidateCheckRepos(t *testing.T) {
 	}
 }
 
-// TestValidateStrictExemptsDeprecationNotices pins the #2700 ruling: a
-// deprecated-but-supported dslVersion must nudge, never break — DVL020
-// prints under --strict and does not promote to an error.
-func TestValidateStrictExemptsDeprecationNotices(t *testing.T) {
+// TestValidateRejectsUnsupportedDSLVersion pins the §8.3 cutover (#3507): 1.4
+// transitioned from deprecated (the strict-neutral DVL020 nudge #2700 tested)
+// to UNSUPPORTED, so a 1.4 pin is now a hard DVL030 error naming the 1.4→2.0
+// recovery edge — it fails plain validate, not just --strict. No DSL version
+// is LevelDeprecated any more, so the CLI's DVL020 strict-exemption filter
+// (cmd/goobers/validate.go) is unreachable via a real pin; the DVL020 emission
+// it filters is still covered at the api/validate layer against a synthetic
+// matrix (TestCheckWorkflowDSLVersionDeprecatedWarnsWithReplacement).
+func TestValidateRejectsUnsupportedDSLVersion(t *testing.T) {
 	root := initDeterministicDemo(t)
 	instancePath := filepath.Join(root, "instance.yaml")
 	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
@@ -400,16 +405,17 @@ func TestValidateStrictExemptsDeprecationNotices(t *testing.T) {
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	replaceInFile(t, workflowPath, `dslVersion: "2.0"`, `dslVersion: "1.4"`)
 
-	code, stdout, stderr := runArgs(t, "validate", "--strict", root)
-	if code != 0 {
-		t.Fatalf("strict validate code=%d, want 0 (deprecation notices are strict-neutral); stdout=%q stderr=%q", code, stdout, stderr)
+	code, stdout, stderr := runArgs(t, "validate", root)
+	if code != 1 {
+		t.Fatalf("validate code=%d, want 1 (1.4 is unsupported); stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	const want = "WARNING DVL020 gaggles/example/workflows/default-implement.yaml Gaggle/example Workflow/default-implement:"
-	if !strings.Contains(stdout, want) {
-		t.Fatalf("strict validate did not render the DVL020 notice with full provenance:\n%s", stdout)
-	}
-	if strings.Contains(stdout, "--strict treats warnings as errors") {
-		t.Fatalf("strict validate promoted a deprecation notice:\n%s", stdout)
+	for _, want := range []string{
+		`dslVersion "1.4" is unsupported by this binary (replacement "2.0"); migrate with ` + "`goobers fix --to 2.0`",
+		"config directory failed validation",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("validate output missing %q:\n%s", want, stdout)
+		}
 	}
 }
 
@@ -620,23 +626,21 @@ func TestValidatePrintsDSLVersionSummary(t *testing.T) {
 	}
 }
 
-func TestValidateWarnsOnMissingDSLVersionPin(t *testing.T) {
+func TestValidateErrorsOnMissingDSLVersionPin(t *testing.T) {
 	root := initDeterministicDemo(t)
 	workflowPath := filepath.Join(root, "config", "gaggles", "example", "workflows", "default-implement.yaml")
 	replaceInFile(t, workflowPath, "dslVersion: \"2.0\"\n", "")
 
 	code, stdout, stderr := runArgs(t, "validate", root)
-	if code != 0 {
-		t.Fatalf("validate: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	// The §8.3 cutover (#3507) dropped DSL 1.4, so a missing dslVersion is no
+	// longer a warn-and-default-to-1.4 nudge — it is a hard error (DVL001)
+	// naming the versions the author may pin. Validation now fails.
+	if code != 1 {
+		t.Fatalf("validate: code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	// An unpinned workflow still defaults to 1.4 (the #2699 unpinned-default
-	// decision is pending), so post-#2700 the defaulted version additionally
-	// carries the DVL020 deprecation warning and a deprecated summary line.
 	for _, want := range []string{
-		"DVL001",
-		`spec has no dslVersion pin; defaulting to "1.4"`,
-		"DVL020",
-		"DSLVERSION Workflow/default-implement: 1.4 (defaulted; no dslVersion pin) (deprecated, replacement 2.0, unsupported after v0.5.0)",
+		"spec has no dslVersion pin; pin an explicit dslVersion (loadable: 2.0, 3.0) — the transitional default is gone now that DSL 1.4 is dropped",
+		"config directory failed validation",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("validate output missing %q:\n%s", want, stdout)
@@ -970,5 +974,38 @@ func appendToFile(t *testing.T, path, content string) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestValidateStrictDoesNotPromoteUnhonoredConnectionRef covers REF012's
+// strict-neutrality (#3296). The finding says the local runtime honors no
+// connectionRef at all — an author who needs the field for a cloud-tier
+// deployment cannot silence it by editing their config — so promoting it
+// under --strict would turn an existing green pipeline red on upgrade. It
+// must still print.
+func TestValidateStrictDoesNotPromoteUnhonoredConnectionRef(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.InitQuickstart(root); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+	// The scaffolded gaggle no longer declares a connection, so the author's
+	// declaration is added here — REF012 is about what an author writes.
+	replaceInFile(t, gagglePath, "    branch: main", `    branch: main
+    connectionRef: repo-token`)
+
+	code, stdout, stderr := runArgs(t, "validate", "--strict", root)
+	if code != 0 {
+		t.Fatalf("validate --strict code=%d, stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "REF012") {
+		t.Fatalf("strict validate did not report the unhonored connectionRef:\n%s", stdout)
 	}
 }

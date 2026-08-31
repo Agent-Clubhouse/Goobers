@@ -37,7 +37,7 @@ const signalHelp = "Usage: goobers signal <name> [path]\n\n" +
 // (#169, once the daemon has a write-capable API surface) is the planned
 // future caller of Scheduler.Signal; this CLI path has no opinion on
 // delivery mechanism and works standalone in the meantime.
-func runSignal(args []string, stdout, stderr io.Writer) int {
+func runSignal(args []string, stdout, stderr io.Writer) (result int) {
 	fs := newCLIFlagSet("signal", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "signal")
@@ -82,12 +82,37 @@ func runSignal(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 
 	var wg sync.WaitGroup
-	setup, err := buildSchedulerSetup(ctx, l, &wg)
+	// DS6 for the one-shot path (#3512 review, finding 2): this command holds
+	// the instance lock, so the daemon — and with it every claim renewal — is
+	// stopped. On an engine-configured instance the setup-time reap plus
+	// Claim's expired-lease takeover would both fire on a live distributed
+	// run's stale-looking lease, so renewal must run before any
+	// scheduling/claiming does. Mode-1 gets a nil recovery: byte-identical
+	// recover-at-setup behavior.
+	claimRecovery := newOneShotClaimRecovery(l)
+	setup, err := buildSchedulerSetup(ctx, l, &wg, claimRecovery.setupOptions()...)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() {
+		// #3851: surface a lost final flush or close rather than exiting as if
+		// the signal command shut down cleanly. The signal itself is already
+		// committed at this point, but the issue requires not reporting clean
+		// completion after losing final persisted state, so a shutdown
+		// failure here downgrades an otherwise-successful result to failure;
+		// it never masks a run-outcome exit code that is already non-zero.
+		if err := setup.Shutdown(context.Background()); err != nil {
+			pf(stderr, "error: shut down scheduler services: %v\n", err)
+			if result == 0 {
+				result = 1
+			}
+		}
+	}()
+	if err := claimRecovery.finish(ctx, l, setup, stderr); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
 
 	opts := append(setup.SchedulerOptions(), localscheduler.WithInstanceRunConditions(setup.RunConditions.MaxParallelRuns, setup.RunConditions.WorkflowBudgets, setup.RunConditions.WorkflowDailyBudgets))
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog, opts...)

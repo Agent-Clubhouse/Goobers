@@ -42,6 +42,27 @@ managed extension with the copy bundled in the new binary. The installed
 manifest records the exact Goobers version and commit; Portal sources and
 preferences are preserved separately from the installed code.
 
+## Learn Goobers or configure an instance
+
+To **learn how Goobers works**, follow the
+[quickstart tutorial](docs/guides/quickstart.md). It starts with an offline,
+credential-free workflow and then uses a disposable repository for one
+issue-to-PR run. The tutorial is intentionally separate from configuring a
+real application.
+
+To **configure a real instance**, choose one of these paths:
+
+- Run `goobers init --guided` for the browser wizard. It teaches
+  the core concepts while inspecting your repository, adapting the canonical
+  workflows, preparing required repository metadata, and validating the
+  resulting instance. It does not execute a workflow.
+- Read [Onboard an arbitrary repository](docs/guides/arbitrary-repo-onboarding.md)
+  and perform the same setup manually.
+- Ask your coding agent to read that guide and the release-matched
+  [Getting Started skill](skills/goobers-getting-started/SKILL.md), inspect your
+  repository, explain each proposed write, and create the validated
+  configuration for you.
+
 ## Predictable workflows around nondeterministic workers
 
 A Goobers workflow is YAML that declares triggers, stages, gates, transitions,
@@ -136,15 +157,10 @@ opaque agent session.
 
 ## Try it locally
 
-Follow the [canonical quickstart](docs/guides/quickstart.md) for the ordered
-first-run path: a credential-free local demo, a disposable GitHub-backed run,
-and then a regular instance using the
-[production-oriented configuration examples](config-examples/README.md).
-
-Prefer a guided walkthrough over typing CLI commands yourself? `goobers
-getting-started` serves a portal-hosted alternative covering the same
-first-run-against-your-own-repository ground — see
-[the CLI reference](docs/cli/README.md#goobers-getting-started).
+Follow the [quickstart tutorial](docs/guides/quickstart.md) for disposable
+learning. To configure a real repository instead, run
+`goobers init --guided` or follow
+[Onboard an arbitrary repository](docs/guides/arbitrary-repo-onboarding.md).
 
 For deeper context, read the
 [historical product vision snapshot (v0.3, July 2026)](docs/VISION.md),
@@ -176,8 +192,6 @@ future-design docs above until its child issues land.
 | `providers/` | Backlog + repo provider abstraction (GitHub / ADO) | Active |
 | `cmd/goobers` | The product binary: `init`, `validate`, `up`, `run`, `status`, `trace` | Active |
 | `cmd/operator` | Kubernetes operator entrypoint | **Quarantined** — reserved for cloud-scale execution |
-| `cmd/scheduler` | Cluster scheduler process (Temporal-backed) | **Quarantined** — reserved for cloud-scale execution |
-| `cmd/goober-runtime` | Per-run agent pod runtime | **Superseded** — folds into `goobers`' local stage execution |
 | `internal/operator` | Kubernetes operator reconcile logic | **Quarantined** — reserved for cloud-scale execution |
 | `internal/configsync` | Config-repo → CRD render/apply (ArgoCD bridge) | **Quarantined** — CRD-apply path is not part of the shipped local runner |
 | `internal/` (other) | Shared Go packages (engine core, telemetry, app bootstrap) | Active |
@@ -213,9 +227,11 @@ Import shared packages as e.g. `github.com/goobers/goobers/internal/version`.
 The product binary is **`goobers`** — the local runner: `init`, `validate`, `up`
 (daemon: scheduler + runner), `run`, `status`, `trace`.
 
-Pre-existing entrypoints (`operator`, `scheduler`, `goober-runtime`) are
-cloud-scale or superseded skeletons kept per the quarantine plan
-(`docs/ARCHITECTURE.md §11`).
+Pre-existing entrypoints (`operator`, `config-sync`) are cloud-scale skeletons
+kept per the quarantine plan (`docs/ARCHITECTURE.md §11`). The tier-3
+scheduler fork (`cmd/scheduler`, `internal/scheduler`) and `cmd/goober-runtime`
+were deleted per `docs/design/goobernetes-architecture.md` D5 (#2055 resolved:
+supersede).
 Every binary shares `internal/app.Main`, which wires `--version`, structured logging
 (`--log-level`, `--log-format`), and SIGINT/SIGTERM-aware shutdown.
 
@@ -232,6 +248,7 @@ the differences relevant to your environment:
 - [Onboard an arbitrary repository (tiers 1-2)](docs/guides/arbitrary-repo-onboarding.md)
 - [Custom deterministic stage cookbook](docs/guides/custom-stage-cookbook.md)
 - [Daemon supervision](docs/guides/supervision.md)
+- [Move a local instance to another machine](docs/guides/move-local-instance.md)
 - [OIDC authentication](docs/guides/oidc-authentication.md)
 - [Azure DevOps authentication](docs/guides/ado-authentication.md)
 - [External telemetry connectors](docs/guides/external-telemetry-connectors.md)
@@ -241,10 +258,12 @@ the differences relevant to your environment:
 Each release publishes a portable
 [Goobers agent toolkit](agent-toolkit/README.md) for an external coding agent
 working in a config repository. Its canonical Agent Skills cover environment
-resolution, [DSL authoring](skills/goobers-dsl-author/SKILL.md), read-only run
-inspection, and workflow upgrades. Release-matched docs, schemas, examples, and
-thin Copilot, Claude, and `AGENTS.md` adapters let it work without a source
-checkout or running daemon. See the
+resolution, [Getting Started](skills/goobers-getting-started/SKILL.md),
+[DSL authoring](skills/goobers-dsl-author/SKILL.md), read-only run inspection,
+and workflow upgrades. Use Getting Started as the repository-aware entry point;
+it asks only for choices that cannot be derived. Release-matched docs, schemas,
+examples, and thin Copilot, Claude, and `AGENTS.md` adapters let it work without
+a source checkout or running daemon. See the
 [installation and usage guide](docs/guides/dsl-authoring-skill.md).
 
 ## Shell completion

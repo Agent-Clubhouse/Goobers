@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -27,32 +26,33 @@ import (
 // apiVersion/kind convention (ARCHITECTURE.md §6) though instance.yaml is a
 // provisioning file, never a CR the operator reconciles.
 const (
-	ConfigAPIVersion                 = "goobers.dev/v1alpha1"
-	ConfigKind                       = "Instance"
-	DefaultAPIListenAddress          = "127.0.0.1:8080"
-	DefaultWebhookListenAddress      = "127.0.0.1:8081"
-	DefaultTemporalHostPort          = "127.0.0.1:7233"
-	DefaultTemporalNamespace         = "default"
-	DefaultEngineTaskQueue           = "goobers-engine"
-	TemporalHostPortEnv              = "GOOBERS_TEMPORAL_HOSTPORT"
-	TemporalAddressEnv               = "GOOBERS_TEMPORAL_ADDRESS"
-	TemporalAddressLegacyEnv         = "TEMPORAL_ADDRESS"
-	TemporalNamespaceEnv             = "GOOBERS_TEMPORAL_NAMESPACE"
-	TemporalNamespaceLegacyEnv       = "TEMPORAL_NAMESPACE"
-	TaskQueueEnv                     = "GOOBERS_TASK_QUEUE"
-	TemporalTaskQueueEnv             = "GOOBERS_TEMPORAL_TASK_QUEUE"
-	TemporalTaskQueueLegacyEnv       = "TEMPORAL_TASK_QUEUE"
-	OTLPEndpointEnv                  = "GOOBERS_OTLP_ENDPOINT"
-	OTLPInsecureEnv                  = "GOOBERS_OTLP_INSECURE"
-	DefaultWorkflowSourceRef         = "main"
-	WorkflowSourceKindLocalDir       = "local-dir"
-	WorkflowSourceKindGit            = "git"
-	DefaultDaemonLivenessTimeout     = 2 * time.Minute
-	MinimumDaemonLivenessTimeout     = 2 * time.Second
-	DefaultStalledRunTimeout         = runcontrol.DefaultStalledRunTimeout
-	DefaultClaimsLockTimeout         = 30 * time.Second
-	DefaultTelemetryRetentionWindow  = 90 * 24 * time.Hour
-	DefaultTelemetryRetentionMaxRuns = 500
+	ConfigAPIVersion                  = "goobers.dev/v1alpha1"
+	ConfigKind                        = "Instance"
+	DefaultAPIListenAddress           = "127.0.0.1:8080"
+	DefaultWebhookListenAddress       = "127.0.0.1:8081"
+	DefaultTemporalHostPort           = "127.0.0.1:7233"
+	DefaultTemporalNamespace          = "default"
+	DefaultEngineTaskQueue            = "goobers-engine"
+	TemporalHostPortEnv               = "GOOBERS_TEMPORAL_HOSTPORT"
+	TemporalAddressEnv                = "GOOBERS_TEMPORAL_ADDRESS"
+	TemporalAddressLegacyEnv          = "TEMPORAL_ADDRESS"
+	TemporalNamespaceEnv              = "GOOBERS_TEMPORAL_NAMESPACE"
+	TemporalNamespaceLegacyEnv        = "TEMPORAL_NAMESPACE"
+	TaskQueueEnv                      = "GOOBERS_TASK_QUEUE"
+	TemporalTaskQueueEnv              = "GOOBERS_TEMPORAL_TASK_QUEUE"
+	TemporalTaskQueueLegacyEnv        = "TEMPORAL_TASK_QUEUE"
+	OTLPEndpointEnv                   = "GOOBERS_OTLP_ENDPOINT"
+	OTLPInsecureEnv                   = "GOOBERS_OTLP_INSECURE"
+	DefaultWorkflowSourceRef          = "main"
+	WorkflowSourceKindLocalDir        = "local-dir"
+	WorkflowSourceKindGit             = "git"
+	DefaultDaemonLivenessTimeout      = 2 * time.Minute
+	MinimumDaemonLivenessTimeout      = 2 * time.Second
+	DefaultStalledRunTimeout          = runcontrol.DefaultStalledRunTimeout
+	DefaultClaimsLockTimeout          = 30 * time.Second
+	DefaultTelemetryRetentionWindow   = 90 * 24 * time.Hour
+	DefaultTelemetryRetentionMaxRuns  = 500
+	DefaultProjectionFullFidelityDays = 90
 	// LargeRepoDefaultStageTimeout is the preset's deterministic-stage deadline.
 	LargeRepoDefaultStageTimeout = "4h"
 	// LargeRepoStalledRunTimeout is the preset's journal inactivity watchdog.
@@ -68,9 +68,18 @@ const (
 // anywhere, so every schedule silently ran in whatever the host process's
 // local zone happened to be).
 type Config struct {
-	APIVersion string    `json:"apiVersion" yaml:"apiVersion"`
-	Kind       string    `json:"kind" yaml:"kind"`
-	Repos      []RepoRef `json:"repos" yaml:"repos"`
+	APIVersion string `json:"apiVersion" yaml:"apiVersion"`
+	Kind       string `json:"kind" yaml:"kind"`
+	// SchemaVersion is the instance-config schema revision (dsl-3.0.md D8,
+	// decision record D3) — the config's first version field. Absent means 1,
+	// the pre-Goobernetes schema every existing install is on; 2 introduces
+	// the runners: inventory. Strict loading on both halves means a
+	// schemaVersion-2 config using runners: hard-fails on an older binary by
+	// design rather than being silently misread. A pointer so the loader can
+	// tell absent from an explicit 0 — the published schema's enum is [1, 2],
+	// so an explicit 0 is refused rather than silently read as legacy.
+	SchemaVersion *int      `json:"schemaVersion,omitempty" yaml:"schemaVersion,omitempty"`
+	Repos         []RepoRef `json:"repos" yaml:"repos"`
 	// SelfIdentity is the instance-wide provider login used when a gaggle does
 	// not declare its own identity. It is an identity value, not a credential.
 	SelfIdentity string `json:"selfIdentity,omitempty" yaml:"selfIdentity,omitempty"`
@@ -124,6 +133,22 @@ type Config struct {
 	// naming it (docs/design/v1/polyglot-stacks.md §5). Empty claims nothing, so
 	// a Go-only instance that declares no requirements is unaffected.
 	Runner RunnerConfig `json:"runner,omitempty" yaml:"runner,omitempty"`
+	// Runners is the plural runner inventory (decision record D3, dsl-3.0.md
+	// §3): every runner class the scheduler may place stages on. Absent, the
+	// legacy singular Runner block above maps to the implicit "self" entry —
+	// the zero-change upgrade every existing install rides (ResolvedRunners).
+	// Declared, it owns capability claims: Runner.Capabilities must then be
+	// empty (supersession, no coexistence), while Runner's execution settings
+	// (envPassthrough, timeouts, harnessCommand) keep their current homes.
+	// Inventory edits are restart-only in v1 (accept-and-pin, D9): instance.yaml
+	// is startup-only, so in-flight runs finish against their pinned snapshot.
+	Runners []RunnerEntry `json:"runners,omitempty" yaml:"runners,omitempty"`
+	// Egress is the operator-supplied network destination set the
+	// per-runner-class NetworkPolicy renderer (`goobers netpol-render`,
+	// issue #3568) fills into the rendered reference manifests. Nil renders
+	// nothing and changes nothing about local execution — the daemon never
+	// applies cluster networking (goobernetes-restrictions.md §7).
+	Egress *EgressConfig `json:"egress,omitempty" yaml:"egress,omitempty"`
 	// SecretStores declares named external secret stores token refs can resolve
 	// through (config half of #683, SEC-010). A token ref opts in per ref with
 	// store: "<storeName>/<secretName>"; an instance that declares no stores and
@@ -164,60 +189,6 @@ type WorkcopiesConfig struct {
 	// creation byte-identical to previous releases; no `_objects` cache
 	// directory is ever created. See worktree.WithObjectCache.
 	ObjectCache bool `json:"objectCache,omitempty" yaml:"objectCache,omitempty"`
-}
-
-// PartialCloneEnabled reports whether newly created mirrors should be
-// blobless partial clones (workcopies.partialClone, defaults to false).
-func (c *Config) PartialCloneEnabled() bool {
-	return c.Workcopies != nil && c.Workcopies.PartialClone
-}
-
-// ObjectCacheEnabled reports whether newly created mirrors should reference
-// a shared node-level object cache (workcopies.objectCache, defaults to
-// false).
-func (c *Config) ObjectCacheEnabled() bool {
-	return c.Workcopies != nil && c.Workcopies.ObjectCache
-}
-
-// EffectiveWorkcopiesLayout applies the gaggle override, then the instance
-// override, to layout. An empty root preserves the instance-local default.
-func EffectiveWorkcopiesLayout(layout Layout, c *Config, gaggle *apiv1.Gaggle) (Layout, error) {
-	root := ""
-	if c != nil && c.Workcopies != nil {
-		root = c.Workcopies.Root
-	}
-	if gaggle != nil && gaggle.Spec.Workcopies != nil && gaggle.Spec.Workcopies.Root != "" {
-		root = gaggle.Spec.Workcopies.Root
-	}
-	if root == "" {
-		return layout, nil
-	}
-	if !filepath.IsAbs(root) {
-		return Layout{}, fmt.Errorf("workcopies.root must be an absolute path: %q", root)
-	}
-	return layout.WithWorkcopiesRoot(filepath.Clean(root)), nil
-}
-
-// EffectiveSelfIdentity returns the provider login configured for gaggle,
-// falling back to the instance-wide default. Empty means assignment-aware
-// backlog selection remains opted out.
-func EffectiveSelfIdentity(c *Config, gaggle *apiv1.Gaggle) string {
-	if gaggle != nil && gaggle.Spec.SelfIdentity != "" {
-		return gaggle.Spec.SelfIdentity
-	}
-	if c == nil {
-		return ""
-	}
-	return c.SelfIdentity
-}
-
-// EffectiveSpeechConfig returns the configured speech settings or disabled
-// defaults when the speech section is absent.
-func (c *Config) EffectiveSpeechConfig() speechnotify.Config {
-	if c.Speech == nil {
-		return speechnotify.Config{}
-	}
-	return *c.Speech
 }
 
 // WorkflowSource locates the workflow configuration independently of Repos.
@@ -333,6 +304,18 @@ type APIConfig struct {
 	// Auth replaces the tier-1 null authenticator (SEC-043). Required for a
 	// non-loopback listen address.
 	Auth *APIAuthConfig `json:"auth,omitempty" yaml:"auth,omitempty"`
+	// PodTokenKeyFile is a path to shared key material for STATELESS pod
+	// tokens (Goobers#3701). Set it when the mode-3 dispatcher runs in a
+	// different process from the daemon — the split `goobers up` /
+	// `goobers worker --dispatch-namespace` deployment — because the
+	// in-memory token registry is daemon-local and a token minted in the
+	// worker cannot otherwise be verified by the daemon receiving the
+	// surrender.
+	//
+	// Path only; key material never appears in instance.yaml (CFG-009).
+	// Unset keeps the in-memory registry, which is correct whenever daemon
+	// and dispatcher share a process.
+	PodTokenKeyFile string `json:"podTokenKeyFile,omitempty" yaml:"podTokenKeyFile,omitempty"`
 }
 
 // APITLSConfig points at the API server's TLS certificate and private key.
@@ -736,6 +719,63 @@ func (a *RepoAuthConfig) BotLogin() string {
 	return strings.TrimSpace(a.Slug) + "[bot]"
 }
 
+// GitHubBotLoginKey is the identity of a github repository for bot-login
+// lookup: owner and name, case-folded, because GitHub itself is
+// case-insensitive about both and a config author's capitalization must not
+// decide whether a stage finds its own login.
+//
+// It exists so the two consumers that resolve the same fact cannot disagree
+// about what "the same repository" means: a stage reading the config directly
+// (the local substrate) and the dispatcher indexing every configured login to
+// stamp one into a stage pod, which has no config to read (#3914).
+func GitHubBotLoginKey(owner, name string) string {
+	return strings.ToLower(strings.TrimSpace(owner)) + "/" + strings.ToLower(strings.TrimSpace(name))
+}
+
+// GitHubBotLogin returns the configured bot login for the github repository
+// owner/name — the App slug plus "[bot]" for a repo whose auth block declares
+// kind github-app with a slug, and "" for every other repo, including one this
+// config does not name at all.
+//
+// "" is a MEANINGFUL answer and not an error: it is the PAT posture, where the
+// credential can self-report through GET /user and no declaration is needed
+// (#3343). Distinguishing it from "nobody resolved this" is the whole of
+// #3914's fail-closed rule, and that distinction is made by the CALLER — here
+// by an unreadable config, in a pod by an unstamped identity variable.
+func (c *Config) GitHubBotLogin(owner, name string) string {
+	if c == nil {
+		return ""
+	}
+	return c.GitHubBotLogins()[GitHubBotLoginKey(owner, name)]
+}
+
+// GitHubBotLogins indexes every configured github repo's declared bot login by
+// GitHubBotLoginKey, omitting the repos that declare none.
+//
+// It is the daemon-side half of #3914: a stage pod has no instance root, so
+// the dispatcher — which does — resolves the login at dispatch and stamps it
+// as run identity. Both halves read THIS index, so the login a pod is handed
+// is the one the local substrate would have computed by construction, not by
+// two lookups that agree until one of them is edited.
+func (c *Config) GitHubBotLogins() map[string]string {
+	if c == nil {
+		return nil
+	}
+	logins := make(map[string]string, len(c.Repos))
+	for _, r := range c.Repos {
+		if r.Provider != "github" {
+			continue
+		}
+		if login := r.Auth.BotLogin(); login != "" {
+			logins[GitHubBotLoginKey(r.Owner, r.Name)] = login
+		}
+	}
+	if len(logins) == 0 {
+		return nil
+	}
+	return logins
+}
+
 // hasGitHubAppFields reports whether any github-app-only field is set, for
 // fail-closed rejection on kinds that must not carry them.
 func (a *RepoAuthConfig) hasGitHubAppFields() bool {
@@ -791,7 +831,21 @@ type DaemonIdentityConfig struct {
 	// RepoAuthConfig.AppID).
 	AppID GitHubID `json:"appId,omitempty" yaml:"appId,omitempty"`
 	// InstallationID is the App's installation ID for kind "github-app".
+	// Mutually exclusive with Installations: one App installation belongs to
+	// exactly one owner, so this form only covers a single-owner instance.
 	InstallationID GitHubID `json:"installationId,omitempty" yaml:"installationId,omitempty"`
+	// Installations binds one installation per owner for kind "github-app"
+	// (#3415), so one App, one key, and one slug can serve an instance whose
+	// repos span several owners. Mutually exclusive with InstallationID.
+	//
+	// This exists because the single-installation form is not merely limited,
+	// it is runtime-fatal on a multi-owner instance: the daemon identity backs
+	// the whole daemon-mutation capability set instance-wide, so a token minted
+	// from one owner's installation fails with a 422 the first time a stage
+	// touches a repo in another owner. Observed in production, worked around by
+	// removing the daemon identity entirely and giving up explicit PR
+	// attribution.
+	Installations []DaemonInstallation `json:"installations,omitempty" yaml:"installations,omitempty"`
 	// PrivateKey references the App's PEM-encoded private key for kind
 	// "github-app" (see RepoAuthConfig.PrivateKey).
 	PrivateKey *TokenRef `json:"privateKey,omitempty" yaml:"privateKey,omitempty"`
@@ -807,10 +861,46 @@ type DaemonIdentityConfig struct {
 	Slug string `json:"slug,omitempty" yaml:"slug,omitempty"`
 }
 
+// DaemonInstallation binds one GitHub App installation to the owner it was
+// installed on (#3415).
+type DaemonInstallation struct {
+	// Owner is the GitHub owner this installation covers, matching a
+	// repos[].owner value.
+	Owner string `json:"owner" yaml:"owner"`
+	// InstallationID is the App's installation ID on that owner.
+	InstallationID GitHubID `json:"installationId" yaml:"installationId"`
+}
+
 // hasGitHubAppFields reports whether any github-app-only field is set, for
 // fail-closed rejection on kinds that must not carry them.
 func (d *DaemonIdentityConfig) hasGitHubAppFields() bool {
-	return d.AppID != "" || d.InstallationID != "" || d.PrivateKey != nil || d.Slug != ""
+	return d.AppID != "" || d.InstallationID != "" || len(d.Installations) > 0 ||
+		d.PrivateKey != nil || d.Slug != ""
+}
+
+// InstallationForOwner resolves the installation this identity should mint with
+// when acting on owner. It answers for both forms: the single-installation
+// form covers whatever owner it was installed on (the caller has already been
+// validated as single-owner, so any owner resolves to it), and the per-owner
+// form matches by name.
+//
+// The owner is known where credentials are wired — buildCredentials receives
+// the gaggle's owner and builds one resolver per gaggle — so selection happens
+// there rather than threading a repo through credentials.ResolveFunc, which
+// takes only a context.
+func (d *DaemonIdentityConfig) InstallationForOwner(owner string) (GitHubID, bool) {
+	if d == nil {
+		return "", false
+	}
+	if len(d.Installations) == 0 {
+		return d.InstallationID, d.InstallationID != ""
+	}
+	for _, binding := range d.Installations {
+		if binding.Owner == owner {
+			return binding.InstallationID, binding.InstallationID != ""
+		}
+	}
+	return "", false
 }
 
 // GitHubApp reports whether this identity authenticates through GitHub App
@@ -848,11 +938,38 @@ func (d *DaemonIdentityConfig) validate(envPassthrough []string, stores map[stri
 		if d.AppID == "" {
 			return fmt.Errorf("appId is required for kind %q", GitHubAuthApp)
 		}
-		if d.InstallationID == "" {
-			return fmt.Errorf("installationId is required for kind %q", GitHubAuthApp)
+		// #3415: exactly one of the two forms. Accepting both would leave the
+		// precedence question to whoever reads the code next, and the two
+		// answers differ in which owner gets minted for.
+		if d.InstallationID == "" && len(d.Installations) == 0 {
+			return fmt.Errorf("installationId or installations is required for kind %q", GitHubAuthApp)
 		}
-		if _, err := strconv.ParseUint(string(d.InstallationID), 10, 64); err != nil {
-			return fmt.Errorf("installationId %q must be the numeric installation ID", d.InstallationID)
+		if d.InstallationID != "" && len(d.Installations) > 0 {
+			return fmt.Errorf("set either installationId or installations for kind %q, not both — "+
+				"installations already carries the per-owner binding", GitHubAuthApp)
+		}
+		if d.InstallationID != "" {
+			if _, err := strconv.ParseUint(string(d.InstallationID), 10, 64); err != nil {
+				return fmt.Errorf("installationId %q must be the numeric installation ID", d.InstallationID)
+			}
+		}
+		seenOwners := make(map[string]bool, len(d.Installations))
+		for i, binding := range d.Installations {
+			if binding.Owner == "" {
+				return fmt.Errorf("installations[%d]: owner is required", i)
+			}
+			if seenOwners[binding.Owner] {
+				return fmt.Errorf("installations[%d]: owner %q is bound more than once — "+
+					"GitHub allows one installation per App per owner", i, binding.Owner)
+			}
+			seenOwners[binding.Owner] = true
+			if binding.InstallationID == "" {
+				return fmt.Errorf("installations[%d] (%s): installationId is required", i, binding.Owner)
+			}
+			if _, err := strconv.ParseUint(string(binding.InstallationID), 10, 64); err != nil {
+				return fmt.Errorf("installations[%d] (%s): installationId %q must be the numeric installation ID",
+					i, binding.Owner, binding.InstallationID)
+			}
 		}
 		if d.PrivateKey == nil || d.PrivateKey.sourceCount() != 1 {
 			return fmt.Errorf("privateKey must reference exactly one of env, file, keychain, or store — " +
@@ -933,6 +1050,15 @@ type TokenRef struct {
 	// "<storeName>/<secretName>". The store name must match a secretStores
 	// entry; the secret name is interpreted by that store's resolver.
 	Store string `json:"store,omitempty" yaml:"store,omitempty"`
+	// GitHubCLI selects a specific login from the host's GitHub CLI credential
+	// store and verifies that login before the resolver admits work.
+	GitHubCLI *GitHubCLIRef `json:"githubCLI,omitempty" yaml:"githubCLI,omitempty"`
+}
+
+// GitHubCLIRef identifies one authenticated GitHub CLI account.
+type GitHubCLIRef struct {
+	Hostname string `json:"hostname" yaml:"hostname"`
+	User     string `json:"user" yaml:"user"`
 }
 
 // sourceCount reports how many of the ref's mutually-exclusive sources are set.
@@ -948,6 +1074,9 @@ func (r TokenRef) sourceCount() int {
 		n++
 	}
 	if r.Store != "" {
+		n++
+	}
+	if r.GitHubCLI != nil {
 		n++
 	}
 	return n
@@ -967,7 +1096,11 @@ func (r TokenRef) Configured() bool {
 // for stores rejects the ref with a diagnostic instead of silently reading
 // it as unconfigured.
 func (r TokenRef) CredentialTokenRef(name string) credentials.TokenRef {
-	return credentials.TokenRef{Name: name, Env: r.Env, File: r.File, Keychain: r.Keychain, Store: r.Store}
+	var githubCLI *credentials.GitHubCLIRef
+	if r.GitHubCLI != nil {
+		githubCLI = &credentials.GitHubCLIRef{Hostname: r.GitHubCLI.Hostname, User: r.GitHubCLI.User}
+	}
+	return credentials.TokenRef{Name: name, Env: r.Env, File: r.File, Keychain: r.Keychain, Store: r.Store, GitHubCLI: githubCLI}
 }
 
 // CredentialGrant sources either one stage capability or one named BYO MCP
@@ -1047,6 +1180,42 @@ type OTLPConfig struct {
 	Endpoint string              `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
 	Insecure bool                `json:"insecure,omitempty" yaml:"insecure,omitempty"`
 	Headers  map[string]TokenRef `json:"headers,omitempty" yaml:"headers,omitempty"`
+	// TLS configures trust for a collector that presents a certificate the
+	// system trust store does not already recognize (e.g. a private CA),
+	// and optionally a client certificate for mTLS. It is additive: absent,
+	// the exporter behaves exactly as before (system trust pool only). It
+	// is mutually exclusive with Insecure — TLS configuration only makes
+	// sense on the encrypted path (#3804).
+	TLS *OTLPTLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
+}
+
+// OTLPTLSConfig extends the OTLP exporter's TLS trust beyond the system
+// certificate pool. Every field is optional; CAFile alone is the common
+// case (trust one additional private CA), CertFile+KeyFile add a client
+// certificate for mTLS, and ServerName overrides SNI/verification when the
+// endpoint's host does not match the certificate (e.g. reaching the
+// collector through a Service name other than the certificate's SAN).
+//
+// Validated SHAPE ONLY at load — no filesystem read happens here. The same
+// instance.yaml this loads is also loaded by `goobers worker --instance`,
+// which builds no telemetry client at all, so a load-time file read here
+// would fail the worker over a file it has no reason to mount. The paths
+// are read only by telemetry.New, on the daemon, where a read/parse failure
+// degrades to local-only telemetry rather than a boot-fatal (#3804).
+type OTLPTLSConfig struct {
+	// CAFile is a PEM file appended to the system trust pool as an extra
+	// root. The system pool is still trusted — this adds to it, it does
+	// not replace it.
+	CAFile string `json:"caFile,omitempty" yaml:"caFile,omitempty"`
+	// ServerName overrides the hostname used for SNI and certificate
+	// verification. Empty uses the endpoint's own host.
+	ServerName string `json:"serverName,omitempty" yaml:"serverName,omitempty"`
+	// CertFile is a PEM client certificate presented for mTLS. Requires
+	// KeyFile; both or neither.
+	CertFile string `json:"certFile,omitempty" yaml:"certFile,omitempty"`
+	// KeyFile is the PEM private key for CertFile. Requires CertFile; both
+	// or neither.
+	KeyFile string `json:"keyFile,omitempty" yaml:"keyFile,omitempty"`
 }
 
 // EngineConfig identifies the Temporal frontend and task queue shared by all
@@ -1055,6 +1224,38 @@ type EngineConfig struct {
 	HostPort  string `json:"hostPort,omitempty" yaml:"hostPort,omitempty"`
 	Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
 	TaskQueue string `json:"taskQueue,omitempty" yaml:"taskQueue,omitempty"`
+	// HITL opts an instance's engine-driven runs into the human-in-the-loop
+	// protocol (#3883). Nil or disabled leaves every engine run settling at
+	// its terminal exactly as it did before, which is the rollback posture.
+	HITL *EngineHITLConfig `json:"hitl,omitempty" yaml:"hitl,omitempty"`
+}
+
+// EngineHITLConfig is the instance's posture on holding an engine-driven run's
+// terminal open for an operator (#3883, decision 005 R8).
+//
+// It is OPT-IN, and deliberately so. When it is on, a run that escalates
+// journals its terminal and then keeps its Temporal workflow OPEN for the
+// window below, waiting for an operator intent. The journal, the projection
+// and the portal see an escalated run exactly as they did before — the
+// terminal is written BEFORE the hold, not after it — but the scheduler's
+// concurrency slot for that lane stays occupied until the operator answers or
+// the window expires. On a lane with a small MaxConcurrentRuns, a day-long
+// default window applied without the operator asking for it would starve the
+// lane. So the default is off, and an instance turning it on chooses the
+// window it can afford.
+type EngineHITLConfig struct {
+	// Enabled turns the protocol on for this instance's engine-driven runs.
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Window is how long a resumable terminal is held open for an operator,
+	// as a Go duration ("4h"). Empty uses the engine's 24h default.
+	Window string `json:"window,omitempty" yaml:"window,omitempty"`
+	// Actors, when non-empty, is the closed set of operator identities the
+	// WORKFLOW will accept an intent from. It is enforced inside the workflow
+	// rather than only at the daemon's API edge, so a compromised or
+	// misconfigured daemon cannot resolve a run it was never entitled to
+	// resolve. Empty means any actor the daemon's own authorization already
+	// admitted.
+	Actors []string `json:"actors,omitempty" yaml:"actors,omitempty"`
 }
 
 // RunConditions are instance-level run conditions (§7): max parallel runs and
@@ -1102,7 +1303,14 @@ type RetentionConfig struct {
 	MaxRetainedWorktreeBytes int64  `json:"maxRetainedWorktreeBytes,omitempty" yaml:"maxRetainedWorktreeBytes,omitempty"`
 	RetainedWorktreeMaxAge   string `json:"retainedWorktreeMaxAge,omitempty" yaml:"retainedWorktreeMaxAge,omitempty"`
 	// ProjectionFullFidelityDays bounds how much history stays INDIVIDUALLY
-	// LISTABLE in the portal read model (#1932, §11.4).
+	// LISTABLE in the portal read model (#1932, §11.4). This is a product
+	// policy decision (issue #3056) to age out runs beyond full-fidelity
+	// listability in unattended-operation scenarios, with OPT-OUT behavior:
+	// the default is 90 days, and operators who want unbounded history must
+	// explicitly set this to 0 or negative. This is deliberately different
+	// from opt-in: a zero-day window would age out every run on the first
+	// pass (the most destructive possible reading of an off value), so the
+	// safe default is explicit configuration.
 	//
 	// Independent of journal retention above, and deliberately so: a journal is
 	// the source of truth and its retention is a decision about disk and audit;
@@ -1113,13 +1321,76 @@ type RetentionConfig struct {
 	// individually listable. That is strictly less than the portal offers
 	// today, and was a product decision rather than an engineering one.
 	//
-	// **0, unset, or negative means UNBOUNDED** — no run is ever aged out. Not
-	// "a zero-day window": compared naively that would age out every run
-	// immediately, which is the most destructive possible reading of the value
-	// an operator would most reasonably expect to mean "off". See
-	// readmodel.RetentionDays, where the distinction is enforced rather than
-	// documented.
+	// 0 or negative means UNBOUNDED. Omitted keeps the product default
+	// (DefaultProjectionFullFidelityDays), so operators can opt out explicitly
+	// without changing the safe default for existing instances.
 	ProjectionFullFidelityDays int `json:"projectionFullFidelityDays,omitempty" yaml:"projectionFullFidelityDays,omitempty"`
+	// projectionFullFidelityDaysSet records whether the field was present at
+	// decode time, so an omitted value can differ from an explicit zero.
+	projectionFullFidelityDaysSet bool `json:"-" yaml:"-"`
+}
+
+// MarshalJSON preserves an explicitly configured zero projection window, which
+// is otherwise omitted by the field's omitempty tag.
+func (c RetentionConfig) MarshalJSON() ([]byte, error) {
+	type alias RetentionConfig
+	data, err := json.Marshal(alias(c))
+	if err != nil {
+		return nil, err
+	}
+	if !c.projectionFullFidelityDaysSet || c.ProjectionFullFidelityDays != 0 {
+		return data, nil
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	fields["projectionFullFidelityDays"] = json.RawMessage("0")
+	return json.Marshal(fields)
+}
+
+// UnmarshalJSON tracks presence of projectionFullFidelityDays so loaders can
+// distinguish "omitted" from "explicitly set to 0".
+func (c *RetentionConfig) UnmarshalJSON(data []byte) error {
+	type alias RetentionConfig
+	var decoded alias
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*c = RetentionConfig(decoded)
+	_, c.projectionFullFidelityDaysSet = fields["projectionFullFidelityDays"]
+	return nil
+}
+
+// ProjectionFullFidelityDaysConfigured reports whether the field was explicitly
+// set in instance.yaml.
+func (c RetentionConfig) ProjectionFullFidelityDaysConfigured() bool {
+	return c.projectionFullFidelityDaysSet
+}
+
+// ProjectionFullFidelityDaysEffective resolves the configured retention window
+// in days with the issue #3056 default policy.
+func (c RetentionConfig) ProjectionFullFidelityDaysEffective() int {
+	if c.ProjectionFullFidelityDays != 0 || c.projectionFullFidelityDaysSet {
+		return c.ProjectionFullFidelityDays
+	}
+	return DefaultProjectionFullFidelityDays
+}
+
+// ProjectionFullFidelityRetentionDays resolves projection retention policy for
+// the full instance config, including nil config defaults.
+func (c *Config) ProjectionFullFidelityRetentionDays() int {
+	if c == nil {
+		return DefaultProjectionFullFidelityDays
+	}
+	return c.Retention.ProjectionFullFidelityDaysEffective()
 }
 
 // RetainedWorktreeMaxAgeDuration resolves the optional retention window.
@@ -1349,6 +1620,16 @@ func (c *Config) EffectiveEngineConfig() EngineConfig {
 	}
 }
 
+// EngineHITLEnabled reports whether this instance opted its engine-driven runs
+// into the #3883 operator-hold protocol.
+func (c *Config) EngineHITLEnabled() bool {
+	if c == nil {
+		return false
+	}
+	hitl := c.EffectiveEngineConfig().HITL
+	return hitl != nil && hitl.Enabled
+}
+
 // EngineProjectionEnabled reports whether instance YAML or a host/address
 // environment override configured a Temporal connection for the daemon.
 func (c *Config) EngineProjectionEnabled() bool {
@@ -1373,7 +1654,43 @@ func (c EngineConfig) Validate() error {
 	if strings.TrimSpace(c.TaskQueue) != c.TaskQueue || c.TaskQueue == "" {
 		return fmt.Errorf("taskQueue must be non-empty without leading or trailing whitespace")
 	}
+	if c.HITL != nil {
+		if err := c.HITL.Validate(); err != nil {
+			return fmt.Errorf("hitl: %w", err)
+		}
+	}
 	return nil
+}
+
+// Validate checks the operator-hold window. An unparsable or non-positive
+// window is refused at load rather than silently falling back to the 24h
+// default: an operator who wrote "4hr" meant to bound the hold, and a daemon
+// that quietly held for a day instead would be holding a lane's concurrency
+// slot they never agreed to give up.
+func (c EngineHITLConfig) Validate() error {
+	if strings.TrimSpace(c.Window) == "" {
+		return nil
+	}
+	window, err := time.ParseDuration(strings.TrimSpace(c.Window))
+	if err != nil {
+		return fmt.Errorf("window %q is not a duration: %w", c.Window, err)
+	}
+	if window <= 0 {
+		return fmt.Errorf("window must be positive, got %s", c.Window)
+	}
+	return nil
+}
+
+// HITLWindow is the configured operator-hold window, or zero when the instance
+// left it to the engine's default. Validate has already refused anything
+// unparsable, so a parse failure here degrades to the default rather than
+// failing a run start.
+func (c EngineHITLConfig) HITLWindow() time.Duration {
+	window, err := time.ParseDuration(strings.TrimSpace(c.Window))
+	if err != nil || window <= 0 {
+		return 0
+	}
+	return window
 }
 
 // Enabled reports whether collector push is configured.
@@ -1384,8 +1701,8 @@ func (c OTLPConfig) Enabled() bool {
 // Validate checks the collector endpoint, transport, and credential references.
 func (c OTLPConfig) Validate() error {
 	if c.Endpoint == "" {
-		if c.Insecure || len(c.Headers) != 0 {
-			return fmt.Errorf("endpoint is required when insecure mode or headers are configured")
+		if c.Insecure || len(c.Headers) != 0 || c.TLS != nil {
+			return fmt.Errorf("endpoint is required when insecure mode, headers, or tls are configured")
 		}
 		return nil
 	}
@@ -1394,6 +1711,18 @@ func (c OTLPConfig) Validate() error {
 	}
 	if err := validateOTLPEndpoint(c.Endpoint, c.Insecure); err != nil {
 		return fmt.Errorf("endpoint %q: %w", c.Endpoint, err)
+	}
+	if c.TLS != nil {
+		// Mirrors the https/insecure conflict below: TLS trust configuration
+		// only makes sense on the encrypted path. Checked independently of
+		// scheme/loopback so it also catches insecure:true against an https
+		// or bare host:port endpoint, not just http.
+		if c.Insecure {
+			return fmt.Errorf("tls configuration conflicts with insecure: true")
+		}
+		if err := c.TLS.Validate(); err != nil {
+			return fmt.Errorf("tls: %w", err)
+		}
 	}
 	seenHeaders := make(map[string]bool, len(c.Headers))
 	for name, ref := range c.Headers {
@@ -1410,6 +1739,58 @@ func (c OTLPConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// Validate checks the TLS block's SHAPE only: whitespace, the certFile/
+// keyFile both-or-neither pairing, and serverName's hostname syntax. It
+// never touches the filesystem — see the type doc for why (the worker loads
+// this same instance.yaml and has no telemetry client to use these paths
+// with).
+func (c OTLPTLSConfig) Validate() error {
+	for _, path := range []struct {
+		field string
+		value string
+	}{
+		{"caFile", c.CAFile},
+		{"certFile", c.CertFile},
+		{"keyFile", c.KeyFile},
+	} {
+		if strings.TrimSpace(path.value) != path.value {
+			return fmt.Errorf("%s must not contain leading or trailing whitespace", path.field)
+		}
+	}
+	if (c.CertFile == "") != (c.KeyFile == "") {
+		return fmt.Errorf("certFile and keyFile must both be set or both be empty")
+	}
+	if strings.TrimSpace(c.ServerName) != c.ServerName {
+		return fmt.Errorf("serverName must not contain leading or trailing whitespace")
+	}
+	if c.ServerName != "" && !validHostname(c.ServerName) {
+		return fmt.Errorf("serverName %q must be a bare hostname (no scheme, port, path, or userinfo)", c.ServerName)
+	}
+	return nil
+}
+
+// validHostname reports whether name is a plain DNS-label hostname: letters,
+// digits, hyphens, and interior dots only — no scheme, port, path, or
+// userinfo. Used for OTLPTLSConfig.ServerName, an SNI override rather than a
+// dialable address, so it deliberately rejects the host:port and URL shapes
+// validateOTLPEndpoint accepts for Endpoint.
+func validHostname(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // APIListenAddress returns the configured HTTP address, defaulting to a
@@ -1529,6 +1910,7 @@ func LoadConfig(path string) (*Config, error) {
 func (c *Config) Validate() error {
 	c.ResolveLargeRepoPresets()
 	if err := validateInOrder(
+		c.validateSchemaVersion,
 		c.Workcopies.validate,
 		func() error { return c.API.validate(c.APIListenAddress()) },
 		c.validateWorkflowSource,
@@ -1554,9 +1936,12 @@ func (c *Config) Validate() error {
 		c.RunConditions.validate,
 		c.Retention.validate,
 		func() error { return c.validateRepos(stores) },
+		c.validateGitHubCLIIdentityRefs,
 		func() error { return c.validateDaemonIdentity(stores) },
 		func() error { return c.validateCredentials(stores) },
 		c.Runner.validate,
+		c.validateRunners,
+		c.validateEgress,
 		func() error { return c.validateWorkflowSourceCredentials(stores) },
 		c.validateSandbox,
 	)

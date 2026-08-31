@@ -1,3 +1,5 @@
+import type { ConfigAuthoringErrorCode } from "./contract.generated";
+
 export const API_VERSION = "v1";
 export const SCHEMA_VERSION = "v1";
 
@@ -88,6 +90,164 @@ export interface ApiErrorEnvelope {
 export interface ContractVersion {
   apiVersion: typeof API_VERSION;
   schemaVersion: typeof SCHEMA_VERSION;
+}
+
+export const CONFIG_AUTHORING_SCHEMA_VERSION = "v1alpha1";
+
+export interface ConfigAuthoringContractVersion {
+  apiVersion: typeof API_VERSION;
+  schemaVersion: typeof CONFIG_AUTHORING_SCHEMA_VERSION;
+}
+
+export type ConfigSourceKind = "local" | "git" | "provider";
+
+export interface ConfigSourceCapabilities {
+  read: boolean;
+  validate: boolean;
+  directWrite: boolean;
+  reviewWrite: boolean;
+}
+
+export interface ConfigSourceDescriptor {
+  id: string;
+  displayName: string;
+  kind: ConfigSourceKind;
+  revision: string;
+  capabilities: ConfigSourceCapabilities;
+}
+
+export interface ConfigSourcePage extends ConfigAuthoringContractVersion {
+  items: ConfigSourceDescriptor[];
+}
+
+export type ConfigDocumentKind =
+  | "manifest"
+  | "instance"
+  | "gaggle"
+  | "workflow"
+  | "goober"
+  | "support";
+
+export interface ConfigDefinitionReference {
+  kind: ConfigDocumentKind;
+  name: string;
+  gaggle?: string;
+}
+
+export interface ConfigDocumentDescriptor {
+  path: string;
+  mediaType: string;
+  etag: string;
+  editable: boolean;
+  definition?: ConfigDefinitionReference;
+}
+
+export interface ConfigDocumentPage extends ConfigAuthoringContractVersion {
+  sourceId: string;
+  revision: string;
+  items: ConfigDocumentDescriptor[];
+}
+
+export interface ConfigDocumentRequest {
+  path: string;
+}
+
+export interface ConfigDocument extends ConfigAuthoringContractVersion {
+  sourceId: string;
+  revision: string;
+  document: ConfigDocumentDescriptor;
+  content: string;
+}
+
+export type ConfigDocumentChange =
+  | {
+      path: string;
+      operation: "upsert";
+      baseEtag?: string;
+      content: string;
+    }
+  | {
+      path: string;
+      operation: "delete";
+      baseEtag: string;
+      content?: never;
+    };
+
+export interface ConfigChangeSet {
+  baseRevision: string;
+  changes: ConfigDocumentChange[];
+}
+
+export type ConfigDiagnosticSeverity = "error" | "warning";
+
+export interface ConfigDiagnosticLocation {
+  path: string;
+  line?: number;
+  column?: number;
+  endLine?: number;
+  endColumn?: number;
+}
+
+export interface ConfigDiagnostic {
+  code: string;
+  severity: ConfigDiagnosticSeverity;
+  message: string;
+  scope?: string;
+  location?: ConfigDiagnosticLocation;
+}
+
+export interface ConfigDiff {
+  format: string;
+  content: string;
+  truncated: boolean;
+}
+
+export interface ConfigChangePreviewRequest {
+  changeSet: ConfigChangeSet;
+}
+
+export interface ConfigChangePreview extends ConfigAuthoringContractVersion {
+  sourceId: string;
+  baseRevision: string;
+  previewId: string;
+  eligible: boolean;
+  diagnostics: ConfigDiagnostic[];
+  diff: ConfigDiff;
+}
+
+export type ConfigWriteStrategy = "direct" | "review";
+
+export interface ConfigWriteRequest {
+  previewId: string;
+  changeSet: ConfigChangeSet;
+  strategy: ConfigWriteStrategy;
+  summary?: string;
+}
+
+export interface ConfigReviewReference {
+  id: string;
+  url: string;
+  branch?: string;
+  commit?: string;
+}
+
+export interface ConfigWriteOutcome extends ConfigAuthoringContractVersion {
+  sourceId: string;
+  baseRevision: string;
+  revision?: string;
+  strategy: ConfigWriteStrategy;
+  changedDocuments: string[];
+  review?: ConfigReviewReference;
+  sourceApplied?: string;
+}
+
+export interface ConfigAuthoringApiError {
+  code: ConfigAuthoringErrorCode;
+  message: string;
+}
+
+export interface ConfigAuthoringErrorEnvelope {
+  error: ConfigAuthoringApiError;
 }
 
 export interface Health extends ContractVersion {
@@ -236,6 +396,7 @@ export interface WorkflowTrigger {
 }
 
 export interface ReadinessConditions {
+  desiredConcurrentRuns?: number;
   maxConcurrentRuns?: number;
   maxRunsPerHour?: number;
   maxRunsPerDay?: number;
@@ -250,7 +411,10 @@ export interface WorkflowDefinition {
 
 export interface WorkflowConcurrency {
   activeRuns: number;
+  desiredRuns?: number;
   maxConcurrentRuns: number;
+  admissionBlocked?: boolean;
+  blockingCondition?: string;
 }
 
 export interface WorkflowSummary {
@@ -342,6 +506,14 @@ export interface RunListOptions {
   limit?: number;
   cursor?: string;
   latestPerWorkflow?: boolean;
+  /**
+   * Filters and orders by the run's last journal activity instead of its
+   * start (#1777). `since`/`until` bound last activity on this axis, which is
+   * what makes "runs active in the last N hours" expressible. Requires the
+   * read model — an instance without one refuses rather than silently
+   * ordering by start.
+   */
+  orderByActivity?: boolean;
   /** Includes routine no-work schedule ticks (#2188); omitted/false hides them. */
   showNoWork?: boolean;
 }
@@ -599,6 +771,31 @@ export interface AttemptList {
   attempts: StageAttempt[];
 }
 
+/**
+ * Placement provenance journaled under runner.* for one stage attempt:
+ * where it physically executed, as far as the executing substrate knew.
+ * Every field except runner is optional — a local attempt has no pod and
+ * never queued.
+ */
+export interface AttemptPlacement {
+  /** Runners-inventory entry name; "self" for the daemon's own host. */
+  runner: string;
+  /** Cluster node the attempt ran on — only ever a real node, never a hostname. */
+  node?: string;
+  /** The executing process's own hostname; inside a pod this is the pod name. */
+  host?: string;
+  /** GOOS of the executing substrate. */
+  os?: string;
+  /** Container image reference the attempt ran under. */
+  image?: string;
+  /** Pod identity for containerized attempts. */
+  pod?: string;
+  /** When the attempt entered the dispatch fabric. */
+  queuedAt?: string;
+  /** When the attempt's pod began executing. */
+  podStartedAt?: string;
+}
+
 export interface StageAttempt {
   id: string;
   visit: number;
@@ -615,6 +812,8 @@ export interface StageAttempt {
   error?: ErrorDetail;
   /** Requested/selected model (e.g. "auto"), when the telemetry rollup has indexed it. */
   model?: string;
+  /** runner.* placement provenance; absent for journals recorded before it existed. */
+  placement?: AttemptPlacement;
 }
 
 export interface ArtifactContent {
@@ -638,6 +837,17 @@ export interface TelemetryStatsOptions {
   gaggle?: string;
   since?: string;
   until?: string;
+  trendSince?: string;
+  trendUntil?: string;
+  trendBuckets?: number;
+  trendPreviousSince?: string;
+  trendPreviousUntil?: string;
+}
+
+export interface TelemetryTrendBucket {
+  since: string;
+  until: string;
+  usage: TelemetryUsageStats[];
 }
 
 export interface TelemetryStatsResult {
@@ -647,8 +857,32 @@ export interface TelemetryStatsResult {
   usage: TelemetryUsageStats[];
   models: TelemetryModelStats[];
   creditAssignment: NodeCredit[];
+  causalCredit: CausalNodeCredit[] | null;
+  graphAnalytics?: GraphAnalytics;
+  promotionSignals?: PromotionSignal[];
+  promotionCandidates?: PromotionSignal[];
   curation: TelemetryCurationStats;
   readyPool: TelemetryReadyPool;
+  trend?: TelemetryTrendBucket[];
+  trendPrevious?: TelemetryTrendBucket;
+}
+
+export interface GraphAnalytics {
+  centrality: CentralityScore[];
+  criticalPath: CriticalPath;
+  cycles: string[][];
+  confidence: "bounded" | "partial" | "untrusted" | string;
+  caveat?: string;
+}
+
+export interface CentralityScore {
+  node: string;
+  score: number;
+}
+
+export interface CriticalPath {
+  nodes: string[];
+  weight: number;
 }
 
 export interface NodeCredit {
@@ -662,6 +896,40 @@ export interface NodeCredit {
   failureShare: number;
   escalationRuns: number;
   retryWasteAttempts: number;
+  effect?: number;
+  lower?: number;
+  upper?: number;
+  identification: string;
+  caveat?: string;
+}
+
+export interface CausalNodeCredit {
+  node: string;
+  effect: number;
+  lower: number;
+  upper: number;
+  identification:
+    | "randomized"
+    | "observational-difference-in-differences"
+    | "unidentifiable";
+  caveat: string;
+  treatedBefore: number;
+  treatedAfter: number;
+  controlBefore: number;
+  controlAfter: number;
+  intervalAvailable: boolean;
+  promotionEligible: boolean;
+  promotionSource: string;
+}
+
+export interface PromotionSignal {
+  node: string;
+  value: number;
+  lower?: number;
+  upper?: number;
+  source: string;
+  caveat: string;
+  promotionEligible: boolean;
 }
 
 export interface TelemetryCurationStats {

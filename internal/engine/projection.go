@@ -36,6 +36,25 @@ var projectableEventTypes = map[journal.EventType]bool{
 	journal.EventRefTouched:    true,
 	journal.EventError:         true,
 	journal.EventSpanRecorded:  true,
+	// Placement provenance (#3515) is non-normative for CONFORMANCE but is
+	// projectable: projectable and conformance-normative are different
+	// questions, and span.recorded is the standing precedent — also excluded
+	// from conformance, also projected. Without this entry a repair/backfill
+	// re-projection of any history carrying a placement op fails closed on a
+	// type the engine itself will emit (#3529).
+	journal.EventRunnerPlacement: true,
+	// Workspace continuity (#3803/#3767) is the same shape: emitted by the
+	// engine on both the live path and this projection (DS5 — a type only
+	// one side emits files a live_journal_divergence on every mode-3 run),
+	// projectable, and excluded from conformance by the runner.* namespace.
+	journal.EventRunnerWorkspaceDelta: true,
+	// The retry-decision annotation (#415/E6) is the third of the same shape:
+	// emitted by the engine's walk on the live path and therefore by this
+	// projection too, excluded from conformance by the runner.* namespace,
+	// and read back by priorRepassCause. Omitting it would fail-closed every
+	// history containing a gate fail branch — the implementation lane's
+	// entire repass loop.
+	journal.EventRunnerAnnotation: true,
 }
 
 // spanUnavailableErrorCode marks the EventError a projection appends in place
@@ -117,7 +136,6 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 	}
 
 	finalDir := filepath.Join(runsDir, proj.Identity.RunID)
-	replacePartial := false
 	if journal.Recorded(finalDir) {
 		complete, err := projectedJournalComplete(finalDir)
 		if err != nil {
@@ -126,7 +144,6 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 		if complete {
 			return finalDir, nil
 		}
-		replacePartial = true
 	}
 	if err := os.MkdirAll(runsDir, 0o755); err != nil {
 		return "", fmt.Errorf("engine: create projected runs directory: %w", err)
@@ -148,19 +165,33 @@ func ProjectRun(runsDir string, proj JournalProjection, opts ...ProjectOption) (
 	if err != nil {
 		return "", err
 	}
-	if replacePartial {
-		if err := os.RemoveAll(finalDir); err != nil {
-			return "", fmt.Errorf("engine: remove partial projection for run %q: %w", proj.Identity.RunID, err)
+	// Publication goes through journal.ReplaceRun: the whole
+	// recheck→move-aside→rename span runs under the run publication lock, the
+	// superseded journal is only dropped once the replacement is published
+	// and synced (and restored if it is not, #3641), a live writer holding
+	// the run-dir lock refuses the replacement
+	// (journal.ErrRunActive — deleting its directory would strand
+	// acknowledged emits in unlinked inodes), and the completeness recheck
+	// happens under those locks, so a journal another owner finished while we
+	// staged is kept, never clobbered.
+	replaced, err := journal.ReplaceRun(finalDir, projectedDir, func() (bool, error) {
+		if !journal.Recorded(finalDir) {
+			return false, nil
 		}
-	}
-	if err := os.Rename(projectedDir, finalDir); err != nil {
-		if journal.Recorded(finalDir) {
-			complete, inspectErr := projectedJournalComplete(finalDir)
-			if inspectErr == nil && complete {
-				return finalDir, nil
-			}
+		complete, inspectErr := projectedJournalComplete(finalDir)
+		if inspectErr != nil {
+			return false, fmt.Errorf("engine: re-inspect projected journal for run %q: %w", proj.Identity.RunID, inspectErr)
 		}
+		return complete, nil
+	})
+	if err != nil {
 		return "", fmt.Errorf("engine: publish projected journal for run %q: %w", proj.Identity.RunID, err)
+	}
+	if !replaced {
+		// The recheck found a complete journal already in place: another
+		// owner (the live writer's terminal emit, a concurrent projector)
+		// finished it while we staged. Keep theirs.
+		return finalDir, nil
 	}
 	if err := durability.SyncDir(runsDir); err != nil {
 		return "", fmt.Errorf("engine: sync projected runs directory: %w", err)
@@ -176,6 +207,14 @@ func writeProjectedRun(runsDir string, proj JournalProjection, cfg *projectConfi
 	inputIntegrity := map[string]apiv1.Integrity{
 		journal.PinnedWorkflowGraphInputName:      apiv1.IntegrityTrusted,
 		journal.PinnedWorkflowDefinitionInputName: apiv1.IntegrityTrusted,
+	}
+	// The reviewer-goober capability map pinned into the run input at start
+	// (#294): projected as a trusted input so the daemon credential plane
+	// resolves an agentic gate's reviewer grants from the run's pin, never
+	// the currently-served config (PR #3528).
+	if len(proj.GateGooberCapabilities) > 0 {
+		inputs[journal.PinnedGateGooberCapabilitiesInputName] = []byte(proj.GateGooberCapabilities)
+		inputIntegrity[journal.PinnedGateGooberCapabilitiesInputName] = apiv1.IntegrityTrusted
 	}
 	if proj.Item != nil {
 		item := normalizeItemIntegrity(proj.Item)
@@ -443,12 +482,18 @@ type projectionQuerier interface {
 // ProjectCompletedRun queries a run's journal projection from Temporal
 // (replaying its history — the projection is a function of history, #629) and
 // writes it into the standard runs/<id>/ layout under runsDir.
-func ProjectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, runsDir string) (string, error) {
+//
+// opts are handed straight to ProjectRun. The one that matters in production
+// is WithSpanSource: a repair/backfill projection that cannot adopt spans the
+// live writer CAN adopt produces a journal that differs from the live one by
+// an event, which is a divergence about the environment rather than about the
+// run (#3805).
+func ProjectCompletedRun(ctx context.Context, q projectionQuerier, workflowID, runsDir string, opts ...ProjectOption) (string, error) {
 	proj, err := queryProjection(ctx, q, workflowID)
 	if err != nil {
 		return "", err
 	}
-	return ProjectRun(runsDir, proj)
+	return ProjectRun(runsDir, proj, opts...)
 }
 
 // ProjectCompletedScheduledRun projects both sides of a schedule fire: the

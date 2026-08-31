@@ -8,8 +8,10 @@ import type {
   AttemptList,
   ArtifactContent,
   DaemonClient,
+  RequestOptions,
   RunEvent,
   StageAttempt,
+  TranscriptContent,
   WorkflowGraphNode,
 } from "../api/types";
 import { goWireFixtures } from "../api/wire.generated";
@@ -37,6 +39,19 @@ function renderInspector(ui: ReactElement) {
   return { ...view, rerender: (node: ReactElement) => view.rerender(wrap(node)) };
 }
 
+
+function transcriptEvidence(seq: number): RunEvent {
+  return {
+    schema: "v1",
+    seq,
+    type: "span.recorded",
+    branch: 0,
+    time: "2026-07-18T12:36:57Z",
+    knownSchema: true,
+    stage: "review",
+    name: "transcript",
+  };
+}
 
 const reviewNode: WorkflowGraphNode = { id: "review", kind: "gate", evaluator: "agentic" };
 const implementNode: WorkflowGraphNode = { id: "implement", kind: "agentic" };
@@ -222,6 +237,54 @@ describe("run stage inspector", () => {
     expect(screen.queryByText(/^model:/)).not.toBeInTheDocument();
   });
 
+  it("shows placement provenance when the attempt's journal recorded it (#3515)", async () => {
+    const client = stubClient([
+      attempt({
+        number: 1,
+        status: "success",
+        placement: {
+          runner: "linux-large",
+          node: "aks-linux-0001",
+          host: "goobers-stage-review-4x2vq",
+          os: "linux",
+          pod: "goobers-stage-review-4x2vq",
+          queuedAt: "2026-08-22T10:00:00Z",
+          podStartedAt: "2026-08-22T10:00:09Z",
+        },
+      }),
+    ]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    expect(await screen.findByText("runner: linux-large")).toBeInTheDocument();
+    expect(screen.getByText("node: aks-linux-0001")).toBeInTheDocument();
+    expect(screen.getByText("pod: goobers-stage-review-4x2vq")).toBeInTheDocument();
+    expect(screen.getByText("queue wait: 9s")).toBeInTheDocument();
+    // The pod's hostname is redundant once a real node is known.
+    expect(screen.queryByText(/^host:/)).not.toBeInTheDocument();
+  });
+
+  it("labels a local attempt's hostname as a host, never as a node (#3515)", async () => {
+    const client = stubClient([
+      attempt({
+        number: 1,
+        status: "success",
+        placement: { runner: "self", host: "build-box-07", os: "darwin" },
+      }),
+    ]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    expect(await screen.findByText("host: build-box-07")).toBeInTheDocument();
+    expect(screen.queryByText(/^node:/)).not.toBeInTheDocument();
+  });
+
+  it("omits the placement row for journals recorded before provenance existed", async () => {
+    const client = stubClient([attempt({ number: 1, status: "success" })]);
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    await screen.findByText("success");
+    expect(screen.queryByLabelText("Attempt placement")).not.toBeInTheDocument();
+  });
+
   it("only shows attempts started by the selected sequence", async () => {
     const client = stubClient([
       attempt({ number: 1, startedSeq: 1, finishedSeq: 2 }),
@@ -353,8 +416,36 @@ describe("run stage inspector", () => {
     renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "View content" }));
-    expect(await screen.findByText(body)).toBeInTheDocument();
-    expect(client.getArtifact).toHaveBeenCalledWith("run-1", "sha256:abc");
+    const preview = await screen.findByText(body);
+    expect(preview).toBeInTheDocument();
+    expect(preview.className).not.toContain("artifact-content-bounded");
+    expect(client.getArtifact).toHaveBeenCalledWith("run-1", "sha256:abc", {
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("caps an oversized artifact preview with an internal scroll bound (#fix-artifact-windowing)", async () => {
+    const body = "x".repeat(20_001);
+    const bytes = new TextEncoder().encode(body).buffer;
+    const client = stubClient(
+      [
+        attempt({
+          artifacts: [{ name: "big.log", digest: "sha256:big", size: body.length, mediaType: "text/plain" }],
+        }),
+      ],
+      { digest: "sha256:big", mediaType: "text/plain", size: body.length, etag: null, bytes },
+    );
+    renderInspector(<RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View content" }));
+    await waitFor(() => {
+      expect(document.querySelector(".artifact-content")).not.toBeNull();
+    });
+    const preview = document.querySelector(".artifact-content") as HTMLElement;
+
+    expect(preview.className).toContain("artifact-content-bounded");
+    expect(window.getComputedStyle(preview).maxHeight).toBe("320px");
+    expect(window.getComputedStyle(preview).overflowY).toBe("auto");
   });
 
   it("keeps an open artifact preview readable across initial, light, and dark themes", async () => {
@@ -393,5 +484,130 @@ describe("run stage inspector", () => {
     });
     expect(darkColors).not.toEqual(initialColors);
     expect(preview).toBeInTheDocument();
+  });
+  describe("cancels evidence loads when the view goes away (#3665)", () => {
+    function pendingClient(): {
+      client: DaemonClient;
+      artifactSignals: AbortSignal[];
+      transcriptSignals: AbortSignal[];
+    } {
+      const artifactSignals: AbortSignal[] = [];
+      const transcriptSignals: AbortSignal[] = [];
+      const client = {
+        listStageAttempts: vi.fn(
+          async (): Promise<AttemptList> => ({
+            runId: "run-1",
+            stage: "review",
+            attempts: [
+              attempt({
+                artifacts: [
+                  {
+                    name: "preview",
+                    digest: "sha256:abc",
+                    size: 4,
+                    mediaType: "text/plain",
+                  },
+                ],
+              }),
+            ],
+          }),
+        ),
+        getArtifact: vi.fn(async (_runId: string, _digest: string, options?: RequestOptions) => {
+          artifactSignals.push(options!.signal!);
+          return new Promise<ArtifactContent>(() => {});
+        }),
+        getTranscript: vi.fn(async (_runId: string, _seq: number, options?: RequestOptions) => {
+          transcriptSignals.push(options!.signal!);
+          return new Promise<TranscriptContent>(() => {});
+        }),
+      } as unknown as DaemonClient;
+      return { client, artifactSignals, transcriptSignals };
+    }
+
+    it("aborts an in-flight artifact download when the inspector unmounts", async () => {
+      const { client, artifactSignals } = pendingClient();
+      const view = renderInspector(
+        <RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "View content" }));
+      await waitFor(() => expect(artifactSignals).toHaveLength(1));
+      expect(artifactSignals[0].aborted).toBe(false);
+
+      view.unmount();
+
+      expect(artifactSignals[0].aborted).toBe(true);
+    });
+
+    it("aborts an in-flight transcript download when the selected evidence changes", async () => {
+      const { client, transcriptSignals } = pendingClient();
+      const view = renderInspector(
+        <RunStageInspector
+          client={client}
+          node={reviewNode}
+          runId="run-1"
+          selectedEvidence={transcriptEvidence(9)}
+          selectedSeq={9}
+        />,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "View transcript" }));
+      await waitFor(() => expect(transcriptSignals).toHaveLength(1));
+
+      view.rerender(
+        <RunStageInspector
+          client={client}
+          node={reviewNode}
+          runId="run-1"
+          selectedEvidence={transcriptEvidence(11)}
+          selectedSeq={11}
+        />,
+      );
+
+      expect(transcriptSignals[0].aborted).toBe(true);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "View transcript" })).toBeInTheDocument();
+    });
+
+    it("reports no error when an aborted artifact download rejects", async () => {
+      const artifactSignals: AbortSignal[] = [];
+      let rejectLoad: ((reason: Error) => void) | undefined;
+      const client = {
+        listStageAttempts: vi.fn(
+          async (): Promise<AttemptList> => ({
+            runId: "run-1",
+            stage: "review",
+            attempts: [
+              attempt({
+                artifacts: [
+                  { name: "preview", digest: "sha256:abc", size: 4, mediaType: "text/plain" },
+                ],
+              }),
+            ],
+          }),
+        ),
+        getArtifact: vi.fn(async (_runId: string, _digest: string, options?: RequestOptions) => {
+          artifactSignals.push(options!.signal!);
+          return new Promise<ArtifactContent>((_resolve, reject) => {
+            rejectLoad = reject;
+          });
+        }),
+      } as unknown as DaemonClient;
+      const view = renderInspector(
+        <RunStageInspector client={client} node={reviewNode} runId="run-1" selectedSeq={9} />,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "View content" }));
+      await waitFor(() => expect(artifactSignals).toHaveLength(1));
+
+      view.rerender(
+        <RunStageInspector client={client} node={reviewNode} runId="run-2" selectedSeq={9} />,
+      );
+      expect(artifactSignals[0].aborted).toBe(true);
+      rejectLoad!(new Error("The user aborted a request."));
+
+      expect(await screen.findByRole("button", { name: "View content" })).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
   });
 });

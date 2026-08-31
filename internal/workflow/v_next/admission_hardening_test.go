@@ -19,6 +19,26 @@ func singleTaskSpec(task apiv1.Task) apiv1.WorkflowSpec {
 	}
 }
 
+func TestCompileRejectsDesiredConcurrencyAboveMax(t *testing.T) {
+	task := apiv1.Task{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}
+	spec := singleTaskSpec(task)
+	spec.Readiness = apiv1.ReadinessConditions{MaxConcurrentRuns: 2, DesiredConcurrentRuns: 3}
+	_, err := compileAcknowledged(Definition{Name: "bad-refill", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "desiredConcurrentRuns (3) must be less than or equal to spec.readiness.maxConcurrentRuns (2)") {
+		t.Fatalf("Compile error = %v, want desired/max readiness rejection", err)
+	}
+}
+
+func TestCompileRejectsDesiredConcurrencyAboveDefaultMax(t *testing.T) {
+	task := apiv1.Task{Name: "implement", Type: apiv1.TaskDeterministic, Goal: "implement", Run: &apiv1.DeterministicRun{Command: []string{"true"}}}
+	spec := singleTaskSpec(task)
+	spec.Readiness = apiv1.ReadinessConditions{DesiredConcurrentRuns: 2}
+	_, err := compileAcknowledged(Definition{Name: "bad-refill-default", Version: 1, Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "desiredConcurrentRuns (2) must be less than or equal to spec.readiness.maxConcurrentRuns (1)") {
+		t.Fatalf("Compile error = %v, want desired/default-max readiness rejection", err)
+	}
+}
+
 func TestCompileRejectsUnknownBuiltinSubcommand(t *testing.T) {
 	task := apiv1.Task{
 		Name: "publish",
@@ -126,8 +146,8 @@ func TestCompileSubsumedCapabilitySatisfiesBuiltinRequirement(t *testing.T) {
 	}
 
 	dedupe.Capabilities = []string{string(capability.GitHubIssuesWrite)}
-	if _, err := compileAcknowledged(Definition{Name: "write-subsumes", Version: 1, Spec: singleTaskSpec(dedupe)}); err != nil {
-		t.Fatalf("write grant must satisfy the narrowed read requirement via Subsumes (#2386): %v", err)
+	if _, err := compileAcknowledged(Definition{Name: "write-subsumes", Version: 1, Spec: singleTaskSpec(dedupe)}); err == nil || !strings.Contains(err.Error(), "GOOBERS_CRED_GITHUB_ISSUES_READ") {
+		t.Fatalf("write grant must not satisfy the separately brokered read requirement: %v", err)
 	}
 
 	dedupe.Capabilities = []string{string(capability.GitHubIssuesRead)}

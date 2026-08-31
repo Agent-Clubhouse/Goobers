@@ -31,15 +31,10 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	runID, _, err := providerRunContext()
 	if err != nil {
@@ -150,11 +145,7 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 }
 
 func readLatestRemediationBrief(root, runID string) (apiv1.RemediationBrief, error) {
-	runDir, err := runDirFor(layoutFor(root), runID)
-	if err != nil {
-		return apiv1.RemediationBrief{}, err
-	}
-	rd, err := journal.OpenRead(runDir)
+	rd, err := stageRunJournal(root, runID)
 	if err != nil {
 		return apiv1.RemediationBrief{}, err
 	}

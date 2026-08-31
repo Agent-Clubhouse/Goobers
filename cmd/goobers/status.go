@@ -35,7 +35,7 @@ const (
 	statusHighlight            = "\x1b[1m"
 	statusReset                = "\x1b[0m"
 	statusWatchRowFormat       = "%-14.14s  %-18.18s  %-8.8s  %-9.9s  %-20.20s"
-	statusFleetRowFormat       = "%-19.19s %-6.6s %-15.15s %-10.10s %s"
+	statusFleetRowFormat       = "%-19.19s %-7.7s %-15.15s %-10.10s %s"
 	statusSuccessRateWindow    = 10
 	statusNextFireScheduled    = "scheduled"
 	statusNextFireManual       = "manual"
@@ -49,6 +49,25 @@ func providerQuotaStatusLine(status readservice.SchedulerStatus, now time.Time) 
 	}
 	return "GitHub quota exhausted — resuming dispatch at " +
 		status.ProviderQuotaResumeAt.UTC().Format(time.RFC3339) + "\n"
+}
+
+// refusedWorkflowStatusLines surfaces the workflows the startup constraint
+// solve refused (#2860, dsl-3.0.md §5 checkpoint 3): the daemon is up and
+// every other workflow serves, so these lines are the operator's only
+// standing signal that a workflow can never run on the declared inventory.
+func refusedWorkflowStatusLines(status readservice.SchedulerStatus) string {
+	if len(status.RefusedWorkflows) == 0 {
+		return ""
+	}
+	var text strings.Builder
+	for _, refusal := range status.RefusedWorkflows {
+		scope := refusal.Workflow
+		if refusal.Gaggle != "" {
+			scope = refusal.Gaggle + "/" + refusal.Workflow
+		}
+		fmt.Fprintf(&text, "Workflow %s refused (unplaceable on the declared runners: inventory): %s\n", scope, refusal.Reason)
+	}
+	return text.String()
 }
 
 type statusPRLabelCounts struct {
@@ -114,6 +133,7 @@ func (c *statusTimeToFirstPRCache) Load(ctx context.Context) (telemetry.TimeToFi
 var (
 	loadStatusPRLabelCounts = queryStatusPRLabelCounts
 	newStatusGitHubProvider = providers.NewGitHubProvider
+	newStatusGiteaProvider  = providers.NewGiteaProvider
 )
 
 type statusPRLabelCountCache struct {
@@ -165,9 +185,25 @@ func queryStatusPRLabelCounts(ctx context.Context, cfg *instance.Config) (status
 	if err != nil {
 		return statusPRLabelCounts{}, fmt.Errorf("resolve status token for %s: %w", ref, err)
 	}
-	prs, err := newStatusGitHubProvider(token).ListPullRequests(ctx, providers.ListPullRequestsRequest{
+	providerKind := providers.ProviderKind(repo.Provider)
+	if providerKind == "" {
+		providerKind = providers.ProviderGitHub
+	}
+	var provider providers.RepoProvider
+	switch providerKind {
+	case providers.ProviderGitHub:
+		provider = newStatusGitHubProvider(token)
+	case providers.ProviderGitea:
+		if repo.BaseURL == "" {
+			return statusPRLabelCounts{}, fmt.Errorf("gitea repo %s has no baseUrl configured", ref)
+		}
+		provider = newStatusGiteaProvider(repo.BaseURL, token)
+	default:
+		return statusPRLabelCounts{}, fmt.Errorf("open PR label counts do not support repository provider %q", providerKind)
+	}
+	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
 		Repository: providers.RepositoryRef{
-			Provider: providers.ProviderGitHub,
+			Provider: providerKind,
 			Owner:    repo.Owner,
 			Name:     repo.Name,
 		},
@@ -205,7 +241,12 @@ type statusJSONOutput struct {
 	Warnings      []validate.CodedWarning          `json:"warnings"`
 	TimeToFirstPR *telemetry.TimeToFirstPRMetric   `json:"timeToFirstPR,omitempty"`
 	DaemonRestart *readservice.DaemonRestartStatus `json:"daemonRestart,omitempty"`
-	Summary       *statusFleetSummary              `json:"summary,omitempty"`
+	// RefusedWorkflows are the workflows the startup constraint solve marked
+	// unplaceable on the declared runners: inventory (#2860, dsl-3.0.md §5
+	// checkpoint 3) — the scripting-side counterpart of the text renderer's
+	// refusedWorkflowStatusLines; omitted on zero-declaration instances.
+	RefusedWorkflows []readservice.WorkflowRefusalStatus `json:"refusedWorkflows,omitempty"`
+	Summary          *statusFleetSummary                 `json:"summary,omitempty"`
 	// ParkedBacklog reports items that left the ready pool on a park
 	// disposition (#3355); omitted when the provider snapshot is unavailable,
 	// the same posture as timeToFirstPR.
@@ -249,6 +290,8 @@ type statusWorkflowSummary struct {
 	Gaggle            string           `json:"gaggle"`
 	InFlight          int              `json:"inFlight"`
 	MaxConcurrentRuns int              `json:"maxConcurrentRuns"`
+	DesiredRuns       int              `json:"desiredRuns,omitempty"`
+	AdmissionBlocked  string           `json:"admissionBlocked,omitempty"`
 	LastOutcome       journal.RunPhase `json:"lastOutcome,omitempty"`
 	LastOutcomeAt     *time.Time       `json:"lastOutcomeAt,omitempty"`
 	TerminalRuns      int              `json:"terminalRuns"`
@@ -287,6 +330,7 @@ func buildStatusFleetSummary(
 	workflows []apiv1.Workflow,
 	runs []runSummary,
 	lastEvals map[localscheduler.WorkflowIdentity]time.Time,
+	refill map[localscheduler.WorkflowIdentity]readservice.RefillOccupancyStatus,
 	now time.Time,
 	loc *time.Location,
 ) (statusFleetSummary, error) {
@@ -328,6 +372,12 @@ func buildStatusFleetSummary(
 			Gaggle:            def.Spec.Gaggle,
 			MaxConcurrentRuns: maxConcurrent,
 			NextFire:          nextFire,
+		}
+		if occupancy, ok := refill[identity]; ok {
+			workflowSummary.DesiredRuns = int(occupancy.DesiredRuns)
+			if occupancy.AdmissionBlocked {
+				workflowSummary.AdmissionBlocked = occupancy.BlockingCondition
+			}
 		}
 
 		var terminal []runSummary
@@ -423,7 +473,7 @@ func statusRunOutcomeTime(run runSummary) time.Time {
 
 func renderStatusFleetSummary(stdout io.Writer, summary statusFleetSummary, now time.Time) {
 	pf(stdout, "Workflow summary (success rate over last %d terminal runs):\n", summary.SuccessRateWindow)
-	pf(stdout, statusFleetRowFormat+"\n", "WORKFLOW", "ACTIVE", "LAST (AGO)", "SUCCESS", "NEXT")
+	pf(stdout, statusFleetRowFormat+"\n", "WORKFLOW", "A/D/MAX", "LAST (AGO)", "SUCCESS", "NEXT")
 	nameCounts := make(map[string]int, len(summary.Workflows))
 	for _, workflow := range summary.Workflows {
 		nameCounts[workflow.Workflow]++
@@ -447,13 +497,23 @@ func renderStatusFleetSummary(stdout io.Writer, summary statusFleetSummary, now 
 		}
 		pf(stdout, statusFleetRowFormat+"\n",
 			name,
-			fmt.Sprintf("%d/%d", workflow.InFlight, workflow.MaxConcurrentRuns),
+			statusConcurrencyText(workflow),
 			last,
 			success,
 			next,
 		)
+		if workflow.AdmissionBlocked != "" {
+			pf(stdout, "  %-19.19s blocked: %.45s\n", name, workflow.AdmissionBlocked)
+		}
 	}
 	pf(stdout, "\n")
+}
+
+func statusConcurrencyText(workflow statusWorkflowSummary) string {
+	if workflow.DesiredRuns > 0 {
+		return fmt.Sprintf("%d/%d/%d", workflow.InFlight, workflow.DesiredRuns, workflow.MaxConcurrentRuns)
+	}
+	return fmt.Sprintf("%d/%d", workflow.InFlight, workflow.MaxConcurrentRuns)
 }
 
 func formatSummaryAge(now, activity time.Time) string {
@@ -716,12 +776,20 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	loadRuns := func() ([]runSummary, error) {
 		return listStatusRuns(context.Background(), reads)
 	}
-	loadFleetSummary := func(runs []runSummary, now time.Time) (statusFleetSummary, error) {
+	loadFleetSummary := func(
+		runs []runSummary,
+		schedulerStatus readservice.SchedulerStatus,
+		now time.Time,
+	) (statusFleetSummary, error) {
 		lastEvals, err := statusWorkflowLastEvals(l)
 		if err != nil {
 			return statusFleetSummary{}, err
 		}
-		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, now, statusLocation)
+		refill := make(map[localscheduler.WorkflowIdentity]readservice.RefillOccupancyStatus, len(schedulerStatus.RefillOccupancy))
+		for _, occupancy := range schedulerStatus.RefillOccupancy {
+			refill[localscheduler.WorkflowIdentity{Gaggle: occupancy.Gaggle, Workflow: occupancy.Workflow}] = occupancy
+		}
+		return buildStatusFleetSummary(set.Workflows, runs, lastEvals, refill, now, statusLocation)
 	}
 	prLabelCounts := newStatusPRLabelCountCache()
 	parkedBacklog := newStatusParkedBacklogCache()
@@ -746,15 +814,22 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		} else {
 			text.WriteString(timeToFirstPRStatusText(timeToFirstPR))
 		}
-		summary, err := loadFleetSummary(runs, now)
-		if err != nil {
-			return "", err
-		}
-		renderStatusFleetSummary(&text, summary, now)
 		status, err := reads.SchedulerStatus(context.Background())
 		if err == nil {
+			summary, summaryErr := loadFleetSummary(runs, status, now)
+			if summaryErr != nil {
+				return "", summaryErr
+			}
+			renderStatusFleetSummary(&text, summary, now)
 			text.WriteString(daemonRestartStatusLine(status, now))
 			text.WriteString(providerQuotaStatusLine(status, now))
+			text.WriteString(refusedWorkflowStatusLines(status))
+		} else {
+			summary, summaryErr := loadFleetSummary(runs, readservice.SchedulerStatus{}, now)
+			if summaryErr != nil {
+				return "", summaryErr
+			}
+			renderStatusFleetSummary(&text, summary, now)
 		}
 		counts, err := prLabelCounts.Load(ctx, cfg)
 		if err != nil {
@@ -814,7 +889,11 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	}
 	var fleetSummary *statusFleetSummary
 	if supportsWatch {
-		summary, err := loadFleetSummary(allRuns, now)
+		status, statusErr := reads.SchedulerStatus(context.Background())
+		if statusErr != nil {
+			status = readservice.SchedulerStatus{}
+		}
+		summary, err := loadFleetSummary(allRuns, status, now)
 		if err != nil {
 			pf(stderr, "error: %v\n", err)
 			return 2
@@ -825,6 +904,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 	if *jsonOutput {
 		var timeToFirstPR *telemetry.TimeToFirstPRMetric
 		var daemonRestart *readservice.DaemonRestartStatus
+		var refusedWorkflows []readservice.WorkflowRefusalStatus
 		var parked *statusParkedBacklog
 		if supportsWatch {
 			metric, err := timeToFirstPRCache.Load(context.Background())
@@ -833,18 +913,20 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			}
 			if status, err := reads.SchedulerStatus(context.Background()); err == nil {
 				daemonRestart = status.DaemonRestart
+				refusedWorkflows = status.RefusedWorkflows
 			}
 			if snapshot, err := parkedBacklog.Load(context.Background(), cfg); err == nil {
 				parked = &snapshot
 			}
 		}
 		output := statusJSONOutput{
-			Warnings:      warnings,
-			TimeToFirstPR: timeToFirstPR,
-			DaemonRestart: daemonRestart,
-			Summary:       fleetSummary,
-			ParkedBacklog: parked,
-			Runs:          statusJSONSummaries(runs),
+			Warnings:         warnings,
+			TimeToFirstPR:    timeToFirstPR,
+			DaemonRestart:    daemonRestart,
+			RefusedWorkflows: refusedWorkflows,
+			Summary:          fleetSummary,
+			ParkedBacklog:    parked,
+			Runs:             statusJSONSummaries(runs),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
 			pf(stderr, "error: encode status: %v\n", err)

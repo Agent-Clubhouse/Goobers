@@ -163,6 +163,9 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        # Rebinds the following agentic review gate to the selected managed
+        # PR branch so the runner attaches the cumulative base...HEAD diff.
+        - workspaceBranch
         - advisoryMode
         # reviewDigest (#523) is threaded to apply-verdict's inputsFrom too —
         # apply-verdict stamps it onto a genuinely fresh verdict before
@@ -225,6 +228,19 @@ spec:
         # stage already has, so re-deriving is exact rather than approximate.
         # A test pins that the two stages agree on identical inputs.
         electionPolicy: "fifo"
+        # Sibling-serialization strategy (#2741) — WHICH siblings this PR is
+        # serialized against, orthogonal to electionPolicy (which decides who
+        # goes first within that cluster). "election" (default) serializes only
+        # over the deterministic file-overlap set gather-sibling-context
+        # supplies; "ordering" also serializes over the reviewer's named
+        # cross-PR blockers, the lighter default for a merge-review workflow
+        # that omits elect-lander/elect-gate and therefore has no overlap set —
+        # without it such a workflow has no serialization mechanism at all and
+        # a file-overlap cluster deadlocks at needs-changes. This gaggle runs
+        # the full election machinery, so it stays on "election". An unknown
+        # value falls back to "election". MUST match elect-lander's
+        # siblingSerialization.
+        siblingSerialization: "election"
       capabilities:
         - provider:pr:write
         - github:pr:review
@@ -286,6 +302,9 @@ spec:
         # point. An unknown value falls back to fifo. MUST match apply-verdict's
         # electionPolicy.
         electionPolicy: "fifo"
+        # #2741: MUST match apply-verdict's siblingSerialization above (see its
+        # comment for the legal values) so both stages resolve the same cluster.
+        siblingSerialization: "election"
       capabilities:
         - github:pr:write
       expectedOutputs:
@@ -474,7 +493,7 @@ spec:
           equals: "false"
       branches:
         pass: gather-sibling-context
-        fail: ""
+        fail: "@abort"
 
     # Scope gate (#1313/#1814): gather-sibling-context reconciles the label and
     # computes scopeGateParked before review. The value is carried through

@@ -125,6 +125,43 @@ func TestTelemetryStatsAfterRun(t *testing.T) {
 	}
 }
 
+// TestTelemetryRebuildRefusesWhileDaemonOwnsDatabase is issue #3653's
+// regression case. A rebuild renames a staging database over telemetry.db,
+// which on Unix unlinks the inode a running daemon still has open — every
+// ingest it writes after that is lost. The run-root maintenance locks the
+// rebuild takes do not exclude the daemon, so the rebuild must refuse while
+// up.lock is held and leave the live database exactly as it found it.
+func TestTelemetryRebuildRefusesWhileDaemonOwnsDatabase(t *testing.T) {
+	root := initDemo(t)
+	l := instance.NewLayout(root)
+	writeFixtureRunWithError(t, root)
+	const sentinel = "live telemetry database"
+	if err := os.WriteFile(l.TelemetryDB(), []byte(sentinel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := acquireInstanceLock(filepath.Join(l.SchedulerDir(), "up.lock"))
+	if err != nil {
+		t.Fatalf("hold daemon lock: %v", err)
+	}
+	defer release()
+
+	code, _, stderr := runArgs(t, "telemetry", "stats", "--rebuild", root)
+	if code != 2 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "daemon owns the database") || !strings.Contains(stderr, "goobers up") {
+		t.Fatalf("stderr = %q, want an actionable daemon-owns-database refusal", stderr)
+	}
+	got, err := os.ReadFile(l.TelemetryDB())
+	if err != nil {
+		t.Fatalf("read live telemetry database: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("telemetry.db replaced while the daemon held the lock: %q", got)
+	}
+}
+
 func TestRebuildReadModelRefusesToBypassActiveProjector(t *testing.T) {
 	root := initDemo(t)
 	l := instance.NewLayout(root)
@@ -346,7 +383,7 @@ func TestTelemetryJSONEmptyInstance(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"gaggles":[],"runs":[],"stages":[],"usage":[],"models":[],"creditAssignment":[],"curation":{"everRecorded":false,"runs":0,"reportedRuns":0,"ready":0,"needsHuman":0,"closed":0,"deduped":0,"split":0,"stale":0,"reconciled":0,"milestoned":0,"bounced":0},"readyPool":{"sampleEverRecorded":false,"claimAgeSamples":0,"bounceEverRecorded":false,"forwardCurationThroughput":0,"implementationDemand":0,"inFlightClaimSamples":0,"averageInFlightClaimAgeSeconds":0,"oldestInFlightClaimAgeSeconds":0}}` + "\n"},
+		{name: "stats", args: []string{"telemetry", "stats", "--json", root}, want: `{"gaggles":[],"runs":[],"stages":[],"usage":[],"models":[],"creditAssignment":[],"causalCredit":null,"curation":{"everRecorded":false,"runs":0,"reportedRuns":0,"ready":0,"needsHuman":0,"closed":0,"deduped":0,"split":0,"stale":0,"reconciled":0,"milestoned":0,"bounced":0},"readyPool":{"sampleEverRecorded":false,"claimAgeSamples":0,"bounceEverRecorded":false,"forwardCurationThroughput":0,"implementationDemand":0,"inFlightClaimSamples":0,"averageInFlightClaimAgeSeconds":0,"oldestInFlightClaimAgeSeconds":0}}` + "\n"},
 		{name: "errors", args: []string{"telemetry", "errors", "--json", root}, want: "[]\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

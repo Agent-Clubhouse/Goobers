@@ -13,6 +13,7 @@ import {
   eventNodeId,
   eventStage,
   eventSummary,
+  isFailureJournalEvent,
   journalEntries,
   keyMomentEvidence,
   keyMomentLabel,
@@ -87,6 +88,33 @@ describe("run detail projection", () => {
       .toBe("implement");
     expect(graph).toEqual(originalGraph);
     expect(events).toEqual(originalEvents);
+  });
+
+  it("names a placement's node when one is known and its host otherwise (#3515)", () => {
+    const onANode = event(9, "runner.placement", {
+      stage: "implement",
+      runner: {
+        runner: "linux-large",
+        node: "aks-linux-0001",
+        host: "goobers-stage-implement-4x2vq",
+        os: "linux",
+        pod: "goobers-stage-implement-4x2vq",
+      },
+    });
+    const summary = eventSummary(onANode, undefined, "run-1");
+    expect(summary).toContain("node aks-linux-0001");
+    // The pod name must never also be presented as an unlabelled location.
+    expect(summary).not.toContain("host goobers-stage-implement-4x2vq");
+
+    // A local attempt knows no node. Its hostname is reported as a host, never
+    // promoted to a node it is not.
+    const local = event(10, "runner.placement", {
+      stage: "implement",
+      runner: { runner: "self", host: "build-box-07", os: "darwin" },
+    });
+    const localSummary = eventSummary(local, undefined, "run-1");
+    expect(localSummary).toContain("host build-box-07");
+    expect(localSummary).not.toContain("node ");
   });
 
   it("retains unsupported schemas through safe generic presentation", () => {
@@ -781,6 +809,45 @@ describe("keyMoments", () => {
     ];
 
     expect(keyMoments(events)).toEqual([]);
+  });
+});
+
+describe("isFailureJournalEvent", () => {
+  it("flags an explicit error event", () => {
+    expect(isFailureJournalEvent(event(1, "error", { category: "bookkeeping" }))).toBe(true);
+  });
+
+  it("flags a failed or blocked stage attempt", () => {
+    expect(
+      isFailureJournalEvent(
+        event(1, "stage.finished", { category: "transition", status: "failure" }),
+      ),
+    ).toBe(true);
+    expect(
+      isFailureJournalEvent(
+        event(2, "stage.finished", { category: "transition", status: "blocked" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("flags an escalated event", () => {
+    expect(
+      isFailureJournalEvent(event(1, "stage.finished", { category: "transition", escalated: true })),
+    ).toBe(true);
+    expect(
+      isFailureJournalEvent(event(2, "run.finished", { category: "transition", status: "escalated" })),
+    ).toBe(true);
+  });
+
+  it("does not flag ordinary success events", () => {
+    expect(
+      isFailureJournalEvent(
+        event(1, "stage.finished", { category: "transition", status: "success" }),
+      ),
+    ).toBe(false);
+    expect(isFailureJournalEvent(event(2, "stage.heartbeat", { category: "liveness" }))).toBe(
+      false,
+    );
   });
 });
 

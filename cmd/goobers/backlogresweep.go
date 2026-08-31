@@ -1,19 +1,18 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/fieldpredicate"
-	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -75,8 +74,19 @@ func readBacklogResweepPolicy(maxItems int) (backlogResweepPolicy, bool, error) 
 	return backlogResweepPolicy{maxItems: resweepMax, interval: interval, readyLabel: readyLabel}, true, nil
 }
 
-func backlogResweepStatePath(
-	schedulerDir string,
+// backlogResweepStateKey is the scheduler-state key holding the re-sweep
+// state for one distinct re-sweep shape. A pure function of the shape —
+// repository, gaggle, trust label, ready label — so two differently-scoped
+// re-sweeps never share state, and the SAME shape reaches the same state
+// whether it runs in the daemon's process or in a stage pod talking to the
+// scheduler-state plane (Goobers#3898).
+//
+// This replaces backlogResweepStatePath, which joined the digest onto the
+// scheduler directory. The key namespace is a BARE FILENAME on both backends;
+// the file store rejoins it onto the same directory, so the on-disk path a
+// type-1/type-2 instance uses is byte-identical to the one this function's
+// predecessor produced, and an in-flight re-sweep's state survives the change.
+func backlogResweepStateKey(
 	repo providers.RepositoryRef,
 	gaggle, trustLabel, readyLabel string,
 ) string {
@@ -92,20 +102,18 @@ func backlogResweepStatePath(
 		ReadyLabel: readyLabel,
 	})
 	sum := sha256.Sum256(key)
-	return filepath.Join(schedulerDir, fmt.Sprintf("backlog-resweep-%x.json", sum))
+	return stateclient.ResweepStateKey(fmt.Sprintf("%x", sum))
 }
 
-func loadBacklogResweepState(path string) (backlogResweepState, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
+// decodeBacklogResweepState is loadBacklogResweepState over a scheduler-state
+// value: an absent key is the empty state, exactly as a missing file was.
+func decodeBacklogResweepState(value stateclient.Value) (backlogResweepState, error) {
+	if !value.Exists() {
 		return backlogResweepState{LastSweptAt: map[string]time.Time{}}, nil
 	}
-	if err != nil {
-		return backlogResweepState{}, err
-	}
 	var state backlogResweepState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return backlogResweepState{}, fmt.Errorf("decode %s: %w", path, err)
+	if err := json.Unmarshal(value.Data, &state); err != nil {
+		return backlogResweepState{}, fmt.Errorf("decode backlog re-sweep state: %w", err)
 	}
 	if state.LastSweptAt == nil {
 		state.LastSweptAt = map[string]time.Time{}
@@ -113,39 +121,46 @@ func loadBacklogResweepState(path string) (backlogResweepState, error) {
 	return state, nil
 }
 
-func readBacklogResweepState(lockPath, statePath string) (backlogResweepState, error) {
-	var state backlogResweepState
-	err := withClaimLock(lockPath, claimLockOperationBacklogResweep, func() error {
-		var err error
-		state, err = loadBacklogResweepState(statePath)
-		return err
-	})
-	return state, err
+func readBacklogResweepState(ctx context.Context, store stateclient.Store, key string) (backlogResweepState, error) {
+	value, err := store.Get(ctx, key)
+	if err != nil {
+		return backlogResweepState{}, err
+	}
+	return decodeBacklogResweepState(value)
 }
 
+// advanceBacklogResweepState publishes this cycle's re-sweep state, and does
+// nothing if the stored generation is no longer the one this cycle observed —
+// another sweeper already advanced it and this cycle's state would rewind it.
+//
+// The generation check and the write are ONE read-modify-write: on the file
+// backend they are the claims.lock section this has always been, and on the
+// scheduler-state plane they are a compare-and-swap the daemon serves under
+// that same claims.lock. Identical in shape to advanceBacklogScanCursor, and
+// for the identical reason.
 func advanceBacklogResweepState(
-	lockPath, statePath string,
+	ctx context.Context,
+	store stateclient.Store,
+	key string,
 	observedGeneration uint64,
 	state backlogResweepState,
 ) error {
-	return withClaimLock(lockPath, claimLockOperationBacklogResweep, func() error {
-		current, err := loadBacklogResweepState(statePath)
-		if err != nil {
-			return err
-		}
-		if current.Generation != observedGeneration {
-			return nil
-		}
-		state.Generation = observedGeneration + 1
-		data, err := json.Marshal(state)
-		if err != nil {
-			return fmt.Errorf("marshal backlog re-sweep state: %w", err)
-		}
-		if err := journal.WriteFileAtomic(statePath, data, 0o644); err != nil {
-			return fmt.Errorf("write backlog re-sweep state: %w", err)
-		}
-		return nil
-	})
+	return store.Update(ctx, key, claimLockOperationBacklogResweep,
+		func(value stateclient.Value) ([]byte, bool, error) {
+			current, err := decodeBacklogResweepState(value)
+			if err != nil {
+				return nil, false, err
+			}
+			if current.Generation != observedGeneration {
+				return nil, false, nil
+			}
+			state.Generation = observedGeneration + 1
+			data, err := json.Marshal(state)
+			if err != nil {
+				return nil, false, fmt.Errorf("marshal backlog re-sweep state: %w", err)
+			}
+			return data, true, nil
+		})
 }
 
 func backlogResweepDue(state backlogResweepState, observedAt time.Time, interval time.Duration) bool {

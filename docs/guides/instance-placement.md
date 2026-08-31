@@ -60,6 +60,9 @@ workcopies:
 Goobers appends the gaggle name and repository key beneath this base. A gaggle
 may override the instance default in its own `spec.workcopies.root`; this keeps
 separate gaggles isolated even when they select the same short base path.
+`goobers validate` rejects a relative root, and rejects two gaggles whose roots
+resolve to the same directory or nest one inside the other, rather than letting
+the daemon fail at startup.
 
 Changing either root does not move existing mirrors or worktrees; Goobers
 clones clean copies at the new location. Stop Goobers, confirm that no run is
@@ -68,6 +71,9 @@ remove it immediately). After updating the configuration and restarting, verify
 the new checkouts, then remove the backup. Do not copy managed checkouts into
 the new root because Git worktree metadata may contain the old absolute path.
 Leaving the old directory in place is safe but continues to consume disk space.
+For a complete host cutover, including journals, scheduler state, telemetry,
+credentials, and split-brain prevention, follow
+[Move a local instance to another machine](move-local-instance.md).
 
 Before creating a checkout, Goobers measures the deepest tracked path and
 refuses it when the worktree prefix plus that path exceeds the repository's
@@ -253,15 +259,15 @@ export GOOBERS_INSTANCE="$HOME/goobers/instances/hass-dreo"
 export GOOBERS_CONFIG_SOURCE="$HOME/src/hass-dreo-goobers-config"
 export GOOBERS_TARGET="JeffSteinbok/hass-dreo"
 
-goobers init --guided "$GOOBERS_INSTANCE"
+goobers init --guided
 goobers validate --source-tree "$GOOBERS_CONFIG_SOURCE"
 goobers config materialize "$GOOBERS_INSTANCE"
 goobers validate "$GOOBERS_INSTANCE"
 ```
 
-During guided setup, select or create
-`$GOOBERS_CONFIG_SOURCE` as the config source and enter `$GOOBERS_TARGET` only
-as the target application repository. The managed target checkout then lives
+During the tutorial, select `$GOOBERS_CONFIG_SOURCE` as a custom configuration
+folder and provide the existing local clone of `$GOOBERS_TARGET`. The managed
+target checkout then lives
 under `$GOOBERS_INSTANCE/gaggles/<gaggle>/workcopies/`. The target's existing
 `.github/copilot-instructions.md` and `.claude/` guidance stays in `hass-dreo`
 and is available in those workcopies; instance config and runtime state stay

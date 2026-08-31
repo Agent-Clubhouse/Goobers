@@ -1,9 +1,8 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -40,20 +39,17 @@ func TestPortalExtensionCLIInstallStatusAndUpdate(t *testing.T) {
 	}
 }
 
-func TestGuidedPortalOfferOnlyWhenCopilotAppDetected(t *testing.T) {
+func TestGuidedPortalInstallRequiresCopilotApp(t *testing.T) {
 	originalDetect, originalInstall := detectCopilotAppForInit, installPortalForInit
 	t.Cleanup(func() {
 		detectCopilotAppForInit = originalDetect
 		installPortalForInit = originalInstall
 	})
 	detectCopilotAppForInit = func() bool { return false }
-	var output bytes.Buffer
-	if err := offerGuidedPortalExtension(guidedPrompter{reader: bufio.NewReader(strings.NewReader("")), out: &output}); err != nil {
-		t.Fatal(err)
-	}
-
-	if output.Len() != 0 {
-		t.Fatalf("offer output without app detection = %q", output.String())
+	server := newTestGuidedServer(t, t.TempDir())
+	response := guidedPost(http.HandlerFunc(server.serveGuided), "/guided/actions/install-portal-extension", "{}")
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "copilot_app_unavailable") {
+		t.Fatalf("install without app: status=%d body=%q", response.Code, response.Body.String())
 	}
 
 	detectCopilotAppForInit = func() bool { return true }
@@ -62,20 +58,9 @@ func TestGuidedPortalOfferOnlyWhenCopilotAppDetected(t *testing.T) {
 		installed = true
 		return portalextension.InstallResult{Path: "test-path", Installed: true}, nil
 	}
-	output.Reset()
-	if err := offerGuidedPortalExtension(guidedPrompter{reader: bufio.NewReader(strings.NewReader("no\n")), out: &output}); err != nil {
-		t.Fatal(err)
-	}
-	if installed || !strings.Contains(output.String(), "goobers portal-extension install") {
-		t.Fatalf("decline installed=%t output=%q", installed, output.String())
-	}
-
-	output.Reset()
-	if err := offerGuidedPortalExtension(guidedPrompter{reader: bufio.NewReader(strings.NewReader("\n")), out: &output}); err != nil {
-		t.Fatal(err)
-	}
-	if !installed || !strings.Contains(output.String(), "Reload extensions") {
-		t.Fatalf("accept installed=%t output=%q", installed, output.String())
+	response = guidedPost(http.HandlerFunc(server.serveGuided), "/guided/actions/install-portal-extension", "{}")
+	if response.Code != http.StatusOK || !installed || !strings.Contains(response.Body.String(), `"path":"test-path"`) {
+		t.Fatalf("install: installed=%t status=%d body=%q", installed, response.Code, response.Body.String())
 	}
 }
 
@@ -89,17 +74,15 @@ func TestGuidedPortalInstallFailureIsNonFatal(t *testing.T) {
 	installPortalForInit = func() (portalextension.InstallResult, error) {
 		return portalextension.InstallResult{}, errors.New("existing extension needs an update")
 	}
-	var output bytes.Buffer
-	err := offerGuidedPortalExtension(guidedPrompter{
-		reader: bufio.NewReader(strings.NewReader("yes\n")),
-		out:    &output,
-	})
-	if err != nil {
-		t.Fatalf("optional Portal failure aborted setup: %v", err)
+	server := newTestGuidedServer(t, t.TempDir())
+	response := guidedPost(http.HandlerFunc(server.serveGuided), "/guided/actions/install-portal-extension", "{}")
+	output := response.Body.String()
+	if response.Code != http.StatusConflict {
+		t.Fatalf("install failure status=%d body=%q", response.Code, output)
 	}
 	for _, want := range []string{"existing extension needs an update", "portal-extension install", "portal-extension update"} {
-		if !strings.Contains(output.String(), want) {
-			t.Fatalf("output %q missing %q", output.String(), want)
+		if !strings.Contains(output, want) {
+			t.Fatalf("output %q missing %q", output, want)
 		}
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -83,6 +84,15 @@ func TestTerminalCleanupReleasesClaimMarkerWithLedger(t *testing.T) {
 	if ok, _, err := ledger.Claim(pullRequestClaimKey(77), runID, "pr-remediation", time.Hour); err != nil || !ok {
 		t.Fatalf("seed PR claim: ok=%v err=%v", ok, err)
 	}
+	// A leaked merge-lock lease this run also holds: mergepr's exclusive
+	// window is a synthetic ledger item, not a GitHub issue, so releasing one
+	// here would either error against a nonexistent issue or land on whatever
+	// issue happens to share its numeral suffix.
+	if ok, _, err := ledger.ClaimScoped(localscheduler.ClaimKey{
+		Gaggle: "example", Provider: "github", ExternalID: claimsclient.MergeLockKey("example", "github", "your-org", "your-repo").ExternalID,
+	}, runID, "merge-pr", time.Hour); err != nil || !ok {
+		t.Fatalf("seed merge-lock lease: ok=%v err=%v", ok, err)
+	}
 	if ok, _, err := ledger.Claim("999", "other-run", "default-implement", time.Hour); err != nil || !ok {
 		t.Fatalf("seed other run's claim: ok=%v err=%v", ok, err)
 	}
@@ -98,7 +108,7 @@ func TestTerminalCleanupReleasesClaimMarkerWithLedger(t *testing.T) {
 	}
 
 	if len(fake.requests) != 1 {
-		t.Fatalf("provider claim releases = %+v, want exactly the backlog item (PR claims carry no marker)", fake.requests)
+		t.Fatalf("provider claim releases = %+v, want exactly the backlog item (PR claims and merge-lock leases carry no marker)", fake.requests)
 	}
 	req := fake.requests[0]
 	if req.ID != "3347" || req.RunID != runID {
@@ -313,7 +323,7 @@ func TestNoWorkTerminalRunReleasesClaimMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	ledger := openTestClaimLedger(t, ledgerPath)
 	if ok, _, err := ledger.Claim("3347", runID, "default-implement", time.Hour); err != nil || !ok {

@@ -8,6 +8,7 @@ import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryS
 import { RecoveryCommand } from "../components/RecoveryAction";
 import { ScopePivot } from "../components/ScopePivot";
 import {
+  incompleteRunPhasesMessage,
   type OperationalOverview,
   useOperationalOverview,
   workflowDisplayName,
@@ -74,6 +75,7 @@ function Overview({
     !emptyInstance &&
     !emptyWorkflows &&
     !overview.sectionErrors?.runs &&
+    !groups.incomplete &&
     groups.active.length === 0 &&
     groups.attention.length === 0 &&
     groups.recent.length === 0;
@@ -146,6 +148,16 @@ function Overview({
           {overview.sectionErrors.runs
             ? "Run activity could not be read just now, so the run groups below may be incomplete or out of date. Everything else on this page is current."
             : "The gaggle and workflow inventory could not be read just now, so names and counts may be out of date. Everything else on this page is current."}
+        </p>
+      )}
+
+      {/* A phase that failed while its siblings succeeded is the same trap one
+          level down: the surviving groups are real, but the failed phase's
+          runs are missing and would otherwise read as "nothing happened"
+          (#3658). */}
+      {!overview.sectionErrors?.runs && groups.incomplete && (
+        <p className="inline-empty" role="alert">
+          {incompleteRunPhasesMessage(groups.incomplete)}
         </p>
       )}
 
@@ -302,9 +314,7 @@ function Overview({
               No configuration is available to the Portal yet. New to Goobers? The guided
               walkthrough builds a working instance step by step.
             </p>
-            <RecoveryCommand command="goobers getting-started" />
-            <p>Or initialize the instance to add its first gaggle and workflow definitions.</p>
-            <RecoveryCommand command="goobers init --guided <instance>" />
+            <RecoveryCommand command="goobers init --guided" />
           </div>
         </section>
       ) : emptyWorkflows ? (

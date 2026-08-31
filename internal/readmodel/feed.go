@@ -44,12 +44,21 @@ type FeedPosition struct {
 type Feed struct {
 	store *Store
 
-	mu      sync.Mutex
-	waiters []chan struct{}
+	mu sync.Mutex
+	// Keyed by channel so a waiter that leaves before the next Notify can be
+	// removed by identity: a slice would make every abandoned subscription
+	// (query error, immediate rows, cancelled context) accumulate until some
+	// unrelated commit finally cleared the list, which on a quiet instance is
+	// unbounded growth.
+	waiters map[chan struct{}]struct{}
+
+	readChanges func(context.Context, uint64, int) ([]Change, error)
 }
 
 // NewFeed constructs a feed over a store.
-func NewFeed(store *Store) *Feed { return &Feed{store: store} }
+func NewFeed(store *Store) *Feed {
+	return &Feed{store: store, readChanges: store.Changes}
+}
 
 // Notify wakes anything waiting for new changes.
 //
@@ -62,18 +71,31 @@ func (f *Feed) Notify() {
 	waiters := f.waiters
 	f.waiters = nil
 	f.mu.Unlock()
-	for _, waiter := range waiters {
+	for waiter := range waiters {
 		close(waiter)
 	}
 }
 
-// wait returns a channel closed on the next Notify.
-func (f *Feed) wait() <-chan struct{} {
+// wait returns a channel closed on the next Notify, plus an unregister that
+// drops this exact waiter.
+//
+// Unregister is safe to call after Notify has already taken the waiter: the
+// removal is by key under the same mutex, so it either happens before Notify
+// detaches the set (and the waiter is never closed) or after (and the delete
+// finds nothing) — never a double close and never a lost wakeup.
+func (f *Feed) wait() (<-chan struct{}, func()) {
 	waiter := make(chan struct{})
 	f.mu.Lock()
-	f.waiters = append(f.waiters, waiter)
+	if f.waiters == nil {
+		f.waiters = make(map[chan struct{}]struct{})
+	}
+	f.waiters[waiter] = struct{}{}
 	f.mu.Unlock()
-	return waiter
+	return waiter, func() {
+		f.mu.Lock()
+		delete(f.waiters, waiter)
+		f.mu.Unlock()
+	}
 }
 
 // Since returns changes after a cursor, blocking until there are some or the
@@ -101,13 +123,15 @@ func (f *Feed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPositio
 		// commits between the read and the registration — the subscriber would
 		// then block until the next unrelated commit, and a quiet instance could
 		// sit on a stale view indefinitely.
-		waiter := f.wait()
+		waiter, unregister := f.wait()
 
-		changes, err := f.store.Changes(ctx, cursor.Seq, limit)
+		changes, err := f.readChanges(ctx, cursor.Seq, limit)
 		if err != nil {
+			unregister()
 			return FeedPosition{}, err
 		}
 		if len(changes) > 0 {
+			unregister()
 			next := cursor
 			next.Seq = changes[len(changes)-1].Seq
 			return FeedPosition{Cursor: next, Changes: changes}, nil
@@ -115,6 +139,7 @@ func (f *Feed) Since(ctx context.Context, cursor Cursor, limit int) (FeedPositio
 
 		select {
 		case <-ctx.Done():
+			unregister()
 			return FeedPosition{}, ctx.Err()
 		case <-waiter:
 		}

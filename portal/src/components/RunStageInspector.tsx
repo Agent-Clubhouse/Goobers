@@ -3,6 +3,7 @@ import { useLiveData } from "../liveData";
 import type {
   ArtifactContent,
   ArtifactMetadata,
+  AttemptPlacement,
   DaemonClient,
   RunEvent,
   StageAttempt,
@@ -37,6 +38,15 @@ function canPreview(media: string): boolean {
   return previewableMediaTypes.has(media.toLowerCase());
 }
 
+// Above this size an inline artifact preview gets a scroll cap (see
+// .artifact-content-bounded) instead of rendering in full and pushing the
+// run page long.
+const ARTIFACT_PREVIEW_BOUND_BYTES = 20_000;
+
+function isLargeArtifactPreview(bytes: ArrayBuffer): boolean {
+  return bytes.byteLength > ARTIFACT_PREVIEW_BOUND_BYTES;
+}
+
 function attemptStatusLabel(status: StageAttempt["status"]): string {
   return status === "" ? "pending" : status;
 }
@@ -69,6 +79,18 @@ function groupAttemptsByVisit(attempts: StageAttempt[]): StageVisit[] {
 function attemptLabel(attempt: StageAttempt): string {
   const retry = attempt.class === "initial" ? "" : ` (${attempt.class} retry)`;
   return `Attempt ${attempt.number}${retry}`;
+}
+
+// queueWaitMillis derives the dispatch latency from placement's two
+// timestamps, when both are present and parseable — the carrier the scale
+// rung reads (goobernetes-smoke.md §6.3). Local attempts never queue and
+// carry neither timestamp.
+function queueWaitMillis(placement: AttemptPlacement): number | undefined {
+  if (!placement.queuedAt || !placement.podStartedAt) {
+    return undefined;
+  }
+  const wait = Date.parse(placement.podStartedAt) - Date.parse(placement.queuedAt);
+  return Number.isFinite(wait) && wait >= 0 ? wait : undefined;
 }
 
 function repassDecision(
@@ -488,17 +510,41 @@ function TranscriptRow({
   const [content, setContent] = useState<string>();
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
   const [error, setError] = useState<string>();
+  const request = useRef<AbortController | undefined>(undefined);
+
+  // A transcript body is large and keeps streaming after the reader leaves, so
+  // a load that outlives its row — the inspector unmounted, or other evidence
+  // was selected — is cancelled rather than left buffering into a component
+  // that will never render it (#3665).
+  useEffect(() => {
+    setContent(undefined);
+    setState("idle");
+    setError(undefined);
+    return () => {
+      request.current?.abort();
+      request.current = undefined;
+    };
+  }, [client, event.seq, runId]);
 
   const load = () => {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
     setState("loading");
     setError(undefined);
     client
-      .getTranscript(runId, event.seq)
+      .getTranscript(runId, event.seq, { signal: controller.signal })
       .then((value) => {
+        if (controller.signal.aborted) {
+          return;
+        }
         setContent(new TextDecoder().decode(value.bytes));
         setState("idle");
       })
       .catch((err: unknown) => {
+        if (controller.signal.aborted) {
+          return;
+        }
         setError(err instanceof Error ? err.message : "Unknown error");
         setState("error");
       });
@@ -709,6 +755,30 @@ function AttemptDetail({
         <span>{attemptLabel(attempt)}</span>
         {attempt.model && <span className="mono">model: {attempt.model}</span>}
       </div>
+      {attempt.placement && (
+        <div aria-label="Attempt placement" className="attempt-summary-row">
+          <span className="mono">runner: {attempt.placement.runner}</span>
+          {/* node is a real cluster node; host is the executing process's own
+              hostname, which inside a pod is the pod name. Show the node when
+              some authority declared one, and otherwise the honest host —
+              never one labelled as the other. */}
+          {attempt.placement.node ? (
+            <span className="mono">node: {attempt.placement.node}</span>
+          ) : (
+            attempt.placement.host && <span className="mono">host: {attempt.placement.host}</span>
+          )}
+          {attempt.placement.os && <span className="mono">os: {attempt.placement.os}</span>}
+          {attempt.placement.image && (
+            <span className="mono">image: {attempt.placement.image}</span>
+          )}
+          {attempt.placement.pod && <span className="mono">pod: {attempt.placement.pod}</span>}
+          {queueWaitMillis(attempt.placement) !== undefined && (
+            <span className="mono">
+              queue wait: {formatDuration(queueWaitMillis(attempt.placement) ?? 0)}
+            </span>
+          )}
+        </div>
+      )}
       {attempt.error && (
         <p className="artifact-load-error">
           {attempt.error.code}
@@ -766,17 +836,41 @@ function ArtifactRow({
   const [content, setContent] = useState<ArtifactContent>();
   const [state, setState] = useState<"idle" | "loading" | "error">("idle");
   const [error, setError] = useState<string>();
+  const request = useRef<AbortController | undefined>(undefined);
+
+  // Same cancellation contract as the transcript row: an artifact download is
+  // abandoned when the row goes away or points at different evidence, so the
+  // transfer stops at the earliest boundary instead of completing into a dead
+  // component (#3665).
+  useEffect(() => {
+    setContent(undefined);
+    setState("idle");
+    setError(undefined);
+    return () => {
+      request.current?.abort();
+      request.current = undefined;
+    };
+  }, [artifact.digest, client, runId]);
 
   const load = () => {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
     setState("loading");
     setError(undefined);
     client
-      .getArtifact(runId, artifact.digest)
+      .getArtifact(runId, artifact.digest, { signal: controller.signal })
       .then((value) => {
+        if (controller.signal.aborted) {
+          return;
+        }
         setContent(value);
         setState("idle");
       })
       .catch((err: unknown) => {
+        if (controller.signal.aborted) {
+          return;
+        }
         setError(err instanceof Error ? err.message : "Unknown error");
         setState("error");
       });
@@ -813,7 +907,11 @@ function ArtifactRow({
       </dl>
       {canPreview(artifact.mediaType) ? (
         content ? (
-          <pre className="artifact-content code-block">
+          <pre
+            className={`artifact-content code-block${
+              isLargeArtifactPreview(content.bytes) ? " artifact-content-bounded" : ""
+            }`}
+          >
             {new TextDecoder().decode(content.bytes)}
           </pre>
         ) : (

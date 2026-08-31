@@ -10,13 +10,11 @@ spec:
     owner: your-org
     name: your-repo
     branch: main
-    connectionRef: repo-token
   backlog:
     provider: github
     project: your-org/your-repo
     labels:
       - goobers:approved
       - goobers:ready
-    connectionRef: repo-token
   isolation:
     namespace: gaggle-quickstart
