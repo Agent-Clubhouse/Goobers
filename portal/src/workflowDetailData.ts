@@ -22,7 +22,7 @@ export function useWorkflowDetail(
   gaggle: string,
   workflowName: string,
 ): WorkflowDetailQuery {
-  const { cache, freshness, subscribe } = useLiveData();
+  const { cache, freshness, isFresh, subscribe } = useLiveData();
   const cacheKey = dataCacheKey("workflow-detail", gaggle, workflowName);
   const [state, setState] = useState<QueryState<WorkflowDetailSnapshot>>(() => {
     const cached = cache.get<WorkflowDetailSnapshot>(cacheKey);
@@ -51,7 +51,11 @@ export function useWorkflowDetail(
           request.current = undefined;
         }
         cache.set(cacheKey, data, dependencies, cacheRevision);
-        setState({ status: "ready", data });
+        // The stream can drop while this request is in flight; the freshness
+        // effect below only fires on a freshness change, so publishing an
+        // unconditional "ready" here would leave the page claiming live data
+        // until the next transition (#3657).
+        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
         return true;
       },
       (error: unknown) => {
@@ -71,7 +75,7 @@ export function useWorkflowDetail(
         return false;
       },
     );
-  }, [cache, cacheKey, client, gaggle, workflowName]);
+  }, [cache, cacheKey, client, gaggle, isFresh, workflowName]);
 
   useEffect(() => {
     const cached = cache.get<WorkflowDetailSnapshot>(cacheKey);
@@ -82,7 +86,9 @@ export function useWorkflowDetail(
         const current =
           reason === "initial" ? cache.get<WorkflowDetailSnapshot>(cacheKey) : undefined;
         if (current) {
-          setState({ status: "ready", data: current });
+          setState(
+            isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
+          );
           return true;
         }
         return refresh();
@@ -94,7 +100,7 @@ export function useWorkflowDetail(
       request.current?.abort();
       request.current = undefined;
     };
-  }, [cache, cacheKey, refresh, subscribe]);
+  }, [cache, cacheKey, isFresh, refresh, subscribe]);
 
   // Freshness downgrade (#1714).
   //

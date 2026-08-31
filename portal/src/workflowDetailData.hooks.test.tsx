@@ -5,87 +5,51 @@ import { FixtureDaemonClient } from "./api/fixtureClient";
 import type {
   DaemonEventStream,
   DaemonUpdateEvent,
-  EventList,
   RequestOptions,
-  RunDetail,
+  RunList,
+  RunListOptions,
+  WorkflowDetail,
 } from "./api/types";
 import { LiveDataProvider } from "./liveData";
-import { useRunDetail } from "./runDetailData";
 import { populatedDaemonFixtures } from "./test/daemonFixtures";
+import { useWorkflowDetail } from "./workflowDetailData";
 
-describe("useRunDetail", () => {
+const GAGGLE = "core";
+const WORKFLOW = "implementation";
+
+describe("useWorkflowDetail", () => {
   beforeEach(() => {
     window.sessionStorage.clear();
-    Object.defineProperty(document, "visibilityState", {
-      configurable: true,
-      value: "visible",
-    });
-    Object.defineProperty(window.navigator, "onLine", {
-      configurable: true,
-      value: true,
-    });
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    Object.defineProperty(window.navigator, "onLine", { configurable: true, value: true });
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("loads fresh data, retains it while refreshing, and preserves it on refresh error", async () => {
-    const runId = "01JZ441DAEMONAPI";
-    const client = new DeferredRunDetailClient();
-    const { result, unmount } = renderHook(() => useRunDetail(client, runId), {
+  it("publishes ready once a successful load lands on a live stream", async () => {
+    const client = new DeferredWorkflowDetailClient();
+    const { result, unmount } = renderHook(() => useWorkflowDetail(client, GAGGLE, WORKFLOW), {
       wrapper: liveWrapper(client),
     });
 
     expect(result.current.state).toEqual({ status: "loading" });
     await waitFor(() => expect(client.signals).toHaveLength(2));
-    expect(result.current.state).toEqual({ status: "loading" });
 
     act(() => client.release(2));
     await waitFor(() => expect(result.current.state.status).toBe("ready"));
     if (result.current.state.status !== "ready") {
-      throw new Error("Expected run detail to be ready.");
+      throw new Error("Expected workflow detail to be ready.");
     }
-    const retained = result.current.state.data;
-
-    act(() => client.stream.push(invalidation("run-refresh")));
-    await waitFor(() => expect(client.signals).toHaveLength(4));
-    expect(result.current.state).toEqual({ status: "stale", data: retained });
-
-    const refreshError = new Error("refresh failed");
-    client.failure = refreshError;
-    act(() => client.release(2));
-    await waitFor(() =>
-      expect(result.current.state).toEqual({
-        status: "stale",
-        data: retained,
-        error: refreshError,
-      }),
-    );
-
-    client.failure = undefined;
-    act(() => result.current.retry());
-    await waitFor(() => expect(client.signals).toHaveLength(6));
-    expect(result.current.state).toEqual({ status: "stale", data: retained });
-
-    const retryError = new Error("retry failed");
-    client.failure = retryError;
-    act(() => client.release(2));
-    await waitFor(() =>
-      expect(result.current.state).toEqual({
-        status: "stale",
-        data: retained,
-        error: retryError,
-      }),
-    );
+    expect(result.current.state.data.workflow.identity.name).toBe(WORKFLOW);
 
     unmount();
   });
 
   it("publishes stale when the live stream drops while the request is in flight (#3657)", async () => {
-    const runId = "01JZ441DAEMONAPI";
-    const client = new DeferredRunDetailClient();
-    const { result, unmount } = renderHook(() => useRunDetail(client, runId), {
+    const client = new DeferredWorkflowDetailClient();
+    const { result, unmount } = renderHook(() => useWorkflowDetail(client, GAGGLE, WORKFLOW), {
       wrapper: liveWrapper(client),
     });
 
@@ -95,9 +59,9 @@ describe("useRunDetail", () => {
     act(() => client.release(2));
     await waitFor(() => expect(result.current.state.status).toBe("stale"));
     if (result.current.state.status !== "stale") {
-      throw new Error("Expected run detail to be stale while disconnected.");
+      throw new Error("Expected workflow detail to be stale while disconnected.");
     }
-    expect(result.current.state.data.run.id).toBe(runId);
+    expect(result.current.state.data.workflow.identity.name).toBe(WORKFLOW);
     expect(result.current.state.error).toBeUndefined();
 
     unmount();
@@ -109,10 +73,9 @@ function goOffline(): void {
   window.dispatchEvent(new Event("offline"));
 }
 
-class DeferredRunDetailClient extends FixtureDaemonClient {
+class DeferredWorkflowDetailClient extends FixtureDaemonClient {
   readonly signals: (AbortSignal | undefined)[] = [];
   readonly stream = new ControlledEventStream();
-  failure: Error | undefined;
   private readonly gates: Deferred[] = [];
 
   constructor() {
@@ -123,17 +86,18 @@ class DeferredRunDetailClient extends FixtureDaemonClient {
     return Promise.resolve(this.stream);
   }
 
-  override async getRun(runId: string, options?: RequestOptions): Promise<RunDetail> {
+  override async getWorkflow(
+    gaggle: string,
+    workflow: string,
+    options?: RequestOptions,
+  ): Promise<WorkflowDetail> {
     await this.waitForRelease(options);
-    return super.getRun(runId, options);
+    return super.getWorkflow(gaggle, workflow, options);
   }
 
-  override async listRunEvents(
-    runId: string,
-    options?: RequestOptions,
-  ): Promise<EventList> {
+  override async listRuns(request?: RunListOptions, options?: RequestOptions): Promise<RunList> {
     await this.waitForRelease(options);
-    return super.listRunEvents(runId, options);
+    return super.listRuns(request, options);
   }
 
   release(count: number): void {
@@ -147,9 +111,6 @@ class DeferredRunDetailClient extends FixtureDaemonClient {
     const gate = deferred();
     this.gates.push(gate);
     await gate.promise;
-    if (this.failure) {
-      throw this.failure;
-    }
   }
 }
 
@@ -203,11 +164,7 @@ function deferred(): Deferred {
   return { promise, resolve };
 }
 
-function invalidation(id: string): DaemonUpdateEvent {
-  return { id, type: "invalidate", data: { cursor: id, models: ["run"] } };
-}
-
-function liveWrapper(client: DeferredRunDetailClient) {
+function liveWrapper(client: DeferredWorkflowDetailClient) {
   return ({ children }: { children: ReactNode }) => (
     <LiveDataProvider client={client} config={{ invalidationWindowMs: 0 }}>
       {children}
