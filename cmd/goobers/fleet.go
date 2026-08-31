@@ -211,6 +211,7 @@ func runFleetStatus(args []string, stdout, stderr io.Writer) int {
 		ProtocolVersion:        association.ProtocolVersion,
 		ACLVersion:             association.ACL.PolicyVersion,
 		CredentialExpiresAt:    association.CredentialExpiresAt,
+		CredentialNonExpiring:  association.CredentialExpiresAt.IsZero(),
 		Revoked:                association.Revoked,
 		RevokeReason:           association.RevokeReason,
 		Connected:              connectionState == "connected",
@@ -239,7 +240,11 @@ func runFleetStatus(args []string, stdout, stderr io.Writer) int {
 	pln(stdout, "")
 	pf(stdout, "  heartbeat: %s\n", formatFleetTime(status.LastHeartbeatAt))
 	pf(stdout, "  ACL version: %s\n", status.ACLVersion)
-	pf(stdout, "  credential expires: %s\n", formatFleetTime(status.CredentialExpiresAt))
+	if status.CredentialNonExpiring {
+		pln(stdout, "  credential expires: never (non-expiring development credential)")
+	} else {
+		pf(stdout, "  credential expires: %s\n", formatFleetTime(status.CredentialExpiresAt))
+	}
 	if status.Revoked {
 		pf(stdout, "  revoked: %s\n", status.RevokeReason)
 	}
@@ -297,6 +302,7 @@ type fleetStatusOutput struct {
 	ProtocolVersion        string    `json:"protocolVersion,omitempty"`
 	ACLVersion             string    `json:"aclVersion,omitempty"`
 	CredentialExpiresAt    time.Time `json:"credentialExpiresAt,omitempty"`
+	CredentialNonExpiring  bool      `json:"credentialNonExpiring"`
 	Revoked                bool      `json:"revoked"`
 	RevokeReason           string    `json:"revokeReason,omitempty"`
 	Connected              bool      `json:"connected"`
@@ -432,11 +438,12 @@ func fleetConnectionState(association fleet.Association, now time.Time) string {
 	case !association.Connected:
 		return "disconnected"
 	}
-	// Three missed acknowledgements make the connection stale. Compute through
-	// division first so corrupted persisted values cannot overflow Duration.
+	// A zero or out-of-protocol heartbeat interval falls back to the 30-second
+	// floor, making corrupt state stale instead of trusting it. The accepted
+	// range also guarantees the multiplication below cannot overflow Duration.
 	staleAfter := minimumFleetStaleAfter
-	maxSafeSeconds := int64((time.Duration(1<<63-1) / time.Second) / 3)
-	if association.HeartbeatSeconds > 0 && int64(association.HeartbeatSeconds) <= maxSafeSeconds {
+	if association.HeartbeatSeconds > 0 &&
+		association.HeartbeatSeconds <= fleet.MaxNegotiatedHeartbeatSeconds {
 		staleAfter = 3 * time.Duration(association.HeartbeatSeconds) * time.Second
 	}
 	if staleAfter < minimumFleetStaleAfter {

@@ -95,12 +95,21 @@ func TestFileStorageDeleteRemovesAssociation(t *testing.T) {
 	if err := store.Delete(root); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Load(root); !errors.Is(err, ErrNotAssociated) {
-		t.Fatalf("Load after Delete error = %v, want ErrNotAssociated", err)
-	}
 	dir, err := store.InstanceDirectory(root)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, disabledFileName)); err != nil {
+		t.Fatalf("disabled tombstone after Delete: %v", err)
+	}
+	if _, err := store.Load(root); !errors.Is(err, ErrNotAssociated) {
+		t.Fatalf("Load after Delete error = %v, want ErrNotAssociated", err)
+	}
+	if _, err := store.LoadAssociation(root); !errors.Is(err, ErrNotAssociated) {
+		t.Fatalf("LoadAssociation after Delete error = %v, want ErrNotAssociated", err)
+	}
+	if err := store.Update(root, func(*Association) error { return nil }); !errors.Is(err, ErrNotAssociated) {
+		t.Fatalf("Update after Delete error = %v, want ErrNotAssociated", err)
 	}
 	for _, name := range []string{associationFileName, privateKeyFileName, credentialFileName} {
 		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
@@ -120,5 +129,36 @@ func TestFileStorageDeleteRemovesAssociation(t *testing.T) {
 	}
 	if loaded.Association.InstanceID != "instance-2" {
 		t.Fatalf("rejoined association = %+v", loaded.Association)
+	}
+}
+
+func TestFileStorageRejectsUnknownAssociationSchema(t *testing.T) {
+	store, err := NewFileStorage(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := store.Save(root, Record{
+		Association: Association{InstanceID: "instance", ProtocolVersion: ProtocolVersion},
+		PrivateKey:  []byte("key"),
+		Credential:  "credential",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := store.InstanceDirectory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, associationFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.Replace(data, []byte(`"schemaVersion": "1"`), []byte(`"schemaVersion": "999"`), 1)
+	if err := atomicWrite(path, data); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadAssociation(root); err == nil || !strings.Contains(err.Error(), "unsupported association schema version") {
+		t.Fatalf("LoadAssociation error = %v", err)
 	}
 }

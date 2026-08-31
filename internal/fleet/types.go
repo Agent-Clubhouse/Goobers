@@ -14,6 +14,9 @@ const (
 	// DefaultACLPolicyVersion is the initial revision of an instance-owned ACL.
 	// ACL revisions advance independently of wire and storage schema versions.
 	DefaultACLPolicyVersion = "1"
+	// MaxNegotiatedHeartbeatSeconds is the longest heartbeat interval this
+	// client accepts or trusts when evaluating persisted connection state.
+	MaxNegotiatedHeartbeatSeconds = 60 * 60
 
 	messageTypeChallenge    = "challenge"
 	messageTypeHello        = "hello"

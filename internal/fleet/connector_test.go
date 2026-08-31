@@ -176,7 +176,7 @@ func TestConnectorHelloHeartbeatAndRevoke(t *testing.T) {
 }
 
 func TestNegotiatedHeartbeatIntervalRejectsUnreasonableValues(t *testing.T) {
-	for _, seconds := range []int{0, -1, int(maxNegotiatedHeartbeatInterval/time.Second) + 1} {
+	for _, seconds := range []int{0, -1, MaxNegotiatedHeartbeatSeconds + 1} {
 		if _, err := negotiatedHeartbeatInterval(seconds); err == nil {
 			t.Fatalf("negotiatedHeartbeatInterval(%d) succeeded", seconds)
 		}

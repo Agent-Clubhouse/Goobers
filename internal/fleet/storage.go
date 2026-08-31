@@ -295,8 +295,9 @@ func (s *FileStorage) Update(instanceRoot string, update func(*Association) erro
 
 // Delete removes the Fleet association, private key, and credential for
 // instanceRoot. It leaves the directory and disabled tombstone in place so a
-// later join can safely reuse the same canonical instance identity. It returns
-// ErrNotAssociated if no association exists.
+// later join reuses the same path-derived storage directory; that join still
+// creates a fresh instance ID, key pair, credential, and registration. It
+// returns ErrNotAssociated if no association exists.
 func (s *FileStorage) Delete(instanceRoot string) error {
 	return s.withDirectoryLock(instanceRoot, false, func(dir string) error {
 		if _, err := os.Stat(filepath.Join(dir, associationFileName)); errors.Is(err, fs.ErrNotExist) {

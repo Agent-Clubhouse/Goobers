@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/goobers/goobers/internal/fleet"
 	"github.com/goobers/goobers/internal/version"
@@ -34,7 +35,27 @@ func startDaemonFleetConnector(ctx context.Context, root string) (<-chan error, 
 	done := make(chan error, 1)
 	connector := newDaemonFleetConnector(storage, root)
 	go func() {
-		done <- connector.Run(ctx)
+		done <- daemonFleetConnectorResult(ctx, storage, root, connector.Run(ctx))
 	}()
 	return done, true, nil
+}
+
+func daemonFleetConnectorResult(ctx context.Context, storage fleet.Storage, root string, runErr error) error {
+	if runErr != nil || ctx.Err() != nil {
+		return runErr
+	}
+	association, err := storage.LoadAssociation(root)
+	if errors.Is(err, fleet.ErrNotAssociated) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect stopped Fleet connector: %w", err)
+	}
+	if association.Revoked {
+		if association.RevokeReason != "" {
+			return fmt.Errorf("fleet registration revoked: %s", association.RevokeReason)
+		}
+		return fmt.Errorf("fleet registration revoked")
+	}
+	return nil
 }

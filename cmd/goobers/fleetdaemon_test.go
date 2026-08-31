@@ -14,6 +14,22 @@ type blockingFleetConnector struct {
 	stopped chan struct{}
 }
 
+func TestDaemonFleetConnectorReportsRevocation(t *testing.T) {
+	store := &fleetMemoryStorage{
+		saved: true,
+		record: fleet.Record{
+			Association: fleet.Association{
+				Revoked:      true,
+				RevokeReason: "operator removed registration",
+			},
+		},
+	}
+	err := daemonFleetConnectorResult(context.Background(), store, "root", nil)
+	if err == nil || err.Error() != "fleet registration revoked: operator removed registration" {
+		t.Fatalf("daemonFleetConnectorResult error = %v", err)
+	}
+}
+
 func (c *blockingFleetConnector) Run(ctx context.Context) error {
 	close(c.started)
 	<-ctx.Done()

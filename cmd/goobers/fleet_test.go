@@ -214,6 +214,9 @@ func TestFleetStatusJSONRedactsSecretsAndLeaveDeletes(t *testing.T) {
 	if !status.Associated || status.RegistrationID != "registration-1" {
 		t.Fatalf("status = %+v", status)
 	}
+	if status.CredentialNonExpiring {
+		t.Fatalf("dated credential reported as non-expiring: %+v", status)
+	}
 	if status.Connected || !status.Stale || status.ConnectionState != "stale" || status.HeartbeatSeconds != 10 {
 		t.Fatalf("stale connection status = %+v", status)
 	}
@@ -228,6 +231,45 @@ func TestFleetStatusJSONRedactsSecretsAndLeaveDeletes(t *testing.T) {
 	code, stdout, stderr = runArgs(t, "fleet", "leave", root)
 	if code != 0 || stderr != "" || store.saved {
 		t.Fatalf("leave code=%d stdout=%q stderr=%q saved=%v", code, stdout, stderr, store.saved)
+	}
+}
+
+func TestFleetStatusLabelsNonExpiringDevelopmentCredential(t *testing.T) {
+	root := t.TempDir()
+	if _, err := instance.Init(root); err != nil {
+		t.Fatal(err)
+	}
+	store := &fleetMemoryStorage{
+		saved: true,
+		record: fleet.Record{
+			Association: fleet.Association{
+				InstanceID:      "instance-1",
+				DisplayName:     "dev-box",
+				CanonicalURI:    "http://127.0.0.1:15080",
+				ProtocolVersion: fleet.ProtocolVersion,
+			},
+		},
+	}
+	originalStorage := newFleetStorage
+	newFleetStorage = func() (fleet.Storage, error) { return store, nil }
+	t.Cleanup(func() { newFleetStorage = originalStorage })
+
+	code, stdout, stderr := runArgs(t, "fleet", "status", "--json", root)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	var status fleetStatusOutput
+	if err := json.Unmarshal([]byte(stdout), &status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.CredentialNonExpiring {
+		t.Fatalf("status = %+v, want credentialNonExpiring", status)
+	}
+
+	code, stdout, stderr = runArgs(t, "fleet", "status", root)
+	if code != 0 || stderr != "" ||
+		!strings.Contains(stdout, "never (non-expiring development credential)") {
+		t.Fatalf("text status code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 

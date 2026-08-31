@@ -19,9 +19,10 @@ var errAssociationChanged = errors.New("fleet: association changed")
 var errCredentialExpired = errors.New("fleet: credential expired")
 
 const (
-	maxNegotiatedHeartbeatInterval = time.Hour
-	missedHeartbeatLimit           = 3
-	handshakeTimeout               = 30 * time.Second
+	// Three outstanding heartbeats allow three full intervals of silence. Any
+	// valid acknowledgement resets the complete missed-heartbeat window.
+	missedHeartbeatLimit = 3
+	handshakeTimeout     = 30 * time.Second
 )
 
 // Socket is the WebSocket surface used by Connector.
@@ -235,6 +236,8 @@ func (c *Connector) connectOnce(ctx context.Context, record Record) error {
 		defer credentialTimer.Stop()
 	}
 	readCtx, cancelRead := context.WithCancel(ctx)
+	// cancelRead stops the reader first; the earlier deferred socket.Close then
+	// unblocks any transport read that has not observed cancellation yet.
 	defer cancelRead()
 	messages := make(chan inboundMessage, 1)
 	go func() {
@@ -359,11 +362,10 @@ func negotiatedHeartbeatInterval(seconds int) (time.Duration, error) {
 	if seconds <= 0 {
 		return 0, fmt.Errorf("fleet: hello acknowledgement heartbeatSeconds must be positive")
 	}
-	maxSeconds := int(maxNegotiatedHeartbeatInterval / time.Second)
-	if seconds > maxSeconds {
+	if seconds > MaxNegotiatedHeartbeatSeconds {
 		return 0, fmt.Errorf(
 			"fleet: hello acknowledgement heartbeatSeconds must not exceed %d",
-			maxSeconds)
+			MaxNegotiatedHeartbeatSeconds)
 	}
 	return time.Duration(seconds) * time.Second, nil
 }
