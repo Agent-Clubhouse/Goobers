@@ -41,6 +41,15 @@ const HEALTH_REFRESH_INTERVAL_MS = 5_000;
 const ACTIVE_RUN_LIMIT = 50;
 const ATTENTION_RUN_LIMIT = 20;
 const RECENT_OUTCOME_LIMIT = 20;
+// Positional companion to the phase queries loadOverviewRunGroups settles, so
+// a rejected result can be named in the incomplete-data report (#3658).
+const OVERVIEW_RUN_PHASES: readonly RunPhase[] = [
+  "running",
+  "escalated",
+  "failed",
+  "completed",
+  "aborted",
+];
 // An escalated/failed run is a candidate for the attention list only while it
 // has been touched — stage.started / stage.finished / escalated — in the last
 // 24h. Escalation is a permanent terminal phase with no dismissal otherwise,
@@ -85,10 +94,27 @@ export interface OperationalSnapshot {
   runs: RunSummary[];
 }
 
+/**
+ * Phases whose query failed while sibling phases succeeded (#3658). The groups
+ * they feed are rendered from whatever prior data survived, so the page must
+ * say the list is incomplete rather than pass it off as an idle instance.
+ */
+export interface IncompleteRunPhases {
+  phases: RunPhase[];
+  error: Error;
+}
+
 export interface OperationalRunGroups {
   active: RunSummary[];
   attention: RunSummary[];
   recent: RunSummary[];
+  incomplete?: IncompleteRunPhases;
+}
+
+/** One-line, actionable description of a partially unreadable run list (#3658). */
+export function incompleteRunPhasesMessage(incomplete: IncompleteRunPhases): string {
+  const label = incomplete.phases.length === 1 ? "phase" : "phases";
+  return `Run activity for the ${incomplete.phases.join(", ")} ${label} could not be read just now (${incomplete.error.message}), so these groups may be incomplete or out of date.`;
 }
 
 export interface OperationalSnapshotQuery {
@@ -746,6 +772,7 @@ export function useGaggleList(client: DaemonClient): GaggleListQuery {
 export interface GaggleActivity {
   active: RunSummary[];
   recent: RunSummary[];
+  incomplete?: IncompleteRunPhases;
 }
 
 export interface GaggleActivityQuery {
@@ -779,7 +806,7 @@ export function useGaggleActivity(client: DaemonClient, gaggleName: string): Gag
       );
 
       try {
-        const loaded = await loadGaggleActivity(client, gaggleName, signal);
+        const loaded = await loadGaggleActivity(client, gaggleName, signal, data.current);
         if (signal.aborted) {
           return false;
         }
@@ -850,6 +877,7 @@ async function loadGaggleActivity(
   client: DaemonClient,
   gaggleName: string,
   signal?: AbortSignal,
+  previous?: GaggleActivity,
 ): Promise<GaggleActivity> {
   const byPhase = (phase: RunPhase, limit: number) =>
     client.listRuns({ gaggle: gaggleName, phase, limit }, { signal });
@@ -866,16 +894,56 @@ async function loadGaggleActivity(
   if (firstError && settled.every((result) => result.status === "rejected")) {
     throw settledError(firstError) ?? new Error("Unable to read runs.");
   }
-  const [running, escalated, failed, completed, aborted] = settled.map((result) =>
-    settledValue(result)?.runs ?? [],
+  // The caller's prior activity can belong to a different gaggle — this hook's
+  // ref survives navigation between gaggle pages — so the fallback must be
+  // restricted to this gaggle or it renders another gaggle's runs here (#3658).
+  const previousRuns = previous
+    ? [...previous.active, ...previous.recent].filter((run) => run.gaggle === gaggleName)
+    : [];
+  const [running, escalated, failed, completed, aborted] = settled.map((result, index) =>
+    resolvePhaseRuns(result, OVERVIEW_RUN_PHASES[index], previousRuns),
   );
+  const incomplete = incompletePhases(settled, OVERVIEW_RUN_PHASES);
   return {
     active: sortRuns(running),
     recent: sortRuns([...escalated, ...failed, ...completed, ...aborted]).slice(
       0,
       GAGGLE_RECENT_OUTCOME_LIMIT,
     ),
+    ...(incomplete ? { incomplete } : {}),
   };
+}
+
+/**
+ * A phase whose query failed falls back to the runs the caller already had for
+ * that phase: dropping them silently is what let the UI claim an instance had
+ * no active or failed runs when the phase was merely unreadable (#3658). The
+ * preserved runs can be phase-stale, which the incomplete-data warning covers.
+ */
+function resolvePhaseRuns(
+  result: PromiseSettledResult<{ runs: RunSummary[] }>,
+  phase: RunPhase,
+  previousRuns: readonly RunSummary[],
+): RunSummary[] {
+  const runs = settledValue(result)?.runs;
+  if (runs) {
+    return runs;
+  }
+  return previousRuns.filter((run) => run.phase === phase);
+}
+
+function incompletePhases(
+  settled: readonly PromiseSettledResult<unknown>[],
+  phases: readonly RunPhase[],
+): IncompleteRunPhases | undefined {
+  const rejected = phases.filter((_, index) => settled[index].status === "rejected");
+  if (rejected.length === 0) {
+    return undefined;
+  }
+  const error =
+    settledError(settled.find((result) => result.status === "rejected")!) ??
+    new Error("Unable to read runs.");
+  return { phases: rejected, error };
 }
 
 function usePeriodicHealth<T extends { health: Health }>(
@@ -967,7 +1035,7 @@ export async function loadOperationalOverview(
           gaggleCount: previous!.gaggleCount,
           workflowNames: previous!.workflowNames,
         }),
-    wantRuns ? loadOverviewRunGroups(client, signal) : Promise.resolve(previous!.groups),
+    wantRuns ? loadOverviewRunGroups(client, signal, previous?.groups) : Promise.resolve(previous!.groups),
   ]);
 
   // An aborted request is not a degraded section — the caller is discarding this
@@ -1353,6 +1421,7 @@ function workflowDefinition(workflow: WorkflowSummary): WorkflowDefinitionSummar
 async function loadOverviewRunGroups(
   client: DaemonClient,
   signal?: AbortSignal,
+  previous?: OperationalRunGroups,
 ): Promise<OperationalRunGroups> {
   const byPhase = (phase: RunPhase, limit: number) =>
     client.listRuns({ phase, limit }, { signal });
@@ -1384,10 +1453,10 @@ async function loadOverviewRunGroups(
   // queried on the last-activity axis (#1199), which a read-model-less
   // instance refuses outright. That refusal doesn't fail every phase — running/
   // completed/aborted still succeed — so the check above would let it through,
-  // and the `?? []` fallback below would render an attention list that is
-  // empty for the same reason as a genuinely idle instance: hiding real
-  // escalations behind no error at all. Treat either attention query rejecting
-  // as unreadable too.
+  // and a per-phase fallback would render an attention list that is empty for
+  // the same reason as a genuinely idle instance: hiding real escalations
+  // behind no error at all. Treat either attention query rejecting as
+  // unreadable too.
   const firstError = settled.find((result) => result.status === "rejected");
   if (
     (firstError && settled.every((result) => result.status === "rejected")) ||
@@ -1401,12 +1470,17 @@ async function loadOverviewRunGroups(
       new Error("Unable to read runs.")
     );
   }
-  const [running, escalated, failed, completed, aborted] = settled.map((result) =>
-    settledValue(result)?.runs ?? [],
+  const previousRuns = previous
+    ? [...previous.active, ...previous.attention, ...previous.recent]
+    : [];
+  const [running, escalated, failed, completed, aborted] = settled.map((result, index) =>
+    resolvePhaseRuns(result, OVERVIEW_RUN_PHASES[index], previousRuns),
   );
+  const incomplete = incompletePhases(settled, OVERVIEW_RUN_PHASES);
   return {
     active: sortRuns(running),
     attention: sortRunsByActivity([...escalated, ...failed]).slice(0, ATTENTION_RUN_LIMIT),
     recent: sortRuns([...completed, ...aborted]).slice(0, RECENT_OUTCOME_LIMIT),
+    ...(incomplete ? { incomplete } : {}),
   };
 }
