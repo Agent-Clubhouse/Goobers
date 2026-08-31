@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/goobers/goobers/internal/pathutil"
 )
 
 // ErrInvalidOutboxMirrorRoot marks a configured outbox mirror root that cannot
@@ -37,7 +39,7 @@ func ValidateOutboxMirrorRoot(root string) error {
 	if strings.TrimSpace(root) == "" {
 		return fmt.Errorf("%w: empty root", ErrInvalidOutboxMirrorRoot)
 	}
-	if strings.HasPrefix(root, "~/") || rootedOrVolumeBound(root) {
+	if strings.HasPrefix(root, "~/") || pathutil.IsRootedOrVolumeBound(root) {
 		return nil
 	}
 	return fmt.Errorf("%w: %q must be absolute or start with ~/", ErrInvalidOutboxMirrorRoot, root)
