@@ -79,309 +79,279 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return 2
 	}
-
 	repo, err := providerRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// The remediation loop selects flagged PRs oldest-first (FIFO). Validate
-	// any configured remediationAlgorithm override up front — provider-agnostic,
-	// so it runs before the ADO branch — so an unrecognized value warns rather
-	// than silently selecting fifo anyway.
 	validateRemediationAlgorithm(stderr)
-	// Azure DevOps pr-remediation epic: gather-pr-context's ADO branch selects a
-	// needs-remediation PR from the label tier, rebinds its branch, and recovers
-	// the merge-review verdict from the PR THREAD (ADO has no PR-comment
-	// transport). It never resolves a github:* token and never touches the
-	// GitHub-concrete remediationProvider helpers. Every GitHub path below stays
-	// byte-identical — the ADO behavior is a wholly separate function reached only
-	// on this switch, mirroring runPRSelectADO / runGatherSiblingContextADO.
-	if repo.Provider == providers.ProviderADO {
-		return runGatherPRContextADO(root, repo, stdout, stderr)
-	}
-	prToken, err := providerToken(capability.GitHubPRWrite)
+	adapter, err := newGatherPRContextAdapter(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	return runGatherPRContextCore(root, repo, adapter, stdout, stderr)
+}
+
+// gatherPRContextFeatures explicitly records evidence the decision core may
+// consume. ADO gaps remain absent rather than being emulated by stub calls.
+type gatherPRContextFeatures struct{ checkState, siblingBlocking, liveBaseTip bool }
+
+type gatherPRContextAdapter struct {
+	features         gatherPRContextFeatures
+	pushToken, note  string
+	list             func(context.Context, providers.ListPullRequestsRequest) ([]providers.PullRequestSummary, error)
+	prepare          func(context.Context, []providers.PullRequestSummary, map[string]bool) ([]providers.PullRequestSummary, map[int]int, error)
+	resolveCheck     func(context.Context, *providers.PullRequestSummary) error
+	behindBase       func(providers.PullRequestSummary) (bool, error)
+	comments         func(context.Context, string) ([]providers.Comment, error)
+	commentOperation func(int) string
+	login            func(context.Context) (string, error)
+	baseTip          func(context.Context, string) (string, error)
+	park             func(context.Context, providers.PullRequestSummary, string, string) error
+}
+type gatherPRContextAdapterError struct {
+	operation string
+	err       error
+}
+
+func (e *gatherPRContextAdapterError) Error() string { return e.operation + ": " + e.err.Error() }
+func (e *gatherPRContextAdapterError) Unwrap() error { return e.err }
+func gatherPRAdapterError(operation string, err error) error {
+	return &gatherPRContextAdapterError{operation, err}
+}
+func failGatherPRAdapter(stderr io.Writer, err error) int {
+	var e *gatherPRContextAdapterError
+	if errors.As(err, &e) {
+		return failProviderStage(stderr, e.operation, e.err, remediationBriefResultFile)
+	}
+	return failProviderStage(stderr, "prepare remediation candidates", err, remediationBriefResultFile)
+}
+func newGatherPRContextAdapter(root string, repo providers.RepositoryRef) (gatherPRContextAdapter, error) {
+	if repo.Provider == providers.ProviderADO {
+		return newADOGatherPRContextAdapter(root, repo)
+	}
+	return newGitHubGiteaGatherPRContextAdapter(root, repo)
+}
+func newGitHubGiteaGatherPRContextAdapter(root string, repo providers.RepositoryRef) (gatherPRContextAdapter, error) {
+	prToken, err := providerToken(capability.GitHubPRWrite)
+	if err != nil {
+		return gatherPRContextAdapter{}, err
 	}
 	pushToken, err := providerToken(capability.RepoPush)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return gatherPRContextAdapter{}, err
 	}
 	provider, err := remediationStageProvider(root, repo, prToken, true)
 	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
+		return gatherPRContextAdapter{}, err
 	}
-
+	bases := map[string]bool{}
+	return gatherPRContextAdapter{
+		features: gatherPRContextFeatures{checkState: true, siblingBlocking: true, liveBaseTip: true}, pushToken: pushToken, list: provider.ListPullRequests,
+		prepare: func(ctx context.Context, prs []providers.PullRequestSummary, held map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
+			if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
+				return nil, nil, gatherPRAdapterError("resolve remediation check states", err)
+			}
+			eligible, blocked, err := filterRemediationPullRequests(ctx, provider, repo, prs, held)
+			if err != nil {
+				return nil, nil, gatherPRAdapterError("filter remediation candidates", err)
+			}
+			return eligible, blocked, nil
+		},
+		resolveCheck: func(ctx context.Context, pr *providers.PullRequestSummary) error {
+			return resolveRemediationCheckState(ctx, provider, repo, pr)
+		},
+		behindBase: func(pr providers.PullRequestSummary) (bool, error) {
+			if !bases[pr.Base] {
+				if _, err := fetchExistingBranch(".", pr.Base, pushToken); err != nil {
+					return false, fmt.Errorf("fetch base branch %q: %w", pr.Base, err)
+				}
+				bases[pr.Base] = true
+			}
+			head, err := fetchExistingBranch(".", pr.Head, pushToken)
+			if err != nil {
+				return false, fmt.Errorf("fetch PR #%d branch %q: %w", pr.Number, pr.Head, err)
+			}
+			return isCommitBehindBase(".", pr.BaseSHA, head)
+		},
+		comments: func(ctx context.Context, id string) ([]providers.Comment, error) {
+			return provider.ListComments(ctx, repo, id)
+		}, commentOperation: func(n int) string { return fmt.Sprintf("list comments on PR #%d", n) }, login: provider.AuthenticatedLogin,
+		baseTip: func(ctx context.Context, branch string) (string, error) {
+			return provider.BranchTipSHA(ctx, repo, branch)
+		},
+		park: func(ctx context.Context, pr providers.PullRequestSummary, prior, body string) error {
+			if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{Repository: repo, ID: strconv.Itoa(pr.Number), AddLabels: []string{remediationEscalatedLabel}, RemoveLabels: []string{needsRemediationLabel}}); err != nil {
+				return gatherPRAdapterError(fmt.Sprintf("park unchanged-digest PR #%d", pr.Number), err)
+			}
+			if err := postOrRecreateRemediationComment(ctx, provider, repo, pr.Number, prior, body); err != nil {
+				return gatherPRAdapterError(fmt.Sprintf("record unchanged-digest escalation on PR #%d", pr.Number), err)
+			}
+			return nil
+		},
+	}, nil
+}
+func newADOGatherPRContextAdapter(root string, repo providers.RepositoryRef) (gatherPRContextAdapter, error) {
+	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
+	if err != nil {
+		return gatherPRContextAdapter{}, err
+	}
+	pushToken, err := providerToken(capability.RepoPush)
+	if err != nil {
+		return gatherPRContextAdapter{}, err
+	}
+	return gatherPRContextAdapter{pushToken: pushToken, note: "note: Azure DevOps supports only the \"fifo\" remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order", list: provider.ListPullRequests,
+		prepare: func(_ context.Context, prs []providers.PullRequestSummary, held map[string]bool) ([]providers.PullRequestSummary, map[int]int, error) {
+			eligible := make([]providers.PullRequestSummary, 0, len(prs))
+			for _, pr := range prs {
+				if !held[pr.Head] && !hasAnyLabel(pr.Labels, []string{providers.LabelNeedsHuman}) {
+					eligible = append(eligible, pr)
+				}
+			}
+			return eligible, map[int]int{}, nil
+		},
+		comments: func(ctx context.Context, id string) ([]providers.Comment, error) {
+			return provider.ListPullRequestThreadComments(ctx, repo, id)
+		}, commentOperation: func(n int) string { return fmt.Sprintf("list thread comments on PR #%d", n) }, login: provider.AuthenticatedLogin,
+		park: func(ctx context.Context, pr providers.PullRequestSummary, prior, body string) error {
+			id := strconv.Itoa(pr.Number)
+			if err := provider.AddPullRequestLabels(ctx, repo, id, []string{remediationEscalatedLabel}); err != nil {
+				return gatherPRAdapterError(fmt.Sprintf("park unchanged-digest PR #%d", pr.Number), err)
+			}
+			if err := provider.RemovePullRequestLabel(ctx, repo, id, needsRemediationLabel); err != nil {
+				return gatherPRAdapterError(fmt.Sprintf("clear needs-remediation label from PR #%d", pr.Number), err)
+			}
+			if err := postOrRecreateRemediationThreadComment(ctx, provider, repo, id, prior, body); err != nil {
+				return gatherPRAdapterError(fmt.Sprintf("record unchanged-digest escalation on PR #%d", pr.Number), err)
+			}
+			return nil
+		},
+	}, nil
+}
+func runGatherPRContextCore(root string, repo providers.RepositoryRef, a gatherPRContextAdapter, stdout, stderr io.Writer) int {
+	if a.note != "" {
+		pf(stderr, "%s\n", a.note)
+	}
 	base := providerInput("base", providerBaseBranch())
-	headPrefix := providerInput("headPrefix", providerBranchNamespace())
-
-	// #3985: the pull request this run was dispatched for, when the trigger
-	// named one. Resolved before selection so both the pinned handoff path and
-	// the self-selecting path below are constrained by it.
+	prefix := providerInput("headPrefix", providerBranchNamespace())
 	target := remediationTargetFromEnv()
-
 	ctx, cancel := providerCommandContext()
 	defer cancel()
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
-	})
+	prs, err := a.list(ctx, providers.ListPullRequestsRequest{Repository: repo, Base: base, HeadPrefix: prefix, SkipCheckState: true})
 	if err != nil {
 		return failProviderStage(stderr, "list pull requests", err, remediationBriefResultFile)
 	}
 	listed := prs
-	handoffNumber := providerInput("selectedNumber", "")
-	claimedNumber, hasExistingClaim, err := claimedPullRequestNumber(root)
+	prs, pinned, done, code := gatherPRContextCandidateScope(root, target, prs, stdout, stderr)
+	if done {
+		return code
+	}
+	eligible, blocked, err := a.prepare(ctx, prs, worktreeHeldBranches("."))
 	if err != nil {
-		pf(stderr, "error: resolve this run's existing PR claim: %v\n", err)
-		return 1
+		return failGatherPRAdapter(stderr, err)
 	}
-	hasPinnedCandidate := hasExistingClaim
-	if handoffNumber != "" {
-		selectedNumber, parseErr := strconv.Atoi(handoffNumber)
-		if parseErr != nil || selectedNumber <= 0 {
-			pf(stderr, "error: selectedNumber input %q must be a positive integer\n", handoffNumber)
-			return 1
+	selected, done, code := gatherPRContextSelectCandidate(gatherPRContextCandidateSelection{root: root, repo: repo, base: base, headPrefix: prefix, target: target, listed: listed, eligible: eligible, blockedDependents: blocked, hasPinnedCandidate: pinned, supportsBehindBaseFallback: a.features.siblingBlocking, behindBase: a.behindBase}, stdout, stderr)
+	if done {
+		return code
+	}
+	if a.features.checkState {
+		if err := a.resolveCheck(ctx, &selected); err != nil {
+			return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", selected.Number), err, remediationBriefResultFile)
 		}
-		if hasExistingClaim && claimedNumber != selectedNumber {
-			pf(stderr, "error: selectedNumber input PR #%d does not match this run's claimed PR #%d\n", selectedNumber, claimedNumber)
-			return 1
-		}
-		claimedNumber = selectedNumber
-		hasPinnedCandidate = true
 	}
-	// #3985: a targeted run may only ever remediate the PR its trigger named.
-	// update-behind-pr restricts its own selection to that PR, so a pinned
-	// handoff or claim naming a different PR means the run's own upstream
-	// state disagrees with the operator's argument — refuse rather than
-	// remediate a pull request nobody asked for.
-	if target.targeted && hasPinnedCandidate && claimedNumber != target.number {
-		pf(stderr, "error: this run targets PR #%d but is pinned to PR #%d; refusing to remediate a pull request the trigger did not name\n",
-			target.number, claimedNumber)
-		return 1
-	}
-	if hasPinnedCandidate {
-		var claimed []providers.PullRequestSummary
-		for _, pr := range prs {
-			if pr.Number == claimedNumber {
-				claimed = append(claimed, pr)
-				break
-			}
-		}
-		if len(claimed) == 0 {
-			return writeNoWorkResult(stdout, stderr, fmt.Sprintf("this run's claimed PR #%d is no longer open", claimedNumber))
-		}
-		prs = claimed
-	}
-
-	// #716's core fix, applied upstream of #596's tier selection: a PR
-	// carrying goobers:merge-escalated only stays excluded from EVERY tier
-	// (needs-remediation, failing-CI, and the behind-base fallback alike)
-	// while its live head/base SHA still match the snapshot recorded at
-	// escalation time — escalationStillBlocks is self-heal-aware, unlike a
-	// static label check, so a PR that self-healed (new commits, or a
-	// sibling merge advancing its base) is filtered back IN here and
-	// reaches whichever tier its other signals qualify it for. Filtering
-	// here, before tiering, means an excluded top-tier PR correctly falls
-	// through to a lower tier's candidates rather than forcing a no-work
-	// cycle when a perfectly eligible lower-tier PR exists.
-	// #872/#1007: a PR whose head branch is still checked out by another live
-	// worktree (its originating implementation run's ci-poll stage, holding the
-	// branch while it polls CI on the PR it just opened) cannot be checked out
-	// here — git forbids the same branch in two worktrees of the shared managed
-	// mirror. De-select such a PR this tick so gather-pr-context skips it
-	// cleanly (no claim, no failed run) rather than claiming it and colliding on
-	// the checkout every ~60s until the owning run releases the branch; normal
-	// selection resumes automatically once it does. Enumerated once here (a
-	// local git query, no provider call) and reused across the candidate loop.
-	heldBranches := worktreeHeldBranches(".")
-
-	if err := resolveRemediationCheckStates(ctx, provider, repo, prs); err != nil {
-		return failProviderStage(stderr, "resolve remediation check states", err, remediationBriefResultFile)
-	}
-	nonBlocked, blockedDependents, err := filterRemediationPullRequests(ctx, provider, repo, prs, heldBranches)
-	if err != nil {
-		return failProviderStage(stderr, "filter remediation candidates", err, remediationBriefResultFile)
-	}
-
-	// update-behind-pr already selected a full-remediation candidate and threads
-	// its number through the workflow. The claim ledger remains the durable
-	// fallback across retries and resumes.
-	candidates := nonBlocked
-	var behindBase func(providers.PullRequestSummary) (bool, error)
-	var refusal string
-	if !hasPinnedCandidate {
-		filtered := nonBlocked
-		nonBlocked, err = stageClaimAvailablePullRequests(
-			root, repo, os.Getenv(executor.RunIDEnvVar), nonBlocked, time.Now(),
-		)
-		if err != nil {
-			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
-		}
-		unclaimed := nonBlocked
-		fetchedBases := make(map[string]bool)
-		behindBase = func(pr providers.PullRequestSummary) (bool, error) {
-			if !fetchedBases[pr.Base] {
-				if _, err := fetchExistingBranch(".", pr.Base, pushToken); err != nil {
-					return false, fmt.Errorf("fetch base branch %q: %w", pr.Base, err)
-				}
-				fetchedBases[pr.Base] = true
-			}
-			headSHA, err := fetchExistingBranch(".", pr.Head, pushToken)
-			if err != nil {
-				return false, fmt.Errorf("fetch PR #%d branch %q: %w", pr.Number, pr.Head, err)
-			}
-			return isCommitBehindBase(".", pr.BaseSHA, headSHA)
-		}
-		candidates, _, err = selectRemediationCandidates(nonBlocked, blockedDependents, behindBase)
-		if err != nil {
-			pf(stderr, "error: determine remediation eligibility: %v\n", err)
-			return 1
-		}
-		// #3985: eligibility and tier ranking ran over the whole open-PR set,
-		// exactly as on a scheduled tick; a targeted run then keeps only the
-		// PR the trigger named, or ends here naming the filter that dropped it.
-		candidates, refusal = target.apply(
-			remediationTargetStage{prs: listed, reason: remediationTargetUnlistedReason(base, headPrefix)},
-			remediationTargetStage{prs: filtered, reason: remediationTargetFilteredReason},
-			remediationTargetStage{prs: unclaimed, reason: remediationTargetClaimedReason},
-			remediationTargetStage{prs: candidates, reason: remediationTargetIneligibleReason},
-		)
-	} else {
-		// The pinned candidate is already this run's target (cross-checked
-		// above), so the only way it can vanish here is a remediation
-		// exclusion — report that rather than the generic no-work reason.
-		candidates, refusal = target.apply(
-			remediationTargetStage{prs: candidates, reason: remediationTargetFilteredReason},
-		)
-	}
-	if refusal != "" {
-		return writeNoWorkResult(stdout, stderr, refusal)
-	}
-	if len(candidates) == 0 {
-		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
-	}
-
-	claimed, err := claimEligiblePullRequestInOrder(root, repo, candidates)
-	if err != nil {
-		pf(stderr, "error: claim eligible PR: %v\n", err)
-		return 1
-	}
-	if claimed == nil {
-		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
-	}
-	selected := *claimed
-	if err := resolveRemediationCheckState(ctx, provider, repo, &selected); err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("check state for PR #%d", selected.Number), err, remediationBriefResultFile)
-	}
-
-	if _, err := checkoutExistingBranch(".", selected.Head, pushToken); err != nil {
+	if _, err := checkoutExistingBranch(".", selected.Head, a.pushToken); err != nil {
 		pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selected.Number, selected.Head, err)
 		return 1
 	}
-
 	behind, err := isBehindBase(".", selected.BaseSHA)
 	if err != nil {
 		pf(stderr, "error: check base ancestry for PR #%d: %v\n", selected.Number, err)
 		return 1
 	}
-
-	rawComments, err := provider.ListComments(ctx, repo, strconv.Itoa(selected.Number))
+	comments, err := a.comments(ctx, strconv.Itoa(selected.Number))
 	if err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("list comments on PR #%d", selected.Number), err, remediationBriefResultFile)
+		return failProviderStage(stderr, a.commentOperation(selected.Number), err, remediationBriefResultFile)
 	}
-	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
+	author, err := a.login(ctx)
 	if err != nil {
 		return failProviderStage(stderr, "resolve merge-review verdict author", err, remediationBriefResultFile)
 	}
-	verdict := gatherPRVerdict(rawComments, verdictAuthor)
-
-	// Digest short-circuit (#716 design item 2): escalationStillBlocks above
-	// only excludes a PR whose LIVE goobers:merge-escalated label matches its
-	// recorded snapshot exactly — it does not fire once that label is gone
-	// (self-healed via a new head/base, or cleared by a human) OR once the
-	// PR's base has moved just enough to change its recorded base SHA. Either
-	// way, this PR was selected because ITS SELECTION criteria say "go", but
-	// if the actual `git diff base...HEAD` content is still byte-identical to
-	// what was recorded at the last escalation, running rebase-pr/remediation
-	// again cannot make progress — bail as a clean no-work tick instead of
-	// spending a cycle (worktree provision, checkout, potential agentic
-	// work) reproducing the exact escalation remediation-checkpoint already
-	// recorded.
-	if remState, priorCommentID, ok := latestRemediationStateForPR(selected.Body, rawComments); ok && remState.Escalated && remState.LastDiffDigest != "" {
-		digest, derr := diffDigest(".", selected.BaseSHA)
-		if derr != nil {
-			pf(stderr, "error: compute diff digest for PR #%d: %v\n", selected.Number, derr)
-			return 1
-		}
-		if digest == remState.LastDiffDigest {
-			l := layoutFor(root)
-			signature := remediationNoopSignature{HeadSHA: selected.HeadSHA, DiffDigest: digest}
-			record, operatorReset, err := recordGatherPRContextDigestNoop(
-				l, selected.Number, signature, os.Getenv(executor.RunIDEnvVar),
-				hasAnyLabel(selected.Labels, []string{remediationEscalatedLabel}),
-			)
-			if err != nil {
-				pf(stderr, "error: record unchanged remediation digest for PR #%d: %v\n", selected.Number, err)
-				return 1
-			}
-			if operatorReset {
-				pf(stdout, "PR #%d: escalation cleared by an operator — bypassing the unchanged-digest guard for a fresh remediation attempt\n", selected.Number)
-			} else if record.Attempts >= remediationNoopLimit {
-				liveBaseTip, err := provider.BranchTipSHA(ctx, repo, selected.Base)
-				if err != nil {
-					return failProviderStage(stderr, fmt.Sprintf("resolve base branch %q tip for PR #%d", selected.Base, selected.Number), err, remediationBriefResultFile)
-				}
-				reason := fmt.Sprintf(
-					"gather-pr-context observed the unchanged diff digest %s in %d consecutive runs, so remediation cannot make progress",
-					digest, record.Attempts,
-				)
-				generation := nextEscalationGeneration(remState, selected.HeadSHA)
-				remState.Cycles++
-				remState.LastDiffDigest = digest
-				remState.HeadSHA = selected.HeadSHA
-				remState.BaseSHA = selected.BaseSHA
-				remState.Escalated = true
-				remState.EscalatedReason = reason
-				remState.EscalationOutcome = remediationOutcomeDidNotConverge
-				remState.RemediationAttempted = false
-				remState.AttemptedCauses = nil
-				remState.EscalatedHeadSHA = selected.HeadSHA
-				remState.EscalatedBaseSHA = liveBaseTip
-				remState.EscalationCauses = nil
-				remState.EscalationGeneration = generation
-				if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-					Repository:   repo,
-					ID:           strconv.Itoa(selected.Number),
-					AddLabels:    []string{remediationEscalatedLabel},
-					RemoveLabels: []string{needsRemediationLabel},
-				}); err != nil {
-					return failProviderStage(stderr, fmt.Sprintf("park unchanged-digest PR #%d", selected.Number), err, remediationBriefResultFile)
-				}
-				if err := postOrRecreateRemediationComment(ctx, provider, repo, selected.Number, priorCommentID, renderRemediationComment(remState)); err != nil {
-					return failProviderStage(stderr, fmt.Sprintf("record unchanged-digest escalation on PR #%d", selected.Number), err, remediationBriefResultFile)
-				}
-				gaggle := l.Gaggle()
-				if gaggle == "" {
-					gaggle = providerGaggle()
-				}
-				if err := markRemediationNoopParked(l, remediationNoopKey(gaggle, selected.Number)); err != nil {
-					pf(stderr, "error: mark unchanged-digest PR #%d parked: %v\n", selected.Number, err)
-					return 1
-				}
-				return writeNoWorkResult(stdout, stderr, fmt.Sprintf("PR #%d was visibly parked after %d unchanged-digest runs", selected.Number, record.Attempts))
-			} else {
-				return writeNoWorkResult(stdout, stderr, fmt.Sprintf(
-					"PR #%d's diff (digest %s) is unchanged since its last recorded escalation — no progress possible this cycle",
-					selected.Number, digest,
-				))
-			}
+	if handled, code := handleGatherPRContextUnchangedDigest(root, a, ctx, selected, comments, stdout, stderr); handled {
+		return code
+	}
+	return writeGatherPRContextResult(selected, behind, gatherPRVerdict(comments, author), comments, stdout, stderr)
+}
+func handleGatherPRContextUnchangedDigest(root string, a gatherPRContextAdapter, ctx context.Context, pr providers.PullRequestSummary, comments []providers.Comment, stdout, stderr io.Writer) (bool, int) {
+	state, prior, ok := latestRemediationStateForPR(pr.Body, comments)
+	if !ok || !state.Escalated || state.LastDiffDigest == "" {
+		return false, 0
+	}
+	digest, err := diffDigest(".", pr.BaseSHA)
+	if err != nil {
+		pf(stderr, "error: compute diff digest for PR #%d: %v\n", pr.Number, err)
+		return true, 1
+	}
+	if digest != state.LastDiffDigest {
+		return false, 0
+	}
+	l := layoutFor(root)
+	record, reset, err := recordGatherPRContextDigestNoop(l, pr.Number, remediationNoopSignature{HeadSHA: pr.HeadSHA, DiffDigest: digest}, os.Getenv(executor.RunIDEnvVar), hasAnyLabel(pr.Labels, []string{remediationEscalatedLabel}))
+	if err != nil {
+		pf(stderr, "error: record unchanged remediation digest for PR #%d: %v\n", pr.Number, err)
+		return true, 1
+	}
+	if reset {
+		pf(stdout, "PR #%d: escalation cleared by an operator — bypassing the unchanged-digest guard for a fresh remediation attempt\n", pr.Number)
+		return false, 0
+	}
+	if record.Attempts < remediationNoopLimit {
+		return true, writeNoWorkResult(stdout, stderr, fmt.Sprintf("PR #%d's diff (digest %s) is unchanged since its last recorded escalation — no progress possible this cycle", pr.Number, digest))
+	}
+	generation := nextEscalationGeneration(state, pr.HeadSHA)
+	base := pr.BaseSHA
+	if a.features.liveBaseTip {
+		base, err = a.baseTip(ctx, pr.Base)
+		if err != nil {
+			return true, failProviderStage(stderr, fmt.Sprintf("resolve base branch %q tip for PR #%d", pr.Base, pr.Number), err, remediationBriefResultFile)
 		}
 	}
+	state.Cycles++
+	state.LastDiffDigest = digest
+	state.HeadSHA = pr.HeadSHA
+	state.BaseSHA = pr.BaseSHA
+	state.Escalated = true
+	state.EscalatedReason = fmt.Sprintf("gather-pr-context observed the unchanged diff digest %s in %d consecutive runs, so remediation cannot make progress", digest, record.Attempts)
+	state.EscalationOutcome = remediationOutcomeDidNotConverge
+	state.RemediationAttempted = false
+	state.AttemptedCauses = nil
+	state.EscalatedHeadSHA = pr.HeadSHA
+	state.EscalatedBaseSHA = base
+	state.EscalationCauses = nil
+	state.EscalationGeneration = generation
+	if err := a.park(ctx, pr, prior, renderRemediationComment(state)); err != nil {
+		return true, failGatherPRAdapter(stderr, err)
+	}
+	gaggle := l.Gaggle()
+	if gaggle == "" {
+		gaggle = providerGaggle()
+	}
+	if err := markRemediationNoopParked(l, remediationNoopKey(gaggle, pr.Number)); err != nil {
+		pf(stderr, "error: mark unchanged-digest PR #%d parked: %v\n", pr.Number, err)
+		return true, 1
+	}
+	return true, writeNoWorkResult(stdout, stderr, fmt.Sprintf("PR #%d was visibly parked after %d unchanged-digest runs", pr.Number, record.Attempts))
+}
 
+// writeGatherPRContextResult preserves the versioned brief contract after a
+// provider-specific transport has obtained the verdict comments.
+func writeGatherPRContextResult(
+	selected providers.PullRequestSummary,
+	behind bool,
+	verdict *apiv1.Verdict,
+	rawComments []providers.Comment,
+	stdout, stderr io.Writer,
+) int {
 	comments := make([]apiv1.RemediationThreadComment, 0, len(rawComments))
 	integrities := []apiv1.Integrity{selected.Integrity}
 	for _, c := range rawComments {
@@ -458,330 +428,141 @@ func runGatherPRContext(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runGatherPRContextADO is gather-pr-context's Azure DevOps branch
-// (remediation-wiring-plan §3.1). It mirrors runGatherPRContext's shape, but
-// every GitHub-concrete surface the lane leans on is either provider-neutral
-// (the claim ledger and the git branch rebind, unchanged here) or rerouted to
-// an ADO-specific primitive:
-//
-//   - Selection stays the existing label tier: ADO's ListPullRequests already
-//     surfaces PR labels (§0.4), so remediationPriorityFor reads
-//     goobers:needs-remediation off pr.Labels unmodified. The failing-CI tier
-//     never fires — ADO's ListPullRequests pins CheckState pending and this
-//     branch resolves no per-PR check state (§2.2, the label tier never consults
-//     it), so a needs-remediation label is the only signal that admits a PR here.
-//   - filterRemediationPullRequests and its escalationStillBlocks /
-//     liveBlockedOnSiblingBlockers helpers take the GitHub-concrete
-//     remediationProvider *ADOProvider cannot satisfy (§0.1), and read PR
-//     comments that are work-item comments on ADO; they are gated OFF. The
-//     eligible set is produced directly from the label tier (skip a branch a
-//     sibling worktree already holds, and a needs-human PR) with no escalation or
-//     blocked-on-sibling filtering — there is no sibling election on ADO.
-//   - resolveRemediationCheckState(s) (RefCheckState/RefCheckStates, absent on
-//     ADO) is skipped for the same reason.
-//   - The merge-review verdict rides on a PR THREAD, not a PR comment (§0.3): it
-//     is recovered from ListPullRequestThreadComments (the ADO analog of
-//     ListComments) and trusted against AuthenticatedLogin (connectionData).
-//
-// It never resolves a github:* capability token — the ADO provider draws its own
-// org-scoped auth from the shared stage provider factory. repo:push still
-// carries the git checkout credential (the #392 branch rebind), provider-neutral
-// on every backend.
-func runGatherPRContextADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, false)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	pushToken, err := providerToken(capability.RepoPush)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	// Sibling-overlap serialization is a GitHub-only refinement; on Azure DevOps
-	// the remediation loop is pure FIFO. State it plainly so an operator is not
-	// surprised that two overlapping ADO PRs are remediated independently rather
-	// than serialized behind one another.
-	pf(stderr, "note: Azure DevOps supports only the %q remediation algorithm; sibling-overlap serialization is unavailable, so pull requests are remediated in strict oldest-first order\n", remediationAlgorithmFIFO)
-
-	base := providerInput("base", providerBaseBranch())
-	headPrefix := providerInput("headPrefix", providerBranchNamespace())
-
-	// #3985: `goobers run --pr` targets an ADO lane through the same synthetic
-	// pull_request delivery it uses on GitHub, so the ADO branch honours the
-	// target identically.
-	target := remediationTargetFromEnv()
-
-	ctx, cancel := providerCommandContext()
-	defer cancel()
-	prs, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: headPrefix, SkipCheckState: true,
-	})
-	if err != nil {
-		return failProviderStage(stderr, "list pull requests", err, remediationBriefResultFile)
-	}
-	listed := prs
+// gatherPRContextCandidateScope applies the durable handoff and run-target
+// constraints before a provider prepares the candidate set. The provider paths
+// deliberately retain their native preparation work after this point: GitHub
+// resolves CI, escalation, and sibling state; ADO has only its label tier.
+func gatherPRContextCandidateScope(
+	root string,
+	target remediationTarget,
+	prs []providers.PullRequestSummary,
+	stdout, stderr io.Writer,
+) ([]providers.PullRequestSummary, bool, bool, int) {
 	handoffNumber := providerInput("selectedNumber", "")
 	claimedNumber, hasExistingClaim, err := claimedPullRequestNumber(root)
 	if err != nil {
 		pf(stderr, "error: resolve this run's existing PR claim: %v\n", err)
-		return 1
+		return nil, false, true, 1
 	}
 	hasPinnedCandidate := hasExistingClaim
 	if handoffNumber != "" {
 		selectedNumber, parseErr := strconv.Atoi(handoffNumber)
 		if parseErr != nil || selectedNumber <= 0 {
 			pf(stderr, "error: selectedNumber input %q must be a positive integer\n", handoffNumber)
-			return 1
+			return nil, false, true, 1
 		}
 		if hasExistingClaim && claimedNumber != selectedNumber {
 			pf(stderr, "error: selectedNumber input PR #%d does not match this run's claimed PR #%d\n", selectedNumber, claimedNumber)
-			return 1
+			return nil, false, true, 1
 		}
 		claimedNumber = selectedNumber
 		hasPinnedCandidate = true
 	}
+	// #3985: a targeted run may only ever remediate the PR its trigger named.
+	// update-behind-pr restricts its own selection to that PR, so a pinned
+	// handoff or claim naming a different PR means the run's own upstream
+	// state disagrees with the operator's argument — refuse rather than
+	// remediate a pull request nobody asked for.
 	if target.targeted && hasPinnedCandidate && claimedNumber != target.number {
 		pf(stderr, "error: this run targets PR #%d but is pinned to PR #%d; refusing to remediate a pull request the trigger did not name\n",
 			target.number, claimedNumber)
-		return 1
+		return nil, false, true, 1
 	}
-	if hasPinnedCandidate {
-		var claimed []providers.PullRequestSummary
-		for _, pr := range prs {
-			if pr.Number == claimedNumber {
-				claimed = append(claimed, pr)
-				break
-			}
-		}
-		if len(claimed) == 0 {
-			return writeNoWorkResult(stdout, stderr, fmt.Sprintf("this run's claimed PR #%d is no longer open", claimedNumber))
-		}
-		prs = claimed
-	}
-
-	heldBranches := worktreeHeldBranches(".")
-
-	// The label-tier eligible set, produced directly (filterRemediationPullRequests
-	// is gated OFF, §3.1/§0.1): skip a branch another live worktree already holds
-	// (#872/#1007) and a needs-human PR. No escalation / blocked-on-sibling
-	// filtering on ADO, so no dependent is crowned.
-	nonBlocked := make([]providers.PullRequestSummary, 0, len(prs))
-	for _, pr := range prs {
-		if heldBranches[pr.Head] {
-			continue
-		}
-		if hasAnyLabel(pr.Labels, []string{providers.LabelNeedsHuman}) {
-			continue
-		}
-		nonBlocked = append(nonBlocked, pr)
-	}
-	blockedDependents := map[int]int{}
-
-	candidates := nonBlocked
-	var refusal string
 	if !hasPinnedCandidate {
-		filtered := nonBlocked
-		nonBlocked, err = stageClaimAvailablePullRequests(
-			root, repo, os.Getenv(executor.RunIDEnvVar), nonBlocked, time.Now(),
+		return prs, false, false, 0
+	}
+	for _, pr := range prs {
+		if pr.Number == claimedNumber {
+			return []providers.PullRequestSummary{pr}, true, false, 0
+		}
+	}
+	return nil, true, true, writeNoWorkResult(
+		stdout, stderr, fmt.Sprintf("this run's claimed PR #%d is no longer open", claimedNumber),
+	)
+}
+
+type gatherPRContextCandidateSelection struct {
+	root                       string
+	repo                       providers.RepositoryRef
+	base                       string
+	headPrefix                 string
+	target                     remediationTarget
+	listed                     []providers.PullRequestSummary
+	eligible                   []providers.PullRequestSummary
+	blockedDependents          map[int]int
+	hasPinnedCandidate         bool
+	supportsBehindBaseFallback bool
+	behindBase                 func(providers.PullRequestSummary) (bool, error)
+}
+
+// gatherPRContextSelectCandidate applies the shared candidate ranking, target
+// narrowing, and claim protocol after the provider-specific eligibility pass.
+func gatherPRContextSelectCandidate(
+	selection gatherPRContextCandidateSelection,
+	stdout, stderr io.Writer,
+) (providers.PullRequestSummary, bool, int) {
+	candidates := selection.eligible
+	var refusal string
+	if !selection.hasPinnedCandidate {
+		filtered := selection.eligible
+		unclaimed, err := stageClaimAvailablePullRequests(
+			selection.root,
+			selection.repo,
+			os.Getenv(executor.RunIDEnvVar),
+			selection.eligible,
+			time.Now(),
 		)
 		if err != nil {
-			return failProviderStage(stderr, "filter claimed remediation candidates", err, remediationBriefResultFile)
+			return providers.PullRequestSummary{}, true, failProviderStage(
+				stderr, "filter claimed remediation candidates", err, remediationBriefResultFile,
+			)
 		}
-		unclaimed := nonBlocked
-		// The behind-base fallback tier crowns only a lander with a live parked
-		// dependent, which never materializes on ADO (no sibling election), so
-		// selectRemediationCandidates never invokes this probe — it exists solely
-		// to satisfy the signature and fails loudly if the invariant is ever
-		// broken. resolveRemediationCheckStates (RefCheckStates, absent on ADO) is
-		// deliberately not run: the label tier never consults CheckState (§2.2).
-		behindBase := func(pr providers.PullRequestSummary) (bool, error) {
-			return false, fmt.Errorf("behind-base probe is unreachable on ADO (no sibling election) for PR #%d", pr.Number)
+		if selection.supportsBehindBaseFallback {
+			candidates, _, err = selectRemediationCandidates(
+				unclaimed, selection.blockedDependents, selection.behindBase,
+			)
+			if err != nil {
+				pf(stderr, "error: determine remediation eligibility: %v\n", err)
+				return providers.PullRequestSummary{}, true, 1
+			}
+		} else {
+			// No ADO sibling-election evidence exists, so it cannot supply the
+			// behind-base fallback tier.
+			candidates, _ = strongRemediationCandidates(unclaimed)
 		}
-		candidates, _, err = selectRemediationCandidates(nonBlocked, blockedDependents, behindBase)
-		if err != nil {
-			pf(stderr, "error: determine remediation eligibility: %v\n", err)
-			return 1
-		}
-		candidates, refusal = target.apply(
-			remediationTargetStage{prs: listed, reason: remediationTargetUnlistedReason(base, headPrefix)},
+		// #3985: eligibility and tier ranking ran over the whole open-PR set,
+		// exactly as on a scheduled tick; a targeted run then keeps only the
+		// PR the trigger named, or ends here naming the filter that dropped it.
+		candidates, refusal = selection.target.apply(
+			remediationTargetStage{prs: selection.listed, reason: remediationTargetUnlistedReason(selection.base, selection.headPrefix)},
 			remediationTargetStage{prs: filtered, reason: remediationTargetFilteredReason},
 			remediationTargetStage{prs: unclaimed, reason: remediationTargetClaimedReason},
 			remediationTargetStage{prs: candidates, reason: remediationTargetIneligibleReason},
 		)
 	} else {
-		candidates, refusal = target.apply(
+		// The pinned candidate is already this run's target (cross-checked
+		// above), so the only way it can vanish here is a remediation
+		// exclusion — report that rather than the generic no-work reason.
+		candidates, refusal = selection.target.apply(
 			remediationTargetStage{prs: candidates, reason: remediationTargetFilteredReason},
 		)
 	}
 	if refusal != "" {
-		return writeNoWorkResult(stdout, stderr, refusal)
+		return providers.PullRequestSummary{}, true, writeNoWorkResult(stdout, stderr, refusal)
 	}
 	if len(candidates) == 0 {
-		return writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
+		return providers.PullRequestSummary{}, true, writeNoWorkResult(stdout, stderr, "no PR needs remediation this cycle")
 	}
 
-	claimed, err := claimEligiblePullRequestInOrder(root, repo, candidates)
+	claimed, err := claimEligiblePullRequestInOrder(selection.root, selection.repo, candidates)
 	if err != nil {
 		pf(stderr, "error: claim eligible PR: %v\n", err)
-		return 1
+		return providers.PullRequestSummary{}, true, 1
 	}
 	if claimed == nil {
-		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+		return providers.PullRequestSummary{}, true, writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
 	}
-	selected := *claimed
-	// resolveRemediationCheckState (RefCheckState, absent on ADO) is skipped:
-	// selected.CheckState stays pending from ListPullRequests, the label tier does
-	// not consult it, and hasFailingCI below reports false accordingly (§2.2).
-
-	if _, err := checkoutExistingBranch(".", selected.Head, pushToken); err != nil {
-		pf(stderr, "error: checkout PR #%d's branch %q: %v\n", selected.Number, selected.Head, err)
-		return 1
-	}
-
-	behind, err := isBehindBase(".", selected.BaseSHA)
-	if err != nil {
-		pf(stderr, "error: check base ancestry for PR #%d: %v\n", selected.Number, err)
-		return 1
-	}
-
-	// The verdict apply-verdict posted rides on a PR THREAD, not a PR comment
-	// (§0.3): recover it from ListPullRequestThreadComments (the ADO analog of
-	// ListComments, which addresses work-item comments on ADO) and trust it
-	// against AuthenticatedLogin — connectionData returns the same displayName the
-	// thread author is mapped to, so a thread we posted is recognized.
-	rawComments, err := provider.ListPullRequestThreadComments(ctx, repo, strconv.Itoa(selected.Number))
-	if err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("list thread comments on PR #%d", selected.Number), err, remediationBriefResultFile)
-	}
-	verdictAuthor, err := provider.AuthenticatedLogin(ctx)
-	if err != nil {
-		return failProviderStage(stderr, "resolve merge-review verdict author", err, remediationBriefResultFile)
-	}
-	verdict := gatherPRVerdict(rawComments, verdictAuthor)
-
-	// Digest short-circuit (#716), identical to the GitHub path but with the
-	// sticky remediation-state carried on the PR thread. selected.Body is empty on
-	// ADO (ListPullRequests does not populate it), so the state is recovered from
-	// the thread comments alone.
-	if remState, priorCommentID, ok := latestRemediationStateForPR(selected.Body, rawComments); ok && remState.Escalated && remState.LastDiffDigest != "" {
-		digest, derr := diffDigest(".", selected.BaseSHA)
-		if derr != nil {
-			pf(stderr, "error: compute diff digest for PR #%d: %v\n", selected.Number, derr)
-			return 1
-		}
-		if digest == remState.LastDiffDigest {
-			l := layoutFor(root)
-			signature := remediationNoopSignature{HeadSHA: selected.HeadSHA, DiffDigest: digest}
-			record, operatorReset, err := recordGatherPRContextDigestNoop(
-				l, selected.Number, signature, os.Getenv(executor.RunIDEnvVar),
-				hasAnyLabel(selected.Labels, []string{remediationEscalatedLabel}),
-			)
-			if err != nil {
-				pf(stderr, "error: record unchanged remediation digest for PR #%d: %v\n", selected.Number, err)
-				return 1
-			}
-			if operatorReset {
-				pf(stdout, "PR #%d: escalation cleared by an operator — bypassing the unchanged-digest guard for a fresh remediation attempt\n", selected.Number)
-			} else if record.Attempts >= remediationNoopLimit {
-				reason := fmt.Sprintf(
-					"gather-pr-context observed the unchanged diff digest %s in %d consecutive runs, so remediation cannot make progress",
-					digest, record.Attempts,
-				)
-				generation := nextEscalationGeneration(remState, selected.HeadSHA)
-				remState.Cycles++
-				remState.LastDiffDigest = digest
-				remState.HeadSHA = selected.HeadSHA
-				remState.BaseSHA = selected.BaseSHA
-				remState.Escalated = true
-				remState.EscalatedReason = reason
-				remState.EscalationOutcome = remediationOutcomeDidNotConverge
-				remState.RemediationAttempted = false
-				remState.AttemptedCauses = nil
-				remState.EscalatedHeadSHA = selected.HeadSHA
-				remState.EscalatedBaseSHA = selected.BaseSHA
-				remState.EscalationCauses = nil
-				remState.EscalationGeneration = generation
-				pullID := strconv.Itoa(selected.Number)
-				if err := provider.AddPullRequestLabels(ctx, repo, pullID, []string{remediationEscalatedLabel}); err != nil {
-					return failProviderStage(stderr, fmt.Sprintf("park unchanged-digest PR #%d", selected.Number), err, remediationBriefResultFile)
-				}
-				if err := provider.RemovePullRequestLabel(ctx, repo, pullID, needsRemediationLabel); err != nil {
-					return failProviderStage(stderr, fmt.Sprintf("clear needs-remediation label from PR #%d", selected.Number), err, remediationBriefResultFile)
-				}
-				if err := postOrRecreateRemediationThreadComment(ctx, provider, repo, pullID, priorCommentID, renderRemediationComment(remState)); err != nil {
-					return failProviderStage(stderr, fmt.Sprintf("record unchanged-digest escalation on PR #%d", selected.Number), err, remediationBriefResultFile)
-				}
-				gaggle := l.Gaggle()
-				if gaggle == "" {
-					gaggle = providerGaggle()
-				}
-				if err := markRemediationNoopParked(l, remediationNoopKey(gaggle, selected.Number)); err != nil {
-					pf(stderr, "error: mark unchanged-digest PR #%d parked: %v\n", selected.Number, err)
-					return 1
-				}
-				return writeNoWorkResult(stdout, stderr, fmt.Sprintf("PR #%d was visibly parked after %d unchanged-digest runs", selected.Number, record.Attempts))
-			} else {
-				return writeNoWorkResult(stdout, stderr, fmt.Sprintf(
-					"PR #%d's diff (digest %s) is unchanged since its last recorded escalation — no progress possible this cycle",
-					selected.Number, digest,
-				))
-			}
-		}
-	}
-
-	comments := make([]apiv1.RemediationThreadComment, 0, len(rawComments))
-	integrities := []apiv1.Integrity{selected.Integrity}
-	for _, c := range rawComments {
-		createdAt := ""
-		if c.CreatedAt != nil {
-			createdAt = c.CreatedAt.Format(time.RFC3339)
-		}
-		comments = append(comments, apiv1.RemediationThreadComment{
-			Author: c.Author, Body: c.Body, CreatedAt: createdAt, URL: c.URL, Integrity: c.Integrity,
-		})
-		integrities = append(integrities, c.Integrity)
-	}
-
-	hasSubstantiveFindings := "false"
-	if verdictHasSubstantiveFindingForPR(verdict, selected.Number, resolveMinSeverity(stderr)) {
-		hasSubstantiveFindings = "true"
-	}
-	hasFailingCI := strconv.FormatBool(selected.CheckState == providers.CheckStateFailing)
-
-	resultFile := providerInput("resultFile", remediationBriefResultFile)
-	data, err := json.MarshalIndent(apiv1.RemediationBrief{
-		Schema:                 apiv1.RemediationBriefVersion,
-		Integrity:              apiv1.WeakestIntegrity(integrities...),
-		SelectedNumber:         strconv.Itoa(selected.Number),
-		Head:                   selected.Head,
-		WorkspaceBranch:        selected.Head,
-		Base:                   selected.Base,
-		IsBehindBase:           behind,
-		HasSubstantiveFindings: hasSubstantiveFindings,
-		HasFailingCI:           hasFailingCI,
-		GatherPRContext: apiv1.RemediationPRContext{
-			HeadSHA:  selected.HeadSHA,
-			BaseSHA:  selected.BaseSHA,
-			Verdict:  verdict,
-			Comments: comments,
-		},
-	}, "", "  ")
-	if err != nil {
-		pf(stderr, "error: marshal remediation brief: %v\n", err)
-		return 1
-	}
-	if err := validateRemediationBriefJSON(data); err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
-	}
-
-	pf(stdout, "gathered context for PR #%d (%s): behind=%v, %d comment(s)\n", selected.Number, selected.Head, behind, len(comments))
-	return 0
+	return *claimed, false, 0
 }
 
 // gatherPRVerdict prefers the oldest trusted marked comment because

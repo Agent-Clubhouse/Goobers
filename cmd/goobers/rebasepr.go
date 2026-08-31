@@ -106,67 +106,179 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
+	var transport rebasePRTransport
+	var pushToken string
 	if repo.Provider == providers.ProviderADO {
-		return runRebasePRADO(root, repo, stdout, stderr)
+		adoProvider, providerErr := newProviderForStageAs[*providers.ADOProvider](root, repo, true)
+		if providerErr != nil {
+			return fail(providerErr)
+		}
+		pushToken, err = providerToken(capability.RepoPush)
+		if err != nil {
+			return fail(err)
+		}
+		transport = threadCommentRebaseTransport{provider: adoProvider}
+	} else {
+		pushToken, err = providerToken(capability.RepoPush)
+		if err != nil {
+			return fail(err)
+		}
+		issuesToken, tokenErr := providerToken(capability.GitHubIssuesWrite)
+		if tokenErr != nil {
+			return fail(tokenErr)
+		}
+		issueProvider, providerErr := remediationStageProvider(root, repo, issuesToken, false)
+		if providerErr != nil {
+			return fail(providerErr)
+		}
+		prToken, tokenErr := providerToken(capability.GitHubPRWrite)
+		if tokenErr != nil {
+			return fail(tokenErr)
+		}
+		handoffProvider, providerErr := remediationStageProvider(root, repo, prToken, false)
+		if providerErr != nil {
+			return fail(providerErr)
+		}
+		transport = issueCommentRebaseTransport{issueProvider: issueProvider, handoffProvider: handoffProvider}
 	}
-	pushToken, err := providerToken(capability.RepoPush)
-	if err != nil {
-		return fail(err)
-	}
-	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
-	if err != nil {
-		return fail(err)
-	}
-	provider, err := remediationStageProvider(root, repo, issuesToken, false)
-	if err != nil {
-		return fail(err)
-	}
-	prToken, err := providerToken(capability.GitHubPRWrite)
-	if err != nil {
-		return fail(err)
-	}
-	handoffProvider, err := remediationStageProvider(root, repo, prToken, false)
-	if err != nil {
-		return fail(err)
-	}
+	return runRebasePRCore(ctx, repo, resultFile, selectedNumber, selectedPRNumber, head, base,
+		hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, remediate, pushToken, transport, stdout, stderr)
+}
 
-	attemptedHeadSHA, err = checkoutExistingBranch(".", head, pushToken)
+// rebasePRTransport confines provider-specific I/O to reading native comment
+// evidence, updating a legacy handoff, and clearing the label. Checkout,
+// evidence interpretation, policy evaluation, result writing, and
+// force-with-lease publication are shared.
+type rebasePRTransport interface {
+	LoadCommentEvidence(context.Context, providers.RepositoryRef, string) (rebasePRCommentEvidence, error)
+	LoadHumanCommentEvidence(context.Context, providers.RepositoryRef, string) (rebasePRCommentEvidence, error)
+	AuthenticatedLogin(context.Context) (string, error)
+	UpdateComment(context.Context, providers.RepositoryRef, string, string) error
+	ClearNeedsRemediation(context.Context, providers.RepositoryRef, string) error
+}
+
+// rebasePRCommentEvidence is the raw native comment channel used by the
+// provider-neutral rebase policy. available is false when the provider has no
+// equivalent evidence channel, rather than treating that as an empty comment
+// list.
+type rebasePRCommentEvidence struct {
+	available bool
+	comments  []providers.Comment
+}
+
+type issueCommentRebaseTransport struct {
+	issueProvider   remediationProvider
+	handoffProvider remediationProvider
+}
+
+func (t issueCommentRebaseTransport) LoadCommentEvidence(ctx context.Context, repo providers.RepositoryRef, selectedNumber string) (rebasePRCommentEvidence, error) {
+	comments, err := t.handoffProvider.ListComments(ctx, repo, selectedNumber)
+	if err != nil {
+		return rebasePRCommentEvidence{}, err
+	}
+	return rebasePRCommentEvidence{available: true, comments: comments}, nil
+}
+
+func (t issueCommentRebaseTransport) LoadHumanCommentEvidence(ctx context.Context, repo providers.RepositoryRef, selectedNumber string) (rebasePRCommentEvidence, error) {
+	return t.LoadCommentEvidence(ctx, repo, selectedNumber)
+}
+
+func (t issueCommentRebaseTransport) UpdateComment(ctx context.Context, repo providers.RepositoryRef, commentID, body string) error {
+	return t.handoffProvider.UpdateComment(ctx, repo, commentID, body)
+}
+
+func (t issueCommentRebaseTransport) AuthenticatedLogin(ctx context.Context) (string, error) {
+	return t.handoffProvider.AuthenticatedLogin(ctx)
+}
+
+func (t issueCommentRebaseTransport) ClearNeedsRemediation(ctx context.Context, repo providers.RepositoryRef, selectedNumber string) error {
+	_, err := t.issueProvider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{Repository: repo, ID: selectedNumber, RemoveLabels: []string{needsRemediationLabel}})
+	return err
+}
+
+type threadCommentRebaseTransport struct{ provider *providers.ADOProvider }
+
+func (threadCommentRebaseTransport) LoadCommentEvidence(_ context.Context, _ providers.RepositoryRef, _ string) (rebasePRCommentEvidence, error) {
+	// ADO PR threads are not the issue-comment evidence channel used for
+	// sibling handoffs or human-comment watermarks.
+	return rebasePRCommentEvidence{available: false}, nil
+}
+
+func (threadCommentRebaseTransport) LoadHumanCommentEvidence(_ context.Context, _ providers.RepositoryRef, _ string) (rebasePRCommentEvidence, error) {
+	return rebasePRCommentEvidence{available: false}, nil
+}
+
+func (threadCommentRebaseTransport) UpdateComment(_ context.Context, _ providers.RepositoryRef, _, _ string) error {
+	return errors.New("rebase PR comment evidence is unavailable for Azure DevOps")
+}
+
+func (threadCommentRebaseTransport) AuthenticatedLogin(context.Context) (string, error) {
+	return "", errors.New("rebase PR comment evidence is unavailable for Azure DevOps")
+}
+
+func (t threadCommentRebaseTransport) ClearNeedsRemediation(ctx context.Context, repo providers.RepositoryRef, selectedNumber string) error {
+	return t.provider.RemovePullRequestLabel(ctx, repo, selectedNumber, needsRemediationLabel)
+}
+
+func runRebasePRCore(ctx context.Context, repo providers.RepositoryRef, resultFile, selectedNumber string, selectedPRNumber int, head, base string, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap bool, remediate, pushToken string, transport rebasePRTransport, stdout, stderr io.Writer) int {
+	attemptedHeadSHA := ""
+	rebaseBaseSHA := ""
+	conflict := false
+	var conflictLocations []rebaseConflictLocation
+	policy := evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, false)
+	fail := func(err error) int {
+		return failRebasePR(stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA, conflict, conflictLocations, policy, err)
+	}
+	attemptedHeadSHA, err := checkoutExistingBranch(".", head, pushToken)
 	if err != nil {
 		return fail(fmt.Errorf("checkout PR #%s's branch %q: %w", selectedNumber, head, err))
 	}
 
-	siblingHandoffs, hasSiblingHandoff, err := trustedSiblingOverlapHandoffs(
-		ctx, handoffProvider, repo, selectedNumber, attemptedHeadSHA,
-	)
-	hasSiblingOverlap = hasSiblingOverlap || hasSiblingHandoff
-	if hasSiblingHandoff && hasSubstantiveFindings && siblingHandoffs.verdict != nil {
-		hasSubstantiveFindings = verdictHasIndependentSubstantiveFindingForPR(
-			siblingHandoffs.verdict,
-			selectedPRNumber,
-			siblingHandoffs.displacingPullNumbers,
-			resolveMinSeverity(stderr),
-		)
-	}
-	// Detect a genuinely new human comment ONLY when the declared policy names
-	// human-comment (#941/PRR-6 gate). Skipping the provider calls entirely for
-	// an old pinned policy that omits the cause is what keeps such a workflow
-	// byte-for-byte unaffected — the parking-regression hazard (design §0/§6).
-	hasNewHumanComment := false
-	if remediatePolicyAllows(remediate, remediateCauseHumanComment) {
-		comments, err := handoffProvider.ListComments(ctx, repo, selectedNumber)
-		if err != nil {
-			return fail(fmt.Errorf("list comments on PR #%s: %w", selectedNumber, err))
-		}
-		botLogin, err := handoffProvider.AuthenticatedLogin(ctx)
-		if err != nil {
-			return fail(fmt.Errorf("resolve authenticated login for PR #%s: %w", selectedNumber, err))
-		}
-		hasNewHumanComment = hasNewHumanCommentSince(comments, botLogin)
-	}
-	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, hasNewHumanComment)
+	evidence, err := transport.LoadCommentEvidence(ctx, repo, selectedNumber)
 	if err != nil {
 		return fail(fmt.Errorf("load post-merge remediation handoff for PR #%s: %w", selectedNumber, err))
 	}
+
+	hasNewHumanComment := false
+	if evidence.available {
+		hasPotentialHandoff := hasPotentialSiblingOverlapHandoff(evidence.comments, attemptedHeadSHA)
+		if hasPotentialHandoff {
+			botLogin, loginErr := transport.AuthenticatedLogin(ctx)
+			if loginErr != nil {
+				return fail(fmt.Errorf("load post-merge remediation handoff for PR #%s: %w", selectedNumber, loginErr))
+			}
+			handoffs, hasHandoff, handoffErr := trustedSiblingOverlapHandoffs(
+				evidence.comments, botLogin, attemptedHeadSHA,
+				func(commentID, body string) error {
+					return transport.UpdateComment(ctx, repo, commentID, body)
+				},
+			)
+			hasSiblingOverlap = hasSiblingOverlap || hasHandoff
+			if hasHandoff && hasSubstantiveFindings && handoffs.verdict != nil {
+				hasSubstantiveFindings = verdictHasIndependentSubstantiveFindingForPR(
+					handoffs.verdict, selectedPRNumber, handoffs.displacingPullNumbers, resolveMinSeverity(stderr),
+				)
+			}
+			policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, false)
+			if handoffErr != nil {
+				return fail(fmt.Errorf("load post-merge remediation handoff for PR #%s: %w", selectedNumber, handoffErr))
+			}
+		}
+	}
+	if remediatePolicyAllows(remediate, remediateCauseHumanComment) {
+		humanCommentEvidence, err := transport.LoadHumanCommentEvidence(ctx, repo, selectedNumber)
+		if err != nil {
+			return fail(fmt.Errorf("list comments on PR #%s: %w", selectedNumber, err))
+		}
+		if humanCommentEvidence.available {
+			botLogin, err := transport.AuthenticatedLogin(ctx)
+			if err != nil {
+				return fail(fmt.Errorf("resolve authenticated login for PR #%s: %w", selectedNumber, err))
+			}
+			hasNewHumanComment = hasNewHumanCommentSince(humanCommentEvidence.comments, botLogin)
+		}
+	}
+	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, hasNewHumanComment)
 
 	conflict, conflictLocations, rebaseBaseSHA, err = attemptRebase(".", base, pushToken)
 	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, hasNewHumanComment)
@@ -180,9 +292,7 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
 			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
 		}
-		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo, ID: selectedNumber, RemoveLabels: []string{needsRemediationLabel},
-		}); err != nil {
+		if err := transport.ClearNeedsRemediation(ctx, repo, selectedNumber); err != nil {
 			return fail(fmt.Errorf("clear %s from PR #%s: %w", needsRemediationLabel, selectedNumber, err))
 		}
 		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, policyResult{}, nil, attemptedHeadSHA, rebaseBaseSHA); err != nil {
@@ -214,127 +324,6 @@ func runRebasePR(args []string, stdout, stderr io.Writer) int {
 	// cause. A human-comment-only cycle likewise just force-pushes the clean
 	// rebase (safe: it neither rewrites content nor drops a finding) and defers
 	// to the checkpoint for the agentic response to the comment.
-	if !conflict && !hasSubstantiveFindings && !hasSiblingOverlap {
-		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
-			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
-		}
-	}
-
-	if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
-		return fail(err)
-	}
-	pf(stdout, "PR #%s needs agentic remediation (conflict=%v, substantiveFindings=%v, failingCI=%v) — routing to remediation checkpoint\n", selectedNumber, conflict, hasSubstantiveFindings, hasFailingCI)
-	return 0
-}
-
-// runRebasePRADO runs the rebase-pr stage on Azure DevOps. The git core —
-// checkout, fetch/rebase (with the portal-bundle and adjacent-line
-// auto-resolution), and the mandatory force-with-lease — is provider-neutral and
-// shared verbatim with the GitHub path (checkoutExistingBranch, attemptRebase,
-// forcePushWithLease, evaluateRemediatePolicy, writeRebaseResult, failRebasePR).
-// Only three things differ on ADO, all reached because *ADOProvider cannot
-// satisfy remediationProvider (remediation-wiring-plan §0.1/§3.2):
-//
-//   - The clean-rebase label clear routes to the native PR-label DELETE
-//     (RemovePullRequestLabel, §2.6) instead of UpdateWorkItem(ID: PR#), which on
-//     ADO would mutate the unrelated work item that shares the PR's numeric id
-//     (the wrong-object hazard, §0.5).
-//   - The trusted-sibling-overlap handoff scan is GitHub-only remediation
-//     machinery (it reads PR issue comments and uses identity semantics ADO
-//     lacks and takes a remediationProvider *ADOProvider cannot satisfy); it never
-//     runs, so hasSiblingOverlap stays whatever gather-pr-context reported
-//     (always false on ADO).
-//   - human-comment detection never runs: the ADO remediate policy drops that
-//     cause (§3.2), so no PR-comment scan is needed and — exactly as on GitHub —
-//     an old pinned policy is byte-for-byte unaffected.
-//
-// The provider is built from config-sourced ADO auth via the shared stage factory
-// (no github:* token is resolved); only the provider-neutral repo:push
-// credential feeds the git operations.
-func runRebasePRADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	ctx, cancel := providerCommandContext()
-	defer cancel()
-
-	resultFile := providerInput("resultFile", "rebase-result.json")
-	selectedNumber := providerInput("selectedNumber", "")
-	head := providerInput("head", "")
-	base := providerInput("base", providerBaseBranch())
-	attemptedHeadSHA := ""
-	rebaseBaseSHA := ""
-	hasSubstantiveFindings := providerInput("hasSubstantiveFindings", "false") == "true"
-	hasFailingCI := providerInput("hasFailingCI", "false") == "true"
-	hasSiblingOverlap := providerInput("hasSiblingOverlap", "false") == "true"
-	remediate := providerInput("remediate", defaultRemediatePolicy)
-	conflict := false
-	var conflictLocations []rebaseConflictLocation
-	// human-comment is never detected on ADO (see the doc comment) — pass false.
-	policy := evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, false)
-	fail := func(err error) int {
-		return failRebasePR(
-			stderr, resultFile, selectedNumber, head, attemptedHeadSHA, rebaseBaseSHA,
-			conflict, conflictLocations, policy, err,
-		)
-	}
-	if selectedNumber == "" || head == "" {
-		return fail(errors.New("selectedNumber and head are required (inputsFrom gather-pr-context's own outputs)"))
-	}
-	if _, err := strconv.Atoi(selectedNumber); err != nil {
-		return fail(fmt.Errorf("invalid selectedNumber %q: %w", selectedNumber, err))
-	}
-
-	provider, err := newProviderForStageAs[*providers.ADOProvider](root, repo, true)
-	if err != nil {
-		return fail(err)
-	}
-	pushToken, err := providerToken(capability.RepoPush)
-	if err != nil {
-		return fail(err)
-	}
-
-	attemptedHeadSHA, err = checkoutExistingBranch(".", head, pushToken)
-	if err != nil {
-		return fail(fmt.Errorf("checkout PR #%s's branch %q: %w", selectedNumber, head, err))
-	}
-
-	conflict, conflictLocations, rebaseBaseSHA, err = attemptRebase(".", base, pushToken)
-	policy = evaluateRemediatePolicy(remediate, conflict, hasSubstantiveFindings, hasFailingCI, hasSiblingOverlap, false)
-	if err != nil {
-		return fail(fmt.Errorf("rebase PR #%s onto %q: %w", selectedNumber, base, err))
-	}
-
-	if !policy.needsAgent {
-		// Nothing detected at all — the liberal-default behavior this reproduces
-		// exactly regardless of the declared policy.
-		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
-			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
-		}
-		// The re-entry trigger: clear the marker via the native PR-label DELETE,
-		// NEVER UpdateWorkItem(ID: PR#) — that is the wrong-object hazard on ADO.
-		if err := provider.RemovePullRequestLabel(ctx, repo, selectedNumber, needsRemediationLabel); err != nil {
-			return fail(fmt.Errorf("clear %s from PR #%s: %w", needsRemediationLabel, selectedNumber, err))
-		}
-		if err := writeRebaseResult(resultFile, selectedNumber, head, false, false, policyResult{}, nil, attemptedHeadSHA, rebaseBaseSHA); err != nil {
-			return fail(err)
-		}
-		pf(stdout, "PR #%s: clean rebase onto %s, no substantive finding — force-pushed and cleared %s\n", selectedNumber, base, needsRemediationLabel)
-		return 0
-	}
-
-	if policy.policyExcluded {
-		// A cause WAS detected, but the declared policy excludes every detected
-		// cause (#941/PRR-6) — leave this cycle untouched for a human rather than
-		// force-pushing or dropping the finding.
-		if err := writeRebaseResult(resultFile, selectedNumber, head, conflict, true, policy.policyResult, conflictLocations, attemptedHeadSHA, rebaseBaseSHA); err != nil {
-			return fail(err)
-		}
-		pf(stdout, "PR #%s: %s\n", selectedNumber, policy.excludedReason)
-		return 0
-	}
-
-	// At least one detected cause is allowed by the declared policy. Same
-	// force-push-to-retrigger-CI-only behavior as the GitHub path when the rebase
-	// itself is clean (only failing-ci fired): that push touches neither the
-	// firing cause nor a finding.
 	if !conflict && !hasSubstantiveFindings && !hasSiblingOverlap {
 		if err := forcePushWithLease(".", head, attemptedHeadSHA, pushToken); err != nil {
 			return fail(fmt.Errorf("force-push rebased PR #%s branch %q: %w", selectedNumber, head, err))
@@ -617,22 +606,13 @@ type trustedSiblingHandoffs struct {
 }
 
 func trustedSiblingOverlapHandoffs(
-	ctx context.Context,
-	provider remediationProvider,
-	repo providers.RepositoryRef,
-	selectedNumber string,
+	comments []providers.Comment,
+	author string,
 	targetHeadSHA string,
+	updateComment func(commentID, body string) error,
 ) (trustedSiblingHandoffs, bool, error) {
-	comments, err := provider.ListComments(ctx, repo, selectedNumber)
-	if err != nil {
-		return trustedSiblingHandoffs{}, false, err
-	}
 	if !hasPotentialSiblingOverlapHandoff(comments, targetHeadSHA) {
 		return trustedSiblingHandoffs{}, false, nil
-	}
-	author, err := provider.AuthenticatedLogin(ctx)
-	if err != nil {
-		return trustedSiblingHandoffs{}, false, err
 	}
 	type matchingHandoff struct {
 		comment providers.Comment
@@ -674,7 +654,7 @@ func trustedSiblingOverlapHandoffs(
 		if err != nil {
 			return found, true, err
 		}
-		if err := provider.UpdateComment(ctx, repo, match.comment.ID, body); err != nil {
+		if err := updateComment(match.comment.ID, body); err != nil {
 			return found, true, fmt.Errorf("migrate legacy post-merge remediation handoff: %w", err)
 		}
 	}

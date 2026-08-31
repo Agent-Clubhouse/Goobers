@@ -207,6 +207,22 @@ func setADOCheckpointStageEnv(t *testing.T, repo providers.RepositoryRef) {
 	t.Setenv("GOOBERS_INPUT_SELECTEDNUMBER", "359")
 }
 
+func TestADORemediationCheckpointFeaturesUseOnlyADOInputs(t *testing.T) {
+	features := adoRemediationCheckpointFeatures()
+	if !features.CopyListedLabels || features.StabilizeLiveReads {
+		t.Fatalf("ADO features = %+v, want listed labels without live-read stabilization", features)
+	}
+	if features.FindStructuralCollisions != nil ||
+		features.NoopEscalationReason != nil ||
+		features.SiblingOverlapContext != nil ||
+		features.LiveBaseTip != nil {
+		t.Fatalf("ADO features expose unsupported GitHub enrichments: %+v", features)
+	}
+	if features.CheckoutToken == nil || features.CommentNoun != "thread comments" {
+		t.Fatalf("ADO features = %+v, want thread comments and checkout support", features)
+	}
+}
+
 func TestRunRemediationCheckpointADOWaitsForSiblingAndClearsStaleLabel(t *testing.T) {
 	root, repo := providerDispatchFixture(t, providers.ProviderADO)
 	setADOCheckpointStageEnv(t, repo)

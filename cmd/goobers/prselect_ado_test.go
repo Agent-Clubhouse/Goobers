@@ -299,3 +299,19 @@ func TestPRSelectADOEnforcesOptInAndAssigneePolicy(t *testing.T) {
 		t.Fatalf("read claimed-item.json: %v", err)
 	}
 }
+
+func TestPRSelectADORequiresExplicitSelfIdentity(t *testing.T) {
+	root, repo := providerDispatchFixture(t, providers.ProviderADO)
+	server := adoPRSelectServer(t, "approved")
+	adoPRSelectEnv(t, repo, server)
+	t.Setenv("GOOBERS_INPUT_RESPECTASSIGNEE", "true")
+	t.Chdir(t.TempDir())
+
+	code, stdout, stderr := runArgs(t, "pr-select", root)
+	if code != 1 {
+		t.Fatalf("pr-select: code = %d, stdout = %q, stderr = %q; want explicit-self-identity error", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "selfIdentity is required for respectAssignee on Azure DevOps") {
+		t.Fatalf("stderr = %q, want explicit-self-identity error", stderr)
+	}
+}

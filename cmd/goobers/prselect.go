@@ -84,28 +84,25 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Azure DevOps merge epic: pr-select's ADO branch dispatches
-	// selection through the provider-neutral Dispatcher and never resolves a
-	// github:pr:write token. Every GitHub path below stays byte-identical — the
-	// ADO behavior is a wholly separate function reached only on this switch.
-	if repo.Provider == providers.ProviderADO {
-		return runPRSelectADO(root, repo, stdout, stderr)
-	}
-	token, err := providerToken(capability.GitHubPRWrite)
+	source, gateProvider, err := newPRSelectSources(root, repo)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	// Dispatch on the routed repo's own provider kind. Constructing a GitHub
-	// provider unconditionally addressed a Gitea-routed repo's selection scan
-	// to api.github.com with a Gitea credential, failing the stage with a 401
-	// github_auth_failed on a repo that has no GitHub side at all — the same
-	// defect open-pr's per-kind dispatch fixed for PR creation.
-	provider, err := remediationStageProvider(root, repo, token, true)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
+	return runPRSelectCore(root, repo, source, gateProvider, stdout, stderr)
+}
+
+// runPRSelectCore owns the provider-neutral selection policy. source supplies
+// the current PR snapshot through the provider's supported read channel;
+// gateProvider is present only for the issue-comment forges, whose
+// sibling/foundation/escalation/demotion/Tutor gates are supported.
+func runPRSelectCore(
+	root string,
+	repo providers.RepositoryRef,
+	source prSelectSource,
+	gateProvider remediationProvider,
+	stdout, stderr io.Writer,
+) int {
 
 	base := providerInput("base", providerBaseBranch())
 	headPrefixes := mergeReviewHeadPrefixes()
@@ -142,72 +139,43 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 	}
 	selfIdentity := strings.TrimSpace(providerInput("selfIdentity", ""))
 	if respectAssignee && selfIdentity == "" {
-		selfIdentity, err = provider.AuthenticatedLogin(ctx)
+		identitySource, ok := source.(prSelectSelfIdentitySource)
+		if !ok {
+			pf(stderr, "error: selfIdentity is required for respectAssignee on Azure DevOps\n")
+			return 1
+		}
+		selfIdentity, err = identitySource.resolveSelfIdentity(ctx)
 		if err != nil {
 			pf(stderr, "error: resolve selfIdentity for assignee policy: %v\n", err)
 			return 1
 		}
 	}
 	now := time.Now().UTC()
-	expectedAuthorLogin := daemonIdentityAuthorLogin(ctx, root, provider)
+	expectedAuthorLogin := source.expectedAuthorLogin(ctx, root)
 	triggerRef := os.Getenv(executor.TriggerRefEnvVar)
 	completeness, err := prSelectSnapshotCompletenessForRun(root, repo, triggerRef, now)
 	if err != nil {
 		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
 		return 1
 	}
-	prs, openPRs, err := pullRequestsForSelection(ctx, provider, repo, base, headPrefixes, authorScope, identityFilters, triggerRef, completeness, expectedAuthorLogin)
+	prs, openPRs, err := source.pullRequests(ctx, repo, prSelectSourceRequest{
+		base:                base,
+		headPrefixes:        headPrefixes,
+		authorScope:         authorScope,
+		identityFilters:     identityFilters,
+		triggerRef:          triggerRef,
+		completeness:        completeness,
+		expectedAuthorLogin: expectedAuthorLogin,
+	})
 	if err != nil {
 		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
 	}
 
-	blockerScanCtx, cancelBlockerScan := blockedOnSiblingScanContext(ctx)
-	defer cancelBlockerScan()
-	siblingBlocked := make(map[int]bool)
-	liveSiblingBlockers := make(map[int][]int)
-	blockedDependents := make(map[int]int)
-	for _, pr := range openPRs {
-		blockers, err := liveBlockedOnSiblingBlockers(blockerScanCtx, provider, repo, pr)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
-		}
-		liveSiblingBlockers[pr.Number] = blockers
-		siblingBlocked[pr.Number] = len(blockers) > 0
-		for _, blocker := range blockers {
-			blockedDependents[blocker]++
-		}
-	}
-	var couplingDependents []providers.PullRequestSummary
-	for _, pr := range openPRs {
-		if pr.State == "open" && pr.Base == base && isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin) &&
-			!hasAnyLabel(pr.Labels, []string{noMergeReviewLabel}) {
-			couplingDependents = append(couplingDependents, pr)
-		}
-	}
-	couplings, couplingWarnings, err := loadFoundationCouplings(blockerScanCtx, provider, repo, couplingDependents, openPRs, siblingBlocked)
-	if err != nil {
-		return failProviderStage(stderr, "detect foundation-coupled pull requests", err, "selected-pr.json")
-	}
-	for _, warning := range couplingWarnings {
-		pf(stderr, "warning: foundation-coupling scan: %s\n", warning)
-	}
-	for _, coupling := range couplings {
-		changed, ferr := flagFoundationCoupling(
-			blockerScanCtx, provider, repo, coupling, liveSiblingBlockers[coupling.dependent.Number],
-		)
-		if ferr != nil {
-			return failProviderStage(stderr, fmt.Sprintf("flag foundation-coupled PR #%d", coupling.dependent.Number), ferr, "selected-pr.json")
-		}
-		if !changed {
-			continue
-		}
-		liveSiblingBlockers[coupling.dependent.Number] = append(
-			liveSiblingBlockers[coupling.dependent.Number], coupling.foundation.Number,
-		)
-		siblingBlocked[coupling.dependent.Number] = true
-		blockedDependents[coupling.foundation.Number]++
-		pf(stdout, "foundation-coupled: parked PR #%d behind PR #%d (%s)\n",
-			coupling.dependent.Number, coupling.foundation.Number, strings.Join(coupling.files, ", "))
+	gateState, gateCode := loadPRSelectSafetyGateState(
+		ctx, gateProvider, repo, openPRs, base, headPrefixes, expectedAuthorLogin, stdout, stderr,
+	)
+	if gateCode != 0 {
+		return gateCode
 	}
 
 	var eligible []providers.PullRequestSummary
@@ -230,58 +198,39 @@ func runPRSelect(args []string, stdout, stderr io.Writer) int {
 				mergeReviewPolicyRejection(pr, requiredOptInLabel, respectAssignee, selfIdentity))
 			continue
 		}
-		parked, err := scopeGateVerdictStillParks(ctx, provider, repo, pr)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("check scope-gate verdict for PR #%d", pr.Number), err, "selected-pr.json")
-		}
-		if parked {
-			continue
-		}
-		if isTutorBranch(pr.Head, providerBranchNamespace()) {
-			classification, classifyErr := classifyRemoteTutorChanges(
-				ctx, provider, repo, strconv.Itoa(pr.Number), pr.BaseSHA, pr.HeadSHA,
-			)
-			if classifyErr != nil {
-				pf(stderr, "warning: could not classify Tutor PR #%d (%v) — requiring manual review\n", pr.Number, classifyErr)
-				continue
-			}
-			if classification.RequiresHumanSignoff() {
-				pf(stdout, "manual review required for Tutor PR #%d: %s\n", pr.Number, classification.String())
-				continue
-			}
-		}
-		blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
-		if err != nil {
-			return failProviderStage(stderr, fmt.Sprintf("check escalation state for PR #%d", pr.Number), err, "selected-pr.json")
+		blocked, gateCode := prSelectSafetyGatesBlock(
+			ctx, gateProvider, repo, pr, gateState.siblingBlocked[pr.Number], stdout, stderr,
+		)
+		if gateCode != 0 {
+			return gateCode
 		}
 		if blocked {
 			continue
 		}
-		// #950: a demoted PR (repeatedly could not merge at an unchanged head)
-		// is excluded from selection so the election stops re-crowning the stuck
-		// lander; its cluster drains around it via the blocked-on-sibling
-		// liveness change. Self-heals the instant its head advances, same as
-		// escalationStillBlocks above. Fail OPEN — treat a resolution error as
-		// not-demoted (today's behavior) so the demotion signal can never itself
-		// keep an otherwise-eligible PR out of merge-review.
-		demoted, derr := demotionStillHolds(ctx, provider, repo, pr)
-		if derr != nil {
-			pf(stderr, "warning: could not resolve merge-demotion state for PR #%d (%v) — treating as not demoted\n", pr.Number, derr)
-			demoted = false
-		}
-		if demoted {
-			continue
-		}
-		// #748: a PR parked goobers:blocked-on-sibling is skipped while any of
-		// its named blocker PRs is still open — re-reviewing it would just
-		// reproduce the identical cross-PR verdict. Self-heals (selectable
-		// again) automatically once every blocker merges or closes, with no
-		// human clearing the label.
-		if siblingBlocked[pr.Number] {
-			continue
-		}
 		eligible = append(eligible, pr)
 	}
+	return completePRSelection(root, repo, prs, eligible, completeness, now,
+		gateState.blockedDependents, triggerRef, authorScope, headPrefixes, expectedAuthorLogin,
+		requiredOptInLabel, respectAssignee, selfIdentity, stdout, stderr)
+}
+
+// completePRSelection is the provider-neutral selection decision after a
+// source has supplied its eligible snapshot. Fairness, target narrowing,
+// claiming, and the result contract are identical for every provider.
+func completePRSelection(
+	root string,
+	repo providers.RepositoryRef,
+	prs, eligible []providers.PullRequestSummary,
+	completeness prSelectSnapshotCompleteness,
+	now time.Time,
+	blockedDependents map[int]int,
+	triggerRef, authorScope string,
+	headPrefixes []string,
+	expectedAuthorLogin, requiredOptInLabel string,
+	respectAssignee bool,
+	selfIdentity string,
+	stdout, stderr io.Writer,
+) int {
 	observation, err := observePRSelectEligibility(root, repo, prs, eligible, completeness, now)
 	if err != nil {
 		pf(stderr, "error: update PR fairness state: %v\n", err)
@@ -411,189 +360,229 @@ func pullRequestsForSelection(
 	return prs, openPRs, nil
 }
 
-// runPRSelectADO is pr-select's Azure DevOps branch (ADO merge epic). It
-// mirrors runPRSelect's GitHub selection, but through the
-// provider-neutral *Dispatcher rather than a concrete *providers.GitHubProvider:
-//
-//   - The provider is built from config-sourced ADO auth via
-//     the shared stage provider factory — no github:pr:write token is resolved. The
-//     GitHubPRWrite grant maps to ado:pr:write on ADO, carried by the configured
-//     auth source; pr-select performs no merge/completion, so it needs no
-//     ado:pr:complete authority (that grant gates merge-pr/queue-watch only).
-//   - Candidate CheckState comes from PollPullRequest's branch-policy
-//     evaluations — ADO has no RefCheckState/RefCheckStates (§2).
-//   - The webhook-targeted PR is resolved via PollPullRequest — ADO has no
-//     GetPullRequest (§2).
-//   - Identity falls to the branch-prefix heuristic: ADO has no
-//     AuthenticatedLogin, so daemonIdentityAuthorLogin's login is "" (§2/§8).
-//   - The blocked-on-sibling, foundation-coupling, escalation, demotion, and
-//     Tutor gates are GitHub-only remediation-lane machinery and are gated OFF
-//     as documented no-ops (§1b/§7): their helpers take a concrete
-//     *providers.GitHubProvider / remediationProvider that *ADOProvider does not
-//     satisfy, and several would otherwise issue a PR-as-work-item write against
-//     wit/workitems (wrong-object hazard). No sibling is parked here.
-func runPRSelectADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	adoProvider, err := newMergeReviewProvider(root, repo, true)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-	provider := providers.NewDispatcher(adoProvider)
+// prSelectSource contains only the provider-dependent reads that construct the
+// selection snapshot. The decision core deliberately keeps eligibility,
+// fairness, claims, and result handling outside this adapter.
+type prSelectSource interface {
+	pullRequests(context.Context, providers.RepositoryRef, prSelectSourceRequest) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error)
+	expectedAuthorLogin(context.Context, string) string
+}
 
-	base := providerInput("base", providerBaseBranch())
-	headPrefixes := mergeReviewHeadPrefixes()
-	authorScope := providerInput("authorScope", authorScopeGoobers)
-	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {
-		pf(stderr, "error: authorScope input %q must be %q or %q\n", authorScope, authorScopeGoobers, authorScopeAny)
-		return 1
-	}
-	excludeLabels := splitLabelList(providerInput("excludeLabels", defaultExcludeLabels))
-	// See runPRSelect's matching comment (#3262): LabelNeedsHuman is
-	// always excluded here too, for whenever it applies to an ADO work item.
-	excludeLabels = append(excludeLabels, noMergeReviewLabel, abortedRunLabel, providers.LabelNeedsHuman)
-	identityFilters := providers.ListPullRequestsRequest{
-		Author:            providerInput("author", ""),
-		Assignee:          providerInput("assignee", ""),
-		RequestedReviewer: providerInput("requestedReviewer", ""),
+// prSelectSelfIdentitySource is implemented only where the configured
+// credential exposes a stable PR assignee/reviewer identity.
+type prSelectSelfIdentitySource interface {
+	prSelectSource
+	resolveSelfIdentity(context.Context) (string, error)
+}
+
+type prSelectSourceRequest struct {
+	base                string
+	headPrefixes        []string
+	authorScope         string
+	identityFilters     providers.ListPullRequestsRequest
+	triggerRef          string
+	completeness        prSelectSnapshotCompleteness
+	expectedAuthorLogin string
+}
+
+// newPRSelectSources selects the supported snapshot channel. GitHub and Gitea
+// use the normal single-PR/check-ref source; ADO uses its branch-policy poll
+// source and intentionally supplies no remediation gate provider. That makes
+// the documented ADO no-op gates unreachable rather than probing unsupported
+// comment, file, or branch operations.
+func newPRSelectSources(root string, repo providers.RepositoryRef) (prSelectSource, remediationProvider, error) {
+	if repo.Provider == providers.ProviderADO {
+		provider, err := newMergeReviewProvider(root, repo, true)
+		if err != nil {
+			return nil, nil, err
+		}
+		return branchPolicyPRSelectSource{provider: providers.NewDispatcher(provider)}, nil, nil
 	}
 
-	ctx, cancel := providerCommandContext()
-	defer cancel()
-	now := time.Now().UTC()
-	requiredOptInLabel := strings.TrimSpace(providerInput("requireOptInLabel", ""))
-	respectAssignee, err := strconv.ParseBool(providerInput("respectAssignee", "false"))
+	token, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
-		pf(stderr, "error: invalid respectAssignee input: %v\n", err)
-		return 1
+		return nil, nil, err
 	}
-	selfIdentity := strings.TrimSpace(providerInput("selfIdentity", ""))
-	if respectAssignee && selfIdentity == "" {
-		pf(stderr, "error: selfIdentity is required for respectAssignee on Azure DevOps\n")
-		return 1
-	}
-	// ADO has no AuthenticatedLogin (merge-wiring-plan §2): daemonIdentityAuthorLogin
-	// would return "" here, so isOwnPullRequest falls to the branch-prefix
-	// heuristic against headPrefixes. See §8 (the advisoryMode misfire): the ADO
-	// run-branch namespace must appear in the gaggle's headPrefixes or a
-	// goobers-authored ADO PR is misclassified as advisory and never merges.
-	expectedAuthorLogin := ""
-	triggerRef := os.Getenv(executor.TriggerRefEnvVar)
-	completeness, err := prSelectSnapshotCompletenessForRun(root, repo, triggerRef, now)
+	// Dispatch on the routed repo's own provider kind. Constructing a GitHub
+	// provider unconditionally addressed a Gitea-routed repo's selection scan
+	// to api.github.com with a Gitea credential, failing the stage with a 401
+	// github_auth_failed on a repo that has no GitHub side at all — the same
+	// defect open-pr's per-kind dispatch fixed for PR creation.
+	provider, err := remediationStageProvider(root, repo, token, true)
 	if err != nil {
-		pf(stderr, "error: determine PR snapshot completeness: %v\n", err)
-		return 1
+		return nil, nil, err
 	}
-	prs, _, err := pullRequestsForSelectionADO(
-		ctx, provider, repo, base, headPrefixes, authorScope, identityFilters, triggerRef, completeness, expectedAuthorLogin,
+	return refCheckPRSelectSource{provider: provider}, provider, nil
+}
+
+// refCheckPRSelectSource is the GitHub/Gitea source: checks are resolved at a
+// head ref and a webhook-targeted PR is read directly.
+type refCheckPRSelectSource struct {
+	provider remediationProvider
+}
+
+func (s refCheckPRSelectSource) pullRequests(ctx context.Context, repo providers.RepositoryRef, request prSelectSourceRequest) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
+	return pullRequestsForSelection(
+		ctx, s.provider, repo, request.base, request.headPrefixes, request.authorScope,
+		request.identityFilters, request.triggerRef, request.completeness, request.expectedAuthorLogin,
 	)
-	if err != nil {
-		return failProviderStage(stderr, "load pull requests", err, "selected-pr.json")
-	}
+}
 
-	// merge-wiring-plan §1b/§7: the blocked-on-sibling / foundation-coupling scan
-	// and the per-candidate escalation/demotion/sibling/Tutor gates are gated OFF
-	// on ADO. Nothing parks a sibling, so no dependent is aging-boosted here.
-	blockedDependents := map[int]int{}
+func (s refCheckPRSelectSource) resolveSelfIdentity(ctx context.Context) (string, error) {
+	return s.provider.AuthenticatedLogin(ctx)
+}
 
-	var eligible []providers.PullRequestSummary
-	for _, pr := range prs {
-		if pr.State != "open" || pr.Base != base ||
-			(authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin)) {
-			continue
-		}
-		if pr.Draft {
-			continue
-		}
-		if pr.CheckState != providers.CheckStatePassing {
-			continue
-		}
-		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
-			continue
-		}
-		if !eligibleByMergeReviewPolicy(pr, requiredOptInLabel, respectAssignee, selfIdentity) {
-			pf(stdout, "rejected PR #%d by merge-review eligibility policy: %s\n", pr.Number,
-				mergeReviewPolicyRejection(pr, requiredOptInLabel, respectAssignee, selfIdentity))
-			continue
-		}
-		eligible = append(eligible, pr)
-	}
+func (s refCheckPRSelectSource) expectedAuthorLogin(ctx context.Context, root string) string {
+	return daemonIdentityAuthorLogin(ctx, root, s.provider)
+}
 
-	observation, err := observePRSelectEligibility(root, repo, prs, eligible, completeness, now)
-	if err != nil {
-		pf(stderr, "error: update PR fairness state: %v\n", err)
-		return 1
-	}
-	if len(eligible) == 0 {
-		return writeNoWorkResult(stdout, stderr, "no eligible PR to select this cycle")
-	}
-	eligible, priorities, fairness := rankEligiblePullRequests(
-		observation.UnclaimedEligible, blockedDependents, observation.EligibleSince, now,
+// branchPolicyPRSelectSource is the ADO source. Its policy evaluations are the
+// source of truth for CheckState, and it intentionally has no inferred
+// self-identity or daemon-login lookup: ADO selection stays on the configured
+// branch-prefix ownership rule.
+type branchPolicyPRSelectSource struct {
+	provider adoSelectProvider
+}
+
+func (s branchPolicyPRSelectSource) pullRequests(ctx context.Context, repo providers.RepositoryRef, request prSelectSourceRequest) ([]providers.PullRequestSummary, []providers.PullRequestSummary, error) {
+	return pullRequestsForSelectionADO(
+		ctx, s.provider, repo, request.base, request.headPrefixes, request.authorScope,
+		request.identityFilters, request.triggerRef, request.completeness, request.expectedAuthorLogin,
 	)
-	eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
-	if observation.CurrentRunHasLiveClaim {
-		if len(observation.CurrentRunClaimEligible) == 0 {
-			return writeNoWorkResult(stdout, stderr, "current run already holds a live claim outside the eligible snapshot")
+}
+
+func (branchPolicyPRSelectSource) expectedAuthorLogin(context.Context, string) string { return "" }
+
+type prSelectSafetyGateState struct {
+	siblingBlocked    map[int]bool
+	blockedDependents map[int]int
+}
+
+// loadPRSelectSafetyGateState performs the issue-comment-forge gates before
+// eligibility. An absent provider is the explicit ADO limitation: no sibling
+// is parked or aging-boosted, and no unsupported operation is attempted.
+func loadPRSelectSafetyGateState(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	openPRs []providers.PullRequestSummary,
+	base string,
+	headPrefixes []string,
+	expectedAuthorLogin string,
+	stdout, stderr io.Writer,
+) (prSelectSafetyGateState, int) {
+	state := prSelectSafetyGateState{
+		siblingBlocked:    make(map[int]bool),
+		blockedDependents: make(map[int]int),
+	}
+	if provider == nil {
+		return state, 0
+	}
+
+	blockerScanCtx, cancelBlockerScan := blockedOnSiblingScanContext(ctx)
+	defer cancelBlockerScan()
+	liveSiblingBlockers := make(map[int][]int)
+	for _, pr := range openPRs {
+		blockers, err := liveBlockedOnSiblingBlockers(blockerScanCtx, provider, repo, pr)
+		if err != nil {
+			return state, failProviderStage(stderr, fmt.Sprintf("check blocked-on-sibling state for PR #%d", pr.Number), err, "selected-pr.json")
 		}
-		eligible, priorities, _ = rankEligiblePullRequests(
-			observation.CurrentRunClaimEligible, blockedDependents, nil, now,
+		liveSiblingBlockers[pr.Number] = blockers
+		state.siblingBlocked[pr.Number] = len(blockers) > 0
+		for _, blocker := range blockers {
+			state.blockedDependents[blocker]++
+		}
+	}
+	var couplingDependents []providers.PullRequestSummary
+	for _, pr := range openPRs {
+		if pr.State == "open" && pr.Base == base && isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin) &&
+			!hasAnyLabel(pr.Labels, []string{noMergeReviewLabel}) {
+			couplingDependents = append(couplingDependents, pr)
+		}
+	}
+	couplings, couplingWarnings, err := loadFoundationCouplings(blockerScanCtx, provider, repo, couplingDependents, openPRs, state.siblingBlocked)
+	if err != nil {
+		return state, failProviderStage(stderr, "detect foundation-coupled pull requests", err, "selected-pr.json")
+	}
+	for _, warning := range couplingWarnings {
+		pf(stderr, "warning: foundation-coupling scan: %s\n", warning)
+	}
+	for _, coupling := range couplings {
+		changed, err := flagFoundationCoupling(
+			blockerScanCtx, provider, repo, coupling, liveSiblingBlockers[coupling.dependent.Number],
 		)
-		eligible = restrictSelectionToTargetedPullRequest(eligible, triggerRef)
+		if err != nil {
+			return state, failProviderStage(stderr, fmt.Sprintf("flag foundation-coupled PR #%d", coupling.dependent.Number), err, "selected-pr.json")
+		}
+		if !changed {
+			continue
+		}
+		liveSiblingBlockers[coupling.dependent.Number] = append(
+			liveSiblingBlockers[coupling.dependent.Number], coupling.foundation.Number,
+		)
+		state.siblingBlocked[coupling.dependent.Number] = true
+		state.blockedDependents[coupling.foundation.Number]++
+		pf(stdout, "foundation-coupled: parked PR #%d behind PR #%d (%s)\n",
+			coupling.dependent.Number, coupling.foundation.Number, strings.Join(coupling.files, ", "))
 	}
-	if len(eligible) == 0 {
-		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+	return state, 0
+}
+
+// prSelectSafetyGatesBlock applies the remaining issue-comment-forge gates to
+// one otherwise eligible candidate. The nil ADO provider returns before any
+// GitHub/Gitea-only helper can issue an unsupported operation.
+func prSelectSafetyGatesBlock(
+	ctx context.Context,
+	provider remediationProvider,
+	repo providers.RepositoryRef,
+	pr providers.PullRequestSummary,
+	siblingBlocked bool,
+	stdout, stderr io.Writer,
+) (bool, int) {
+	if provider == nil {
+		return false, 0
 	}
 
-	claimed, err := claimEligiblePullRequestInOrder(root, repo, eligible)
+	parked, err := scopeGateVerdictStillParks(ctx, provider, repo, pr)
 	if err != nil {
-		pf(stderr, "error: claim eligible PR: %v\n", err)
-		return 1
+		return false, failProviderStage(stderr, fmt.Sprintf("check scope-gate verdict for PR #%d", pr.Number), err, "selected-pr.json")
 	}
-	if claimed == nil {
-		return writeNoWorkResult(stdout, stderr, "every eligible PR is already claimed by another run")
+	if parked {
+		return true, 0
 	}
-	selected := *claimed
-	advisoryMode := authorScope == authorScopeAny && !isOwnPullRequest(selected.Author, selected.Head, headPrefixes, expectedAuthorLogin)
-	if err := clearPRSelectEligibilityWait(root, repo, selected); err != nil {
-		pf(stderr, "error: clear selected PR fairness state: %v\n", err)
-		return 1
+	if isTutorBranch(pr.Head, providerBranchNamespace()) {
+		classification, err := classifyRemoteTutorChanges(
+			ctx, provider, repo, strconv.Itoa(pr.Number), pr.BaseSHA, pr.HeadSHA,
+		)
+		if err != nil {
+			pf(stderr, "warning: could not classify Tutor PR #%d (%v) — requiring manual review\n", pr.Number, err)
+			return true, 0
+		}
+		if classification.RequiresHumanSignoff() {
+			pf(stdout, "manual review required for Tutor PR #%d: %s\n", pr.Number, classification.String())
+			return true, 0
+		}
 	}
-	priority := priorities[selected.Number]
-
-	resultFile := providerInput("resultFile", "selected-pr.json")
-	data, err := json.Marshal(map[string]string{
-		"number":                 strconv.Itoa(selected.Number),
-		"head":                   selected.Head,
-		"base":                   selected.Base,
-		"headSha":                selected.HeadSHA,
-		"baseSha":                selected.BaseSHA,
-		"url":                    selected.URL,
-		"advisoryMode":           strconv.FormatBool(advisoryMode),
-		"eligibleSince":          priority.EligibleSince.Format(time.RFC3339Nano),
-		"eligibleWaitSeconds":    strconv.FormatInt(int64(priority.Wait/time.Second), 10),
-		"agingBoost":             strconv.FormatInt(priority.AgingBoost, 10),
-		"starvationGuarded":      strconv.FormatBool(priority.StarvationGuarded),
-		"maxEligibleWaitSeconds": strconv.FormatInt(int64(fairness.MaxWait/time.Second), 10),
-		"starvedEligiblePRsCsv":  joinPRNumbers(fairness.Starved),
-		"eligibilityPolicy":      mergeReviewEligibilityDescription(requiredOptInLabel, respectAssignee, selfIdentity),
-	})
+	blocked, err := escalationStillBlocks(ctx, provider, repo, pr)
 	if err != nil {
-		pf(stderr, "error: marshal selected PR: %v\n", err)
-		return 1
+		return false, failProviderStage(stderr, fmt.Sprintf("check escalation state for PR #%d", pr.Number), err, "selected-pr.json")
 	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
+	if blocked {
+		return true, 0
 	}
-
-	pf(stdout, "selected PR #%d: %s\n", selected.Number, selected.URL)
-	pf(stdout, "selection eligibility policy: %s\n", mergeReviewEligibilityDescription(requiredOptInLabel, respectAssignee, selfIdentity))
-	pf(stdout, "selection fairness: eligible wait %s, max eligible wait %s, starvation guard %t, starved eligible PRs %s\n",
-		priority.Wait.Round(time.Second),
-		fairness.MaxWait.Round(time.Second),
-		priority.StarvationGuarded,
-		noneIfEmpty(joinPRNumbers(fairness.Starved)),
-	)
-	return 0
+	// #950: a demoted PR (repeatedly could not merge at an unchanged head)
+	// is excluded from selection so the election stops re-crowning the stuck
+	// lander; its cluster drains around it via the blocked-on-sibling liveness
+	// change. Fail OPEN so a demotion lookup error cannot create a merge outage.
+	demoted, err := demotionStillHolds(ctx, provider, repo, pr)
+	if err != nil {
+		pf(stderr, "warning: could not resolve merge-demotion state for PR #%d (%v) — treating as not demoted\n", pr.Number, err)
+		demoted = false
+	}
+	if demoted || siblingBlocked {
+		return true, 0
+	}
+	return false, 0
 }
 
 func restrictSelectionToTargetedPullRequest(candidates []providers.PullRequestSummary, triggerRef string) []providers.PullRequestSummary {
@@ -676,8 +665,8 @@ type adoSelectProvider interface {
 // State, which ADO's ListPullRequests leaves empty — is resolved from
 // PollPullRequest's branch-policy evaluations, and the webhook-targeted PR is
 // resolved via PollPullRequest rather than GetPullRequest. The second return
-// value (all open PRs) mirrors the GitHub signature for symmetry; the ADO branch
-// discards it because the sibling/foundation scans that consumed it are gated OFF.
+// value preserves the shared source contract; the selection core receives it
+// but skips the unsupported sibling/foundation scans for this source.
 func pullRequestsForSelectionADO(
 	ctx context.Context,
 	provider adoSelectProvider,

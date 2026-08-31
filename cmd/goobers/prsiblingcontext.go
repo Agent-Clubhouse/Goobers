@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -155,37 +156,67 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if repo.Provider == providers.ProviderADO {
-		return runGatherSiblingContextADO(root, repo, stdout, stderr)
+		adapter, err := newADOGatherSiblingContextAdapter(root, repo)
+		if err != nil {
+			pf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return runGatherSiblingContextWithoutSiblingEvidence(root, repo, adapter, stdout, stderr)
 	}
-	provider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, true,
-		withStageProviderCapability(capability.GitHubPRWrite),
-		withStageProviderCache(),
-	)
+	token, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-
-	selectedNumberStr := providerInput("selectedNumber", "")
-	if selectedNumberStr == "" {
-		pf(stderr, "error: selectedNumber is required (inputsFrom pr-select's number output)\n")
-		return 1
-	}
-	selectedNumber, err := strconv.Atoi(selectedNumberStr)
+	provider, err := remediationStageProvider(root, repo, token, true)
 	if err != nil {
-		pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumberStr, err)
+		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	base := providerInput("base", providerBaseBranch())
-	headPrefixes := mergeReviewHeadPrefixes()
-	authorScope := providerInput("authorScope", authorScopeGoobers)
-	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {
-		pf(stderr, "error: authorScope input %q must be %q or %q\n", authorScope, authorScopeGoobers, authorScopeAny)
-		return 1
+	return runGatherSiblingContextCore(root, repo, provider, *noCache, *noVerdictCache, stdout, stderr)
+}
+
+type gatherSiblingContextInput struct {
+	selectedNumber    string
+	selectedNumberInt int
+	base              string
+	advisoryMode      bool
+}
+
+// gatherSiblingContextStageInput owns the selected-PR handoff validation used
+// by both full sibling evidence and capability-limited provider paths.
+func gatherSiblingContextStageInput(stderr io.Writer) (gatherSiblingContextInput, bool) {
+	selectedNumber := providerInput("selectedNumber", "")
+	if selectedNumber == "" {
+		pf(stderr, "error: selectedNumber is required (inputsFrom pr-select's number output)\n")
+		return gatherSiblingContextInput{}, false
+	}
+	number, err := strconv.Atoi(selectedNumber)
+	if err != nil {
+		pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumber, err)
+		return gatherSiblingContextInput{}, false
 	}
 	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
 	if err != nil {
 		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
+		return gatherSiblingContextInput{}, false
+	}
+	return gatherSiblingContextInput{selectedNumber: selectedNumber, selectedNumberInt: number, base: providerInput("base", providerBaseBranch()), advisoryMode: advisoryMode}, true
+}
+
+func runGatherSiblingContextCore(root string, repo providers.RepositoryRef, provider remediationProvider, noCache, noVerdictCache bool, stdout, stderr io.Writer) int {
+	input, ok := gatherSiblingContextStageInput(stderr)
+	if !ok {
+		return 1
+	}
+	selectedNumberStr := input.selectedNumber
+	selectedNumber := input.selectedNumberInt
+	base := input.base
+	advisoryMode := input.advisoryMode
+	headPrefixes := mergeReviewHeadPrefixes()
+	authorScope := providerInput("authorScope", authorScopeGoobers)
+	if authorScope != authorScopeGoobers && authorScope != authorScopeAny {
+		pf(stderr, "error: authorScope input %q must be %q or %q\n", authorScope, authorScopeGoobers, authorScopeAny)
 		return 1
 	}
 	managedHeadPrefix := providerBranchNamespace()
@@ -210,7 +241,7 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 
 	layout := layoutFor(root)
 	var cached map[string]siblingCacheEntry
-	if !*noCache {
+	if !noCache {
 		cached = loadSiblingCache(layout, stderr)
 	}
 	next := make(map[string]siblingCacheEntry, len(prs))
@@ -344,7 +375,7 @@ siblingLoop:
 
 	// Persist before the selected-vanished check: sibling evidence gathered
 	// on a run that ends up moot is still valid memo for the next run.
-	if !*noCache {
+	if !noCache {
 		if err := saveSiblingCache(layout, next); err != nil {
 			pf(stderr, "warning: persist sibling-context cache: %v\n", err)
 		}
@@ -459,7 +490,7 @@ siblingLoop:
 	var cachedVerdictJSON string
 	if reviewDigest == "" {
 		pf(stderr, "warning: verdict cache key is incomplete; forcing a fresh review\n")
-	} else if !*noVerdictCache {
+	} else if !noVerdictCache {
 		cached, cerr := findCachedVerdict(ctx, provider, repo, selectedNumber, reviewDigest, selectedHeadSHA, selectedBaseSHA)
 		if cerr != nil {
 			pf(stderr, "warning: verdict-cache lookup: %v\n", cerr)
@@ -552,104 +583,19 @@ siblingLoop:
 		// (evaluateGate), never through a declared inputsFrom edge.
 		out["cachedVerdictJson"] = cachedVerdictJSON
 	}
-	data, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		pf(stderr, "error: marshal sibling context: %v\n", err)
-		return 1
-	}
-	if err := os.WriteFile(resultFile, data, 0o644); err != nil {
-		pf(stderr, "error: write %s: %v\n", resultFile, err)
-		return 1
-	}
-
 	cacheNote := "no verdict cache hit"
 	if cachedVerdictJSON != "" {
 		cacheNote = "verdict cache HIT — reviewer call will be skipped"
 	}
-	pf(stdout, "gathered context for %d sibling PR(s) (%d reused from cache, %d fetched fresh); %s\n",
-		len(siblings), reused, len(siblings)-reused, cacheNote)
-	return 0
+	return writeSiblingContextResult(resultFile, out, fmt.Sprintf(
+		"gathered context for %d sibling PR(s) (%d reused from cache, %d fetched fresh); %s",
+		len(siblings), reused, len(siblings)-reused, cacheNote,
+	), stdout, stderr)
 }
 
-// runGatherSiblingContextADO produces the gather-sibling-context stage output on
-// Azure DevOps. The GitHub path's sibling scan leans on surfaces ADO gaps or
-// that carry GitHub-only identity semantics (RefCheckState, AuthenticatedLogin,
-// the sibling file-overlap and verdict caches, the scope-drift/scope-gate label
-// writes) — none of which the single-clean-PR ADO land needs. So on ADO this
-// stage resolves only the selected PR's own head/base SHAs (the deterministic
-// pin apply-verdict requires via selectedHeadSha/selectedBaseSha) with one
-// PollPullRequest and emits an EMPTY sibling set: the review gate then has
-// trivial no-sibling evidence and reviews the single diff, keeping the run
-// moving. Cross-PR sibling sequencing on ADO is deferred to the ADO merge epic
-// (#2061). It never resolves a github:* capability token — the ADO provider
-// resolves its own org-scoped auth from instance config.
-func runGatherSiblingContextADO(root string, repo providers.RepositoryRef, stdout, stderr io.Writer) int {
-	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, true)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 1
-	}
-
-	selectedNumberStr := providerInput("selectedNumber", "")
-	if selectedNumberStr == "" {
-		pf(stderr, "error: selectedNumber is required (inputsFrom pr-select's number output)\n")
-		return 1
-	}
-	if _, aerr := strconv.Atoi(selectedNumberStr); aerr != nil {
-		pf(stderr, "error: invalid selectedNumber %q: %v\n", selectedNumberStr, aerr)
-		return 1
-	}
-	base := providerInput("base", providerBaseBranch())
-	advisoryMode, err := strconv.ParseBool(providerInput("advisoryMode", "false"))
-	if err != nil {
-		pf(stderr, "error: invalid advisoryMode input: %v\n", err)
-		return 1
-	}
-
-	ctx, cancel := providerCommandContext()
-	defer cancel()
-	poll, err := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: selectedNumberStr})
-	if err != nil {
-		return failProviderStage(stderr, fmt.Sprintf("poll pull request #%s", selectedNumberStr), err, "sibling-context.json")
-	}
-	if poll.State != "open" || poll.Merged {
-		// The selected PR closed/merged/retargeted between pr-select and here —
-		// nothing to review, the same disposition as the GitHub
-		// selected-vanished path above.
-		return writeNoWorkResult(stdout, stderr, "selected PR is no longer open")
-	}
-
-	selectedHead := poll.HeadBranch
-	if selectedHead == "" {
-		selectedHead = providerInput("head", "")
-	}
-	if base == "" {
-		base = poll.BaseBranch
-	}
-
-	resultFile := providerInput("resultFile", "sibling-context.json")
-	out := map[string]interface{}{
-		"selectedNumber":         selectedNumberStr,
-		"head":                   selectedHead,
-		"base":                   base,
-		"hasSubstantiveFindings": providerInput("hasSubstantiveFindings", "false"),
-		"hasFailingCI":           providerInput("hasFailingCI", "false"),
-		"hasSiblingOverlap":      "false",
-		"advisoryMode":           strconv.FormatBool(advisoryMode),
-		"selectedHeadSha":        poll.HeadSHA,
-		"selectedBaseSha":        poll.BaseSHA,
-		"reviewDigest":           computeReviewDigest(poll.HeadSHA, poll.BaseSHA, poll.Labels),
-		// Empty slices (not omitted) so a consumer distinguishes "computed, none
-		// overlap" from "field absent"; matches the GitHub producer above.
-		"siblings":               []siblingPR{},
-		"overlappingSiblings":    []int{},
-		"overlappingSiblingsCsv": "",
-		// Scope drift/gate are GitHub-only label mechanics; report zero/false so
-		// the pre-merge scope gate this threads into never parks on ADO.
-		"selectedChangedFiles": "0",
-		"selectedChangedLines": "0",
-		"scopeGateParked":      "false",
-	}
+// writeSiblingContextResult preserves the shared stage artifact protocol once a
+// provider-specific context transport has assembled its evidence.
+func writeSiblingContextResult(resultFile string, out map[string]interface{}, summary string, stdout, stderr io.Writer) int {
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		pf(stderr, "error: marshal sibling context: %v\n", err)
@@ -659,6 +605,76 @@ func runGatherSiblingContextADO(root string, repo providers.RepositoryRef, stdou
 		pf(stderr, "error: write %s: %v\n", resultFile, err)
 		return 1
 	}
-	pf(stdout, "gathered context for 0 sibling PR(s) on Azure DevOps (empty sibling set — single-PR review)\n")
+	pf(stdout, "%s\n", summary)
 	return 0
+}
+
+// gatherSiblingContextFeatures makes ADO's intentionally absent evidence
+// explicit. The shared result protocol is preserved without pretending that
+// sibling scans, ref checks, or scope-label mutations ran.
+type gatherSiblingContextFeatures struct {
+	siblingEvidence bool
+	refCheckState   bool
+	scopeLabels     bool
+	verdictCache    bool
+}
+
+type gatherSiblingContextAdapter struct {
+	features gatherSiblingContextFeatures
+	poll     func(context.Context, providers.PullRequestPollRequest) (providers.PullRequestPollResult, error)
+}
+
+// newADOGatherSiblingContextAdapter is deliberately construction-only: ADO's
+// supported selected-PR poll is injected into the provider-neutral no-sibling
+// decision core below.
+func newADOGatherSiblingContextAdapter(root string, repo providers.RepositoryRef) (gatherSiblingContextAdapter, error) {
+	provider, err := newMergeReviewProviderAs[*providers.ADOProvider](root, repo, true)
+	if err != nil {
+		return gatherSiblingContextAdapter{}, err
+	}
+	return gatherSiblingContextAdapter{
+		features: gatherSiblingContextFeatures{},
+		poll:     provider.PollPullRequest,
+	}, nil
+}
+
+// runGatherSiblingContextWithoutSiblingEvidence is the common selected-PR
+// lifecycle for backends that do not implement sibling evidence. It does not
+// substitute empty provider calls for unavailable ADO capabilities.
+func runGatherSiblingContextWithoutSiblingEvidence(root string, repo providers.RepositoryRef, adapter gatherSiblingContextAdapter, stdout, stderr io.Writer) int {
+	input, ok := gatherSiblingContextStageInput(stderr)
+	if !ok {
+		return 1
+	}
+	selectedNumber := input.selectedNumber
+	advisoryMode := input.advisoryMode
+	ctx, cancel := providerCommandContext()
+	defer cancel()
+	poll, err := adapter.poll(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: selectedNumber})
+	if err != nil {
+		return failProviderStage(stderr, fmt.Sprintf("poll pull request #%s", selectedNumber), err, "sibling-context.json")
+	}
+	if poll.State != "open" || poll.Merged {
+		return writeNoWorkResult(stdout, stderr, "selected PR is no longer open")
+	}
+	head := poll.HeadBranch
+	if head == "" {
+		head = providerInput("head", "")
+	}
+	base := input.base
+	if base == "" {
+		base = poll.BaseBranch
+	}
+	out := map[string]interface{}{
+		"selectedNumber": selectedNumber, "head": head, "base": base,
+		"hasSubstantiveFindings": providerInput("hasSubstantiveFindings", "false"),
+		"hasFailingCI":           providerInput("hasFailingCI", "false"),
+		"hasSiblingOverlap":      "false", "advisoryMode": strconv.FormatBool(advisoryMode),
+		"selectedHeadSha": poll.HeadSHA, "selectedBaseSha": poll.BaseSHA,
+		"reviewDigest": computeReviewDigest(poll.HeadSHA, poll.BaseSHA, poll.Labels),
+		"siblings":     []siblingPR{}, "overlappingSiblings": []int{}, "overlappingSiblingsCsv": "",
+		"selectedChangedFiles": "0", "selectedChangedLines": "0", "scopeGateParked": "false",
+	}
+	return writeSiblingContextResult(providerInput("resultFile", "sibling-context.json"), out,
+		"gathered context for 0 sibling PR(s) on Azure DevOps (empty sibling set — single-PR review)", stdout, stderr)
 }
