@@ -292,7 +292,7 @@ func TestClaimAdminDelegationRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sweepPendingClaimAdminRequests(schedulerDir, log, time.Now); err != nil {
+	if err := sweepPendingClaimAdminRequests(schedulerDir, log, time.Now, nil); err != nil {
 		t.Fatal(err)
 	}
 	resp, err := pollClaimAdminResponse(context.Background(), schedulerDir, rejectedID, testResponseWait)
@@ -315,7 +315,7 @@ func TestClaimAdminDelegationRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := sweepPendingClaimAdminRequests(schedulerDir, log, time.Now); err != nil {
+	if err := sweepPendingClaimAdminRequests(schedulerDir, log, time.Now, nil); err != nil {
 		t.Fatal(err)
 	}
 	resp, err = pollClaimAdminResponse(context.Background(), schedulerDir, requestID, testResponseWait)
