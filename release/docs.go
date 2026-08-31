@@ -92,9 +92,10 @@ const (
 	quickstartSourceOnboardingAssets = "Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
 		"against a disposable GitHub repository you control. This path requires a\n" +
 		"GitHub token and an authenticated agent harness. The shipped template's\n" +
-		"goobers default to `harness: copilot`; to run it on Claude Code instead, set\n" +
-		"`harness: claude-code` in `./tutorial-instance/config/gaggles/example/goobers/{implementer,reviewer}/goober.yaml`\n" +
-		"after materializing the instance below (see\n" +
+		"goobers default to `harness: copilot`; to run it on Claude Code instead, pass\n" +
+		"`--harness claude-code` to the `goobers init --template=quickstart` command\n" +
+		"below, which seeds every goober with that harness and needs no `goober.yaml`\n" +
+		"edit (see\n" +
 		"[`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)\n" +
 		"for a full claude-code gaggle reference).\n\n" +
 		"### Check prerequisites\n\n" +
