@@ -119,6 +119,9 @@ func mirrorOutbox(runDir, configuredRoot string, refs []journal.Ref) error {
 }
 
 func expandOutboxMirrorRoot(configured string) (string, error) {
+	if err := apiv1.ValidateOutboxMirrorRoot(configured); err != nil {
+		return "", err
+	}
 	root := configured
 	if strings.HasPrefix(root, "~/") {
 		home, err := os.UserHomeDir()

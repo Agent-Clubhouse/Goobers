@@ -302,6 +302,9 @@ func WithPreviewFeatures(enabled bool) Option {
 
 // Compile dispatches a pinned definition to its versioned interpreter.
 func Compile(def Definition, opts ...Option) (*Machine, error) {
+	if problems := CheckOutbox(def); len(problems) > 0 {
+		return nil, fmt.Errorf("invalid workflow %q: %s", def.Name, strings.Join(problems, "; "))
+	}
 	def.Spec.Tasks = append([]apiv1.Task(nil), def.Spec.Tasks...)
 	for i := range def.Spec.Tasks {
 		if def.Spec.Tasks[i].OutboxMirrorPath == "" {
