@@ -239,8 +239,8 @@ func apparentDiskUsage(root string) (int64, error) {
 	var total int64
 	opts := mcpio.DefaultWalkFilesOptions()
 	opts.SkipHiddenDirs = false // Include hidden files in disk usage
-	opts.SkipSymlinkEntries = false // Include symlinks
-	
+	opts.SkipSymlinkEntries = false
+
 	err = mcpio.WalkFiles(root, func(_ string, entry fs.DirEntry) error {
 		info, err := entry.Info()
 		if err != nil {
@@ -252,7 +252,7 @@ func apparentDiskUsage(root string) (int64, error) {
 		total += info.Size()
 		return nil
 	}, opts)
-	
+
 	if err != nil {
 		return 0, err
 	}

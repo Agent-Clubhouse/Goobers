@@ -308,6 +308,33 @@ func TestLoadConfigDirMissingDir(t *testing.T) {
 	}
 }
 
+func TestReadDocsIncludesSymlinkedYAML(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "linked.yaml")
+	if err := os.WriteFile(target, []byte(`kind: Manifest
+metadata: {name: linked}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "linked.yaml")); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+
+	docs, err := readDocs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 1 || docs[0].kind != "Manifest" || docs[0].name != "linked" || docs[0].file != "linked.yaml" {
+		t.Fatalf("readDocs = %+v, want linked Manifest", docs)
+	}
+}
+
+func TestReadDocsMissingRootReturnsError(t *testing.T) {
+	if _, err := readDocs(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("readDocs missing root succeeded, want an error")
+	}
+}
+
 func TestCallersDoNotDiscardConfigReports(t *testing.T) {
 	root := filepath.Clean("../..")
 	loaders := map[string]bool{

@@ -244,6 +244,7 @@ func readDocs(root string) ([]rawDoc, error) {
 
 	opts := mcpio.DefaultWalkFilesOptions()
 	opts.SkipDirPredicate = skipPredicate
+	opts.SkipSymlinkEntries = false
 
 	err := mcpio.WalkFiles(root, func(path string, entry fs.DirEntry) error {
 		// Only process YAML files

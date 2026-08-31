@@ -22,9 +22,6 @@ type WalkFilesOptions struct {
 	// (except the root itself). Default: false to preserve filepath.WalkDir's
 	// default behavior and avoid silently discarding dotfiles in user dirs.
 	SkipHiddenFiles bool
-	// FollowSymlinks, when false (default), does not follow symlinks.
-	// filepath.WalkDir never follows symlinks, and this helper preserves that.
-	FollowSymlinks bool
 	// SkipSymlinkEntries, when true, skips entries that are symlinks
 	// (at the entry type level). Default: true.
 	SkipSymlinkEntries bool
@@ -36,23 +33,27 @@ type WalkFilesOptions struct {
 	// If it returns true, the directory is skipped (not recursed into).
 	// This is called after SkipHiddenDirs checks.
 	SkipDirPredicate func(path string, entry fs.DirEntry) bool
+	// IgnoreNotExist, when true, continues when filepath.WalkDir reports an
+	// fs.ErrNotExist error. It does not apply to errors returned by callback.
+	// Default: false.
+	IgnoreNotExist bool
 }
 
 // DefaultWalkFilesOptions returns a WalkFilesOptions with safe defaults:
 // - SkipHiddenDirs: true
 // - SkipHiddenFiles: false
-// - FollowSymlinks: false
 // - SkipSymlinkEntries: true
 // - SkipDirs: true
 // - SkipDirPredicate: nil
+// - IgnoreNotExist: false
 func DefaultWalkFilesOptions() WalkFilesOptions {
 	return WalkFilesOptions{
 		SkipHiddenDirs:     true,
 		SkipHiddenFiles:    false,
-		FollowSymlinks:     false,
 		SkipSymlinkEntries: true,
 		SkipDirs:           true,
 		SkipDirPredicate:   nil,
+		IgnoreNotExist:     false,
 	}
 }
 
@@ -63,7 +64,8 @@ func DefaultWalkFilesOptions() WalkFilesOptions {
 //
 // The callback receives the full path and the DirEntry. If callback returns an
 // error, the walk stops and returns that error. The root itself is not visited
-// as an entry (only its contents are walked).
+// as an entry (only its contents are walked). When IgnoreNotExist is true,
+// fs.ErrNotExist errors reported by the underlying walk are ignored.
 //
 // WalkFiles is useful for consolidating repeated directory scanning logic,
 // especially in contexts where symlink safety and hidden-directory handling
@@ -71,7 +73,7 @@ func DefaultWalkFilesOptions() WalkFilesOptions {
 func WalkFiles(root string, callback WalkFileCallback, opts WalkFilesOptions) error {
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			if errors.Is(walkErr, fs.ErrNotExist) {
+			if opts.IgnoreNotExist && errors.Is(walkErr, fs.ErrNotExist) {
 				return nil
 			}
 			return walkErr
@@ -81,67 +83,25 @@ func WalkFiles(root string, callback WalkFileCallback, opts WalkFilesOptions) er
 			if opts.SkipHiddenDirs && entry.IsDir() && strings.HasPrefix(entry.Name(), ".") {
 				return filepath.SkipDir
 			}
-			if opts.SkipDirPredicate != nil && entry.IsDir() && opts.SkipDirPredicate(path, entry) {
-				return filepath.SkipDir
-			}
 			if opts.SkipHiddenFiles && !entry.IsDir() && strings.HasPrefix(entry.Name(), ".") {
 				return nil
 			}
+		}
+		if opts.SkipDirPredicate != nil && entry.IsDir() && opts.SkipDirPredicate(path, entry) {
+			return filepath.SkipDir
 		}
 
 		if opts.SkipDirs && entry.IsDir() {
 			return nil
 		}
 
-		if opts.SkipSymlinkEntries && entry.Type()&fs.ModeSymlink != 0 {
+		if !entry.Type().IsRegular() &&
+			(opts.SkipSymlinkEntries || entry.Type()&fs.ModeSymlink == 0) {
 			return nil
 		}
 
-		if !entry.Type().IsRegular() && !(opts.SkipSymlinkEntries == false && entry.Type()&fs.ModeSymlink != 0) {
-			return nil
-		}
-
-		if err := callback(path, entry); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		return nil
-	})
-}
-
-// WalkYAMLFiles walks the directory tree rooted at root, calling callback for
-// each YAML file (.yaml or .yml extension, case-insensitive).
-// It uses WalkFiles with sensible defaults for config parsing.
-func WalkYAMLFiles(root string, callback WalkFileCallback) error {
-	return WalkFiles(root, func(path string, entry fs.DirEntry) error {
-		// Filter for YAML extensions only
-		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".yaml" && ext != ".yml" {
-			return nil
-		}
 		return callback(path, entry)
-	}, DefaultWalkFilesOptions())
-}
-
-// SumFileSizes walks the directory tree rooted at root and returns the total
-// size of all files encountered (respecting the options for what counts as a
-// file to include). It never follows symlinks.
-func SumFileSizes(root string, opts WalkFilesOptions) (int64, error) {
-	var total int64
-	err := WalkFiles(root, func(path string, entry fs.DirEntry) error {
-		info, err := entry.Info()
-		if err != nil {
-			return fmt.Errorf("stat %s: %w", path, err)
-		}
-		total += info.Size()
-		return nil
-	}, opts)
-	if err != nil {
-		return 0, fmt.Errorf("walk %s: %w", root, err)
-	}
-	return total, nil
+	})
 }
 
 // SumAllFileSizes walks the directory tree rooted at root and returns the total
@@ -164,21 +124,4 @@ func SumAllFileSizes(root string) (int64, error) {
 		return 0, fmt.Errorf("walk %s: %w", root, err)
 	}
 	return total, nil
-}
-
-// CollectFiles walks the directory tree rooted at root and returns all paths
-// and their corresponding DirEntry objects that match the callback predicate.
-// callback should return true to include the file, false to skip it.
-func CollectFiles(root string, callback func(path string, entry fs.DirEntry) bool, opts WalkFilesOptions) ([]string, error) {
-	var paths []string
-	err := WalkFiles(root, func(path string, entry fs.DirEntry) error {
-		if callback(path, entry) {
-			paths = append(paths, path)
-		}
-		return nil
-	}, opts)
-	if err != nil {
-		return nil, fmt.Errorf("walk %s: %w", root, err)
-	}
-	return paths, nil
 }
