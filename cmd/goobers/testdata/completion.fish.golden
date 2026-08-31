@@ -54,6 +54,7 @@ complete -c goobers -n '__fish_seen_subcommand_from init' -l workdir -r -d 'With
 complete -c goobers -n '__fish_seen_subcommand_from init' -l demo -d 'Seed a credential-free runnable demo workflow'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l insecure -d 'Allow an unisolated Windows demo'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l template -r -a 'quickstart' -d 'Seed a named onboarding template'
+complete -c goobers -n '__fish_seen_subcommand_from init' -l harness -r -a 'copilot claude-code' -d 'With --template=quickstart, the harness every seeded goober uses'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l source-tree -r -d 'Seed the template as a checked-in config source'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l json -d 'Emit the config-source action result as JSON'
 complete -c goobers -n '__fish_seen_subcommand_from connect' -l token-env -r -d 'Repository token environment variable name'
