@@ -510,7 +510,26 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 		escalation.Generation = nextEscalationGeneration(in.Prior, in.HeadSHA)
 		escalationCauses := in.Causes
 		if in.Forced {
-			escalationCauses = nil
+			// #4074: a forced escalation means the IN-RUN REVIEWER rejected the
+			// remediation ATTEMPT, not the PR. Discarding the cause made
+			// escalationBaseAdvanceUnparks read the record as "no remediation
+			// cause was ever observed" and refuse every base advance forever —
+			// and since filterRemediationPullRequests excludes escalated PRs,
+			// the head could never move either, so the exit the escalation
+			// comment advertises was unreachable.
+			//
+			// What the reviewer actually rejected is whatever remediation was
+			// attempting, and this same decision already computed that two
+			// lines up. A rejected conflict resolution is a function of the
+			// base: the next base advance produces a different one. A rejected
+			// substantive fix is not.
+			//
+			// AttemptedCauses is the CUMULATIVE set across cycles, which is the
+			// fail-closed direction — any single non-curable cause in it keeps
+			// the whole park. Live on 2026-08-31 this told #3894 and #3891
+			// (attempted `conflict` only, both displaced by a sibling merge)
+			// apart from #3941 (attempted `substantive`), which stays parked.
+			escalationCauses = escalation.AttemptedCauses
 		}
 		return remediationCheckpointDecision{
 			Escalated:  true,
@@ -806,8 +825,10 @@ func escalationBaseAdvanceUnparks(state remediationState) bool {
 		return false
 	}
 	if len(state.EscalationCauses) == 0 {
-		// A forced escalation (a reviewer verdict of fail, or a repeated
-		// implementer no-op) observed no remediation cause at all.
+		// No remediation cause was ever observed — a repeated implementer
+		// no-op, or a park recorded before #4074 taught the forced path to
+		// attribute the reviewer's rejection to what remediation was actually
+		// attempting. Nothing to decide a rebase against, so hold.
 		return false
 	}
 	for _, cause := range state.EscalationCauses {
