@@ -1,3 +1,6 @@
+// Package yamldoc splits multi-document YAML streams and extracts the
+// minimal kind/name metadata used to route each document, shared by the
+// config validators and loaders that walk a config-as-code tree.
 package yamldoc
 
 import (
