@@ -175,6 +175,13 @@ func TestAuthoringCommandsRejectInvalidInputAndRenderHumanOutput(t *testing.T) {
 	}{
 		{[]string{"schema", "not-a-schema"}, 1, `unknown schema kind "not-a-schema"`},
 		{[]string{"explain", "workflow.stages[].gate"}, 1, `unknown selector "workflow.stages[].gate"`},
+		// An unknown selector must name the failing segment, the valid names
+		// there, and the nearest match (#3072) — a bare rejection leaves an
+		// author guessing at the whole schema surface.
+		{[]string{"explain", "workflow.stages[].gate"}, 1, `no field "stages" under "workflow"`},
+		{[]string{"explain", "workflow.stages[].gate"}, 1, `valid fields at "workflow": apiVersion`},
+		{[]string{"explain", "goober.spec.capabilites"}, 1, `did you mean "goober.spec.capabilities"?`},
+		{[]string{"explain", "workflow.spec.tasks.name"}, 1, `did you mean "workflow.spec.tasks[].name"?`},
 		// workflow.spec.tasks[].run.script is 2.0 surface and explains
 		// successfully now that resolution spans every loadable DSL version
 		// (#3291); internal/authoring's tests pin the positive behavior.

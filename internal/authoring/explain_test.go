@@ -2,7 +2,10 @@ package authoring
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -209,4 +212,144 @@ func TestExplainRejectsInvalidSelectors(t *testing.T) {
 	// (parallels, run.script, task workspace) enshrined #3291's bug; they now
 	// explain at the newest loadable version and are pinned positively by
 	// TestExplainResolvesNewerVersionSelectors.
+}
+
+// An unknown selector is only actionable if it names WHERE it failed and what
+// is valid there: a bare `unknown selector "x"` leaves an author guessing at
+// the whole schema surface (#3072).
+func TestExplainReportsSelectorCandidatesAndNearMisses(t *testing.T) {
+	tests := []struct {
+		name           string
+		selector       string
+		wantSegment    string
+		wantPrefix     string
+		wantSuggestion string
+		wantCandidates []string
+		wantMessage    []string
+	}{
+		{
+			name:           "unknown kind",
+			selector:       "gooober.spec",
+			wantSegment:    "gooober",
+			wantSuggestion: "goober.spec",
+			wantCandidates: []string{"goober", "workflow", "instance"},
+			wantMessage:    []string{`no schema kind "gooober"`, "valid kinds:"},
+		},
+		{
+			name:           "misspelled field",
+			selector:       "goober.spec.capabilites",
+			wantSegment:    "capabilites",
+			wantPrefix:     "goober.spec",
+			wantSuggestion: "goober.spec.capabilities",
+			wantCandidates: []string{"capabilities", "role"},
+			wantMessage:    []string{`no field "capabilites" under "goober.spec"`, `valid fields at "goober.spec":`},
+		},
+		{
+			name:           "array element marker omitted",
+			selector:       "workflow.spec.tasks.name",
+			wantSegment:    "name",
+			wantPrefix:     "workflow.spec.tasks[]",
+			wantSuggestion: "workflow.spec.tasks[].name",
+			wantCandidates: []string{"name", "goober"},
+			wantMessage:    []string{`no field "name" under "workflow.spec.tasks[]"`},
+		},
+		{
+			name:           "slash selector keeps its separator",
+			selector:       "workflow/spec/gate",
+			wantSegment:    "gate",
+			wantPrefix:     "workflow/spec",
+			wantSuggestion: "workflow/spec/gates",
+			wantCandidates: []string{"gates", "tasks"},
+		},
+		{
+			name:           "element marker on a scalar",
+			selector:       "goober.spec.role[]",
+			wantSegment:    "role",
+			wantPrefix:     "goober.spec",
+			wantSuggestion: "goober.spec.role",
+			wantMessage:    []string{"is not an array"},
+		},
+		{
+			name:        "no near miss at all",
+			selector:    "workflow.spec.tasks[].zzzzzzzz",
+			wantSegment: "zzzzzzzz",
+			wantPrefix:  "workflow.spec.tasks[]",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Explain(test.selector)
+			if !errors.Is(err, ErrUnknownSelector) {
+				t.Fatalf("error = %v, want ErrUnknownSelector", err)
+			}
+			var selectorErr *SelectorError
+			if !errors.As(err, &selectorErr) {
+				t.Fatalf("error = %v, want *SelectorError", err)
+			}
+			if selectorErr.Selector != test.selector || selectorErr.Segment != test.wantSegment ||
+				selectorErr.Prefix != test.wantPrefix {
+				t.Fatalf("selector error = %+v", selectorErr)
+			}
+			if selectorErr.Suggestion != test.wantSuggestion {
+				t.Errorf("suggestion = %q, want %q", selectorErr.Suggestion, test.wantSuggestion)
+			}
+			for _, want := range test.wantCandidates {
+				if !slices.Contains(selectorErr.Candidates, want) {
+					t.Errorf("candidates %v do not include %q", selectorErr.Candidates, want)
+				}
+			}
+			if !sort.StringsAreSorted(selectorErr.Candidates) {
+				t.Errorf("candidates %v are not sorted", selectorErr.Candidates)
+			}
+			message := err.Error()
+			if !strings.Contains(message, `unknown selector "`+test.selector+`"`) {
+				t.Errorf("message %q does not name the selector", message)
+			}
+			if test.wantSuggestion != "" &&
+				!strings.Contains(message, `did you mean "`+test.wantSuggestion+`"?`) {
+				t.Errorf("message %q does not suggest %q", message, test.wantSuggestion)
+			}
+			for _, want := range test.wantMessage {
+				if !strings.Contains(message, want) {
+					t.Errorf("message %q does not contain %q", message, want)
+				}
+			}
+		})
+	}
+}
+
+// A wide schema node has more fields than a terminal line can carry, so the
+// candidate list is bounded and says how many it withheld.
+func TestSelectorErrorBoundsCandidateList(t *testing.T) {
+	candidates := make([]string, 0, maxReportedCandidates+3)
+	for i := range cap(candidates) {
+		candidates = append(candidates, fmt.Sprintf("field%02d", i))
+	}
+	err := &SelectorError{Selector: "goober.zzzzzzzz", Segment: "zzzzzzzz", Candidates: candidates}
+	message := err.Error()
+	if !strings.Contains(message, "(+3 more)") {
+		t.Fatalf("message %q does not report withheld candidates", message)
+	}
+	if strings.Contains(message, candidates[maxReportedCandidates]) {
+		t.Fatalf("message %q lists more than %d candidates", message, maxReportedCandidates)
+	}
+}
+
+func TestNearestNameRejectsDistantCandidates(t *testing.T) {
+	candidates := []string{"capabilities", "role", "model"}
+	tests := []struct {
+		name string
+		want string
+	}{
+		{"capabilites", "capabilities"},
+		{"Role", "role"},
+		{"mode", "model"},
+		{"harness", ""},
+		{"xy", ""},
+	}
+	for _, test := range tests {
+		if got := nearestName(test.name, candidates); got != test.want {
+			t.Errorf("nearestName(%q) = %q, want %q", test.name, got, test.want)
+		}
+	}
 }
