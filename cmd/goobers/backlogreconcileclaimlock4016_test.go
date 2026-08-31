@@ -231,7 +231,8 @@ func TestReconcileBacklogMetadataSucceedsWhenPodDispatched(t *testing.T) {
 	if reconciled != 1 {
 		t.Fatalf("reconciliations = %d, want the one orphaned claim marker cleared", reconciled)
 	}
-	assertFakeIssueLabels(t, server, 21, []string{providers.LabelReady}, []string{providers.LabelClaimed})}
+	assertFakeIssueLabels(t, server, 21, []string{providers.LabelReady}, []string{providers.LabelClaimed})
+}
 
 // TestStageClaimRecoveryOffThePlaneStillSweepsInProcess is the other half of
 // the seam: a mode-1/mode-2 instance, or a self-placed stage running as a

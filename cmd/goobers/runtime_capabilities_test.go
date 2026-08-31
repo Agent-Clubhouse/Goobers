@@ -84,7 +84,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 		// stale-claim sweep it cannot run itself (the sweep reads run journals
 		// under the instance root and honours interventions and the recovery
 		// gate). Same machine-seam class as the rest of the claims plane.
-		"claimRecover": true,
+		"claimRecover":  true,
 		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "blobPut": true,
 		"stageSurrender": true, "gaggleStatePut": true,
 		// The cross-run journal read plane (#3880): POSTs because each carries
