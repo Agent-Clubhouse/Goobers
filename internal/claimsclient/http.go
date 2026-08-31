@@ -48,6 +48,14 @@ type claimListResponse struct {
 	History []Entry `json:"history,omitempty"`
 }
 
+type claimRecoverRequest struct {
+	RunID string `json:"runId"`
+}
+
+type claimRecoverResponse struct {
+	Released []Entry `json:"released,omitempty"`
+}
+
 // List scopes, restated from the server.
 const (
 	scopeRun       = "run"
@@ -365,6 +373,16 @@ func (h *HTTP) MergeLock(ctx context.Context, lock MergeLock, fn func(context.Co
 // ContainedRunID implements Contained: the plane admits this bearer for one
 // run only.
 func (h *HTTP) ContainedRunID() string { return h.cfg.RunID }
+
+// RecoverStale implements StaleRecoverer over claims/recover: the daemon runs
+// its own sweep and answers with what it released.
+func (h *HTTP) RecoverStale(ctx context.Context) ([]Entry, error) {
+	var response claimRecoverResponse
+	if err := h.post(ctx, apicontract.ClaimRecoverPath, claimRecoverRequest{RunID: h.cfg.RunID}, &response); err != nil {
+		return nil, err
+	}
+	return response.Released, nil
+}
 
 // Locked implements Ledger: no client-side lock exists on the plane — the
 // daemon serializes every primitive under its own claims lock — so fn runs

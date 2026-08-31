@@ -80,6 +80,11 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true,
+		// claims/recover (#4016): a stage pod asking the daemon to run the
+		// stale-claim sweep it cannot run itself (the sweep reads run journals
+		// under the instance root and honours interventions and the recovery
+		// gate). Same machine-seam class as the rest of the claims plane.
+		"claimRecover":  true,
 		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "blobPut": true,
 		"stageSurrender": true, "gaggleStatePut": true,
 		// The cross-run journal read plane (#3880): POSTs because each carries

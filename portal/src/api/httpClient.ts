@@ -92,6 +92,12 @@ const clientRoutes = {
   claimRelease: apiRoutes.claimRelease,
   claimSettle: apiRoutes.claimSettle,
   claimList: apiRoutes.claimList,
+  // The stale-claim sweep (#4016): a mode-3 stage pod asks the daemon to run
+  // the recovery pass it cannot run itself — the sweep reads run journals
+  // under the instance root and honours the intervention check and the
+  // recovery gate, none of which exist in a pod. Pod-only like the rest of
+  // the claims plane; the portal never calls it.
+  claimRecover: apiRoutes.claimRecover,
   triggerIngest: apiRoutes.triggerIngest,
   resolveEscalation: apiRoutes.resolveEscalation,
   journalEmit: apiRoutes.journalEmit,

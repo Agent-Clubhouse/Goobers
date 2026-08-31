@@ -180,7 +180,8 @@ func podPlanePath(path string) (scope string, ok bool) {
 		apicontract.ClaimRenewPath,
 		apicontract.ClaimReleasePath,
 		apicontract.ClaimSettlePath,
-		apicontract.ClaimListPath:
+		apicontract.ClaimListPath,
+		apicontract.ClaimRecoverPath:
 		return ScopeClaims, true
 	case apicontract.TriggerIngestPath:
 		// The trigger plane rides the state bearer: the only pod-side caller

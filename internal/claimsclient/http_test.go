@@ -329,3 +329,71 @@ func TestHTTPMergeLockFailsClosedOnLostLease(t *testing.T) {
 		t.Fatalf("releases = %d, want 1: the window is still handed back on the way out", releases)
 	}
 }
+
+// TestHTTPRecoverStaleWire pins the stale-claim sweep's wire shape
+// (Goobers#4016): the contract path, the claims bearer, and a body carrying
+// the client's OWN contained run and nothing else — no item, no namespace, no
+// lease, because the sweep is instance-wide and the caller supplies no part
+// of the decision. The answer is the daemon's released set.
+func TestHTTPRecoverStaleWire(t *testing.T) {
+	plane, client := newFakePlane(t, func(path string, _ map[string]any) (int, any) {
+		if path != apicontract.ClaimRecoverPath {
+			return http.StatusNotFound, map[string]any{}
+		}
+		return http.StatusOK, map[string]any{"released": []map[string]any{
+			{"itemId": "42", "runId": "crashed-run"},
+		}}
+	})
+
+	var recoverer StaleRecoverer = client
+	released, err := recoverer.RecoverStale(context.Background())
+	if err != nil {
+		t.Fatalf("RecoverStale: %v", err)
+	}
+	if len(released) != 1 || released[0].ItemID != "42" || released[0].RunID != "crashed-run" {
+		t.Fatalf("released = %+v, want the plane's one released lease", released)
+	}
+	recorded := plane.recorded()
+	if len(recorded) != 1 {
+		t.Fatalf("recorded %d requests, want 1", len(recorded))
+	}
+	request := recorded[0]
+	if request.path != apicontract.ClaimRecoverPath || request.bearer != "claims-token" {
+		t.Fatalf("request = %+v, want a claims-bearer POST to %s", request, apicontract.ClaimRecoverPath)
+	}
+	if request.body["runId"] != "run-1" || len(request.body) != 1 {
+		t.Fatalf("body = %+v, want exactly the client's own run id", request.body)
+	}
+}
+
+// TestHTTPRecoverStaleSurfacesPlaneRefusals proves the sweep does not swallow
+// a refusal into a silent "recovery happened": a 403 from the plane reaches
+// the caller as a typed claims-plane error.
+func TestHTTPRecoverStaleSurfacesPlaneRefusals(t *testing.T) {
+	_, client := newFakePlane(t, func(_ string, _ map[string]any) (int, any) {
+		return http.StatusForbidden, map[string]any{
+			"error": map[string]any{"code": "run_mismatch", "message": "nope"},
+		}
+	})
+	if _, err := client.RecoverStale(context.Background()); err == nil {
+		t.Fatal("RecoverStale reported success on a 403")
+	} else {
+		var planeErr *Error
+		if !errors.As(err, &planeErr) || planeErr.Code != "run_mismatch" {
+			t.Fatalf("err = %v, want a typed claims-plane refusal", err)
+		}
+	}
+}
+
+// TestFileBackendIsNotAStaleRecoverer pins the asymmetry the seam depends on:
+// only the plane implements StaleRecoverer, so the CLI seam's type assertion
+// is a reliable "am I in a pod" test rather than an accident.
+func TestFileBackendIsNotAStaleRecoverer(t *testing.T) {
+	file, err := NewFile(FileConfig{LedgerPath: t.TempDir() + "/claims.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := any(file).(StaleRecoverer); ok {
+		t.Fatal("the file backend implements StaleRecoverer; the CLI seam would take the plane branch without a daemon")
+	}
+}

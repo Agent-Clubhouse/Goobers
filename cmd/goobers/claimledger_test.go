@@ -51,7 +51,9 @@ func newClaimsPlane(t *testing.T) *claimsPlane {
 	}
 	handler, err := httpapi.NewHandler(&telemetryParityReader{}, httpapi.RequireRoles(), log.New(io.Discard, "", 0),
 		httpapi.WithAuthenticator(authenticator),
-		httpapi.WithClaimService(newDaemonClaimService(layout, instanceLog)),
+		httpapi.WithClaimService(newDaemonClaimService(layout, instanceLog, func(now time.Time) ([]localscheduler.ClaimEntry, error) {
+			return recoverClaims(layout, instanceLog, now, nil, nil)
+		})),
 	)
 	if err != nil {
 		t.Fatal(err)

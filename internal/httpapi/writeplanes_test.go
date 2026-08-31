@@ -18,12 +18,14 @@ import (
 )
 
 type fakeClaimService struct {
-	response     ClaimResponse
-	listResponse ClaimListResponse
-	err          error
-	requests     []ClaimRequest
-	lists        []ClaimListRequest
-	ops          []string
+	response        ClaimResponse
+	listResponse    ClaimListResponse
+	recoverResponse ClaimRecoverResponse
+	err             error
+	requests        []ClaimRequest
+	lists           []ClaimListRequest
+	recovers        []ClaimRecoverRequest
+	ops             []string
 }
 
 func (f *fakeClaimService) call(op string, request ClaimRequest) (ClaimResponse, error) {
@@ -52,6 +54,12 @@ func (f *fakeClaimService) List(_ context.Context, request ClaimListRequest) (Cl
 	f.ops = append(f.ops, "list")
 	f.lists = append(f.lists, request)
 	return f.listResponse, f.err
+}
+
+func (f *fakeClaimService) Recover(_ context.Context, request ClaimRecoverRequest) (ClaimRecoverResponse, error) {
+	f.ops = append(f.ops, "recover")
+	f.recovers = append(f.recovers, request)
+	return f.recoverResponse, f.err
 }
 
 type fakeTriggerService struct {
@@ -491,6 +499,69 @@ func TestClaimListRouteValidatesAndContainsPods(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.ClaimListPath, nil))
 	if response.Code == http.StatusOK {
 		t.Fatal("GET on the list path was admitted for a pod principal")
+	}
+}
+
+// TestClaimRecoverRouteValidatesAndContainsPods is the route half of
+// Goobers#4016. The stale-claim sweep is instance-wide by nature — it has no
+// item and no namespace — so the ONLY thing the route can contain is the
+// caller's identity, and it must: a pod principal may ask for a sweep as
+// itself and nobody else, an unnamed run is a 400, an unavailable service is
+// a 503 rather than a silent success, and GET is refused like every other pod
+// plane.
+func TestClaimRecoverRouteValidatesAndContainsPods(t *testing.T) {
+	claims := &fakeClaimService{recoverResponse: ClaimRecoverResponse{Released: []ClaimEntry{{ItemID: "42", RunID: "crashed-run"}}}}
+	pod := &fakeAuthenticator{principal: &Principal{Subject: "run:run-1", Issuer: PodPrincipalIssuer}}
+	handler := writePlaneHandler(t, pod, RequireRoles(), WithClaimService(claims))
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.ClaimRecoverPath, `{"runId":"run-1"}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("pod recovery: status = %d, body = %s", response.Code, response.Body)
+	}
+	var decoded ClaimRecoverResponse
+	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil || len(decoded.Released) != 1 || decoded.Released[0].RunID != "crashed-run" {
+		t.Fatalf("decoded = %+v, err = %v", decoded, err)
+	}
+	if len(claims.recovers) != 1 || !claims.recovers[0].PodScoped || claims.recovers[0].RunID != "run-1" {
+		t.Fatalf("service saw %+v; want one PodScoped recovery for run-1", claims.recovers)
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.ClaimRecoverPath, `{"runId":"run-2"}`))
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("pod recovering as another run: status = %d, want 403", response.Code)
+	}
+
+	before := len(claims.recovers)
+	for name, body := range map[string]string{
+		"no run":        `{}`,
+		"blank run":     `{"runId":"   "}`,
+		"unknown field": `{"runId":"run-1","podScoped":true}`,
+	} {
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.ClaimRecoverPath, body))
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", name, response.Code)
+		}
+	}
+	if len(claims.recovers) != before {
+		t.Fatal("an invalid recovery request reached the service")
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, apicontract.ClaimRecoverPath, nil))
+	if response.Code == http.StatusOK {
+		t.Fatal("GET on the recover path was admitted for a pod principal")
+	}
+
+	// No claims plane wired at all: an explicit refusal, never a 200 the
+	// caller would read as "the sweep happened".
+	bare := writePlaneHandler(t, pod, RequireRoles())
+	response = httptest.NewRecorder()
+	bare.ServeHTTP(response, jsonRequest(http.MethodPost, apicontract.ClaimRecoverPath, `{"runId":"run-1"}`))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("recovery without a claims plane: status = %d, want 503", response.Code)
 	}
 }
 
