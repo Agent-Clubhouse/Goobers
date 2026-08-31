@@ -364,6 +364,35 @@ cluster-internal git remote is a deferred optimization behind the same contract 
 from); edge pushes are transport to the run branch, not a publish. #2861's cross-OS rule is
 subsumed: with every chain declared, the unsafe transition it rejected cannot be written.
 
+**Cross-substrate verification (#4009).** Transport crosses a substrate boundary — a stage
+pod publishes a workspace delta to the blob plane and a self/worker-placed stage provisions
+from it, and the reverse — and that boundary is where #3803 (a worker-side gate or stage
+cannot see a pod stage's commits) and #3767 (continuity follows the declared edge, not the
+last writer) are decided. It is verified **in-repo**, by two harnesses that compose the real
+adapters rather than simulating either half:
+
+- `cmd/goobers/continuitysubstrate_test.go` drives the real pod publish/apply
+  (`publishWorkspaceDelta`/`applyWorkspaceDelta`) against the real worker provisioner
+  (`workerhost.WorktreeWorkspaces`) over one shared blob store, in both directions, with
+  ablation arms that reproduce the pre-fix defect (both substrates provision at base) and
+  refusal arms for a missing digest, substituted bytes, and an unreachable blob plane.
+- `internal/engine/continuitysubstrate_test.go` drives the runtime selection rule
+  (`selectDelta`) and lands the selected bundle through real worktrees, so each arm asserts
+  which *bytes* reach the consumer, not only which record row was chosen.
+
+Both emit a machine-readable evidence document (`test/testsupport/continuityevidence`,
+collected by pointing `GOOBERS_CONTINUITY_EVIDENCE_DIR` at an archived directory) so a
+release reviewer can cite what was proven, on which digests, in which direction.
+
+A **mixed lane** — one stage pinned to a pod and another pinned to `Self` in the same
+workflow — is not a way to exercise this boundary, and is unreachable by construction on the
+daemon's runner-driven path: `selectEngineForEntry` disqualifies a lane carrying any `Self`
+pin, and the runner-driven path cannot dispatch a pod pin, so checkpoint 3 refuses it. That
+refusal is deliberate and stays; what changed for #4009 is that it now names the self-pinned
+stage as the cause, so an operator on an engine-enabled instance is not left reading a
+refusal of the pod stage they declared correctly. Mixed lanes remain executable under
+`goobers engine-start`, whose walk handles `Self` pins directly.
+
 The migrator computes `repoFrom` lists via the same reaching-definitions analysis and
 inserts them automatically; it refuses only where coverage cannot be computed, with a named
 diagnostic. On the live cloud tree this yields zero refusals; the canonical 14-workflow

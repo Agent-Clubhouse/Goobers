@@ -192,6 +192,10 @@ func TestMixedAndSelfPinnedLanesKeepTodaysRefusal(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		def  workflow.Definition
+		// selfStage is the stage the appended #4009 clause must name as the
+		// cause. Empty when the lane has no self-pinned stage at all, which
+		// is the ablation: the clause must NOT appear there.
+		selfStage string
 	}{
 		{
 			name: "mixed",
@@ -199,6 +203,7 @@ func TestMixedAndSelfPinnedLanesKeepTodaysRefusal(t *testing.T) {
 				seamTask("build", true, &apiv1.RunsOn{OS: "windows"}, "verify"),
 				seamTask("verify", false, nil, ""),
 			),
+			selfStage: "verify",
 		},
 		{
 			name: "self-only-stage-pinned-remote",
@@ -207,8 +212,37 @@ func TestMixedAndSelfPinnedLanesKeepTodaysRefusal(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decisions := seamDecisions(t, seamConfig(true), tc.def)
-			if _, refused := decisions.Refusals[seamIdentity]; !refused {
+			diagnostic, refused := decisions.Refusals[seamIdentity]
+			if !refused {
 				t.Fatalf("a runner-driven lane must keep today's refusal; deferrals=%v", decisions.EngineDeferred)
+			}
+			// The solver's own half is unchanged: the appended clause is
+			// additive, never a replacement.
+			if !strings.Contains(diagnostic, `stage "build"`) {
+				t.Errorf("refusal must keep the solver's named diagnostic: %s", diagnostic)
+			}
+			if tc.selfStage == "" {
+				// The ablation. This lane is refused for a reason that has
+				// nothing to do with self-pinning (no runner satisfies the
+				// stage at all), so naming a self-pin here would send an
+				// operator to edit a declaration that is not the problem.
+				if strings.Contains(diagnostic, "pinned to self") {
+					t.Errorf("a lane with no self-pinned stage must not blame one: %s", diagnostic)
+				}
+				return
+			}
+			// #4009 acceptance: on an ENGINE-ENABLED instance, a mixed lane's
+			// refusal reads as a contradiction unless it names the self pin
+			// that took the lane off the engine. Without this the operator
+			// sees only the pod stage they already declared correctly.
+			for _, want := range []string{
+				`stage "` + tc.selfStage + `" is pinned to self`,
+				"not engine-selected",
+				"#4009",
+			} {
+				if !strings.Contains(diagnostic, want) {
+					t.Errorf("mixed-lane refusal missing %q, so it never names the cause: %s", want, diagnostic)
+				}
 			}
 		})
 	}
