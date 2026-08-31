@@ -331,9 +331,7 @@ func configDirectoryDigest(root string) (string, error) {
 			return walkErr
 		}
 		name := entry.Name()
-		if entry.IsDir() && configtree.IsGaggleSkillsDir(root, path) {
-			return filepath.SkipDir
-		}
+		// Handle asset loading/hashing first
 		if gooberassets.IsSourceDir(path) {
 			bundle, err := gooberassets.Load(path)
 			if err != nil {
@@ -351,9 +349,8 @@ func configDirectoryDigest(root string) (string, error) {
 			return nil
 		}
 		if entry.IsDir() {
-			// Skip dotfile directories (notably .git when the config dir is a
-			// tracked repo, per the Workflow-CD epic #453) and all their churn.
-			if path != root && strings.HasPrefix(name, ".") {
+			// Skip hidden dirs and gaggle skills dirs
+			if configtree.ShouldSkipConfigDirExcludingAssets(root, path) {
 				return filepath.SkipDir
 			}
 			return nil
