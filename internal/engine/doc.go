@@ -51,6 +51,23 @@
 // detail, and the #3366 unpushed-diff capture. Each is now pinned by a row of
 // the parity table for the same reason E2's are.
 //
+// The transient worktree-provision entry that ledger closed is now PINNED
+// rather than only asserted (#2878). E4-E9 landed the classification —
+// classifySeamError and provisionWorkspace hand a transient connection,
+// timeout or remote-5xx provisioning failure to the bounded infrastructure
+// path, and leave an auth failure or a missing base ref non-retryable — but
+// nothing outside a unit test over classifySeamError proved the WALK behaved
+// like the local runner's #572 behaviour, and a closed divergence that is only
+// asserted at the classifier reopens the moment the retry loop around it
+// changes. provisionparity_test.go walks one fixture through both drivers
+// against a real git remote that fails with a scripted HTTP status, and
+// compares the attempt classes, the attempt count at the shared bound, the
+// preserved cause and the executor call count. It is an EXTERNAL test package
+// because it drives the engine through the production provisioner
+// (workerhost.WorktreeWorkspaces), which imports this one; and it is not a
+// parity-table row because the table's two sides share a fixture, not a
+// remote, and neither of its provisioner seams can fail on demand.
+//
 // Plan item E10's residual (#3929) removed a divergence of a different kind:
 // one this package created for itself. Both drivers must decide whether a
 // gate's retry route earns a learning episode, and the engine answered it with
