@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -34,6 +35,14 @@ func stageJournalSelection() (journalclient.Selection, error) {
 	return journalclient.Select(os.Getenv)
 }
 
+// ErrPlaneRunMismatch is stageRunJournal's refusal to read a run the stage's
+// own plane bearer does not name. It is a sentinel because it is
+// MISCONFIGURATION, not absence: a caller that tolerates "this run has no
+// journal here" (journalclient.ErrRunNotFound) must not also tolerate "I was
+// pointed at the wrong run", which would otherwise arrive as the same opaque
+// error and degrade into a silently different decision.
+var ErrPlaneRunMismatch = errors.New("the journal plane is authenticated as a different run")
+
 // stageRunJournal opens the CURRENT run's journal for a stage command: the
 // on-disk reader on the file path, the daemon's run-scoped read routes on the
 // plane.
@@ -52,8 +61,8 @@ func stageRunJournal(root, runID string) (journalclient.Reader, error) {
 	}
 	if runID != "" && runID != selection.RunID {
 		return nil, fmt.Errorf(
-			"refusing to read run %q over the journal plane: this stage is authenticated as run %q and the plane serves only its own run",
-			runID, selection.RunID)
+			"%w: refusing to read run %q over the journal plane: this stage is authenticated as run %q and the plane serves only its own run",
+			ErrPlaneRunMismatch, runID, selection.RunID)
 	}
 	return journalclient.NewHTTPFromSelection(selection)
 }

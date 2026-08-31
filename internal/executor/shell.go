@@ -408,6 +408,26 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	// journal.OpenRead (:166, :452) — a cross-run walk the journal plane's
 	// three purpose-built gaggle-scoped questions do not answer.
 	"reconcile-branches": true,
+	// file-issues is deliberately NOT here, and was never here — which was
+	// the defect Goobers#3996 blocker 2 named rather than a decision. It read
+	// the signals stage's stdout artifact by opening a run directory under the
+	// instance root (fileissues.go readStageStdoutArtifact), which in a pod
+	// resolves to "." and fails; because nothing refused the command, the lane
+	// ran GREEN while filing every nomination unapproved — the silent-wrong-
+	// result this list exists to make loud, arriving without a refusal.
+	//
+	// It is not added here because the read now reaches a plane seam:
+	// stageRunJournal plus journalclient.StageArtifactContent, a typed
+	// artifact-content fetch resolved only from a reference the caller's own
+	// run journal records. Per-command audit, every stateful access followed
+	// from runFileIssues: the nominations artifact and the check result go
+	// through readDecompositionInput (already the stageRunJournal seam), the
+	// findings read is the new seam, the repo and all three credentials come
+	// from providerRepo/providerToken (environment first), the dedupe scan and
+	// every mutation are provider API calls, and the result file and mutation
+	// sidecar are workspace-relative. Nothing holds a path under the instance
+	// root, so the refusal that would have covered the old defect would now
+	// only keep a working lane on self.
 }
 
 // stageKindsWithPodExecution names the built-in deterministic stage KINDS

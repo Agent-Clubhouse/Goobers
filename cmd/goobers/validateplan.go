@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
@@ -191,23 +189,18 @@ func readDecompositionInput[T any](root, path, defaultPath, stage, artifactSuffi
 	return value, nil
 }
 
+// decompositionStageArtifact finds the artifact a run's journal records for
+// stage's newest successful finish under a name ending in nameSuffix.
+//
+// One spelling of that rule, in journalclient, shared with the typed
+// artifact-content fetch (Goobers#3996): the resolution that decides WHICH
+// artifact a stage may read must not exist twice, or the plane route and the
+// on-disk route can come to disagree about what "the signals stage's stdout"
+// means.
 func decompositionStageArtifact(events []journal.Event, stage, nameSuffix string) (journal.Ref, bool) {
-	artifacts := make(map[string]journal.Ref)
-	for _, event := range events {
-		if event.Type == journal.EventArtifactRecorded && event.Ref != nil && strings.HasSuffix(event.Name, nameSuffix) {
-			artifacts[event.Ref.Digest] = *event.Ref
-		}
+	resolved, ok := journalclient.ResolveStageArtifact(events, stage, nameSuffix)
+	if !ok {
+		return journal.Ref{}, false
 	}
-	for i := len(events) - 1; i >= 0; i-- {
-		event := events[i]
-		if event.Type != journal.EventStageFinished || event.Stage != stage || event.Status != string(apiv1.ResultSuccess) {
-			continue
-		}
-		for _, ref := range event.Artifacts {
-			if artifact, ok := artifacts[ref.Digest]; ok {
-				return artifact, true
-			}
-		}
-	}
-	return journal.Ref{}, false
+	return resolved.Ref, true
 }
