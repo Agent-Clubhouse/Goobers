@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -28,6 +27,7 @@ import (
 	"github.com/goobers/goobers/internal/telemetry"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
+	"github.com/goobers/goobers/internal/workcopyroot"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 )
@@ -652,9 +652,9 @@ func claimWorkcopyRoot(claims map[string]workcopyRootClaim, gaggle, root string,
 	if err != nil {
 		return fmt.Errorf("resolve workcopies path for gaggle %s: %w", gaggle, err)
 	}
-	key := filepath.Clean(path)
-	if runtime.GOOS == "windows" {
-		key = strings.ToLower(key)
+	key, err := workcopyroot.Key(path)
+	if err != nil {
+		return fmt.Errorf("resolve workcopies path for gaggle %s: %w", gaggle, err)
 	}
 	if other, exists := claims[key]; exists && other.gaggle != gaggle && (alternate || other.alternate) {
 		return fmt.Errorf("workcopies path collision: gaggles %s and %s resolve to %s", other.gaggle, gaggle, path)
