@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"text/tabwriter"
 
 	configexamples "github.com/goobers/goobers/config-examples"
 )
@@ -12,13 +13,14 @@ const examplesHelp = "Usage: goobers examples <list|show> [name]\n\n" +
 	"Browse the canonical workflow examples embedded in this binary. No source\n" +
 	"checkout or instance root is required.\n\n" +
 	"Commands:\n" +
-	"  list         print the available example names\n" +
+	"  list         print the available example names and descriptions\n" +
 	"  show <name>  print an example's exact Workflow YAML\n\n" +
 	"Run `goobers examples list -h` or `goobers examples show -h` for details.\n"
 
 const examplesListHelp = "Usage: goobers examples list\n\n" +
-	"Print the names of the canonical embedded workflow examples, one per line.\n" +
-	"Pass one of these names to `goobers examples show` to print its YAML.\n\n" +
+	"Print the canonical embedded workflow examples, one per line, as the\n" +
+	"example name followed by its one-line description. Pass a name to\n" +
+	"`goobers examples show` to print its YAML.\n\n" +
 	"Exit codes: 0 = listed, 1 = embedded catalog error, 2 = usage error.\n"
 
 const examplesShowHelp = "Usage: goobers examples show <name>\n\n" +
@@ -55,8 +57,17 @@ func runExamplesList(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	for _, example := range examples {
-		pln(stdout, example.Name)
+		if example.Description == "" {
+			pln(tw, example.Name)
+			continue
+		}
+		pf(tw, "%s\t%s\n", example.Name, example.Description)
+	}
+	if err := tw.Flush(); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
 	}
 	return 0
 }

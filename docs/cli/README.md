@@ -1389,7 +1389,7 @@ Browse the canonical workflow examples embedded in this binary. No source
 checkout or instance root is required.
 
 Commands:
-  list         print the available example names
+  list         print the available example names and descriptions
   show <name>  print an example's exact Workflow YAML
 
 Run `goobers examples list -h` or `goobers examples show -h` for details.
@@ -1409,8 +1409,9 @@ list canonical embedded workflow examples
 ~~~text
 Usage: goobers examples list
 
-Print the names of the canonical embedded workflow examples, one per line.
-Pass one of these names to `goobers examples show` to print its YAML.
+Print the canonical embedded workflow examples, one per line, as the
+example name followed by its one-line description. Pass a name to
+`goobers examples show` to print its YAML.
 
 Exit codes: 0 = listed, 1 = embedded catalog error, 2 = usage error.
 ~~~
