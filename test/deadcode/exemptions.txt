@@ -72,6 +72,11 @@ github.com/goobers/goobers/telemetryconnector/v1alpha1.NewQueryError # Public co
 # Cross-surface contract invariants exercised by drift tests.
 github.com/goobers/goobers/providers.BlessedTierProviderKinds # Blessed-tier CI gate's provider set, invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
 github.com/goobers/goobers/providers.ValidateBlessedTier # Blessed-tier CI gate invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
+github.com/goobers/goobers/providers.ValidateGapRegistry # Capability-gap registry well-formedness gate (#3058) invoked by TestGapRegistryEntriesAreWellFormed and TestValidateGapRegistryRejectsMalformedEntries.
+github.com/goobers/goobers/providers.TrackedGapReferences # Tracked-gap inventory (#3058) invoked by TestTrackedGapReferencesExcludePermanentGaps and the integration-tagged TestIntegrationTrackedGapReferencesAreOpen.
+github.com/goobers/goobers/providers.ValidateTrackedGapsOpen # Forge-aware tracked-gap gate (#3058) invoked by the integration-tagged TestIntegrationTrackedGapReferencesAreOpen and the hermetic ValidateTrackedGapsOpen cases in capability_gap_gate_test.go.
+github.com/goobers/goobers/providers.issueStateIsClosed # Provider-native closed-state vocabulary reached through the tracked-gap gate (#3058), exercised directly by TestIssueStateIsClosed.
+github.com/goobers/goobers/providers.repoLabel # Repository-reference error renderer reached through the tracked-gap gate (#3058).
 github.com/goobers/goobers/internal/apicontract.ValidateRuntimeParity # Contract generator invariant retained for cross-surface drift tests.
 github.com/goobers/goobers/internal/apicontract.validSurface # Contract generator helper reachable through the drift-test invariant.
 github.com/goobers/goobers/internal/apicontract.V1ConfigAuthoringRoutes # Config-authoring route contract (#3779) not yet registered by the daemon until its backing services land; exercised by authoring_test.go.

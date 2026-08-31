@@ -100,25 +100,57 @@ func WorkflowRequiredCapabilities() CapabilitySet {
 	)
 }
 
-// knownGaps is CONF-2's gap registry (design doc §5: "gap (linked issue)").
-// Every blessed-tier (provider, capability) pair inside
+// CapabilityGapKind distinguishes the two things a registry entry can
+// mean. Collapsing them onto one "linked issue" string made a permanent
+// forge difference indistinguishable from unfinished work, and forced
+// non-applicable cells to point at an issue that will never be open
+// (#3058).
+type CapabilityGapKind string
+
+const (
+	// GapTracked is a fixable divergence: the provider should reach
+	// conformance, and the named issue tracks getting there.
+	GapTracked CapabilityGapKind = "tracked"
+	// GapNotApplicable is a permanent difference in the forge itself:
+	// there is nothing to fix, so the entry carries a rationale instead of
+	// an issue reference.
+	GapNotApplicable CapabilityGapKind = "not-applicable"
+)
+
+// CapabilityGap is one registry entry. A GapTracked entry carries Issue
+// (and no Rationale); a GapNotApplicable entry carries Rationale (and no
+// Issue). ValidateGapRegistry enforces that split.
+type CapabilityGap struct {
+	Kind      CapabilityGapKind
+	Issue     string // e.g. "#3030"; GapTracked only.
+	Rationale string // why the capability can never apply; GapNotApplicable only.
+}
+
+// knownGaps is CONF-2's gap registry (design doc §5: "gap (linked issue) /
+// not-applicable"). Every blessed-tier (provider, capability) pair inside
 // WorkflowRequiredCapabilities() that is not fully conformant today MUST
-// appear here with the issue tracking the fix, or
-// TestBlessedTierGapsAreTracked fails CI with an actionable message.
-// Remove an entry only once its provider's declaration and behavior have
-// actually caught up (CONF-3/#2076 removed the landing-group entries once
-// it implemented them and flipped ADO's declaration).
-var knownGaps = map[ProviderKind]map[Capability]string{
+// appear here — either as a GapTracked entry naming the issue tracking the
+// fix, or as a GapNotApplicable entry explaining why the capability cannot
+// exist on that forge — or TestBlessedTierGapsAreTracked fails CI with an
+// actionable message. Remove a GapTracked entry only once its provider's
+// declaration and behavior have actually caught up (CONF-3/#2076 removed
+// the landing-group entries once it implemented them and flipped ADO's
+// declaration).
+var knownGaps = map[ProviderKind]map[Capability]CapabilityGap{
 	ProviderADO: {
-		CapBacklogBlockers: "#3030",
-		CapPRQueryAssignee: "#2178", // ADO has no PR-assignee concept; reviewers are the closest analog.
+		CapBacklogBlockers: {Kind: GapTracked, Issue: "#3030"},
+		CapPRQueryAssignee: {
+			Kind:      GapNotApplicable,
+			Rationale: "Azure DevOps pull requests have no assignee concept; reviewers are the closest analog and are covered by pr.query.requestedReviewer",
+		},
 	},
 }
 
-// gapIssueFor returns the tracked issue for (kind, cap), or "" if none is
+// gapFor returns the registry entry for (kind, cap), and whether one is
 // registered.
-func gapIssueFor(kind ProviderKind, cap Capability) string {
-	return knownGaps[kind][cap]
+func gapFor(kind ProviderKind, cap Capability) (CapabilityGap, bool) {
+	gap, ok := knownGaps[kind][cap]
+	return gap, ok
 }
 
 // MatrixStatus is a matrix cell's rendered state.
@@ -133,6 +165,11 @@ const (
 	StatusDeclaredGap MatrixStatus = "declared (gap)"
 	// StatusGap is not declared, with a tracked issue explaining why.
 	StatusGap MatrixStatus = "gap"
+	// StatusNotApplicable is not declared because the capability cannot
+	// exist on that forge (design doc §5's "not-applicable" state). Unlike
+	// StatusGap it is permanent: no issue tracks it, because there is
+	// nothing to fix.
+	StatusNotApplicable MatrixStatus = "not applicable"
 	// StatusNotDeclared is not declared with no tracked issue — legal for
 	// a capability outside WorkflowRequiredCapabilities(), or for a
 	// community adapter, which owes no gap-issue justification (§5:
@@ -146,18 +183,27 @@ type MatrixCell struct {
 	Capability Capability
 	Provider   ProviderKind
 	Status     MatrixStatus
-	GapIssue   string // e.g. "#2076"; empty unless Status is a gap state.
+	GapKind    CapabilityGapKind // empty unless a registry entry covers this cell.
+	GapIssue   string            // e.g. "#2076"; empty unless Status is a tracked gap state.
+	Rationale  string            // why the capability is permanently not applicable; StatusNotApplicable only.
 }
 
 func classify(kind ProviderKind, cap Capability, declared bool) MatrixCell {
-	issue := gapIssueFor(kind, cap)
-	cell := MatrixCell{Capability: cap, Provider: kind, GapIssue: issue}
+	gap, registered := gapFor(kind, cap)
+	cell := MatrixCell{Capability: cap, Provider: kind}
+	if registered {
+		cell.GapKind = gap.Kind
+		cell.GapIssue = gap.Issue
+		cell.Rationale = gap.Rationale
+	}
 	switch {
-	case declared && issue == "":
-		cell.Status = StatusConformant
-	case declared && issue != "":
+	case registered && gap.Kind == GapNotApplicable:
+		cell.Status = StatusNotApplicable
+	case declared && registered:
 		cell.Status = StatusDeclaredGap
-	case !declared && issue != "":
+	case declared:
+		cell.Status = StatusConformant
+	case registered:
 		cell.Status = StatusGap
 	default:
 		cell.Status = StatusNotDeclared
@@ -183,21 +229,72 @@ func BuildMatrix() []MatrixCell {
 
 // ValidateBlessedTier enforces the design doc §5 blessed-tier rule: every
 // capability in WorkflowRequiredCapabilities() must be conformant or
-// StatusDeclaredGap/StatusGap (i.e. tracked) for every blessed-tier
-// provider — StatusNotDeclared inside the required set is the one
-// forbidden state, an undocumented divergence. Returns one actionable
-// error per violation; a clean run returns nil.
+// covered by a registry entry (StatusDeclaredGap/StatusGap for a tracked
+// divergence, StatusNotApplicable for a permanent one) for every
+// blessed-tier provider — StatusNotDeclared inside the required set is the
+// one forbidden state, an undocumented divergence. A capability a provider
+// actually declares must not be registered as permanently not applicable
+// either: that contradiction would render a working capability as absent.
+// Returns one actionable error per violation; a clean run returns nil.
 func ValidateBlessedTier() []error {
 	var errs []error
 	required := WorkflowRequiredCapabilities()
 	for _, kind := range BlessedTierProviderKinds() {
 		declared, _ := CapabilitiesFor(kind)
 		for cap := range required {
-			cell := classify(kind, cap, declared.Has(cap))
+			isDeclared := declared.Has(cap)
+			cell := classify(kind, cap, isDeclared)
 			if cell.Status == StatusNotDeclared {
 				errs = append(errs, fmt.Errorf(
-					"blessed-tier provider %q does not declare required capability %q and has no linked gap issue in providers/capability_matrix.go's knownGaps registry",
+					"blessed-tier provider %q does not declare required capability %q and has no gap entry in providers/capability_matrix.go's knownGaps registry",
 					kind, cap))
+			}
+			if isDeclared && cell.GapKind == GapNotApplicable {
+				errs = append(errs, fmt.Errorf(
+					"provider %q declares capability %q, but knownGaps records it as permanently not applicable — drop the registry entry or stop declaring the capability",
+					kind, cap))
+			}
+		}
+	}
+	return errs
+}
+
+// ValidateGapRegistry checks each knownGaps entry is well formed for its
+// kind: a tracked gap names an issue and no rationale, a not-applicable
+// gap carries a rationale and no issue reference. This keeps the two
+// representations distinguishable rather than letting a permanent
+// difference quietly borrow an issue link (#3058).
+func ValidateGapRegistry() []error {
+	var errs []error
+	for _, kind := range AllProviderKinds() {
+		caps := knownGaps[kind]
+		for _, cap := range AllCapabilities() {
+			gap, ok := caps[cap]
+			if !ok {
+				continue
+			}
+			switch gap.Kind {
+			case GapTracked:
+				if !trackedGapIssuePattern.MatchString(gap.Issue) {
+					errs = append(errs, fmt.Errorf(
+						"knownGaps[%q][%q] is a tracked gap but its issue reference %q is not of the form \"#NNN\"", kind, cap, gap.Issue))
+				}
+				if gap.Rationale != "" {
+					errs = append(errs, fmt.Errorf(
+						"knownGaps[%q][%q] is a tracked gap but carries a not-applicable rationale — tracked gaps are explained by their issue", kind, cap))
+				}
+			case GapNotApplicable:
+				if gap.Rationale == "" {
+					errs = append(errs, fmt.Errorf(
+						"knownGaps[%q][%q] is not applicable but carries no rationale explaining why the capability cannot exist on that forge", kind, cap))
+				}
+				if gap.Issue != "" {
+					errs = append(errs, fmt.Errorf(
+						"knownGaps[%q][%q] is not applicable but references issue %q — a permanent difference has no fix to track", kind, cap, gap.Issue))
+				}
+			default:
+				errs = append(errs, fmt.Errorf(
+					"knownGaps[%q][%q] has unknown gap kind %q, want %q or %q", kind, cap, gap.Kind, GapTracked, GapNotApplicable))
 			}
 		}
 	}
