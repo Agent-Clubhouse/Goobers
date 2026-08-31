@@ -168,3 +168,166 @@ func TestClusterSiblingEscalationHasAnExit(t *testing.T) {
 		}
 	})
 }
+
+// TestFindinglessPassSiblingUnparksOnBaseAdvance covers #4051, the half of
+// #4038 its first fix missed. The cluster election escalates a deferring
+// sibling AFTER that sibling's own merge-review verdict, and when that verdict
+// is a pass it carries no findings at all. #4038 derived the cause class with
+// allCrossPRBlocked, which returns false for an empty finding list by design,
+// so the pass case recorded no EscalationCauses, escalationBaseAdvanceUnparks
+// stayed false, and the park was released only by a head change that
+// pr-remediation — excluded upstream — could never produce.
+//
+// Live on 2026-08-31, after #4038 had shipped to 6d044284195c, targeted
+// `goobers run --pr N pr-remediation` still refused #3941, #3894, #3900,
+// #3891 and #3968 at filterRemediationPullRequests. #3894 is the sharpest:
+// verdict pass at 19:25Z, goobers:merge-escalated applied at 20:45Z, head
+// still exactly what the pass pinned, base advanced out from under it to
+// CONFLICTING.
+func TestFindinglessPassSiblingUnparksOnBaseAdvance(t *testing.T) {
+	repo := providers.RepositoryRef{Owner: "your-org", Name: "your-repo"}
+	passVerdict := func(head, base string) string {
+		return renderVerdictComment(apiv1.Verdict{
+			Decision: apiv1.VerdictPass,
+			Summary:  "waiter-leak fix is correct on every exit",
+			HeadSHA:  head,
+			BaseSHA:  base,
+		})
+	}
+
+	t.Run("base advanced under a finding-less pass unparks it", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(7, "pr 7")
+		server.addComment(7, passVerdict("h7", "b7"))
+		server.setBranchTip("main", "advanced-base")
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{
+			Number: 7, HeadSHA: "h7", BaseSHA: "b7", Base: "main",
+			Labels: []string{remediationEscalatedLabel},
+		}
+
+		blocked, err := escalationStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("escalationStillBlocks: %v", err)
+		}
+		if blocked {
+			t.Fatal("blocked = true, want false — a pass faults nothing in this PR, so the escalation is the cluster's ordering and a base advance cures it")
+		}
+	})
+
+	t.Run("finding-less pass at an unchanged base stays parked", func(t *testing.T) {
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(8, "pr 8")
+		server.addComment(8, passVerdict("h8", "b8"))
+		server.setBranchTip("main", "b8")
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{
+			Number: 8, HeadSHA: "h8", BaseSHA: "b8", Base: "main",
+			Labels: []string{remediationEscalatedLabel},
+		}
+
+		blocked, err := escalationStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("escalationStillBlocks: %v", err)
+		}
+		if !blocked {
+			t.Fatal("blocked = false, want true — nothing has moved, so the park is still correct")
+		}
+	})
+
+	t.Run("a sibling-attributed needs-changes is not this PR's own content", func(t *testing.T) {
+		// The reviewer faulted the SIBLING, and pointed Location at it with no
+		// mention of this PR. That is not a rejection of this PR's content, so
+		// a base advance must release it just as a pass does.
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(9, "pr 9")
+		server.addComment(9, renderVerdictComment(apiv1.Verdict{
+			Decision: apiv1.VerdictNeedsChanges,
+			Summary:  "ordering only",
+			HeadSHA:  "h9",
+			BaseSHA:  "b9",
+			Findings: []apiv1.Finding{{
+				Class:    apiv1.FindingCrossPRBlocked,
+				Severity: apiv1.SeverityError,
+				Message:  "merge PR #99 first, then rebase",
+				Location: "PR #99",
+			}},
+		}))
+		server.setBranchTip("main", "advanced-base")
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{
+			Number: 9, HeadSHA: "h9", BaseSHA: "b9", Base: "main",
+			Labels: []string{remediationEscalatedLabel},
+		}
+
+		blocked, err := escalationStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("escalationStillBlocks: %v", err)
+		}
+		if blocked {
+			t.Fatal("blocked = true, want false — #4038's original ordering case must keep working under the new predicate")
+		}
+	})
+
+	t.Run("a finding-less needs-changes still fails closed", func(t *testing.T) {
+		// The complement of the pass case, and #4031's contract: a REJECTING
+		// verdict with no findings carries no attribution either way, so it
+		// must not be read as "nothing is wrong about this PR".
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(11, "pr 11")
+		server.addComment(11, renderVerdictComment(apiv1.Verdict{
+			Decision: apiv1.VerdictNeedsChanges,
+			Summary:  "rejected without an itemised finding",
+			HeadSHA:  "h11",
+			BaseSHA:  "b11",
+		}))
+		server.setBranchTip("main", "advanced-base")
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{
+			Number: 11, HeadSHA: "h11", BaseSHA: "b11", Base: "main",
+			Labels: []string{remediationEscalatedLabel},
+		}
+
+		blocked, err := escalationStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("escalationStillBlocks: %v", err)
+		}
+		if !blocked {
+			t.Fatal("blocked = false, want true — an empty finding list on a rejecting verdict is not evidence that the PR is fine")
+		}
+	})
+
+	t.Run("an info-severity self-attributed finding still parks", func(t *testing.T) {
+		// The severity floor is deliberately the lowest one: any finding that
+		// blames this PR's own diff keeps the park, because un-parking a PR a
+		// reviewer really did fault is the worse error.
+		server := newFakeGitHubServer(t, repo.Owner, repo.Name)
+		server.addIssue(10, "pr 10")
+		server.addComment(10, renderVerdictComment(apiv1.Verdict{
+			Decision: apiv1.VerdictNeedsChanges,
+			Summary:  "small but real",
+			HeadSHA:  "h10",
+			BaseSHA:  "b10",
+			Findings: []apiv1.Finding{{
+				Class:    apiv1.FindingMissingTests,
+				Severity: apiv1.SeverityInfo,
+				Message:  "this branch is untested",
+				Location: "cmd/goobers/thing.go:10",
+			}},
+		}))
+		server.setBranchTip("main", "advanced-base")
+		provider := server.newGitHubProvider("token")
+		pr := providers.PullRequestSummary{
+			Number: 10, HeadSHA: "h10", BaseSHA: "b10", Base: "main",
+			Labels: []string{remediationEscalatedLabel},
+		}
+
+		blocked, err := escalationStillBlocks(context.Background(), provider, repo, pr)
+		if err != nil {
+			t.Fatalf("escalationStillBlocks: %v", err)
+		}
+		if !blocked {
+			t.Fatal("blocked = false, want true — a self-attributed finding at any severity keeps the park")
+		}
+	})
+}

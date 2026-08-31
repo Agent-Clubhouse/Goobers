@@ -642,14 +642,15 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 			//
 			// The verdict pins the head/base it was computed against whatever
 			// the decision, so use it as the snapshot, and derive the cause
-			// class from its findings rather than assuming one:
+			// class from whether it faults the PR itself rather than assuming
+			// one:
 			state = remediationState{Escalated: true, EscalationGeneration: 1}
-			if allCrossPRBlocked(verdict.Findings) {
-				// Every finding is a pure cross-PR ordering ask, which is what
-				// makes this a cluster sibling in the first place. That is
-				// exactly the cause baseAdvanceCuresRemediationCause calls
-				// rebase-curable, so a base advance releases it — the sibling
-				// it was waiting behind has landed.
+			if escalationIsOrderingOnly(verdict, pr.Number) {
+				// The verdict does not fault this PR's own content, so the
+				// escalation cannot be about this PR — it is the cluster's
+				// ordering. That is the cause baseAdvanceCuresRemediationCause
+				// calls rebase-curable, so a base advance releases it: the
+				// sibling it was waiting behind has landed.
 				state.EscalationCauses = []remediationCause{remediationCauseSiblingOverlap}
 			}
 			// Otherwise the causes stay empty and escalationBaseAdvanceUnparks
@@ -706,6 +707,40 @@ func latestMergeReviewEscalationPins(comments []providers.Comment) (head, base s
 		head, base, ok = verdict.HeadSHA, verdict.BaseSHA, true
 	}
 	return head, base, ok
+}
+
+// escalationIsOrderingOnly reports whether a cluster-sibling escalation stands
+// on the cluster's merge ORDERING rather than on anything wrong with the PR
+// itself — which decides whether a base advance cures the park (#4051).
+//
+// A pass faults nothing by definition, so an escalation applied over it can
+// only be the election deferring this PR behind a sibling. That is the shape
+// #4038 missed: it derived the cause with allCrossPRBlocked, which returns
+// false for an empty finding list by design (applyverdict.go), and a pass
+// carries no findings — so the pass case recorded no cause, never unparked on
+// a base advance, and pr-remediation could not move the head to release it
+// either because escalated PRs are filtered out upstream. Live on 2026-08-31
+// that still refused #3941, #3894, #3900, #3891 and #3968 after #4038 shipped.
+//
+// For a REJECTING verdict the finding list is what carries the attribution, so
+// ask whether any finding blames this PR's own diff. An all-cross-PR-blocked
+// verdict does not (that class's RequiresCodeChange is false), which keeps
+// #4038's original case working. An EMPTY finding list on a rejecting verdict
+// carries no information at all, so it must not be read as "nothing is wrong"
+// — it stays parked, preserving #4031's fail-closed contract for a verdict
+// that never escalated in the first place.
+//
+// The severity floor is the lowest one on purpose: any finding that blames
+// this PR's own diff keeps the park, because un-parking a PR a reviewer really
+// did fault is the worse error.
+func escalationIsOrderingOnly(verdict apiv1.Verdict, prNumber int) bool {
+	if verdict.Decision == apiv1.VerdictPass {
+		return true
+	}
+	if len(verdict.Findings) == 0 {
+		return false
+	}
+	return !verdictHasSubstantiveFindingForPR(&verdict, prNumber, apiv1.SeverityInfo)
 }
 
 // latestMergeReviewVerdict returns the last merge-review verdict on the thread
