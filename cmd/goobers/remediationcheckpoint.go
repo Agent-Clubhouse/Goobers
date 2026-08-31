@@ -627,10 +627,40 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 		if vHead, vBase, ok := latestMergeReviewEscalationPins(rawComments); ok {
 			state = remediationState{Escalated: true, EscalationGeneration: 1}
 			head, base = vHead, vBase
+		} else if verdict, ok := latestMergeReviewVerdict(rawComments); ok {
+			// A merge-review escalation does not always leave a fail verdict on
+			// the PR it escalates. The cluster election writes its fail on the
+			// CLUSTER WINNER's thread and labels the deferring siblings, so a
+			// sibling ends up carrying goobers:merge-escalated whose only
+			// verdict-json payloads are its own needs-changes or pass rows
+			// (#4038). Those siblings hit the fail-closed return below and were
+			// parked with NO exit at all: pr-remediation excludes escalated PRs
+			// upstream, so the head could never move, so the head comparison
+			// that releases the park was unreachable. Live on 2026-08-31 that
+			// was four of the five open bot PRs — three of them with a verdict
+			// of pass — and it starved the lane to `no work` on every tick.
+			//
+			// The verdict pins the head/base it was computed against whatever
+			// the decision, so use it as the snapshot, and derive the cause
+			// class from its findings rather than assuming one:
+			state = remediationState{Escalated: true, EscalationGeneration: 1}
+			if allCrossPRBlocked(verdict.Findings) {
+				// Every finding is a pure cross-PR ordering ask, which is what
+				// makes this a cluster sibling in the first place. That is
+				// exactly the cause baseAdvanceCuresRemediationCause calls
+				// rebase-curable, so a base advance releases it — the sibling
+				// it was waiting behind has landed.
+				state.EscalationCauses = []remediationCause{remediationCauseSiblingOverlap}
+			}
+			// Otherwise the causes stay empty and escalationBaseAdvanceUnparks
+			// keeps returning false, so a park recorded against the PR's own
+			// content still survives a base advance and is released only by a
+			// head change — the same asymmetry the fail path above relies on.
+			head, base = verdict.HeadSHA, verdict.BaseSHA
 		}
 	}
 	if head == "" {
-		// Genuinely nothing to compare — a PR escalated before either payload
+		// Genuinely nothing to compare — a PR escalated before any payload
 		// shipped, or a human applied the label by hand. Fail closed: still
 		// blocks until a human clears the label.
 		return true, nil
@@ -676,6 +706,36 @@ func latestMergeReviewEscalationPins(comments []providers.Comment) (head, base s
 		head, base, ok = verdict.HeadSHA, verdict.BaseSHA, true
 	}
 	return head, base, ok
+}
+
+// latestMergeReviewVerdict returns the last merge-review verdict on the thread
+// that carries a head pin, whatever its decision.
+//
+// This is the weaker sibling of latestMergeReviewEscalationPins and is only
+// consulted when that one finds nothing: a PR escalated by the CLUSTER
+// election has no fail verdict of its own, because the fail is recorded on the
+// winner's thread while the deferring siblings only get the label (#4038).
+// Their own thread still carries a verdict-json payload — needs-changes, or
+// even pass — pinned to the head and base the review was computed against, and
+// that is a perfectly good snapshot for "has anything moved since?".
+//
+// Scans oldest-first (ListComments' order) and keeps the last qualifying
+// comment, matching latestRemediationState and latestMergeReviewEscalationPins:
+// only the most recent verdict is still actionable.
+func latestMergeReviewVerdict(comments []providers.Comment) (apiv1.Verdict, bool) {
+	var latest apiv1.Verdict
+	found := false
+	for _, comment := range comments {
+		if !isMergeReviewStatusComment(comment.Body) {
+			continue
+		}
+		verdict, parsed := parseVerdictComment(comment.Body)
+		if !parsed || verdict.HeadSHA == "" {
+			continue
+		}
+		latest, found = verdict, true
+	}
+	return latest, found
 }
 
 // escalationBaseAdvanceUnparks reports whether a base-branch advance ALONE may
