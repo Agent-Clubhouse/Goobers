@@ -290,6 +290,7 @@ const (
 	errorPathSimulation           WarningCode = "WF017"
 	errorCapabilityRuntimeSupport WarningCode = "WF019"
 	errorDocsRoot                 WarningCode = "DOCS001"
+	errorOutbox                   WarningCode = "OUT001"
 	errorUnsupportedFeature       WarningCode = "VER005"
 	errorLabelPredicateGaggle     WarningCode = "LBL001"
 	errorLabelPredicateTrigger    WarningCode = "LBL002"
@@ -1048,6 +1049,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// Sibling-scope overlap warning (MIRC-2, #1901).
 	ix.checkGaggleSiblingLabelOverlap(r)
 	ix.checkGaggleRunControls(r)
+	ix.checkGaggleOutboxMirrorPath(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
 	// Managed working-copy root normalization and cross-gaggle collisions (#3663).
@@ -1681,6 +1683,22 @@ func intersectLabels(a, b []string) []string {
 	return out
 }
 
+// checkGaggleOutboxMirrorPath refuses a gaggle-level outbox mirror default
+// that is neither absolute nor home-relative (#3662). The gaggle value is the
+// instance-wide default every workflow inherits, so a relative root there
+// would break artifact export for every run that mirrors.
+func (ix *index) checkGaggleOutboxMirrorPath(r *Report) {
+	for name, g := range ix.gaggles {
+		root := g.Spec.OutboxMirrorPath
+		if root == "" {
+			continue
+		}
+		if err := apiv1.ValidateOutboxMirrorRoot(root); err != nil {
+			r.add(errorOutbox, Error, ix.gaggleFile[name], "Gaggle", name, "spec.outboxMirrorPath: %v", err)
+		}
+	}
+}
+
 // checkGaggleWorkcopies rejects managed working-copy roots the daemon cannot
 // build definitions from (#3663): a relative spec.workcopies.root, which
 // instance.EffectiveWorkcopiesLayout refuses at startup, and two gaggles whose
@@ -2053,6 +2071,12 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	}
 	for _, msg := range wf.CheckReachability(def) {
 		r.add(errorReachability, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// Outbox declarations and mirror roots (#3662): an escaping or empty
+	// outbox entry, or a relative mirror root, only fails at artifact export
+	// — after the stage has already done its work — so it is refused here.
+	for _, msg := range wf.CheckOutbox(def) {
+		r.add(errorOutbox, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckSchedules(def) {
 		r.add(errorSchedule, Error, file, "Workflow", w.Name, "%s", msg)
