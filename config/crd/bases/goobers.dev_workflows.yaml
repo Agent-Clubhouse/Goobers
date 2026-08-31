@@ -1021,6 +1021,8 @@ spec:
                       - message: syncBase requires a repo workspace
                         rule: '!has(self.syncBase) || !self.syncBase || !has(self.workspace)
                           || self.workspace != ''scratch'''
+                      - message: command[0] must name an executable
+                        rule: '!has(self.command) || size(self.command[0]) > 0'
                     runsOn:
                       description: |-
                         RunsOn declares where this stage may execute (DSL 3.0, dsl-3.0.md §2):

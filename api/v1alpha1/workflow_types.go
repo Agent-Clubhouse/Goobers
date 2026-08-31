@@ -510,6 +510,11 @@ type RunControls struct {
 // DeterministicRun describes the code a deterministic task runs.
 // +kubebuilder:validation:XValidation:rule="has(self.command) != has(self.script)",message="exactly one of command or script is required"
 // +kubebuilder:validation:XValidation:rule="!has(self.syncBase) || !self.syncBase || !has(self.workspace) || self.workspace != 'scratch'",message="syncBase requires a repo workspace"
+// The CEL rule only rejects an empty executable: a trim()-based whitespace test
+// exceeds the apiserver's per-rule cost budget on an unbounded argv string, so
+// whitespace-only names are rejected by the JSON Schema pattern and by semantic
+// compilation instead (#3661).
+// +kubebuilder:validation:XValidation:rule="!has(self.command) || size(self.command[0]) > 0",message="command[0] must name an executable"
 type DeterministicRun struct {
 	// Command is the command + args to execute.
 	// +kubebuilder:validation:MinItems=1
