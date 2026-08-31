@@ -19,7 +19,7 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 )
 
-const initHelp = "Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]\n\n" +
+const initHelp = "Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db\n" +
 	"placeholder. The daemon creates per-gaggle runs/ and workcopies/ under\n" +
@@ -32,7 +32,10 @@ const initHelp = "Usage: goobers init [--guided [--port=<port|auto>] [--no-open]
 	"seeds the checked-in source layout (instance.yaml.example, manifest.yaml,\n" +
 	"and gaggles/) without runtime state. The source-tree action is non-interactive,\n" +
 	"preserves every existing file, and reports each created or skipped path;\n" +
-	"--json emits its versioned machine-readable result envelope. --demo seeds a hermetic mock-provider full-loop tour\n" +
+	"--json emits its versioned machine-readable result envelope. With\n" +
+	"--harness <name> (copilot or claude-code), every seeded goober uses that\n" +
+	"harness, so the generated instance needs no goober.yaml edits to switch;\n" +
+	"omitting it keeps the template's default harness. --demo seeds a hermetic mock-provider full-loop tour\n" +
 	"requiring no repo, provider credentials, model tokens, or network writes. The\n" +
 	"demo is supported on Linux and macOS, where network isolation is enforced; it is\n" +
 	"fail-closed on Windows (no enforced network:none equivalent exists there) unless\n" +
@@ -59,6 +62,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	guidedNoOpen := fs.Bool("no-open", false, "with --guided, print the URL without opening a browser")
 	guidedWorkdir := fs.String("workdir", defaultGettingStartedWorkdir(), "with --guided, temporary browser setup state")
 	template := fs.String("template", "", "seed a named onboarding template (available: quickstart)")
+	harness := fs.String("harness", "", "with --template=quickstart, the agent harness every seeded goober uses (copilot, claude-code)")
 	sourceTree := fs.String("source-tree", "", "seed the selected template as a checked-in config source at path")
 	asJSON := fs.Bool("json", false, "emit the config-source action result as JSON")
 	fs.Usage = helpUsage(stderr, "init")
@@ -101,6 +105,14 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		pf(stderr, "error: --json is supported by init only with --source-tree\n")
 		return 2
 	}
+	if *harness != "" && *template != instance.QuickstartTemplate {
+		pf(stderr, "error: --harness requires --template=%s\n", instance.QuickstartTemplate)
+		return 2
+	}
+	if err := instance.ValidateQuickstartHarness(*harness); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	if *sourceTree != "" && fs.NArg() != 0 {
 		pf(stderr, "error: --source-tree supplies the destination; do not also pass [path]\n")
 		return 2
@@ -119,7 +131,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		return 2
 	}
 	if *sourceTree != "" {
-		return seedQuickstartConfigSource(*sourceTree, *asJSON, stdout, stderr, goos)
+		return seedQuickstartConfigSource(*sourceTree, *harness, *asJSON, stdout, stderr, goos)
 	}
 	root := "."
 	if fs.NArg() == 1 {
@@ -137,7 +149,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	var err error
 	errCode := 2
 	if *template == instance.QuickstartTemplate {
-		res, err = instance.InitQuickstart(root)
+		res, err = instance.InitQuickstartWithOptions(root, instance.QuickstartOptions{Harness: *harness})
 	} else if *demo {
 		res, err = instance.InitDemo(root)
 	} else {
@@ -260,8 +272,8 @@ func ensureInitCompleted(root string) error {
 	return instanceLog.Close()
 }
 
-func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writer, goos string) int {
-	envelope, err := executeSeedConfigSourceAction(root, nil, goos)
+func seedQuickstartConfigSource(root, harness string, asJSON bool, stdout, stderr io.Writer, goos string) int {
+	envelope, err := executeSeedConfigSourceAction(root, harness, nil, goos)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2

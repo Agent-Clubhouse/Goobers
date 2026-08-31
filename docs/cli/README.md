@@ -1770,7 +1770,7 @@ instance, gaggle, goober, workflow, stage, gate, harness, capability.
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
@@ -1784,7 +1784,10 @@ intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
 and gaggles/) without runtime state. The source-tree action is non-interactive,
 preserves every existing file, and reports each created or skipped path;
---json emits its versioned machine-readable result envelope. --demo seeds a hermetic mock-provider full-loop tour
+--json emits its versioned machine-readable result envelope. With
+--harness <name> (copilot or claude-code), every seeded goober uses that
+harness, so the generated instance needs no goober.yaml edits to switch;
+omitting it keeps the template's default harness. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
 demo is supported on Linux and macOS, where network isolation is enforced; it is
 fail-closed on Windows (no enforced network:none equivalent exists there) unless

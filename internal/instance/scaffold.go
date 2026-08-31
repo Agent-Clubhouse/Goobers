@@ -8,7 +8,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -24,6 +26,9 @@ const (
 	starterDir    = "starter"
 	demoDir       = "demo"
 	quickstartDir = "quickstart-v1"
+
+	// gooberFileName is the goober spec file name inside a seeded template.
+	gooberFileName = "goober.yaml"
 
 	// QuickstartTemplate is the public init selector for the embedded
 	// onboarding-only quickstart@v1 configuration.
@@ -75,16 +80,44 @@ func InitDemo(root string) (*InitResult, error) {
 	return initWithConfig(root, demoDir, demoConfig())
 }
 
+// QuickstartOptions carries the non-interactive choices init may apply to the
+// embedded quickstart template.
+type QuickstartOptions struct {
+	// Harness overrides the agent harness every generated agentic goober
+	// uses (apiv1.HarnessCopilot or apiv1.HarnessClaudeCode). Empty keeps
+	// the harness the template itself declares, so the default seeding is
+	// byte-identical to the embedded template.
+	Harness string
+}
+
 // InitQuickstart scaffolds the versioned onboarding template: one linear
 // backlog-to-PR workflow with no production remediation or escalation paths.
 func InitQuickstart(root string) (*InitResult, error) {
-	return initWithConfig(root, quickstartDir, defaultConfig())
+	return InitQuickstartWithOptions(root, QuickstartOptions{})
+}
+
+// InitQuickstartWithOptions is InitQuickstart with the template choices in
+// opts applied to the seeded configuration.
+func InitQuickstartWithOptions(root string, opts QuickstartOptions) (*InitResult, error) {
+	files, err := quickstartTemplateFiles(opts)
+	if err != nil {
+		return nil, err
+	}
+	return initWithSeed(root, defaultConfig(), func(dir string) error {
+		return writeConfigFiles(dir, files)
+	})
 }
 
 // SeedQuickstartConfigSource creates the checked-in form of the quickstart
 // template without runtime state. Identical files are preserved; conflicting
 // managed paths are rejected.
 func SeedQuickstartConfigSource(root string) (*ConfigSourceSeedResult, error) {
+	return SeedQuickstartConfigSourceWithOptions(root, QuickstartOptions{})
+}
+
+// SeedQuickstartConfigSourceWithOptions is SeedQuickstartConfigSource with the
+// template choices in opts applied to the seeded configuration.
+func SeedQuickstartConfigSourceWithOptions(root string, opts QuickstartOptions) (*ConfigSourceSeedResult, error) {
 	if root == "" {
 		return nil, errors.New("config source path is required")
 	}
@@ -96,12 +129,70 @@ func SeedQuickstartConfigSource(root string) (*ConfigSourceSeedResult, error) {
 		path: GuidedSourceInstanceFile,
 		data: config,
 	}}
-	templateFiles, err := embeddedConfigFiles(quickstartDir)
+	templateFiles, err := quickstartTemplateFiles(opts)
 	if err != nil {
-		return nil, fmt.Errorf("load quickstart template: %w", err)
+		return nil, err
 	}
 	files = append(files, templateFiles...)
 	return seedConfigSource(root, files, "quickstart template")
+}
+
+// quickstartTemplateFiles loads the embedded quickstart tree and applies the
+// selected template options to it.
+func quickstartTemplateFiles(opts QuickstartOptions) ([]configSeedFile, error) {
+	files, err := embeddedConfigFiles(quickstartDir)
+	if err != nil {
+		return nil, fmt.Errorf("load quickstart template: %w", err)
+	}
+	if err := applyQuickstartHarness(files, opts.Harness); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// ValidateQuickstartHarness reports whether harness names a harness the
+// quickstart template can be seeded with. Empty selects the template default.
+func ValidateQuickstartHarness(harness string) error {
+	switch apiv1.Harness(harness) {
+	case "", apiv1.HarnessCopilot, apiv1.HarnessClaudeCode:
+		return nil
+	}
+	return fmt.Errorf("harness must be %q or %q", apiv1.HarnessCopilot, apiv1.HarnessClaudeCode)
+}
+
+// quickstartHarnessLine matches the `harness:` key of an embedded goober spec.
+// The template files are product-owned and comment-free, so rewriting the line
+// in place keeps the seeded YAML byte-identical to the template apart from the
+// selected harness — a full decode/encode round trip would reflow every
+// generated goober.yaml instead.
+var quickstartHarnessLine = regexp.MustCompile(`(?m)^([ \t]*harness:)[ \t]*\S.*$`)
+
+func applyQuickstartHarness(files []configSeedFile, harness string) error {
+	if err := ValidateQuickstartHarness(harness); err != nil {
+		return err
+	}
+	if harness == "" {
+		return nil
+	}
+	for i, file := range files {
+		if path.Base(file.path) != gooberFileName {
+			continue
+		}
+		rewritten, count := replaceQuickstartHarness(file.data, harness)
+		if count != 1 {
+			return fmt.Errorf("select harness %q: quickstart template %s declares %d harness keys, want exactly 1", harness, file.path, count)
+		}
+		files[i].data = rewritten
+	}
+	return nil
+}
+
+func replaceQuickstartHarness(data []byte, harness string) ([]byte, int) {
+	matches := quickstartHarnessLine.FindAllIndex(data, -1)
+	if len(matches) != 1 {
+		return data, len(matches)
+	}
+	return quickstartHarnessLine.ReplaceAll(data, []byte("${1} "+harness)), 1
 }
 
 func seedConfigSource(root string, files []configSeedFile, templateName string) (*ConfigSourceSeedResult, error) {
@@ -338,6 +429,11 @@ func copyConfig(dir, source string) error {
 	if err != nil {
 		return err
 	}
+	return writeConfigFiles(dir, files)
+}
+
+// writeConfigFiles writes a seeded config tree into dir.
+func writeConfigFiles(dir string, files []configSeedFile) error {
 	for _, file := range files {
 		target := filepath.Join(dir, filepath.FromSlash(file.path))
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
