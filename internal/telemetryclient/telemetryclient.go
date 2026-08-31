@@ -10,10 +10,17 @@
 //
 // Scope is deliberately narrow. This client reads DERIVED, low-sensitivity
 // projections only: the implementation-outcome evidence
-// `backlog-health --feedback` needs. `telemetry-query`
-// (executor.KindExternalTelemetry) is NOT served here and stays refused on the
-// engine path — it queries external connectors, not this rollup, and has no
-// plane.
+// `backlog-health --feedback` needs, and — since Goobers#4001, the blocker-1
+// half of #3996 — the four fixed defect-nomination aggregates
+// `telemetry-query` needs (defectaggregates.go). Neither read exposes the
+// telemetry database, a query, a path, or a connector, and error signatures
+// are NORMALIZED by the daemon before they cross.
+//
+// What is still not served here: raw telemetry events, the raw
+// (code, error_class) signature route, and every EXTERNAL telemetry connector
+// (executor.KindExternalTelemetry). A connector stage reaches a third-party
+// vendor with the instance's own credential; that is not a derived aggregate
+// and stays refused on the engine path.
 package telemetryclient
 
 import (
@@ -138,6 +145,9 @@ func NewHTTP(cfg Config) (*HTTP, error) {
 	if cfg.BaseURL == "" {
 		return nil, errors.New("telemetryclient: HTTP backend requires a base URL")
 	}
+	if err := ValidateEndpoint(cfg.BaseURL); err != nil {
+		return nil, err
+	}
 	cfg.Token = strings.TrimSpace(cfg.Token)
 	if cfg.Token == "" {
 		return nil, ErrEndpointWithoutToken
@@ -146,10 +156,53 @@ func NewHTTP(cfg Config) (*HTTP, error) {
 	if cfg.Gaggle == "" {
 		return nil, ErrEndpointWithoutGaggle
 	}
+	if err := ValidateScopeName("gaggle", cfg.Gaggle); err != nil {
+		return nil, err
+	}
 	if cfg.Client == nil {
 		cfg.Client = &http.Client{Timeout: DefaultTimeout}
 	}
 	return &HTTP{cfg: cfg}, nil
+}
+
+// ValidateEndpoint refuses a plane endpoint this client will not talk to.
+//
+// The endpoint arrives from the process environment, which in a stage pod is
+// written by the dispatcher — but a bearer token is attached to every request
+// made through it, so an endpoint that is not what it claims to be is a
+// credential-exfiltration primitive, not merely a broken read. The rules are
+// therefore structural and fail closed:
+//
+//   - an absolute http/https URL only: no file://, no gopher://, no
+//     scheme-relative or opaque form that a URL parser and an HTTP client
+//     might read differently;
+//   - a host: an empty authority resolves against nothing predictable;
+//   - NO embedded credentials, query string, or fragment: each of those is a
+//     way to make the composed request address something other than the
+//     contract path this client appends to it.
+func ValidateEndpoint(endpoint string) error {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("telemetryclient: plane endpoint is not a valid URL: %w", err)
+	}
+	switch parsed.Scheme {
+	case "http", "https":
+	default:
+		return fmt.Errorf("telemetryclient: plane endpoint scheme %q is refused; only http and https are served", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return errors.New("telemetryclient: plane endpoint has no host")
+	}
+	if parsed.User != nil {
+		return errors.New("telemetryclient: plane endpoint must not embed credentials")
+	}
+	if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return errors.New("telemetryclient: plane endpoint must not carry a query string or fragment")
+	}
+	if strings.Contains(parsed.Path, "..") {
+		return errors.New("telemetryclient: plane endpoint path must not traverse")
+	}
+	return nil
 }
 
 // Select chooses the telemetry read backend for a stage process from its

@@ -2189,6 +2189,17 @@ merge time and first observed post-merge configuration transition. Exact
 EffectiveVersion cohorts verify transitions and additions; a removal is
 verified when the workflow is absent from the live reconciled config.
 
+In a dispatched stage pod (GOOBERS_TELEMETRY_ENDPOINT + its bearer +
+GOOBERS_GAGGLE) the query is answered by the daemon's bounded
+defect-aggregate plane instead of a local rollup file. That plane serves
+only --aggregate stage-failure-rate, error-signature, gate-noise and
+credit-assignment with --format candidate-findings, error signatures are
+normalized by the daemon before they cross, and the read is contained to
+the stage's own gaggle. Anything outside that — another --format, another
+aggregate, --learning-action, a path argument, or a threshold governing an
+unserved family — is refused rather than answered narrowly. Off the plane,
+the resolved root must be a real goobers instance.
+
 Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
 

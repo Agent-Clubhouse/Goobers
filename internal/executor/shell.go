@@ -271,13 +271,19 @@ func StageInvokesGoobersCLI(command []string) bool {
 // cannot run there.
 //
 // DERIVED, and re-derivable: `grep -l LoadConfigDir cmd/goobers/*.go`, then map
-// each file to the command its newCLIFlagSet declares. That yields 16 files, of
-// which all but this one are operator commands (config, connect, fix, features,
+// each file to the command its newCLIFlagSet declares. That yields 16 files,
+// all of which are operator commands (config, connect, fix, features,
 // onboarding, run, workflow) that a workflow never invokes as a stage. If that
 // grep ever names a new STAGE command, it belongs here.
-var stageCommandsRequiringInstanceConfig = map[string]bool{
-	"telemetry-query": true,
-}
+//
+// The map is EMPTY as of Goobers#4001. Its only entry was telemetry-query,
+// which now reads the daemon's bounded defect-aggregate plane in a dispatched
+// pod (internal/httpapi/telemetrydefectplane.go) and only consults the config
+// directory on the local path, which it refuses to take without a real
+// instance root. The map is kept rather than deleted because the CONDITION it
+// encodes is still real: a stage pod has no config directory, and the next
+// command that needs one belongs here.
+var stageCommandsRequiringInstanceConfig = map[string]bool{}
 
 // StageRequiresInstanceConfig reports whether a stage command needs the instance
 // config directory, and so cannot run in a stage pod. This is deliberately a
@@ -361,12 +367,18 @@ var stageCommandsRequiringInstanceRoot = map[string]bool{
 	// entirely, so the journal plane does not serve it. Its claim RELEASE is
 	// already plane-served; only these three reads hold it here.
 	"issue-close-out": true,
-	// telemetry-query opens the daemon's telemetry ROLLUP database directly
-	// (telemetryquery.go:412 l.TelemetryDB()). The telemetry plane is a write
-	// and gaggle-scoped-evidence surface, not a rollup-query one, and
-	// decision 005 R4 keeps this command refused deliberately. It is also the
-	// only entry in stageCommandsRequiringInstanceConfig.
-	"telemetry-query": true,
+	// telemetry-query is NOT here any more (Goobers#4001). It opened the
+	// daemon's telemetry ROLLUP database directly (l.TelemetryDB()), and
+	// decision 005 R4 refused it at dispatch because the only shape anyone
+	// had for serving it would have exposed that database or raw error
+	// signatures. It now reads a NARROW, gaggle-contained, run-authenticated
+	// aggregate route instead (apicontract.TelemetryDefectAggregatesPath):
+	// four fixed derived families, no SQL, no path, no connector, and error
+	// signatures normalized before they leave the daemon. The command selects
+	// that plane BEFORE resolving a root, and on the local path it now
+	// refuses outright when the resolved root is not an instance — so the
+	// silent "." fallback this entry existed to prevent is unreachable from
+	// either direction rather than merely undispatched.
 	// gather-pr-context is NOT here any more (Goobers#3989). Its REMEDIATION
 	// NO-OP GUARD — the record that stops the lane re-attempting a PR whose
 	// previous attempt already concluded there was nothing to do — held it
