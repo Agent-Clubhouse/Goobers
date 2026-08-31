@@ -230,6 +230,45 @@ class GuidedRequestError extends Error {
   }
 }
 
+/** A /guided/ request the caller abandoned — its scope (a poll pass, a page)
+ *  went away while the request was still in flight. */
+class GuidedRequestCancelledError extends Error {
+  readonly path: string;
+
+  constructor(path: string, options?: ErrorOptions) {
+    super(`${path} was cancelled`, options);
+    this.name = "GuidedRequestCancelledError";
+    this.path = path;
+  }
+}
+
+/** A /guided/ request that outlived its caller-supplied deadline. The polling
+ *  reads carry one so a getting-started server that stops answering surfaces as
+ *  a named timeout instead of a request that never settles. */
+class GuidedRequestTimeoutError extends Error {
+  readonly path: string;
+  readonly timeoutMs: number;
+
+  constructor(path: string, timeoutMs: number, options?: ErrorOptions) {
+    super(`${path} timed out after ${timeoutMs}ms`, options);
+    this.name = "GuidedRequestTimeoutError";
+    this.path = path;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+export interface GuidedRequestOptions {
+  /** Abandons the request when the caller's scope goes away. */
+  signal?: AbortSignal;
+  /**
+   * Abort the request after this many milliseconds. Omitted means no deadline:
+   * the action endpoints run CLI subprocesses (`goobers init`, `goobers
+   * validate`) whose duration has no useful upper bound, so only the polling
+   * reads pass one.
+   */
+  timeoutMs?: number;
+}
+
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export class GuidedClient {
@@ -239,8 +278,8 @@ export class GuidedClient {
     this.fetchFn = fetchFn ?? ((input, init) => fetch(input, init));
   }
 
-  getState(): Promise<GuidedState> {
-    return this.request<GuidedState>("/guided/state");
+  getState(options?: GuidedRequestOptions): Promise<GuidedState> {
+    return this.request<GuidedState>("/guided/state", undefined, options);
   }
 
   inspectRepository(location: string): Promise<GuidedRepositoryInspection> {
@@ -274,8 +313,12 @@ export class GuidedClient {
     return this.post("/guided/actions/run", body);
   }
 
-  getJob(id: string): Promise<GuidedJobDetail> {
-    return this.request<GuidedJobDetail>(`/guided/jobs/${encodeURIComponent(id)}`);
+  getJob(id: string, options?: GuidedRequestOptions): Promise<GuidedJobDetail> {
+    return this.request<GuidedJobDetail>(
+      `/guided/jobs/${encodeURIComponent(id)}`,
+      undefined,
+      options,
+    );
   }
 
   getStatus(): Promise<GuidedEnvelopeResult<StatusEnvelope>> {
@@ -294,8 +337,12 @@ export class GuidedClient {
     });
   }
 
-  private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await this.fetchFn(path, init);
+  private async request<T>(
+    path: string,
+    init?: RequestInit,
+    options?: GuidedRequestOptions,
+  ): Promise<T> {
+    const response = await this.fetchWithDeadline(path, init, options);
     if (!response.ok) {
       let code = "request_failed";
       let message = `${path} failed with status ${response.status}`;
@@ -309,5 +356,60 @@ export class GuidedClient {
       throw new GuidedRequestError(response.status, code, message);
     }
     return (await response.json()) as T;
+  }
+
+  /**
+   * Issue the request under the caller's abort scope and optional deadline,
+   * translating either cancellation into a named error so a caller can tell a
+   * server that is gone from one it abandoned itself.
+   */
+  private async fetchWithDeadline(
+    path: string,
+    init: RequestInit | undefined,
+    options: GuidedRequestOptions | undefined,
+  ): Promise<Response> {
+    const signal = options?.signal;
+    const timeoutMs = options?.timeoutMs;
+    if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+      throw new RangeError("Guided request timeout must be a positive finite number.");
+    }
+    if (signal?.aborted) {
+      throw new GuidedRequestCancelledError(path);
+    }
+    if (!signal && timeoutMs === undefined) {
+      return this.fetchFn(path, init);
+    }
+
+    const controller = new AbortController();
+    let abortKind: "cancelled" | "timeout" | undefined;
+    const cancel = () => {
+      abortKind = "cancelled";
+      controller.abort();
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : globalThis.setTimeout(() => {
+            abortKind = "timeout";
+            controller.abort();
+          }, timeoutMs);
+
+    try {
+      return await this.fetchFn(path, { ...init, signal: controller.signal });
+    } catch (error) {
+      if (abortKind === "timeout") {
+        throw new GuidedRequestTimeoutError(path, timeoutMs!, { cause: error });
+      }
+      if (abortKind === "cancelled" || signal?.aborted) {
+        throw new GuidedRequestCancelledError(path, { cause: error });
+      }
+      throw error;
+    } finally {
+      if (timer !== undefined) {
+        globalThis.clearTimeout(timer);
+      }
+      signal?.removeEventListener("abort", cancel);
+    }
   }
 }
