@@ -609,7 +609,28 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 		head, base = state.HeadSHA, state.BaseSHA
 	}
 	if !found || head == "" {
-		// Genuinely nothing to compare — a PR escalated before this payload
+		// pr-remediation is not the only writer of this label: merge-review
+		// applies it too, on a verdict of fail (applyverdict.go's verdictLabel
+		// contract, design doc §4 D2), and that path never writes a
+		// remediation-state comment at all — its record rides the verdict-json
+		// payload on the merge-review-status comment instead. Failing closed
+		// here would park every merge-review escalation permanently, which is
+		// the same dead end #1855 fixed one marker over: the head comparison
+		// below is never reached, so pushing a commit cannot release a park
+		// whose own comment advertises exactly that exit.
+		//
+		// The verdict pins its head/base for SHA-pinning already, so read the
+		// snapshot from there. The escalating verdict is a fail — a rejection
+		// of the PR's content — so the synthesized record carries no
+		// rebase-curable cause and escalationBaseAdvanceUnparks keeps
+		// returning false for it, exactly as for a forced escalation.
+		if vHead, vBase, ok := latestMergeReviewEscalationPins(rawComments); ok {
+			state = remediationState{Escalated: true, EscalationGeneration: 1}
+			head, base = vHead, vBase
+		}
+	}
+	if head == "" {
+		// Genuinely nothing to compare — a PR escalated before either payload
 		// shipped, or a human applied the label by hand. Fail closed: still
 		// blocks until a human clears the label.
 		return true, nil
@@ -630,6 +651,31 @@ func escalationStillBlocks(ctx context.Context, provider remediationProvider, re
 		return false, nil
 	}
 	return true, nil
+}
+
+// latestMergeReviewEscalationPins recovers the head/base snapshot merge-review
+// recorded when IT applied goobers:merge-escalated. That path (applyverdict.go)
+// posts a merge-review-status comment carrying a verdict-json payload and never
+// writes a remediation-state comment, so escalationStillBlocks has no
+// pr-remediation record to read; the verdict's own SHA pins are the snapshot.
+//
+// Scans oldest-first (ListComments' order) and keeps the last qualifying
+// comment, matching latestRemediationState: only the most recent verdict is
+// still actionable. Only a fail verdict qualifies — that is the sole decision
+// that escalates — so a later needs-changes or pass comment does not resurrect
+// a stale pin.
+func latestMergeReviewEscalationPins(comments []providers.Comment) (head, base string, ok bool) {
+	for _, comment := range comments {
+		if !isMergeReviewStatusComment(comment.Body) {
+			continue
+		}
+		verdict, parsed := parseVerdictComment(comment.Body)
+		if !parsed || verdict.Decision != apiv1.VerdictFail || verdict.HeadSHA == "" {
+			continue
+		}
+		head, base, ok = verdict.HeadSHA, verdict.BaseSHA, true
+	}
+	return head, base, ok
 }
 
 // escalationBaseAdvanceUnparks reports whether a base-branch advance ALONE may
