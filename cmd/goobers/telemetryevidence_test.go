@@ -59,6 +59,10 @@ func newTelemetryReadPlane(t *testing.T, root string) *telemetryReadPlane {
 		log.New(io.Discard, "", 0),
 		httpapi.WithAuthenticator(authenticator),
 		httpapi.WithPodRunGaggle(podRunGaggleResolver(layout)),
+		// The defect-nomination aggregate route (Goobers#4001), wired exactly
+		// as cmd/goobers/up.go wires it, so the parity tests exercise the
+		// daemon's real derivation rather than a stand-in.
+		httpapi.WithTelemetryDefectAggregateService(newDaemonTelemetryDefectAggregateService(layout)),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -261,20 +265,32 @@ func TestBacklogHealthFeedbackOverTheReadPlane(t *testing.T) {
 	}
 }
 
-// TestTelemetryQueryStaysRefusedOnTheEnginePath pins the half of decision 005
-// R4 that did NOT move: the read plane serves the daemon's own rollup to a
-// contained pod, and `telemetry-query` — which reaches EXTERNAL connectors
-// (executor.KindExternalTelemetry) and is used only by the nomination lanes —
-// is untouched by it and still refuses to dispatch.
-func TestTelemetryQueryStaysRefusedOnTheEnginePath(t *testing.T) {
-	if !executor.StageRequiresInstanceRoot([]string{"goobers", "telemetry-query"}, "") {
-		t.Fatal("telemetry-query must stay refused on the dispatch path; the telemetry READ plane serves the daemon rollup, not external connectors")
-	}
+// TestExternalTelemetryConnectorsStayRefusedOnTheEnginePath pins the half of
+// decision 005 R4 that did NOT move at Goobers#4001.
+//
+// `telemetry-query` itself is now dispatchable: it reads a narrow, bounded,
+// gaggle-contained DERIVED-aggregate route
+// (apicontract.TelemetryDefectAggregatesPath) that never exposes the rollup
+// database and normalizes error signatures before they leave the daemon. What
+// stays refused is the EXTERNAL-telemetry connector kind
+// (executor.KindExternalTelemetry): reaching a third-party telemetry vendor
+// with the instance's own credential is not a derived aggregate, no plane
+// serves it, and admitting it would be a separate ruling.
+func TestExternalTelemetryConnectorsStayRefusedOnTheEnginePath(t *testing.T) {
 	if !executor.StageRequiresInstanceRoot(
 		[]string{"goobers", "external-telemetry"},
 		executor.KindExternalTelemetry,
 	) {
 		t.Fatal("kind=external-telemetry must stay refused on the dispatch path")
+	}
+	// The command's own refusal is gone, and gone deliberately: the
+	// defect-nomination lane is pod-pinnable precisely because this is false
+	// now. A `true` here means #4001 was reverted without its plane.
+	if executor.StageRequiresInstanceRoot([]string{"goobers", "telemetry-query"}, "") {
+		t.Fatal("telemetry-query is served by the defect-aggregate plane since Goobers#4001; a refusal here re-pins defect-nomination to Self")
+	}
+	if executor.StageRequiresInstanceConfig([]string{"goobers", "telemetry-query"}) {
+		t.Fatal("telemetry-query no longer needs the instance config directory on the plane path (Goobers#4001)")
 	}
 	// The stage that this issue's read route DOES serve is unchanged too:
 	// backlog-health's own refusal was never C3's to lift, and C2 has since

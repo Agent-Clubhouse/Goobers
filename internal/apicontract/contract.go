@@ -45,7 +45,21 @@ const (
 	// gaggle filter — and split out only because `backlog-health --feedback`
 	// needs the run-to-item join neither of those two carries.
 	TelemetryImplementationOutcomesPath = V1Prefix + "/telemetry/implementation-outcomes"
-	EventsPath                          = V1Prefix + "/events"
+	// TelemetryDefectAggregatesPath is the defect-nomination aggregate read
+	// (decision 005 R4 as amended by Goobers#4001, the blocker-1 half of
+	// #3996): the FIXED set of derived, threshold-crossing aggregates the
+	// `defect-nomination` and `work-nomination` lanes' `telemetry-query`
+	// stage needs — stage-failure-rate, gate-noise, credit-assignment, and a
+	// NORMALIZED, REDACTED error-signature aggregate.
+	//
+	// It is a query route in the sense that the DAEMON queries: the client
+	// names a gaggle, a bounded window, which of four aggregate families it
+	// wants, and bounded numeric thresholds. It cannot name a table, a path,
+	// a connector, or a projection. Everything outside that closed parameter
+	// set is refused rather than ignored, and the raw rollup rows behind the
+	// aggregates never cross the boundary.
+	TelemetryDefectAggregatesPath = V1Prefix + "/telemetry/defect-aggregates"
+	EventsPath                    = V1Prefix + "/events"
 
 	// Tier-2 human-intervention mutation routes. The CLI and dashboard use this
 	// same API-first surface, behind the shared access-control seam.
@@ -177,6 +191,12 @@ const (
 	RouteTelemetryErrors          RouteID = "telemetryErrors"
 
 	RouteTelemetryImplementationOutcomes RouteID = "telemetryImplementationOutcomes"
+
+	// RouteTelemetryDefectAggregates is the defect-nomination aggregate read
+	// (Goobers#4001). Named for its CONSUMER rather than for a projection,
+	// because what it serves is exactly one lane's fixed evidence set and
+	// widening it is a ruling amendment, not a parameter change.
+	RouteTelemetryDefectAggregates RouteID = "telemetryDefectAggregates"
 
 	RouteEvents RouteID = "events"
 
@@ -311,6 +331,12 @@ var v1Routes = []Route{
 	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryImplementationOutcomes, Method: http.MethodGet, Path: TelemetryImplementationOutcomesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	// The defect-aggregate route is classified with its telemetry siblings:
+	// answered from the same pre-aggregated rollup buckets, bounded by the
+	// same read budget. It costs more than one of them because it runs
+	// several detection families, which is why its window, its response and
+	// its cardinality are all bounded server-side rather than by the caller.
+	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
