@@ -91,6 +91,14 @@ export GOOBERS_COPILOT_TOKEN=github_pat_...
 export COPILOT_GITHUB_TOKEN="$GOOBERS_COPILOT_TOKEN"
 ```
 
+PowerShell:
+
+```powershell
+$env:GOOBERS_GITHUB_TOKEN = "github_pat_..."
+$env:GOOBERS_COPILOT_TOKEN = "github_pat_..."
+$env:COPILOT_GITHUB_TOKEN = $env:GOOBERS_COPILOT_TOKEN
+```
+
 `GOOBERS_COPILOT_TOKEN` is the source named by `instance.yaml`. Goobers injects
 it as `COPILOT_GITHUB_TOKEN` only into agentic subprocesses that declare
 `agent:model`. The separate `COPILOT_GITHUB_TOKEN` export lets the harness
@@ -108,6 +116,13 @@ Preflight the repository token before changing the instance:
 
 ```sh
 GH_TOKEN="$GOOBERS_GITHUB_TOKEN" gh repo view "$GOOBERS_TARGET"
+```
+
+PowerShell:
+
+```powershell
+$env:GH_TOKEN = $env:GOOBERS_GITHUB_TOKEN
+gh repo view $env:GOOBERS_TARGET
 ```
 
 ## 3. Initialize the instance
