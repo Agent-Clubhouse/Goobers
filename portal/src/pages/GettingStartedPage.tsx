@@ -607,7 +607,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                           <li>
                             Set <strong>Resource owner</strong> to{" "}
                             <strong>{inspection.owner}</strong>, the account or organization
-                            that owns this repository—not the default personal account.
+                            that owns this repository. Keep the default personal account when
+                            it is the owner.
                           </li>
                           <li>
                             Choose <strong>Only select repositories</strong>, then select{" "}
@@ -616,8 +617,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                           <li>
                             Grant the least-privilege permissions in{" "}
                             <code>docs/guides/github-token-scopes.md</code>, generate the
-                            token, and use it with the environment variable named in your
-                            configuration.
+                            token, then restart this wizard with{" "}
+                            <code>GH_TOKEN=&lt;your token&gt; goobers init --guided</code>.
                           </li>
                         </ol>
                       </>

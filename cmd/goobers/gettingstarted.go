@@ -32,9 +32,9 @@ const guidedInitBrowserHelp = "Usage: goobers init --guided [--port=<port|auto>]
 	"while completed filesystem\n" +
 	"actions remain the source of truth across restarts. Token values never\n" +
 	"reach the browser or configuration files. For GitHub PAT setup, use\n" +
-	"https://github.com/settings/personal-access-tokens/new, select the\n" +
-	"repository's Resource owner (for example, odsp-microsoft) rather than the\n" +
-	"default account, choose Only select repositories, and grant the permissions\n" +
+	"https://github.com/settings/personal-access-tokens/new, select the account\n" +
+	"or organization that owns the repository, choose Only select repositories,\n" +
+	"and grant the permissions\n" +
 	"documented in docs/guides/github-token-scopes.md.\n\n" +
 	"Configuration and instance placement are selected in the browser. --workdir\n" +
 	"holds temporary browser setup state and defaults beneath the current\n" +

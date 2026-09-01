@@ -179,11 +179,11 @@ with a real one.
 2. Create a fine-grained GitHub PAT using the
    [PAT setup instructions](github-token-scopes.md#create-a-fine-grained-pat-for-a-repository).
    **Resource owner must be the account or organization that owns
-   `<owner>/<repo>` (for example, `odsp-microsoft`), not the default personal
-   account.** Choose **Only select repositories** and select exactly the
-   disposable repository, with Contents, Issues, Pull requests, and the
-   read-only CI permissions described in that guide. Then export it once under
-   the name `connect` expects by default:
+   `<owner>/<repo>` (for example, `odsp-microsoft`); keep the default personal
+   account when it owns the repository.** Choose **Only select repositories**
+   and select exactly the disposable repository, with Contents, Issues, and
+   Pull requests permissions. Then export it once under the name `connect`
+   expects by default:
 
    ```sh
    export GOOBERS_GITHUB_TOKEN=<your token>

@@ -257,6 +257,11 @@ func discoverGuidedAuth(ctx context.Context, identity guidedRepositoryIdentity) 
 
 func runGuidedDiscovery(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := guidedDiscoveryCommand(ctx, name, args...)
+	if name == "gh" && os.Getenv("GH_TOKEN") == "" {
+		if token := os.Getenv("GOOBERS_GITHUB_TOKEN"); token != "" {
+			cmd.Env = append(os.Environ(), "GH_TOKEN="+token)
+		}
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()

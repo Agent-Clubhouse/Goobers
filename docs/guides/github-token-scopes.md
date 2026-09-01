@@ -12,16 +12,16 @@ and complete these fields before generating the token:
 
 1. **Resource owner:** select the account or organization that owns the target
    repository — for example, `odsp-microsoft` when the repository is under that
-   organization. **Do not leave the default personal account selected.** A
-   token created under the wrong resource owner cannot access the target
-   repository, even when its permissions look correct.
+   organization. Keep the default personal account when it owns the target;
+   otherwise change it. A token created under the wrong resource owner cannot
+   access the target repository, even when its permissions look correct.
 2. **Repository access:** select **Only select repositories**, then choose the
    exact target repository. Do not grant access to all repositories.
 3. **Repository permissions:** grant only the permissions required by the
-   selected workflow. For the getting-started implementation path, use
-   **Contents: Read and write**, **Issues: Read and write**, **Pull requests:
-   Read and write**, and **Actions: Read-only**. Grant **Commit statuses:
-   Read-only** when it is available for the target's CI integration.
+   selected workflow. The getting-started quickstart needs **Contents: Read
+   and write**, **Issues: Read and write**, and **Pull requests: Read and
+   write**. Add **Actions: Read-only** and **Commit statuses: Read-only** only
+   for workflows that poll hosted CI.
 4. Select **Generate token**, copy it once, and store it in the environment
    variable named by the Goobers configuration. Never paste the token into
    YAML, source code, issue text, or a browser wizard.
