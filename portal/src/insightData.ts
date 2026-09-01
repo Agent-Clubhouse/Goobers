@@ -1,4 +1,3 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import type { QueryState } from "./api/queryState";
 import type {
   DaemonClient,
@@ -8,9 +7,10 @@ import type {
   TelemetryStatsResult,
   TelemetryTrendBucket,
   TelemetryUsageStats,
+  UpdateModel,
 } from "./api/types";
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
-import { useLiveData } from "./liveData";
+import { useLiveQuery } from "./liveQuery";
 
 export type InsightWindow = "24h" | "7d" | "30d" | "all";
 
@@ -72,97 +72,23 @@ export function useInsightStats(
   retry: () => void;
   state: QueryState<InsightSnapshot>;
 } {
-  const { cache, freshness, isFresh, subscribe } = useLiveData();
-  const cacheKey = scopeRequest
-    ? dataCacheKey("insight-stats", window, gaggle ?? "", workflow ?? "")
-    : dataCacheKey("insight-stats", window);
-  const [state, setState] = useState<QueryState<InsightSnapshot>>(() => {
-    const cached = cache.get<InsightSnapshot>(cacheKey);
-    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  return useLiveQuery<InsightSnapshot>({
+    cacheKey: scopeRequest
+      ? dataCacheKey("insight-stats", window, gaggle ?? "", workflow ?? "")
+      : dataCacheKey("insight-stats", window),
+    dependencies: RUN_DATA_DEPENDENCIES,
+    models: RUN_MODELS,
+    scope: { gaggle, workflow },
+    isCurrent: (data) => data.window === window,
+    errorMessage: "Unable to read telemetry statistics.",
+    load: async (signal) => {
+      const filters = scopeRequest
+        ? insightStatsFilters(window, gaggle, workflow)
+        : insightWindowFilters(window);
+      const stats = await client.getTelemetryStats(filters, { signal });
+      return { filters, stats, window };
+    },
   });
-  const request = useRef<AbortController | undefined>(undefined);
-
-  const refresh = useCallback(() => {
-    request.current?.abort();
-    const cacheRevision = cache.beginWrite(cacheKey, RUN_DATA_DEPENDENCIES);
-    const controller = new AbortController();
-    request.current = controller;
-    const filters = scopeRequest
-      ? insightStatsFilters(window, gaggle, workflow)
-      : insightWindowFilters(window);
-    setState((current) =>
-      (current.status === "ready" || current.status === "stale") &&
-      current.data.window === window
-        ? { status: "stale", data: current.data }
-        : { status: "loading" },
-    );
-
-    return client.getTelemetryStats(filters, { signal: controller.signal }).then(
-      (stats) => {
-        if (controller.signal.aborted) {
-          return true;
-        }
-        const data = { filters, stats, window };
-        cache.set(cacheKey, data, RUN_DATA_DEPENDENCIES, cacheRevision);
-        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
-        return true;
-      },
-      (error: unknown) => {
-        if (!controller.signal.aborted) {
-          const queryError =
-            error instanceof Error ? error : new Error("Unable to read telemetry statistics.");
-          setState((current) =>
-            (current.status === "ready" || current.status === "stale") &&
-            current.data.window === window
-              ? { status: "stale", data: current.data, error: queryError }
-              : { status: "error", error: queryError },
-          );
-        }
-        return false;
-      },
-    );
-  }, [cache, cacheKey, client, gaggle, isFresh, scopeRequest, window, workflow]);
-
-  useEffect(() => {
-    const cached = cache.get<InsightSnapshot>(cacheKey);
-    setState(cached ? { status: "ready", data: cached } : { status: "loading" });
-    const unsubscribe = subscribe(
-      ["run"],
-      (_models, reason) => {
-        const current = reason === "initial" ? cache.get<InsightSnapshot>(cacheKey) : undefined;
-        if (current) {
-          setState(
-            isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
-          );
-          return true;
-        }
-        return refresh();
-      },
-      { gaggle, workflow },
-    );
-    return () => {
-      unsubscribe();
-      request.current?.abort();
-    };
-  }, [cache, cacheKey, gaggle, isFresh, refresh, subscribe, workflow]);
-
-  useEffect(() => {
-    setState((current) => {
-      if (freshness !== "connected" && current.status === "ready") {
-        return { status: "stale", data: current.data };
-      }
-      if (freshness === "connected" && current.status === "stale" && !current.error) {
-        return { status: "ready", data: current.data };
-      }
-      return current;
-    });
-  }, [freshness]);
-
-  const retry = useCallback(() => {
-    cache.remove(cacheKey);
-    return refresh();
-  }, [cache, cacheKey, refresh]);
-  return { retry, state };
 }
 
 const TREND_BUCKET_COUNTS: Record<Exclude<InsightWindow, "all">, number> = {
@@ -234,135 +160,45 @@ export function useInsightCostTrend(
   retry: () => void;
   state: QueryState<InsightCostTrendSnapshot>;
 } {
-  const { cache, freshness, isFresh, subscribe } = useLiveData();
-  const cacheKey = dataCacheKey("insight-cost-trend", window, gaggle ?? "", workflow ?? "");
-  const [state, setState] = useState<QueryState<InsightCostTrendSnapshot>>(() => {
-    const cached = cache.get<InsightCostTrendSnapshot>(cacheKey);
-    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  return useLiveQuery<InsightCostTrendSnapshot>({
+    cacheKey: dataCacheKey("insight-cost-trend", window, gaggle ?? "", workflow ?? ""),
+    dependencies: insightDependencies(gaggle, workflow),
+    models: RUN_MODELS,
+    scope: { gaggle, workflow },
+    isCurrent: (data) => data.window === window,
+    errorMessage: "Unable to read the cost trend.",
+    load: async (signal) => {
+      const bucketRanges = insightTrendBuckets(window);
+      if (bucketRanges.length === 0) {
+        return { buckets: [], window };
+      }
+      const previousRange = insightPreviousWindowFilters(window);
+      const currentRange = insightWindowFilters(window);
+      const trendSince = previousRange?.since ?? bucketRanges[0]?.since;
+      const trendUntil = bucketRanges.at(-1)?.until;
+      const trendBucketCount = previousRange ? bucketRanges.length * 2 : bucketRanges.length;
+      const stats = await client.getTelemetryStats(
+        {
+          gaggle,
+          workflow,
+          since: currentRange.since,
+          until: currentRange.until,
+          trendSince,
+          trendUntil,
+          trendBuckets: trendSince && trendUntil ? trendBucketCount : undefined,
+          trendPreviousSince: previousRange?.since,
+          trendPreviousUntil: previousRange?.until,
+        },
+        { signal },
+      );
+      const buckets = selectInsightCostTrendBuckets(
+        stats.trend ?? [],
+        bucketRanges.length,
+        previousRange !== undefined,
+      ).map(({ since, until, usage }) => ({ since, until, usage }));
+      return { buckets, previous: previousRange ? stats.trendPrevious : undefined, window };
+    },
   });
-  const request = useRef<AbortController | undefined>(undefined);
-
-  const refresh = useCallback(() => {
-    request.current?.abort();
-    const dependencies = insightDependencies(gaggle, workflow);
-    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
-    const controller = new AbortController();
-    request.current = controller;
-    const bucketRanges = insightTrendBuckets(window);
-    const previousRange = insightPreviousWindowFilters(window);
-    const currentRange = insightWindowFilters(window);
-    setState((current) =>
-      (current.status === "ready" || current.status === "stale") &&
-      current.data.window === window
-        ? { status: "stale", data: current.data }
-        : { status: "loading" },
-    );
-
-    if (bucketRanges.length === 0) {
-      const data: InsightCostTrendSnapshot = { buckets: [], window };
-      cache.set(cacheKey, data, dependencies, cacheRevision);
-      setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
-      return Promise.resolve(true);
-    }
-
-    const trendSince = previousRange?.since ?? bucketRanges[0]?.since;
-    const trendUntil = bucketRanges.at(-1)?.until;
-    const trendBucketCount = previousRange ? bucketRanges.length * 2 : bucketRanges.length;
-    return client.getTelemetryStats(
-      {
-        gaggle,
-        workflow,
-        since: currentRange.since,
-        until: currentRange.until,
-        trendSince,
-        trendUntil,
-        trendBuckets: trendSince && trendUntil ? trendBucketCount : undefined,
-        trendPreviousSince: previousRange?.since,
-        trendPreviousUntil: previousRange?.until,
-      },
-      { signal: controller.signal },
-    ).then(
-      (stats) => {
-        const trend = stats.trend ?? [];
-        const buckets = selectInsightCostTrendBuckets(
-          trend,
-          bucketRanges.length,
-          previousRange !== undefined,
-        ).map(({ since, until, usage }) => ({
-          since,
-          until,
-          usage,
-        }));
-        const previous = previousRange ? stats.trendPrevious : undefined;
-        return [buckets, previous] as const;
-      },
-    ).then(
-      ([buckets, previous]) => {
-        if (controller.signal.aborted) {
-          return true;
-        }
-        const data: InsightCostTrendSnapshot = { buckets, previous, window };
-        cache.set(cacheKey, data, dependencies, cacheRevision);
-        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
-        return true;
-      },
-      (error: unknown) => {
-        if (!controller.signal.aborted) {
-          const queryError =
-            error instanceof Error ? error : new Error("Unable to read the cost trend.");
-          setState((current) =>
-            (current.status === "ready" || current.status === "stale") &&
-            current.data.window === window
-              ? { status: "stale", data: current.data, error: queryError }
-              : { status: "error", error: queryError },
-          );
-        }
-        return false;
-      },
-    );
-  }, [cache, cacheKey, client, gaggle, isFresh, window, workflow]);
-
-  useEffect(() => {
-    const cached = cache.get<InsightCostTrendSnapshot>(cacheKey);
-    setState(cached ? { status: "ready", data: cached } : { status: "loading" });
-    const unsubscribe = subscribe(
-      ["run"],
-      (_models, reason) => {
-        const current =
-          reason === "initial" ? cache.get<InsightCostTrendSnapshot>(cacheKey) : undefined;
-        if (current) {
-          setState(
-            isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
-          );
-          return true;
-        }
-        return refresh();
-      },
-      { gaggle, workflow },
-    );
-    return () => {
-      unsubscribe();
-      request.current?.abort();
-    };
-  }, [cache, cacheKey, gaggle, isFresh, refresh, subscribe, workflow]);
-
-  useEffect(() => {
-    setState((current) => {
-      if (freshness !== "connected" && current.status === "ready") {
-        return { status: "stale", data: current.data };
-      }
-      if (freshness === "connected" && current.status === "stale" && !current.error) {
-        return { status: "ready", data: current.data };
-      }
-      return current;
-    });
-  }, [freshness]);
-
-  const retry = useCallback(() => {
-    cache.remove(cacheKey);
-    return refresh();
-  }, [cache, cacheKey, refresh]);
-  return { retry, state };
 }
 
 /**
@@ -382,90 +218,18 @@ export function useInsightCostRollup(
   retry: () => void;
   state: QueryState<InsightCostRollupSnapshot>;
 } {
-  const { cache, freshness, isFresh, subscribe } = useLiveData();
-  const cacheKey = dataCacheKey("insight-cost-rollup", window);
-  const [state, setState] = useState<QueryState<InsightCostRollupSnapshot>>(() => {
-    const cached = cache.get<InsightCostRollupSnapshot>(cacheKey);
-    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  return useLiveQuery<InsightCostRollupSnapshot>({
+    cacheKey: dataCacheKey("insight-cost-rollup", window),
+    dependencies: RUN_DATA_DEPENDENCIES,
+    models: RUN_MODELS,
+    isCurrent: (data) => data.window === window,
+    errorMessage: "Unable to read instance spend.",
+    load: async (signal) => {
+      const filters = insightWindowFilters(window);
+      const stats = await client.getTelemetryStats(filters, { signal });
+      return costRollupFromStats(filters, stats, window);
+    },
   });
-  const request = useRef<AbortController | undefined>(undefined);
-
-  const refresh = useCallback(() => {
-    request.current?.abort();
-    const cacheRevision = cache.beginWrite(cacheKey, RUN_DATA_DEPENDENCIES);
-    const controller = new AbortController();
-    request.current = controller;
-    const filters = insightWindowFilters(window);
-    setState((current) =>
-      (current.status === "ready" || current.status === "stale") &&
-      current.data.window === window
-        ? { status: "stale", data: current.data }
-        : { status: "loading" },
-    );
-
-    return client.getTelemetryStats(filters, { signal: controller.signal }).then(
-      (stats) => {
-        if (controller.signal.aborted) {
-          return true;
-        }
-        const data = costRollupFromStats(filters, stats, window);
-        cache.set(cacheKey, data, RUN_DATA_DEPENDENCIES, cacheRevision);
-        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
-        return true;
-      },
-      (error: unknown) => {
-        if (!controller.signal.aborted) {
-          const queryError =
-            error instanceof Error ? error : new Error("Unable to read instance spend.");
-          setState((current) =>
-            (current.status === "ready" || current.status === "stale") &&
-            current.data.window === window
-              ? { status: "stale", data: current.data, error: queryError }
-              : { status: "error", error: queryError },
-          );
-        }
-        return false;
-      },
-    );
-  }, [cache, cacheKey, client, isFresh, window]);
-
-  useEffect(() => {
-    const cached = cache.get<InsightCostRollupSnapshot>(cacheKey);
-    setState(cached ? { status: "ready", data: cached } : { status: "loading" });
-    const unsubscribe = subscribe(["run"], (_models, reason) => {
-      const current =
-        reason === "initial" ? cache.get<InsightCostRollupSnapshot>(cacheKey) : undefined;
-      if (current) {
-        setState(
-          isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
-        );
-        return true;
-      }
-      return refresh();
-    });
-    return () => {
-      unsubscribe();
-      request.current?.abort();
-    };
-  }, [cache, cacheKey, isFresh, refresh, subscribe]);
-
-  useEffect(() => {
-    setState((current) => {
-      if (freshness !== "connected" && current.status === "ready") {
-        return { status: "stale", data: current.data };
-      }
-      if (freshness === "connected" && current.status === "stale" && !current.error) {
-        return { status: "ready", data: current.data };
-      }
-      return current;
-    });
-  }, [freshness]);
-
-  const retry = useCallback(() => {
-    cache.remove(cacheKey);
-    return refresh();
-  }, [cache, cacheKey, refresh]);
-  return { retry, state };
 }
 
 function costRollupFromStats(
@@ -499,99 +263,23 @@ export function useInsightErrorSignatures(
   retry: () => void;
   state: QueryState<InsightErrorSignaturesSnapshot>;
 } {
-  const { cache, freshness, isFresh, subscribe } = useLiveData();
-  const request = useRef<AbortController | undefined>(undefined);
   const requestKey = JSON.stringify([window, gaggle ?? "", workflow ?? "", stage ?? ""]);
-  const cacheKey = dataCacheKey("insight-error-signatures", requestKey);
-  const [state, setState] = useState<QueryState<InsightErrorSignaturesSnapshot>>(() => {
-    const cached = cache.get<InsightErrorSignaturesSnapshot>(cacheKey);
-    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  return useLiveQuery<InsightErrorSignaturesSnapshot>({
+    cacheKey: dataCacheKey("insight-error-signatures", requestKey),
+    dependencies: insightDependencies(gaggle, workflow),
+    models: RUN_MODELS,
+    scope: { gaggle, workflow },
+    isCurrent: (data) => data.requestKey === requestKey,
+    errorMessage: "Unable to read failure reasons.",
+    load: async (signal) => {
+      const filters = insightErrorSignatureFilters(window, gaggle, workflow, stage);
+      const result = await client.getTelemetryErrorSignatures(filters, { signal });
+      return { filters, requestKey, result };
+    },
   });
-
-  const refresh = useCallback(() => {
-    request.current?.abort();
-    const dependencies = insightDependencies(gaggle, workflow);
-    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
-    const controller = new AbortController();
-    request.current = controller;
-    const filters = insightErrorSignatureFilters(window, gaggle, workflow, stage);
-    setState((current) =>
-      (current.status === "ready" || current.status === "stale") &&
-      current.data.requestKey === requestKey
-        ? { status: "stale", data: current.data }
-        : { status: "loading" },
-    );
-
-    return client.getTelemetryErrorSignatures(filters, { signal: controller.signal }).then(
-      (result) => {
-        if (controller.signal.aborted) {
-          return true;
-        }
-        const data = { filters, requestKey, result };
-        cache.set(cacheKey, data, dependencies, cacheRevision);
-        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
-        return true;
-      },
-      (error: unknown) => {
-        if (!controller.signal.aborted) {
-          const queryError =
-            error instanceof Error ? error : new Error("Unable to read failure reasons.");
-          setState((current) =>
-            (current.status === "ready" || current.status === "stale") &&
-            current.data.requestKey === requestKey
-              ? { status: "stale", data: current.data, error: queryError }
-              : { status: "error", error: queryError },
-          );
-        }
-        return false;
-      },
-    );
-  }, [cache, cacheKey, client, gaggle, isFresh, requestKey, stage, window, workflow]);
-
-  useEffect(() => {
-    const cached = cache.get<InsightErrorSignaturesSnapshot>(cacheKey);
-    setState(cached ? { status: "ready", data: cached } : { status: "loading" });
-    const unsubscribe = subscribe(
-      ["run"],
-      (_models, reason) => {
-        const current =
-          reason === "initial"
-            ? cache.get<InsightErrorSignaturesSnapshot>(cacheKey)
-            : undefined;
-        if (current) {
-          setState(
-            isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
-          );
-          return true;
-        }
-        return refresh();
-      },
-      { gaggle, workflow },
-    );
-    return () => {
-      unsubscribe();
-      request.current?.abort();
-    };
-  }, [cache, cacheKey, gaggle, isFresh, refresh, subscribe, workflow]);
-
-  useEffect(() => {
-    setState((current) => {
-      if (freshness !== "connected" && current.status === "ready") {
-        return { status: "stale", data: current.data };
-      }
-      if (freshness === "connected" && current.status === "stale" && !current.error) {
-        return { status: "ready", data: current.data };
-      }
-      return current;
-    });
-  }, [freshness]);
-
-  const retry = useCallback(() => {
-    cache.remove(cacheKey);
-    return refresh();
-  }, [cache, cacheKey, refresh]);
-  return { retry, state };
 }
+
+const RUN_MODELS: readonly UpdateModel[] = ["run"];
 
 const RUN_DATA_DEPENDENCIES: readonly DataCacheDependency[] = [{ model: "run" }];
 
