@@ -59,6 +59,14 @@ export GOOBERS_CONFIG_SOURCE="$HOME/goobers-widget-config"
 export GOOBERS_TARGET="acme/widget-service"
 ```
 
+PowerShell:
+
+```powershell
+$env:GOOBERS_INSTANCE = "$HOME/goobers-widget"
+$env:GOOBERS_CONFIG_SOURCE = "$HOME/goobers-widget-config"
+$env:GOOBERS_TARGET = "acme/widget-service"
+```
+
 `GOOBERS_CONFIG_SOURCE` is the desired-state tree to version and review.
 `GOOBERS_INSTANCE` is runtime state and must be separate from both the config
 source and target repository.
