@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/failureclass"
 )
 
 const maxFailureSummaryBytes = 512
@@ -115,6 +116,14 @@ func FailureDiagnostic(stdout, stderr []byte) string {
 func failureLineSpecificity(line string) int {
 	line = cleanOutputLine(line)
 	switch {
+	// A dependency fetch the network refused is the most specific line a
+	// failing build can carry: it names a cause no diff can address. It has
+	// to outrank the wrapper trailer below it (#4143 — `make: *** [ci]` is
+	// emitted after `npm error 403 Forbidden`, won the tie, and left the
+	// recorded diagnostic with no trace of the denial, so the gate's
+	// infrastructure classifier could not see one).
+	case failureclass.IsDependencyTransportDenial(line):
+		return 3
 	case testFailurePattern.MatchString(line) &&
 		!strings.HasPrefix(strings.ToLower(line), "failed tests") &&
 		!strings.HasPrefix(line, "FAIL\t"):

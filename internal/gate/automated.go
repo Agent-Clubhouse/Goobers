@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/failureclass"
 )
 
 // InputKeyStatus and the error keys are the env.Inputs keys an automated gate
@@ -404,42 +405,6 @@ var infrastructureSignatures = [][]string{
 	{"permission denied", "mkdir"},
 }
 
-// dependencyFetchMarkers say the failing command was a dependency or
-// artifact fetch: a module-proxy/package-registry host, or a toolchain's own
-// download diagnostic.
-var dependencyFetchMarkers = []string{
-	"go: downloading",
-	"go: module ",
-	"go mod download",
-	"verifying module",
-	"reading https://",
-	"goproxy",
-	"proxy.golang.org",
-	"sum.golang.org",
-	"storage.googleapis.com",
-	"registry.npmjs.org",
-	"npm error network",
-	"npm err! network",
-	"files.pythonhosted.org",
-	"pypi.org",
-	"index.crates.io",
-}
-
-// transportDenialTokens say the network refused or could not reach that
-// fetch — an egress policy denial or an unreachable proxy, neither of which
-// any diff can fix.
-var transportDenialTokens = []string{
-	"403 forbidden",
-	": forbidden",
-	"connection refused",
-	"econnrefused",
-	"i/o timeout",
-	"etimedout",
-	"tls handshake timeout",
-	"proxyconnect",
-	"network is unreachable",
-}
-
 func isRecognizedInfrastructureFailure(inputs map[string]interface{}) bool {
 	if stringField(inputs, InputKeyErrorCode) != "nonzero_exit" {
 		return false
@@ -450,18 +415,7 @@ func isRecognizedInfrastructureFailure(inputs map[string]interface{}) bool {
 			return true
 		}
 	}
-	return isDependencyTransportDenial(message)
-}
-
-// isDependencyTransportDenial reports whether message is a dependency or
-// artifact fetch that the network refused (#3373: an egress proxy answering
-// Forbidden to a module zip fetch classified as a code failure and cost six
-// implement repasses). Both axes are required: a 403 or a refused connection
-// on its own is ordinary application output, and a package host on its own is
-// ordinary build chatter.
-func isDependencyTransportDenial(message string) bool {
-	return containsAny(message, dependencyFetchMarkers) &&
-		containsAny(message, transportDenialTokens)
+	return failureclass.IsDependencyTransportDenial(message)
 }
 
 func containsAll(message string, tokens []string) bool {
@@ -474,15 +428,6 @@ func containsAll(message string, tokens []string) bool {
 		}
 	}
 	return true
-}
-
-func containsAny(message string, tokens []string) bool {
-	for _, token := range tokens {
-		if strings.Contains(message, token) {
-			return true
-		}
-	}
-	return false
 }
 
 func boolOutcome(pass bool) string {
