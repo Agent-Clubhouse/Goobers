@@ -313,6 +313,62 @@ The guard runs in `make ci` (`go test ./api/validate/...`). If a schema
 genuinely has no Go producer to drift from, say so in the pull request rather
 than leaving the omission unexplained.
 
+### Advertised recovery exits need a registered, tested caller
+
+**Rule.** A change that advertises a way out of a stuck state — an escape
+hatch, a rollback path, a self-heal sweep, an unpark of a park/quarantine
+state, a forced escalation — must **register** that exit with a production
+caller in the same change, and ship a test that demonstrates the recovery path
+can actually be invoked. "Registered" means something that runs unattended
+reaches the exit for the records that are actually stuck: a daemon sweep, a
+post-merge hook, a scheduler pass. An exit whose only caller is a test, whose
+only trigger is an operator running a command by hand, or whose trigger the
+parked records can never produce, recovers nothing — it only documents an
+intention.
+
+**Acceptable evidence** — a reviewer should be able to point at all three:
+
+1. **The exit.** A named function or handler, and the exact stuck state it
+   clears, including which records qualify. State the recovery direction the
+   exit fails toward when its evidence is missing: an unpark that fails open
+   sheds the marker from records that are genuinely still blocked.
+2. **The registration.** The call path from a process that runs unattended to
+   the exit, plus the trigger that fires it. For example,
+   `unparkResolvedSiblings` (`cmd/goobers/postmerge.go`) clears
+   `goobers:blocked-on-sibling`, and `performPostMerge` calls it on every
+   merged bot PR (same file), so parked PRs shed the label without anyone
+   asking. Citing the exit function alone is not evidence; cite its production
+   caller. Also check the exit's **reach**: records parked *before* the exit
+   shipped, or parked through a different path, are exactly the ones that stay
+   stuck forever when the trigger only fires on newly-parked records.
+3. **The test.** A test that puts a record into the stuck state, invokes the
+   recovery path, and asserts the record actually comes out — not merely that
+   the exit function returns without error.
+   `TestUnparkResolvedSiblings` (`cmd/goobers/blockedonsibling_test.go`) is the
+   shape to copy: it seeds a resolved-blocker PR, a still-blocked PR, and an
+   unparked PR, runs the sweep, and asserts exactly which one unparks.
+
+If the caller genuinely belongs in a follow-up, say so in the PR and open the
+follow-up issue in the same change; an advertised exit landing with no
+registered caller is a `needs-changes`.
+
+**Incident lineage.** This class keeps recurring in different disguises
+([#2081](https://github.com/Agent-Clubhouse/Goobers/issues/2081)):
+[#3355](https://github.com/Agent-Clubhouse/Goobers/issues/3355) — the only
+`blocked-on-sibling` unpark iterated pull requests and fired only when a bot PR
+merged, so ~60 parked *issues* had no way to shed the label at all;
+[#4038](https://github.com/Agent-Clubhouse/Goobers/issues/4038) — a
+cluster-escalated sibling PR had no self-heal exit, permanently starving
+`pr-remediation`;
+[#4058](https://github.com/Agent-Clubhouse/Goobers/issues/4058) — a failing-CI
+escalation caused by the base never unparked, and the base-advance exit was
+inert against a spent budget; and
+[#4089](https://github.com/Agent-Clubhouse/Goobers/issues/4089) — a
+forced-escalation exit could not reach any record parked before it shipped. In
+each case the exit was written, documented, and plausible on inspection; what
+was missing was a caller that the stuck records could actually reach, and a
+test that would have noticed.
+
 ## DSL compatibility policy
 
 The `apiVersion` on configuration resources defines a compatibility line. Within
