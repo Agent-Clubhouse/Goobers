@@ -64,6 +64,17 @@ export interface LiveDataConfig {
   pollingIntervalMs: number;
   /** Ceiling for the backoff applied to consecutively failing refreshes. */
   refreshMaxDelayMs: number;
+  /**
+   * How many distinct pending invalidations may be retained before the queue is
+   * replaced by a single all-model refresh.
+   *
+   * Coalescing already collapses repeats of the same model/scope, but a long
+   * read outage over a healthy stream still accumulates one entry per distinct
+   * entity touched. Past this point replaying them individually costs more than
+   * refetching everything, so the queue is discarded in favour of one complete
+   * snapshot refresh — the same recovery a cold connect performs.
+   */
+  maxPendingInvalidations: number;
 }
 
 const defaultConfig: LiveDataConfig = {
@@ -76,6 +87,7 @@ const defaultConfig: LiveDataConfig = {
   failuresBeforePolling: 3,
   pollingIntervalMs: 5_000,
   refreshMaxDelayMs: 60_000,
+  maxPendingInvalidations: 64,
 };
 
 type ModelListener = (
@@ -172,6 +184,7 @@ export function LiveDataProvider({
       config?.streamIdleTimeoutMs,
       config?.connectionSettledMs,
       config?.refreshMaxDelayMs,
+      config?.maxPendingInvalidations,
       diagnostics,
     ],
   );
@@ -227,7 +240,17 @@ export class LiveDataController {
     scope: LiveDataScope | undefined;
   }>();
   private readonly stateListeners = new Set<StateListener>();
-  private readonly pendingInvalidations: ModelInvalidation[] = [];
+  /**
+   * Pending work keyed by model set and scope, in the order it was first seen.
+   *
+   * A map rather than a list because the queue is drained as a set of refresh
+   * requests, not replayed as a log: two invalidations naming the same models
+   * and the same entities produce exactly the same refetch, so retaining both
+   * grew memory and recovery cost without changing the outcome (#2460).
+   */
+  private pendingInvalidations = new Map<string, ModelInvalidation>();
+  /** Cursor of the most recently queued invalidation, for a collapsed refresh. */
+  private lastQueuedCursor = "";
   private readonly seenEventIds = new Set<string>();
   private readonly seenEventOrder: string[] = [];
   private activeStream: DaemonEventStream | undefined;
@@ -274,7 +297,7 @@ export class LiveDataController {
 
   private queueRefresh(invalidation: ModelInvalidation, delay: number): void {
     this.invalidationRevision += 1;
-    this.pendingInvalidations.push(copyInvalidation(invalidation));
+    this.enqueueInvalidations([invalidation], "back");
     if (delay === 0) {
       this.clearInvalidationTimer();
       if (!this.invalidationsPaused) {
@@ -339,7 +362,8 @@ export class LiveDataController {
     this.clearPollingTimer();
     this.clearInvalidationTimer();
     this.cache.dispose();
-    this.pendingInvalidations.length = 0;
+    this.pendingInvalidations.clear();
+    this.lastQueuedCursor = "";
   }
 
   private readonly onOnline = (): void => {
@@ -755,6 +779,48 @@ export class LiveDataController {
     );
   }
 
+  /**
+   * Merges invalidations into the pending queue, coalescing equivalent work.
+   *
+   * `"front"` re-queues a batch whose refresh failed ahead of anything that
+   * arrived while it was in flight, so retry order still matches arrival order
+   * without the batch being retained separately from its own duplicates.
+   */
+  private enqueueInvalidations(
+    incoming: readonly ModelInvalidation[],
+    position: "back" | "front",
+  ): void {
+    if (position === "back") {
+      for (const invalidation of incoming) {
+        if (invalidation.cursor) {
+          this.lastQueuedCursor = invalidation.cursor;
+        }
+        mergeInvalidation(this.pendingInvalidations, invalidation);
+      }
+    } else {
+      const pending = new Map<string, ModelInvalidation>();
+      for (const invalidation of incoming) {
+        mergeInvalidation(pending, invalidation);
+      }
+      for (const invalidation of this.pendingInvalidations.values()) {
+        mergeInvalidation(pending, invalidation);
+      }
+      this.pendingInvalidations = pending;
+    }
+    this.collapseOversizedQueue();
+  }
+
+  private collapseOversizedQueue(): void {
+    if (this.pendingInvalidations.size <= this.config.maxPendingInvalidations) {
+      return;
+    }
+    const complete: ModelInvalidation = {
+      cursor: this.lastQueuedCursor,
+      models: [...ALL_MODELS],
+    };
+    this.pendingInvalidations = new Map([[invalidationKey(complete), complete]]);
+  }
+
   private scheduleInvalidationFlush(delay: number): void {
     if (this.invalidationsPaused || this.invalidationTimer !== undefined) {
       return;
@@ -774,7 +840,7 @@ export class LiveDataController {
         this.invalidationFlush = undefined;
         if (
           !this.invalidationsPaused &&
-          this.pendingInvalidations.length > 0 &&
+          this.pendingInvalidations.size > 0 &&
           this.invalidationTimer === undefined
         ) {
           void this.flushInvalidations();
@@ -786,12 +852,13 @@ export class LiveDataController {
   }
 
   private async drainInvalidations(): Promise<void> {
-    while (this.pendingInvalidations.length > 0) {
+    while (this.pendingInvalidations.size > 0) {
       if (this.invalidationsPaused) {
         return;
       }
       const revision = this.invalidationRevision;
-      const invalidations = this.pendingInvalidations.splice(0);
+      const invalidations = [...this.pendingInvalidations.values()];
+      this.pendingInvalidations = new Map();
       const stream = this.activeStream;
       const restoreConnected = stream !== undefined;
       if (restoreConnected) {
@@ -804,7 +871,7 @@ export class LiveDataController {
       if (!refreshed) {
         this.refreshFailureCount += 1;
         this.invalidationRevision += 1;
-        this.pendingInvalidations.unshift(...invalidations);
+        this.enqueueInvalidations(invalidations, "front");
         this.scheduleInvalidationFlush(this.refreshRetryDelay());
         return;
       }
@@ -816,7 +883,7 @@ export class LiveDataController {
         restoreConnected &&
         refreshed &&
         stream === this.activeStream &&
-        this.pendingInvalidations.length === 0 &&
+        this.pendingInvalidations.size === 0 &&
         revision === this.invalidationRevision
       ) {
         this.setFreshness("connected");
@@ -825,7 +892,7 @@ export class LiveDataController {
   }
 
   private resumeInvalidations(): void {
-    if (this.pendingInvalidations.length > 0) {
+    if (this.pendingInvalidations.size > 0) {
       this.scheduleInvalidationFlush(0);
     }
   }
@@ -883,6 +950,39 @@ function isStaleCursorError(error: unknown): boolean {
     error instanceof DaemonApiError &&
     (error.code === "stale_cursor" || error.code === "invalid_cursor")
   );
+}
+
+/**
+ * Identifies the refetch an invalidation asks for.
+ *
+ * Cursor is deliberately excluded: two invalidations naming the same models and
+ * the same entities request identical work regardless of which event produced
+ * them, and it is that equivalence the pending queue coalesces on.
+ */
+function invalidationKey(invalidation: ModelInvalidation): string {
+  const models = [...invalidation.models].sort().join(",");
+  const runIds = [...(invalidation.runIds ?? [])].sort().join(",");
+  const workflows = (invalidation.workflows ?? [])
+    .map((workflow) => `${workflow.gaggle}/${workflow.name}`)
+    .sort()
+    .join(",");
+  return `${models}|${runIds}|${workflows}`;
+}
+
+/** Adds an invalidation, keeping the position of any equivalent entry. */
+function mergeInvalidation(
+  pending: Map<string, ModelInvalidation>,
+  invalidation: ModelInvalidation,
+): void {
+  const key = invalidationKey(invalidation);
+  const existing = pending.get(key);
+  if (existing) {
+    // Same work, newer cursor: the entry keeps its queue position so ordering
+    // still follows first arrival.
+    existing.cursor = invalidation.cursor;
+    return;
+  }
+  pending.set(key, copyInvalidation(invalidation));
 }
 
 function copyInvalidation(invalidation: ModelInvalidation): ModelInvalidation {
