@@ -10,6 +10,7 @@ import (
 	"github.com/goobers/goobers/internal/livejournal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel/intake"
+	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 )
 
 // journalplane.go wires the daemon side of the write API's journal plane
@@ -65,7 +66,7 @@ func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instan
 	if blobs != nil {
 		opts = append(opts, livejournal.WithSpanSource(blobs))
 	}
-	if observer := runIntakeObserver(watermarks, instanceLog); observer != nil {
+	if observer := telemetryingest.RunIntakeObserver(watermarks, instanceLog); observer != nil {
 		// The same read-model intake the local runner notifies per append —
 		// which is what makes a live engine run's stage transitions reach SSE
 		// and the portal through the existing machinery, mid-run.

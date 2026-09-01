@@ -870,8 +870,8 @@ tiers (§13.3 adds the leader fence).
 At tier 3 it runs as its own leader-elected process with no model change, because
 it is driven by a table and a watermark rather than an in-process call from the
 writer. Today the coupling is the opposite:
-`cmd/goobers/runnerwiring.go` and `cmd/goobers/daemon.go` call `IngestRun` from
-the writer after the run finishes.
+`internal/telemetry/ingest`, called from `cmd/goobers/daemon.go`, calls
+`IngestRun` from the writer after the run finishes.
 
 ### 6.2 Normal path
 

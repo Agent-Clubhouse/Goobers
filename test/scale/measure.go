@@ -58,6 +58,11 @@ type Measurement struct {
 	// MixedLoad, when present, is the §16.3 experiment's result.
 	MixedLoad *LoadResult `json:"mixedLoad,omitempty"`
 
+	// TenantLoad, when present, is the multi-gaggle tenant-load scenario's
+	// result: the same read mix measured at two or more concurrent-tenant
+	// counts, each level reported separately.
+	TenantLoad *TenantLoadResult `json:"tenantLoad,omitempty"`
+
 	// Work is the expensive work each operation performs for ONE invocation,
 	// keyed by operation name. Latency alone cannot distinguish "fast because
 	// bounded" from "fast because the corpus is small", which is how a read path

@@ -206,18 +206,13 @@ func (s *Local) TimeToFirstPR(ctx context.Context) (telemetry.TimeToFirstPRMetri
 			firstPROpenAt = *persisted.FirstPROpenAt
 		}
 	}
-	instanceEvents, err := journal.ReadInstanceLog(s.sources.Layout.SchedulerDir())
+	projected, err := s.instanceLog.snapshot(ctx, s.sources.Layout.SchedulerDir())
 	if err != nil {
 		return telemetry.TimeToFirstPRMetric{}, fmt.Errorf("read instance journal for time to first PR: %w", err)
 	}
-	for _, event := range instanceEvents {
-		if err := ctx.Err(); err != nil {
-			return telemetry.TimeToFirstPRMetric{}, err
-		}
-		if event.Type == journal.EventInitCompleted && !event.Time.IsZero() &&
-			(initCompletedAt.IsZero() || event.Time.Before(initCompletedAt)) {
-			initCompletedAt = event.Time
-		}
+	if journaled := projected.initCompletedAt; !journaled.IsZero() &&
+		(initCompletedAt.IsZero() || journaled.Before(initCompletedAt)) {
+		initCompletedAt = journaled
 	}
 	if initCompletedAt.IsZero() ||
 		(!firstPROpenAt.IsZero() && firstPROpenAt.Before(initCompletedAt)) {
@@ -266,107 +261,13 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return SchedulerStatus{}, err
 	}
-	events, err := journal.ReadInstanceLog(s.sources.Layout.SchedulerDir())
+	projected, err := s.instanceLog.snapshot(ctx, s.sources.Layout.SchedulerDir())
 	if err != nil {
 		return SchedulerStatus{}, err
 	}
-	var resetAt *time.Time
-	var restart *DaemonRestartStatus
-	var sawDaemonStart bool
-	var dirtyReason string
-	refusalOrder := make([]string, 0)
-	refusals := make(map[string]WorkflowRefusalStatus)
-	resetRefusals := func() {
-		refusalOrder = refusalOrder[:0]
-		refusals = make(map[string]WorkflowRefusalStatus)
-	}
-	refillBlocked := make(map[localscheduler.WorkflowIdentity]string)
-	resetRefillBlocked := func() {
-		refillBlocked = make(map[localscheduler.WorkflowIdentity]string)
-	}
-	for _, event := range events {
-		if err := ctx.Err(); err != nil {
-			return SchedulerStatus{}, err
-		}
-		switch event.Type {
-		case journal.EventTriggerFired:
-			if localscheduler.IsRefillTriggerReason(event.Reason) {
-				delete(refillBlocked, localscheduler.WorkflowIdentity{Gaggle: event.Gaggle, Workflow: event.Workflow})
-			}
-		case journal.EventError:
-			if event.Error != nil && event.Error.Code == providers.ErrorCodeAuthFailed && event.Workflow != "" {
-				refillBlocked[localscheduler.WorkflowIdentity{
-					Gaggle: event.Gaggle, Workflow: event.Workflow,
-				}] = localscheduler.ReasonProviderAuth
-			}
-		case journal.EventPollShed:
-			if event.Workflow != "" {
-				refillBlocked[localscheduler.WorkflowIdentity{
-					Gaggle: event.Gaggle, Workflow: event.Workflow,
-				}] = localscheduler.ReasonProviderQuota
-			}
-		case journal.EventProviderQuotaReset:
-			for identity, blocking := range refillBlocked {
-				if blocking == localscheduler.ReasonProviderQuota {
-					delete(refillBlocked, identity)
-				}
-			}
-		case journal.EventConfigReloaded:
-			// The scheduler re-journals current refusals after each accepted
-			// reload, and refill blockers may have changed with the config.
-			resetRefusals()
-			resetRefillBlocked()
-		case journal.EventTickSkipped:
-			if candidate, ok := parseProviderQuotaResumeTime(event.Reason); ok {
-				candidate = candidate.UTC()
-				resetAt = &candidate
-			}
-			if blocking, ok := localscheduler.RefillBlockedReason(event.Reason); ok {
-				identity := localscheduler.WorkflowIdentity{Gaggle: event.Gaggle, Workflow: event.Workflow}
-				if identity.Workflow != "" {
-					refillBlocked[identity] = blocking
-				}
-			}
-		case journal.EventWorkflowRefused:
-			key := event.Gaggle + "/" + event.Workflow
-			if _, known := refusals[key]; !known {
-				refusalOrder = append(refusalOrder, key)
-			}
-			refusals[key] = WorkflowRefusalStatus{
-				Gaggle:   event.Gaggle,
-				Workflow: event.Workflow,
-				Reason:   event.Reason,
-				At:       event.Time,
-			}
-		case journal.EventDaemonDirtyRestart:
-			dirtyReason = event.Reason
-		case journal.EventDaemonStarted:
-			resetRefusals()
-			resetRefillBlocked()
-			if sawDaemonStart || dirtyReason != "" {
-				reason := "clean restart"
-				if dirtyReason != "" {
-					reason = dirtyReason
-				}
-				restart = &DaemonRestartStatus{
-					At:      event.Time,
-					Reason:  reason,
-					PID:     runnerInt(event.Runner, "pid"),
-					Version: runnerString(event.Runner, "version"),
-					Root:    runnerString(event.Runner, "instanceRoot"),
-				}
-			}
-			sawDaemonStart = true
-			dirtyReason = ""
-		case journal.EventRunnerAnnotation:
-			if restart != nil &&
-				runnerString(event.Runner, "kind") == journal.RunnerAnnotationRunRecovery &&
-				event.RunID != "" &&
-				!containsString(restart.RunIDs, event.RunID) {
-				restart.RunIDs = append(restart.RunIDs, event.RunID)
-			}
-		}
-	}
+	resetAt := projected.providerQuotaResumeAt
+	restart := projected.restart
+	refillBlocked := projected.refillBlocked
 	if restart != nil {
 		restart.Replacements, err = s.restartReplacements(ctx, restart.At)
 		if err != nil {
@@ -374,8 +275,8 @@ func (s *Local) SchedulerStatus(ctx context.Context) (SchedulerStatus, error) {
 		}
 	}
 	status := SchedulerStatus{ProviderQuotaResumeAt: resetAt, DaemonRestart: restart}
-	for _, key := range refusalOrder {
-		status.RefusedWorkflows = append(status.RefusedWorkflows, refusals[key])
+	for _, key := range projected.refusalOrder {
+		status.RefusedWorkflows = append(status.RefusedWorkflows, projected.refusals[key])
 	}
 	activeCounts, err := s.activeRunCounts()
 	if err != nil {

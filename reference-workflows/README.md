@@ -177,6 +177,14 @@ After the canonical quickstart has created and validated a regular instance:
    copilot # sign in once; the local daemon reuses this stored session
    ```
 
+   PowerShell:
+
+   ```powershell
+   $env:GOOBERS_GITHUB_TOKEN = "ghp_..."
+   $env:GOOBERS_GITHUB_REVIEW_TOKEN = "github_pat_..."
+   copilot # sign in once; the local daemon reuses this stored session
+   ```
+
    For a headless service or CI account, configure the commented
    `agent:model` entry in `instance.yaml` and set
    `GOOBERS_COPILOT_TOKEN` to a fine-grained PAT with Copilot Requests:

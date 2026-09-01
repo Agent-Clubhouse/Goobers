@@ -443,6 +443,11 @@ type Config struct {
 	// stage escalates the run (internal/gate.EscalationNotifier). Optional —
 	// nil is a no-op.
 	Escalation *gate.EscalationNotifier
+	// BaselineHealth attributes a failing local-ci stage to the run's own diff
+	// or to a target branch that was already failing at the pinned base SHA
+	// (#2971). Optional — nil leaves every CI failure routed exactly as it was
+	// before base-health awareness existed.
+	BaselineHealth BaselineHealth
 	// ClaimedItems resolves the backlog item id(s) a run currently claims, for
 	// runs started without an Item snapshot — scheduled/fan-out implementation
 	// runs claim their item mid-run, so in.Item is nil (#796). Used as the
@@ -1038,6 +1043,11 @@ func (r *Runner) Start(ctx context.Context, in StartInput) (Result, error) {
 		}()
 		ctx, span := r.startRunSpan(ctx, in)
 		defer span.End()
+		ctx = providers.WithAttributionContext(ctx, providers.Attribution{
+			Schema: 1, Goobers: true,
+			Gaggle: in.Gaggle, Workflow: in.Machine.Def.Name,
+			Goober: "runner", Run: in.RunID,
+		})
 		setStalledAttemptContext(ctx)
 
 		// #735: verify the run's declared runtime toolchains are actually present
@@ -1470,6 +1480,10 @@ func workspaceBranchFrom(outputs map[string]interface{}, nsPrefix string) string
 // (#316), and context reconstructed from the journal (#107/#108).
 func (r *Runner) walk(ctx context.Context, ws *walkState) (Result, error) {
 	ws.ex = newExecutors(r.cfg, ws.jr, ws.reg)
+	// #2971: a subject parked on a shared baseline failure cannot un-park
+	// itself, so every run on the repository checks whether the base has moved
+	// past the failure that parked it.
+	r.releaseBaselineParks(ctx, ws)
 	ws.gateEval = &gate.Evaluator{
 		Automated:   r.cfg.Automated,
 		Journal:     ws.jr,
@@ -2644,6 +2658,7 @@ func (r *Runner) notifyTerminalGate(ctx context.Context, jr *journal.Run, runID 
 		return nil
 	}
 	seq := jr.Seq()
+	ctx = withRunnerAttributionTask(ctx, gr.Gate)
 	for _, itemID := range itemIDs {
 		if err := r.cfg.Escalation.NotifyEscalated(ctx, providerRepositoryRef(repoRef), itemID, runID, seq, gr, reason); err != nil {
 			if aerr := jr.Append(journal.Event{
@@ -2740,6 +2755,7 @@ func (r *Runner) notifyStageEscalation(ctx context.Context, jr *journal.Run, run
 		return nil
 	}
 	seq := jr.Seq()
+	ctx = withRunnerAttributionTask(ctx, stage)
 	for _, itemID := range itemIDs {
 		if err := r.cfg.Escalation.NotifyStageEscalated(ctx, providerRepositoryRef(repoRef), itemID, runID, seq, stage, reason); err != nil {
 			if aerr := jr.Append(journal.Event{
@@ -2755,6 +2771,16 @@ func (r *Runner) notifyStageEscalation(ctx context.Context, jr *journal.Run, run
 		}
 	}
 	return nil
+}
+
+func withRunnerAttributionTask(ctx context.Context, task string) context.Context {
+	attribution, ok := providers.AttributionFromContext(ctx)
+	if !ok {
+		return ctx
+	}
+	attribution.Task = task
+	attribution.Goober = "runner"
+	return providers.WithAttributionContext(ctx, attribution)
 }
 
 // notifyRateLimited invokes the configured RateLimited handler (#712). A
@@ -3621,6 +3647,18 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 				}
 			}
 		}
+		// #2971: before routing a failing local-ci stage back into an
+		// implementation repass, ask whether the target branch itself already
+		// fails this exact command at the pinned base SHA. A shared baseline
+		// failure is rewritten into the parked SHARED_BASELINE_FAILURE
+		// disposition below; anything else — including a baseline that cannot
+		// be measured — leaves the result untouched.
+		classified, cerr := r.classifyBaselineFailure(ctx, ws, t, result)
+		if cerr != nil {
+			res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, cerr)
+			return "", res, false, err
+		}
+		result = classified
 		if t.ContinueOnError {
 			if aerr := journalToleratedFailure(jr, t.Name); aerr != nil {
 				res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal tolerated failure for %q: %w", t.Name, aerr))
@@ -5227,6 +5265,12 @@ var escalateErrorCodes = map[string]bool{
 	"ISSUE_OVER_SCOPE":                  true,
 	"NEEDS_DECOMPOSITION":               true,
 	telemetry.ErrCodeIssueNotApplicable: true,
+	// SHARED_BASELINE_FAILURE (#2971) is the same shape of conclusion reached
+	// deterministically rather than by an agent: the target branch itself fails
+	// the identical CI command at the pinned base SHA, so no repass on this
+	// branch can fix it. The run parks against the shared blocker instead of
+	// spending its remediation budget re-deriving that.
+	SharedBaselineFailureCode: true,
 }
 
 // isNonRetryableEscalation reports whether a stage failure is a non-retryable

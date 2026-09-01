@@ -29,7 +29,14 @@ func TestGuidedInitHelpDescribesBrowserSetup(t *testing.T) {
 	if code := runInitWithInput([]string{"--help"}, strings.NewReader(""), io.Discard, &stderr); code != 2 {
 		t.Fatalf("help code = %d", code)
 	}
-	for _, want := range []string{"--guided", "browser-based setup", "does not run a workflow"} {
+	for _, want := range []string{
+		"--guided",
+		"browser-based setup",
+		"does not run a workflow",
+		"https://github.com/settings/personal-access-tokens/new",
+		"Resource owner",
+		"Only select repositories",
+	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("init help = %q, missing %q", stderr.String(), want)
 		}

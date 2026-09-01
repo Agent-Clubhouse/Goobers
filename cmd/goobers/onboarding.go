@@ -77,6 +77,7 @@ type agentToolkitInstallActionResult struct {
 
 func executeSeedConfigSourceAction(
 	root string,
+	harness string,
 	guided *instance.GuidedOptions,
 	goos string,
 ) (onboardingActionResult, error) {
@@ -85,7 +86,7 @@ func executeSeedConfigSourceAction(
 		err    error
 	)
 	if guided == nil {
-		seeded, err = instance.SeedQuickstartConfigSource(root)
+		seeded, err = instance.SeedQuickstartConfigSourceWithOptions(root, instance.QuickstartOptions{Harness: harness})
 	} else {
 		if err := instance.CheckGuidedSourceTarget(root); err != nil {
 			return onboardingActionResult{}, err

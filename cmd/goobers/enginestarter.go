@@ -14,6 +14,7 @@ import (
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	"github.com/goobers/goobers/internal/workflow"
 )
@@ -259,7 +260,7 @@ func (s *engineStarter) Start(ctx context.Context, req localscheduler.StartReque
 	// must not skip claim release: the run is over either way, and its claims
 	// would otherwise be held until the lease expires.
 	s.hooks.run(context.WithoutCancel(ctx), out)
-	ingestRunTelemetry(s.telemetry, s.rollupDB, s.watermarks, s.layout, req.RunID, s.log)
+	telemetryingest.RunTelemetry(s.telemetry, s.rollupDB, s.watermarks, s.layout, req.RunID, s.log)
 	return engineStartResult(result, phase, attachment.Err), attachment.Err
 }
 

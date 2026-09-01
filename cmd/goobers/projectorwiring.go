@@ -20,7 +20,7 @@ var newRetentionLoop = readmodel.NewRetentionLoop
 //
 // # What starting it changes
 //
-// Before: `ingestRunTelemetry` projected a run inline, from the writer, at
+// Before: run telemetry ingestion projected a run inline, from the writer, at
 // completion. A run written while the daemon was down was never projected, and
 // nothing noticed — the read model was silently missing it until the next
 // rebuild.

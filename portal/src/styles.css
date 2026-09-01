@@ -7061,6 +7061,20 @@ a.telemetry-error-row:hover {
   line-height: 1.55;
 }
 
+.guided-pat-steps {
+  color: var(--muted-strong);
+  display: grid;
+  font-size: 12px;
+  gap: 7px;
+  line-height: 1.5;
+  margin: 10px 0 0;
+  padding-left: 22px;
+}
+
+.guided-pat-steps strong {
+  color: var(--ink);
+}
+
 .guided-choice-grid {
   display: grid;
   gap: 14px;
