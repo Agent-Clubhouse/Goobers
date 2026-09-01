@@ -188,11 +188,20 @@ type remediationState struct {
 	StructuralCollisionContext string `json:"structuralCollisionContext,omitempty"`
 	// EscalationCauses is the cause set observed on the cycle that escalated —
 	// the cause CLASS escalationBaseAdvanceUnparks reads to decide whether a
-	// base-branch advance alone may release the park. Empty on a forced or
-	// policy-excluded escalation (no cause was ever observed, so no rebase
-	// addresses it) and on records written before this field shipped;
-	// EscalationGeneration separates those two cases.
+	// base-branch advance alone may release the park. Empty on a
+	// policy-excluded escalation (the PR was never evaluated on its merits) and
+	// on records written before this field shipped; EscalationGeneration
+	// separates those two cases, and AttemptedCauses is the fallback for a
+	// record written by a binary that had not yet learned to populate this
+	// field on the forced path (#4089).
 	EscalationCauses []remediationCause `json:"escalationCauses,omitempty"`
+	// EscalationCausesCleared records that EscalationCauses was emptied ON
+	// PURPOSE — refreshEscalationSnapshotAfterRepeatFail drops the cause set
+	// when a reviewer re-fails an unchanged head, because no rebase cures a
+	// rejection of the PR's content (#2378). It is the marker that keeps the
+	// #4089 AttemptedCauses fallback from resurrecting a window that was
+	// deliberately closed.
+	EscalationCausesCleared bool `json:"escalationCausesCleared,omitempty"`
 	// EscalationGeneration counts how many times in a row this PR has been
 	// parked at the SAME head SHA: 1 the first time a head is parked, +1 on
 	// every re-escalation of that unchanged head. It is churn telemetry, never
@@ -824,14 +833,34 @@ func escalationBaseAdvanceUnparks(state remediationState) bool {
 	if state.StructuralCollisionContext != "" {
 		return false
 	}
-	if len(state.EscalationCauses) == 0 {
+	causes := state.EscalationCauses
+	if len(causes) == 0 && !state.EscalationCausesCleared && state.EscalationGeneration == 1 {
+		// A park written before #4074 taught the forced path to attribute the
+		// reviewer's rejection recorded no escalationCauses, but it recorded
+		// attemptedCauses in the same payload — and an escalation is only
+		// reachable from a cycle that attempted something. Reading that here is
+		// what lets the #4074 exit reach the ALREADY-parked records that
+		// motivated it, instead of only PRs parked after the upgrade: a parked
+		// record cannot be rewritten, because the rewrite is the checkpoint the
+		// park suppresses (#4089).
+		//
+		// It is the fail-closed direction — AttemptedCauses is cumulative
+		// across cycles, a superset of the escalating cycle's causes, so one
+		// non-curable member holds the whole park.
+		//
+		// Bounded to generation 1, the record as first written. A later
+		// generation is either a repeat-fail refresh, whose empty cause set is
+		// deliberate, or a re-escalation by a binary that populates
+		// EscalationCauses itself and so never needs the fallback.
+		causes = state.AttemptedCauses
+	}
+	if len(causes) == 0 {
 		// No remediation cause was ever observed — a repeated implementer
-		// no-op, or a park recorded before #4074 taught the forced path to
-		// attribute the reviewer's rejection to what remediation was actually
-		// attempting. Nothing to decide a rebase against, so hold.
+		// no-op, or a policy exclusion. Nothing to decide a rebase against, so
+		// hold.
 		return false
 	}
-	for _, cause := range state.EscalationCauses {
+	for _, cause := range causes {
 		if !baseAdvanceCuresRemediationCause(cause) {
 			return false
 		}
@@ -913,6 +942,7 @@ func refreshEscalationSnapshotAfterRepeatFail(ctx context.Context, provider reme
 	state.EscalatedHeadSHA = pr.HeadSHA
 	state.EscalatedBaseSHA = liveBaseTip
 	state.EscalationCauses = nil
+	state.EscalationCausesCleared = true
 	return provider.UpdateComment(ctx, repo, commentID, renderRemediationComment(state))
 }
 
