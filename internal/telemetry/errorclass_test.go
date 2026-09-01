@@ -23,6 +23,7 @@ func TestClassifyErrorNamesEveryProducedCode(t *testing.T) {
 		{code: ErrCodeGitHubAuth, want: ErrorClassProvider},
 		{code: ErrCodeProviderFailed, want: ErrorClassProvider},
 		{code: ErrCodePollProvider, want: ErrorClassProvider},
+		{code: ErrCodeNoWorkUnsubstantiated, want: ErrorClassValidation},
 		{code: "github_rate_limited", want: ErrorClassProviderRateLimit},
 		// Unlisted codes still reach their owner through the namespace
 		// heuristics rather than falling back to unknown.

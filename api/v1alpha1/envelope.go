@@ -253,10 +253,15 @@ const (
 	// ResultSuccess (which implies the stage actually produced work for a
 	// downstream stage to consume) and ResultFailure (which implies a retry
 	// policy should apply). The runner short-circuits a ResultNoWork task
-	// straight to a clean PhaseCompleted, regardless of the task's declared
-	// Next — an agentic downstream stage is never invoked with no subject
-	// (ARCHITECTURE.md's "don't fake a success that then does nothing
-	// useful" principle). A stage that genuinely errored (a provider/auth
+	// straight to a clean PhaseCompleted, regardless of the task's
+	// declared Next — an agentic downstream stage is never invoked with no
+	// subject (ARCHITECTURE.md's "don't fake a success that then does nothing
+	// useful" principle). The claim is not accepted on the stage's word alone
+	// (#2736): when the stage consumes upstream evidence by declaration —
+	// contextFrom, or a parallel's fan-in join — and the journal shows none of
+	// that upstream produced anything, the evidence never arrived and the run
+	// ends failed with NO_WORK_UNSUBSTANTIATED rather than recording a healthy
+	// empty tick. A stage that genuinely errored (a provider/auth
 	// failure, a malformed query) must still return ResultFailure, not
 	// ResultNoWork — this status is only for "correctly found nothing," the
 	// steady state of an idle instance, never a masked error.

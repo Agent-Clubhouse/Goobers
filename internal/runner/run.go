@@ -3740,6 +3740,31 @@ func (r *Runner) taskOutcome(ctx context.Context, ws *walkState, transition task
 		// query-backlog -> curate/implement wiring (Next names a real,
 		// non-reserved state) still terminates cleanly on an empty tick
 		// without the workflow author having to special-case it in the DSL.
+		//
+		// #2736: the short-circuit is no longer unconditional. A claim whose
+		// upstream stages all journaled nothing is not "looked and found
+		// nothing", it is "the evidence never arrived" — accepting it would
+		// complete the run as a healthy empty tick and lose the most
+		// consequential failure a fan-in has. Refused as a stage failure so
+		// the run is reportable, with the barren upstream named.
+		if barren := r.noWorkEvidenceGap(ws, t); len(barren) > 0 {
+			cause := NoWorkUnsubstantiatedMessage(t.Name, barren)
+			if aerr := jr.Append(journal.Event{
+				Type: journal.EventRunnerAnnotation, Stage: t.Name,
+				Runner: map[string]any{
+					"kind":                 "no-work-unsubstantiated",
+					"barrenUpstreamStages": barren,
+				},
+			}); aerr != nil {
+				res, err = r.failTerminal(ctx, runID, jr, repoRef, t.Name, steps, fmt.Errorf("runner: journal unsubstantiated no-work for %q: %w", t.Name, aerr))
+				return "", res, false, err
+			}
+			res, err = r.finishStageFailure(ctx, runID, jr, repoRef, t.Name, steps, &apiv1.ErrorInfo{
+				Code:    NoWorkUnsubstantiatedCode,
+				Message: cause,
+			})
+			return "", res, false, err
+		}
 
 		// Issue #3236: when implement returns no-work with existingFixCommit,
 		// notify the handler before completing so labels can be stripped to
