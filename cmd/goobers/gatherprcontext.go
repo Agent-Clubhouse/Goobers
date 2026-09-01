@@ -1130,14 +1130,14 @@ func worktreeHeldBranches(dir string) map[string]bool {
 	held := make(map[string]bool)
 
 	self := workspaceGitCommand(dir, "rev-parse", "--show-toplevel")
-	selfOut, err := self.Output()
+	selfOut, err := workspaceGitOutput(self)
 	if err != nil {
 		return held // not a git worktree (or unreadable): nothing to guard against
 	}
 	selfPath := canonicalPath(strings.TrimSpace(string(selfOut)))
 
 	list := workspaceGitCommand(dir, "worktree", "list", "--porcelain")
-	out, err := list.Output()
+	out, err := workspaceGitOutput(list)
 	if err != nil {
 		return held
 	}
@@ -1201,7 +1201,7 @@ func checkoutExistingBranch(dir, branch, token string) (fetchedSHA string, err e
 		return "", err
 	}
 	checkout := workspaceGitCommand(dir, "checkout", "-B", branch, "FETCH_HEAD")
-	if out, err := checkout.CombinedOutput(); err != nil {
+	if out, err := workspaceGitCombinedOutput(checkout); err != nil {
 		return "", fmt.Errorf("checkout %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}
 	return fetchedSHA, nil
@@ -1219,11 +1219,11 @@ func fetchExistingBranch(dir, branch, token string) (string, error) {
 	}
 	env := gitAuthEnv(token)
 	fetch := workspaceGitAuthEnvCommand(dir, env, "fetch", url, "refs/heads/"+branch)
-	if out, err := fetch.CombinedOutput(); err != nil {
+	if out, err := workspaceGitCombinedOutput(fetch); err != nil {
 		return "", fmt.Errorf("fetch %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}
 	rev := workspaceGitCommand(dir, "rev-parse", "FETCH_HEAD")
-	out, err := rev.Output()
+	out, err := workspaceGitOutput(rev)
 	if err != nil {
 		return "", fmt.Errorf("resolve fetched SHA for %s: %w", branch, err)
 	}
@@ -1251,7 +1251,7 @@ func isCommitBehindBase(dir, baseSHA, headSHA string) (bool, error) {
 		return false, fmt.Errorf("PR has no recorded head SHA")
 	}
 	cmd := workspaceGitCommand(dir, "merge-base", "--is-ancestor", baseSHA, headSHA)
-	err := cmd.Run()
+	err := runWorkspaceGit(cmd)
 	if err == nil {
 		return false, nil
 	}

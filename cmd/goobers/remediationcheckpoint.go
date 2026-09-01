@@ -2305,7 +2305,7 @@ func writeCheckpointResult(stderr io.Writer, continueRemediation bool, selectedN
 // falls back to an explicit checkout.
 func currentBranchIs(dir, branch string) (bool, error) {
 	cmd := workspaceGitCommand(dir, "rev-parse", "--abbrev-ref", "HEAD")
-	out, err := cmd.Output()
+	out, err := workspaceGitOutput(cmd)
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
@@ -2349,7 +2349,7 @@ func diffDigest(dir, baseSHA string) (string, error) {
 		return "", fmt.Errorf("PR has no recorded base SHA")
 	}
 	cmd := workspaceGitCommand(dir, "diff", baseSHA+"...HEAD")
-	out, err := cmd.Output()
+	out, err := workspaceGitOutput(cmd)
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {

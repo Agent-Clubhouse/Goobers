@@ -345,7 +345,7 @@ func writePushRemediatedResult(selectedNumber int, published bool, head, localHe
 // resolveHead returns dir's current HEAD commit SHA.
 func resolveHead(dir string) (string, error) {
 	cmd := workspaceGitCommand(dir, "rev-parse", "HEAD")
-	out, err := cmd.Output()
+	out, err := workspaceGitOutput(cmd)
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
