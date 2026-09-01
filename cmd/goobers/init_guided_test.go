@@ -31,6 +31,7 @@ func TestGuidedInitHelpDescribesBrowserSetup(t *testing.T) {
 	}
 	for _, want := range []string{
 		"--guided",
+		"--instance-path",
 		"browser-based setup",
 		"does not run a workflow",
 		"https://github.com/settings/personal-access-tokens/new",
@@ -56,5 +57,37 @@ func TestGuidedInitRejectsPath(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "--guided does not accept a path") {
 		t.Fatalf("guided init path stderr = %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--instance-path <dir>") {
+		t.Fatalf("guided init path stderr = %q, missing instance-path guidance", stderr.String())
+	}
+}
+
+func TestGuidedInitInstancePathRequiresGuidedMode(t *testing.T) {
+	var stderr bytes.Buffer
+	code := runInitWithInput(
+		[]string{"--instance-path", filepath.Join(t.TempDir(), "instance")},
+		strings.NewReader(""),
+		io.Discard,
+		&stderr,
+	)
+	if code != 2 || !strings.Contains(stderr.String(), "--instance-path requires --guided") {
+		t.Fatalf("instance path code=%d stderr=%q, want guided-only usage error", code, stderr.String())
+	}
+}
+
+func TestGuidedInitUnsafeInstancePathShowsOverrideInvocation(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "instance")
+	t.Setenv("RUNNER_ENVIRONMENT", "github-hosted")
+	var stderr bytes.Buffer
+	code := runInitWithInput(
+		[]string{"--guided", "--instance-path", target, "--no-open"},
+		strings.NewReader(""),
+		io.Discard,
+		&stderr,
+	)
+	want := `goobers init --guided --instance-path "` + target + `" --allow-ephemeral`
+	if code != 2 || !strings.Contains(stderr.String(), want) {
+		t.Fatalf("unsafe guided code=%d stderr=%q, want %q", code, stderr.String(), want)
 	}
 }

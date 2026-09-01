@@ -16,8 +16,9 @@ The guide uses the complete
 then removes workflows that are not needed for the first acceptance cycle.
 Finish the single-repository path before adding another gaggle.
 
-`goobers init --guided` follows the same convention: it loads the canonical
-work-nomination, backlog-curation, and implementation modules from
+`goobers init --guided --instance-path <durable-instance-root>` follows the
+same convention: it loads the canonical work-nomination, backlog-curation, and
+implementation modules from
 `config-examples/gaggles/acme-web`, then adapts repository identity, branch,
 issue scope, harness, CI command, and required capabilities from the choices
 and evidence collected by the wizard. It does not reuse the deliberately
@@ -27,6 +28,15 @@ This guide uses the recommended outside layout: a separate config source and
 instance root, neither inside the target repository. Before choosing paths, see
 [Choose where an instance and its config live](instance-placement.md) for the
 supported placements, decision table, and trust implications.
+
+Do not run initialization with the instance path inside a GitHub App, hosted
+agent, Codespaces, or other ephemeral worktree. Goobers refuses that placement
+by default because the worktree may be deleted with the session. Use a durable
+path such as `~/goobers/instances/widget/` for `GOOBERS_INSTANCE`; keep the
+checked-in source in `GOOBERS_CONFIG_SOURCE` (a separate repository or an
+intentional in-repo subtree). Only add `--allow-ephemeral` when the selected
+workspace is independently persistent and losing its runtime state is
+acceptable.
 
 ## 1. Prepare the host and target repository
 
@@ -140,14 +150,18 @@ gh repo view $env:GOOBERS_TARGET
 ## 3. Initialize the instance
 
 ```sh
-goobers init --guided
+goobers init --guided --instance-path "$GOOBERS_INSTANCE"
 ```
 
 Provide the existing local clone for `$GOOBERS_TARGET`. The tutorial discovers
 GitHub or Azure DevOps identity, default branch, CI command, toolchain, and CLI
-authentication. Choose `$GOOBERS_CONFIG_SOURCE` as a custom configuration
-folder, or use the recommended peer folder suggested beside the target clone.
-The tutorial never asks for token values.
+authentication. If the GitHub CLI account is not authenticated, the repository
+step offers `gh auth login --hostname github.com --git-protocol https --web`
+directly; it does not start that flow for an already-authenticated account or
+for Azure DevOps. If `gh` is unavailable, install GitHub CLI and retry the
+action. Choose `$GOOBERS_CONFIG_SOURCE` as a custom configuration folder, or
+use the recommended peer folder suggested beside the target clone. The
+tutorial never asks for token values.
 
 For an agent-driven path, use:
 

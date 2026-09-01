@@ -70,12 +70,22 @@ export interface GuidedRepositoryInspection {
   needsClone: boolean;
   peerConfigPath?: string;
   inRepoConfigPath?: string;
+  ephemeral?: boolean;
+  ephemeralReason?: string;
+  safeInstancePath?: string;
   auth: {
     kind: "github-cli" | "azure-cli" | string;
     ready: boolean;
     identity?: string;
     remediationCommand?: string;
+    message?: string;
+    needsLogin?: boolean;
   };
+}
+
+export interface GuidedGitHubAuthorizationResult {
+  auth: GuidedRepositoryInspection["auth"];
+  message: string;
 }
 
 export interface GuidedChooseFolderResult {
@@ -245,6 +255,10 @@ export class GuidedClient {
 
   inspectRepository(location: string): Promise<GuidedRepositoryInspection> {
     return this.post("/guided/actions/inspect-repository", { location });
+  }
+
+  authorizeGitHub(repository: string): Promise<GuidedGitHubAuthorizationResult> {
+    return this.post("/guided/actions/authorize-github", { repository });
   }
 
   chooseRepositoryFolder(): Promise<GuidedChooseFolderResult> {
