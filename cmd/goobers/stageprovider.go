@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -111,7 +112,52 @@ func newProviderForStage(root string, repo providers.RepositoryRef, readOnly boo
 	if !ok {
 		return nil, fmt.Errorf("repository provider %q is not registered for stages", repo.Provider)
 	}
-	return factory(cfg)
+	provider, err := factory(cfg)
+	if err != nil {
+		return nil, err
+	}
+	configureStageAttribution(provider, root)
+	return provider, nil
+}
+
+func configureStageAttribution(provider providers.Provider, root string) {
+	configurer, ok := provider.(providers.AttributionConfigurer)
+	if !ok {
+		return
+	}
+	attribution, ok := stageAttribution(root)
+	if !ok {
+		return
+	}
+	configurer.SetAttribution(attribution)
+}
+
+func stageAttribution(root string) (providers.Attribution, bool) {
+	runID := strings.TrimSpace(os.Getenv("GOOBERS_RUN_ID"))
+	gaggle := strings.TrimSpace(os.Getenv("GOOBERS_GAGGLE"))
+	workflow := strings.TrimSpace(os.Getenv("GOOBERS_WORKFLOW"))
+	task := strings.TrimSpace(os.Getenv(executor.TaskEnvVar))
+	goober := strings.TrimSpace(os.Getenv(executor.GooberEnvVar))
+	if runID == "" || gaggle == "" || workflow == "" || task == "" {
+		return providers.Attribution{}, false
+	}
+	if goober == "" {
+		goober = "deterministic"
+	}
+	instanceName := ""
+	if clean := filepath.Clean(strings.TrimSpace(root)); clean != "." && clean != "" {
+		instanceName = filepath.Base(clean)
+	}
+	return providers.Attribution{
+		Schema:   1,
+		Goobers:  true,
+		Instance: instanceName,
+		Gaggle:   gaggle,
+		Workflow: workflow,
+		Task:     task,
+		Goober:   goober,
+		Run:      runID,
+	}, true
 }
 
 func newProviderForStageAs[T providers.Provider](root string, repo providers.RepositoryRef, readOnly bool, opts ...stageProviderOption) (T, error) {

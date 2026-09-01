@@ -101,6 +101,17 @@ func summarizeCommandFailure(stdout, stderr []byte) commandFailureDiagnostic {
 	return commandFailureDiagnostic{failure: best, warning: warning}
 }
 
+// FailureDiagnostic extracts the failure section a command's output carries —
+// the same extraction the shell executor records in a failing stage result's
+// summary and error message. It is exported so a caller holding raw command
+// output (a baseline probe re-running the identical CI command, #2971) can
+// reduce it to exactly the text a stage result already carries, instead of
+// comparing an extracted diagnostic against a raw transcript. It returns the
+// empty string when the output carries no recognizable failure section.
+func FailureDiagnostic(stdout, stderr []byte) string {
+	return summarizeCommandFailure(stdout, stderr).failure.text
+}
+
 func failureLineSpecificity(line string) int {
 	line = cleanOutputLine(line)
 	switch {

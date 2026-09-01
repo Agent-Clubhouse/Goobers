@@ -528,7 +528,7 @@ func (w *Writer) Reserve(runID string) (release func(), ok bool) {
 //   - The runner's per-run SCRUBBER and append OBSERVER apply, since they are
 //     the loaned handle's. Both are what the daemon wants: the observer is the
 //     same read-model intake newLiveJournalWriter would have wired
-//     (cmd/goobers/daemon.go's runIntakeObserver), so pod events reach SSE and
+//     (internal/telemetry/ingest's RunIntakeObserver), so pod events reach SSE and
 //     the portal mid-run, and the scrubber is the run's own credential-aware
 //     one rather than this writer's default.
 //

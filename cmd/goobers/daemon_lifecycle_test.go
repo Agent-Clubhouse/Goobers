@@ -122,7 +122,7 @@ func TestResumeReleasesReconciledSlotForFollowUpTrigger(t *testing.T) {
 	// unconditionally already run (it's the first line of Start, in the
 	// same goroutine that later journals the terminal phase via s.r.Start)
 	// — so the Add-race above no longer applies and this Wait is safe.
-	// It's still necessary: trackedStarter.Start calls ingestRunTelemetry
+	// It's still necessary: trackedStarter.Start calls telemetryingest.RunTelemetry
 	// (rollup DB writes under l.RunsDir()/l.SchedulerDir()) AFTER s.r.Start
 	// returns but BEFORE the deferred wg.Done() fires (issue #320) — without
 	// this Wait, the test can return and let t.TempDir()'s cleanup race that
@@ -288,7 +288,7 @@ func TestResumePastOrphanedWorktreeAtSameKey(t *testing.T) {
 	// resumeInterruptedRuns' wg.Add(1) runs synchronously in its own loop,
 	// before the resume goroutine launches (#320's fix comment above has the
 	// full analysis for the Trigger-dispatch case) — no Add-race here, but
-	// this Wait is still needed: the goroutine's ingestRunTelemetry call
+	// this Wait is still needed: the goroutine's telemetryingest.RunTelemetry call
 	// (rollup DB writes under l.RunsDir()/l.SchedulerDir()) runs after the
 	// journal already shows PhaseCompleted, so returning right after
 	// waitForRunPhase can let t.TempDir()'s cleanup race that still-in-flight

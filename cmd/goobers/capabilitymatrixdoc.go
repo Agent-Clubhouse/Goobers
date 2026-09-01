@@ -51,7 +51,7 @@ func renderCapabilityMatrix() string {
 	b.WriteString("\n## Capabilities\n\n")
 	b.WriteString("Every declared capability (`providers.Capability`, design doc `docs/design/provider-contract-conformance.md` §3.1) ")
 	b.WriteString("projected across every registered provider. `required` marks capabilities in `providers.WorkflowRequiredCapabilities()` — ")
-	b.WriteString("the set the blessed tier (GitHub, ADO) must be conformant on or have a linked gap issue for; other capabilities are informational.\n\n")
+	b.WriteString("the set the blessed tier (GitHub, ADO) must be conformant on, have a linked gap issue for, or record as permanently not applicable; other capabilities are informational.\n\n")
 	b.WriteString("| Capability | Required |")
 	for _, provider := range support {
 		fmt.Fprintf(&b, " %s", provider.Provider)
@@ -77,6 +77,34 @@ func renderCapabilityMatrix() string {
 			fmt.Fprintf(&b, " %s |", formatMatrixCell(cell))
 		}
 		b.WriteString("\n")
+	}
+	b.WriteString(renderNotApplicableRationales(cells))
+	return b.String()
+}
+
+// renderNotApplicableRationales lists the permanently non-applicable
+// cells with the reason each capability cannot exist on that forge. These
+// carry no issue link on purpose: unlike a tracked gap there is nothing to
+// fix, so the table cell reads "not applicable" and the explanation lives
+// here (#3058).
+func renderNotApplicableRationales(cells []providers.MatrixCell) string {
+	var rows []providers.MatrixCell
+	for _, cell := range cells {
+		if cell.Status == providers.StatusNotApplicable {
+			rows = append(rows, cell)
+		}
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n## Not applicable\n\n")
+	b.WriteString("Permanent forge differences, not tracked work: these capabilities cannot exist on the provider, so no issue tracks them.\n\n")
+	b.WriteString("| Provider | Capability | Why |\n")
+	b.WriteString("| --- | --- | --- |\n")
+	for _, cell := range rows {
+		fmt.Fprintf(&b, "| %s | `%s` | %s |\n", cell.Provider, cell.Capability, cell.Rationale)
 	}
 	return b.String()
 }

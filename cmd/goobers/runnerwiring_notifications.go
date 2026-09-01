@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/blockedcycle"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
@@ -43,6 +43,31 @@ type escalationCommenter struct {
 	needsHumanAssignee string
 }
 
+func (c *escalationCommenter) configureAttribution(ctx context.Context, provider any) error {
+	configurer, ok := provider.(providers.AttributionConfigurer)
+	if !ok {
+		return nil
+	}
+	attribution, ok := providers.AttributionFromContext(ctx)
+	if !ok {
+		return fmt.Errorf("refusing daemon-authored provider write without run attribution")
+	}
+	if attribution.Instance == "" && strings.TrimSpace(c.layout.Root) != "" {
+		attribution.Instance = filepath.Base(filepath.Clean(c.layout.Root))
+	}
+	if attribution.Gaggle == "" {
+		attribution.Gaggle = c.layout.Gaggle()
+	}
+	if attribution.Task == "" {
+		attribution.Task = "runner"
+	}
+	if attribution.Goober == "" {
+		attribution.Goober = "runner"
+	}
+	configurer.SetAttribution(attribution)
+	return nil
+}
+
 func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.UpdateWorkItemRequest) (providers.WorkItem, error) {
 	// PR remediation uses pr/<number> as its internal claim key; provider work
 	// item endpoints use the shared bare issue/PR number.
@@ -52,6 +77,9 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 		provider, err := newADOProviderForStage(c.layout.Root, req.Repository)
 		if err != nil {
 			return providers.WorkItem{}, fmt.Errorf("build ADO escalation provider for %s/%s: %w", req.Repository.Owner, req.Repository.Name, err)
+		}
+		if err := c.configureAttribution(ctx, provider); err != nil {
+			return providers.WorkItem{}, err
 		}
 		req.Repository = backlogRepoRefForGaggle(c.layout, req.Repository)
 		return provider.UpdateWorkItem(ctx, req)
@@ -73,6 +101,9 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 		if err != nil {
 			return providers.WorkItem{}, fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
 		}
+		if err := c.configureAttribution(ctx, provider); err != nil {
+			return providers.WorkItem{}, err
+		}
 		return provider.UpdateWorkItem(ctx, req)
 	}
 	ref := req.Repository.Owner + "/" + req.Repository.Name
@@ -81,7 +112,11 @@ func (c *escalationCommenter) UpdateWorkItem(ctx context.Context, req providers.
 		return providers.WorkItem{}, fmt.Errorf("resolve escalation-comment token for %s: %w", ref, err)
 	}
 	c.reg.Register([]byte(token))
-	return newEscalationPoster(token).UpdateWorkItem(ctx, req)
+	provider := newEscalationPoster(token)
+	if err := c.configureAttribution(ctx, provider); err != nil {
+		return providers.WorkItem{}, err
+	}
+	return provider.UpdateWorkItem(ctx, req)
 }
 
 func (c *escalationCommenter) ListComments(ctx context.Context, repository providers.RepositoryRef, itemID string) ([]providers.Comment, error) {
@@ -106,7 +141,8 @@ func (c *escalationCommenter) ListComments(ctx context.Context, repository provi
 		}
 		return provider.ListComments(ctx, repository, itemID)
 	}
-	return newEscalationPoster(token).ListComments(ctx, repository, itemID)
+	provider := newEscalationPoster(token)
+	return provider.ListComments(ctx, repository, itemID)
 }
 
 func (c *escalationCommenter) UpdateComment(ctx context.Context, repository providers.RepositoryRef, commentID, body string) error {
@@ -124,9 +160,16 @@ func (c *escalationCommenter) UpdateComment(ctx context.Context, repository prov
 		if err != nil {
 			return fmt.Errorf("build gitea escalation provider for %s: %w", ref, err)
 		}
+		if err := c.configureAttribution(ctx, provider); err != nil {
+			return err
+		}
 		return provider.UpdateComment(ctx, repository, commentID, body)
 	}
-	return newEscalationPoster(token).UpdateComment(ctx, repository, commentID, body)
+	provider := newEscalationPoster(token)
+	if err := c.configureAttribution(ctx, provider); err != nil {
+		return err
+	}
+	return provider.UpdateComment(ctx, repository, commentID, body)
 }
 
 // buildEscalationNotifier wires the gate.EscalationNotifier (#20) at the
@@ -200,6 +243,7 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 	}
 
 	return func(ctx context.Context, o runner.BlockedOutcome) error {
+		ctx = withDaemonAttributionTask(ctx, o.Stage)
 		itemIDs := []string{o.ItemID}
 		if o.ItemID == "" {
 			ids, err := claimedItemIDsForRun(l, o.RunID)
@@ -276,7 +320,7 @@ func buildBlockedHandler(l instance.Layout, cfg *instance.Config, resolver crede
 					errs = append(errs, fmt.Errorf("record block for %s: %w", itemID, err))
 				}
 				if len(cycle.Affected) > 0 {
-					comments := blockedCycleComments(cycle)
+					comments := blockedcycle.Comments(cycle)
 					for _, cycleItem := range cycle.Affected {
 						for _, comment := range comments {
 							cycleReq := providers.UpdateWorkItemRequest{
@@ -334,6 +378,7 @@ func buildFailedHandler(l instance.Layout, cfg *instance.Config, resolver creden
 	}
 
 	return func(ctx context.Context, o runner.FailedOutcome) error {
+		ctx = withDaemonAttributionTask(ctx, o.Stage)
 		// #3361/#3364: an infra-fault terminal (credential materialization, git,
 		// network, lock contention) is weather, not evidence about the item —
 		// it must not accumulate failure-streak strikes that eventually park
@@ -463,12 +508,13 @@ func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolv
 		if phase == journal.PhaseCompleted || phase == journal.PhaseEscalated || phase == journal.PhaseAborted {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
+			attributedCtx, _ := attributionContextForRun(ctx, l, runID, finalState)
 			runURL, _ := failureRunURL(l, cfg, runID)
 			if phase == journal.PhaseCompleted {
-				if err := resetCircuitBreaker(ctx, poster, l, repoRef, runID, runURL); err != nil {
+				if err := resetCircuitBreaker(attributedCtx, poster, l, repoRef, runID, runURL); err != nil {
 					errs = append(errs, fmt.Errorf("reset circuit breaker for run %q: %w", runID, err))
 				}
-			} else if err := applyCircuitBreaker(ctx, poster, l, repoRef, runID, finalState, runURL); err != nil {
+			} else if err := applyCircuitBreaker(attributedCtx, poster, l, repoRef, runID, finalState, runURL); err != nil {
 				errs = append(errs, fmt.Errorf("apply circuit breaker for run %q: %w", runID, err))
 			}
 		}
@@ -479,6 +525,32 @@ func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolv
 		}
 		return errors.Join(errs...)
 	}
+}
+
+func withDaemonAttributionTask(ctx context.Context, task string) context.Context {
+	attribution, ok := providers.AttributionFromContext(ctx)
+	if !ok {
+		return ctx
+	}
+	attribution.Task = task
+	attribution.Goober = "runner"
+	return providers.WithAttributionContext(ctx, attribution)
+}
+
+func attributionContextForRun(ctx context.Context, l instance.Layout, runID, task string) (context.Context, error) {
+	reader, err := journal.OpenReadOnly(filepath.Join(l.RunsDir(), runID))
+	if err != nil {
+		return ctx, err
+	}
+	identity, err := reader.Identity()
+	if err != nil {
+		return ctx, err
+	}
+	return providers.WithAttributionContext(ctx, providers.Attribution{
+		Schema: 1, Goobers: true,
+		Gaggle: identity.Gaggle, Workflow: identity.Workflow,
+		Task: task, Goober: "runner", Run: runID,
+	}), nil
 }
 
 func failureRunURL(l instance.Layout, cfg *instance.Config, runID string) (string, error) {
@@ -525,256 +597,6 @@ func claimedItemIDsForRun(l instance.Layout, runID string) ([]string, error) {
 		return nil
 	})
 	return ids, err
-}
-
-// issueRefList renders issue numbers as "#441, #442" for provider comments.
-func issueRefList(numbers []string) string {
-	out := make([]byte, 0, len(numbers)*6)
-	for i, n := range numbers {
-		if i > 0 {
-			out = append(out, ", "...)
-		}
-		out = append(out, '#')
-		out = append(out, n...)
-	}
-	return string(out)
-}
-
-const cyclePathSeparator = " -> "
-
-func issueCyclePath(numbers []string) string {
-	var out strings.Builder
-	for i, n := range numbers {
-		if i > 0 {
-			out.WriteString(cyclePathSeparator)
-		}
-		out.WriteByte('#')
-		out.WriteString(n)
-	}
-	return out.String()
-}
-
-func issueCyclePathLength(numbers []string, maxLength int) (int, bool) {
-	length := 0
-	for i, number := range numbers {
-		addition := 1 + len(number)
-		if i > 0 {
-			addition += len(cyclePathSeparator)
-		}
-		if addition > maxLength-length {
-			return 0, false
-		}
-		length += addition
-	}
-	return length, true
-}
-
-func boundedIssueCyclePath(numbers []string, maxLength int) (string, bool) {
-	if _, fits := issueCyclePathLength(numbers, maxLength); fits {
-		return issueCyclePath(numbers), false
-	}
-	return truncatedIssueCyclePath(numbers, maxLength), true
-}
-
-func truncatedIssueCyclePath(numbers []string, maxLength int) string {
-	if len(numbers) == 0 || maxLength <= 0 {
-		return ""
-	}
-
-	bestHead, bestIdentified := 0, -1
-	bestTail := false
-	prefixLength := 0
-	for head := 0; head < len(numbers); head++ {
-		consider := func(includeTail bool) {
-			omitted := len(numbers) - head
-			identified := head
-			if includeTail {
-				omitted--
-				identified++
-			}
-			if omitted <= 0 {
-				return
-			}
-
-			length := prefixLength
-			if head > 0 {
-				length += len(cyclePathSeparator)
-			}
-			length += len(cycleMembersOmitted(omitted))
-			if includeTail {
-				length += len(cyclePathSeparator) + 1 + len(numbers[len(numbers)-1])
-			}
-			if length <= maxLength &&
-				(identified > bestIdentified || identified == bestIdentified && head > bestHead) {
-				bestHead = head
-				bestTail = includeTail
-				bestIdentified = identified
-			}
-		}
-
-		consider(false)
-		consider(head < len(numbers)-1)
-
-		addition := 1 + len(numbers[head])
-		if head > 0 {
-			addition += len(cyclePathSeparator)
-		}
-		prefixLength += addition
-		if prefixLength > maxLength {
-			break
-		}
-	}
-	if bestIdentified < 0 {
-		return ""
-	}
-
-	omitted := len(numbers) - bestHead
-	if bestTail {
-		omitted--
-	}
-	parts := make([]string, 0, bestHead+2)
-	for _, number := range numbers[:bestHead] {
-		parts = append(parts, "#"+number)
-	}
-	parts = append(parts, cycleMembersOmitted(omitted))
-	if bestTail {
-		parts = append(parts, "#"+numbers[len(numbers)-1])
-	}
-	return strings.Join(parts, cyclePathSeparator)
-}
-
-func cycleMembersOmitted(count int) string {
-	return fmt.Sprintf("[%d cycle members omitted]", count)
-}
-
-const maxBlockedCycleCommentLength = 2000
-
-func blockedCycleComment(paths [][]string, morePaths bool) string {
-	const prefix = "Goobers detected circular issue dependencies. Representative cycles: "
-	const additionalPathsOmitted = "additional cycle paths omitted"
-	suffix := fmt.Sprintf(
-		". Every issue in the cycle has been marked `%s` and removed from `%s` for human resolution.",
-		providers.LabelNeedsHuman, providers.LabelReady,
-	)
-	available := maxBlockedCycleCommentLength - len(prefix) - len(suffix)
-	if summaries, ok := completeCycleSummaries(paths, morePaths, available, additionalPathsOmitted); ok {
-		return prefix + summaries + suffix
-	}
-
-	var summaries strings.Builder
-	included := 0
-	for i, path := range paths {
-		separatorLength := 0
-		if summaries.Len() > 0 {
-			separatorLength = 2
-		}
-
-		reservedNoticeLength := 0
-		if morePaths || i < len(paths)-1 {
-			reservedNoticeLength = 2 + len(additionalPathsOmitted)
-		}
-		pathBudget := available - summaries.Len() - separatorLength - reservedNoticeLength
-		summary, truncated := boundedIssueCyclePath(path, pathBudget)
-		if summary == "" {
-			break
-		}
-		if separatorLength > 0 {
-			summaries.WriteString("; ")
-		}
-		summaries.WriteString(summary)
-		included++
-		if truncated {
-			break
-		}
-	}
-
-	if morePaths || included < len(paths) {
-		if summaries.Len() > 0 {
-			summaries.WriteString("; ")
-		}
-		summaries.WriteString(additionalPathsOmitted)
-	}
-	return prefix + summaries.String() + suffix
-}
-
-func blockedCycleComments(cycle blockedCycleResult) []string {
-	report := blockedCycleComment(cycle.Paths, cycle.MorePaths)
-	itemIDs := make([]string, len(cycle.Affected))
-	for i, item := range cycle.Affected {
-		itemIDs[i] = item.ItemID
-	}
-
-	memberList := " Affected issues: " + issueRefList(itemIDs) + "."
-	if len(report)+len(memberList) <= maxBlockedCycleCommentLength {
-		return []string{report + memberList}
-	}
-
-	comments := []string{report}
-	const prefix = "Affected issues in this dependency cycle: "
-	var current strings.Builder
-	current.WriteString(prefix)
-	for _, itemID := range itemIDs {
-		separator := ""
-		if current.Len() > len(prefix) {
-			separator = ", "
-		}
-		reference := "#" + itemID
-		if current.Len()+len(separator)+len(reference)+1 > maxBlockedCycleCommentLength {
-			current.WriteByte('.')
-			comments = append(comments, current.String())
-			current.Reset()
-			current.WriteString(prefix)
-			separator = ""
-		}
-		current.WriteString(separator)
-		current.WriteString(reference)
-	}
-	if current.Len() > len(prefix) {
-		current.WriteByte('.')
-		comments = append(comments, current.String())
-	}
-	return comments
-}
-
-func completeCycleSummaries(paths [][]string, morePaths bool, maxLength int, additionalPathsOmitted string) (string, bool) {
-	total := 0
-	for i, path := range paths {
-		separatorLength := 0
-		if i > 0 {
-			separatorLength = 2
-		}
-		pathLength, fits := issueCyclePathLength(path, maxLength-total-separatorLength)
-		if !fits {
-			return "", false
-		}
-		total += separatorLength + pathLength
-	}
-	if morePaths {
-		separatorLength := 0
-		if len(paths) > 0 {
-			separatorLength = 2
-		}
-		if len(additionalPathsOmitted) > maxLength-total-separatorLength {
-			return "", false
-		}
-		total += separatorLength + len(additionalPathsOmitted)
-	}
-
-	var summaries strings.Builder
-	summaries.Grow(total)
-	for i, path := range paths {
-		if i > 0 {
-			summaries.WriteString("; ")
-		}
-		summaries.WriteString(issueCyclePath(path))
-	}
-	if morePaths {
-		if summaries.Len() > 0 {
-			summaries.WriteString("; ")
-		}
-		summaries.WriteString(additionalPathsOmitted)
-	}
-	return summaries.String(), true
 }
 
 // buildExistingFixHandler wires runner.Config.ExistingFix (#3236): the

@@ -16,7 +16,8 @@ semantic model is fixed for v1:
 - Managed worktree lifecycle measurements are emitted as
   `goobers.worktree.disk.usage` and `goobers.workcopy.disk.usage` span events.
   Measurement gaps emit `goobers.workcopy.disk.measurement_failed`.
-  `ExporterOTLP` sends spans to an OTLP collector.
+  `ExporterOTLP` sends spans to an OTLP collector, and — since #4073 — the same
+  OTLP configuration also exports first-class metrics (see below).
 - `JournalSpanExporter` appends run spans to both the legacy
   `spans/spans.jsonl` projection and `spans/otlp.jsonl`.
   `NewPerGaggleJournalSpanExporter` routes scheduler spans to the
@@ -30,6 +31,56 @@ semantic model is fixed for v1:
 The workflow engine should call `StartRun` once per workflow run, then use the
 returned context for task-attempt and gate-evaluation spans. Within-stage
 happenings are span events rather than peer stage spans.
+
+`internal/telemetry/ingest` is the run-completion side of the same pipeline: it
+flushes a finished run's spans, ingests the run and the scheduler decision log
+into the `internal/telemetry/rollup` store, and records the read model's intake
+watermark. It sits below `internal/telemetry` and `internal/telemetry/rollup`
+rather than inside either, so the CLI's runner wiring stays construction-only.
+
+## Metric catalog
+
+Configuring `ExporterOTLP` attaches an OTLP/gRPC metric exporter behind a
+periodic reader (60s by default, `Config.MetricExportInterval` to override) to
+the same endpoint, TLS material, headers, and resource attributes as the trace
+exporter. Metrics are optional and best-effort: a client with no reader (the
+stdout/local-journal default, and telemetry-disabled processes) records
+nothing, and a collector that is unreachable — or that accepts traces but not
+metrics — never fails or stalls Goobers work. `Flush` and `Shutdown` drive the
+meter provider alongside the tracer provider.
+
+Stage `metrics.jsonl` values are exported as metrics *and* retained as span
+events, so trace correlation and the existing rollup keep working unchanged.
+
+Instrument names, types, units, and the attributes they may carry — this is the
+contract the Goobernetes-Infra collector pipeline is configured against:
+
+| Metric | Type | Unit | Attributes |
+| --- | --- | --- | --- |
+| `goobers.run.duration` | histogram (float64) | `s` | `goobers.workflow`, `goobers.outcome`, `goobers.error.code` |
+| `goobers.run.outcomes` | counter (int64) | `{run}` | `goobers.workflow`, `goobers.outcome`, `goobers.error.code` |
+| `goobers.stage.duration` | histogram (float64) | `s` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.model`, `goobers.outcome`, `goobers.error.code` |
+| `goobers.stage.outcomes` | counter (int64) | `{stage}` | same as `goobers.stage.duration` |
+| `goobers.stage.retries` | counter (int64) | `{attempt}` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.attempt.kind` |
+| `goobers.gate.decisions` | counter (int64) | `{decision}` | `goobers.workflow`, `goobers.stage`, `goobers.gate.decision` |
+| `goobers.escalations` | counter (int64) | `{escalation}` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type` |
+| `goobers.work.active` | up-down counter (int64) | `{span}` | `goobers.workflow`, `goobers.span.kind` (`run`/`task`/`gate`/`scheduler`) |
+| `goobers.stage.metric.value` | histogram (float64) | `1` | `goobers.workflow`, `goobers.stage`, `goobers.stage.type`, `goobers.metric.name`, `goobers.metric.unit` |
+| `goobers.worktree.disk.usage` | gauge (int64) | `By` | `goobers.storage.operation` |
+| `goobers.workcopy.disk.usage` | gauge (int64) | `By` | `goobers.storage.operation` |
+
+Cardinality and privacy are enforced in two layers, both in `metrics.go`:
+
+- An allowlist decides which span attribute keys may become metric dimensions.
+  Run ids, item ids and URLs, gaggle (a repository name), worktree ids,
+  workflow/goober digests, branch indexes, harness versions, error messages,
+  prompts, and agent/model usage detail are **never** metric attributes; they
+  stay on spans.
+- A per-key cardinality limiter caps each key at 100 distinct values per
+  process and rejects values longer than 64 characters or outside an
+  identifier-ish character set (units additionally allow UCUM `{}`, `/`, and
+  `%`). Anything over the bound collapses to `other`, so a stage-authored
+  metric name or a mislabeled workflow cannot blow up collector cardinality.
 
 ## Load/scale harness for the read path
 
@@ -96,7 +147,14 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [azuredataexplorer]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [azuredataexplorer]
 ```
+
+The metrics pipeline is the follow-up Goobernetes-Infra change; the instruments
+it carries are the ones in the metric catalog above.
 
 The ADX exporter expects the target database and tables to exist before ingest.
 Use the provisioned ADX database output (`gooberrun` by default) rather than any

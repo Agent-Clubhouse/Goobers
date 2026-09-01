@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -76,6 +77,39 @@ func TestStageProviderRegistryIncludesBuiltInProviders(t *testing.T) {
 		if stageProviderFactories[kind] == nil {
 			t.Errorf("provider %q is not registered", kind)
 		}
+	}
+}
+
+func TestStageAttributionUsesInjectedRunContext(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "MDB1")
+	t.Setenv("GOOBERS_RUN_ID", "run-123456789")
+	t.Setenv("GOOBERS_GAGGLE", "efunhouse")
+	t.Setenv("GOOBERS_WORKFLOW", "implementation")
+	t.Setenv(executor.TaskEnvVar, "publish-result")
+	t.Setenv(executor.GooberEnvVar, "implementer")
+
+	got, ok := stageAttribution(root)
+	if !ok {
+		t.Fatal("stageAttribution did not recognize complete run context")
+	}
+	if got.Instance != "MDB1" ||
+		got.Gaggle != "efunhouse" ||
+		got.Workflow != "implementation" ||
+		got.Task != "publish-result" ||
+		got.Goober != "implementer" ||
+		got.Run != "run-123456789" {
+		t.Fatalf("attribution = %+v", got)
+	}
+}
+
+func TestStageAttributionRequiresCompleteStageContext(t *testing.T) {
+	t.Setenv("GOOBERS_RUN_ID", "run-1")
+	t.Setenv("GOOBERS_GAGGLE", "gaggle")
+	t.Setenv("GOOBERS_WORKFLOW", "workflow")
+	t.Setenv(executor.TaskEnvVar, "")
+
+	if got, ok := stageAttribution(t.TempDir()); ok {
+		t.Fatalf("stageAttribution = %+v, want incomplete standalone context ignored", got)
 	}
 }
 

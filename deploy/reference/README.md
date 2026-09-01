@@ -94,7 +94,10 @@ reference sets no fixed capacity, VM SKU, spot policy, or scale-to-zero default.
   with CHANGE-ME comments until they land. The daemon API Deployment is explicitly
   disabled (`replicas: 0`) until its in-cluster listener (#652) lands; enabling the
   current lock-owning daemon would also contend with the worker for the RWO instance
-  volume. Per #663 the manifests express the target shape now.
+  volume. The operator Deployment is disabled the same way (`replicas: 0`):
+  `internal/operator` is quarantined Tier-3 (V2) and the runtime image its reconciler
+  schedules is not published, so applying it as shipped would only produce
+  `ImagePullBackOff` workloads. Per #663 the manifests express the target shape now.
 
 ## Validation
 

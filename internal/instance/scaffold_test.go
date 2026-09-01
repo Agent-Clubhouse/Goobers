@@ -167,6 +167,77 @@ func TestInitQuickstartFresh(t *testing.T) {
 	}
 }
 
+// TestInitQuickstartHarnessOption covers #3071: the quickstart template can be
+// seeded with a chosen harness so the generated instance needs no goober.yaml
+// edits, and omitting the choice preserves the template's own harness.
+func TestInitQuickstartHarnessOption(t *testing.T) {
+	tests := []struct {
+		name    string
+		harness string
+		want    apiv1.Harness
+	}{
+		{name: "default preserves template harness", want: apiv1.HarnessCopilot},
+		{name: "claude-code selected", harness: string(apiv1.HarnessClaudeCode), want: apiv1.HarnessClaudeCode},
+		{name: "copilot selected", harness: string(apiv1.HarnessCopilot), want: apiv1.HarnessCopilot},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "quickstart")
+			if _, err := InitQuickstartWithOptions(root, QuickstartOptions{Harness: tt.harness}); err != nil {
+				t.Fatalf("InitQuickstartWithOptions: %v", err)
+			}
+			set, report, err := LoadConfigDir(NewLayout(root).ConfigDir())
+			if err != nil {
+				t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+			}
+			if len(set.Goobers) != 2 {
+				t.Fatalf("seeded goobers = %d, want 2", len(set.Goobers))
+			}
+			for _, goober := range set.Goobers {
+				if goober.Spec.Harness != tt.want {
+					t.Fatalf("goober %q harness = %q, want %q", goober.Name, goober.Spec.Harness, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestInitQuickstartRejectsUnknownHarness(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "quickstart")
+	_, err := InitQuickstartWithOptions(root, QuickstartOptions{Harness: "nope"})
+	if err == nil || !strings.Contains(err.Error(), "harness must be") {
+		t.Fatalf("InitQuickstartWithOptions error = %v, want unknown-harness refusal", err)
+	}
+	if exists(filepath.Join(root, ConfigFileName)) {
+		t.Fatalf("refused init wrote %s", ConfigFileName)
+	}
+}
+
+func TestSeedQuickstartConfigSourceHarnessOption(t *testing.T) {
+	root := t.TempDir()
+	if _, err := SeedQuickstartConfigSourceWithOptions(root, QuickstartOptions{Harness: string(apiv1.HarnessClaudeCode)}); err != nil {
+		t.Fatalf("SeedQuickstartConfigSourceWithOptions: %v", err)
+	}
+	set, report, err := LoadConfigDir(root)
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	for _, goober := range set.Goobers {
+		if goober.Spec.Harness != apiv1.HarnessClaudeCode {
+			t.Fatalf("goober %q harness = %q, want claude-code", goober.Name, goober.Spec.Harness)
+		}
+	}
+	// The seed stays idempotent for the same selection: re-seeding preserves
+	// the harness-rewritten files instead of reporting a conflict.
+	res, err := SeedQuickstartConfigSourceWithOptions(root, QuickstartOptions{Harness: string(apiv1.HarnessClaudeCode)})
+	if err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	if len(res.Created) != 0 {
+		t.Fatalf("re-seed created %v, want nothing", res.Created)
+	}
+}
+
 func assertPreviewFeaturesDefaultOff(t *testing.T, configDir string) {
 	t.Helper()
 	manifest, err := os.ReadFile(filepath.Join(configDir, "manifest.yaml"))

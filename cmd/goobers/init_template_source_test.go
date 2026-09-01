@@ -303,6 +303,91 @@ func TestInitQuickstartConfigSourceFlagValidation(t *testing.T) {
 	}
 }
 
+// TestInitQuickstartHarnessSelection covers #3071: --harness makes the seeded
+// quickstart instance and config source use the chosen harness with no manual
+// goober.yaml edit, and the option is refused outside the quickstart template
+// or with an unknown harness name.
+func TestInitQuickstartHarnessSelection(t *testing.T) {
+	t.Run("instance", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "instance")
+		code, stdout, stderr := runArgs(t, "init", "--template=quickstart", "--harness", "claude-code", root)
+		if code != 0 {
+			t.Fatalf("init: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		assertSeededHarness(t, instance.NewLayout(root).ConfigDir(), "claude-code")
+	})
+
+	t.Run("source tree", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "config-source")
+		code, stdout, stderr := runArgs(
+			t,
+			"init",
+			"--template=quickstart",
+			"--harness",
+			"claude-code",
+			"--source-tree",
+			root,
+		)
+		if code != 0 || stderr != "" {
+			t.Fatalf("init source: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		assertSeededHarness(t, root, "claude-code")
+		assertQuickstartSourceValid(t, root)
+	})
+
+	t.Run("default preserved", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "config-source")
+		code, stdout, stderr := runArgs(t, "init", "--template=quickstart", "--source-tree", root)
+		if code != 0 || stderr != "" {
+			t.Fatalf("init source: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		assertSeededHarness(t, root, "copilot")
+	})
+
+	t.Run("flag validation", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		tests := []struct {
+			args []string
+			want string
+		}{
+			{
+				args: []string{"init", "--harness", "claude-code"},
+				want: "--harness requires --template=quickstart",
+			},
+			{
+				args: []string{"init", "--demo", "--harness", "claude-code"},
+				want: "--harness requires --template=quickstart",
+			},
+			{
+				args: []string{"init", "--template=quickstart", "--harness", "nope", "instance"},
+				want: `harness must be "copilot" or "claude-code"`,
+			},
+		}
+		for _, test := range tests {
+			code, stdout, stderr := runArgs(t, test.args...)
+			if code != 2 || stdout != "" || !strings.Contains(stderr, test.want) {
+				t.Errorf("args=%v code=%d stdout=%q stderr=%q, want %q", test.args, code, stdout, stderr, test.want)
+			}
+		}
+	})
+}
+
+func assertSeededHarness(t *testing.T, configDir, want string) {
+	t.Helper()
+	set, report, err := instance.LoadConfigDir(configDir)
+	if err != nil {
+		t.Fatalf("LoadConfigDir: %v (report: %+v)", err, report)
+	}
+	if len(set.Goobers) == 0 {
+		t.Fatalf("no goobers seeded under %s", configDir)
+	}
+	for _, goober := range set.Goobers {
+		if string(goober.Spec.Harness) != want {
+			t.Fatalf("goober %q harness = %q, want %q", goober.Name, goober.Spec.Harness, want)
+		}
+	}
+}
+
 func assertQuickstartSourceValid(t *testing.T, root string) {
 	t.Helper()
 	code, stdout, stderr := runArgs(t, "validate", "--source-tree", "--json", root)

@@ -165,6 +165,54 @@ type Config struct {
 	// sibling sections, so an unconfigured instance's written instance.yaml
 	// stays byte-identical.
 	Workcopies *WorkcopiesConfig `json:"workcopies,omitempty" yaml:"workcopies,omitempty"`
+	// BaselineHealth opts the deterministic CI gate into base-health awareness
+	// (#2971): a local-ci failure is compared against the target branch at the
+	// pinned base SHA before it is attributed to the run's own diff. Nil — the
+	// default — leaves every CI failure routed exactly as before, because the
+	// comparison costs one extra CI run per newly observed red base.
+	BaselineHealth *BaselineHealthConfig `json:"baselineHealth,omitempty" yaml:"baselineHealth,omitempty"`
+}
+
+// BaselineHealthConfig tunes shared-baseline-failure detection.
+type BaselineHealthConfig struct {
+	// Enabled turns the comparison on. False (the default) keeps the runner's
+	// pre-existing attribution.
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// SharedRepairLane lets an affected branch carry the repair for a shared
+	// baseline failure instead of parking against the shared blocker. Off by
+	// default: silently adding the same unrelated fix to every feature branch
+	// is exactly the churn detection exists to stop, so repairing on a feature
+	// branch is an explicit operator choice.
+	SharedRepairLane bool `json:"sharedRepairLane,omitempty" yaml:"sharedRepairLane,omitempty"`
+	// ProbeTimeoutSeconds bounds one baseline measurement — a full CI run on
+	// the untouched base. Zero uses DefaultBaselineProbeTimeoutSeconds.
+	ProbeTimeoutSeconds int `json:"probeTimeoutSeconds,omitempty" yaml:"probeTimeoutSeconds,omitempty"`
+}
+
+// DefaultBaselineProbeTimeoutSeconds bounds an unconfigured baseline probe. It
+// matches the shipped local-ci stage budget (40 minutes), because the probe
+// runs the identical command on the identical repository.
+const DefaultBaselineProbeTimeoutSeconds = 2400
+
+// BaselineHealthEnabled reports whether failing CI stages are compared against
+// the target branch's own health (baselineHealth.enabled, defaults to false).
+func (c *Config) BaselineHealthEnabled() bool {
+	return c != nil && c.BaselineHealth != nil && c.BaselineHealth.Enabled
+}
+
+// SharedRepairLaneEnabled reports whether an affected branch may carry a shared
+// baseline repair instead of parking (baselineHealth.sharedRepairLane).
+func (c *Config) SharedRepairLaneEnabled() bool {
+	return c != nil && c.BaselineHealth != nil && c.BaselineHealth.SharedRepairLane
+}
+
+// BaselineProbeTimeout is the effective bound on one baseline measurement.
+func (c *Config) BaselineProbeTimeout() time.Duration {
+	seconds := DefaultBaselineProbeTimeoutSeconds
+	if c != nil && c.BaselineHealth != nil && c.BaselineHealth.ProbeTimeoutSeconds > 0 {
+		seconds = c.BaselineHealth.ProbeTimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // WorkcopiesConfig tunes how the worktree manager provisions managed mirrors.
@@ -1909,13 +1957,7 @@ func LoadConfig(path string) (*Config, error) {
 // tick that tries to use it.
 func (c *Config) Validate() error {
 	c.ResolveLargeRepoPresets()
-	if err := validateInOrder(
-		c.validateSchemaVersion,
-		c.Workcopies.validate,
-		func() error { return c.API.validate(c.APIListenAddress()) },
-		c.validateWorkflowSource,
-		func() error { return c.Webhook.validate(c.WebhookListenAddress()) },
-	); err != nil {
+	if err := c.validateBaseConfig(); err != nil {
 		return err
 	}
 
@@ -1924,27 +1966,7 @@ func (c *Config) Validate() error {
 	if err != nil {
 		return err
 	}
-	return validateInOrder(
-		func() error { return c.Portal.validate() },
-		c.validateSpeech,
-		func() error { return c.Webhook.validateSecret(stores) },
-		c.validateTimezone,
-		c.Runner.validateDefaultStageTimeout,
-		func() error { return c.Telemetry.validate(stores, c.TelemetryEnabled()) },
-		c.validateExternalTelemetry,
-		c.Telemetry.Retention.validate,
-		c.RunConditions.validate,
-		c.Retention.validate,
-		func() error { return c.validateRepos(stores) },
-		c.validateGitHubCLIIdentityRefs,
-		func() error { return c.validateDaemonIdentity(stores) },
-		func() error { return c.validateCredentials(stores) },
-		c.Runner.validate,
-		c.validateRunners,
-		c.validateEgress,
-		func() error { return c.validateWorkflowSourceCredentials(stores) },
-		c.validateSandbox,
-	)
+	return c.validateConfigSections(stores)
 }
 
 // validateSecretStores checks every secretStores entry fail-closed at load

@@ -16,6 +16,9 @@ Closes #
 
 - [ ] Scope is limited to one logical concern (no unrelated changes)
 - [ ] New behavior and error paths have tests
+- [ ] Any new append-only file, table, directory, or long-lived map has a
+      bound/pruner wired by a production caller, with a test that asserts the
+      bound ([review rules](../CONTRIBUTING.md#append-only-growth-needs-a-wired-bound-or-pruner))
 - [ ] `make ci` passes locally (fmt-check · vet · build · test · lint)
 - [ ] Any new closed JSON schema joins the structural drift guard in this change
       ([review rules](../CONTRIBUTING.md#review-rules))

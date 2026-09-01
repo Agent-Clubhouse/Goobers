@@ -39,6 +39,12 @@ func TestCloseMootPullRequestDispatchesToADO(t *testing.T) {
 				}
 				_, _ = w.Write([]byte(`{"pullRequestId":42,"status":"abandoned"}`))
 			})
+			mux.HandleFunc("/org/project/_apis/git/repositories/repo/pullrequests/42/threads", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Fatalf("threads method = %s, want POST", r.Method)
+				}
+				_, _ = w.Write([]byte(`{"id":11,"comments":[{"id":1,"content":"posted","author":{"displayName":"goober"},"publishedDate":"2026-08-09T00:00:00Z"}]}`))
+			})
 			server := httptest.NewServer(mux)
 			defer server.Close()
 
