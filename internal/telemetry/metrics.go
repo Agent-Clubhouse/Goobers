@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -248,6 +249,11 @@ type spanMetrics struct {
 	attrs   []attribute.KeyValue
 	kind    string
 	started time.Time
+	// recorded makes the terminal record at most once per span. Callers
+	// routinely pair `defer span.End()` with an explicit Complete/Fail; a
+	// second trace End is a no-op, but a second metric record would
+	// double-count outcomes and drive activeWork negative.
+	recorded atomic.Bool
 }
 
 func (c *Client) beginSpanMetrics(kind string, startedAt time.Time, attrs []attribute.KeyValue) *spanMetrics {
@@ -285,7 +291,7 @@ func (m *spanMetrics) activeAttributes() []attribute.KeyValue {
 // matching active-work decrement. endedAt zero means "now", mirroring
 // Span.EndAt.
 func (m *spanMetrics) record(endedAt time.Time, outcome, errorCode string) {
-	if m == nil {
+	if m == nil || !m.recorded.CompareAndSwap(false, true) {
 		return
 	}
 	ctx := context.Background()

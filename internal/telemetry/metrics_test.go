@@ -207,6 +207,54 @@ func TestRunStageGateAndRetryMetricsAreRecorded(t *testing.T) {
 	}
 }
 
+// Callers pair `defer span.End()` with an explicit Complete/Fail, so a span is
+// routinely ended twice; only the first terminal call may record metrics.
+func TestSpanEndedTwiceRecordsMetricsOnce(t *testing.T) {
+	reader := metric.NewManualReader()
+	client := newMetricsClient(t, Config{MetricReader: reader})
+	ctx := context.Background()
+
+	runCtx, runSpan, err := client.StartRun(ctx, RunAttributes{
+		Gaggle: "acme-web", WorkflowID: "implement", RunID: testRunID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, taskSpan, err := client.StartTask(runCtx, TaskAttributes{
+		Gaggle: "acme-web", WorkflowID: "implement", RunID: testRunID,
+		TaskID: "build", TaskType: StageTypeDeterministic,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskSpan.Fail(errors.New("build broke"))
+	taskSpan.End()
+	runSpan.Complete(OutcomeSuccess, false)
+	runSpan.End()
+
+	collected := collectMetrics(t, reader)
+	runOutcomes := metricPoints(t, collected, MetricRunOutcomes)
+	if len(runOutcomes) != 1 || runOutcomes[0].value != 1 {
+		t.Fatalf("%s points = %+v, want a single success point", MetricRunOutcomes, runOutcomes)
+	}
+	assertPointAttr(t, runOutcomes[0], AttrOutcome, OutcomeSuccess)
+
+	stageOutcomes := metricPoints(t, collected, MetricStageOutcomes)
+	if len(stageOutcomes) != 1 || stageOutcomes[0].value != 1 {
+		t.Fatalf("%s points = %+v, want a single failure point", MetricStageOutcomes, stageOutcomes)
+	}
+	assertPointAttr(t, stageOutcomes[0], AttrOutcome, OutcomeFailure)
+
+	if durations := metricPoints(t, collected, MetricStageDuration); len(durations) != 1 || durations[0].count != 1 {
+		t.Fatalf("%s points = %+v, want one duration sample", MetricStageDuration, durations)
+	}
+	for _, point := range metricPoints(t, collected, MetricWorkActive) {
+		if point.value != 0 {
+			t.Fatalf("%s = %v for %v, want a single decrement per span", MetricWorkActive, point.value, point.attrs)
+		}
+	}
+}
+
 func TestMetricAttributesExcludeHighCardinalityAndSensitiveValues(t *testing.T) {
 	reader := metric.NewManualReader()
 	client := newMetricsClient(t, Config{MetricReader: reader})
