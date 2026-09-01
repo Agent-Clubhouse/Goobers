@@ -61,13 +61,22 @@ type Config struct {
 	// OTLPCertFile and OTLPKeyFile present a client certificate for mTLS.
 	// Both or neither — instance.OTLPTLSConfig.Validate enforces the pairing
 	// before this Config is ever built.
-	OTLPCertFile       string
-	OTLPKeyFile        string
-	Stdout             io.Writer
-	SpanExporter       sdktrace.SpanExporter
-	Scrubber           journal.Scrubber
-	ResourceAttributes []attribute.KeyValue
-	Batch              bool
+	OTLPCertFile string
+	OTLPKeyFile  string
+	Stdout       io.Writer
+	SpanExporter sdktrace.SpanExporter
+	// MetricReader collects metrics directly from the meter provider,
+	// alongside any configured exporter. Tests inject a manual reader.
+	MetricReader metric.Reader
+	// MetricExporter is attached to the meter provider behind a periodic
+	// reader, exactly like the OTLP metric exporter.
+	MetricExporter metric.Exporter
+	// MetricExportInterval overrides the periodic reader's export period.
+	// Zero uses metricExportInterval.
+	MetricExportInterval time.Duration
+	Scrubber             journal.Scrubber
+	ResourceAttributes   []attribute.KeyValue
+	Batch                bool
 }
 
 // ErrOTLPUnavailable is the sentinel New wraps into its returned error when
@@ -93,6 +102,7 @@ type Client struct {
 	tracerProvider     *sdktrace.TracerProvider
 	localSpanProcessor sdktrace.SpanProcessor
 	meterProvider      *metric.MeterProvider
+	instruments        *instruments
 	tracer             trace.Tracer
 	scrubber           journal.Scrubber
 }
@@ -158,13 +168,37 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	tracerProvider := sdktrace.NewTracerProvider(options...)
-	meterProvider := metric.NewMeterProvider(metric.WithResource(res))
+
+	readers, err := metricReaders(ctx, cfg)
+	if err != nil {
+		if !errors.Is(err, ErrOTLPUnavailable) {
+			return nil, err
+		}
+		if otlpDegraded == nil {
+			otlpDegraded = err
+		}
+	}
+	meterOptions := make([]metric.Option, 0, len(readers)+1)
+	meterOptions = append(meterOptions, metric.WithResource(res))
+	for _, reader := range readers {
+		meterOptions = append(meterOptions, metric.WithReader(reader))
+	}
+	meterProvider := metric.NewMeterProvider(meterOptions...)
 
 	client := &Client{
 		tracerProvider: tracerProvider,
 		meterProvider:  meterProvider,
 		tracer:         tracerProvider.Tracer(ScopeName),
 		scrubber:       scrubber,
+	}
+	if len(readers) != 0 {
+		// A meter provider with no reader records nothing, so instruments are
+		// built only when something collects them. An instrument-construction
+		// failure disables metrics rather than failing telemetry setup: metric
+		// export is optional and must never become a new boot-fatal class.
+		if inst, instErr := newInstruments(meterProvider.Meter(ScopeName)); instErr == nil {
+			client.instruments = inst
+		}
 	}
 	if cfg.SpanExporter != nil {
 		client.localSpanProcessor = processors[0]
@@ -203,7 +237,8 @@ func (c *Client) StartRun(ctx context.Context, attrs RunAttributes) (context.Con
 	}
 	opts = appendStartTime(opts, attrs.StartedAt)
 	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, runSpanName(attrs.WorkflowID)), opts...)
-	return ctx, Span{span: span, scrubber: c.scrubber}, nil
+	metrics := c.beginSpanMetrics(SpanKindRun, attrs.StartedAt, runAttributeSet(attrs))
+	return ctx, Span{span: span, scrubber: c.scrubber, metrics: metrics}, nil
 }
 
 // StartTask starts a task span under the current run context.
@@ -225,7 +260,9 @@ func (c *Client) StartTask(ctx context.Context, attrs TaskAttributes) (context.C
 	}
 	taskOpts = appendStartTime(taskOpts, attrs.StartedAt)
 	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, taskSpanName(attrs.TaskID)), taskOpts...)
-	return ctx, Span{span: span, scrubber: c.scrubber}, nil
+	metrics := c.beginSpanMetrics(SpanKindTask, attrs.StartedAt, taskAttributeSet(attrs))
+	metrics.recordRetry(attrs.Attempt, attrs.AttemptKind)
+	return ctx, Span{span: span, scrubber: c.scrubber, metrics: metrics}, nil
 }
 
 // StartGate starts a gate evaluation span under the current run context.
@@ -247,7 +284,8 @@ func (c *Client) StartGate(ctx context.Context, attrs GateAttributes) (context.C
 	}
 	gateOpts = appendStartTime(gateOpts, attrs.StartedAt)
 	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, gateSpanName(attrs.GateID)), gateOpts...)
-	return ctx, Span{span: span, scrubber: c.scrubber}, nil
+	metrics := c.beginSpanMetrics(SpanKindGate, attrs.StartedAt, gateAttributeSet(attrs))
+	return ctx, Span{span: span, scrubber: c.scrubber, metrics: metrics}, nil
 }
 
 // StartSchedulerSpan starts a scheduler decision span.
@@ -272,7 +310,8 @@ func (c *Client) StartSchedulerSpan(ctx context.Context, attrs SchedulerAttribut
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(scrubAttributes(c.scrubber, schedulerAttributeSet(attrs))...),
 	)
-	return ctx, Span{span: span, scrubber: c.scrubber}, nil
+	metrics := c.beginSpanMetrics(SpanKindScheduler, time.Time{}, schedulerAttributeSet(attrs))
+	return ctx, Span{span: span, scrubber: c.scrubber, metrics: metrics}, nil
 }
 
 // Flush forces pending telemetry through configured providers. A transient
@@ -283,9 +322,12 @@ func (c *Client) Flush(ctx context.Context) error {
 	if err := c.tracerProvider.ForceFlush(ctx); err != nil && !isCollectorUnreachable(err) {
 		return fmt.Errorf("flush telemetry traces: %w", err)
 	}
-	if err := c.meterProvider.ForceFlush(ctx); err != nil && !isCollectorUnreachable(err) {
-		return fmt.Errorf("flush telemetry metrics: %w", err)
-	}
+	// Metric export is strictly best-effort: unlike traces it has no local
+	// exporter whose failure means a real defect, so every error here is a
+	// remote-collector condition (unreachable, or a collector configured for
+	// traces only). The SDK still reports it through the global otel error
+	// handler; it must never fail the caller's work.
+	_ = c.meterProvider.ForceFlush(ctx)
 	return nil
 }
 
@@ -311,9 +353,8 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	if err := c.tracerProvider.Shutdown(ctx); err != nil && !isCollectorUnreachable(err) {
 		errs = append(errs, fmt.Errorf("shutdown telemetry traces: %w", err))
 	}
-	if err := c.meterProvider.Shutdown(ctx); err != nil && !isCollectorUnreachable(err) {
-		errs = append(errs, fmt.Errorf("shutdown telemetry metrics: %w", err))
-	}
+	// Best-effort, exactly as in Flush.
+	_ = c.meterProvider.Shutdown(ctx)
 	return errors.Join(errs...)
 }
 
