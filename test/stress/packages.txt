@@ -1,10 +1,12 @@
 # Curated timing/goroutine-sensitive packages. Keep this list small: every
-# entry runs under the race detector twenty times in the nightly stress tier.
+# entry runs under the race detector twenty times in the nightly stress tier,
+# unless it has a reviewed `count=N` override. Overrides are for packages whose
+# complete race suite cannot fit twenty repetitions within the job budget.
 
 # Embedded scheduler and claim ledger; site of the timing incident tracked by #21.
 ./internal/localscheduler
 
 # Packages with default-branch failures tracked by the flake ledger.
-./cmd/goobers
+./cmd/goobers count=2
 ./internal/harness
 ./internal/httpapi

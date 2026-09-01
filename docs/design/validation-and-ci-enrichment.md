@@ -121,7 +121,9 @@ unit-tier hermeticity.
 ### Flake discipline (closes G3)
 
 - **F1. Stress job.** Nightly + on-demand (`/stress` label or dispatch) job running
-  timing/goroutine-sensitive packages under `-race -count=20`; label-selected packages via
+  timing/goroutine-sensitive packages under `-race -count=20` by default; a
+  reviewed per-package override may lower the count for a full suite that cannot
+  fit the stress budget. Label-selected packages via
   build tags or a package list file. QA-gate lore ("single pass hides ~20% flakes")
   becomes automation.
 - **F2. Flake ledger + quarantine policy.** Failures from F1 auto-file/refresh a flake

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,28 @@ func TestLoadPackages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"./internal/localscheduler", "./internal/runner"}
+	want := []packageSpec{
+		{Package: "./internal/localscheduler", Count: stressCount},
+		{Package: "./internal/runner", Count: stressCount},
+	}
+	if !slices.Equal(packages, want) {
+		t.Fatalf("loadPackages() = %v, want %v", packages, want)
+	}
+}
+
+func TestLoadPackagesAcceptsReviewedCountOverride(t *testing.T) {
+	t.Parallel()
+	packages, err := loadPackages(strings.NewReader(`
+./internal/localscheduler
+./cmd/goobers count=2 # full race suite exceeds the default stress budget
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []packageSpec{
+		{Package: "./internal/localscheduler", Count: stressCount},
+		{Package: "./cmd/goobers", Count: 2},
+	}
 	if !slices.Equal(packages, want) {
 		t.Fatalf("loadPackages() = %v, want %v", packages, want)
 	}
@@ -41,7 +63,11 @@ func TestLoadPackagesRejectsInvalidEnrollment(t *testing.T) {
 	}{
 		{name: "empty", list: "# comments only\n", want: "empty"},
 		{name: "absolute", list: "/internal/runner\n", want: "relative"},
-		{name: "whitespace", list: "./internal/runner ./internal/engine\n", want: "relative"},
+		{name: "invalid setting", list: "./internal/runner repeats=2\n", want: "count=N"},
+		{name: "extra field", list: "./internal/runner count=2 extra\n", want: "expected package"},
+		{name: "zero count", list: "./internal/runner count=0\n", want: "between 1"},
+		{name: "negative count", list: "./internal/runner count=-1\n", want: "between 1"},
+		{name: "excessive count", list: "./internal/runner count=21\n", want: "between 1"},
 		{name: "duplicate", list: "./internal/runner\n./internal/runner\n", want: "duplicate"},
 	}
 	for _, test := range tests {
@@ -195,12 +221,14 @@ Previous %s at 0x00c000012340 by goroutine 12:
 
 func TestGoTestArgsLockStressFlags(t *testing.T) {
 	t.Parallel()
-	got := goTestArgs("./internal/localscheduler", stressCount, 42)
-	want := []string{
-		"test", "-json", "-race", "-count=20", "-timeout=30m0s", "-shuffle=42", "./internal/localscheduler",
-	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("goTestArgs() = %v, want %v", got, want)
+	for _, count := range []int{stressCount, 2} {
+		got := goTestArgs("./internal/localscheduler", count, 42)
+		want := []string{
+			"test", "-json", "-race", "-count=" + strconv.Itoa(count), "-timeout=30m0s", "-shuffle=42", "./internal/localscheduler",
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("goTestArgs(count=%d) = %v, want %v", count, got, want)
+		}
 	}
 	if stressTimeout <= 10*time.Minute {
 		t.Fatalf("stressTimeout = %v, want more than Go's 10m default (#3167)", stressTimeout)
@@ -346,7 +374,7 @@ func TestExecuteStressAndWriteReports(t *testing.T) {
 	summary, failures, err := executeStress(
 		context.Background(),
 		runner,
-		[]string{"./internal/localscheduler"},
+		[]packageSpec{{Package: "./internal/localscheduler", Count: stressCount}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -370,6 +398,32 @@ func TestExecuteStressAndWriteReports(t *testing.T) {
 	if decoded.SchemaVersion != reportSchema || decoded.Count != 20 ||
 		decoded.Seed != 43 || decoded.Run.RunID != "run-8" {
 		t.Fatalf("decoded summary = %+v", decoded)
+	}
+}
+
+func TestExecuteStressReportsPackageSpecificCounts(t *testing.T) {
+	t.Setenv("GOOBERS_STRESS_HELPER", "pass")
+	runner := processRunner{
+		command:   helperCommand,
+		goCommand: "go",
+		outputDir: t.TempDir(),
+		runID:     "run-counts",
+		count:     stressCount,
+		seed:      43,
+		stdout:    &bytes.Buffer{},
+		stderr:    &bytes.Buffer{},
+		now:       time.Now,
+	}
+	summary, _, err := executeStress(context.Background(), runner, []packageSpec{
+		{Package: "./internal/localscheduler", Count: stressCount},
+		{Package: "./cmd/goobers", Count: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Count != stressCount || len(summary.Packages) != 2 ||
+		summary.Packages[0].Count != stressCount || summary.Packages[1].Count != 2 {
+		t.Fatalf("summary package counts = %+v, want default and override", summary)
 	}
 }
 
@@ -432,7 +486,7 @@ func TestRepositoryStressWiring(t *testing.T) {
 	)
 	assertFileContains(t, filepath.Join(root, "test", "stress", "packages.txt"),
 		"./internal/localscheduler",
-		"./cmd/goobers",
+		"./cmd/goobers count=2",
 		"./internal/harness",
 		"./internal/httpapi",
 	)

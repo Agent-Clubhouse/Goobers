@@ -40,8 +40,10 @@ each sets a precedent this design follows rather than reinvents:
 - **`test/stress/`** (`.github/workflows/stress.yml`): repeats a small, curated
   set of timing/goroutine-sensitive packages (currently just
   `internal/localscheduler`, annotated "site of the timing incident tracked by
-  #21") under `go test -race -count=20`, nightly plus `workflow_dispatch`, 90-minute
-  budget, uploads a `stress-results/` artifact `if: always()`, and feeds a
+  #21") under `go test -race -count=20` by default. A reviewed per-package
+  `count=N` override may lower repetitions only when its full race suite cannot
+  fit the 90-minute job budget. It runs nightly plus `workflow_dispatch`, uploads
+  a `stress-results/` artifact `if: always()`, and feeds a
   `flake-ledger` job — gated on `github.event_name == 'schedule'` — that files or
   updates a GitHub issue through `test/flakeledger`. This is repetition under the
   race detector, not concurrent resource load; it has never caught a
