@@ -361,6 +361,28 @@ func TestFailureClass(t *testing.T) {
 			want: OutcomeInfra,
 		},
 		{
+			// #4141/#4143: the private mirror in a polluted lockfile is on no
+			// host list, so the tool's own error prefix is what identifies the
+			// fetch.
+			name: "npm tarball 403 from a private mirror",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 2; failure: npm error 403 403 Forbidden - GET https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/three/-/three-0.185.1.tgz`},
+			},
+			want: OutcomeInfra,
+		},
+		{
+			// The wrapper trailer alone names no cause; it must stay a work
+			// failure, which is why internal/executor has to surface the denial
+			// line instead of this one.
+			name: "make trailer alone is not infrastructure",
+			result: apiv1.ResultEnvelope{
+				Status: apiv1.ResultFailure,
+				Error:  &apiv1.ErrorInfo{Code: "nonzero_exit", Message: `command exited 2; failure: make: *** [Makefile:352: ci] Error 1`},
+			},
+			want: OutcomeFail,
+		},
+		{
 			name: "application 403 without a dependency fetch",
 			result: apiv1.ResultEnvelope{
 				Status: apiv1.ResultFailure,

@@ -174,3 +174,26 @@ func TestBoundDiagnosticPreservesUTF8(t *testing.T) {
 		t.Fatalf("bounded diagnostic is not valid truncated UTF-8: %q", got)
 	}
 }
+
+func TestCommandFailureDiagnosticPrefersTransportDenialOverWrapperTrailer(t *testing.T) {
+	// Regression for #4143, from production run c1356b5d1a0dd68d3625f2147322290e:
+	// `make ci` shells out to `npm ci`, the lockfile named a private mirror that
+	// answered 403, and the make trailer that followed won the tie. The recorded
+	// diagnostic then said only that a recipe exited, so internal/gate's
+	// infrastructure classifier had nothing to recognize and the denial was
+	// charged to the item under implementation.
+	stderr := []byte(`npm error code E403
+npm error 403 403 Forbidden - GET https://ms-feed-12.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/three/-/three-0.185.1.tgz
+npm error 403 In most cases, you or one of your dependencies are requesting
+ci: portal-install: exit status 1
+make: *** [Makefile:352: ci] Error 1
+`)
+
+	got := summarizeCommandFailure(nil, stderr).failure
+	if !strings.Contains(got.text, "403 Forbidden") {
+		t.Fatalf("failure = %+v, want the transport denial", got)
+	}
+	if strings.HasPrefix(got.text, "make: ***") {
+		t.Fatalf("failure = %+v, must not select the wrapper trailer", got)
+	}
+}
