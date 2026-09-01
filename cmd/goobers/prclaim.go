@@ -2,14 +2,13 @@ package main
 
 import (
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/claimsclient"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
-	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -19,12 +18,16 @@ func pullRequestClaimKey(number int) string {
 	return pullRequestClaimPrefix + strconv.Itoa(number)
 }
 
-func claimEligiblePullRequestInOrder(root string, eligible []providers.PullRequestSummary) (*providers.PullRequestSummary, error) {
+func claimEligiblePullRequestInOrder(
+	root string,
+	repo providers.RepositoryRef,
+	eligible []providers.PullRequestSummary,
+) (*providers.PullRequestSummary, error) {
 	runID, workflow, leaseDuration, err := pullRequestClaimParameters()
 	if err != nil {
 		return nil, err
 	}
-	return claimPullRequestInOrder(root, eligible, runID, workflow, leaseDuration)
+	return claimPullRequestInOrder(root, repo, eligible, runID, workflow, leaseDuration)
 }
 
 func pullRequestClaimParameters() (runID, workflow string, leaseDuration time.Duration, err error) {
@@ -62,13 +65,17 @@ func claimedPullRequestNumber(root string) (number int, ok bool, err error) {
 		return 0, false, err
 	}
 	l := layoutFor(root)
+	ledger, err := openStageClaimLedger(l)
+	if err != nil {
+		return 0, false, fmt.Errorf("open claim ledger: %w", err)
+	}
 	var claimed string
-	lockErr := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRLookup, func() error {
-		ledger, lerr := localscheduler.OpenClaimLedger(filepath.Join(l.SchedulerDir(), claimLedgerFileName))
+	lockErr := ledger.Locked(claimContext(), claimLockOperationPRLookup, func(tx claimsclient.Ledger) error {
+		entries, lerr := tx.ForRunAll(claimContext(), runID)
 		if lerr != nil {
-			return fmt.Errorf("open claim ledger: %w", lerr)
+			return fmt.Errorf("read this run's claims: %w", lerr)
 		}
-		for _, entry := range ledger.ForRunAll(runID) {
+		for _, entry := range entries {
 			if strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
 				claimed = strings.TrimPrefix(entry.ItemID, pullRequestClaimPrefix)
 				break
@@ -92,20 +99,24 @@ func claimedPullRequestNumber(root string) (number int, ok bool, err error) {
 	return number, true, nil
 }
 
+// releasePullRequestClaimsForRun surrenders every PR lease runID holds. log
+// may be nil when the stage is on the claims plane (the daemon's ledger
+// journals the release there — claimLedgerJournal).
 func releasePullRequestClaimsForRun(l instance.Layout, log *journal.InstanceLog, runID string) error {
-	return withClaimLockForRun(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRRelease, l.Gaggle(), runID, func() error {
-		ledger, err := localscheduler.OpenClaimLedger(
-			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-			localscheduler.WithInstanceLog(log),
-		)
+	ledger, err := stageClaimLedgerForRun(l, l.Gaggle(), runID, withClaimJournal(log)...)
+	if err != nil {
+		return fmt.Errorf("open claim ledger: %w", err)
+	}
+	return ledger.Locked(claimContext(), claimLockOperationPRRelease, func(tx claimsclient.Ledger) error {
+		entries, err := tx.ForRunAll(claimContext(), runID)
 		if err != nil {
-			return fmt.Errorf("open claim ledger: %w", err)
+			return fmt.Errorf("read this run's claims: %w", err)
 		}
-		for _, entry := range ledger.ForRunAll(runID) {
+		for _, entry := range entries {
 			if !strings.HasPrefix(entry.ItemID, pullRequestClaimPrefix) {
 				continue
 			}
-			if err := ledger.ReleaseEntry(entry, runID); err != nil {
+			if err := tx.ReleaseScoped(claimContext(), claimsclient.KeyForEntry(entry), runID); err != nil {
 				return fmt.Errorf("release claim %s for run %s: %w", entry.ItemID, runID, err)
 			}
 		}
@@ -130,38 +141,35 @@ func pullRequestClaimLease() (time.Duration, error) {
 
 func claimPullRequestInOrder(
 	root string,
+	repo providers.RepositoryRef,
 	candidates []providers.PullRequestSummary,
 	runID, workflow string,
 	leaseDuration time.Duration,
 ) (*providers.PullRequestSummary, error) {
 	l := layoutFor(root)
+	instanceLog, closeLog, err := claimLedgerJournal(l)
+	if err != nil {
+		return nil, err
+	}
+	defer closeLog()
+	ledger, err := openStageClaimLedger(l, withClaimJournal(instanceLog)...)
+	if err != nil {
+		return nil, fmt.Errorf("open claim ledger: %w", err)
+	}
 	var selected *providers.PullRequestSummary
-	err := withClaimLock(filepath.Join(l.SchedulerDir(), claimLockFileName), claimLockOperationPRAcquire, func() error {
-		instanceLog, _, err := journal.OpenInstanceLog(l.SchedulerDir())
-		if err != nil {
-			return fmt.Errorf("open instance log: %w", err)
-		}
-		defer func() { _ = instanceLog.Close() }()
-
-		ledger, err := localscheduler.OpenClaimLedger(
-			filepath.Join(l.SchedulerDir(), claimLedgerFileName),
-			localscheduler.WithInstanceLog(instanceLog),
-		)
-		if err != nil {
-			return fmt.Errorf("open claim ledger: %w", err)
-		}
+	err = ledger.Locked(claimContext(), claimLockOperationPRAcquire, func(tx claimsclient.Ledger) error {
 		for _, candidate := range candidates {
-			itemID := pullRequestClaimKey(candidate.Number)
-			var ok bool
-			if gaggle := providerGaggle(); gaggle != "" {
-				ok, _, err = ledger.ClaimScoped(localscheduler.ClaimKey{
-					Gaggle:     gaggle,
-					Provider:   string(providers.ProviderGitHub),
-					ExternalID: itemID,
-				}, runID, workflow, leaseDuration)
-			} else {
-				ok, _, err = ledger.Claim(itemID, runID, workflow, leaseDuration)
+			// The claim namespace must carry the repository's actual
+			// provider (#3649): hardcoding github let an ADO or Gitea
+			// repository's PR claim collide with a GitHub one of the same
+			// number, so one provider's run could suppress another's.
+			if gaggle := providerGaggle(); gaggle != "" && repo.Provider == "" {
+				return fmt.Errorf(
+					"claim PR #%d in ledger: repository provider identity is required for gaggle-scoped claims",
+					candidate.Number,
+				)
 			}
+			ok, _, err := tx.ClaimScoped(claimContext(), pullRequestClaimLedgerKey(providerGaggle(), repo.Provider, candidate.Number), runID, workflow, leaseDuration)
 			if err != nil {
 				return fmt.Errorf("claim PR #%d in ledger: %w", candidate.Number, err)
 			}
@@ -177,4 +185,21 @@ func claimPullRequestInOrder(
 		return nil, err
 	}
 	return selected, nil
+}
+
+// pullRequestClaimLedgerKey addresses PR number's lease: scoped to the
+// gaggle's repository-provider namespace, or legacy (unscoped) when the
+// stage runs ungaggled — the split the ledger's Claim/ClaimScoped pair
+// expressed. provider must be the claiming PR's own repository provider
+// (#3649): a hardcoded provider let two repositories on different providers
+// collide on the same PR number within one gaggle.
+func pullRequestClaimLedgerKey(gaggle string, provider providers.ProviderKind, number int) claimsclient.Key {
+	if gaggle == "" {
+		return claimsclient.Key{ExternalID: pullRequestClaimKey(number)}
+	}
+	return claimsclient.Key{
+		Gaggle:     gaggle,
+		Provider:   string(provider),
+		ExternalID: pullRequestClaimKey(number),
+	}
 }

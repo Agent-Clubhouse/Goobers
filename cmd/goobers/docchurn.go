@@ -159,7 +159,7 @@ func runDocsChurn(args []string, stdout, stderr io.Writer) int {
 		multiplier = m
 	}
 
-	workflow := firstNonEmpty(*workflowFlag, os.Getenv("GOOBERS_WORKFLOW"))
+	workflow := firstNonEmpty(*workflowFlag, os.Getenv(executor.WorkflowEnvVar))
 	if workflow == "" {
 		pf(stderr, "error: --workflow or $GOOBERS_WORKFLOW is required (the docs watermark is per-workflow)\n")
 		return 2

@@ -5,6 +5,32 @@
 > come from `instance.yaml` token refs resolved by `internal/credentials`
 > (issue #14). Tier-3 identity (Key Vault, Entra) is out of scope here.
 
+## Create a fine-grained PAT for a repository
+
+Open GitHub's [fine-grained personal access token settings](https://github.com/settings/personal-access-tokens/new)
+and complete these fields before generating the token:
+
+1. **Resource owner:** select the account or organization that owns the target
+   repository — for example, `odsp-microsoft` when the repository is under that
+   organization. Keep the default personal account when it owns the target;
+   otherwise change it. A token created under the wrong resource owner cannot
+   access the target repository, even when its permissions look correct.
+2. **Repository access:** select **Only select repositories**, then choose the
+   exact target repository. Do not grant access to all repositories.
+3. **Repository permissions:** grant only the permissions required by the
+   selected workflow. The getting-started quickstart needs **Contents: Read
+   and write**, **Issues: Read and write**, and **Pull requests: Read and
+   write**. Add **Actions: Read-only** and **Commit statuses: Read-only** only
+   for workflows that poll hosted CI.
+4. Select **Generate token**, copy it once, and store it in the environment
+   variable named by the Goobers configuration. Never paste the token into
+   YAML, source code, issue text, or a browser wizard.
+
+If the selected resource owner is an organization, its owner may need to
+approve the token before it can access organization repositories. The
+getting-started wizard can use an existing `gh` CLI sign-in instead; this PAT
+setup is for token-backed repository or headless authentication.
+
 ## Use fine-grained personal access tokens
 
 Prefer GitHub's **fine-grained PATs** over classic PATs. Classic PATs grant

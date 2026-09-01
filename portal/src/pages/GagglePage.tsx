@@ -6,9 +6,10 @@ import type {
   WorkflowSummary,
 } from "../api/types";
 import { DaemonErrorState, DaemonLoadingState } from "../components/DaemonQueryState";
+import { GaggleWorkflowExplorer } from "../components/GaggleWorkflowExplorer";
 import { ScopePivot } from "../components/ScopePivot";
 import {
-  latestWorkflowOutcome,
+  incompleteRunPhasesMessage,
   useGaggleActivity,
   useGaggleList,
   useOperationalSnapshot,
@@ -22,7 +23,6 @@ import { DataList, DataRow } from "../ui/DataList";
 import { GraphFrame } from "../ui/GraphFrame";
 import { Icon } from "../ui/Icon";
 import { StatusBadge } from "../ui/StatusBadge";
-import { formatTriggers } from "./WorkflowsPage";
 
 export function GagglePage({
   client,
@@ -82,6 +82,7 @@ export function GagglePage({
   return (
     <GaggleTopology
       activity={activity}
+      client={client}
       gaggleList={gaggleList}
       inventory={inventory}
       navigate={navigate}
@@ -92,12 +93,14 @@ export function GagglePage({
 
 function GaggleTopology({
   activity,
+  client,
   gaggleList,
   inventory,
   navigate,
   runs,
 }: {
   activity: GaggleActivity | undefined;
+  client: DaemonClient;
   gaggleList: GaggleSummary[] | undefined;
   inventory: GaggleInventory;
   navigate: Navigate;
@@ -171,46 +174,29 @@ function GaggleTopology({
 
       <GoobersPanel gaggleDisplayName={gaggle.displayName} goobers={inventory.goobers} />
 
+      <GaggleWorkflowExplorer
+        client={client}
+        gaggleDisplayName={gaggle.displayName}
+        runs={runs}
+        workflows={inventory.workflows}
+      />
+
       <GraphFrame
         action={
           <span className="graph-legend">
-            {inventory.workflows.length}{" "}
-            {inventory.workflows.length === 1 ? "workflow" : "workflows"} ·{" "}
             {inventory.connections.length}{" "}
             {inventory.connections.length === 1 ? "repository" : "repositories"}
           </span>
         }
         className="gaggle-topology-panel"
-        eyebrow="Definitions"
-        title="Workflow topology"
+        eyebrow="Connections"
+        title="Repository topology"
       >
-        <div className="gaggle-workflow-topology">
-          <div className="gaggle-workflow-column">
-            {inventory.workflows.length === 0 ? (
-              <p className="inline-empty">No workflows are provisioned for this gaggle.</p>
-            ) : (
-              <ul aria-label={`${gaggle.displayName} workflows`} className="gaggle-workflow-list">
-                {inventory.workflows.map((workflow) => (
-                  <WorkflowNode
-                    gaggleDisplayName={gaggle.displayName}
-                    key={workflow.identity.name}
-                    latestOutcome={latestWorkflowOutcome(
-                      runs,
-                      workflow.identity.gaggle,
-                      workflow.identity.name,
-                    )}
-                    workflow={workflow}
-                  />
-                ))}
-              </ul>
-            )}
-          </div>
-          <ConnectionTopology
-            connections={inventory.connections}
-            gaggleDisplayName={gaggle.displayName}
-            hasWorkflows={inventory.workflows.length > 0}
-          />
-        </div>
+        <ConnectionTopology
+          connections={inventory.connections}
+          gaggleDisplayName={gaggle.displayName}
+          hasWorkflows={inventory.workflows.length > 0}
+        />
       </GraphFrame>
     </>
   );
@@ -287,6 +273,13 @@ function GaggleActivitySections({
 
   return (
     <>
+      {/* Some phase queries failed while others succeeded: the sections below
+          are missing those runs and must not read as an idle gaggle (#3658). */}
+      {activity?.incomplete && (
+        <p className="inline-empty" role="alert">
+          {incompleteRunPhasesMessage(activity.incomplete)}
+        </p>
+      )}
       <section className="content-section">
         <div className="section-heading">
           <div>
@@ -420,75 +413,4 @@ function repositoryIdentity(connection: RepositoryConnection): string {
 
 function formatAccessMode(connection: RepositoryConnection): string {
   return connection.accessMode === "read-write" ? "Read / write" : "Read only";
-}
-
-function WorkflowNode({
-  gaggleDisplayName,
-  latestOutcome,
-  workflow,
-}: {
-  gaggleDisplayName: string;
-  latestOutcome?: RunSummary;
-  workflow: WorkflowSummary;
-}) {
-  return (
-    <li className="gaggle-workflow-node">
-      <div className="gaggle-workflow-card data-row-stretched">
-        <a
-          aria-label={`Open workflow ${workflow.displayName} for gaggle ${gaggleDisplayName}`}
-          className="data-row-stretch-link"
-          href={routeHash({
-            page: "workflow",
-            gaggle: workflow.identity.gaggle,
-            id: workflow.identity.name,
-          })}
-        />
-        <span className="gaggle-workflow-kind">
-          <Icon name="workflow" size={13} />
-          Workflow
-        </span>
-        <span className="gaggle-workflow-title">
-          <strong>{workflow.displayName}</strong>
-          <ScopePivot
-            label={`${gaggleDisplayName} / ${workflow.displayName}`}
-            scope={{ gaggle: workflow.identity.gaggle, workflow: workflow.identity.name }}
-          />
-        </span>
-        <p>{workflow.purpose}</p>
-        <dl>
-          <div>
-            <dt>Trigger</dt>
-            <dd>{formatTriggers(workflow)}</dd>
-          </div>
-          <div>
-            <dt>Stages</dt>
-            <dd>{workflow.stageCount}</dd>
-          </div>
-          <div>
-            <dt>Concurrency</dt>
-            <dd>
-              {workflow.concurrency.activeRuns} active
-              {workflow.concurrency.desiredRuns !== undefined
-                ? ` / ${workflow.concurrency.desiredRuns} desired`
-                : ""}{" "}
-              / {workflow.concurrency.maxConcurrentRuns} max
-              {workflow.concurrency.admissionBlocked && (
-                <small>Blocked: {workflow.concurrency.blockingCondition}</small>
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>Last outcome</dt>
-            <dd>
-              {latestOutcome ? (
-                <StatusBadge status={latestOutcome.phase} />
-              ) : (
-                <span className="gaggle-workflow-no-runs">No recorded runs</span>
-              )}
-            </dd>
-          </div>
-        </dl>
-      </div>
-    </li>
-  );
 }

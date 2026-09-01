@@ -79,6 +79,25 @@ type InvocationEnvelope struct {
 	// the envelope, so without this the agentic seam cannot know WHICH goober
 	// to construct: invoke.Goober.Invoke(ctx, env) is the whole signature.
 	Goober string `json:"goober,omitempty"`
+	// GooberDigest is the content digest of the goober kit this run was
+	// admitted against (workflow.ComputeGooberDigest over the participating
+	// goobers' resolved specs, instruction bodies and skill packages), pinned
+	// at run start and carried unchanged on every attempt of every stage.
+	//
+	// It is a SELECTOR, not decoration (#3884). The local runner resolves its
+	// kit in the same process that recorded the digest, so it cannot drift;
+	// a Temporal worker resolves the kit from its OWN config tree, which
+	// reloads independently, so without this field on the wire attempt N+1 of
+	// a run could silently execute different instructions than attempt N —
+	// the I-51 staleness class, one layer up. The worker matches this value
+	// against the digest its snapshot resolves for (Gaggle, WorkflowID) and
+	// refuses the attempt when it cannot serve it, rather than substituting
+	// whatever it currently has.
+	//
+	// Empty means unpinned: every envelope built before this field existed,
+	// and every run started without a digest. Unpinned attempts resolve the
+	// worker's current tree exactly as before, byte for byte.
+	GooberDigest string `json:"gooberDigest,omitempty"`
 	// Goal is the stage's goal statement.
 	Goal string `json:"goal"`
 	// OwnershipBoundary is the work this invocation owns and may mutate.
@@ -481,15 +500,17 @@ type Verdict struct {
 	// always still names the run a human or `goobers trace` would need to
 	// inspect to see the real reviewer reasoning behind it.
 	SourceRunID string `json:"sourceRunId,omitempty"`
-	// OverlapCluster records whether this PR shared a deterministic file
-	// overlap with at least one other open PR (#989/#990) at the moment this
-	// verdict was published — PR-altitude only, always false for an in-run
-	// gate Verdict. See Elected.
+	// OverlapCluster records whether this PR had at least one other open PR
+	// in its sibling-serialization cluster (#989/#990) at the moment this
+	// verdict was published — the deterministic file-overlap set under the
+	// default `election` strategy, and that set unioned with the reviewer's
+	// named cross-PR blockers under `ordering` (#2741). PR-altitude only,
+	// always false for an in-run gate Verdict. See Elected.
 	OverlapCluster bool `json:"overlapCluster,omitempty"`
 	// Elected records whether this PR was the single-lander election's
-	// deterministic winner (PRL-021) for its overlap cluster at the moment
-	// this verdict was published — always false when OverlapCluster is
-	// false. A published `pass` with OverlapCluster true and Elected false
+	// deterministic winner (PRL-021) for that same serialization cluster at
+	// the moment this verdict was published — always false when OverlapCluster
+	// is false. A published `pass` with OverlapCluster true and Elected false
 	// is not a landing authority: merge-pr's election conjunct (#1071)
 	// refuses to land it, so GitHub's native merge queue can never crown a
 	// cluster member on its own.

@@ -117,7 +117,7 @@ func Refresh(ctx context.Context, cfg RefreshConfig) (Fixture, error) {
 	specs := target.requestSet(cfg.Repository)
 	fixture := Fixture{
 		SchemaVersion: SchemaVersion,
-		Provider:      "github",
+		Provider:      string(providers.ProviderGitHub),
 		Repository:    Repository{Owner: normalizedOwner, Name: normalizedRepo},
 		Issue:         cfg.Issue,
 		PullRequest:   cfg.PullRequest,

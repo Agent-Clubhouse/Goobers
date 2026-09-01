@@ -1,0 +1,284 @@
+// Package fleet implements Goobers Fleet discovery, enrollment, durable
+// identity storage, and the authenticated outbound connection protocol.
+//
+// A connection exchanges challenge, hello, and hello-ack messages before
+// entering a heartbeat/heartbeat-ack loop. Fleet may terminate the association
+// with a revoke message. Unknown inbound message types close the connection so
+// protocol changes are explicit rather than silently ignored.
+package fleet
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"path"
+	"slices"
+	"strings"
+	"time"
+)
+
+const maxResponseBytes = 1 << 20
+
+// HTTPDoer is the subset of *http.Client used by Client, allowing callers to
+// substitute a custom transport (for example, in tests).
+type HTTPDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+// Client is a Fleet enrollment client that performs discovery, enrollment,
+// and join operations against a Fleet service.
+type Client struct {
+	HTTP HTTPDoer
+	Now  func() time.Time
+}
+
+// JoinOptions configures a Join or JoinDiscovered call.
+type JoinOptions struct {
+	Grant        string
+	InstanceRoot string
+	DisplayName  string
+	ACL          ACL
+}
+
+// Discover fetches and validates the Fleet service's well-known discovery
+// document at fleetURL.
+func (c Client) Discover(ctx context.Context, fleetURL string) (Discovery, error) {
+	base, err := validateTransportURI(fleetURL, "https", "http", "")
+	if err != nil {
+		return Discovery{}, fmt.Errorf("fleet: URL: %w", err)
+	}
+	discoveryURL := *base
+	discoveryURL.Path = path.Join("/", ".well-known", "goobers-fleet")
+	discoveryURL.RawPath = ""
+	discoveryURL.RawQuery = ""
+	discoveryURL.Fragment = ""
+	var discovery Discovery
+	if err := c.doJSON(ctx, http.MethodGet, discoveryURL.String(), nil, &discovery); err != nil {
+		return Discovery{}, fmt.Errorf("fleet: discovery: %w", err)
+	}
+	if err := validateDiscovery(discovery); err != nil {
+		return Discovery{}, err
+	}
+	return discovery, nil
+}
+
+// Enroll redeems an enrollment grant at endpoint and returns the resulting
+// enrollment response, validating that it is complete and protocol-compatible.
+func (c Client) Enroll(ctx context.Context, endpoint string, request EnrollmentRequest) (EnrollmentResponse, error) {
+	var response EnrollmentResponse
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, request, &response); err != nil {
+		return EnrollmentResponse{}, fmt.Errorf("fleet: enrollment: %w", err)
+	}
+	if response.ProtocolVersion != ProtocolVersion {
+		return EnrollmentResponse{}, fmt.Errorf("fleet: enrollment selected unsupported protocol version %q", response.ProtocolVersion)
+	}
+	if response.FleetID == "" || response.RegistrationID == "" || response.RegistrationGeneration <= 0 ||
+		response.CanonicalURI == "" || response.ConnectionEndpoint == "" ||
+		response.Credential == "" {
+		return EnrollmentResponse{}, fmt.Errorf("fleet: enrollment response is incomplete")
+	}
+	if _, err := validateTransportURI(response.CanonicalURI, "https", "http", ""); err != nil {
+		return EnrollmentResponse{}, fmt.Errorf("fleet: enrollment canonical URI: %w", err)
+	}
+	if _, err := validateTransportURI(response.ConnectionEndpoint, "wss", "ws", "/api/fleet/v1/connections"); err != nil {
+		return EnrollmentResponse{}, fmt.Errorf("fleet: enrollment connection endpoint: %w", err)
+	}
+	return response, nil
+}
+
+// JoinDiscovered enrolls the instance with an already-discovered Fleet
+// service, generates a new instance key, and persists the resulting
+// association to storage.
+func (c Client) JoinDiscovered(ctx context.Context, storage Storage, discovery Discovery, options JoinOptions) (Association, error) {
+	if strings.TrimSpace(options.Grant) == "" {
+		return Association{}, fmt.Errorf("fleet: enrollment grant must not be empty")
+	}
+	if err := validateDiscovery(discovery); err != nil {
+		return Association{}, err
+	}
+	if _, err := storage.Load(options.InstanceRoot); err == nil {
+		return Association{}, fmt.Errorf("fleet: instance is already associated; leave it before joining another Fleet")
+	} else if !errors.Is(err, ErrNotAssociated) {
+		return Association{}, err
+	}
+	key, err := GenerateKey()
+	if err != nil {
+		return Association{}, err
+	}
+	privateKey, err := MarshalPrivateKey(key)
+	if err != nil {
+		return Association{}, err
+	}
+	publicKey, err := PublicKeySPKI(key)
+	if err != nil {
+		return Association{}, err
+	}
+	instanceID, err := randomUUID()
+	if err != nil {
+		return Association{}, err
+	}
+	response, err := c.Enroll(ctx, discovery.EnrollmentEndpoint, EnrollmentRequest{
+		Grant:           options.Grant,
+		InstanceID:      instanceID,
+		DisplayName:     options.DisplayName,
+		PublicKeySPKI:   publicKey,
+		ProtocolVersion: ProtocolVersion,
+		ACL:             options.ACL,
+	})
+	if err != nil {
+		return Association{}, err
+	}
+	if response.FleetID != discovery.FleetID {
+		return Association{}, fmt.Errorf("fleet: enrollment fleet ID %q does not match discovery %q", response.FleetID, discovery.FleetID)
+	}
+	if response.CanonicalURI != discovery.CanonicalURI {
+		return Association{}, fmt.Errorf("fleet: enrollment canonical URI %q does not match discovery %q", response.CanonicalURI, discovery.CanonicalURI)
+	}
+	now := time.Now()
+	if c.Now != nil {
+		now = c.Now()
+	}
+	association := Association{
+		SchemaVersion:          AssociationSchemaVersion,
+		InstanceID:             instanceID,
+		DisplayName:            options.DisplayName,
+		FleetID:                response.FleetID,
+		RegistrationID:         response.RegistrationID,
+		RegistrationGeneration: response.RegistrationGeneration,
+		CanonicalURI:           response.CanonicalURI,
+		ConnectionEndpoint:     response.ConnectionEndpoint,
+		CredentialExpiresAt:    response.CredentialExpiresAt,
+		ProtocolVersion:        response.ProtocolVersion,
+		ACL:                    options.ACL,
+		JoinedAt:               now.UTC(),
+	}
+	if err := storage.Save(options.InstanceRoot, Record{
+		Association: association,
+		PrivateKey:  privateKey,
+		Credential:  response.Credential,
+	}); err != nil {
+		return Association{}, err
+	}
+	return association, nil
+}
+
+func validateDiscovery(discovery Discovery) error {
+	if discovery.FleetID == "" || discovery.CanonicalURI == "" {
+		return fmt.Errorf("fleet: discovery response is incomplete")
+	}
+	if !slices.Contains(discovery.ProtocolVersions, ProtocolVersion) {
+		return fmt.Errorf("fleet: discovery does not support protocol version %s", ProtocolVersion)
+	}
+	if !slices.Contains(discovery.SupportedAuthenticationMethods, "enrollment-grant") {
+		return fmt.Errorf("fleet: discovery does not support enrollment-grant authentication")
+	}
+	if _, err := validateTransportURI(discovery.CanonicalURI, "https", "http", ""); err != nil {
+		return fmt.Errorf("fleet: canonical URI: %w", err)
+	}
+	if _, err := validateTransportURI(discovery.EnrollmentEndpoint, "https", "http", "/api/fleet/v1/enrollments:redeem"); err != nil {
+		return fmt.Errorf("fleet: enrollment endpoint: %w", err)
+	}
+	if _, err := validateTransportURI(discovery.ConnectionEndpoint, "wss", "ws", "/api/fleet/v1/connections"); err != nil {
+		return fmt.Errorf("fleet: connection endpoint: %w", err)
+	}
+	if principal := discovery.LocalAdministratorPrincipal; principal != nil {
+		if principal.Kind != "user" || principal.Issuer == "" || principal.Subject == "" {
+			return fmt.Errorf("fleet: local administrator principal is invalid")
+		}
+	}
+	return nil
+}
+
+// validateTransportURI requires the secure scheme except for loopback
+// development hosts. A suffix matches the end of the path so Fleet services
+// may be mounted beneath a deployment-specific base path.
+func validateTransportURI(raw, secureScheme, loopbackScheme, suffix string) (*url.URL, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" {
+		return nil, fmt.Errorf("must be an absolute %s URI", secureScheme)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != secureScheme && scheme != loopbackScheme {
+		return nil, fmt.Errorf("must use %s, or %s only for a loopback host", secureScheme, loopbackScheme)
+	}
+	if parsed.User != nil {
+		return nil, fmt.Errorf("must not include user information")
+	}
+	if scheme == loopbackScheme && !isLoopbackHost(parsed.Hostname()) {
+		return nil, fmt.Errorf("%s is allowed only for localhost or a loopback IP address", loopbackScheme)
+	}
+	if suffix != "" && !strings.HasSuffix(strings.TrimSuffix(parsed.Path, "/"), suffix) {
+		return nil, fmt.Errorf("must end with %s", suffix)
+	}
+	return parsed, nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "localhost" {
+		return true
+	}
+	address, err := netip.ParseAddr(host)
+	return err == nil && address.IsLoopback()
+}
+
+func (c Client) doJSON(ctx context.Context, method, endpoint string, requestBody any, responseBody any) error {
+	var body io.Reader
+	if requestBody != nil {
+		encoded, err := json.Marshal(requestBody)
+		if err != nil {
+			return fmt.Errorf("encode request: %w", err)
+		}
+		body = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	if requestBody != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	client := c.HTTP
+	if client == nil {
+		client = http.DefaultClient
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	if len(data) > maxResponseBytes {
+		return fmt.Errorf("response exceeds %d bytes", maxResponseBytes)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("server returned %s", response.Status)
+	}
+	if err := json.Unmarshal(data, responseBody); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+func randomUUID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("fleet: generate instance ID: %w", err)
+	}
+	value[6] = (value[6] & 0x0f) | 0x40
+	value[8] = (value[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(value[:])
+	return encoded[0:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:32], nil
+}

@@ -246,7 +246,7 @@ var copilotModelLister harness.CopilotModelLister
 // buildHarnessRegistry is the production harness composition point. Registry
 // keys are goober spec.harness values; adapter names remain their diagnostic
 // identities, so Copilot continues to report "copilot-cli" in spans and errors.
-func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, harnessCommand map[string][]string, instanceRoot, selfBin string, deferModelDiscovery bool) (*harness.Registry, error) {
+func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, harnessCommand map[string][]string, instanceRoot, selfBin string, deferModelDiscovery bool, modelCredential func(ctx context.Context) (string, error), ephemeralTmp bool) (*harness.Registry, error) {
 	registry := harness.NewRegistry()
 	copilotAdapter := &harness.CopilotAdapter{
 		Command:         harnessCommandOrDefault(harnessCommand, string(apiv1.HarnessCopilot), []string{"copilot"}),
@@ -260,6 +260,8 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, ha
 		InstanceRoot:      instanceRoot,
 		SelfBin:           selfBin,
 		DeferDiscovery:    deferModelDiscovery,
+		ModelCredential:   modelCredential,
+		EphemeralTmp:      ephemeralTmp,
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessCopilot), copilotAdapter); err != nil {
 		return nil, fmt.Errorf("register Copilot harness: %w", err)
@@ -279,6 +281,7 @@ func buildHarnessRegistry(envCaps map[string]string, envPassthrough []string, ha
 		ExtraEnvAllowlist: envPassthrough,
 		InstanceRoot:      instanceRoot,
 		SelfBin:           selfBin,
+		EphemeralTmp:      ephemeralTmp,
 	}
 	if err := registry.RegisterAs(string(apiv1.HarnessClaudeCode), claudeAdapter); err != nil {
 		return nil, fmt.Errorf("register Claude Code harness: %w", err)
@@ -336,6 +339,14 @@ func buildDeterministicExecutor(input deterministicExecutorInput) (invoke.Determ
 	shell.InstanceRoot = input.InstanceRoot
 	shell.ScratchDir = input.ScratchDir
 	shell.ExtraEnvAllowlist = input.Config.Runner.EnvPassthrough
+	// The self runner's declared `tmp:ephemeral` is a RUNNER PROPERTY
+	// (docs/design/goobernetes-restrictions.md §5): every stage this executor
+	// runs is placed on self, so every one of them runs under the effect once
+	// the inventory's self entry declares it — no per-stage requirement is
+	// consulted, and none needs to be. An instance with no runners: block
+	// declares nothing and this stays false, which is the zero-declaration
+	// invariance the architecture requires (§11 item 1).
+	shell.EphemeralTmp = input.Config.SelfRunnerEnforces(instance.RunnerRestrictionTmpEphemeral)
 	if input.ProjectConfigured && input.ConfiguredProject.LargeRepo {
 		shell.DefaultEnv = map[string]string{"MSBUILDDISABLENODEREUSE": "1"}
 	}

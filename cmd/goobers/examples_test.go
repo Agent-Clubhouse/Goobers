@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	configexamples "github.com/goobers/goobers/config-examples"
 )
 
@@ -29,12 +31,62 @@ func TestExamplesListFromOutsideCheckout(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, stderr = %q", code, stderr)
 	}
-	const want = "backlog-assignment\nbacklog-curation\nimplementation\nwork-nomination\n"
+	const want = "backlog-assignment  Backlog assignment\n" +
+		"backlog-curation    Backlog curation\n" +
+		"implementation      Implementation (issue -> PR, reviewer gate, CI-poll repass)\n" +
+		"work-nomination     Work nomination\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+}
+
+// TestExamplesListDescriptionsMatchEmbeddedYAML pins each listed description to
+// the embedded workflow's spec.displayName so the list cannot drift from the
+// YAML it describes.
+func TestExamplesListDescriptionsMatchEmbeddedYAML(t *testing.T) {
+	examples, err := configexamples.WorkflowExamples()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "examples", "list")
+	if code != 0 {
+		t.Fatalf("code = %d, stderr = %q", code, stderr)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	if len(lines) != len(examples) {
+		t.Fatalf("got %d lines, want %d", len(lines), len(examples))
+	}
+	for i, example := range examples {
+		data, err := configexamples.Files.ReadFile(example.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Spec struct {
+				DisplayName string `yaml:"displayName"`
+			} `yaml:"spec"`
+		}
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			t.Fatal(err)
+		}
+		if doc.Spec.DisplayName == "" {
+			t.Fatalf("%s has no spec.displayName to describe it", example.Path)
+		}
+		if example.Description != doc.Spec.DisplayName {
+			t.Errorf("%s description = %q, want %q", example.Name, example.Description, doc.Spec.DisplayName)
+		}
+
+		fields := strings.SplitN(lines[i], "  ", 2)
+		if fields[0] != example.Name {
+			t.Errorf("line %d name = %q, want %q", i, fields[0], example.Name)
+		}
+		if len(fields) != 2 || strings.TrimSpace(fields[1]) != doc.Spec.DisplayName {
+			t.Errorf("line %d = %q, want description %q", i, lines[i], doc.Spec.DisplayName)
+		}
 	}
 }
 

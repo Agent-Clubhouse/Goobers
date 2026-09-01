@@ -210,10 +210,16 @@ func (r *configReloader) poll(now time.Time) error {
 		r.observedDigest = r.appliedDigest
 		return nil
 	}
+	// #3876: buildSchedulerDefinitions built a fresh engine-runtime holder,
+	// and only the boot path has the Temporal client and live-journal writer
+	// to attach one with. Carry the boot attachment across BEFORE the new
+	// entries go live, or every engine lane fails closed from this reload on.
+	definitions.EngineRuntime.adoptFrom(r.setup.EngineRuntime)
 	if err := r.scheduler.Reload(definitions.Entries, definitions.OpenPRRefresher, now, r.appliedDigest, digest); err != nil {
 		r.observedDigest = r.appliedDigest
 		return err
 	}
+	r.setup.EngineRuntime = definitions.EngineRuntime
 	r.setup.RunnerRegistry.Replace(definitions.Runners)
 	r.setup.Interventions.Replace(interventionDefinitions(definitions, r.setup.LegacyRunner))
 	if r.setup.CredentialPlane != nil {
@@ -325,9 +331,7 @@ func configDirectoryDigest(root string) (string, error) {
 			return walkErr
 		}
 		name := entry.Name()
-		if entry.IsDir() && configtree.IsGaggleSkillsDir(root, path) {
-			return filepath.SkipDir
-		}
+		// Handle asset loading/hashing first
 		if gooberassets.IsSourceDir(path) {
 			bundle, err := gooberassets.Load(path)
 			if err != nil {
@@ -345,9 +349,8 @@ func configDirectoryDigest(root string) (string, error) {
 			return nil
 		}
 		if entry.IsDir() {
-			// Skip dotfile directories (notably .git when the config dir is a
-			// tracked repo, per the Workflow-CD epic #453) and all their churn.
-			if path != root && strings.HasPrefix(name, ".") {
+			// Skip hidden dirs and gaggle skills dirs
+			if configtree.ShouldSkipConfigDirExcludingAssets(root, path) {
 				return filepath.SkipDir
 			}
 			return nil

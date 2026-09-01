@@ -260,3 +260,136 @@ spec:
 		t.Fatalf("issues = %+v, want a WF010 version-gate refusal naming dslVersion 3.0", report.Issues)
 	}
 }
+
+// --- Agentic-gate placement (decision 001, #3798) -------------------------
+
+// gatedDSL30Workflow renders a one-task, one-agentic-gate workflow at the
+// given dslVersion with the caller's runsOn block on the gate (empty for
+// none). The gate reviews with the coder goober the dsl30Config tree already
+// declares.
+func gatedDSL30Workflow(dslVersion, evaluator, gateRunsOn string) string {
+	evaluatorBlock := "      agentic:\n        goober: coder\n"
+	branches := "        needs-changes: implement\n"
+	if evaluator == "automated" {
+		evaluatorBlock = "      automated:\n        check: status-equals\n"
+		branches = ""
+	}
+	return fmt.Sprintf(`apiVersion: goobers.dev/v1alpha1
+kind: Workflow
+dslVersion: %q
+metadata:
+  name: gated
+spec:
+  gaggle: web
+  triggers:
+    - type: manual
+  start: implement
+  tasks:
+    - name: implement
+      type: agentic
+      goober: coder
+      goal: Implement.
+      capabilities: [agent:model]
+      next: review
+  gates:
+    - name: review
+      evaluator: %s
+%s%s      branches:
+        pass: ""
+        fail: "@abort"
+%s`, dslVersion, evaluator, evaluatorBlock, gateRunsOn, branches)
+}
+
+const placedGateRunsOnYAML = "      runsOn:\n        cpu: 1000m\n        memory: 2Gi\n"
+
+func TestValidateTwoPointOhGateRunsOnIsRefused(t *testing.T) {
+	report := validateDSL30(t, dsl30Config(false, gatedDSL30Workflow("2.0", "agentic", placedGateRunsOnYAML)))
+	var matched bool
+	for _, issue := range issuesWithCode(report, errorWorkflowAdmission) {
+		if strings.Contains(issue.Message, `gate "review" declares runsOn, which requires dslVersion "3.0"`) {
+			matched = true
+		}
+	}
+	if !matched {
+		t.Fatalf("issues = %+v, want a WF010 version-gate refusal naming the gate and dslVersion 3.0", report.Issues)
+	}
+	if len(issuesWithCode(report, errorGateRunsOn)) != 0 {
+		t.Fatalf("issues = %+v, want no WF023 on a 2.0 document (the router refuses the field first)", report.Issues)
+	}
+}
+
+func TestValidateGateRunsOnRules(t *testing.T) {
+	t.Run("agentic gate with cpu and memory is accepted clean", func(t *testing.T) {
+		report := validateDSL30(t, dsl30Config(true, gatedDSL30Workflow("3.0", "agentic", placedGateRunsOnYAML)))
+		for _, issue := range report.Issues {
+			if issue.Severity == Error {
+				t.Fatalf("issues = %+v, want no errors for a placed agentic gate", report.Issues)
+			}
+		}
+		// The "not yet honoured" WF024 warning that rode here between the
+		// DSL half of decision 001 and its engine/pod half is gone with the
+		// engine half: a placed gate is now honoured at execution, and the
+		// code must not come back under any spelling.
+		for _, issue := range report.Issues {
+			if issue.Code == "WF024" || strings.Contains(issue.Message, "no execution path honours a gate placement") {
+				t.Fatalf("issues = %+v, want no retired WF024 warning on a placed agentic gate", report.Issues)
+			}
+		}
+	})
+	t.Run("agentic gate with runsOn but no agentic block is WF023", func(t *testing.T) {
+		noReviewer := strings.Replace(gatedDSL30Workflow("3.0", "agentic", placedGateRunsOnYAML), "      agentic:\n        goober: coder\n", "", 1)
+		report := validateDSL30(t, dsl30Config(true, noReviewer))
+		var matched bool
+		for _, issue := range issuesWithCode(report, errorGateRunsOn) {
+			if strings.Contains(issue.Message, `gate "review" declares runsOn but has no agentic: block`) {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Fatalf("issues = %+v, want a WF023 naming the missing reviewer block", report.Issues)
+		}
+	})
+	t.Run("automated gate with runsOn is WF023", func(t *testing.T) {
+		report := validateDSL30(t, dsl30Config(true, gatedDSL30Workflow("3.0", "automated", placedGateRunsOnYAML)))
+		found := issuesWithCode(report, errorGateRunsOn)
+		if len(found) != 1 || !strings.Contains(found[0].Message, `gate "review" declares runsOn but its evaluator is "automated"`) {
+			t.Fatalf("issues = %+v, want one WF023 naming the non-agentic evaluator", report.Issues)
+		}
+	})
+	t.Run("agentic gate without memory is WF023", func(t *testing.T) {
+		report := validateDSL30(t, dsl30Config(true, gatedDSL30Workflow("3.0", "agentic", "      runsOn:\n        cpu: 1000m\n")))
+		found := issuesWithCode(report, errorGateRunsOn)
+		if len(found) != 1 || !strings.Contains(found[0].Message, `gate "review" declares runsOn without memory:`) {
+			t.Fatalf("issues = %+v, want one WF023 naming the missing quantity", report.Issues)
+		}
+	})
+	t.Run("os token on a gate is CAP004", func(t *testing.T) {
+		report := validateDSL30(t, dsl30Config(true, gatedDSL30Workflow("3.0", "agentic",
+			"      runsOn:\n        cpu: 1000m\n        memory: 2Gi\n        capabilities: [os=linux]\n")))
+		found := issuesWithCode(report, errorOSTokenInV3)
+		if len(found) != 1 || !strings.Contains(found[0].Message, `gate "review" runsOn.capabilities contains "os=linux"`) {
+			t.Fatalf("issues = %+v, want one CAP004 attributed to the gate", report.Issues)
+		}
+	})
+	t.Run("unknown restriction on a gate is CAP005", func(t *testing.T) {
+		// The schema pins the restriction enum, so a config tree refuses an
+		// unknown token at SCHEMA003; CAP005 is the belt for the API path.
+		def := wf.Definition{
+			Name: "gate-restriction", Version: 1, DSLVersion: "3.0",
+			Spec: apiv1.WorkflowSpec{
+				Gaggle: "web", Start: "implement",
+				Tasks: []apiv1.Task{{Name: "implement", Type: apiv1.TaskAgentic, Goober: "coder", Goal: "implement", Next: "review"}},
+				Gates: []apiv1.Gate{{
+					Name: "review", Evaluator: apiv1.EvaluatorAgentic,
+					Agentic:  &apiv1.AgenticGate{Goober: "coder"},
+					RunsOn:   &apiv1.RunsOn{CPU: "1000m", Memory: "2Gi", Restrictions: []string{"network:allow-list"}},
+					Branches: map[string]string{"pass": "", "fail": "@abort"},
+				}},
+			},
+		}
+		problems := wf.CheckRunsOnRestrictions(def, nil)
+		if len(problems) != 1 || !strings.HasPrefix(problems[0], `gate "review" runsOn.restrictions:`) || !strings.Contains(problems[0], `did you mean "network:allowlist"?`) {
+			t.Fatalf("CheckRunsOnRestrictions = %v, want one gate-attributed suggestion-carrying problem", problems)
+		}
+	})
+}

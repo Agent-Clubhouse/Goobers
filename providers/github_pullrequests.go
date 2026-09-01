@@ -16,7 +16,14 @@ import (
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 )
 
-// OpenPullRequest creates or updates a pull request for the requested branches.
+// OpenPullRequest opens a GitHub pull request — idempotent on repass (#132):
+// a workflow's open-pr stage reuses the same stable run branch
+// (providers.BranchName) on every repass through it, so a second call here
+// must find and update the PR it already opened rather than attempting a
+// duplicate POST (which GitHub 422s on, since a PR already exists for that
+// head/base). Checking first, rather than POSTing and catching the 422, also
+// sidesteps this package's lack of a typed HTTP-status error to match against
+// (doStatus's non-2xx path returns a plain fmt.Errorf).
 func (p *GitHubProvider) OpenPullRequest(ctx context.Context, req PullRequestRequest) (PullRequestResult, error) {
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return PullRequestResult{}, err
@@ -179,7 +186,7 @@ func (p *GitHubProvider) PollPullRequest(ctx context.Context, req PullRequestPol
 		return PullRequestPollResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestPollResult{}, fmt.Errorf("pull id is required")
+		return PullRequestPollResult{}, errPullIDRequired
 	}
 	prEndpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
 	if err != nil {
@@ -259,7 +266,7 @@ func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequ
 		return ClosePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return ClosePullRequestResult{}, fmt.Errorf("pull id is required")
+		return ClosePullRequestResult{}, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID)
 	if err != nil {
@@ -270,11 +277,7 @@ func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequ
 		return ClosePullRequestResult{}, err
 	}
 	if req.Comment != "" {
-		comments, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.PullID, "comments")
-		if err != nil {
-			return ClosePullRequestResult{}, err
-		}
-		if err := p.do(ctx, http.MethodPost, comments, map[string]string{"body": req.Comment}, nil); err != nil {
+		if err := p.postAttributedComment(ctx, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
 			return ClosePullRequestResult{}, err
 		}
 	}
@@ -319,7 +322,7 @@ func (p *GitHubProvider) UpdateBranch(ctx context.Context, req UpdateBranchReque
 		return UpdateBranchResult{}, err
 	}
 	if req.PullID == "" {
-		return UpdateBranchResult{}, fmt.Errorf("pull id is required")
+		return UpdateBranchResult{}, errPullIDRequired
 	}
 	if req.ExpectedHeadSHA == "" {
 		return UpdateBranchResult{}, fmt.Errorf("expected head SHA is required")
@@ -383,7 +386,7 @@ func (p *GitHubProvider) MergePullRequest(ctx context.Context, req MergePullRequ
 		return MergePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return MergePullRequestResult{}, fmt.Errorf("pull id is required")
+		return MergePullRequestResult{}, errPullIDRequired
 	}
 	if req.MergeMethod != "" && !req.MergeMethod.IsValid() {
 		return MergePullRequestResult{}, fmt.Errorf("unsupported merge method %q", req.MergeMethod)
@@ -616,7 +619,7 @@ func (p *GitHubProvider) EnqueuePullRequest(ctx context.Context, req EnqueuePull
 		return EnqueuePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return EnqueuePullRequestResult{}, fmt.Errorf("pull id is required")
+		return EnqueuePullRequestResult{}, errPullIDRequired
 	}
 	number, err := strconv.Atoi(req.PullID)
 	if err != nil {
@@ -715,7 +718,7 @@ func (p *GitHubProvider) DequeuePullRequest(ctx context.Context, req DequeuePull
 		return err
 	}
 	if req.PullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	if req.PullRequestNodeID == "" {
 		return fmt.Errorf("pull request node id is required")
@@ -791,7 +794,7 @@ func (p *GitHubProvider) PollMergeQueueEntry(ctx context.Context, req PollMergeQ
 		return PollMergeQueueEntryResult{}, err
 	}
 	if req.PullID == "" {
-		return PollMergeQueueEntryResult{}, fmt.Errorf("pull id is required")
+		return PollMergeQueueEntryResult{}, errPullIDRequired
 	}
 	number, err := strconv.Atoi(req.PullID)
 	if err != nil {
@@ -874,7 +877,7 @@ func (p *GitHubProvider) GetPullRequest(ctx context.Context, repo RepositoryRef,
 		return PullRequestSummary{}, err
 	}
 	if pullID == "" {
-		return PullRequestSummary{}, fmt.Errorf("pull id is required")
+		return PullRequestSummary{}, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID)
 	if err != nil {
@@ -1025,7 +1028,7 @@ func (p *GitHubProvider) PullRequestFiles(ctx context.Context, repo RepositoryRe
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID, "files")
 	if err != nil {
@@ -1148,7 +1151,7 @@ func (p *GitHubProvider) PullRequestMergeable(ctx context.Context, repo Reposito
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "pulls", pullID)
 	if err != nil {
@@ -1535,7 +1538,7 @@ func (p *GitHubProvider) RequestReview(ctx context.Context, req ReviewRequest) e
 		return err
 	}
 	if req.PullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "pulls", req.PullID, "requested_reviewers")
 	if err != nil {
@@ -1564,13 +1567,17 @@ func (p *GitHubProvider) SubmitPullRequestReview(ctx context.Context, req PullRe
 		return PullRequestReviewResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestReviewResult{}, fmt.Errorf("pull id is required")
+		return PullRequestReviewResult{}, errPullIDRequired
 	}
 	if req.CommitSHA == "" {
 		return PullRequestReviewResult{}, fmt.Errorf("commit sha is required")
 	}
 	if req.Body == "" {
 		return PullRequestReviewResult{}, fmt.Errorf("review body is required")
+	}
+	reviewBody, err := withAttribution(req.Body, p.attribution, "pull-request-review")
+	if err != nil {
+		return PullRequestReviewResult{}, err
 	}
 
 	var event string
@@ -1588,7 +1595,7 @@ func (p *GitHubProvider) SubmitPullRequestReview(ctx context.Context, req PullRe
 		return PullRequestReviewResult{}, err
 	}
 	body := map[string]string{
-		"body":      req.Body,
+		"body":      reviewBody,
 		"commit_id": req.CommitSHA,
 		"event":     event,
 	}

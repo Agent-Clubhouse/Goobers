@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 	"github.com/goobers/goobers/internal/decomposition"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
-	"github.com/goobers/goobers/providers"
 )
 
 const publishBatchHelp = "Usage: goobers publish-batch [path]\n\n" +
@@ -42,15 +40,10 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 	plan, err := readDecompositionInput[decomposition.Plan](root, providerInput("planFile", "plan.json"), "plan.json", "design-slices", "/plan.json")
 	if err != nil {
 		pf(stderr, "error: read plan: %v\n", err)
@@ -79,25 +72,13 @@ func runPublishBatch(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	var provider publishBatchProvider
-	switch repo.Provider {
-	case providers.ProviderADO:
-		provider, err = newADOProviderForStage(root, repo)
-	case providers.ProviderGitea:
-		var token string
-		token, err = providerToken(capability.GitHubIssuesWrite)
-		if err == nil {
-			provider, err = newGiteaProviderForStage(root, repo, token, providers.WithGiteaMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-		}
-	case providers.ProviderGitHub:
-		var token string
-		token, err = providerToken(capability.GitHubIssuesWrite)
-		if err == nil {
-			provider = newCachedGitHubProvider(root, token, providers.WithMutationRecorder(sidecarMutationRecorder{kind: "issue"}))
-		}
-	default:
-		err = fmt.Errorf("publish-batch does not support repository provider %q", repo.Provider)
-	}
+	provider, err := newProviderForStageSurface[publishBatchProvider](
+		root,
+		repo,
+		false,
+		withStageProviderCapability(capability.GitHubIssuesWrite),
+		withStageProviderMutations("issue"),
+	)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1

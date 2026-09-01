@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 	yamlv3 "gopkg.in/yaml.v3"
@@ -33,6 +34,7 @@ import (
 	"github.com/goobers/goobers/internal/mcpconfig"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/supportmatrix"
+	"github.com/goobers/goobers/internal/workcopyroot"
 	wf "github.com/goobers/goobers/internal/workflow"
 )
 
@@ -160,6 +162,63 @@ const (
 	// WARNING: resource requirements are advisory on local modes by design
 	// (dsl-3.0.md D4) and never affect eligibility.
 	RunnerQuantityAdvisory WarningCode = "RNR004"
+	// RunnerInstanceRootRequired (RNR005) identifies a 3.0 stage whose
+	// resolved ELIGIBLE RUNNER SET (the same per-stage solve RNR001 runs)
+	// excludes every self entry, but whose command or built-in stage kind
+	// needs the daemon's instance root: the file claim ledger, a merge
+	// lock, an on-disk run journal, or a kind with no pod-side execution
+	// path (executor.StageRequiresInstanceRoot, decision 003 ruling 3).
+	// Always a WARNING, never promoted by inventory declaration the way
+	// RNR001/RNR003 are: the enforcement is at dispatch (a placed run of
+	// this workflow is refused loud, with the same named code, rather than
+	// running silently wrong), so this is advance notice at author time,
+	// not a second gate.
+	RunnerInstanceRootRequired WarningCode = "RNR005"
+	// RunnerAVExclusionsUnverified (RNR006) identifies a runners: entry
+	// declaring provides.os: windows that does not assert
+	// provides.windows.avExclusionsVerified: true — the operator has not
+	// said whether the directories Goobers writes then immediately reads on
+	// that runner are excluded from real-time antivirus scanning (#3480).
+	// Always a WARNING and only ever advisory: the claim is trusted, not
+	// verified (DI-11), an organisation-wide AV policy is the operator's to
+	// set, and the failure it guards against is a flake that surfaces as an
+	// unrelated git "Permission denied" (#3161–#3164), not a wrong result.
+	// `goobers doctor --av-exclusions` on the runner's host or image
+	// produces the answer to declare.
+	//
+	// STRICT-NEUTRAL, like DVL020 and unlike every other config-shape
+	// finding (DI-10's general rule): `goobers validate --strict` does not
+	// promote it. Two reasons, both specific to this code. First, it is a
+	// new warning that lands on configs nobody edited, so promoting it
+	// would turn every existing --strict pipeline with a Windows runner red
+	// on upgrade — the same "a nudge must not break a green pipeline"
+	// property DVL020 was carved out for. Second, and decisive: declaring
+	// `avExclusionsVerified: false` does NOT silence it, so the only way to
+	// get green under --strict is to declare `true`. That would put an
+	// operator under CI pressure to assert a trusted claim they have not
+	// earned, and a trusted-claim surface that rewards lying is worse than
+	// no claim at all.
+	RunnerAVExclusionsUnverified WarningCode = "RNR006"
+	// WarningConnectionRefUnhonored (REF012) identifies a gaggle that declares
+	// a connectionRef at any of its project, backlog, or additionalRepos sites
+	// (#3296). connectionRef is a credential SELECTOR in the config, but the
+	// runtime never consults it: credentials are resolved from instance.yaml
+	// repos[] by repository identity, and every credentialed capability a
+	// gaggle's stages hold comes from that gaggle's own repo binding
+	// (internal/credentials.RunnerGrants), with reference repos taking their
+	// own identity-selected read token (AdditionalReadGrants). The named
+	// Connection's secret is never read, so every declaration is inert — a
+	// single site naming a narrow connection is substituted just as silently
+	// as the losing one of a mismatched pair, which is the one prohibited
+	// state for a declared credential selector.
+	//
+	// STRICT-NEUTRAL, like DVL020 and RNR006: the shipped guides, scaffold
+	// templates, and config-examples all declare connectionRef, so promoting
+	// this would turn every existing --strict pipeline red on upgrade for a
+	// platform limitation the author cannot fix in their config. It is a
+	// notice that the runtime does not honor the field, not a defect in the
+	// config that declared it.
+	WarningConnectionRefUnhonored WarningCode = "REF012"
 	// WarningSubprocessTimeout identifies a deterministic stage whose command
 	// wraps a subprocess carrying its own, longer wall-clock ceiling than the
 	// stage's own budget — a literal `go test -timeout` flag, an explicit
@@ -170,6 +229,9 @@ const (
 	// in-progress work; the stage is unwinnable by construction regardless of
 	// typical-case duration (#3377).
 	WarningSubprocessTimeout WarningCode = "WF021"
+	// WF024 was the "gate placement not yet honoured" warning that stood
+	// between the DSL half of decision 001 (#3848) and its engine/pod half
+	// (rulings 7–8). It retired with that half and the code is not reused.
 )
 
 const (
@@ -186,6 +248,8 @@ const (
 	errorCICommand                WarningCode = "CFG005"
 	errorBranchNamespace          WarningCode = "CFG006"
 	errorGaggleCheckoutSparse     WarningCode = "CFG007"
+	errorWorkcopiesRoot           WarningCode = "CFG008"
+	errorWorkcopiesCollision      WarningCode = "CFG009"
 	errorManifestGaggleReference  WarningCode = "REF001"
 	errorGooberGaggleReference    WarningCode = "REF002"
 	errorGooberWorkflowReference  WarningCode = "REF003"
@@ -202,6 +266,7 @@ const (
 	errorOSTokenInV3              WarningCode = "CAP004"
 	errorUnknownRestriction       WarningCode = "CAP005"
 	errorRepoHandoff              WarningCode = "WF022"
+	errorGateRunsOn               WarningCode = "WF023"
 	errorInstructionsMissing      WarningCode = "GBO001"
 	errorInstructionsAccess       WarningCode = "GBO002"
 	errorInstructionsNotRegular   WarningCode = "GBO003"
@@ -224,7 +289,9 @@ const (
 	errorRunControls              WarningCode = "WF016"
 	errorPathSimulation           WarningCode = "WF017"
 	errorCapabilityRuntimeSupport WarningCode = "WF019"
+	errorWorkflowCompile          WarningCode = "WF025"
 	errorDocsRoot                 WarningCode = "DOCS001"
+	errorOutbox                   WarningCode = "OUT001"
 	errorUnsupportedFeature       WarningCode = "VER005"
 	errorLabelPredicateGaggle     WarningCode = "LBL001"
 	errorLabelPredicateTrigger    WarningCode = "LBL002"
@@ -491,9 +558,23 @@ func (r *Report) addFeatureDiagnostics(file, gaggle, kind, name string, diagnost
 }
 
 // Validator holds compiled schemas, reusable across many validations.
+//
+// A Validator is safe for concurrent use by multiple goroutines (#3887).
+// Callers share one process-wide — the engine's verdict validator is a
+// sync.OnceValues singleton read by every concurrent placed-gate review, and
+// the harness, agentkit and configsync builders each keep one for the life of
+// their component — so the lazy compile below cannot be left unsynchronized:
+// jsonschema.Compiler mutates its own resource maps while compiling, and the
+// cache is a plain map, so two cold-cache validations at once raced and could
+// fatal the worker with "concurrent map writes" or panic inside the compiler.
 type Validator struct {
 	compiler *jsonschema.Compiler
-	cache    map[string]*jsonschema.Schema
+	// mu guards compiler and cache. It is held across Compile (and only
+	// Compile): compiled *jsonschema.Schema values are immutable once
+	// returned, so Validate runs lock-free and the lock is paid once per
+	// schema file, not once per validation.
+	mu    sync.Mutex
+	cache map[string]*jsonschema.Schema
 }
 
 // New builds a Validator with all embedded schemas registered so cross-schema
@@ -514,6 +595,8 @@ func New() (*Validator, error) {
 }
 
 func (v *Validator) schema(file string) (*jsonschema.Schema, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	if s, ok := v.cache[file]; ok {
 		return s, nil
 	}
@@ -628,12 +711,8 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() && path != root && strings.HasPrefix(d.Name(), ".") {
-			return filepath.SkipDir
-		}
-		if d.IsDir() && configtree.IsGaggleSkillsDir(root, path) {
-			return filepath.SkipDir
-		}
+		// Handle asset validation first (needs to validate before skipping)
+		// Check for assets before dir checks since assets can be symlinks
 		if gooberassets.IsSourceDir(path) {
 			if assetErr := gooberassets.Validate(path); assetErr != nil {
 				rel, _ := filepath.Rel(root, path)
@@ -645,6 +724,10 @@ func (v *Validator) ValidateDir(root string) (*Report, error) {
 			return nil
 		}
 		if d.IsDir() {
+			// Skip hidden dirs and gaggle skills dirs
+			if configtree.ShouldSkipConfigDirExcludingAssets(root, path) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(path))
@@ -954,6 +1037,9 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// a gaggle legitimately binds its repo token per-repo in instance.yaml
 	// rather than through a Manifest Connection.
 	ix.checkGaggleConnections(r)
+	// A declared connectionRef that the runtime cannot honor is surfaced
+	// rather than silently substituted (#3296).
+	ix.checkGaggleConnectionRefHonored(r)
 	// Read-only reference-repo coherence (MGV-10, #1285): an AdditionalRepos
 	// entry must not also be the gaggle's read-write Project.
 	ix.checkGaggleAdditionalRepos(r)
@@ -964,8 +1050,11 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 	// Sibling-scope overlap warning (MIRC-2, #1901).
 	ix.checkGaggleSiblingLabelOverlap(r)
 	ix.checkGaggleRunControls(r)
+	ix.checkGaggleOutboxMirrorPath(r)
 	// Accepted-but-inert checkout declarations (#649) surface a VER003 notice.
 	ix.checkGaggleCheckout(r)
+	// Managed working-copy root normalization and cross-gaggle collisions (#3663).
+	ix.checkGaggleWorkcopies(r)
 	ix.checkLabelPredicates(r)
 	ix.checkContextFromUniqueness(r)
 	ix.checkFieldSelections(r)
@@ -1041,6 +1130,7 @@ func (ix *index) crossCheck(r *Report, configRoot string) {
 		ix.checkWorkflow(r, indexed.definition, indexed.file, allowPreview)
 		checkWorkflowDSLVersion(r, indexed.definition, indexed.file, allowPreview)
 	}
+	ix.checkWorkflowsCompile(r, allowPreview)
 
 	// Every referenceNotFound call in this pass (including from checkWorkflow
 	// above) was buffered, not yet added to r — flush now that the run's full
@@ -1595,6 +1685,79 @@ func intersectLabels(a, b []string) []string {
 	return out
 }
 
+// checkGaggleOutboxMirrorPath refuses a gaggle-level outbox mirror default
+// that is neither absolute nor home-relative (#3662). The gaggle value is the
+// instance-wide default every workflow inherits, so a relative root there
+// would break artifact export for every run that mirrors.
+func (ix *index) checkGaggleOutboxMirrorPath(r *Report) {
+	for name, g := range ix.gaggles {
+		root := g.Spec.OutboxMirrorPath
+		if root == "" {
+			continue
+		}
+		if err := apiv1.ValidateOutboxMirrorRoot(root); err != nil {
+			r.add(errorOutbox, Error, ix.gaggleFile[name], "Gaggle", name, "spec.outboxMirrorPath: %v", err)
+		}
+	}
+}
+
+// checkGaggleWorkcopies rejects managed working-copy roots the daemon cannot
+// build definitions from (#3663): a relative spec.workcopies.root, which
+// instance.EffectiveWorkcopiesLayout refuses at startup, and two gaggles whose
+// resolved working-copy directories collide — the same directory or one nested
+// beneath the other, which would make two workforces share mutable mirrors and
+// worktrees. Validation applies the daemon's own normalization
+// (internal/workcopyroot) so both boundaries agree on what a root resolves to.
+func (ix *index) checkGaggleWorkcopies(r *Report) {
+	type resolved struct {
+		gaggle string
+		root   string
+		dir    string
+		key    string
+	}
+	var roots []resolved
+	for _, name := range sortedGaggleNames(ix.gaggles) {
+		spec := ix.gaggles[name].Spec.Workcopies
+		if spec == nil || spec.Root == "" {
+			continue
+		}
+		if err := workcopyroot.Validate("spec.workcopies.root", spec.Root); err != nil {
+			r.add(errorWorkcopiesRoot, Error, ix.gaggleFile[name], "Gaggle", name, "%v", err)
+			continue
+		}
+		// A gaggle-scoped layout appends the gaggle name beneath the
+		// configured base (instance.Layout.WorkcopiesDir).
+		dir := filepath.Join(spec.Root, name)
+		key, err := workcopyroot.Key(dir)
+		if err != nil {
+			r.add(errorWorkcopiesRoot, Error, ix.gaggleFile[name], "Gaggle", name,
+				"spec.workcopies.root %q cannot be resolved: %v", spec.Root, err)
+			continue
+		}
+		roots = append(roots, resolved{gaggle: name, root: spec.Root, dir: dir, key: key})
+	}
+	for i := range roots {
+		for j := i + 1; j < len(roots); j++ {
+			if !workcopyroot.Overlap(roots[i].key, roots[j].key) {
+				continue
+			}
+			r.add(errorWorkcopiesCollision, Error, ix.gaggleFile[roots[j].gaggle], "Gaggle", roots[j].gaggle,
+				"spec.workcopies.root %q resolves to %s, which collides with gaggle %q at %s — "+
+					"each gaggle needs its own managed working-copy tree",
+				roots[j].root, roots[j].dir, roots[i].gaggle, roots[i].dir)
+		}
+	}
+}
+
+func sortedGaggleNames(gaggles map[string]apiv1.Gaggle) []string {
+	names := make([]string, 0, len(gaggles))
+	for name := range gaggles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (ix *index) checkGaggleRunControls(r *Report) {
 	for name, g := range ix.gaggles {
 		if g.Spec.RunControls == nil {
@@ -1698,6 +1861,46 @@ func (ix *index) checkGaggleConnections(r *Report) {
 		for i, repo := range g.Spec.AdditionalRepos {
 			check(repo.ConnectionRef, fmt.Sprintf("spec.additionalRepos[%d].connectionRef", i))
 		}
+	}
+}
+
+// checkGaggleConnectionRefHonored surfaces a declared connectionRef the runtime
+// cannot honor (#3296). connectionRef reads as a credential SELECTOR, but
+// nothing downstream consults it: credentials.RunnerGrants backs every
+// credentialed capability a gaggle's stages hold with that gaggle's own repo
+// binding, selected from instance.yaml repos[] by repository identity, and
+// AdditionalReadGrants does the same per reference repo — the named
+// Connection's own secret is never read. So EVERY non-empty declaration is
+// inert, not just the losing one of a mismatched pair: an author naming a
+// narrow connection at a single site gets whatever credential repository
+// identity selects, which for a credential selector is a silent substitution.
+//
+// One finding per gaggle names every site that declared a connection, so the
+// author sees the whole inert set at once rather than one finding per field.
+func (ix *index) checkGaggleConnectionRefHonored(r *Report) {
+	for name, g := range ix.gaggles {
+		fields := []string{}
+		refs := []string{}
+		declare := func(field, ref string) {
+			if ref == "" {
+				return
+			}
+			fields = append(fields, field)
+			refs = append(refs, strconv.Quote(ref))
+		}
+		declare("spec.project.connectionRef", g.Spec.Project.ConnectionRef)
+		declare("spec.backlog.connectionRef", g.Spec.Backlog.ConnectionRef)
+		for i, repo := range g.Spec.AdditionalRepos {
+			declare(fmt.Sprintf("spec.additionalRepos[%d].connectionRef", i), repo.ConnectionRef)
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		r.add(WarningConnectionRefUnhonored, Warning, ix.gaggleFile[name], "Gaggle", name,
+			"connectionRef is declared at %s (naming %s), but it does not select credentials at runtime: each access is backed by "+
+				"the credential configured for its repository in instance.yaml repos[], so the connection named there has no "+
+				"effect on which token is used",
+			strings.Join(fields, ", "), strings.Join(refs, ", "))
 	}
 }
 
@@ -1871,6 +2074,12 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckReachability(def) {
 		r.add(errorReachability, Error, file, "Workflow", w.Name, "%s", msg)
 	}
+	// Outbox declarations and mirror roots (#3662): an escaping or empty
+	// outbox entry, or a relative mirror root, only fails at artifact export
+	// — after the stage has already done its work — so it is refused here.
+	for _, msg := range wf.CheckOutbox(def) {
+		r.add(errorOutbox, Error, file, "Workflow", w.Name, "%s", msg)
+	}
 	for _, msg := range wf.CheckSchedules(def) {
 		r.add(errorSchedule, Error, file, "Workflow", w.Name, "%s", msg)
 	}
@@ -1913,6 +2122,11 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	}
 	for _, msg := range wf.CheckRunsOnPlacement(def, gaggleRunsOn) {
 		r.add(errorWorkflowAdmission, Error, file, "Workflow", w.Name, "%s", msg)
+	}
+	// The gate-only runsOn rules (WF023, decision 001): runsOn on a
+	// non-agentic gate, or an agentic gate runsOn without cpu and memory.
+	for _, msg := range wf.CheckGateRunsOn(def) {
+		r.add(errorGateRunsOn, Error, file, "Workflow", w.Name, "%s", msg)
 	}
 	for _, msg := range wf.CheckRepoHandoffs(def) {
 		r.add(errorRepoHandoff, Error, file, "Workflow", w.Name, "%s", msg)
@@ -1966,6 +2180,72 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	// one missing line. It stays exported for callers that want the strict
 	// bar (this repo holds its own shipped workflows to it in
 	// internal/workflow's stage-contract test).
+}
+
+// checkWorkflowsCompile closes the admission gap between canonical config
+// loading and the runtime (#3664). Every workflow check above mirrors part of
+// the versioned compiler, but the mirror was never complete: compiler-only
+// structural rules — an unresolved contextFrom source, a parallel topology
+// problem, a dotted state name, incompatible placement across claims-mutating
+// stages — were enforced only where something actually called
+// workflow.Compile (the CLI and daemon startup), so a GitOps, config-sync, or
+// direct-loader consumer of LoadConfigDir got a weaker verdict than the
+// daemon it was feeding. Running the real compiler here makes the loader's
+// verdict the runtime's verdict by construction, with no second
+// implementation to drift.
+//
+// It runs only on a config this pass has otherwise admitted. The compiler
+// aggregates every problem it finds across the whole document — including
+// ones the checks above already reported, and ones that belong to the Goober
+// or Gaggle a workflow binds rather than to the workflow itself — so on an
+// already-invalid config it would restate those findings under a second code
+// and a less precise scope. A config that is already rejected loses nothing
+// by that: it fails closed either way, and the compiler's remaining findings
+// surface on the next pass once the reported errors are fixed.
+//
+// Compile options mirror the individual wf.Check* calls in checkWorkflow
+// exactly — the goober specs, the preview-feature opt-in, and the
+// gaggle-level requirement floor. The registries only a running daemon owns
+// (known automated checks, known harnesses) stay unset, as they are for those
+// checks, so this reports nothing that depends on runtime wiring the loader
+// cannot see.
+func (ix *index) checkWorkflowsCompile(r *Report, allowPreview bool) {
+	if r.HasErrors() || len(ix.pendingReferenceIssues) > 0 {
+		return
+	}
+	goobers := ix.gooberSpecs()
+	for _, identity := range sortedWorkflowIdentities(ix.workflows) {
+		indexed := ix.workflows[identity]
+		w := indexed.definition
+		opts := []wf.Option{
+			wf.WithGoobers(goobers),
+			wf.WithPreviewFeatures(allowPreview),
+		}
+		if gaggle, ok := ix.gaggles[w.Spec.Gaggle]; ok {
+			opts = append(opts,
+				wf.WithGaggleRequiredCapabilities(gaggle.Spec.RequiredCapabilities),
+				wf.WithGaggleRunsOn(gaggle.Spec.RunsOn),
+			)
+		}
+		def := wf.Definition{Name: w.Name, Version: 1, DSLVersion: w.DSLVersion, Spec: w.Spec}
+		if _, err := wf.Compile(def, opts...); err != nil {
+			r.add(errorWorkflowCompile, Error, indexed.file, "Workflow", w.Name, "%v", err)
+		}
+	}
+}
+
+func sortedWorkflowIdentities(workflows map[workflowIdentity]indexedWorkflow) []workflowIdentity {
+	identities := make([]workflowIdentity, 0, len(workflows))
+	for identity := range workflows {
+		identities = append(identities, identity)
+	}
+	sort.Slice(identities, func(i, j int) bool {
+		if identities[i].gaggle != identities[j].gaggle {
+			return identities[i].gaggle < identities[j].gaggle
+		}
+		return identities[i].name < identities[j].name
+	})
+	return identities
 }
 
 func (ix *index) checkCapabilityRuntimeSupport(r *Report, w apiv1.Workflow, file string) {

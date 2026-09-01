@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/goobers/goobers/internal/mcpio"
 )
 
 // RetentionRule identifies the limit that made a resource eligible.
@@ -323,22 +324,11 @@ func inventoryRetainedWorktrees(managers []*Manager, opts RetentionOptions) ([]r
 }
 
 func directorySize(root string) (int64, error) {
-	var total int64
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		total += info.Size()
-		return nil
-	})
+	size, err := mcpio.SumAllFileSizes(root)
 	if err != nil {
 		return 0, fmt.Errorf("measure retained worktree %s: %w", root, err)
 	}
-	return total, nil
+	return size, nil
 }
 
 func pruneRetainedWorktree(ctx context.Context, candidate *retainedWorktree, rule RetentionRule, delete bool) RetentionResult {

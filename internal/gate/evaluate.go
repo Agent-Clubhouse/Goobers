@@ -108,6 +108,14 @@ type Result struct {
 	// DisprovenFindings retain the complete finding-level contract so a
 	// same-evaluation deterministic disproval projects as false-finding.
 	DisprovenFindings []apiv1.Finding
+	// RepeatedFindingIDs were already active in the latest prior episode for
+	// this gate, so they recurred across a repass rather than being raised
+	// for the first time (issue #3136).
+	RepeatedFindingIDs []string
+	// UnverifiedRepeatFindingIDs are the RepeatedFindingIDs the latest
+	// authoritative diff does not corroborate: it contains no line, and no
+	// file, at the location the finding names.
+	UnverifiedRepeatFindingIDs []string
 }
 
 // RepassCause is the machine-readable upstream reason for a repass.
@@ -387,22 +395,14 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			// of issuing needs-changes and burning repass cycles that can only
 			// re-observe the same empty diff. Mirrors the identical-diff guard
 			// below: both spare the repass budget a degenerate reviewer call.
-			outcome = string(apiv1.VerdictFail)
-			verdict = &apiv1.Verdict{
-				Decision:  apiv1.VerdictFail,
-				Rationale: "runner: the implement stage produced no committed changes — failing without review, since an empty diff offers nothing to evaluate and a repass can only reproduce it",
-			}
+			synthesized := EmptyDiffVerdict()
+			outcome = string(synthesized.Decision)
+			verdict = &synthesized
 		} else if diffDigest != "" && e.LastDiffDigest != nil && e.LastDiffDigest[g.Name] == diffDigest {
 			duplicateDiff = true
-			outcome = string(apiv1.VerdictNeedsChanges)
-			rationale := fmt.Sprintf("runner: this repass produced no change (digest %s)", diffDigest)
-			if e.RepassCause != nil {
-				rationale = e.RepassCause.String() + "; the implementer produced no change in response"
-			}
-			verdict = &apiv1.Verdict{
-				Decision:  apiv1.VerdictNeedsChanges,
-				Rationale: rationale,
-			}
+			synthesized := DuplicateDiffVerdict(diffDigest, e.RepassCause)
+			outcome = string(synthesized.Decision)
+			verdict = &synthesized
 		} else {
 			var v apiv1.Verdict
 			invalidNeedsHuman, err := e.evaluateReviewerWithRetry(ctx, g.Name, policy, env.Limits.MaxDurationSeconds, &env, subjectStage, subject, g, &v)
@@ -425,7 +425,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	// from the prior episode were corrected.
 	if verdict != nil && !duplicateDiff && !emptyDiff {
 		normalized, resolution := reconcileLearningFindings(
-			*verdict, env.ContextPointers, journalDir(e.Journal), g.Name, diffDigest,
+			*verdict, env.ContextPointers, ArtifactBytesFromRoot(journalDir(e.Journal)), g.Name, diffDigest,
 		)
 		verdict = &normalized
 		learningResolution = resolution
@@ -437,7 +437,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 	if outcome == string(apiv1.VerdictNeedsChanges) && verdict != nil {
 		beforeFindings := append([]apiv1.Finding(nil), verdict.Findings...)
 		before := findingIDs(beforeFindings)
-		normalized, allDisproven := disproveReviewerFindings(*verdict, env.ContextPointers, journalDir(e.Journal), g.Name)
+		normalized, allDisproven := disproveReviewerFindings(*verdict, env.ContextPointers, ArtifactBytesFromRoot(journalDir(e.Journal)), g.Name)
 		verdict = &normalized
 		outcome = string(normalized.Decision)
 		learningResolution.Disproven = removedFindingIDs(before, normalized.Findings)
@@ -446,8 +446,24 @@ func (e *Evaluator) Evaluate(ctx context.Context, g apiv1.Gate, env apiv1.Invoca
 			outcomeReason = ReasonFindingDisproven
 		}
 	}
+	// #3136: a needs-changes verdict that only repeats findings the diff
+	// cannot corroborate buys nothing from another implementer session, so it
+	// goes to arbitration rather than charging the repass budget again.
+	forcedEscalation := emptyDiff
+	if outcome == string(apiv1.VerdictNeedsChanges) && verdict != nil && !duplicateDiff {
+		normalized, arbitration := arbitrateRepeatedFindings(
+			*verdict, env.ContextPointers, ArtifactBytesFromRoot(journalDir(e.Journal)), g.Name,
+		)
+		verdict = &normalized
+		learningResolution.Repeated = arbitration.Repeated
+		learningResolution.UnverifiedRepeats = arbitration.Unverified
+		if arbitration.Arbitrate {
+			forcedEscalation = true
+			outcomeReason = ReasonFindingUnverifiedRepeat
+		}
+	}
 
-	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, emptyDiff, cacheHit, outcomeReason, learningResolution)
+	return e.resolveOutcome(g, outcome, verdict, diffDigest, duplicateDiff, forcedEscalation, cacheHit, outcomeReason, learningResolution)
 }
 
 // EvaluateHuman applies an explicit human decision to a human gate. The
@@ -526,8 +542,8 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 		return Result{}, fmt.Errorf("gate %q: outcome %q has no defined branch (never a silent pass, GT-002)", g.Name, outcome)
 	}
 
-	attempt, gateAttempt, repassTarget, exceeded := e.trackRepass(g, outcome, target)
-	escalated := exceeded || duplicateDiff || forcedEscalation
+	charge := e.trackRepass(g, outcome, target)
+	escalated := charge.Exceeded || duplicateDiff || forcedEscalation
 	if escalated {
 		target = escalationTarget(g)
 	}
@@ -539,18 +555,16 @@ func (e *Evaluator) resolveOutcome(g apiv1.Gate, outcome string, verdict *apiv1.
 		reason = ReasonUnchangedRepass
 	}
 	if escalated && reason == "" {
-		reason = ReasonRepassBudgetExhausted
-		if outcome == OutcomeInfra {
-			reason = ReasonInfrastructureBudgetExhausted
-		}
+		reason = charge.EscalationReason()
 	}
 	r := Result{
-		Gate: g.Name, Outcome: outcome, Target: target, Attempt: attempt,
-		RepassTarget: repassTarget, GateAttempt: gateAttempt, Escalated: escalated,
+		Gate: g.Name, Outcome: outcome, Target: target, Attempt: charge.Attempt,
+		RepassTarget: charge.RepassTarget, GateAttempt: charge.GateAttempt, Escalated: escalated,
 		DuplicateDiff: duplicateDiff, RepassCause: repassCause, Reason: reason, CacheHit: cacheHit, Verdict: verdict,
 		ResolvedFindingIDs: resolution.Resolved, SuppressedFindingIDs: resolution.Suppressed,
 		ReopenedFindingIDs: resolution.Reopened, DisprovenFindingIDs: resolution.Disproven,
-		DisprovenFindings: resolution.DisprovenFindings,
+		DisprovenFindings:  resolution.DisprovenFindings,
+		RepeatedFindingIDs: resolution.Repeated, UnverifiedRepeatFindingIDs: resolution.UnverifiedRepeats,
 	}
 	artifact, err := recordVerdict(e.Journal, r, diffDigest)
 	if err != nil {
@@ -645,52 +659,34 @@ func escalationTarget(g apiv1.Gate) string {
 // trackRepass charges branches that re-enter an already-completed target stage.
 // Retryable infrastructure outcomes use their own bounded counters so they do
 // not consume policy repasses.
-func (e *Evaluator) trackRepass(g apiv1.Gate, outcome, target string) (attempt, gateAttempt int, repassTarget string, exceeded bool) {
-	if e.Attempts == nil {
-		e.Attempts = make(map[string]int)
-	}
-	if e.InfrastructureAttempts == nil {
-		e.InfrastructureAttempts = make(map[string]int)
-	}
-	if outcome != OutcomeInfra && e.InfrastructureRepassAttempts != nil {
-		if infrastructureTarget, ok := wf.BranchTarget(g, OutcomeInfra); ok {
-			e.InfrastructureRepassAttempts[infrastructureTarget] = 0
-		}
-	}
-	switch outcome {
-	case OutcomePass:
-		e.Attempts[g.Name] = 0
-		e.InfrastructureAttempts[g.Name] = 0
-	case OutcomeInfra:
-		e.Attempts[g.Name] = 0
-		e.InfrastructureAttempts[g.Name]++
-		gateAttempt = e.InfrastructureAttempts[g.Name]
-	default:
-		e.InfrastructureAttempts[g.Name] = 0
-		e.Attempts[g.Name]++
-		gateAttempt = e.Attempts[g.Name]
-	}
+//
+// The arithmetic itself is RepassBudget.Charge (repassbudget.go), shared with
+// the Temporal engine's workflow-side resolveGateOutcome so the two drivers
+// cannot disagree about when a run escalates (#3930). This method owns only
+// what is genuinely the Evaluator's: which of ITS maps hold the budget, and
+// how it answers "is this target a stage that already completed" (IsReentry,
+// defaulting to the historical assumption that every non-pass branch is a
+// repass for direct callers that supply no predicate).
+func (e *Evaluator) trackRepass(g apiv1.Gate, outcome, target string) RepassCharge {
 	reentry := outcome != OutcomePass
 	if e.IsReentry != nil {
 		reentry = e.IsReentry(target)
 	}
-	if !reentry {
-		return 0, gateAttempt, "", false
+	budget := RepassBudget{
+		Attempts:                     e.Attempts,
+		InfrastructureAttempts:       e.InfrastructureAttempts,
+		RepassAttempts:               e.RepassAttempts,
+		InfrastructureRepassAttempts: e.InfrastructureRepassAttempts,
 	}
-	if outcome == OutcomeInfra {
-		if e.InfrastructureRepassAttempts == nil {
-			e.InfrastructureRepassAttempts = make(map[string]int)
-		}
-		e.InfrastructureRepassAttempts[target]++
-		attempt = e.InfrastructureRepassAttempts[target]
-		return attempt, gateAttempt, target, attempt > DefaultMaxInfrastructureRepasses
-	}
-	if e.RepassAttempts == nil {
-		e.RepassAttempts = make(map[string]int)
-	}
-	e.RepassAttempts[target]++
-	attempt = e.RepassAttempts[target]
-	return attempt, gateAttempt, target, attempt > e.maxRepasses(g)
+	charge := budget.Charge(g, outcome, target, reentry, e.MaxRepasses)
+	// Charge allocates any map it has to touch, so the lazily-created ones are
+	// carried back onto the Evaluator — it, not the temporary, is the live
+	// checkpoint source a resume re-seeds and a caller reads back.
+	e.Attempts = budget.Attempts
+	e.InfrastructureAttempts = budget.InfrastructureAttempts
+	e.RepassAttempts = budget.RepassAttempts
+	e.InfrastructureRepassAttempts = budget.InfrastructureRepassAttempts
+	return charge
 }
 
 func (e *Evaluator) maxRepasses(g apiv1.Gate) int {

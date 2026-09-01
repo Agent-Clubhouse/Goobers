@@ -113,6 +113,10 @@
       "description": "How managed mirrors and worktrees are provisioned. Omitted keeps every default; existing mirrors are never migrated in either direction when these change.",
       "$ref": "#/$defs/workcopies"
     },
+    "baselineHealth": {
+      "description": "Base-health awareness for the deterministic CI gate. Omitted keeps the runner's existing attribution: every local-ci failure is treated as the run's own.",
+      "$ref": "#/$defs/baselineHealth"
+    },
     "api": {
       "description": "The daemon's read-only HTTP API (the portal's backend).",
       "$ref": "#/$defs/api"
@@ -558,6 +562,33 @@
           "minLength": 1,
           "pattern": "^\\S+$",
           "description": "Task queue used for engine workflows and activities. Defaults to `goobers-engine`; GOOBERS_TASK_QUEUE overrides this value."
+        },
+        "hitl": {
+          "description": "Human-in-the-loop posture for engine-driven runs (goobers.hitl.v1). Opt-in: when omitted or disabled, an engine run settles at its terminal exactly as it did before the protocol existed and operator interventions on it are refused. When enabled, a resumable terminal is journaled and then held open for the window below so an operator can resolve, rerun, or resume it — which also keeps the run's Temporal workflow, and therefore its scheduler concurrency slot, occupied for that long.",
+          "$ref": "#/$defs/engineHITL"
+        }
+      }
+    },
+    "engineHITL": {
+      "description": "Operator-hold settings for engine-driven runs. The posture is pinned into each run at start, so a change here affects new runs only.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Holds a resumable terminal (escalated or failed) open for an operator instead of settling immediately."
+        },
+        "window": {
+          "description": "How long a resumable terminal is held open for an operator. Defaults to 24h. An expired hold leaves the terminal standing, unchanged.",
+          "$ref": "#/$defs/duration",
+          "examples": ["4h"]
+        },
+        "actors": {
+          "description": "Closed set of operator identities the WORKFLOW will accept an intent from, enforced inside the workflow rather than only at the daemon's API edge. Omitted or empty means any actor the daemon's own authorization already admitted.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "examples": [["ops@example.com"]]
         }
       }
     },
@@ -702,6 +733,18 @@
             "type": "string",
             "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
           }
+        },
+        "windows": {
+          "description": "Claims only a Windows runner can make. Refused at load on a runner whose provides.os is not windows. Omitted on a windows runner, `goobers validate` warns (RNR006): the daemon cannot otherwise learn whether the host or image was prepared, and the failure it guards against surfaces minutes later in a different subsystem.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["avExclusionsVerified"],
+          "properties": {
+            "avExclusionsVerified": {
+              "description": "Asserts that the directories Goobers writes then immediately reads on this runner — the set `goobers doctor --av-exclusions` enumerates (instance root, run journals, workcopies, worker work root, the stage pod's C:\\workspace and TMP) — are excluded from real-time antivirus scanning, so a scan cannot hold a handle on a just-written file and surface later as an unrelated git \"Permission denied\" (#3480, #3161–#3164). Trusted like every other provides: claim (DI-11): nothing re-verifies it against the image or host; the stage pod's own startup advisory line is the evidence. false is an honest \"not prepared\" and still warns.",
+              "type": "boolean"
+            }
+          }
         }
       }
     },
@@ -793,8 +836,49 @@
               "description": "Extra gRPC headers, keyed by header name. Every value is an indirect secret ref, never a literal header value.",
               "type": "object",
               "additionalProperties": { "$ref": "#/$defs/tokenRef" }
+            },
+            "tls": {
+              "description": "Extends TLS trust beyond the system certificate pool for a collector this host does not already trust — a private CA, an optional client certificate for mTLS, and an SNI override. Conflicts with insecure: true. Every path is validated for SHAPE only at load; a bad path degrades to local-only telemetry with a loud instance-journal error rather than failing the daemon to start.",
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "caFile": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Path to a PEM file appended to the system trust pool as an extra root. The system pool is still trusted; this only adds to it.",
+                  "examples": ["/etc/goobers/otlp-ca.crt"]
+                },
+                "serverName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Overrides the hostname used for SNI and certificate verification. A bare hostname only — no scheme, port, path, or userinfo. Empty uses the endpoint's own host.",
+                  "examples": ["goobers-collector.goobers-system.svc.cluster.local"]
+                },
+                "certFile": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Path to a PEM client certificate presented for mTLS. Requires keyFile; both or neither."
+                },
+                "keyFile": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Path to the PEM private key for certFile. Requires certFile; both or neither."
+                }
+              }
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "insecure": { "const": true } }, "required": ["insecure"] },
+              "then": {
+                "properties": {
+                  "endpoint": {
+                    "pattern": "^([Hh][Tt][Tt][Pp][Ss]?://)?(127(\\.[0-9]{1,3}){3}|\\[[0-9A-Fa-f:.]+\\]|::1|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt])(:[0-9]{1,5})?/?$"
+                  }
+                }
+              }
+            }
+          ]
         },
         "retention": {
           "description": "Bounds terminal run journals and their rollup rows. Automatic pruning is OPT-IN: with this block absent nothing is ever pruned, and `goobers telemetry prune --dry-run` can preview the same policy at any time.",
@@ -932,6 +1016,29 @@
           "type": "boolean",
           "default": false,
           "description": "Lets new mirrors borrow objects from a shared node-level object cache via git alternates: one bare clone per repository URL shared by every gaggle on the node, instead of one full clone per gaggle. Off never creates the cache directory."
+        }
+      }
+    },
+    "baselineHealth": {
+      "description": "Shared-baseline-failure detection: before a failing local-ci stage is blamed on a run's own diff, the same command is measured against the target branch at the pinned base SHA, and the measurement is cached per base commit so only the first affected run pays for it.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Turns the comparison on. A failure the target branch already reproduces identically is classified as a shared baseline failure and the affected run parks against one durable shared blocker instead of spending a repass that can only re-derive an empty diff. Off keeps the previous attribution, where every unrelated branch pays for the same red base."
+        },
+        "sharedRepairLane": {
+          "type": "boolean",
+          "default": false,
+          "description": "Lets an affected branch carry the repair for a shared baseline failure instead of parking. Off — the default — is the safe posture: it never adds an unrelated fix to a feature branch behind the author's back."
+        },
+        "probeTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2400,
+          "description": "Bound on one baseline measurement, which runs the project's full CI command on the untouched base. Defaults to the shipped local-ci stage budget."
         }
       }
     },

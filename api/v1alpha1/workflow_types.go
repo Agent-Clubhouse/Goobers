@@ -223,6 +223,9 @@ type Task struct {
 	// ContextFrom limits this task's context pointers to artifacts and verdicts
 	// produced by the named tasks or gates. Empty preserves the historical
 	// behavior of receiving every accumulated pointer.
+	// System-generated pointers have no producing task or gate and are outside
+	// the filter: an injected learning.episode[<seq>] correction survives it
+	// unconditionally (see SelectContextPointers and ContextPointerClass).
 	// Duplicate entries are rejected by api/validate (CTX001) rather than by a
 	// CRD uniqueness marker, which Kubernetes refuses to install.
 	// +optional
@@ -507,6 +510,11 @@ type RunControls struct {
 // DeterministicRun describes the code a deterministic task runs.
 // +kubebuilder:validation:XValidation:rule="has(self.command) != has(self.script)",message="exactly one of command or script is required"
 // +kubebuilder:validation:XValidation:rule="!has(self.syncBase) || !self.syncBase || !has(self.workspace) || self.workspace != 'scratch'",message="syncBase requires a repo workspace"
+// The CEL rule only rejects an empty executable: a trim()-based whitespace test
+// exceeds the apiserver's per-rule cost budget on an unbounded argv string, so
+// whitespace-only names are rejected by the JSON Schema pattern and by semantic
+// compilation instead (#3661).
+// +kubebuilder:validation:XValidation:rule="!has(self.command) || size(self.command[0]) > 0",message="command[0] must name an executable"
 type DeterministicRun struct {
 	// Command is the command + args to execute.
 	// +kubebuilder:validation:MinItems=1
@@ -580,6 +588,47 @@ func (m WorkspaceMode) IsRepoBacked() bool {
 // branch with the intent that it commit there.
 func (m WorkspaceMode) IsWritableRepo() bool { return m == WorkspaceRepo }
 
+// EffectiveWorkspace resolves the workspace mode a task DECLARES, applying
+// the one precedence Task.Workspace documents: Run.Workspace when set
+// (authoritative for a deterministic task), else Task.Workspace. Empty means
+// the task declared nothing — and what "" provisions is the substrate's
+// reading, not this function's: the local runner and the worker treat it as
+// the historical writable repo worktree, a stage pod checks nothing out.
+//
+// This is the ONE resolution of that precedence. The runner, the engine's
+// continuity record, its pod dispatch and the credential plane all decide
+// something from the declared workspace (which worktree to cut, whether to
+// hand the stage its predecessor's commits, which capability the checkout
+// needs), and the first divergent private copy — reading Run.Workspace alone
+// — silently dropped a predecessor's commits for a task-level `workspace:
+// repo` (#3803 review). A shared method makes that divergence impossible to
+// write rather than something a review has to catch.
+func (t Task) EffectiveWorkspace() WorkspaceMode {
+	return EffectiveWorkspace(t.Workspace, t.Run)
+}
+
+// EffectiveWorkspace is Task.EffectiveWorkspace over the two declarations
+// carried separately, for a caller that holds them apart from the Task (the
+// engine's pod dispatch input carries Run and the task-level Workspace as
+// two fields).
+func EffectiveWorkspace(task WorkspaceMode, run *DeterministicRun) WorkspaceMode {
+	if run != nil && run.Workspace != "" {
+		return run.Workspace
+	}
+	return task
+}
+
+// EffectiveWorkspace resolves the workspace an agentic gate's reviewer
+// declares (AgenticGate.Workspace). Empty for an unset declaration and for a
+// non-agentic gate, which evaluates in no workspace at all; as with
+// Task.EffectiveWorkspace, what "" provisions is the substrate's reading.
+func (g Gate) EffectiveWorkspace() WorkspaceMode {
+	if g.Agentic == nil {
+		return ""
+	}
+	return g.Agentic.Workspace
+}
+
 // EvaluatorKind is the pluggable evaluator a gate uses. A gate has exactly one
 // (GT-003, GT-016).
 type EvaluatorKind string
@@ -597,6 +646,7 @@ const (
 // failing/negative outcome MUST follow a defined branch — never a silent pass
 // (GT-002).
 // +kubebuilder:validation:XValidation:rule="!has(self.maxRepasses) || self.evaluator != 'human'",message="maxRepasses is only valid for automated or agentic gates"
+// +kubebuilder:validation:XValidation:rule="!has(self.runsOn) || self.evaluator == 'agentic'",message="runsOn is only valid for agentic gates"
 type Gate struct {
 	// Name uniquely identifies this state within the workflow.
 	// +kubebuilder:validation:Required
@@ -626,6 +676,29 @@ type Gate struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxRepasses int32 `json:"maxRepasses,omitempty" yaml:"maxRepasses,omitempty"`
+	// RunsOn declares the placement an AGENTIC gate's reviewer requires (DSL
+	// 3.0, dsl-3.0.md §2 "Gates"; Goobernetes-E2E-Core decision 001): the
+	// identical placement block tasks carry, with the identical gaggle-floor
+	// merge and the derived harness:<reviewer goober's harness> tag. Optional
+	// — absent, the reviewer evaluates in the daemon/control plane exactly as
+	// before the field existed. Valid only when evaluator=agentic (automated
+	// and human gates are control-plane by definition, ruling 2), and a
+	// declared block must carry cpu AND memory (ruling 5: the gaggle floor
+	// has no quantities and a review is the most expensive stage class in a
+	// lane, so an inherited envelope would silently under-provision).
+	//
+	// Honoured at execution by the engine (rulings 7–8): a gate pinned to a
+	// non-self runner evaluates in a dispatcher-created pod on that runner's
+	// queue — the reviewer runs in review mode, the pod computes the
+	// reviewer diff itself and surrenders a Verdict the engine re-validates
+	// — and a placement self satisfies pins self and evaluates in-process. A
+	// DAEMON-scheduled run (internal/runner) has no gate dispatch arm yet:
+	// there, a gate placement self cannot satisfy is refused at boot
+	// (workflow.refused) rather than run outside its declared isolation.
+	// Interpreters before 3.0 refuse the field; the compiler enforces that,
+	// not the shared schema.
+	// +optional
+	RunsOn *RunsOn `json:"runsOn,omitempty" yaml:"runsOn,omitempty"`
 }
 
 // AutomatedGate runs a deterministic coded check.

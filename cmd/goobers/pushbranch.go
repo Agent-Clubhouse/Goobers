@@ -229,6 +229,77 @@ func appendBranchPushFact(dir, branch string) {
 // dispatch-exec process does NOT, so a raw exec.Command("git", ...) fails there
 // and nowhere else. MEASURED: every git call in the workspace-delta path failed
 // this way in-pod while passing on the worker and in tests.
+// gitCommandError marks a failure raised by a git subprocess this process ran
+// itself, so a consumer can tell it apart from a provider refusing a request
+// without re-reading message text.
+//
+// classifyProviderError used to fall through to provider_error for these, and
+// telemetry.ClassifyError("provider_error") is not an infra fault — so the
+// #3361/#3364 circuit-breaker exemption, whose own comment names git as
+// weather, never fired for a stage-body git failure. Three of them park the
+// item goobers:needs-human and filterRemediationPullRequests then drops it
+// from the lane for good. MEASURED (#4106): #3894 and #3908, both
+// app/goobersbot PRs with 22/22 green checks, were parked that way by #4103
+// alone.
+//
+// Only the workspace helpers below produce it, so the tag means exactly "git,
+// run by us, against a checkout" — never a provider call and never a stage's
+// own build or test subprocess.
+type gitCommandError struct{ err error }
+
+func (e *gitCommandError) Error() string { return e.err.Error() }
+
+func (e *gitCommandError) Unwrap() error { return e.err }
+
+func gitFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &gitCommandError{err: err}
+}
+
+// gitFailureFor tags every workspace git failure EXCEPT a rejected push.
+//
+// A push is the one operation here whose failure is normally the forge's
+// answer rather than the workspace's: GH006 protected-branch and merge-queue
+// rejections both arrive as a plain `exit status 1` from `git push`, and
+// classifyProviderError already reads them as the retryable provider
+// conditions they are. Tagging those would relabel a real provider verdict as
+// infrastructure and, worse, make it non-retryable.
+func gitFailureFor(cmd *exec.Cmd, err error) error {
+	if err == nil {
+		return nil
+	}
+	if gitSubcommand(cmd) == "push" {
+		return err
+	}
+	return gitFailure(err)
+}
+
+// gitSubcommand reads the verb off a command this package built, so the rule
+// above keys on the argv we chose rather than on the message git produced.
+func gitSubcommand(cmd *exec.Cmd) string {
+	for _, arg := range cmd.Args[1:] {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return arg
+	}
+	return ""
+}
+
+func runWorkspaceGit(cmd *exec.Cmd) error { return gitFailureFor(cmd, cmd.Run()) }
+
+func workspaceGitOutput(cmd *exec.Cmd) ([]byte, error) {
+	out, err := cmd.Output()
+	return out, gitFailureFor(cmd, err)
+}
+
+func workspaceGitCombinedOutput(cmd *exec.Cmd) ([]byte, error) {
+	out, err := cmd.CombinedOutput()
+	return out, gitFailureFor(cmd, err)
+}
+
 func workspaceGitCommand(dir string, args ...string) *exec.Cmd {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
@@ -236,9 +307,34 @@ func workspaceGitCommand(dir string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// workspaceGitAuthCommand is workspaceGitCommand for a git subprocess that
+// also has to authenticate against origin.
+//
+// The two concerns are both carried by GIT_CONFIG_*, and assigning either one
+// alone silently drops the other: gitAuthEnv restates GIT_CONFIG_COUNT=1 for
+// its own http.extraheader, which erases the safe.directory exemption, and
+// composeGitEnv(dir, nil) claims the same slot for safe.directory, which
+// erases the credential. composeGitEnv(dir, authEnv) is the one composition
+// that keeps both — gitPushBranch already had to learn this in-pod (#4103),
+// and every other authenticated git call in the remediation path had not.
+func workspaceGitAuthCommand(dir, token string, args ...string) *exec.Cmd {
+	return workspaceGitAuthEnvCommand(dir, gitAuthEnv(token), args...)
+}
+
+// workspaceGitAuthEnvCommand is workspaceGitAuthCommand for a caller that
+// already holds a complete credentialed environment — an ADO PAT environment
+// from providers.ADOGitAuthEnvironment, or one gitAuthEnv built once and
+// reuses across several commands.
+func workspaceGitAuthEnvCommand(dir string, authEnv []string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = composeGitEnv(dir, authEnv)
+	return cmd
+}
+
 func currentBranch(dir string) (string, error) {
 	cmd := workspaceGitCommand(dir, "symbolic-ref", "--short", "HEAD")
-	out, err := cmd.Output()
+	out, err := workspaceGitOutput(cmd)
 	if err != nil {
 		return "", fmt.Errorf("determine checked-out branch (detached HEAD?): %w", err)
 	}
@@ -259,7 +355,7 @@ func currentBranch(dir string) (string, error) {
 func resolveBaseRef(dir, base string) (string, error) {
 	for _, candidate := range []string{"origin/" + base, "refs/heads/" + base, base} {
 		verify := workspaceGitCommand(dir, "rev-parse", "--verify", "--quiet", candidate+"^{commit}")
-		if err := verify.Run(); err == nil {
+		if err := runWorkspaceGit(verify); err == nil {
 			return candidate, nil
 		}
 	}
@@ -324,8 +420,7 @@ func gitPushBranch(dir, branch string, env []string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("git", "push", url, branch+":"+branch)
-	cmd.Dir = dir
+	cmd := workspaceGitCommand(dir, "push", url, branch+":"+branch)
 	// composeGitEnv, not env: credentials.GitAuthEnvironment returns a COMPLETE
 	// environment and strips foreign GIT_CONFIG_* before installing its own, so
 	// assigning it directly ERASED the workspace's safe.directory exemption.
@@ -334,7 +429,7 @@ func gitPushBranch(dir, branch string, env []string) error {
 	// at all. composeGitEnv extends the count instead of restating it, exactly
 	// as its own comment prescribes.
 	cmd.Env = composeGitEnv(dir, env)
-	out, err := cmd.CombinedOutput()
+	out, err := workspaceGitCombinedOutput(cmd)
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -385,7 +480,7 @@ func adoRepoForOrigin(cfg *instance.Config, remote string) (instance.RepoRef, bo
 	normalized := strings.TrimSuffix(strings.TrimRight(remote, "/"), ".git")
 	for i := range cfg.Repos {
 		repo := cfg.Repos[i]
-		if repo.Provider != "ado" {
+		if repo.Provider != string(providers.ProviderADO) {
 			continue
 		}
 		expected := fmt.Sprintf("https://dev.azure.com/%s/%s/_git/%s",
@@ -427,7 +522,7 @@ func gitAuthEnv(token string) []string {
 // originURL resolves the worktree's "origin" remote to its configured URL.
 func originURL(dir string) (string, error) {
 	cmd := workspaceGitCommand(dir, "remote", "get-url", "origin")
-	out, err := cmd.Output()
+	out, err := workspaceGitOutput(cmd)
 	if err != nil {
 		return "", fmt.Errorf("resolve origin URL: %w", err)
 	}

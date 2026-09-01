@@ -1,102 +1,94 @@
 ### (bare)
-goobers — tier 1-2 local instance CLI
+================================================================
+goobers dev
+================================================================
 
 Usage:
-  goobers version [--json]      print build version, commit, and date (--json for structured output)
-  goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
-                                scaffold an instance root or checked-in config source
-  goobers connect <owner>/<repo> [--token-env NAME] [--seed] [--replace] [--json] [path]
-                                connect an instance to your own GitHub repository
-  goobers examples list | show <name>
-                                browse canonical workflow examples embedded in the binary
-  goobers scaffold goober|workflow|gaggle [flags] <name> [path]
-                                scaffold a goober, workflow, or gaggle
-  goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
-                                validate an instance or checked-in config source tree
-  goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
-                                run the daemon (scheduler + runner + loopback HTTP API)
-  goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
-  goobers service install|uninstall|stop|start|status [path]
-                                install and manage the platform-supervised daemon
-  goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]
-                                serve and open the local operations portal
-  goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
-                                serve and open the guided portal Getting Started walkthrough
-  goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
-                                trigger a run manually (still honors run conditions)
-  goobers signal <name> [path]  fire an external signal, dispatching every
-                                subscribed type=signal-trigger workflow
-  goobers workflow show [--dot] <name> [path]  show a workflow as a text DAG
-  goobers status [--daemon] [--agents] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]
-                                validate config, show warnings, list runs newest first, report daemon health with --daemon, or list live agentic stages by role with --agents
-  goobers stats [--since <duration>] [--json] [path]
-                                show the instance lifetime summary card
-  goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
-                                show a run's journal events, review verdicts, follow a live run, or show recorded agent transcripts
-  goobers escalations [--json] [path]
-                                list escalated runs newest first
-  goobers completion bash|zsh|fish|powershell  generate a shell completion script
+  goobers <COMMAND> [OPTIONS]
 
-path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
-business errors, 2 = usage/IO error. After waiting for a run, run/signal use
-0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
-modes exit 0 before a terminal outcome is known.
+Commands:
+  completion        Generate shell completion scripts.
+  connect           Connect an instance to a GitHub repository.
+  dashboard         Open the local operations portal.
+  down              Gracefully stop a running daemon.
+  escalations       List escalated runs.
+  examples          Browse embedded workflow examples.
+  init              Create an instance or configuration source.
+  run               Start a workflow run.
+  scaffold          Create a goober, workflow, or gaggle.
+  service           Install and manage the supervised daemon.
+  signal            Fire an external workflow signal.
+  stats             Show instance lifetime statistics.
+  status            Show instance, daemon, run, or agent status.
+  trace             Inspect a run's journal and transcripts.
+  up                Start the local daemon.
+  validate          Validate an instance or configuration source.
+  version           Show build version information.
+  workflow show     Show a workflow as a text DAG.
 
-Use `goobers help all` for advanced operator commands or
-`goobers help stages` for runner-invoked workflow internals.
-Quickstart guide: docs/guides/quickstart.md
-DSL entry points: `goobers schema` and `goobers examples`
-Troubleshooting: `goobers status`, `goobers trace`, and `goobers escalations`
+Defaults:
+  Path arguments use the current directory when omitted.
+
+Exit codes:
+  0  Success or successful submission
+  1  Validation/business failure, failed run, or aborted run
+  2  Usage or I/O error
+  3  Escalated run or signal
+  Submission-only modes return 0 before the final outcome is known.
+
+More help:
+  Advanced commands  goobers help all
+  Workflow internals goobers help stages
+  Command details    goobers help <command>
+  Quickstart         docs/guides/quickstart.md
+  DSL                goobers schema, goobers examples
+  Troubleshooting    goobers status, goobers trace, goobers escalations
 
 ### help
-goobers — tier 1-2 local instance CLI
+================================================================
+goobers dev
+================================================================
 
 Usage:
-  goobers version [--json]      print build version, commit, and date (--json for structured output)
-  goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
-                                scaffold an instance root or checked-in config source
-  goobers connect <owner>/<repo> [--token-env NAME] [--seed] [--replace] [--json] [path]
-                                connect an instance to your own GitHub repository
-  goobers examples list | show <name>
-                                browse canonical workflow examples embedded in the binary
-  goobers scaffold goober|workflow|gaggle [flags] <name> [path]
-                                scaffold a goober, workflow, or gaggle
-  goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
-                                validate an instance or checked-in config source tree
-  goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
-                                run the daemon (scheduler + runner + loopback HTTP API)
-  goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
-  goobers service install|uninstall|stop|start|status [path]
-                                install and manage the platform-supervised daemon
-  goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]
-                                serve and open the local operations portal
-  goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
-                                serve and open the guided portal Getting Started walkthrough
-  goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
-                                trigger a run manually (still honors run conditions)
-  goobers signal <name> [path]  fire an external signal, dispatching every
-                                subscribed type=signal-trigger workflow
-  goobers workflow show [--dot] <name> [path]  show a workflow as a text DAG
-  goobers status [--daemon] [--agents] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]
-                                validate config, show warnings, list runs newest first, report daemon health with --daemon, or list live agentic stages by role with --agents
-  goobers stats [--since <duration>] [--json] [path]
-                                show the instance lifetime summary card
-  goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
-                                show a run's journal events, review verdicts, follow a live run, or show recorded agent transcripts
-  goobers escalations [--json] [path]
-                                list escalated runs newest first
-  goobers completion bash|zsh|fish|powershell  generate a shell completion script
+  goobers <COMMAND> [OPTIONS]
 
-path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
-business errors, 2 = usage/IO error. After waiting for a run, run/signal use
-0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
-modes exit 0 before a terminal outcome is known.
+Commands:
+  completion        Generate shell completion scripts.
+  connect           Connect an instance to a GitHub repository.
+  dashboard         Open the local operations portal.
+  down              Gracefully stop a running daemon.
+  escalations       List escalated runs.
+  examples          Browse embedded workflow examples.
+  init              Create an instance or configuration source.
+  run               Start a workflow run.
+  scaffold          Create a goober, workflow, or gaggle.
+  service           Install and manage the supervised daemon.
+  signal            Fire an external workflow signal.
+  stats             Show instance lifetime statistics.
+  status            Show instance, daemon, run, or agent status.
+  trace             Inspect a run's journal and transcripts.
+  up                Start the local daemon.
+  validate          Validate an instance or configuration source.
+  version           Show build version information.
+  workflow show     Show a workflow as a text DAG.
 
-Use `goobers help all` for advanced operator commands or
-`goobers help stages` for runner-invoked workflow internals.
-Quickstart guide: docs/guides/quickstart.md
-DSL entry points: `goobers schema` and `goobers examples`
-Troubleshooting: `goobers status`, `goobers trace`, and `goobers escalations`
+Defaults:
+  Path arguments use the current directory when omitted.
+
+Exit codes:
+  0  Success or successful submission
+  1  Validation/business failure, failed run, or aborted run
+  2  Usage or I/O error
+  3  Escalated run or signal
+  Submission-only modes return 0 before the final outcome is known.
+
+More help:
+  Advanced commands  goobers help all
+  Workflow internals goobers help stages
+  Command details    goobers help <command>
+  Quickstart         docs/guides/quickstart.md
+  DSL                goobers schema, goobers examples
+  Troubleshooting    goobers status, goobers trace, goobers escalations
 
 ### help all
 goobers — complete command reference
@@ -104,149 +96,109 @@ goobers — complete command reference
 Usage:
 
 Core commands:
-  goobers version [--json]      print build version, commit, and date (--json for structured output)
-  goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
-                                scaffold an instance root or checked-in config source
-  goobers connect <owner>/<repo> [--token-env NAME] [--seed] [--replace] [--json] [path]
-                                connect an instance to your own GitHub repository
-  goobers examples list | show <name>
-                                browse canonical workflow examples embedded in the binary
-  goobers scaffold goober|workflow|gaggle [flags] <name> [path]
-                                scaffold a goober, workflow, or gaggle
-  goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
-                                validate an instance or checked-in config source tree
-  goobers up [--quiet] [--diagnostics] [--notify[=all]] [--watch-config] [--drain-timeout <duration>] [--skip-preflight] [--cleanup-spans-only-runs] [--disable-read-model-reads] [path]
-                                run the daemon (scheduler + runner + loopback HTTP API)
-  goobers down [path]           request a live daemon's graceful drain-shutdown from a separate terminal
-  goobers service install|uninstall|stop|start|status [path]
-                                install and manage the platform-supervised daemon
-  goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]
-                                serve and open the local operations portal
-  goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
-                                serve and open the guided portal Getting Started walkthrough
-  goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
-                                trigger a run manually (still honors run conditions)
-  goobers signal <name> [path]  fire an external signal, dispatching every
-                                subscribed type=signal-trigger workflow
-  goobers workflow show [--dot] <name> [path]  show a workflow as a text DAG
-  goobers status [--daemon] [--agents] [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [--watch [--interval=2s]] [path]
-                                validate config, show warnings, list runs newest first, report daemon health with --daemon, or list live agentic stages by role with --agents
-  goobers stats [--since <duration>] [--json] [path]
-                                show the instance lifetime summary card
-  goobers trace [--json] [--follow] [--summary | --verdicts] [--transcripts | --transcript=<stage>] <run-id> [path]
-                                show a run's journal events, review verdicts, follow a live run, or show recorded agent transcripts
-  goobers escalations [--json] [path]
-                                list escalated runs newest first
-  goobers completion bash|zsh|fish|powershell  generate a shell completion script
+  completion        Generate shell completion scripts.
+  connect           Connect an instance to a GitHub repository.
+  dashboard         Open the local operations portal.
+  down              Gracefully stop a running daemon.
+  escalations       List escalated runs.
+  examples          Browse embedded workflow examples.
+  init              Create an instance or configuration source.
+  run               Start a workflow run.
+  scaffold          Create a goober, workflow, or gaggle.
+  service           Install and manage the supervised daemon.
+  signal            Fire an external workflow signal.
+  stats             Show instance lifetime statistics.
+  status            Show instance, daemon, run, or agent status.
+  trace             Inspect a run's journal and transcripts.
+  up                Start the local daemon.
+  validate          Validate an instance or configuration source.
+  version           Show build version information.
+  workflow show     Show a workflow as a text DAG.
 
 Advanced operator commands:
-  goobers versions [--json]     print the supported DSL, Go toolchain, and OS/arch matrix
-  goobers preflight [--distro <name>] [--launch-wsl -- <command> [args...]]
-                                check WSL full-isolation readiness and optionally hand off a command
-  goobers onboarding stub-agent-instructions|stub-sample [flags]
-                                run non-interactive onboarding actions
-  goobers agent-kit install|check|update [flags] [path]
-                                install, inspect, or explicitly update the release-matched agent toolkit
-  goobers lint [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
-                                lint config via the single authoritative validation engine (alias for validate)
-  goobers fix --to <version> [--write] [path]
-                                mechanically migrate workflows to a target dslVersion, one step at a time
-  goobers doctor (--k8s | --repo) [--kubeconfig <path>] [--context <name>] [--report text|json] [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>] [--timeout <duration>]
-                                preflight Kubernetes or compare repository forge policy
-  goobers netpol-render [--out <dir>] [--check] [--baseline <path>] [--write-baseline] [--timeout <duration>] [--print-blob-endpoint] [path]
-                                render per-runner-class NetworkPolicy reference manifests from the runners: inventory
-  goobers config show|materialize|diff [flags] [path]
-                                inspect, materialize, or compare instance configuration
-  goobers speech preflight|test [flags] [path]
-                                preflight or test local speech notifications
-  goobers apply [path]          reconcile a live daemon's workflow definitions from its configured source now
-  goobers self-update [--policy manual|on-release|on-main] [--branch <name>] [--target <tag>] [--health-ticks <n>] [--health-timeout <duration>] [path]
-                                stage and request a supervised binary update
-  goobers engine-start [--gaggle <name>] [--temporal-hostport h:p] [--temporal-namespace <name>] [--task-queue <name>] [--dedupe-key <key>] [--live-journal] <workflow> [path]
-                                dispatch one run onto the tier-3 engine (experimental)
-  goobers engine-project --gaggle <name> [--temporal-hostport h:p] [--temporal-namespace <name>] <run-id> [path]
-                                write a completed engine run's journal into the instance (experimental)
-  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>] [--instance <path>] [--blob-store <path>] [--daemon-api <url>] [--dispatch-namespace <ns>]
-                                host a Temporal engine worker (tier-3, experimental)
-  goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted
-  goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon
-  goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]  approve a paused or escalated gate
-  goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]  override a nondeterministic gate
-  goobers rerun-stage --addendum=<text> [--actor=<identity>] <run-id> <stage> [path]  rerun a stage with an instruction addendum
-  goobers runs list [--json] [--phase=...] [--workflow=...] [--gaggle=...] [--limit=N] [path]
-                                alias for the status run table (same flags, no --watch)
-  goobers runs du [--json] [path]       report per-run journal and artifact bytes
-  goobers features [--json] [--dsl-version <version>] [--used] [path]
-                                list the workflow-DSL features this build supports
-  goobers schema <kind> | --list [--human]  emit a JSON Schema embedded in this build
-  goobers explain [--human] <selector>      project field facts from an embedded JSON Schema
-  goobers reset-rate-limit [path]  clear the hourly run-rate budget without deleting runs/
-  goobers workspace reset <repo> [path]  explicitly re-materialize a pinned workspace
-  goobers blocked list [--json] [path]   print the learned blocked-item ledger (scheduler/blocked.json)
-  goobers blocked clear <item-id> [path]  safely remove one blocked-item record, under claims.lock
-  goobers claims list [--json] [--stale] [--gaggle=name] [--provider=name] [path]
-                                print current claim leases, optionally only expired leases
-  goobers claims release [--force] [--gaggle=name --provider=name] <item-id> [path]
-                                force-release a claim through the live daemon or claims.lock
-  goobers e2e verify --run <run-id> [--gaggle <name>] [--expected <topology.json>] [--out <bundle.json>] [--print-runner-class <restrictions>] [path]
-                                verify the Goobernetes S1-S9 e2e proof harness's assertions against one completed run's recorded data
-  goobers e2e kill-inject --run <run-id> --stage <name> --stage-class <builtin|agentic|local-ci> --namespace <ns> [--poll-timeout <duration>] [--out <record.json>]
-                                perform one live S6 kill-matrix cell (pod-kill) against a real cluster
-  goobers escalations show [--json] [--include-verdict] <run-id> [path]
-                                show escalation cause, verdict, and per-stage artifact timeline
-  goobers telemetry stats|errors|export|prune|prune-orphans|compact [flags] [path]
-                                query, export, prune, or compact run telemetry
-  goobers journal redact --run <id> --path <blob> --reason <text> [--secret-file <f>] [path]
-                                remove a leaked secret from a stored blob (SEC-041)
+  agent-kit         install, inspect, or update the release-matched agent toolkit
+  apply             reconcile a live daemon's workflow definitions now
+  approve           approve a paused or escalated gate
+  blocked clear     safely remove one blocked-item record, under claims.lock
+  blocked list      print the learned blocked-item ledger (scheduler/blocked.json)
+  claims list       print current claim leases, optionally only expired leases
+  claims release    force-release a claim through the live daemon or claims.lock
+  config            inspect, materialize, and compare instance configuration
+  doctor            preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
+  e2e kill-inject   perform one live S6 kill-matrix cell (pod-kill) against a real cluster
+  e2e verify        verify the Goobernetes S1-S9 e2e proof harness against one completed run's recorded data
+  engine-project    write a completed engine run's journal into the instance (experimental)
+  engine-queues     report which workers poll this instance's engine and dispatch task queues (experimental)
+  engine-start      dispatch one run onto the tier-3 engine via Temporal (experimental)
+  escalations show  show escalation cause, verdict, and per-stage artifact timeline
+  explain           project field facts from an embedded JSON Schema
+  features          list the workflow-DSL features this build supports
+  fix               mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
+  fleet             associate this instance with a Fleet service
+  journal redact    remove a leaked secret from a stored blob (SEC-041)
+  lint              lint config via the single authoritative validation engine (alias for validate)
+  netpol-render     render per-runner-class NetworkPolicy reference manifests from the runners: inventory
+  onboarding        run non-interactive onboarding actions
+  override          override a nondeterministic gate with a rationale
+  preflight         check WSL full-isolation readiness and optionally hand off a command
+  rerun-stage       rerun a stage with a recorded instruction addendum
+  reset-rate-limit  clear the hourly run-rate budget without deleting runs/
+  run abort         mark a stuck non-terminal run aborted
+  run cancel        cancel a live in-flight run via the daemon
+  runs du           report per-run journal and artifact bytes
+  runs list         alias for the status run table (same flags, no --watch)
+  schema            emit a JSON Schema embedded in this build
+  self-update       stage and request a supervised binary update
+  speech            preflight and test local speech notifications
+  telemetry         query, export, prune, or compact run telemetry
+  versions          print the supported DSL, Go toolchain, and OS/arch matrix (--json for structured output)
+  worker            host a Temporal engine worker: task queues, graceful drain, versioned identity (tier-3, experimental)
+  workspace         explicitly recover pinned repository workspaces
 
 Workflow-stage and connector commands:
-  goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
-  goobers backlog-assignment             assign eligible backlog items from a configured roster (a workflow stage)
-  goobers backlog-health [--feedback]    snapshot ready-pool depth and age (a workflow stage)
-  goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)
-  goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)
-  goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
-  goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
-  goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
-                                report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
-  goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
-  goobers check-fail-first                enforce fail-first evidence for a new workflow gate (a workflow stage)
-  goobers open-pr                        open or update the run's PR (a workflow stage)
-  goobers report-pr-status               publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
-  goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
-  goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
-  goobers set-milestone --item ID --milestone N [path]
-                                assign an existing milestone to an issue (a workflow stage)
-  goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
-  goobers record-merge-refusal           record a merge refusal and demote a persistently-stuck lander (a workflow stage)
-  goobers merge-queue-poll               watch an enqueued pull request until merged, evicted, timed out, or opted out; dequeue opt-outs and route failures (a workflow stage)
-  goobers reconcile-post-merge [--max N] [--lookback D]
-                                reconcile bounded late merge-queue merges through post-merge bookkeeping (a workflow stage)
-  goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
-  goobers telemetry-query [--window <d>] [--aggregate <name>] [--learning-action <name>] [--threshold <k=v>] [--format candidate-findings] [--gaggle <name>] [--workflow <name>]
-                                emit versioned candidate findings (a connector stage)
-  goobers docs-churn [--repo <dir>] [--workflow <name>] [--gaggle <name>] [--since <d>] [--buffer-multiplier <f>] [--format churn-digest]
-                                emit the docs-drift churn digest since the watermark (a connector stage)
-  goobers ios-simulator-test (--project <path> | --workspace <path>) --scheme <name> [--device <name>] [--runtime <id>] [--only-testing <test>] [--result-bundle <path>]
-                                run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)
-  goobers pr-select                      select one managed or advisory open PR for merge-review (a workflow stage)
-  goobers check-issue-staleness          route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
-  goobers gather-sibling-context [--no-cache] [--no-verdict-cache]  load other open PRs' files/state as review evidence (a workflow stage)
-  goobers gather-implement-context       load first-pass verdict taxonomy and hot-file context (a workflow stage)
-  goobers apply-verdict [--gate <name>]  publish a managed or advisory merge-review verdict (a workflow stage)
-  goobers elect-lander [--gate <name>]   elect the landing PR among a merge-review cohort (a workflow stage)
-  goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
-  goobers pr-claim [--release]           check PR liveness or release its remediation claim (a workflow stage)
-  goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
-  goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
-  goobers resolve-review-threads         reply to and resolve remediated native review threads (a workflow stage)
-  goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
-  goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
-  goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
-  goobers remediation-checkpoint [--budget N] [--escalate <reason> [--escalation-outcome <outcome>]]  durable per-cause attempt budgets + same-diff escalation (a workflow stage)
-  goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)
-  goobers respond-to-findings [--check]  post a validated per-finding remediation response to the claimed PR (a workflow stage)
-  goobers mcp-io --config <path>         run the generic goobers-io MCP server over stdio (harness-spawned, not run by hand)
+  apply-verdict     publish a managed or advisory merge-review verdict (a workflow stage)
+  backlog-assignment assign eligible backlog items from a configured roster (a workflow stage)
+  backlog-dedupe    surface ranked duplicate candidates for curator judgment (a workflow stage)
+  backlog-health    snapshot ready-pool depth and age (a workflow stage)
+  backlog-query     query/claim one eligible backlog item (a workflow stage)
+  check-fail-first  enforce fail-first evidence for a new workflow gate (a workflow stage)
+  check-issue-staleness route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
+  docs-churn        emit the docs-drift churn digest since the watermark (a connector stage)
+  elect-lander      elect the landing PR among a merge-review cohort (a workflow stage)
+  file-issues       file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
+  gate-removal-guard block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
+  gather-ci-failures add failing CI diagnostics to a remediation brief (a workflow stage)
+  gather-implement-context load first-pass implementation review and hot-file context (a workflow stage)
+  gather-issue-context add originating issue bodies to a remediation brief (a workflow stage)
+  gather-pr-context pr-remediation entrypoint: select and load a PR's context (a workflow stage)
+  gather-review-threads add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+  gather-sibling-context load other open PRs as review evidence (a workflow stage)
+  ios-simulator-test run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)
+  issue-close-out   comment + close out the claimed issue (a workflow stage)
+  mcp-io            run the generic publish/read/list MCP server the harness spawns for a goober (a workflow stage)
+  merge-pr          conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
+  merge-queue-poll  watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)
+  open-pr           open or update the run's PR (a workflow stage)
+  post-merge        post-merge fan-out + close the referenced issue (a workflow stage)
+  pr-claim          check PR liveness or release its remediation claim (a workflow stage)
+  pr-comment-watch  label open goober PRs carrying unaddressed human comments (a workflow stage)
+  pr-select         select one managed or advisory open PR for merge-review (a workflow stage)
+  publish-batch     publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
+  push-branch       push the worktree's checked-out branch to origin (a workflow stage)
+  push-remediated   force-push the remediated branch and clear needs-remediation (a workflow stage)
+  rebase-pr         rebase-first, finding-driven remediation routing (a workflow stage)
+  reconcile-branches report bounded stale goobers/* branch candidates (a workflow stage)
+  reconcile-post-merge reconcile late merge-queue merges (a workflow stage)
+  record-merge-refusal record a merge refusal and demote a persistently-stuck lander (a workflow stage)
+  remediation-checkpoint durable per-cause attempt budgets + same-diff escalation (a workflow stage)
+  report-pr-status  publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
+  resolve-review-threads reply to and resolve remediated native review threads (a workflow stage)
+  respond-to-findings post a validated per-finding remediation response to the claimed PR (a workflow stage)
+  select-source     select and claim an unconsumed L6 decomposition disposition (a workflow stage)
+  set-milestone     assign an existing milestone to an issue (a workflow stage)
+  telemetry-query   emit versioned candidate findings (a connector stage)
+  update-behind-pr  API-update a clean behind-base PR, else route to remediation (a workflow stage)
+  validate-plan     validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
 
 path defaults to the current directory.
 
@@ -258,53 +210,49 @@ their run context from GOOBERS_* environment variables and retain their
 existing standalone invocation behavior.
 
 Usage:
-  goobers backlog-dedupe                 surface ranked duplicate candidates for curator judgment (a workflow stage)
-  goobers backlog-assignment             assign eligible backlog items from a configured roster (a workflow stage)
-  goobers backlog-health [--feedback]    snapshot ready-pool depth and age (a workflow stage)
-  goobers backlog-query [--debug] [--read-only | --claim | --reconcile | --release]  query/claim one eligible backlog item (a workflow stage)
-  goobers select-source                  select and claim an unconsumed L6 decomposition disposition (a workflow stage)
-  goobers validate-plan                  validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
-  goobers publish-batch                  publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
-  goobers reconcile-branches [--delete] [--max N] [--min-age D] [--after BRANCH]
-                                report bounded stale goobers/* branch candidates; --delete opts into removal (a workflow stage)
-  goobers push-branch                    push the worktree's checked-out branch to origin (a workflow stage)
-  goobers check-fail-first                enforce fail-first evidence for a new workflow gate (a workflow stage)
-  goobers open-pr                        open or update the run's PR (a workflow stage)
-  goobers report-pr-status               publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
-  goobers gate-removal-guard             block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
-  goobers issue-close-out                comment + close out the claimed issue (a workflow stage)
-  goobers set-milestone --item ID --milestone N [path]
-                                assign an existing milestone to an issue (a workflow stage)
-  goobers merge-pr                       conjunctive auto-merge — verdict=pass + CI green + not-draft + SHA-pin valid; lands via direct-merge or merge-queue-enqueue per the repo's detected merge policy (a workflow stage)
-  goobers record-merge-refusal           record a merge refusal and demote a persistently-stuck lander (a workflow stage)
-  goobers merge-queue-poll               watch an enqueued pull request until merged, evicted, timed out, or opted out; dequeue opt-outs and route failures (a workflow stage)
-  goobers reconcile-post-merge [--max N] [--lookback D]
-                                reconcile bounded late merge-queue merges through post-merge bookkeeping (a workflow stage)
-  goobers post-merge                     post-merge fan-out (label behind PRs) + close the referenced issue (a workflow stage)
-  goobers telemetry-query [--window <d>] [--aggregate <name>] [--learning-action <name>] [--threshold <k=v>] [--format candidate-findings] [--gaggle <name>] [--workflow <name>]
-                                emit versioned candidate findings (a connector stage)
-  goobers docs-churn [--repo <dir>] [--workflow <name>] [--gaggle <name>] [--since <d>] [--buffer-multiplier <f>] [--format churn-digest]
-                                emit the docs-drift churn digest since the watermark (a connector stage)
-  goobers ios-simulator-test (--project <path> | --workspace <path>) --scheme <name> [--device <name>] [--runtime <id>] [--only-testing <test>] [--result-bundle <path>]
-                                run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)
-  goobers pr-select                      select one managed or advisory open PR for merge-review (a workflow stage)
-  goobers check-issue-staleness          route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
-  goobers gather-sibling-context [--no-cache] [--no-verdict-cache]  load other open PRs' files/state as review evidence (a workflow stage)
-  goobers gather-implement-context       load first-pass verdict taxonomy and hot-file context (a workflow stage)
-  goobers apply-verdict [--gate <name>]  publish a managed or advisory merge-review verdict (a workflow stage)
-  goobers elect-lander [--gate <name>]   elect the landing PR among a merge-review cohort (a workflow stage)
-  goobers update-behind-pr               API-update a clean behind-base PR, otherwise route to full remediation (a workflow stage)
-  goobers pr-claim [--release]           check PR liveness or release its remediation claim (a workflow stage)
-  goobers gather-pr-context              pr-remediation entrypoint: select a needs-remediation PR, check out its branch, load verdict/thread/behind-base context (a workflow stage)
-  goobers gather-review-threads          add native reviews and anchored inline threads to a remediation brief (a workflow stage)
-  goobers resolve-review-threads         reply to and resolve remediated native review threads (a workflow stage)
-  goobers gather-issue-context           add originating issue bodies to a remediation brief (a workflow stage)
-  goobers gather-ci-failures             add failing check summaries and annotations to a remediation brief (a workflow stage)
-  goobers rebase-pr                      rebase-first, finding-driven routing: clean+no-substantive force-pushes and clears the label, else defers to agentic remediation (a workflow stage)
-  goobers remediation-checkpoint [--budget N] [--escalate <reason> [--escalation-outcome <outcome>]]  durable per-cause attempt budgets + same-diff escalation (a workflow stage)
-  goobers push-remediated                force-push the remediated branch to the claimed PR and clear needs-remediation (a workflow stage)
-  goobers respond-to-findings [--check]  post a validated per-finding remediation response to the claimed PR (a workflow stage)
-  goobers mcp-io --config <path>         run the generic goobers-io MCP server over stdio (harness-spawned, not run by hand)
+  apply-verdict     publish a managed or advisory merge-review verdict (a workflow stage)
+  backlog-assignment assign eligible backlog items from a configured roster (a workflow stage)
+  backlog-dedupe    surface ranked duplicate candidates for curator judgment (a workflow stage)
+  backlog-health    snapshot ready-pool depth and age (a workflow stage)
+  backlog-query     query/claim one eligible backlog item (a workflow stage)
+  check-fail-first  enforce fail-first evidence for a new workflow gate (a workflow stage)
+  check-issue-staleness route a PR to remediation if its linked issue changed since implementation began (a workflow stage)
+  docs-churn        emit the docs-drift churn digest since the watermark (a connector stage)
+  elect-lander      elect the landing PR among a merge-review cohort (a workflow stage)
+  file-issues       file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
+  gate-removal-guard block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
+  gather-ci-failures add failing CI diagnostics to a remediation brief (a workflow stage)
+  gather-implement-context load first-pass implementation review and hot-file context (a workflow stage)
+  gather-issue-context add originating issue bodies to a remediation brief (a workflow stage)
+  gather-pr-context pr-remediation entrypoint: select and load a PR's context (a workflow stage)
+  gather-review-threads add native reviews and anchored inline threads to a remediation brief (a workflow stage)
+  gather-sibling-context load other open PRs as review evidence (a workflow stage)
+  ios-simulator-test run XCUITest on an iOS simulator and parse its xcresult (a workflow stage)
+  issue-close-out   comment + close out the claimed issue (a workflow stage)
+  mcp-io            run the generic publish/read/list MCP server the harness spawns for a goober (a workflow stage)
+  merge-pr          conjunctive auto-merge via direct-merge or merge-queue (a workflow stage)
+  merge-queue-poll  watch an enqueued PR until merged, evicted, timed out, or opted out (a workflow stage)
+  open-pr           open or update the run's PR (a workflow stage)
+  post-merge        post-merge fan-out + close the referenced issue (a workflow stage)
+  pr-claim          check PR liveness or release its remediation claim (a workflow stage)
+  pr-comment-watch  label open goober PRs carrying unaddressed human comments (a workflow stage)
+  pr-select         select one managed or advisory open PR for merge-review (a workflow stage)
+  publish-batch     publish a verified decomposition batch behind one eligibility barrier (a workflow stage)
+  push-branch       push the worktree's checked-out branch to origin (a workflow stage)
+  push-remediated   force-push the remediated branch and clear needs-remediation (a workflow stage)
+  rebase-pr         rebase-first, finding-driven remediation routing (a workflow stage)
+  reconcile-branches report bounded stale goobers/* branch candidates (a workflow stage)
+  reconcile-post-merge reconcile late merge-queue merges (a workflow stage)
+  record-merge-refusal record a merge refusal and demote a persistently-stuck lander (a workflow stage)
+  remediation-checkpoint durable per-cause attempt budgets + same-diff escalation (a workflow stage)
+  report-pr-status  publish goobers' verdict + CI evidence as a policy-gate-able PR status (a workflow stage)
+  resolve-review-threads reply to and resolve remediated native review threads (a workflow stage)
+  respond-to-findings post a validated per-finding remediation response to the claimed PR (a workflow stage)
+  select-source     select and claim an unconsumed L6 decomposition disposition (a workflow stage)
+  set-milestone     assign an existing milestone to an issue (a workflow stage)
+  telemetry-query   emit versioned candidate findings (a connector stage)
+  update-behind-pr  API-update a clean behind-base PR, else route to remediation (a workflow stage)
+  validate-plan     validate a decomposition plan against its selector artifact and the live parent (a workflow stage)
 
 See `goobers --help` for core operator commands.
 
@@ -754,6 +702,7 @@ Usage: goobers doctor --k8s [--kubeconfig <path>] [--context <name>] [--report t
                           [--oidc-issuer <url>] [--registry <host>] [--egress <host:port,...>]
                           [--timeout <duration>]
        goobers doctor --repo [--report text|json] [instance-root]
+       goobers doctor --av-exclusions [--report text|json] [--work-root <dir>] [instance-root]
 
 --k8s preflights a target Kubernetes cluster against the documented
 infrastructure shape (docs/design/k8s-infra-shape.md) before installing
@@ -791,11 +740,33 @@ skipped. Token-scope introspection is reported as unavailable when GitHub
 does not expose it (fine-grained PAT / GitHub App tokens) — never inferred
 from a failed call. instance-root defaults to ".".
 
---report json emits the stable machine-readable report; text (default)
-prints a human-readable table (--k8s) or per-repo findings (--repo).
+--av-exclusions lists every directory Goobers writes and immediately reads
+back — the set real-time antivirus scanning on Windows must exclude, or a
+scan holding a handle on a just-written file surfaces minutes later as an
+unrelated git "Permission denied" (#3480, #3161–#3164). The list is
+derived from the same path code the daemon (instance root, run journals,
+scheduler ledger, blob store, workcopies, TEMP), the worker (--work-root,
+which applies to this mode only, and its workcopies/scratch subtrees) and
+a Windows stage pod (C:\workspace, the tmp:ephemeral TEMP, the container
+user's profile) actually use, so it cannot drift from what the binary
+writes. Each gaggle's own spec.workcopies.root is enumerated separately,
+since it beats the instance-wide one and may name any drive; when config/
+cannot be read, that is reported rather than passed off as no gaggles.
+On a Windows host it also reads
+Microsoft Defender's exclusion list (Get-MpPreference, read-only) and
+reports each directory as excluded, not-excluded, or unknown; elsewhere
+it lists the set and reports unknown. ADVISORY: exit 0 whatever the
+coverage — an organisation-wide AV policy is the operator's to set, and
+nothing here changes it. Declare the answer on each windows runner as
+provides.windows.avExclusionsVerified (validate warns RNR006 without it).
 
-Exit codes: 0 = conformant (warns allowed for --k8s), 1 = a required check
-failed or drift was found, 2 = usage/IO error.
+--report json emits the stable machine-readable report; text (default)
+prints a human-readable table (--k8s), per-repo findings (--repo), or the
+per-directory coverage list (--av-exclusions).
+
+Exit codes: 0 = conformant (warns allowed for --k8s; always for
+--av-exclusions), 1 = a required check failed or drift was found,
+2 = usage/IO error.
 
 ### down
 Usage: goobers down [path]
@@ -992,11 +963,52 @@ Write a completed engine run's standard journal into the instance.
 Exit codes: 0 = projected or already present, 1 = query/write failure,
 2 = usage/config error.
 
+### engine-queues
+Usage: goobers engine-queues [flags] [path]
+
+Report which workers poll this instance's engine task queues (experimental).
+The queue set is derived, not typed: the engine's workflow queue plus every
+goobers-dispatch.<gaggle>.<runner> queue the runners: inventory and the
+declared gaggles imply — the same derivation `goobers worker
+--dispatch-namespace` serves. Each queue is described for both task types
+(workflow and activity) and every poller's Temporal identity is printed.
+
+This is the evidence for the queue-ownership check: goobers-worker must poll
+the workflow queue and every dispatch queue, and goobers-api must poll none
+of them — the daemon dispatches as a Temporal client and is never a pod
+creator.
+
+Flags:
+  --temporal-hostport <h:p>  Temporal frontend (default engine.hostPort)
+  --temporal-namespace <ns>  Temporal namespace (default engine.namespace)
+  --task-queue <queue>       workflow queue to describe (default
+                             engine.taskQueue)
+  --timeout <duration>       bound on the whole describe (default 30s)
+  --json                     emit the report as JSON
+
+Exit codes: 0 = described, 1 = describe/connection failure, 2 = usage/config
+error.
+
 ### engine-start
 Usage: goobers engine-start [flags] <workflow> [path]
 
-Dispatch one run onto the tier-3 engine (experimental). The run id is
-derived from gaggle, workflow, and --dedupe-key.
+Dispatch one run onto the tier-3 engine (experimental).
+
+When a `goobers up` daemon holds this instance's lock the dispatch is
+DELEGATED to it: the daemon admits the run through the scheduler (so it
+takes a concurrency slot, records an instance-log run.started, reserves
+the run journal and fires the terminal hooks on completion) and starts
+the workflow through its own engine starter. The run id is the
+scheduler's, and --dedupe-key is refused, because the daemon mints a
+fresh run id per admission.
+
+--direct bypasses the daemon and starts the workflow straight on
+Temporal with REJECT_DUPLICATE, deriving the run id from gaggle,
+workflow and --dedupe-key. That is the only mode in which --dedupe-key
+means anything: a direct start's run id IS its dedupe unit, whereas a
+delegated dispatch dedupes DELIVERIES (by request id) and not work.
+A direct start takes no scheduler slot and fires no terminal hooks.
+--direct is implied when no daemon is running.
 
 --live-journal pins live journal authorship into the run: workers emit
 journal events through the daemon's journal plane as they happen, so the
@@ -1026,7 +1038,7 @@ Browse the canonical workflow examples embedded in this binary. No source
 checkout or instance root is required.
 
 Commands:
-  list         print the available example names
+  list         print the available example names and descriptions
   show <name>  print an example's exact Workflow YAML
 
 Run `goobers examples list -h` or `goobers examples show -h` for details.
@@ -1034,8 +1046,9 @@ Run `goobers examples list -h` or `goobers examples show -h` for details.
 ### examples list
 Usage: goobers examples list
 
-Print the names of the canonical embedded workflow examples, one per line.
-Pass one of these names to `goobers examples show` to print its YAML.
+Print the canonical embedded workflow examples, one per line, as the
+example name followed by its one-line description. Pass a name to
+`goobers examples show` to print its YAML.
 
 Exit codes: 0 = listed, 1 = embedded catalog error, 2 = usage error.
 
@@ -1075,6 +1088,50 @@ actually references across its workflows and goobers — the subset that
 instance's config exercises. Exit codes: 0 = OK, 1 = invalid instance
 config, 2 = usage/IO error.
 
+### file-issues
+Usage: goobers file-issues [--check] [path]
+
+file-issues is the nomination workflows' deterministic issue filer —
+TBH-1 #2251's first slice, built on the decomposition binding (a typed
+goobers.dev/nominations/v1 artifact, a digest-bound check, a publisher
+that owns every goobers:* label). The finder proposes area/type labels
+and evidence; this stage dedupes by body marker against every issue
+carrying the nominated label, excludes anything flake-watch already
+fingerprints, enforces maxPerRun, and creates issues with a retry-safe
+idempotency key.
+
+goobers:approved (the SEC-047 trust label) is applied on one condition
+only (decision 004): the nomination's evidence names a finding — a go
+vet diagnostic, a golangci-lint issue (linter + file + line) or a go
+test failure (package + test) — that the deterministic signalsStage's
+stdout artifact of THIS run contains byte for byte, as parsed by this
+stage from the run journal; plus riskClass low, type:bug, one package,
+no load-bearing path, no needs-human trigger, and no open or recently
+closed nominated issue naming the same finding (a body marker the
+filer computes from the finding, not the model's dedupeKey), nor an
+earlier nomination of the same artifact naming it. autoApprove=
+deterministic-only (exactly; default never) opts in and the label is
+added with the github:issues:approve credential only.
+Everything else files unapproved with the reasons in the result. The
+journal read goes through the run-scoped journal plane, so a dispatched
+stage pod confirms against the same artifact a daemon host does; a
+half-configured plane is a hard failure, and a run whose signals stage
+recorded nothing simply approves nothing and says so.
+
+With --check, only validate the artifact and run the read-only dedupe
+scan (github:issues:read); nothing is created. The write path must be
+bound to a --check that marked this artifact valid: wire the check
+stage's nominationsDigest output to the checkDigest input (inputsFrom),
+or point checkFile at its result, or run on a self runner where the
+checkStage's recorded result is in the run journal.
+
+Inputs: nominationsFile (nominations.json), producerStage (triage),
+backlogLabel (required), partitionLabel (required), maxPerRun (3),
+dedupeWindowDays (21), nominatedLabel, autoApprove (never), signalsStage
+(collect-repo-signals), checkDigest, checkFile (nomination-check.json),
+checkStage (validate-nominations), resultFile (filed-nominations.json).
+Exit codes: 0 = filed or checked / 1 = business or provider error / 2 = usage error.
+
 ### fix
 Usage: goobers fix --to <version> [--write] [path]
 
@@ -1089,6 +1146,40 @@ silent multi-step rewrite. Never runs automatically; this is always an
 author-run, reviewable change. Exit codes: 0 = migrated (or nothing to
 migrate), 1 = one or more workflows could not be migrated,
 2 = usage/IO error.
+
+### fleet
+Usage: goobers fleet <join|status|leave> [flags] [path]
+
+Associate a local Goobers instance with a Fleet service, inspect its durable
+connection state, or remove the association. Fleet identity and credentials
+are stored outside the instance root so copying an instance does not clone its
+identity.
+
+### fleet join
+Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
+
+Discover and enroll an instance with a Fleet service. By default the one-time
+enrollment grant is read from a protected terminal prompt and never accepted
+as a command-line value. --enrollment-token-file supports automation and is
+accepted only when the file is private to its owner.
+
+When discovery advertises a local administrator principal, interactive use
+offers an explicit instance:read self-grant. Noninteractive use must choose
+--grant-local-admin or --no-grant-local-admin. An empty ACL always requires an
+explicit opt-out or interactive confirmation.
+
+### fleet leave
+Usage: goobers fleet leave [path]
+
+Remove the Fleet association, private key, and bearer credential. A running
+daemon observes the removal and stops reconnecting.
+
+### fleet status
+Usage: goobers fleet status [--json] [path]
+
+Show the durable Fleet registration, connection, heartbeat, ACL version, and
+credential expiry state. Private key and bearer credential material are never
+printed.
 
 ### gate-removal-guard
 Usage: goobers gate-removal-guard [path]
@@ -1142,8 +1233,11 @@ Usage: goobers gather-pr-context [path]
 
 Select one open, goober-authored PR labeled goobers:needs-remediation
 or reporting failing CI, falling back to a PR behind its base only when
-neither stronger signal is present. Check out its branch into this
-stage's worktree and load the latest merge-review verdict + PR-thread
+neither stronger signal is present. A run dispatched for one pull
+request (goobers run --pr, or a pull_request webhook delivery) selects
+that PR and no other, and reports no-work naming the reason when it is
+not selectable. Check out its branch into this stage's worktree and
+load the latest merge-review verdict + PR-thread
 comments + whether the base has advanced since this PR branched, writing
 the versioned remediation-brief artifact to the declared result file.
 [path] is the instance root (matching
@@ -1187,51 +1281,28 @@ lookup, always forcing a fresh review. Exit codes: 0 = context gathered
 (possibly empty — no siblings is not an error), 1 = business error,
 2 = usage/IO error.
 
-### getting-started
-Usage: goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
-
-Serve and open the portal's guided Getting Started walkthrough: two paths
-from an empty working directory to a first autonomous pull request. The
-recommended path connects a repository you already work in — goobers init,
-goobers connect --json, goobers validate --json --check-harness
---check-repos, and goobers run default-implement — and ends with a real PR
-against your own backlog. The alternative walks a disposable
-getting-started-task-api sample instead — goobers onboarding stub-sample,
-goobers init --template=quickstart, the same validate call, and goobers run
-quickstart. Every write action the guide offers is a thin wrapper over
-these documented CLI commands; it never scaffolds, connects, or validates
-on its own. The manual steps stay yours, and the guide states each one
-explicitly: exporting your token for the own-repository path, or creating
-the disposable GitHub repository, pushing the sample, and exporting tokens
-for the sample path. Time to First PR is computed locally and reported
-only to you; nothing leaves your machine.
-
---workdir (default ".") holds the sample checkout and the tutorial
-instance; no instance root needs to exist yet. The default --port is auto,
-incrementing from 8081 until a port is available. Blocks until interrupted.
-Exit codes: 0 = clean shutdown, 1 = service or browser failure, 2 =
-usage/IO error.
-
 ### init
-Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
 placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
-gaggles/<gaggle>/ at runtime. Re-running without --guided is safe — existing
-pieces are left untouched. --guided is first-run only and refuses a target
-with instance.yaml or a populated config/ before prompting. It separately
-selects a checked-in config source and target GitHub application repository,
-then validates both. It can optionally preview and install the release-matched
-agent toolkit into that config source after an explicit harness and destination
-choice. The source may be new or existing locally, cloned from GitHub, or
-optionally backed by a newly confirmed GitHub repository.
+gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
+untouched.
+--guided opens the browser-based setup for a real repository and instance.
+It prepares and validates configuration but does not run a workflow.
+For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new,
+select the repository's Resource owner, choose Only select repositories, and
+grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
 and gaggles/) without runtime state. The source-tree action is non-interactive,
 preserves every existing file, and reports each created or skipped path;
---json emits its versioned machine-readable result envelope. --demo seeds a hermetic mock-provider full-loop tour
+--json emits its versioned machine-readable result envelope. With
+--harness <name> (copilot or claude-code), every seeded goober uses that
+harness, so the generated instance needs no goober.yaml edits to switch;
+omitting it keeps the template's default harness. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
 demo is supported on Linux and macOS, where network isolation is enforced; it is
 fail-closed on Windows (no enforced network:none equivalent exists there) unless
@@ -1429,7 +1500,6 @@ explicitly named.
 
 Commands:
   stub-agent-instructions  install agent assets into a config source
-  stub-sample              materialize the disposable Getting Started target
 
 Run `goobers onboarding <command> -h` for action flags.
 
@@ -1449,28 +1519,6 @@ Flags:
 
 Exit codes: 0 = installed or already current, 1 = unsafe target, collision,
 drift, or write error, 2 = usage error.
-
-### onboarding stub-sample
-Usage: goobers onboarding stub-sample --destination <path> [--work-tracking <owner/repo>] [--token-env <name>] [--force] [--json]
-
-Materialize the embedded getting-started-task-api sample at an explicitly
-named destination. Existing matching files are skipped. A conflicting file
-fails the complete preflight without changing the destination unless --force
-is set; symbolic links are always refused.
-
-With --work-tracking owner/repo, seed the catalog's missing GitHub labels and
-issues using the token named by --token-env. If the token is unset, report
-the issues pending and complete the local materialization without network
-access. No remote repository is created or pushed.
-
-Flags:
-  --destination <path>      required sample destination
-  --work-tracking <repo>    optional GitHub owner/repo to seed
-  --token-env <name>        issue token environment variable (default GOOBERS_GITHUB_ISSUES_TOKEN)
-  --force                   replace conflicting regular files
-  --json                    emit the versioned action envelope
-
-Exit codes: 0 = materialized, 1 = conflict/provider error, 2 = usage error.
 
 ### open-pr
 Usage: goobers open-pr [path]
@@ -1515,6 +1563,30 @@ With --release, explicitly release the run's PR claim without querying the
 provider. Releasing an already-released claim is an idempotent success.
 
 Exit codes: 0 = PR open, terminal no-work, or released; 1 = business error;
+2 = usage/IO error.
+
+### pr-comment-watch
+Usage: goobers pr-comment-watch [path]
+
+Scan open goober-authored PRs (head under the gaggle branch namespace)
+and label any whose newest human comment is newer than the bot's own
+newest comment with goobers:needs-remediation, so pr-remediation updates
+that PR in place. A PR parked for a human (needs-human / merge-escalated)
+is un-parked when a fresh human comment lands: the park label is cleared
+and needs-remediation added in one mutation, since the human the PR was
+parked for has now weighed in. The bot identity is the token's own login
+(AuthenticatedLogin) — a dedicated bot account is required for signal;
+with a shared human identity the stage never fires. Comments landing
+mid-remediation after the brief snapshot can be masked by the bot's
+response comment until the human comments again (accepted v1 limit).
+
+Inputs: maxPullRequests (default 20), headPrefixes (default the branch
+namespace), base (default the gaggle base branch), excludeLabels (labels
+that hard-exclude a PR from the scan), unparkLabels (park labels a fresh
+human comment clears while routing, default needs-human,merge-escalated),
+excludeAuthors (extra bot logins to ignore, e.g. Gitea CI bots),
+resultFile (default comment-watch-result.json).
+Exit codes: 0 = scanned (labeled zero or more), 1 = business error,
 2 = usage/IO error.
 
 ### pr-select
@@ -1768,7 +1840,9 @@ Usage: goobers run abort <run-id> [path]
 
 Mark a stuck non-terminal run aborted by appending a terminal
 run.finished(status=aborted) event to its own journal (default path
-"."). Exit codes: 0 = aborted, 1 = business error (run already terminal),
+"."). An ENGINE-DRIVEN run is cancelled on the engine instead — its
+journal is never edited here, and the engine writes its terminal event.
+Exit codes: 0 = aborted, 1 = business error (run already terminal),
 2 = usage/IO error (unknown run).
 
 ### run cancel
@@ -1778,10 +1852,12 @@ Ask the live `goobers up` daemon to stop a run it is actively executing
 (default path "."): it cancels the active stage, tears down the run
 worktree, releases the backlog claim so the item can be re-queued, and
 records terminal phase aborted — without stopping the daemon or editing a
-journal behind its back. Use `run abort` instead when no daemon is running
-(that path finalizes a stuck run's journal directly). Exit codes: 0 =
-cancelled, 1 = business error (already terminal, not currently running, or
-no daemon to cancel it), 2 = usage/IO error (unknown run).
+journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine
+(CancelWorkflow) instead, with no live daemon required. Use `run abort`
+instead when no daemon is running (that path finalizes a stuck run's
+journal directly). Exit codes: 0 = cancelled, 1 = business error
+(already terminal, not currently running, or no daemon to cancel it),
+2 = usage/IO error (unknown run).
 
 ### runs
 Usage: goobers runs <command> [flags] [path]
@@ -2059,6 +2135,8 @@ Each run includes work identity, stage liveness, PR trajectory, claim drift, lat
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 It lists parked backlog items too — open issues carrying a park disposition without
 goobers:ready, which backlog selection can no longer see and no workflow re-readies.
+Shared baseline failures are listed with the subjects waiting on them: runs parked
+because the target branch itself fails CI, all released by one repair to that branch.
 With --daemon, report daemon health, identity, and effective behavior settings instead.
 With --agents, list only the agentic stages in flight right now, by role and run id.
 The --agents answer comes from the runner's own journals, never from a process table,
@@ -2155,6 +2233,17 @@ merge time and first observed post-merge configuration transition. Exact
 EffectiveVersion cohorts verify transitions and additions; a removal is
 verified when the workflow is absent from the live reconciled config.
 
+In a dispatched stage pod (GOOBERS_TELEMETRY_ENDPOINT + its bearer +
+GOOBERS_GAGGLE) the query is answered by the daemon's bounded
+defect-aggregate plane instead of a local rollup file. That plane serves
+only --aggregate stage-failure-rate, error-signature, gate-noise and
+credit-assignment with --format candidate-findings, error signatures are
+normalized by the daemon before they cross, and the read is contained to
+the stage's own gaggle. Anything outside that — another --format, another
+aggregate, --learning-action, a path argument, or a threshold governing an
+unserved family — is refused rather than answered narrowly. Off the plane,
+the resolved root must be a real goobers instance.
+
 Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
 
@@ -2224,8 +2313,12 @@ Usage: goobers update-behind-pr [path]
 
 Update one behind-base PR through GitHub's update-branch API when it
 is mergeable, CI-clean, and carries no substantive findings. Other
-candidates are routed to full remediation. Exit codes: 0 = updated,
-routed, or no-work; 1 = business error; 2 = usage/IO error.
+candidates are routed to full remediation. A run dispatched for one
+pull request (goobers run --pr, or a pull_request webhook delivery)
+selects that PR and no other; when the target is not selectable the
+stage reports no-work naming the reason instead of falling back to
+another PR. Exit codes: 0 = updated, routed, or no-work;
+1 = business error; 2 = usage/IO error.
 
 ### validate
 Usage: goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]
@@ -2317,6 +2410,20 @@ Flags:
                              emission through the journal plane, with the
                              per-run bearer from $GOOBERS_POD_TOKEN when
                              set (default $GOOBERS_DAEMON_API)
+  --config-reload-interval <dur>
+                             how often to re-read the instance config
+                             tree and rebuild the gaggle seams whose
+                             config changed, without a restart; 0
+                             disables reload and freezes the worker on
+                             its boot-time tree (default 10s; requires
+                             --instance)
+  --config-history-depth <n>
+                             how many superseded config trees to retain
+                             so an in-flight run pinned to one is still
+                             served the goober kit it was admitted
+                             against across a reload; 0 disables
+                             retention and refuses every superseded pin
+                             (default 3; requires --instance)
   --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;
                              wires the dispatcher behind the stage-dispatch
                              seam and serves the per-(gaggle x runner)
@@ -2330,6 +2437,22 @@ Flags:
 The worker identity reported to Temporal is versioned
 (goobers-worker/<build>@<host>#<pid>) so visibility alone answers which
 build serves a queue.
+
+With --instance, the worker re-reads its config tree on
+--config-reload-interval and atomically replaces the gaggle, credential,
+and agentic-kit seams whose config changed, so a definitions edit reaches
+the NEXT stage this worker serves without a pod restart. An attempt
+already running keeps the kit it was handed. A reload that does not parse
+is logged and rejected; the last-known-good tree stays in force.
+
+An agentic stage is served the goober kit its run pinned at start
+(run.yaml's gooberDigest), resolved against the current config tree or
+one of the --config-history-depth superseded trees still retained. A pin
+no retained tree satisfies is REFUSED by name (gate_pin_missing), loudly
+and retriably, naming the expected digest: the worker never substitutes
+its currently-configured goober for the one the run was admitted
+against. Such an attempt recovers by itself once a reload brings the
+pinned tree into force.
 
 Exit codes: 0 = clean drain, 1 = startup/connection error, 2 = usage error,
 3 = drain timeout expired with in-flight work abandoned.

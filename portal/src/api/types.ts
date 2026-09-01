@@ -1,3 +1,5 @@
+import type { ConfigAuthoringErrorCode } from "./contract.generated";
+
 export const API_VERSION = "v1";
 export const SCHEMA_VERSION = "v1";
 
@@ -88,6 +90,164 @@ export interface ApiErrorEnvelope {
 export interface ContractVersion {
   apiVersion: typeof API_VERSION;
   schemaVersion: typeof SCHEMA_VERSION;
+}
+
+export const CONFIG_AUTHORING_SCHEMA_VERSION = "v1alpha1";
+
+export interface ConfigAuthoringContractVersion {
+  apiVersion: typeof API_VERSION;
+  schemaVersion: typeof CONFIG_AUTHORING_SCHEMA_VERSION;
+}
+
+export type ConfigSourceKind = "local" | "git" | "provider";
+
+export interface ConfigSourceCapabilities {
+  read: boolean;
+  validate: boolean;
+  directWrite: boolean;
+  reviewWrite: boolean;
+}
+
+export interface ConfigSourceDescriptor {
+  id: string;
+  displayName: string;
+  kind: ConfigSourceKind;
+  revision: string;
+  capabilities: ConfigSourceCapabilities;
+}
+
+export interface ConfigSourcePage extends ConfigAuthoringContractVersion {
+  items: ConfigSourceDescriptor[];
+}
+
+export type ConfigDocumentKind =
+  | "manifest"
+  | "instance"
+  | "gaggle"
+  | "workflow"
+  | "goober"
+  | "support";
+
+export interface ConfigDefinitionReference {
+  kind: ConfigDocumentKind;
+  name: string;
+  gaggle?: string;
+}
+
+export interface ConfigDocumentDescriptor {
+  path: string;
+  mediaType: string;
+  etag: string;
+  editable: boolean;
+  definition?: ConfigDefinitionReference;
+}
+
+export interface ConfigDocumentPage extends ConfigAuthoringContractVersion {
+  sourceId: string;
+  revision: string;
+  items: ConfigDocumentDescriptor[];
+}
+
+export interface ConfigDocumentRequest {
+  path: string;
+}
+
+export interface ConfigDocument extends ConfigAuthoringContractVersion {
+  sourceId: string;
+  revision: string;
+  document: ConfigDocumentDescriptor;
+  content: string;
+}
+
+export type ConfigDocumentChange =
+  | {
+      path: string;
+      operation: "upsert";
+      baseEtag?: string;
+      content: string;
+    }
+  | {
+      path: string;
+      operation: "delete";
+      baseEtag: string;
+      content?: never;
+    };
+
+export interface ConfigChangeSet {
+  baseRevision: string;
+  changes: ConfigDocumentChange[];
+}
+
+export type ConfigDiagnosticSeverity = "error" | "warning";
+
+export interface ConfigDiagnosticLocation {
+  path: string;
+  line?: number;
+  column?: number;
+  endLine?: number;
+  endColumn?: number;
+}
+
+export interface ConfigDiagnostic {
+  code: string;
+  severity: ConfigDiagnosticSeverity;
+  message: string;
+  scope?: string;
+  location?: ConfigDiagnosticLocation;
+}
+
+export interface ConfigDiff {
+  format: string;
+  content: string;
+  truncated: boolean;
+}
+
+export interface ConfigChangePreviewRequest {
+  changeSet: ConfigChangeSet;
+}
+
+export interface ConfigChangePreview extends ConfigAuthoringContractVersion {
+  sourceId: string;
+  baseRevision: string;
+  previewId: string;
+  eligible: boolean;
+  diagnostics: ConfigDiagnostic[];
+  diff: ConfigDiff;
+}
+
+export type ConfigWriteStrategy = "direct" | "review";
+
+export interface ConfigWriteRequest {
+  previewId: string;
+  changeSet: ConfigChangeSet;
+  strategy: ConfigWriteStrategy;
+  summary?: string;
+}
+
+export interface ConfigReviewReference {
+  id: string;
+  url: string;
+  branch?: string;
+  commit?: string;
+}
+
+export interface ConfigWriteOutcome extends ConfigAuthoringContractVersion {
+  sourceId: string;
+  baseRevision: string;
+  revision?: string;
+  strategy: ConfigWriteStrategy;
+  changedDocuments: string[];
+  review?: ConfigReviewReference;
+  sourceApplied?: string;
+}
+
+export interface ConfigAuthoringApiError {
+  code: ConfigAuthoringErrorCode;
+  message: string;
+}
+
+export interface ConfigAuthoringErrorEnvelope {
+  error: ConfigAuthoringApiError;
 }
 
 export interface Health extends ContractVersion {
@@ -346,6 +506,14 @@ export interface RunListOptions {
   limit?: number;
   cursor?: string;
   latestPerWorkflow?: boolean;
+  /**
+   * Filters and orders by the run's last journal activity instead of its
+   * start (#1777). `since`/`until` bound last activity on this axis, which is
+   * what makes "runs active in the last N hours" expressible. Requires the
+   * read model — an instance without one refuses rather than silently
+   * ordering by start.
+   */
+  orderByActivity?: boolean;
   /** Includes routine no-work schedule ticks (#2188); omitted/false hides them. */
   showNoWork?: boolean;
 }

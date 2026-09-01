@@ -13,13 +13,11 @@ spec:
     owner: acme
     name: java-service
     branch: main
-    connectionRef: github-main
   backlog:
     provider: github
     project: acme/java-service
     labels:
       - goobers
-    connectionRef: github-backlog
   isolation:
     namespace: gaggle-java-service
     identityRef: java-service-identity

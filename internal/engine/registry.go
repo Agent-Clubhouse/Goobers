@@ -140,6 +140,52 @@ type StartSpec struct {
 	// every zero-declaration and local-mode instance, which leaves every
 	// stage on the legacy self path byte for byte.
 	Placements []PinnedPlacement
+	// RunControls is the run's already-resolved run-control policy: the
+	// starter collapses the instance → repo → gaggle → workflow inheritance
+	// (#1671) into one effective block before dispatch, exactly as the
+	// daemon's scheduler entry does, and this pins it for the run.
+	//
+	// The zero value is not "inherit later" — nothing downstream re-reads
+	// the config — it is "no configured layer", which newRunJournal resolves
+	// to the built-in 3-repass / 45m defaults. A starter that has the
+	// instance config must fill this in or every run it dispatches pins the
+	// defaults no matter what the author declared (#3820).
+	RunControls apiv1.RunControls
+	// BacklogQueryAssignedTo is this gaggle's resolved self identity
+	// (instance.EffectiveSelfIdentity) and BacklogQueryRequireLabels its
+	// comma-joined GaggleSpec.RequireLabels — the gaggle defaults
+	// cmd/goobers' selfIdentitiesByGaggle / requireLabelsByGaggle resolve for
+	// the local runner's Config. Pinning them here is what gives an
+	// engine-driven run the same MIRC-2 claim partition the runner has had
+	// since #1901: a starter that leaves them empty dispatches a
+	// backlog-query stage with no partition at all, which on a shared backlog
+	// claims the sibling instance's goobers:local items (#3873).
+	BacklogQueryAssignedTo    string
+	BacklogQueryRequireLabels string
+	// GooberDigest is the content digest of the goober kit this run's stages
+	// must execute (localscheduler.WorkflowEntry.GooberDigest — what
+	// gooberDigestStarter stamps onto a runner-driven run's StartRequest).
+	//
+	// Pinning it here puts the same value in the engine run's run.yaml
+	// identity, so an engine-driven run's provenance names the kit exactly as
+	// a runner-driven one does and the two are comparable in the parity
+	// harness. Since #3884 it also SELECTS the kit the worker executes: it
+	// rides every InvocationEnvelope, and the worker serves the attempt from
+	// the config snapshot whose tree resolves this digest — refusing by name
+	// (retriable) when it holds no such tree — instead of substituting its
+	// current instructions. See docs/reference/engine-parity.md.
+	GooberDigest string
+	// HITL pins this run's human-in-the-loop posture (#3883, decision 005
+	// R8). Nil — the value every run started before the protocol existed
+	// carries, and the value an instance that did not opt in carries — means
+	// the run settles at its terminal exactly as it always did, and an
+	// operator intent addressed to it is refused by name.
+	//
+	// It is PINNED at start rather than read from config mid-run for the
+	// WF-016 reason every other control here is pinned: the workflow must
+	// decide the same way on replay as it did live, and a config edit between
+	// the two would otherwise change the command sequence and wedge the run.
+	HITL *HITLPolicy
 }
 
 // StartInput resolves the latest version of a workflow and pins it into a
@@ -159,14 +205,42 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 	if !ok {
 		return RunInput{}, fmt.Errorf("workflow %q version %d is not registered", name, version)
 	}
-	allowPreviewFeatures := r.allowPreviewFeatures
+	return RunInputFor(name, def, r.allowPreviewFeatures, s)
+}
+
+// RunInputFor pins an already-resolved definition into a RunInput, applying
+// the same R9 refusal StartInputVersion applies.
+//
+// It is the registry-free form of StartInputVersion, and it exists for the
+// daemon: cmd/goobers already holds each lane's compiled wf.Definition (the
+// scheduler entry pins it at build time), and routing that definition through
+// a throwaway single-entry Registry would renumber its Version — Register
+// assigns versions by insertion order, so a lane's v7 becomes v1 and the run's
+// pinned identity stops matching the definition the operator deployed.
+// Building the RunInput directly from the definition keeps name, Version,
+// DSLVersion and Spec exactly as compiled.
+//
+// allowPreviewFeatures is the instance's preview-feature posture
+// (Registry.allowPreviewFeatures); it is pinned into the run so the walk's
+// preview gating is decided at start, not re-read mid-run.
+func RunInputFor(name string, def wf.Definition, allowPreviewFeatures bool, s StartSpec) (RunInput, error) {
+	// R9 run-start refusal: a definition declaring parallels, a bandit
+	// experiment, a cumulative usage budget or an outbox has no engine walk
+	// implementation, and the walk would otherwise IGNORE the declaration
+	// silently. Refusing here rather than at RegisterDefinition keeps a
+	// gaggle's other lanes startable — see registryrefusal.go for why that
+	// placement is load-bearing.
+	if err := refuseUnsupportedEngineFeatures(name, def.Spec); err != nil {
+		return RunInput{}, err
+	}
+	previewEnabled := allowPreviewFeatures
 	return RunInput{
 		RunID:                  s.RunID,
 		Gaggle:                 s.Gaggle,
 		WorkflowName:           name,
 		Version:                def.Version,
 		DSLVersion:             def.DSLVersion,
-		PreviewFeaturesEnabled: &allowPreviewFeatures,
+		PreviewFeaturesEnabled: &previewEnabled,
 		Spec:                   def.Spec,
 		RepoRef:                s.RepoRef,
 		Item:                   s.Item,
@@ -176,5 +250,11 @@ func (r *Registry) StartInputVersion(name string, version int, s StartSpec) (Run
 		GateGooberCapabilities: s.GateGooberCapabilities,
 		LiveJournal:            s.LiveJournal,
 		Placements:             s.Placements,
+		RunControls:            s.RunControls,
+		GooberDigest:           s.GooberDigest,
+		HITL:                   s.HITL,
+
+		BacklogQueryAssignedTo:    s.BacklogQueryAssignedTo,
+		BacklogQueryRequireLabels: s.BacklogQueryRequireLabels,
 	}, nil
 }

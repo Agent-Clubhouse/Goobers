@@ -144,7 +144,7 @@ func blobPutHandler(store blobstore.Store, errorLog *log.Logger) http.HandlerFun
 					fmt.Sprintf("blob body exceeds %d bytes", MaxBlobBytes))
 				return
 			}
-			writeError(w, http.StatusBadRequest, "invalid_request", "blob body could not be read")
+			writeError(w, http.StatusBadRequest, CodeInvalidRequest, "blob body could not be read")
 			return
 		}
 		// The whole point of content-addressing: a PUT whose body does not hash

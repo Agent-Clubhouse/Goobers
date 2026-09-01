@@ -37,7 +37,29 @@ const (
 	TelemetryStatsPath           = V1Prefix + "/telemetry/stats"
 	TelemetryErrorSignaturesPath = V1Prefix + "/telemetry/error-signatures"
 	TelemetryErrorsPath          = V1Prefix + "/telemetry/errors"
-	EventsPath                   = V1Prefix + "/events"
+	// TelemetryImplementationOutcomesPath is the curation-evidence read
+	// (decision 005 R4 / finding 002 C3): the terminal implementation runs
+	// that claimed a backlog item, with the run's last error and gate verdict
+	// retained as bounded evidence. Derived entirely from the rollup rows the
+	// stats and errors routes already project — same low sensitivity, same
+	// gaggle filter — and split out only because `backlog-health --feedback`
+	// needs the run-to-item join neither of those two carries.
+	TelemetryImplementationOutcomesPath = V1Prefix + "/telemetry/implementation-outcomes"
+	// TelemetryDefectAggregatesPath is the defect-nomination aggregate read
+	// (decision 005 R4 as amended by Goobers#4001, the blocker-1 half of
+	// #3996): the FIXED set of derived, threshold-crossing aggregates the
+	// `defect-nomination` and `work-nomination` lanes' `telemetry-query`
+	// stage needs — stage-failure-rate, gate-noise, credit-assignment, and a
+	// NORMALIZED, REDACTED error-signature aggregate.
+	//
+	// It is a query route in the sense that the DAEMON queries: the client
+	// names a gaggle, a bounded window, which of four aggregate families it
+	// wants, and bounded numeric thresholds. It cannot name a table, a path,
+	// a connector, or a projection. Everything outside that closed parameter
+	// set is refused rather than ignored, and the raw rollup rows behind the
+	// aggregates never cross the boundary.
+	TelemetryDefectAggregatesPath = V1Prefix + "/telemetry/defect-aggregates"
+	EventsPath                    = V1Prefix + "/events"
 
 	// Tier-2 human-intervention mutation routes. The CLI and dashboard use this
 	// same API-first surface, behind the shared access-control seam.
@@ -53,10 +75,30 @@ const (
 	// validate/dedupe/mint path the pending-triggers sweep uses; the HITL
 	// plane resolves an escalated run (approve/deny/redirect). Modes 1/2 keep
 	// their file seams — these routes are the non-local path.
-	ClaimAcquirePath         = V1Prefix + "/claims/acquire"
-	ClaimRenewPath           = V1Prefix + "/claims/renew"
-	ClaimReleasePath         = V1Prefix + "/claims/release"
-	ClaimSettlePath          = V1Prefix + "/claims/settle"
+	ClaimAcquirePath = V1Prefix + "/claims/acquire"
+	ClaimRenewPath   = V1Prefix + "/claims/renew"
+	ClaimReleasePath = V1Prefix + "/claims/release"
+	ClaimSettlePath  = V1Prefix + "/claims/settle"
+	// ClaimListPath is the claims plane's read (decision 005 amendment /
+	// finding 002 C1): a pod principal lists the claims its own run holds, or
+	// its gaggle namespace's current holders plus released history, so the
+	// selection filters every ledger-touching CLI stage runs in-process today
+	// (pre-existing claims, dedupe, ready-pool, PR claim-availability,
+	// failure-streak deprioritization) keep their input off the daemon. POST
+	// like its sibling routes: it is served under the same claims lock and
+	// carries a body, not a query string.
+	ClaimListPath = V1Prefix + "/claims/list"
+	// ClaimRecoverPath is the claims plane's STALE-CLAIM SWEEP (Goobers#4016):
+	// release the ledger's expired leases and the leases whose owning run is
+	// already terminal. Unlike the five routes above it is not a primitive a
+	// stage could equivalently run itself — terminality is resolved from the
+	// OWNING run's journal under the instance root, and the daemon's own
+	// sweep additionally honours active interventions and the restart-time
+	// recovery gate, none of which a pod can see. `backlog-query --reconcile`
+	// needs the sweep to have happened before it inspects provider claim
+	// markers, so the plane's answer is "the daemon ran its own recovery",
+	// not "here is a lock you may take".
+	ClaimRecoverPath         = V1Prefix + "/claims/recover"
 	TriggerIngestPath        = V1Prefix + "/triggers"
 	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
 	// RunJournalEmitPath is the journal plane (§8, DS4): batched live journal
@@ -91,7 +133,57 @@ const (
 	// carries no run scope to check, so containment is "authenticated pod
 	// principal or refused" rather than a per-run comparison.
 	BlobDigestPath = V1Prefix + "/blobs/{digest}"
+
+	// GaggleStateKeyPath is the scheduler-state plane (decision 005 R3 /
+	// finding 002 "plane clients" §3, plan step C2): ONE small gaggle-scoped
+	// key/value route for the scheduler state that is NOT a claim —
+	// blocked.json's learned-dependency records, the per-scan backlog cursor
+	// (#2067 fairness), the reconcile-post-merge ledger, and the
+	// gather-sibling-context cache. GET reads the value and its ETag; PUT
+	// writes it under an `If-Match` (or `If-None-Match: *`) precondition, so
+	// a read-modify-write split across two round trips is a compare-and-swap
+	// and never a lost update. The daemon serves both halves under the SAME
+	// per-key lock the in-process path takes (blocked.json and the scan
+	// cursor: claims.lock), which is what keeps a runner-driven 2.0 run and
+	// an engine-driven 3.0 run in one atomicity domain rather than two.
+	//
+	// The key namespace is closed (stateclient.ValidKey): a pod principal
+	// cannot address claims.json, the instance config, or anything outside
+	// the four state shapes above.
+	GaggleStateKeyPath = V1Prefix + "/gaggles/{gaggle}/state/{key}"
+
+	// The cross-run journal plane (decision 005 R1 option 1, finding 002 C4).
+	//
+	// A pod principal reads ITS OWN run's journal through the existing
+	// run-scoped read routes above (RunEventsPath / StageAttemptsPath /
+	// RunArtifactPath), contained by the handler to the run its token names.
+	// The reads that legitimately cross runs do NOT get a general cross-run
+	// reader: each is a purpose-built, gaggle-scoped question whose answer the
+	// daemon derives, so what is exposable is decided on the daemon rather
+	// than by whatever a stage chooses to fetch.
+	//
+	// JournalRunPhasePath answers "what phase did run X end in" — the input
+	// backlog-query --claim's terminalFailureStreak walks an item's released
+	// claim history for. Nothing but the phase crosses the boundary.
+	JournalRunPhasePath = V1Prefix + "/journal/run-phase"
+	// JournalConflictTouchesPath answers "which runs recorded base-sync
+	// conflicts, over which files, since T" — gather-implement-context's
+	// hot-file history. File names and run ids only; no artifact bytes.
+	JournalConflictTouchesPath = V1Prefix + "/journal/conflict-touches"
+	// JournalUnpushedWorkPath answers "is there stranded committed-but-never-
+	// published work for the items this run holds" (#3366). The daemon derives
+	// the asking run's items from its own claim ledger rather than trusting
+	// the request, so a pod cannot ask about an item it does not hold.
+	JournalUnpushedWorkPath = V1Prefix + "/journal/unpushed-work"
 )
+
+// DigestHeader names the content address of the body RunArtifactPath served.
+// A client that asked for one artifact and was answered with another can say
+// so by NAME rather than only by "the bytes did not verify", which is the
+// difference between a diagnosable substitution and an opaque integrity
+// failure. Named here rather than spelled in the router and the client
+// separately, so the two cannot drift.
+const DigestHeader = "X-Goobers-Digest"
 
 // RouteID is the stable cross-adapter identity of a versioned route.
 type RouteID string
@@ -116,7 +208,16 @@ const (
 	RouteTelemetryStats           RouteID = "telemetryStats"
 	RouteTelemetryErrorSignatures RouteID = "telemetryErrorSignatures"
 	RouteTelemetryErrors          RouteID = "telemetryErrors"
-	RouteEvents                   RouteID = "events"
+
+	RouteTelemetryImplementationOutcomes RouteID = "telemetryImplementationOutcomes"
+
+	// RouteTelemetryDefectAggregates is the defect-nomination aggregate read
+	// (Goobers#4001). Named for its CONSUMER rather than for a projection,
+	// because what it serves is exactly one lane's fixed evidence set and
+	// widening it is a ruling amendment, not a parameter change.
+	RouteTelemetryDefectAggregates RouteID = "telemetryDefectAggregates"
+
+	RouteEvents RouteID = "events"
 
 	RouteApproveStage  RouteID = "approveStage"
 	RouteOverrideStage RouteID = "overrideStage"
@@ -126,6 +227,8 @@ const (
 	RouteClaimRenew        RouteID = "claimRenew"
 	RouteClaimRelease      RouteID = "claimRelease"
 	RouteClaimSettle       RouteID = "claimSettle"
+	RouteClaimList         RouteID = "claimList"
+	RouteClaimRecover      RouteID = "claimRecover"
 	RouteTriggerIngest     RouteID = "triggerIngest"
 	RouteResolveEscalation RouteID = "resolveEscalation"
 	RouteJournalEmit       RouteID = "journalEmit"
@@ -137,6 +240,18 @@ const (
 	// carries exactly one Method.
 	RouteBlobGet RouteID = "blobGet"
 	RouteBlobPut RouteID = "blobPut"
+
+	// RouteGaggleStateGet and RouteGaggleStatePut are the scheduler-state
+	// plane (decision 005 R3 / finding 002 C2): two methods sharing
+	// GaggleStateKeyPath, distinct RouteIDs for the same reason the blob
+	// plane's pair are.
+	RouteGaggleStateGet RouteID = "gaggleStateGet"
+	RouteGaggleStatePut RouteID = "gaggleStatePut"
+
+	// The cross-run journal plane (decision 005 R1, finding 002 C4).
+	RouteJournalRunPhase        RouteID = "journalRunPhase"
+	RouteJournalConflictTouches RouteID = "journalConflictTouches"
+	RouteJournalUnpushedWork    RouteID = "journalUnpushedWork"
 )
 
 // Route is one method and path in the versioned daemon contract.
@@ -235,6 +350,13 @@ var v1Routes = []Route{
 	{ID: RouteTelemetryStats, Method: http.MethodGet, Path: TelemetryStatsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrorSignatures, Method: http.MethodGet, Path: TelemetryErrorSignaturesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteTelemetryErrors, Method: http.MethodGet, Path: TelemetryErrorsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	{ID: RouteTelemetryImplementationOutcomes, Method: http.MethodGet, Path: TelemetryImplementationOutcomesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
+	// The defect-aggregate route is classified with its telemetry siblings:
+	// answered from the same pre-aggregated rollup buckets, bounded by the
+	// same read budget. It costs more than one of them because it runs
+	// several detection families, which is why its window, its response and
+	// its cardinality are all bounded server-side rather than by the caller.
+	{ID: RouteTelemetryDefectAggregates, Method: http.MethodGet, Path: TelemetryDefectAggregatesPath, ActionClass: ActionReadOnlyNavigation, Cost: CostAggregate, Budget: BoundedBudget},
 	{ID: RouteEvents, Method: http.MethodGet, Path: EventsPath, ActionClass: ActionReadOnlyNavigation, Cost: CostStream, Budget: 0},
 
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
@@ -252,6 +374,14 @@ var v1Routes = []Route{
 	{ID: RouteClaimRenew, Method: http.MethodPost, Path: ClaimRenewPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteClaimRelease, Method: http.MethodPost, Path: ClaimReleasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteClaimSettle, Method: http.MethodPost, Path: ClaimSettlePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	// claims/list is a read of the ledger, but it is served under the same
+	// claims lock as the four mutations and pooled with them on purpose: a
+	// claimant's select-then-acquire must not have its select shed as read
+	// traffic while its acquire is admitted.
+	{ID: RouteClaimList, Method: http.MethodPost, Path: ClaimListPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	// claims/recover mutates the ledger (it releases leases), so it is pooled
+	// with the mutations rather than the reads.
+	{ID: RouteClaimRecover, Method: http.MethodPost, Path: ClaimRecoverPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 
@@ -281,6 +411,33 @@ var v1Routes = []Route{
 	// RouteJournalEmit accepts for its own inline artifact bytes).
 	{ID: RouteBlobGet, Method: http.MethodGet, Path: BlobDigestPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBlob, Budget: BlobBudget},
 	{ID: RouteBlobPut, Method: http.MethodPut, Path: BlobDigestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
+	// The scheduler-state plane (decision 005 R3, finding 002 C2) is the
+	// claims plane's sibling: the same machine seam, the same daemon lock,
+	// for the gaggle-scoped scheduler state that is not a claim. GET is
+	// classified with the claims plane's own read (claims/list) rather than
+	// as read-only navigation and pooled with the mutation for one reason:
+	// a caller's read-then-CAS must not have its read shed as read traffic
+	// while its write is admitted, which would spin the CAS loop forever
+	// under shed.
+	// The read half is read-only navigation with a bounded cost, as every
+	// other single-object GET is: it starts nothing, and each value is capped
+	// (MaxStateValueBytes) rather than streamed. The write half is workflow
+	// execution — a compare-and-swap that advances the scheduler's own state.
+	{ID: RouteGaggleStateGet, Method: http.MethodGet, Path: GaggleStateKeyPath, ActionClass: ActionReadOnlyNavigation, Cost: CostBounded, Budget: BoundedBudget},
+	{ID: RouteGaggleStatePut, Method: http.MethodPut, Path: GaggleStateKeyPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+
+	// The cross-run journal plane (decision 005 R1 option 1, finding 002 C4)
+	// is a machine seam like the claims plane: a stage pod asking the daemon
+	// one derived question about its own gaggle so a CLI stage keeps an input
+	// it used to read off the local filesystem. Workflow-execution and
+	// mutation-classed for exactly the reason claims/list is — these are reads
+	// taken IN FLIGHT by a claimant whose next act depends on the answer, and
+	// shedding them as read traffic would silently change a stage's decision
+	// rather than delay a human's page.
+	{ID: RouteJournalRunPhase, Method: http.MethodPost, Path: JournalRunPhasePath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalConflictTouches, Method: http.MethodPost, Path: JournalConflictTouchesPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
+	{ID: RouteJournalUnpushedWork, Method: http.MethodPost, Path: JournalUnpushedWorkPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 }
 
 // V1Routes returns an isolated copy of the versioned route contract.
@@ -390,6 +547,9 @@ func indexRoutes(name string, routes []Route) (map[RouteID]Route, error) {
 				route.ID,
 				route.Method,
 			)
+		case ActionConfigTime:
+			// Configuration actions include both read-only discovery and
+			// validated mutations, so their method is declared per route.
 		default:
 			return nil, fmt.Errorf(
 				"%s route %q action class %q is not valid for an API route",
@@ -649,6 +809,9 @@ func TypeScriptContract() ([]byte, error) {
 	if err := ValidateRoutes(v1Routes, v1Routes); err != nil {
 		return nil, fmt.Errorf("validate route contract: %w", err)
 	}
+	if err := ValidateRoutes(v1ConfigAuthoringRoutes, v1ConfigAuthoringRoutes); err != nil {
+		return nil, fmt.Errorf("validate configuration authoring route contract: %w", err)
+	}
 	runtimeCapabilities := V1RuntimeCapabilities()
 	if _, err := indexCapabilities(runtimeCapabilities); err != nil {
 		return nil, fmt.Errorf("validate runtime capability contract: %w", err)
@@ -656,24 +819,21 @@ func TypeScriptContract() ([]byte, error) {
 
 	var output strings.Builder
 	output.WriteString("// Code generated by go generate ./internal/apicontract; DO NOT EDIT.\n\n")
-	output.WriteString("export const apiRoutes = {\n")
-	for _, route := range v1Routes {
-		output.WriteString("  ")
-		output.WriteString(strconv.Quote(string(route.ID)))
-		output.WriteString(": { method: ")
-		output.WriteString(strconv.Quote(route.Method))
-		output.WriteString(", path: ")
-		output.WriteString(strconv.Quote(route.Path))
-		output.WriteString(", actionClass: ")
-		output.WriteString(strconv.Quote(string(route.ActionClass)))
-		if route.Capability != "" {
-			output.WriteString(", capability: ")
-			output.WriteString(strconv.Quote(string(route.Capability)))
-		}
-		output.WriteString(" },\n")
-	}
-	output.WriteString("} as const;\n\n")
+	writeTypeScriptRoutes(&output, "apiRoutes", v1Routes)
 	output.WriteString("export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];\n\n")
+	writeTypeScriptRoutes(&output, "configAuthoringRoutes", v1ConfigAuthoringRoutes)
+	output.WriteString("export type ConfigAuthoringRoute =\n")
+	output.WriteString("  (typeof configAuthoringRoutes)[keyof typeof configAuthoringRoutes];\n\n")
+	output.WriteString("export const configAuthoringErrorCodes = [")
+	for i, code := range ConfigAuthoringErrorCodes() {
+		if i > 0 {
+			output.WriteString(", ")
+		}
+		output.WriteString(strconv.Quote(string(code)))
+	}
+	output.WriteString("] as const;\n\n")
+	output.WriteString("export type ConfigAuthoringErrorCode =\n")
+	output.WriteString("  (typeof configAuthoringErrorCodes)[number];\n\n")
 	output.WriteString("export const runtimeMutationCapabilities = [")
 	first := true
 	for _, capability := range runtimeCapabilities {
@@ -703,4 +863,26 @@ func TypeScriptContract() ([]byte, error) {
 	output.WriteString("  | { id: string; class: typeof actionClasses.runtimeMutation; capability: RuntimeMutationCapabilityId }\n")
 	output.WriteString("  | { id: string; class: Exclude<ActionClass, typeof actionClasses.runtimeMutation>; capability?: never };\n")
 	return []byte(output.String()), nil
+}
+
+func writeTypeScriptRoutes(output *strings.Builder, name string, routes []Route) {
+	output.WriteString("export const ")
+	output.WriteString(name)
+	output.WriteString(" = {\n")
+	for _, route := range routes {
+		output.WriteString("  ")
+		output.WriteString(strconv.Quote(string(route.ID)))
+		output.WriteString(": { method: ")
+		output.WriteString(strconv.Quote(route.Method))
+		output.WriteString(", path: ")
+		output.WriteString(strconv.Quote(route.Path))
+		output.WriteString(", actionClass: ")
+		output.WriteString(strconv.Quote(string(route.ActionClass)))
+		if route.Capability != "" {
+			output.WriteString(", capability: ")
+			output.WriteString(strconv.Quote(string(route.Capability)))
+		}
+		output.WriteString(" },\n")
+	}
+	output.WriteString("} as const;\n\n")
 }

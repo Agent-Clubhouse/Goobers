@@ -177,11 +177,10 @@ func reorderScaffoldGaggleArgs(args []string) []string {
 }
 
 // scaffoldNewGaggle creates an empty gaggle: gaggle.yaml plus its manifest
-// registration. connectionRef is populated only when the manifest declares
-// exactly one Connection (the common case every shipped template seeds);
-// otherwise it is left empty, which REF004 (api/validate/validate.go) treats
-// as valid — "an empty connectionRef is left alone" — rather than guessing
-// wrong and erroring.
+// registration. It writes no connectionRef: the local runtime resolves every
+// access's credential from instance.yaml repos[] by repository identity and
+// never consults the field, so seeding one would only earn the scaffolded
+// gaggle a REF012 finding (#3296).
 func scaffoldNewGaggle(
 	instanceRoot string,
 	layout instance.Layout,
@@ -194,7 +193,7 @@ func scaffoldNewGaggle(
 	if err := os.MkdirAll(gaggleDir, 0o755); err != nil {
 		return fmt.Errorf("create %s: %w", gaggleDir, err)
 	}
-	data := scaffoldTemplateData{Name: name, ConnectionRef: soleConnectionName(manifest)}
+	data := scaffoldTemplateData{Name: name}
 	rendered, err := renderScaffoldTemplate("templates/scaffold/gaggle.yaml.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render gaggle.yaml: %w", err)
@@ -211,16 +210,6 @@ func scaffoldNewGaggle(
 	}
 	pf(stdout, "updated %s\n", manifestPath)
 	return nil
-}
-
-// soleConnectionName returns the manifest's only declared Connection name, or
-// "" when there is not exactly one — the ambiguous case a scaffolder should
-// never guess through.
-func soleConnectionName(manifest *apiv1.Manifest) string {
-	if manifest == nil || len(manifest.Spec.Connections) != 1 {
-		return ""
-	}
-	return manifest.Spec.Connections[0].Name
 }
 
 // scaffoldRenameGaggle moves an existing, manifest-active gaggle directory to

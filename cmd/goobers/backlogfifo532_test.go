@@ -135,10 +135,19 @@ func TestBacklogQueryPredicateDoesNotExpandScanCeiling(t *testing.T) {
 	if !strings.Contains(stdout, "claimed 251: Item 251") {
 		t.Fatalf("stdout = %q, want predicate match beyond the first scan window", stdout)
 	}
-	if got := server.issueListRequestCount(); got != 6 {
-		t.Fatalf("issue list requests = %d, want two bounded three-page scans", got)
+	if got := server.issueListRequestCount(); got != 7 {
+		t.Fatalf("issue list requests = %d, want the first bounded three-page scan plus the resumed scan's four", got)
 	}
-	if got := server.issueListPageSizeHistory(); !slices.Equal(got, []int{100, 100, 50, 50, 100, 100}) {
+	// The resumed scan's four reads still spend exactly the 250-candidate
+	// ceiling, which is what this test guards: a full page from candidate
+	// 251 (the fetch covering the resume offset, whose first 50 records
+	// precede it), the rest of the 400-item set, an empty read past its end,
+	// and then #4036's wrap spending the 100 candidates still left in the
+	// budget on the head of the backlog instead of abandoning them. Before
+	// the wrap, a scan that ran off the end of the result set returned with
+	// its budget unspent and reported exhaustion — the silent under-scan
+	// that made a live backlog of 218 approved items read as drained.
+	if got := server.issueListPageSizeHistory(); !slices.Equal(got, []int{100, 100, 50, 100, 100, 100, 100}) {
 		t.Fatalf("issue page sizes = %v, want bounded progression from candidate 251", got)
 	}
 }

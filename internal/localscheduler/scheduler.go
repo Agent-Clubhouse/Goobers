@@ -209,6 +209,17 @@ type Scheduler struct {
 	afterTick         func(context.Context)
 	heartbeatInterval time.Duration
 	refreshHeartbeat  func(time.Time) error
+	// onPollProgress, if set, is called after every individual
+	// provider-backed demand poll Tick issues while holding tickMu (#3806) —
+	// not just once when Tick itself returns. A tick with several due
+	// polls, each bounded only by demandPollTimeout (45s), can otherwise
+	// leave refreshHeartbeat's once-per-Run staleness window open for
+	// several minutes: long enough for a liveness probe reading that
+	// heartbeat to kill a busy-but-healthy daemon mid-tick. Unlike
+	// refreshHeartbeat, this callback MUST be cheap and non-blocking — it
+	// is called from inside the tickMu-held critical section once per poll,
+	// so it must never itself touch disk or a provider.
+	onPollProgress    func(time.Time)
 	writeTriggerState func(string, map[WorkflowIdentity]time.Time) error
 	// stateOwner is the M5 generation/ownership guard for the shared state
 	// files this scheduler rewrites (stateguard.go): a second daemon against
@@ -332,6 +343,20 @@ func WithTickHeartbeat(interval time.Duration, refresh func(time.Time) error) Op
 	}
 }
 
+// WithPollHeartbeat registers a callback fired after every individual
+// provider-backed demand poll Tick issues, in addition to (not instead of)
+// WithTickHeartbeat's once-per-Run refresh (#3806). mark must be cheap and
+// non-blocking: it runs inside Tick's tickMu-held critical section, once per
+// due poll, specifically so an in-memory liveness signal can stay fresh
+// across a tick with several slow (up to demandPollTimeout) polls — a
+// once-per-Run refresh alone cannot bound that window. nil (the default)
+// installs no callback.
+func WithPollHeartbeat(mark func(time.Time)) Option {
+	return func(s *Scheduler) {
+		s.onPollProgress = mark
+	}
+}
+
 // WithInstanceRunConditions applies instance.yaml's runConditions (§7,
 // SCH-003's "max-parallel per workflow/instance") on top of each workflow's
 // own per-workflow conditions — before this option existed, instance.yaml's
@@ -364,6 +389,19 @@ func WithProviderQuota(gate ProviderQuotaGate) Option {
 		if gate != nil {
 			s.conditions.SetProviderQuota(gate)
 			s.providerQuota = gate
+		}
+	}
+}
+
+// WithMemoryGate wires the cgroup-aware admission gate (#3949): when the
+// daemon's own memory cgroup is near its limit, new runs are refused with
+// ReasonMemoryPressure until it recovers, rather than being admitted into a
+// container that is about to be OOM-killed. Optional — nil/unset leaves it
+// unenforced, which is also what a gate reads as outside a container.
+func WithMemoryGate(gate MemoryGate) Option {
+	return func(s *Scheduler) {
+		if gate != nil {
+			s.conditions.SetMemoryGate(gate)
 		}
 	}
 }
@@ -1054,8 +1092,13 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 					candidate.dispatchedThisTick = true
 					break
 				}
+				// Retained demand must survive a refusal the next tick can
+				// clear on its own. Memory pressure is such a refusal (#3960),
+				// so it joins the two max-parallel reasons here; it is
+				// prefix-matched because Admit appends the measurement to it.
 				if kind == journal.TriggerSchedule && candidate.scheduleDemand &&
-					reason != ReasonMaxParallel && reason != ReasonInstanceMaxParallel {
+					reason != ReasonMaxParallel && reason != ReasonInstanceMaxParallel &&
+					!strings.HasPrefix(reason, ReasonMemoryPressure) {
 					s.clearPendingScheduleDemand(candidate.entry)
 				}
 				candidate.stopped = true
@@ -1458,10 +1501,12 @@ func (s *Scheduler) pollDemandCounters(ctx context.Context, candidates []*tickCa
 			if decision.Allowed > 0 {
 				pollCtx := WithProviderPollBudget(ctx, decision)
 				s.applyDemandCount(poll, s.pollDemand(pollCtx, entry, poll))
+				s.markPollProgress()
 				continue
 			}
 			if guarded, ok := poll.counter.(ProviderQuotaGuardedBacklogCounter); ok && guarded.ProviderQuotaGuarded() {
 				s.applyDemandCount(poll, s.pollDemand(ctx, entry, poll))
+				s.markPollProgress()
 				continue
 			}
 			s.applyDemandCount(poll, 0)
@@ -1641,6 +1686,16 @@ func (s *Scheduler) persistScheduleDemand(identity WorkflowIdentity, outstanding
 	return false
 }
 
+// markPollProgress fires the optional WithPollHeartbeat callback after a
+// provider-backed poll completes. Called from inside Tick's tickMu-held
+// section (#3806), so onPollProgress itself must be cheap/non-blocking —
+// see its doc comment on the Scheduler struct.
+func (s *Scheduler) markPollProgress() {
+	if s.onPollProgress != nil {
+		s.onPollProgress(s.now())
+	}
+}
+
 func (s *Scheduler) pollDemand(ctx context.Context, entry WorkflowEntry, poll demandPoll) int {
 	pollCtx, cancel := context.WithTimeout(ctx, s.demandPollTimeout)
 	defer cancel()
@@ -1754,6 +1809,25 @@ func (s *Scheduler) journalProviderQuotaResetDecision(provider apiv1.Provider, r
 // silent no-op here, unlike a cron Tick's skip, since a human explicitly
 // asked for this run and deserves to know why it didn't start).
 func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time) (runID string, err error) {
+	return s.TriggerWithDispatchContext(ctx, ctx, workflow, now)
+}
+
+// TriggerWithDispatchContext validates with ctx while starting an admitted run
+// with dispatchCtx — Trigger's separated-lifetime form, the same shape
+// TriggerSignalWithDispatchContext has had since delegated webhook triggers
+// landed.
+//
+// It exists because dispatch() runs the Starter goroutine on the context it is
+// handed (scheduler.go's dispatch), and the trigger plane calls in on
+// request.Context() — which Go cancels the instant the HTTP handler returns.
+// For the local runner that silently drains a trigger-plane-started run at its
+// first stage boundary; for an engine-driven run, whose Starter BLOCKS on the
+// workflow's Get, it would return PhaseRunning the moment the POST responded,
+// release the maxConcurrentRuns slot, and skip every terminal hook while the
+// workflow kept executing — silent duplicate admission (decision 005 D1,
+// finding 002 "D1 BLOCKING SEMANTICS"). Both bugs are the same bug; this is
+// the seam that closes it for the unqualified-name path.
+func (s *Scheduler) TriggerWithDispatchContext(ctx, dispatchCtx context.Context, workflow string, now time.Time) (runID string, err error) {
 	s.mu.Lock()
 	var entry WorkflowEntry
 	var gaggles []string
@@ -1778,7 +1852,10 @@ func (s *Scheduler) Trigger(ctx context.Context, workflow string, now time.Time)
 			workflow, strings.Join(gaggles, ", "), strings.Join(commands, " or "),
 		)
 	}
-	return s.triggerWorkflow(ctx, entry, now,
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return s.triggerWorkflow(dispatchCtx, entry, now,
 		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
 		"manual")
 }
@@ -1822,13 +1899,23 @@ func (s *Scheduler) TriggerSignalWithDispatchContext(ctx, dispatchCtx context.Co
 
 // TriggerExact manually fires one workflow identified by its gaggle and name.
 func (s *Scheduler) TriggerExact(ctx context.Context, identity WorkflowIdentity, now time.Time) (runID string, err error) {
+	return s.TriggerExactWithDispatchContext(ctx, ctx, identity, now)
+}
+
+// TriggerExactWithDispatchContext is TriggerExact with separate validation and
+// run-lifetime contexts. See TriggerWithDispatchContext for why the trigger
+// plane and the pending-trigger sweep must use this form and not TriggerExact.
+func (s *Scheduler) TriggerExactWithDispatchContext(ctx, dispatchCtx context.Context, identity WorkflowIdentity, now time.Time) (runID string, err error) {
 	s.mu.Lock()
 	entry, ok := s.workflows[identity]
 	s.mu.Unlock()
 	if !ok {
 		return "", fmt.Errorf("localscheduler: unknown workflow %q in gaggle %q", identity.Workflow, identity.Gaggle)
 	}
-	return s.triggerWorkflow(ctx, entry, now,
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return s.triggerWorkflow(dispatchCtx, entry, now,
 		journal.Trigger{Kind: journal.TriggerManual, Ref: entry.Workflow},
 		"manual")
 }
@@ -1882,6 +1969,12 @@ func (s *Scheduler) TriggerSignalExactWithDispatchContext(ctx, dispatchCtx conte
 // publishes state that can change its selection order. It is an output-driven
 // signal, not a bypass: normal readiness admission still applies.
 func (s *Scheduler) TriggerPriority(ctx context.Context, identity WorkflowIdentity, sourceRun string, now time.Time) (runID string, err error) {
+	return s.TriggerPriorityWithDispatchContext(ctx, ctx, identity, sourceRun, now)
+}
+
+// TriggerPriorityWithDispatchContext is TriggerPriority with separate
+// validation and run-lifetime contexts. See TriggerWithDispatchContext.
+func (s *Scheduler) TriggerPriorityWithDispatchContext(ctx, dispatchCtx context.Context, identity WorkflowIdentity, sourceRun string, now time.Time) (runID string, err error) {
 	s.mu.Lock()
 	entry, ok := s.workflows[identity]
 	s.mu.Unlock()
@@ -1891,7 +1984,10 @@ func (s *Scheduler) TriggerPriority(ctx context.Context, identity WorkflowIdenti
 	if strings.TrimSpace(sourceRun) == "" {
 		return "", errors.New("localscheduler: priority trigger source run is required")
 	}
-	return s.triggerWorkflow(ctx, entry, now,
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return s.triggerWorkflow(dispatchCtx, entry, now,
 		journal.Trigger{Kind: journal.TriggerSignal, Ref: "priority-re-tick:" + sourceRun},
 		"priority re-tick requested by run "+sourceRun)
 }
@@ -1942,7 +2038,13 @@ func (e *TriggerRejectedError) Error() string {
 // capacity that is about to exist. Budget/quota/open-PR-cap refusals are not
 // transient in this sense and must still fail fast.
 func (e *TriggerRejectedError) Transient() bool {
-	return e.Reason == ReasonMaxParallel || e.Reason == ReasonInstanceMaxParallel
+	// ReasonMemoryPressure is prefix-matched, not compared: Admit appends the
+	// cgroup measurement after it. It belongs here because it is capacity in
+	// exactly the sense above — the pod's memory frees as runs finish and the
+	// kernel reclaims, so a refused trigger is refused for capacity that is
+	// about to exist (#3960).
+	return e.Reason == ReasonMaxParallel || e.Reason == ReasonInstanceMaxParallel ||
+		strings.HasPrefix(e.Reason, ReasonMemoryPressure)
 }
 
 // RecordTriggerRefusal journals a trigger rejected by an admission layer

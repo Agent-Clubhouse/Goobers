@@ -47,6 +47,45 @@ const mergeQueuePollHelp = "Usage: goobers merge-queue-poll [path]\n\n" +
 	"1 = business error (missing capability/config,\n" +
 	"provider failure), 2 = usage/IO error.\n"
 
+type mergeQueuePollConfig struct {
+	pullNumber  string
+	resultFile  string
+	interval    time.Duration
+	maxInterval time.Duration
+	timeout     time.Duration
+}
+
+// mergeQueuePollConfiguration owns the provider-neutral poll contract and
+// budget clamp; transports decide only what individual queue states mean.
+func mergeQueuePollConfiguration(stderr io.Writer) (mergeQueuePollConfig, int) {
+	pullNumber := providerInput("pullNumber", "")
+	if pullNumber == "" {
+		pf(stderr, "error: pullNumber input is required\n")
+		return mergeQueuePollConfig{}, 1
+	}
+	resultFile := providerInput("resultFile", "queue-result.json")
+	interval, err := pollDurationInput("pollIntervalSeconds", executor.DefaultPollInterval)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return mergeQueuePollConfig{}, 2
+	}
+	maxInterval, err := pollDurationInput("pollMaxIntervalSeconds", executor.DefaultMaxPollInterval)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return mergeQueuePollConfig{}, 2
+	}
+	timeout, err := pollDurationInput("pollTimeoutSeconds", executor.DefaultPollTimeout)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return mergeQueuePollConfig{}, 2
+	}
+	if clamped := boundedwait.MergeQueuePollBudget(stageTimeout()); timeout > clamped {
+		pf(stderr, "note: poll timeout %s exceeds this stage's own budget; polling for %s instead\n", timeout, clamped)
+		timeout = clamped
+	}
+	return mergeQueuePollConfig{pullNumber: pullNumber, resultFile: resultFile, interval: interval, maxInterval: maxInterval, timeout: timeout}, 0
+}
+
 func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("merge-queue-poll", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -54,15 +93,10 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -79,7 +113,11 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 	if repo.Provider == providers.ProviderADO {
 		return runMergeQueuePollADO(root, repo, stdout, stderr)
 	}
-	provider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, false,
+	if repo.Provider != providers.ProviderGitHub {
+		pf(stderr, "error: merge-queue-poll does not support repository provider %q (native merge-queue polling is unavailable)\n", repo.Provider)
+		return 1
+	}
+	provider, err := newProviderForStageAs[*providers.GitHubProvider](root, repo, false,
 		withStageProviderCapability(capability.GitHubPRMerge),
 		withStageProviderMutations("pr"),
 	)
@@ -87,42 +125,64 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
+	return runMergeQueuePollCore(repo, githubMergeQueuePollTransport{provider: provider, root: root}, stdout, stderr)
+}
 
-	pullNumber := providerInput("pullNumber", "")
-	if pullNumber == "" {
-		pf(stderr, "error: pullNumber input is required\n")
-		return 1
-	}
-	resultFile := providerInput("resultFile", "queue-result.json")
-	interval, err := pollDurationInput("pollIntervalSeconds", executor.DefaultPollInterval)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	maxInterval, err := pollDurationInput("pollMaxIntervalSeconds", executor.DefaultMaxPollInterval)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	timeout, err := pollDurationInput("pollTimeoutSeconds", executor.DefaultPollTimeout)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	// Never poll past the deadline the executor will kill this stage at
-	// (issue #884). Without this clamp the default 30m poll runs inside a
-	// stage the shell executor SIGKILLs at 10m: the loop never reaches its
-	// own timeout branch, so it never writes queue-result.json, so
-	// queue-gate reads a missing queueOutcome as fail and the whole
-	// merge-review run is journaled as FAILED — for a pull request that
-	// was in fact successfully enqueued and will very likely merge.
-	// Reporting a working landing as a failure is worse than reporting it
-	// late, so the poll budget yields to the stage budget.
-	if clamped := boundedwait.MergeQueuePollBudget(stageTimeout()); timeout > clamped {
-		pf(stderr, "note: poll timeout %s exceeds this stage's own budget; polling for %s instead\n", timeout, clamped)
-		timeout = clamped
-	}
+// mergeQueuePollTransport isolates forge-native queue behavior. The core owns
+// polling timing, transient-error handling, and terminal-state decisions.
+type mergeQueuePollTransport interface {
+	Poll(context.Context, providers.RepositoryRef, string) (providers.PollMergeQueueEntryResult, error)
+	Merge(context.Context, providers.RepositoryRef, string, string, string, io.Writer, io.Writer) int
+	Evict(context.Context, providers.RepositoryRef, string, string, io.Writer, io.Writer) int
+	Timeout(context.Context, providers.RepositoryRef, string, time.Duration, string, io.Writer, io.Writer) int
+	Dequeue(context.Context, providers.RepositoryRef, string, string) error
+	RecordTimeout(providers.RepositoryRef, string) error
+	ConfirmAbsentEntry() bool
+	SupportsOptOutDequeue() bool
+}
 
+type githubMergeQueuePollTransport struct {
+	provider *providers.GitHubProvider
+	root     string
+}
+
+func (t githubMergeQueuePollTransport) Poll(ctx context.Context, repo providers.RepositoryRef, pullNumber string) (providers.PollMergeQueueEntryResult, error) {
+	return t.provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: repo, PullID: pullNumber})
+}
+
+func (t githubMergeQueuePollTransport) Merge(ctx context.Context, repo providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
+	return mergeQueuePollMerged(ctx, t.root, t.provider, repo, pullNumber, mergeSHA, resultFile, stdout, stderr)
+}
+
+func (t githubMergeQueuePollTransport) Evict(ctx context.Context, repo providers.RepositoryRef, pullNumber, resultFile string, stdout, stderr io.Writer) int {
+	return mergeQueuePollEvicted(ctx, repo, pullNumber, resultFile, stdout, stderr)
+}
+
+func (t githubMergeQueuePollTransport) Timeout(ctx context.Context, repo providers.RepositoryRef, pullNumber string, timeout time.Duration, resultFile string, stdout, stderr io.Writer) int {
+	return mergeQueuePollTimedOut(ctx, repo, pullNumber, timeout, resultFile, stdout, stderr)
+}
+
+func (t githubMergeQueuePollTransport) Dequeue(ctx context.Context, repo providers.RepositoryRef, pullNumber, nodeID string) error {
+	return t.provider.DequeuePullRequest(ctx, providers.DequeuePullRequestRequest{
+		Repository: repo, PullID: pullNumber, PullRequestNodeID: nodeID,
+	})
+}
+
+func (t githubMergeQueuePollTransport) RecordTimeout(repo providers.RepositoryRef, pullNumber string) error {
+	return recordPostMergeTimeout(t.root, repo, pullNumber, time.Now())
+}
+
+func (githubMergeQueuePollTransport) ConfirmAbsentEntry() bool    { return true }
+func (githubMergeQueuePollTransport) SupportsOptOutDequeue() bool { return true }
+
+func runMergeQueuePollCore(repo providers.RepositoryRef, transport mergeQueuePollTransport, stdout, stderr io.Writer) int {
+
+	config, code := mergeQueuePollConfiguration(stderr)
+	if code != 0 {
+		return code
+	}
+	pullNumber, resultFile := config.pullNumber, config.resultFile
+	interval, maxInterval, timeout := config.interval, config.maxInterval, config.timeout
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 	deadline := time.Now().Add(timeout)
@@ -156,7 +216,7 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 	absentStreak := 0
 	optedOut := false
 	for attempt := 0; ; attempt++ {
-		result, pollErr := provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: repo, PullID: pullNumber})
+		result, pollErr := transport.Poll(ctx, repo, pullNumber)
 		if pollErr != nil && !providers.IsTransientError(pollErr) {
 			return failProviderStage(stderr, "poll merge queue entry", pollErr, resultFile)
 		}
@@ -166,19 +226,17 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 			// same as an operator applying goobers:no-merge-review — the queue
 			// is a second merge authority and must not land a PR merge-pr would
 			// now refuse.
-			if hasAnyLabel(result.Labels, []string{noMergeReviewLabel, abortedRunLabel}) {
+			if transport.SupportsOptOutDequeue() && hasAnyLabel(result.Labels, []string{noMergeReviewLabel, abortedRunLabel}) {
 				optedOut = true
 			}
 			if optedOut {
 				switch result.State {
 				case providers.MergeQueueEntryMerged:
-					return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
+					return transport.Merge(ctx, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryPending:
 					entrySeen = true
 					absentStreak = 0
-					if err := provider.DequeuePullRequest(ctx, providers.DequeuePullRequestRequest{
-						Repository: repo, PullID: pullNumber, PullRequestNodeID: result.PullRequestNodeID,
-					}); err == nil {
+					if err := transport.Dequeue(ctx, repo, pullNumber, result.PullRequestNodeID); err == nil {
 						return mergeQueuePollSkipped(pullNumber, resultFile, stdout, stderr)
 					} else {
 						pf(stderr, "warning: dequeue opted-out pull request #%s: %v; continuing to monitor and retry\n", pullNumber, err)
@@ -195,31 +253,33 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 			} else {
 				switch result.State {
 				case providers.MergeQueueEntryMerged:
-					return mergeQueuePollMerged(ctx, provider, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
+					return transport.Merge(ctx, repo, pullNumber, result.MergeSHA, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryEvicted:
-					return mergeQueuePollEvicted(ctx, repo, pullNumber, resultFile, stdout, stderr)
+					return transport.Evict(ctx, repo, pullNumber, resultFile, stdout, stderr)
 				case providers.MergeQueueEntryPending:
 					entrySeen = true
 					// A conclusive non-absent read breaks the absence streak.
 					absentStreak = 0
 				case providers.MergeQueueEntryAbsent:
-					absentStreak++
-					switch {
-					case !entrySeen && time.Now().Before(graceUntil):
-						// No entry has ever been seen and we are still inside the
-						// enqueue-propagation grace window: treat as pending.
-					case absentStreak >= mergeQueueAbsenceConfirmPolls:
-						// Absence held across independent reads. A merge landing
-						// in the gap would have resolved to Merged by now, so this
-						// is a real eviction.
-						pf(stdout, "pr #%s is open and unmerged with no merge queue entry across %d polls — evicted\n", pullNumber, absentStreak)
-						return mergeQueuePollEvicted(ctx, repo, pullNumber, resultFile, stdout, stderr)
-					default:
-						// First absent read of this streak. Do NOT commit to an
-						// eviction yet — this is exactly what a successful merge
-						// also looks like for an instant (#924). Poll again and
-						// let the merge become visible if that is what happened.
-						pf(stdout, "pr #%s has no merge queue entry; re-polling to confirm before calling it an eviction\n", pullNumber)
+					if transport.ConfirmAbsentEntry() {
+						absentStreak++
+						switch {
+						case !entrySeen && time.Now().Before(graceUntil):
+							// No entry has ever been seen and we are still inside the
+							// enqueue-propagation grace window: treat as pending.
+						case absentStreak >= mergeQueueAbsenceConfirmPolls:
+							// Absence held across independent reads. A merge landing
+							// in the gap would have resolved to Merged by now, so this
+							// is a real eviction.
+							pf(stdout, "pr #%s is open and unmerged with no merge queue entry across %d polls — evicted\n", pullNumber, absentStreak)
+							return transport.Evict(ctx, repo, pullNumber, resultFile, stdout, stderr)
+						default:
+							// First absent read of this streak. Do not classify it as
+							// an eviction yet — this is exactly what a successful merge
+							// also looks like for an instant (#924). Poll again and
+							// let the merge become visible if that is what happened.
+							pf(stdout, "pr #%s has no merge queue entry; re-polling to confirm before calling it an eviction\n", pullNumber)
+						}
 					}
 				}
 			}
@@ -235,18 +295,18 @@ func runMergeQueuePoll(args []string, stdout, stderr io.Writer) int {
 				// the PR to notice. Recording an entry that turns out never to
 				// merge is harmless; reconciliation is keyed on the merge
 				// actually happening.
-				if err := recordPostMergeTimeout(root, repo, pullNumber, time.Now()); err != nil {
+				if err := transport.RecordTimeout(repo, pullNumber); err != nil {
 					pf(stderr, "error: record unconfirmed opt-out dequeue for reconciliation: %v\n", err)
 					return 1
 				}
 				pf(stderr, "error: pull request #%s opted out, but its merge queue removal could not be confirmed before timeout\n", pullNumber)
 				return 1
 			}
-			if err := recordPostMergeTimeout(root, repo, pullNumber, time.Now()); err != nil {
+			if err := transport.RecordTimeout(repo, pullNumber); err != nil {
 				pf(stderr, "error: record timed-out merge queue entry for reconciliation: %v\n", err)
 				return 1
 			}
-			return mergeQueuePollTimedOut(ctx, repo, pullNumber, timeout, resultFile, stdout, stderr)
+			return transport.Timeout(ctx, repo, pullNumber, timeout, resultFile, stdout, stderr)
 		}
 		select {
 		case <-ctx.Done():
@@ -271,13 +331,13 @@ func mergeQueuePollSkipped(pullNumber, resultFile string, stdout, stderr io.Writ
 // same branch cleanup merge-pr's direct-merge path already does — a
 // separate PollPullRequest call resolves the head branch/repository
 // PollMergeQueueEntryResult does not itself carry.
-func mergeQueuePollMerged(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
+func mergeQueuePollMerged(ctx context.Context, root string, provider *providers.GitHubProvider, repo providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
 	var cleanup *mergeBranchCleanup
 	poll, pollErr := provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
 	if pollErr != nil {
 		pf(stderr, "warning: merge queue merged pr #%s but branch cleanup lookup failed: %v\n", pullNumber, pollErr)
 	} else {
-		outcome := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)
+		outcome := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, provider)
 		cleanup = &outcome
 		if outcome.Error != "" {
 			pf(stderr, "warning: merge queue merged pr #%s but branch cleanup failed: %s\n", pullNumber, outcome.Error)
@@ -483,68 +543,37 @@ func runMergeQueuePollADO(root string, repo providers.RepositoryRef, stdout, std
 		return 1
 	}
 	dispatcher := providers.NewDispatcher(adoProvider)
-
-	pullNumber := providerInput("pullNumber", "")
-	if pullNumber == "" {
-		pf(stderr, "error: pullNumber input is required\n")
-		return 1
-	}
-	resultFile := providerInput("resultFile", "queue-result.json")
-	interval, err := pollDurationInput("pollIntervalSeconds", executor.DefaultPollInterval)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	maxInterval, err := pollDurationInput("pollMaxIntervalSeconds", executor.DefaultMaxPollInterval)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	timeout, err := pollDurationInput("pollTimeoutSeconds", executor.DefaultPollTimeout)
-	if err != nil {
-		pf(stderr, "error: %v\n", err)
-		return 2
-	}
-	// Same stage-budget clamp the GitHub path applies (#884): never poll past
-	// the deadline the executor SIGKILLs this stage at.
-	if clamped := boundedwait.MergeQueuePollBudget(stageTimeout()); timeout > clamped {
-		pf(stderr, "note: poll timeout %s exceeds this stage's own budget; polling for %s instead\n", timeout, clamped)
-		timeout = clamped
-	}
-
-	ctx, cancel := providerCommandContext()
-	defer cancel()
-	deadline := time.Now().Add(timeout)
-	for attempt := 0; ; attempt++ {
-		result, pollErr := dispatcher.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: repo, PullID: pullNumber})
-		if pollErr != nil && !providers.IsTransientError(pollErr) {
-			return failProviderStage(stderr, "poll merge queue entry", pollErr, resultFile)
-		}
-		if pollErr == nil {
-			// ADO reports explicit terminal states (completed→Merged,
-			// abandoned/auto-complete-cleared→Evicted) — there is no GitHub-style
-			// absent-entry ambiguity to disambiguate, so Pending simply keeps
-			// polling until a terminal state or this stage's own timeout.
-			switch result.State {
-			case providers.MergeQueueEntryMerged:
-				return mergeQueuePollMergedADO(pullNumber, result.MergeSHA, resultFile, stdout, stderr)
-			case providers.MergeQueueEntryEvicted:
-				return mergeQueuePollEvictedADO(pullNumber, resultFile, stdout, stderr)
-			case providers.MergeQueueEntryPending, providers.MergeQueueEntryAbsent:
-				// Still auto-completing; keep watching.
-			}
-		}
-		if time.Now().After(deadline) {
-			return mergeQueuePollTimedOutADO(pullNumber, timeout, resultFile, stdout, stderr)
-		}
-		select {
-		case <-ctx.Done():
-			pf(stderr, "error: %v\n", ctx.Err())
-			return 1
-		case <-time.After(mergeQueuePollBackoff(interval, maxInterval, attempt)):
-		}
-	}
+	return runMergeQueuePollCore(repo, adoMergeQueuePollTransport{provider: dispatcher}, stdout, stderr)
 }
+
+type adoMergeQueuePollTransport struct{ provider providers.MergeQueuePoller }
+
+func (t adoMergeQueuePollTransport) Poll(ctx context.Context, repo providers.RepositoryRef, pullNumber string) (providers.PollMergeQueueEntryResult, error) {
+	return t.provider.PollMergeQueueEntry(ctx, providers.PollMergeQueueEntryRequest{Repository: repo, PullID: pullNumber})
+}
+
+func (adoMergeQueuePollTransport) Merge(_ context.Context, _ providers.RepositoryRef, pullNumber, mergeSHA, resultFile string, stdout, stderr io.Writer) int {
+	return mergeQueuePollMergedADO(pullNumber, mergeSHA, resultFile, stdout, stderr)
+}
+
+func (adoMergeQueuePollTransport) Evict(_ context.Context, _ providers.RepositoryRef, pullNumber, resultFile string, stdout, stderr io.Writer) int {
+	return mergeQueuePollEvictedADO(pullNumber, resultFile, stdout, stderr)
+}
+
+func (adoMergeQueuePollTransport) Timeout(_ context.Context, _ providers.RepositoryRef, pullNumber string, timeout time.Duration, resultFile string, stdout, stderr io.Writer) int {
+	return mergeQueuePollTimedOutADO(pullNumber, timeout, resultFile, stdout, stderr)
+}
+
+func (adoMergeQueuePollTransport) Dequeue(context.Context, providers.RepositoryRef, string, string) error {
+	return fmt.Errorf("azure devops does not support merge queue dequeue")
+}
+
+func (adoMergeQueuePollTransport) RecordTimeout(providers.RepositoryRef, string) error {
+	return nil
+}
+
+func (adoMergeQueuePollTransport) ConfirmAbsentEntry() bool    { return false }
+func (adoMergeQueuePollTransport) SupportsOptOutDequeue() bool { return false }
 
 // mergeQueuePollMergedADO reports an ADO-completed pull request as merged. The
 // merged determination itself is the CORE land action and is written unchanged;

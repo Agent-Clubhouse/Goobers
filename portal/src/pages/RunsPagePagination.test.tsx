@@ -258,6 +258,58 @@ describe("runs history pagination under live events", () => {
     await waitFor(() => expect(within(row).getByText("implement")).toBeInTheDocument());
   });
 
+  // #3655: a targeted by-id refresh bypasses the daemon's phase filter, so a
+  // run that finished while "active" was selected was merged straight back
+  // into the list and stayed visible until a full reload.
+  it("drops a targeted refresh that no longer matches the selected filter", async () => {
+    const fixtures = largeJournalFixtures({
+      completed: 0,
+      running: 68,
+      failed: 0,
+      escalated: 0,
+      aborted: 0,
+    });
+    const finished = fixtures.runs.runs[60];
+    const retained = fixtures.runs.runs[59];
+    const client = new PushableClient(fixtures);
+    const user = userEvent.setup();
+    render(<App client={client} />);
+
+    const history = await screen.findByRole("region", { name: "Run history" });
+    await user.click(screen.getByRole("button", { name: "active" }));
+    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(50));
+    await user.click(screen.getByRole("button", { name: "Load more runs" }));
+    await waitFor(() => expect(history.querySelectorAll("a")).toHaveLength(68));
+    expect(screen.getByRole("link", { name: `Open run ${finished.id}` })).toBeInTheDocument();
+
+    fixtures.runDetails = {
+      [finished.id]: {
+        ...finished,
+        phase: "completed",
+        terminal: true,
+        finishedAt: "2026-07-18T02:00:00Z",
+        lastSeq: finished.lastSeq + 1,
+        graphStatus: "unavailable",
+        transitionsStatus: "unavailable",
+      },
+    };
+    finished.phase = "completed";
+    finished.terminal = true;
+    finished.lastSeq += 1;
+
+    act(() => {
+      client.push(runEvent("session:left-active", [finished.id]));
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("link", { name: `Open run ${finished.id}` }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(history.querySelectorAll("a")).toHaveLength(67);
+    expect(screen.getByRole("link", { name: `Open run ${retained.id}` })).toBeInTheDocument();
+  });
+
   it("refreshes an invalidated paged-in row after an overlapping load-more", async () => {
     const fixtures = largeJournalFixtures({
       completed: 0,

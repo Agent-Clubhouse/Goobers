@@ -2,6 +2,9 @@ name: Release
 
 on:
   push:
+    # The trailing "*" matches past embedded dots/dashes, so this also
+    # triggers on pre-release tags (e.g. "v1.2.3-beta.2") — see
+    # docs/guides/releases.md "Pre-release tags".
     tags:
       - "v*.*.*"
   workflow_dispatch:
@@ -407,7 +410,7 @@ jobs:
           goobers --version | grep --fixed-strings "$TAG"
           grep --fixed-strings "# Goobers ${TAG} documentation" smoke/docs/RELEASE.md
           grep --fixed-strings "bundled with release \`${TAG}\`" smoke/docs/guides/quickstart.md
-          grep --fixed-strings "goobers-${TAG} init --guided ./my-instance" smoke/docs/guides/quickstart.md
+          grep --fixed-strings "goobers-${TAG} init --guided" smoke/docs/guides/quickstart.md
           grep --fixed-strings "goobers-${TAG} run implementation ./my-instance" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "go build -o bin/goobers" smoke/docs/guides/quickstart.md
           ! grep --fixed-strings "bin/goobers init" smoke/docs/guides/quickstart.md
@@ -420,14 +423,9 @@ jobs:
           mkdir onboarding-asset
           unzip -q "dist/goobers-onboarding_${TAG}.zip" -d onboarding-asset
           diff --recursive smoke/onboarding onboarding-asset
-          goobers init --guided smoke/quickstart-instance \
-            < cmd/goobers/testdata/guided-init-release.answers
+          goobers init --template=quickstart smoke/quickstart-instance
           goobers validate smoke/quickstart-instance
-          test -f smoke/quickstart-instance/config/gaggles/goobers/workflows/implementation.yaml
-          test -f smoke/quickstart-config/instance.yaml.example
-          test -f smoke/quickstart-config/manifest.yaml
-          test -f smoke/quickstart-config/gaggles/goobers/workflows/implementation.yaml
-          test ! -e smoke/quickstart-config/telemetry.db
+          test -f smoke/quickstart-instance/config/gaggles/example/workflows/quickstart.yaml
           mkdir generated-docs
           goobers __generate-docs generated-docs
           diff --recursive smoke/docs/cli generated-docs/cli
@@ -439,12 +437,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          # Stable tags never contain a literal "-"; a SemVer pre-release
+          # suffix always does (v1.2.3-beta.2), so this is enough to tell
+          # them apart without re-implementing the full grammar in bash.
+          prerelease=()
+          if [[ "$TAG" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md
+            gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md "${prerelease[@]}"
             gh release upload "$TAG" dist/* --clobber
           else
             gh release create "$TAG" dist/* \
               --verify-tag \
               --title "$TAG" \
-              --notes-file dist/RELEASE_NOTES.md
+              --notes-file dist/RELEASE_NOTES.md \
+              "${prerelease[@]}"
           fi

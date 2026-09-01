@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -40,15 +41,10 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -186,7 +182,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 		if recordTutorLiveVerification {
 			tutorHoldout, err = prepareTutorHoldout(
 				root,
-				os.Getenv("GOOBERS_GAGGLE"),
+				os.Getenv(executor.GaggleEnvVar),
 				runID,
 				providerInput("tutorConfigSource", ""),
 				classification,
@@ -214,13 +210,26 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// failure must never block a legitimate PR — and gate on haveIssue so
 	// issue-less runs (other workflows, generic PRs) keep exactly today's
 	// behavior.
+	//
+	// The read must target the project the work item actually lives in (#3648).
+	// On ADO the backlog is a different project from the code repo the branch
+	// and PR land in, so a GetWorkItem addressed at the routed code repo returns
+	// not-found for every claimed item — and because the check fails open, that
+	// silently reinstates exactly the stale PR #947 exists to prevent. Only the
+	// work-item read is re-addressed (backlogRepoRefForStage); the PR itself
+	// still opens against the routed code repository.
 	if haveIssue && issueID != "" {
+		issuesRepo := backlogRepoRefForStage(root, repo)
 		ctxCheck, cancelCheck := providerCommandContext()
-		item, checkErr := provider.GetWorkItem(ctxCheck, repo, issueID)
+		item, checkErr := provider.GetWorkItem(ctxCheck, issuesRepo, issueID)
 		cancelCheck()
 		switch {
+		case providers.IsNotFoundError(checkErr):
+			pf(stderr, "warning: claimed issue #%s does not resolve in %s — the staleness re-check could not confirm it is still open; proceeding\n",
+				issueID, repositoryDisplayName(issuesRepo))
 		case checkErr != nil:
-			pf(stderr, "warning: could not re-check issue #%s state before opening PR (%v) — proceeding\n", issueID, checkErr)
+			pf(stderr, "warning: could not re-check issue #%s state in %s before opening PR (%v) — proceeding\n",
+				issueID, repositoryDisplayName(issuesRepo), checkErr)
 		case item.State != "" && !strings.EqualFold(item.State, "open"):
 			pf(stdout, "issue #%s is no longer open (state %q) since it was claimed — aborting without opening a PR (#947)\n", issueID, item.State)
 			if err := writeOpenPRResult(resultFile, false, 0, ""); err != nil {
@@ -237,7 +246,7 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// replace this run-keyed file; optional final classifications remove it.
 	if recordTutorLiveVerification {
 		if tutorHoldout == nil {
-			if err := clearTutorHoldoutsForRun(root, os.Getenv("GOOBERS_GAGGLE"), runID); err != nil {
+			if err := clearTutorHoldoutsForRun(root, os.Getenv(executor.GaggleEnvVar), runID); err != nil {
 				pf(stderr, "error: replace Tutor live verification: %v\n", err)
 				return 1
 			}
@@ -286,7 +295,14 @@ func runOpenPR(args []string, stdout, stderr io.Writer) int {
 	// its own flagged gate gets the stricter-review label; ordinary gate
 	// tuning gets the lighter one. Best-effort — labeling failures never fail
 	// an already-opened PR, same posture as flagScopeDrift.
-	if kind, subject := gateEditClassificationFromJournal(root, runID); kind != "" && kind != "none" {
+	kind, subject, classifyErr := gateEditClassificationFromJournal(root, runID)
+	switch {
+	case classifyErr != nil:
+		// Loud, not silent: an unreadable journal means we do not KNOW whether
+		// this diff edits its own gate, and the PR is going out unlabelled.
+		pf(stderr, "warning: could not read gate-edit classification for pr #%d from the run journal (%v) — the pr is unlabelled for gate-edit review routing\n",
+			result.Number, classifyErr)
+	case kind != "" && kind != "none":
 		if gh, ok := provider.(*providers.GitHubProvider); ok {
 			if lerr := labelGateEdit(ctx, gh, repo, result.Number, kind, subject); lerr != nil {
 				pf(stderr, "warning: could not label pr #%d for gate-edit review routing (%v)\n", result.Number, lerr)

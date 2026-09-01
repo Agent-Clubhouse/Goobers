@@ -443,6 +443,26 @@ func TestValidateRunnersEntryBranches(t *testing.T) {
 			},
 		},
 		{
+			name: "windows claim block on a windows runner is accepted",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Provides: RunnerProvides{OS: RunnerOSWindows, Windows: &RunnerWindowsClaims{AVExclusionsVerified: true}}}}
+			},
+		},
+		{
+			name: "windows claim block on a non-windows runner is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Provides: RunnerProvides{OS: RunnerOSLinux, Windows: &RunnerWindowsClaims{AVExclusionsVerified: true}}}}
+			},
+			wantErr: `provides.windows is declared but provides.os is "linux"`,
+		},
+		{
+			name: "windows claim block on a runner with no os is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Provides: RunnerProvides{Windows: &RunnerWindowsClaims{}}}}
+			},
+			wantErr: `provides.windows is declared but provides.os is ""`,
+		},
+		{
 			name: "unknown restriction is refused naming the closed list",
 			mutate: func(c *Config) {
 				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Restrictions: []RunnerRestriction{"network:proxy"}}}
@@ -461,6 +481,96 @@ func TestValidateRunnersEntryBranches(t *testing.T) {
 			mutate: func(c *Config) {
 				c.Runners = []RunnerEntry{{Name: "a", Host: "self", Restrictions: KnownRunnerRestrictions()}}
 			},
+		},
+		// Restrictions doc D4 as corrected by #3619: a Windows runner may
+		// declare only what Windows can bind — tmp:ephemeral (the live
+		// windows-shell entry's declaration) and env:default-deny — and the
+		// three effects with no Windows binding are refused at load.
+		{
+			name: "windows runner may declare tmp:ephemeral and env:default-deny",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "win", Host: "ghcr.io/example/win:v1",
+					Provides:     RunnerProvides{OS: RunnerOSWindows},
+					Restrictions: []RunnerRestriction{RunnerRestrictionTmpEphemeral, RunnerRestrictionEnvDefaultDeny},
+				}}
+			},
+		},
+		{
+			name: "windows runner declaring fs:readonly-except-workspace is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "win", Host: "ghcr.io/example/win:v1",
+					Provides:     RunnerProvides{OS: RunnerOSWindows},
+					Restrictions: []RunnerRestriction{RunnerRestrictionTmpEphemeral, RunnerRestrictionFSReadonly},
+				}}
+			},
+			wantErr: `restrictions[1]: "fs:readonly-except-workspace" has no Windows binding`,
+		},
+		{
+			name: "windows runner declaring network:none is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "win", Host: "ghcr.io/example/win:v1",
+					Provides:     RunnerProvides{OS: RunnerOSWindows},
+					Restrictions: []RunnerRestriction{RunnerRestrictionNetworkNone},
+				}}
+			},
+			wantErr: `"network:none" has no Windows binding`,
+		},
+		{
+			name: "windows self runner is held to the same declarable set",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "self", Host: "self",
+					Provides:     RunnerProvides{OS: RunnerOSWindows},
+					Restrictions: []RunnerRestriction{RunnerRestrictionNetworkAllowlist},
+				}}
+			},
+			wantErr: `"network:allowlist" has no Windows binding`,
+		},
+		{
+			name: "linux runner keeps the whole closed list",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "lin", Host: "ghcr.io/example/lin:v1",
+					Provides:     RunnerProvides{OS: RunnerOSLinux},
+					Restrictions: KnownRunnerRestrictions(),
+				}}
+			},
+		},
+		// #3619: the privilege=windows-admin capability is a Windows
+		// container identity claim; accepted on a Windows runner, refused on
+		// any other OS and on an entry claiming no OS.
+		{
+			name: "windows runner may claim privilege=windows-admin",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "win-admin", Host: "ghcr.io/example/win:v1",
+					Provides:     RunnerProvides{OS: RunnerOSWindows, Capabilities: []string{"dotnet@8", runnercap.CapabilityWindowsAdmin}},
+					Restrictions: []RunnerRestriction{RunnerRestrictionTmpEphemeral},
+				}}
+			},
+		},
+		{
+			name: "linux runner claiming privilege=windows-admin is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "lin", Host: "ghcr.io/example/lin:v1",
+					Provides: RunnerProvides{OS: RunnerOSLinux, Capabilities: []string{runnercap.CapabilityWindowsAdmin}},
+				}}
+			},
+			wantErr: `provides.capabilities claims "privilege=windows-admin", a Windows container identity (ContainerAdministrator), but provides.os is "linux"`,
+		},
+		{
+			name: "os-less runner claiming privilege=windows-admin is refused",
+			mutate: func(c *Config) {
+				c.Runners = []RunnerEntry{{
+					Name: "anon", Host: "self",
+					Provides: RunnerProvides{Capabilities: []string{runnercap.CapabilityWindowsAdmin}},
+				}}
+			},
+			wantErr: `but provides.os is ""`,
 		},
 	}
 	for _, test := range tests {
@@ -531,5 +641,49 @@ func TestSelfRunnerCapabilitiesWithoutSelfEntryClaimsNothing(t *testing.T) {
 	}
 	if got := cfg.SelfRunnerCapabilities(); got != nil {
 		t.Errorf("SelfRunnerCapabilities() = %v, want nil for an inventory with no self entry", got)
+	}
+}
+
+// TestSelfRunnerRestrictionsReadsTheSelfEntry pins the accessor the daemon's
+// composition root reads to decide which isolation effects to BIND on the
+// local execution seams. Restrictions are a runner property
+// (docs/design/goobernetes-restrictions.md §5): what the self entry declares
+// is what every stage placed on self runs under, asked for or not.
+func TestSelfRunnerRestrictionsReadsTheSelfEntry(t *testing.T) {
+	cfg := &Config{Runners: []RunnerEntry{
+		{Name: "linux-pod", Host: "ghcr.io/example/ci:v1", Restrictions: []RunnerRestriction{RunnerRestrictionFSReadonly}},
+		{Name: "self", Host: RunnerHostSelfName, Restrictions: []RunnerRestriction{RunnerRestrictionTmpEphemeral}},
+	}}
+	if got := cfg.SelfRunnerRestrictions(); len(got) != 1 || got[0] != RunnerRestrictionTmpEphemeral {
+		t.Fatalf("SelfRunnerRestrictions() = %v, want [tmp:ephemeral]", got)
+	}
+	if !cfg.SelfRunnerEnforces(RunnerRestrictionTmpEphemeral) {
+		t.Fatal("SelfRunnerEnforces(tmp:ephemeral) = false for a self entry that declares it")
+	}
+	// A non-self entry's restrictions are never the self runner's: a pod
+	// class enforcing an effect says nothing about the daemon host.
+	if cfg.SelfRunnerEnforces(RunnerRestrictionFSReadonly) {
+		t.Fatal("SelfRunnerEnforces read a NON-self entry's restriction as the self runner's")
+	}
+}
+
+// TestSelfRunnerRestrictionsAreEmptyWithoutAnInventory is the
+// zero-declaration-invariance half (goobernetes-architecture.md §11 item 1):
+// an instance that declares no runners: block binds no effect, so its stage
+// environments stay byte-identical to every previous release.
+func TestSelfRunnerRestrictionsAreEmptyWithoutAnInventory(t *testing.T) {
+	legacy := &Config{Runner: RunnerConfig{Capabilities: []string{"dotnet@8"}}}
+	if got := legacy.SelfRunnerRestrictions(); got != nil {
+		t.Fatalf("SelfRunnerRestrictions() = %v on a legacy config, want nil", got)
+	}
+	if legacy.SelfRunnerEnforces(RunnerRestrictionTmpEphemeral) {
+		t.Fatal("a config with no runners: block must enforce nothing locally")
+	}
+	// An inventory with no self entry likewise enforces nothing locally.
+	remoteOnly := &Config{Runners: []RunnerEntry{
+		{Name: "linux-pod", Host: "ghcr.io/example/ci:v1", Restrictions: []RunnerRestriction{RunnerRestrictionTmpEphemeral}},
+	}}
+	if remoteOnly.SelfRunnerEnforces(RunnerRestrictionTmpEphemeral) {
+		t.Fatal("an inventory with no self entry must enforce nothing locally")
 	}
 }

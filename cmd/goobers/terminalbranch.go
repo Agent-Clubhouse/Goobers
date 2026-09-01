@@ -36,7 +36,62 @@ var newTerminalBranchDeleter = func(source providers.TokenSource) providers.Bran
 	return providers.NewGitHubProvider("", providers.WithTokenSource(source))
 }
 
-func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, project apiv1.RepoRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (runner.TerminalPreparer, error) {
+// newGiteaTerminalBranchDeleter is the Gitea arm of the branch-delete seam.
+var newGiteaTerminalBranchDeleter = func(baseURL string, source providers.TokenSource) providers.BranchDeleter {
+	return providers.NewGiteaProvider(baseURL, "", providers.WithGiteaTokenSource(source))
+}
+
+func newTerminalBranchDeleteProviderForProject(cfg *instance.Config, project apiv1.RepoRef, source providers.TokenSource) (providers.BranchDeleter, error) {
+	repo := terminalRepositoryRefForProject(cfg, project)
+	switch repo.Provider {
+	case providers.ProviderGitea:
+		baseURL, err := terminalGiteaBaseURLForProject(cfg, project)
+		if err != nil {
+			return nil, err
+		}
+		return newGiteaTerminalBranchDeleter(baseURL, source), nil
+	case providers.ProviderGitHub:
+		return newTerminalBranchDeleter(source), nil
+	default:
+		return nil, fmt.Errorf("terminal branch cleanup does not support repository provider %q", repo.Provider)
+	}
+}
+
+// terminalAnnotator is the sink a terminal cleanup step records its outcome
+// to. Both *journal.Run and *journal.InstanceLog satisfy it.
+//
+// The interface exists because decision 005 D1 runs the SAME terminal
+// preparation for engine-driven runs, and an engine run's journal is already
+// closed by the time the daemon sees the workflow's result: the workflow
+// wrote its own run.finished through the live journal plane. Appending a
+// normative ref.touched after that would not merely be untidy — DiffLiveJournal
+// compares the live journal's conformance view against the projected one
+// ELEMENT BY ELEMENT AND BY LENGTH (internal/engine/verify.go), so the extra
+// event would be filed as a live_journal_divergence on every engine run that
+// cleaned up a branch. The cleanup still has to happen and still has to be
+// recorded; for an engine run it is recorded in the INSTANCE log, which is the
+// daemon's own record of what the daemon did, and is exactly where a
+// daemon-side side effect on a run it does not own belongs.
+type terminalAnnotator interface {
+	Append(journal.Event) error
+}
+
+// terminalBranchPreparer is buildTerminalBranchPreparer's driver-neutral
+// shape: runner.TerminalPreparer with the concrete *journal.Run widened to
+// the sink interface above.
+type terminalBranchPreparer func(runID string, phase journal.RunPhase, annotate terminalAnnotator) error
+
+// runnerPreparer adapts a terminalBranchPreparer to the runner's hook type.
+// The runner always passes the live run journal, which is correct for a run
+// it is itself driving: the run.finished append has not happened yet, so the
+// cleanup record lands inside the run's own history exactly as before.
+func (p terminalBranchPreparer) runnerPreparer() runner.TerminalPreparer {
+	return func(runID string, phase journal.RunPhase, jr *journal.Run) error {
+		return p(runID, phase, jr)
+	}
+}
+
+func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, project apiv1.RepoRef, registrar terminalSecretRegistry, stores credentials.StoreResolver) (terminalBranchPreparer, error) {
 	// An instance with no configured repo (the credential-free demo, #587)
 	// never touches a branch by design — every one of its runs is
 	// legitimately branch-less, not an anomaly finalizeTerminalBranch's
@@ -44,7 +99,7 @@ func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, projec
 	// branch cleanup entirely rather than journal a spurious ref.touched
 	// for every single run.
 	if len(cfg.Repos) == 0 {
-		return func(string, journal.RunPhase, *journal.Run) error { return nil }, nil
+		return func(string, journal.RunPhase, terminalAnnotator) error { return nil }, nil
 	}
 	deleteBranch, repo, err := buildTerminalBranchDelete(cfg, project, registrar, stores)
 	if err != nil {
@@ -54,9 +109,9 @@ func buildTerminalBranchPreparer(l instance.Layout, cfg *instance.Config, projec
 	if err != nil {
 		return nil, err
 	}
-	return func(runID string, phase journal.RunPhase, jr *journal.Run) error {
-		branchErr := finalizeTerminalBranch(l.RunsDir(), runID, jr, repo, deleteBranch)
-		labelErr := labelAbortedRunPR(l.RunsDir(), runID, phase, jr, repo, labelAbortedPR)
+	return func(runID string, phase journal.RunPhase, annotate terminalAnnotator) error {
+		branchErr := finalizeTerminalBranch(l.RunsDir(), runID, annotate, repo, deleteBranch)
+		labelErr := labelAbortedRunPR(l.RunsDir(), runID, phase, annotate, repo, labelAbortedPR)
 		return errors.Join(branchErr, labelErr)
 	}, nil
 }
@@ -133,20 +188,16 @@ func buildTerminalBranchDelete(cfg *instance.Config, project apiv1.RepoRef, regi
 	if err != nil {
 		return nil, providers.RepositoryRef{}, fmt.Errorf("build terminal branch-delete credentials: %w", err)
 	}
-	repo := providers.RepositoryRef{
-		Provider: providers.ProviderGitHub,
-		Owner:    cfg.Repos[0].Owner,
-		Name:     cfg.Repos[0].Name,
-	}
-	if project.Owner != "" && project.Name != "" {
-		repo.Owner, repo.Name = project.Owner, project.Name
-	}
+	repo := terminalRepositoryRefForProject(cfg, project)
 	deleteBranch := func(ctx context.Context, req providers.DeleteBranchRequest) (providers.DeleteBranchResult, error) {
 		set, err := injector.Materialize(ctx, []string{string(capability.GitHubBranchDelete)})
 		if err != nil {
 			return providers.DeleteBranchResult{}, scrubTerminalError(registrar, err)
 		}
-		deleter := newTerminalBranchDeleter(set.For(string(capability.GitHubBranchDelete)))
+		deleter, err := newTerminalBranchDeleteProviderForProject(cfg, project, set.For(string(capability.GitHubBranchDelete)))
+		if err != nil {
+			return providers.DeleteBranchResult{}, scrubTerminalError(registrar, err)
+		}
 		result, err := deleter.DeleteBranch(ctx, req)
 		return result, scrubTerminalError(registrar, err)
 	}
@@ -160,7 +211,7 @@ func scrubTerminalError(scrubber journal.Scrubber, err error) error {
 	return errors.New(string(scrubber.Scrub([]byte(err.Error()))))
 }
 
-func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo providers.RepositoryRef, deleteBranch deleteBranchFunc) error {
+func finalizeTerminalBranch(runsDir, runID string, annotate terminalAnnotator, repo providers.RepositoryRef, deleteBranch deleteBranchFunc) error {
 	rd, err := journal.OpenRead(filepath.Join(runsDir, runID))
 	if err != nil {
 		return fmt.Errorf("open terminal run journal: %w", err)
@@ -222,22 +273,22 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 		return nil
 	}
 	if branch == nil {
-		return appendBranchCleanup(jr, &journal.ExternalRef{
+		return appendBranchCleanup(annotate, &journal.ExternalRef{
 			Provider: string(repo.Provider),
 			Kind:     "branch",
 		}, branchCleanupSkipped, "branch-reference-missing", nil)
 	}
 	if !pushed {
-		return appendBranchCleanup(jr, branch, branchCleanupSkipped, "branch-not-pushed", nil)
+		return appendBranchCleanup(annotate, branch, branchCleanupSkipped, "branch-not-pushed", nil)
 	}
 	if openedPR {
-		return appendBranchCleanup(jr, branch, branchCleanupSkipped, "pull-request-opened", nil)
+		return appendBranchCleanup(annotate, branch, branchCleanupSkipped, "pull-request-opened", nil)
 	}
 	if lastGateOutcome == gate.OutcomeInfra {
-		return appendBranchCleanup(jr, branch, branchCleanupSkipped, "remediable-validation-failure", nil)
+		return appendBranchCleanup(annotate, branch, branchCleanupSkipped, "remediable-validation-failure", nil)
 	}
 	if deleteBranch == nil {
-		return appendBranchCleanup(jr, branch, branchCleanupFailed, "", errors.New("branch-delete provider is not configured"))
+		return appendBranchCleanup(annotate, branch, branchCleanupFailed, "", errors.New("branch-delete provider is not configured"))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -245,15 +296,15 @@ func finalizeTerminalBranch(runsDir, runID string, jr *journal.Run, repo provide
 	result, deleteErr := deleteBranch(ctx, providers.DeleteBranchRequest{Repository: repo, Name: branch.ID})
 	switch {
 	case deleteErr != nil:
-		return appendBranchCleanup(jr, branch, branchCleanupFailed, "", deleteErr)
+		return appendBranchCleanup(annotate, branch, branchCleanupFailed, "", deleteErr)
 	case !result.Deleted:
-		return appendBranchCleanup(jr, branch, branchCleanupSkipped, "branch-not-found", nil)
+		return appendBranchCleanup(annotate, branch, branchCleanupSkipped, "branch-not-found", nil)
 	default:
-		return appendBranchCleanup(jr, branch, branchCleanupSucceeded, "", nil)
+		return appendBranchCleanup(annotate, branch, branchCleanupSucceeded, "", nil)
 	}
 }
 
-func appendBranchCleanup(jr *journal.Run, branch *journal.ExternalRef, outcome, reason string, cleanupErr error) error {
+func appendBranchCleanup(annotate terminalAnnotator, branch *journal.ExternalRef, outcome, reason string, cleanupErr error) error {
 	runnerFields := map[string]any{
 		"operation": branchCleanupOperation,
 		"outcome":   outcome,
@@ -269,7 +320,7 @@ func appendBranchCleanup(jr *journal.Run, branch *journal.ExternalRef, outcome, 
 	if cleanupErr != nil {
 		ev.Error = &journal.ErrorDetail{Code: "branch_delete_failed", Message: cleanupErr.Error()}
 	}
-	if err := jr.Append(ev); err != nil {
+	if err := annotate.Append(ev); err != nil {
 		return fmt.Errorf("journal terminal branch cleanup: %w", err)
 	}
 	return nil

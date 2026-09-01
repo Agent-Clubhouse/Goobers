@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/runnercap"
 	"github.com/goobers/goobers/internal/supportmatrix"
 )
 
@@ -623,6 +624,27 @@ const (
 	featureGaggleRunsOnOS           FeatureID = "gaggle.spec.runsOn.os"
 	featureGaggleRunsOnCapabilities FeatureID = "gaggle.spec.runsOn.capabilities"
 	featureGaggleRunsOnRestrictions FeatureID = "gaggle.spec.runsOn.restrictions"
+	// Agentic-gate placement (Goobernetes-E2E-Core decision 001, #3798): the
+	// same runsOn block on gates[]. Registered GA-within-3.0 like the rest of
+	// the 3.0 surface — never as a VER002 preview feature (ruling 1).
+	featureGateRunsOn             FeatureID = "gate.runsOn"
+	featureGateRunsOnOS           FeatureID = "gate.runsOn.os"
+	featureGateRunsOnCPU          FeatureID = "gate.runsOn.cpu"
+	featureGateRunsOnMemory       FeatureID = "gate.runsOn.memory"
+	featureGateRunsOnDisk         FeatureID = "gate.runsOn.disk"
+	featureGateRunsOnCapabilities FeatureID = "gate.runsOn.capabilities"
+	featureGateRunsOnRestrictions FeatureID = "gate.runsOn.restrictions"
+	// The one product-interpreted capability token (#3619,
+	// runnercap.CapabilityWindowsAdmin): a stage requiring
+	// privilege=windows-admin places only on a Windows runner class that
+	// provides it and runs as ContainerAdministrator. Every other
+	// runsOn.capabilities token is an inert exact-match tag, so the token that
+	// selects a distinct substrate behaviour carries its own FeatureID, the
+	// per-value precedent goober.spec.harness.* set — one per declaration
+	// site, like the rest of the runsOn surface.
+	featureTaskRunsOnWindowsAdmin   FeatureID = "task.runsOn.capabilities.privilege.windows-admin"
+	featureGateRunsOnWindowsAdmin   FeatureID = "gate.runsOn.capabilities.privilege.windows-admin"
+	featureGaggleRunsOnWindowsAdmin FeatureID = "gaggle.spec.runsOn.capabilities.privilege.windows-admin"
 )
 
 // The registry predates the first tagged release. Keep this historical value
@@ -830,6 +852,16 @@ func currentFeatures(sinceVersion string) []Feature {
 		featureGaggleRunsOnOS,
 		featureGaggleRunsOnCapabilities,
 		featureGaggleRunsOnRestrictions,
+		featureGateRunsOn,
+		featureGateRunsOnOS,
+		featureGateRunsOnCPU,
+		featureGateRunsOnMemory,
+		featureGateRunsOnDisk,
+		featureGateRunsOnCapabilities,
+		featureGateRunsOnRestrictions,
+		featureTaskRunsOnWindowsAdmin,
+		featureGateRunsOnWindowsAdmin,
+		featureGaggleRunsOnWindowsAdmin,
 	}
 	features := make([]Feature, 0, len(ids))
 	for _, id := range ids {
@@ -882,20 +914,32 @@ func currentFeatures(sinceVersion string) []Feature {
 // (DVL010/DVL011) is the opt-in that guards the whole surface, and stacking a
 // per-feature preview gate on top would demand two acknowledgements for one
 // decision.
+const v30InitialFeatureVersion = "v0.4.0"
+
 var v30Introductions = map[FeatureID]string{
-	featureTaskRunsOn:               "v0.4.0",
-	featureTaskRunsOnOS:             "v0.4.0",
-	featureTaskRunsOnCPU:            "v0.4.0",
-	featureTaskRunsOnMemory:         "v0.4.0",
-	featureTaskRunsOnDisk:           "v0.4.0",
-	featureTaskRunsOnCapabilities:   "v0.4.0",
-	featureTaskRunsOnRestrictions:   "v0.4.0",
-	featureTaskRepoFrom:             "v0.4.0",
-	featureTaskCommitsRepo:          "v0.4.0",
-	featureGaggleRunsOn:             "v0.4.0",
-	featureGaggleRunsOnOS:           "v0.4.0",
-	featureGaggleRunsOnCapabilities: "v0.4.0",
-	featureGaggleRunsOnRestrictions: "v0.4.0",
+	featureTaskRunsOn:               v30InitialFeatureVersion,
+	featureTaskRunsOnOS:             v30InitialFeatureVersion,
+	featureTaskRunsOnCPU:            v30InitialFeatureVersion,
+	featureTaskRunsOnMemory:         v30InitialFeatureVersion,
+	featureTaskRunsOnDisk:           v30InitialFeatureVersion,
+	featureTaskRunsOnCapabilities:   v30InitialFeatureVersion,
+	featureTaskRunsOnRestrictions:   v30InitialFeatureVersion,
+	featureTaskRepoFrom:             v30InitialFeatureVersion,
+	featureTaskCommitsRepo:          v30InitialFeatureVersion,
+	featureGaggleRunsOn:             v30InitialFeatureVersion,
+	featureGaggleRunsOnOS:           v30InitialFeatureVersion,
+	featureGaggleRunsOnCapabilities: v30InitialFeatureVersion,
+	featureGaggleRunsOnRestrictions: v30InitialFeatureVersion,
+	featureGateRunsOn:               v30InitialFeatureVersion,
+	featureGateRunsOnOS:             v30InitialFeatureVersion,
+	featureGateRunsOnCPU:            v30InitialFeatureVersion,
+	featureGateRunsOnMemory:         v30InitialFeatureVersion,
+	featureGateRunsOnDisk:           v30InitialFeatureVersion,
+	featureGateRunsOnCapabilities:   v30InitialFeatureVersion,
+	featureGateRunsOnRestrictions:   v30InitialFeatureVersion,
+	featureTaskRunsOnWindowsAdmin:   v30InitialFeatureVersion,
+	featureGateRunsOnWindowsAdmin:   v30InitialFeatureVersion,
+	featureGaggleRunsOnWindowsAdmin: v30InitialFeatureVersion,
 }
 
 // gaPromotions records features that entered the registry at preview in a
@@ -1160,6 +1204,9 @@ func FeaturesForGaggle(spec apiv1.GaggleSpec) ([]Feature, error) {
 		}
 		if spec.RunsOn.Capabilities != nil {
 			used.add(featureGaggleRunsOnCapabilities)
+			if runnercap.HasWindowsAdmin(spec.RunsOn.Capabilities) {
+				used.add(featureGaggleRunsOnWindowsAdmin)
+			}
 		}
 		if spec.RunsOn.Restrictions != nil {
 			used.add(featureGaggleRunsOnRestrictions)
@@ -1417,6 +1464,9 @@ func addTaskFeatures(used featureSet, task apiv1.Task) {
 		}
 		if task.RunsOn.Capabilities != nil {
 			used.add(featureTaskRunsOnCapabilities)
+			if runnercap.HasWindowsAdmin(task.RunsOn.Capabilities) {
+				used.add(featureTaskRunsOnWindowsAdmin)
+			}
 		}
 		if task.RunsOn.Restrictions != nil {
 			used.add(featureTaskRunsOnRestrictions)
@@ -1529,6 +1579,33 @@ func addGateFeatures(used featureSet, gate apiv1.Gate) {
 	used.add(featureGateName, featureGateBranches)
 	if gate.MaxRepasses != 0 {
 		used.add(featureGateMaxRepasses)
+	}
+	// Collected evaluator-independently: a runsOn on a non-agentic gate is a
+	// compile error (WF023), and the registry records what the document
+	// USES, not what compiles.
+	if gate.RunsOn != nil {
+		used.add(featureGateRunsOn)
+		if gate.RunsOn.OS != "" {
+			used.add(featureGateRunsOnOS)
+		}
+		if gate.RunsOn.CPU != "" {
+			used.add(featureGateRunsOnCPU)
+		}
+		if gate.RunsOn.Memory != "" {
+			used.add(featureGateRunsOnMemory)
+		}
+		if gate.RunsOn.Disk != "" {
+			used.add(featureGateRunsOnDisk)
+		}
+		if gate.RunsOn.Capabilities != nil {
+			used.add(featureGateRunsOnCapabilities)
+			if runnercap.HasWindowsAdmin(gate.RunsOn.Capabilities) {
+				used.add(featureGateRunsOnWindowsAdmin)
+			}
+		}
+		if gate.RunsOn.Restrictions != nil {
+			used.add(featureGateRunsOnRestrictions)
+		}
 	}
 	for outcome, target := range gate.Branches {
 		if outcome == BranchEscalate {

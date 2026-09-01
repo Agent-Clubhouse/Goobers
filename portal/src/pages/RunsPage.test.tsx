@@ -182,7 +182,7 @@ describe("runs history page", () => {
     render(<App client={client} />);
 
     expect(
-      await screen.findByRole("heading", { name: "Daemon unavailable" }),
+      await screen.findByRole("heading", { name: "Couldn't load Goobers data" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reconnect" })).toBeInTheDocument();
   });

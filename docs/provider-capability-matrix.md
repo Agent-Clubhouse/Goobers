@@ -14,7 +14,7 @@ Capability conformance records implemented surfaces; it does not override a prov
 
 ## Capabilities
 
-Every declared capability (`providers.Capability`, design doc `docs/design/provider-contract-conformance.md` §3.1) projected across every registered provider. `required` marks capabilities in `providers.WorkflowRequiredCapabilities()` — the set the blessed tier (GitHub, ADO) must be conformant on or have a linked gap issue for; other capabilities are informational.
+Every declared capability (`providers.Capability`, design doc `docs/design/provider-contract-conformance.md` §3.1) projected across every registered provider. `required` marks capabilities in `providers.WorkflowRequiredCapabilities()` — the set the blessed tier (GitHub, ADO) must be conformant on, have a linked gap issue for, or record as permanently not applicable; other capabilities are informational.
 
 | Capability | Required | github | ado | gitea (experimental) |
 | --- | --- | --- | --- | --- |
@@ -29,7 +29,7 @@ Every declared capability (`providers.Capability`, design doc `docs/design/provi
 | `pr.files` | yes | conformant | conformant | conformant |
 | `pr.compare` | yes | conformant | conformant | conformant |
 | `pr.query.author` | yes | conformant | conformant | not declared |
-| `pr.query.assignee` | yes | conformant | gap (#2178) | not declared |
+| `pr.query.assignee` | yes | conformant | not applicable | not declared |
 | `pr.query.requestedReviewer` | yes | conformant | conformant | not declared |
 | `pr.review.request` | yes | conformant | conformant | conformant |
 | `pr.review.submit` |  | conformant | not declared | conformant |
@@ -52,3 +52,11 @@ Every declared capability (`providers.Capability`, design doc `docs/design/provi
 | `backlog.claim` | yes | conformant | conformant | conformant |
 | `backlog.blockers` | yes | conformant | gap (#3030) | conformant |
 | `trigger.subscribe` | yes | conformant | conformant | conformant |
+
+## Not applicable
+
+Permanent forge differences, not tracked work: these capabilities cannot exist on the provider, so no issue tracks them.
+
+| Provider | Capability | Why |
+| --- | --- | --- |
+| ado | `pr.query.assignee` | Azure DevOps pull requests have no assignee concept; reviewers are the closest analog and are covered by pr.query.requestedReviewer |

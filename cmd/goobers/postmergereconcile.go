@@ -8,19 +8,18 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/goobers/goobers/internal/capability"
-	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
 )
 
 const (
-	postMergeReconcileLedgerFile = "post-merge-reconcile.json"
+	postMergeReconcileLedgerFile = stateclient.KeyPostMergeReconcileLedger
 	postMergeReconcileLockFile   = "post-merge-reconcile.lock"
 	postMergeReconcileVersion    = 1
 	postMergeReconcilePending    = "pending"
@@ -99,8 +98,8 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
 	if *limit < 1 || *limit > maxPostMergeReconcileBatch {
@@ -112,11 +111,6 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 	repo, err := providerRepo(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
@@ -125,25 +119,27 @@ func runReconcilePostMerge(args []string, stdout, stderr io.Writer) int {
 	if repo.Provider == providers.ProviderADO {
 		return runReconcilePostMergeADO(root, repo, *limit, *lookback, stdout, stderr)
 	}
-	provider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, false,
-		withStageProviderCapability(capability.GitHubPRWrite),
-		withStageProviderMutations("pr"),
-	)
+	prToken, err := providerToken(capability.GitHubPRWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	issuesProvider, err := newMergeReviewProviderAs[*providers.GitHubProvider](root, repo, false,
-		withStageProviderCapability(capability.GitHubIssuesWrite),
-		withStageProviderMutations("issue"),
-	)
+	issuesToken, err := providerToken(capability.GitHubIssuesWrite)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if _, err := newMergeReviewProvider(root, repo, false,
-		withStageProviderCapability(capability.GitHubBranchDelete),
-	); err != nil {
+	if _, err := providerToken(capability.GitHubBranchDelete); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	provider, err := mergeStageProviderWithRecorder(root, repo, prToken, sidecarMutationRecorder{kind: "pr"})
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 1
+	}
+	issuesProvider, err := remediationStageProviderWithRecorder(root, repo, issuesToken, false, sidecarMutationRecorder{kind: "issue"})
+	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
 	}
@@ -180,8 +176,8 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 	defer cancel()
 
 	var report postMergeReconcileReport
-	err = withPostMergeReconcileLock(root, func(ledgerPath string) error {
-		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+	err = withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
+		ledger, err := session.read()
 		if err != nil {
 			return err
 		}
@@ -190,6 +186,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 		if len(keys) > limit {
 			keys = keys[:limit]
 		}
+		var reconcileErrs []error
 		for _, key := range keys {
 			entry := ledger.Entries[key]
 			report.Scanned++
@@ -215,6 +212,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 			if len(actionErrs) > 0 {
 				report.Pending++
 				ledger.Entries[key] = entry
+				reconcileErrs = append(reconcileErrs, fmt.Errorf("pr #%s: %w", entry.PullNumber, errors.Join(actionErrs...)))
 				continue
 			}
 			// ADO's post-merge path closes work items only. Do not checkpoint
@@ -230,9 +228,17 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 			ledger.Entries[key] = entry
 			report.Reconciled++
 		}
-		return writePostMergeReconcileLedger(ledgerPath, ledger)
+		if err := session.write(ledger); err != nil {
+			return err
+		}
+		if len(reconcileErrs) > 0 {
+			return &postMergeReconcileProviderError{err: errors.Join(reconcileErrs...)}
+		}
+		return nil
 	})
 	if err != nil {
+		pf(stdout, "post-merge reconciliation: scanned %d, reconciled %d, still pending %d, expired %d\n",
+			report.Scanned, report.Reconciled, report.Pending, report.Expired)
 		return failProviderStage(stderr, "reconcile timed-out merge queue entries", err, "")
 	}
 	pf(stdout, "post-merge reconciliation: scanned %d, reconciled %d, still pending %d, expired %d\n",
@@ -242,7 +248,7 @@ func runReconcilePostMergeADO(root string, repo providers.RepositoryRef, limit i
 
 func reconcileOpenPullRequestParks(
 	ctx context.Context,
-	provider *providers.GitHubProvider,
+	provider remediationProvider,
 	repo providers.RepositoryRef,
 	root string,
 	base string,
@@ -253,12 +259,12 @@ func reconcileOpenPullRequestParks(
 		return nil
 	}
 	var others []providers.PullRequestSummary
-	err := withPostMergeReconcileLock(root, func(ledgerPath string) error {
-		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+	err := withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
+		ledger, err := session.read()
 		if err != nil {
 			return err
 		}
-		key := strings.ToLower(repo.Owner + "/" + repo.Name + "#" + base)
+		key := postMergeOpenPRScanKey(repo, base)
 		page := ledger.OpenPRScanPage[key]
 		if page < 1 {
 			page = 1
@@ -279,7 +285,7 @@ func reconcileOpenPullRequestParks(
 			}
 		}
 		ledger.OpenPRScanPage[key] = page + 1
-		return writePostMergeReconcileLedger(ledgerPath, ledger)
+		return session.write(ledger)
 	})
 	if err != nil {
 		return []error{fmt.Errorf("list bounded open pull requests targeting %s for park reconciliation: %w", base, err)}
@@ -313,7 +319,8 @@ func filterPullRequestsByHeadPrefix(prs []providers.PullRequestSummary, prefix s
 
 func reconcilePostMerges(
 	ctx context.Context,
-	provider, issuesProvider *providers.GitHubProvider,
+	provider mergeProvider,
+	issuesProvider remediationProvider,
 	repo providers.RepositoryRef,
 	root string,
 	limit int,
@@ -332,8 +339,8 @@ func reconcilePostMerges(
 		now = time.Now
 	}
 
-	err := withPostMergeReconcileLock(root, func(ledgerPath string) error {
-		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+	err := withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
+		ledger, err := session.read()
 		if err != nil {
 			return err
 		}
@@ -369,7 +376,7 @@ func reconcilePostMerges(
 				ledger.Entries[key] = entry
 				report.Pending++
 				changed = true
-				if err := writePostMergeReconcileLedger(ledgerPath, ledger); err != nil {
+				if err := session.write(ledger); err != nil {
 					return err
 				}
 				continue
@@ -377,10 +384,10 @@ func reconcilePostMerges(
 
 			ledger.Entries[key] = entry
 			changed = true
-			if err := writePostMergeReconcileLedger(ledgerPath, ledger); err != nil {
+			if err := session.write(ledger); err != nil {
 				return err
 			}
-			actionErrs, err := reconcilePostMergeActions(ctx, provider, issuesProvider, root, poll, key, &ledger, ledgerPath, stdout, stderr)
+			actionErrs, err := reconcilePostMergeActions(ctx, provider, issuesProvider, root, poll, key, &ledger, session, stdout, stderr)
 			if err != nil {
 				return err
 			}
@@ -399,12 +406,12 @@ func reconcilePostMerges(
 			ledger.Entries[key] = entry
 			report.Reconciled++
 			changed = true
-			if err := writePostMergeReconcileLedger(ledgerPath, ledger); err != nil {
+			if err := session.write(ledger); err != nil {
 				return err
 			}
 		}
 		if changed && len(keys) == 0 {
-			return writePostMergeReconcileLedger(ledgerPath, ledger)
+			return session.write(ledger)
 		}
 		if len(reconcileErrs) > 0 {
 			return &postMergeReconcileProviderError{err: errors.Join(reconcileErrs...)}
@@ -416,12 +423,13 @@ func reconcilePostMerges(
 
 func reconcilePostMergeActions(
 	ctx context.Context,
-	provider, issuesProvider *providers.GitHubProvider,
+	provider mergeProvider,
+	issuesProvider remediationProvider,
 	root string,
 	poll providers.PullRequestPollResult,
 	key string,
 	ledger *postMergeReconcileLedger,
-	ledgerPath string,
+	session *postMergeReconcileSession,
 	stdout, stderr io.Writer,
 ) ([]error, error) {
 	entry := ledger.Entries[key]
@@ -431,7 +439,7 @@ func reconcilePostMergeActions(
 	var actionErrs []error
 	persist := func() error {
 		ledger.Entries[key] = entry
-		return writePostMergeReconcileLedger(ledgerPath, *ledger)
+		return session.write(*ledger)
 	}
 	run := func(name string, done *bool, action func() []error) error {
 		if *done {
@@ -451,7 +459,7 @@ func reconcilePostMergeActions(
 	}
 
 	if err := run("branch cleanup", &entry.Actions.BranchCleanup, func() []error {
-		cleanup := cleanupMergedBranch(ctx, poll.HeadRepository, poll.HeadBranch, provider)
+		cleanup := cleanupMergedBranch(ctx, root, poll.HeadRepository, poll.HeadBranch, provider)
 		if cleanup.Error != "" {
 			return []error{errors.New(cleanup.Error)}
 		}
@@ -523,8 +531,8 @@ func recordPostMergeTimeout(root string, repo providers.RepositoryRef, pullNumbe
 	if strings.TrimSpace(pullNumber) == "" {
 		return fmt.Errorf("pull number is required")
 	}
-	return withPostMergeReconcileLock(root, func(ledgerPath string) error {
-		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+	return withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
+		ledger, err := session.read()
 		if err != nil {
 			return err
 		}
@@ -546,7 +554,7 @@ func recordPostMergeTimeout(root string, repo providers.RepositoryRef, pullNumbe
 				TimedOutAt: at.UTC(),
 			}
 		}
-		return writePostMergeReconcileLedger(ledgerPath, ledger)
+		return session.write(ledger)
 	})
 }
 
@@ -595,38 +603,119 @@ func pendingPostMergeReconcileKeys(ledger postMergeReconcileLedger, repo provide
 }
 
 func sameRepository(left, right providers.RepositoryRef) bool {
-	return strings.EqualFold(left.Owner, right.Owner) && strings.EqualFold(left.Name, right.Name)
+	return providers.SameRepository(left, right)
 }
 
+// postMergeReconcileKey keys a durable reconciliation record by the canonical
+// provider-complete repository identity (#3649): owner/name alone repeat
+// across providers, Azure DevOps projects, and self-hosted services, which let
+// one repository's completed record suppress another's reconciliation.
 func postMergeReconcileKey(repo providers.RepositoryRef, pullNumber string) string {
-	return strings.ToLower(repo.Owner) + "/" + strings.ToLower(repo.Name) + "#" + pullNumber
+	return repo.CanonicalKey() + "#" + pullNumber
 }
 
-func withPostMergeReconcileLock(root string, fn func(string) error) error {
-	schedulerDir := layoutFor(root).SchedulerDir()
-	if err := os.MkdirAll(schedulerDir, 0o755); err != nil {
-		return fmt.Errorf("create scheduler directory: %w", err)
+func postMergeOpenPRScanKey(repo providers.RepositoryRef, base string) string {
+	return repo.CanonicalKey() + "#" + strings.ToLower(strings.TrimSpace(base))
+}
+
+// postMergeReconcileSession is one critical section over the reconcile ledger.
+// It exists because this ledger is not a single read-modify-write: the scan
+// reads once and then persists partial progress repeatedly as it polls the
+// provider and takes post-merge actions, so a crash mid-scan does not repeat
+// an action it already completed.
+//
+// Every write carries the ETag the session last observed. On the instance's
+// own files that is a formality — the whole session runs inside
+// post-merge-reconcile.lock, so the ETag always matches. On the
+// scheduler-state plane (#3878) it is the real isolation: an interleaved
+// writer is refused rather than clobbered, and the stage fails loudly instead
+// of losing the other writer's reconcile progress.
+type postMergeReconcileSession struct {
+	ctx   context.Context
+	store stateclient.Store
+	etag  string
+}
+
+// read loads the ledger and records its ETag as the precondition for this
+// session's next write.
+func (s *postMergeReconcileSession) read() (postMergeReconcileLedger, error) {
+	value, err := s.store.Get(s.ctx, stateclient.KeyPostMergeReconcileLedger)
+	if err != nil {
+		return emptyPostMergeReconcileLedger(), fmt.Errorf("read post-merge reconcile ledger: %w", err)
 	}
-	lockPath := filepath.Join(schedulerDir, postMergeReconcileLockFile)
-	ledgerPath := filepath.Join(schedulerDir, postMergeReconcileLedgerFile)
-	return withFileLock(lockPath, func() error { return fn(ledgerPath) })
+	ledger, err := decodePostMergeReconcileLedger(value)
+	if err != nil {
+		return ledger, err
+	}
+	s.etag = value.ETag
+	return ledger, nil
 }
 
-func readPostMergeReconcileLedger(path string) (postMergeReconcileLedger, error) {
-	ledger := postMergeReconcileLedger{
+// write persists the ledger, conditional on nothing else having written since
+// this session last read or wrote.
+func (s *postMergeReconcileSession) write(ledger postMergeReconcileLedger) error {
+	data, err := encodePostMergeReconcileLedger(ledger)
+	if err != nil {
+		return err
+	}
+	value, err := s.store.Put(s.ctx, stateclient.KeyPostMergeReconcileLedger, data, s.etag)
+	if err != nil {
+		return fmt.Errorf("write post-merge reconcile ledger: %w", err)
+	}
+	s.etag = value.ETag
+	return nil
+}
+
+// withPostMergeReconcileLock runs fn as one critical section over the reconcile
+// ledger. The name is unchanged because the guarantee is unchanged: locally it
+// is still post-merge-reconcile.lock held across the whole of fn.
+func withPostMergeReconcileLock(root string, fn func(*postMergeReconcileSession) error) error {
+	return withPostMergeReconcileSession(stateContext(), root, fn)
+}
+
+func withPostMergeReconcileSession(ctx context.Context, root string, fn func(*postMergeReconcileSession) error) error {
+	layout := layoutFor(root)
+	// The plane owns the daemon's scheduler directory; a stage pod has no
+	// business creating one of its own.
+	if !statePlaneSelected() {
+		if err := os.MkdirAll(layout.SchedulerDir(), 0o755); err != nil {
+			return fmt.Errorf("create scheduler directory: %w", err)
+		}
+	}
+	store, err := openStageStateStore(layout)
+	if err != nil {
+		return err
+	}
+	// The session reads and writes through the HELD store: Section already
+	// holds the key's lock for the whole of fn on the file backend, and taking
+	// it again per operation would wait on the section standing above it. On
+	// the plane both stores are the same client — the daemon takes the lock
+	// per request and the session's If-Match is what isolates it.
+	held, err := openHeldStageStateStore(layout)
+	if err != nil {
+		return err
+	}
+	session := &postMergeReconcileSession{ctx: ctx, store: held}
+	return store.Section(ctx, stateclient.KeyPostMergeReconcileLedger, stateLockOperationPostMergeUpdate, func() error {
+		return fn(session)
+	})
+}
+
+func emptyPostMergeReconcileLedger() postMergeReconcileLedger {
+	return postMergeReconcileLedger{
 		Version:        postMergeReconcileVersion,
 		Entries:        map[string]postMergeReconcileEntry{},
 		OpenPRScanPage: map[string]int{},
 	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
+}
+
+func decodePostMergeReconcileLedger(value stateclient.Value) (postMergeReconcileLedger, error) {
+	ledger := emptyPostMergeReconcileLedger()
+	if !value.Exists() {
 		return ledger, nil
 	}
-	if err != nil {
-		return ledger, fmt.Errorf("read post-merge reconcile ledger: %w", err)
-	}
-	if err := json.Unmarshal(data, &ledger); err != nil {
-		return ledger, fmt.Errorf("decode post-merge reconcile ledger: %w", err)
+	if err := json.Unmarshal(value.Data, &ledger); err != nil {
+		return emptyPostMergeReconcileLedger(), fmt.Errorf("decode post-merge reconcile ledger: %w", err)
 	}
 	if ledger.Version != postMergeReconcileVersion {
 		return ledger, fmt.Errorf("unsupported post-merge reconcile ledger version %d", ledger.Version)
@@ -637,17 +726,48 @@ func readPostMergeReconcileLedger(path string) (postMergeReconcileLedger, error)
 	if ledger.OpenPRScanPage == nil {
 		ledger.OpenPRScanPage = map[string]int{}
 	}
+	ledger.Entries = canonicalizePostMergeReconcileEntries(ledger.Entries)
 	return ledger, nil
 }
 
-func writePostMergeReconcileLedger(path string, ledger postMergeReconcileLedger) error {
+// canonicalizePostMergeReconcileEntries rekeys records written before the
+// canonical provider-complete key (#3649). Each entry carries the repository
+// it belongs to, so the canonical key is recomputable in place; without this,
+// a ledger written by an earlier build would keep pending records under keys
+// no lookup can ever reach again, re-reconciling them forever.
+func canonicalizePostMergeReconcileEntries(
+	entries map[string]postMergeReconcileEntry,
+) map[string]postMergeReconcileEntry {
+	canonical := make(map[string]postMergeReconcileEntry, len(entries))
+	for key, entry := range entries {
+		target := key
+		if entry.PullNumber != "" {
+			target = postMergeReconcileKey(entry.Repository, entry.PullNumber)
+		}
+		existing, clash := canonical[target]
+		if clash && !postMergeEntryPreferred(entry, existing) {
+			continue
+		}
+		canonical[target] = entry
+	}
+	return canonical
+}
+
+// postMergeEntryPreferred resolves two legacy records that collapse onto the
+// same canonical key: a completed record wins so reconciliation is never
+// repeated, then the most recent timeout, so the outcome does not depend on
+// map iteration order.
+func postMergeEntryPreferred(candidate, existing postMergeReconcileEntry) bool {
+	if (candidate.State == postMergeReconcileCompleted) != (existing.State == postMergeReconcileCompleted) {
+		return candidate.State == postMergeReconcileCompleted
+	}
+	return candidate.TimedOutAt.After(existing.TimedOutAt)
+}
+
+func encodePostMergeReconcileLedger(ledger postMergeReconcileLedger) ([]byte, error) {
 	data, err := json.MarshalIndent(ledger, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode post-merge reconcile ledger: %w", err)
+		return nil, fmt.Errorf("encode post-merge reconcile ledger: %w", err)
 	}
-	data = append(data, '\n')
-	if err := journal.WriteFileAtomic(path, data, 0o644); err != nil {
-		return fmt.Errorf("write post-merge reconcile ledger: %w", err)
-	}
-	return nil
+	return append(data, '\n'), nil
 }

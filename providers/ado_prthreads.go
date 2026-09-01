@@ -42,11 +42,19 @@ const adoPRThreadCommentType = "text"
 // AuthenticatedLogin returns so a trusted-author filter recognizes a thread we
 // posted.
 func (p *ADOProvider) PostPullRequestThreadComment(ctx context.Context, repo RepositoryRef, pullID, body string) (Comment, error) {
+	return p.postAttributedPullRequestThreadComment(ctx, repo, pullID, body, "pull-request-comment")
+}
+
+func (p *ADOProvider) postAttributedPullRequestThreadComment(ctx context.Context, repo RepositoryRef, pullID, body, action string) (Comment, error) {
 	if err := requireRepo(repo); err != nil {
 		return Comment{}, err
 	}
 	if pullID == "" {
-		return Comment{}, fmt.Errorf("pull id is required")
+		return Comment{}, errPullIDRequired
+	}
+	body, err := withAttribution(body, p.attribution, action)
+	if err != nil {
+		return Comment{}, err
 	}
 	endpoint, err := p.repoURL(repo, "pullrequests", pullID, "threads")
 	if err != nil {
@@ -82,7 +90,7 @@ func (p *ADOProvider) ListPullRequestThreadComments(ctx context.Context, repo Re
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	endpoint, err := p.repoURL(repo, "pullrequests", pullID, "threads")
 	if err != nil {
@@ -117,6 +125,10 @@ func (p *ADOProvider) UpdatePullRequestThreadComment(ctx context.Context, repo R
 	if err != nil {
 		return err
 	}
+	body, err = withAttribution(body, p.attribution, "pull-request-comment-update")
+	if err != nil {
+		return err
+	}
 	endpoint, err := p.repoURL(repo, "pullrequests", pullID, "threads", threadID, "comments", cID)
 	if err != nil {
 		return err
@@ -135,7 +147,7 @@ func (p *ADOProvider) AddPullRequestLabels(ctx context.Context, repo RepositoryR
 		return err
 	}
 	if pullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	for _, name := range names {
 		if strings.TrimSpace(name) == "" {
@@ -204,7 +216,7 @@ func (p *ADOProvider) RemovePullRequestLabel(ctx context.Context, repo Repositor
 		return err
 	}
 	if pullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("label name is required")
@@ -277,7 +289,7 @@ func (p *ADOProvider) GetPullRequest(ctx context.Context, repo RepositoryRef, pu
 		return PullRequestSummary{}, err
 	}
 	if pullID == "" {
-		return PullRequestSummary{}, fmt.Errorf("pull id is required")
+		return PullRequestSummary{}, errPullIDRequired
 	}
 	poll, err := p.PollPullRequest(ctx, PullRequestPollRequest{Repository: repo, PullID: pullID})
 	if err != nil {

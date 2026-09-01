@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -56,6 +57,20 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"                             emission through the journal plane, with the\n" +
 	"                             per-run bearer from $GOOBERS_POD_TOKEN when\n" +
 	"                             set (default $GOOBERS_DAEMON_API)\n" +
+	"  --config-reload-interval <dur>\n" +
+	"                             how often to re-read the instance config\n" +
+	"                             tree and rebuild the gaggle seams whose\n" +
+	"                             config changed, without a restart; 0\n" +
+	"                             disables reload and freezes the worker on\n" +
+	"                             its boot-time tree (default 10s; requires\n" +
+	"                             --instance)\n" +
+	"  --config-history-depth <n>\n" +
+	"                             how many superseded config trees to retain\n" +
+	"                             so an in-flight run pinned to one is still\n" +
+	"                             served the goober kit it was admitted\n" +
+	"                             against across a reload; 0 disables\n" +
+	"                             retention and refuses every superseded pin\n" +
+	"                             (default 3; requires --instance)\n" +
 	"  --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;\n" +
 	"                             wires the dispatcher behind the stage-dispatch\n" +
 	"                             seam and serves the per-(gaggle x runner)\n" +
@@ -68,6 +83,20 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 	"The worker identity reported to Temporal is versioned\n" +
 	"(goobers-worker/<build>@<host>#<pid>) so visibility alone answers which\n" +
 	"build serves a queue.\n\n" +
+	"With --instance, the worker re-reads its config tree on\n" +
+	"--config-reload-interval and atomically replaces the gaggle, credential,\n" +
+	"and agentic-kit seams whose config changed, so a definitions edit reaches\n" +
+	"the NEXT stage this worker serves without a pod restart. An attempt\n" +
+	"already running keeps the kit it was handed. A reload that does not parse\n" +
+	"is logged and rejected; the last-known-good tree stays in force.\n\n" +
+	"An agentic stage is served the goober kit its run pinned at start\n" +
+	"(run.yaml's gooberDigest), resolved against the current config tree or\n" +
+	"one of the --config-history-depth superseded trees still retained. A pin\n" +
+	"no retained tree satisfies is REFUSED by name (gate_pin_missing), loudly\n" +
+	"and retriably, naming the expected digest: the worker never substitutes\n" +
+	"its currently-configured goober for the one the run was admitted\n" +
+	"against. Such an attempt recovers by itself once a reload brings the\n" +
+	"pinned tree into force.\n\n" +
 	"Exit codes: 0 = clean drain, 1 = startup/connection error, 2 = usage error,\n" +
 	"3 = drain timeout expired with in-flight work abandoned.\n"
 
@@ -101,12 +130,18 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	blobRoot := fs.String("blob-store", workerEnvOr("GOOBERS_BLOB_STORE", ""), "directory backing the fleet-wide content-addressed artifact store")
 	daemonAPI := fs.String("daemon-api", workerEnvOr("GOOBERS_DAEMON_API", ""), "daemon write API base URL for live journal emission")
 	dispatchNamespace := fs.String("dispatch-namespace", workerEnvOr("GOOBERS_DISPATCH_NAMESPACE", ""), "namespace to create mode-3 stage pods in; enables the dispatcher-backed stage-dispatch seam")
+	configReloadInterval := fs.Duration("config-reload-interval", workerConfigReloadInterval, "how often to re-read the instance config tree and rebuild changed gaggle seams; 0 disables reload")
+	configHistoryDepth := fs.Int("config-history-depth", workerConfigHistoryDepth, "how many superseded config trees to retain so an in-flight run pinned to one is still served its own kit; 0 disables retention")
 	fs.Usage = helpUsage(stderr, "worker")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 0 {
 		fs.Usage()
+		return 2
+	}
+	if *configHistoryDepth < 0 {
+		pf(stderr, "error: --config-history-depth must not be negative\n")
 		return 2
 	}
 	engineConfig, err := resolveEngineConfig(*instanceRoot)
@@ -126,12 +161,20 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 
 	root := *workRoot
 	if root == "" {
-		root = filepath.Join(os.TempDir(), "goobers-worker")
+		root = defaultWorkerRoot(os.TempDir())
 	}
 	engineRuntime, err := workerEngineDeps(root)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
+	}
+	// #3480: on a Windows host, say once whether the work root and temp the
+	// worker is about to write-then-read are excluded from real-time
+	// scanning. Advisory — the worker starts regardless.
+	if avDeps := realAVExclusionDeps(); avDeps.hostOS == "windows" {
+		if line := hostAVExclusionAdvisory(context.Background(), "worker", workerAVExclusionDirectories(root, avDeps), avDeps); line != "" {
+			pln(stdout, line)
+		}
 	}
 	defer func() { _ = engineRuntime.Close() }()
 
@@ -141,6 +184,11 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	// deterministic seams are the SAME executors the local runner builds, from
 	// the same buildRunnerConfig — which is what journal conformance between
 	// the two tiers rests on.
+	// Declared out here so the mode-3 stage dispatch below shares the SAME
+	// snapshot store the self-execution seams use: one set of current and
+	// retained config trees, so a run's pinned goober digest resolves
+	// identically whether its stage runs in this process or in a pod (#3884).
+	var seams *workerSeams
 	if *instanceRoot != "" {
 		// The fleet's content-addressed store, if one is configured. Without it
 		// a run is only safely served by a SINGLE worker: stage artifacts stay
@@ -162,11 +210,13 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			store = dirStore
 			pf(stdout, "goobers worker: artifact store %s\n", store.Describe())
 		}
-		seams, serr := newWorkerSeams(*instanceRoot, store)
+		builtSeams, serr := newWorkerSeams(*instanceRoot, store)
 		if serr != nil {
 			pf(stderr, "error: %v\n", serr)
 			return 1
 		}
+		builtSeams.historyDepth = *configHistoryDepth
+		seams = builtSeams
 		engineRuntime.deps.Goober = seams.Agentic()
 		engineRuntime.deps.Det = seams.Deterministic()
 		// The #2931 dispatch canary asserts envelopes against the SAME shared
@@ -180,6 +230,19 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		// auth and cannot clone a private repo.
 		engineRuntime.deps.Workspaces = seams.Workspaces(filepath.Join(root, "scratch"))
 		pf(stdout, "goobers worker: runtime seams wired from instance %s\n", *instanceRoot)
+
+		// #3912: the worker's config tree is otherwise frozen at pod start for
+		// as long as the pod lives, while the daemon syncs its own tree live —
+		// the divergence that cost a run's worktree checkout in Infra LEDGER
+		// I-51. Watching keeps the two convergent without a restart.
+		if *configReloadInterval > 0 {
+			watcher := startWorkerConfigWatcher(context.Background(), seams, *configReloadInterval)
+			defer watcher.Stop()
+			pf(stdout, "goobers worker: config reload every %s from %s; retaining %d superseded config tree(s) for in-flight goober-digest pins\n",
+				*configReloadInterval, *instanceRoot, *configHistoryDepth)
+		} else {
+			pf(stdout, "goobers worker: config reload disabled; seams stay pinned to the boot-time config tree\n")
+		}
 	}
 
 	if *daemonAPI != "" {
@@ -227,7 +290,16 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 			pf(stderr, "error: --dispatch-namespace requires --instance (the runner inventory names the dispatch queues)\n")
 			return 2
 		}
-		dispatch, derr := buildStageDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobRoot)
+		// The dispatcher's owner identity: this worker's hostname, which
+		// in-cluster is its pod name. It is stamped on every stage pod and is
+		// the scope the orphan sweep below sweeps within, so a sibling
+		// worker's in-flight pods are outside every sweep by construction.
+		owner, oerr := os.Hostname()
+		if oerr != nil {
+			pf(stderr, "error: resolve stage dispatch owner identity: %v\n", oerr)
+			return 1
+		}
+		dispatch, derr := buildStageDispatch(*instanceRoot, *dispatchNamespace, *daemonAPI, *blobRoot, owner, seams)
 		if derr != nil {
 			pf(stderr, "error: %v\n", derr)
 			return 1
@@ -235,8 +307,15 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		engineRuntime.deps.Dispatcher = dispatch.Dispatcher
 		engineRuntime.deps.Surrenders = dispatch.Surrenders
 		queues = mergeQueues(queues, dispatch.Queues)
-		pf(stdout, "goobers worker: mode-3 stage dispatch into namespace %s; dispatch queues %s\n",
-			*dispatchNamespace, strings.Join(dispatch.Queues, ", "))
+		pf(stdout, "goobers worker: mode-3 stage dispatch into namespace %s as owner %s; dispatch queues %s\n",
+			*dispatchNamespace, owner, strings.Join(dispatch.Queues, ", "))
+		// Decision 003's worker-hygiene graft, run BEFORE this worker polls
+		// anything: reclaim the stage pods this same owner left behind when it
+		// last stopped, asking the engine about each one. A pod whose attempt
+		// is still executing is adopted (left running, its surrender still
+		// lands); only a settled attempt's pod is disposed. Never fatal — see
+		// sweepWorkerStageOrphans.
+		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, stdout, stderr)
 	}
 
 	host, err := workerhost.New(workerhost.Config{
@@ -293,6 +372,14 @@ func workerEngineDeps(workRoot string) (workerEngineRuntime, error) {
 
 const workerRootOwnerFile = ".goobers-worker-owner"
 
+// The worker's work-root layout, named once so the provisioner
+// (workerEngineDepsForPlatform) and the #3480 antivirus-exclusion
+// enumeration (`goobers doctor --av-exclusions`, the worker's startup
+// advisory) read the same paths.
+func defaultWorkerRoot(tempDir string) string    { return filepath.Join(tempDir, "goobers-worker") }
+func workerWorkcopiesDir(workRoot string) string { return filepath.Join(workRoot, "workcopies") }
+func workerScratchDir(workRoot string) string    { return filepath.Join(workRoot, "scratch") }
+
 func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRuntime, error) {
 	rootClaim, err := claimWorkerRoot(workRoot, owner)
 	if err != nil {
@@ -302,7 +389,7 @@ func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRunt
 	if goos == "windows" {
 		managerOptions = append(managerOptions, worktree.WithDefaultPathLengthLimit(worktree.PathLengthLimit{}))
 	}
-	wtMgr, err := worktree.NewManager(filepath.Join(workRoot, "workcopies"), managerOptions...)
+	wtMgr, err := worktree.NewManager(workerWorkcopiesDir(workRoot), managerOptions...)
 	if err != nil {
 		return workerEngineRuntime{}, errors.Join(err, rootClaim.Release())
 	}
@@ -312,7 +399,7 @@ func workerEngineDepsForPlatform(workRoot, goos, owner string) (workerEngineRunt
 			Auto: gate.NewAutomatedEvaluator(),
 			Workspaces: &workerhost.WorktreeWorkspaces{
 				Manager:    wtMgr,
-				ScratchDir: filepath.Join(workRoot, "scratch"),
+				ScratchDir: workerScratchDir(workRoot),
 			},
 			Scrubber: scrubber,
 		},

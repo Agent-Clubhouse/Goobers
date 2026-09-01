@@ -113,7 +113,7 @@ func (p *ADOProvider) RequestReview(ctx context.Context, req ReviewRequest) erro
 		return err
 	}
 	if req.PullID == "" {
-		return fmt.Errorf("pull id is required")
+		return errPullIDRequired
 	}
 	for _, reviewer := range req.Reviewers {
 		endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID, "reviewers", reviewer)
@@ -146,7 +146,7 @@ func (p *ADOProvider) PollPullRequest(ctx context.Context, req PullRequestPollRe
 		return PullRequestPollResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestPollResult{}, fmt.Errorf("pull id is required")
+		return PullRequestPollResult{}, errPullIDRequired
 	}
 	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
 	if err != nil {
@@ -285,7 +285,7 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 		return ClosePullRequestResult{}, err
 	}
 	if req.PullID == "" {
-		return ClosePullRequestResult{}, fmt.Errorf("pull id is required")
+		return ClosePullRequestResult{}, errPullIDRequired
 	}
 	endpoint, err := p.repoURL(req.Repository, "pullrequests", req.PullID)
 	if err != nil {
@@ -294,6 +294,11 @@ func (p *ADOProvider) ClosePullRequest(ctx context.Context, req ClosePullRequest
 	var out adoPullRequest
 	if err := p.do(ctx, http.MethodPatch, endpoint, map[string]interface{}{"status": "abandoned"}, &out); err != nil {
 		return ClosePullRequestResult{}, err
+	}
+	if req.Comment != "" {
+		if _, err := p.postAttributedPullRequestThreadComment(ctx, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
+			return ClosePullRequestResult{}, err
+		}
 	}
 	number := out.PullRequestID
 	if number == 0 {
@@ -315,7 +320,7 @@ func (p *ADOProvider) PublishPullRequestStatus(ctx context.Context, req PullRequ
 		return PullRequestStatusResult{}, err
 	}
 	if req.PullID == "" {
-		return PullRequestStatusResult{}, fmt.Errorf("pull id is required")
+		return PullRequestStatusResult{}, errPullIDRequired
 	}
 	if req.Name == "" {
 		return PullRequestStatusResult{}, fmt.Errorf("status name is required")
@@ -435,7 +440,7 @@ func (p *ADOProvider) PullRequestFiles(ctx context.Context, repo RepositoryRef, 
 		return nil, err
 	}
 	if pullID == "" {
-		return nil, fmt.Errorf("pull id is required")
+		return nil, errPullIDRequired
 	}
 	iterationsEndpoint, err := p.repoURL(repo, "pullrequests", pullID, "iterations")
 	if err != nil {

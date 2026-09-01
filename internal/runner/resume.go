@@ -1079,11 +1079,11 @@ func (r *Runner) refuseResume(jr *journal.Run, runID, code, msg string) (Result,
 	// third PhaseFailed producer. FailureStage stays empty: a resume-time
 	// digest check isn't attributable to one stage.
 	res := Result{Phase: journal.PhaseFailed, FailureCode: code, FailureMessage: boundFailureMessage(msg)}
-	r.notifyTerminal(runID, journal.PhaseFailed, "")
+	notifyErr := r.notifyTerminal(jr, runID, journal.PhaseFailed, "")
 	if err := r.FinalizeTerminal(runID, journal.PhaseFailed); err != nil {
 		return res, fmt.Errorf("runner: %s (additionally failed to finalize terminal refusal: %w)", msg, err)
 	}
-	return res, nil
+	return res, notifyErr
 }
 
 // lastFinishedSubject reconstructs the (stage, ResultEnvelope) pair a live
@@ -1380,6 +1380,28 @@ func pendingParallel(events []journal.Event, machine *workflow.Machine) (*parall
 				!gateClearsFailure(gateResultFromEvent(event), gateDef) {
 				branch.failed = true
 			}
+		case journal.EventRunnerAnnotation:
+			// #3932: a branch that injected a learning episode must get its
+			// pointer BACK on resume, exactly as reconstructPointers rebuilds
+			// the run-level one. Without this the resumed branch re-enters the
+			// stage with the artifact still on disk but no pointer to it: the
+			// correction is journaled and not dispatched, and the repass's
+			// derived-integrity downgrade silently disappears.
+			if branch == nil {
+				continue
+			}
+			kind, _ := event.Runner["kind"].(string)
+			if kind != LearningEpisodeInjectedKind || event.Ref == nil {
+				continue
+			}
+			record(branch, nil, []apiv1.ContextPointer{{
+				Name:      LearningEpisodePointerName(runnerUint64(event.Runner["sourceSeq"])),
+				Integrity: event.Ref.Integrity,
+				Artifact: &apiv1.ArtifactPointer{
+					Path: event.Ref.Path, Digest: event.Ref.Digest, Size: event.Ref.Size,
+					MediaType: "application/json", Integrity: event.Ref.Integrity,
+				},
+			}})
 		case journal.EventBranchFinished:
 			if event.Parallel != spec.Name || branch == nil {
 				continue

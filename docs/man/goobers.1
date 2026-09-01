@@ -1,21 +1,16 @@
 .\" Generated from the goobers command registry — do not edit by hand.
 .TH "GOOBERS" "1" "" "Goobers" "Goobers Manual"
 .SH NAME
-goobers \- tier 1-2 local instance CLI
+goobers \- Goobers command-line interface
 .SH SYNOPSIS
 \fBgoobers\fR \fIcommand\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-path defaults to the current directory. Exit codes: 0 = OK, 1 = validation/
-business errors, 2 = usage/IO error. After waiting for a run, run/signal use
-0 = completed, 1 = failed/aborted, and 3 = escalated; successful submission-only
-modes exit 0 before a terminal outcome is known.
+Path arguments default to the current directory. Exit codes:
+0 = OK, 1 = validation or business error, and 2 = usage or I/O error.
 
 Use `goobers help all` for advanced operator commands or
 `goobers help stages` for runner-invoked workflow internals.
-Quickstart guide: docs/guides/quickstart.md
-DSL entry points: `goobers schema` and `goobers examples`
-Troubleshooting: `goobers status`, `goobers trace`, and `goobers escalations`
 .fi
 .SH COMMANDS
 .SS Core commands
@@ -37,9 +32,6 @@ list escalated runs newest first
 .TP
 \fBgoobers examples\fR
 browse canonical workflow examples embedded in the binary
-.TP
-\fBgoobers getting-started\fR
-serve and open the guided portal Getting Started walkthrough
 .TP
 \fBgoobers help\fR
 show command or concept help
@@ -145,7 +137,7 @@ apply the recorded checked-in source to the runtime instance
 render the effective instance config (secrets redacted)
 .TP
 \fBgoobers doctor\fR
-preflight a Kubernetes cluster against the documented infra shape
+preflight a Kubernetes cluster, repository forge policy, or Windows antivirus exclusions
 .TP
 \fBgoobers e2e\fR
 check the Goobernetes distributed e2e proof harness's assertions against a recorded run
@@ -158,6 +150,9 @@ verify the Goobernetes S1-S9 e2e proof harness against one completed run's recor
 .TP
 \fBgoobers engine-project\fR
 write a completed engine run's journal into the instance (experimental)
+.TP
+\fBgoobers engine-queues\fR
+report which workers poll this instance's engine and dispatch task queues (experimental)
 .TP
 \fBgoobers engine-start\fR
 dispatch one run onto the tier-3 engine via Temporal (experimental)
@@ -180,6 +175,18 @@ list the workflow-DSL features this build supports
 \fBgoobers fix\fR
 mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6)
 .TP
+\fBgoobers fleet\fR
+associate this instance with a Fleet service
+.TP
+\fBgoobers fleet join\fR
+discover and enroll this instance with a Fleet service
+.TP
+\fBgoobers fleet leave\fR
+remove this instance's Fleet association and protected secrets
+.TP
+\fBgoobers fleet status\fR
+show durable Fleet registration and connection state
+.TP
 \fBgoobers journal\fR
 the one sanctioned edit to the append-only journal
 .TP
@@ -197,9 +204,6 @@ run non-interactive onboarding actions
 .TP
 \fBgoobers onboarding stub-agent-instructions\fR
 install agent-instruction assets into a config source
-.TP
-\fBgoobers onboarding stub-sample\fR
-materialize and optionally seed the disposable Getting Started target
 .TP
 \fBgoobers override\fR
 override a nondeterministic gate with a rationale
@@ -328,6 +332,9 @@ emit the docs-drift churn digest since the watermark (a connector stage)
 \fBgoobers elect-lander\fR
 elect the landing PR among a merge-review cohort (a workflow stage)
 .TP
+\fBgoobers file-issues\fR
+file a validated nominations artifact as deduped, budgeted issues (a workflow stage)
+.TP
 \fBgoobers gate-removal-guard\fR
 block a tutor run that removes/loosens its own flagged gate without proof (a workflow stage)
 .TP
@@ -372,6 +379,9 @@ post-merge fan-out + close the referenced issue (a workflow stage)
 .TP
 \fBgoobers pr-claim\fR
 check PR liveness or release its remediation claim (a workflow stage)
+.TP
+\fBgoobers pr-comment-watch\fR
+label open goober PRs carrying unaddressed human comments (a workflow stage)
 .TP
 \fBgoobers pr-select\fR
 select one managed or advisory open PR for merge-review (a workflow stage)
@@ -462,6 +472,7 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-e2e-verify\fR(1),
 \fBgoobers-elect-lander\fR(1),
 \fBgoobers-engine-project\fR(1),
+\fBgoobers-engine-queues\fR(1),
 \fBgoobers-engine-start\fR(1),
 \fBgoobers-escalations\fR(1),
 \fBgoobers-escalations-show\fR(1),
@@ -470,7 +481,12 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-examples-show\fR(1),
 \fBgoobers-explain\fR(1),
 \fBgoobers-features\fR(1),
+\fBgoobers-file-issues\fR(1),
 \fBgoobers-fix\fR(1),
+\fBgoobers-fleet\fR(1),
+\fBgoobers-fleet-join\fR(1),
+\fBgoobers-fleet-leave\fR(1),
+\fBgoobers-fleet-status\fR(1),
 \fBgoobers-gate-removal-guard\fR(1),
 \fBgoobers-gather-ci-failures\fR(1),
 \fBgoobers-gather-implement-context\fR(1),
@@ -478,7 +494,6 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-gather-pr-context\fR(1),
 \fBgoobers-gather-review-threads\fR(1),
 \fBgoobers-gather-sibling-context\fR(1),
-\fBgoobers-getting-started\fR(1),
 \fBgoobers-help\fR(1),
 \fBgoobers-init\fR(1),
 \fBgoobers-ios-simulator-test\fR(1),
@@ -492,11 +507,11 @@ validate a decomposition plan against its selector artifact and the live parent 
 \fBgoobers-netpol-render\fR(1),
 \fBgoobers-onboarding\fR(1),
 \fBgoobers-onboarding-stub-agent-instructions\fR(1),
-\fBgoobers-onboarding-stub-sample\fR(1),
 \fBgoobers-open-pr\fR(1),
 \fBgoobers-override\fR(1),
 \fBgoobers-post-merge\fR(1),
 \fBgoobers-pr-claim\fR(1),
+\fBgoobers-pr-comment-watch\fR(1),
 \fBgoobers-pr-select\fR(1),
 \fBgoobers-preflight\fR(1),
 \fBgoobers-publish-batch\fR(1),

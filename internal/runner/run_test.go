@@ -5353,6 +5353,62 @@ func TestInfrastructureRepassSeedsStaySeparateFromPolicyBudget(t *testing.T) {
 	}
 }
 
+// TestInfrastructureSeedsAreZeroForPreInfrastructureHistories is the
+// backwards-compatibility half of #3930: a run resumed from a journal written
+// BEFORE the infrastructure counters existed must start with those counters at
+// zero — a full infrastructure budget — rather than panicking on a nil map or
+// inheriting a policy number that was never about infrastructure.
+//
+// The fixture is what such a journal looks like: gate.evaluated events with a
+// verdict of fail/pass only, and (for the oldest of them) no repassTarget
+// annotation at all, because the seeds' own key was added later. Both
+// infrastructure seeds must come back empty, and the policy seeds must come
+// back with what the old journal really did record — the resume continues the
+// budget the old run was spending, and starts the one it never had.
+func TestInfrastructureSeedsAreZeroForPreInfrastructureHistories(t *testing.T) {
+	events := []journal.Event{
+		{Type: journal.EventStageFinished, Stage: "implement", Status: string(apiv1.ResultSuccess)},
+		// The oldest shape: no repassTarget, so the seed falls back to Target.
+		{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: gate.OutcomeFail, Target: "implement",
+			Runner: map[string]any{"repassAttempt": 1.0}},
+		{Type: journal.EventGateEvaluated, Gate: "local-gate", Verdict: gate.OutcomeFail, Target: "implement",
+			Runner: map[string]any{"repassAttempt": 2.0, "gateAttempt": 2.0, "repassTarget": "implement"}},
+	}
+	if got := infrastructureTargetRepassSeed(events); len(got) != 0 {
+		t.Fatalf("infrastructure repass seed from a pre-infrastructure journal = %v, want empty — the resumed run "+
+			"has spent none of that budget", got)
+	}
+	if got := gateInfrastructureSeed(events)["local-gate"]; got != 0 {
+		t.Fatalf("infrastructure gate seed from a pre-infrastructure journal = %d, want 0", got)
+	}
+	if got := targetRepassSeed(events)["implement"]; got != 2 {
+		t.Fatalf("policy repass seed = %d, want 2 — the counters the old journal DID record still continue", got)
+	}
+	// The zero values really are usable: charging the resumed budget grants the
+	// full infrastructure retry allowance and leaves the policy budget where
+	// the old run left it.
+	budget := gate.RepassBudget{
+		Attempts:                     gateRepassSeed(events),
+		InfrastructureAttempts:       gateInfrastructureSeed(events),
+		RepassAttempts:               targetRepassSeed(events),
+		InfrastructureRepassAttempts: infrastructureTargetRepassSeed(events),
+	}
+	g := apiv1.Gate{Name: "local-gate", Branches: map[string]string{
+		gate.OutcomePass: "open-pr", gate.OutcomeFail: "implement", gate.OutcomeInfra: "local-ci",
+	}}
+	for attempt := 1; attempt <= gate.DefaultMaxInfrastructureRepasses; attempt++ {
+		charge := budget.Charge(g, gate.OutcomeInfra, "local-ci", true, gate.DefaultMaxRepasses)
+		if charge.Attempt != attempt || charge.Exceeded {
+			t.Fatalf("infrastructure repass %d on a resumed pre-infrastructure budget = %+v, want a full budget",
+				attempt, charge)
+		}
+	}
+	if charge := budget.Charge(g, gate.OutcomeFail, "implement", true, gate.DefaultMaxRepasses); charge.Attempt != 3 {
+		t.Fatalf("policy repass on a resumed pre-infrastructure budget = %+v, want the old journal's count continued",
+			charge)
+	}
+}
+
 // TestGateDiffSeedNilForNoGateEvents proves the nil-safe zero value a fresh
 // run needs: a journal with no gate.evaluated events at all (or none
 // carrying a diffDigest) yields a nil map, matching Evaluator.LastDiffDigest's
@@ -6937,6 +6993,37 @@ func TestRunnerAgenticGateAttachesReviewerDiffEvidence(t *testing.T) {
 	}
 	if diffPtr.Artifact == nil || diffPtr.Artifact.Digest == "" {
 		t.Fatalf("diff evidence pointer has no digested artifact: %+v", diffPtr)
+	}
+
+	// #3135: the run journal records whether the evidence handed to the agent
+	// was transformed on the way, and the digest of the pre-scrub bytes, so a
+	// finding about a redacted region can be correlated with the authoritative
+	// diff of the commits.
+	rd, err := journal.OpenRead(filepath.Join(instanceRoot, "runs", "run-diff-evidence"))
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	events, err := rd.Events()
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var redaction map[string]any
+	for _, e := range events {
+		if e.Type == journal.EventRunnerAnnotation && e.Runner["kind"] == ReviewerDiffRedactionKind {
+			redaction = e.Runner
+		}
+	}
+	if redaction == nil {
+		t.Fatal("no reviewer-diff redaction annotation was journaled")
+	}
+	if got := redaction["digest"]; got != diffPtr.Artifact.Digest {
+		t.Fatalf("annotation digest = %v, want the evidence digest %q", got, diffPtr.Artifact.Digest)
+	}
+	if redaction["redacted"] != false {
+		t.Fatalf("a diff with no secret material was reported as redacted: %+v", redaction)
+	}
+	if got := redaction["sourceDigest"]; got != diffPtr.Artifact.Digest {
+		t.Fatalf("unredacted evidence must carry the source digest %q, got %v", diffPtr.Artifact.Digest, got)
 	}
 }
 

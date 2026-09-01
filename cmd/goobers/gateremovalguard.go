@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/journalclient"
 	"github.com/goobers/goobers/internal/tutorguard"
 	"github.com/goobers/goobers/providers"
 )
@@ -39,15 +40,10 @@ func runGateRemovalGuard(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	runID, _, err := providerRunContext()
 	if err != nil {
@@ -146,17 +142,20 @@ func worseGateEdit(candidate, current tutorguard.GateEditKind) bool {
 // unreadable journal), is not itself an error — it just means there's
 // nothing for this guard to check, and the caller treats it as such.
 func findingMetaFromJournal(root, runID string) (tutorguard.FindingMeta, error) {
-	dir, err := runDirFor(layoutFor(root), runID)
+	rd, err := stageRunJournal(root, runID)
 	if err != nil {
-		return tutorguard.FindingMeta{}, nil
-	}
-	rd, err := journal.OpenRead(dir)
-	if err != nil {
-		return tutorguard.FindingMeta{}, nil
+		// "This host has no journal for the run" stays the benign case it has
+		// always been. A journal that exists but could not be READ — a refused
+		// or failed run-scoped plane read (#3880) — is an error, because
+		// "unreadable" must never be indistinguishable from "no gate edit".
+		if errors.Is(err, journalclient.ErrRunNotFound) {
+			return tutorguard.FindingMeta{}, nil
+		}
+		return tutorguard.FindingMeta{}, fmt.Errorf("open run journal: %w", err)
 	}
 	events, err := rd.Events()
 	if err != nil {
-		return tutorguard.FindingMeta{}, nil
+		return tutorguard.FindingMeta{}, fmt.Errorf("read run journal: %w", err)
 	}
 
 	var artifacts []journalArtifact
@@ -247,18 +246,20 @@ const (
 // letting open-pr (several stages later) reach back to gate-removal-guard's
 // verdict without a fragile multi-hop InputsFrom chain. Returns ("", "") when
 // no such stage ran (a non-tutor workflow) or its outputs are unreadable.
-func gateEditClassificationFromJournal(root, runID string) (kind, subject string) {
-	dir, err := runDirFor(layoutFor(root), runID)
+func gateEditClassificationFromJournal(root, runID string) (kind, subject string, err error) {
+	rd, err := stageRunJournal(root, runID)
 	if err != nil {
-		return "", ""
-	}
-	rd, err := journal.OpenRead(dir)
-	if err != nil {
-		return "", ""
+		// As in findingMetaFromJournal: absent journal is "no classification",
+		// unreadable journal is an error the caller reports rather than
+		// silently routing the PR to the lighter review path (#3880).
+		if errors.Is(err, journalclient.ErrRunNotFound) {
+			return "", "", nil
+		}
+		return "", "", fmt.Errorf("open run journal: %w", err)
 	}
 	events, err := rd.Events()
 	if err != nil {
-		return "", ""
+		return "", "", fmt.Errorf("read run journal: %w", err)
 	}
 	for _, ev := range events {
 		if ev.Type != journal.EventStageFinished || ev.Stage != "gate-removal-guard" || ev.Outputs == nil {
@@ -269,9 +270,9 @@ func gateEditClassificationFromJournal(root, runID string) (kind, subject string
 			continue
 		}
 		gotSubject, _ := ev.Outputs["subject"].(string)
-		return gotKind, gotSubject
+		return gotKind, gotSubject, nil
 	}
-	return "", ""
+	return "", "", nil
 }
 
 // labelGateEdit applies the review-routing label matching kind, clearing the

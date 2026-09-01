@@ -27,11 +27,17 @@ import (
 )
 
 // stageDispatch is what buildStageDispatch wires: the dispatcher seam, the
-// surrender plane, and the dispatch queues this worker must serve.
+// surrender plane, the dispatch queues this worker must serve, and the same
+// dispatcher typed for the boot-time orphan sweep.
 type stageDispatch struct {
 	Dispatcher engine.StageDispatcher
 	Surrenders dispatcher.SurrenderPlane
 	Queues     []string
+	// Sweeper is the SAME *dispatcher.Dispatcher as Dispatcher, named through
+	// the narrow sweep interface. Two fields rather than a type assertion so
+	// the wiring says out loud that the sweep reclaims pods created by THIS
+	// dispatcher — which is exactly what its owner scope enforces.
+	Sweeper stageOrphanSweeper
 }
 
 // dispatchKubeClient builds the typed clientset for pod creation: in-cluster
@@ -50,15 +56,38 @@ var dispatchKubeClient = func() (kubernetes.Interface, error) {
 	return kubernetes.NewForConfig(restConfig)
 }
 
+// newStageDispatcher is a seam beside dispatchKubeClient, for the same reason:
+// what buildStageDispatch does that nothing else does is ASSEMBLE the
+// dispatcher's Config from the instance's config, and that assembly is
+// unobservable once it is inside a constructed Dispatcher. Config.EnvPassthrough
+// is the sharp one — it is the operator's env:default-deny hatch on the pod
+// substrate (#3725/#736), and deleting the line that threads it would leave the
+// helper-level tests green and the hatch dead on the far side.
+var newStageDispatcher = dispatcher.New
+
 // buildStageDispatch loads the instance's runner inventory and constructs the
 // dispatcher-backed seam. blobRoot is the worker's --blob-store directory;
 // the surrender plane lives beside the content-addressed tree under
 // <blobRoot>/surrender (identity-keyed, so it cannot ride the digest-verified
 // store — see dispatcher/surrender.go), which keeps one operator-provided
 // volume backing both planes.
-func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot string) (stageDispatch, error) {
+// owner is this worker's dispatcher identity (its hostname; in-cluster, its
+// pod name): stamped on every pod it creates and the scope its orphan sweep
+// sweeps within. See dispatcher.Config.Owner for why it must be stable across
+// a restart and distinct between workers.
+// seams is the worker's own config-snapshot store, shared so the mode-3 kit
+// writer resolves a stage pod's kit through the SAME current-plus-retained
+// config trees the self-execution path resolves against (#3884). Nil disables
+// the kit writer entirely, which makes Dispatch refuse agentic stages
+// explicitly rather than create a pod that would find no kit — and, crucially,
+// rather than fall back to reading whatever config tree is mounted, which is
+// the substitution the pin exists to prevent.
+func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot, owner string, seams *workerSeams) (stageDispatch, error) {
 	if blobRoot == "" {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: a surrender plane is required — pass --blob-store")
+	}
+	if strings.TrimSpace(owner) == "" {
+		return stageDispatch{}, fmt.Errorf("stage dispatch: a dispatcher owner identity is required — without it a stage pod carries no owner label and no worker can reclaim it")
 	}
 	l := instance.NewLayout(instanceRoot)
 	cfg, err := instance.LoadConfig(l.ConfigFile())
@@ -120,23 +149,36 @@ func buildStageDispatch(instanceRoot, namespace, daemonAPI, blobRoot string) (st
 	}
 
 	build := version.Get()
-	d, err := dispatcher.New(dispatcher.Config{
+	d, err := newStageDispatcher(dispatcher.Config{
 		TokenMinter: minter,
 		// The kit writer needs the same signing key's peer facility — the blob
 		// plane — plus the instance config only the worker has. Nil when no
 		// blob endpoint is configured, which makes Dispatch refuse agentic
 		// stages explicitly instead of creating a pod that would find no kit.
-		KitWriter:       agenticKitWriterFor(instanceRoot, os.Getenv("GOOBERS_BLOB_ENDPOINT"), signed),
+		KitWriter:       agenticKitWriterFor(instanceRoot, seams, os.Getenv("GOOBERS_BLOB_ENDPOINT"), signed),
 		Namespace:       namespace,
+		Owner:           owner,
 		EmbeddedCommit:  build.Commit,
 		EmbeddedVersion: build.Version,
 		BlobEndpoint:    os.Getenv("GOOBERS_BLOB_ENDPOINT"),
 		WriteAPIBase:    daemonAPI,
+		// The same operator-declared passthrough list the local executor gets
+		// (runnerwiring_executors.go: shell.ExtraEnvAllowlist), so a stage on a
+		// runner class enforcing env:default-deny keeps the vars an operator
+		// declared for it instead of losing them by substrate (#3725/#736).
+		EnvPassthrough: cfg.Runner.EnvPassthrough,
+		// The configured bot logins, resolved HERE because this process can
+		// read the instance config and a stage pod cannot (#3914). Deleting
+		// this line leaves every helper-level test green and silently returns
+		// every pod stage to GET /user — which a GitHub App installation token
+		// cannot call — so it is pinned by
+		// TestBuildStageDispatchThreadsTheConfiguredBotLoginToTheStagePod.
+		BotLogins: cfg.GitHubBotLogins(),
 	}, dispatcher.NewKubernetesPodAPI(client), nil, dispatcher.PlaneSurrenderGate{Plane: surrenders}, nil)
 	if err != nil {
 		return stageDispatch{}, fmt.Errorf("stage dispatch: %w", err)
 	}
-	return stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues}, nil
+	return stageDispatch{Dispatcher: d, Surrenders: surrenders, Queues: queues, Sweeper: d}, nil
 }
 
 // mergeQueues appends every dispatch queue not already served, preserving
@@ -189,12 +231,16 @@ func podTokenMinter(cfg *instance.Config) (*podauth.SignedKey, error) {
 // KitWriter != nil check pass and then panic — the same interface trap the
 // token minter already documents — so the nil is returned through the
 // interface type explicitly.
-func agenticKitWriterFor(instanceRoot, blobEndpoint string, minter *podauth.SignedKey) dispatcher.KitWriter {
-	if strings.TrimSpace(instanceRoot) == "" || strings.TrimSpace(blobEndpoint) == "" {
+// A nil seams also returns nil: a kit writer with no snapshot store could only
+// resolve a kit from ambient config, and publishing a pod kit that ignores the
+// run's pinned goober digest is exactly the silent staleness #3884 closes.
+func agenticKitWriterFor(instanceRoot string, seams *workerSeams, blobEndpoint string, minter *podauth.SignedKey) dispatcher.KitWriter {
+	if strings.TrimSpace(instanceRoot) == "" || strings.TrimSpace(blobEndpoint) == "" || seams == nil {
 		return nil
 	}
 	return agenticKitWriter{
 		instanceRoot: instanceRoot,
+		seams:        seams,
 		blobEndpoint: blobEndpoint,
 		minter:       minter,
 		registrar:    journal.NewRegistryScrubber(),

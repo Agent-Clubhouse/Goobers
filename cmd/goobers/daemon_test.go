@@ -145,7 +145,7 @@ func TestBuildSchedulerSetupPinsWorkflowIdentityOnEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	for identity, machine := range setup.Machines {
 		var found bool
@@ -216,7 +216,7 @@ credentials:
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
 	if setup != nil {
-		setup.Shutdown(context.Background())
+		_ = setup.Shutdown(context.Background())
 		t.Fatal("buildSchedulerSetup returned a setup with a missing scheduled credential")
 	}
 	if err == nil ||
@@ -278,7 +278,7 @@ func TestBuildSchedulerSetupRejectsMissingDefaultRepoCredentialForScheduledTask(
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
 	if setup != nil {
-		setup.Shutdown(context.Background())
+		_ = setup.Shutdown(context.Background())
 		t.Fatal("buildSchedulerSetup returned a setup with a missing default repo credential")
 	}
 	if err == nil ||
@@ -364,7 +364,7 @@ spec:
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
 	if setup != nil {
-		setup.Shutdown(context.Background())
+		_ = setup.Shutdown(context.Background())
 		t.Fatal("buildSchedulerSetup returned a setup with a missing parallel branch credential")
 	}
 	if err == nil ||
@@ -540,7 +540,7 @@ func TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	// Telemetry itself really is off — otherwise this test would not be
 	// exercising the case it claims to.
@@ -559,6 +559,106 @@ func TestBuildSchedulerSetupBuildsReadModelWithTelemetryDisabled(t *testing.T) {
 	}
 	if _, err := setup.ReadModel.State(context.Background()); err != nil {
 		t.Errorf("ReadModel.State() = %v, want the store to be open and readable", err)
+	}
+}
+
+// TestBuildSchedulerSetupDegradesOnInvalidOTLPTLSMaterial is #3804's decided
+// degrade behavior end to end, at the seam this issue actually threads
+// through — buildSchedulerSetup, not just telemetry.New in isolation: a
+// telemetry.otlp.tls.caFile that cannot be read must not fail daemon setup
+// (a CA path typo becoming a boot-fatal outage is exactly the ledger L-28
+// shape #3804 exists to avoid). Setup succeeds with a working, usable
+// Telemetry client, and the failure is recorded loudly — a
+// telemetry_otlp_unavailable EventError in the instance journal — rather
+// than swallowed.
+func TestBuildSchedulerSetupDegradesOnInvalidOTLPTLSMaterial(t *testing.T) {
+	root := initDeterministicDemo(t)
+	instanceYAMLPath := filepath.Join(root, "instance.yaml")
+	data, err := os.ReadFile(instanceYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingCAFile := filepath.Join(t.TempDir(), "missing-ca.crt")
+	body := strings.Replace(string(data), "telemetry: {}\n", "telemetry:\n"+
+		"  enabled: true\n"+
+		"  otlp:\n"+
+		"    endpoint: collector.invalid.example:4317\n"+
+		"    tls:\n"+
+		"      caFile: "+missingCAFile+"\n", 1)
+	if body == string(data) {
+		t.Fatalf("expected instance.yaml to contain \"telemetry: {}\", got %q", data)
+	}
+	if err := os.WriteFile(instanceYAMLPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l := instance.NewLayout(root)
+	var wg sync.WaitGroup
+
+	// The other non-fatal degrades in buildSchedulerSetupWithConfigPolicy
+	// all mirror to stderr so an operator watching `kubectl logs` (who has
+	// no instance log to read yet) sees them; the OTLP degrade must too, or
+	// a mistyped caFile is invisible until someone thinks to go looking in
+	// the instance journal (review of #3826).
+	stderrR, stderrW, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatal(pipeErr)
+	}
+	origStderr := os.Stderr
+	os.Stderr = stderrW
+	setup, err := buildSchedulerSetup(context.Background(), l, &wg)
+	os.Stderr = origStderr
+	if closeErr := stderrW.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	var stderrBuf bytes.Buffer
+	if _, readErr := stderrBuf.ReadFrom(stderrR); readErr != nil {
+		t.Fatal(readErr)
+	}
+	if err != nil {
+		t.Fatalf("buildSchedulerSetup() = %v, want a bad otlp.tls.caFile to degrade rather than fail setup", err)
+	}
+	defer func() { _ = setup.Shutdown(context.Background()) }()
+
+	if !strings.Contains(stderrBuf.String(), "otlp") || !strings.Contains(stderrBuf.String(), missingCAFile) {
+		t.Fatalf("stderr = %q, want an otlp degrade warning naming %q", stderrBuf.String(), missingCAFile)
+	}
+
+	if setup.Telemetry == nil {
+		t.Fatal("Telemetry == nil after an OTLP TLS degrade, want local-only telemetry still wired")
+	}
+	if setup.InstanceLog == nil {
+		t.Fatal("InstanceLog == nil, want it open to check for the degrade event")
+	}
+	events, err := journal.ReadInstanceLog(l.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *journal.Event
+	for i := range events {
+		if events[i].Type == journal.EventError && events[i].Error != nil && events[i].Error.Code == "telemetry_otlp_unavailable" {
+			found = &events[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("instance log has no telemetry_otlp_unavailable event; events: %+v", events)
+	}
+	if !strings.Contains(found.Error.Message, missingCAFile) {
+		t.Fatalf("telemetry_otlp_unavailable message = %q, want it to name %q", found.Error.Message, missingCAFile)
+	}
+
+	// The degraded client still works locally: a span reaches the local
+	// (journal) exporter even though the collector export is unavailable.
+	_, span, err := setup.Telemetry.StartRun(context.Background(), telemetry.RunAttributes{
+		Gaggle: "example", WorkflowID: "wf", RunID: "0af7651916cd43dd8448eb211c80319c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	span.End()
+	if err := setup.Telemetry.FlushLocal(context.Background()); err != nil {
+		t.Fatalf("FlushLocal() on a degraded telemetry client = %v, want nil", err)
 	}
 }
 
@@ -615,7 +715,7 @@ func TestBuildSchedulerSetupPrunesChangeFeedWithDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(ctx)
+	defer func() { _ = setup.Shutdown(ctx) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -768,7 +868,7 @@ func TestIdleTickIngestsBatchedSchedulerTelemetry(t *testing.T) {
 		InstanceLog:   instanceLog,
 		ProviderQuota: quota,
 	}
-	t.Cleanup(func() { setup.Shutdown(ctx) })
+	t.Cleanup(func() { _ = setup.Shutdown(ctx) })
 	schedule, err := localscheduler.ParseSchedule("@every 1m")
 	if err != nil {
 		t.Fatal(err)
@@ -821,7 +921,7 @@ func TestSchedulerOptionsIngestsBlockedTickSpan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	tickAt := time.Now().Add(25 * time.Hour)
 	setup.ProviderQuota.RecordExhausted(tickAt.Add(time.Hour))
@@ -896,7 +996,7 @@ func TestSchedulerShutdownIngestsRejectedDispatchSpans(t *testing.T) {
 			setup.ProviderQuota.RecordExhausted(now.Add(time.Hour))
 			sched := localscheduler.New(entries, setup.InstanceLog, setup.SchedulerOptions()...)
 			tt.dispatch(t, sched, entries[0].Workflow, now)
-			setup.Shutdown(context.Background())
+			_ = setup.Shutdown(context.Background())
 
 			body, err := os.ReadFile(filepath.Join(l.SchedulerDir(), "spans", "spans.jsonl"))
 			if err != nil {
@@ -941,7 +1041,7 @@ func TestBuildSchedulerSetupRejectsInvalidOTLPEnvironment(t *testing.T) {
 	var wg sync.WaitGroup
 	setup, err := buildSchedulerSetup(context.Background(), instance.NewLayout(root), &wg)
 	if setup != nil {
-		setup.Shutdown(context.Background())
+		_ = setup.Shutdown(context.Background())
 		t.Fatal("buildSchedulerSetup returned a setup for invalid OTLP configuration")
 	}
 	if err == nil || !strings.Contains(err.Error(), "insecure mode is allowed only") {
@@ -1079,6 +1179,65 @@ func TestEmitHeartbeatsReadsConstantBytesPerTick(t *testing.T) {
 	}
 	if output := stdout.String(); !strings.Contains(output, "1 trigger(s) fired") {
 		t.Fatalf("heartbeat output = %q, want startup activity", output)
+	}
+}
+
+// The memory clause is the whole reason #3949 was diagnosable only by hand: a
+// heartbeat carrying scheduler counts alone cannot distinguish a leaking daemon
+// from a memory cgroup filling with page cache from the stages it runs. The CPU
+// clause answers the question that same incident could not (#3963) — a pod
+// pinned at its CPU quota looks identical to a busy one in every point-in-time
+// metric, and the throttling counters are the only term that separates them.
+// Assert both are on the line, on the healthy and the degraded path alike.
+func TestEmitHeartbeatsCarriesTheResourceFootprint(t *testing.T) {
+	dir := t.TempDir()
+	log, _, err := journal.OpenInstanceLog(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	if err := log.Append(journal.Event{Type: journal.EventTriggerFired, Workflow: "w"}); err != nil {
+		t.Fatal(err)
+	}
+	tail, err := journal.OpenInstanceLogTail(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		dir      string
+		tail     *journal.InstanceLogTail
+		wantLine string
+	}{
+		{name: "activity available", dir: dir, tail: tail, wantLine: "trigger(s) fired"},
+		// A nil tail makes emitHeartbeats reopen the instance log; pointing it
+		// at a directory that has none drives the degraded branch.
+		{name: "activity unavailable", dir: filepath.Join(t.TempDir(), "absent"), wantLine: "scheduler activity unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			stdout := newDaemonOutput()
+			done := make(chan struct{})
+			go emitHeartbeats(ctx, stdout, tc.dir, 1, tc.tail, nil, 10*time.Millisecond, done)
+
+			select {
+			case <-stdout.heartbeat:
+			case <-time.After(2 * time.Second):
+				cancel()
+				<-done
+				t.Fatal("heartbeat was not emitted")
+			}
+			cancel()
+			<-done
+
+			output := stdout.String()
+			for _, want := range []string{tc.wantLine, "heap ", "retained ", "goroutine(s)", "cpu ", "host", "GOMAXPROCS "} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("heartbeat output = %q, want it to contain %q", output, want)
+				}
+			}
+		})
 	}
 }
 
@@ -1439,5 +1598,79 @@ func pollUntilRunTerminal(t *testing.T, runDir string, cancel context.CancelFunc
 	return func() {
 		close(done)
 		<-stopped
+	}
+}
+
+func TestDaemonMemoryGateHonoursItsEnvironmentOverride(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setting string
+		wantNil bool
+	}{
+		"unset uses the default":      {setting: "", wantNil: false},
+		"explicit fraction":           {setting: "0.75", wantNil: false},
+		"off disables the gate":       {setting: "off", wantNil: true},
+		"OFF is case-insensitive":     {setting: "OFF", wantNil: true},
+		"zero disables the gate":      {setting: "0", wantNil: true},
+		"surrounding space tolerated": {setting: "  off  ", wantNil: true},
+		// A typo must not stop the daemon booting, and must not refuse every
+		// run either — it falls back to the built-in threshold.
+		"unparseable falls back": {setting: "nine tenths", wantNil: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(memoryHighWaterEnv, tc.setting)
+			gate := daemonMemoryGate()
+			if tc.wantNil && gate != nil {
+				t.Fatalf("daemonMemoryGate() = %v, want nil for %q", gate, tc.setting)
+			}
+			if !tc.wantNil && gate == nil {
+				t.Fatalf("daemonMemoryGate() = nil, want a gate for %q", tc.setting)
+			}
+		})
+	}
+}
+
+// The default gate must be constructible and callable wherever the daemon
+// boots. This asserts the invariant rather than the verdict: whether a
+// container is above its high-water mark depends on the machine, but a
+// refusal must always carry the measurement that justified it.
+// localscheduler's own tests cover the threshold arithmetic against fixed
+// readings.
+func TestDaemonMemoryGateIsSafeToConsultAnywhere(t *testing.T) {
+	t.Setenv(memoryHighWaterEnv, "")
+	gate := daemonMemoryGate()
+	if gate == nil {
+		t.Fatal("daemonMemoryGate() = nil, want a gate by default")
+	}
+	// The first consultation can only baseline the at-limit counter, so it
+	// must admit no matter how full this machine's cgroup is. Asserting that
+	// pins the design: a single reading is never grounds for a refusal.
+	if pressured, _ := gate.UnderPressure(); pressured {
+		t.Fatal("the first consultation refused; one reading cannot establish memory pressure")
+	}
+	// Consult again past the sample TTL so a refusal is reachable, and hold
+	// the invariant across both readings.
+	time.Sleep(1100 * time.Millisecond)
+	for i := range 2 {
+		pressured, detail := gate.UnderPressure()
+		if !pressured && detail != "" {
+			t.Fatalf("reading %d: detail = %q, want empty when admitting", i, detail)
+		}
+		if pressured && detail == "" {
+			t.Fatalf("reading %d: a refusal carried no measurement to justify it", i)
+		}
+	}
+}
+
+// Every spelling of zero must disable the gate. "0.0" parses successfully as
+// zero, and a naive implementation clamps that back up to the default —
+// enabling the gate for an operator who was trying to turn it off.
+func TestDaemonMemoryGateTreatsEverySpellingOfZeroAsOff(t *testing.T) {
+	for _, setting := range []string{"0", "0.0", "0.00", "00", "off", "OFF", " 0.0 "} {
+		t.Run(setting, func(t *testing.T) {
+			t.Setenv(memoryHighWaterEnv, setting)
+			if gate := daemonMemoryGate(); gate != nil {
+				t.Fatalf("daemonMemoryGate() = %v, want nil for %q", gate, setting)
+			}
+		})
 	}
 }

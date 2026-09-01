@@ -56,6 +56,7 @@ var exceptions = []exception{
 	{Path: "cmd/goobers/applyverdict.go", Value: "goobers:needs-remediation", Reason: "canonical verdict label"},
 	{Path: "cmd/goobers/mergedemotion.go", Value: "goobers:merge-demoted", Reason: "canonical merge-review label"},
 	{Path: "cmd/goobers/postmerge.go", Value: "goobers:needs-remediation", Reason: "canonical verdict label"},
+	{Path: "cmd/goobers/prcommentwatch.go", Value: "goobers:merge-ready", Reason: "canonical merge-review label the comment watcher treats as already-landing"},
 	{Path: "cmd/goobers/prselect.go", Value: "goobers:merge-ready,goobers:needs-remediation", Reason: "canonical merge-review labels"},
 	{Path: "cmd/goobers/prselect.go", Value: "goobers:no-merge-review", Reason: "canonical merge-review label"},
 	{Path: "cmd/goobers/remediationcheckpoint.go", Value: "goobers:merge-escalated", Reason: "canonical verdict label"},

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -43,26 +44,65 @@ type ExporterKind string
 // Config controls tracer/meter setup and exporter selection. ExporterOTLP
 // requires a non-empty, explicitly configured OTLPEndpoint.
 type Config struct {
-	ServiceName        string
-	ServiceVersion     string
-	BuildCommit        string
-	Environment        string
-	Exporter           ExporterKind
-	OTLPEndpoint       string
-	OTLPInsecure       bool
-	OTLPHeaders        map[string]string
-	Stdout             io.Writer
-	SpanExporter       sdktrace.SpanExporter
-	Scrubber           journal.Scrubber
-	ResourceAttributes []attribute.KeyValue
-	Batch              bool
+	ServiceName    string
+	ServiceVersion string
+	BuildCommit    string
+	Environment    string
+	Exporter       ExporterKind
+	OTLPEndpoint   string
+	OTLPInsecure   bool
+	OTLPHeaders    map[string]string
+	// OTLPCAFile is an extra PEM root appended to the system trust pool
+	// (RootCAs). Empty means system trust only, the pre-#3804 behavior.
+	OTLPCAFile string
+	// OTLPServerName overrides SNI/verification. Empty uses the endpoint's
+	// own host.
+	OTLPServerName string
+	// OTLPCertFile and OTLPKeyFile present a client certificate for mTLS.
+	// Both or neither — instance.OTLPTLSConfig.Validate enforces the pairing
+	// before this Config is ever built.
+	OTLPCertFile string
+	OTLPKeyFile  string
+	Stdout       io.Writer
+	SpanExporter sdktrace.SpanExporter
+	// MetricReader collects metrics directly from the meter provider,
+	// alongside any configured exporter. Tests inject a manual reader.
+	MetricReader metric.Reader
+	// MetricExporter is attached to the meter provider behind a periodic
+	// reader, exactly like the OTLP metric exporter.
+	MetricExporter metric.Exporter
+	// MetricExportInterval overrides the periodic reader's export period.
+	// Zero uses metricExportInterval.
+	MetricExportInterval time.Duration
+	Scrubber             journal.Scrubber
+	ResourceAttributes   []attribute.KeyValue
+	Batch                bool
 }
+
+// ErrOTLPUnavailable is the sentinel New wraps into its returned error when
+// the configured OTLP exporter's TLS material could not be loaded (an
+// unreadable CA file, or an unparsable client certificate/key pair). Unlike
+// an unreachable endpoint — otlptracegrpc dials lazily, so a bad address
+// never fails New — a bad TLS path is detectable right now, at
+// construction, so it would otherwise introduce a NEW boot-fatal class: a
+// CA path typo becoming a daemon outage (the same shape #3804 exists to
+// avoid, ledger L-28).
+//
+// When New's error wraps ErrOTLPUnavailable, the returned *Client is still
+// valid: every OTHER exporter (notably SpanExporter, the local journal
+// export every process wires) is fully constructed and usable. A caller
+// that wants the process to stay up should check errors.Is(err,
+// ErrOTLPUnavailable), log the cause loudly (the daemon's convention is
+// instance-journal code telemetry_otlp_unavailable), and keep the returned
+// client rather than discarding it as a construction failure.
+var ErrOTLPUnavailable = errors.New("otlp exporter unavailable")
 
 // Client owns the OTel tracer and meter providers for a Goobers process.
 type Client struct {
 	tracerProvider     *sdktrace.TracerProvider
 	localSpanProcessor sdktrace.SpanProcessor
 	meterProvider      *metric.MeterProvider
+	instruments        *instruments
 	tracer             trace.Tracer
 	scrubber           journal.Scrubber
 }
@@ -91,9 +131,16 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	res = resource.NewWithAttributes(res.SchemaURL(), scrubAttributes(scrubber, res.Attributes())...)
 
+	// otlpDegraded, not err, carries an ErrOTLPUnavailable across the rest of
+	// this function: err gets reused (:=) by later steps below, and the
+	// degrade signal must survive to the final return regardless.
 	exporters, err := spanExporters(ctx, cfg)
+	var otlpDegraded error
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, ErrOTLPUnavailable) {
+			return nil, err
+		}
+		otlpDegraded = err
 	}
 
 	spanLimits := sdktrace.NewSpanLimits()
@@ -121,7 +168,22 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	tracerProvider := sdktrace.NewTracerProvider(options...)
-	meterProvider := metric.NewMeterProvider(metric.WithResource(res))
+
+	readers, err := metricReaders(ctx, cfg)
+	if err != nil {
+		if !errors.Is(err, ErrOTLPUnavailable) {
+			return nil, err
+		}
+		if otlpDegraded == nil {
+			otlpDegraded = err
+		}
+	}
+	meterOptions := make([]metric.Option, 0, len(readers)+1)
+	meterOptions = append(meterOptions, metric.WithResource(res))
+	for _, reader := range readers {
+		meterOptions = append(meterOptions, metric.WithReader(reader))
+	}
+	meterProvider := metric.NewMeterProvider(meterOptions...)
 
 	client := &Client{
 		tracerProvider: tracerProvider,
@@ -129,10 +191,19 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		tracer:         tracerProvider.Tracer(ScopeName),
 		scrubber:       scrubber,
 	}
+	if len(readers) != 0 {
+		// A meter provider with no reader records nothing, so instruments are
+		// built only when something collects them. An instrument-construction
+		// failure disables metrics rather than failing telemetry setup: metric
+		// export is optional and must never become a new boot-fatal class.
+		if inst, instErr := newInstruments(meterProvider.Meter(ScopeName)); instErr == nil {
+			client.instruments = inst
+		}
+	}
 	if cfg.SpanExporter != nil {
 		client.localSpanProcessor = processors[0]
 	}
-	return client, nil
+	return client, otlpDegraded
 }
 
 // NewRunID returns a valid OpenTelemetry trace id for use as a Goobers run id.
@@ -166,7 +237,8 @@ func (c *Client) StartRun(ctx context.Context, attrs RunAttributes) (context.Con
 	}
 	opts = appendStartTime(opts, attrs.StartedAt)
 	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, runSpanName(attrs.WorkflowID)), opts...)
-	return ctx, Span{span: span, scrubber: c.scrubber}, nil
+	metrics := c.beginSpanMetrics(SpanKindRun, attrs.StartedAt, runAttributeSet(attrs))
+	return ctx, Span{span: span, scrubber: c.scrubber, metrics: metrics}, nil
 }
 
 // StartTask starts a task span under the current run context.
@@ -188,7 +260,9 @@ func (c *Client) StartTask(ctx context.Context, attrs TaskAttributes) (context.C
 	}
 	taskOpts = appendStartTime(taskOpts, attrs.StartedAt)
 	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, taskSpanName(attrs.TaskID)), taskOpts...)
-	return ctx, Span{span: span, scrubber: c.scrubber}, nil
+	metrics := c.beginSpanMetrics(SpanKindTask, attrs.StartedAt, taskAttributeSet(attrs))
+	metrics.recordRetry(attrs.Attempt, attrs.AttemptKind)
+	return ctx, Span{span: span, scrubber: c.scrubber, metrics: metrics}, nil
 }
 
 // StartGate starts a gate evaluation span under the current run context.
@@ -210,7 +284,8 @@ func (c *Client) StartGate(ctx context.Context, attrs GateAttributes) (context.C
 	}
 	gateOpts = appendStartTime(gateOpts, attrs.StartedAt)
 	ctx, span := c.tracer.Start(ctx, redactWith(c.scrubber, gateSpanName(attrs.GateID)), gateOpts...)
-	return ctx, Span{span: span, scrubber: c.scrubber}, nil
+	metrics := c.beginSpanMetrics(SpanKindGate, attrs.StartedAt, gateAttributeSet(attrs))
+	return ctx, Span{span: span, scrubber: c.scrubber, metrics: metrics}, nil
 }
 
 // StartSchedulerSpan starts a scheduler decision span.
@@ -235,7 +310,8 @@ func (c *Client) StartSchedulerSpan(ctx context.Context, attrs SchedulerAttribut
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(scrubAttributes(c.scrubber, schedulerAttributeSet(attrs))...),
 	)
-	return ctx, Span{span: span, scrubber: c.scrubber}, nil
+	metrics := c.beginSpanMetrics(SpanKindScheduler, time.Time{}, schedulerAttributeSet(attrs))
+	return ctx, Span{span: span, scrubber: c.scrubber, metrics: metrics}, nil
 }
 
 // Flush forces pending telemetry through configured providers. A transient
@@ -246,9 +322,12 @@ func (c *Client) Flush(ctx context.Context) error {
 	if err := c.tracerProvider.ForceFlush(ctx); err != nil && !isCollectorUnreachable(err) {
 		return fmt.Errorf("flush telemetry traces: %w", err)
 	}
-	if err := c.meterProvider.ForceFlush(ctx); err != nil && !isCollectorUnreachable(err) {
-		return fmt.Errorf("flush telemetry metrics: %w", err)
-	}
+	// Metric export is strictly best-effort: unlike traces it has no local
+	// exporter whose failure means a real defect, so every error here is a
+	// remote-collector condition (unreachable, or a collector configured for
+	// traces only). The SDK still reports it through the global otel error
+	// handler; it must never fail the caller's work.
+	_ = c.meterProvider.ForceFlush(ctx)
 	return nil
 }
 
@@ -274,9 +353,8 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	if err := c.tracerProvider.Shutdown(ctx); err != nil && !isCollectorUnreachable(err) {
 		errs = append(errs, fmt.Errorf("shutdown telemetry traces: %w", err))
 	}
-	if err := c.meterProvider.Shutdown(ctx); err != nil && !isCollectorUnreachable(err) {
-		errs = append(errs, fmt.Errorf("shutdown telemetry metrics: %w", err))
-	}
+	// Best-effort, exactly as in Flush.
+	_ = c.meterProvider.Shutdown(ctx)
 	return errors.Join(errs...)
 }
 
@@ -317,9 +395,14 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		if cfg.OTLPInsecure {
 			opts = append(opts, otlptracegrpc.WithInsecure())
 		} else {
-			opts = append(opts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(&tls.Config{
-				MinVersion: tls.VersionTLS12,
-			})))
+			tlsConfig, tlsErr := buildOTLPTLSConfig(cfg)
+			if tlsErr != nil {
+				// The exporter cannot be built, but exporters collected so
+				// far (cfg.SpanExporter's local journal export, if
+				// configured) are untouched — see ErrOTLPUnavailable's doc.
+				return exporters, fmt.Errorf("%w: %w", ErrOTLPUnavailable, tlsErr)
+			}
+			opts = append(opts, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsConfig)))
 		}
 		headers := make(map[string]string, len(cfg.OTLPHeaders))
 		for name, value := range cfg.OTLPHeaders {
@@ -335,6 +418,52 @@ func spanExporters(ctx context.Context, cfg Config) ([]sdktrace.SpanExporter, er
 		return nil, fmt.Errorf("unsupported telemetry exporter %q", cfg.Exporter)
 	}
 	return append(exporters, exporter), nil
+}
+
+// buildOTLPTLSConfig assembles the OTLP exporter's client TLS config: with
+// no CAFile it leaves RootCAs nil (the pre-#3804 default-verifier path,
+// unchanged); with one configured it builds a system trust pool
+// (SystemCertPool already returns a defensive copy safe to mutate — "clone"
+// in #3804's design) plus the extra root. Also applies an optional
+// SNI/verification override and an optional client certificate for mTLS.
+// MinVersion stays TLS 1.2, unchanged from the path this extends.
+func buildOTLPTLSConfig(cfg Config) (*tls.Config, error) {
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+	// RootCAs stays nil (pre-#3804 behavior) unless an extra CA is actually
+	// configured. On darwin/windows/ios, crypto/x509 hands verification to
+	// the platform verifier when opts.Roots == nil but falls through to Go's
+	// own verifier against RootCAs once it is non-nil — so unconditionally
+	// setting a SystemCertPool clone here, even with nothing appended to it,
+	// would silently swap in a different (and more permissive: CT policy,
+	// OS distrust lists, and name constraints all go unevaluated) trust
+	// decision on the tls-block-absent path this PR claims is untouched.
+	if cfg.OTLPCAFile != "" {
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		pem, err := os.ReadFile(cfg.OTLPCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read ca file %q: %w", cfg.OTLPCAFile, err)
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("ca file %q: no certificates found", cfg.OTLPCAFile)
+		}
+		tlsConfig.RootCAs = pool
+	}
+	if cfg.OTLPServerName != "" {
+		tlsConfig.ServerName = cfg.OTLPServerName
+	}
+	if cfg.OTLPCertFile != "" || cfg.OTLPKeyFile != "" {
+		pair, err := tls.LoadX509KeyPair(cfg.OTLPCertFile, cfg.OTLPKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load client certificate %q/%q: %w", cfg.OTLPCertFile, cfg.OTLPKeyFile, err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{pair}
+	}
+	return tlsConfig, nil
 }
 
 func resourceAttrs(cfg Config) []attribute.KeyValue {

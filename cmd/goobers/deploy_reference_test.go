@@ -143,6 +143,63 @@ func TestDeployReferenceWorkerProvidesWritableHarnessHome(t *testing.T) {
 	}
 }
 
+// TestDeployReferenceAPIProbes locks the reference api-deployment.yaml's
+// startup/readiness/liveness probe shape (#3806): each MUST target the
+// correct path over HTTPS. internal/httpapi/server.go refuses to serve a
+// non-loopback bind without TLS (SEC-043/#640), so any daemon a kubelet can
+// reach at podIP:port is necessarily HTTPS — an httpGet probe with no
+// scheme (kubelet defaults to HTTP) gets a 400 from Go's TLS listener on
+// every attempt, CrashLooping the pod. Nothing else in this repo's test
+// suite would catch that manifest regressing: deleting the probes entirely
+// still passes `make deploy-validate` (kubeconform + the cross-base
+// assertion), since neither validates probe content.
+func TestDeployReferenceAPIProbes(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/reference/goobers-system/api-deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deployment appsv1.Deployment
+	if err := yaml.Unmarshal(raw, &deployment); err != nil {
+		t.Fatal(err)
+	}
+	containers := deployment.Spec.Template.Spec.Containers
+	if len(containers) != 1 {
+		t.Fatalf("got %d containers, want 1", len(containers))
+	}
+	container := containers[0]
+
+	checkProbe := func(name string, probe *corev1.Probe, wantPath string) {
+		t.Helper()
+		if probe == nil {
+			t.Fatalf("%s: missing", name)
+		}
+		if probe.HTTPGet == nil {
+			t.Fatalf("%s: not an httpGet probe: %+v", name, probe)
+		}
+		if probe.HTTPGet.Path != wantPath {
+			t.Errorf("%s: path = %q, want %q", name, probe.HTTPGet.Path, wantPath)
+		}
+		if probe.HTTPGet.Port.StrVal != "http" && probe.HTTPGet.Port.IntVal != 8080 {
+			t.Errorf("%s: port = %v, want the api container's named/numeric port", name, probe.HTTPGet.Port)
+		}
+		// #3806 mustFix: kubelet defaults httpGet.Scheme to HTTP; the daemon
+		// this probe targets serves HTTPS on the only posture where a
+		// kubelet probe can reach it at all (SEC-043/#640, non-loopback
+		// binds require TLS). A missing/wrong scheme here CrashLoops the
+		// pod against every real deployed instance.
+		if probe.HTTPGet.Scheme != corev1.URISchemeHTTPS {
+			t.Errorf("%s: scheme = %q, want %q — kubelet's HTTP default cannot reach this daemon's TLS listener", name, probe.HTTPGet.Scheme, corev1.URISchemeHTTPS)
+		}
+		if probe.TimeoutSeconds <= 0 {
+			t.Errorf("%s: timeoutSeconds = %d, want an explicit positive value (kubelet's 1s default is tight for a real network+TLS round trip)", name, probe.TimeoutSeconds)
+		}
+	}
+
+	checkProbe("startupProbe", container.StartupProbe, "/readyz")
+	checkProbe("readinessProbe", container.ReadinessProbe, "/readyz")
+	checkProbe("livenessProbe", container.LivenessProbe, "/healthz")
+}
+
 func TestDeployReferenceWorkerInitContainerIsRestrictedCompatible(t *testing.T) {
 	raw, err := os.ReadFile("../../deploy/reference/goobers-system/worker-deployment.yaml")
 	if err != nil {
@@ -177,6 +234,34 @@ func TestDeployReferenceWorkerInitContainerIsRestrictedCompatible(t *testing.T) 
 		deployment.Spec.Template.Spec.SecurityContext.SeccompProfile == nil ||
 		deployment.Spec.Template.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 		t.Error("init container does not inherit a RuntimeDefault seccomp profile")
+	}
+}
+
+// TestDeployReferenceDisabledDeploymentsShipZeroReplicas locks the reference
+// base's disabled components at replicas: 0 (#3277). The daemon API waits on
+// its in-cluster listener (#652); the operator is quarantined Tier-3
+// (internal/operator package doc, docs/ARCHITECTURE.md §11) and its reconciler
+// schedules a runtime image nothing in this repository publishes, so applying
+// the base as shipped would reconcile CRDs into ImagePullBackOff workloads.
+// `make deploy-validate` checks schema, not semantics, so nothing else here
+// would catch either regressing back to a running replica.
+func TestDeployReferenceDisabledDeploymentsShipZeroReplicas(t *testing.T) {
+	for _, name := range []string{"api", "operator"} {
+		raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "reference", "goobers-system", name+"-deployment.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var deployment appsv1.Deployment
+		if err := yaml.Unmarshal(raw, &deployment); err != nil {
+			t.Fatal(err)
+		}
+		if deployment.Spec.Replicas == nil {
+			t.Errorf("%s-deployment.yaml: replicas is unset, want an explicit 0", name)
+			continue
+		}
+		if *deployment.Spec.Replicas != 0 {
+			t.Errorf("%s-deployment.yaml: replicas = %d, want 0 — this component is not ready to run in the reference base", name, *deployment.Spec.Replicas)
+		}
 	}
 }
 

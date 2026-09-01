@@ -733,3 +733,44 @@ func TestPRRemediationCheckpointEchoesPushContext(t *testing.T) {
 		t.Errorf("remediation-checkpoint next = %q, want checkpoint-gate — a terminal checkpoint is exactly the #892 dead end", checkpoint.Next)
 	}
 }
+
+// TestPRRemediationSubscribesToPullRequestEvents is #3985's dispatch-side
+// acceptance. `goobers run --pr <n> pr-remediation` is delivered as a
+// pull_request signal, so without this trigger the run is refused before any
+// stage executes ("workflow ... is not subscribed to signal
+// github-webhook:pull_request"). The schedule assertions guard the other half
+// of the fix: subscribing to the event must not cost the lane its
+// eligibility-driven hourly fan-out.
+func TestPRRemediationSubscribesToPullRequestEvents(t *testing.T) {
+	w, _ := loadPRRemediation(t)
+
+	subscribed := false
+	for _, trigger := range w.Spec.Triggers {
+		if trigger.Type != apiv1.TriggerWebhook {
+			continue
+		}
+		for _, event := range trigger.Events {
+			if event == "pull_request" {
+				subscribed = true
+			}
+		}
+	}
+	if !subscribed {
+		t.Fatal("pr-remediation declares no pull_request webhook trigger — `goobers run --pr <n> pr-remediation` cannot reach the lane")
+	}
+
+	schedules := 0
+	for _, trigger := range w.Spec.Triggers {
+		if trigger.Type != apiv1.TriggerSchedule {
+			continue
+		}
+		schedules++
+		if trigger.Schedule != "37 * * * *" || trigger.Priority != 100 {
+			t.Fatalf("schedule trigger = %q priority %d, want the unchanged \"37 * * * *\" priority 100 tick",
+				trigger.Schedule, trigger.Priority)
+		}
+	}
+	if schedules != 1 {
+		t.Fatalf("schedule triggers = %d, want exactly the one pre-existing tick", schedules)
+	}
+}

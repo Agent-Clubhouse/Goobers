@@ -25,7 +25,7 @@ func adoRepoRefForStage(root string, routed providers.RepositoryRef) (instance.R
 		return instance.RepoRef{}, err
 	}
 	for _, repo := range cfg.Repos {
-		if repo.Provider != "ado" {
+		if repo.Provider != string(providers.ProviderADO) {
 			continue
 		}
 		if repo.Owner == routed.Owner && repo.Project == routed.Project && repo.Name == routed.Name {
@@ -38,11 +38,11 @@ func adoRepoRefForStage(root string, routed providers.RepositoryRef) (instance.R
 	// config entry's org-scoped auth serves it — the ADO provider is
 	// organization-scoped and the project is only per-call addressing.
 	for _, repo := range cfg.Repos {
-		if repo.Provider == "ado" && repo.Owner == routed.Owner && repo.Name == routed.Name {
+		if repo.Provider == string(providers.ProviderADO) && repo.Owner == routed.Owner && repo.Name == routed.Name {
 			return repo, nil
 		}
 	}
-	if len(cfg.Repos) == 1 && cfg.Repos[0].Provider == "ado" {
+	if len(cfg.Repos) == 1 && cfg.Repos[0].Provider == string(providers.ProviderADO) {
 		return cfg.Repos[0], nil
 	}
 	return instance.RepoRef{}, fmt.Errorf("no ADO repo %s/%s/%s configured in %s", routed.Owner, routed.Project, routed.Name, l.ConfigFile())
@@ -98,7 +98,7 @@ func backlogRepoRefForStage(root string, routed providers.RepositoryRef) provide
 	if routed.Provider != providers.ProviderADO {
 		return routed
 	}
-	gaggle := os.Getenv("GOOBERS_GAGGLE")
+	gaggle := os.Getenv(executor.GaggleEnvVar)
 	if gaggle == "" {
 		return routed
 	}

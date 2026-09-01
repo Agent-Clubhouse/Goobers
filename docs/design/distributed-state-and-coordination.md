@@ -190,8 +190,8 @@ Field evidence filed upstream: #2854, #2860, #2861, #2862, #2863, #2864, #2865.
 
 | # | Decision | Why |
 |---|---|---|
-| DS1 | **One daemon, one instance root, daemon = control plane.** Claims, provider quota, open-PR caps, fairness, and admission stay in the single daemon pod on RWO storage; no second replica in v1 | D5. #2053's fenced-lease work is the price of a second replica and stays deferred with recorded rationale; "two replicas against one instance root is a refused state" (#2053) remains enforced |
-| DS2 | **The daemon write API is the only instance-state path for mode 3.** v1 surface: claim/release for ledger-touching stages, external trigger ingestion, HITL escalation resolution, live journal ingestion, stage-credential issuance | D5. Removes kubectl-exec-only operation; one API, one auth story, one place M2/M3/M4 converge instead of three coordinators |
+| DS1 | **One daemon, one instance root, daemon = control plane.** Claims, provider quota, open-PR caps, fairness, and admission stay in the single daemon pod on RWO storage; no second replica in v1. The daemon is the single writer of `claims.json` and of the scheduler-state files beside it. Ledger-touching stages mutate them only through the claims/state planes (`internal/claimsclient`'s HTTP backend, selected by `GOOBERS_CLAIMS_ENDPOINT` + a claims bearer); the file-locked in-process path remains the daemon's own and the type-1/type-2 same-host path. Item **selection** (which candidates to try, in what order) belongs to the stage; **admission** (whether a lease is granted) belongs to the plane, and acquire's refusal is the only arbiter of contention (decision 005 R2) | D5. #2053's fenced-lease work is the price of a second replica and stays deferred with recorded rationale; "two replicas against one instance root is a refused state" (#2053) remains enforced |
+| DS2 | **The daemon write API is the only instance-state path for mode 3.** v1 surface: claim/release for ledger-touching stages, external trigger ingestion, HITL escalation resolution, live journal ingestion, stage-credential issuance. Its read counterpart is narrower by construction: a stage pod may GET only *derived, low-sensitivity* telemetry rollups — stats, error counts, and implementation outcomes (`internal/telemetryclient`, selected by `GOOBERS_TELEMETRY_ENDPOINT` + a pod bearer) — always filtered to the gaggle the daemon itself resolves from the caller's own `run.yaml`, never the gaggle the caller claims (decision 005 R4). Amended by Goobers#4001 (blocker 1 of #3996): `telemetry-query`'s four defect-nomination aggregates (`stage-failure-rate`, `gate-noise`, `credit-assignment`, `error-signature`) are served too, over a separate closed-parameter route that filters and aggregates server-side — no SQL, no path, no projection name, no connector is expressible in a request — so `telemetry-query` is dispatchable and `defect-nomination` is fully pod-pinnable. The line the amendment does NOT cross: RAW error signatures and every external-telemetry connector stay off the plane. What crosses is the NORMALIZED signature (`telemetryclient.NormalizeErrorSignature`): an identifier-shaped classification survives, anything else becomes an opaque digest that still clusters and dedupes, and the raw `(code, error_class)` route stays human-only | D5. Removes kubectl-exec-only operation; one API, one auth story, one place M2/M3/M4 converge instead of three coordinators |
 | DS3 | **API contract first, store second.** Claim/release semantics (lease, epoch, exactly-once settle) are the API contract; `claims.json` may remain the v1 store behind it | The store is swappable behind a contract; the contract is not swappable behind a store. Migrating the file to SQLite/Postgres later is invisible to every caller |
 | DS4 | **Live journal service: activities emit journal events as they happen; the daemon's single writer owns sequence allocation; every emit carries an idempotency key** | D0/D5: the journal is the *product output* and must not be an after-image of an implementation detail. Decoupling it from Temporal history keeps Temporal revisitable (D0) and makes runs live — stall detection (`StalledRunTimeout`), SSE, and the portal work mid-run, which D5 makes a v1 functional requirement |
 | DS5 | **History projection is demoted to repair.** `ProjectRun` and the reconciler are retained as a backfill/repair path (deterministic re-projection, #629) and as the conformance cross-check, never the primary author | Deleting it would discard the only independent reconstruction of a run; keeping it primary would keep the product output hostage to Temporal history (contradicts D0) |
@@ -204,7 +204,7 @@ Field evidence filed upstream: #2854, #2860, #2861, #2862, #2863, #2864, #2865.
 ## 7. The daemon write API
 
 One versioned surface, extending the existing `/api/v1` contract (`internal/apicontract/contract.go:20-47`
-— routes there already carry cost classes and budgets; the write routes join that discipline). Five
+— routes there already carry cost classes and budgets; the write routes join that discipline). Six
 planes:
 
 **Claims plane** — `claim`, `renew`, `release`, `settle`. The ledger-touching deterministic stages
@@ -214,6 +214,75 @@ API's contract; arbitration happens where the ledger lives. The CLI's bolted-on 
 (`withClaimLock`, `cmd/goobers/providercmd.go:644`; `pending-claims` file delegation) is subsumed on
 this path. D9's solver rule — ledger-touching stages never place on Windows — becomes unnecessary as
 a *state* restriction (any pod can call the API) but survives v1 as a scheduling default.
+
+**Scheduler-state plane** — `GET`/`PUT /api/v1/gaggles/{gaggle}/state/{key}`, compare-and-swap on an
+opaque `ETag` (`If-Match` to replace a known value, `If-None-Match: *` to create). This is M5's answer
+and the rest of M2's: the scheduler-state files that sit *beside* `claims.json` — `blocked.json`, the
+backlog scan cursors, the post-merge-reconcile ledger, the sibling-context cache, the backlog-health
+ready-transition ledger, the per-PR pr-remediation no-op record, `pr-select`'s fairness lease — are
+per-node for exactly the reason the ledger is, and a mode-3 stage cannot reach them at all.
+`internal/stateclient` selects a backend the same way `internal/claimsclient` does: `GOOBERS_STATE_ENDPOINT` +
+`GOOBERS_STATE_TOKEN` + `GOOBERS_GAGGLE` present ⇒ the plane, all three absent ⇒ the file backend, any
+partial combination ⇒ a refusal, never a silent local write (decision 005 R3).
+
+Three properties make it safe to hand a stage pod:
+
+- **The key namespace is closed.** `stateclient.ValidKey` admits exactly the names above, plus the
+  backlog re-sweep generation (`backlog-resweep-<sha256>.json`, joined by Goobers#3898 — it was the
+  last scheduler-directory file the claiming path opened directly), scan cursors by their
+  `backlog-scan-<sha256>.json` shape, the backlog-health ready-transition ledger by its
+  `backlog-health.<gaggle>.<provider>__<repository>__<label>.json` shape (Goobers#3948), the
+  pr-remediation no-op record by its `pr-remediation-noop-<sha256>.json` shape (Goobers#3989 — the
+  last file holding `gather-pr-context`, and the last of the three seams that command needed), and
+  `pr-select-fairness.json` (Goobers#3988 — the last file holding a `merge-review` stage to
+  `StageRequiresInstanceRoot`, and so the last Self pin on M3). Both the client and the daemon
+  enforce it, so a state bearer can never address `claims.json`, `config.yaml`, or anything else in
+  the scheduler directory. Containment does not rest on path sanitation. The no-op record is *keyed*
+  rather than the fixed `pr-remediation-noop.json` it used to be: the record is per PR, so one key
+  per (gaggle, PR) keeps one PR's compare-and-swap from contending with every other PR's, and the old
+  aggregate name is deliberately **not** admitted — serving it would hand a state bearer every PR's
+  record in a single read. The fairness lease, by contrast, stays a *fixed* key, as
+  `post-merge-reconcile.json` is: it is one instance-wide lease over every candidate, and splitting it
+  per PR would destroy the cross-candidate ordering the aging boost and the starvation guard are
+  computed from.
+- **The gaggle is an authorization scope, not a storage location.** The files stay instance-scoped
+  under `layout.SchedulerDir()`; the path segment decides *who may ask*. A pod principal is contained
+  to the gaggle its own `run.yaml` proves it belongs to — verified, like claims/list, by validating
+  both segments before joining them and refusing anything that is not one plain path element. The
+  ready-transition ledger is the one key that also carries a gaggle *inside* it (its file has always
+  been named per gaggle), so the daemon additionally requires that gaggle to be the caller's own —
+  route scope alone would let a pod contained to gaggle A name gaggle B's ledger. It is delimited by
+  a `.` rather than by the `__` the file name joins on, because a repository or a label may
+  legitimately contain `__` and the containment check must never have to guess where the gaggle ends.
+- **The plane takes the same lock the in-process path takes.** `blocked.json`, the scan cursors, the
+  pr-remediation no-op records and the `pr-select` fairness lease are served under `claims.lock`
+  (finding 002); the reconcile ledger and sibling cache under their own existing lock files. For the
+  last two of those the `claims.lock` is load bearing rather than incidental: terminal cleanup folds
+  a no-op into the record *while* holding that lock to read the finished run's PR claim, and the
+  fairness lease is observed and rewritten *inside* `pr-select`'s claim transaction so that a
+  candidate's wait and the claim that ends it move as one step. Any other lock would split each read
+  from its write into two atomicity domains — for the lease, letting a concurrent run see a PR as
+  unclaimed-and-aging while another run is halfway through claiming it. A runner-driven stage holding
+  the file lock locally and an engine-driven stage CAS-ing through the plane serialize against each
+  other rather than racing — which is the whole point
+  of putting the route in front of the file instead of beside it. The ready-transition ledger is the
+  single deliberate exception, and in the safe direction: it had *no* cross-process lock (one
+  in-process writer plus an atomic rename), it needs one now that the compare and the swap are two
+  round trips, and it gets its own `backlog-health-cursor.lock` rather than the default `claims.lock`
+  — a persist that follows a hundreds-of-pages provider walk must not contend with every claim,
+  release and blocked-record update, which share none of its state.
+
+One key resolves into a *subdirectory*: the ready-transition ledger has always lived at
+`<schedulerDir>/backlog-health/<gaggle>__<provider>__<repository>__<label>.json` and must stay there,
+or a pod-executed cycle and a daemon-driven one would advance two different ledgers. Its key spells
+that directory as a `.`-separated prefix rather than a `/`: a slash would be percent-escaped onto the
+wire, decoded back into a second path segment, and refused by the route's structural pod-scope match
+with a 403 that reads like a containment failure. `stateclient.KeyRelativePath` is the only place a
+key becomes more than one path element.
+
+Priority triggers (apply-verdict's crowned-lander dispatch) ride the trigger plane rather than the file
+drop, under the same containment: a pod principal may post a trigger only for its own gaggle and only
+naming its own run as the source.
 
 **Journal plane** — `emit` (batched events), `adopt-span` (by digest). See §8.
 
@@ -229,9 +298,64 @@ lands as an authenticated API call and is journaled as the resolution event. Thi
 
 Exposure rides the existing fail-closed posture: non-loopback bind requires TLS + configured auth
 with no insecure override (`internal/instance/config.go:309-318`, #640), and the shipped OIDC
-authenticator (`internal/oidcauth`) covers humans (HITL, triggers). Pod-to-daemon authentication is
-an open point (§13) — the candidates are projected service-account tokens verified via TokenReview,
-or per-run bearer tokens minted at dispatch and carried as opaque references (#2931-clean).
+authenticator (`internal/oidcauth`) covers humans (HITL, triggers).
+
+### 7.1 Pod-to-daemon authentication, resolved: per-run scoped plane bearers
+
+§14 left the mechanism open between projected service-account tokens and per-run minted bearers.
+Goobers#3897 settles it on the second, and narrows it further: **per-run, per-plane, least-privilege
+bearers minted at dispatch**.
+
+The forcing argument is `GOOBERS_POD_TOKEN`. That token authenticates `__dispatch-exec` — the pod's
+wrapper process — and its authority includes **surrendering the stage's result**. Handing the same
+token to the stage subprocess so it could reach the claims plane would also hand a
+workflow-authored command the ability to declare its own stage successful for work it never did.
+Every downstream gate believes that declaration. So the stage subprocess never sees the pod token at
+all (it is in `dispatcher.DispatcherPrivilegedEnv`, stripped from *every* stage including
+goobers-CLI ones), and the dispatcher instead mints four separate bearers:
+
+| Plane | Endpoint | Bearer | Scope | Also selects on |
+|---|---|---|---|---|
+| Claims | `GOOBERS_CLAIMS_ENDPOINT` | `GOOBERS_CLAIMS_TOKEN` | `claims` | `GOOBERS_RUN_ID` |
+| Scheduler state | `GOOBERS_STATE_ENDPOINT` | `GOOBERS_STATE_TOKEN` | `state` | `GOOBERS_GAGGLE` |
+| Journal | `GOOBERS_JOURNAL_ENDPOINT` | `GOOBERS_JOURNAL_TOKEN` | `journal` | `GOOBERS_RUN_ID` |
+| Telemetry | `GOOBERS_TELEMETRY_ENDPOINT` | `GOOBERS_TELEMETRY_TOKEN` | `telemetry` | `GOOBERS_GAGGLE` |
+
+**Route confinement is enforced server-side, not by naming convention.** A pod bearer carries its
+scopes inside its signature (`internal/podauth`: a third payload segment for `SignedKey`, a grant
+field for the in-memory `Registry`). `httpapi.RequireRoles` resolves every pod-reachable route to
+exactly one scope (`podRouteScope`) and refuses a bearer that does not carry it. A claims bearer
+therefore reaches `/api/v1/claims/*` and nothing else: not the surrender route, not another plane,
+not a human route. The cross product — every scope against every pod route — is asserted in
+`internal/httpapi/podscope_test.go`.
+
+**Run binding is unchanged and independent of scoping.** The subject is still `run:<runID>`, and
+every handler still enforces its own run or gaggle boundary on top. A scope narrows *which planes*;
+the subject narrows *whose data*. Neither substitutes for the other.
+
+**Compatibility, both directions.** An unscoped token keeps the exact pre-scopes payload, so a
+daemon that has not been redeployed still verifies tokens a rolled-forward worker mints, and an
+unscoped principal reaches every pod plane (that is `__dispatch-exec`'s own token). A *scoped* token
+uses a payload shape an old verifier refuses outright — the correct failure direction: an old daemon
+declines the token rather than admitting it with no scope enforcement at all.
+
+**All or nothing.** Each plane client fails closed on a partial environment (`ErrEndpointWithoutToken`,
+`ErrEndpointWithoutRun`, `ErrEndpointWithoutGaggle`), and an endpoint that is simply *absent* is
+worse than an error: the client silently takes its local-file branch, against a pod scratch volume
+nothing reads. The dispatcher therefore stamps the whole eight-variable set or none of it
+(`stampsPlaneEnv`), refusing to dispatch rather than stamping a partial one. The preconditions are:
+a goobers-CLI stage, a configured write API base, a run id, a gaggle, four bearers, and all four
+distinct from each other and from the pod token.
+
+**These variables are authority, not identity.** They sit in a third dispatcher env category,
+`DispatcherPlaneEnv`, alongside `DispatcherPrivilegedEnv` and `DispatcherRunIdentityEnv`. They are
+kept by a goobers-CLI stage exactly as run identity is, but they are *categorised* separately
+because run identity's documented justification is "knowing a run id grants nothing" — and half of
+these names *are* a bearer. Consequences: workflow-authored `env:` may neither name a control
+variable nor dereference one by value (`$(GOOBERS_CLAIMS_TOKEN)` in any declared value is refused at
+render, `ControlEnvOverrideError`); inputs cannot collide by construction
+(`InputEnvVar` prefixes `GOOBERS_INPUT_`); and the operator `envPassthrough` list carries names into
+the `env:default-deny` allowlist only, never values.
 
 ## 8. The live journal service
 
@@ -271,6 +395,29 @@ the activity; exhaustion fails the attempt as `attemptClass: infra` (#3361 — i
 charges the work budget). The event is not droppable: an effect that cannot be journaled did not
 happen, which is the same fail-closed stance the projection took (`ErrUnprojectable`).
 
+**Instance annotations (Goobers#3898).** The scheduler's cross-run narration — "this backlog item
+was eligible but blocked", "this item completed with only blocked work left", "this item's failure
+streak degraded it" — is a `runner.annotation` event in the **instance** log, not in any run's own
+journal. The claiming path used to write it by opening `journal.OpenInstanceLog` on the daemon's
+scheduler directory directly, which is why `backlog-query --claim` could never run in a pod: that
+volume is not mounted there, and mounting it would give a workflow-authored stage write access to
+every run's scheduling record.
+
+It now rides the same run-scoped emit route as a `livejournal.OpInstanceAnnotation` op. The daemon's
+writer appends it to the instance log it was constructed with (`WithInstanceLog`), and **stamps the
+event's `RunID` from the request rather than the payload** — so a pod that legitimately emits for its
+own run still cannot attribute an instance-log entry to a different one. That is a second,
+independent defence behind the route's own `run_mismatch` refusal, on a field the route never
+inspects. A writer built without an instance log **refuses** the op (`ErrNoInstanceLog`) rather than
+dropping it: an annotation a stage believes it delivered and no operator can ever read is exactly
+the invisible failure this replaced.
+
+One documented limit: dedup for these ops holds only while the run is open in memory, because
+`deriveDedupState` rebuilds from run-journal events and these are not run-journal events. A
+duplicated scheduler annotation is append-only narration — noise, not a correctness failure — and
+the stage-side key derivation is content-plus-ordinal so that two genuinely distinct annotations are
+never collapsed into one (the failure that would actually lose information).
+
 **Conformance.** The journal invariant is unchanged: equivalent normative event sets, `(branch, seq)`
 ordered, across runners (A2 harness). The retained projection (DS5) doubles as the cross-check: a
 periodic reconciler diffs the live-authored journal against a history re-projection and files
@@ -302,6 +449,21 @@ test. Result: a daemon restart of any duration shorter than the lease (30 min de
 `DefaultClaimLease`) is invisible to a live run's claims, and even a longer outage cannot reap a
 claim while the reaper itself is down; only a restarted daemon that sees a *closed or vanished*
 workflow lets the lease lapse.
+
+**"Maps to an open workflow" is an inverse, not an identity (decision 005 D2).** A directly started
+run executes under `WorkflowID == RunID`, so the mapping is free. A `RunScheduled` run does not: its
+`RunID` is rewritten to a hash of the schedule claim id, and the work executes under the claim
+workflow or its `-run` child. `WorkflowLiveness` therefore keeps *one* bounded, TTL-cached open-
+workflow enumeration (`internal/engine/liveness.go`) that yields both a liveness set and the exact
+`RunID -> WorkflowID` inverse, and every consumer — renewal, boot reattach (`OpenRuns`), the guards'
+`await`/`cancel`, and `goobers run cancel/abort` — reads that same scan. Consumers describe the run's
+own id first and consult the inverse only on `NotFound`, so the common case never costs a visibility
+page. The scan's bounds (10s cache TTL, 100-execution pages, 10-page cap) are the DS6 budget: hitting
+the cap, failing the scan, or resolving ambiguously is reported as *unknown*, never as *settled*, so
+a reconciled slot is never freed under a live workflow. Independently, an engine-enabled daemon
+asserts at boot that no Temporal `Schedule` reconciliation is configured — the embedded scheduler
+stays the trigger source and delegates to the engine, which is what keeps the rewritten shape rare
+and the scan budget honest.
 
 **Outage window (DS7).** With one daemon pod on RWO storage, pod loss means, until Kubernetes
 reschedules onto the volume: no new run admission, no claim/release, no trigger or HITL ingestion, no
@@ -386,8 +548,10 @@ Falsifiable, aligned with the D11 smoke:
 
 Not re-opened decisions — implementation questions the design deliberately leaves to the epics:
 
-- **Pod-to-daemon auth mechanism** for the write API: projected service-account tokens + TokenReview
-  vs per-run minted bearer references. (Human auth is decided: the shipped OIDC seam.)
+- ~~**Pod-to-daemon auth mechanism** for the write API: projected service-account tokens +
+  TokenReview vs per-run minted bearer references.~~ **Resolved (Goobers#3897), see §7.1:** per-run,
+  per-plane least-privilege bearers minted at dispatch, with route confinement enforced server-side
+  in `httpapi.RequireRoles`. (Human auth was already decided: the shipped OIDC seam.)
 - **Claims store backend** behind the API contract (retain `claims.json` vs a SQLite table on the
   daemon volume) — DS3 makes this swappable; pick at implementation with a migration note.
 - **Emit batching, retry budget, and buffer bounds** for the journal plane before an attempt
@@ -419,3 +583,6 @@ Not re-opened decisions — implementation questions the design deliberately lea
 | #3482 | Increment 1 (D1): moving execution out of the API pod is the first consumer of this seam |
 | #3489 | Root lesson encoded as DS10; confirmation evidence is an open point |
 | #640 / #2901 / #644 | Exposure posture and portal auth ride D10; the write API inherits the fail-closed bind rule |
+| #3897 | Closes §14's pod-to-daemon auth point: per-run, per-plane scoped bearers stamped as a complete fail-closed env set (§7.1) |
+| #3898 | Instance annotations move onto the journal emit plane (§8); the backlog re-sweep generation joins the scheduler-state namespace (§7) |
+| #3988 | `pr-select`'s fairness lease joins the scheduler-state namespace under `claims.lock` (§7); `pr-select` leaves `StageRequiresInstanceRoot`, clearing the last Self pin on `merge-review` (M3 of #3828) |

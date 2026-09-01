@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,14 +16,14 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// suiteRunWaitTimeout is the generous ceiling every wait-mode `goobers run`/
-// `signal` in this suite gets (via runTerminalWaitTimeout, set in TestMain). A
-// nested demo run's trivial stages finish in seconds even under heavy concurrent
-// make-ci load, so 2 minutes only ever fires on a genuine wedge — yet it fails
-// ~5x faster than the 10-minute local-ci stage limit, turning a silent
-// queue-wedging hang into a loud, diagnosable test failure (#827 recurrence
-// guard). Deliberately not tight (e.g. 5s) so a merely-slow-under-load run never
-// false-fails.
+// suiteRunWaitTimeout is the generous idle ceiling every wait-mode `goobers run`/
+// `signal` in this suite gets (via runTerminalWaitTimeout, set in TestMain). It
+// bounds time WITHOUT journal progress, not total run time, so a nested demo run
+// that merely crawls under heavy concurrent make-ci load still finishes, while a
+// genuine wedge — which appends nothing at all — fails ~5x faster than the
+// 10-minute local-ci stage limit, turning a silent queue-wedging hang into a
+// loud, diagnosable test failure (#827 recurrence guard). Deliberately not tight
+// (e.g. 5s) so a slow-but-advancing stage never false-fails between events.
 const suiteRunWaitTimeout = 2 * time.Minute
 
 // hermeticEphemeralListen is the address every daemon-lifecycle test binds in
@@ -81,6 +82,10 @@ func (testCopilotModelLister) ListModels(context.Context, []string, []string) ([
 //
 //  3. It disables git fsync for every git subprocess these tests spawn (#811).
 //     See disableGitFsyncForTests.
+//
+//  4. It disables git's automatic background housekeeping for every git
+//     subprocess these tests spawn (#3172). See
+//     disableGitAutoMaintenanceForTests.
 func TestMain(m *testing.M) {
 	if os.Getenv(portalBuildMakeEnv) == "1" && isDocsDryRunMakeProcess() {
 		os.Exit(runPortalBuildMake())
@@ -97,6 +102,20 @@ func TestMain(m *testing.M) {
 	}
 	copilotModelLister = testCopilotModelLister{}
 
+	// Keep the daemon suite hermetic against the machine's own memory (#3960).
+	// newDaemonScheduler wires the cgroup-aware admission gate by default, so
+	// without this every test that expects a dispatch would depend on the
+	// runner's cgroup staying below the high-water mark — and this repo's CI
+	// runs on-pod inside exactly the 10Gi cgroup that gate exists to protect,
+	// so those tests would fail precisely when the feature is working. Tests
+	// that exercise the gate itself override this with t.Setenv.
+	if _, set := os.LookupEnv(memoryHighWaterEnv); !set {
+		if err := os.Setenv(memoryHighWaterEnv, "off"); err != nil {
+			fmt.Fprintf(os.Stderr, "set %s: %v\n", memoryHighWaterEnv, err)
+			os.Exit(1)
+		}
+	}
+
 	// Deterministic stages substitute os.Executable for a bare "goobers"
 	// command. Let subprocesses launched that way exercise the real CLI
 	// dispatcher instead of handing stage arguments to testing's flag parser.
@@ -107,7 +126,7 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow, []string, map[string][]string) (harnessPreflightInfo, error) {
+	preflightHarnesses = func(map[string]apiv1.GooberSpec, []apiv1.Workflow, []string, map[string][]string, func(context.Context) (string, error)) (harnessPreflightInfo, error) {
 		return harnessPreflightInfo{}, nil
 	}
 
@@ -120,11 +139,30 @@ func TestMain(m *testing.M) {
 	}
 
 	disableGitFsyncForTests()
+	disableGitAutoMaintenanceForTests()
 	disableGitLineEndingConversionForTests()
 	disableJournalFsyncForTests()
 	runTerminalWaitTimeout = suiteRunWaitTimeout
 
-	os.Exit(m.Run())
+	packageDir, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "package directory guard: resolve working directory: %v\n", err)
+		os.Exit(1)
+	}
+	guard, err := newPackageDirGuard(packageDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "package directory guard: snapshot %s: %v\n", packageDir, err)
+		os.Exit(1)
+	}
+
+	code := m.Run()
+	if changes := guard.changes(); len(changes) > 0 {
+		fmt.Fprintln(os.Stderr, packageDirGuardFailure(packageDir, changes))
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
 }
 
 // installMakeExecutableFixture writes a copy of this test binary into dir as
@@ -205,6 +243,29 @@ func TestJournalFsyncDisabledForSuite(t *testing.T) {
 // the combined output callers like gatherPRContext parse.
 func disableGitFsyncForTests() {
 	appendGitConfigForTests("core.fsync", "none")
+}
+
+// disableGitAutoMaintenanceForTests stops every git subprocess this suite
+// spawns from starting background housekeeping (#3172). A push into a fixture's
+// bare `origin.git` makes receive-pack run `git gc --auto`, which by default
+// detaches (gc.autoDetach) and outlives the test that triggered it. That orphan
+// keeps creating and deleting files under `origin.git/objects/pack` while
+// t.TempDir's RemoveAll is walking the very same directory, so cleanup failed
+// with "unlinkat .../objects/pack: directory not empty" — a flake attributable
+// to whichever test happened to own the temp dir (TestRebasePRResolvesLiteral-
+// PathspecFilename in the reported stress run), not to any defect in it.
+//
+// internal/testgit already passes `-c gc.auto=0 -c maintenance.auto=0` for the
+// fixture git commands it builds, but that covers only its own children; the
+// runner code under test (worktree clones, rebase, push) shells out to git
+// through production paths that inherit this process's environment instead.
+// Layering the same settings via GIT_CONFIG_* closes that gap for both.
+// gc.autoDetach is pinned as well so an explicitly requested gc stays in the
+// foreground and finishes before its caller returns.
+func disableGitAutoMaintenanceForTests() {
+	appendGitConfigForTests("gc.auto", "0")
+	appendGitConfigForTests("gc.autoDetach", "false")
+	appendGitConfigForTests("maintenance.auto", "false")
 }
 
 func disableGitLineEndingConversionForTests() {

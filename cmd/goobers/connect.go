@@ -167,7 +167,7 @@ func (r connectADORepo) String() string {
 // looser (dots and underscores are legal).
 var (
 	adoOrganizationPart = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
-	adoNamePart         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+	adoNamePart         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_. -]*$`)
 )
 
 // connectADOIdentity recognizes an Azure DevOps repository in the forms an
@@ -398,7 +398,7 @@ func executeConnect(opts connectOptions, stdout, stderr io.Writer) int {
 		}
 		var scoped []instance.RepoRef
 		for _, repo := range cfg.Repos {
-			if repo.Provider == "github" && repo.Owner == opts.owner && repo.Name == opts.name {
+			if repo.Provider == string(providers.ProviderGitHub) && repo.Owner == opts.owner && repo.Name == opts.name {
 				scoped = append(scoped, repo)
 			}
 		}
@@ -597,7 +597,7 @@ func connectForeignProviderRefusal(index int, repo instance.RepoRef) error {
 		identity = repo.Owner + "/" + repo.Project + "/" + repo.Name
 	}
 	guide := ""
-	if repo.Provider == "ado" {
+	if repo.Provider == string(providers.ProviderADO) {
 		guide = " (docs/guides/ado-authentication.md)"
 	}
 	return fmt.Errorf("%s repos[%d] declares provider %q (%s) but `goobers connect` writes provider: github entries only; "+
@@ -613,7 +613,7 @@ func connectForeignProviderRefusal(index int, repo instance.RepoRef) error {
 // another provider.
 func connectRewriteInstanceConfig(cfg *instance.Config, opts connectOptions) (bool, error) {
 	target := instance.RepoRef{
-		Provider: "github",
+		Provider: string(providers.ProviderGitHub),
 		Owner:    opts.owner,
 		Name:     opts.name,
 		Token:    instance.TokenRef{Env: opts.tokenEnv},
@@ -627,7 +627,7 @@ func connectRewriteInstanceConfig(cfg *instance.Config, opts connectOptions) (bo
 			cfg.Repos[i] = target
 			return true, nil
 		}
-		if repo.Provider == "github" && repo.Owner == opts.owner && repo.Name == opts.name {
+		if repo.Provider == string(providers.ProviderGitHub) && repo.Owner == opts.owner && repo.Name == opts.name {
 			if repo.Token.Env == opts.tokenEnv {
 				return false, nil // already connected
 			}
@@ -669,7 +669,7 @@ func connectRewriteInstanceConfig(cfg *instance.Config, opts connectOptions) (bo
 // stays connectable.
 func connectForeignProvider(repo instance.RepoRef) bool {
 	provider := strings.TrimSpace(repo.Provider)
-	return provider != "" && provider != "github"
+	return provider != "" && provider != string(providers.ProviderGitHub)
 }
 
 func describeTokenRef(token instance.TokenRef) string {
@@ -1100,7 +1100,7 @@ func connectedRepository(root string) string {
 		if repo.Owner == connectPlaceholderOwner && repo.Name == connectPlaceholderName {
 			continue
 		}
-		if repo.Provider == "github" && repo.Owner != "" && repo.Name != "" {
+		if repo.Provider == string(providers.ProviderGitHub) && repo.Owner != "" && repo.Name != "" {
 			return repo.Owner + "/" + repo.Name
 		}
 	}
@@ -1127,7 +1127,7 @@ func connectedTokenEnv(root string) string {
 		if repo.Owner == connectPlaceholderOwner && repo.Name == connectPlaceholderName {
 			continue
 		}
-		if repo.Provider == "github" && repo.Owner != "" && repo.Name != "" {
+		if repo.Provider == string(providers.ProviderGitHub) && repo.Owner != "" && repo.Name != "" {
 			return repo.Token.Env
 		}
 	}

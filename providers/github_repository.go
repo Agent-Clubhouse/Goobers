@@ -356,6 +356,7 @@ func githubGitPushRateLimitError(repo RepositoryRef, output []byte) *RateLimitEr
 		return nil
 	}
 	return &RateLimitError{
+		Provider:  ProviderGitHub,
 		Endpoint:  fmt.Sprintf("git push %s/%s", repo.Owner, repo.Name),
 		Status:    status,
 		Secondary: secondary,
@@ -420,20 +421,14 @@ func (p *GitHubProvider) Commit(ctx context.Context, req CommitRequest) (CommitR
 	if err := requireOwnerRepo(req.Repository); err != nil {
 		return CommitResult{}, err
 	}
-	if req.Branch == "" {
-		return CommitResult{}, fmt.Errorf("branch is required")
-	}
-	if req.Message == "" {
-		return CommitResult{}, fmt.Errorf("message is required")
-	}
-	if len(req.Files) == 0 {
-		return CommitResult{}, fmt.Errorf("at least one file is required")
+	if err := validateCommitRequest(req); err != nil {
+		return CommitResult{}, err
 	}
 
 	var last githubContentResponse
 	for _, file := range req.Files {
-		if file.Path == "" {
-			return CommitResult{}, fmt.Errorf("file path is required")
+		if err := validateCommitFile(file); err != nil {
+			return CommitResult{}, err
 		}
 		endpoint, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "contents", file.Path)
 		if err != nil {

@@ -2146,3 +2146,149 @@ func TestAdmissionSkippedWithoutGoobers(t *testing.T) {
 		t.Fatalf("runner path should not run admission, got %v", err)
 	}
 }
+
+// TestFileIssuesPolicyActions pins the admission contract for the nomination
+// filer (#2251): the write path prescribes the issue-write actions, --check
+// prescribes none, and approve-issue is prescribed only by the
+// autoApprove=deterministic-only input (decision 004: the filer applies
+// goobers:approved only to a nomination matching a deterministic tool
+// finding, through github:issues:approve) — never by the default, by
+// `never`, or by a flag, since the command defines none. It also pins the
+// readOnlyCommandArguments edge: the read-only flag is parsed alone, so any
+// other flag beside it makes the command a write again rather than silently
+// read-only, and it wins over the approve input.
+func TestFileIssuesPolicyActions(t *testing.T) {
+	const writes = "create-issue,label-issue,comment-on-issue"
+	const approves = writes + ",approve-issue"
+	cases := []struct {
+		name       string
+		args       []string
+		inputs     map[string]string
+		inputsFrom map[string]string
+		want       string
+	}{
+		{name: "write path", want: writes},
+		{name: "check is read-only", args: []string{"--check"}, want: ""},
+		{name: "check with a path is read-only", args: []string{"--check", "."}, want: ""},
+		{name: "check=false is a write", args: []string{"--check=false"}, want: writes},
+		{name: "an unknown flag beside check is a write", args: []string{"--check", "--max", "3"}, want: writes},
+		{name: "a separate-value flag before check hides it", args: []string{"--max", "3", "--check"}, want: writes},
+		{name: "autoApprove deterministic-only input", inputs: map[string]string{"autoApprove": "deterministic-only"}, want: approves},
+		{name: "autoApprove deterministic-only input with whitespace", inputs: map[string]string{"autoApprove": " deterministic-only "}, want: approves},
+		{name: "autoApprove never input", inputs: map[string]string{"autoApprove": "never"}, want: writes},
+		{name: "autoApprove unknown value prescribes nothing extra", inputs: map[string]string{"autoApprove": "low-risk-only"}, want: writes},
+		// The table is exact, not case-folded, and so is the CLI's vocabulary
+		// (TestFileIssuesLabelPolicy): a spelling that prescribes nothing here
+		// is a usage error there, so no spelling opts in without approve-issue.
+		{name: "autoApprove with another spelling prescribes nothing extra", inputs: map[string]string{"autoApprove": "Deterministic-Only"}, want: writes},
+		{name: "autoApprove upper-cased prescribes nothing extra", inputs: map[string]string{"autoApprove": "DETERMINISTIC-ONLY"}, want: writes},
+		{name: "autoApprove bound dynamically fails closed", inputsFrom: map[string]string{"autoApprove": "mode"}, want: approves},
+		{name: "check wins over the approve input", args: []string{"--check"}, inputs: map[string]string{"autoApprove": "deterministic-only"}, want: ""},
+		{name: "no approve flag exists", args: []string{"--auto-approve"}, want: writes},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := apiv1.Task{
+				Run:        &apiv1.DeterministicRun{Command: append([]string{"goobers", "file-issues"}, tc.args...)},
+				Inputs:     tc.inputs,
+				InputsFrom: tc.inputsFrom,
+			}
+			if got := strings.Join(prescribedCommandPolicyActions(task), ","); got != tc.want {
+				t.Fatalf("policy actions = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	// The other read-only entry is unchanged by file-issues' registration.
+	if got := prescribedCommandPolicyActions(apiv1.Task{Run: &apiv1.DeterministicRun{Command: []string{"goobers", "respond-to-findings", "--check"}}}); len(got) != 0 {
+		t.Fatalf("respond-to-findings --check prescribes %v, want none", got)
+	}
+
+	spec := apiv1.WorkflowSpec{
+		Gaggle: "web",
+		Start:  "file",
+		Tasks: []apiv1.Task{{
+			Name:         "file",
+			Type:         apiv1.TaskDeterministic,
+			Goal:         "file validated nominations as issues",
+			Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "file-issues"}},
+			Inputs:       map[string]string{"backlogLabel": "goobers", "partitionLabel": "goobers:cloud"},
+			Capabilities: []string{string(capability.GitHubIssuesWrite)},
+		}},
+	}
+	_, err := compileAcknowledged(Definition{Name: "nominate", Version: 1, Spec: spec})
+	for _, want := range []string{
+		`command "goobers file-issues" prescribes policy action "create-issue"`,
+		`prescribes policy action "label-issue"`,
+		`prescribes policy action "comment-on-issue"`,
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Compile error = %v, want containing %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "approve-issue") {
+		t.Fatalf("file-issues without autoApprove: deterministic-only must never prescribe approve-issue: %v", err)
+	}
+	spec.Tasks[0].PolicyActions = []string{"create-issue", "label-issue", "comment-on-issue"}
+	if _, err := compileAcknowledged(Definition{Name: "nominate", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("declared actions and capabilities should compile: %v", err)
+	}
+	// Opting into deterministic-only approval prescribes approve-issue, whose
+	// contract demands the separately brokered approve credential; the stage
+	// must declare both, so a lane cannot approve on the write token alone.
+	spec.Tasks[0].Inputs["autoApprove"] = "deterministic-only"
+	_, err = compileAcknowledged(Definition{Name: "nominate", Version: 1, Spec: spec})
+	for _, want := range []string{
+		`command "goobers file-issues" prescribes policy action "approve-issue"`,
+		`policy action "approve-issue" requires capability "github:issues:approve"`,
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Compile error = %v, want containing %q", err, want)
+		}
+	}
+	spec.Tasks[0].PolicyActions = append(spec.Tasks[0].PolicyActions, "approve-issue")
+	spec.Tasks[0].Capabilities = append(spec.Tasks[0].Capabilities, string(capability.GitHubIssuesApprove))
+	if _, err := compileAcknowledged(Definition{Name: "nominate", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("declared approve action and capability should compile: %v", err)
+	}
+	spec.Tasks[0].Inputs["autoApprove"] = "never"
+	spec.Tasks[0].PolicyActions = []string{"create-issue", "label-issue", "comment-on-issue"}
+	spec.Tasks[0].Capabilities = []string{string(capability.GitHubIssuesWrite)}
+	if _, err := compileAcknowledged(Definition{Name: "nominate", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("autoApprove: never should compile without the approve action or capability: %v", err)
+	}
+	// A spelling the table does not know compiles without approve-issue —
+	// which is safe only because `goobers file-issues` refuses it at runtime
+	// (its vocabulary is exact), so admission and runtime agree on the one
+	// literal that approves.
+	spec.Tasks[0].Inputs["autoApprove"] = "Deterministic-Only"
+	if _, err := compileAcknowledged(Definition{Name: "nominate", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("an unknown autoApprove spelling should prescribe nothing at admission (the CLI refuses it): %v", err)
+	}
+	spec.Tasks[0].Inputs["autoApprove"] = "never"
+	spec.Tasks[0].Run.Command = []string{"goobers", "file-issues", "--check"}
+	spec.Tasks[0].PolicyActions = nil
+	spec.Tasks[0].Capabilities = []string{string(capability.GitHubIssuesRead)}
+	if _, err := compileAcknowledged(Definition{Name: "nominate", Version: 1, Spec: spec}); err != nil {
+		t.Fatalf("--check with the exact read grant should compile: %v", err)
+	}
+}
+
+func TestCompileRejectsBlankRunExecutable(t *testing.T) {
+	for _, executable := range []string{"", "   ", "\t"} {
+		spec := apiv1.WorkflowSpec{
+			Gaggle: "web",
+			Start:  "check",
+			Tasks: []apiv1.Task{{
+				Name: "check",
+				Type: apiv1.TaskDeterministic,
+				Goal: "check",
+				Run:  &apiv1.DeterministicRun{Command: []string{executable, "--version"}},
+			}},
+		}
+
+		_, err := compileAcknowledged(Definition{Name: "inline", Version: 1, Spec: spec})
+		if err == nil || !strings.Contains(err.Error(), "run.command[0] must name a non-whitespace executable") {
+			t.Fatalf("Compile(%q) error = %v, want blank-executable rejection", executable, err)
+		}
+	}
+}
