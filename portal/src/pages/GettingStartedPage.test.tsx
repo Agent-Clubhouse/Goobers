@@ -74,6 +74,19 @@ const remoteReadyInspection: GuidedRepositoryInspection = {
   needsClone: true,
 };
 
+const githubAccessRequiredInspection: GuidedRepositoryInspection = {
+  ...inspection,
+  auth: {
+    kind: "github-cli",
+    ready: false,
+    identity: "octocat",
+    message:
+      "GitHub CLI is authenticated as octocat, but that account cannot access acme/widgets.",
+    remediationCommand: "gh repo view acme/widgets",
+    needsLogin: false,
+  },
+};
+
 const adoAuthRequiredInspection: GuidedRepositoryInspection = {
   ...inspection,
   provider: "ado",
@@ -329,6 +342,34 @@ describe("GettingStartedPage", () => {
     await user.click(screen.getByRole("button", { name: "Sign in with GitHub" }));
     expect(inspectionRequests).toBe(2);
     expect(screen.getByText("Clone the repository, then inspect it again")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).not.toBeInTheDocument();
+  });
+
+  it("shows GitHub PAT recovery guidance for authenticated access failures", async () => {
+    const user = userEvent.setup();
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/actions/inspect-repository": () => ({ body: githubAccessRequiredInspection }),
+        })}
+      />,
+    );
+
+    await openRepositoryPage(user);
+    await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
+    await user.click(screen.getByRole("button", { name: "Inspect clone" }));
+    expect(
+      await screen.findByText(
+        "GitHub CLI is authenticated as octocat, but that account cannot access acme/widgets.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Open GitHub fine-grained PAT settings" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Resource owner/)).toBeInTheDocument();
+    expect(screen.getByText(/Only select repositories/)).toBeInTheDocument();
+    expect(screen.getByText("gh repo view acme/widgets")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).not.toBeInTheDocument();
   });
 

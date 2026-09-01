@@ -612,7 +612,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                           ? "Goobers will open GitHub's device/web authorization now. It only runs when this repository needs it, and no token is written to Goobers configuration."
                           : "Confirm that the authenticated GitHub account can access this repository before continuing."}
                     </span>
-                    {inspection.provider === "github" && inspection.auth.needsLogin && (
+                    {inspection.provider === "github" && (
                       <>
                         <a
                           className="guided-intro-link"
