@@ -237,6 +237,34 @@ func TestDeployReferenceWorkerInitContainerIsRestrictedCompatible(t *testing.T) 
 	}
 }
 
+// TestDeployReferenceDisabledDeploymentsShipZeroReplicas locks the reference
+// base's disabled components at replicas: 0 (#3277). The daemon API waits on
+// its in-cluster listener (#652); the operator is quarantined Tier-3
+// (internal/operator package doc, docs/ARCHITECTURE.md §11) and its reconciler
+// schedules a runtime image nothing in this repository publishes, so applying
+// the base as shipped would reconcile CRDs into ImagePullBackOff workloads.
+// `make deploy-validate` checks schema, not semantics, so nothing else here
+// would catch either regressing back to a running replica.
+func TestDeployReferenceDisabledDeploymentsShipZeroReplicas(t *testing.T) {
+	for _, name := range []string{"api", "operator"} {
+		raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "reference", "goobers-system", name+"-deployment.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var deployment appsv1.Deployment
+		if err := yaml.Unmarshal(raw, &deployment); err != nil {
+			t.Fatal(err)
+		}
+		if deployment.Spec.Replicas == nil {
+			t.Errorf("%s-deployment.yaml: replicas is unset, want an explicit 0", name)
+			continue
+		}
+		if *deployment.Spec.Replicas != 0 {
+			t.Errorf("%s-deployment.yaml: replicas = %d, want 0 — this component is not ready to run in the reference base", name, *deployment.Spec.Replicas)
+		}
+	}
+}
+
 func registeredCommandFlagSet(t *testing.T, command string) *flag.FlagSet {
 	t.Helper()
 	registration, ok := commandHelp(command)
