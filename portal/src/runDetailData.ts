@@ -1,4 +1,3 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import { MalformedResponseError } from "./api/errors";
 import type {
   BranchStatus,
@@ -7,12 +6,13 @@ import type {
   RunDetail,
   RunEvent,
   RunTransition,
+  UpdateModel,
   WorkflowGraph,
   WorkflowGraphEdge,
 } from "./api/types";
 import type { QueryState } from "./api/queryState";
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
-import { useLiveData } from "./liveData";
+import { useLiveQuery } from "./liveQuery";
 
 export type RunNodeState =
   | "pending"
@@ -56,117 +56,17 @@ interface JournalVisitState {
 }
 
 export function useRunDetail(client: DaemonClient, runId: string): RunDetailQuery {
-  const { cache, freshness, isFresh, subscribe } = useLiveData();
-  const cacheKey = dataCacheKey("run-detail", runId);
-  const [state, setState] = useState<QueryState<RunDetailSnapshot>>(() => {
-    const cached = cache.get<RunDetailSnapshot>(cacheKey);
-    return cached ? { status: "ready", data: cached } : { status: "loading" };
+  return useLiveQuery<RunDetailSnapshot>({
+    cacheKey: dataCacheKey("run-detail", runId),
+    dependencies: runDetailDependencies(runId),
+    models: RUN_DETAIL_MODELS,
+    scope: { runId },
+    load: (signal) => loadRunDetail(client, runId, signal),
+    errorMessage: "Unable to read run detail.",
   });
-  const request = useRef<AbortController | undefined>(undefined);
-
-  const refresh = useCallback((): Promise<boolean> => {
-    request.current?.abort();
-    const dependencies = runDetailDependencies(runId);
-    const cacheRevision = cache.beginWrite(cacheKey, dependencies);
-    const controller = new AbortController();
-    request.current = controller;
-    setState((current) =>
-      current.status === "ready" || current.status === "stale"
-        ? { status: "stale", data: current.data }
-        : { status: "loading" },
-    );
-
-    return loadRunDetail(client, runId, controller.signal).then(
-      (data) => {
-        if (controller.signal.aborted) {
-          return true;
-        }
-        if (request.current === controller) {
-          request.current = undefined;
-        }
-        cache.set(cacheKey, data, dependencies, cacheRevision);
-        // The stream can drop while this request is in flight; the freshness
-        // effect below only fires on a freshness change, so publishing an
-        // unconditional "ready" here would leave the page claiming live data
-        // until the next transition (#3657).
-        setState(isFresh() ? { status: "ready", data } : { status: "stale", data });
-        return true;
-      },
-      (error: unknown) => {
-        if (controller.signal.aborted) {
-          return true;
-        }
-        if (request.current === controller) {
-          request.current = undefined;
-        }
-        const queryError =
-          error instanceof Error ? error : new Error("Unable to read run detail.");
-        setState((current) =>
-          current.status === "stale"
-            ? { status: "stale", data: current.data, error: queryError }
-            : { status: "error", error: queryError },
-        );
-        return false;
-      },
-    );
-  }, [cache, cacheKey, client, isFresh, runId]);
-
-  useEffect(() => {
-    const cached = cache.get<RunDetailSnapshot>(cacheKey);
-    setState(cached ? { status: "ready", data: cached } : { status: "loading" });
-    const unsubscribe = subscribe(
-      ["run"],
-      (_models, reason) => {
-        const current = reason === "initial" ? cache.get<RunDetailSnapshot>(cacheKey) : undefined;
-        if (current) {
-          setState(
-            isFresh() ? { status: "ready", data: current } : { status: "stale", data: current },
-          );
-          return true;
-        }
-        return refresh();
-      },
-      { runId },
-    );
-    return () => {
-      unsubscribe();
-      request.current?.abort();
-      request.current = undefined;
-    };
-  }, [cache, cacheKey, isFresh, refresh, subscribe]);
-
-  // Freshness downgrade (#1714).
-  //
-  // Every other query hook has this; these two did not, so a detail page kept
-  // reporting "ready" after the live stream dropped — the row looked current
-  // while the stream behind it was gone. The status is what the page renders
-  // its freshness indicator from, so without this the indicator lies.
-  //
-  // It moves ready -> stale on disconnect and back on reconnect, and never
-  // clears an error: a stale-with-error state must stay visibly errored rather
-  // than silently becoming "ready" because the socket came back.
-  useEffect(() => {
-    setState((current) => {
-      if (freshness !== "connected" && current.status === "ready") {
-        return { status: "stale", data: current.data };
-      }
-      if (freshness === "connected" && current.status === "stale" && !current.error) {
-        return { status: "ready", data: current.data };
-      }
-      return current;
-    });
-  }, [freshness]);
-
-  const retry = useCallback(() => {
-    // Evict the cached snapshot so a retry refetches rather than re-serving the
-    // entry that just failed — but do NOT reset to "loading". Blanking the page
-    // to a full skeleton on retry is the regression #1684 fixed; refresh() already
-    // moves ready/stale data to "stale" and keeps it visible while the refetch runs.
-    cache.remove(cacheKey);
-    void refresh();
-  }, [cache, cacheKey, refresh]);
-  return { retry, state };
 }
+
+const RUN_DETAIL_MODELS: readonly UpdateModel[] = ["run"];
 
 function runDetailDependencies(runId: string): readonly DataCacheDependency[] {
   return [{ model: "run", runId }];

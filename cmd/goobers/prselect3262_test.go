@@ -42,11 +42,10 @@ func TestPRSelectAlwaysExcludesNeedsHumanLabel(t *testing.T) {
 	assertNoWorkProviderStageResult(t, resultFile)
 }
 
-// TestPRSelectADOAlwaysExcludesNeedsHumanLabel is the ADO-branch counterpart
-// of TestPRSelectAlwaysExcludesNeedsHumanLabel: runPRSelectADO builds its own
-// excludeLabels slice independently of the GitHub branch (#3262), so the fix
-// needs its own coverage. The failure-streak breaker itself cannot trip on
-// ADO today (#3004), but an operator can still apply goobers:needs-human by
+// TestPRSelectADOAlwaysExcludesNeedsHumanLabel verifies that ADO's
+// branch-policy source reaches the same shared exclusion decision as the
+// GitHub/Gitea ref-check source. The failure-streak breaker itself cannot trip
+// on ADO today (#3004), but an operator can still apply goobers:needs-human by
 // hand, and pr-select must respect it there too.
 func TestPRSelectADOAlwaysExcludesNeedsHumanLabel(t *testing.T) {
 	root, repo := providerDispatchFixture(t, providers.ProviderADO)

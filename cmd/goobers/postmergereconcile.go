@@ -292,7 +292,7 @@ func reconcileOpenPullRequestParks(
 	}
 	namespace := providerBranchNamespace()
 	namespaced := filterPullRequestsByHeadPrefix(others, namespace)
-	demotedCandidates := filterPullRequestsByHeadPrefix(others, "goobers/")
+	demotedCandidates := namespaced
 	resolved, resolvedErrs := unparkResolvedSiblingsFrom(
 		ctx, provider, repo, 0, namespaced, stderr,
 	)
@@ -302,9 +302,10 @@ func reconcileOpenPullRequestParks(
 	demoted, demotionErrs := unparkSelfHealedDemotionsFrom(
 		ctx, provider, repo, 0, demotedCandidates, stderr,
 	)
-	pf(stdout, "open-pr reconciliation: unparked %d resolved sibling(s), un-escalated %d self-healed pr(s), un-demoted %d self-healed pr(s)\n",
-		len(resolved), len(escalated), len(demoted))
-	return append(append(resolvedErrs, escalationErrs...), demotionErrs...)
+	handed, handoffErrs := restoreDemotionHandoffFrom(ctx, provider, repo, namespaced, stderr)
+	pf(stdout, "open-pr reconciliation: unparked %d resolved sibling(s), un-escalated %d self-healed pr(s), un-demoted %d self-healed pr(s), re-handed %d demoted pr(s) to remediation\n",
+		len(resolved), len(escalated), len(demoted), len(handed))
+	return append(append(append(resolvedErrs, escalationErrs...), demotionErrs...), handoffErrs...)
 }
 
 func filterPullRequestsByHeadPrefix(prs []providers.PullRequestSummary, prefix string) []providers.PullRequestSummary {
@@ -770,4 +771,62 @@ func encodePostMergeReconcileLedger(ledger postMergeReconcileLedger) ([]byte, er
 		return nil, fmt.Errorf("encode post-merge reconcile ledger: %w", err)
 	}
 	return append(data, '\n'), nil
+}
+
+// restoreDemotionHandoffFrom re-asserts the invariant record-merge-refusal
+// writes: a demoted lander carries goobers:needs-remediation, so it has a path
+// to move its head. mergeDemotionState says the same in prose -- "the demoted
+// PR still goes through pr-remediation on its own merits; demotion is about
+// unblocking its siblings, not abandoning it."
+//
+// merge-demoted AND NOT needs-remediation AND NOT needs-human AND NOT
+// merge-escalated is therefore a state the design says cannot exist. It does:
+// escalate() removes needs-remediation when it parks, and the self-heal that
+// lifts the park only learned to restore it in #4109 -- which cannot reach a
+// PR that already left the escalated bucket. #3891 and #3900 sat in exactly
+// that state, CONFLICTING with 22/22 green checks, refused by both lanes:
+//
+//	pr-remediation  no work: targeted PR #3891 does not need remediation this
+//	                cycle (no goobers:needs-remediation label, CI is not
+//	                failing, and it is not a crowned behind-base lander)
+//	merge-review    no work: no eligible PR to select this cycle
+//
+// Written as a standing invariant rather than another moment-of-transition
+// fix, because that whole family of bugs (#1855, #4032, #4038, #4051, #4058,
+// #4074, #4089, #4109) is one transition after another forgetting to carry
+// something. A sweep that asserts the end state cannot forget.
+//
+// No new policy: a parked PR (needs-human, merge-escalated) is left alone, and
+// the remediation lane still decides the PR's fate on its merits.
+func restoreDemotionHandoffFrom(ctx context.Context, provider remediationProvider, repo providers.RepositoryRef, prs []providers.PullRequestSummary, stderr io.Writer) (handed []int, errs []error) {
+	for _, pr := range prs {
+		if !hasAnyLabel(pr.Labels, []string{mergeDemotedLabel}) {
+			continue
+		}
+		if hasAnyLabel(pr.Labels, []string{needsRemediationLabel}) {
+			continue
+		}
+		if hasAnyLabel(pr.Labels, []string{providers.LabelNeedsHuman, remediationEscalatedLabel}) {
+			continue
+		}
+		held, err := demotionStillHolds(ctx, provider, repo, pr)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("check merge-demoted state for pr #%d during handoff restore: %w", pr.Number, err))
+			continue
+		}
+		if !held {
+			// unparkSelfHealedDemotionsFrom owns this one: its head advanced,
+			// so the demotion lifts entirely rather than being handed on.
+			continue
+		}
+		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
+			Repository: repo, ID: strconv.Itoa(pr.Number), AddLabels: []string{needsRemediationLabel},
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("restore %s on pr #%d: %w", needsRemediationLabel, pr.Number, err))
+			continue
+		}
+		pf(stderr, "reconcile: restored %s on demoted pr #%d\n", needsRemediationLabel, pr.Number)
+		handed = append(handed, pr.Number)
+	}
+	return handed, errs
 }

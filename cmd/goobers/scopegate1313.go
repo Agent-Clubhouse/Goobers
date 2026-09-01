@@ -40,7 +40,12 @@ const (
 // instruction is issued is what keeps the two in sync — a constant that names
 // repository state nothing validates is the same failure mode as the
 // ruleset-pinned required-ci job name.
-func ensureScopeGateAckLabel(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef) error {
+type scopeGateProvider interface {
+	scopeDriftProvider
+	EnsureWorkItemLabels(context.Context, providers.RepositoryRef, []providers.WorkItemLabel) (providers.EnsureWorkItemLabelsResult, error)
+}
+
+func ensureScopeGateAckLabel(ctx context.Context, provider scopeGateProvider, repo providers.RepositoryRef) error {
 	_, err := provider.EnsureWorkItemLabels(ctx, repo, []providers.WorkItemLabel{{
 		Name:        scopeGateAckLabel,
 		Color:       scopeGateAckLabelColor,
@@ -83,7 +88,7 @@ const (
 // Best-effort by contract, same as flagScopeDrift: the caller treats any
 // error as a warning, since a labeling hiccup must never itself block or
 // unblock a merge.
-func reconcileScopeGate(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, prLabels []string, changedFiles, changedLines, filesThreshold, linesThreshold int) (parked bool, changed bool, err error) {
+func reconcileScopeGate(ctx context.Context, provider scopeDriftProvider, repo providers.RepositoryRef, prNumber int, prLabels []string, changedFiles, changedLines, filesThreshold, linesThreshold int) (parked bool, changed bool, err error) {
 	overFiles := filesThreshold > 0 && changedFiles >= filesThreshold
 	overLines := linesThreshold > 0 && changedLines >= linesThreshold
 	acked := hasAnyLabel(prLabels, []string{scopeGateAckLabel})
@@ -97,7 +102,9 @@ func reconcileScopeGate(ctx context.Context, provider *providers.GitHubProvider,
 		// parking is the safe direction, so a labels-API hiccup must not stop the
 		// gate from blocking. Worst case the operator has to create the label by
 		// hand — the situation before this change, not a worse one.
-		_ = ensureScopeGateAckLabel(ctx, provider, repo)
+		if labels, ok := provider.(scopeGateProvider); ok {
+			_ = ensureScopeGateAckLabel(ctx, labels, repo)
+		}
 		comment := fmt.Sprintf(
 			"🚧 **Scope gate** (#1313): this pull request %s — at or past the configured threshold for autonomous "+
 				"merge. Unlike the advisory `goobers:scope-drift` flag (#1111), this label **blocks autonomous merge** "+

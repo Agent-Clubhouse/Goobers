@@ -16,32 +16,36 @@ const releaseDocsVersionFile = "docs/RELEASE.md"
 
 const (
 	readmeSourceReleaseInstall = "## Install\n\n" +
-		"Install the current `v0.1.0` release on Linux or macOS:\n\n" +
+		"Install the latest stable release on Linux or macOS:\n\n" +
 		"```sh\n" +
-		"/bin/sh -c \"$(curl -fsSL https://github.com/Agent-Clubhouse/Goobers/releases/download/v0.1.0/install.sh)\" \\\n" +
-		"  -- v0.1.0\n" +
+		"VERSION=\"$(curl -fsSL https://api.github.com/repos/Agent-Clubhouse/Goobers/releases/latest |\n" +
+		"  awk -F '\"' '/tag_name/ { print $4; exit }')\"\n" +
+		"/bin/sh -c \"$(curl -fsSL \"https://github.com/Agent-Clubhouse/Goobers/releases/download/${VERSION}/install.sh\")\" \\\n" +
+		"  -- \"$VERSION\"\n" +
 		"```\n\n" +
 		"The installer verifies the downloaded archive against the release checksum and\n" +
 		"places `goobers` in `$HOME/.local/bin`. See\n" +
 		"[Release installation and verification](docs/guides/releases.md) for\n" +
-		"prerequisites, install-directory overrides, and the Windows path.\n\n"
-	readmeSourceInstall = "## Learn Goobers or configure an instance\n\n" +
-		"To **learn how Goobers works**, follow the\n" +
-		"[quickstart tutorial](docs/guides/quickstart.md). It starts with an offline,\n" +
-		"credential-free workflow and then uses a disposable repository for one\n" +
-		"issue-to-PR run. The tutorial is intentionally separate from configuring a\n" +
-		"real application.\n\n" +
-		"To **configure a real instance**, choose one of these paths:\n\n" +
-		"- Run `goobers init --guided` for the browser wizard. It teaches\n" +
-		"  the core concepts while inspecting your repository, adapting the canonical\n" +
-		"  workflows, preparing required repository metadata, and validating the\n" +
-		"  resulting instance. It does not execute a workflow.\n" +
-		"- Read [Onboard an arbitrary repository](docs/guides/arbitrary-repo-onboarding.md)\n" +
-		"  and perform the same setup manually.\n" +
-		"- Ask your coding agent to read that guide and the release-matched\n" +
-		"  [Getting Started skill](skills/goobers-getting-started/SKILL.md), inspect your\n" +
-		"  repository, explain each proposed write, and create the validated\n" +
-		"  configuration for you.\n"
+		"prerequisites, version pinning, install-directory overrides, pre-releases, and\n" +
+		"the Windows path.\n\n"
+	readmeSourceInstall = "## Quick start\n\n" +
+		"Tour the full workflow locally without credentials or network writes:\n\n" +
+		"```sh\n" +
+		"goobers init --demo ./demo-instance\n" +
+		"goobers run demo ./demo-instance\n" +
+		"```\n\n" +
+		"When you are ready to configure an existing GitHub or Azure DevOps repository,\n" +
+		"start the guided browser setup:\n\n" +
+		"```sh\n" +
+		"goobers init --guided\n" +
+		"```\n\n" +
+		"The guided flow inspects the repository, derives what it can, adapts the\n" +
+		"canonical workflows, prepares required repository metadata, and validates the\n" +
+		"resulting instance. It does not execute a workflow.\n\n" +
+		"Follow the [quickstart tutorial](docs/guides/quickstart.md) for the complete\n" +
+		"learning path. For manual or agent-assisted setup, use\n" +
+		"[Onboard an arbitrary repository](docs/guides/arbitrary-repo-onboarding.md) or\n" +
+		"the release-matched [Getting Started skill](skills/goobers-getting-started/SKILL.md).\n"
 	quickstartSourceBuild = "## Build the binary\n\n```sh\n" +
 		"go build -o bin/goobers ./cmd/goobers    # or: make build\n```\n\n"
 	quickstartSourceInit = "## Separate path: configure a real instance\n\n" +
@@ -51,12 +55,13 @@ const (
 		"Start the focused browser walkthrough:\n\n" +
 		"```sh\n" +
 		"export PATH=\"$PWD/bin:$PATH\"\n" +
-		"goobers init --guided\n" +
+		"goobers init --guided --instance-path ~/goobers/instances/my-repository\n" +
 		"```\n\n" +
 		"Provide an existing local Git clone. Getting Started supports GitHub and Azure\n" +
 		"DevOps, discovers repository identity, default branch, CI command, toolchain,\n" +
 		"and existing CLI authentication, then asks only for configuration placement,\n" +
-		"workflow behavior, and agent harness choices that cannot be derived.\n\n" +
+		"workflow behavior, and agent harness choices that cannot be derived. The\n" +
+		"`--instance-path` value selects the runtime instance root.\n\n" +
 		"The workflow choices are adapted from the canonical modules under\n" +
 		"[`config-examples/gaggles/acme-web`](../../config-examples/gaggles/acme-web/),\n" +
 		"not from the deliberately simplified `quickstart@v1` tutorial workflow.\n\n"
@@ -86,7 +91,7 @@ const (
 	quickstartInstalledInit = "## Separate path: configure a real instance\n\n" +
 		"The release installer installs the binary and documentation only. Start browser-based setup after installation:\n\n" +
 		"```sh\n" +
-		"goobers init --guided\n" +
+		"goobers init --guided --instance-path ~/goobers/instances/my-repository\n" +
 		"```\n\n" +
 		"The legacy installer `--guided` option prints migration guidance and makes no changes; guided setup belongs to the installed `goobers` binary.\n\n"
 	quickstartSourceOnboardingAssets = "Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +

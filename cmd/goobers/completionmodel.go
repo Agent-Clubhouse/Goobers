@@ -85,7 +85,9 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"init": {
-		{name: "guided", desc: "Open browser-based setup, including placement choices"},
+		{name: "guided", desc: "Open browser-based setup"},
+		{name: "allow-ephemeral", desc: "Allow initialization inside a linked or hosted ephemeral workspace"},
+		{name: "instance-path", takesArg: true, desc: "With --guided, instance root to create"},
 		{name: "port", takesArg: true, desc: "With --guided, server port or auto"},
 		{name: "no-open", desc: "With --guided, print the URL without opening a browser"},
 		{name: "workdir", takesArg: true, desc: "With --guided, temporary browser setup state"},

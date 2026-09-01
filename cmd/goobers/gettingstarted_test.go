@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -96,5 +97,52 @@ func TestGuidedInitBrowserUsageErrors(t *testing.T) {
 	}
 	if code := runGuidedInitBrowserContext(context.Background(), []string{"--workdir", notDirectory}, io.Discard, io.Discard); code != 2 {
 		t.Fatalf("file workdir exit code = %d, want 2", code)
+	}
+}
+
+func TestGuidedInitBrowserUsesExplicitInstancePath(t *testing.T) {
+	workdir := t.TempDir()
+	instancePath := filepath.Join(t.TempDir(), "durable-instance")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := &dashboardURLWriter{url: make(chan string, 1)}
+	done := make(chan int, 1)
+
+	go func() {
+		done <- runGuidedInitBrowserContext(ctx, []string{
+			"--no-open", "--workdir", workdir, "--instance-path", instancePath,
+		}, started, io.Discard)
+	}()
+
+	var address string
+	select {
+	case address = <-started.url:
+	case code := <-done:
+		t.Fatalf("guided init exited before startup: code = %d", code)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for getting-started URL")
+	}
+	base := strings.TrimSuffix(address, "#/getting-started")
+	response, err := http.Get(base + "guided/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	var state guidedStateBody
+	if err := json.NewDecoder(response.Body).Decode(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state.InstancePath != instancePath {
+		t.Fatalf("guided instance path = %q, want %q", state.InstancePath, instancePath)
+	}
+
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("guided init exit code = %d", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("guided init did not stop after cancellation")
 	}
 }
