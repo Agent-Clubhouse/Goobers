@@ -318,6 +318,12 @@ func hasReconciledMetadataLabel(item providers.WorkItem) bool {
 		// blocked-on-sibling check below is unreachable — a check that runs on
 		// no input is indistinguishable from one that was never written.
 		item.HasLabel(blockedOnSiblingLabel) ||
+		// #4154: and the same argument for the remediation park, which is the
+		// OTHER label nothing else can clear from an issue. An item parked for
+		// an infrastructure failure carries only this one — never ready, which
+		// park-escalated removed on the way in — so without this clause the
+		// infrastructure-park check below runs on no input at all.
+		item.HasLabel(needsRemediationLabel) ||
 		(item.HasLabel(providers.LabelReady) && itemHasParkLabel(item))
 }
 
@@ -374,7 +380,21 @@ func inspectBacklogMetadata(
 		correction.addLabels = append(correction.addLabels, blockedOnSiblingLabel)
 		correction.reasons = append(correction.reasons, blockedOnSiblingRestoredReason(driftedBlockers))
 	}
-	if !validTracking && item.HasLabel(providers.LabelReady) && (itemHasParkLabel(item) || len(driftedBlockers) > 0) {
+	// #4154: decided BEFORE the ready-coexistence rule below, because an
+	// infrastructure park that is being cleared in this same pass is not a park
+	// that goobers:ready has to yield to.
+	infraParkCleared, err := staleInfrastructureRemediationPark(ctx, provider, repo, item)
+	if err != nil {
+		return correction, botLogin, fmt.Errorf("inspect remediation park: %w", err)
+	}
+	if infraParkCleared {
+		correction.removeLabels = append(correction.removeLabels, needsRemediationLabel)
+		correction.reasons = append(correction.reasons, infrastructureParkResolvedReason)
+	}
+	stillParked := item.HasLabel(providers.LabelNeedsHuman) ||
+		item.HasLabel(blockedOnSiblingLabel) ||
+		(item.HasLabel(needsRemediationLabel) && !infraParkCleared)
+	if !validTracking && item.HasLabel(providers.LabelReady) && (stillParked || len(driftedBlockers) > 0) {
 		correction.removeLabels = append(correction.removeLabels, providers.LabelReady)
 		correction.reasons = append(correction.reasons,
 			"removed `goobers:ready` because it cannot coexist with a park disposition "+
