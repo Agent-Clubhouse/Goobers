@@ -82,6 +82,44 @@ describe("useRunDetail", () => {
     unmount();
   });
 
+  it("completes a fresh read despite repeated invalidations arriving during it (#2455)", async () => {
+    const runId = "01JZ441DAEMONAPI";
+    const client = new DeferredRunDetailClient();
+    const { result, unmount } = renderHook(() => useRunDetail(client, runId), {
+      wrapper: liveWrapper(client),
+    });
+
+    await waitFor(() => expect(client.signals).toHaveLength(2));
+    act(() => client.release(2));
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    act(() => {
+      for (let index = 1; index <= 5; index += 1) {
+        client.stream.push(invalidation(`run-refresh-${index}`));
+      }
+    });
+    await waitFor(() => expect(client.signals).toHaveLength(4));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    // The refresh started by the first event is still running and untouched:
+    // the events behind it queue one follow-up pass instead of cancelling it.
+    expect(client.signals).toHaveLength(4);
+    expect(client.signals.every((signal) => signal?.aborted === false)).toBe(true);
+
+    await waitFor(
+      () => {
+        client.release(2);
+        expect(result.current.state.status).toBe("ready");
+      },
+      { timeout: 2_000 },
+    );
+    expect(client.signals.every((signal) => signal?.aborted === false)).toBe(true);
+
+    unmount();
+  });
+
   it("publishes stale when the live stream drops while the request is in flight (#3657)", async () => {
     const runId = "01JZ441DAEMONAPI";
     const client = new DeferredRunDetailClient();
