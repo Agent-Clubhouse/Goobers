@@ -177,6 +177,170 @@ func TestGettingStartedInspectsLocalGitHubRepository(t *testing.T) {
 	}
 }
 
+func stubGitHubDiscovery(t *testing.T, repositoryAccessible bool) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("GitHub discovery stubs use /bin/sh")
+	}
+	previous := guidedDiscoveryCommand
+	guidedDiscoveryCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name != "gh" {
+			t.Fatalf("discovery command = %q, want gh", name)
+		}
+		if len(args) > 0 && args[0] == "api" {
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "printf 'octocat\\n'")
+		}
+		if repositoryAccessible {
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "printf 'widgets\\n'")
+		}
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1")
+	}
+	t.Cleanup(func() { guidedDiscoveryCommand = previous })
+}
+
+func stubGitHubAuthorization(t *testing.T, script string) *[][]string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("GitHub authorization stubs use /bin/sh")
+	}
+	previous := guidedGitHubAuthorizationCommand
+	calls := &[][]string{}
+	guidedGitHubAuthorizationCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name != "gh" {
+			t.Errorf("authorization command = %q, want gh", name)
+		}
+		*calls = append(*calls, append([]string{}, args...))
+		return exec.CommandContext(ctx, "/bin/sh", "-c", script)
+	}
+	t.Cleanup(func() { guidedGitHubAuthorizationCommand = previous })
+	return calls
+}
+
+func TestGettingStartedGitHubAuthorizationStartsDeviceFlowWhenNeeded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("GitHub authorization stubs use /bin/sh")
+	}
+	previousDiscovery := guidedDiscoveryCommand
+	authenticated := false
+	guidedDiscoveryCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name != "gh" {
+			t.Fatalf("discovery command = %q, want gh", name)
+		}
+		if len(args) > 0 && args[0] == "api" && !authenticated {
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1")
+		}
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "printf 'octocat\\n'")
+	}
+	t.Cleanup(func() { guidedDiscoveryCommand = previousDiscovery })
+	calls := stubGitHubAuthorization(t, "exit 0")
+	previousAuthorization := guidedGitHubAuthorizationCommand
+	guidedGitHubAuthorizationCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		authenticated = true
+		return previousAuthorization(ctx, name, args...)
+	}
+	t.Cleanup(func() { guidedGitHubAuthorizationCommand = previousAuthorization })
+	server := newTestGuidedServer(t, t.TempDir())
+
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/authorize-github",
+		`{"repository":"acme/widgets"}`,
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeGuidedResponse[guidedAuthorizeGitHubResponse](t, recorder)
+	if !response.Auth.Ready || response.Auth.Identity != "octocat" {
+		t.Fatalf("authorization response = %+v", response)
+	}
+	if response.Message != "GitHub device/web authorization completed as octocat." {
+		t.Fatalf("authorization message = %q", response.Message)
+	}
+	want := []string{"auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"}
+	if len(*calls) != 1 || !reflect.DeepEqual((*calls)[0], want) {
+		t.Fatalf("authorization argv = %v, want [%v]", *calls, want)
+	}
+}
+
+func TestGettingStartedGitHubAuthorizationSkipsAlreadyReadyAccount(t *testing.T) {
+	stubGitHubDiscovery(t, true)
+	calls := stubGitHubAuthorization(t, "exit 1")
+	server := newTestGuidedServer(t, t.TempDir())
+
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/authorize-github",
+		`{"repository":"acme/widgets"}`,
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeGuidedResponse[guidedAuthorizeGitHubResponse](t, recorder)
+	if !response.Auth.Ready || !strings.Contains(response.Message, "already ready") {
+		t.Fatalf("already-ready response = %+v", response)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("already-authenticated account started login: %v", *calls)
+	}
+}
+
+func TestGettingStartedGitHubAuthorizationDoesNotReloginForRepositoryAccess(t *testing.T) {
+	stubGitHubDiscovery(t, false)
+	calls := stubGitHubAuthorization(t, "exit 1")
+	server := newTestGuidedServer(t, t.TempDir())
+
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/authorize-github",
+		`{"repository":"acme/widgets"}`,
+	)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeGuidedResponse[guidedErrorBody](t, recorder)
+	if response.Code != "github_repository_access_unavailable" ||
+		!strings.Contains(response.Message, "authenticated as octocat") {
+		t.Fatalf("repository access response = %+v", response)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("repository access failure started login: %v", *calls)
+	}
+}
+
+func TestGettingStartedGitHubAuthorizationReportsMissingCLI(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("GitHub authorization stubs use a missing executable")
+	}
+	previousDiscovery := guidedDiscoveryCommand
+	previousAuthorization := guidedGitHubAuthorizationCommand
+	guidedDiscoveryCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "goobers-missing-github-cli", args...)
+	}
+	guidedGitHubAuthorizationCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "goobers-missing-github-cli", args...)
+	}
+	t.Cleanup(func() {
+		guidedDiscoveryCommand = previousDiscovery
+		guidedGitHubAuthorizationCommand = previousAuthorization
+	})
+	server := newTestGuidedServer(t, t.TempDir())
+
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/authorize-github",
+		`{"repository":"acme/widgets"}`,
+	)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeGuidedResponse[guidedErrorBody](t, recorder)
+	if response.Code != "github_authorization_unavailable" ||
+		!strings.Contains(response.Message, "GitHub CLI") ||
+		!strings.Contains(response.Message, guidedGitHubLoginCommand) {
+		t.Fatalf("missing CLI response = %+v", response)
+	}
+}
+
 func TestGettingStartedChooseRepositoryFolder(t *testing.T) {
 	previous := guidedChooseRepositoryFolder
 	guidedChooseRepositoryFolder = func(context.Context) (string, bool, error) {

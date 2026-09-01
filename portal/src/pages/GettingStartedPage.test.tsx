@@ -51,6 +51,17 @@ const inspection: GuidedRepositoryInspection = {
   },
 };
 
+const authRequiredInspection: GuidedRepositoryInspection = {
+  ...inspection,
+  auth: {
+    kind: "github-cli",
+    ready: false,
+    message: "GitHub CLI authentication is required before setup can continue.",
+    remediationCommand: "gh auth login --hostname github.com --git-protocol https --web",
+    needsLogin: true,
+  },
+};
+
 type RouteHandler = (init?: RequestInit) => { status?: number; body: unknown };
 
 function clientWith(routes: Record<string, RouteHandler>): GuidedClient {
@@ -194,6 +205,47 @@ describe("GettingStartedPage", () => {
         },
       },
     ]);
+  });
+
+  it("starts GitHub device authorization from the repository step", async () => {
+    const user = userEvent.setup();
+    let authorizationRequests = 0;
+    let inspectionRequests = 0;
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/actions/inspect-repository": () => {
+            inspectionRequests += 1;
+            return { body: inspectionRequests === 1 ? authRequiredInspection : inspection };
+          },
+          "/guided/actions/authorize-github": (init) => {
+            authorizationRequests += 1;
+            expect(parseBody(init)).toEqual({ repository: "acme/widgets" });
+            return {
+              body: {
+                auth: inspection.auth,
+                message: "GitHub device/web authorization completed as octocat.",
+              },
+            };
+          },
+        })}
+      />,
+    );
+
+    await openRepositoryPage(user);
+    await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
+    await user.click(screen.getByRole("button", { name: "Inspect clone" }));
+    expect(
+      await screen.findByText("GitHub CLI authentication is required before setup can continue."),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Sign in with GitHub" }));
+    expect(authorizationRequests).toBe(1);
+    expect(inspectionRequests).toBe(2);
+    expect(
+      await screen.findByText("GitHub CLI authentication is ready as octocat."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).not.toBeInTheDocument();
   });
 
   it("switches repository entry modes and browses for a local clone", async () => {

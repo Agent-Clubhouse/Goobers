@@ -18,6 +18,12 @@ var guidedDiscoveryCommand = func(ctx context.Context, name string, args ...stri
 	return exec.CommandContext(ctx, name, args...)
 }
 
+var guidedGitHubAuthorizationCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, name, args...)
+}
+
+const guidedGitHubLoginCommand = "gh auth login --hostname github.com --git-protocol https --web"
+
 type guidedRepositoryInspection struct {
 	Provider             string          `json:"provider"`
 	Owner                string          `json:"owner"`
@@ -44,6 +50,8 @@ type guidedAuthState struct {
 	Ready              bool   `json:"ready"`
 	Identity           string `json:"identity,omitempty"`
 	RemediationCommand string `json:"remediationCommand,omitempty"`
+	Message            string `json:"message,omitempty"`
+	NeedsLogin         bool   `json:"needsLogin,omitempty"`
 }
 
 func inspectGuidedRepository(ctx context.Context, input string) (guidedRepositoryInspection, error) {
@@ -220,15 +228,35 @@ func discoverGuidedAuth(ctx context.Context, identity guidedRepositoryIdentity) 
 	switch identity.provider {
 	case "github":
 		login, err := runGuidedDiscovery(ctx, "gh", "api", "user", "--jq", ".login")
-		if err == nil && strings.TrimSpace(login) != "" {
-			_, err = runGuidedDiscovery(ctx, "gh", "repo", "view", identity.owner+"/"+identity.name, "--json", "name", "--jq", ".name")
+		login = strings.TrimSpace(login)
+		if err != nil || login == "" {
+			return guidedAuthState{
+				Kind:               "github-cli",
+				RemediationCommand: guidedGitHubLoginCommand,
+				Message:            "GitHub CLI authentication is required before setup can continue.",
+				NeedsLogin:         true,
+			}
 		}
-		if err == nil && strings.TrimSpace(login) != "" {
-			return guidedAuthState{Kind: "github-cli", Ready: true, Identity: strings.TrimSpace(login)}
+
+		_, err = runGuidedDiscovery(ctx, "gh", "repo", "view", identity.owner+"/"+identity.name, "--json", "name", "--jq", ".name")
+		if err != nil {
+			return guidedAuthState{
+				Kind:               "github-cli",
+				Identity:           login,
+				RemediationCommand: "gh repo view " + identity.owner + "/" + identity.name,
+				Message: fmt.Sprintf(
+					"GitHub CLI is authenticated as %s, but that account cannot access %s.",
+					login,
+					identity.owner+"/"+identity.name,
+				),
+			}
 		}
+
 		return guidedAuthState{
-			Kind:               "github-cli",
-			RemediationCommand: "gh auth login --hostname github.com --git-protocol https --web --clipboard",
+			Kind:     "github-cli",
+			Ready:    true,
+			Identity: login,
+			Message:  "GitHub CLI authentication and repository access are ready.",
 		}
 	case "ado":
 		login, err := runGuidedDiscovery(ctx, "az", "account", "show", "--query", "user.name", "--output", "tsv")
@@ -247,9 +275,19 @@ func discoverGuidedAuth(ctx context.Context, identity guidedRepositoryIdentity) 
 			)
 		}
 		if err == nil && strings.TrimSpace(login) != "" {
-			return guidedAuthState{Kind: "azure-cli", Ready: true, Identity: strings.TrimSpace(login)}
+			return guidedAuthState{
+				Kind:     "azure-cli",
+				Ready:    true,
+				Identity: strings.TrimSpace(login),
+				Message:  "Azure CLI authentication and repository access are ready.",
+			}
 		}
-		return guidedAuthState{Kind: "azure-cli", RemediationCommand: "az login"}
+		return guidedAuthState{
+			Kind:               "azure-cli",
+			RemediationCommand: "az login",
+			Message:            "Azure CLI authentication is required before setup can continue.",
+			NeedsLogin:         true,
+		}
 	default:
 		return guidedAuthState{}
 	}
@@ -277,4 +315,14 @@ func configureGuidedDiscoveryCommand(cmd *exec.Cmd, name string) {
 			cmd.Env = append(os.Environ(), "GH_TOKEN="+token)
 		}
 	}
+}
+
+func runGuidedGitHubAuthorization(ctx context.Context) error {
+	if err := guidedGitHubAuthorizationRunner(ctx); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return fmt.Errorf("GitHub CLI (`gh`) is not installed or not available on PATH")
+		}
+		return fmt.Errorf("GitHub device/web authorization did not complete: %w", err)
+	}
+	return nil
 }
