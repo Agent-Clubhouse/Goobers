@@ -94,7 +94,7 @@ goobers --version
 
 Alternatively, the release's attached `install.sh` performs the same
 architecture selection and checksum verification before starting guided
-setup. See [Releases and packaging](releases.md#install-a-pinned-release).
+setup. See [Releases and packaging](releases.md#install-the-latest-stable-release).
 
 To build from source instead:
 
