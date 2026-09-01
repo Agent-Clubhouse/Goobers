@@ -35,11 +35,12 @@ var ErrGiteaMergeQueueUnsupported = errors.New("gitea: merge queue is not suppor
 type GiteaProvider struct {
 	// BaseURL is the API root (forge root + /api/v1); RootURL is the forge root
 	// used to build git clone URLs.
-	BaseURL string
-	RootURL string
-	Token   string
-	Client  HTTPClient
-	Runner  CommandRunner
+	BaseURL     string
+	RootURL     string
+	Token       string
+	Client      HTTPClient
+	Runner      CommandRunner
+	attribution Attribution
 
 	// initErr is a deferred constructor error (empty baseURL) surfaced on the
 	// first call rather than panicking at construction, mirroring http.Client's
@@ -917,11 +918,7 @@ func (p *GiteaProvider) ClosePullRequest(ctx context.Context, req ClosePullReque
 		return ClosePullRequestResult{}, err
 	}
 	if req.Comment != "" {
-		comments, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.PullID, "comments")
-		if err != nil {
-			return ClosePullRequestResult{}, err
-		}
-		if err := p.do(ctx, http.MethodPost, comments, map[string]string{"body": req.Comment}, nil); err != nil {
+		if err := p.postAttributedComment(ctx, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
 			return ClosePullRequestResult{}, err
 		}
 	}
@@ -1456,6 +1453,10 @@ func (p *GiteaProvider) SubmitPullRequestReview(ctx context.Context, req PullReq
 	if req.Body == "" {
 		return PullRequestReviewResult{}, fmt.Errorf("review body is required")
 	}
+	reviewBody, err := withAttribution(req.Body, p.attribution, "pull-request-review")
+	if err != nil {
+		return PullRequestReviewResult{}, err
+	}
 	var event string
 	switch req.Decision {
 	case ReviewDecisionApproved:
@@ -1471,7 +1472,7 @@ func (p *GiteaProvider) SubmitPullRequestReview(ctx context.Context, req PullReq
 	}
 	body := map[string]string{
 		"event":     event,
-		"body":      req.Body,
+		"body":      reviewBody,
 		"commit_id": req.CommitSHA,
 	}
 	var out struct {

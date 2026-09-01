@@ -255,6 +255,10 @@ func (p *GitHubProvider) UpdateComment(ctx context.Context, repo RepositoryRef, 
 	if commentID == "" {
 		return fmt.Errorf("comment id is required")
 	}
+	body, err := withAttribution(body, p.attribution, "comment-update")
+	if err != nil {
+		return err
+	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
 	if err != nil {
 		return err
@@ -650,7 +654,7 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 
 	// No existing claim: stake ours with a breadcrumb comment, then re-read to settle
 	// the race deterministically by minimum comment id.
-	if err := p.postComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID)); err != nil {
+	if err := p.postAttributedComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim"); err != nil {
 		return ClaimResult{}, err
 	}
 	winner, ok, err := p.claimWinner(ctx, req.Repository, req.ID)
@@ -703,7 +707,7 @@ func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWork
 	releasedRunID := req.RunID
 	if claimed {
 		releasedRunID = winner
-		if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+		if err := p.postAttributedComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
 			return WorkItem{}, err
 		}
 	}
@@ -883,6 +887,14 @@ func (p *GitHubProvider) applyLabelChanges(ctx context.Context, repo RepositoryR
 }
 
 func (p *GitHubProvider) postComment(ctx context.Context, repo RepositoryRef, id, body string) error {
+	return p.postAttributedComment(ctx, repo, id, body, "comment")
+}
+
+func (p *GitHubProvider) postAttributedComment(ctx context.Context, repo RepositoryRef, id, body, action string) error {
+	body, err := withAttribution(body, p.attribution, action)
+	if err != nil {
+		return err
+	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
 	if err != nil {
 		return err
@@ -899,6 +911,10 @@ func (p *GitHubProvider) CreateWorkItemComment(ctx context.Context, repo Reposit
 	}
 	if id == "" {
 		return Comment{}, errIssueIDRequired
+	}
+	body, err := withAttribution(body, p.attribution, "comment")
+	if err != nil {
+		return Comment{}, err
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
 	if err != nil {

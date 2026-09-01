@@ -67,6 +67,7 @@ github.com/goobers/goobers/providers.WithGiteaMaxRateLimitRetries # Public Gitea
 github.com/goobers/goobers/providers.WithGiteaMaxTransientRetries # Public Gitea transient-retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithGiteaRateLimitMaxWait # Public Gitea rate-limit wait-budget option retained for external provider consumers; mirrors WithRateLimitMaxWait.
 github.com/goobers/goobers/providers.BranchName # Public provider branch helper retained for external provider consumers.
+github.com/goobers/goobers/providers.ParseAttribution # Documented attribution-marker decoder retained for external consumers (e.g. ReviewStar) to parse Goobers-authored comments per #3502; Goobers itself only ever writes markers.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.RegisterFactory # Public connector-extension registration API retained for externally linked adapters.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.MustRegisterFactory # Init-time connector-extension registration API retained for externally linked adapters.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.NewQueryError # Public connector failure-classification helper retained for external adapters.
