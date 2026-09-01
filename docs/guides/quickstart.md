@@ -183,6 +183,12 @@ with a real one.
    export GOOBERS_GITHUB_TOKEN=<your token>
    ```
 
+   PowerShell:
+
+   ```powershell
+   $env:GOOBERS_GITHUB_TOKEN = "<your token>"
+   ```
+
 3. Point the instance at the repository, and seed it in the same step:
 
    ```sh

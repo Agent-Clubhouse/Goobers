@@ -161,6 +161,10 @@ const (
 		"   ```sh\n" +
 		"   export GOOBERS_GITHUB_TOKEN=<your token>\n" +
 		"   ```\n\n" +
+		"   PowerShell:\n\n" +
+		"   ```powershell\n" +
+		"   $env:GOOBERS_GITHUB_TOKEN = \"<your token>\"\n" +
+		"   ```\n\n" +
 		"3. Point the instance at the repository, and seed it in the same step:\n\n" +
 		"   ```sh\n" +
 		"   bin/goobers connect <owner>/<repo> --seed ./tutorial-instance\n" +
