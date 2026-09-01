@@ -1129,16 +1129,14 @@ func referencesTarget(matches [][]string, target string) bool {
 func worktreeHeldBranches(dir string) map[string]bool {
 	held := make(map[string]bool)
 
-	self := exec.Command("git", "rev-parse", "--show-toplevel")
-	self.Dir = dir
+	self := workspaceGitCommand(dir, "rev-parse", "--show-toplevel")
 	selfOut, err := self.Output()
 	if err != nil {
 		return held // not a git worktree (or unreadable): nothing to guard against
 	}
 	selfPath := canonicalPath(strings.TrimSpace(string(selfOut)))
 
-	list := exec.Command("git", "worktree", "list", "--porcelain")
-	list.Dir = dir
+	list := workspaceGitCommand(dir, "worktree", "list", "--porcelain")
 	out, err := list.Output()
 	if err != nil {
 		return held
@@ -1202,8 +1200,7 @@ func checkoutExistingBranch(dir, branch, token string) (fetchedSHA string, err e
 	if err != nil {
 		return "", err
 	}
-	checkout := exec.Command("git", "checkout", "-B", branch, "FETCH_HEAD")
-	checkout.Dir = dir
+	checkout := workspaceGitCommand(dir, "checkout", "-B", branch, "FETCH_HEAD")
 	if out, err := checkout.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("checkout %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}
@@ -1221,14 +1218,11 @@ func fetchExistingBranch(dir, branch, token string) (string, error) {
 		return "", err
 	}
 	env := gitAuthEnv(token)
-	fetch := exec.Command("git", "fetch", url, "refs/heads/"+branch)
-	fetch.Dir = dir
-	fetch.Env = env
+	fetch := workspaceGitAuthEnvCommand(dir, env, "fetch", url, "refs/heads/"+branch)
 	if out, err := fetch.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("fetch %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}
-	rev := exec.Command("git", "rev-parse", "FETCH_HEAD")
-	rev.Dir = dir
+	rev := workspaceGitCommand(dir, "rev-parse", "FETCH_HEAD")
 	out, err := rev.Output()
 	if err != nil {
 		return "", fmt.Errorf("resolve fetched SHA for %s: %w", branch, err)
@@ -1256,8 +1250,7 @@ func isCommitBehindBase(dir, baseSHA, headSHA string) (bool, error) {
 	if headSHA == "" {
 		return false, fmt.Errorf("PR has no recorded head SHA")
 	}
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", baseSHA, headSHA)
-	cmd.Dir = dir
+	cmd := workspaceGitCommand(dir, "merge-base", "--is-ancestor", baseSHA, headSHA)
 	err := cmd.Run()
 	if err == nil {
 		return false, nil
