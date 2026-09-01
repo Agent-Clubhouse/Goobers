@@ -309,19 +309,19 @@ func TestGettingStartedGitHubAuthorizationDoesNotReloginForRepositoryAccess(t *t
 
 func TestGettingStartedGitHubAuthorizationReportsMissingCLI(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("GitHub authorization stubs use a missing executable")
+		t.Skip("GitHub authorization stubs use /bin/sh")
 	}
 	previousDiscovery := guidedDiscoveryCommand
-	previousAuthorization := guidedGitHubAuthorizationCommand
 	guidedDiscoveryCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		return exec.CommandContext(ctx, "goobers-missing-github-cli", args...)
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1")
 	}
-	guidedGitHubAuthorizationCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		return exec.CommandContext(ctx, "goobers-missing-github-cli", args...)
+	previousRunner := guidedGitHubAuthorizationRunner
+	guidedGitHubAuthorizationRunner = func(context.Context) error {
+		return exec.ErrNotFound
 	}
 	t.Cleanup(func() {
 		guidedDiscoveryCommand = previousDiscovery
-		guidedGitHubAuthorizationCommand = previousAuthorization
+		guidedGitHubAuthorizationRunner = previousRunner
 	})
 	server := newTestGuidedServer(t, t.TempDir())
 

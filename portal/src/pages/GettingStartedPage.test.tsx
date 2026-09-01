@@ -62,6 +62,31 @@ const authRequiredInspection: GuidedRepositoryInspection = {
   },
 };
 
+const remoteAuthRequiredInspection: GuidedRepositoryInspection = {
+  ...authRequiredInspection,
+  localPath: undefined,
+  needsClone: true,
+};
+
+const remoteReadyInspection: GuidedRepositoryInspection = {
+  ...inspection,
+  localPath: undefined,
+  needsClone: true,
+};
+
+const adoAuthRequiredInspection: GuidedRepositoryInspection = {
+  ...inspection,
+  provider: "ado",
+  project: "platform",
+  auth: {
+    kind: "azure-cli",
+    ready: false,
+    message: "Azure CLI authentication is required before setup can continue.",
+    remediationCommand: "az login",
+    needsLogin: true,
+  },
+};
+
 type RouteHandler = (init?: RequestInit) => { status?: number; body: unknown };
 
 function clientWith(routes: Record<string, RouteHandler>): GuidedClient {
@@ -244,6 +269,76 @@ describe("GettingStartedPage", () => {
     expect(inspectionRequests).toBe(2);
     expect(
       await screen.findByText("GitHub CLI authentication is ready as octocat."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).not.toBeInTheDocument();
+  });
+
+  it("shows GitHub authorization before cloning a repository URL", async () => {
+    const user = userEvent.setup();
+    let inspectionRequests = 0;
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/actions/inspect-repository": () => {
+            inspectionRequests += 1;
+            return {
+              body: inspectionRequests === 1 ? remoteAuthRequiredInspection : remoteReadyInspection,
+            };
+          },
+          "/guided/actions/authorize-github": (init) => {
+            expect(parseBody(init)).toEqual({ repository: "acme/widgets" });
+            return {
+              body: {
+                auth: remoteReadyInspection.auth,
+                message: "GitHub device/web authorization completed as octocat.",
+              },
+            };
+          },
+        })}
+      />,
+    );
+
+    await openRepositoryPage(user);
+    await user.click(screen.getByRole("button", { name: "Repository URL" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Repository URL" }),
+      "https://github.com/acme/widgets",
+    );
+    await user.click(screen.getByRole("button", { name: "Inspect URL" }));
+    expect(
+      await screen.findByText("GitHub CLI authentication is required before setup can continue."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeInTheDocument();
+    expect(screen.getByText("Authenticate, then clone the repository")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Sign in with GitHub" }));
+    expect(inspectionRequests).toBe(2);
+    expect(screen.getByText("Clone the repository, then inspect it again")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).not.toBeInTheDocument();
+  });
+
+  it("keeps Azure DevOps authentication manual", async () => {
+    const user = userEvent.setup();
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/actions/inspect-repository": () => ({ body: adoAuthRequiredInspection }),
+        })}
+      />,
+    );
+
+    await openRepositoryPage(user);
+    await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
+    await user.click(screen.getByRole("button", { name: "Inspect clone" }));
+    expect(
+      await screen.findByText("Azure CLI authentication is required before setup can continue."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Run the Azure CLI login command, then inspect the repository again. Azure DevOps authentication remains a manual step.",
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).not.toBeInTheDocument();
   });

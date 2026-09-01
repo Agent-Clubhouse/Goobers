@@ -22,6 +22,24 @@ var guidedGitHubAuthorizationCommand = func(ctx context.Context, name string, ar
 	return exec.CommandContext(ctx, name, args...)
 }
 
+var guidedGitHubAuthorizationRunner = func(ctx context.Context) error {
+	command := guidedGitHubAuthorizationCommand(
+		ctx,
+		"gh",
+		"auth",
+		"login",
+		"--hostname",
+		"github.com",
+		"--git-protocol",
+		"https",
+		"--web",
+	)
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	return command.Run()
+}
+
 const guidedGitHubLoginCommand = "gh auth login --hostname github.com --git-protocol https --web"
 
 type guidedRepositoryInspection struct {
