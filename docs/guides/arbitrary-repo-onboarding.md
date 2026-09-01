@@ -155,9 +155,13 @@ goobers init --guided --instance-path "$GOOBERS_INSTANCE"
 
 Provide the existing local clone for `$GOOBERS_TARGET`. The tutorial discovers
 GitHub or Azure DevOps identity, default branch, CI command, toolchain, and CLI
-authentication. Choose `$GOOBERS_CONFIG_SOURCE` as a custom configuration
-folder, or use the recommended peer folder suggested beside the target clone.
-The tutorial never asks for token values.
+authentication. If the GitHub CLI account is not authenticated, the repository
+step offers `gh auth login --hostname github.com --git-protocol https --web`
+directly; it does not start that flow for an already-authenticated account or
+for Azure DevOps. If `gh` is unavailable, install GitHub CLI and retry the
+action. Choose `$GOOBERS_CONFIG_SOURCE` as a custom configuration folder, or
+use the recommended peer folder suggested beside the target clone. The
+tutorial never asks for token values.
 
 For an agent-driven path, use:
 

@@ -33,7 +33,10 @@ const guidedInitBrowserHelp = "Usage: goobers init --guided [--allow-ephemeral] 
 	"not run a workflow. Back and Continue navigation stays inside the browser,\n" +
 	"while completed filesystem\n" +
 	"actions remain the source of truth across restarts. Token values never\n" +
-	"reach the browser or configuration files. For GitHub PAT setup, use\n" +
+	"reach the browser or configuration files. When a GitHub repository needs\n" +
+	"authentication, the repository step offers the GitHub CLI device/web flow;\n" +
+	"already-authenticated accounts and Azure DevOps setup are not changed. For\n" +
+	"GitHub PAT setup, use\n" +
 	"https://github.com/settings/personal-access-tokens/new, select the account\n" +
 	"or organization that owns the repository, choose Only select repositories,\n" +
 	"and grant the permissions\n" +
