@@ -87,6 +87,13 @@ func (testCopilotModelLister) ListModels(context.Context, []string, []string) ([
 //     subprocess these tests spawn (#3172). See
 //     disableGitAutoMaintenanceForTests.
 func TestMain(m *testing.M) {
+	// Most CLI tests initialize ordinary t.TempDir fixtures. Do not inherit a
+	// GitHub-hosted runner classification into those fixtures; tests that
+	// exercise the hosted policy set this marker explicitly with t.Setenv.
+	if err := os.Unsetenv("RUNNER_ENVIRONMENT"); err != nil {
+		fmt.Fprintf(os.Stderr, "clear RUNNER_ENVIRONMENT for test fixtures: %v\n", err)
+		os.Exit(1)
+	}
 	if os.Getenv(portalBuildMakeEnv) == "1" && isDocsDryRunMakeProcess() {
 		os.Exit(runPortalBuildMake())
 	}

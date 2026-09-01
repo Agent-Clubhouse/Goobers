@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // seedSourceCheckoutCwd builds a directory shaped like a fresh clone of this
@@ -57,5 +59,78 @@ func TestInitDefaultPathRefusesSourceCheckoutCwd(t *testing.T) {
 		if _, statErr := os.Stat(filepath.Join(checkout, name)); !os.IsNotExist(statErr) {
 			t.Fatalf("refused init wrote %s, stat error = %v", name, statErr)
 		}
+	}
+}
+
+func TestInitDefaultPathRefusesLinkedWorktreeWithoutWriting(t *testing.T) {
+	repository := seedGitInitTargetRepository(t)
+	linked := filepath.Join(t.TempDir(), "session-worktree")
+	runInitTargetGit(t, repository, "worktree", "add", "-b", "session", linked, "main")
+	t.Chdir(linked)
+
+	resolvedLinked, err := filepath.EvalSymlinks(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runArgs(t, "init")
+	if code == 0 {
+		t.Fatalf("init inside linked worktree succeeded: stdout=%q stderr=%q", stdout, stderr)
+	}
+	for _, want := range []string{
+		"refusing to initialize",
+		"linked Git worktree",
+		"--allow-ephemeral",
+		`goobers init --allow-ephemeral "` + resolvedLinked + `"`,
+		"goobers/instances",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("init stderr = %q, missing %q", stderr, want)
+		}
+	}
+	for _, name := range []string{"instance.yaml", "config", "gaggles", "scheduler", "telemetry.db"} {
+		if _, err := os.Stat(filepath.Join(linked, name)); !os.IsNotExist(err) {
+			t.Fatalf("refused init wrote %s: %v", name, err)
+		}
+	}
+}
+
+func TestInitDefaultPathAllowsExplicitLinkedWorktreeOverride(t *testing.T) {
+	repository := seedGitInitTargetRepository(t)
+	linked := filepath.Join(t.TempDir(), "session-worktree")
+	runInitTargetGit(t, repository, "worktree", "add", "-b", "session", linked, "main")
+	t.Chdir(linked)
+
+	code, _, stderr := runArgs(t, "init", "--allow-ephemeral")
+	if code != 0 {
+		t.Fatalf("init override failed: stderr=%q", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(linked, "instance.yaml")); err != nil {
+		t.Fatalf("override did not initialize linked worktree: %v", err)
+	}
+}
+
+func seedGitInitTargetRepository(t *testing.T) string {
+	t.Helper()
+	repository := filepath.Join(t.TempDir(), "repository")
+	if err := os.MkdirAll(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runInitTargetGit(t, repository, "init", "-b", "main")
+	runInitTargetGit(t, repository, "config", "user.email", "test@example.com")
+	runInitTargetGit(t, repository, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(repository, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runInitTargetGit(t, repository, "add", "README.md")
+	runInitTargetGit(t, repository, "commit", "-m", "initial")
+	return repository
+}
+
+func runInitTargetGit(t *testing.T, directory string, args ...string) {
+	t.Helper()
+	command := testgit.Command(append([]string{"-C", directory}, args...)...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
 }

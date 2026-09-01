@@ -55,12 +55,13 @@ const (
 		"Start the focused browser walkthrough:\n\n" +
 		"```sh\n" +
 		"export PATH=\"$PWD/bin:$PATH\"\n" +
-		"goobers init --guided\n" +
+		"goobers init --guided --instance-path ~/goobers/instances/my-repository\n" +
 		"```\n\n" +
 		"Provide an existing local Git clone. Getting Started supports GitHub and Azure\n" +
 		"DevOps, discovers repository identity, default branch, CI command, toolchain,\n" +
 		"and existing CLI authentication, then asks only for configuration placement,\n" +
-		"workflow behavior, and agent harness choices that cannot be derived.\n\n" +
+		"workflow behavior, and agent harness choices that cannot be derived. The\n" +
+		"`--instance-path` value selects the runtime instance root.\n\n" +
 		"The workflow choices are adapted from the canonical modules under\n" +
 		"[`config-examples/gaggles/acme-web`](../../config-examples/gaggles/acme-web/),\n" +
 		"not from the deliberately simplified `quickstart@v1` tutorial workflow.\n\n"
@@ -90,7 +91,7 @@ const (
 	quickstartInstalledInit = "## Separate path: configure a real instance\n\n" +
 		"The release installer installs the binary and documentation only. Start browser-based setup after installation:\n\n" +
 		"```sh\n" +
-		"goobers init --guided\n" +
+		"goobers init --guided --instance-path ~/goobers/instances/my-repository\n" +
 		"```\n\n" +
 		"The legacy installer `--guided` option prints migration guidance and makes no changes; guided setup belongs to the installed `goobers` binary.\n\n"
 	quickstartSourceOnboardingAssets = "Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
