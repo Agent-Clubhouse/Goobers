@@ -163,7 +163,10 @@ const (
 		"   account when it owns the repository.** Choose **Only select repositories**\n" +
 		"   and select exactly the disposable repository. Grant only **Contents: Read\n" +
 		"   and write**, **Issues: Read and write**, and **Pull requests: Read and\n" +
-		"   write**. Then export it once under the name `connect` expects by default:\n\n" +
+		"   write**. For an organization-owned repository, the organization owner may\n" +
+		"   need to approve the token before it works; request or wait for approval\n" +
+		"   before `connect --seed`. Then export it once under the name `connect`\n" +
+		"   expects by default:\n\n" +
 		"   ```sh\n" +
 		"   export GOOBERS_GITHUB_TOKEN=<your token>\n" +
 		"   ```\n\n" +
