@@ -224,6 +224,44 @@ describe("GettingStartedPage", () => {
     expect(screen.getByText("GitHub CLI authentication is ready as octocat.")).toBeInTheDocument();
   });
 
+  it("gives GitHub PAT owner and repository guidance when authentication is unavailable", async () => {
+    const user = userEvent.setup();
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/actions/inspect-repository": () => ({
+            body: {
+              ...inspection,
+              auth: {
+                kind: "github-cli",
+                ready: false,
+                remediationCommand: "gh auth login",
+              },
+            },
+          }),
+        })}
+      />,
+    );
+
+    await openRepositoryPage(user);
+    await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
+    await user.click(screen.getByRole("button", { name: "Inspect clone" }));
+
+    expect(await screen.findByText("GitHub authentication is required")).toBeInTheDocument();
+    const patLink = screen.getByRole("link", {
+      name: "Open GitHub fine-grained PAT settings",
+    });
+    expect(patLink).toHaveAttribute(
+      "href",
+      "https://github.com/settings/personal-access-tokens/new",
+    );
+    expect(screen.getByText(/Resource owner/)).toBeInTheDocument();
+    expect(screen.getByText("acme")).toBeInTheDocument();
+    expect(screen.getByText(/Only select repositories/)).toBeInTheDocument();
+    expect(screen.getByText("gh auth login")).toBeInTheDocument();
+  });
+
   it("ends after checks with commands for operating the instance", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem("goobers-wizard-path", JSON.stringify("own-repo"));

@@ -14,6 +14,7 @@ import {
 
 const defaultClient = new GuidedClient();
 const statePollIntervalMs = 5_000;
+const githubPATSettingsURL = "https://github.com/settings/personal-access-tokens/new";
 type RepositorySource = "local" | "remote";
 type QueryState =
   | { status: "loading" }
@@ -582,12 +583,45 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                   </p>
                 ) : (
                   <div className="guided-callout">
-                    <strong>Sign in, then inspect the repository again</strong>
+                    <strong>
+                      {inspection.provider === "ado"
+                        ? "Sign in, then inspect the repository again"
+                        : "GitHub authentication is required"}
+                    </strong>
                     <span>
                       {inspection.provider === "ado"
                         ? "Azure CLI authentication is not ready."
-                        : "GitHub CLI authentication is not ready."}
+                        : "GitHub CLI authentication is not ready. Use `gh auth login`, or create a fine-grained PAT and sign in with it."}
                     </span>
+                    {inspection.provider === "github" && (
+                      <>
+                        <a
+                          className="guided-intro-link"
+                          href={githubPATSettingsURL}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          Open GitHub fine-grained PAT settings
+                        </a>
+                        <ol className="guided-pat-steps">
+                          <li>
+                            Set <strong>Resource owner</strong> to{" "}
+                            <strong>{inspection.owner}</strong>, the account or organization
+                            that owns this repository—not the default personal account.
+                          </li>
+                          <li>
+                            Choose <strong>Only select repositories</strong>, then select{" "}
+                            <strong>{inspection.displayName}</strong>.
+                          </li>
+                          <li>
+                            Grant the least-privilege permissions in{" "}
+                            <code>docs/guides/github-token-scopes.md</code>, generate the
+                            token, and use it with the environment variable named in your
+                            configuration.
+                          </li>
+                        </ol>
+                      </>
+                    )}
                     {inspection.auth.remediationCommand && (
                       <code>{inspection.auth.remediationCommand}</code>
                     )}

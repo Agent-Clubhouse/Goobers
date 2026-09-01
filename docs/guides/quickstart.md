@@ -176,8 +176,14 @@ with a real one.
    Already have a disposable repository you'd rather reuse? Skip this step
    and use its `<owner>/<repo>` below instead.
 
-2. Export a GitHub token with repo/issues access, once, under the name
-   `connect` expects by default:
+2. Create a fine-grained GitHub PAT using the
+   [PAT setup instructions](github-token-scopes.md#create-a-fine-grained-pat-for-a-repository).
+   **Resource owner must be the account or organization that owns
+   `<owner>/<repo>` (for example, `odsp-microsoft`), not the default personal
+   account.** Choose **Only select repositories** and select exactly the
+   disposable repository, with Contents, Issues, Pull requests, and the
+   read-only CI permissions described in that guide. Then export it once under
+   the name `connect` expects by default:
 
    ```sh
    export GOOBERS_GITHUB_TOKEN=<your token>
