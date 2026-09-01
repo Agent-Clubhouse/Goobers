@@ -75,6 +75,7 @@ func TestInitDefaultPathRefusesLinkedWorktreeWithoutWriting(t *testing.T) {
 		"refusing to initialize",
 		"linked Git worktree",
 		"--allow-ephemeral",
+		`goobers init --allow-ephemeral "` + linked + `"`,
 		"goobers/instances",
 	} {
 		if !strings.Contains(stderr, want) {

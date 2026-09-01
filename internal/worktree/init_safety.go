@@ -32,11 +32,10 @@ type UnsafeInitTargetError struct {
 
 func (e *UnsafeInitTargetError) Error() string {
 	return fmt.Sprintf(
-		"refusing to initialize Goobers at %s: %s; durable instance state must not live in an ephemeral checkout. Use a safe instance root such as %s, keep checked-in repository configuration in a separate source path, or rerun `goobers init --allow-ephemeral %q` if this location is intentionally persistent",
+		"refusing to initialize Goobers at %s: %s; durable instance state must not live in an ephemeral checkout. Use a safe instance root such as %s, keep checked-in repository configuration in a separate source path, or explicitly acknowledge that this location is intentionally persistent with --allow-ephemeral",
 		e.Safety.Path,
 		e.Safety.Reason,
 		e.SafePath,
-		e.Safety.Path,
 	)
 }
 

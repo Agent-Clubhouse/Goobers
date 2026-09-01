@@ -164,6 +164,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	}
 	if err := worktree.CheckInitTarget(context.Background(), root, *allowEphemeral); err != nil {
 		pf(stderr, "error: %v\n", err)
+		printInitTargetOverride(stderr, err)
 		printDefaultedTargetNote(stderr, err, fs.NArg())
 		return 2
 	}
@@ -260,6 +261,13 @@ func finishInitValidation(root string, stdout, stderr io.Writer) int {
 		pf(stdout, "  %s\n", finding.file)
 	}
 	return 0
+}
+
+func printInitTargetOverride(stderr io.Writer, err error) {
+	var unsafe *worktree.UnsafeInitTargetError
+	if errors.As(err, &unsafe) {
+		pf(stderr, "note: to acknowledge this target, rerun `goobers init --allow-ephemeral %q`\n", unsafe.Safety.Path)
+	}
 }
 
 // printDefaultedTargetNote explains, after an init target-conflict refusal,

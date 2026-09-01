@@ -9,6 +9,16 @@ import (
 	"testing"
 )
 
+// TestMain keeps ordinary fixture directories ordinary even when the suite is
+// invoked by a GitHub-hosted runner. Tests that exercise hosted detection set
+// RUNNER_ENVIRONMENT explicitly with t.Setenv.
+func TestMain(m *testing.M) {
+	if err := os.Unsetenv("RUNNER_ENVIRONMENT"); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
+
 func TestInspectInitTargetDetectsLinkedWorktree(t *testing.T) {
 	repository := t.TempDir()
 	runInitSafetyTestGit(t, repository, "init", "-b", "main")

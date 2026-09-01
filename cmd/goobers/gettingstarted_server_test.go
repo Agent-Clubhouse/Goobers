@@ -200,6 +200,9 @@ func TestGettingStartedRefusesUnsafeGuidedInstanceTarget(t *testing.T) {
 		!strings.Contains(response.Message, `goobers init --guided --instance-path "`+server.instancePath+`" --allow-ephemeral`) {
 		t.Fatalf("response = %+v, want actionable unsafe-target refusal", response)
 	}
+	if strings.Contains(response.Message, `goobers init --allow-ephemeral "`+server.instancePath+`"`) {
+		t.Fatalf("response = %+v, must not offer a non-guided remediation", response)
+	}
 	if _, err := os.Stat(server.instancePath); !os.IsNotExist(err) {
 		t.Fatalf("unsafe guided init created instance target: %v", err)
 	}
