@@ -1,0 +1,19 @@
+.\" Generated from the goobers command registry — do not edit by hand.
+.TH "GOOBERS FLEET LEAVE" "1" "" "Goobers" "Goobers Manual"
+.SH NAME
+goobers fleet leave \- remove this instance's Fleet association and protected secrets
+.SH SYNOPSIS
+\fBgoobers fleet leave\fR [\fIoptions\fR]
+.SH DESCRIPTION
+.nf
+Usage: goobers fleet leave [path]
+
+Remove the Fleet association, private key, and bearer credential. A running
+daemon observes the removal and stops reconnecting.
+.fi
+.SH EXAMPLES
+.nf
+goobers fleet leave
+.fi
+.SH SEE ALSO
+\fBgoobers\fR(1)
