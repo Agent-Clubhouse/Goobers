@@ -141,6 +141,7 @@ func IngestStageEmissions(dir string, result *apiv1.ResultEnvelope, span Span) {
 			attrs = append(attrs, attribute.String(metricUnitAttribute, metric.Unit))
 		}
 		span.Event(metric.Name, attrs...)
+		span.metrics.recordStageMetric(metric.Name, metric.Unit, *metric.Value)
 	}
 
 	for _, event := range events {

@@ -48,6 +48,13 @@ reference sets no fixed capacity, VM SKU, spot policy, or scale-to-zero default.
 
 - **`CHANGE-ME`** marks every value the customer must replace (registry, hosts,
   storage class, identity client ids). Nothing here references a real registry or tenant.
+  In fields that carry a declared name format (RFC-1123 labels/subdomains such as
+  `ingressClassName`, `storageClassName`, and `metadata.name`) the placeholder is
+  spelled lowercase `change-me`: an uppercase one is *syntactically* invalid, so the
+  API server rejects the whole `kubectl apply -k` instead of just leaving that one
+  field unbound (#3310). `make deploy-validate` lints these formats
+  (`TestDeployReferenceNamedFieldsAreFormatValid`), because kustomize renders and
+  kubeconform checks schema — neither checks a value against its own field's format.
   Stage egress CIDRs are NOT hand-edited here any more: they are rendered per runner
   class by `goobers netpol-render` from `instance.yaml egress.allowlist` (issue #3568,
   decision 016 — the rendered output is the only authoritative copy, and the render
@@ -94,7 +101,10 @@ reference sets no fixed capacity, VM SKU, spot policy, or scale-to-zero default.
   with CHANGE-ME comments until they land. The daemon API Deployment is explicitly
   disabled (`replicas: 0`) until its in-cluster listener (#652) lands; enabling the
   current lock-owning daemon would also contend with the worker for the RWO instance
-  volume. Per #663 the manifests express the target shape now.
+  volume. The operator Deployment is disabled the same way (`replicas: 0`):
+  `internal/operator` is quarantined Tier-3 (V2) and the runtime image its reconciler
+  schedules is not published, so applying it as shipped would only produce
+  `ImagePullBackOff` workloads. Per #663 the manifests express the target shape now.
 
 ## Validation
 

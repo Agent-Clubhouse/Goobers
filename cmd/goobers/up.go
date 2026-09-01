@@ -1489,6 +1489,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}()
 
+	fleetConnectorDone, fleetConnectorStarted, fleetConnectorErr := startDaemonFleetConnector(ctx, root)
+	if fleetConnectorErr != nil {
+		pf(stdout, "warning: Fleet connector unavailable: %v\n", fleetConnectorErr)
+	}
 	if webhookGate.Start() {
 		ready.Store(true)
 	}
@@ -1498,6 +1502,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	if diagnosticsMode {
 		pln(stdout, "diagnostics mode: ON — long-running stages get periodic process samples + lsof + un-truncated output recorded as run artifacts")
+	}
+	if fleetConnectorStarted {
+		pln(stdout, "Fleet connector started")
 	}
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
@@ -1518,42 +1525,60 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if webhookServer != nil {
 		webhookErrors = webhookServer.Errors()
 	}
-	select {
-	case runErr = <-schedulerDone:
-	case stopErr := <-supervisorStop:
-		if stopErr != nil {
-			schedulerFailed = true
-			pf(stderr, "error: supervisor stop request: %v\n", stopErr)
+daemonLoop:
+	for {
+		select {
+		case connectorErr := <-fleetConnectorDone:
+			fleetConnectorDone = nil
+			fleetConnectorStarted = false
+			if ctx.Err() == nil {
+				if connectorErr != nil {
+					pf(stderr, "warning: Fleet connector stopped: %v\n", connectorErr)
+				} else {
+					pln(stderr, "Fleet connector stopped")
+				}
+			}
+		case runErr = <-schedulerDone:
+			break daemonLoop
+		case stopErr := <-supervisorStop:
+			if stopErr != nil {
+				schedulerFailed = true
+				pf(stderr, "error: supervisor stop request: %v\n", stopErr)
+			}
+			stopDaemon()
+			runErr = <-schedulerDone
+			break daemonLoop
+		case reloadErr := <-configDone:
+			configWatcherDone = true
+			if reloadErr == nil {
+				reloadErr = errors.New("config watcher stopped unexpectedly")
+			}
+			if ctx.Err() == nil {
+				configFailed = true
+				pf(stderr, "error: config watcher stopped: %v\n", reloadErr)
+			}
+			stopDaemon()
+			runErr = <-schedulerDone
+			break daemonLoop
+		case serveErr, ok := <-apiServer.Errors():
+			apiFailed = true
+			if !ok {
+				serveErr = errors.New("server stopped unexpectedly")
+			}
+			pf(stderr, "error: HTTP API stopped: %v\n", serveErr)
+			stopDaemon()
+			runErr = <-schedulerDone
+			break daemonLoop
+		case serveErr, ok := <-webhookErrors:
+			webhookFailed = true
+			if !ok {
+				serveErr = errors.New("server stopped unexpectedly")
+			}
+			pf(stderr, "error: webhook listener stopped: %v\n", serveErr)
+			stopDaemon()
+			runErr = <-schedulerDone
+			break daemonLoop
 		}
-		stopDaemon()
-		runErr = <-schedulerDone
-	case reloadErr := <-configDone:
-		configWatcherDone = true
-		if reloadErr == nil {
-			reloadErr = errors.New("config watcher stopped unexpectedly")
-		}
-		if ctx.Err() == nil {
-			configFailed = true
-			pf(stderr, "error: config watcher stopped: %v\n", reloadErr)
-		}
-		stopDaemon()
-		runErr = <-schedulerDone
-	case serveErr, ok := <-apiServer.Errors():
-		apiFailed = true
-		if !ok {
-			serveErr = errors.New("server stopped unexpectedly")
-		}
-		pf(stderr, "error: HTTP API stopped: %v\n", serveErr)
-		stopDaemon()
-		runErr = <-schedulerDone
-	case serveErr, ok := <-webhookErrors:
-		webhookFailed = true
-		if !ok {
-			serveErr = errors.New("server stopped unexpectedly")
-		}
-		pf(stderr, "error: webhook listener stopped: %v\n", serveErr)
-		stopDaemon()
-		runErr = <-schedulerDone
 	}
 	stopDaemon()
 	if configLoopEnabled && !configWatcherDone {
@@ -1602,6 +1627,18 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	<-supervisorStopDone
 	if heartbeatDone != nil {
 		<-heartbeatDone
+	}
+	if fleetConnectorStarted && fleetConnectorDone != nil {
+		select {
+		case connectorErr := <-fleetConnectorDone:
+			if connectorErr != nil &&
+				!errors.Is(connectorErr, context.Canceled) &&
+				!errors.Is(connectorErr, context.DeadlineExceeded) {
+				pf(stderr, "warning: Fleet connector stopped: %v\n", connectorErr)
+			}
+		case <-time.After(5 * time.Second):
+			pf(stderr, "warning: Fleet connector did not stop within 5s\n")
+		}
 	}
 
 	if runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {

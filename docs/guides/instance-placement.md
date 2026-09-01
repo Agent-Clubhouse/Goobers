@@ -12,6 +12,41 @@ the second option: the config source is a non-empty subtree of that repository.
 The instance root itself is still outside. For a third-party target or a
 team-operated deployment, prefer a separate config repository.
 
+## Do not initialize durable state in an ephemeral worktree
+
+GitHub App sessions, hosted agents, Codespaces, and similar automation often
+check a repository out into a linked or temporary Git worktree. The checkout
+and everything beneath it can disappear when the session ends. `goobers init`
+and the Getting Started wizard therefore refuse to create an instance root
+there by default. The refusal happens before any files are written and names
+the target plus a durable replacement.
+
+Use a stable, user-owned instance root such as:
+
+```text
+# POSIX
+~/goobers/instances/widget/
+
+# Windows
+C:\goobers\instances\widget\
+```
+
+Run `goobers init ~/goobers/instances/widget` from the ephemeral checkout. For
+Getting Started, select that root explicitly with
+`goobers init --guided --instance-path ~/goobers/instances/widget`. On a
+GitHub-hosted runner, its session home is ephemeral too: choose a path on a
+persistent volume instead of relying on the `~/goobers` examples. If the
+checkout is intentionally durable and its lifetime is managed separately, pass
+`--allow-ephemeral` to acknowledge the risk. This override is deliberately
+explicit; it does not make the worktree persistent.
+
+The repository's desired-state files are a separate placement decision. Keep
+them in a reviewed config repository or an intentionally checked-in subtree
+such as `<checkout>/goobers`; do not confuse that source tree with the mutable
+instance root. `goobers init --template=quickstart --source-tree <path>` writes
+only the checked-in source layout and remains available for that deliberate
+workflow.
+
 ## Keep runtime state outside target repositories
 
 An instance root contains mutable execution data:
@@ -259,7 +294,7 @@ export GOOBERS_INSTANCE="$HOME/goobers/instances/hass-dreo"
 export GOOBERS_CONFIG_SOURCE="$HOME/src/hass-dreo-goobers-config"
 export GOOBERS_TARGET="JeffSteinbok/hass-dreo"
 
-goobers init --guided
+goobers init --guided --instance-path "$GOOBERS_INSTANCE"
 goobers validate --source-tree "$GOOBERS_CONFIG_SOURCE"
 goobers config materialize "$GOOBERS_INSTANCE"
 goobers validate "$GOOBERS_INSTANCE"

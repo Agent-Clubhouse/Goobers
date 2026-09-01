@@ -620,6 +620,17 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
 	stageEnv = append(stageEnv, commandEnv...)
+	if injectRunContext {
+		task := strings.TrimPrefix(env.TaskID, env.RunID+":")
+		if task == "" {
+			task = env.TaskID
+		}
+		goober := env.Goober
+		if goober == "" {
+			goober = "deterministic"
+		}
+		stageEnv = append(stageEnv, TaskEnvVar+"="+task, GooberEnvVar+"="+goober)
+	}
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
 	}
@@ -941,7 +952,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 					if aerr != nil {
 						return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 					}
-					result.Artifacts = append(result.Artifacts, refToPointer(ref, mediaTypeFor(resultFile)))
+					result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
 					mergeResultFileOutputs(&result, data)
 					code, message, retryable := consumeErrorOutputs(result.Outputs)
 					if code != "" {
@@ -1004,7 +1015,7 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 				if aerr != nil {
 					return apiv1.ResultEnvelope{}, fmt.Errorf("executor: record result file: %w", aerr)
 				}
-				result.Artifacts = append(result.Artifacts, refToPointer(ref, mediaTypeFor(resultFile)))
+				result.Artifacts = append(result.Artifacts, refToPointer(ref, MediaTypeFor(resultFile)))
 				mergeResultFileOutputs(&result, data)
 			case os.IsNotExist(rerr):
 				result.Status = apiv1.ResultFailure
@@ -1355,7 +1366,12 @@ func providerResultIntegrity(data []byte) (apiv1.Integrity, error) {
 	return integrity, nil
 }
 
-func mediaTypeFor(path string) string {
+// MediaTypeFor is the media type this executor declares for a result-file
+// pointer. Exported because the POD arm must declare the identical type for
+// the identical artifact (cmd/goobers/dispatchexec.go): a reader that bounds
+// the type would otherwise admit an artifact on a self runner and refuse the
+// same one in a pod, which is the substrate-dependent divergence #4119 was.
+func MediaTypeFor(path string) string {
 	if strings.HasSuffix(path, ".json") {
 		return "application/json"
 	}

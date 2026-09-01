@@ -418,6 +418,13 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 	// run (gatePodAttempt): the surrender-plane key and the pod name for a
 	// reviewer evaluated in a pod. Untouched by the self arm.
 	gateDispatches := map[string]int{}
+	// evaluatedGates names every gate that has recorded a verdict on this
+	// walk. A gate named in a downstream stage's contextFrom delivers that
+	// verdict as context, so the #2736 no-work check must count it as
+	// production — the upstream results map holds task results only
+	// (internal/runner's journal read counts an EventGateEvaluated the same
+	// way).
+	evaluatedGates := map[string]bool{}
 	// The implementation-lane state ported in #3882, all plain workflow state
 	// so a replay reconstructs it from the same deterministic sequence:
 	//
@@ -551,7 +558,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 				state = t.Name
 				continue
 			}
-			next, out, terminal := taskOutcome(ctx, m, t, res, upstream, steps, rec)
+			next, out, terminal := taskOutcome(ctx, m, t, res, upstream, evaluatedGates, steps, rec)
 			if terminal {
 				resumeState, resumed, serr := settle(out)
 				if serr != nil {
@@ -661,6 +668,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 			if jerr != nil {
 				return RunResult{}, jerr
 			}
+			evaluatedGates[g.Name] = true
 			if review.DiffDigest != "" {
 				lastDiffDigest[g.Name] = review.DiffDigest
 			}
@@ -779,7 +787,7 @@ func walk(ctx workflow.Context, in RunInput, m *wf.Machine, rec *runJournal, hit
 // branch routes to a stage owning the human-facing disposition itself), and it
 // changes no transition. The routing — the part the parity inventory rows — is
 // what lands here.
-func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1.ResultEnvelope, upstream map[string]apiv1.ResultEnvelope, steps int, rec *runJournal) (next string, out RunResult, terminal bool) {
+func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1.ResultEnvelope, upstream map[string]apiv1.ResultEnvelope, evaluatedGates map[string]bool, steps int, rec *runJournal) (next string, out RunResult, terminal bool) {
 	switch result.Status {
 	case apiv1.ResultBlocked:
 		rec.blocked(ctx, t.Name, result)
@@ -798,6 +806,20 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 		code, message := failureCause(result.Error)
 		return "", RunResult{Status: StatusFailed, FinalState: t.Name, FailureCode: code, FailureMessage: message, Outputs: upstream, Steps: steps}, true
 	case apiv1.ResultNoWork:
+		// #2736 parity with internal/runner: a no-work claim from a task that
+		// NAMES its producers with contextFrom short-circuits the run to
+		// completed only when one of those producers actually delivered
+		// evidence. Producers that all journaled nothing mean the evidence
+		// never arrived, and completing on the claim alone would record that
+		// as a healthy empty tick.
+		if barren := runner.BarrenUpstream(declaredUpstreamProduction(t, upstream, evaluatedGates)); len(barren) > 0 {
+			return "", RunResult{
+				Status: StatusFailed, FinalState: t.Name,
+				FailureCode:    runner.NoWorkUnsubstantiatedCode,
+				FailureMessage: runner.NoWorkUnsubstantiatedMessage(t.Name, barren),
+				Outputs:        upstream, Steps: steps,
+			}, true
+		}
 		// NoWork is the run's #233 accounting, not the stage's: it is set only
 		// when the no-work stage was the FIRST step, which is what makes it the
 		// scheduler's "this tick did nothing" signal rather than "some stage
@@ -813,6 +835,39 @@ func taskOutcome(ctx workflow.Context, m *wf.Machine, t apiv1.Task, result apiv1
 		return "", RunResult{Status: StatusEscalated, FinalState: t.Name, Outputs: upstream, Steps: steps}, true
 	}
 	return t.Next, RunResult{}, false
+}
+
+// declaredUpstreamProduction reports what each producer t named with
+// contextFrom delivered, in declaration order. Empty for a task that named
+// none: like the local runner's noWorkEvidenceGap, only a declared consumer of
+// upstream artifacts is judged on them, since a producer can also deliver
+// through the shared workspace and return an empty envelope.
+func declaredUpstreamProduction(t apiv1.Task, upstream map[string]apiv1.ResultEnvelope, evaluatedGates map[string]bool) []runner.StageProduction {
+	production := make([]runner.StageProduction, 0, len(t.ContextFrom))
+	for _, source := range t.ContextFrom {
+		if source == t.Name {
+			continue
+		}
+		if evaluatedGates[source] {
+			// An evaluated gate delivers its verdict to this stage as a
+			// "<gate>.verdict" pointer, so it always counts as production —
+			// the local runner counts its EventGateEvaluated identically.
+			production = append(production, runner.StageProduction{Stage: source, Delivered: true})
+			continue
+		}
+		result, ok := upstream[source]
+		if !ok {
+			// A gate that never evaluated on this path, or a producer that
+			// never ran: the walk's upstream map holds task results only, so
+			// there is nothing here to call barren.
+			continue
+		}
+		production = append(production, runner.StageProduction{
+			Stage:     source,
+			Delivered: runner.DeliveredEvidence(result),
+		})
+	}
+	return production
 }
 
 // gateTransition maps a resolved gate branch to the walk's next move,

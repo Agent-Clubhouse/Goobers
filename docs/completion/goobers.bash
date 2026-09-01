@@ -21,7 +21,7 @@ _goobers_completion()
             flags+=" --json"
             ;;
         init)
-            flags+=" --guided --port --no-open --workdir --demo --insecure --template --source-tree --json"
+            flags+=" --guided --allow-ephemeral --instance-path --port --no-open --workdir --demo --insecure --template --harness --source-tree --json"
             ;;
         connect)
             flags+=" --token-env --seed --replace --json"
@@ -79,6 +79,12 @@ _goobers_completion()
             case "${COMP_WORDS[2]:-}" in
                 preflight) flags+=" --json" ;;
                 test) flags+=" --json" ;;
+            esac
+            ;;
+        fleet)
+            case "${COMP_WORDS[2]:-}" in
+                join) flags+=" --url --enrollment-token-file --grant-local-admin --no-grant-local-admin" ;;
+                status) flags+=" --json" ;;
             esac
             ;;
         up)
@@ -278,6 +284,11 @@ _goobers_completion()
         speech)
             if (( COMP_CWORD == 2 )); then
                 candidates="preflight test"
+            fi
+            ;;
+        fleet)
+            if (( COMP_CWORD == 2 )); then
+                candidates="join status leave"
             fi
             ;;
         service)

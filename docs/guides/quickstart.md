@@ -25,6 +25,14 @@ required host tools are ready.
 
 See `docs/ARCHITECTURE.md` §6 for the instance layout these commands operate on.
 
+Keep every tutorial instance outside a GitHub App, hosted-agent, Codespaces, or
+other ephemeral worktree. Goobers refuses `init` targets in linked or known
+hosted workspaces by default because the directory may be deleted when the
+session ends. For durable setup use a path such as
+`~/goobers/instances/widget/`; the config-source form
+(`--source-tree`) is separate and may intentionally be checked in. Use
+`--allow-ephemeral` only for a workspace whose lifetime you control.
+
 If declarative systems are new to you, read
 [How Goobers works: desired state, not scripts](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md) first.
 It explains the config/runtime split and why agents propose definition changes
@@ -95,9 +103,10 @@ bin/goobers trace <run-id> ./demo-instance
 Next, use the versioned `quickstart@v1` template for a first autonomous run
 against a disposable GitHub repository you control. This path requires a
 GitHub token and an authenticated agent harness. The shipped template's
-goobers default to `harness: copilot`; to run it on Claude Code instead, set
-`harness: claude-code` in `./tutorial-instance/config/gaggles/example/goobers/{implementer,reviewer}/goober.yaml`
-after materializing the instance below (see
+goobers default to `harness: copilot`; to run it on Claude Code instead, pass
+`--harness claude-code` to the `goobers init --template=quickstart` command
+below, which seeds every goober with that harness and needs no `goober.yaml`
+edit (see
 [`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)
 for a full claude-code gaggle reference).
 
@@ -175,11 +184,26 @@ with a real one.
    Already have a disposable repository you'd rather reuse? Skip this step
    and use its `<owner>/<repo>` below instead.
 
-2. Export a GitHub token with repo/issues access, once, under the name
-   `connect` expects by default:
+2. Create a fine-grained GitHub PAT in
+   [GitHub's token settings](https://github.com/settings/personal-access-tokens/new).
+   **Set Resource owner to the account or organization that owns
+   `<owner>/<repo>` (for example, `odsp-microsoft`); keep the default personal
+   account when it owns the repository.** Choose **Only select repositories**
+   and select exactly the disposable repository. Grant only **Contents: Read
+   and write**, **Issues: Read and write**, and **Pull requests: Read and
+   write**. For an organization-owned repository, the organization owner may
+   need to approve the token before it works; request or wait for approval
+   before `connect --seed`. Then export it once under the name `connect`
+   expects by default:
 
    ```sh
    export GOOBERS_GITHUB_TOKEN=<your token>
+   ```
+
+   PowerShell:
+
+   ```powershell
+   $env:GOOBERS_GITHUB_TOKEN = "<your token>"
    ```
 
 3. Point the instance at the repository, and seed it in the same step:
@@ -241,12 +265,13 @@ bin/goobers validate --source-tree --json ./tutorial-config
 ```
 
 The browser wizard is intentionally not an alternative tutorial. Use
-`goobers init --guided` when you are ready to configure a real
+`goobers init --guided --instance-path <durable-instance-root>` when you are ready to configure a real
 repository with the production-oriented canonical workflow modules.
 
 The tutorial is complete after this disposable run. Do not promote the
 `quickstart@v1` workflow into production: it intentionally omits safeguards.
-To configure a real repository, use `goobers init --guided` and
+To configure a real repository, use
+`goobers init --guided --instance-path <durable-instance-root>` and
 [Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md).
 
 For reference, the production-oriented path starts from the
@@ -267,7 +292,7 @@ Start the focused browser walkthrough:
 
 ```sh
 export PATH="$PWD/bin:$PATH"
-goobers init --guided
+goobers init --guided --instance-path ~/goobers/instances/my-repository
 ```
 
 When the GitHub Copilot app is already installed, the guided flow also offers
@@ -279,7 +304,8 @@ portal-extension status` and `goobers portal-extension update`.
 Provide an existing local Git clone. Getting Started supports GitHub and Azure
 DevOps, discovers repository identity, default branch, CI command, toolchain,
 and existing CLI authentication, then asks only for configuration placement,
-workflow behavior, and agent harness choices that cannot be derived.
+workflow behavior, and agent harness choices that cannot be derived. The
+`--instance-path` value selects the runtime instance root.
 
 The workflow choices are adapted from the canonical modules under
 [`config-examples/gaggles/acme-web`](../../config-examples/gaggles/acme-web/),

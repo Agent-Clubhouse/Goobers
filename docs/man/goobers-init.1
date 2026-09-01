@@ -6,23 +6,30 @@ goobers init \- scaffold an instance root
 \fBgoobers init\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
 placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
 gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
 untouched.
---guided opens the browser-based setup for a real repository and instance.
+--guided opens the browser-based setup for a real repository and instance;
+use --instance-path to select its instance root.
 It prepares and validates configuration but does not run a workflow. When the
 GitHub Copilot app is detected, setup also offers to install the release-matched
 user-scoped Portal canvas extension.
+For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new,
+select the repository's Resource owner, choose Only select repositories, and
+grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
 and gaggles/) without runtime state. The source-tree action is non-interactive,
 preserves every existing file, and reports each created or skipped path;
---json emits its versioned machine-readable result envelope. --demo seeds a hermetic mock-provider full-loop tour
+--json emits its versioned machine-readable result envelope. With
+--harness <name> (copilot or claude-code), every seeded goober uses that
+harness, so the generated instance needs no goober.yaml edits to switch;
+omitting it keeps the template's default harness. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
 demo is supported on Linux and macOS, where network isolation is enforced; it is
 fail-closed on Windows (no enforced network:none equivalent exists there) unless
@@ -30,6 +37,9 @@ fail-closed on Windows (no enforced network:none equivalent exists there) unless
 isolation limitation — an explicit, narrowly-scoped opt-in that does not alter
 the general Windows sandbox policy (#651). Use `goobers preflight` to check and
 launch the fully isolated WSL 2 route instead. --insecure requires --demo.
+--allow-ephemeral permits initialization inside a linked or hosted workspace
+only when that location is intentionally persistent; it is refused by default
+to protect GitHub/App sessions whose worktrees may be deleted.
 .fi
 .SH EXAMPLES
 .nf

@@ -2005,11 +2005,15 @@ func TestEscalationParkUnparkMatrix(t *testing.T) {
 			},
 		},
 		{
-			name: "failing-ci cause: green-ness is a property of the head, not the base tip",
+			// #4058: CI is evaluated against merge(base, head), so a base
+			// advance re-decides it — and a park the BASE caused (a broken
+			// harness on main, later fixed) is cured by exactly that.
+			name: "failing-ci cause: CI runs against merge(base, head), so the base tip re-decides it",
 			state: remediationState{
 				EscalationOutcome: remediationOutcomeBudgetExhausted,
 				EscalationCauses:  []remediationCause{remediationCauseFailingCI},
 			},
+			baseAdvanceUnblocks: true,
 		},
 		{
 			name: "human-comment cause: only a human or a new commit resolves it",
@@ -2022,8 +2026,16 @@ func TestEscalationParkUnparkMatrix(t *testing.T) {
 			name: "mixed causes: one non-curable cause keeps the whole park",
 			state: remediationState{
 				EscalationOutcome: remediationOutcomeBudgetExhausted,
+				EscalationCauses:  []remediationCause{remediationCauseConflict, remediationCauseSubstantive},
+			},
+		},
+		{
+			name: "mixed causes: every curable cause releases the park",
+			state: remediationState{
+				EscalationOutcome: remediationOutcomeBudgetExhausted,
 				EscalationCauses:  []remediationCause{remediationCauseConflict, remediationCauseFailingCI},
 			},
+			baseAdvanceUnblocks: true,
 		},
 		{
 			name: "infrastructure failure: the PR was never judged on its merits",
@@ -2185,14 +2197,17 @@ func TestRemediationCheckpointRecordsCauseClassAndGeneration(t *testing.T) {
 		wantBaseCanUnpark bool
 	}{
 		{
-			name:  "first park of a failing-ci PR is generation 1 and holds against base advances",
+			// #4058: CI runs against merge(base, head), so a base advance is
+			// new evidence about a failing-ci park — including one the base
+			// itself caused.
+			name:  "first park of a failing-ci PR is generation 1 and stays rebase-curable",
 			cause: "failing-ci", wantGeneration: 1,
-			wantCauses: []remediationCause{remediationCauseFailingCI},
+			wantCauses: []remediationCause{remediationCauseFailingCI}, wantBaseCanUnpark: true,
 		},
 		{
 			name:  "re-escalating the same head counts up",
 			cause: "failing-ci", priorGeneration: 3, priorHeadIsLive: true, wantGeneration: 4,
-			wantCauses: []remediationCause{remediationCauseFailingCI},
+			wantCauses: []remediationCause{remediationCauseFailingCI}, wantBaseCanUnpark: true,
 		},
 		{
 			name:  "a conflict park stays rebase-curable",

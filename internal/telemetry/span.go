@@ -16,12 +16,14 @@ import (
 type Span struct {
 	span     trace.Span
 	scrubber journal.Scrubber
+	metrics  *spanMetrics
 }
 
 // End finishes the span without changing its status.
 func (s Span) End() {
 	if s.span != nil {
 		s.span.End()
+		s.metrics.record(time.Time{}, outcomeUnset, "")
 	}
 }
 
@@ -38,9 +40,11 @@ func (s Span) EndAt(at time.Time) {
 	}
 	if at.IsZero() {
 		s.span.End()
+		s.metrics.record(time.Time{}, outcomeUnset, "")
 		return
 	}
 	s.span.End(trace.WithTimestamp(at))
+	s.metrics.record(at, outcomeUnset, "")
 }
 
 // Succeed marks the span as successful and finishes it.
@@ -51,6 +55,7 @@ func (s Span) Succeed(message string) {
 	s.span.SetAttributes(attribute.String(AttrOutcome, OutcomeSuccess))
 	s.span.SetStatus(codes.Ok, s.scrub(message))
 	s.span.End()
+	s.metrics.record(time.Time{}, OutcomeSuccess, "")
 }
 
 // Complete finishes a span with a business outcome.
@@ -83,6 +88,7 @@ func (s Span) CompleteWithError(outcome, errorCode string, isFailure bool) {
 		s.span.SetStatus(codes.Ok, outcome)
 	}
 	s.span.End()
+	s.metrics.record(time.Time{}, outcome, errorCode)
 }
 
 // Fail records err, marks the span as failed, and finishes it.
@@ -117,6 +123,7 @@ func (s Span) FailWithCode(err error, errorCode string) {
 	s.span.RecordError(errors.New(message))
 	s.span.SetStatus(codes.Error, message)
 	s.span.End()
+	s.metrics.record(time.Time{}, OutcomeFailure, errorCode)
 }
 
 // SetGateResult records the decision and repass count from gate.evaluated.
@@ -128,6 +135,7 @@ func (s Span) SetGateResult(decision string, repassNumber int) {
 		attribute.String(AttrGateDecision, s.scrub(decision)),
 		attribute.Int(AttrGateRepassNumber, repassNumber),
 	)
+	s.metrics.recordGateDecision(s.scrub(decision))
 }
 
 // Event records a named span event.

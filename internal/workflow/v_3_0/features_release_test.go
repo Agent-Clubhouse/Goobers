@@ -187,12 +187,34 @@ func loadLatestReleasedFeatureRegistry(t *testing.T, repository string) (Feature
 	if goCommand == "" {
 		goCommand = "go"
 	}
-	output := runCommand(t, releaseTree, goCommand, "run", "./feature_registry_snapshot.go")
+	output, err := runCommandAllowingFailure(t, releaseTree, goCommand, "run", "./feature_registry_snapshot.go")
+	if err != nil {
+		if offlineModuleFetchRefused(output) {
+			// The gate is not being waived, it cannot be run here: this
+			// program is compiled INSIDE the release tree, so it needs that
+			// release's module graph, and a module cache populated for the
+			// current tree does not contain it. #4145 - the cluster's runner
+			// image sets GOPROXY=off behind a deny-first egress proxy, so
+			// every in-cluster `make ci` reported a compatibility violation
+			// that did not exist, and the runner charged it to whatever item
+			// happened to be running. Every other build failure below stays a
+			// failure, and CI with a reachable proxy still enforces this on
+			// every PR - the #2924 rule that this gate must never pass
+			// vacuously is unchanged.
+			t.Skipf("release %s (%s) cannot be built here: its module graph is "+
+				"absent from the local module cache and module downloads are "+
+				"refused (GOPROXY=%q). The compatibility gate is enforced where "+
+				"modules are fetchable; it cannot be evaluated offline: %s",
+				tag, revision, os.Getenv("GOPROXY"), strings.TrimSpace(output))
+		}
+		t.Fatalf("%s run ./feature_registry_snapshot.go: %v: %s",
+			goCommand, err, strings.TrimSpace(output))
+	}
 	var features []Feature
 	if err := json.Unmarshal([]byte(output), &features); err != nil {
 		t.Fatalf("decode feature registry from release %s: %v", tag, err)
 	}
-	features, err := FeaturesAtDSLVersion(features, DSLVersion)
+	features, err = FeaturesAtDSLVersion(features, DSLVersion)
 	if err != nil {
 		t.Fatalf("project feature registry from release %s to DSL %s: %v", tag, DSLVersion, err)
 	}
@@ -293,6 +315,106 @@ func writeFile(t *testing.T, path, content string) {
 func runGit(t *testing.T, repository string, args ...string) string {
 	t.Helper()
 	return runCommand(t, "", "git", append([]string{"-C", repository}, args...)...)
+}
+
+// The classifier must be narrow in both directions: an offline refusal is not
+// a compatibility violation, and a real build failure is not an excuse to skip
+// the gate (#2924, #4145).
+func TestOfflineModuleFetchRefused(t *testing.T) {
+	for _, testCase := range []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			name:   "GOPROXY off",
+			output: "go: downloading k8s.io/apimachinery v0.36.3\napi/v1alpha1/goober_types.go:4:2: module lookup disabled by GOPROXY=off",
+			want:   true,
+		},
+		{
+			name:   "toolchain not cached",
+			output: "go: downloading go1.26.6 (linux/amd64)\ngo: download go1.26.6 for linux/amd64: toolchain not available",
+			want:   true,
+		},
+		{
+			name:   "proxy unreachable",
+			output: "go: downloading k8s.io/apimachinery v0.36.3\ndial tcp 142.250.1.141:443: connect: connection refused",
+			want:   true,
+		},
+		{
+			name:   "proxy denies the fetch",
+			output: "go: downloading k8s.io/apimachinery v0.36.3\nreading https://proxy.example/@v/list: 403 Forbidden",
+			want:   true,
+		},
+		{
+			name:   "compile error in the release tree",
+			output: "./feature_registry_snapshot.go:9:14: undefined: workflow.AllFeatures",
+			want:   false,
+		},
+		{
+			name:   "a downloaded module that then failed to build",
+			output: "go: downloading k8s.io/apimachinery v0.36.3\n./x.go:3:2: cannot use n (variable of type int) as string value",
+			want:   false,
+		},
+		{
+			name:   "the snapshot program panicked",
+			output: "panic: json: unsupported type\n\ngoroutine 1 [running]:",
+			want:   false,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := offlineModuleFetchRefused(testCase.output); got != testCase.want {
+				t.Errorf("offlineModuleFetchRefused(%q) = %v, want %v",
+					testCase.output, got, testCase.want)
+			}
+		})
+	}
+}
+
+// offlineModuleFetchRefused reports whether output is `go` declining to reach
+// a module proxy, rather than a defect in the code it was asked to build.
+// The spellings differ by cause: an explicitly disabled proxy states so, a
+// pinned toolchain that is not cached says the toolchain is unavailable, and
+// a proxy that is merely unreachable surfaces as a transport error under a
+// `go: downloading` line.
+func offlineModuleFetchRefused(output string) bool {
+	lowered := strings.ToLower(output)
+	// An explicitly disabled proxy says so, and a toolchain the release pins
+	// but this cache does not hold is the same refusal one layer down - `go`
+	// fetches toolchains through the module proxy too.
+	if strings.Contains(lowered, "module lookup disabled") ||
+		strings.Contains(lowered, "toolchain not available") {
+		return true
+	}
+	if !strings.Contains(lowered, "go: downloading") {
+		return false
+	}
+	for _, marker := range []string{
+		"dial tcp",
+		"connection refused",
+		"i/o timeout",
+		"no such host",
+		"tls handshake",
+		"proxy error",
+		"403 forbidden",
+		"407 proxy",
+	} {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// runCommandAllowingFailure is runCommand for a command whose failure the
+// caller must classify rather than report. runCommand cannot serve: it calls
+// t.Fatalf, which ends the test before the output can be read.
+func runCommandAllowingFailure(t *testing.T, directory, name string, args ...string) (string, error) {
+	t.Helper()
+	command := exec.Command(name, args...)
+	command.Dir = directory
+	output, err := command.CombinedOutput()
+	return string(output), err
 }
 
 func runCommand(t *testing.T, directory, name string, args ...string) string {

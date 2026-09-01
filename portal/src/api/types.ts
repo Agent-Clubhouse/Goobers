@@ -1148,6 +1148,7 @@ export interface PortalConfig {
   support: PortalSupport;
   capabilities: {
     revealRun: boolean;
+    workflowEnable: boolean;
   };
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,33 +16,44 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/version"
+	"github.com/goobers/goobers/internal/worktree"
 
 	"github.com/goobers/goobers/api/schemas"
 )
 
-const initHelp = "Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]\n\n" +
+const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db\n" +
 	"placeholder. The daemon creates per-gaggle runs/ and workcopies/ under\n" +
 	"gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left\n" +
 	"untouched.\n" +
-	"--guided opens the browser-based setup for a real repository and instance.\n" +
+	"--guided opens the browser-based setup for a real repository and instance;\n" +
+	"use --instance-path to select its instance root.\n" +
 	"It prepares and validates configuration but does not run a workflow. When the\n" +
 	"GitHub Copilot app is detected, setup also offers to install the release-matched\n" +
 	"user-scoped Portal canvas extension.\n" +
+	"For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new,\n" +
+	"select the repository's Resource owner, choose Only select repositories, and\n" +
+	"grant the permissions documented in docs/guides/github-token-scopes.md.\n" +
 	"--template=quickstart seeds the versioned onboarding workflow; it is\n" +
 	"intentionally not production-safe. With --source-tree <path>, it instead\n" +
 	"seeds the checked-in source layout (instance.yaml.example, manifest.yaml,\n" +
 	"and gaggles/) without runtime state. The source-tree action is non-interactive,\n" +
 	"preserves every existing file, and reports each created or skipped path;\n" +
-	"--json emits its versioned machine-readable result envelope. --demo seeds a hermetic mock-provider full-loop tour\n" +
+	"--json emits its versioned machine-readable result envelope. With\n" +
+	"--harness <name> (copilot or claude-code), every seeded goober uses that\n" +
+	"harness, so the generated instance needs no goober.yaml edits to switch;\n" +
+	"omitting it keeps the template's default harness. --demo seeds a hermetic mock-provider full-loop tour\n" +
 	"requiring no repo, provider credentials, model tokens, or network writes. The\n" +
 	"demo is supported on Linux and macOS, where network isolation is enforced; it is\n" +
 	"fail-closed on Windows (no enforced network:none equivalent exists there) unless\n" +
 	"--insecure is also given, which scaffolds the demo anyway and reports the\n" +
 	"isolation limitation — an explicit, narrowly-scoped opt-in that does not alter\n" +
 	"the general Windows sandbox policy (#651). Use `goobers preflight` to check and\n" +
-	"launch the fully isolated WSL 2 route instead. --insecure requires --demo.\n"
+	"launch the fully isolated WSL 2 route instead. --insecure requires --demo.\n" +
+	"--allow-ephemeral permits initialization inside a linked or hosted workspace\n" +
+	"only when that location is intentionally persistent; it is refused by default\n" +
+	"to protect GitHub/App sessions whose worktrees may be deleted.\n"
 
 func runInit(args []string, stdout, stderr io.Writer) int {
 	return runInitWithInput(args, os.Stdin, stdout, stderr)
@@ -56,11 +68,14 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	fs.SetOutput(stderr)
 	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
 	insecure := fs.Bool("insecure", false, "with --demo on a platform without enforced network isolation (Windows), scaffold anyway without it")
+	allowEphemeral := fs.Bool("allow-ephemeral", false, "allow initialization inside a linked or hosted ephemeral workspace")
 	guided := fs.Bool("guided", false, "open browser-based setup for a real repository")
 	guidedPort := fs.String("port", "auto", "with --guided, server port or auto")
 	guidedNoOpen := fs.Bool("no-open", false, "with --guided, print the URL without opening a browser")
 	guidedWorkdir := fs.String("workdir", defaultGettingStartedWorkdir(), "with --guided, temporary browser setup state")
+	guidedInstancePath := fs.String("instance-path", "", "with --guided, instance root to create")
 	template := fs.String("template", "", "seed a named onboarding template (available: quickstart)")
+	harness := fs.String("harness", "", "with --template=quickstart, the agent harness every seeded goober uses (copilot, claude-code)")
 	sourceTree := fs.String("source-tree", "", "seed the selected template as a checked-in config source at path")
 	asJSON := fs.Bool("json", false, "emit the config-source action result as JSON")
 	fs.Usage = helpUsage(stderr, "init")
@@ -103,12 +118,24 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		pf(stderr, "error: --json is supported by init only with --source-tree\n")
 		return 2
 	}
+	if *harness != "" && *template != instance.QuickstartTemplate {
+		pf(stderr, "error: --harness requires --template=%s\n", instance.QuickstartTemplate)
+		return 2
+	}
+	if *guidedInstancePath != "" && !*guided {
+		pf(stderr, "error: --instance-path requires --guided\n")
+		return 2
+	}
+	if err := instance.ValidateQuickstartHarness(*harness); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
 	if *sourceTree != "" && fs.NArg() != 0 {
 		pf(stderr, "error: --source-tree supplies the destination; do not also pass [path]\n")
 		return 2
 	}
 	if *guided && fs.NArg() != 0 {
-		pf(stderr, "error: --guided does not accept a path; choose configuration and instance placement in the browser\n")
+		pf(stderr, "error: --guided does not accept a path; use --instance-path <dir> to choose the instance location\n")
 		return 2
 	}
 	if fs.NArg() > 1 {
@@ -121,7 +148,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		return 2
 	}
 	if *sourceTree != "" {
-		return seedQuickstartConfigSource(*sourceTree, *asJSON, stdout, stderr, goos)
+		return seedQuickstartConfigSource(*sourceTree, *harness, *asJSON, stdout, stderr, goos)
 	}
 	root := "."
 	if fs.NArg() == 1 {
@@ -129,17 +156,29 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	}
 	if *guided {
 		browserArgs := []string{"--port=" + *guidedPort, "--workdir", *guidedWorkdir}
+		if *guidedInstancePath != "" {
+			browserArgs = append(browserArgs, "--instance-path", *guidedInstancePath)
+		}
 		if *guidedNoOpen {
 			browserArgs = append(browserArgs, "--no-open")
 		}
+		if *allowEphemeral {
+			browserArgs = append(browserArgs, "--allow-ephemeral")
+		}
 		return runGuidedInitBrowser(browserArgs, stdout, stderr)
+	}
+	if err := worktree.CheckInitTarget(context.Background(), root, *allowEphemeral); err != nil {
+		pf(stderr, "error: %v\n", err)
+		printInitTargetOverride(stderr, err)
+		printDefaultedTargetNote(stderr, err, fs.NArg())
+		return 2
 	}
 
 	var res *instance.InitResult
 	var err error
 	errCode := 2
 	if *template == instance.QuickstartTemplate {
-		res, err = instance.InitQuickstart(root)
+		res, err = instance.InitQuickstartWithOptions(root, instance.QuickstartOptions{Harness: *harness})
 	} else if *demo {
 		res, err = instance.InitDemo(root)
 	} else {
@@ -229,6 +268,13 @@ func finishInitValidation(root string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func printInitTargetOverride(stderr io.Writer, err error) {
+	var unsafe *worktree.UnsafeInitTargetError
+	if errors.As(err, &unsafe) {
+		pf(stderr, "note: to acknowledge this target, rerun `goobers init --allow-ephemeral %q`\n", unsafe.Safety.Path)
+	}
+}
+
 // printDefaultedTargetNote explains, after an init target-conflict refusal,
 // that the conflicting target was never chosen explicitly — init with no
 // [path] defaults to the current directory, the exact trap of running it from
@@ -262,8 +308,8 @@ func ensureInitCompleted(root string) error {
 	return instanceLog.Close()
 }
 
-func seedQuickstartConfigSource(root string, asJSON bool, stdout, stderr io.Writer, goos string) int {
-	envelope, err := executeSeedConfigSourceAction(root, nil, goos)
+func seedQuickstartConfigSource(root, harness string, asJSON bool, stdout, stderr io.Writer, goos string) int {
+	envelope, err := executeSeedConfigSourceAction(root, harness, nil, goos)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2

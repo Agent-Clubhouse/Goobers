@@ -43,6 +43,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
@@ -54,6 +55,19 @@ import (
 // the shared package's, restated for the tests that check it is not left
 // behind in the source repo.
 const workspaceDeltaRef = workspacedelta.Ref
+
+// publishBaseFile is where dispatch-checkout leaves HEAD as it HANDED the
+// workspace to the stage, and where publishWorkspaceDelta reads it back
+// (#4124). It is the pod's half of the worker's worktreeWorkspace.publishBase
+// field, which exists for the same reason and answers the same question.
+//
+// It lives under .git/ because the two halves are separate PROCESSES in one
+// pod — dispatch-checkout provisions, dispatch-exec runs and publishes — so an
+// in-memory field cannot span them, and anything in the working tree would
+// show up in the stage's own `git status`, in its diff, and in the bundle this
+// very mechanism cuts. .git/ is inside the workspace, outside the working
+// tree, and disposed with the pod.
+const publishBaseFile = "goobers-publish-base"
 
 // podBlobClient builds the pod's blob-plane client, or nil when this pod has no
 // blob endpoint (the pre-continuity deployment shape).
@@ -128,6 +142,20 @@ type publishedWorkspaceDelta struct {
 // workspace, or a repo workspace with no new commits — both of which are
 // ordinary.
 //
+// "No new commits" is measured against the HEAD this stage was HANDED, not
+// against base (#4124). The two differ constantly and the difference is not
+// cosmetic: a stage that applied a predecessor's delta, or that stands on a
+// rebound PR head, is ahead of base before it runs a single command, so a
+// base-only test says "publish" for every stage that changed nothing. The
+// engine then records a non-producer as the continuity record's newest entry
+// and refuses the next declared 3.0 consumer over it (WF022 runtime, #3767) —
+// MEASURED as run 187c9f340bf9 on PR #3900, where gather-pr-context's bundle
+// was re-published verbatim by rebase-pr (which aborted a conflicted rebase)
+// and again by remediation-checkpoint (which only writes a comment), and
+// implement was refused for not declaring a producer that had produced
+// nothing. This is the same question workerhost's PublishDelta asks of
+// publishBase; asking it here is what makes the two substrates agree.
+//
 // A failure here is NOT ordinary and is returned as an error: the commits exist,
 // nothing else will carry them, and reporting success would strand exactly the
 // diff this exists to preserve.
@@ -145,6 +173,9 @@ func publishWorkspaceDelta(ctx context.Context, dir string, stderr io.Writer) (p
 		// deploy cycles to find: in-pod every git call failed on dubious
 		// ownership, and this swallowed it as a benign skip.
 		return publishedWorkspaceDelta{}, fmt.Errorf("workspace delta: cannot determine the checked-out branch of the writable repo workspace: %w", err)
+	}
+	if moved, known := stageCommittedBeyondPublishBase(dir, stderr); known && !moved {
+		return publishedWorkspaceDelta{Unchanged: true}, nil
 	}
 	empty, err := branchHasNoCommitsBeyondBase(dir, branch)
 	if err != nil {
@@ -278,4 +309,86 @@ func deltaBranchContext(dir string) string {
 		return ""
 	}
 	return " (" + strings.Join(parts, "; ") + ")"
+}
+
+// publishBasePath is where the handed-HEAD baseline lives for the workspace
+// rooted at dir. Resolved through git rather than assumed to be dir/.git, so a
+// worktree-style checkout (where .git is a FILE naming the real directory)
+// records and reads the same place.
+func publishBasePath(dir string) (string, error) {
+	out, err := workspaceGitCommand(dir, "rev-parse", "--absolute-git-dir").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve git dir for the publish baseline: %w", err)
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if gitDir == "" {
+		return "", fmt.Errorf("resolve git dir for the publish baseline: git reported no path")
+	}
+	return filepath.Join(gitDir, publishBaseFile), nil
+}
+
+// recordStagePublishBase writes HEAD as the stage is about to receive it.
+//
+// Called at the END of provisioning a writable repo workspace — after the
+// clone, after any inherited delta was applied, after any syncBase merge —
+// because every one of those moves HEAD without the stage having done
+// anything, which is precisely what publishWorkspaceDelta must not mistake for
+// the stage's own work.
+//
+// A failure is reported to the caller. Provisioning that cannot record the
+// baseline would leave publishWorkspaceDelta with no way to tell an inherited
+// commit from a produced one, and the silent shape that follows — a
+// non-producer entering the continuity record — is what #4124 is.
+func recordStagePublishBase(ctx context.Context, dir string, gitEnv []string, stderr io.Writer) error {
+	git := podGit{env: gitEnv, stderr: stderr}
+	head, err := git.Output(ctx, dir, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return fmt.Errorf("record the publish baseline: determine provisioned HEAD: %w", err)
+	}
+	path, err := publishBasePath(dir)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(head)+"\n"), 0o600); err != nil {
+		return fmt.Errorf("record the publish baseline: %w", err)
+	}
+	return nil
+}
+
+// stageCommittedBeyondPublishBase reports whether HEAD has moved past the
+// baseline provisioning recorded, and whether that could be established at all.
+//
+// known=false is the FAIL-OPEN arm and it is deliberate. No baseline means an
+// image whose dispatch-checkout predates #4124, or a workspace provisioned by
+// some path that does not record one; in either case the caller must fall
+// through to the base-range test it used before, because publishing a
+// redundant bundle wastes bytes while skipping a real one loses a stage's
+// work. An unreadable HEAD is the same: unproven, not proven-unchanged.
+func stageCommittedBeyondPublishBase(dir string, stderr io.Writer) (moved, known bool) {
+	path, err := publishBasePath(dir)
+	if err != nil {
+		pf(stderr, "workspace delta: %v; measuring against base instead\n", err)
+		return false, false
+	}
+	recorded, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			pf(stderr, "workspace delta: could not read the publish baseline (%v); measuring against base instead\n", err)
+		}
+		return false, false
+	}
+	baseline := strings.TrimSpace(string(recorded))
+	if baseline == "" {
+		return false, false
+	}
+	out, err := workspaceGitCommand(dir, "rev-parse", "--verify", "HEAD^{commit}").Output()
+	if err != nil {
+		pf(stderr, "workspace delta: could not resolve HEAD against the publish baseline (%v); measuring against base instead\n", err)
+		return false, false
+	}
+	head := strings.TrimSpace(string(out))
+	if head == "" {
+		return false, false
+	}
+	return head != baseline, true
 }

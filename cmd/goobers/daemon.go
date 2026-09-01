@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/secretstore"
 	"github.com/goobers/goobers/internal/telemetry"
+	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/telemetry/rollup"
 	webhookhttp "github.com/goobers/goobers/internal/webhook"
 	"github.com/goobers/goobers/internal/workcopyroot"
@@ -277,8 +278,8 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 	// telemetry.enabled defaults to true; instance.yaml can opt out (issue
 	// #129). tel/rollupDB stay nil in that case — every downstream use
 	// already tolerates nil: buildRunnerConfig only sets
-	// runner.Config.Telemetry when tel != nil, ingestRunTelemetry no-ops on a
-	// nil *rollup.DB, and SchedulerOptions/Shutdown below no-op too. A nil
+	// runner.Config.Telemetry when tel != nil, telemetryingest.RunTelemetry
+	// no-ops on a nil *rollup.DB, and SchedulerOptions/Shutdown below no-op too. A nil
 	// *telemetry.Client must never reach localscheduler.WithTelemetry
 	// directly — that would wrap it in a non-nil SpanStarter interface value
 	// (Go's typed-nil-in-interface trap), making localscheduler's own
@@ -456,7 +457,7 @@ func buildSchedulerSetupWithConfigPolicy(ctx context.Context, l instance.Layout,
 		return nil, fmt.Errorf("open instance log: %w", err)
 	}
 	if telemetryOTLPDegradeErr != nil {
-		logIngestFailure(instanceLog, "", "telemetry_otlp_unavailable", telemetryOTLPDegradeErr)
+		telemetryingest.LogFailure(instanceLog, "", "telemetry_otlp_unavailable", telemetryOTLPDegradeErr)
 	}
 	if err := journalLegacyRuntimeMigration(l, instanceLog, runtimeMigration); err != nil {
 		return nil, fmt.Errorf("journal legacy runtime migration: %w", err)
@@ -1258,7 +1259,7 @@ func buildRuntimeRunner(
 	}
 	runnerCfg.BacklogQueryAssignedTo = selfIdentity
 	runnerCfg.BacklogQueryRequireLabels = requireLabelsDefault
-	runnerCfg.JournalAdvanced = runIntakeObserver(watermarks, instanceLog)
+	runnerCfg.JournalAdvanced = telemetryingest.RunIntakeObserver(watermarks, instanceLog)
 	prepareTerminal, err := buildTerminalBranchPreparer(l, cfg, gaggleProject, sharedReg, stores)
 	if err != nil {
 		return nil, nil, nil, err
@@ -1359,14 +1360,14 @@ func (s *schedulerSetup) SchedulerOptions() []localscheduler.Option {
 		opts = append(opts, localscheduler.WithTelemetry(s.Telemetry))
 		if s.RollupDB != nil && s.InstanceLog != nil {
 			opts = append(opts, localscheduler.WithAfterTick(func(ctx context.Context) {
-				ingestSchedulerTelemetry(ctx, s.Telemetry, s.RollupDB, s.InstanceLog.Dir(), s.InstanceLog)
+				telemetryingest.SchedulerTelemetry(ctx, s.Telemetry, s.RollupDB, s.InstanceLog.Dir(), s.InstanceLog)
 			}))
 		}
 	}
 	if s.Telemetry != nil && s.RollupDB != nil {
 		opts = append(opts, localscheduler.WithAfterTick(func(ctx context.Context) {
 			if err := s.Telemetry.Flush(ctx); err != nil {
-				logIngestFailure(s.InstanceLog, "", "telemetry_flush_scheduler_failed", err)
+				telemetryingest.LogFailure(s.InstanceLog, "", "telemetry_flush_scheduler_failed", err)
 			}
 			_ = s.ingestSchedulerLog(context.Background())
 		}))
@@ -1379,7 +1380,7 @@ func (s *schedulerSetup) ingestSchedulerLog(ctx context.Context) error {
 		return nil
 	}
 	if err := s.RollupDB.IngestSchedulerLog(ctx, s.InstanceLog.Dir()); err != nil {
-		logIngestFailure(s.InstanceLog, "", "telemetry_ingest_scheduler_log_failed", err)
+		telemetryingest.LogFailure(s.InstanceLog, "", "telemetry_ingest_scheduler_log_failed", err)
 		return err
 	}
 	return nil
@@ -1535,7 +1536,7 @@ func (s *trackedStarter) Start(ctx context.Context, req localscheduler.StartRequ
 		RunControls:          s.runControls,
 		RequiredCapabilities: s.requiredCaps,
 	})
-	ingestRunTelemetry(s.tel, s.rollupDB, s.watermarks, s.l, req.RunID, s.log)
+	telemetryingest.RunTelemetry(s.tel, s.rollupDB, s.watermarks, s.l, req.RunID, s.log)
 	return localscheduler.StartResult{
 		Phase:          res.Phase,
 		FinalState:     res.FinalState,
@@ -1662,10 +1663,10 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 					}
 					// #2190: a run that resumed here and was already terminal
 					// took a different path than a normal terminal run's
-					// ingestRunTelemetry call below (line ~1080) — it never
-					// recorded its intake watermark, so the read model never
-					// discovered it advanced.
-					recordRunIntake(watermarks, runLayout, id.RunID, log)
+					// telemetryingest.RunTelemetry call below (line ~1080) — it
+					// never recorded its intake watermark, so the read model
+					// never discovered it advanced.
+					telemetryingest.RunIntake(watermarks, runLayout, id.RunID, log)
 					release(id.RunID, id.Workflow)
 					continue // terminal: nothing to resume
 				}
@@ -1761,7 +1762,7 @@ func resumeInterruptedRunsWithRunners(ctx context.Context, l instance.Layout, ru
 					RunID: runID, Machine: machine, GooberDigest: gooberDigest, RepoRef: repoRef,
 					RecoveryReason: "daemon_restart",
 				})
-				ingestRunTelemetry(tel, rollupDB, watermarks, runLayout, runID, log)
+				telemetryingest.RunTelemetry(tel, rollupDB, watermarks, runLayout, runID, log)
 				// #710: same fix as localscheduler/scheduler.go's dispatch echo —
 				// a business failure (result.Phase == PhaseFailed, err == nil:
 				// e.g. a WF-016 refuseResume, or Resume replaying a stage's own

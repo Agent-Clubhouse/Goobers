@@ -68,6 +68,10 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers explain`](#goobers-explain) | project field facts from an embedded JSON Schema |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
+| [`goobers fleet`](#goobers-fleet) | associate this instance with a Fleet service |
+| [`goobers fleet join`](#goobers-fleet-join) | discover and enroll this instance with a Fleet service |
+| [`goobers fleet leave`](#goobers-fleet-leave) | remove this instance's Fleet association and protected secrets |
+| [`goobers fleet status`](#goobers-fleet-status) | show durable Fleet registration and connection state |
 | [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
@@ -1393,7 +1397,7 @@ Browse the canonical workflow examples embedded in this binary. No source
 checkout or instance root is required.
 
 Commands:
-  list         print the available example names
+  list         print the available example names and descriptions
   show <name>  print an example's exact Workflow YAML
 
 Run `goobers examples list -h` or `goobers examples show -h` for details.
@@ -1413,8 +1417,9 @@ list canonical embedded workflow examples
 ~~~text
 Usage: goobers examples list
 
-Print the names of the canonical embedded workflow examples, one per line.
-Pass one of these names to `goobers examples show` to print its YAML.
+Print the canonical embedded workflow examples, one per line, as the
+example name followed by its one-line description. Pass a name to
+`goobers examples show` to print its YAML.
 
 Exit codes: 0 = listed, 1 = embedded catalog error, 2 = usage error.
 ~~~
@@ -1578,6 +1583,88 @@ migrate), 1 = one or more workflows could not be migrated,
 ~~~console
 $ goobers fix --to 2.0
 $ goobers fix --to 2.0 --write ./instance
+~~~
+
+## `goobers fleet`
+
+associate this instance with a Fleet service
+
+~~~text
+Usage: goobers fleet <join|status|leave> [flags] [path]
+
+Associate a local Goobers instance with a Fleet service, inspect its durable
+connection state, or remove the association. Fleet identity and credentials
+are stored outside the instance root so copying an instance does not clone its
+identity.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fleet join --url https://fleet.example
+$ goobers fleet status
+$ goobers fleet leave
+~~~
+
+## `goobers fleet join`
+
+discover and enroll this instance with a Fleet service
+
+~~~text
+Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
+
+Discover and enroll an instance with a Fleet service. By default the one-time
+enrollment grant is read from a protected terminal prompt and never accepted
+as a command-line value. --enrollment-token-file supports automation and is
+accepted only when the file is private to its owner.
+
+When discovery advertises a local administrator principal, interactive use
+offers an explicit instance:read self-grant. Noninteractive use must choose
+--grant-local-admin or --no-grant-local-admin. An empty ACL always requires an
+explicit opt-out or interactive confirmation.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fleet join --url https://fleet.example
+$ goobers fleet join --url https://fleet.example --enrollment-token-file ./grant.txt --grant-local-admin
+~~~
+
+## `goobers fleet leave`
+
+remove this instance's Fleet association and protected secrets
+
+~~~text
+Usage: goobers fleet leave [path]
+
+Remove the Fleet association, private key, and bearer credential. A running
+daemon observes the removal and stops reconnecting.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fleet leave
+~~~
+
+## `goobers fleet status`
+
+show durable Fleet registration and connection state
+
+~~~text
+Usage: goobers fleet status [--json] [path]
+
+Show the durable Fleet registration, connection, heartbeat, ACL version, and
+credential expiry state. Private key and bearer credential material are never
+printed.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fleet status
+$ goobers fleet status --json
 ~~~
 
 ## `goobers gate-removal-guard`
@@ -1774,23 +1861,30 @@ instance, gaggle, goober, workflow, stage, gate, harness, capability.
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
 placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
 gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
 untouched.
---guided opens the browser-based setup for a real repository and instance.
+--guided opens the browser-based setup for a real repository and instance;
+use --instance-path to select its instance root.
 It prepares and validates configuration but does not run a workflow. When the
 GitHub Copilot app is detected, setup also offers to install the release-matched
 user-scoped Portal canvas extension.
+For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new,
+select the repository's Resource owner, choose Only select repositories, and
+grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
 and gaggles/) without runtime state. The source-tree action is non-interactive,
 preserves every existing file, and reports each created or skipped path;
---json emits its versioned machine-readable result envelope. --demo seeds a hermetic mock-provider full-loop tour
+--json emits its versioned machine-readable result envelope. With
+--harness <name> (copilot or claude-code), every seeded goober uses that
+harness, so the generated instance needs no goober.yaml edits to switch;
+omitting it keeps the template's default harness. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
 demo is supported on Linux and macOS, where network isolation is enforced; it is
 fail-closed on Windows (no enforced network:none equivalent exists there) unless
@@ -1798,6 +1892,9 @@ fail-closed on Windows (no enforced network:none equivalent exists there) unless
 isolation limitation — an explicit, narrowly-scoped opt-in that does not alter
 the general Windows sandbox policy (#651). Use `goobers preflight` to check and
 launch the fully isolated WSL 2 route instead. --insecure requires --demo.
+--allow-ephemeral permits initialization inside a linked or hosted workspace
+only when that location is intentionally persistent; it is refused by default
+to protect GitHub/App sessions whose worktrees may be deleted.
 ~~~
 
 **Examples**
@@ -3332,6 +3429,8 @@ Each run includes work identity, stage liveness, PR trajectory, claim drift, lat
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 It lists parked backlog items too — open issues carrying a park disposition without
 goobers:ready, which backlog selection can no longer see and no workflow re-readies.
+Shared baseline failures are listed with the subjects waiting on them: runs parked
+because the target branch itself fails CI, all released by one repair to that branch.
 With --daemon, report daemon health, identity, and effective behavior settings instead.
 With --agents, list only the agentic stages in flight right now, by role and run id.
 The --agents answer comes from the runner's own journals, never from a process table,

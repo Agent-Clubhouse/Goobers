@@ -92,6 +92,11 @@ var approvedImplicitEgress = map[string]implicitEgressApproval{
 		options:        "opts",
 		endpointSource: "cfg.OTLPEndpoint",
 	},
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc.New": {
+		location:       "internal/telemetry/metrics.go:metricExporter",
+		options:        "opts",
+		endpointSource: "cfg.OTLPEndpoint",
+	},
 }
 
 var reportingSDKMarkers = []string{

@@ -323,6 +323,10 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		{label: "flake-policy", command: tools.goCommand, args: []string{"run", "./test/flakepolicy"}, group: groupChecks},
 		{label: "design-doc-status", command: tools.goCommand, args: []string{"run", "./test/designstatus"}, group: groupChecks},
 		{label: "markdown-links", command: tools.goCommand, args: []string{"run", "./test/markdownlinks"}, group: groupChecks},
+		// A lockfile pinned to a private npm mirror answers 403 to every
+		// checkout outside that mirror's ACL, and the failure surfaces as an
+		// unrelated portal-install break in whatever change is in flight.
+		{label: "npm-registry", command: tools.goCommand, args: []string{"run", "./test/npmregistry"}, group: groupChecks},
 		// The release image's Go toolchain is an input to a shipped artifact,
 		// and packaging/docker/Dockerfile is the only leg that can drift from
 		// go.mod (ci.yml defers to it via go-version-file). #3452.

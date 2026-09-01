@@ -5,7 +5,8 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: CHANGE-ME-gaggle
+  # Lowercase for the #3310 reason: metadata.name is an RFC-1123 label.
+  name: change-me-gaggle
   labels:
     goobers.dev/gaggle: CHANGE-ME
     # Stage pods are non-root, capability-dropped, no-privilege workloads.

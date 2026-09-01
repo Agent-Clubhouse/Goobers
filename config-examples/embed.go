@@ -9,6 +9,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Files contains the canonical workflows and their goober definitions.
@@ -29,6 +31,16 @@ const workflowExamplePattern = "gaggles/*/workflows/*.yaml"
 type WorkflowExample struct {
 	Name string
 	Path string
+	// Description is the workflow's spec.displayName, empty when unset.
+	Description string
+}
+
+// workflowExampleDoc is the minimal shape needed to describe an example
+// without depending on the full workflow schema.
+type workflowExampleDoc struct {
+	Spec struct {
+		DisplayName string `yaml:"displayName"`
+	} `yaml:"spec"`
 }
 
 // WorkflowExamples returns the embedded workflows in name order.
@@ -46,7 +58,11 @@ func WorkflowExamples() ([]WorkflowExample, error) {
 			return nil, fmt.Errorf("embedded workflow example %q is ambiguous: %s and %s", name, previous, workflowPath)
 		}
 		seen[name] = workflowPath
-		examples = append(examples, WorkflowExample{Name: name, Path: workflowPath})
+		description, err := workflowExampleDescription(workflowPath)
+		if err != nil {
+			return nil, err
+		}
+		examples = append(examples, WorkflowExample{Name: name, Path: workflowPath, Description: description})
 	}
 	sort.Slice(examples, func(i, j int) bool {
 		return examples[i].Name < examples[j].Name
@@ -70,4 +86,16 @@ func ReadWorkflowExample(name string) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("workflow example %q: %w", name, fs.ErrNotExist)
+}
+
+func workflowExampleDescription(workflowPath string) (string, error) {
+	data, err := Files.ReadFile(workflowPath)
+	if err != nil {
+		return "", fmt.Errorf("read embedded workflow example %q: %w", workflowPath, err)
+	}
+	var doc workflowExampleDoc
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return "", fmt.Errorf("parse embedded workflow example %q: %w", workflowPath, err)
+	}
+	return strings.TrimSpace(doc.Spec.DisplayName), nil
 }

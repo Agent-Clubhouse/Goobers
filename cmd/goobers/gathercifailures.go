@@ -16,6 +16,10 @@ import (
 
 const gatherCIRawLogByteLimit = 0
 
+// remediationBriefArtifact names the thing an upstream stage owed this one, for
+// the operator-facing message an upstreamArtifactError builds (#4121).
+const remediationBriefArtifact = "remediation brief artifact"
+
 const gatherCIFailuresHelp = "Usage: goobers gather-ci-failures [path]\n\n" +
 	"Enrich this run's remediation brief with failing check names,\n" +
 	"conclusions, summaries, and annotations. Passing CI leaves the brief\n" +
@@ -108,33 +112,34 @@ func runGatherCIFailures(args []string, stdout, stderr io.Writer) int {
 func readRemediationBriefArtifact(root, runID, stage string) (apiv1.RemediationBrief, error) {
 	rd, err := stageRunJournal(root, runID)
 	if err != nil {
-		return apiv1.RemediationBrief{}, err
+		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(stage, remediationBriefArtifact, err)
 	}
 	events, err := rd.Events()
 	if err != nil {
-		return apiv1.RemediationBrief{}, err
+		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(stage, remediationBriefArtifact, err)
 	}
-	name := runID + ":" + stage + "/result"
+	name := stage + "/result"
 	var ref *journal.Ref
 	for i := range events {
 		event := &events[i]
-		if event.Type == journal.EventArtifactRecorded && event.Name == name && event.Ref != nil {
+		if event.Type == journal.EventArtifactRecorded && stageArtifactName(runID, event.Name) == name && event.Ref != nil {
 			ref = event.Ref
 		}
 	}
 	if ref == nil {
-		return apiv1.RemediationBrief{}, fmt.Errorf("%s produced no remediation brief artifact", stage)
+		return apiv1.RemediationBrief{}, upstreamArtifactMissing(stage, remediationBriefArtifact)
 	}
 	data, err := rd.ArtifactBytes(*ref)
 	if err != nil {
-		return apiv1.RemediationBrief{}, err
+		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(stage, remediationBriefArtifact, err)
 	}
 	if err := validateRemediationBriefJSON(data); err != nil {
-		return apiv1.RemediationBrief{}, err
+		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(stage, remediationBriefArtifact, err)
 	}
 	var brief apiv1.RemediationBrief
 	if err := json.Unmarshal(data, &brief); err != nil {
-		return apiv1.RemediationBrief{}, fmt.Errorf("decode remediation brief: %w", err)
+		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(stage, remediationBriefArtifact,
+			fmt.Errorf("decode remediation brief: %w", err))
 	}
 	return brief, nil
 }

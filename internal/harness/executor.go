@@ -14,6 +14,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/creditgraph"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/gooberassets"
 	"github.com/goobers/goobers/internal/invoke"
@@ -704,6 +705,23 @@ func (e *Executor) run(ctx context.Context, mode Mode, env apiv1.InvocationEnvel
 		} else {
 			ptr := refToPointer(ref, "")
 			transcript = &ptr
+			// Additive credit-graph provenance: name the subagent whose
+			// session this span records, so the graph attaches its model and
+			// tool calls to a recorded agent instead of an unknown one.
+			if agentID := transcriptRootAgentID(agentEvents, env.TaskID); hasAppender && agentID != "" && ref.Digest != "" {
+				if err := appender.Append(journal.Event{
+					Type:  journal.EventRunnerAnnotation,
+					Stage: env.TaskID,
+					Runner: map[string]any{
+						creditgraph.SpanProvenanceKeyKind:    creditgraph.SpanProvenanceAnnotation,
+						creditgraph.SpanProvenanceKeyAgentID: agentID,
+						creditgraph.SpanProvenanceKeyDigest:  ref.Digest,
+						"span":                               name,
+					},
+				}); err != nil {
+					runErr = errors.Join(runErr, fmt.Errorf("harness: journal span provenance for %q: %w", env.TaskID, err))
+				}
+			}
 		}
 	}
 	if runErr != nil {

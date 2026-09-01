@@ -6,6 +6,7 @@ import {
   type DiagnosticsEnvelope,
   type GuidedInitOptions,
   type GuidedInitResult,
+  type GuidedGitHubAuthorizationResult,
   type GuidedRepositoryInspection,
   type GuidedRepositoryReadiness,
   type GuidedState,
@@ -14,6 +15,7 @@ import {
 
 const defaultClient = new GuidedClient();
 const statePollIntervalMs = 5_000;
+const githubPATSettingsURL = "https://github.com/settings/personal-access-tokens/new";
 type RepositorySource = "local" | "remote";
 type QueryState =
   | { status: "loading" }
@@ -22,6 +24,7 @@ type QueryState =
 type BusyAction =
   | "browse"
   | "inspect"
+  | "authorize"
   | "init"
   | "prepare"
   | "validate"
@@ -146,10 +149,6 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     exitCode: number;
     envelope: DiagnosticsEnvelope | null;
     stderr: string;
-  } | null>(null);
-  const [portalInstall, setPortalInstall] = useState<{
-    path: string;
-    installed: boolean;
   } | null>(null);
 
   const refreshState = useCallback(async () => {
@@ -325,6 +324,25 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         setValidateResult(null);
       },
     );
+
+  const authorizeGitHub = () => {
+    if (!inspection || inspection.provider !== "github") {
+      setActionError("Inspect a GitHub repository before starting authorization.");
+      return;
+    }
+    void runAction(
+      "authorize",
+      async () => {
+        const authorization: GuidedGitHubAuthorizationResult =
+          await client.authorizeGitHub(`${inspection.owner}/${inspection.name}`);
+        const refreshed = await client.inspectRepository(repo.trim());
+        return { ...refreshed, auth: authorization.auth };
+      },
+      (result) => {
+        setInspection(result);
+      },
+    );
+  };
 
   const browseRepository = () =>
     void runAction(
@@ -578,10 +596,100 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                     ["Default branch", inspection.defaultBranch],
                   ]}
                 />
+                {inspection.ephemeral && (
+                  <div className="guided-callout">
+                    <strong>This checkout may be ephemeral</strong>
+                    <span>
+                      {inspection.ephemeralReason ||
+                        "The local checkout may be removed when its session ends."}{" "}
+                      Keep the runtime instance outside it, for example{" "}
+                      <code>
+                        {inspection.safeInstancePath || "~/goobers/instances/<repository>"}
+                      </code>
+                      .
+                    </span>
+                  </div>
+                )}
+                {!inspection.auth.ready && (
+                  <div className="guided-callout">
+                    <strong>
+                      {inspection.auth.message ||
+                        (inspection.provider === "ado"
+                          ? "Azure CLI authentication is required before setup can continue."
+                          : "GitHub authentication is required before setup can continue.")}
+                    </strong>
+                    <span>
+                      {inspection.provider === "ado"
+                        ? inspection.auth.needsLogin
+                          ? "Run the Azure CLI login command, then inspect the repository again. Azure DevOps authentication remains a manual step."
+                          : "Confirm that the authenticated Azure account can access this repository before continuing."
+                        : inspection.auth.needsLogin
+                          ? "Goobers will open GitHub's device/web authorization now. It only runs when this repository needs it, and no token is written to Goobers configuration."
+                          : "Confirm that the authenticated GitHub account can access this repository before continuing."}
+                    </span>
+                    {inspection.provider === "github" && (
+                      <>
+                        <a
+                          className="guided-intro-link"
+                          href={githubPATSettingsURL}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          Open GitHub fine-grained PAT settings
+                        </a>
+                        <ol className="guided-pat-steps">
+                          <li>
+                            Set <strong>Resource owner</strong> to{" "}
+                            <strong>{inspection.owner}</strong>, the account or organization
+                            that owns this repository. Keep the default personal account when
+                            it is the owner.
+                          </li>
+                          <li>
+                            Choose <strong>Only select repositories</strong>, then select{" "}
+                            <strong>{inspection.displayName}</strong>.
+                          </li>
+                          <li>
+                            Grant the least-privilege permissions in{" "}
+                            <code>docs/guides/github-token-scopes.md</code>, generate the
+                            token, then restart this wizard with{" "}
+                            <code>GH_TOKEN=&lt;your token&gt; goobers init --guided</code>.
+                          </li>
+                        </ol>
+                      </>
+                    )}
+                    {inspection.auth.remediationCommand && (
+                      <code>{inspection.auth.remediationCommand}</code>
+                    )}
+                    {inspection.provider === "github" && inspection.auth.needsLogin && (
+                      <button
+                        className="reconnect-button"
+                        disabled={busy !== null}
+                        onClick={authorizeGitHub}
+                        type="button"
+                      >
+                        {busy === "authorize"
+                          ? "Waiting for GitHub authorization…"
+                          : "Sign in with GitHub"}
+                      </button>
+                    )}
+                  </div>
+                )}
                 {inspection.needsClone ? (
                   <div className="guided-callout">
-                    <strong>Clone the repository, then inspect it again</strong>
-                    <span>Run this command from the folder where you keep source code.</span>
+                    <strong>
+                      {inspection.auth.ready
+                        ? "Clone the repository, then inspect it again"
+                        : inspection.auth.needsLogin
+                          ? "Authenticate, then clone the repository"
+                          : "Resolve repository access, then clone the repository"}
+                    </strong>
+                    <span>
+                      {inspection.auth.ready
+                        ? "Run this command from the folder where you keep source code."
+                        : inspection.auth.needsLogin
+                          ? "Complete authentication before cloning this repository, then run this command from the folder where you keep source code."
+                          : "After the authenticated account can access this repository, run this command from the folder where you keep source code."}
+                    </span>
                     {cloneCommand && <code>{cloneCommand}</code>}
                   </div>
                 ) : inspection.auth.ready ? (
@@ -591,19 +699,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                       : "GitHub CLI authentication is ready"}
                     {inspection.auth.identity ? ` as ${inspection.auth.identity}` : ""}.
                   </p>
-                ) : (
-                  <div className="guided-callout">
-                    <strong>Sign in, then inspect the repository again</strong>
-                    <span>
-                      {inspection.provider === "ado"
-                        ? "Azure CLI authentication is not ready."
-                        : "GitHub CLI authentication is not ready."}
-                    </span>
-                    {inspection.auth.remediationCommand && (
-                      <code>{inspection.auth.remediationCommand}</code>
-                    )}
-                  </div>
-                )}
+                ) : null}
                 {implementationSelected && !inspection.needsClone && (
                   <div className="guided-repository-runtime">
                     {inspection.stack && (
@@ -1042,39 +1138,6 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md"
               label="Read the real-repository onboarding and operating guide"
             />
-            {state.copilotAppDetected && (
-              <>
-                <h3>Use the Portal in GitHub Copilot</h3>
-                <p>
-                  Install the release-matched canvas extension for the current user.
-                </p>
-                <button
-                  className="reconnect-button"
-                  disabled={busy !== null || portalInstall !== null}
-                  onClick={() =>
-                    void runAction(
-                      "install-portal",
-                      () => client.installPortalExtension(),
-                      setPortalInstall,
-                    )
-                  }
-                  type="button"
-                >
-                  {busy === "install-portal"
-                    ? "Installing…"
-                    : portalInstall
-                      ? "Portal extension ready"
-                      : "Install Goobers Portal"}
-                </button>
-                {portalInstall && (
-                  <p className="guided-note">
-                    {portalInstall.installed
-                      ? `Installed at ${portalInstall.path}. Reload extensions in the Copilot app to activate it.`
-                      : `Already current at ${portalInstall.path}.`}
-                  </p>
-                )}
-              </>
-            )}
             <h3>Customize it with an agent</h3>
             <p>
               Copy one of these prompts into GitHub Copilot CLI or Claude Code from your

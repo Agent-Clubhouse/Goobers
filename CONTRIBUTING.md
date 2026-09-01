@@ -224,6 +224,95 @@ documented and enforced policies do not drift.
 
 Prefer small, reviewable PRs. Squash-merge is the default so `main` stays linear.
 
+## Review rules
+
+These are class-level rules: they exist because the same defect shape has
+shipped more than once, so review checks the whole class rather than the
+individual instance ([#2081](https://github.com/Agent-Clubhouse/Goobers/issues/2081)).
+
+### Append-only growth needs a wired bound or pruner
+
+**Rule.** A change that introduces a structure which grows without a natural
+end — an append-only file, a database table, an on-disk directory of
+per-run/per-item entries, or a long-lived in-memory map or slice — must
+identify and **wire** its bound or pruner in the same change. "Wired" means a
+running production caller reaches it: a daemon sweep, a retention loop, a
+writer that trims on append, or an eviction on insert. A pruner that only an
+operator can invoke, or one whose only caller is a test, does not bound
+anything.
+
+**Acceptable evidence** — a reviewer should be able to point at all three:
+
+1. **The bound.** A named limit (row/entry count, age window, byte cap, or
+   fixed capacity) with a default that applies to a stock configuration, not
+   only to a configuration an operator opts into.
+2. **The wiring.** The call path from a process that runs unattended to the
+   code that enforces the bound. For example, the projection retention loop
+   calls `PruneChangeFeed` on every pass
+   (`internal/readmodel/retentionloop.go`), and the daemon's retention ticker
+   calls `pruneConfiguredTelemetryRetention` and `compactSchedulerRetention`
+   (`cmd/goobers/up.go`). Citing the pruner function alone is not evidence;
+   cite its production caller.
+3. **The test.** A test that grows the structure past its bound and asserts a
+   bounded steady state — not merely that the prune function returns without
+   error. `TestPruneChangeFeedBoundsGrowth`
+   (`internal/readmodel/retention_test.go`) is the shape to copy.
+
+If the bound genuinely belongs in a follow-up, say so in the PR and open the
+follow-up issue in the same change; an unbounded structure landing with no
+named owner for its bound is a `needs-changes`.
+
+**Incident lineage.** This class keeps recurring in different disguises:
+[#2038](https://github.com/Agent-Clubhouse/Goobers/issues/2038) — the instance
+journal and the rollup scheduler tables grew at scheduler-tick rate for the
+daemon's lifetime because the only compactor refused to run while a daemon was
+up, so a never-restarted daemon never reclaimed anything (the referenced live
+journal reached 324 MB);
+[#3048](https://github.com/Agent-Clubhouse/Goobers/issues/3048) — the change
+feed's designed 50,000-row bound existed but was not enforced independently of
+projection retention, so the bound was documented and inoperative;
+[#3049](https://github.com/Agent-Clubhouse/Goobers/issues/3049) — tombstones
+accumulated with no retention policy or deleter at all; and
+[#3969](https://github.com/Agent-Clubhouse/Goobers/issues/3969) — temp
+directories orphaned by an OOMKill were never reclaimed because nothing swept
+the ones no live process owned. In each case the growth was introduced by a
+change that was correct in isolation and the bound arrived later, after the
+disk or the startup cost had already become the symptom.
+
+### Closed JSON schemas join the structural drift guard
+
+A new **closed** JSON schema (`additionalProperties: false`) that mirrors a Go
+type must join the structural Go-to-schema drift guard **in the change that adds
+it** — not in a follow-up. A closed schema rejects an envelope carrying a field
+it does not declare, so a field added to the Go producer later becomes a
+validation failure at runtime rather than a build failure, and nothing else in
+the tree notices the divergence.
+[#1700](https://github.com/Agent-Clubhouse/Goobers/issues/1700)/[#1704](https://github.com/Agent-Clubhouse/Goobers/issues/1704)
+and [#2042](https://github.com/Agent-Clubhouse/Goobers/issues/2042) — the last
+adding `DataSchema` to `journal.Event` with no matching schema property — are
+instances of that one class, which is why the rule is structural rather than a
+reviewer's memory.
+
+Registration path, both steps in the same change:
+
+1. Register the schema file in [`api/schemas/embed.go`](api/schemas/embed.go):
+   in the map naming its contract family (`Envelope`, `Journal`,
+   `Notification`), or as an exported constant for a standalone artifact
+   schema.
+2. Add a fully populated round-trip fixture for it to the `fixtures` map in
+   `TestSchemaBackedEnvelopeCompleteness`
+   ([`api/validate/envelope_completeness_test.go`](api/validate/envelope_completeness_test.go)).
+   The guard asserts every JSON field of the Go value is populated, marshals
+   it, and validates the result against the schema, so a Go field the schema
+   does not declare fails the merge gate. An entry in `schemas.Envelope` with no fixture
+   fails the guard on its own; a schema outside that map — like
+   `journal-event` — is covered only once its fixture is added, so add it
+   explicitly.
+
+The guard runs in `make ci` (`go test ./api/validate/...`). If a schema
+genuinely has no Go producer to drift from, say so in the pull request rather
+than leaving the omission unexplained.
+
 ## DSL compatibility policy
 
 The `apiVersion` on configuration resources defines a compatibility line. Within
@@ -301,8 +390,8 @@ observable contract is a patch. If a "fix" changes what a workflow observes,
 it is a new DSL minor or major, not a patch — see the DSL compatibility
 policy above.
 
-A **frozen** interpreter package (`internal/workflow/v_current`, once
-`v_next` supersedes it in turn) may only receive contract-preserving
+A **frozen** interpreter package (`internal/workflow/v_next`, once
+`v_3_0` supersedes it in turn) may only receive contract-preserving
 patches; a feature or semantic change belongs in a copied-forward
 interpreter instead. This is enforced, not just documented: each frozen
 package's `testdata/golden/PATCH_LOG.json` pins its `digests.json` by
