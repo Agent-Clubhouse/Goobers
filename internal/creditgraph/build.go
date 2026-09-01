@@ -339,7 +339,7 @@ func (b *builder) addSpans(input Input) error {
 			b.gap(ownerID, KindSubagent, "span "+event.Name+" recorded no retrievable content, so its model and tool calls are unknown")
 			continue
 		}
-		if err := b.addTranscript(data, ownerID, ownerKnown, event); err != nil {
+		if err := b.addTranscript(data, ownerID, digest, ownerKnown, event); err != nil {
 			return err
 		}
 	}
@@ -387,7 +387,7 @@ type genaiRecord struct {
 	ToolCall *genaiToolRecord  `json:"tool_call,omitempty"`
 }
 
-func (b *builder) addTranscript(data []byte, ownerID string, ownerKnown bool, event journal.Event) error {
+func (b *builder) addTranscript(data []byte, ownerID, spanDigest string, ownerKnown bool, event journal.Event) error {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), len(data)+1)
 	ownerProvenance := provenanceOf(ownerKnown)
@@ -406,11 +406,11 @@ func (b *builder) addTranscript(data []byte, ownerID string, ownerKnown bool, ev
 		index++
 		switch {
 		case record.ToolCall != nil && record.Role == "tool":
-			b.addToolResult(record, ownerID, ownerProvenance, event, index)
+			b.addToolResult(record, ownerID, spanDigest, ownerProvenance, event, index)
 		case record.ToolCall != nil:
-			b.addToolCall(record, ownerID, lastModelID, ownerProvenance, event, index)
+			b.addToolCall(record, ownerID, spanDigest, lastModelID, ownerProvenance, event, index)
 		case record.Role == "assistant":
-			lastModelID = b.addModelInvocation(record, ownerID, ownerProvenance, event, index)
+			lastModelID = b.addModelInvocation(record, ownerID, spanDigest, ownerProvenance, event, index)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -419,8 +419,8 @@ func (b *builder) addTranscript(data []byte, ownerID string, ownerKnown bool, ev
 	return nil
 }
 
-func (b *builder) addModelInvocation(record genaiRecord, ownerID string, ownerProvenance Provenance, event journal.Event, index int) string {
-	id := "model:" + ownerID + "#" + strconv.Itoa(index)
+func (b *builder) addModelInvocation(record genaiRecord, ownerID, spanDigest string, ownerProvenance Provenance, event journal.Event, index int) string {
+	id := spanScopedID("model", ownerID, spanDigest, index)
 	attributes := map[string]string{}
 	if record.Model != "" {
 		attributes["model"] = record.Model
@@ -445,9 +445,9 @@ func (b *builder) addModelInvocation(record genaiRecord, ownerID string, ownerPr
 	return id
 }
 
-func (b *builder) addToolCall(record genaiRecord, ownerID, lastModelID string, ownerProvenance Provenance, event journal.Event, index int) {
+func (b *builder) addToolCall(record genaiRecord, ownerID, spanDigest, lastModelID string, ownerProvenance Provenance, event journal.Event, index int) {
 	callID := record.ToolCall.ID
-	id := "toolcall:" + ownerID + "#" + strconv.Itoa(index)
+	id := spanScopedID("toolcall", ownerID, spanDigest, index)
 	attributes := map[string]string{}
 	if callID != "" {
 		attributes["callId"] = callID
@@ -476,12 +476,12 @@ func (b *builder) addToolCall(record genaiRecord, ownerID, lastModelID string, o
 		b.gap(id, KindToolCall, "tool call carries no call id, so its result cannot be joined")
 		return
 	}
-	b.callNodes[callID] = id
+	b.callNodes[spanCallKey(spanDigest, callID)] = id
 }
 
-func (b *builder) addToolResult(record genaiRecord, ownerID string, ownerProvenance Provenance, event journal.Event, index int) {
+func (b *builder) addToolResult(record genaiRecord, ownerID, spanDigest string, ownerProvenance Provenance, event journal.Event, index int) {
 	callID := record.ToolCall.ID
-	id := "toolresult:" + ownerID + "#" + strconv.Itoa(index)
+	id := spanScopedID("toolresult", ownerID, spanDigest, index)
 	attributes := map[string]string{}
 	if callID != "" {
 		attributes["callId"] = callID
@@ -489,7 +489,7 @@ func (b *builder) addToolResult(record genaiRecord, ownerID string, ownerProvena
 	if record.ToolCall.Success != nil {
 		attributes["success"] = strconv.FormatBool(*record.ToolCall.Success)
 	}
-	callNodeID, known := b.callNodes[callID]
+	callNodeID, known := b.callNodes[spanCallKey(spanDigest, callID)]
 	b.addNode(Node{
 		ID: id, Kind: KindToolResult, Stage: event.Stage, Attempt: event.Attempt,
 		Provenance: provenanceOf(known), Attributes: attributes,
@@ -499,8 +499,20 @@ func (b *builder) addToolResult(record genaiRecord, ownerID string, ownerProvena
 		b.gap(id, KindToolResult, "tool result joins no recorded tool call")
 		return
 	}
-	b.callResult[callID] = true
+	b.callResult[callNodeID] = true
 	b.addEdge(callNodeID, id, EdgeProduces, ProvenanceRecorded)
+}
+
+// spanScopedID namespaces per-record node ids by the owning span's content
+// digest so that a subagent owning more than one span (for example one span per
+// stage attempt) cannot have the records of its later spans collide with, and
+// be silently dropped in favour of, the records of its earlier ones.
+func spanScopedID(prefix, ownerID, spanDigest string, index int) string {
+	return prefix + ":" + ownerID + "@" + spanDigest + "#" + strconv.Itoa(index)
+}
+
+func spanCallKey(spanDigest, callID string) string {
+	return spanDigest + "\x00" + callID
 }
 
 func (b *builder) ensureTool(name string) string {
@@ -519,7 +531,7 @@ func (b *builder) reportUnresolvedToolCalls() {
 			continue
 		}
 		callID := node.Attributes["callId"]
-		if callID == "" || b.callResult[callID] {
+		if callID == "" || b.callResult[node.ID] {
 			continue
 		}
 		b.gap(node.ID, KindToolCall, "tool call recorded no result")

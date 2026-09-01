@@ -36,8 +36,13 @@ case — is visited once per traversal, so the graph is a DAG, not a tree.
 journal recorded but has no record of its own: a stage that never journaled
 `stage.started`, an agent named as a parent that never journaled a lifecycle, a
 span whose content is unavailable, a tool result whose call id matches no
-recorded call. Each one also appends a `Gap` naming what is absent. The read
-model never infers a link to close a hole, so a partially instrumented run
+recorded call *in its own span*. Each one also appends a `Gap` naming what is
+absent. Per-record nodes — model invocations, tool calls, tool results — are
+identified by the owning span's content digest as well as the owner and record
+index, so a subagent that emits several spans (one per stage attempt, say)
+keeps each span's records distinct and a call id reused across spans is never
+joined to another span's call. The read model never infers a link to close a
+hole, so a partially instrumented run
 projects a smaller, honest graph instead of a complete-looking, fabricated one.
 
 ## Provenance capture

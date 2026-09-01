@@ -256,6 +256,75 @@ func TestBuildSharesToolIdentityAcrossAgents(t *testing.T) {
 	}
 }
 
+// TestBuildKeepsSpansOfOneSubagentDistinct pins that a subagent owning more
+// than one span — one per stage attempt, say — keeps every span's records as
+// their own nodes, so no call is silently dropped and no result is joined to
+// another span's call.
+func TestBuildKeepsSpansOfOneSubagentDistinct(t *testing.T) {
+	first, second := "sha256:attempt-1", "sha256:attempt-2"
+	events := []journal.Event{
+		{Seq: 1, Type: journal.EventRunStarted},
+		{Seq: 2, Type: journal.EventStageStarted, Stage: "implement", Attempt: 1},
+		agentEvent("worker", "", "implement", "gpt-5", journal.AgentCompleted),
+		spanEvent("implement", "attempt-1.transcript", first),
+		spanProvenance("implement", first, "worker"),
+		spanEvent("implement", "attempt-2.transcript", second),
+		spanProvenance("implement", second, "worker"),
+		{Seq: 3, Type: journal.EventRunFinished, Status: "completed"},
+	}
+	graph, err := Build(Input{
+		RunID: "run-1", Workflow: "implementation", Events: events,
+		SpanData: map[string][]byte{
+			first: transcript(
+				`{"role":"assistant","model":"gpt-5"}`,
+				`{"role":"assistant","model":"gpt-5","tool_call":{"id":"a-1","name":"bash"}}`,
+				`{"role":"tool","tool_call":{"id":"a-1","success":true}}`,
+			),
+			second: transcript(
+				`{"role":"assistant","model":"gpt-5"}`,
+				`{"role":"assistant","model":"gpt-5","tool_call":{"id":"b-1","name":"grep"}}`,
+				`{"role":"tool","tool_call":{"id":"b-1","success":false}}`,
+			),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	calls := graph.NodesOfKind(KindToolCall)
+	if len(calls) != 2 {
+		t.Fatalf("tool calls = %+v, want one per span", calls)
+	}
+	byCallID := map[string]Node{}
+	for _, call := range calls {
+		byCallID[call.Attributes["callId"]] = call
+	}
+	for callID, tool := range map[string]string{"a-1": "bash", "b-1": "grep"} {
+		call, ok := byCallID[callID]
+		if !ok || call.Label != tool {
+			t.Fatalf("call %q = %+v, want a node labeled %q", callID, call, tool)
+		}
+	}
+	results := graph.NodesOfKind(KindToolResult)
+	if len(results) != 2 {
+		t.Fatalf("tool results = %+v, want one per span", results)
+	}
+	for _, result := range results {
+		call, ok := byCallID[result.Attributes["callId"]]
+		if !ok {
+			t.Fatalf("result %+v joins no call of its own span", result)
+		}
+		if !hasEdge(graph, call.ID, result.ID, EdgeProduces) {
+			t.Fatalf("result %q must be produced by call %q: %+v", result.ID, call.ID, graph.Edges)
+		}
+	}
+	if models := graph.NodesOfKind(KindModelInvocation); len(models) != 2 {
+		t.Fatalf("model invocations = %+v, want both spans' invocations", models)
+	}
+	if len(graph.Gaps) != 0 {
+		t.Fatalf("fully instrumented spans reported gaps: %+v", graph.Gaps)
+	}
+}
+
 // TestBuildMarksMissingProvenanceUnknown pins the read model's refusal to
 // invent links on a partially instrumented run.
 func TestBuildMarksMissingProvenanceUnknown(t *testing.T) {
