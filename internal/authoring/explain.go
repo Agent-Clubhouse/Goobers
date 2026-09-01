@@ -67,7 +67,7 @@ func Explain(selector string) (Explanation, error) {
 	r := registry{documents: make(map[string]*schemaDocument)}
 	doc, err := r.load(parts[0].name)
 	if err != nil {
-		return Explanation{}, unknownSelector(selector)
+		return Explanation{}, unknownKindSelector(selector, parts, schemas.Kinds())
 	}
 	contractEntry := doc.entry
 	parts[0].name = contractEntry.Kind
@@ -78,12 +78,15 @@ func Explain(selector string) (Explanation, error) {
 	var required *bool
 	var elementDescription string
 
-	for _, part := range parts[1:] {
+	for index, part := range parts[1:] {
 		elementDescription = ""
 		childDoc, child, childResolved, isRequired, found, resolveErr :=
 			r.resolveProperty(currentDoc, resolved, part.name, 0)
-		if resolveErr != nil || !found {
+		if resolveErr != nil {
 			return Explanation{}, unknownSelector(selector)
+		}
+		if !found {
+			return Explanation{}, r.unknownFieldError(selector, parts, index+1, currentDoc, resolved)
 		}
 		required = &isRequired
 		declared = child
@@ -95,8 +98,11 @@ func Explain(selector string) (Explanation, error) {
 		elementDescription, _ = schemaString(declared, resolved, "description")
 		itemDoc, items, itemResolved, found, resolveErr :=
 			r.resolveItems(currentDoc, resolved, 0)
-		if resolveErr != nil || !found {
+		if resolveErr != nil {
 			return Explanation{}, unknownSelector(selector)
+		}
+		if !found {
+			return Explanation{}, notAnArraySelector(selector, parts, index+1)
 		}
 		declared = items
 		currentDoc, resolved = itemDoc, itemResolved

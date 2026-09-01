@@ -224,6 +224,61 @@ documented and enforced policies do not drift.
 
 Prefer small, reviewable PRs. Squash-merge is the default so `main` stays linear.
 
+## Review rules
+
+These are class-level rules: they exist because the same defect shape has
+shipped more than once, so review checks the whole class rather than the
+individual instance ([#2081](https://github.com/Agent-Clubhouse/Goobers/issues/2081)).
+
+### Append-only growth needs a wired bound or pruner
+
+**Rule.** A change that introduces a structure which grows without a natural
+end — an append-only file, a database table, an on-disk directory of
+per-run/per-item entries, or a long-lived in-memory map or slice — must
+identify and **wire** its bound or pruner in the same change. "Wired" means a
+running production caller reaches it: a daemon sweep, a retention loop, a
+writer that trims on append, or an eviction on insert. A pruner that only an
+operator can invoke, or one whose only caller is a test, does not bound
+anything.
+
+**Acceptable evidence** — a reviewer should be able to point at all three:
+
+1. **The bound.** A named limit (row/entry count, age window, byte cap, or
+   fixed capacity) with a default that applies to a stock configuration, not
+   only to a configuration an operator opts into.
+2. **The wiring.** The call path from a process that runs unattended to the
+   code that enforces the bound. For example, the projection retention loop
+   calls `PruneChangeFeed` on every pass
+   (`internal/readmodel/retentionloop.go`), and the daemon's retention ticker
+   calls `pruneConfiguredTelemetryRetention` and `compactSchedulerRetention`
+   (`cmd/goobers/up.go`). Citing the pruner function alone is not evidence;
+   cite its production caller.
+3. **The test.** A test that grows the structure past its bound and asserts a
+   bounded steady state — not merely that the prune function returns without
+   error. `TestPruneChangeFeedBoundsGrowth`
+   (`internal/readmodel/retention_test.go`) is the shape to copy.
+
+If the bound genuinely belongs in a follow-up, say so in the PR and open the
+follow-up issue in the same change; an unbounded structure landing with no
+named owner for its bound is a `needs-changes`.
+
+**Incident lineage.** This class keeps recurring in different disguises:
+[#2038](https://github.com/Agent-Clubhouse/Goobers/issues/2038) — the instance
+journal and the rollup scheduler tables grew at scheduler-tick rate for the
+daemon's lifetime because the only compactor refused to run while a daemon was
+up, so a never-restarted daemon never reclaimed anything (the referenced live
+journal reached 324 MB);
+[#3048](https://github.com/Agent-Clubhouse/Goobers/issues/3048) — the change
+feed's designed 50,000-row bound existed but was not enforced independently of
+projection retention, so the bound was documented and inoperative;
+[#3049](https://github.com/Agent-Clubhouse/Goobers/issues/3049) — tombstones
+accumulated with no retention policy or deleter at all; and
+[#3969](https://github.com/Agent-Clubhouse/Goobers/issues/3969) — temp
+directories orphaned by an OOMKill were never reclaimed because nothing swept
+the ones no live process owned. In each case the growth was introduced by a
+change that was correct in isolation and the bound arrived later, after the
+disk or the startup cost had already become the symptom.
+
 ## DSL compatibility policy
 
 The `apiVersion` on configuration resources defines a compatibility line. Within

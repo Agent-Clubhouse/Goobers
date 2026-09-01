@@ -31,7 +31,11 @@ const defaultScopeDriftThreshold = 50
 // re-comments. Best-effort by contract: the caller treats any error as a
 // warning and never fails the review stage on it, since this is a flag, not a
 // gate.
-func flagScopeDrift(ctx context.Context, provider *providers.GitHubProvider, repo providers.RepositoryRef, prNumber int, prLabels []string, changedFiles, threshold int) (changed bool, err error) {
+type scopeDriftProvider interface {
+	UpdateWorkItem(context.Context, providers.UpdateWorkItemRequest) (providers.WorkItem, error)
+}
+
+func flagScopeDrift(ctx context.Context, provider scopeDriftProvider, repo providers.RepositoryRef, prNumber int, prLabels []string, changedFiles, threshold int) (changed bool, err error) {
 	if threshold <= 0 {
 		return false, nil
 	}

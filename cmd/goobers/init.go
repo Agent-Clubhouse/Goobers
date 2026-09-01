@@ -30,6 +30,9 @@ const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-
 	"--guided opens the browser-based setup for a real repository and instance;\n" +
 	"use --instance-path to select its instance root.\n" +
 	"It prepares and validates configuration but does not run a workflow.\n" +
+	"For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new,\n" +
+	"select the repository's Resource owner, choose Only select repositories, and\n" +
+	"grant the permissions documented in docs/guides/github-token-scopes.md.\n" +
 	"--template=quickstart seeds the versioned onboarding workflow; it is\n" +
 	"intentionally not production-safe. With --source-tree <path>, it instead\n" +
 	"seeds the checked-in source layout (instance.yaml.example, manifest.yaml,\n" +

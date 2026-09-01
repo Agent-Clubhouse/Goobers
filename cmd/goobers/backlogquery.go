@@ -557,6 +557,18 @@ func runBacklogQueryMode(mode backlogQueryMode, env backlogQueryEnv, beforeClaim
 			return 1
 		}
 		eligible = deprioritizeRepeatedFailures(env.layout, phases, listing, eligible, observedAt, env, runID, workflow)
+		// #2971: an item parked on a shared baseline failure is waiting on a
+		// repair to the target branch, so claiming it would spend an attempt
+		// that cannot succeed. The runner releases these as soon as the base
+		// moves, so the skip is self-healing.
+		baselineFiltered, baselineSkips, baselineWarnings := filterBaselineParkedItems(env.layout, env.repo, eligible)
+		eligible = baselineFiltered
+		for _, warning := range baselineWarnings {
+			pf(stderr, "warning: %s\n", warning)
+		}
+		for _, skip := range baselineSkips {
+			env.debugf("baseline park: %s", skip)
+		}
 	}
 
 	// The claim transaction's blocked-record reconcile runs INSIDE the claims

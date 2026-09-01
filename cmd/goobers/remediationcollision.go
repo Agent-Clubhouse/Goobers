@@ -47,9 +47,8 @@ var goFunctionScopePattern = regexp.MustCompile(`^func\s+(?:\(([^)]*)\)\s*)?([A-
 var combinedHunkTheirsLinePattern = regexp.MustCompile(`^@@@ -[0-9]+(?:,[0-9]+)? -([0-9]+)(?:,[0-9]+)? \+[0-9]+(?:,[0-9]+)? @@@`)
 
 func currentRebaseConflictLocations(dir string) ([]rebaseConflictLocation, error) {
-	cmd := exec.Command("git", "diff", "--name-only", "--diff-filter=U", "-z")
-	cmd.Dir = dir
-	out, err := cmd.Output()
+	cmd := workspaceGitCommand(dir, "diff", "--name-only", "--diff-filter=U", "-z")
+	out, err := workspaceGitOutput(cmd)
 	if err != nil {
 		return nil, gitOutputError("git diff --name-only --diff-filter=U", err)
 	}
@@ -60,9 +59,8 @@ func currentRebaseConflictLocations(dir string) ([]rebaseConflictLocation, error
 		if rawPath == "" {
 			continue
 		}
-		diff := exec.Command("git", "diff", "--cc", "--unified=0", "--no-color", "--", rawPath)
-		diff.Dir = dir
-		patch, err := diff.Output()
+		diff := workspaceGitCommand(dir, "diff", "--cc", "--unified=0", "--no-color", "--", rawPath)
+		patch, err := workspaceGitOutput(diff)
 		if err != nil {
 			return nil, gitOutputError("git diff --cc --unified=0 -- "+rawPath, err)
 		}
@@ -109,9 +107,8 @@ func combinedHunkTheirsLine(header string) (int, bool) {
 }
 
 func conflictGoFunctionScope(dir, path string, line int) string {
-	show := exec.Command("git", "show", ":3:"+path)
-	show.Dir = dir
-	source, err := show.Output()
+	show := workspaceGitCommand(dir, "show", ":3:"+path)
+	source, err := workspaceGitOutput(show)
 	if err != nil {
 		return ""
 	}
@@ -356,9 +353,8 @@ func matchStructuralCollisions(
 }
 
 func gitIsAncestor(dir, ancestor, descendant string) (bool, error) {
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", ancestor, descendant)
-	cmd.Dir = dir
-	err := cmd.Run()
+	cmd := workspaceGitCommand(dir, "merge-base", "--is-ancestor", ancestor, descendant)
+	err := runWorkspaceGit(cmd)
 	if err == nil {
 		return true, nil
 	}
@@ -374,15 +370,12 @@ func fetchBranchObjects(dir, branch, commit, token string) error {
 	if err != nil {
 		return err
 	}
-	fetch := exec.Command("git", "fetch", url, "refs/heads/"+branch)
-	fetch.Dir = dir
-	fetch.Env = gitAuthEnv(token)
-	if out, err := fetch.CombinedOutput(); err != nil {
+	fetch := workspaceGitAuthCommand(dir, token, "fetch", url, "refs/heads/"+branch)
+	if out, err := workspaceGitCombinedOutput(fetch); err != nil {
 		return fmt.Errorf("fetch base %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}
-	verify := exec.Command("git", "cat-file", "-e", commit+"^{commit}")
-	verify.Dir = dir
-	if err := verify.Run(); err != nil {
+	verify := workspaceGitCommand(dir, "cat-file", "-e", commit+"^{commit}")
+	if err := runWorkspaceGit(verify); err != nil {
 		return gitOutputError("git cat-file -e "+commit+"^{commit}", err)
 	}
 	return nil
@@ -404,9 +397,8 @@ func commitIntroducedBetween(dir, commit, oldBase, liveBase string) (bool, error
 }
 
 func gitCommitTime(dir, revision string) (time.Time, error) {
-	cmd := exec.Command("git", "show", "-s", "--format=%ct", revision)
-	cmd.Dir = dir
-	out, err := cmd.Output()
+	cmd := workspaceGitCommand(dir, "show", "-s", "--format=%ct", revision)
+	out, err := workspaceGitOutput(cmd)
 	if err != nil {
 		return time.Time{}, gitOutputError("git show -s --format=%ct "+revision, err)
 	}
@@ -418,18 +410,16 @@ func gitCommitTime(dir, revision string) (time.Time, error) {
 }
 
 func goFunctionAtRevision(dir, revision, path, function string) (goFunctionSnapshot, bool, error) {
-	lsTree := exec.Command("git", "ls-tree", "-z", revision, "--", path)
-	lsTree.Dir = dir
-	entry, err := lsTree.Output()
+	lsTree := workspaceGitCommand(dir, "ls-tree", "-z", revision, "--", path)
+	entry, err := workspaceGitOutput(lsTree)
 	if err != nil {
 		return goFunctionSnapshot{}, false, gitOutputError("git ls-tree "+revision+" -- "+path, err)
 	}
 	if len(entry) == 0 {
 		return goFunctionSnapshot{}, false, nil
 	}
-	show := exec.Command("git", "show", revision+":"+path)
-	show.Dir = dir
-	source, err := show.Output()
+	show := workspaceGitCommand(dir, "show", revision+":"+path)
+	source, err := workspaceGitOutput(show)
 	if err != nil {
 		return goFunctionSnapshot{}, false, gitOutputError("git show "+revision+":"+path, err)
 	}
@@ -534,9 +524,8 @@ func hydrateCurrentPatches(dir, base string, files []providers.ChangedFile) ([]p
 			args = append(args, out[i].PreviousPath)
 		}
 		args = append(args, out[i].Path)
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		patch, err := cmd.Output()
+		cmd := workspaceGitCommand(dir, args...)
+		patch, err := workspaceGitOutput(cmd)
 		if err != nil {
 			return nil, gitOutputError("git "+strings.Join(args, " "), err)
 		}
@@ -559,9 +548,8 @@ func hydrateMergedSiblingPatches(dir, mergeSHA string, files []providers.Changed
 			args = append(args, out[i].PreviousPath)
 		}
 		args = append(args, out[i].Path)
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		patch, err := cmd.Output()
+		cmd := workspaceGitCommand(dir, args...)
+		patch, err := workspaceGitOutput(cmd)
 		if err != nil {
 			return nil, gitOutputError("git "+strings.Join(args, " "), err)
 		}
