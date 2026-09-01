@@ -711,18 +711,18 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 	}
 	auth := gitAuthEnv(token)
 	fetch := workspaceGitAuthEnvCommand(dir, auth, "fetch", url, "refs/heads/"+base)
-	if out, err := fetch.CombinedOutput(); err != nil {
+	if out, err := workspaceGitCombinedOutput(fetch); err != nil {
 		return false, nil, "", fmt.Errorf("fetch base %s: %w: %s", base, err, strings.TrimSpace(string(out)))
 	}
 	baseRev := workspaceGitCommand(dir, "rev-parse", "FETCH_HEAD")
-	baseOut, err := baseRev.Output()
+	baseOut, err := workspaceGitOutput(baseRev)
 	if err != nil {
 		return false, nil, "", gitOutputError("git rev-parse FETCH_HEAD", err)
 	}
 	rebaseBaseSHA = strings.TrimSpace(string(baseOut))
 
 	rebase := workspaceGitCommand(dir, rebaseFetchHeadArgs(dir)...)
-	out, rerr := rebase.CombinedOutput()
+	out, rerr := workspaceGitCombinedOutput(rebase)
 	if rerr == nil {
 		return false, nil, rebaseBaseSHA, nil
 	}
@@ -755,7 +755,7 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 
 		cont := workspaceGitCommand(dir, "rebase", "--continue")
 		cont.Env = append(cont.Env, "GIT_EDITOR=true")
-		continueOut, continueErr := cont.CombinedOutput()
+		continueOut, continueErr := workspaceGitCombinedOutput(cont)
 		if continueErr == nil {
 			return false, nil, rebaseBaseSHA, nil
 		}
@@ -775,7 +775,7 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 
 func rebaseFetchHeadArgs(dir string) []string {
 	help := workspaceGitCommand(dir, "rebase", "-h")
-	out, _ := help.CombinedOutput()
+	out, _ := workspaceGitCombinedOutput(help)
 	if strings.Contains(string(out), "reapply-cherry-picks") {
 		return []string{"rebase", "--no-reapply-cherry-picks", "FETCH_HEAD"}
 	}
@@ -801,7 +801,7 @@ const portalDistPath = "cmd/goobers/portal-dist"
 func execGit(dir string) mergeresolve.Git {
 	return func(args ...string) ([]byte, error) {
 		cmd := workspaceGitCommand(dir, args...)
-		out, err := cmd.Output()
+		out, err := workspaceGitOutput(cmd)
 		if err != nil {
 			return nil, gitOutputError("git "+strings.Join(args, " "), err)
 		}
@@ -829,7 +829,7 @@ func resolvePortalDistConflicts(dir string) (rebaseConflictStatus, error) {
 		return rebaseConflictUnsafe, fmt.Errorf("regenerate portal bundle: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	add := workspaceGitCommand(dir, "--literal-pathspecs", "add", "-A", "--", portalDistPath)
-	if out, err := add.CombinedOutput(); err != nil {
+	if out, err := workspaceGitCombinedOutput(add); err != nil {
 		return rebaseConflictUnsafe, fmt.Errorf("stage regenerated portal bundle: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	remaining, err := unmergedConflictFiles(dir)
@@ -863,7 +863,7 @@ func unmergedConflictFiles(dir string) ([]mergeresolve.File, error) {
 
 func abortRebase(dir string) error {
 	abort := workspaceGitCommand(dir, "rebase", "--abort")
-	if out, err := abort.CombinedOutput(); err != nil {
+	if out, err := workspaceGitCombinedOutput(abort); err != nil {
 		return fmt.Errorf("abort rebase: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -904,7 +904,7 @@ func forcePushWithLease(dir, branch, expectedSHA, token string) error {
 		return err
 	}
 	cmd := workspaceGitAuthCommand(dir, token, "push", "--force-with-lease="+branch+":"+expectedSHA, url, branch+":"+branch)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := workspaceGitCombinedOutput(cmd); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil

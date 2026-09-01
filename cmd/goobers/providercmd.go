@@ -434,6 +434,17 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	if providers.IsTransientError(err) {
 		return errorCodeNetwork, true, nil
 	}
+	// Last, so every provider-specific reading above still wins: a git
+	// subprocess WE ran against a checkout, failing for a reason no provider
+	// condition explains, is this process's own infrastructure and not
+	// evidence about the item. provider_error was the fallback, and
+	// telemetry.ClassifyError("provider_error") is not an infra fault, so the
+	// #3361/#3364 circuit-breaker exemption never fired for one. See
+	// gitCommandError (#4106).
+	var gitErr *gitCommandError
+	if errors.As(err, &gitErr) {
+		return telemetry.ErrCodeInfraGit, false, nil
+	}
 	return errorCodeProvider, false, nil
 }
 
