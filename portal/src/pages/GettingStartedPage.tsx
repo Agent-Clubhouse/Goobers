@@ -595,6 +595,20 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                     ["Default branch", inspection.defaultBranch],
                   ]}
                 />
+                {inspection.ephemeral && (
+                  <div className="guided-callout">
+                    <strong>This checkout may be ephemeral</strong>
+                    <span>
+                      {inspection.ephemeralReason ||
+                        "The local checkout may be removed when its session ends."}{" "}
+                      Keep the runtime instance outside it, for example{" "}
+                      <code>
+                        {inspection.safeInstancePath || "~/goobers/instances/<repository>"}
+                      </code>
+                      .
+                    </span>
+                  </div>
+                )}
                 {!inspection.auth.ready && (
                   <div className="guided-callout">
                     <strong>

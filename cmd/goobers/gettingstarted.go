@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // dashboardModeGettingStarted is the portal mode the getting-started command
@@ -23,7 +25,7 @@ import (
 // dashboard` does, so the dashboard's own startup contract is untouched.
 const dashboardModeGettingStarted dashboardMode = "getting-started"
 
-const guidedInitBrowserHelp = "Usage: goobers init --guided [--port=<port|auto>] [--no-open] [--workdir <dir>]\n\n" +
+const guidedInitBrowserHelp = "Usage: goobers init --guided [--allow-ephemeral] [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--workdir <dir>]\n\n" +
 	"Serve and open the browser-based instance setup. It inspects an existing\n" +
 	"GitHub or Azure DevOps clone, discovers its identity, default branch, CI and\n" +
 	"toolchain, asks only for configuration placement and desired behavior, creates\n" +
@@ -39,13 +41,15 @@ const guidedInitBrowserHelp = "Usage: goobers init --guided [--port=<port|auto>]
 	"or organization that owns the repository, choose Only select repositories,\n" +
 	"and grant the permissions\n" +
 	"documented in docs/guides/github-token-scopes.md.\n\n" +
-	"Configuration and instance placement are selected in the browser. --workdir\n" +
-	"holds temporary browser setup state and defaults beneath the current\n" +
+	"Configuration placement is selected in the browser. --instance-path selects\n" +
+	"the instance root; when omitted it defaults beside --workdir. --workdir holds\n" +
+	"temporary browser setup state and defaults beneath the current\n" +
 	"user's local application-data directory; the directory is created when\n" +
 	"needed. The default --port is auto,\n" +
 	"incrementing from %d until a port is available. Blocks until interrupted.\n" +
 	"Exit codes: 0 = clean shutdown, 1 = service or browser failure, 2 =\n" +
-	"usage/IO error.\n"
+	"usage/IO error. Use --allow-ephemeral only when the chosen workspace and\n" +
+	"instance location are intentionally persistent.\n"
 
 func runGuidedInitBrowser(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signals.SetupSignalContext()
@@ -59,6 +63,8 @@ func runGuidedInitBrowserContext(ctx context.Context, args []string, stdout, std
 	portValue := flags.String("port", "auto", "server port, or \"auto\" to use the first available port from 8081")
 	noOpen := flags.Bool("no-open", false, "print the guided setup URL without opening a browser")
 	workdir := flags.String("workdir", defaultGettingStartedWorkdir(), "directory holding temporary browser setup state")
+	instancePath := flags.String("instance-path", "", "instance root to create")
+	allowEphemeral := flags.Bool("allow-ephemeral", false, "allow guided initialization inside a linked or hosted ephemeral workspace")
 	flags.Usage = func() { pf(stderr, guidedInitBrowserHelp, defaultDashboardPort) }
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -77,13 +83,21 @@ func runGuidedInitBrowserContext(ctx context.Context, args []string, stdout, std
 		pf(stderr, "error: resolve --workdir: %v\n", err)
 		return 2
 	}
-	if err := os.MkdirAll(absWorkdir, 0o755); err != nil {
-		pf(stderr, "error: create --workdir %s: %v\n", absWorkdir, err)
-		return 2
+	selectedInstancePath := *instancePath
+	if selectedInstancePath == "" {
+		selectedInstancePath = filepath.Join(filepath.Dir(absWorkdir), "instance")
 	}
-	absInstancePath, err := filepath.Abs(filepath.Join(filepath.Dir(absWorkdir), "instance"))
+	absInstancePath, err := filepath.Abs(selectedInstancePath)
 	if err != nil {
 		pf(stderr, "error: resolve instance path: %v\n", err)
+		return 2
+	}
+	if err := checkGuidedInitTarget(ctx, absInstancePath, *allowEphemeral); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if err := os.MkdirAll(absWorkdir, 0o755); err != nil {
+		pf(stderr, "error: create --workdir %s: %v\n", absWorkdir, err)
 		return 2
 	}
 
@@ -93,6 +107,7 @@ func runGuidedInitBrowserContext(ctx context.Context, args []string, stdout, std
 		pf(stderr, "error: initialize guided server: %v\n", err)
 		return 1
 	}
+	guided.allowEphemeral = *allowEphemeral
 
 	assets, err := dashboardAssetFS("")
 	if err != nil {
@@ -176,6 +191,17 @@ func stopGettingStarted(server *http.Server, cancelRequests context.CancelFunc, 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return errors.Join(server.Shutdown(ctx), guidedErr)
+}
+
+func checkGuidedInitTarget(ctx context.Context, instancePath string, allowEphemeral bool) error {
+	if err := worktree.CheckInitTarget(ctx, instancePath, allowEphemeral); err != nil {
+		return fmt.Errorf(
+			"%w; to acknowledge this guided target, rerun `goobers init --guided --instance-path %q --allow-ephemeral`",
+			err,
+			instancePath,
+		)
+	}
+	return nil
 }
 
 func defaultGettingStartedWorkdir() string {

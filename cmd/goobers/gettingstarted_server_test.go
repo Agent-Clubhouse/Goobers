@@ -140,6 +140,7 @@ func TestGettingStartedInspectsLocalGitHubRepository(t *testing.T) {
 	if err := os.MkdirAll(repository, 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	for _, args := range [][]string{
 		{"init", "-b", "trunk"},
 		{"remote", "add", "origin", "https://github.com/acme/widgets.git"},
@@ -499,6 +500,39 @@ func TestGettingStartedGitHubAuthorizationRejectsInvalidRepositories(t *testing.
 				t.Fatalf("invalid repository response = %+v", response)
 			}
 		})
+	}
+}
+
+func TestGettingStartedRefusesUnsafeGuidedInstanceTarget(t *testing.T) {
+	repository := seedGitInitTargetRepository(t)
+	linked := filepath.Join(t.TempDir(), "session-worktree")
+	runInitTargetGit(t, repository, "worktree", "add", "-b", "session", linked, "main")
+
+	server := newTestGuidedServer(t, t.TempDir())
+	server.instancePath = filepath.Join(linked, "instance")
+	server.configPath = filepath.Join(t.TempDir(), "config-source")
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/init-instance",
+		`{"template":"quickstart"}`,
+	)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeGuidedResponse[guidedErrorBody](t, recorder)
+	if response.Code != "unsafe_init_target" ||
+		!strings.Contains(response.Message, "--allow-ephemeral") ||
+		!strings.Contains(response.Message, `goobers init --guided --instance-path "`+server.instancePath+`" --allow-ephemeral`) {
+		t.Fatalf("response = %+v, want actionable unsafe-target refusal", response)
+	}
+	if strings.Contains(response.Message, `goobers init --allow-ephemeral "`+server.instancePath+`"`) {
+		t.Fatalf("response = %+v, must not offer a non-guided remediation", response)
+	}
+	if _, err := os.Stat(server.instancePath); !os.IsNotExist(err) {
+		t.Fatalf("unsafe guided init created instance target: %v", err)
+	}
+	if _, err := os.Stat(server.configPath); !os.IsNotExist(err) {
+		t.Fatalf("unsafe guided init created config source: %v", err)
 	}
 }
 
