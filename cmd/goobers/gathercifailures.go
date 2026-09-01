@@ -114,11 +114,11 @@ func readRemediationBriefArtifact(root, runID, stage string) (apiv1.RemediationB
 	if err != nil {
 		return apiv1.RemediationBrief{}, err
 	}
-	name := runID + ":" + stage + "/result"
+	name := stage + "/result"
 	var ref *journal.Ref
 	for i := range events {
 		event := &events[i]
-		if event.Type == journal.EventArtifactRecorded && event.Name == name && event.Ref != nil {
+		if event.Type == journal.EventArtifactRecorded && stageArtifactName(runID, event.Name) == name && event.Ref != nil {
 			ref = event.Ref
 		}
 	}
