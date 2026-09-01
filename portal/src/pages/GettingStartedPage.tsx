@@ -1,124 +1,153 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AnimatedGoober } from "../components/AnimatedGoober";
 import { RecoveryCommand } from "../components/RecoveryAction";
 import {
   GuidedClient,
-  GuidedRequestError,
   type DiagnosticsEnvelope,
-  type DiagnosticsFinding,
-  type GuidedEnvelopeResult,
+  type GuidedInitOptions,
   type GuidedInitResult,
-  type GuidedJobDetail,
-  type GuidedProbeResult,
+  type GuidedRepositoryInspection,
+  type GuidedRepositoryReadiness,
   type GuidedState,
-  type OnboardingActionEnvelope,
-  type StatusEnvelope,
+  type GuidedWorkflow,
 } from "../guided/client";
 
-// The guided walkthrough (#437), extended with the connect-your-repository
-// path (#2449, onboarding ladder §3 R3). Every write action on this page is a
-// thin wrapper over a documented CLI command executed by the getting-started
-// server; the exact command is always shown next to the button. Manual steps
-// — creating the disposable GitHub repository, pushing the sample, editing
-// placeholders, exporting tokens — are presented explicitly and are never
-// performed on the user's behalf.
-
 const defaultClient = new GuidedClient();
-
 const statePollIntervalMs = 5_000;
-const jobPollIntervalMs = 2_000;
-
-/** Per-branch workflow stage names, mapped to a best-effort mini progress row
- *  by grepping run output for the CLI's stage transition lines. Absence of
- *  any match simply hides the row. */
-const quickstartRunStages = [
-  "query-backlog",
-  "implement",
-  "review",
-  "local-ci",
-  "push-branch",
-  "open-pr",
-] as const;
-
-const defaultImplementRunStages = [
-  "query-backlog",
-  "implement",
-  "push-branch",
-  "open-pr",
-] as const;
-
-type GuidedQuery =
+const githubPATSettingsURL = "https://github.com/settings/personal-access-tokens/new";
+type RepositorySource = "local" | "remote";
+type QueryState =
   | { status: "loading" }
   | { status: "unavailable" }
   | { status: "ready"; state: GuidedState };
+type BusyAction = "browse" | "inspect" | "init" | "prepare" | "validate" | null;
+type WizardPageId =
+  | "welcome"
+  | "repository"
+  | "placement"
+  | "workflows"
+  | "issue-scope"
+  | "runtime"
+  | "review"
+  | "repository-setup"
+  | "validate"
+  | "complete";
 
-type StepStatus = "pending" | "active" | "done" | "failed";
+interface WizardPage {
+  id: WizardPageId;
+  label: string;
+  step: number;
+}
 
-type BusyAction = "stub-sample" | "init" | "connect" | "validate" | "run" | null;
+const wizardStepCount = 10;
 
-/** The two rungs of the path chooser: connect the repository you already work
- *  in (the spine, PO ruling), or the disposable sample tutorial. */
-type GuidedPath = "own-repo" | "sample";
-
-const guidedPathStorageKey = "goobers-guided-path";
-const defaultConnectTokenEnv = "GOOBERS_GITHUB_TOKEN";
-const repoShapePattern = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*)\/[A-Za-z0-9._-]+$/;
+const workflowChoices: Array<{
+  id: GuidedWorkflow;
+  title: string;
+  description: string;
+  outcome: string;
+  image: string;
+}> = [
+  {
+    id: "work-nomination",
+    title: "Work nomination",
+    description: "Uses code and operational signals to propose new issues for human approval.",
+    outcome: "Adds a nominator goober.",
+    image: "/workflow-nomination.png",
+  },
+  {
+    id: "backlog-curation",
+    title: "Backlog curation",
+    description: "Turns approved issues into scoped work that is ready for implementation.",
+    outcome: "Adds a curator goober.",
+    image: "/workflow-curation.png",
+  },
+  {
+    id: "implementation",
+    title: "Implementation",
+    description: "Takes ready issues through implementation, review, local CI, and a pull request.",
+    outcome: "Adds implementer and reviewer goobers.",
+    image: "/workflow-implementation.png",
+  },
+];
 
 export function GettingStartedPage({ client = defaultClient }: { client?: GuidedClient } = {}) {
-  const [query, setQuery] = useState<GuidedQuery>({ status: "loading" });
-
-  // UI-only progress bits (which manual steps the user confirmed, whether the
-  // welcome step was acknowledged, which path was chosen) live in
-  // sessionStorage; everything the server can attest to (sample/instance
-  // existence, the connected repository, job state, env tokens) comes from
-  // /guided/state and wins over anything stored here.
-  const [welcomeDone, setWelcomeDone] = useSessionFlag("goobers-guided-welcome-done");
-  const [pushDone, setPushDone] = useSessionFlag("goobers-guided-push-done");
-  const [placeholdersDone, setPlaceholdersDone] = useSessionFlag("goobers-guided-placeholders-done");
-  const [tokenExported, setTokenExported] = useSessionFlag("goobers-guided-token-exported");
-  const [validateOk, setValidateOk] = useSessionFlag("goobers-guided-validate-ok");
-  const [storedPath, setStoredPath] = useSessionValue(guidedPathStorageKey);
+  const [query, setQuery] = useState<QueryState>({ status: "loading" });
+  const [pageIndex, setPageIndex] = useSessionState("goobers-wizard-page", 0);
+  const [repositorySource, setRepositorySource] = useSessionState<RepositorySource>(
+    "goobers-wizard-repository-source",
+    "local",
+  );
+  const [repo, setRepo] = useSessionState("goobers-wizard-repo", "");
+  const [branch, setBranch] = useSessionState("goobers-wizard-branch", "main");
+  const [configPlacement, setConfigPlacement] = useSessionState<
+    "peer" | "in-repo" | "custom"
+  >("goobers-wizard-config-placement", "peer");
+  const [configPath, setConfigPath] = useSessionState(
+    "goobers-wizard-config-path",
+    "",
+  );
+  const [workflows, setWorkflows] = useSessionState<GuidedWorkflow[]>(
+    "goobers-wizard-workflows",
+    ["work-nomination", "backlog-curation", "implementation"],
+  );
+  const [issueScope, setIssueScope] = useSessionState<"all" | "assigned">(
+    "goobers-wizard-issue-scope",
+    "all",
+  );
+  const [ciCommandText, setCICommandText] = useSessionState("goobers-wizard-ci", "");
+  const [capability, setCapability] = useSessionState("goobers-wizard-capability", "");
+  const [pullRequestCI, setPullRequestCI] = useSessionState(
+    "goobers-wizard-pull-request-ci",
+    false,
+  );
+  const [harness, setHarness] = useSessionState<"copilot" | "claude-code">(
+    "goobers-wizard-harness",
+    "copilot",
+  );
+  const [repoTokenEnv, setRepoTokenEnv] = useSessionState(
+    "goobers-wizard-repo-token",
+    "GOOBERS_GITHUB_REPO_TOKEN",
+  );
+  const [issuesTokenEnv, setIssuesTokenEnv] = useSessionState(
+    "goobers-wizard-issues-token",
+    "GOOBERS_GITHUB_ISSUES_TOKEN",
+  );
+  const [prTokenEnv, setPRTokenEnv] = useSessionState(
+    "goobers-wizard-pr-token",
+    "GOOBERS_GITHUB_PR_TOKEN",
+  );
+  const [pushTokenEnv, setPushTokenEnv] = useSessionState(
+    "goobers-wizard-push-token",
+    "GOOBERS_GITHUB_PUSH_TOKEN",
+  );
+  const [modelTokenEnv, setModelTokenEnv] = useSessionState(
+    "goobers-wizard-model-token",
+    "",
+  );
+  const [createStarterIssue, setCreateStarterIssue] = useSessionState(
+    "goobers-wizard-create-starter-issue",
+    true,
+  );
+  const [inspection, setInspection] = useState<GuidedRepositoryInspection | null>(null);
+  const [repositoryReadiness, setRepositoryReadiness] =
+    useState<GuidedRepositoryReadiness | null>(null);
 
   const [busy, setBusy] = useState<BusyAction>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-
-  const [stubResult, setStubResult] =
-    useState<GuidedEnvelopeResult<OnboardingActionEnvelope> | null>(null);
   const [initResult, setInitResult] = useState<GuidedInitResult | null>(null);
-  const [connectResult, setConnectResult] =
-    useState<GuidedEnvelopeResult<OnboardingActionEnvelope> | null>(null);
-  const [validateResult, setValidateResult] =
-    useState<GuidedEnvelopeResult<DiagnosticsEnvelope> | null>(null);
-  const [statusResult, setStatusResult] =
-    useState<GuidedEnvelopeResult<StatusEnvelope> | null>(null);
-  // #2638: the sample path's read-only pre-run eligibility probe. null means
-  // "not checked yet (or reset for a fresh check)" — distinct from a probe
-  // result whose own eligibleCount is null (no issues token exported yet).
-  const [probeResult, setProbeResult] = useState<GuidedProbeResult | null>(null);
-  const [probeChecking, setProbeChecking] = useState(false);
-
-  const [workTracking, setWorkTracking] = useState("");
-  const [useMainToken, setUseMainToken] = useState(false);
-  const [forceRerun, setForceRerun] = useState(false);
-
-  const [connectRepo, setConnectRepo] = useState("");
-  const [connectTokenEnv, setConnectTokenEnv] = useState(defaultConnectTokenEnv);
-  const [connectSeed, setConnectSeed] = useState(true);
-  const [connectReplace, setConnectReplace] = useState(false);
-
-  const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  const [jobDetail, setJobDetail] = useState<GuidedJobDetail | null>(null);
+  const [validateResult, setValidateResult] = useState<{
+    exitCode: number;
+    envelope: DiagnosticsEnvelope | null;
+    stderr: string;
+  } | null>(null);
 
   const refreshState = useCallback(async () => {
     try {
       const state = await client.getState();
       setQuery({ status: "ready", state });
       return state;
-    } catch (error) {
-      // Any failure to read /guided/state — a 404 from the operational
-      // dashboard or daemon portal, or no server at all — means the guided
-      // experience is not being served here; render the instructions instead
-      // of crashing (per the portal's inline-degradation idiom).
-      void error;
+    } catch {
       setQuery((previous) =>
         previous.status === "ready" ? previous : { status: "unavailable" },
       );
@@ -126,272 +155,89 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     }
   }, [client]);
 
-  // Server truth is polled: sample/instance existence and the connected
-  // repository reflect the filesystem on every poll. The env-token badges do
-  // NOT — they read the getting-started server's own process environment,
-  // fixed at server launch (#2639). A token exported in any terminal after
-  // the server started, including the one that launched it, never reaches
-  // this process; only exporting before launch (or restarting the server
-  // after exporting) changes what these badges report.
   useEffect(() => {
     void refreshState();
     const timer = setInterval(() => void refreshState(), statePollIntervalMs);
     return () => clearInterval(timer);
   }, [refreshState]);
 
-  const serverState = query.status === "ready" ? query.state : null;
+  const state = query.status === "ready" ? query.state : null;
+  const implementationSelected = workflows.includes("implementation");
+  const pullRequestsNeeded =
+    implementationSelected || workflows.includes("backlog-curation");
 
-  // Adopt the server's most recent job (page reload mid-run, or a run started
-  // from another tab): polling it restores the output tail and completion.
   useEffect(() => {
-    if (serverState?.job && activeJobId === null) {
-      setActiveJobId(serverState.job.id);
+    if (!implementationSelected) {
+      setWorkflows([...workflows, "implementation"]);
     }
-  }, [serverState, activeJobId]);
+  }, [implementationSelected, setWorkflows, workflows]);
 
   useEffect(() => {
-    if (!activeJobId) {
+    if (!inspection) {
       return;
     }
-    let cancelled = false;
-    let timer: ReturnType<typeof setInterval> | null = null;
-    const poll = async () => {
-      try {
-        const detail = await client.getJob(activeJobId);
-        if (cancelled) {
-          return;
-        }
-        setJobDetail(detail);
-        if (detail.done) {
-          if (timer !== null) {
-            clearInterval(timer);
-            timer = null;
-          }
-          void refreshState();
-        }
-      } catch {
-        // Job vanished (server restarted): stop polling; /guided/state remains
-        // the source of truth for what to render.
-        if (timer !== null) {
-          clearInterval(timer);
-          timer = null;
-        }
-      }
-    };
-    void poll();
-    timer = setInterval(() => void poll(), jobPollIntervalMs);
-    return () => {
-      cancelled = true;
-      if (timer !== null) {
-        clearInterval(timer);
-      }
-    };
-  }, [activeJobId, client, refreshState]);
+    setBranch(inspection.defaultBranch);
+    if (implementationSelected && inspection.ciCommand?.length) {
+      setCICommandText(inspection.ciCommand.join(" "));
+      setPullRequestCI(false);
+    } else if (inspection.pullRequestCI) {
+      setCICommandText("");
+      setCapability("");
+      setPullRequestCI(true);
+    }
+    if (implementationSelected && inspection.requiredCapabilities?.length) {
+      setCapability(inspection.requiredCapabilities[0]);
+    }
+  }, [
+    inspection,
+    implementationSelected,
+    setCICommandText,
+    setCapability,
+    setPullRequestCI,
+    setBranch,
+  ]);
 
-  const job = jobDetail ?? serverState?.job ?? null;
-  const connectedRepo = serverState?.connected?.repo ?? null;
+  useEffect(() => {
+    if (!inspection) {
+      return;
+    }
+    if (configPlacement === "peer" && inspection.peerConfigPath) {
+      setConfigPath(inspection.peerConfigPath);
+    }
+    if (configPlacement === "in-repo" && inspection.inRepoConfigPath) {
+      setConfigPath(inspection.inRepoConfigPath);
+    }
+  }, [configPlacement, inspection, setConfigPath]);
 
-  // The chosen path: the stored choice wins (switching stays possible after a
-  // connect); with nothing stored, server truth infers it on reload — a
-  // connected repository means the own-repo path, an existing sample means
-  // the tutorial path.
-  const path: GuidedPath | null =
-    storedPath === "own-repo" || storedPath === "sample"
-      ? storedPath
-      : connectedRepo !== null
-        ? "own-repo"
-        : (serverState?.sampleExists ?? false)
-          ? "sample"
-          : null;
-
-  // #2638: a run that exits 0 only means the workflow reached PhaseCompleted
-  // — the SAME terminal phase a genuine no-eligible-work backlog-query tick
-  // short-circuits to (issue #233's shared runner/backlog-query contract,
-  // untouched here). exitCode alone cannot distinguish "opened a PR" from
-  // "found nothing to do", so this reads the same stage-transition lines
-  // RunProgress already greps for progress display: if the terminal
-  // "open-pr" stage never started, query-backlog (or whatever gated it)
-  // never handed off — nothing was implemented or opened, regardless of the
-  // clean exit.
-  const runStages = path === "own-repo" ? defaultImplementRunStages : quickstartRunStages;
-  const runOutput = jobDetail?.output ?? [];
-  const runStageProgress = useMemo(
-    () => runStageStates(runOutput, runStages),
-    [runOutput, runStages],
+  const pages = useMemo<WizardPage[]>(
+    () => [
+      { id: "welcome", label: "Welcome", step: 1 },
+      { id: "repository", label: "Repository", step: 2 },
+      { id: "placement", label: "Configuration", step: 3 },
+      { id: "workflows", label: "Workflows", step: 4 },
+      { id: "issue-scope", label: "Issue scope", step: 5 },
+      { id: "runtime", label: "Runtime", step: 6 },
+      { id: "review", label: "Review", step: 7 },
+      { id: "repository-setup", label: "Repository setup", step: 8 },
+      { id: "validate", label: "Checks", step: 9 },
+      { id: "complete", label: "Complete", step: 10 },
+    ],
+    [],
   );
-  const runOutcome: "success" | "no-work" | "failed" | null =
-    job === null || !job.done
-      ? null
-      : job.exitCode !== 0
-        ? "failed"
-        : runStageProgress?.["open-pr"] === "pending" || runStageProgress?.["open-pr"] === undefined
-          ? "no-work"
-          : "success";
-  const runFinishedOk = runOutcome === "success" || runOutcome === "no-work";
-  const runFailed = runOutcome === "failed";
-
-  // Success step: the Time-to-First-PR readout is computed by `goobers status
-  // --json` from local journal timestamps. It is a local number — nothing on
-  // this page reports it (or anything else) anywhere. Only fetched on an
-  // actual success — a no-work run has no first PR to time.
-  useEffect(() => {
-    if (runOutcome !== "success" || statusResult !== null) {
-      return;
-    }
-    let cancelled = false;
-    void client
-      .getStatus()
-      .then((result) => {
-        if (!cancelled) {
-          setStatusResult(result);
-        }
-      })
-      .catch(() => {
-        // Leave the success step's fallback copy in place.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [runOutcome, statusResult, client]);
-
-  const sampleDone = (serverState?.sampleExists ?? false) || stubResult?.exitCode === 0;
-  const initDone = serverState?.instanceExists ?? false;
-  const stubFailed = stubResult !== null && stubResult.exitCode !== 0 && !sampleDone;
-  const initFailed = initResult !== null && initResult.exitCode !== 0 && !initDone;
-  const connectDone = connectedRepo !== null || connectResult?.exitCode === 0;
-  const connectFailed = connectResult !== null && connectResult.exitCode !== 0 && !connectDone;
-  const validateFailed = validateResult !== null && validateResult.exitCode !== 0;
-  const validateDone = validateOk && !validateFailed;
-
-  // #2638: a read-only "how many eligible issues are there right now" check,
-  // run before the sample quickstart's Run button is used — surfacing "0
-  // eligible issues" as a pre-run warning instead of letting the user
-  // discover it only after a run completes with nothing to show. Sample
-  // path only (own-repo's label conventions are the user's own, out of
-  // scope here — see the server-side handler's comment).
-  const checkBacklogProbe = useCallback(async () => {
-    setProbeChecking(true);
-    try {
-      const result = await client.probeBacklog();
-      setProbeResult(result);
-    } catch {
-      // A failed probe is a soft warning, not a blocking error — leave
-      // whatever was there (nothing, on a first check) and let the user
-      // just start the run if they want to.
-    } finally {
-      setProbeChecking(false);
-    }
-  }, [client]);
 
   useEffect(() => {
-    if (
-      path !== "sample" ||
-      !validateDone ||
-      probeResult !== null ||
-      probeChecking ||
-      (job !== null && !job.done)
-    ) {
-      return;
+    if (pageIndex >= pages.length) {
+      setPageIndex(pages.length - 1);
     }
-    void checkBacklogProbe();
-  }, [path, validateDone, probeResult, probeChecking, job, checkBacklogProbe]);
-
-  const choosePath = (next: GuidedPath) => {
-    if (path === next) {
-      if (storedPath !== next) {
-        setStoredPath(next);
-      }
-      return;
-    }
-    // Switching resets only the branch-specific steps' UI state — action
-    // results and manual acknowledgements. Server truth (instance/sample
-    // existence, the connected repo, job state) still governs the done marks.
-    setStubResult(null);
-    setInitResult(null);
-    setConnectResult(null);
-    setValidateResult(null);
-    setStatusResult(null);
-    setValidateOk(false);
-    setPushDone(false);
-    setPlaceholdersDone(false);
-    setTokenExported(false);
-    setForceRerun(false);
-    setConnectReplace(false);
-    setStoredPath(next);
-  };
-
-  const chooserDone = path !== null;
-  const tokenEnvName =
-    connectTokenEnv.trim() === "" ? defaultConnectTokenEnv : connectTokenEnv.trim();
-  const tokenDone =
-    tokenExported ||
-    (tokenEnvName === defaultConnectTokenEnv &&
-      (serverState?.env.goobersGithubToken ?? false));
-
-  // Step done/failed flags per branch, in render order. The success step is
-  // rendered explicitly from runOutcome, as before (it also needs to tell
-  // "no PR opened" apart from "opened one", which a single boolean can't).
-  const doneFlags =
-    path === "own-repo"
-      ? [welcomeDone, chooserDone, initDone, connectDone, tokenDone, validateDone, runFinishedOk, false]
-      : path === "sample"
-        ? [
-            welcomeDone,
-            chooserDone,
-            sampleDone,
-            pushDone,
-            initDone,
-            placeholdersDone,
-            validateDone,
-            runFinishedOk,
-            false,
-          ]
-        : [welcomeDone, false];
-  const failedFlags =
-    path === "own-repo"
-      ? [false, false, initFailed, connectFailed, false, validateFailed, runFailed, false]
-      : path === "sample"
-        ? [false, false, stubFailed, false, false, false, validateFailed, runFailed, false]
-        : [false, false];
-  const firstOpen = doneFlags.indexOf(false);
-  const stepStatus = (index: number): StepStatus => {
-    if (doneFlags[index]) {
-      return "done";
-    }
-    if (index === firstOpen) {
-      return failedFlags[index] ? "failed" : "active";
-    }
-    return failedFlags[index] ? "failed" : "pending";
-  };
-
-  const runAction = async <T,>(
-    kind: Exclude<BusyAction, null>,
-    action: () => Promise<T>,
-    apply: (result: T) => void,
-  ) => {
-    setBusy(kind);
-    setActionError(null);
-    try {
-      const result = await action();
-      apply(result);
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(null);
-      void refreshState();
-    }
-  };
-
-  const samplePath = serverState?.samplePath ?? "./getting-started-task-api";
-  const instancePath = serverState?.instancePath ?? "./tutorial-instance";
+  }, [pageIndex, pages.length, setPageIndex]);
 
   if (query.status === "loading") {
     return (
       <section aria-live="polite" className="daemon-state" role="status">
         <span aria-hidden="true" className="loading-mark" />
         <div>
-          <h1>Loading the guided experience</h1>
-          <p>Reading the walkthrough's local state.</p>
+          <h1>Opening setup</h1>
+          <p>Reading the setup already completed on this machine.</p>
         </div>
       </section>
     );
@@ -407,1158 +253,1062 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         <section className="empty-state">
           <img alt="" src="/goober-mascot.png" />
           <div>
-            <h2>The guided experience is not running here</h2>
+            <h2>Setup is not available from this dashboard</h2>
             <p>
-              This portal is serving the operational dashboard, which has no guided action
-              endpoints. Launch the walkthrough from a terminal in an empty working directory —
-              it opens this page served by its own local process.
+              Open the setup wizard from a terminal. The command starts Goobers locally and
+              opens this wizard in your browser.
             </p>
-            <RecoveryCommand command="goobers getting-started" />
+            <RecoveryCommand command="goobers init --guided" />
           </div>
         </section>
       </>
     );
   }
 
-  const state = query.state;
+  if (state === null) {
+    return null;
+  }
 
-  const repoShapeValid = repoShapePattern.test(connectRepo.trim());
+  const currentPage = pages[Math.min(pageIndex, pages.length - 1)];
+  const instanceReady = state.instanceExists || initResult?.exitCode === 0;
+  const validationPassed = validateResult?.exitCode === 0;
+  const repositoryReady =
+    inspection !== null && !inspection.needsClone && inspection.auth.ready;
+  const ciCommand = splitCommand(ciCommandText);
+  const runtimeValid =
+    pullRequestCI || (ciCommand.length > 0 && capability.trim() !== "");
+  const placementValid = configPath.trim() !== "";
+  const repositoryPrepared =
+    repositoryReadiness?.usesWorkItemTags === true ||
+    (repositoryReadiness?.missingLabels.length === 0 &&
+      (repositoryReadiness.eligibleCount ?? 0) > 0);
+  const cloneCommand =
+    inspection?.provider === "github"
+      ? `gh repo clone ${inspection.owner}/${inspection.name}`
+      : inspection?.provider === "ado"
+        ? `az repos clone --organization https://dev.azure.com/${inspection.owner} --project "${inspection.project}" --repository "${inspection.name}"`
+        : "";
 
-  const connectCommand = (() => {
-    let command = `goobers connect ${connectRepo.trim() || "<owner>/<repo>"} --json`;
-    if (tokenEnvName !== defaultConnectTokenEnv) {
-      command += ` --token-env ${tokenEnvName}`;
+  const runAction = async <T,>(
+    kind: Exclude<BusyAction, null>,
+    action: () => Promise<T>,
+    apply: (result: T) => void,
+  ) => {
+    setBusy(kind);
+    setActionError(null);
+    try {
+      apply(await action());
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(null);
+      void refreshState();
     }
-    if (connectSeed) {
-      command += " --seed";
-    }
-    if (connectReplace) {
-      command += " --replace";
-    }
-    return `${command} ${instancePath}`;
-  })();
+  };
 
-  // The validate, run, and success steps are shared between the two branches
-  // (only their index, workflow name, and stage vocabulary differ).
-  const validateStep = (index: number) => (
-    <GuidedStep index={index} status={stepStatus(index)} title="Check everything">
-      <p>
-        Runs the full diagnostic pass over the instance: config validity, the harness
-        toolchain, and reachability of your repository.
-      </p>
-      <RecoveryCommand
-        command={`goobers validate --json --check-harness --check-repos ${instancePath}`}
-      />
-      <button
-        className="reconnect-button"
-        disabled={busy !== null}
-        onClick={() =>
-          void runAction(
-            "validate",
-            () => client.validate({ checkHarness: true, checkRepos: true }),
-            (result) => {
-              setValidateResult(result);
-              setValidateOk(result.exitCode === 0);
-            },
-          )
-        }
-        type="button"
-      >
-        {busy === "validate" ? "Checking…" : "Run the checks"}
-      </button>
-      {validateResult && <ValidateResult result={validateResult} />}
-    </GuidedStep>
-  );
-
-  const startRun = (workflow: "quickstart" | "default-implement") =>
+  const inspectRepository = () =>
     void runAction(
-      "run",
-      () => client.startRun({ workflow }),
-      ({ jobId }) => {
-        setJobDetail(null);
-        setStatusResult(null);
-        // Reset so the next completion re-triggers the eligibility probe
-        // effect above — eligible issues can change between runs (e.g. the
-        // user just labeled one in response to a "0 eligible" warning).
-        setProbeResult(null);
-        setActiveJobId(jobId);
+      "inspect",
+      () => client.inspectRepository(repo.trim()),
+      (result) => {
+        setInspection(result);
+        setValidateResult(null);
       },
     );
 
-  const runStep = (
-    index: number,
-    workflow: "quickstart" | "default-implement",
-    stages: readonly string[],
-    description: string,
-    probeSection?: React.ReactNode,
-  ) => (
-    <GuidedStep index={index} status={stepStatus(index)} title="Run your first autonomous workflow">
-      <p>{description}</p>
-      {probeSection}
-      <RecoveryCommand command={`goobers run ${workflow} ${instancePath}`} />
-      <button
-        className="reconnect-button"
-        disabled={busy !== null || (job !== null && !job.done)}
-        onClick={() => startRun(workflow)}
-        type="button"
-      >
-        {job !== null && !job.done
-          ? "Running…"
-          : runOutcome === "failed"
-            ? "Retry the run"
-            : runOutcome === "no-work"
-              ? "Run again"
-              : "Start the run"}
-      </button>
-      {job !== null && (
-        <RunProgress detail={jobDetail} failed={runFailed} job={job} stages={stages} />
-      )}
-    </GuidedStep>
-  );
+  const browseRepository = () =>
+    void runAction(
+      "browse",
+      async () => {
+        const selected = await client.chooseRepositoryFolder();
+        if (selected.canceled || !selected.path) {
+          return null;
+        }
+        return {
+          path: selected.path,
+          inspection: await client.inspectRepository(selected.path),
+        };
+      },
+      (result) => {
+        if (!result) {
+          return;
+        }
+        setRepositorySource("local");
+        setRepo(result.path);
+        setInspection(result.inspection);
+        setValidateResult(null);
+      },
+    );
 
-  const successStep = (
-    index: number,
-    variant: GuidedPath,
-    workflow: "quickstart" | "default-implement",
-  ) => (
-    <GuidedStep
-      index={index}
-      status={runOutcome === "success" || runOutcome === "no-work" ? "active" : "pending"}
-      title="Success"
-    >
-      {runOutcome === "success" ? (
-        <SuccessStep
-          instancePath={instancePath}
-          runId={job?.runId ?? null}
-          status={statusResult}
-          variant={variant}
-        />
-      ) : runOutcome === "no-work" ? (
-        <NoWorkStep
-          disabled={busy !== null}
-          onRerun={() => startRun(workflow)}
-          runId={job?.runId ?? null}
-        />
-      ) : (
-        <p className="guided-note">
-          Finishes the walkthrough once your first run completes: your local
-          Time-to-First-PR readout and where to go next.
-        </p>
-      )}
-    </GuidedStep>
-  );
+  const createGuidedInstance = () => {
+    if (!inspection) {
+      setActionError("Inspect the repository before creating the instance.");
+      return;
+    }
+    const guided: GuidedInitOptions = {
+      provider: inspection.provider,
+      owner: inspection.owner,
+      project: inspection.project,
+      name: inspection.name,
+      localPath: inspection.localPath,
+      configPath: configPath.trim(),
+      branch: branch.trim(),
+      workflows,
+      issueScope,
+      ...(issueScope === "assigned" && inspection.auth.identity
+        ? { assignedTo: inspection.auth.identity }
+        : {}),
+      ...(pullRequestCI
+        ? { pullRequestCI: true }
+        : implementationSelected
+        ? {
+            ciCommand,
+            requiredCapabilities: [capability.trim()],
+          }
+        : {}),
+      harness,
+      repoTokenEnv: repoTokenEnv.trim(),
+      workTrackingTokenEnv: issuesTokenEnv.trim(),
+      ...(inspection.auth.kind === "github-cli" && inspection.auth.identity
+        ? { githubCLIUser: inspection.auth.identity }
+        : {}),
+      ...(inspection.provider === "ado" ? { authKind: inspection.auth.kind } : {}),
+      ...(pullRequestsNeeded ? { pullRequestTokenEnv: prTokenEnv.trim() } : {}),
+      ...(implementationSelected ? { repoPushTokenEnv: pushTokenEnv.trim() } : {}),
+      ...(modelTokenEnv.trim()
+        ? { optionalModelTokenEnv: modelTokenEnv.trim() }
+        : {}),
+    };
+    void runAction(
+      "init",
+      () => client.initInstance({ template: "guided", guided }),
+      setInitResult,
+    );
+  };
+
+  const validate = () =>
+    void runAction(
+      "validate",
+      () => client.validate({ checkHarness: true, checkRepos: true }),
+      setValidateResult,
+    );
+
+  const prepareRepository = (apply: boolean) =>
+    void runAction(
+      "prepare",
+      () =>
+        client.prepareRepository({
+          apply,
+          createStarterIssue: apply && createStarterIssue,
+        }),
+      setRepositoryReadiness,
+    );
+
+  const canContinue = (() => {
+    switch (currentPage.id) {
+      case "welcome":
+        return true;
+      case "repository":
+        return repositoryReady && branch.trim() !== "";
+      case "placement":
+        return placementValid;
+      case "workflows":
+        return workflows.length > 0;
+      case "issue-scope":
+        return issueScope === "all" || issueScope === "assigned";
+      case "runtime":
+        return runtimeValid;
+      case "review":
+        return instanceReady;
+      case "repository-setup":
+        return repositoryPrepared;
+      case "validate":
+        return validationPassed;
+      case "complete":
+        return true;
+    }
+  })();
+
+  const pageContent = (() => {
+    switch (currentPage.id) {
+      case "welcome":
+        return (
+          <WizardPage className="guided-welcome-page" title="Welcome to Goobers">
+            <div aria-hidden="true" className="guided-mascot-orbit">
+              <AnimatedGoober />
+            </div>
+            <p className="guided-welcome-lead">
+              Let&apos;s build an AI workforce for your repository.
+            </p>
+            <p>
+              Guided init inspects how your repository works, creates a reviewable Goobers
+              configuration, and checks that it can run safely. It will not start a workflow
+              or change application code.
+            </p>
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md"
+              label="Learn how gaggles, goobers, workflows, and desired state fit together"
+            />
+            <a
+              className="guided-intro-link"
+              href="https://goobers.dev/"
+              rel="noreferrer"
+              target="_blank"
+            >
+              Watch the Goobers introduction
+            </a>
+          </WizardPage>
+        );
+      case "repository":
+        return (
+          <WizardPage title="Choose the repository">
+            <p>
+              Choose an existing local clone for full inspection, or start with a GitHub
+              or Azure DevOps URL and clone it before continuing.
+            </p>
+            <div aria-label="Repository source" className="guided-source-choice" role="group">
+              <button
+                aria-label="Local clone"
+                aria-pressed={repositorySource === "local"}
+                data-selected={repositorySource === "local"}
+                onClick={() => {
+                  setRepositorySource("local");
+                  setRepo("");
+                  setInspection(null);
+                }}
+                type="button"
+              >
+                <strong>Local clone</strong>
+                <span>Recommended for repository-aware setup</span>
+              </button>
+              <button
+                aria-label="Repository URL"
+                aria-pressed={repositorySource === "remote"}
+                data-selected={repositorySource === "remote"}
+                onClick={() => {
+                  setRepositorySource("remote");
+                  setRepo("");
+                  setInspection(null);
+                }}
+                type="button"
+              >
+                <strong>Repository URL</strong>
+                <span>Identify it first, then clone locally</span>
+              </button>
+            </div>
+            <form
+              className="guided-repository-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (repositoryReady) {
+                  setPageIndex(Math.min(pages.length - 1, pageIndex + 1));
+                  return;
+                }
+                if (repo.trim()) {
+                  inspectRepository();
+                }
+              }}
+            >
+              <div className="guided-repository-entry">
+                <TextField
+                  label={repositorySource === "local" ? "Local clone" : "Repository URL"}
+                  onChange={(value) => {
+                    setRepo(value);
+                    setInspection(null);
+                  }}
+                  placeholder={
+                    repositorySource === "local"
+                      ? "C:\\src\\my-app"
+                      : "https://github.com/owner/repository"
+                  }
+                  value={repo}
+                />
+                {repositorySource === "local" && (
+                  <button
+                    className="secondary-button guided-browse-button"
+                    disabled={busy !== null}
+                    onClick={browseRepository}
+                    type="button"
+                  >
+                    {busy === "browse" ? "Choosing…" : "Browse…"}
+                  </button>
+                )}
+              </div>
+              <button
+                className="reconnect-button"
+                disabled={busy !== null || repo.trim() === ""}
+                type="submit"
+              >
+                {busy === "inspect"
+                  ? "Inspecting…"
+                  : inspection
+                    ? "Inspect again"
+                    : repositorySource === "local"
+                      ? "Inspect clone"
+                      : "Inspect URL"}
+              </button>
+              {busy === "inspect" && (
+                <p aria-live="polite" className="guided-wait-message" role="status">
+                  Inspecting repository files and authentication…
+                </p>
+              )}
+              {busy === "browse" && (
+                <p aria-live="polite" className="guided-wait-message" role="status">
+                  Waiting for you to choose a local clone…
+                </p>
+              )}
+            </form>
+            {inspection && (
+              <>
+                <ReviewTable
+                  rows={[
+                    ["Provider", inspection.provider === "ado" ? "Azure DevOps" : "GitHub"],
+                    ["Repository", inspection.displayName],
+                    ["Local clone", inspection.localPath || "Not found"],
+                    ["Default branch", inspection.defaultBranch],
+                  ]}
+                />
+                {inspection.needsClone ? (
+                  <div className="guided-callout">
+                    <strong>Clone the repository, then inspect it again</strong>
+                    <span>Run this command from the folder where you keep source code.</span>
+                    {cloneCommand && <code>{cloneCommand}</code>}
+                  </div>
+                ) : inspection.auth.ready ? (
+                  <p className="guided-success">
+                    {inspection.provider === "ado"
+                      ? "Azure CLI authentication is ready"
+                      : "GitHub CLI authentication is ready"}
+                    {inspection.auth.identity ? ` as ${inspection.auth.identity}` : ""}.
+                  </p>
+                ) : (
+                  <div className="guided-callout">
+                    <strong>
+                      {inspection.provider === "ado"
+                        ? "Sign in, then inspect the repository again"
+                        : "GitHub authentication is required"}
+                    </strong>
+                    <span>
+                      {inspection.provider === "ado"
+                        ? "Azure CLI authentication is not ready."
+                        : "GitHub CLI authentication is not ready. Use `gh auth login`, or create a fine-grained PAT and sign in with it."}
+                    </span>
+                    {inspection.provider === "github" && (
+                      <>
+                        <a
+                          className="guided-intro-link"
+                          href={githubPATSettingsURL}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          Open GitHub fine-grained PAT settings
+                        </a>
+                        <ol className="guided-pat-steps">
+                          <li>
+                            Set <strong>Resource owner</strong> to{" "}
+                            <strong>{inspection.owner}</strong>, the account or organization
+                            that owns this repository. Keep the default personal account when
+                            it is the owner.
+                          </li>
+                          <li>
+                            Choose <strong>Only select repositories</strong>, then select{" "}
+                            <strong>{inspection.displayName}</strong>.
+                          </li>
+                          <li>
+                            Grant the least-privilege permissions in{" "}
+                            <code>docs/guides/github-token-scopes.md</code>, generate the
+                            token, then restart this wizard with{" "}
+                            <code>GH_TOKEN=&lt;your token&gt; goobers init --guided</code>.
+                          </li>
+                        </ol>
+                      </>
+                    )}
+                    {inspection.auth.remediationCommand && (
+                      <code>{inspection.auth.remediationCommand}</code>
+                    )}
+                  </div>
+                )}
+                {implementationSelected && !inspection.needsClone && (
+                  <div className="guided-repository-runtime">
+                    {inspection.stack && (
+                      <p className="guided-note">
+                        Inferred {inspection.stack} from{" "}
+                        {inspection.discovery === "copilot"
+                          ? "a read-only Copilot inspection"
+                          : "repository files"}
+                        {(inspection.evidence?.length ?? 0) > 0
+                          ? `: ${inspection.evidence?.join(", ")}`
+                          : "."}
+                      </p>
+                    )}
+                    <ReviewTable
+                      rows={[
+                        [
+                          "CI validation",
+                          pullRequestCI
+                            ? "Provider CI after the pull request opens"
+                            : ciCommand.join(" ") || "Not inferred",
+                        ],
+                        ...(!pullRequestCI
+                          ? [["Required capability", capability.trim() || "Not inferred"]]
+                          : []),
+                      ]}
+                    />
+                    <details>
+                      <summary>Change CI validation</summary>
+                      <div className="guided-fields">
+                        <label className="guided-check">
+                          <input
+                            checked={pullRequestCI}
+                            onChange={(event) => setPullRequestCI(event.target.checked)}
+                            type="checkbox"
+                          />
+                          <span>Rely on provider CI after the pull request opens.</span>
+                        </label>
+                        <TextField
+                          label="Local CI command"
+                          onChange={(value) => {
+                            setCICommandText(value);
+                            if (value.trim()) {
+                              setPullRequestCI(false);
+                            }
+                          }}
+                          placeholder="npm run ci"
+                          value={ciCommandText}
+                        />
+                        <TextField
+                          label="Required toolchain capability"
+                          onChange={setCapability}
+                          placeholder="node@20"
+                          value={capability}
+                        />
+                      </div>
+                    </details>
+                  </div>
+                )}
+              </>
+            )}
+          </WizardPage>
+        );
+      case "placement":
+        return (
+          <WizardPage title="Choose where Instance Configuration lives">
+            <p>
+              Instance Configuration is the versioned desired state for this workforce.
+              It contains <code>instance.yaml.example</code>, <code>manifest.yaml</code>,
+              and <code>gaggles/</code>. Mutable runtime state stays in a separate local
+              instance folder.
+            </p>
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/instance-placement.md"
+              label="Compare configuration and runtime placement options"
+            />
+            <div aria-label="Configuration location" className="guided-choice-grid" role="group">
+              <ChoiceCard
+                checked={configPlacement === "peer"}
+                description={`Create a neighboring folder${inspection?.peerConfigPath ? ` at ${inspection.peerConfigPath}` : ""}. This keeps Instance Configuration independent from application code.`}
+                onClick={() => setConfigPlacement("peer")}
+                recommended
+                title="Separate Instance Configuration folder"
+              />
+              <ChoiceCard
+                checked={configPlacement === "in-repo"}
+                description={`Store Instance Configuration in a goobers subtree inside the application repository${inspection?.inRepoConfigPath ? ` at ${inspection.inRepoConfigPath}` : ""}.`}
+                onClick={() => setConfigPlacement("in-repo")}
+                title="Inside the application repository"
+              />
+              <ChoiceCard
+                checked={configPlacement === "custom"}
+                description="Choose another local folder for Instance Configuration."
+                onClick={() => setConfigPlacement("custom")}
+                title="Custom location"
+              />
+            </div>
+            {configPlacement === "custom" && (
+              <TextField
+                label="Configuration folder"
+                onChange={setConfigPath}
+                placeholder="C:\src\my-app-goobers"
+                value={configPath}
+              />
+            )}
+            <p className="guided-note">
+              Track this folder with Git for change history. For a separate folder, run{" "}
+              <code>git init</code> there and push it to GitHub or Azure DevOps when ready.
+            </p>
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/tree/main/config-examples/gaggles/acme-web"
+              label="Review the canonical workflow modules"
+            />
+          </WizardPage>
+        );
+      case "workflows":
+        return (
+          <WizardPage title="Set up your first gaggle">
+            <p>
+              A gaggle is a team of goobers and workflows for one area of work. This
+              gaggle is stored in Instance Configuration under{" "}
+              <code>gaggles/{inspection?.gaggleName || "<repository>"}/</code>. Choose the
+              workflows it should start with; you can customize them later with the
+              Goobers authoring skills.
+            </p>
+            <p className="guided-note">
+              These are production-oriented canonical modules adapted from{" "}
+              <code>config-examples/gaggles/acme-web</code>. They are intentionally more
+              complete than the disposable <code>quickstart@v1</code> tutorial workflow.
+            </p>
+            <div className="guided-module-grid">
+              {workflowChoices.map((choice) => (
+                <label className="guided-module-card" data-selected={workflows.includes(choice.id)} key={choice.id}>
+                  <input
+                    checked={workflows.includes(choice.id)}
+                    disabled={choice.id === "implementation"}
+                    onChange={() =>
+                      choice.id !== "implementation" &&
+                      setWorkflows(
+                        workflows.includes(choice.id)
+                          ? workflows.filter((workflow) => workflow !== choice.id)
+                          : [...workflows, choice.id],
+                      )
+                    }
+                    type="checkbox"
+                  />
+                  <img alt="" src={choice.image} />
+                  <span>
+                    <strong>{choice.title}</strong>
+                    <span>{choice.description}</span>
+                    <small>{choice.outcome}</small>
+                    {choice.id === "implementation" && <small>Required for your first gaggle.</small>}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </WizardPage>
+        );
+      case "issue-scope":
+        return (
+          <WizardPage title="Choose which ready issues Goobers may implement">
+            <p>
+              Limit implementation to work assigned to your authenticated repository
+              identity, or allow it to pick up any issue carrying the required ready and
+              approval labels.
+            </p>
+            <fieldset className="guided-radio-group">
+              <legend>Which ready issues may implementation pick up?</legend>
+              <label data-selected={issueScope === "all"}>
+                <input
+                  checked={issueScope === "all"}
+                  name="issue-scope"
+                  onChange={() => setIssueScope("all")}
+                  type="radio"
+                />
+                <span>
+                  <strong>All ready issues</strong>
+                  <small>Any issue carrying the required ready and approval labels.</small>
+                </span>
+              </label>
+              <label data-selected={issueScope === "assigned"}>
+                <input
+                  checked={issueScope === "assigned"}
+                  name="issue-scope"
+                  onChange={() => setIssueScope("assigned")}
+                  type="radio"
+                />
+                <span>
+                  <strong>Only issues assigned to me</strong>
+                  <small>
+                    {inspection?.auth.identity
+                      ? `Limits work to issues assigned to ${inspection.auth.identity}.`
+                      : "Goobers will resolve your authenticated repository identity before creating the instance."}
+                  </small>
+                </span>
+              </label>
+            </fieldset>
+          </WizardPage>
+        );
+      case "runtime":
+        return (
+          <WizardPage title="Configure the agent runtime">
+            <p>
+              A harness runs agentic stages, while deterministic stages and gates keep
+              control of repository effects, retries, and escalation.
+            </p>
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/requirements/goober.md"
+              label="Learn how goobers, harnesses, capabilities, and instructions work"
+            />
+            <fieldset className="guided-radio-group">
+              <legend>Agent harness</legend>
+              <label data-selected={harness === "copilot"}>
+                <input
+                  checked={harness === "copilot"}
+                  name="harness"
+                  onChange={() => setHarness("copilot")}
+                  type="radio"
+                />
+                <span>
+                  <strong>GitHub Copilot CLI</strong>
+                  <small>
+                    Uses your signed-in Copilot CLI to implement, review, and customize
+                    repository work.
+                  </small>
+                </span>
+              </label>
+              <label data-selected={harness === "claude-code"}>
+                <input
+                  checked={harness === "claude-code"}
+                  name="harness"
+                  onChange={() => setHarness("claude-code")}
+                  type="radio"
+                />
+                <span>
+                  <strong>Claude Code CLI</strong>
+                  <small>
+                    Uses your signed-in Claude Code CLI for the same generated workforce
+                    roles.
+                  </small>
+                </span>
+              </label>
+            </fieldset>
+          </WizardPage>
+        );
+      case "review":
+        return (
+          <WizardPage title="Review and create the instance">
+            <ReviewTable
+              rows={[
+                ["Application repository", `${repo.trim()} (${branch.trim()})`],
+                ["Configuration files", configPath.trim()],
+                ["Runtime instance", state.instancePath],
+                ["Workflow modules", workflows.join(", ")],
+                [
+                  "Ready issue scope",
+                  issueScope === "assigned"
+                    ? `Assigned to ${inspection?.auth.identity || "authenticated user"}`
+                    : "All ready issues",
+                ],
+                ["Agent harness", harness],
+                [
+                  "CI validation",
+                  pullRequestCI ? "Provider CI after pull request" : ciCommand.join(" "),
+                ],
+                ...(!pullRequestCI
+                  ? [["Required capability", capability.trim()]]
+                  : []),
+              ]}
+            />
+            <p className="guided-note">
+              Setup writes a reviewable Instance Configuration folder, then materializes it
+              into the local runtime. The selected configuration location must be new or
+              empty; setup stops rather than replacing existing content.
+            </p>
+            <button
+              className="reconnect-button guided-create-instance-button"
+              disabled={busy !== null || instanceReady}
+              onClick={createGuidedInstance}
+              type="button"
+            >
+              {busy === "init"
+                ? "Creating…"
+                : initResult?.exitCode === 0
+                  ? "Instance created"
+                  : state.instanceExists
+                    ? "Instance already exists"
+                  : "Create Goobers instance"}
+            </button>
+            {state.instanceExists && initResult?.exitCode !== 0 && (
+              <p className="guided-note">
+                Restart clears the tutorial answers, but it does not delete Instance
+                Configuration or runtime files that were already created.
+              </p>
+            )}
+            {initResult?.stdout && <p className="guided-success">{initResult.stdout}</p>}
+          </WizardPage>
+        );
+      case "repository-setup":
+        return (
+          <WizardPage title="Prepare the repository">
+            <p>
+              Goobers uses repository labels to identify eligible work and record workflow
+              state. Check the repository first; nothing is changed until you approve it.
+            </p>
+            {!repositoryReadiness && (
+              <button
+                className="reconnect-button"
+                disabled={busy !== null}
+                onClick={() => prepareRepository(false)}
+                type="button"
+              >
+                {busy === "prepare" ? "Checking…" : "Check labels and ready issues"}
+              </button>
+            )}
+            {repositoryReadiness?.usesWorkItemTags && (
+              <div className="guided-callout">
+                <strong>Azure DevOps uses work-item tags</strong>
+                <span>
+                  These tags are created when Goobers first applies them; no repository
+                  label catalog needs to be changed.
+                </span>
+              </div>
+            )}
+            {repositoryReadiness && !repositoryReadiness.usesWorkItemTags && (
+              <>
+                <div className="guided-callout">
+                  <strong>Repository changes</strong>
+                  <span>
+                    {repositoryReadiness.missingLabels.length > 0
+                      ? `Goobers will create ${repositoryReadiness.missingLabels.length} missing label(s). Existing labels will not be modified.`
+                      : "All required labels already exist. Existing labels were not modified."}
+                  </span>
+                </div>
+                <div className="guided-badges">
+                  {repositoryReadiness.missingLabels.map((label) => (
+                    <span className="guided-badge guided-badge-missing" key={label}>
+                      {label}
+                    </span>
+                  ))}
+                </div>
+                <p>
+                  Eligible ready issues:{" "}
+                  <strong>{repositoryReadiness.eligibleCount ?? "unknown"}</strong>
+                </p>
+                {(repositoryReadiness.eligibleCount ?? 0) === 0 && (
+                  <label className="guided-check">
+                    <input
+                      checked={createStarterIssue}
+                      onChange={(event) => setCreateStarterIssue(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>
+                      Create one safe starter issue to add a <code>HELLO-GOOBERS.md</code>{" "}
+                      file, with the required ready and approval labels.
+                    </span>
+                  </label>
+                )}
+                {!repositoryPrepared && (
+                  <div className="guided-inline-actions">
+                    <button
+                      className="reconnect-button"
+                      disabled={
+                        busy !== null ||
+                        ((repositoryReadiness.eligibleCount ?? 0) === 0 &&
+                          !createStarterIssue)
+                      }
+                      onClick={() => prepareRepository(true)}
+                      type="button"
+                    >
+                      {busy === "prepare"
+                        ? "Preparing…"
+                        : (repositoryReadiness.eligibleCount ?? 0) === 0
+                          ? "Create labels and starter issue"
+                          : "Create missing labels"}
+                    </button>
+                    <button
+                      className="secondary-button"
+                      disabled={busy !== null}
+                      onClick={() => prepareRepository(false)}
+                      type="button"
+                    >
+                      Check again
+                    </button>
+                  </div>
+                )}
+                {repositoryPrepared && (
+                  <p className="guided-success">
+                    The repository is ready and has eligible work for the first run.
+                  </p>
+                )}
+              </>
+            )}
+          </WizardPage>
+        );
+      case "validate":
+        return (
+          <WizardPage title="Check the setup">
+            <p>
+              Goobers will validate the configuration, confirm the selected harness is
+              usable, and verify access to the repository.
+            </p>
+            <RecoveryCommand
+              command={`goobers validate --check-harness --check-repos ${state.instancePath}`}
+            />
+            <button
+              className="reconnect-button"
+              disabled={busy !== null}
+              onClick={validate}
+              type="button"
+            >
+              {busy === "validate" ? "Checking…" : "Run checks"}
+            </button>
+            {validateResult && <ValidationResult result={validateResult} />}
+          </WizardPage>
+        );
+      case "complete":
+        const customizationPrompts = [
+          `Use the goobers-dsl-author skill to review the generated workflows for ${repo.trim() || "my repository"} and tailor them to the repository's actual contribution and CI conventions.`,
+          `Use the goobers-dsl-author skill to strengthen the implementation workflow for ${repo.trim() || "my repository"} while preserving least-privilege capabilities.`,
+          `Use the goobers-dsl-author skill to propose one additional workflow that would be valuable for ${repo.trim() || "this repository"}, but do not write files until I approve the state graph and capabilities.`,
+        ];
+        return (
+          <WizardPage title="Goobers is ready">
+            <p>
+              The configuration source and runtime instance are prepared and validated.
+              Review the generated definitions before starting the daemon or running a
+              workflow.
+            </p>
+            <h3>Next commands</h3>
+            <RecoveryCommand command={`goobers validate --source-tree "${configPath.trim()}"`} />
+            <RecoveryCommand command={`goobers config materialize "${state.instancePath}"`} />
+            <RecoveryCommand command={`goobers up "${state.instancePath}"`} />
+            <RecoveryCommand command={`goobers run implementation "${state.instancePath}"`} />
+            <RecoveryCommand command={`goobers dashboard "${state.instancePath}"`} />
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md"
+              label="Read the real-repository onboarding and operating guide"
+            />
+            <h3>Customize it with an agent</h3>
+            <p>
+              Copy one of these prompts into GitHub Copilot CLI or Claude Code from your
+              configuration repository.
+            </p>
+            <div className="guided-prompt-list">
+              {customizationPrompts.map((prompt) => (
+                <code key={prompt}>{prompt}</code>
+              ))}
+            </div>
+          </WizardPage>
+        );
+    }
+  })();
 
   return (
-    <>
-      <header className="page-heading">
-        <p className="page-kicker">Guided onboarding</p>
-        <h1>Getting Started</h1>
-        <p>
-          From an empty folder to your first autonomous pull request — against the repository
-          you already work in, or a disposable sample. Every button below runs the exact CLI
-          command shown beside it — this page is a wrapper over the CLI, nothing more.
-        </p>
-      </header>
-
+    <div className="guided-wizard">
       {actionError && (
         <section className="daemon-state daemon-state-error guided-action-error" role="alert">
           <div>
-            <h1>Action failed to start</h1>
+            <h1>That step could not be completed</h1>
             <p>{actionError}</p>
           </div>
         </section>
       )}
 
-      <ol className="guided-steps">
-        <GuidedStep index={0} status={stepStatus(0)} title="Welcome & prerequisites">
-          <p>
-            This walkthrough runs one autonomous workflow that ends in a real pull request.
-            Everything this page does is the printed CLI command shown in each step's chip;
-            the manual steps are called out explicitly and stay yours.
-          </p>
-          <ul className="guided-checklist">
-            <li>A GitHub account and a repository to work against.</li>
-            <li>Copilot CLI installed and signed in.</li>
-            <li>
-              <code>export GOOBERS_GITHUB_TOKEN=...</code> — and optionally{" "}
-              <code>GOOBERS_GITHUB_ISSUES_TOKEN</code> for seeding starter issues.
-            </li>
-            <li>
-              Connecting your own repository? Its own workflow determines any further
-              tooling it needs — the checks step below (<code>goobers validate
-              --check-harness --check-repos</code>) confirms what your connected instance
-              actually requires.
-            </li>
-          </ul>
-          <div aria-label="Token environment status" className="guided-badges">
-            <EnvBadge name="GOOBERS_GITHUB_TOKEN" present={state.env.goobersGithubToken} />
-            <EnvBadge
-              name="GOOBERS_GITHUB_ISSUES_TOKEN"
-              present={state.env.goobersGithubIssuesToken}
-            />
+      <main className="guided-wizard-content">{pageContent}</main>
+
+      <nav aria-label="Setup progress" className="guided-wizard-footer">
+        <div className="guided-footer-actions">
+          <button
+            className="secondary-button"
+            disabled={pageIndex === 0 || busy !== null}
+            onClick={() => setPageIndex(Math.max(0, pageIndex - 1))}
+            type="button"
+          >
+            Back
+          </button>
+          <button
+            className="guided-restart-button"
+            disabled={busy !== null}
+            onClick={() => {
+              if (!window.confirm("Restart setup? Your selections will be cleared. Files and repository changes already created will remain.")) {
+                return;
+              }
+              for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
+                const key = window.sessionStorage.key(index);
+                if (key?.startsWith("goobers-wizard-")) {
+                  window.sessionStorage.removeItem(key);
+                }
+              }
+              window.location.reload();
+            }}
+            type="button"
+          >
+            Restart
+          </button>
+        </div>
+        <div className="guided-wizard-progress">
+          <div>
+            <span>Step {currentPage.step} of {wizardStepCount}</span>
           </div>
-          <p className="guided-note">
-            Token badges reflect the getting-started server's own environment as of when it
-            launched — not this machine's environment generally, and not anything exported
-            afterward. Export before running <code>goobers getting-started</code>, or restart
-            it after exporting. Token values never reach this page — only whether each
-            variable is set.
-          </p>
-          {!welcomeDone && (
-            <button
-              className="reconnect-button"
-              onClick={() => setWelcomeDone(true)}
-              type="button"
-            >
-              Start the walkthrough
-            </button>
-          )}
-        </GuidedStep>
-
-        <GuidedStep index={1} status={stepStatus(1)} title="Choose your path">
-          <p>
-            Two ways through. You can switch later — switching resets only this page's step
-            state for the branch; nothing on disk is touched, and what the server already
-            attests to stays done.
-          </p>
-          <div aria-label="Path chooser" className="guided-chooser" role="group">
-            <button
-              aria-pressed={path === "own-repo"}
-              className="guided-chooser-card"
-              data-selected={path === "own-repo"}
-              onClick={() => choosePath("own-repo")}
-              type="button"
-            >
-              <span className="guided-chooser-recommended">Recommended</span>
-              <span className="guided-chooser-title">Connect your repository</span>
-              <span className="guided-chooser-copy">
-                Your repo, your issues, a real first PR.
-              </span>
-            </button>
-            <button
-              aria-pressed={path === "sample"}
-              className="guided-chooser-card"
-              data-selected={path === "sample"}
-              onClick={() => choosePath("sample")}
-              type="button"
-            >
-              <span className="guided-chooser-title">Try the disposable sample</span>
-              <span className="guided-chooser-copy">
-                A zero-stakes tutorial against a throwaway repo.
-              </span>
-            </button>
+          <div
+            aria-valuemax={wizardStepCount}
+            aria-valuemin={1}
+            aria-valuenow={currentPage.step}
+            className="guided-progress-track"
+            role="progressbar"
+          >
+            <span style={{ width: `${(currentPage.step / wizardStepCount) * 100}%` }} />
           </div>
-        </GuidedStep>
-
-        {path === "own-repo" && (
-          <>
-            <GuidedStep index={2} status={stepStatus(2)} title="Initialize a starter instance">
-              <p>
-                Creates a starter instance at <code>{instancePath}</code>: one coder goober
-                driving the <code>default-implement</code> workflow — claim an issue,
-                implement it, push a branch, open a PR.
-              </p>
-              <RecoveryCommand command={`goobers init ${instancePath}`} />
-              <button
-                className="reconnect-button"
-                disabled={busy !== null}
-                onClick={() =>
-                  void runAction(
-                    "init",
-                    () => client.initInstance({ template: "starter" }),
-                    setInitResult,
-                  )
-                }
-                type="button"
-              >
-                {busy === "init" ? "Initializing…" : "Initialize the starter instance"}
-              </button>
-              {initResult && initResult.exitCode !== 0 && (
-                <GuidedStderr
-                  label="init failed"
-                  text={initResult.stderr || initResult.stdout}
-                />
-              )}
-              {initDone && (
-                <p className="guided-note">
-                  <strong>What you just created:</strong> <code>instance.yaml</code> and the{" "}
-                  <code>config/</code> tree are the instance's declarative desired state —
-                  which repositories it works on, which gaggles, workflows, and goobers
-                  exist. The daemon reconciles running state against these files; they are
-                  the single source of truth.
-                </p>
-              )}
-            </GuidedStep>
-
-            <GuidedStep index={3} status={stepStatus(3)} title="Connect your repository">
-              <p>
-                Rewrites the starter placeholders to name your repository — in{" "}
-                <code>instance.yaml</code> and the gaggle's project/backlog — then checks it
-                is reachable. Only the token's environment variable <em>name</em> is
-                recorded; the value itself never leaves your shell.
-              </p>
-              <RecoveryCommand command={connectCommand} />
-              <div className="guided-fields">
-                <label className="guided-field">
-                  <span>Repository (owner/repo)</span>
-                  <input
-                    onChange={(event) => setConnectRepo(event.target.value)}
-                    placeholder="your-org/your-repo"
-                    type="text"
-                    value={connectRepo}
-                  />
-                </label>
-                <label className="guided-field">
-                  <span>Token environment variable (a name, never the token value)</span>
-                  <input
-                    onChange={(event) => setConnectTokenEnv(event.target.value)}
-                    placeholder={defaultConnectTokenEnv}
-                    type="text"
-                    value={connectTokenEnv}
-                  />
-                </label>
-                <label className="guided-check">
-                  <input
-                    checked={connectSeed}
-                    onChange={(event) => setConnectSeed(event.target.checked)}
-                    type="checkbox"
-                  />
-                  <span>
-                    Seed the backlog: creates the labels the workforce's backlog selector
-                    actually filters on, plus one safe starter issue — or skip and label one
-                    of <strong>your</strong> real issues with <code>goobers</code> instead.
-                  </span>
-                </label>
-                {connectResult !== null && connectResult.exitCode !== 0 && (
-                  <label className="guided-check">
-                    <input
-                      checked={connectReplace}
-                      onChange={(event) => setConnectReplace(event.target.checked)}
-                      type="checkbox"
-                    />
-                    <span>
-                      Re-run with <code>--replace</code> (rewrites a repository that is
-                      already connected)
-                    </span>
-                  </label>
-                )}
-              </div>
-              <button
-                className="reconnect-button"
-                disabled={busy !== null || !repoShapeValid}
-                onClick={() =>
-                  void runAction(
-                    "connect",
-                    () =>
-                      client.connect({
-                        repo: connectRepo.trim(),
-                        ...(tokenEnvName !== defaultConnectTokenEnv
-                          ? { tokenEnv: tokenEnvName }
-                          : {}),
-                        ...(connectSeed ? { seed: true } : {}),
-                        ...(connectReplace ? { replace: true } : {}),
-                      }),
-                    setConnectResult,
-                  )
-                }
-                type="button"
-              >
-                {busy === "connect" ? "Connecting…" : "Connect the repository"}
-              </button>
-              {connectRepo.trim() !== "" && !repoShapeValid && (
-                <p className="guided-note">
-                  Enter the repository as <code>owner/repo</code>.
-                </p>
-              )}
-              {connectedRepo !== null && (
-                <p className="guided-note">
-                  Connected to <code>{connectedRepo}</code>.
-                </p>
-              )}
-              {connectResult && <ConnectResult result={connectResult} />}
-            </GuidedStep>
-
-            <GuidedStep index={4} manual status={stepStatus(4)} title="Export the token">
-              <p>
-                <strong>Manual step.</strong> The instance reads your GitHub token from{" "}
-                <code>{state.env.tokenEnv}</code>, the environment variable named at connect
-                time — but only from the getting-started server's OWN process, fixed at
-                launch. Export it in the shell that will LAUNCH{" "}
-                <code>goobers getting-started</code>, then (re)start that command; exporting
-                in the already-running shell, or any other shell, does not reach this
-                process. Only presence is checked — the value never reaches this page.
-              </p>
-              <RecoveryCommand command={`export ${state.env.tokenEnv}=...`} />
-              <p className="guided-note">
-                Then relaunch: <code>goobers getting-started</code> resumes this walkthrough
-                from the instance you already created.
-              </p>
-              <div aria-label="Connect token status" className="guided-badges">
-                <EnvBadge
-                  name={state.env.tokenEnv}
-                  present={state.env.goobersGithubToken}
-                />
-              </div>
-              <label className="guided-check">
-                <input
-                  checked={tokenExported}
-                  onChange={(event) => setTokenExported(event.target.checked)}
-                  type="checkbox"
-                />
-                <span>I exported the token</span>
-              </label>
-            </GuidedStep>
-
-            {validateStep(5)}
-            {runStep(
-              6,
-              "default-implement",
-              defaultImplementRunStages,
-              "Starts one default-implement workflow run: your coder goober claims a labeled issue from your backlog, implements it, pushes a branch, and opens a pull request on your repository.",
-            )}
-            {successStep(7, "own-repo", "default-implement")}
-          </>
+        </div>
+        {currentPage.id === "complete" ? (
+          <span aria-hidden="true" />
+        ) : (
+          <button
+            className="reconnect-button"
+            disabled={!canContinue || busy !== null}
+            onClick={() => setPageIndex(Math.min(pages.length - 1, pageIndex + 1))}
+            type="button"
+          >
+            Continue
+          </button>
         )}
-
-        {path === "sample" && (
-          <>
-            <GuidedStep index={2} status={stepStatus(2)} title="Materialize the sample">
-              <p>
-                Writes the embedded <code>getting-started-task-api</code> sample to{" "}
-                <code>{samplePath}</code>. With a work-tracking repo named, it also seeds the
-                starter labels and issues there.
-              </p>
-              <p className="guided-note">
-                The sample is a small Node.js/TypeScript project — its own CI expects
-                Node.js &gt;= 20 and npm on <code>PATH</code> to build and test it. Nothing
-                here enforces that for you; it's the sample's own tooling, not this
-                walkthrough's.
-              </p>
-              <RecoveryCommand
-                command={stubSampleCommand(samplePath, workTracking, useMainToken, forceRerun)}
-              />
-              <div className="guided-fields">
-                <label className="guided-field">
-                  <span>Work-tracking repo (optional, owner/repo)</span>
-                  <input
-                    onChange={(event) => setWorkTracking(event.target.value)}
-                    placeholder="your-org/your-repo"
-                    type="text"
-                    value={workTracking}
-                  />
-                </label>
-                <label className="guided-check">
-                  <input
-                    checked={useMainToken}
-                    onChange={(event) => setUseMainToken(event.target.checked)}
-                    type="checkbox"
-                  />
-                  <span>
-                    Seed with <code>GOOBERS_GITHUB_TOKEN</code> instead (sets{" "}
-                    <code>--token-env</code>; seeding otherwise uses{" "}
-                    <code>GOOBERS_GITHUB_ISSUES_TOKEN</code>)
-                  </span>
-                </label>
-                {stubFailed && (
-                  <label className="guided-check">
-                    <input
-                      checked={forceRerun}
-                      onChange={(event) => setForceRerun(event.target.checked)}
-                      type="checkbox"
-                    />
-                    <span>
-                      Re-run with <code>--force</code> (replaces conflicting files at the
-                      destination)
-                    </span>
-                  </label>
-                )}
-              </div>
-              <button
-                className="reconnect-button"
-                disabled={busy !== null}
-                onClick={() =>
-                  void runAction(
-                    "stub-sample",
-                    () =>
-                      client.stubSample({
-                        ...(workTracking.trim() !== ""
-                          ? { workTracking: workTracking.trim() }
-                          : {}),
-                        ...(useMainToken ? { tokenEnv: "GOOBERS_GITHUB_TOKEN" } : {}),
-                        ...(forceRerun ? { force: true } : {}),
-                      }),
-                    setStubResult,
-                  )
-                }
-                type="button"
-              >
-                {busy === "stub-sample" ? "Materializing…" : "Materialize the sample"}
-              </button>
-              {stubResult && <StubSampleResult result={stubResult} />}
-            </GuidedStep>
-
-            <GuidedStep
-              index={3}
-              manual
-              status={stepStatus(3)}
-              title="Create the disposable GitHub repo & push"
-            >
-              <p>
-                <strong>Manual step.</strong> The sample needs a remote to open pull requests
-                against. This repository is yours and disposable — Goobers never creates
-                remotes, never pushes, and never touches a repository you did not explicitly
-                name. Run these in a terminal (pick any owner/repo you own):
-              </p>
-              <ol className="guided-commands">
-                <li>
-                  <code>gh repo create &lt;owner&gt;/&lt;repo&gt; --private</code>
-                </li>
-                <li>
-                  <code>git -C {samplePath} init</code>
-                </li>
-                <li>
-                  <code>git -C {samplePath} add .</code>
-                </li>
-                <li>
-                  <code>git -C {samplePath} commit -m &quot;getting-started sample&quot;</code>
-                </li>
-                <li>
-                  <code>git -C {samplePath} branch -M main</code>
-                </li>
-                <li>
-                  <code>
-                    git -C {samplePath} remote add origin
-                    https://github.com/&lt;owner&gt;/&lt;repo&gt;.git
-                  </code>
-                </li>
-                <li>
-                  <code>git -C {samplePath} push -u origin main</code>
-                </li>
-              </ol>
-              <p className="guided-note">
-                Then either enter the owner/repo in step 3 above and re-run seeding to create
-                the starter issues there, or continue — you can seed later.
-              </p>
-              <label className="guided-check">
-                <input
-                  checked={pushDone}
-                  onChange={(event) => setPushDone(event.target.checked)}
-                  type="checkbox"
-                />
-                <span>I created the repository and pushed the sample</span>
-              </label>
-            </GuidedStep>
-
-            <GuidedStep index={4} status={stepStatus(4)} title="Initialize the tutorial instance">
-              <p>
-                Creates the tutorial instance from the quickstart template at{" "}
-                <code>{instancePath}</code>.
-              </p>
-              <RecoveryCommand command={`goobers init --template=quickstart ${instancePath}`} />
-              <button
-                className="reconnect-button"
-                disabled={busy !== null}
-                onClick={() =>
-                  void runAction(
-                    "init",
-                    () => client.initInstance({ template: "quickstart" }),
-                    setInitResult,
-                  )
-                }
-                type="button"
-              >
-                {busy === "init" ? "Initializing…" : "Initialize the instance"}
-              </button>
-              {initResult && initResult.exitCode !== 0 && (
-                <GuidedStderr
-                  label="init failed"
-                  text={initResult.stderr || initResult.stdout}
-                />
-              )}
-              {initDone && (
-                <p className="guided-note">
-                  <strong>What you just created:</strong> <code>instance.yaml</code> and the{" "}
-                  <code>config/</code> tree are the instance's declarative desired state —
-                  which repositories it works on, which gaggles, workflows, and goobers
-                  exist. The daemon reconciles running state against these files; they are
-                  the single source of truth. Edits are plain file edits, reviewable and
-                  versionable like any other code.
-                </p>
-              )}
-            </GuidedStep>
-
-            <GuidedStep index={5} manual status={stepStatus(5)} title="Point it at your repo">
-              <p>
-                <strong>Manual step.</strong> The quickstart template ships with{" "}
-                <code>your-org/your-repo</code> placeholders. Edit them to name the repository
-                you created in step 4:
-              </p>
-              <ul className="guided-checklist">
-                <li>
-                  <code>tutorial-instance/instance.yaml</code> — set{" "}
-                  <code>repos[0].owner</code> (<code>your-org</code>) and{" "}
-                  <code>repos[0].name</code> (<code>your-repo</code>).
-                </li>
-                <li>
-                  <code>tutorial-instance/config/gaggles/example/gaggle.yaml</code> — set{" "}
-                  <code>spec.project.owner</code>/<code>spec.project.name</code> and{" "}
-                  <code>spec.backlog.project</code> (<code>your-org/your-repo</code>).
-                </li>
-                <li>
-                  Make sure <code>{state.env.tokenEnv}</code> is exported in the shell that
-                  will LAUNCH <code>goobers getting-started</code>, then (re)start that
-                  command — the instance's token ref reads it from the getting-started
-                  server's own process environment, fixed at launch, not from any shell an
-                  export happens in afterward.
-                </li>
-              </ul>
-              <label className="guided-check">
-                <input
-                  checked={placeholdersDone}
-                  onChange={(event) => setPlaceholdersDone(event.target.checked)}
-                  type="checkbox"
-                />
-                <span>I edited the placeholders and exported the token</span>
-              </label>
-            </GuidedStep>
-
-            {validateStep(6)}
-            {runStep(
-              7,
-              "quickstart",
-              quickstartRunStages,
-              "Starts one quickstart workflow run: an agent picks up a starter issue, implements it, reviews it, runs CI, and opens a pull request on your repository.",
-              <BacklogProbeWarning
-                checking={probeChecking}
-                onRecheck={() => void checkBacklogProbe()}
-                result={probeResult}
-              />,
-            )}
-            {successStep(8, "sample", "quickstart")}
-          </>
-        )}
-      </ol>
-    </>
+      </nav>
+    </div>
   );
 }
 
-function GuidedStep({
+function WizardPage({
   children,
-  index,
-  manual = false,
-  status,
+  className = "",
   title,
 }: {
   children: React.ReactNode;
-  index: number;
-  manual?: boolean;
-  status: StepStatus;
+  className?: string;
   title: string;
 }) {
   return (
-    <li className="guided-step content-section" data-state={status}>
-      <div className="guided-step-header">
-        <span aria-hidden="true" className="guided-step-index">
-          {index + 1}
-        </span>
-        <h2>{title}</h2>
-        {manual && <span className="guided-manual-mark">manual</span>}
-        <span className={`guided-step-state guided-step-state-${status}`}>
-          {stepStatusLabel[status]}
-        </span>
-      </div>
-      <div className="guided-step-body">{children}</div>
-    </li>
+    <section className={`content-section guided-wizard-page ${className}`.trim()}>
+      <h2>{title}</h2>
+      {children}
+    </section>
   );
 }
 
-const stepStatusLabel: Record<StepStatus, string> = {
-  pending: "Pending",
-  active: "Active",
-  done: "Done",
-  failed: "Failed",
-};
-
-function EnvBadge({ name, present }: { name: string; present: boolean }) {
+function DocumentationLink({ href, label }: { href: string; label: string }) {
   return (
-    <span
-      className={present ? "guided-badge guided-badge-set" : "guided-badge guided-badge-missing"}
+    <a className="guided-intro-link" href={href} rel="noreferrer" target="_blank">
+      {label}
+    </a>
+  );
+}
+
+function ChoiceCard({
+  checked,
+  description,
+  onClick,
+  recommended = false,
+  title,
+}: {
+  checked: boolean;
+  description: string;
+  onClick: () => void;
+  recommended?: boolean;
+  title: string;
+}) {
+  return (
+    <button
+      aria-pressed={checked}
+      className="guided-choice-card"
+      data-selected={checked}
+      onClick={onClick}
+      type="button"
     >
-      <code>{name}</code> {present ? "set" : "not set"}
-    </span>
+      {recommended && <span className="guided-choice-recommendation">Recommended</span>}
+      <strong>{title}</strong>
+      <span>{description}</span>
+    </button>
   );
 }
 
-function stubSampleCommand(
-  samplePath: string,
-  workTracking: string,
-  useMainToken: boolean,
-  force: boolean,
-): string {
-  let command = `goobers onboarding stub-sample --destination ${samplePath} --json`;
-  if (workTracking.trim() !== "") {
-    command += ` --work-tracking ${workTracking.trim()}`;
-  }
-  if (useMainToken) {
-    command += " --token-env GOOBERS_GITHUB_TOKEN";
-  }
-  if (force) {
-    command += " --force";
-  }
-  return command;
-}
-
-const pendingIssuePattern = /^issue:(.+) \(pending: (.+)\)$/;
-
-/** The created/updated/skipped lists of an onboarding action envelope, with
- *  pending seed entries (skipped `issue:<x> (pending: <why>)`) rendered as the
- *  established non-error pending state. */
-function EnvelopeLists({ envelope }: { envelope: OnboardingActionEnvelope | null }) {
-  const created = envelope?.created ?? [];
-  const updated = envelope?.updated ?? [];
-  const skipped = envelope?.skipped ?? [];
-  const pending = skipped
-    .map((entry) => pendingIssuePattern.exec(entry))
-    .filter((match): match is RegExpExecArray => match !== null);
-  const plainSkipped = skipped.filter((entry) => !pendingIssuePattern.test(entry));
-  return (
-    <div className="guided-result">
-      {created.length > 0 && (
-        <div>
-          <p className="section-kicker">Created</p>
-          <ul className="guided-entry-list">
-            {created.map((entry) => (
-              <li key={entry}>
-                <code>{entry}</code>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {updated.length > 0 && (
-        <div>
-          <p className="section-kicker">Updated</p>
-          <ul className="guided-entry-list">
-            {updated.map((entry) => (
-              <li key={entry}>
-                <code>{entry}</code>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {plainSkipped.length > 0 && (
-        <div>
-          <p className="section-kicker">Skipped (already present)</p>
-          <ul className="guided-entry-list">
-            {plainSkipped.map((entry) => (
-              <li key={entry}>
-                <code>{entry}</code>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {pending.length > 0 && (
-        <div>
-          <p className="section-kicker">Pending seeds</p>
-          <ul className="guided-entry-list">
-            {pending.map((match) => (
-              <li className="guided-pending" key={match[0]}>
-                <code>issue:{match[1]}</code>
-                <span className="guided-pending-reason">pending: {match[2]}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="guided-note">
-            Pending is not an error: these starter issues were held back (usually because no
-            seeding token was available). Export the token and re-run this step to seed them.
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StubSampleResult({
-  result,
+function TextField({
+  label,
+  onChange,
+  placeholder,
+  value,
 }: {
-  result: GuidedEnvelopeResult<OnboardingActionEnvelope>;
+  label: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  value: string;
 }) {
-  if (result.exitCode !== 0) {
-    return (
-      <GuidedStderr
-        label="stub-sample failed (likely a conflicting file at the destination)"
-        text={result.stderr || "The sample was not materialized."}
-      />
-    );
-  }
-  return <EnvelopeLists envelope={result.envelope} />;
-}
-
-function ConnectResult({
-  result,
-}: {
-  result: GuidedEnvelopeResult<OnboardingActionEnvelope>;
-}) {
-  if (result.exitCode !== 0) {
-    return (
-      <GuidedStderr
-        label="connect refused"
-        text={result.stderr || "The repository was not connected."}
-      />
-    );
-  }
-  return <EnvelopeLists envelope={result.envelope} />;
-}
-
-function ValidateResult({ result }: { result: GuidedEnvelopeResult<DiagnosticsEnvelope> }) {
-  const findings = result.envelope?.findings ?? [];
-  if (result.exitCode === 0) {
-    return (
-      <div className="guided-result guided-all-clear" role="status">
-        <p>
-          <strong>All systems go.</strong> Configuration, harness, and repository checks
-          passed
-          {findings.length > 0 ? ` with ${findings.length} advisory finding(s) below.` : "."}
-        </p>
-        {findings.length > 0 && <FindingsTable findings={findings} />}
-      </div>
-    );
-  }
   return (
-    <div className="guided-result">
-      {findings.length > 0 ? (
-        <FindingsTable findings={findings} />
-      ) : (
-        <GuidedStderr label="validate failed" text={result.stderr || "No findings returned."} />
-      )}
-    </div>
+    <label className="guided-field">
+      <span>{label}</span>
+      <input
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        type="text"
+        value={value}
+      />
+    </label>
   );
 }
 
-function FindingsTable({ findings }: { findings: DiagnosticsFinding[] }) {
+function ReviewTable({ rows }: { rows: string[][] }) {
   return (
-    <div aria-label="Validation findings" className="data-table guided-findings" role="table">
-      <div className="data-header guided-findings-row" role="row">
-        <span role="columnheader">Severity</span>
-        <span role="columnheader">Code</span>
-        <span role="columnheader">File</span>
-        <span role="columnheader">Message</span>
-      </div>
-      {findings.map((finding, index) => (
-        <div
-          className="data-row guided-findings-row"
-          key={`${finding.code}-${finding.file}-${index}`}
-          role="row"
-        >
-          <span role="cell">{finding.severity}</span>
-          <span className="mono" role="cell">
-            {finding.code}
-          </span>
-          <span className="mono" role="cell">
-            {finding.file}
-          </span>
-          <span role="cell">{finding.message}</span>
+    <dl className="guided-review">
+      {rows.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{value}</dd>
         </div>
       ))}
-    </div>
+    </dl>
   );
 }
 
-function RunProgress({
-  detail,
-  failed,
-  job,
-  stages,
-}: {
-  detail: GuidedJobDetail | null;
-  failed: boolean;
-  job: { done: boolean; exitCode: number | null; runId: string | null };
-  stages: readonly string[];
-}) {
-  const output = detail?.output ?? [];
-  const stageStates = useMemo(() => runStageStates(output, stages), [output, stages]);
-  return (
-    <div className="guided-result">
-      {job.runId && (
-        <p className="guided-run-link">
-          <a href={`#/run/${encodeURIComponent(job.runId)}`}>
-            Watch run {job.runId} live →
-          </a>
-        </p>
-      )}
-      {stageStates && (
-        <div aria-label="Run stage progress" className="guided-stage-row">
-          {stages.map((stage) => (
-            <span
-              className={`guided-stage guided-stage-${stageStates[stage]}`}
-              data-state={stageStates[stage]}
-              key={stage}
-            >
-              {stage}
-            </span>
-          ))}
-        </div>
-      )}
-      {output.length > 0 && <OutputTail lines={output} />}
-      {failed && (
-        <p className="guided-note guided-failed-note" role="alert">
-          The run exited with code {job.exitCode}. Inspect the output above, fix what it
-          points at (most often the repository connection or the token export), and retry.
-        </p>
-      )}
-    </div>
-  );
-}
-
-function runStageStates(
-  output: string[],
-  stages: readonly string[],
-): Record<string, "pending" | "running" | "done"> | null {
-  const states = Object.fromEntries(stages.map((stage) => [stage, "pending"])) as Record<
-    string,
-    "pending" | "running" | "done"
-  >;
-  let sawAny = false;
-  for (const line of output) {
-    const match = /^stage (\S+) (started|finished)\b/.exec(line);
-    if (!match) {
-      continue;
-    }
-    const stage = match[1];
-    if (!(stage in states)) {
-      continue;
-    }
-    sawAny = true;
-    states[stage] = match[2] === "finished" ? "done" : "running";
-  }
-  return sawAny ? states : null;
-}
-
-/** The live output tail, autoscrolled to the newest line. */
-function OutputTail({ lines }: { lines: string[] }) {
-  const pre = useRef<HTMLPreElement>(null);
-  useEffect(() => {
-    if (pre.current) {
-      pre.current.scrollTop = pre.current.scrollHeight;
-    }
-  }, [lines]);
-  return (
-    <pre className="code-block guided-output" ref={pre}>
-      {lines.join("\n")}
-    </pre>
-  );
-}
-
-/** #2638: the read-only pre-run probe's result, rendered inside the Run step
- *  BEFORE the user clicks Start — distinct from NoWorkStep below, which
- *  reports what a run that already happened found (or didn't). Renders
- *  nothing when there's genuinely nothing to say yet: no check has run, or
- *  the check couldn't run because no issues token is exported (that's the
- *  earlier "export the token" step's job to flag, not this one's). */
-function BacklogProbeWarning({
-  checking,
-  onRecheck,
+function ValidationResult({
   result,
 }: {
-  checking: boolean;
-  onRecheck: () => void;
-  result: GuidedProbeResult | null;
+  result: { exitCode: number; envelope: DiagnosticsEnvelope | null; stderr: string };
 }) {
-  if (result === null) {
-    return checking ? <p className="guided-note">Checking for eligible issues…</p> : null;
+  if (result.exitCode === 0) {
+    return <p className="guided-success">All configuration, harness, and repository checks passed.</p>;
   }
-  if (result.eligibleCount === null) {
-    return null;
-  }
-  if (result.eligibleCount > 0) {
-    return (
-      <p className="guided-note">
-        {result.eligibleCount} eligible {result.eligibleCount === 1 ? "issue" : "issues"} found —
-        ready to run.
-      </p>
-    );
-  }
-  return (
-    <div className="guided-note guided-failed-note" role="alert">
-      <p>
-        <strong>0 eligible issues found.</strong> This workflow only claims issues labeled{" "}
-        <code>goobers:approved</code> and <code>goobers:ready</code> — starting the run now would
-        likely finish without opening a pull request. Label an issue (the sample repository
-        includes one to label), then check again.
-      </p>
-      <button className="reconnect-button" disabled={checking} onClick={onRecheck} type="button">
-        {checking ? "Checking…" : "Check again"}
-      </button>
-    </div>
-  );
-}
-
-/** #2638: the run completed (exit 0) but never reached the "open-pr" stage —
- *  no eligible backlog item was found, so nothing was implemented or opened.
- *  Rendered instead of SuccessStep, never alongside it — a clean exit with
- *  no PR is not the "first autonomous PR" the walkthrough promises. */
-function NoWorkStep({
-  disabled,
-  onRerun,
-  runId,
-}: {
-  disabled: boolean;
-  onRerun: () => void;
-  runId: string | null;
-}) {
-  return (
-    <div className="guided-result" role="status">
-      <p>
-        <strong>No eligible issues found.</strong> The run finished without an error, but no
-        issue in your backlog carried the labels this workflow claims from — so nothing was
-        implemented and no pull request was opened.
-      </p>
-      <p className="guided-note">
-        Label an issue (or seed a new one), then re-run. Nothing else in the walkthrough needs
-        to change.
-      </p>
-      <button className="reconnect-button" disabled={disabled} onClick={onRerun} type="button">
-        Re-run
-      </button>
-      {runId && (
-        <p className="guided-run-link">
-          <a href={`#/run/${encodeURIComponent(runId)}`}>Inspect run {runId} →</a>
-        </p>
-      )}
-    </div>
-  );
-}
-
-function SuccessStep({
-  instancePath,
-  runId,
-  status,
-  variant,
-}: {
-  instancePath: string;
-  runId: string | null;
-  status: GuidedEnvelopeResult<StatusEnvelope> | null;
-  variant: GuidedPath;
-}) {
-  const milliseconds = status?.envelope?.timeToFirstPR?.milliseconds;
-  return (
-    <div className="guided-result">
-      <p>
-        {typeof milliseconds === "number" ? (
-          <strong>Your first autonomous PR opened in {formatElapsed(milliseconds)}.</strong>
-        ) : (
-          <strong>Your first autonomous run finished.</strong>
-        )}{" "}
-        Time-to-First-PR is computed locally by <code>goobers status --json</code> from this
-        instance's own journal — it is a first-run success indicator for you, and it never
-        leaves this machine.
-      </p>
-      <RecoveryCommand command={`goobers status --json ${instancePath}`} />
-      {runId && (
-        <p className="guided-run-link">
-          <a href={`#/run/${encodeURIComponent(runId)}`}>Revisit run {runId} →</a>
-        </p>
-      )}
-      <p className="section-kicker">Next steps</p>
-      {variant === "own-repo" ? (
-        <ul className="guided-checklist">
-          <li>
-            Label more of your issues with <code>goobers</code> — the workforce keeps picking
-            them up.
-          </li>
-          <li>
-            Graduate to the flagship chain (merge-review + pr-remediation) via{" "}
-            <code>config-examples</code>.
-          </li>
-          <li>
-            <code>goobers agent-kit install</code> — install the agent toolkit into your own
-            config source.
-          </li>
-          <li>
-            <code>goobers dashboard</code> — the operational portal over any instance.
-          </li>
-        </ul>
-      ) : (
-        <ul className="guided-checklist">
-          <li>
-            <code>goobers dashboard</code> — the operational portal over any instance.
-          </li>
-          <li>
-            <code>docs/guides/quickstart.md</code> — graduating from the disposable sample to
-            production examples on repositories you own.
-          </li>
-          <li>
-            <code>goobers agent-kit install</code> — install the agent toolkit into your own
-            config source.
-          </li>
-        </ul>
-      )}
-    </div>
-  );
-}
-
-function formatElapsed(milliseconds: number): string {
-  const minutes = Math.round(milliseconds / 60_000);
-  if (minutes < 1) {
-    return `${Math.max(1, Math.round(milliseconds / 1_000))} seconds`;
-  }
-  return minutes === 1 ? "1 minute" : `${minutes} minutes`;
-}
-
-function GuidedStderr({ label, text }: { label: string; text: string }) {
+  const findings = result.envelope?.findings ?? [];
   return (
     <div className="guided-result" role="alert">
-      <p className="guided-failed-note">
-        <strong>{label}</strong>
-      </p>
-      <pre className="code-block guided-output">{text}</pre>
+      <strong>Some checks need attention.</strong>
+      {findings.length > 0 ? (
+        <ul className="guided-checklist">
+          {findings.map((finding) => (
+            <li key={`${finding.code}-${finding.file}-${finding.line ?? 0}`}>
+              <code>{finding.code}</code> {finding.file}: {finding.message}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <pre className="code-block guided-output">{result.stderr}</pre>
+      )}
     </div>
   );
 }
 
-/** A sessionStorage-persisted boolean for UI-only progress bits. Server truth
- *  from /guided/state always wins over these where both exist. */
-function useSessionFlag(key: string): [boolean, (value: boolean) => void] {
-  const [value, setValue] = useState<boolean>(() => {
+function splitCommand(value: string): string[] {
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return [];
+  }
+  if (trimmed.startsWith("[")) {
     try {
-      return window.sessionStorage.getItem(key) === "true";
-    } catch {
-      return false;
-    }
-  });
-  const update = useCallback(
-    (next: boolean) => {
-      setValue(next);
-      try {
-        window.sessionStorage.setItem(key, String(next));
-      } catch {
-        // Storage unavailable: the flag just won't survive a reload.
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed) && parsed.every((part) => typeof part === "string")) {
+        return parsed;
       }
-    },
-    [key],
-  );
-  return [value, update];
+    } catch {
+      return [];
+    }
+  }
+  return trimmed.split(/\s+/);
 }
 
-/** A sessionStorage-persisted string (the chosen path). */
-function useSessionValue(key: string): [string | null, (value: string) => void] {
-  const [value, setValue] = useState<string | null>(() => {
+function useSessionState<T>(
+  key: string,
+  initialValue: T,
+): [T, (value: T) => void] {
+  const [value, setValue] = useState<T>(() => {
+    const stored = window.sessionStorage.getItem(key);
+    if (stored === null) {
+      return initialValue;
+    }
     try {
-      return window.sessionStorage.getItem(key);
+      return JSON.parse(stored) as T;
     } catch {
-      return null;
+      return initialValue;
     }
   });
   const update = useCallback(
-    (next: string) => {
+    (next: T) => {
       setValue(next);
-      try {
-        window.sessionStorage.setItem(key, next);
-      } catch {
-        // Storage unavailable: the value just won't survive a reload.
-      }
+      window.sessionStorage.setItem(key, JSON.stringify(next));
     },
     [key],
   );

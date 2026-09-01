@@ -10,6 +10,7 @@ import type {
 import { dataCacheKey, type DataCacheDependency } from "./dataCache";
 import { useLiveData } from "./liveData";
 import { QueryFamily } from "./api/queryFamily";
+import { ScopedRequests, type ScopedRequest } from "./api/scopedRequest";
 
 export type RunsFilter = "all" | "active" | "attention" | "complete";
 
@@ -69,7 +70,7 @@ export function useRunsHistory(
     const cached = initialCached.current;
     return cached ? { status: "ready", data: cached.data } : { status: "loading" };
   });
-  const request = useRef<AbortController | undefined>(undefined);
+  const request = useRef<ScopedRequest | undefined>(undefined);
   // The coalescing family (#1930). Held in a ref and recreated only when the
   // subscription scope changes: its whole job is to remember what is in flight,
   // and a family that was rebuilt on every render would remember nothing —
@@ -77,8 +78,13 @@ export function useRunsHistory(
   //
   // The loader is read from a ref at call time so ordinary renders do not
   // rebuild the family merely because `refreshWindow` changes identity.
-  const refreshLoader = useRef<() => Promise<unknown>>(() => Promise.resolve());
+  const refreshLoader = useRef<(scopeSignal?: AbortSignal) => Promise<unknown>>(() =>
+    Promise.resolve(),
+  );
   const family = useRef<QueryFamily | undefined>(undefined);
+  // Owns the controllers for background refreshes so scope teardown can abort
+  // them and any completion that outlives its scope is rejected (#3656).
+  const scopedRequests = useRef(new ScopedRequests());
   const streams = useRef<RunsStream[]>(
     initialCached.current?.streams.map((stream) => ({ ...stream })) ?? [],
   );
@@ -122,8 +128,8 @@ export function useRunsHistory(
     request.current?.abort();
     const dependencies = runsHistoryDependencies(scope);
     const cacheRevision = cache.beginWrite(cacheKey, dependencies);
-    const controller = new AbortController();
-    request.current = controller;
+    const pending = scopedRequests.current.begin();
+    request.current = pending;
     streams.current = FILTER_PHASES[filter].map((phase) => ({
       phase,
       cursor: undefined,
@@ -137,22 +143,29 @@ export function useRunsHistory(
         : { status: "loading" },
     );
 
-    return advanceStreams(client, streams.current, scope, controller.signal)
+    return advanceStreams(client, streams.current, scope, pending.signal)
       .then(async (fetched) => {
-        if (controller.signal.aborted) {
+        if (pending.obsolete) {
+          return true;
+        }
+        const hasRuns =
+          fetched.length > 0 || (await instanceHasRuns(client, pending.signal));
+        if (pending.obsolete) {
           return true;
         }
         runs.current = mergeRuns([], fetched);
-        hasAnyRuns.current =
-          fetched.length > 0 || (await instanceHasRuns(client, controller.signal));
+        hasAnyRuns.current = hasRuns;
         publish(isFresh(), cacheRevision);
         return true;
       })
       .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
+        if (!pending.obsolete) {
           setState((current) => runsError(current, error));
         }
         return false;
+      })
+      .finally(() => {
+        pending.end();
       });
   }, [cache, cacheKey, client, filter, isFresh, publish, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow, scope.showNoWork]);
 
@@ -165,7 +178,7 @@ export function useRunsHistory(
   //   - new runs appear at the head;
   //   - a run already in the head page is updated by the list response;
   //   - invalidated rows outside the head page are fetched directly by id.
-  const refreshWindow = useCallback(() => {
+  const refreshWindow = useCallback((scopeSignal?: AbortSignal) => {
     // Deliberately does NOT abort an in-flight loadMore. A live event arriving
     // while the user is paging must not cancel their page — that was another
     // way the old reset lost work.
@@ -190,9 +203,14 @@ export function useRunsHistory(
     // at response time. Cancelling it discards work that was about to answer
     // the question. Coalescing is handled by the QueryFamily wrapping this
     // loader, which holds at most one in-flight and one queued pass.
+    //
+    // A SCOPE change is the exception, and it is why this pass is registered
+    // with scopedRequests and carries the family's signal (#3656): the filter
+    // or route the pass was started for is gone, so its answer is not merely
+    // late, it is about a different question.
     const dependencies = runsHistoryDependencies(scope);
     const cacheRevision = cache.beginWrite(cacheKey, dependencies);
-    const controller = new AbortController();
+    const pending = scopedRequests.current.begin(scopeSignal);
 
     // A throwaway stream set positioned at the top. streams.current is left
     // untouched, so "Load more" continues from where the user actually is.
@@ -204,9 +222,9 @@ export function useRunsHistory(
     const affectedRunIds = [...invalidatedRunIds.current];
     invalidatedRunIds.current.clear();
 
-    return advanceStreams(client, head, scope, controller.signal)
+    return advanceStreams(client, head, scope, pending.signal)
       .then(async (fetched) => {
-        if (controller.signal.aborted) {
+        if (pending.obsolete) {
           return true;
         }
         const fetchedIds = new Set(fetched.map((run) => run.id));
@@ -214,28 +232,52 @@ export function useRunsHistory(
         const targeted = await Promise.all(
           affectedRunIds
             .filter((runId) => loadedIds.has(runId) && !fetchedIds.has(runId))
-            .map((runId) => client.getRun(runId, { signal: controller.signal })),
+            .map((runId) => client.getRun(runId, { signal: pending.signal })),
         );
-        if (controller.signal.aborted) {
+        if (pending.obsolete) {
           return true;
         }
-        runs.current = mergeRuns(runs.current, [...fetched, ...targeted]);
-        if (!hasAnyRuns.current && runs.current.length === 0) {
-          hasAnyRuns.current = await instanceHasRuns(client, controller.signal);
-        } else if (runs.current.length > 0) {
-          hasAnyRuns.current = true;
+        // A by-id fetch bypasses the daemon's phase and scope filtering, so a
+        // targeted row can come back no longer belonging in this window (a
+        // running run that finished while "active" is selected). Evicting it
+        // here — the boundary where the unfiltered row enters — is what keeps
+        // it from surviving until a full reload (#3655).
+        const retained: RunSummary[] = [];
+        const evicted = new Set<string>();
+        for (const run of targeted) {
+          if (matchesRunsWindow(run, filter, scope)) {
+            retained.push(run);
+          } else {
+            evicted.add(run.id);
+          }
         }
+        const merged = mergeRuns(
+          evicted.size > 0 ? runs.current.filter((run) => !evicted.has(run.id)) : runs.current,
+          [...fetched, ...retained],
+        );
+        const hasRuns =
+          !hasAnyRuns.current && merged.length === 0
+            ? await instanceHasRuns(client, pending.signal)
+            : hasAnyRuns.current || merged.length > 0;
+        if (pending.obsolete) {
+          return true;
+        }
+        runs.current = merged;
+        hasAnyRuns.current = hasRuns;
         publish(isFresh(), cacheRevision);
         return true;
       })
       .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
+        if (!pending.obsolete) {
           for (const runId of affectedRunIds) {
             invalidatedRunIds.current.add(runId);
           }
           setState((current) => runsError(current, error));
         }
         return false;
+      })
+      .finally(() => {
+        pending.end();
       });
   }, [cache, cacheKey, client, filter, isFresh, publish, reload, scope.gaggle, scope.outcome, scope.population, scope.since, scope.stage, scope.until, scope.workflow, scope.showNoWork]);
 
@@ -243,16 +285,17 @@ export function useRunsHistory(
     if (loadingMore.current || !streams.current.some((stream) => !stream.exhausted)) {
       return;
     }
-    const controller = new AbortController();
+    const pending = scopedRequests.current.begin();
     const dependencies = runsHistoryDependencies(scope);
     const cacheRevision = cache.beginWrite(cacheKey, dependencies);
-    request.current = controller;
+    request.current = pending;
     loadingMore.current = true;
     publish(isFresh(), cacheRevision);
 
-    void advanceStreams(client, streams.current, scope, controller.signal).then(
+    void advanceStreams(client, streams.current, scope, pending.signal).then(
       (fetched) => {
-        if (controller.signal.aborted) {
+        pending.end();
+        if (pending.obsolete) {
           return;
         }
         loadingMore.current = false;
@@ -263,7 +306,8 @@ export function useRunsHistory(
         }
       },
       (error: unknown) => {
-        if (!controller.signal.aborted) {
+        pending.end();
+        if (!pending.obsolete) {
           loadingMore.current = false;
           setState((current) => runsError(current, error));
           if (invalidatedRunIds.current.size > 0) {
@@ -277,8 +321,8 @@ export function useRunsHistory(
   refreshLoader.current = refreshWindow;
 
   useEffect(() => {
-    const owned = new QueryFamily(async () => {
-      await refreshLoader.current();
+    const owned = new QueryFamily(async (context) => {
+      await refreshLoader.current(context.signal);
     });
     family.current = owned;
     const unsubscribe = subscribe(
@@ -323,6 +367,11 @@ export function useRunsHistory(
         family.current = undefined;
       }
       request.current?.abort();
+      // Unmount and a scope change are the same thing here: everything started
+      // for the scope being torn down is abandoned, and anything that already
+      // resolved is rejected on the way back in (#3656).
+      scopedRequests.current.cancelScope();
+      request.current = undefined;
     };
   }, [cache, cacheKey, isFresh, publish, reload, subscribe]);
 
@@ -392,6 +441,49 @@ async function advanceStreams(
     }),
   );
   return pages.flat();
+}
+
+// Whether a run still belongs in the window the user is looking at.
+//
+// Only the predicates the summary can answer exactly are checked: phase (the
+// filter chip), gaggle, workflow, the no-work exclusion, and the started-at
+// bounds. `stage`, `outcome` and `population` are journal-derived server-side
+// predicates that a summary cannot reproduce, so they are left to the daemon
+// rather than guessed at — guessing would evict rows that do match.
+function matchesRunsWindow(
+  run: RunSummary,
+  filter: RunsFilter,
+  scope: RunHistoryScope,
+): boolean {
+  const phases = FILTER_PHASES[filter];
+  if (!phases.includes(undefined) && !phases.includes(run.phase)) {
+    return false;
+  }
+  if (scope.gaggle !== undefined && run.gaggle !== scope.gaggle) {
+    return false;
+  }
+  if (scope.workflow !== undefined && run.workflow !== scope.workflow) {
+    return false;
+  }
+  if (!scope.showNoWork && run.noWork) {
+    return false;
+  }
+  const startedAt = Date.parse(run.startedAt);
+  if (Number.isNaN(startedAt)) {
+    return true;
+  }
+  return withinBound(startedAt, scope.since, "since") && withinBound(startedAt, scope.until, "until");
+}
+
+function withinBound(startedAt: number, bound: string | undefined, kind: "since" | "until"): boolean {
+  if (bound === undefined) {
+    return true;
+  }
+  const boundary = Date.parse(bound);
+  if (Number.isNaN(boundary)) {
+    return true;
+  }
+  return kind === "since" ? startedAt >= boundary : startedAt <= boundary;
 }
 
 function mergeRuns(existing: RunSummary[], incoming: RunSummary[]): RunSummary[] {

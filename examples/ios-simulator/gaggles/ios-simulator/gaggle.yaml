@@ -9,13 +9,11 @@ spec:
     owner: acme
     name: ios-app
     branch: main
-    connectionRef: github-main
   backlog:
     provider: github
     project: acme/ios-app
     labels:
       - goobers
-    connectionRef: github-backlog
   isolation:
     namespace: gaggle-ios-simulator
     identityRef: ios-simulator-identity

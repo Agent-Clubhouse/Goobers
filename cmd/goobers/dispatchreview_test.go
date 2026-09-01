@@ -120,7 +120,7 @@ func installFakeHarness(t *testing.T, act func(context.Context, harness.RunReque
 		t.Fatal(err)
 	}
 	previous := podHarnessRegistry
-	podHarnessRegistry = func(map[string]string, []string, map[string][]string, string, string, bool, func(context.Context) (string, error)) (*harness.Registry, error) {
+	podHarnessRegistry = func(map[string]string, []string, map[string][]string, string, string, bool, func(context.Context) (string, error), bool) (*harness.Registry, error) {
 		return registry, nil
 	}
 	t.Cleanup(func() { podHarnessRegistry = previous })
@@ -282,6 +282,12 @@ func TestReviewPodComputesTheReviewerDiffFromTheAppliedDelta(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "reviewer diff: recorded review/reviewer-diff.patch") {
 		t.Errorf("pod stderr does not announce the journaled reviewer diff (the far-side evidence line):\n%s", stderr.String())
+	}
+	// #3135: the announcement records whether the evidence was transformed on
+	// its way to the agent, and names the pre-scrub bytes so a finding about a
+	// redacted region can be correlated with the diff of the commits.
+	if !strings.Contains(stderr.String(), "redacted=false source=sha256:") {
+		t.Errorf("pod stderr does not record the evidence transformation state:\n%s", stderr.String())
 	}
 
 	planes.mu.Lock()

@@ -16,7 +16,6 @@ interface PortalShellProps {
   client: DaemonClient;
   currentScope: Pick<ScopeFilters, "gaggle" | "workflow" | "stage">;
   navigate: Navigate;
-  showGettingStarted: boolean;
   standalone: boolean;
   theme: Theme;
   toggleTheme: () => void;
@@ -29,7 +28,6 @@ export function PortalShell({
   client,
   currentScope,
   navigate,
-  showGettingStarted,
   standalone,
   theme,
   toggleTheme,
@@ -118,22 +116,6 @@ export function PortalShell({
             <Icon name="insight" />
             <span className="nav-label">Insight</span>
           </button>
-          {/* The walkthrough belongs to `goobers getting-started`, not the
-              operational workbench: the nav entry renders only in that mode.
-              The #/getting-started route itself stays deep-linkable in every
-              mode and explains how to launch the guided experience. */}
-          {showGettingStarted && (
-            <button
-              aria-current={activeArea === "getting-started" ? "page" : undefined}
-              aria-label="Getting Started"
-              className={activeArea === "getting-started" ? "nav-item nav-item-active" : "nav-item"}
-              onClick={() => navigate({ page: "getting-started" })}
-              type="button"
-            >
-              <Icon name="play" />
-              <span className="nav-label">Getting Started</span>
-            </button>
-          )}
         </nav>
 
         <GaggleNav activeGaggle={activeGaggle} client={client} navigate={navigate} />

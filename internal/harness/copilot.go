@@ -17,6 +17,7 @@ import (
 
 	"github.com/goobers/goobers/api/validate"
 	"github.com/goobers/goobers/internal/capability"
+	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/telemetry"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -198,6 +199,30 @@ type CopilotAdapter struct {
 	// SelfBin is the running daemon's executable path. It is exposed to the
 	// agentic subprocess so tools can invoke that exact goobers binary.
 	SelfBin string
+	// EphemeralTmp binds the `tmp:ephemeral` restriction on the SELF runner
+	// (docs/design/goobernetes-restrictions.md §2.4) for this adapter's
+	// subprocess: an attempt-private temp directory carved out of the daemon's
+	// temp root, with the temp-nested build caches (GOCACHE, GOMODCACHE, ...)
+	// re-rooted into it, destroyed when the attempt returns.
+	//
+	// It is a RUNNER property, set by wiring from the resolved inventory's
+	// self entry, so every agentic stage placed on self runs under it whether
+	// or not it asked (goobernetes-restrictions.md §5). Off by default: an
+	// instance that declares no runners builds a byte-identical subprocess
+	// environment to before this field existed.
+	//
+	// The adapter's own in-workspace runtime confinement still wins for
+	// TMPDIR where it applies (the enforced-sandbox path below), because that
+	// area is already attempt-private, rides workspace cleanup, and is inside
+	// the sandbox's writable roots. What this adds there is the reclaim of the
+	// build caches the agent's own toolchain invocations write.
+	//
+	// Failure to establish the private area fails the stage CLOSED.
+	EphemeralTmp bool
+	// EphemeralTmpRoot overrides the temp root the per-attempt directory is
+	// carved out of. Empty means the daemon's own temp root (os.TempDir()) —
+	// the same medium the stage's temp would otherwise have used.
+	EphemeralTmpRoot string
 	// DeferDiscovery makes a cold-cache ResolveConfig skip model discovery
 	// entirely instead of spawning the Copilot CLI and waiting on its JSON-RPC
 	// handshake. The daemon sets this for startup admission (#3336): in an
@@ -622,6 +647,14 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		// fail-closed misconfiguration error an unset workspace should be.
 		return Outcome{}, fmt.Errorf("harness: copilot-cli: RunRequest.Workspace is empty")
 	}
+	// The self-runner tmp:ephemeral binding for this attempt. Established
+	// before anything below builds an environment, reclaimed on every exit
+	// path — including the error returns between here and the subprocess.
+	ephemeralTmp, err := establishEphemeralTmp(c.Name(), c.EphemeralTmp, c.EphemeralTmpRoot)
+	if err != nil {
+		return Outcome{}, err
+	}
+	defer func() { _ = ephemeralTmp.Reclaim() }()
 	// Auto-wire goobers-io (#2406) before anything below reads req.Tools or
 	// req.MCPServers: completionInResponse, the rendered prompt, and the MCP
 	// credential/prep block all need to see the goobers-io server and tools
@@ -719,7 +752,7 @@ func (c *CopilotAdapter) Run(ctx context.Context, req RunRequest) (out Outcome, 
 		argv = append(argv, "--additional-mcp-config", "@"+mcpArg)
 	}
 
-	env, err := c.credentialEnv(ctx, req)
+	env, err := c.credentialEnv(ctx, ephemeralTmp, req)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -1286,7 +1319,7 @@ func processTranscriptBytes(result ProcessResult) []byte {
 // configured to inject and that were actually declared for this invocation.
 // A configured capability that fails to resolve is a hard stop — the harness
 // never runs half-credentialed.
-func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]string, error) {
+func (c *CopilotAdapter) credentialEnv(ctx context.Context, ephemeralTmp *ephemeraltmp.Scope, req RunRequest) ([]string, error) {
 	return buildCredentialEnv(ctx, credentialEnvConfig{
 		adapterName:                    c.Name(),
 		envCapabilities:                c.EnvCapabilities,
@@ -1294,6 +1327,7 @@ func (c *CopilotAdapter) credentialEnv(ctx context.Context, req RunRequest) ([]s
 		extraEnvAllowlist:              c.ExtraEnvAllowlist,
 		instanceRoot:                   c.InstanceRoot,
 		selfBin:                        c.SelfBin,
+		ephemeralTmp:                   ephemeralTmp,
 	}, req)
 }
 

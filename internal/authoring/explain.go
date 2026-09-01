@@ -67,7 +67,7 @@ func Explain(selector string) (Explanation, error) {
 	r := registry{documents: make(map[string]*schemaDocument)}
 	doc, err := r.load(parts[0].name)
 	if err != nil {
-		return Explanation{}, unknownSelector(selector)
+		return Explanation{}, unknownKindSelector(selector, parts, schemas.Kinds())
 	}
 	contractEntry := doc.entry
 	parts[0].name = contractEntry.Kind
@@ -78,12 +78,15 @@ func Explain(selector string) (Explanation, error) {
 	var required *bool
 	var elementDescription string
 
-	for _, part := range parts[1:] {
+	for index, part := range parts[1:] {
 		elementDescription = ""
 		childDoc, child, childResolved, isRequired, found, resolveErr :=
 			r.resolveProperty(currentDoc, resolved, part.name, 0)
-		if resolveErr != nil || !found {
+		if resolveErr != nil {
 			return Explanation{}, unknownSelector(selector)
+		}
+		if !found {
+			return Explanation{}, r.unknownFieldError(selector, parts, index+1, currentDoc, resolved)
 		}
 		required = &isRequired
 		declared = child
@@ -95,8 +98,11 @@ func Explain(selector string) (Explanation, error) {
 		elementDescription, _ = schemaString(declared, resolved, "description")
 		itemDoc, items, itemResolved, found, resolveErr :=
 			r.resolveItems(currentDoc, resolved, 0)
-		if resolveErr != nil || !found {
+		if resolveErr != nil {
 			return Explanation{}, unknownSelector(selector)
+		}
+		if !found {
+			return Explanation{}, notAnArraySelector(selector, parts, index+1)
 		}
 		declared = items
 		currentDoc, resolved = itemDoc, itemResolved
@@ -162,7 +168,7 @@ func projectFacts(selector, purposeSelector string, declared, resolved map[strin
 // resolutionFeatures returns the DSL feature projections explain resolves
 // against: every loadable (non-unsupported) DSL version, NEWEST FIRST, so a
 // selector explains at the newest version that carries it (#3291). Resolving
-// only at CurrentDSLVersion — the deprecated 1.4 — made every newer-version
+// only at CurrentDSLVersion — the dropped 1.4 — made every newer-version
 // feature, and via selectorLifecycle's ancestor walk its entire dotted
 // subtree, report "unavailable" while the coverage test skipped exactly that
 // error. Newest-first matters for the returned lifecycle too: a feature
@@ -286,7 +292,7 @@ func selectorAllowedValues(parts []selectorPart, values []any) ([]any, error) {
 			return nil, fmt.Errorf("run.workspace schema value %q has no feature mapping", workspace)
 		}
 		// A value is explainable when ANY loadable DSL version carries its
-		// feature (#3291) — filtering at the deprecated CurrentDSLVersion
+		// feature (#3291) — filtering at the dropped CurrentDSLVersion
 		// hid repo-readonly, a valid 2.0 value, from explain's output.
 		for _, features := range sets {
 			if _, ok := lookupFeature(features, featureID); ok {

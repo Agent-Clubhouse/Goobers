@@ -3,7 +3,6 @@ package v1alpha1
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	apiintegrity "github.com/goobers/goobers/api/integrity"
 )
@@ -116,15 +115,41 @@ func ValidateInputIntegrity(item *BacklogItem, pointers []ContextPointer, minimu
 
 // SelectContextPointers returns only pointers produced by the named workflow
 // states. An empty source list preserves the accumulated context unchanged.
+//
+// contextFrom is a filter over upstream PRODUCERS, so it can only speak about
+// pointers whose names carry one — the source-scoped classes. A
+// SYSTEM-GENERATED pointer has no producing workflow state and no source name
+// a workflow author could ever write to select it, so it is outside the
+// filter's jurisdiction and survives selection (#3928).
+//
+// The concrete case is the injected learning episode. A repassing gate mints
+// "learning.episode[<seq>]" and addresses it to the one stage it is sending
+// back; dropping it here discarded the correction feedback before the stage
+// was dispatched, and before ValidateInputIntegrity could grade it, on every
+// stage that declares contextFrom — which is every stage on the flagship
+// implementation lane. Selection is still a filter, not an opening: an
+// unclassified name, including a MALFORMED one that resembles a system
+// pointer, matches nothing and is dropped, and source-scoped pointers keep
+// their source scoping exactly as before.
+//
+// Order is preserved: callers thread the result straight into an invocation
+// envelope whose digest is on the conformance surface.
 func SelectContextPointers(pointers []ContextPointer, sources []string) []ContextPointer {
 	if len(sources) == 0 {
 		return pointers
 	}
 	selected := make([]ContextPointer, 0, len(pointers))
 	for _, pointer := range pointers {
-		for _, source := range sources {
-			if pointer.Name == source+".verdict" ||
-				strings.HasPrefix(pointer.Name, source+".artifact[") {
+		class, source := ClassifyContextPointer(pointer.Name)
+		if class.SystemGenerated() {
+			selected = append(selected, pointer)
+			continue
+		}
+		if !class.SourceScoped() {
+			continue
+		}
+		for _, want := range sources {
+			if source == want {
 				selected = append(selected, pointer)
 				break
 			}

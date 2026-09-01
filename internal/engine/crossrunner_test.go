@@ -457,19 +457,18 @@ func TestResolveGateOutcome(t *testing.T) {
 	})
 
 	t.Run("pass resets gate recovery count without charging a forward branch", func(t *testing.T) {
-		gateAttempts := map[string]int{"review": 2}
-		repassAttempts := map[string]int{}
-		gr, err := resolveGateOutcome(g, gate.OutcomePass, false, gateAttempts, repassAttempts, 3)
+		budget := gate.RepassBudget{Attempts: map[string]int{"review": 2}}
+		gr, err := resolveGateOutcome(g, gate.OutcomePass, false, &budget, 3)
 		if err != nil {
 			t.Fatalf("resolveGateOutcome: %v", err)
 		}
-		if gr.Escalated || gr.Attempt != 0 || gateAttempts["review"] != 0 || gr.Target != wf.TerminalComplete {
-			t.Fatalf("pass result = %+v gateAttempts=%d, want reset to 0 and the pass branch", gr, gateAttempts["review"])
+		if gr.Escalated || gr.Attempt != 0 || budget.Attempts["review"] != 0 || gr.Target != wf.TerminalComplete {
+			t.Fatalf("pass result = %+v gateAttempts=%d, want reset to 0 and the pass branch", gr, budget.Attempts["review"])
 		}
 	})
 
 	t.Run("non-pass within budget follows the gate's own branch", func(t *testing.T) {
-		gr, err := resolveGateOutcome(g, gate.OutcomeFail, true, map[string]int{}, map[string]int{}, 1)
+		gr, err := resolveGateOutcome(g, gate.OutcomeFail, true, &gate.RepassBudget{}, 1)
 		if err != nil {
 			t.Fatalf("resolveGateOutcome: %v", err)
 		}
@@ -480,8 +479,11 @@ func TestResolveGateOutcome(t *testing.T) {
 
 	t.Run("pass-driven re-entry consumes the target budget", func(t *testing.T) {
 		passBack := crGate("review", map[string]string{"pass": "implement", "fail": wf.TargetAbort})
-		repasses := map[string]int{"implement": 1}
-		gr, err := resolveGateOutcome(passBack, gate.OutcomePass, true, map[string]int{"review": 2}, repasses, 1)
+		budget := gate.RepassBudget{
+			Attempts:       map[string]int{"review": 2},
+			RepassAttempts: map[string]int{"implement": 1},
+		}
+		gr, err := resolveGateOutcome(passBack, gate.OutcomePass, true, &budget, 1)
 		if err != nil {
 			t.Fatalf("resolveGateOutcome: %v", err)
 		}
@@ -490,9 +492,52 @@ func TestResolveGateOutcome(t *testing.T) {
 		}
 	})
 
+	// #3930: the infrastructure class is charged to its own counter, at its own
+	// bound, and is cross-reset by an intervening policy outcome — the same
+	// three properties gate.Evaluator.trackRepass has always had, reached
+	// through the shared helper both drivers now call.
+	t.Run("infrastructure outcomes are charged to their own bounded counter", func(t *testing.T) {
+		localGate := crGate("local-gate", map[string]string{
+			"pass": wf.TerminalComplete, "fail": "implement",
+			gate.OutcomeInfra: "local-ci", wf.BranchEscalate: "park-escalated",
+		})
+		var budget gate.RepassBudget
+		for attempt := 1; attempt <= gate.DefaultMaxInfrastructureRepasses; attempt++ {
+			gr, err := resolveGateOutcome(localGate, gate.OutcomeInfra, true, &budget, gate.DefaultMaxRepasses)
+			if err != nil {
+				t.Fatalf("resolveGateOutcome: %v", err)
+			}
+			if gr.Escalated || gr.Attempt != attempt || gr.Target != "local-ci" {
+				t.Fatalf("infrastructure repass %d = %+v, want a bounded retry to local-ci", attempt, gr)
+			}
+		}
+		exhausted, err := resolveGateOutcome(localGate, gate.OutcomeInfra, true, &budget, gate.DefaultMaxRepasses)
+		if err != nil {
+			t.Fatalf("resolveGateOutcome: %v", err)
+		}
+		if !exhausted.Escalated || exhausted.Target != "park-escalated" {
+			t.Fatalf("exhausted infrastructure repass = %+v, want escalation at the infrastructure bound %d",
+				exhausted, gate.DefaultMaxInfrastructureRepasses)
+		}
+		if got := budget.RepassAttempts["local-ci"]; got != 0 {
+			t.Fatalf("policy budget charged for local-ci = %d, want 0", got)
+		}
+		policy, err := resolveGateOutcome(localGate, gate.OutcomeFail, true, &budget, gate.DefaultMaxRepasses)
+		if err != nil {
+			t.Fatalf("resolveGateOutcome: %v", err)
+		}
+		if policy.Escalated || policy.Attempt != 1 || policy.Target != "implement" {
+			t.Fatalf("policy repass after exhausted infrastructure retries = %+v, want a full policy budget", policy)
+		}
+		if got := budget.InfrastructureRepassAttempts["local-ci"]; got != 0 {
+			t.Fatalf("infrastructure budget after an intervening policy outcome = %d, want it returned", got)
+		}
+	})
+
 	t.Run("exhaustion escalates to @escalate without a control branch", func(t *testing.T) {
 		repasses := map[string]int{"implement": 1}
-		gr, err := resolveGateOutcome(g, gate.OutcomeFail, true, map[string]int{"review": 1}, repasses, 1)
+		gr, err := resolveGateOutcome(g, gate.OutcomeFail, true,
+			&gate.RepassBudget{Attempts: map[string]int{"review": 1}, RepassAttempts: repasses}, 1)
 		if err != nil {
 			t.Fatalf("resolveGateOutcome: %v", err)
 		}
@@ -504,7 +549,8 @@ func TestResolveGateOutcome(t *testing.T) {
 	t.Run("gate budget overrides the inherited run budget", func(t *testing.T) {
 		gateOverride := g
 		gateOverride.MaxRepasses = 1
-		gr, err := resolveGateOutcome(gateOverride, gate.OutcomeFail, true, map[string]int{"review": 1}, map[string]int{"implement": 1}, 5)
+		gr, err := resolveGateOutcome(gateOverride, gate.OutcomeFail, true,
+			&gate.RepassBudget{Attempts: map[string]int{"review": 1}, RepassAttempts: map[string]int{"implement": 1}}, 5)
 		if err != nil {
 			t.Fatalf("resolveGateOutcome: %v", err)
 		}
@@ -514,7 +560,8 @@ func TestResolveGateOutcome(t *testing.T) {
 	})
 
 	t.Run("exhaustion routes through the escalate control branch", func(t *testing.T) {
-		gr, err := resolveGateOutcome(withEscalate, gate.OutcomeFail, true, map[string]int{"review": 1}, map[string]int{"implement": 1}, 1)
+		gr, err := resolveGateOutcome(withEscalate, gate.OutcomeFail, true,
+			&gate.RepassBudget{Attempts: map[string]int{"review": 1}, RepassAttempts: map[string]int{"implement": 1}}, 1)
 		if err != nil {
 			t.Fatalf("resolveGateOutcome: %v", err)
 		}
@@ -524,7 +571,7 @@ func TestResolveGateOutcome(t *testing.T) {
 	})
 
 	t.Run("unmapped outcome errors", func(t *testing.T) {
-		if _, err := resolveGateOutcome(g, "maybe", false, map[string]int{}, map[string]int{}, 1); err == nil || !strings.Contains(err.Error(), "GT-002") {
+		if _, err := resolveGateOutcome(g, "maybe", false, &gate.RepassBudget{}, 1); err == nil || !strings.Contains(err.Error(), "GT-002") {
 			t.Fatalf("err = %v, want the GT-002 no-silent-pass error", err)
 		}
 	})

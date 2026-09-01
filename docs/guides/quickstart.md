@@ -1,9 +1,29 @@
-# Quickstart (tier 1, local)
+# Quickstart tutorial (tier 1, local)
 
-This is the canonical first-run path. Follow the sections in order: start with
-a credential-free local demo, graduate to a disposable GitHub-backed run, then
-create a regular instance and adopt production-oriented configuration. See
-`docs/ARCHITECTURE.md` §6 for the instance layout these commands operate on.
+This is the canonical **learning path**, not the procedure for configuring a
+real application repository. Follow sections 1 and 2 in order: start with a
+credential-free local demo, then graduate to a disposable GitHub-backed run.
+Delete those tutorial repositories and instances when you are done.
+
+If your goal is to configure Goobers for an existing repository, skip this
+tutorial and run `goobers init --guided`, then follow
+[Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md). That path
+adapts the production-oriented canonical workflow modules to your repository.
+
+| Goal | Route |
+| --- | --- |
+| See the workflow model without credentials | Section 1: zero-credential demo |
+| Exercise one disposable issue-to-PR run | Sections 1-2: complete tutorial |
+| Configure a real repository | `goobers init --guided` and [Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md) |
+| Hand-author every configuration layer | [Manual configuration](#manualadvanced-alternative-bare-init) |
+
+**Before continuing, complete installation and host prerequisites in the guide
+for your operating system:** [macOS](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-macos.md),
+[Linux](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-linux.md), or [Windows](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/quickstart-windows.md). Return here
+for the disposable tutorial after the OS guide says the `goobers` binary and
+required host tools are ready.
+
+See `docs/ARCHITECTURE.md` §6 for the instance layout these commands operate on.
 
 If declarative systems are new to you, read
 [How Goobers works: desired state, not scripts](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md) first.
@@ -75,9 +95,10 @@ bin/goobers trace <run-id> ./demo-instance
 Next, use the versioned `quickstart@v1` template for a first autonomous run
 against a disposable GitHub repository you control. This path requires a
 GitHub token and an authenticated agent harness. The shipped template's
-goobers default to `harness: copilot`; to run it on Claude Code instead, set
-`harness: claude-code` in `./tutorial-instance/config/gaggles/example/goobers/{implementer,reviewer}/goober.yaml`
-after materializing the instance below (see
+goobers default to `harness: copilot`; to run it on Claude Code instead, pass
+`--harness claude-code` to the `goobers init --template=quickstart` command
+below, which seeds every goober with that harness and needs no `goober.yaml`
+edit (see
 [`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)
 for a full claude-code gaggle reference).
 
@@ -155,11 +176,26 @@ with a real one.
    Already have a disposable repository you'd rather reuse? Skip this step
    and use its `<owner>/<repo>` below instead.
 
-2. Export a GitHub token with repo/issues access, once, under the name
-   `connect` expects by default:
+2. Create a fine-grained GitHub PAT in
+   [GitHub's token settings](https://github.com/settings/personal-access-tokens/new).
+   **Set Resource owner to the account or organization that owns
+   `<owner>/<repo>` (for example, `odsp-microsoft`); keep the default personal
+   account when it owns the repository.** Choose **Only select repositories**
+   and select exactly the disposable repository. Grant only **Contents: Read
+   and write**, **Issues: Read and write**, and **Pull requests: Read and
+   write**. For an organization-owned repository, the organization owner may
+   need to approve the token before it works; request or wait for approval
+   before `connect --seed`. Then export it once under the name `connect`
+   expects by default:
 
    ```sh
    export GOOBERS_GITHUB_TOKEN=<your token>
+   ```
+
+   PowerShell:
+
+   ```powershell
+   $env:GOOBERS_GITHUB_TOKEN = "<your token>"
    ```
 
 3. Point the instance at the repository, and seed it in the same step:
@@ -220,14 +256,16 @@ bin/goobers init --template=quickstart --source-tree ./tutorial-config --json
 bin/goobers validate --source-tree --json ./tutorial-config
 ```
 
-Prefer a guided walkthrough over typing these commands yourself? `goobers
-getting-started` serves a portal-hosted alternative covering the same
-first-run-against-your-own-repository ground — see
-[the CLI reference](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/cli/README.md#goobers-getting-started)
-for its exact steps.
+The browser wizard is intentionally not an alternative tutorial. Use
+`goobers init --guided` when you are ready to configure a real
+repository with the production-oriented canonical workflow modules.
 
-Continue with section 3 to configure a regular instance and run its selected
-canonical workflow. Once that works, read the
+The tutorial is complete after this disposable run. Do not promote the
+`quickstart@v1` workflow into production: it intentionally omits safeguards.
+To configure a real repository, use `goobers init --guided` and
+[Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md).
+
+For reference, the production-oriented path starts from the
 [`config-examples` reference layout](../../config-examples/README.md) and adapt
 its
 [`implementation` workflow](../../config-examples/gaggles/acme-web/workflows/implementation.yaml)
@@ -235,26 +273,48 @@ for production-oriented review, local CI with bounded implementation repasses,
 explicit escalation paths, and PR CI polling. Add the separate `merge-review`
 workflow only after those safeguards are configured.
 
-## 3. `init --guided` — configure a regular instance
+## Separate path: configure a real instance
+
+This section is not the next tutorial step. It summarizes the separate,
+production-oriented path documented fully in
+[Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md).
+
+Start the focused browser walkthrough:
 
 ```sh
 export PATH="$PWD/bin:$PATH"
-goobers init --guided ./my-instance
+goobers init --guided
 ```
 
-The guided flow uses the same configuration sequence as the release installer.
-It separately selects a checked-in config source and target GitHub application
-repository, prompts for credential references and canonical workflows, and
-validates both the source and materialized instance. Use a fresh instance path;
-a new config source path must also be empty, while an existing source is
-validated and left unchanged. Guided init is first-run only and refuses an
-already initialized target before prompting.
+Provide an existing local Git clone. Getting Started supports GitHub and Azure
+DevOps, discovers repository identity, default branch, CI command, toolchain,
+and existing CLI authentication, then asks only for configuration placement,
+workflow behavior, and agent harness choices that cannot be derived.
+
+The workflow choices are adapted from the canonical modules under
+[`config-examples/gaggles/acme-web`](../../config-examples/gaggles/acme-web/),
+not from the deliberately simplified `quickstart@v1` tutorial workflow.
+
+The default configuration location is a peer folder beside the application
+repository. You can instead choose a `goobers` folder inside the repository or
+another local path. Mutable instance state remains outside the application
+repository. Track the configuration folder with Git for review and history.
+
+To use an agent instead of the browser, install the release-matched agent
+toolkit and run this prompt from the selected configuration folder:
+
+```text
+Use the Goobers Getting Started skill to inspect target repository <path-or-provider-url>,
+derive its default branch, CI command, toolchain, and conventions, and create the
+smallest validated configuration source here. Explain each write and ask only when
+required evidence or behavior cannot be safely derived.
+```
 
 A fresh successful initialization records
 `init.completed` in `scheduler/events.jsonl` as the Time to First PR anchor.
 
-After validation, guided mode prints the config-source-to-instance mapping and
-the commands for applying later source edits:
+After validation, setup shows the config-source-to-instance mapping and the
+commands for applying later source edits:
 
 ```text
 After editing the checked-in source, validate and materialize it before startup:
@@ -263,7 +323,8 @@ After editing the checked-in source, validate and materialize it before startup:
   goobers up "<instance-root>"
 ```
 
-It then prints the runnable next commands and developer documentation:
+It also shows runnable next commands, repository-aware customization prompts,
+and developer documentation:
 
 ```text
 Ready to run from <instance-root>:
@@ -318,6 +379,13 @@ validation errors, and `2` for usage or I/O errors.
   `GOCACHE`, `GOMODCACHE`, `GOFLAGS`, `GOPROXY`, `GOSUMDB`, `GOPRIVATE`,
   `GOTOOLCHAIN`) into every stage — set these before `goobers up` if your host
   relocates the Go cache/module store or sits behind a corporate module proxy.
+- `GOMAXPROCS` is *derived*, not just passed through. When the daemon runs in a
+  container whose CPU quota is narrower than the machine's CPU count, every
+  stage and harness subprocess is told that quota, so `go build -p`/`go test -p`
+  size their process fan-out to what the container can actually run instead of
+  to the node's CPU count. Nothing is set on an unconstrained host, and a
+  `GOMAXPROCS` you set yourself — on the daemon, or in a stage's own `env:` —
+  always wins.
 
 **Upgrading a flat V0 instance:** on first startup, an instance with one active
 gaggle automatically moves populated top-level `runs/` and `workcopies/` into
@@ -333,7 +401,12 @@ For event-driven workflows, see [GitHub webhook triggers](https://github.com/Age
 The daemon keeps that listener on loopback; tunnel or reverse-proxy exposure is
 an operator choice.
 
-## 4. `up` — run the daemon
+## Operating a configured instance
+
+The remaining commands apply after Getting Started or manual configuration;
+they are not additional quickstart tutorial steps.
+
+### `up` — run the daemon
 
 ```sh
 cd ./my-instance
@@ -379,7 +452,7 @@ digest, creates its run journal (ARCHITECTURE.md §4), and advances it through t
 local runner. It prints the run ID up front and the final phase and state when it
 returns.
 
-## 5. `status` — list runs
+### `status` — list runs
 
 ```sh
 goobers status
@@ -401,7 +474,7 @@ RUN ID                              WORKFLOW                  GAGGLE      PHASE 
 a671b69fe766595e550677b91658726a    default-implement         example     completed   2026-07-12T23:37:36-07:00
 ```
 
-## 6. `trace` — inspect one run
+### `trace` — inspect one run
 
 ```sh
 goobers trace a671b69fe766595e550677b91658726a
@@ -414,7 +487,7 @@ in `internal/journal/README.md` use, just pre-formatted. If the telemetry
 rollup (`telemetry.db`, #22) has ingested the run, its trace spans print too;
 this is best-effort — an empty or not-yet-rebuilt rollup is not an error.
 
-## 7. `reset-rate-limit` — run again without losing history
+### `reset-rate-limit` — run again without losing history
 
 A workflow's `maxRunsPerHour` budget can leave you rate-limited when you want to
 trigger another run immediately (e.g. during acceptance testing). Reset just the

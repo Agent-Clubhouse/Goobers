@@ -92,6 +92,12 @@ const clientRoutes = {
   claimRelease: apiRoutes.claimRelease,
   claimSettle: apiRoutes.claimSettle,
   claimList: apiRoutes.claimList,
+  // The stale-claim sweep (#4016): a mode-3 stage pod asks the daemon to run
+  // the recovery pass it cannot run itself — the sweep reads run journals
+  // under the instance root and honours the intervention check and the
+  // recovery gate, none of which exist in a pod. Pod-only like the rest of
+  // the claims plane; the portal never calls it.
+  claimRecover: apiRoutes.claimRecover,
   triggerIngest: apiRoutes.triggerIngest,
   resolveEscalation: apiRoutes.resolveEscalation,
   journalEmit: apiRoutes.journalEmit,
@@ -108,6 +114,15 @@ const clientRoutes = {
   // and blob planes — the portal never calls this and never will — but the
   // exhaustiveness check requires the full contract here as it grows.
   stageSurrender: apiRoutes.stageSurrender,
+  // The scheduler-state plane (#3878, decision 005 R3): a mode-3 stage pod
+  // reads and compare-and-swaps its gaggle's scheduler state (blocked.json,
+  // the backlog scan cursors, the reconcile ledger, the sibling-context
+  // cache) here, under the same locks the in-process path takes. Pod-only,
+  // like the credential, blob, and surrender planes — the portal never calls
+  // these — but the exhaustiveness check requires the full contract here as
+  // it grows.
+  gaggleStateGet: apiRoutes.gaggleStateGet,
+  gaggleStatePut: apiRoutes.gaggleStatePut,
   // The cross-run journal read plane (#3880, decision 005 R1): a mode-3 stage
   // pod asks the daemon the three questions its own run journal cannot answer
   // — a prior run's phase, the gaggle's base-sync conflict history, and a
@@ -117,6 +132,14 @@ const clientRoutes = {
   journalRunPhase: apiRoutes.journalRunPhase,
   journalConflictTouches: apiRoutes.journalConflictTouches,
   journalUnpushedWork: apiRoutes.journalUnpushedWork,
+  // The defect-nomination aggregate plane (#4001, decision 005 R4 as
+  // amended): a mode-3 stage pod asks the daemon for the four derived
+  // families `goobers telemetry-query` nominates from, with error signatures
+  // normalized before they cross. Pod-facing like the planes above — the
+  // portal renders telemetry through its own read routes and never calls this
+  // one — but the exhaustiveness check requires the full contract here as it
+  // grows.
+  telemetryDefectAggregates: apiRoutes.telemetryDefectAggregates,
 } satisfies { [K in keyof typeof apiRoutes]: (typeof apiRoutes)[K] };
 
 export interface HttpDaemonClientConfig {

@@ -71,6 +71,18 @@ type Principal struct {
 	// Roles are the instance-scoped roles granted to this principal by
 	// configuration. Empty means authenticated but authorized for nothing.
 	Roles []Role
+	// Scopes narrow a POD principal to a subset of the pod-reachable planes
+	// (podauth.KnownScopes). Empty means the unscoped pod token, which reaches
+	// every pod plane — the posture GOOBERS_POD_TOKEN has always had, and the
+	// one __dispatch-exec needs to surrender, resolve credentials and move
+	// blobs.
+	//
+	// A stage SUBPROCESS never holds that token. The dispatcher mints it one
+	// scoped bearer per plane (Goobers#3897), so a claims bearer presented to
+	// the surrender route is refused HERE, by the authorizer, before any
+	// handler's run containment runs. Ignored for human principals, whose
+	// authorization is the role ladder.
+	Scopes []string
 }
 
 // Role is an instance-scoped authorization level (#644). Roles are ordered:
@@ -123,38 +135,97 @@ func IsPodPrincipal(principal Principal) bool {
 	return principal.Issuer == PodPrincipalIssuer
 }
 
-// podPlanePath reports whether path is one of the write routes a pod
-// principal may reach: the claims plane (its four mutations and its list
-// read, all POST), the credential plane's resolve route
-// (distributed-state-and-coordination.md §11 — the plane exists FOR stage
-// pods), and the cross-run journal plane's three purpose-built questions
-// (decision 005 R1 / finding 002 C4 — each answered by the daemon from data
-// the daemon derives, gaggle-scoped, never another run's journal). The
-// journal plane is the third pod-reachable plane; it carries a run-id segment
-// and is matched structurally by journalPlanePath. The blob plane is the
-// fourth; it carries a digest segment and is matched structurally by
-// blobPlanePath. The surrender plane is the fifth; it carries
-// run/stage/attempt segments and is matched structurally by
-// surrenderPlanePath. The run-scoped READ routes are the sixth (decision 005
-// R1 option 1); they carry a run-id segment and are matched structurally by
-// runReadPlanePath. Everything else (other reads, triggers, HITL,
-// interventions) stays human-only: a stage pod has no business resolving
-// escalations or minting runs.
-func podPlanePath(path string) bool {
+// Pod plane scopes, restated from internal/podauth rather than imported:
+// podauth depends on this package (it implements Authenticator), so importing
+// it back would be a cycle. Pinned against the originals by
+// TestPodPlaneScopesMatchPodauth so the restatement cannot drift — the same
+// discipline internal/dispatcher applies to the executor's env names.
+const (
+	ScopeClaims     = "claims"
+	ScopeState      = "state"
+	ScopeJournal    = "journal"
+	ScopeTelemetry  = "telemetry"
+	ScopeSurrender  = "surrender"
+	ScopeBlob       = "blob"
+	ScopeCredential = "credential"
+)
+
+// HasScope reports whether a pod principal may reach the plane named by
+// scope. A principal carrying NO scopes is the unscoped pod token and reaches
+// every plane; one carrying scopes reaches exactly those.
+//
+// Fail closed on the empty argument: a call site that cannot name its plane
+// has not decided what it is authorizing.
+func (p Principal) HasScope(scope string) bool {
+	if scope == "" {
+		return false
+	}
+	if len(p.Scopes) == 0 {
+		return true
+	}
+	return slices.Contains(p.Scopes, scope)
+}
+
+// podPlanePath reports whether path is one of the fixed pod routes: claims,
+// trigger ingest, credential resolve, and the cross-run journal plane's three
+// purpose-built questions. Routes with path parameters are matched by their
+// dedicated structural helpers below. Handler-level checks bind each request
+// to the pod's run or gaggle; everything else stays human-only.
+//
+// scope names the least-privilege bearer a pod must present for the route
+// (Goobers#3897); ok is false for a path that is not a fixed pod route.
+func podPlanePath(path string) (scope string, ok bool) {
 	switch path {
 	case apicontract.ClaimAcquirePath,
 		apicontract.ClaimRenewPath,
 		apicontract.ClaimReleasePath,
 		apicontract.ClaimSettlePath,
 		apicontract.ClaimListPath,
-		apicontract.CredentialResolvePath,
-		apicontract.JournalRunPhasePath,
+		apicontract.ClaimRecoverPath:
+		return ScopeClaims, true
+	case apicontract.TriggerIngestPath:
+		// The trigger plane rides the state bearer: the only pod-side caller
+		// is apply-verdict's crowned-lander dispatch, which reaches it
+		// through stateclient's own transport and therefore holds exactly
+		// the bearer stateclient was handed.
+		return ScopeState, true
+	case apicontract.CredentialResolvePath:
+		return ScopeCredential, true
+	case apicontract.JournalRunPhasePath,
 		apicontract.JournalConflictTouchesPath,
 		apicontract.JournalUnpushedWorkPath:
-		return true
+		return ScopeJournal, true
 	default:
+		return "", false
+	}
+}
+
+// gaggleStatePrefix and gaggleStateInfix are GaggleStateKeyPath split around
+// its two wildcards — the literal fragments every scheduler-state request path
+// carries. Derived from the contract constant rather than restated, so the two
+// cannot drift.
+var (
+	gaggleStatePrefix = apicontract.GaggleStateKeyPath[:strings.Index(apicontract.GaggleStateKeyPath, "{gaggle}")]
+	gaggleStateInfix  = "/state/"
+)
+
+// statePlanePath reports whether path is the scheduler-state plane's route
+// (decision 005 R3 / finding 002 C2) — the sixth pod-reachable plane. Matched
+// structurally, like the journal and surrender planes, because the route
+// carries gaggle and key segments; WHICH gaggle the pod may address is
+// enforced by the handler and its service, which can see both the path and the
+// principal. Handler() has already refused non-clean paths, so segment
+// counting is sound.
+func statePlanePath(path string) bool {
+	rest, ok := strings.CutPrefix(path, gaggleStatePrefix)
+	if !ok {
 		return false
 	}
+	gaggle, key, ok := strings.Cut(rest, gaggleStateInfix)
+	if !ok {
+		return false
+	}
+	return gaggle != "" && key != "" && !strings.Contains(gaggle, "/") && !strings.Contains(key, "/")
 }
 
 // runReadPlanePath reports whether path is one of the THREE run-scoped read
@@ -244,20 +315,27 @@ func surrenderPlanePath(path string) bool {
 
 // telemetryPlanePath reports whether path is one of the telemetry read routes
 // a pod principal may GET (decision 005 R4 / finding 002 C3): the stats and
-// errors aggregates, plus the implementation-outcome evidence derived from
-// the same rows. Derived, low-sensitivity data — no raw secret, no other
-// gaggle's configuration — and gaggle containment is enforced by the
-// handlers, which can see the query string and the principal together
+// errors aggregates, the implementation-outcome evidence derived from the
+// same rows, and the defect-nomination aggregate read (Goobers#4001).
+// Derived, low-sensitivity data — no raw secret, no other gaggle's
+// configuration — and gaggle containment is enforced by the handlers, which
+// can see the query string and the principal together
 // (registerTelemetryRoutes/podTelemetryGaggle).
 //
-// TelemetryErrorSignaturesPath is deliberately NOT here: the ruling named
-// stats and errors, and the signature aggregate has no consumer on the pod
-// side. Adding it is a ruling amendment, not an oversight to fix silently.
+// TelemetryErrorSignaturesPath is deliberately NOT here, and its absence
+// survived Goobers#4001 rather than being overtaken by it. That route serves
+// RAW (code, error_class) pairs with an example run, stage and attempt —
+// exactly what R4 keeps off the plane. The defect-aggregate route below
+// serves the NORMALIZED signature instead
+// (telemetryclient.NormalizeErrorSignature), which is what the amended ruling
+// admits. Admitting the raw route is still a ruling amendment, not an
+// oversight to fix silently.
 func telemetryPlanePath(path string) bool {
 	switch path {
 	case apicontract.TelemetryStatsPath,
 		apicontract.TelemetryErrorsPath,
-		apicontract.TelemetryImplementationOutcomesPath:
+		apicontract.TelemetryImplementationOutcomesPath,
+		apicontract.TelemetryDefectAggregatesPath:
 		return true
 	default:
 		return false
@@ -271,21 +349,19 @@ func telemetryPlanePath(path string) bool {
 // stays anonymous and would be refused.
 //
 // Pod principals (PodPrincipalIssuer) bypass the role ladder and are confined
-// to the pod planes (claims + credential resolve + journal emit + blob
-// get/put + surrender put + telemetry read + the cross-run journal plane +
-// their OWN run's three read routes): their token proves "I am run X's stage
-// pod", which authorizes ledger operations, credential resolution, journal
-// emission, blob transfer, result surrender, its own gaggle's derived
-// telemetry for that run, and reads of run X's own scrubbed journal — and
-// nothing else. Per-run containment (the request body's runId, or the path
-// run id for the journal, surrender, and run-read routes, matching the pod's
-// run) is enforced by the plane handlers, which can see the request — the
-// credential and blob handlers additionally refuse human principals outright
-// (DS9: those planes serve stage pods only; the blob plane's digest carries
-// no run to compare against). The telemetry read is contained by GAGGLE
-// rather than by run, because the evidence it serves is a gaggle-wide rollup
-// by construction; that check also lives in the handlers, for the same
-// reason.
+// to the machine planes required by a stage: claims, triggers, credentials,
+// journal emit/read, blobs, surrender, telemetry, and scheduler state. Their
+// token proves "I am run X's stage pod"; handlers then enforce the relevant
+// run or gaggle boundary. The credential and blob handlers additionally
+// refuse human principals outright.
+//
+// Since Goobers#3897 the token ALSO proves which planes it may reach. The
+// unscoped pod token (GOOBERS_POD_TOKEN, held by __dispatch-exec itself)
+// reaches all of them; the per-plane bearers the dispatcher stamps into a
+// goobers-CLI stage's environment reach exactly one each. That is what makes
+// a stage subprocess unable to surrender its own result even though it holds
+// a bearer for the same run — route confinement, checked here, not a naming
+// convention.
 func RequireRoles() Authorizer {
 	return authorizerFunc(func(request *http.Request) error {
 		principal, ok := PrincipalFromRequest(request)
@@ -293,22 +369,14 @@ func RequireRoles() Authorizer {
 			return errors.New("no authenticated principal")
 		}
 		if IsPodPrincipal(principal) {
-			if (podPlanePath(request.URL.Path) || journalPlanePath(request.URL.Path) || surrenderPlanePath(request.URL.Path)) && request.Method == http.MethodPost {
-				return nil
+			scope, admitted := podRouteScope(request)
+			if !admitted {
+				return fmt.Errorf("pod principal %q may only call the claims, trigger, credential, journal, blob, surrender, telemetry-read, scheduler-state, and own-run read planes", principal.Subject)
 			}
-			if blobPlanePath(request.URL.Path) && (request.Method == http.MethodGet || request.Method == http.MethodPut) {
-				return nil
+			if !principal.HasScope(scope) {
+				return fmt.Errorf("pod principal %q presents a bearer scoped to %v, which does not admit the %s plane", principal.Subject, principal.Scopes, scope)
 			}
-			if telemetryPlanePath(request.URL.Path) && request.Method == http.MethodGet {
-				return nil
-			}
-			// Decision 005 R1 option 1: reads of the pod's own run's journal,
-			// GET only. A pod may never write through a read route, and the
-			// handler still decides WHICH run.
-			if runReadPlanePath(request.URL.Path) && request.Method == http.MethodGet {
-				return nil
-			}
-			return fmt.Errorf("pod principal %q may only call the claims, credential, journal, blob, surrender, and telemetry-read planes and read its own run", principal.Subject)
+			return nil
 		}
 		required := RoleView
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
@@ -319,6 +387,42 @@ func RequireRoles() Authorizer {
 		}
 		return nil
 	})
+}
+
+// podRouteScope resolves a request to the pod plane it addresses and the
+// scope a bearer must carry for it. admitted=false means the route is not
+// pod-reachable at all (or not by this method), which fails closed above.
+//
+// One function rather than a chain of inline conditions so the route->scope
+// mapping is enumerable in one place: a new pod plane that forgets its scope
+// does not compile.
+func podRouteScope(request *http.Request) (scope string, admitted bool) {
+	path, method := request.URL.Path, request.Method
+	if scope, ok := podPlanePath(path); ok && method == http.MethodPost {
+		return scope, true
+	}
+	if journalPlanePath(path) && method == http.MethodPost {
+		return ScopeJournal, true
+	}
+	if surrenderPlanePath(path) && method == http.MethodPost {
+		return ScopeSurrender, true
+	}
+	if blobPlanePath(path) && (method == http.MethodGet || method == http.MethodPut) {
+		return ScopeBlob, true
+	}
+	if statePlanePath(path) && (method == http.MethodGet || method == http.MethodPut) {
+		return ScopeState, true
+	}
+	if telemetryPlanePath(path) && method == http.MethodGet {
+		return ScopeTelemetry, true
+	}
+	// Decision 005 R1 option 1: reads of the pod's own run's journal, GET
+	// only. A pod may never write through a read route, and the handler still
+	// decides WHICH run.
+	if runReadPlanePath(path) && method == http.MethodGet {
+		return ScopeJournal, true
+	}
+	return "", false
 }
 
 // Authenticator establishes the caller identity before authorization.
@@ -404,6 +508,8 @@ type handlerConfig struct {
 	credentials         CredentialService
 	blobs               blobstore.Store
 	surrenders          SurrenderService
+	state               StateService
+	telemetryDefects    TelemetryDefectAggregateService
 	podRunGaggle        func(context.Context, string) (string, error)
 }
 
@@ -714,6 +820,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 		writeJSON(w, http.StatusOK, portalConfig)
 	})
 	registerTelemetryRoutes(router, reader, config.podRunGaggle, errorLog)
+	registerTelemetryDefectAggregateRoute(router, config.telemetryDefects, config.podRunGaggle, errorLog)
 	registerRunRoutes(router, reader, errorLog)
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
@@ -723,6 +830,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerRunJournalPlaneRoutes(router, config, errorLog)
 	registerBlobPlaneRoutes(router, config.blobs, errorLog)
 	registerSurrenderPlaneRoutes(router, config, errorLog)
+	registerStatePlaneRoutes(router, config.state, errorLog)
 }
 
 func registerRunRevealRoute(router *Router, reveal func(context.Context, string) error, errorLog *log.Logger) {
@@ -812,7 +920,7 @@ func registerRunRoutes(router *Router, reader readservice.Reader, errorLog *log.
 		w.Header().Set("Content-Length", strconv.Itoa(len(artifact.Bytes)))
 		w.Header().Set("ETag", `"`+artifact.Metadata.Digest+`"`)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Goobers-Digest", artifact.Metadata.Digest)
+		w.Header().Set(apicontract.DigestHeader, artifact.Metadata.Digest)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(artifact.Bytes)
 	})

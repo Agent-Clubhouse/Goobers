@@ -70,21 +70,22 @@ func buildRemediationStageProvider(root string, repo providers.RepositoryRef, to
 // so the recorder cannot live on the GitHub arm alone.
 func remediationStageProviderWithRecorder(root string, repo providers.RepositoryRef, token string, cached bool, recorder providers.MutationRecorder) (remediationProvider, error) {
 	switch repo.Provider {
-	case providers.ProviderGitea:
-		var opts []func(*providers.GiteaProvider)
+	case providers.ProviderGitea, providers.ProviderGitHub:
+		// Through the shared stage-provider seam, not a backend constructor:
+		// this lane's surface includes AuthenticatedLogin, so a provider built
+		// off-seam carries no declared identity — #3885/#3890 on the local
+		// substrate, and #3914 in a pod, where the login is stamped run
+		// identity because there is no instance config to read.
+		opts := []stageProviderOption{withStageProviderToken(token)}
 		if recorder != nil {
-			opts = append(opts, providers.WithGiteaMutationRecorder(recorder))
+			opts = append(opts, withStageProviderMutationRecorder(recorder))
 		}
-		return newGiteaProviderForStage(root, repo, token, opts...)
-	case providers.ProviderGitHub:
-		var opts []func(*providers.GitHubProvider)
-		if recorder != nil {
-			opts = append(opts, providers.WithMutationRecorder(recorder))
+		// The conditional-GET read cache is a GitHub HTTPClient decorator
+		// (apireadcache.go); the Gitea arm has never been cached.
+		if cached && repo.Provider == providers.ProviderGitHub {
+			opts = append(opts, withStageProviderCache())
 		}
-		if cached {
-			return newCachedGitHubProvider(root, token, opts...), nil
-		}
-		return newGitHubProvider(token, opts...), nil
+		return newProviderForStageSurface[remediationProvider](root, repo, false, opts...)
 	default:
 		return nil, fmt.Errorf("pr-remediation does not support repository provider %q", repo.Provider)
 	}

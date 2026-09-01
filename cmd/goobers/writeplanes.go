@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -46,10 +44,21 @@ var claimSettleOutcomes = map[string]bool{"completed": true, "abandoned": true}
 type daemonClaimService struct {
 	layout instance.Layout
 	log    *journal.InstanceLog
+	// recover is the daemon's OWN stale-claim sweep, injected rather than
+	// reconstructed: it closes over the intervention predicate and the
+	// restart-time recovery gate (up.go), which are in-memory daemon state
+	// this service has no other way to see. nil in an assembly that has no
+	// sweep to offer, which answers the route unavailable rather than
+	// silently running a weaker sweep.
+	recover func(now time.Time) ([]localscheduler.ClaimEntry, error)
 }
 
-func newDaemonClaimService(layout instance.Layout, log *journal.InstanceLog) *daemonClaimService {
-	return &daemonClaimService{layout: layout, log: log}
+func newDaemonClaimService(
+	layout instance.Layout,
+	log *journal.InstanceLog,
+	recover func(now time.Time) ([]localscheduler.ClaimEntry, error),
+) *daemonClaimService {
+	return &daemonClaimService{layout: layout, log: log, recover: recover}
 }
 
 func (s *daemonClaimService) lockPath() string {
@@ -180,7 +189,7 @@ func (s *daemonClaimService) Release(_ context.Context, request httpapi.ClaimReq
 
 func (s *daemonClaimService) releaseAllForRun(request httpapi.ClaimRequest) (httpapi.ClaimResponse, error) {
 	if (request.Gaggle == "") != (request.Provider == "") {
-		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request",
+		return httpapi.ClaimResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
 			"gaggle and provider must be given together for a release of every claim the run holds", nil)
 	}
 	var released []httpapi.ClaimEntry
@@ -211,13 +220,13 @@ func (s *daemonClaimService) releaseAllForRun(request httpapi.ClaimRequest) (htt
 // off-daemon backlog-query runs keeps its input.
 func (s *daemonClaimService) List(_ context.Context, request httpapi.ClaimListRequest) (httpapi.ClaimListResponse, error) {
 	if request.RunID == "" {
-		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request", "runId is required", nil)
+		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest, "runId is required", nil)
 	}
 	switch request.Scope {
 	case httpapi.ClaimListScopeRun:
 	case httpapi.ClaimListScopeNamespace:
 		if request.Gaggle == "" || request.Provider == "" {
-			return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request",
+			return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
 				"gaggle and provider are required for a namespace listing", nil)
 		}
 		if request.PodScoped && !s.runBelongsToGaggle(request.Gaggle, request.RunID) {
@@ -229,7 +238,7 @@ func (s *daemonClaimService) List(_ context.Context, request httpapi.ClaimListRe
 				"pod principal may only list the gaggle namespace its own run belongs to", nil)
 		}
 	default:
-		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, "invalid_request", "scope must be run or namespace", nil)
+		return httpapi.ClaimListResponse{}, httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest, "scope must be run or namespace", nil)
 	}
 	inNamespace := func(entry localscheduler.ClaimEntry) bool {
 		if entry.Gaggle == "" && entry.Provider == "" {
@@ -268,20 +277,11 @@ func (s *daemonClaimService) List(_ context.Context, request httpapi.ClaimListRe
 }
 
 // runBelongsToGaggle reports whether runID's journal lives under gaggle's
-// runs directory on this instance — the run.yaml the daemon's live writer
-// creates at the run's first emit, which every pod plane call follows.
-//
-// Both segments are validated before they are joined into a path: this is a
-// containment check whose only inputs are a pod's request body, so a gaggle
-// that is not a single plain path element (".", "..", anything carrying a
-// separator) is refused outright rather than resolved. Fail closed — an
-// unverifiable gaggle is not a gaggle the run belongs to.
+// runs directory on this instance. Delegates to the shared containment check
+// (schedulerstate.go), which the scheduler-state plane applies to the same
+// question for the same reason.
 func (s *daemonClaimService) runBelongsToGaggle(gaggle, runID string) bool {
-	if !apiv1.ValidRunID(runID) || !plainPathElement(gaggle) {
-		return false
-	}
-	_, err := os.Stat(filepath.Join(s.layout.ForGaggle(gaggle).RunsDir(), runID, "run.yaml"))
-	return err == nil
+	return runBelongsToGaggle(s.layout, gaggle, runID)
 }
 
 // plainPathElement reports whether value is safe to join as exactly one path
@@ -309,6 +309,37 @@ func claimEntryWire(entry localscheduler.ClaimEntry) httpapi.ClaimEntry {
 		ExpiresAt:  entry.ExpiresAt,
 		ReleasedAt: entry.ReleasedAt,
 	}
+}
+
+// Recover runs the daemon's OWN stale-claim sweep (Goobers#4016) and reports
+// the leases it released.
+//
+// The route exists because the sweep is not portable to the caller. Three of
+// its inputs live only here: a lease's terminality is resolved from the
+// OWNING run's journal under the instance root, an active intervention must
+// hold a claim that would otherwise look reapable, and the restart-time
+// recovery gate keeps a sweep from racing the renewal pass that rebuilds a
+// live distributed run's leases across a daemon restart. A stage pod has none
+// of the three, so the plane delegates the whole decision rather than lending
+// out a lock — which is exactly what `backlog-query --reconcile` used to try
+// to take against a relative "scheduler/claims.lock" the pod did not have.
+//
+// A claims-lock timeout is deliberately NOT an error: the sweep is
+// best-effort maintenance whose only consequence is that a dead claimant's
+// provider marker survives one more reconciliation pass, and the daemon's own
+// periodic recovery retries it. The daemon's startup and tick call sites
+// swallow the same error for the same reason.
+func (s *daemonClaimService) Recover(_ context.Context, _ httpapi.ClaimRecoverRequest) (httpapi.ClaimRecoverResponse, error) {
+	if s.recover == nil {
+		return httpapi.ClaimRecoverResponse{}, httpapi.NewInterventionError(
+			http.StatusServiceUnavailable, "claims_recovery_unavailable",
+			"this server does not run claim recovery", nil)
+	}
+	released, err := s.recover(time.Now())
+	if err != nil && !isJournaledClaimsLockTimeout(err) {
+		return httpapi.ClaimRecoverResponse{}, err
+	}
+	return httpapi.ClaimRecoverResponse{Released: claimEntriesWire(released)}, nil
 }
 
 func claimEntriesWire(entries []localscheduler.ClaimEntry) []httpapi.ClaimEntry {
@@ -397,8 +428,28 @@ func (s *daemonClaimService) journalRefusal(request httpapi.ClaimRequest, holder
 // plane dispatches through — the same methods the pending-triggers sweep
 // calls, seam-shaped for tests.
 type workflowTriggerer interface {
-	Trigger(ctx context.Context, workflow string, now time.Time) (string, error)
-	TriggerExact(ctx context.Context, identity localscheduler.WorkflowIdentity, now time.Time) (string, error)
+	// Every method here is a *WithDispatchContext form, which splits the caller's context in two:
+	// admission is validated against the CALLER's context (so a hung or
+	// abandoned caller cannot hold an admission decision open), while the
+	// dispatched run's own lifecycle hangs off the DAEMON's context.
+	//
+	// #3876 (decision 005 D1). Before the split, every trigger-plane dispatch
+	// ran under the HTTP *request* context. An engine dispatch is
+	// asynchronous — it starts a Temporal workflow, then awaits its result —
+	// so `curl` hanging up, or Go's http.Server cancelling the request
+	// context the instant the handler returns 200, cancelled the await. The
+	// workflow kept running on the far side while this daemon concluded the
+	// run had failed: a divergence between the durable truth and the
+	// journal, produced by nothing more than a client disconnect. The runner
+	// path had the same latent bug, hidden only because its dispatch was
+	// synchronous enough to finish first.
+	//
+	// TriggerPriority* is the output-driven re-tick the sweep dispatches for
+	// a priority request file (rundelegate.go) — the plane's path for a stage
+	// pod, which has no scheduler directory to drop that file into.
+	TriggerWithDispatchContext(ctx, dispatchCtx context.Context, workflow string, now time.Time) (string, error)
+	TriggerExactWithDispatchContext(ctx, dispatchCtx context.Context, identity localscheduler.WorkflowIdentity, now time.Time) (string, error)
+	TriggerPriorityWithDispatchContext(ctx, dispatchCtx context.Context, identity localscheduler.WorkflowIdentity, sourceRun string, now time.Time) (string, error)
 }
 
 // maxTriggerDedupeRecords bounds the trigger plane's delivery-dedupe memory,
@@ -414,9 +465,19 @@ const maxTriggerDedupeRecords = 10000
 type daemonTriggerService struct {
 	sched atomic.Pointer[localscheduler.Scheduler]
 	now   func() time.Time
+	// dispatchCtx is the daemon's lifecycle context, attached alongside the
+	// scheduler. Runs this plane mints live and die with the daemon, not with
+	// the HTTP request that asked for them. nil (never attached) degrades to
+	// the request context, which is the pre-#3876 behaviour.
+	dispatchCtx atomic.Pointer[dispatchContextHolder]
 	// dispatch overrides the scheduler dispatch seam in tests; nil dispatches
 	// through the attached scheduler.
 	dispatch workflowTriggerer
+	// contains verifies that a pod caller's run belongs to the gaggle it
+	// named — the trigger plane's half of decision 005 R3's "a pod principal
+	// may POST /triggers for its OWN gaggle". nil is fail-closed: a pod
+	// request is refused rather than admitted unverified.
+	contains func(gaggle, runID string) bool
 
 	mu    sync.Mutex
 	seen  map[string]string // requestId -> minted run id
@@ -427,10 +488,39 @@ func newDaemonTriggerService() *daemonTriggerService {
 	return &daemonTriggerService{now: time.Now, seen: make(map[string]string)}
 }
 
+// withGaggleContainment attaches the pod-principal containment check. The
+// daemon wires the instance's own run.yaml lookup here, the same authority the
+// claims and scheduler-state planes use.
+func (s *daemonTriggerService) withGaggleContainment(contains func(gaggle, runID string) bool) *daemonTriggerService {
+	s.contains = contains
+	return s
+}
+
 func (s *daemonTriggerService) AttachScheduler(sched *localscheduler.Scheduler) {
 	if s != nil {
 		s.sched.Store(sched)
 	}
+}
+
+// dispatchContextHolder boxes a context for atomic.Pointer, which cannot hold
+// an interface value.
+type dispatchContextHolder struct{ ctx context.Context }
+
+// AttachDispatchContext gives the plane the daemon's lifecycle context. Call
+// it with the same context the scheduler itself runs under.
+func (s *daemonTriggerService) AttachDispatchContext(ctx context.Context) {
+	if s != nil && ctx != nil {
+		s.dispatchCtx.Store(&dispatchContextHolder{ctx: ctx})
+	}
+}
+
+// lifecycleContext returns the attached daemon context, falling back to the
+// caller's when the plane was never attached.
+func (s *daemonTriggerService) lifecycleContext(requestCtx context.Context) context.Context {
+	if holder := s.dispatchCtx.Load(); holder != nil && holder.ctx != nil {
+		return holder.ctx
+	}
+	return requestCtx
 }
 
 func (s *daemonTriggerService) triggerer() workflowTriggerer {
@@ -457,6 +547,26 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 			http.StatusServiceUnavailable, "scheduler_unavailable", "run admission is not available", nil,
 		)
 	}
+	// Pod containment (decision 005 R3). The route has already established
+	// that the caller named a gaggle and, for a priority re-tick, its own run;
+	// this is the authority check the route cannot make — does that run
+	// actually live in that gaggle on this instance? A missing verifier is a
+	// refusal, not a pass: the daemon must never admit a pod trigger it could
+	// not contain.
+	if request.PodScoped {
+		if s.contains == nil {
+			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+				http.StatusForbidden, "gaggle_mismatch",
+				"pod-principal triggers are not available from this server", nil,
+			)
+		}
+		if !s.contains(request.Gaggle, request.PodRunID) {
+			return httpapi.TriggerResponse{}, httpapi.NewInterventionError(
+				http.StatusForbidden, "gaggle_mismatch",
+				"pod principal may only trigger a workflow in the gaggle its own run belongs to", nil,
+			)
+		}
+	}
 	requestID := strings.TrimSpace(request.RequestID)
 	if requestID != "" {
 		if runID, duplicate := s.reserve(requestID); duplicate {
@@ -464,14 +574,33 @@ func (s *daemonTriggerService) Trigger(ctx context.Context, request httpapi.Trig
 		}
 	}
 
+	// The request context governs admission; the daemon's lifecycle context
+	// governs the run the admission mints. See workflowTriggerer.
+	dispatchCtx := s.lifecycleContext(ctx)
+
 	var runID string
 	var err error
-	if request.Gaggle != "" {
-		runID, err = dispatch.TriggerExact(ctx, localscheduler.WorkflowIdentity{
+	switch {
+	case strings.TrimSpace(request.SourceRun) != "":
+		// A priority re-tick names an exact workflow by construction: the
+		// source run publishes durable state that changes ONE workflow's
+		// selection order, and TriggerPriority takes that identity. An
+		// unscoped priority request has no such identity, so it is refused
+		// rather than resolved against whatever gaggle happens to match.
+		if request.Gaggle == "" {
+			err = httpapi.NewInterventionError(http.StatusBadRequest, httpapi.CodeInvalidRequest,
+				"a priority trigger requires the workflow's gaggle", nil)
+			break
+		}
+		runID, err = dispatch.TriggerPriorityWithDispatchContext(ctx, dispatchCtx, localscheduler.WorkflowIdentity{
+			Gaggle: request.Gaggle, Workflow: request.Workflow,
+		}, strings.TrimSpace(request.SourceRun), s.now())
+	case request.Gaggle != "":
+		runID, err = dispatch.TriggerExactWithDispatchContext(ctx, dispatchCtx, localscheduler.WorkflowIdentity{
 			Gaggle: request.Gaggle, Workflow: request.Workflow,
 		}, s.now())
-	} else {
-		runID, err = dispatch.Trigger(ctx, request.Workflow, s.now())
+	default:
+		runID, err = dispatch.TriggerWithDispatchContext(ctx, dispatchCtx, request.Workflow, s.now())
 	}
 	if err != nil {
 		if requestID != "" {

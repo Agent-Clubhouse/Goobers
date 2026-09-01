@@ -9,7 +9,10 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
+	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/learning"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/runner"
 	wf "github.com/goobers/goobers/internal/workflow"
@@ -150,6 +153,30 @@ type runJournal struct {
 // caller records runStarted (and, for a non-deferred trigger, the run-branch
 // provenance) once the definition has compiled.
 func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJournal, error) {
+	rec, err := newRunJournalRecorder(in, m)
+	if err != nil {
+		return nil, err
+	}
+	if err := workflow.SetQueryHandler(ctx, JournalQuery, func() (JournalProjection, error) {
+		return rec.proj, nil
+	}); err != nil {
+		return nil, fmt.Errorf("engine: register journal query: %w", err)
+	}
+	return rec, nil
+}
+
+// newRunJournalRecorder builds the recorder without touching workflow.Context.
+//
+// Split out of newRunJournal so the identity and input snapshots have exactly
+// one construction site. The daemon's engine starter reserves a run's journal
+// BEFORE Temporal is asked to start the workflow (decision 005 D1's
+// start-to-first-emit window), and the header it writes must be the same
+// bytes the workflow's own first emit would have written — a live journal
+// absorbs the later duplicate run.started and keeps the FIRST header as
+// run.yaml, so any drift between the two construction sites would become a
+// permanently wrong run.yaml on exactly the runs the reservation exists to
+// protect. One function, two callers, no drift.
+func newRunJournalRecorder(in RunInput, m *wf.Machine) (*runJournal, error) {
 	graph, err := json.Marshal(m.Graph())
 	if err != nil {
 		return nil, fmt.Errorf("engine: marshal pinned workflow graph: %w", err)
@@ -195,6 +222,9 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				Driver:      journal.DriverEngine,
 				RunControls: &runControls,
 				Trigger:     journal.Trigger{Kind: journal.TriggerKind(in.TriggerKind), Ref: in.TriggerRef},
+				// #3876: pinned kit provenance, matching what
+				// gooberDigestStarter stamps on a runner-driven run.
+				GooberDigest: in.GooberDigest,
 			},
 			Item:                   in.Item,
 			Graph:                  graph,
@@ -211,11 +241,6 @@ func newRunJournal(ctx workflow.Context, in RunInput, m *wf.Machine) (*runJourna
 				in.WorkflowName, in.RunID,
 			),
 		},
-	}
-	if err := workflow.SetQueryHandler(ctx, JournalQuery, func() (JournalProjection, error) {
-		return rec.proj, nil
-	}); err != nil {
-		return nil, fmt.Errorf("engine: register journal query: %w", err)
 	}
 	return rec, nil
 }
@@ -316,6 +341,68 @@ func (r *runJournal) stageStarted(at time.Time, stage string, attempt int, class
 	r.appendAt(at, journal.Event{Type: journal.EventStageStarted, Stage: stage, Attempt: attempt, AttemptClass: class})
 }
 
+// placement journals one attempt's runner.placement provenance from what the
+// dispatch reported back (#3875, plan item E3) — the engine's counterpart to
+// internal/runner.runTask's own PlacementEvent append beside stage.started.
+//
+// Journal-only and conformance-EXCLUDED (journal/event.go), so it has no state
+// effect on the walk and cannot move a run's control flow; §11 acceptance 6
+// ("which runner served the stage, which pod carried it, which image that pod
+// actually ran, and how long the attempt waited for capacity") is the whole
+// reason it exists, and the stall sweep is its first reader.
+//
+// AFTER the dispatch, not beside stage.started, and that ordering is forced
+// rather than chosen: a pod attempt's placement is not KNOWN until the pod has
+// been created and the attempt has settled (StagePlacement's "settled attempts
+// only" contract), and inventing one at stage.started would journal the
+// placement the walk ASKED for instead of the one it got — precisely the fact
+// finding 002's inventory row says is missing. It still lands between this
+// attempt's stage.started and the next event a reader correlates it with, so
+// "every stage.started is followed by a runner.placement" holds on the wire.
+//
+// An attempt whose dispatch FAILED carries no placement (every dispatcher error
+// discards the report) and journals nothing: absence is honest here, and a
+// fabricated block would be the first untested branch in a contract that has
+// none.
+func (r *runJournal) placement(ctx workflow.Context, stage string, attempt int, class journal.AttemptClass, result stageActivityResult) {
+	placement, ok := attemptPlacement(result)
+	if !ok {
+		return
+	}
+	r.append(ctx, journal.PlacementEvent(stage, attempt, class, placement))
+}
+
+// attemptPlacement projects one dispatch result onto the journal's placement
+// payload, preferring the pod arm's dispatcher report over the self arm's
+// self-observation. Both are never set at once — a stage executes on exactly
+// one substrate — and the pod arm is checked first so a result that somehow
+// carried both would still describe the pod that actually ran the work.
+func attemptPlacement(result stageActivityResult) (journal.Placement, bool) {
+	if pod := result.Placement; pod != nil {
+		placement := journal.Placement{
+			Runner: pod.Runner,
+			Pod:    pod.Pod,
+			Image:  pod.Image,
+		}
+		// Absent rather than zero: journal.Placement's timestamps are pointers
+		// precisely so "this attempt never queued" and "it queued at the zero
+		// instant" stay distinguishable.
+		if !pod.QueuedAt.IsZero() {
+			queuedAt := pod.QueuedAt
+			placement.QueuedAt = &queuedAt
+		}
+		if !pod.PodStartedAt.IsZero() {
+			podStartedAt := pod.PodStartedAt
+			placement.PodStartedAt = &podStartedAt
+		}
+		return placement, placement.Runner != ""
+	}
+	if self := result.SelfPlacement; self != nil {
+		return *self, self.Runner != ""
+	}
+	return journal.Placement{}, false
+}
+
 // contextManifest mirrors internal/runner's recordContextManifest byte-for-byte
 // so both runners commit identical manifest blobs (identical digests).
 func (r *runJournal) contextManifest(at time.Time, stage string, attempt int, class journal.AttemptClass, pointers []apiv1.ContextPointer) error {
@@ -372,18 +459,51 @@ func (r *runJournal) stageFinished(ctx workflow.Context, stage string, attempt i
 			Name: stage + ".transcript", Ref: journalRefFrom(*result.Transcript),
 		})
 	}
+	r.append(ctx, stageFinishedEvent(stage, attempt, class, result, continueOnError))
+}
+
+// stageFinishedEvent builds the stage.finished event, including the
+// tolerated-failure output discard. Split out from stageFinished so the
+// discard's exact shape is testable without a workflow environment.
+func stageFinishedEvent(stage string, attempt int, class journal.AttemptClass, result apiv1.ResultEnvelope, continueOnError bool) journal.Event {
 	outputs := result.Outputs
+	var runnerFacts map[string]any
 	if result.Status == apiv1.ResultFailure && continueOnError {
 		outputs = nil
+		// The output discard mirrors the local runner exactly and must stay.
+		// But a rate-limit reset is not a stage OUTPUT in any meaningful
+		// sense — it is a scheduler fact about the provider, and the local
+		// runner acts on it (notifyRateLimited) BEFORE it reaches the
+		// continueOnError arm, precisely so a tolerated failure still parks
+		// the provider window. An engine run's only channel to this daemon's
+		// ProviderQuotaState is the journal, so the fact is carried on the
+		// event's Runner map: not conformance-normative (journal.ConformanceView
+		// does not project Runner), so the two drivers' journals still match,
+		// while the daemon's live observer can still see it.
+		if reset, ok := rateLimitResetFact(result); ok {
+			runnerFacts = map[string]any{executor.OutputRateLimitReset: reset}
+		}
 	}
-	r.append(ctx, journal.Event{
+	return journal.Event{
 		Type: journal.EventStageFinished, Stage: stage, Attempt: attempt, AttemptClass: class,
 		Status: string(result.Status), Error: resultErrorDetail(result),
 		Outputs: outputs, Artifacts: journalRefsFrom(result.Artifacts),
+		Runner: runnerFacts,
 		// Mirrors the local runner's stage.finished: the produced provenance is
 		// normative, so it must appear identically in both journals (TBH-4).
 		Integrity: result.Integrity,
-	})
+	}
+}
+
+// rateLimitResetFact recovers a rate-limited failure's reset instant from the
+// result's declared outputs, as the raw value the stage wrote so the daemon's
+// observer applies the one shared parse to it.
+func rateLimitResetFact(result apiv1.ResultEnvelope) (any, bool) {
+	if result.Error == nil || result.Error.Code != providers.ErrorCodeRateLimited {
+		return nil, false
+	}
+	reset, ok := result.Outputs[executor.OutputRateLimitReset]
+	return reset, ok
 }
 
 // toleratedFailure mirrors journalToleratedFailure: the error event that keeps
@@ -480,13 +600,59 @@ func (r *runJournal) gateEvaluated(ctx workflow.Context, gr gateResult, verdict 
 		Type: journal.EventGateEvaluated,
 		Gate: gr.Gate, Verdict: gr.Outcome, Target: gr.Target, Escalated: gr.Escalated,
 		Runner: map[string]any{
-			"repassAttempt": gr.Attempt,
-			"gateAttempt":   gr.GateAttempt,
-			"escalated":     gr.Escalated,
+			"repassAttempt":   gr.Attempt,
+			"gateAttempt":     gr.GateAttempt,
+			"escalated":       gr.Escalated,
+			"duplicateDiff":   gr.DuplicateDiff,
+			"verdictCacheHit": gr.CacheHit,
 		},
 	}
 	if gr.RepassTarget != "" {
 		ev.Runner["repassTarget"] = gr.RepassTarget
+	}
+	// The implementation-lane annotations (#3882), keyed exactly as
+	// internal/gate's recordVerdict keys them: this event is the only place a
+	// consumer can learn that a gate resolved WITHOUT invoking a reviewer, and
+	// which of the previous verdict's findings this one settled.
+	if gr.DiffDigest != "" {
+		ev.Runner["diffDigest"] = gr.DiffDigest
+	}
+	if gr.RepassCause != nil {
+		ev.Runner["repassCause"] = gr.RepassCause
+	}
+	if gr.Reason != "" {
+		ev.Runner["reason"] = gr.Reason
+	}
+	if verdict != nil && len(verdict.Findings) > 0 {
+		identities := make([]string, 0, len(verdict.Findings))
+		for i := range verdict.Findings {
+			learning.NormalizeFinding(&verdict.Findings[i], gr.Gate, gr.DiffDigest)
+			identities = append(identities, verdict.Findings[i].ID)
+		}
+		ev.Runner["findingIdentities"] = identities
+		ev.Runner["learningFindings"] = gate.LearningFindingRecords(verdict.Findings)
+		ev.Runner["correctionFeedback"] = verdict.Rationale
+	}
+	if len(gr.ResolvedFindingIDs) > 0 {
+		ev.Runner["resolvedFindingIdentities"] = gr.ResolvedFindingIDs
+	}
+	if len(gr.SuppressedFindingIDs) > 0 {
+		ev.Runner["suppressedFindingIdentities"] = gr.SuppressedFindingIDs
+	}
+	if len(gr.ReopenedFindingIDs) > 0 {
+		ev.Runner["reopenedFindingIdentities"] = gr.ReopenedFindingIDs
+	}
+	if len(gr.DisprovenFindingIDs) > 0 {
+		ev.Runner["disprovenFindingIdentities"] = gr.DisprovenFindingIDs
+	}
+	if len(gr.DisprovenFindings) > 0 {
+		ev.Runner["disprovenLearningFindings"] = gate.LearningFindingRecords(gr.DisprovenFindings)
+	}
+	if len(gr.RepeatedFindingIDs) > 0 {
+		ev.Runner["repeatedFindingIdentities"] = gr.RepeatedFindingIDs
+	}
+	if len(gr.UnverifiedRepeatFindingIDs) > 0 {
+		ev.Runner["unverifiedRepeatFindingIdentities"] = gr.UnverifiedRepeatFindingIDs
 	}
 	var artifact *apiv1.ArtifactPointer
 	if verdict != nil {
@@ -543,10 +709,17 @@ func (r *runJournal) runFinished(ctx workflow.Context, phase journal.RunPhase) {
 	r.append(ctx, journal.Event{Type: journal.EventRunFinished, Status: string(phase)})
 }
 
-// phaseForStatus maps the engine's RunResult status onto the local runner's
+// PhaseForStatus maps the engine's RunResult status onto the local runner's
 // terminal phase vocabulary — the same mapping the cross-runner outcome tests
 // pin (crossrunner_test.go statusForPhase, inverted).
-func phaseForStatus(status string) (journal.RunPhase, error) {
+//
+// Exported (plan item E2) because the daemon's RunResult -> StartResult mapping
+// and the terminal-hook frame built on it MUST key on the journal PHASE, not on
+// the status word. StatusBlocked — an @abort target — maps to PhaseAborted, not
+// to anything "blocked"-shaped, so a hook table keyed on status wording
+// silently skips that whole class of terminal. Keeping one exported mapping
+// means there is nothing for a second table to disagree with.
+func PhaseForStatus(status string) (journal.RunPhase, error) {
 	switch status {
 	case StatusCompleted:
 		return journal.PhaseCompleted, nil

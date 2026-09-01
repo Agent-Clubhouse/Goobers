@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -13,6 +14,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/runnercap"
 )
 
@@ -87,6 +90,50 @@ const (
 	EnvWorkflow = "GOOBERS_WORKFLOW"
 	EnvStage    = "GOOBERS_STAGE"
 	EnvAttempt  = "GOOBERS_ATTEMPT"
+	// ProviderBotLoginEnv carries the login the stage's forge credential
+	// authenticates AS for the routed repository — the instance config's
+	// declared GitHub App bot login, resolved DAEMON-SIDE at dispatch, where
+	// the instance config is readable (Goobers#3914).
+	//
+	// It exists because a stage pod has no instance root, so the CLI's own
+	// resolution (stageProviderConfiguredLogin) always returned "" there and
+	// providers.WithConfiguredLogin was never applied. Under GitHub App auth
+	// that is #3885's failure exactly: an installation token cannot call
+	// GET /user, so every stage that consults AuthenticatedLogin in a pod —
+	// claim markers, verdicts, handoffs, unparks — fell back to an endpoint
+	// that answers "Resource not accessible by integration".
+	//
+	// RUN IDENTITY, not authority: it names WHO this run acts as, and knowing
+	// a bot login grants nothing (the credential is still the pod's own
+	// capability-scoped token). It is in DispatcherRunIdentityEnv for the
+	// consequences that category carries and that this variable needs:
+	//
+	//   - a goobers-CLI stage KEEPS it (it is the party that builds providers),
+	//     every other stage is stripped of it;
+	//   - a workflow may not author it — refuseControlEnvOverrides refuses a
+	//     declared `env:` naming it AND a value dereferencing $(it);
+	//   - GOOBERS_INPUT_ prefixing keeps an input from colliding with it, and
+	//     the operator passthrough carries names, never values;
+	//   - it survives env:default-deny's in-pod rebuild by name.
+	//
+	// STAMPED FOR EVERY CLI STAGE, empty value included, which is the third
+	// spoof door and the reason the stamp is not conditional on having found
+	// a login: in a pod these arrive as ordinary container variables, so a
+	// runner IMAGE exporting GOOBERS_PROVIDER_BOT_LOGIN would otherwise be
+	// inherited verbatim by the one stage class that keeps the name. A value
+	// the dispatcher always stamps is a value the image cannot supply.
+	//
+	// Its three states are three different facts, and #3914 is the story of
+	// two of them having been one:
+	//
+	//   - ABSENT: nobody resolved this. In a pod that is version skew or a
+	//     hand-built attempt, and the CLI fails the provider's login
+	//     self-report CLOSED rather than falling back to GET /user.
+	//   - PRESENT AND EMPTY: resolved, and the repo declares no bot login —
+	//     the PAT posture, where GET /user is the correct answer and the
+	//     local substrate would have said "" too.
+	//   - PRESENT AND SET: the login, applied as providers.WithConfiguredLogin.
+	ProviderBotLoginEnv = "GOOBERS_PROVIDER_BOT_LOGIN"
 	// EnvBlobEndpoint is the network blob endpoint URL the pod fetches/puts
 	// artifact digests against (decision 010) — present on EVERY runner
 	// class, restricted included (§2a: it is the class's own data path).
@@ -204,6 +251,50 @@ const (
 	EnvStageEnvAllow = "GOOBERS_STAGE_ENV_ALLOW"
 )
 
+// The MACHINE PLANE contract (Goobers#3897): the endpoint/bearer pairs a
+// goobers-CLI stage selects its plane backends from. Each name is restated
+// from the client package that owns it (internal/claimsclient,
+// internal/stateclient, internal/journalclient, internal/telemetryclient)
+// rather than imported, for the reason runContextEnv restates the executor's
+// names: those packages sit ABOVE this one and importing them would invert
+// the dependency. Pinned against the originals by
+// TestPlaneEnvNamesMatchTheClients so the restatement cannot drift.
+//
+// The endpoints are all the SAME daemon API base (Config.WriteAPIBase); the
+// separation that matters is the bearers, which are four distinct, run-bound,
+// single-plane tokens (podauth scopes). A stage holding the claims bearer
+// cannot read the journal with it, and none of the four can surrender.
+//
+// These eight carry the Env SUFFIX rather than this file's usual Env prefix.
+// That is deliberate: test/nophonehome's SEC-048 guard flags any identifier
+// containing both "telemetry" and "endpoint" that is assigned a static
+// string, and exempts identifiers ending in "env" precisely because such a
+// name holds an environment VARIABLE NAME and not a destination. The suffix
+// is the repository's existing way of saying "this is a variable name, not a
+// URL", so the block follows it uniformly rather than for the one constant
+// that would otherwise trip the guard.
+const (
+	// ClaimsEndpointEnv / ClaimsTokenEnv select internal/claimsclient's HTTP
+	// backend. Requires GOOBERS_RUN_ID, which DispatcherRunIdentityEnv
+	// already carries.
+	ClaimsEndpointEnv = "GOOBERS_CLAIMS_ENDPOINT"
+	ClaimsTokenEnv    = "GOOBERS_CLAIMS_TOKEN"
+	// StateEndpointEnv / StateTokenEnv select internal/stateclient's HTTP
+	// backend (and the priority-trigger route that rides it). Requires
+	// GOOBERS_GAGGLE.
+	StateEndpointEnv = "GOOBERS_STATE_ENDPOINT"
+	StateTokenEnv    = "GOOBERS_STATE_TOKEN"
+	// JournalEndpointEnv / JournalTokenEnv select internal/journalclient's
+	// HTTP backend and the instance-annotation emit seam (Goobers#3898).
+	// Requires GOOBERS_RUN_ID; GOOBERS_GAGGLE for the cross-run questions.
+	JournalEndpointEnv = "GOOBERS_JOURNAL_ENDPOINT"
+	JournalTokenEnv    = "GOOBERS_JOURNAL_TOKEN"
+	// TelemetryEndpointEnv / TelemetryTokenEnv select
+	// internal/telemetryclient's HTTP backend. Requires GOOBERS_GAGGLE.
+	TelemetryEndpointEnv = "GOOBERS_TELEMETRY_ENDPOINT"
+	TelemetryTokenEnv    = "GOOBERS_TELEMETRY_TOKEN"
+)
+
 // DispatcherControlEnv is the set of variables the DISPATCHER stamps for its
 // own in-pod runtime. They are the pod's control plane, not the stage's
 // environment, and __dispatch-exec strips every one of them before handing an
@@ -214,7 +305,7 @@ const (
 // for work that failed. MEASURED before this list existed: a stage command on
 // a runner declaring env:default-deny saw POD_TOKEN=PRESENT in a 24-variable
 // inherited environment.
-var DispatcherControlEnv = append(append([]string{}, DispatcherPrivilegedEnv...), DispatcherRunIdentityEnv...)
+var DispatcherControlEnv = append(append(append([]string{}, DispatcherPrivilegedEnv...), DispatcherRunIdentityEnv...), DispatcherPlaneEnv...)
 
 // DispatcherPrivilegedEnv is the half of the control plane that NO stage may
 // ever see, goobers-CLI stage included. EnvPodToken is the reason the whole
@@ -242,8 +333,42 @@ var DispatcherPrivilegedEnv = []string{
 // exempting — a stage running the project's own `make ci` must not see them, or
 // a self-hosting project's tests are perturbed by the live run.
 var DispatcherRunIdentityEnv = append([]string{
-	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt,
+	EnvRunID, EnvGaggle, EnvWorkflow, EnvStage, EnvAttempt, ProviderBotLoginEnv,
 }, runContextEnv...)
+
+// DispatcherPlaneEnv is the THIRD category, and it exists because neither of
+// the other two describes it (Goobers#3897 scope item 3).
+//
+// It is not DispatcherPrivilegedEnv: a goobers-CLI stage is precisely the
+// party that must read these — claimsclient/stateclient/journalclient/
+// telemetryclient select their backend from os.Getenv inside that subprocess,
+// and a stage stripped of them silently takes the FILE branch against a
+// scratch volume nothing reads, which is the failure #3897 was filed about.
+//
+// It is not DispatcherRunIdentityEnv either, and this is the sharper half:
+// that category's whole justification is "knowing a run ID grants nothing —
+// every plane demands the bearer token above". Half of these names ARE that
+// bearer token. Folding them in would quietly falsify the sentence the
+// category is documented by.
+//
+// So: kept for a goobers-CLI stage, stripped from every other stage, exactly
+// like run identity — but grouped and named as AUTHORITY, and minted per run
+// per plane so that what a CLI stage gains is the narrowest thing that works.
+// Each bearer is confined by podauth scope to one plane and by the plane's own
+// handler to this run/gaggle; none of them admits the surrender route, so a
+// stage still cannot author its own outcome (which is what the pod token
+// authorizes and why it stays privileged).
+//
+// All-or-nothing: stageEnv stamps the whole set or none of it. Every client's
+// Select is fail-closed on a partial combination, so a partial stamp turns a
+// working stage into a refused one rather than a silent local write — correct,
+// but a self-inflicted outage. See stampsPlaneEnv.
+var DispatcherPlaneEnv = []string{
+	ClaimsEndpointEnv, ClaimsTokenEnv,
+	StateEndpointEnv, StateTokenEnv,
+	JournalEndpointEnv, JournalTokenEnv,
+	TelemetryEndpointEnv, TelemetryTokenEnv,
+}
 
 // runContextEnv are the run-identity variables the DISPATCHER stamps from the
 // envelope rather than deriving: which repository this run was routed to, and
@@ -695,7 +820,9 @@ func templateStageImage(deployment *appsv1.Deployment) string {
 }
 
 // refuseOverrides is the §3 refuse-to-create for workflow/gaggle/stage input:
-// no goobers.dev/* pod metadata may arrive from outside the dispatcher.
+// no goobers.dev/* pod metadata may arrive from outside the dispatcher, and no
+// workflow-authored `env:` may name — or dereference — a dispatcher control
+// variable.
 func refuseOverrides(attempt Attempt) error {
 	for _, keys := range []map[string]string{attempt.ExtraLabels, attempt.ExtraAnnotations} {
 		for key := range keys {
@@ -704,7 +831,73 @@ func refuseOverrides(attempt Attempt) error {
 			}
 		}
 	}
+	return refuseControlEnvOverrides(attempt)
+}
+
+// controlEnvReference matches a kubelet $(VAR_NAME) dereference inside a
+// declared env VALUE. Kubelet expands these against variables declared EARLIER
+// in the same container env list, and stageEnv stamps the whole control plane
+// first — so `env: {X: "$(GOOBERS_CLAIMS_TOKEN)"}` would hand a stage the
+// bearer's value under a name the stage-env allowlist legitimately admits.
+var controlEnvReference = regexp.MustCompile(`\$\(([A-Za-z_][A-Za-z0-9_]*)\)`)
+
+// refuseControlEnvOverrides closes the two ways workflow-authored `env:` could
+// reach the dispatcher's own variables (Goobers#3897 scope item 4).
+//
+// BY NAME: stageEnv stamps the control plane before a stage's declared `env:`,
+// and a later container env entry of the same name is the one the kubelet
+// hands the container. A stage declaring `env: {GOOBERS_STATE_ENDPOINT: ...}`
+// would therefore point the scheduler-state plane at a server it chose, with
+// the daemon's own bearer attached. Refused at create, like a goobers.dev/*
+// label: a workflow must not be able to author the platform's side of its own
+// environment.
+//
+// BY VALUE: `env: {X: "$(GOOBERS_POD_TOKEN)"}` copies the token's VALUE into a
+// name the stage keeps. That path predates the plane bearers — it leaks on an
+// unrestricted class too, where nothing filters at all — and the #3725 comment
+// records it as open, needing "validating declared env values or reserving the
+// GOOBERS_ prefix". Stamping four run-bound bearers into the same list is
+// exactly the change that makes it worth closing now, and validating the
+// values is the narrower of the two options: it refuses only a dereference of
+// a name the DISPATCHER owns, and leaves every other $(VAR) expansion (a
+// stage composing PATH, or referencing its own earlier key) working.
+//
+// Inputs need no check: InputEnvVar prefixes every one with GOOBERS_INPUT_,
+// which no control variable can collide with (pinned by
+// TestInputEnvVarCannotCollideWithControlEnv). Run context is dispatcher-built.
+func refuseControlEnvOverrides(attempt Attempt) error {
+	for _, name := range sortedKeys(attempt.Env) {
+		if slices.Contains(DispatcherControlEnv, name) {
+			return &ControlEnvOverrideError{Key: name}
+		}
+		for _, match := range controlEnvReference.FindAllStringSubmatch(attempt.Env[name], -1) {
+			if slices.Contains(DispatcherControlEnv, match[1]) {
+				return &ControlEnvOverrideError{Key: name, Dereferences: match[1]}
+			}
+		}
+	}
 	return nil
+}
+
+// ControlEnvOverrideError reports a stage's declared `env:` naming or
+// dereferencing a dispatcher control variable.
+type ControlEnvOverrideError struct {
+	// Key is the declared env key.
+	Key string
+	// Dereferences names the control variable the VALUE expanded, when the
+	// refusal was by value rather than by name.
+	Dereferences string
+}
+
+func (e *ControlEnvOverrideError) Error() string {
+	if e.Dereferences != "" {
+		return fmt.Sprintf(
+			"dispatcher: stage env %q dereferences the dispatcher-owned variable $(%s); a stage may not copy the platform's endpoints, bearers, run or gaggle into a name it keeps",
+			e.Key, e.Dereferences)
+	}
+	return fmt.Sprintf(
+		"dispatcher: stage env %q is a dispatcher-owned control variable; a workflow may not author the platform's endpoints, bearers, run or gaggle",
+		e.Key)
 }
 
 func assertRestrictionsEnforced(attempt Attempt, runner RunnerSpec) error {
@@ -879,6 +1072,7 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	if attempt.PodToken != "" {
 		env = append(env, corev1.EnvVar{Name: EnvPodToken, Value: attempt.PodToken})
 	}
+	env = append(env, planeEnv(cfg, attempt)...)
 	if len(attempt.Command) > 0 {
 		// []string always marshals; a marshal failure here would mean the Go
 		// runtime itself is broken, not a data problem — ignoring the error
@@ -908,6 +1102,13 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 	}
 	if attempt.CLIStage {
 		env = append(env, corev1.EnvVar{Name: EnvStageIsCLI, Value: "true"})
+		// The routed repository's configured bot login, resolved here because
+		// the pod has no instance config to resolve it from (#3914). Stamped
+		// for EVERY CLI stage, empty value included: see ProviderBotLoginEnv
+		// for why the stamp is unconditional (a runner image cannot then
+		// supply the name) and why an empty value and an absent one are two
+		// different facts on the far side.
+		env = append(env, corev1.EnvVar{Name: ProviderBotLoginEnv, Value: providerBotLogin(cfg, attempt)})
 	}
 	if ws := strings.TrimSpace(attempt.Workspace); ws != "" {
 		env = append(env, corev1.EnvVar{Name: EnvStageWorkspace, Value: ws})
@@ -942,6 +1143,87 @@ func stageEnv(cfg Config, attempt Attempt, class map[string]bool, alreadyOnConta
 		)
 	}
 	return env
+}
+
+// providerBotLogin resolves the bot login for the repository this attempt was
+// ROUTED to — the same lookup the CLI performs against the instance config on
+// the local substrate (instance.Config.GitHubBotLogin), against the index the
+// worker built from that same config (Config.BotLogins).
+//
+// The routed repository is read from the attempt's own RunContext, which is
+// dispatcher-built from the invocation envelope: a workflow cannot author it,
+// and it is the same map stageEnv stamps GOOBERS_REPO_* from, so the login and
+// the repository it belongs to can never describe two different repositories.
+//
+// "" for everything that is not a github repository, for a github repository
+// that declares no App bot login, and for an attempt with no routed repo at
+// all. All three are the PAT posture on the far side — GET /user answers, and
+// the local substrate would have returned "" for them too. The fail-closed
+// case is not here: it is the ABSENCE of the stamp, which only version skew or
+// a hand-built attempt can produce.
+func providerBotLogin(cfg Config, attempt Attempt) string {
+	if len(cfg.BotLogins) == 0 {
+		return ""
+	}
+	if attempt.RunContext[executorRepoProviderEnv] != string(apiv1.ProviderGitHub) {
+		return ""
+	}
+	owner := attempt.RunContext[executorRepoOwnerEnv]
+	name := attempt.RunContext[executorRepoNameEnv]
+	if strings.TrimSpace(owner) == "" || strings.TrimSpace(name) == "" {
+		return ""
+	}
+	return cfg.BotLogins[instance.GitHubBotLoginKey(owner, name)]
+}
+
+// planeEnv is the MACHINE PLANE stamp (Goobers#3897): the endpoint/bearer
+// pair for each of the four planes a goobers-CLI stage selects its backend
+// from, or nothing at all.
+//
+// ALL OR NOTHING, which is the whole design of this function. Every plane
+// client's Select is fail-closed on an endpoint with no bearer, and a
+// gaggle-scoped one refuses an empty GOOBERS_GAGGLE — so a partial stamp does
+// not degrade to the file backend, it REFUSES the stage inside the pod. The
+// completeness conditions are therefore checked together and produce either
+// eight variables or zero:
+//
+//   - a CLI stage (nothing else survives the in-pod control-plane strip),
+//   - a write API base to point the four endpoints at,
+//   - four distinct bearers, none of them the pod token,
+//   - the run identity the claims and journal planes contain a caller to, and
+//   - the gaggle the scheduler-state and telemetry planes are scoped by.
+//
+// Dispatch refuses at mint when a CLI stage cannot be given a complete set, so
+// reaching this function with an incomplete one means a DIRECT RenderPod
+// caller (a test, a preflight renderer) built the attempt by hand. Stamping
+// nothing is the right answer there: the rendered spec is then exactly the one
+// this code rendered before plane stamping existed.
+func planeEnv(cfg Config, attempt Attempt) []corev1.EnvVar {
+	if !stampsPlaneEnv(cfg, attempt) {
+		return nil
+	}
+	base := cfg.WriteAPIBase
+	return []corev1.EnvVar{
+		{Name: ClaimsEndpointEnv, Value: base},
+		{Name: ClaimsTokenEnv, Value: attempt.PlaneTokens.Claims},
+		{Name: StateEndpointEnv, Value: base},
+		{Name: StateTokenEnv, Value: attempt.PlaneTokens.State},
+		{Name: JournalEndpointEnv, Value: base},
+		{Name: JournalTokenEnv, Value: attempt.PlaneTokens.Journal},
+		{Name: TelemetryEndpointEnv, Value: base},
+		{Name: TelemetryTokenEnv, Value: attempt.PlaneTokens.Telemetry},
+	}
+}
+
+// stampsPlaneEnv is planeEnv's completeness predicate, separated so the
+// allowlist and the tests read the same rule rather than restating it.
+func stampsPlaneEnv(cfg Config, attempt Attempt) bool {
+	return attempt.CLIStage &&
+		strings.TrimSpace(cfg.WriteAPIBase) != "" &&
+		strings.TrimSpace(attempt.RunID) != "" &&
+		strings.TrimSpace(attempt.Gaggle) != "" &&
+		attempt.PlaneTokens.Complete() &&
+		attempt.PlaneTokens.Distinct(attempt.PodToken)
 }
 
 // stageEnvAllowlist names the ambient container variables __dispatch-exec must
@@ -999,6 +1281,14 @@ func stageEnvAllowlist(cfg Config, attempt Attempt, alreadyOnContainer []string)
 	// A goobers-CLI stage keeps these; every other stage is stripped of them
 	// by the control-plane strip that runs after the rebuild.
 	names = append(names, DispatcherRunIdentityEnv...)
+	// The machine planes, for the same reason and with the same ordering
+	// property: a goobers-CLI stage must READ them (that is how claimsclient
+	// and friends select a backend), the rebuild runs BEFORE the CLI/non-CLI
+	// strip, and a non-CLI stage loses them again at that strip. Without them
+	// here, a CLI stage on a class enforcing env:default-deny would lose its
+	// plane environment and silently take the FILE branch against a scratch
+	// volume — #3725's restriction-conditional shape, wearing #3897's clothes.
+	names = append(names, DispatcherPlaneEnv...)
 	names = append(names, alreadyOnContainer...)
 	names = append(names, cfg.EnvPassthrough...)
 	return names

@@ -33,7 +33,7 @@ func TestReconcileLearningFindingsResolvesSuppressesAndReopensByEvidence(t *test
 	verdict, resolution := reconcileLearningFindings(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Findings: []apiv1.Finding{b},
-	}, []apiv1.ContextPointer{first}, root, "review", "sha256:diff-2")
+	}, []apiv1.ContextPointer{first}, ArtifactBytesFromRoot(root), "review", "sha256:diff-2")
 	if verdict.Decision != apiv1.VerdictNeedsChanges ||
 		!slices.Equal(resolution.Resolved, []string{"finding-a"}) ||
 		len(verdict.Findings) != 1 || verdict.Findings[0].ID != "finding-b" {
@@ -44,7 +44,7 @@ func TestReconcileLearningFindingsResolvesSuppressesAndReopensByEvidence(t *test
 	verdict, resolution = reconcileLearningFindings(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Findings: []apiv1.Finding{a},
-	}, []apiv1.ContextPointer{first, second}, root, "review", "sha256:diff-3")
+	}, []apiv1.ContextPointer{first, second}, ArtifactBytesFromRoot(root), "review", "sha256:diff-3")
 	if verdict.Decision != apiv1.VerdictPass || !resolution.AllSuppressed ||
 		!slices.Equal(resolution.Suppressed, []string{"finding-a"}) ||
 		len(verdict.Findings) != 0 {
@@ -55,7 +55,7 @@ func TestReconcileLearningFindingsResolvesSuppressesAndReopensByEvidence(t *test
 	verdict, resolution = reconcileLearningFindings(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Findings: []apiv1.Finding{a},
-	}, []apiv1.ContextPointer{first, second}, root, "review", "sha256:diff-new")
+	}, []apiv1.ContextPointer{first, second}, ArtifactBytesFromRoot(root), "review", "sha256:diff-new")
 	if verdict.Decision != apiv1.VerdictNeedsChanges ||
 		!slices.Equal(resolution.Reopened, []string{"finding-a"}) ||
 		len(verdict.Findings) != 1 ||
@@ -67,7 +67,7 @@ func TestReconcileLearningFindingsResolvesSuppressesAndReopensByEvidence(t *test
 	verdict, resolution = reconcileLearningFindings(apiv1.Verdict{
 		Decision: apiv1.VerdictNeedsChanges,
 		Findings: []apiv1.Finding{a},
-	}, []apiv1.ContextPointer{first, second}, root, "review", "sha256:diff-4")
+	}, []apiv1.ContextPointer{first, second}, ArtifactBytesFromRoot(root), "review", "sha256:diff-4")
 	if verdict.Decision != apiv1.VerdictNeedsChanges ||
 		!slices.Equal(resolution.Reopened, []string{"finding-a"}) ||
 		len(verdict.Findings) != 1 {
@@ -150,5 +150,48 @@ func writeLearningEpisodePointer(t *testing.T, root string, seq uint64, findings
 	if err != nil {
 		t.Fatal(err)
 	}
-	return apiv1.ContextPointer{Name: "learning.episode", Artifact: &pointer}
+	// The name the PRODUCER actually emits (internal/runner.
+	// LearningEpisodePointerName), not a truncated stand-in: readEpisodeHistory
+	// classifies pointers through apiv1.ClassifyContextPointer, the same
+	// classifier contextFrom selection uses (#3928), so a fixture naming its
+	// episode anything else would be testing a pointer that could never reach
+	// a stage in the first place.
+	return apiv1.ContextPointer{Name: fmt.Sprintf("learning.episode[%d]", seq), Artifact: &pointer}
+}
+
+// A pointer that RESEMBLES an episode without being one is not read back.
+// readEpisodeHistory resolves and parses whatever it accepts, so a loose match
+// here is how an unrelated artifact would get to influence finding identity
+// and, through it, a gate's decision.
+func TestReadEpisodeHistoryIgnoresMalformedEpisodePointers(t *testing.T) {
+	root := t.TempDir()
+	finding := apiv1.Finding{
+		ID: "finding-a", LearningSignature: "sig-a",
+		LearningClassification: apiv1.LearningInstruction,
+		EvidenceDigest:         "sha256:old-a",
+		Severity:               apiv1.SeverityError,
+		Message:                "fix A",
+	}
+	good := writeLearningEpisodePointer(t, root, 10, []apiv1.Finding{finding})
+	for _, name := range []string{
+		"learning.episode",
+		"learning.episodes[10]",
+		"learning.episode[]",
+		"learning.episode[ten]",
+		"enrich.learning.episode[10]",
+	} {
+		t.Run(name, func(t *testing.T) {
+			pointer := good
+			pointer.Name = name
+			history := readEpisodeHistory(
+				[]apiv1.ContextPointer{pointer}, ArtifactBytesFromRoot(root), "review")
+			if len(history.known) != 0 {
+				t.Fatalf("pointer %q was read back as an episode: %+v", name, history.known)
+			}
+		})
+	}
+	history := readEpisodeHistory([]apiv1.ContextPointer{good}, ArtifactBytesFromRoot(root), "review")
+	if len(history.known) != 1 {
+		t.Fatalf("the well-formed pointer %q was NOT read back: %+v", good.Name, history.known)
+	}
 }

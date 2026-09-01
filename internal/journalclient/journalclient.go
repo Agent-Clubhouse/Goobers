@@ -84,6 +84,12 @@ type Reader interface {
 	// ArtifactBytes returns the artifact ref addresses, verified against
 	// ref.Digest.
 	ArtifactBytes(ref journal.Ref) ([]byte, error)
+	// ArtifactBytesBounded is ArtifactBytes with an explicit ceiling: content
+	// over maxBytes is refused rather than buffered, so a caller that will
+	// only act on a bounded artifact cannot be made to hold an unbounded one.
+	// maxBytes <= 0 is unbounded. It is on the interface rather than beside
+	// it so a backend cannot be added that has no way to be bounded.
+	ArtifactBytesBounded(ref journal.Ref, maxBytes int64) ([]byte, error)
 	// ArtifactByDigest returns the artifact stored at digest, verified.
 	ArtifactByDigest(digest string) ([]byte, error)
 	// StageAttempts returns every durable traversal of stage.

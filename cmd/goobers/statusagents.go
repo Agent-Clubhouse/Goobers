@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -220,7 +221,7 @@ func buildAgentProbe(
 // selfProbeRunID is the invoking run id when this process is itself a stage.
 // It is a package var so tests can drive the self-exclusion path without
 // mutating process env.
-var selfProbeRunID = func() string { return os.Getenv("GOOBERS_RUN_ID") }
+var selfProbeRunID = func() string { return os.Getenv(executor.RunIDEnvVar) }
 
 func renderAgentProbe(stdout io.Writer, probe agentProbe, now time.Time) {
 	pf(stdout, "agentic stages live: %d (source: %s; this invocation can never be a match)\n",

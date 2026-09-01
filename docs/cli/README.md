@@ -2,7 +2,7 @@
 
 <!-- Generated from the command registry (cmd/goobers/runtime_capabilities.go) by `make docs`. Do not edit by hand; edits are overwritten and the CI drift guard will fail. -->
 
-`goobers` is the tier 1-2 local instance CLI. This reference is generated from the CLI command registry, so it always matches the shipped binary.
+`goobers` is the Goobers command-line interface. This reference is generated from the CLI command registry, so it always matches the shipped binary.
 
 ## Core commands
 
@@ -14,7 +14,6 @@
 | [`goobers down`](#goobers-down) | request a live daemon's graceful drain-shutdown from a separate terminal |
 | [`goobers escalations`](#goobers-escalations) | list escalated runs newest first |
 | [`goobers examples`](#goobers-examples) | browse canonical workflow examples embedded in the binary |
-| [`goobers getting-started`](#goobers-getting-started) | serve and open the guided portal Getting Started walkthrough |
 | [`goobers help`](#goobers-help) | show command or concept help |
 | [`goobers init`](#goobers-init) | scaffold an instance root |
 | [`goobers run`](#goobers-run) | trigger a run manually (still honors run conditions) |
@@ -69,13 +68,16 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers explain`](#goobers-explain) | project field facts from an embedded JSON Schema |
 | [`goobers features`](#goobers-features) | list the workflow-DSL features this build supports |
 | [`goobers fix`](#goobers-fix) | mechanically migrate workflows to a target dslVersion, one step at a time (DVL-6) |
+| [`goobers fleet`](#goobers-fleet) | associate this instance with a Fleet service |
+| [`goobers fleet join`](#goobers-fleet-join) | discover and enroll this instance with a Fleet service |
+| [`goobers fleet leave`](#goobers-fleet-leave) | remove this instance's Fleet association and protected secrets |
+| [`goobers fleet status`](#goobers-fleet-status) | show durable Fleet registration and connection state |
 | [`goobers journal`](#goobers-journal) | the one sanctioned edit to the append-only journal |
 | [`goobers journal redact`](#goobers-journal-redact) | remove a leaked secret from a stored blob (SEC-041) |
 | [`goobers lint`](#goobers-lint) | lint config via the single authoritative validation engine (alias for validate) |
 | [`goobers netpol-render`](#goobers-netpol-render) | render per-runner-class NetworkPolicy reference manifests from the runners: inventory |
 | [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
 | [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
-| [`goobers onboarding stub-sample`](#goobers-onboarding-stub-sample) | materialize and optionally seed the disposable Getting Started target |
 | [`goobers override`](#goobers-override) | override a nondeterministic gate with a rationale |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
@@ -1310,8 +1312,23 @@ dispatch one run onto the tier-3 engine via Temporal (experimental)
 ~~~text
 Usage: goobers engine-start [flags] <workflow> [path]
 
-Dispatch one run onto the tier-3 engine (experimental). The run id is
-derived from gaggle, workflow, and --dedupe-key.
+Dispatch one run onto the tier-3 engine (experimental).
+
+When a `goobers up` daemon holds this instance's lock the dispatch is
+DELEGATED to it: the daemon admits the run through the scheduler (so it
+takes a concurrency slot, records an instance-log run.started, reserves
+the run journal and fires the terminal hooks on completion) and starts
+the workflow through its own engine starter. The run id is the
+scheduler's, and --dedupe-key is refused, because the daemon mints a
+fresh run id per admission.
+
+--direct bypasses the daemon and starts the workflow straight on
+Temporal with REJECT_DUPLICATE, deriving the run id from gaggle,
+workflow and --dedupe-key. That is the only mode in which --dedupe-key
+means anything: a direct start's run id IS its dedupe unit, whereas a
+delegated dispatch dedupes DELIVERIES (by request id) and not work.
+A direct start takes no scheduler slot and fires no terminal hooks.
+--direct is implied when no daemon is running.
 
 --live-journal pins live journal authorship into the run: workers emit
 journal events through the daemon's journal plane as they happen, so the
@@ -1376,7 +1393,7 @@ Browse the canonical workflow examples embedded in this binary. No source
 checkout or instance root is required.
 
 Commands:
-  list         print the available example names
+  list         print the available example names and descriptions
   show <name>  print an example's exact Workflow YAML
 
 Run `goobers examples list -h` or `goobers examples show -h` for details.
@@ -1396,8 +1413,9 @@ list canonical embedded workflow examples
 ~~~text
 Usage: goobers examples list
 
-Print the names of the canonical embedded workflow examples, one per line.
-Pass one of these names to `goobers examples show` to print its YAML.
+Print the canonical embedded workflow examples, one per line, as the
+example name followed by its one-line description. Pass a name to
+`goobers examples show` to print its YAML.
 
 Exit codes: 0 = listed, 1 = embedded catalog error, 2 = usage error.
 ~~~
@@ -1508,8 +1526,11 @@ filer computes from the finding, not the model's dedupeKey), nor an
 earlier nomination of the same artifact naming it. autoApprove=
 deterministic-only (exactly; default never) opts in and the label is
 added with the github:issues:approve credential only.
-Everything else files unapproved with the reasons in the result. On a
-stage pod the run journal is unreachable, so nothing is approved.
+Everything else files unapproved with the reasons in the result. The
+journal read goes through the run-scoped journal plane, so a dispatched
+stage pod confirms against the same artifact a daemon host does; a
+half-configured plane is a hard failure, and a run whose signals stage
+recorded nothing simply approves nothing and says so.
 
 With --check, only validate the artifact and run the read-only dedupe
 scan (github:issues:read); nothing is created. The write path must be
@@ -1558,6 +1579,88 @@ migrate), 1 = one or more workflows could not be migrated,
 ~~~console
 $ goobers fix --to 2.0
 $ goobers fix --to 2.0 --write ./instance
+~~~
+
+## `goobers fleet`
+
+associate this instance with a Fleet service
+
+~~~text
+Usage: goobers fleet <join|status|leave> [flags] [path]
+
+Associate a local Goobers instance with a Fleet service, inspect its durable
+connection state, or remove the association. Fleet identity and credentials
+are stored outside the instance root so copying an instance does not clone its
+identity.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fleet join --url https://fleet.example
+$ goobers fleet status
+$ goobers fleet leave
+~~~
+
+## `goobers fleet join`
+
+discover and enroll this instance with a Fleet service
+
+~~~text
+Usage: goobers fleet join --url <url> [--enrollment-token-file <path>] [--grant-local-admin | --no-grant-local-admin] [path]
+
+Discover and enroll an instance with a Fleet service. By default the one-time
+enrollment grant is read from a protected terminal prompt and never accepted
+as a command-line value. --enrollment-token-file supports automation and is
+accepted only when the file is private to its owner.
+
+When discovery advertises a local administrator principal, interactive use
+offers an explicit instance:read self-grant. Noninteractive use must choose
+--grant-local-admin or --no-grant-local-admin. An empty ACL always requires an
+explicit opt-out or interactive confirmation.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fleet join --url https://fleet.example
+$ goobers fleet join --url https://fleet.example --enrollment-token-file ./grant.txt --grant-local-admin
+~~~
+
+## `goobers fleet leave`
+
+remove this instance's Fleet association and protected secrets
+
+~~~text
+Usage: goobers fleet leave [path]
+
+Remove the Fleet association, private key, and bearer credential. A running
+daemon observes the removal and stops reconnecting.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fleet leave
+~~~
+
+## `goobers fleet status`
+
+show durable Fleet registration and connection state
+
+~~~text
+Usage: goobers fleet status [--json] [path]
+
+Show the durable Fleet registration, connection, heartbeat, ACL version, and
+credential expiry state. Private key and bearer credential material are never
+printed.
+~~~
+
+**Examples**
+
+~~~console
+$ goobers fleet status
+$ goobers fleet status --json
 ~~~
 
 ## `goobers gate-removal-guard`
@@ -1660,8 +1763,11 @@ Usage: goobers gather-pr-context [path]
 
 Select one open, goober-authored PR labeled goobers:needs-remediation
 or reporting failing CI, falling back to a PR behind its base only when
-neither stronger signal is present. Check out its branch into this
-stage's worktree and load the latest merge-review verdict + PR-thread
+neither stronger signal is present. A run dispatched for one pull
+request (goobers run --pr, or a pull_request webhook delivery) selects
+that PR and no other, and reports no-work naming the reason when it is
+not selectable. Check out its branch into this stage's worktree and
+load the latest merge-review verdict + PR-thread
 comments + whether the base has advanced since this PR branched, writing
 the versioned remediation-brief artifact to the declared result file.
 [path] is the instance root (matching
@@ -1734,43 +1840,6 @@ lookup, always forcing a fresh review. Exit codes: 0 = context gathered
 $ goobers gather-sibling-context
 ~~~
 
-## `goobers getting-started`
-
-serve and open the guided portal Getting Started walkthrough
-
-~~~text
-Usage: goobers getting-started [--port=<port|auto>] [--no-open] [--workdir <dir>]
-
-Serve and open the portal's guided Getting Started walkthrough: two paths
-from an empty working directory to a first autonomous pull request. The
-recommended path connects a repository you already work in — goobers init,
-goobers connect --json, goobers validate --json --check-harness
---check-repos, and goobers run default-implement — and ends with a real PR
-against your own backlog. The alternative walks a disposable
-getting-started-task-api sample instead — goobers onboarding stub-sample,
-goobers init --template=quickstart, the same validate call, and goobers run
-quickstart. Every write action the guide offers is a thin wrapper over
-these documented CLI commands; it never scaffolds, connects, or validates
-on its own. The manual steps stay yours, and the guide states each one
-explicitly: exporting your token for the own-repository path, or creating
-the disposable GitHub repository, pushing the sample, and exporting tokens
-for the sample path. Time to First PR is computed locally and reported
-only to you; nothing leaves your machine.
-
---workdir (default ".") holds the sample checkout and the tutorial
-instance; no instance root needs to exist yet. The default --port is auto,
-incrementing from 8081 until a port is available. Blocks until interrupted.
-Exit codes: 0 = clean shutdown, 1 = service or browser failure, 2 =
-usage/IO error.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers getting-started
-$ goobers getting-started --no-open --workdir ~/goobers-tutorial
-~~~
-
 ## `goobers help`
 
 show command or concept help
@@ -1778,8 +1847,8 @@ show command or concept help
 ~~~text
 Usage: goobers help [all|stages|COMMAND|CONCEPT]
 
-Show core command help with no topic, the complete or workflow-stage command
-list with all or stages, a command's full help, or one of these concepts:
+List core commands with no topic, show the complete or workflow-stage command
+list with all or stages, show a command's full help, or explain one of these concepts:
 instance, gaggle, goober, workflow, stage, gate, harness, capability.
 ~~~
 
@@ -1788,25 +1857,27 @@ instance, gaggle, goober, workflow, stage, gate, harness, capability.
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--guided | --demo [--insecure] | --template=quickstart [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
 placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
-gaggles/<gaggle>/ at runtime. Re-running without --guided is safe — existing
-pieces are left untouched. --guided is first-run only and refuses a target
-with instance.yaml or a populated config/ before prompting. It separately
-selects a checked-in config source and target GitHub application repository,
-then validates both. It can optionally preview and install the release-matched
-agent toolkit into that config source after an explicit harness and destination
-choice. The source may be new or existing locally, cloned from GitHub, or
-optionally backed by a newly confirmed GitHub repository.
+gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
+untouched.
+--guided opens the browser-based setup for a real repository and instance.
+It prepares and validates configuration but does not run a workflow.
+For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new,
+select the repository's Resource owner, choose Only select repositories, and
+grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,
 and gaggles/) without runtime state. The source-tree action is non-interactive,
 preserves every existing file, and reports each created or skipped path;
---json emits its versioned machine-readable result envelope. --demo seeds a hermetic mock-provider full-loop tour
+--json emits its versioned machine-readable result envelope. With
+--harness <name> (copilot or claude-code), every seeded goober uses that
+harness, so the generated instance needs no goober.yaml edits to switch;
+omitting it keeps the template's default harness. --demo seeds a hermetic mock-provider full-loop tour
 requiring no repo, provider credentials, model tokens, or network writes. The
 demo is supported on Linux and macOS, where network isolation is enforced; it is
 fail-closed on Windows (no enforced network:none equivalent exists there) unless
@@ -1822,7 +1893,6 @@ launch the fully isolated WSL 2 route instead. --insecure requires --demo.
 $ goobers init
 $ goobers init --template=quickstart ./tutorial
 $ goobers init --template=quickstart --source-tree ./tutorial-config --json
-$ goobers init --guided ./my-instance
 $ goobers init --demo ./demo
 ~~~
 
@@ -2116,7 +2186,6 @@ explicitly named.
 
 Commands:
   stub-agent-instructions  install agent assets into a config source
-  stub-sample              materialize the disposable Getting Started target
 
 Run `goobers onboarding <command> -h` for action flags.
 ~~~
@@ -2125,7 +2194,6 @@ Run `goobers onboarding <command> -h` for action flags.
 
 ~~~console
 $ goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json
-$ goobers onboarding stub-sample --destination ./getting-started-task-api --json
 ~~~
 
 ## `goobers onboarding stub-agent-instructions`
@@ -2154,40 +2222,6 @@ drift, or write error, 2 = usage error.
 
 ~~~console
 $ goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json
-~~~
-
-## `goobers onboarding stub-sample`
-
-materialize and optionally seed the disposable Getting Started target
-
-~~~text
-Usage: goobers onboarding stub-sample --destination <path> [--work-tracking <owner/repo>] [--token-env <name>] [--force] [--json]
-
-Materialize the embedded getting-started-task-api sample at an explicitly
-named destination. Existing matching files are skipped. A conflicting file
-fails the complete preflight without changing the destination unless --force
-is set; symbolic links are always refused.
-
-With --work-tracking owner/repo, seed the catalog's missing GitHub labels and
-issues using the token named by --token-env. If the token is unset, report
-the issues pending and complete the local materialization without network
-access. No remote repository is created or pushed.
-
-Flags:
-  --destination <path>      required sample destination
-  --work-tracking <repo>    optional GitHub owner/repo to seed
-  --token-env <name>        issue token environment variable (default GOOBERS_GITHUB_ISSUES_TOKEN)
-  --force                   replace conflicting regular files
-  --json                    emit the versioned action envelope
-
-Exit codes: 0 = materialized, 1 = conflict/provider error, 2 = usage error.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers onboarding stub-sample --destination ./getting-started-task-api --json
-$ goobers onboarding stub-sample --destination ./getting-started-task-api --work-tracking my-org/tutorial
 ~~~
 
 ## `goobers open-pr`
@@ -2751,7 +2785,9 @@ Usage: goobers run abort <run-id> [path]
 
 Mark a stuck non-terminal run aborted by appending a terminal
 run.finished(status=aborted) event to its own journal (default path
-"."). Exit codes: 0 = aborted, 1 = business error (run already terminal),
+"."). An ENGINE-DRIVEN run is cancelled on the engine instead — its
+journal is never edited here, and the engine writes its terminal event.
+Exit codes: 0 = aborted, 1 = business error (run already terminal),
 2 = usage/IO error (unknown run).
 ~~~
 
@@ -2772,10 +2808,12 @@ Ask the live `goobers up` daemon to stop a run it is actively executing
 (default path "."): it cancels the active stage, tears down the run
 worktree, releases the backlog claim so the item can be re-queued, and
 records terminal phase aborted — without stopping the daemon or editing a
-journal behind its back. Use `run abort` instead when no daemon is running
-(that path finalizes a stuck run's journal directly). Exit codes: 0 =
-cancelled, 1 = business error (already terminal, not currently running, or
-no daemon to cancel it), 2 = usage/IO error (unknown run).
+journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine
+(CancelWorkflow) instead, with no live daemon required. Use `run abort`
+instead when no daemon is running (that path finalizes a stuck run's
+journal directly). Exit codes: 0 = cancelled, 1 = business error
+(already terminal, not currently running, or no daemon to cancel it),
+2 = usage/IO error (unknown run).
 ~~~
 
 **Examples**
@@ -3298,6 +3336,8 @@ Each run includes work identity, stage liveness, PR trajectory, claim drift, lat
 Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.
 It lists parked backlog items too — open issues carrying a park disposition without
 goobers:ready, which backlog selection can no longer see and no workflow re-readies.
+Shared baseline failures are listed with the subjects waiting on them: runs parked
+because the target branch itself fails CI, all released by one repair to that branch.
 With --daemon, report daemon health, identity, and effective behavior settings instead.
 With --agents, list only the agentic stages in flight right now, by role and run id.
 The --agents answer comes from the runner's own journals, never from a process table,
@@ -3495,6 +3535,17 @@ merge time and first observed post-merge configuration transition. Exact
 EffectiveVersion cohorts verify transitions and additions; a removal is
 verified when the workflow is absent from the live reconciled config.
 
+In a dispatched stage pod (GOOBERS_TELEMETRY_ENDPOINT + its bearer +
+GOOBERS_GAGGLE) the query is answered by the daemon's bounded
+defect-aggregate plane instead of a local rollup file. That plane serves
+only --aggregate stage-failure-rate, error-signature, gate-noise and
+credit-assignment with --format candidate-findings, error signatures are
+normalized by the daemon before they cross, and the read is contained to
+the stage's own gaggle. Anything outside that — another --format, another
+aggregate, --learning-action, a path argument, or a threshold governing an
+unserved family — is refused rather than answered narrowly. Off the plane,
+the resolved root must be a real goobers instance.
+
 Exit codes: 0 = OK (including a clean no-work result), 1 = business error,
 2 = usage/IO error.
 ~~~
@@ -3602,8 +3653,12 @@ Usage: goobers update-behind-pr [path]
 
 Update one behind-base PR through GitHub's update-branch API when it
 is mergeable, CI-clean, and carries no substantive findings. Other
-candidates are routed to full remediation. Exit codes: 0 = updated,
-routed, or no-work; 1 = business error; 2 = usage/IO error.
+candidates are routed to full remediation. A run dispatched for one
+pull request (goobers run --pr, or a pull_request webhook delivery)
+selects that PR and no other; when the target is not selectable the
+stage reports no-work naming the reason instead of falling back to
+another PR. Exit codes: 0 = updated, routed, or no-work;
+1 = business error; 2 = usage/IO error.
 ~~~
 
 **Examples**
@@ -3766,6 +3821,20 @@ Flags:
                              emission through the journal plane, with the
                              per-run bearer from $GOOBERS_POD_TOKEN when
                              set (default $GOOBERS_DAEMON_API)
+  --config-reload-interval <dur>
+                             how often to re-read the instance config
+                             tree and rebuild the gaggle seams whose
+                             config changed, without a restart; 0
+                             disables reload and freezes the worker on
+                             its boot-time tree (default 10s; requires
+                             --instance)
+  --config-history-depth <n>
+                             how many superseded config trees to retain
+                             so an in-flight run pinned to one is still
+                             served the goober kit it was admitted
+                             against across a reload; 0 disables
+                             retention and refuses every superseded pin
+                             (default 3; requires --instance)
   --dispatch-namespace <ns>  namespace to create mode-3 stage pods in;
                              wires the dispatcher behind the stage-dispatch
                              seam and serves the per-(gaggle x runner)
@@ -3779,6 +3848,22 @@ Flags:
 The worker identity reported to Temporal is versioned
 (goobers-worker/<build>@<host>#<pid>) so visibility alone answers which
 build serves a queue.
+
+With --instance, the worker re-reads its config tree on
+--config-reload-interval and atomically replaces the gaggle, credential,
+and agentic-kit seams whose config changed, so a definitions edit reaches
+the NEXT stage this worker serves without a pod restart. An attempt
+already running keeps the kit it was handed. A reload that does not parse
+is logged and rejected; the last-known-good tree stays in force.
+
+An agentic stage is served the goober kit its run pinned at start
+(run.yaml's gooberDigest), resolved against the current config tree or
+one of the --config-history-depth superseded trees still retained. A pin
+no retained tree satisfies is REFUSED by name (gate_pin_missing), loudly
+and retriably, naming the expected digest: the worker never substitutes
+its currently-configured goober for the one the run was admitted
+against. Such an attempt recovers by itself once a reload brings the
+pinned tree into force.
 
 Exit codes: 0 = clean drain, 1 = startup/connection error, 2 = usage error,
 3 = drain timeout expired with in-flight work abandoned.

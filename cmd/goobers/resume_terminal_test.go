@@ -103,7 +103,7 @@ func TestResumeInterruptedRunsSkipsStaleTerminalCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)
@@ -211,7 +211,7 @@ func TestResumeScanReleasesClaimsForAlreadyTerminalRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)
@@ -272,7 +272,7 @@ func TestResumeScanFinalizesTerminalRunFromRemovedGaggle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	var released []string
 	resumed, warned, _, err := resumeInterruptedRunsWithRunners(
@@ -338,8 +338,8 @@ func TestRunAbortRejectsStaleTerminalCheckpoint(t *testing.T) {
 	}
 }
 
-// highestJournalSeq mirrors lastJournalSeq's "take the max, not the last
-// record" logic (runnerwiring.go) so tests can assert the intake watermark
+// highestJournalSeq mirrors internal/telemetry/ingest's "take the max, not
+// the last record" logic so tests can assert the intake watermark
 // against the run's actual highest sequence without hardcoding a number that
 // would drift if the journal fixture setup changes shape.
 func highestJournalSeq(t *testing.T, dir string) uint64 {
@@ -365,7 +365,7 @@ func highestJournalSeq(t *testing.T, dir string) uint64 {
 // scenario: a run discovered already-terminal during the daemon's startup
 // resume scan took the finalize-and-release branch without ever recording
 // its intake watermark, so the read model never learned it had advanced —
-// unlike a normal terminal run, which gets there via ingestRunTelemetry.
+// unlike a normal terminal run, which gets there via telemetryingest.RunTelemetry.
 func TestResumeScanRecordsIntakeWatermarkForTerminalRun(t *testing.T) {
 	root := initDeterministicDemo(t)
 	l := instance.NewLayout(root)
@@ -379,7 +379,7 @@ func TestResumeScanRecordsIntakeWatermarkForTerminalRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	if setup.Watermarks == nil {
 		t.Fatal("setup.Watermarks is nil — cannot assert intake recording")
 	}

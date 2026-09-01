@@ -981,6 +981,130 @@ func TestMixedLoadExperimentProducesAVerdict(t *testing.T) {
 	}
 }
 
+// TestTenantLoadMeasuresEachLevelSeparately is the smoke test for the
+// multi-gaggle dimension: two tenant levels must each be driven and reported on
+// their own, with real concurrent writes applied at both.
+//
+// It asserts nothing about how much contention there is — that is a measurement
+// on a real corpus — but it does pin the property the dimension exists for: a
+// level that measured no reads, or applied no writes, would be multi-tenant cost
+// inferred rather than exercised, which is exactly what this replaces.
+func TestTenantLoadMeasuresEachLevelSeparately(t *testing.T) {
+	spec := correctnessSpec(t.TempDir())
+	spec.Runs = 40
+	spec.OrphanDirs = 0
+	spec.SpansPerRun = 0
+	spec.OversizedRuns = 0
+	spec.SchedulerEvents = 200
+	spec.GiantSchedulerRecords = 0
+	gen, err := generate(spec)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := rebuildAllRoots(gen); err != nil {
+		t.Fatalf("rebuild rollup: %v", err)
+	}
+
+	load := DefaultTenantLoadSpec(500 * time.Millisecond)
+	load.Levels = []int{1, 2}
+	res, err := runTenantLoad(gen.Layout, gen, load, 4)
+	if err != nil {
+		t.Fatalf("tenant load: %v", err)
+	}
+
+	if len(res.Levels) != 2 {
+		t.Fatalf("expected 2 measured levels, got %d", len(res.Levels))
+	}
+	if res.Levels[0].Tenants != 1 || res.Levels[1].Tenants != 2 {
+		t.Fatalf("levels not measured as 1 then 2 tenants: %d, %d",
+			res.Levels[0].Tenants, res.Levels[1].Tenants)
+	}
+	for _, level := range res.Levels {
+		s, ok := level.Stats[tenantStoreBoundOp]
+		if !ok || s.Samples == 0 {
+			t.Fatalf("tenants=%d measured no %s samples", level.Tenants, tenantStoreBoundOp)
+		}
+		w := level.WritesApplied
+		t.Logf("tenants=%d: %s p99=%s n=%d; writes %d sched, %d run, %d ingest",
+			level.Tenants, tenantStoreBoundOp, s.P99, s.Samples,
+			w.SchedulerAppends, w.RunAppends, w.Ingests)
+		if w.SchedulerAppends == 0 && w.RunAppends == 0 && w.Ingests == 0 {
+			t.Errorf("tenants=%d applied no writes; the level measured an idle instance", level.Tenants)
+		}
+	}
+	// The whole dimension's output: a comparable figure across levels. Zero
+	// would mean one of the levels never measured the operation it keys on.
+	if res.ContentionFactor <= 0 {
+		t.Errorf("no cross-level factor for %s", res.ContentionOperation)
+	}
+}
+
+// TestTenantLevelsClampToGeneratedGaggles pins the clamp and its reporting. A
+// level above the corpus's gaggle count cannot be driven, and reporting the
+// requested number would claim a concurrency that never ran.
+func TestTenantLevelsClampToGeneratedGaggles(t *testing.T) {
+	levels := normalizeTenantLevels([]int{8, 1, 0, 4, 1}, 4)
+	want := []tenantLevelPlan{{requested: 1, effective: 1}, {requested: 4, effective: 4}}
+	if len(levels) != len(want) {
+		t.Fatalf("normalizeTenantLevels = %+v, want %+v", levels, want)
+	}
+	for i, plan := range levels {
+		if plan != want[i] {
+			t.Errorf("level %d = %+v, want %+v", i, plan, want[i])
+		}
+	}
+
+	clamped := normalizeTenantLevels([]int{1, 6}, 2)
+	if len(clamped) != 2 || clamped[1].effective != 2 || clamped[1].requested != 6 {
+		t.Fatalf("a level above the gaggle count must clamp and say so: %+v", clamped)
+	}
+}
+
+// TestTenantLoadRequiresTwoDistinctLevels keeps the scenario from reporting a
+// single level as a comparison: one level is a load test, not a dimension.
+func TestTenantLoadRequiresTwoDistinctLevels(t *testing.T) {
+	spec := correctnessSpec(t.TempDir())
+	spec.Runs = 4
+	spec.OrphanDirs = 0
+	spec.SpansPerRun = 0
+	spec.OversizedRuns = 0
+	spec.SchedulerEvents = 10
+	spec.GiantSchedulerRecords = 0
+	spec.Inventory.Gaggles = 1
+	gen, err := generate(spec)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := rebuildAllRoots(gen); err != nil {
+		t.Fatalf("rebuild rollup: %v", err)
+	}
+	load := DefaultTenantLoadSpec(10 * time.Millisecond)
+	if _, err := runTenantLoad(gen.Layout, gen, load, 2); err == nil {
+		t.Fatal("expected an error when every level clamps onto the same tenant count")
+	}
+}
+
+// TestParseTenantLevels covers the CLI list, including the rejections: a
+// silently-dropped level would measure a different scenario than the one asked
+// for and report it under the requested name.
+func TestParseTenantLevels(t *testing.T) {
+	got, err := parseTenantLevels(" 1, 4 ,16")
+	if err != nil {
+		t.Fatalf("parseTenantLevels: %v", err)
+	}
+	want := []int{1, 4, 16}
+	for i := range want {
+		if i >= len(got) || got[i] != want[i] {
+			t.Fatalf("parseTenantLevels = %v, want %v", got, want)
+		}
+	}
+	for _, bad := range []string{"4", "1,x", "1,0", "1,-2", ""} {
+		if _, err := parseTenantLevels(bad); err == nil {
+			t.Errorf("parseTenantLevels(%q) accepted an unusable level list", bad)
+		}
+	}
+}
+
 // adverseFixtureInstance builds a small readable instance for the adverse-state
 // tests, returning the generated corpus and an open read service.
 func adverseFixtureInstance(t *testing.T) (GenerateResult, *readservice.Local, *rollup.DB) {

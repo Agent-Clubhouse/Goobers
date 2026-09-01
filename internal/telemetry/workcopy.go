@@ -48,12 +48,16 @@ func (c *Client) RecordWorkcopyUsage(ctx context.Context, measurement worktree.U
 	}
 
 	attrs := usageIdentityAttributes(measurement)
+	// Metrics carry only the bounded storage operation; the identity
+	// attributes above (run id, worktree id, gaggle) stay on the span.
+	usageMetricAttrs := []attribute.KeyValue{attribute.String(AttrStorageOperation, string(measurement.Operation))}
 	if measurement.WorktreeMeasured {
 		span.Event(EventWorktreeDiskUsage, append(attrs,
 			attribute.String(emissionKindAttribute, emissionKindMetric),
 			attribute.Int64(metricValueAttribute, measurement.WorktreeBytes),
 			attribute.String(metricUnitAttribute, "By"),
 		)...)
+		c.recordDiskUsage(ctx, worktreeDiskUsage, measurement.WorktreeBytes, usageMetricAttrs)
 	}
 	if measurement.WorkcopyMeasured {
 		span.Event(EventWorkcopyDiskUsage, append(attrs,
@@ -62,6 +66,7 @@ func (c *Client) RecordWorkcopyUsage(ctx context.Context, measurement worktree.U
 			attribute.String(metricUnitAttribute, "By"),
 			attribute.Int(AttrUnmeasuredWorktrees, measurement.UnmeasuredWorktrees),
 		)...)
+		c.recordDiskUsage(ctx, workcopyDiskUsage, measurement.WorkcopyBytes, usageMetricAttrs)
 	}
 	if measurement.Err != nil {
 		span.Event(EventWorkcopyDiskMeasurementFailed, append(attrs,

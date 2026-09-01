@@ -26,8 +26,8 @@ func newTestGuidedServer(t *testing.T, workdir string) *guidedServer {
 	t.Helper()
 	return &guidedServer{
 		workdir:      workdir,
-		samplePath:   filepath.Join(workdir, gettingStartedSampleDirName),
-		instancePath: filepath.Join(workdir, gettingStartedInstanceDirName),
+		instancePath: filepath.Join(workdir, "tutorial-instance"),
+		configPath:   filepath.Join(workdir, "tutorial-instance-config"),
 		executable:   "goobers-under-test",
 		errorLog:     log.New(io.Discard, "", 0),
 	}
@@ -90,13 +90,14 @@ func TestGettingStartedStateEndpoint(t *testing.T) {
 		t.Fatalf("state Content-Type = %q", contentType)
 	}
 	state := decodeGuidedResponse[guidedStateBody](t, before)
-	if state.Version != 1 ||
+	if state.Version != guidedStateVersion ||
+		state.Platform != runtime.GOOS ||
 		state.Workdir != workdir ||
-		state.SamplePath != filepath.Join(workdir, "getting-started-task-api") ||
-		state.InstancePath != filepath.Join(workdir, "tutorial-instance") {
+		state.InstancePath != filepath.Join(workdir, "tutorial-instance") ||
+		state.ConfigPath != filepath.Join(workdir, "tutorial-instance-config") {
 		t.Fatalf("state paths = %+v", state)
 	}
-	if state.SampleExists || state.InstanceExists || state.APIReady || state.Job != nil {
+	if state.InstanceExists || state.APIReady || state.Job != nil {
 		t.Fatalf("fresh workdir state = %+v", state)
 	}
 	if state.Env.GoobersGithubToken || state.Env.GoobersGithubIssuesToken {
@@ -107,9 +108,6 @@ func TestGettingStartedStateEndpoint(t *testing.T) {
 		t.Fatalf("state body missing explicit null job: %q", before.Body.String())
 	}
 
-	if err := os.MkdirAll(server.samplePath, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.MkdirAll(server.instancePath, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +118,7 @@ func TestGettingStartedStateEndpoint(t *testing.T) {
 	t.Setenv("GOOBERS_GITHUB_ISSUES_TOKEN", "issues-token")
 
 	after := decodeGuidedResponse[guidedStateBody](t, guidedGet(http.HandlerFunc(server.serveGuided), "/guided/state"))
-	if !after.SampleExists || !after.InstanceExists {
+	if !after.InstanceExists {
 		t.Fatalf("state after creation = %+v", after)
 	}
 	if !after.Env.GoobersGithubToken || !after.Env.GoobersGithubIssuesToken {
@@ -137,33 +135,78 @@ func TestGettingStartedStateNeverLeaksTokenValues(t *testing.T) {
 	}
 }
 
+func TestGettingStartedInspectsLocalGitHubRepository(t *testing.T) {
+	repository := filepath.Join(t.TempDir(), "widgets")
+	if err := os.MkdirAll(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-b", "trunk"},
+		{"remote", "add", "origin", "https://github.com/acme/widgets.git"},
+	} {
+		runAgentKitTestGit(t, repository, args...)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "Makefile"), []byte("ci:\n\t@true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request, err := json.Marshal(map[string]string{"location": repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newTestGuidedServer(t, t.TempDir())
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/inspect-repository",
+		string(request),
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	inspection := decodeGuidedResponse[guidedRepositoryInspection](t, recorder)
+	if inspection.Provider != "github" ||
+		inspection.Owner != "acme" ||
+		inspection.Name != "widgets" ||
+		inspection.DefaultBranch != "trunk" ||
+		inspection.Stack != "Makefile" ||
+		!reflect.DeepEqual(inspection.CICommand, []string{"make", "ci"}) ||
+		inspection.NeedsClone {
+		t.Fatalf("inspection = %+v", inspection)
+	}
+	if inspection.LocalPath == "" || inspection.PeerConfigPath == "" || inspection.InRepoConfigPath == "" {
+		t.Fatalf("inspection paths = %+v", inspection)
+	}
+}
+
+func TestGettingStartedChooseRepositoryFolder(t *testing.T) {
+	previous := guidedChooseRepositoryFolder
+	guidedChooseRepositoryFolder = func(context.Context) (string, bool, error) {
+		return `C:\src\widgets`, false, nil
+	}
+	t.Cleanup(func() { guidedChooseRepositoryFolder = previous })
+
+	server := newTestGuidedServer(t, t.TempDir())
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/choose-repository-folder",
+		`{}`,
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeGuidedResponse[guidedChooseFolderResponse](t, recorder)
+	if response.Path != `C:\src\widgets` || response.Canceled {
+		t.Fatalf("response = %+v", response)
+	}
+}
+
 func TestGettingStartedActionArgv(t *testing.T) {
 	workdir := t.TempDir()
-	sample := filepath.Join(workdir, "getting-started-task-api")
 	tutorial := filepath.Join(workdir, "tutorial-instance")
 	cases := []struct {
 		name   string
 		invoke func(handler http.Handler) *httptest.ResponseRecorder
 		want   []string
 	}{
-		{
-			name: "stub-sample default",
-			invoke: func(h http.Handler) *httptest.ResponseRecorder {
-				return guidedPost(h, "/guided/actions/stub-sample", `{}`)
-			},
-			want: []string{"onboarding", "stub-sample", "--destination", sample, "--json"},
-		},
-		{
-			name: "stub-sample all options",
-			invoke: func(h http.Handler) *httptest.ResponseRecorder {
-				return guidedPost(h, "/guided/actions/stub-sample",
-					`{"workTracking":"my-org/tutorial","tokenEnv":"MY_TOKEN","force":true}`)
-			},
-			want: []string{
-				"onboarding", "stub-sample", "--destination", sample, "--json",
-				"--work-tracking", "my-org/tutorial", "--token-env", "MY_TOKEN", "--force",
-			},
-		},
 		{
 			name: "init-instance",
 			invoke: func(h http.Handler) *httptest.ResponseRecorder {
@@ -272,6 +315,107 @@ func TestGettingStartedAllowlistRejections(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Fatalf("rejected requests must never exec: %v", *calls)
+	}
+}
+
+func TestGettingStartedGuidedInitMaterializesSelectedModules(t *testing.T) {
+	workdir := t.TempDir()
+	server := newTestGuidedServer(t, workdir)
+	body := `{
+		"template":"guided",
+		"guided":{
+			"provider":"github",
+			"owner":"acme",
+			"name":"widgets",
+			"localPath":"C:\\src\\widgets",
+			"configPath":"` + filepath.ToSlash(server.configPath) + `",
+			"branch":"main",
+			"workflows":["backlog-curation","work-nomination"],
+			"harness":"copilot",
+			"githubCLIUser":"octocat"
+		}
+	}`
+
+	recorder := guidedPost(http.HandlerFunc(server.serveGuided), "/guided/actions/init-instance", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeGuidedResponse[guidedInitBody](t, recorder)
+	if response.ExitCode != 0 || !strings.Contains(response.Stdout, "2 workflow module(s)") {
+		t.Fatalf("guided init response = %+v", response)
+	}
+	for _, path := range []string{
+		filepath.Join(server.configPath, instance.GuidedSourceInstanceFile),
+		filepath.Join(server.configPath, "gaggles", "widgets", "workflows", "backlog-curation.yaml"),
+		filepath.Join(server.configPath, "gaggles", "widgets", "workflows", "work-nomination.yaml"),
+		filepath.Join(server.instancePath, instance.ConfigFileName),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("guided init did not create %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(
+		server.configPath,
+		"gaggles",
+		"widgets",
+		"workflows",
+		"implementation.yaml",
+	)); !os.IsNotExist(err) {
+		t.Fatalf("guided init created unselected implementation workflow: %v", err)
+	}
+}
+
+func TestGettingStartedRunDoesNotRequireEnvTokenForCLIAuth(t *testing.T) {
+	cases := []struct {
+		name string
+		opts instance.GuidedOptions
+	}{
+		{
+			name: "GitHub CLI",
+			opts: instance.GuidedOptions{
+				GaggleName:    "widgets",
+				DisplayName:   "acme/widgets",
+				RepoProvider:  "github",
+				RepoOwner:     "acme",
+				RepoName:      "widgets",
+				RepoBranch:    "main",
+				GitHubCLIUser: "octocat",
+				Workflows:     []string{instance.GuidedWorkflowWorkNomination},
+			},
+		},
+		{
+			name: "Azure CLI",
+			opts: instance.GuidedOptions{
+				GaggleName:   "widgets",
+				DisplayName:  "acme/platform/widgets",
+				RepoProvider: "ado",
+				RepoOwner:    "acme",
+				RepoProject:  "platform",
+				RepoName:     "widgets",
+				RepoBranch:   "main",
+				RepoAuthKind: instance.ADOAuthAzureCLI,
+				Workflows:    []string{instance.GuidedWorkflowWorkNomination},
+			},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := newTestGuidedServer(t, t.TempDir())
+			source := filepath.Join(t.TempDir(), "config")
+			if _, err := instance.SeedGuidedConfigSource(source, testCase.opts); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := instance.LoadGuidedSourceConfig(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := instance.InitGuidedFromSource(server.instancePath, source, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if env, required := server.requiredRunTokenEnv(); required || env != "" {
+				t.Fatalf("requiredRunTokenEnv() = (%q, %v), want no environment token", env, required)
+			}
+		})
 	}
 }
 
@@ -411,6 +555,7 @@ func TestGettingStartedRunWorkflowChooser(t *testing.T) {
 		{`{}`, []string{"run", "quickstart", tutorial}},
 		{`{"workflow":"quickstart"}`, []string{"run", "quickstart", tutorial}},
 		{`{"workflow":"default-implement"}`, []string{"run", "default-implement", tutorial}},
+		{`{"workflow":"implementation"}`, []string{"run", "implementation", tutorial}},
 	} {
 		server := newTestGuidedServer(t, workdir)
 		handler := http.HandlerFunc(server.serveGuided)

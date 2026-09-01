@@ -9,6 +9,7 @@ github.com/goobers/goobers/api/v1alpha1.RegisteredKinds # Public CRD inventory r
 github.com/goobers/goobers/internal/configdiff.OperationalFields # Documented operational-tuning allowlist, exercised directly by TestOperationalFields (#2044 audit: was vaguely "audit and tooling consumers" with no named consumer).
 github.com/goobers/goobers/internal/credentials.NewResolverWithSources # Dynamic-source resolver constructor (#686) retained as public API, exercised by credential resolver tests.
 github.com/goobers/goobers/internal/gooberassets.IsWithinSourceDir # Embedded-asset boundary helper, exercised by assets_test.go's hidden-directory case (#2044 audit).
+github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration.
 github.com/goobers/goobers/internal/missioncontrol.EvaluateMetric # Versioned mission-control metric contract entry point retained for workflow consumers (#1449).
 github.com/goobers/goobers/internal/missioncontrol.Build # Versioned mission-control artifact builder retained for workflow consumers (#1449).
 github.com/goobers/goobers/internal/missioncontrol.aggregate # Mission-control aggregation helper reachable through the retained artifact builder (#1449).
@@ -44,6 +45,8 @@ github.com/goobers/goobers/internal/missioncontrol.canonicalize # Mission-contro
 github.com/goobers/goobers/internal/missioncontrol.RenderFacts # Exact mission-control facts renderer retained for workflow consumers (#1449).
 github.com/goobers/goobers/internal/missioncontrol.renderCriterion # Mission-control criterion renderer reachable through the retained exact-facts renderer (#1449).
 github.com/goobers/goobers/internal/telemetry/rollup.Rebuild # Single-root convenience wrapper over RebuildAll, retained for the CLI trace/stats tests; its last non-test caller was the scale harness, which moved to multi-root RebuildAll when runs became per-gaggle (#1913).
+github.com/goobers/goobers/internal/instance.InitQuickstart # Default-options convenience wrapper over InitQuickstartWithOptions, retained for the CLI and release onboarding tests; the init command always passes the --harness selection (#3071).
+github.com/goobers/goobers/internal/instance.SeedQuickstartConfigSource # Default-options convenience wrapper over SeedQuickstartConfigSourceWithOptions, retained for the config-source seeding and validate tests; the init command always passes the --harness selection (#3071).
 github.com/goobers/goobers/internal/readmodel.SupportedCombinations # Exposes the closed set for contract generation and the API-surface enumeration test (#1920).
 github.com/goobers/goobers/internal/httpapi.SurfaceActions # API capability inventory, exercised by cmd/goobers/runtime_capabilities_test.go's cross-surface parity check and mutations_test.go's runtime-mutation classification (#2044 audit).
 github.com/goobers/goobers/internal/builtincmd.Names # Built-in subcommand inventory accessor, exercised by cmd/goobers/builtincmd_parity_test.go's CLI-registry parity check (#2861 admission hardening).
@@ -64,6 +67,7 @@ github.com/goobers/goobers/providers.WithGiteaMaxRateLimitRetries # Public Gitea
 github.com/goobers/goobers/providers.WithGiteaMaxTransientRetries # Public Gitea transient-retry option retained for external provider consumers.
 github.com/goobers/goobers/providers.WithGiteaRateLimitMaxWait # Public Gitea rate-limit wait-budget option retained for external provider consumers; mirrors WithRateLimitMaxWait.
 github.com/goobers/goobers/providers.BranchName # Public provider branch helper retained for external provider consumers.
+github.com/goobers/goobers/providers.ParseAttribution # Documented attribution-marker decoder retained for external consumers (e.g. ReviewStar) to parse Goobers-authored comments per #3502; Goobers itself only ever writes markers.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.RegisterFactory # Public connector-extension registration API retained for externally linked adapters.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.MustRegisterFactory # Init-time connector-extension registration API retained for externally linked adapters.
 github.com/goobers/goobers/telemetryconnector/v1alpha1.NewQueryError # Public connector failure-classification helper retained for external adapters.
@@ -71,8 +75,14 @@ github.com/goobers/goobers/telemetryconnector/v1alpha1.NewQueryError # Public co
 # Cross-surface contract invariants exercised by drift tests.
 github.com/goobers/goobers/providers.BlessedTierProviderKinds # Blessed-tier CI gate's provider set, invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
 github.com/goobers/goobers/providers.ValidateBlessedTier # Blessed-tier CI gate invoked by TestBlessedTierGapsAreTracked (CONF-2, #2075).
+github.com/goobers/goobers/providers.ValidateGapRegistry # Capability-gap registry well-formedness gate (#3058) invoked by TestGapRegistryEntriesAreWellFormed and TestValidateGapRegistryRejectsMalformedEntries.
+github.com/goobers/goobers/providers.TrackedGapReferences # Tracked-gap inventory (#3058) invoked by TestTrackedGapReferencesExcludePermanentGaps and the integration-tagged TestIntegrationTrackedGapReferencesAreOpen.
+github.com/goobers/goobers/providers.ValidateTrackedGapsOpen # Forge-aware tracked-gap gate (#3058) invoked by the integration-tagged TestIntegrationTrackedGapReferencesAreOpen and the hermetic ValidateTrackedGapsOpen cases in capability_gap_gate_test.go.
+github.com/goobers/goobers/providers.issueStateIsClosed # Provider-native closed-state vocabulary reached through the tracked-gap gate (#3058), exercised directly by TestIssueStateIsClosed.
+github.com/goobers/goobers/providers.repoLabel # Repository-reference error renderer reached through the tracked-gap gate (#3058).
 github.com/goobers/goobers/internal/apicontract.ValidateRuntimeParity # Contract generator invariant retained for cross-surface drift tests.
 github.com/goobers/goobers/internal/apicontract.validSurface # Contract generator helper reachable through the drift-test invariant.
+github.com/goobers/goobers/internal/apicontract.V1ConfigAuthoringRoutes # Config-authoring route contract (#3779) not yet registered by the daemon until its backing services land; exercised by authoring_test.go.
 
 # Test and fixture support intentionally shared across package boundaries.
 github.com/goobers/goobers/internal/flake.Quarantine # Issue-backed quarantine API (#664) intentionally ships with zero occupants until a flake is diagnosed.
@@ -90,7 +100,6 @@ github.com/goobers/goobers/internal/workflow/v_3_0.CheckGaggleFeatureSupport # 3
 github.com/goobers/goobers/internal/workflow/v_3_0.LookupFeature # 3.0-interpreter feature lookup retained as part of the independently versioned interpreter API (#3505).
 github.com/goobers/goobers/internal/workflow/v_3_0.newFeatureRegistryAgainstReleased # 3.0-interpreter feature-registry evolution guard exercised by the release-baseline tests (#3505, mirrors the v_next entry).
 github.com/goobers/goobers/internal/workflow/v_3_0.validateFeatureRegistryEvolution # 3.0-interpreter feature-registry evolution validator exercised by the release-baseline tests (#3505, mirrors the v_next entry).
-github.com/goobers/goobers/cmd/goobers.promptGuidedOptions # Guided target-input prompt seam retained for focused parser and credential-reference tests.
 github.com/goobers/goobers/cmd/goobers.reconcileMergeReviewStatusComment # Merge-review reconciliation seam retained for command tests.
 github.com/goobers/goobers/cmd/goobers.refreshBlockedEligibility # Blocked-record refresh seam retained for command tests.
 github.com/goobers/goobers/cmd/goobers.resumeInterruptedRuns # Crash-recovery seam retained for daemon tests.
@@ -140,6 +149,8 @@ github.com/goobers/goobers/internal/notification.TerminalSink.Kind # Development
 github.com/goobers/goobers/internal/notification.TerminalSink.Version # Development terminal sink contract method reserved for notification-output callers (#1451).
 github.com/goobers/goobers/internal/notification.TerminalSink.Deliver # Development terminal sink delivery method reserved for notification-output callers (#1451).
 github.com/goobers/goobers/internal/configsync.NoopApplier.Apply # Quarantined tier-3 direct-apply seam retained per docs/ARCHITECTURE.md section 11.
+github.com/goobers/goobers/internal/configsync.AuthoritativeGeneration # Generation-barrier read side (#2444) for quarantined tier-3 config-sync consumers, exercised by generation_test.go's authoritative-generation assertions.
+github.com/goobers/goobers/internal/configsync.GenerationSelector # Single-generation label selector (#2444) for quarantined tier-3 config-sync consumers, exercised by generation_test.go's single-generation consistency assertions.
 github.com/goobers/goobers/internal/engine.NewRegistry # Temporal engine registry constructor retained for tier 3, exercised by registry package tests.
 github.com/goobers/goobers/internal/engine.ProjectCompletedScheduledRun # Temporal scheduled-run projection entrypoint (#635) retained for tier 3, exercised by schedule integration tests.
 github.com/goobers/goobers/internal/engine.ProjectSchedulerEvents # Temporal scheduler-journal projection helper (#635) retained for tier 3, exercised by schedule tests.
@@ -152,8 +163,21 @@ github.com/goobers/goobers/internal/journal.ConformanceBranches # Per-branch con
 github.com/goobers/goobers/internal/journal.MonotonicSeq # Cross-runner journal invariant retained for the tier-3 harness.
 github.com/goobers/goobers/internal/journal.SetLockTimeoutForTest # Lock-timeout test seam used only from _test.go files: cmd/goobers's live-daemon abort-delegation tests (#2270) and the journal-plane adoption tests that shrink the 30s bound instead of waiting it out (#3828).
 github.com/goobers/goobers/internal/localscheduler.ActiveRunCounts # Scheduler readiness helper retained for alternate trigger integrations.
-github.com/goobers/goobers/internal/platform/shutdown.NewExternal # Windows service shutdown entrypoint retained for SCM integration.
 github.com/goobers/goobers/internal/platform/shutdown.Notifier.Reason # Shutdown reason accessor retained for service and diagnostics integrations.
+
+# Removed public stub-sample command implementation retained temporarily for fixture-level regression tests.
+github.com/goobers/goobers/cmd/goobers.loadOnboardingSample # Used only by onboarding fixture tests after the public stub-sample command was removed.
+github.com/goobers/goobers/cmd/goobers.materializeOnboardingSample # Used only by onboarding fixture tests after the public stub-sample command was removed.
+github.com/goobers/goobers/cmd/goobers.planOnboardingSampleFile # Used only by onboarding fixture tests after the public stub-sample command was removed.
+github.com/goobers/goobers/cmd/goobers.readOnboardingSampleFile # Used only by onboarding fixture tests after the public stub-sample command was removed.
+github.com/goobers/goobers/cmd/goobers.writeOnboardingSampleFile # Used only by onboarding fixture tests after the public stub-sample command was removed.
+github.com/goobers/goobers/cmd/goobers.createOnboardingStagedFile # Used only by onboarding fixture tests after the public stub-sample command was removed.
+github.com/goobers/goobers/cmd/goobers.openOnboardingDestination # Used only by onboarding fixture tests after the public stub-sample command was removed.
+github.com/goobers/goobers/cmd/goobers.openOnboardingSampleParent # Used only by onboarding fixture tests after the public stub-sample command was removed.
+github.com/goobers/goobers/cmd/goobers.openStableOnboardingDirectory # Used only by onboarding fixture tests after the public stub-sample command was removed.
+github.com/goobers/goobers/cmd/goobers.validateOnboardingDestinationBinding # Used only by onboarding fixture tests after the public stub-sample command was removed.
+github.com/goobers/goobers/cmd/goobers.seedOnboardingIssues # Used only by onboarding fixture tests after the public stub-sample command was removed.
+github.com/goobers/goobers/cmd/goobers.runOnboardingStubSample # Used only by onboarding fixture tests after the public stub-sample command was removed.
 
 # Test-support constructors: reachable only from _test.go, so unreachable from any main.
 github.com/goobers/goobers/internal/temporaltest.NewWorkflowEnvironment # Shared Temporal test-environment constructor (#1735) used by every engine and e2e workflow test.
@@ -285,3 +309,46 @@ github.com/goobers/goobers/internal/e2e.matchLine # §5 rule 1 guard's shared pa
 github.com/goobers/goobers/internal/e2e.ScanTextForKubectlExec # S7's transcript half of the §5 rule 1 guard; topology-pending with AssertTriggerAndEscalationViaWriteAPI above (its only intended caller).
 github.com/goobers/goobers/internal/e2e.ScanGoStringLiteralsForKubectlExec # §5 rule 1 guard over this package's own Go source; not wired into any lint/CI entrypoint yet, only its own tests.
 github.com/goobers/goobers/internal/e2e.ReadBundle # Bundle.Encode's round-trip counterpart; no consumer reads a written evidence bundle back yet (a future re-run/comparison feature), only its own tests.
+
+# Credit-graph contract and read model (#4077). The package defines the
+# hierarchical execution/credit graph and materializes it from a run's journal
+# and telemetry provenance; the executor records the provenance the builder
+# reads, but no CLI or portal surface calls Build yet — that consumer wiring is
+# explicit follow-up. Every builder helper below is reachable only through the
+# retained Build entry point, and the traversal API below is the contract the
+# eventual consumer traverses. All are unit-tested by build_test.go.
+github.com/goobers/goobers/internal/creditgraph.Build # Credit-graph read-model entry point retained as the run-graph contract surface; consumer wiring is follow-up (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.collectSpanProvenance # Span provenance collector reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addOutcomeAndRun # Outcome/run root construction reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addStages # Stage node construction reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.ensureStage # Stage node deduplication reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addAgents # Subagent node construction reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addAgent # Single-subagent node construction reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.linkAgent # Subagent parent linking reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addAgentModelNode # Aggregate model-invocation node for uninstrumented agents, reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.hasSpan # Span-presence check reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addSpans # Transcript span construction reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.spanOwner # Span owner resolution reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addTranscript # Transcript record fan-out reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addModelInvocation # Model-invocation node construction reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addToolCall # Tool-call node construction reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addToolResult # Tool-result node construction reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.spanScopedID # Per-span node id namespacing reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.spanCallKey # Per-span tool-call key namespacing reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.ensureTool # Shared tool-identity deduplication reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.reportUnresolvedToolCalls # Unresolved tool-call gap reporting reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addEvidence # Evidence node construction reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addEvaluators # Evaluator node construction reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addNode # Node insertion primitive reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.addEdge # Edge insertion primitive reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.builder.gap # Missing-provenance gap recorder reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.runNodeID # Run node id helper reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.provenanceOf # Recorded/unknown provenance classifier reachable through the retained credit-graph builder (#4077).
+github.com/goobers/goobers/internal/creditgraph.Graph.Node # Credit-graph node lookup, part of the traversal contract retained for run-graph consumers (#4077).
+github.com/goobers/goobers/internal/creditgraph.Graph.Root # Credit-graph root (final outcome) accessor, part of the traversal contract retained for run-graph consumers (#4077).
+github.com/goobers/goobers/internal/creditgraph.Graph.OutEdges # Credit-graph out-edge accessor, part of the traversal contract retained for run-graph consumers (#4077).
+github.com/goobers/goobers/internal/creditgraph.Graph.Children # Credit-graph child accessor, part of the traversal contract retained for run-graph consumers (#4077).
+github.com/goobers/goobers/internal/creditgraph.Graph.Walk # Credit-graph depth-first traversal, part of the traversal contract retained for run-graph consumers (#4077).
+github.com/goobers/goobers/internal/creditgraph.Graph.walk # Depth-first recursion reachable through the retained credit-graph Walk API (#4077).
+github.com/goobers/goobers/internal/creditgraph.Graph.Descendants # Credit-graph descendant enumeration, part of the traversal contract retained for run-graph consumers (#4077).
+github.com/goobers/goobers/internal/creditgraph.Graph.NodesOfKind # Credit-graph kind filter, part of the traversal contract retained for run-graph consumers (#4077).

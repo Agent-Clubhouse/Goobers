@@ -93,6 +93,11 @@ func declareRemoteRunner(t *testing.T, root, entryYAML string) {
 // builtin stage (derives no self-only tag) whose runsOn only a remote
 // runner can satisfy. The base spelling requires windows; capability
 // variants string-replace the runsOn block.
+//
+// Note that on an engine-enabled instance this lane is FULLY POD-PINNED, so
+// it is engine-selected and no longer boot-refused (#3987 — see
+// placementrefusalengine_test.go). Tests that need the runner-driven refusal
+// wrap it in withSelfOnlyStage.
 const remoteOnlyV30WorkflowYAML = `apiVersion: goobers.dev/v1alpha1
 kind: Workflow
 dslVersion: "3.0"
@@ -113,6 +118,21 @@ spec:
       run:
         command: ["goobers", "docs-churn"]
 `
+
+// withSelfOnlyStage appends a shell stage to a remoteOnlyV30WorkflowYAML
+// variant, making the lane RUNNER-DRIVEN: a shell stage derives run:shell,
+// which only the self runner satisfies, so the lane carries a self pin and
+// selectEngineForEntry keeps it on the local runner. That is what makes the
+// remote-only stage before it a genuine checkpoint-3 refusal after #3987 —
+// the daemon really is the thing that would have to execute this lane, and
+// it really cannot place every stage.
+func withSelfOnlyStage(workflowYAML string) string {
+	return strings.Replace(workflowYAML,
+		"      run:\n        command: [\"goobers\", \"docs-churn\"]\n",
+		"      run:\n        command: [\"goobers\", \"docs-churn\"]\n      next: local\n"+
+			"    - name: local\n      type: deterministic\n      goal: shell out on the daemon host\n"+
+			"      run:\n        command: [\"true\"]\n", 1)
+}
 
 // TestValidatePlacementSever: acceptance §9 item 4. The same unsatisfiable
 // 3.0 workflow is an ERROR (exit 1, RNR001) when the instance declares a
@@ -320,7 +340,7 @@ func TestDaemonStartsWithOneUnsatisfiableWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the daemon must start with an unsatisfiable workflow in config (boot never kills, #2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	var refused, healthy *localscheduler.WorkflowEntry
 	for i := range setup.Entries {
@@ -378,11 +398,21 @@ func TestDaemonStartsWithOneUnsatisfiableWorkflow(t *testing.T) {
 // substrate that actually executes — self only, until #3513) with a named
 // diagnostic, journaled workflow.refused — and nothing ever executes on the
 // daemon host that does not satisfy the stage.
+//
+// The lane carries a self-only shell stage (withSelfOnlyStage), which is what
+// makes it RUNNER-DRIVEN and therefore in scope for the refusal after #3987.
+// This is not a weakening of the probe — it is the honest statement of what
+// checkpoint 3 now decides. A lane the daemon executes in-process must be
+// refused when the daemon cannot place all of it; a lane the ENGINE executes
+// must not be, and the fully-pinned variant of this exact fixture asserts
+// that in TestPodPinnedLaneServesOnEngineEnabledDaemon. The mixed shape here
+// is also the more dangerous one: exempting it would run the shell stage on
+// the daemon host and then strand the windows stage with nowhere to go.
 func TestRemoteOnlyStageValidatesButBootRefuses(t *testing.T) {
 	root := initDeterministicDemo(t)
 	declareInventory(t, root)
 	declareRemoteRunner(t, root, "  - name: ci\n    host: ghcr.io/example/ci:v1\n    provides:\n      os: windows\n")
-	writeSecondWorkflow(t, root, remoteOnlyV30WorkflowYAML)
+	writeSecondWorkflow(t, root, withSelfOnlyStage(remoteOnlyV30WorkflowYAML))
 
 	// Checkpoint 1: the config is VALID — the declared inventory satisfies
 	// the stage (the remote windows runner). Exit 0, no placement finding.
@@ -401,7 +431,7 @@ func TestRemoteOnlyStageValidatesButBootRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot must never kill (#2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	var refused *localscheduler.WorkflowEntry
 	for i := range setup.Entries {
 		if setup.Entries[i].Workflow == "win-build" {
@@ -463,6 +493,10 @@ func TestRemoteOnlyStageValidatesButBootRefuses(t *testing.T) {
 // placement, and `goobers status` (text and --json shapes) shows it, so the
 // operator signal that used to come from CheckCapabilityRequirements
 // survives declared inventories.
+//
+// Runner-driven (withSelfOnlyStage) for the #3987 reason documented on
+// TestRemoteOnlyStageValidatesButBootRefuses: the status projection is fed by
+// workflow.refused, so this test needs a lane that is genuinely refused.
 func TestRemoteOnlyCapabilityRefusalSurfacesInStatus(t *testing.T) {
 	root := initDeterministicDemo(t)
 	declareInventory(t, root)
@@ -470,7 +504,7 @@ func TestRemoteOnlyCapabilityRefusalSurfacesInStatus(t *testing.T) {
 	dotnet := strings.Replace(remoteOnlyV30WorkflowYAML,
 		"      runsOn:\n        os: windows\n",
 		"      runsOn:\n        capabilities: [\"dotnet@8\"]\n", 1)
-	writeSecondWorkflow(t, root, dotnet)
+	writeSecondWorkflow(t, root, withSelfOnlyStage(dotnet))
 
 	// Validates clean: the declared inventory claims the capability.
 	if code, stdout, stderr := runArgs(t, "validate", root); code != 0 {
@@ -482,7 +516,7 @@ func TestRemoteOnlyCapabilityRefusalSurfacesInStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot must never kill (#2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	localscheduler.New(setup.Entries, setup.InstanceLog)
 
 	events, err := journal.ReadInstanceLog(setup.InstanceLog.Dir())
@@ -649,7 +683,7 @@ func TestDaemonZeroDeclarationKeepsLegacyBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a zero-declaration instance must start with an unclaimed capability: %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	for _, entry := range setup.Entries {
 		if entry.PlacementRefusal != "" {
 			t.Fatalf("zero-declaration entries must never carry a boot refusal, got %q on %q", entry.PlacementRefusal, entry.Workflow)
@@ -812,7 +846,7 @@ func TestPlacedGateSelfCannotSatisfyValidatesButBootRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("boot must never kill (#2860): %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	var refused *localscheduler.WorkflowEntry
 	for i := range setup.Entries {
 		if setup.Entries[i].Workflow == "win-build" {

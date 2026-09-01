@@ -10,17 +10,11 @@ spec:
     owner: your-org
     name: your-repo
     branch: main
-{{- if .ConnectionRef }}
-    connectionRef: "{{ .ConnectionRef }}"
-{{- end }}
   # The singleton backlog this gaggle draws work from (GAG-004).
   backlog:
     provider: github
     project: your-org/your-repo
     labels:
       - goobers
-{{- if .ConnectionRef }}
-    connectionRef: "{{ .ConnectionRef }}"
-{{- end }}
   isolation:
     namespace: "gaggle-{{ .Name }}"

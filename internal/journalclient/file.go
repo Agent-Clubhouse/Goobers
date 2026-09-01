@@ -56,6 +56,11 @@ func (f *File) Events() ([]journal.Event, error) { return f.reader.Events() }
 // ArtifactBytes implements Reader.
 func (f *File) ArtifactBytes(ref journal.Ref) ([]byte, error) { return f.reader.ArtifactBytes(ref) }
 
+// ArtifactBytesBounded implements Reader.
+func (f *File) ArtifactBytesBounded(ref journal.Ref, maxBytes int64) ([]byte, error) {
+	return f.reader.ArtifactBytesBounded(ref, maxBytes)
+}
+
 // ArtifactByDigest implements Reader.
 func (f *File) ArtifactByDigest(digest string) ([]byte, error) {
 	return f.reader.ArtifactByDigest(digest)

@@ -16,14 +16,14 @@ import (
 	"github.com/goobers/goobers/providers"
 )
 
-// suiteRunWaitTimeout is the generous ceiling every wait-mode `goobers run`/
-// `signal` in this suite gets (via runTerminalWaitTimeout, set in TestMain). A
-// nested demo run's trivial stages finish in seconds even under heavy concurrent
-// make-ci load, so 2 minutes only ever fires on a genuine wedge — yet it fails
-// ~5x faster than the 10-minute local-ci stage limit, turning a silent
-// queue-wedging hang into a loud, diagnosable test failure (#827 recurrence
-// guard). Deliberately not tight (e.g. 5s) so a merely-slow-under-load run never
-// false-fails.
+// suiteRunWaitTimeout is the generous idle ceiling every wait-mode `goobers run`/
+// `signal` in this suite gets (via runTerminalWaitTimeout, set in TestMain). It
+// bounds time WITHOUT journal progress, not total run time, so a nested demo run
+// that merely crawls under heavy concurrent make-ci load still finishes, while a
+// genuine wedge — which appends nothing at all — fails ~5x faster than the
+// 10-minute local-ci stage limit, turning a silent queue-wedging hang into a
+// loud, diagnosable test failure (#827 recurrence guard). Deliberately not tight
+// (e.g. 5s) so a slow-but-advancing stage never false-fails between events.
 const suiteRunWaitTimeout = 2 * time.Minute
 
 // hermeticEphemeralListen is the address every daemon-lifecycle test binds in
@@ -101,6 +101,20 @@ func TestMain(m *testing.M) {
 		}
 	}
 	copilotModelLister = testCopilotModelLister{}
+
+	// Keep the daemon suite hermetic against the machine's own memory (#3960).
+	// newDaemonScheduler wires the cgroup-aware admission gate by default, so
+	// without this every test that expects a dispatch would depend on the
+	// runner's cgroup staying below the high-water mark — and this repo's CI
+	// runs on-pod inside exactly the 10Gi cgroup that gate exists to protect,
+	// so those tests would fail precisely when the feature is working. Tests
+	// that exercise the gate itself override this with t.Setenv.
+	if _, set := os.LookupEnv(memoryHighWaterEnv); !set {
+		if err := os.Setenv(memoryHighWaterEnv, "off"); err != nil {
+			fmt.Fprintf(os.Stderr, "set %s: %v\n", memoryHighWaterEnv, err)
+			os.Exit(1)
+		}
+	}
 
 	// Deterministic stages substitute os.Executable for a bare "goobers"
 	// command. Let subprocesses launched that way exercise the real CLI

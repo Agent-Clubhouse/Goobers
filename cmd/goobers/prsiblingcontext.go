@@ -144,15 +144,10 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -213,10 +208,10 @@ func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 		return failProviderStage(stderr, "list pull requests", err, "sibling-context.json")
 	}
 
-	schedulerDir := layoutFor(root).SchedulerDir()
+	layout := layoutFor(root)
 	var cached map[string]siblingCacheEntry
 	if !*noCache {
-		cached = loadSiblingCache(schedulerDir, stderr)
+		cached = loadSiblingCache(layout, stderr)
 	}
 	next := make(map[string]siblingCacheEntry, len(prs))
 
@@ -350,7 +345,7 @@ siblingLoop:
 	// Persist before the selected-vanished check: sibling evidence gathered
 	// on a run that ends up moot is still valid memo for the next run.
 	if !*noCache {
-		if err := saveSiblingCache(schedulerDir, next); err != nil {
+		if err := saveSiblingCache(layout, next); err != nil {
 			pf(stderr, "warning: persist sibling-context cache: %v\n", err)
 		}
 	}

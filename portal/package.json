@@ -5,31 +5,34 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:getting-started": "vite --mode getting-started",
     "build": "npm run typecheck && vite build",
     "deadcode": "node scripts/check-dead-code.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "tsc --noEmit -p tsconfig.e2e.json && playwright test",
-    "test:contract": "vitest run src/api/wireContract.test.ts",
+    "test:contract": "vitest run src/api/wireContract.test.ts src/api/authoringContract.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.1",
-    "@testing-library/user-event": "^14.6.4",
+    "@testing-library/user-event": "^14.6.6",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
-    "@vitejs/plugin-react": "^6.0.5",
+    "@types/three": "^0.185.4",
+    "@vitejs/plugin-react": "^6.1.0",
     "jsdom": "^30.0.1",
     "knip": "^6.32.2",
     "typescript": "^7.0.2",
-    "vite": "^8.2.1",
-    "vitest": "^4.1.10"
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
   }
 }

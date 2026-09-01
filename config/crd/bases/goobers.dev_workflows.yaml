@@ -567,6 +567,9 @@ spec:
                         ContextFrom limits this task's context pointers to artifacts and verdicts
                         produced by the named tasks or gates. Empty preserves the historical
                         behavior of receiving every accumulated pointer.
+                        System-generated pointers have no producing task or gate and are outside
+                        the filter: an injected learning.episode[<seq>] correction survives it
+                        unconditionally (see SelectContextPointers and ContextPointerClass).
                         Duplicate entries are rejected by api/validate (CTX001) rather than by a
                         CRD uniqueness marker, which Kubernetes refuses to install.
                       items:
@@ -1018,6 +1021,8 @@ spec:
                       - message: syncBase requires a repo workspace
                         rule: '!has(self.syncBase) || !self.syncBase || !has(self.workspace)
                           || self.workspace != ''scratch'''
+                      - message: command[0] must name an executable
+                        rule: '!has(self.command) || size(self.command[0]) > 0'
                     runsOn:
                       description: |-
                         RunsOn declares where this stage may execute (DSL 3.0, dsl-3.0.md §2):

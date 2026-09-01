@@ -71,6 +71,7 @@ export function WorkflowTopologyGraph({
   graph,
   onSelectStage,
   selectedStageId,
+  preview = false,
   nodeStates,
   stateSeq,
   traversedEdges,
@@ -81,8 +82,9 @@ export function WorkflowTopologyGraph({
   analytics,
 }: {
   graph: WorkflowGraph;
-  onSelectStage: (stageId: string, revealInspector?: boolean) => void;
+  onSelectStage?: (stageId: string, revealInspector?: boolean) => void;
   selectedStageId?: string;
+  preview?: boolean;
   // When present, the graph is a live run overlay: each node paints its
   // as-of-sequence run state and the executed path is emphasized (DASH-19).
   nodeStates?: Record<string, RunNodeState>;
@@ -116,7 +118,7 @@ export function WorkflowTopologyGraph({
     width: FALLBACK_VIEWPORT_WIDTH,
     height: FALLBACK_VIEWPORT_HEIGHT,
   });
-  const [fitActive, setFitActive] = useState(false);
+  const [fitActive, setFitActive] = useState(preview);
   const [zoom, setZoom] = useState(1);
   const zoomRef = useRef(zoom);
   const [dragging, setDragging] = useState(false);
@@ -295,7 +297,7 @@ export function WorkflowTopologyGraph({
 
   useEffect(() => {
     const viewport = viewportRef.current;
-    if (!viewport) {
+    if (!viewport || preview) {
       return;
     }
     const zoomOnWheel = (event: WheelEvent) => {
@@ -321,14 +323,14 @@ export function WorkflowTopologyGraph({
     };
     viewport.addEventListener("wheel", zoomOnWheel, { passive: false });
     return () => viewport.removeEventListener("wheel", zoomOnWheel);
-  }, [layout.nodes.length, setZoomAround]);
+  }, [layout.nodes.length, preview, setZoomAround]);
 
   const moveSelection = (targetIndex: number) => {
     const target = layout.stageOrder[targetIndex];
     if (!target) {
       return;
     }
-    onSelectStage(target.id);
+    onSelectStage?.(target.id);
     const element = nodeRefs.current.get(target.id);
     element?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
     element?.focus();
@@ -518,6 +520,7 @@ export function WorkflowTopologyGraph({
     <div
       className={[
         "workflow-graph-shell",
+        preview ? "workflow-graph-shell-preview" : "",
         fullscreenTargetRef ? "" : "workflow-graph-fullscreen-target",
         fullscreenMode === "fallback" && !fullscreenTargetRef
           ? "workflow-graph-shell-expanded"
@@ -544,61 +547,66 @@ export function WorkflowTopologyGraph({
           Pinned v{graph.version} · <span className="mono">{graph.digest}</span>
         </p>
       )}
-      <div aria-label="Graph view controls" className="workflow-graph-controls" role="group">
-        <button
-          aria-label="Zoom out"
-          disabled={zoom <= MIN_GRAPH_ZOOM}
-          onClick={() => changeZoom(-ZOOM_STEP)}
-          type="button"
-        >
-          -
-        </button>
-        <span aria-live="polite" className="graph-zoom-value">
-          {Math.round(zoom * 100)}%
-        </span>
-        <button
-          aria-label="Zoom in"
-          disabled={zoom >= MAX_GRAPH_ZOOM}
-          onClick={() => changeZoom(ZOOM_STEP)}
-          type="button"
-        >
-          +
-        </button>
-        <button onClick={fit} type="button">
-          Fit
-        </button>
-        <button
-          aria-label={fullscreenMode === "none" ? "Fullscreen" : "Exit fullscreen"}
-          onClick={() => void toggleFullscreen()}
-          ref={fullscreenButtonRef}
-          type="button"
-        >
-          {fullscreenMode === "none" ? "Fullscreen" : "Exit fullscreen"}
-        </button>
-        {fullscreenError && (
-          <span className="sr-only" role="status">
-            {fullscreenError}
-          </span>
-        )}
-      </div>
-      <p className="sr-only" id={instructionsId}>
-        Focus the graph to zoom with the wheel. Drag to pan. Use plus and minus to zoom,
-        arrow keys to pan, zero to reset, and F to fit.
-      </p>
+      {!preview && (
+        <>
+          <div aria-label="Graph view controls" className="workflow-graph-controls" role="group">
+            <button
+              aria-label="Zoom out"
+              disabled={zoom <= MIN_GRAPH_ZOOM}
+              onClick={() => changeZoom(-ZOOM_STEP)}
+              type="button"
+            >
+              -
+            </button>
+            <span aria-live="polite" className="graph-zoom-value">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              aria-label="Zoom in"
+              disabled={zoom >= MAX_GRAPH_ZOOM}
+              onClick={() => changeZoom(ZOOM_STEP)}
+              type="button"
+            >
+              +
+            </button>
+            <button onClick={fit} type="button">
+              Fit
+            </button>
+            <button
+              aria-label={fullscreenMode === "none" ? "Fullscreen" : "Exit fullscreen"}
+              onClick={() => void toggleFullscreen()}
+              ref={fullscreenButtonRef}
+              type="button"
+            >
+              {fullscreenMode === "none" ? "Fullscreen" : "Exit fullscreen"}
+            </button>
+            {fullscreenError && (
+              <span className="sr-only" role="status">
+                {fullscreenError}
+              </span>
+            )}
+          </div>
+          <p className="sr-only" id={instructionsId}>
+            Focus the graph to zoom with the wheel. Drag to pan. Use plus and minus to zoom,
+            arrow keys to pan, zero to reset, and F to fit.
+          </p>
+        </>
+      )}
       <div
-        aria-describedby={instructionsId}
+        aria-describedby={preview ? undefined : instructionsId}
         aria-label={`${graph.name} ${nodeStates ? "pinned " : ""}execution graph`}
-        className={`workflow-graph-viewport${dragging ? " is-dragging" : ""}`}
-        data-responsive-layout="scroll-under-820"
+        className={`workflow-graph-viewport${dragging ? " is-dragging" : ""}${preview ? " is-preview" : ""}`}
+        data-preview={preview ? "true" : undefined}
+        data-responsive-layout={preview ? "fit" : "scroll-under-820"}
         data-zoom={zoom.toFixed(3)}
-        onKeyDown={handleViewportKeyDown}
-        onPointerCancel={handlePointerEnd}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerEnd}
+        onKeyDown={preview ? undefined : handleViewportKeyDown}
+        onPointerCancel={preview ? undefined : handlePointerEnd}
+        onPointerDown={preview ? undefined : handlePointerDown}
+        onPointerMove={preview ? undefined : handlePointerMove}
+        onPointerUp={preview ? undefined : handlePointerEnd}
         ref={viewportRef}
         role="group"
-        tabIndex={0}
+        tabIndex={preview ? undefined : 0}
       >
         <div
           className="workflow-graph-sizer"
@@ -706,26 +714,59 @@ export function WorkflowTopologyGraph({
               const ariaLabel = runState
                 ? `${node.id}, ${node.kind}, ${runStateLabel(runState)}${seqSuffix}${causalSuffix}${analyticsSuffix ? `, ${analyticsSuffix}` : ""}`
                 : `${node.id}, ${nodeKindLabel(node)}, ${actor}, configured${causalSuffix}${analyticsSuffix ? `, ${analyticsSuffix}` : ""}`;
+              const nodeClassName = [
+                "workflow-graph-node",
+                `workflow-node-${node.kind}`,
+                runState ? `run-node-state-${runState}` : "",
+                causalNodeId === node.id ? "run-node-causal" : "",
+                centrality ? "workflow-node-centrality" : "",
+                critical ? "workflow-node-critical" : "",
+                cycle ? "workflow-node-cycle" : "",
+              ]
+                .filter(Boolean)
+                .join(" ");
+              const nodeContent = (
+                <>
+                  {node.kind === "gate" && <GateShape />}
+                  <span className="graph-node-kind">{nodeKindLabel(node)}</span>
+                  <strong>{node.id}</strong>
+                  <span className="workflow-node-actor">{actor}</span>
+                  <span className="graph-node-state">{stateText}</span>
+                  {centrality && (
+                    <span className="workflow-node-analytics">
+                      Blame {centrality.score.toFixed(2)}
+                    </span>
+                  )}
+                  {critical && <span className="workflow-node-analytics">Critical path</span>}
+                  {cycle && <span className="workflow-node-analytics">Cycle detected</span>}
+                </>
+              );
+              if (preview) {
+                return (
+                  <div
+                    aria-label={ariaLabel}
+                    className={nodeClassName}
+                    data-causal={causalNodeId === node.id ? "true" : undefined}
+                    data-node-kind={node.kind}
+                    data-run-state={runState}
+                    key={node.id}
+                    role="img"
+                    style={{ left: layoutNode.x, top: layoutNode.y }}
+                  >
+                    {nodeContent}
+                  </div>
+                );
+              }
               return (
                 <button
                   aria-label={ariaLabel}
                   aria-pressed={selectedStageId === node.id}
-                  className={[
-                    "workflow-graph-node",
-                    `workflow-node-${node.kind}`,
-                    runState ? `run-node-state-${runState}` : "",
-                    causalNodeId === node.id ? "run-node-causal" : "",
-                    centrality ? "workflow-node-centrality" : "",
-                    critical ? "workflow-node-critical" : "",
-                    cycle ? "workflow-node-cycle" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
+                  className={nodeClassName}
                   data-node-kind={node.kind}
                   data-run-state={runState}
                   data-causal={causalNodeId === node.id ? "true" : undefined}
                   key={node.id}
-                  onClick={() => onSelectStage(node.id, true)}
+                  onClick={() => onSelectStage?.(node.id, true)}
                   onKeyDown={(event) => {
                     let targetIndex: number | undefined;
                     if (event.key === "ArrowRight" || event.key === "ArrowDown") {
@@ -753,18 +794,7 @@ export function WorkflowTopologyGraph({
                   style={{ left: layoutNode.x, top: layoutNode.y }}
                   type="button"
                 >
-                  {node.kind === "gate" && <GateShape />}
-                  <span className="graph-node-kind">{nodeKindLabel(node)}</span>
-                  <strong>{node.id}</strong>
-                  <span className="workflow-node-actor">{actor}</span>
-                  <span className="graph-node-state">{stateText}</span>
-                  {centrality && (
-                    <span className="workflow-node-analytics">
-                      Blame {centrality.score.toFixed(2)}
-                    </span>
-                  )}
-                  {critical && <span className="workflow-node-analytics">Critical path</span>}
-                  {cycle && <span className="workflow-node-analytics">Cycle detected</span>}
+                  {nodeContent}
                 </button>
               );
             })}
@@ -777,7 +807,7 @@ export function WorkflowTopologyGraph({
           stageOrder={layout.stageOrder}
           traversedEdges={traversedEdges}
         />
-        <WorkflowGraphLegend />
+        {!preview && <WorkflowGraphLegend />}
       </div>
     </div>
   );

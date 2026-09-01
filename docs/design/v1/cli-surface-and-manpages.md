@@ -108,8 +108,8 @@ inputs, invoke these commands, and render their parsed results:
 The three write actions return the same versioned envelope:
 `{action, version, created[], skipped[], path, nextCommand}`. They are
 non-interactive, idempotent, no-clobber, and schema-validated before JSON is
-emitted. `init --guided` uses the same seed-config action core after prompts
-collect the repository-specific values.
+emitted. Getting Started uses the same seed-config action core after collecting
+repository-specific values.
 
 Portal onboarding write-actions MUST be thin process/API wrappers over these
 commands. They MUST NOT copy template files, install agent assets, seed provider

@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -84,10 +85,14 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"init": {
+		{name: "guided", desc: "Open browser-based setup, including placement choices"},
+		{name: "port", takesArg: true, desc: "With --guided, server port or auto"},
+		{name: "no-open", desc: "With --guided, print the URL without opening a browser"},
+		{name: "workdir", takesArg: true, desc: "With --guided, temporary browser setup state"},
 		{name: "demo", desc: "Seed a credential-free runnable demo workflow"},
 		{name: "insecure", desc: "Allow an unisolated Windows demo"},
-		{name: "guided", desc: "Prompt for repository, credentials, and workflows"},
 		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate}, desc: "Seed a named onboarding template"},
+		{name: "harness", takesArg: true, values: []string{string(apiv1.HarnessCopilot), string(apiv1.HarnessClaudeCode)}, desc: "With --template=quickstart, the harness every seeded goober uses"},
 		{name: "source-tree", takesArg: true, desc: "Seed the template as a checked-in config source"},
 		{name: "json", desc: "Emit the config-source action result as JSON"},
 	},
@@ -100,13 +105,6 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"preflight": {
 		{name: "distro", takesArg: true, desc: "Select the WSL distro to check"},
 		{name: "launch-wsl", desc: "Run the trailing Goobers command inside WSL"},
-	},
-	"onboarding stub-sample": {
-		{name: "destination", takesArg: true, desc: "Sample destination"},
-		{name: "work-tracking", takesArg: true, desc: "GitHub owner/repo to seed"},
-		{name: "token-env", takesArg: true, desc: "Issue token environment variable"},
-		{name: "force", desc: "Replace conflicting regular files"},
-		{name: "json", desc: "Emit the versioned action envelope"},
 	},
 	"onboarding stub-agent-instructions": {
 		{name: "source-tree", takesArg: true, desc: "Config source repository root"},
@@ -197,7 +195,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
 		{name: "task-queue", takesArg: true, desc: "Workflow task queue"},
-		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key"},
+		{name: "dedupe-key", takesArg: true, desc: "Run identity deduplication key (requires --direct)"},
+		{name: "direct", desc: "Dispatch straight to Temporal instead of through the running daemon"},
 		{name: "live-journal", desc: "Author the run journal live through the daemon's journal plane"},
 	},
 	"engine-queues": {
@@ -217,6 +216,8 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "blob-store", takesArg: true, desc: "Directory backing the fleet artifact store"},
 		{name: "daemon-api", takesArg: true, desc: "Daemon write API base URL for live journal emission"},
 		{name: "dispatch-namespace", takesArg: true, desc: "Namespace for mode-3 stage pods; wires the dispatcher seam"},
+		{name: "config-reload-interval", takesArg: true, desc: "How often to re-read the instance config tree and rebuild changed gaggle seams (0 disables)"},
+		{name: "config-history-depth", takesArg: true, desc: "How many superseded config trees to retain so an in-flight run pinned to one is still served its own goober kit (0 disables)"},
 		{name: "task-queue", takesArg: true, desc: "Task queue to serve (repeatable)"},
 		{name: "temporal-hostport", takesArg: true, desc: "Temporal frontend host and port"},
 		{name: "temporal-namespace", takesArg: true, desc: "Temporal namespace"},
@@ -229,17 +230,21 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 	"speech test": {
 		{name: "json", desc: "Emit JSON"},
 	},
+	"fleet join": {
+		{name: "url", takesArg: true, desc: "Fleet service URL"},
+		{name: "enrollment-token-file", takesArg: true, desc: "Private file containing the one-time enrollment grant"},
+		{name: "grant-local-admin", desc: "Grant the discovered local administrator instance:read"},
+		{name: "no-grant-local-admin", desc: "Explicitly enroll with an empty ACL"},
+	},
+	"fleet status": {
+		{name: "json", desc: "Emit JSON"},
+	},
 	"dashboard": {
 		{name: "port", takesArg: true, desc: "Dashboard port, or auto"},
 		{name: "listen", takesArg: true, desc: "Bind address as host:port; non-loopback requires api.auth"},
 		{name: "no-open", desc: "Print the URL without opening a browser"},
 		{name: "dev-assets", takesArg: true, desc: "Serve a local portal build"},
 		{name: "wait-for-daemon", desc: "Wait up to 30s for a concurrently starting daemon"},
-	},
-	"getting-started": {
-		{name: "port", takesArg: true, desc: "Server port, or auto"},
-		{name: "no-open", desc: "Print the URL without opening a browser"},
-		{name: "workdir", takesArg: true, desc: "Directory holding the tutorial sample and instance"},
 	},
 	"run": {
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},

@@ -115,7 +115,7 @@ func init() {
 		coreCommand("init", apicontract.ActionConfigTime, runInit).
 			withSynopsis(synopsisByID["init"]).
 			withHelp("scaffold an instance root", initHelp).
-			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --template=quickstart --source-tree ./tutorial-config --json", "goobers init --guided ./my-instance", "goobers init --demo ./demo"),
+			withExamples("goobers init", "goobers init --template=quickstart ./tutorial", "goobers init --template=quickstart --source-tree ./tutorial-config --json", "goobers init --demo ./demo"),
 		coreCommand("connect", apicontract.ActionConfigTime, runConnect).
 			withSynopsis(synopsisByID["connect"]).
 			withHelp("connect an instance to your own GitHub repository", connectHelp).
@@ -141,18 +141,11 @@ func init() {
 				withExamples(
 					"goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json",
 				),
-			subcommand("onboarding stub-sample", "stub-sample", apicontract.ActionConfigTime, runOnboardingStubSample).
-				withHelp("materialize and optionally seed the disposable Getting Started target", stubSampleHelp).
-				withExamples(
-					"goobers onboarding stub-sample --destination ./getting-started-task-api --json",
-					"goobers onboarding stub-sample --destination ./getting-started-task-api --work-tracking my-org/tutorial",
-				),
 		).
 			withSynopsis(synopsisByID["onboarding"]).
 			withHelp("run non-interactive onboarding actions", onboardingHelp).
 			withExamples(
 				"goobers onboarding stub-agent-instructions --source-tree ./config-repo --harness copilot --json",
-				"goobers onboarding stub-sample --destination ./getting-started-task-api --json",
 			),
 		coreGroupCommand(
 			"examples",
@@ -265,6 +258,22 @@ func init() {
 			withSynopsis(synopsisByID["speech"]).
 			withHelp("preflight and test local speech notifications", speechHelp).
 			withExamples("goobers speech preflight", "goobers speech test"),
+		groupCommand(
+			"fleet",
+			runFleet,
+			subcommand("fleet join", "join", apicontract.ActionConfigTime, runFleetJoin).
+				withHelp("discover and enroll this instance with a Fleet service", fleetJoinHelp).
+				withExamples("goobers fleet join --url https://fleet.example", "goobers fleet join --url https://fleet.example --enrollment-token-file ./grant.txt --grant-local-admin"),
+			subcommand("fleet status", "status", apicontract.ActionReadOnlyNavigation, runFleetStatus).
+				withHelp("show durable Fleet registration and connection state", fleetStatusHelp).
+				withExamples("goobers fleet status", "goobers fleet status --json"),
+			subcommand("fleet leave", "leave", apicontract.ActionMaintenance, runFleetLeave).
+				withHelp("remove this instance's Fleet association and protected secrets", fleetLeaveHelp).
+				withExamples("goobers fleet leave"),
+		).
+			withSynopsis(synopsisByID["fleet"]).
+			withHelp("associate this instance with a Fleet service", fleetHelp).
+			withExamples("goobers fleet join --url https://fleet.example", "goobers fleet status", "goobers fleet leave"),
 		coreCommand("up", apicontract.ActionDaemonLifecycle, runUp).
 			withSynopsis(synopsisByID["up"]).
 			withHelp("run the daemon (scheduler + runner + loopback HTTP API)", upHelp).
@@ -324,13 +333,6 @@ func init() {
 			withSynopsis(synopsisByID["dashboard"]).
 			withHelp("serve and open the local operations portal", fmt.Sprintf(dashboardHelp, defaultDashboardPort)).
 			withExamples("goobers dashboard", "goobers dashboard --port=auto --no-open"),
-		// Read-only-navigation like dashboard: the server itself only navigates —
-		// every guided write action is a user-invoked CLI subprocess that carries
-		// its own action class.
-		coreCommand("getting-started", apicontract.ActionReadOnlyNavigation, runGettingStarted).
-			withSynopsis(synopsisByID["getting-started"]).
-			withHelp("serve and open the guided portal Getting Started walkthrough", fmt.Sprintf(gettingStartedHelp, defaultDashboardPort)).
-			withExamples("goobers getting-started", "goobers getting-started --no-open --workdir ~/goobers-tutorial"),
 		coreCommandWithSubcommands(
 			"run",
 			apicontract.ActionWorkflowExecution,

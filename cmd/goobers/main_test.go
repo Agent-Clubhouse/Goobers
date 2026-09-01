@@ -70,7 +70,7 @@ func TestRunHelp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout, "goobers init") {
+	if !strings.Contains(stdout, "\n  init") {
 		t.Fatalf("expected help text, got %q", stdout)
 	}
 }

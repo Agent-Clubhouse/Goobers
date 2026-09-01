@@ -25,6 +25,7 @@ import (
 	"github.com/goobers/goobers/internal/dispatcher"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/temporaltest"
+	"github.com/goobers/goobers/providers"
 )
 
 // fakeStageDispatcher is a scripted StageDispatcher: it records every
@@ -365,13 +366,15 @@ func TestDispatchStageRefusesV1UnsupportedRun(t *testing.T) {
 			in.Run = &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceMode("shared-nfs")}
 		},
 		// Narrow, measured replacement for the blanket goobers-CLI refusal:
-		// telemetry-query reads the instance CONFIG DIRECTORY (the workflow
-		// definitions), which a stage pod does not have. Every other CLI stage
-		// this instance's workflows invoke reaches its repo and credential
-		// through the environment and now dispatches.
-		"goobers command reading the config dir": func(in *DispatchStageInput) {
-			in.Run = &apiv1.DeterministicRun{Command: []string{"goobers", "telemetry-query"}, Workspace: apiv1.WorkspaceScratch}
-		},
+		// this arm refuses a command that reads the instance CONFIG DIRECTORY
+		// (the workflow definitions), which a stage pod does not have.
+		//
+		// It has no member today. telemetry-query was the only one, and
+		// Goobers#4001 moved its rollup read onto a narrow derived-aggregate
+		// plane and its config read behind a local-path-only guard, so it
+		// dispatches now — see TestDispatchStageAdmitsTelemetryQuery below,
+		// which pins that directly. The arm itself stays because the
+		// CONDITION is still true for the next command that needs one.
 	} {
 		t.Run(name, func(t *testing.T) {
 			fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
@@ -385,6 +388,41 @@ func TestDispatchStageRefusesV1UnsupportedRun(t *testing.T) {
 				t.Fatal("an unsupported Run reached the dispatcher instead of being refused first")
 			}
 		})
+	}
+}
+
+// TestDispatchStageAdmitsTelemetryQuery pins Goobers#4001 at the engine seam.
+//
+// telemetry-query was this guard's only subject: it read the instance config
+// directory and the telemetry rollup, so a pod would have found neither and
+// reported no defects at all. It now reads a narrow, gaggle-contained
+// derived-aggregate plane instead, and the command refuses its own local path
+// when the resolved root is not an instance. A refusal here would silently
+// re-pin the whole defect-nomination lane to a self runner, which is what
+// #3996 was filed about.
+func TestDispatchStageAdmitsTelemetryQuery(t *testing.T) {
+	store := surrenderStore(t)
+	putSurrendered(t, store, "run-u", "build", 1, dispatcher.SurrenderedResult{
+		Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+	})
+	fake := &fakeStageDispatcher{report: dispatcher.Report{
+		Runner: "win-ci", Phase: corev1.PodSucceeded, SurrenderConfirmed: true, Disposed: true,
+	}}
+	a := &Activities{Dispatcher: fake, Surrenders: store}
+	input := dispatchInput("run-u", "build", 1)
+	input.Run = &apiv1.DeterministicRun{
+		Command: []string{
+			"goobers", "telemetry-query", "--window", "168h",
+			"--aggregate", "stage-failure-rate", "--aggregate", "error-signature",
+			"--aggregate", "gate-noise", "--aggregate", "credit-assignment",
+		},
+		Workspace: apiv1.WorkspaceScratch,
+	}
+	if _, err := a.DispatchStage(context.Background(), input); err != nil {
+		t.Fatalf("DispatchStage error: %v", err)
+	}
+	if fake.calls.Load() != 1 {
+		t.Fatalf("dispatch calls = %d, want the stage to reach the dispatcher", fake.calls.Load())
 	}
 }
 
@@ -563,20 +601,28 @@ func TestSelfAndAbsentPlacementsKeepLocalArms(t *testing.T) {
 	}
 }
 
-// Decision 003 ruling 3: a placed ledger-touching goobers-CLI stage —
-// backlog-query --claim, the shape every production backlog-curation lane
-// leads with — is refused BEFORE dispatch. The refusal carries the named
-// code in the run's failure (stage.finished's ErrorInfo.Code, surfaced here
-// as RunResult.FailureCode), and the dispatcher is never consulted: no
-// activity is executed, so no pod is ever created.
+// Decision 003 ruling 3: a placed goobers-CLI stage that still holds a file
+// under the daemon's instance root is refused BEFORE dispatch. The exemplar
+// is select-source, which opens the instance log and leases its parent with a
+// direct claim-ledger open rather than through the claims plane
+// (cmd/goobers/selectsource.go). The refusal carries the named code in the
+// run's failure (stage.finished's ErrorInfo.Code, surfaced here as
+// RunResult.FailureCode), and the dispatcher is never consulted: no activity
+// is executed, so no pod is ever created.
+//
+// This test used to lead with `backlog-query --claim`. That command is now
+// DISPATCHABLE — Goobers#3897 stamps the plane endpoints and bearers and
+// #3898 moved its annotation write and re-sweep state onto planes — and the
+// test immediately below pins that, so the two together cover both directions
+// of the same decision.
 func TestModeThreeRefusesInstanceRootStageBeforeDispatch(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
 		Start:    "query-backlog",
 		Tasks: []apiv1.Task{
-			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "claim a backlog item",
-				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}, Workspace: apiv1.WorkspaceScratch},
+			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "select the decomposition parent",
+				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "select-source"}, Workspace: apiv1.WorkspaceScratch},
 				Capabilities:  []string{"github:issues:write"},
 				PolicyActions: []string{"claim-backlog-items"}},
 		},
@@ -607,7 +653,7 @@ func TestModeThreeRefusesInstanceRootStageBeforeDispatch(t *testing.T) {
 	if result.FailureCode != executor.StageRequiresInstanceRootCode {
 		t.Fatalf("failure code = %q, want %q", result.FailureCode, executor.StageRequiresInstanceRootCode)
 	}
-	if !strings.Contains(result.FailureMessage, "backlog-query") {
+	if !strings.Contains(result.FailureMessage, "select-source") {
 		t.Fatalf("failure message = %q, want it to name the refused command", result.FailureMessage)
 	}
 	if fake.calls.Load() != 0 {
@@ -615,20 +661,76 @@ func TestModeThreeRefusesInstanceRootStageBeforeDispatch(t *testing.T) {
 	}
 }
 
-// The kind-based half of the same refusal: a placed `inputs.kind: ci-poll`
-// stage has no pod-side execution path at all (no CLI subcommand backs it —
-// dispatch.go's TaskExecutor routes it in-process only) and must be refused
-// exactly like a ledger command, never dispatched to find out.
+// The inverse, and the acceptance shape for Goobers#3898: `backlog-query
+// --claim` — the command every production backlog-curation lane leads with,
+// and the one decision 003 ruling 3 refused for two years — now REACHES the
+// dispatcher.
+//
+// Asserted at this level rather than only over the refusal list because the
+// list is one input to a decision made in dispatchRemoteTask; a regression
+// that reintroduced the refusal anywhere on that path would leave the
+// executor-level table green and still leave every curation lane pinned to
+// the daemon host.
+func TestModeThreeDispatchesTheClaimingBacklogQuery(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "query-backlog",
+		Tasks: []apiv1.Task{
+			{Name: "query-backlog", Type: apiv1.TaskDeterministic, Goal: "claim a backlog item",
+				Run:           &apiv1.DeterministicRun{Command: []string{"goobers", "backlog-query", "--claim"}, Workspace: apiv1.WorkspaceScratch},
+				Capabilities:  []string{"github:issues:write"},
+				PolicyActions: []string{"claim-backlog-items"}},
+		},
+	}
+	in := runInput("mode-three-backlog-query", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "query-backlog", Queue: dispatcher.QueueName("web", "linux-toolchain"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	fake := &fakeStageDispatcher{report: dispatcher.Report{
+		Runner: "linux-toolchain", Phase: corev1.PodSucceeded, SurrenderConfirmed: true,
+	}}
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	surrenders := surrenderStore(t)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		// A surrender-fetch failure here still proves the point — the
+		// dispatcher was reached — but assert the call count explicitly
+		// below rather than relying on the error text.
+		if fake.calls.Load() == 0 {
+			t.Fatalf("workflow error with the dispatcher never called: %v", err)
+		}
+	}
+	if fake.calls.Load() == 0 {
+		t.Fatal("backlog-query --claim must now reach the dispatcher: its claims, scheduler-state and journal-emit needs are all plane-served (Goobers#3897/#3898)")
+	}
+}
+
+// The kind-based half of the same refusal: a placed
+// `inputs.kind: external-telemetry` stage has no pod-side execution path at
+// all (no CLI subcommand backs it, and its executor is constructed from the
+// instance's connector configuration, which a pod has no config directory to
+// read) and must be refused exactly like a ledger command, never dispatched
+// to find out.
+//
+// ci-poll was this test's subject until #3881 and deliberately is not any
+// more: it now HAS a pod-side path (cmd/goobers/dispatchcipoll.go), and
+// TestModeThreeDispatchesCIPollToAPod below is the ablation that pins the
+// removal. external-telemetry keeps the kind arm of the refusal honest.
 func TestModeThreeRefusesInstanceRootKindBeforeDispatch(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
 		Gaggle:   "web",
 		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
 		Start:    "await-ci",
 		Tasks: []apiv1.Task{
-			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "await CI",
-				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}, Workspace: apiv1.WorkspaceScratch},
-				Inputs:       map[string]string{"kind": "ci-poll"},
-				Capabilities: []string{"provider:pr:write"}},
+			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "publish telemetry",
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "external-telemetry"}, Workspace: apiv1.WorkspaceScratch},
+				Inputs:       map[string]string{"kind": "external-telemetry"},
+				Capabilities: []string{"telemetry:read"}},
 		},
 	}
 	in := runInput("mode-three-instance-root-kind", spec)
@@ -652,11 +754,70 @@ func TestModeThreeRefusesInstanceRootKindBeforeDispatch(t *testing.T) {
 	if result.FailureCode != executor.StageRequiresInstanceRootCode {
 		t.Fatalf("failure code = %q, want %q", result.FailureCode, executor.StageRequiresInstanceRootCode)
 	}
-	if !strings.Contains(result.FailureMessage, "ci-poll") {
+	if !strings.Contains(result.FailureMessage, "external-telemetry") {
 		t.Fatalf("failure message = %q, want it to name the refused kind", result.FailureMessage)
 	}
 	if fake.calls.Load() != 0 {
-		t.Fatal("a kind=ci-poll stage must never reach the dispatcher")
+		t.Fatal("a kind=external-telemetry stage must never reach the dispatcher")
+	}
+}
+
+// TestModeThreeDispatchesCIPollToAPod is #3881's engine-side ablation and
+// the exact inverse of the test above: the SHIPPED ci-poll shape — the
+// implementation lane's await-ci stage, `command: [goobers, ci-poll]` with
+// `inputs.kind: ci-poll` and `capabilities: [provider:pr:write]` — placed on
+// a remote queue must now reach the dispatcher and be executed in the pod,
+// not refused before one is created.
+//
+// This is the whole point of decision 005 step C5: ci-poll was the last
+// gate-shaped stage in the implementation lane that pinned the run to the
+// daemon's own host, so with it dispatchable the lane can be placed entirely
+// off-self. If StageRequiresInstanceRoot ever re-adds ci-poll, this fails
+// while the refusal test above still passes, which is what makes the pair
+// meaningful.
+func TestModeThreeDispatchesCIPollToAPod(t *testing.T) {
+	spec := apiv1.WorkflowSpec{
+		Gaggle:   "web",
+		Triggers: []apiv1.Trigger{{Type: apiv1.TriggerSchedule, Schedule: "@hourly"}},
+		Start:    "await-ci",
+		Tasks: []apiv1.Task{
+			{Name: "await-ci", Type: apiv1.TaskDeterministic, Goal: "await CI",
+				Run:          &apiv1.DeterministicRun{Command: []string{"goobers", "ci-poll"}, Workspace: apiv1.WorkspaceScratch},
+				Inputs:       map[string]string{"kind": "ci-poll", "prNumber": "42"},
+				Capabilities: []string{"provider:pr:write"}},
+		},
+	}
+	in := runInput("mode-three-ci-poll-dispatches", spec)
+	in.Placements = []PinnedPlacement{{
+		Stage: "await-ci", Queue: dispatcher.QueueName("web", "linux"),
+		Eligible: remoteEligible(), Memory: "1Gi",
+	}}
+	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
+	surrenders := surrenderStore(t)
+	putSurrendered(t, surrenders, in.RunID, "await-ci", 1, dispatcher.SurrenderedResult{Result: apiv1.ResultEnvelope{
+		Status:  apiv1.ResultSuccess,
+		Outputs: map[string]interface{}{executor.OutputCIStatus: string(providers.CheckStatePassing), executor.OutputPRNumber: "42"},
+	}})
+
+	var ts testsuite.WorkflowTestSuite
+	env := temporaltest.NewWorkflowEnvironment(&ts)
+	env.RegisterActivity(&Activities{Workspaces: testWorkspaces(t), Dispatcher: fake, Surrenders: surrenders})
+	env.ExecuteWorkflow(Run, in)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	var result RunResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.FailureCode == executor.StageRequiresInstanceRootCode {
+		t.Fatalf("ci-poll was refused before dispatch (%q: %s) — #3881 gives it an in-pod path", result.FailureCode, result.FailureMessage)
+	}
+	if result.Status != StatusCompleted {
+		t.Fatalf("status = %q, want %q (failure: %s %s)", result.Status, StatusCompleted, result.FailureCode, result.FailureMessage)
+	}
+	if fake.calls.Load() != 1 {
+		t.Fatalf("dispatcher calls = %d, want 1 — a placed ci-poll stage must be dispatched to a pod", fake.calls.Load())
 	}
 }
 
@@ -674,7 +835,7 @@ func TestModeThreeRefusesInstanceRootKindBeforeDispatch(t *testing.T) {
 // with no pod-side path at run time. dispatchRemoteTask must read the
 // resolved value out of env.Inputs (which runTask overlays from inputsFrom
 // before routing), not the task's static Inputs alone — otherwise a
-// dynamically-resolved ci-poll/external-telemetry kind sails past this
+// dynamically-resolved external-telemetry kind sails past this
 // guard, a pod is created, and only the pod-entrypoint backstop catches it.
 func TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch(t *testing.T) {
 	spec := apiv1.WorkflowSpec{
@@ -697,7 +858,7 @@ func TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch(t *testing.T) {
 	}}
 	det := &capturingDeterministic{result: apiv1.ResultEnvelope{
 		Status:  apiv1.ResultSuccess,
-		Outputs: map[string]interface{}{"resolvedKind": "ci-poll"},
+		Outputs: map[string]interface{}{"resolvedKind": "external-telemetry"},
 	}}
 	fake := &fakeStageDispatcher{report: dispatcher.Report{Runner: "linux", Phase: corev1.PodSucceeded, SurrenderConfirmed: true}}
 
@@ -715,11 +876,11 @@ func TestModeThreeRefusesInstanceRootDynamicKindBeforeDispatch(t *testing.T) {
 	if result.FailureCode != executor.StageRequiresInstanceRootCode {
 		t.Fatalf("failure code = %q, want %q (a kind resolved dynamically via inputsFrom must be refused exactly like a statically-declared one)", result.FailureCode, executor.StageRequiresInstanceRootCode)
 	}
-	if !strings.Contains(result.FailureMessage, "ci-poll") {
+	if !strings.Contains(result.FailureMessage, "external-telemetry") {
 		t.Fatalf("failure message = %q, want it to name the dynamically-resolved kind", result.FailureMessage)
 	}
 	if fake.calls.Load() != 0 {
-		t.Fatal("a dynamically-resolved kind=ci-poll stage must never reach the dispatcher")
+		t.Fatal("a dynamically-resolved kind=external-telemetry stage must never reach the dispatcher")
 	}
 }
 

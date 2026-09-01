@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/boundedwait"
 	"github.com/goobers/goobers/internal/credentials"
+	"github.com/goobers/goobers/internal/ephemeraltmp"
 	"github.com/goobers/goobers/internal/invoke"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/platform/proc"
@@ -202,6 +203,35 @@ type ShellExecutor struct {
 	// behavior — os.CreateTemp("", ...) resolves against os.TempDir(), which
 	// already honors TMPDIR when the process environment sets it.
 	ScratchDir string
+	// EphemeralTmp binds the `tmp:ephemeral` restriction on the SELF runner
+	// (docs/design/goobernetes-restrictions.md §2.4, the modes-1/2 half of the
+	// effect the dispatcher gives a stage pod by construction). When set,
+	// every stage this executor runs gets an attempt-private temp directory
+	// carved out of the daemon's temp root — TMPDIR/TMP/TEMP pointed at it,
+	// every temp-nested build cache (GOCACHE, GOMODCACHE, ...) re-rooted into
+	// it — and that directory is destroyed when the attempt returns, on the
+	// failure path as much as the success path.
+	//
+	// It is a RUNNER property, not a stage requirement: wiring sets it from
+	// the resolved inventory's self entry declaring the effect, and then every
+	// stage placed on self runs under it whether or not it asked
+	// (goobernetes-restrictions.md §5). Off by default, so an instance that
+	// declares no runners — or a self entry that declares no restrictions —
+	// builds a byte-identical stage environment to before this field existed.
+	//
+	// The failure mode is CLOSED. If the private directory cannot be
+	// established the stage fails with a named diagnostic rather than running
+	// against ambient temp, because a restriction that silently degrades is
+	// worse than one that is absent: the solver has already told the operator
+	// this runner enforces it.
+	EphemeralTmp bool
+	// EphemeralTmpRoot overrides the temp root EphemeralTmp carves the
+	// per-attempt directory out of. Empty means the daemon's own temp root
+	// (os.TempDir(), which honors TMPDIR) — deliberately the SAME medium the
+	// stage's temp would otherwise land on, so binding the effect changes the
+	// lifetime of those bytes and not their location. Set by tests, and
+	// available to a deployment that mounts its scratch medium elsewhere.
+	EphemeralTmpRoot string
 }
 
 type builtinErrorReport struct {
@@ -241,13 +271,19 @@ func StageInvokesGoobersCLI(command []string) bool {
 // cannot run there.
 //
 // DERIVED, and re-derivable: `grep -l LoadConfigDir cmd/goobers/*.go`, then map
-// each file to the command its newCLIFlagSet declares. That yields 16 files, of
-// which all but this one are operator commands (config, connect, fix, features,
+// each file to the command its newCLIFlagSet declares. That yields 16 files,
+// all of which are operator commands (config, connect, fix, features,
 // onboarding, run, workflow) that a workflow never invokes as a stage. If that
 // grep ever names a new STAGE command, it belongs here.
-var stageCommandsRequiringInstanceConfig = map[string]bool{
-	"telemetry-query": true,
-}
+//
+// The map is EMPTY as of Goobers#4001. Its only entry was telemetry-query,
+// which now reads the daemon's bounded defect-aggregate plane in a dispatched
+// pod (internal/httpapi/telemetrydefectplane.go) and only consults the config
+// directory on the local path, which it refuses to take without a real
+// instance root. The map is kept rather than deleted because the CONDITION it
+// encodes is still real: a stage pod has no config directory, and the next
+// command that needs one belongs here.
+var stageCommandsRequiringInstanceConfig = map[string]bool{}
 
 // StageRequiresInstanceConfig reports whether a stage command needs the instance
 // config directory, and so cannot run in a stage pod. This is deliberately a
@@ -264,37 +300,52 @@ func StageRequiresInstanceConfig(command []string) bool {
 
 // stageCommandsRequiringInstanceRoot are goobers CLI subcommands that
 // UNCONDITIONALLY read or write state that lives only under the daemon's
-// instance root — the file claim ledger, a merge lock, the post-merge
-// reconcile ledger, an on-disk run journal, or the telemetry rollup
-// (decision 003 ruling 3; production-lanes-3.0 stillBroken #2). A stage pod
-// stamps no GOOBERS_INSTANCE_ROOT (internal/dispatcher/podspec.go), so
+// instance root — a file this process opens by path, under a lock this
+// process takes, that no plane serves. A stage pod stamps no
+// GOOBERS_INSTANCE_ROOT (internal/dispatcher/podspec.go), so
 // providerStageRoot() falls back to "." and these commands would silently
 // operate on an empty, pod-local root instead of failing — the exact
-// "silent-wrong-result" class this refusal turns loud. None of them can be
-// removed from this list yet — see the note below on what each one is still
-// waiting for.
+// "silent-wrong-result" class this refusal turns loud.
 //
-// #3880 / decision 005 R1 landed the READ half of the journal seam: a pod
-// principal may GET its own run's events, artifacts and stage attempts, and
-// three purpose-built gaggle-scoped routes answer the cross-run questions
-// (internal/journalclient, internal/httpapi/journalreadplane.go). Every
-// journal-reading command in this list now goes through that seam rather than
-// journal.OpenRead. They stay refused ANYWAY, deliberately, because the seam
-// selects the plane from GOOBERS_JOURNAL_ENDPOINT/GOOBERS_JOURNAL_TOKEN and
-// the dispatcher does not stamp either yet (internal/dispatcher/podspec.go).
-// Removing a command here before that stamping exists would trade a loud
-// refusal for a fail-closed error inside the pod — better than the silent
-// wrong answer, but strictly worse than the refusal. The removals belong with
-// the dispatcher-env change, and only for commands whose OTHER instance-root
-// needs (a claim ledger, a merge lock, the sibling cache) are also served by
-// then.
+// THE LIST SHRANK WITH Goobers#3897/#3898. Four plane clients were already
+// landed (claims C1, scheduler-state C2, telemetry C3, journal-read C4) but
+// every one of them selects its backend from environment the dispatcher did
+// not stamp, so a mode-3 stage silently took the local-file branch and the
+// refusals had to stay. #3897 stamps the complete eight-variable set
+// (endpoint + bearer for all four planes, alongside GOOBERS_RUN_ID and
+// GOOBERS_GAGGLE) into every goobers-CLI stage pod, and #3898 moved the
+// claiming path's last two local dependencies — the instance-log annotation
+// write and the backlog re-sweep state file — onto the journal emit plane and
+// the scheduler-state key namespace respectively.
 //
-// backlog-query and backlog-health are deliberately NOT here: only specific
-// FLAGS make them provider-only rather than ledger/journal-touching (for
-// backlog-query only --read-only is; every other mode, including bare,
-// reaches the scan lock — see the case below), so StageRequiresInstanceRoot
-// matches them by name below instead of folding them into this
-// unconditional set.
+// The removals were made ONE COMMAND AT A TIME against a per-command audit:
+// a command was removed only when EVERY stateful access it makes, followed
+// transitively from its entry function, reaches a plane seam
+// (openStageClaimLedger, openStageStateStore/openHeldStageStateStore,
+// stageRunJournal/stageCrossRunJournal, openStageAnnotator,
+// stageImplementationOutcomes), a provider API call, or a workspace-relative
+// file. Anything still holding a path under the instance root is BELOW, with
+// the specific file named — because trading a loud refusal for a silent wrong
+// answer is strictly worse than the refusal.
+//
+// backlog-query and backlog-health used to be singled out here as
+// flag-gated: only specific FLAGS made them provider-only rather than
+// ledger-touching, so StageRequiresInstanceRoot matched them by name. Both
+// are now fully plane-served in every mode (#3898, #3948) and neither appears
+// in the map below at all. pr-select left it the same way (#3988), by
+// admitting its fairness lease to the scheduler-state namespace.
+//
+// backlog-query --reconcile lost its LAST instance-root dependency the same
+// way (#4016). It opens the metadata reconciliation with a stale-claim sweep,
+// and that sweep is not a composable ledger primitive: it reads the owning
+// run's journal under the instance root and the daemon applies the
+// intervention check and the recovery gate to it. Rather than hand the pod a
+// root it must not have, the sweep became a claims-plane call
+// (apicontract.ClaimRecoverPath, claimsclient.StaleRecoverer) that asks the
+// daemon to run its own sweep; cmd/goobers/staleclaimrecovery.go refuses
+// loudly when neither a plane nor a real instance root is present, rather
+// than resolving "scheduler/claims.lock" relative to a pod's cwd — the exact
+// silent-wrong-answer-turned-ENOENT that #4016 hit in production.
 //
 // Scope: this matches on the COMMAND VECTOR (cmd[0]=="goobers", cmd[1]=the
 // subcommand), the same shape both dispatchRemoteTask and the pod-entrypoint
@@ -302,44 +353,136 @@ func StageRequiresInstanceConfig(command []string) bool {
 // declared with run.script instead of run.command is out of scope on both
 // sides today — DeterministicCommand's argv for a script is the shell
 // wrapper, never the goobers invocation inside it — matching the
-// pre-existing, narrower StageRequiresInstanceConfig's scope; closing it is
-// step 6's, not this list's.
+// pre-existing, narrower StageRequiresInstanceConfig's scope.
 //
-// DERIVED, and re-derivable: per command, grep its handler for
-// SchedulerDir()/claimLedgerFileName/mergeLockFileName (a ledger or lock) or
-// journal.OpenRead / stageRunJournal / stageCrossRunJournal (a run-journal
-// read) — cmd/goobers/{prclaim,
-// prremediationlifecycle,prselect,updatebehindpr,mergepr,
-// postmergereconcile,applyverdict,respondtofindings,implementcontext,
-// issuecloseout,telemetryquery,backlogdedupe,gatherprcontext,
-// gathercifailures,gatherissuecontext,prsiblingcontext,
-// resolvereviewthreads,selectsource,publishbatch,postmerge,
-// reconcilebranches,validateplan,gateremovalguard}.go. Re-run that grep
-// against every registered stageCommand() (cmd/goobers/runtime_capabilities.go)
-// before trusting this list is still complete.
+// DERIVED, and re-derivable: per command, follow its handler transitively and
+// grep for SchedulerDir()/journal.OpenInstanceLog/journal.OpenRead/
+// withClaimLock/withFileLock/localscheduler.OpenClaimLedger/TelemetryDB()/
+// RunsDir()/FindRunDir/instance.LoadConfig that is NOT behind a plane seam or
+// a plane predicate (statePlaneSelected/claimsPlaneSelected/
+// journalPlaneSelected). Re-run that walk against every registered
+// stageCommand() (cmd/goobers/runtime_capabilities.go) before trusting this
+// list is still complete.
 var stageCommandsRequiringInstanceRoot = map[string]bool{
-	"pr-claim":                 true, // always acquires, checks, or releases a claim-ledger lease, with or without --release (prremediationlifecycle.go)
-	"pr-select":                true, // leases the selected PR in the claim ledger before choosing it (prselect.go)
-	"update-behind-pr":         true, // selects/leases the PR via the claim ledger before its API update
-	"merge-pr":                 true, // instance-wide flock in SchedulerDir around poll->decide->merge (issue #719)
-	"reconcile-post-merge":     true, // reads/writes the post-merge reconcile ledger in SchedulerDir
-	"apply-verdict":            true, // reads the review gate's verdict from its own run journal (#3880 seam: waiting only on dispatcher journal-endpoint stamping)
-	"respond-to-findings":      true, // reads implement's outputs from its own run journal, plain or --check ("validate-finding-responses" in the workflow DSL) (#3880 seam: same)
-	"gather-implement-context": true, // reads OTHER runs' journals (#3880 cross-run seam: same)
-	"issue-close-out":          true, // unconditionally releases the claim-ledger lease on every terminal status
-	"telemetry-query":          true, // reads the instance telemetry rollup under the instance root (also refused separately for its instance CONFIG read via StageRequiresInstanceConfig)
-	"backlog-dedupe":           true, // opens the claim ledger and lists this run's claimed IDs (backlogdedupe.go) — a missing ledger file in a pod resolves to a FRESH EMPTY ledger, not an error, so this is the silent-wrong-result class this list exists to close
-	"gather-pr-context":        true, // filters claim-available PRs via the claim ledger in SchedulerDir before candidate selection (gatherprcontext.go)
-	"gather-ci-failures":       true, // reads the current run's journal (gathercifailures.go) (#3880 seam: waiting only on dispatcher stamping)
-	"gather-issue-context":     true, // reads the current run's journal (gatherissuecontext.go) (#3880 seam: same)
-	"gather-sibling-context":   true, // reads the sibling cache under SchedulerDir (prsiblingcontext.go) — NOT a journal read at all; finding 002 C2's scheduler-state concern, not C4's
-	"resolve-review-threads":   true, // reads the current run's journal (resolvereviewthreads.go) (#3880 seam: waiting only on dispatcher stamping)
-	"select-source":            true, // opens the instance log and the claim ledger under SchedulerDir to lease/select the parent (selectsource.go)
-	"publish-batch":            true, // locks under SchedulerDir/decomposition-target-locks and releases the parent claim via the instance log (publishbatch.go)
-	"post-merge":               true, // reads the sibling cache under SchedulerDir (postmerge.go)
-	"reconcile-branches":       true, // opens the instance log under SchedulerDir (reconcilebranches.go)
-	"validate-plan":            true, // reads the current run's journal for the selection artifact (validateplan.go) (#3880 seam: waiting only on dispatcher stamping)
-	"gate-removal-guard":       true, // reads the analyze stage's finding from the run journal (gateremovalguard.go) (#3880 seam: same)
+	// pr-select is NOT here any more (Goobers#3988). Its claims are on the
+	// claims plane and the last thing that held it — the FAIRNESS LEASE at
+	// SchedulerDir()/pr-select-fairness.json, #1336's aging plus the one-hour
+	// starvation guard — is now a scheduler-state key
+	// (stateclient.KeyPRSelectFairness), reached through
+	// openStageStateStore/openHeldStageStateStore like every other key in that
+	// namespace and served under the SAME claims.lock it always took, so a
+	// pod-executed selection and a daemon-driven one advance ONE lease rather
+	// than two. Everything else it touches is a provider API call.
+	// issue-close-out reads run journals through journal.OpenRead directly
+	// (issuecloseout.go:96, :168, :241) over a run directory it finds with
+	// instance.Layout.FindRunDir — bypassing the stageRunJournal seam
+	// entirely, so the journal plane does not serve it. Its claim RELEASE is
+	// already plane-served; only these three reads hold it here.
+	"issue-close-out": true,
+	// telemetry-query is NOT here any more (Goobers#4001). It opened the
+	// daemon's telemetry ROLLUP database directly (l.TelemetryDB()), and
+	// decision 005 R4 refused it at dispatch because the only shape anyone
+	// had for serving it would have exposed that database or raw error
+	// signatures. It now reads a NARROW, gaggle-contained, run-authenticated
+	// aggregate route instead (apicontract.TelemetryDefectAggregatesPath):
+	// four fixed derived families, no SQL, no path, no connector, and error
+	// signatures normalized before they leave the daemon. The command selects
+	// that plane BEFORE resolving a root, and on the local path it now
+	// refuses outright when the resolved root is not an instance — so the
+	// silent "." fallback this entry existed to prevent is unreachable from
+	// either direction rather than merely undispatched.
+	// gather-pr-context is NOT here any more (Goobers#3989). Its REMEDIATION
+	// NO-OP GUARD — the record that stops the lane re-attempting a PR whose
+	// previous attempt already concluded there was nothing to do — held it
+	// three separate ways, and all three are now plane seams
+	// (remediationnoopguard.go): the record is a keyed scheduler-state key
+	// (stateclient.PRRemediationNoopKey, one per gaggle+PR) reached through
+	// openStageStateStore, its claim resolution goes through the claims seam
+	// (stageClaimLedgerForRun/Locked) instead of localscheduler.OpenClaimLedger,
+	// and the terminal run's journal is read through stageRunJournal instead of
+	// journal.OpenRead over a FindRunDir path. claims.lock mutual exclusion is
+	// preserved: every no-op key falls through schedulerStateLock's default
+	// arm, which is claims.lock, and the daemon serves a pod's compare-and-swap
+	// under that same lock. remediation-checkpoint, which shares the guard,
+	// clears with it.
+	// select-source opens the instance log (selectsource.go:99), walks the
+	// instance's runs tree through readservice.NewOfflineRuns (:89), and
+	// leases the parent with withClaimLock + localscheduler.OpenClaimLedger
+	// directly (:219-224, :240-243) rather than through the claims seam.
+	"select-source": true,
+	// publish-batch leases decomposition targets with a FileTargetLeaser over
+	// SchedulerDir()/decomposition-target-locks (publishbatch.go:116), opens
+	// the instance log (:145), and shares select-source's direct parent
+	// release (:154). The target-lock directory has no plane at all.
+	"publish-batch": true,
+	// backlog-health is NOT here any more (Goobers#3948). Its claim read is on
+	// the claims plane, its implementation-outcome evidence read is on the
+	// telemetry plane, and the last thing that held it — the READY-TRANSITION
+	// LEDGER, the resumable label-transition scan cursor at
+	// instance.Layout.BacklogHealthCursorPath — is now a scheduler-state key
+	// (stateclient.BacklogHealthCursorKey), reached through
+	// openStageStateStore like every other key in that namespace. Both modes
+	// are dispatchable: the bare snapshot and --feedback share one ledger
+	// resolution, so nothing about the flag changes which state is touched.
+	// Its provider read-cache writes are the same correctness-neutral
+	// conditional-GET store backlog-query and backlog-dedupe already carry
+	// into a pod.
+	// reconcile-branches opens the instance log (reconcilebranches.go:155)
+	// and reads OTHER runs' journals by walking layout.RunsDir() with
+	// journal.OpenRead (:166, :452) — a cross-run walk the journal plane's
+	// three purpose-built gaggle-scoped questions do not answer.
+	"reconcile-branches": true,
+	// file-issues is deliberately NOT here, and was never here — which was
+	// the defect Goobers#3996 blocker 2 named rather than a decision. It read
+	// the signals stage's stdout artifact by opening a run directory under the
+	// instance root (fileissues.go readStageStdoutArtifact), which in a pod
+	// resolves to "." and fails; because nothing refused the command, the lane
+	// ran GREEN while filing every nomination unapproved — the silent-wrong-
+	// result this list exists to make loud, arriving without a refusal.
+	//
+	// It is not added here because the read now reaches a plane seam:
+	// stageRunJournal plus journalclient.StageArtifactContent, a typed
+	// artifact-content fetch resolved only from a reference the caller's own
+	// run journal records. Per-command audit, every stateful access followed
+	// from runFileIssues: the nominations artifact and the check result go
+	// through readDecompositionInput (already the stageRunJournal seam), the
+	// findings read is the new seam, the repo and all three credentials come
+	// from providerRepo/providerToken (environment first), the dedupe scan and
+	// every mutation are provider API calls, and the result file and mutation
+	// sidecar are workspace-relative. Nothing holds a path under the instance
+	// root, so the refusal that would have covered the old defect would now
+	// only keep a working lane on self.
+}
+
+// stageKindsWithPodExecution names the built-in deterministic stage KINDS
+// that HAVE a pod-side execution path, so a stage declaring one is not
+// refused by StageRequiresInstanceRoot's kind arm.
+//
+// AN ALLOWLIST, NOT A DENYLIST, and that direction is the point: an
+// unrecognized kind — a newer engine dispatching a kind this binary has never
+// heard of — falls through to `true` and is refused, rather than being
+// dispatched into a pod whose dispatch-exec has no branch for it and would
+// silently run the stage's PLACEHOLDER command instead (implementation.yaml's
+// ["goobers","ci-poll"] exits nonzero; a future kind's placeholder might exit
+// 0 and surrender an empty success). Adding a kind here is therefore a
+// deliberate act taken together with the in-pod branch that runs it.
+//
+//   - KindShell is the ordinary shell-command case (kind == "" means the
+//     same); it has always run in a pod.
+//   - KindCIPoll runs in-process inside dispatch-exec (decision 005 C5,
+//     #3881): cmd/goobers/dispatchcipoll.go builds a CIPollExecutor with
+//     provider:pr:write resolved through the credential plane, exactly as
+//     every other pod stage resolves its declared capabilities. It needs no
+//     ledger, no merge lock and no on-disk journal — only a provider token —
+//     which is why it is the one kind that could leave this refusal.
+//
+// KindExternalTelemetry is deliberately ABSENT and stays refused: its
+// executor is built from the instance's connector configuration
+// (buildExternalTelemetryExecutor, cmd/goobers/runnerwiring_executors.go),
+// which lives under the instance config directory a pod does not have.
+var stageKindsWithPodExecution = map[string]bool{
+	KindShell:  true,
+	KindCIPoll: true,
 }
 
 // StageRequiresInstanceRootCode names, in a stage's failure ErrorInfo.Code,
@@ -353,16 +496,16 @@ const StageRequiresInstanceRootCode = "instance_root_required"
 
 // StageRequiresInstanceRoot reports whether a stage cannot execute in a pod
 // today because it needs the daemon's instance root: either its resolved
-// stage KIND is a built-in with no pod-side execution path (ci-poll,
-// external-telemetry — in-process Go executors selected by
-// Task.Inputs["kind"], see dispatch.go; kind == "" or KindShell is the
-// ordinary shell-command case and is never refused here), or its command is
-// a goobers CLI subcommand that reads/writes the file claim ledger, a merge
-// lock, or an on-disk run journal — none of which a stage pod has (decision
-// 003 ruling 3; production-lanes-3.0 stillBroken #2).
+// stage KIND is a built-in with no pod-side execution path
+// (external-telemetry, or any kind this binary does not recognize — see
+// stageKindsWithPodExecution; kind == "", KindShell and KindCIPoll all run in
+// a pod and are never refused here), or its command is a goobers CLI
+// subcommand that reads/writes the file claim ledger, a merge lock, or an
+// on-disk run journal — none of which a stage pod has (decision 003 ruling 3;
+// production-lanes-3.0 stillBroken #2).
 //
-// DELIBERATELY one data-driven list (a package-level map plus two
-// flag-gated cases), not a switch spread across call sites: decision 003's
+// DELIBERATELY one data-driven list (two package-level maps), not a switch
+// spread across call sites: decision 003's
 // later runner branch (step 6) consumes this exact function so the two
 // dispatch paths — the engine's dispatchRemoteTask and the runner's — can
 // never silently diverge on which stages are refused.
@@ -370,55 +513,13 @@ const StageRequiresInstanceRootCode = "instance_root_required"
 // kind is the stage's resolved Task.Inputs["kind"]; pass "" for an ordinary
 // shell-command stage.
 func StageRequiresInstanceRoot(cmd []string, kind string) bool {
-	if kind != "" && kind != KindShell {
+	if kind != "" && !stageKindsWithPodExecution[kind] {
 		return true
 	}
 	if !StageInvokesGoobersCLI(cmd) || len(cmd) < 2 {
 		return false
 	}
-	switch cmd[1] {
-	case "backlog-query":
-		// Every mode except --read-only reaches scanBacklogEligibility
-		// (cmd/goobers/backlogquery.go), which reads the persisted scan
-		// cursor under SchedulerDir()/claimLockFileName before ever looking
-		// at --claim/--release/--reconcile — including the bare and
-		// --debug-alone shapes. Only --read-only takes the separate
-		// runReadOnlyBacklogQuery path (a zero cursor, no lock).
-		return !commandDeclaresAnyFlag(cmd[2:], "read-only")
-	case "backlog-health":
-		// Every mode: --feedback reads the instance telemetry rollup and
-		// run/error evidence and takes a per-item claim reservation; the bare
-		// ready-pool snapshot opens the claim ledger too (backloghealth.go's
-		// unclaimedReadyItems), and a missing claims.json in a pod resolves to
-		// a fresh EMPTY ledger, so every ready item would be reported
-		// unclaimed and the stage would succeed — the silent-wrong-result
-		// class this list exists to close (finding 002, the critic's
-		// bare-backlog-health row). Removed deliberately, with a test, once
-		// the stage's ledger read reaches the daemon through the claims plane.
-		return true
-	default:
-		return stageCommandsRequiringInstanceRoot[cmd[1]]
-	}
-}
-
-// commandDeclaresAnyFlag reports whether args declares any of names as a
-// flag, in either Go flag package form (-name, --name, -name=value,
-// --name=value). Used only to discriminate backlog-query/backlog-health's
-// ledger/journal-touching modes from their read-only ones — every other
-// command in stageCommandsRequiringInstanceRoot is unconditional.
-func commandDeclaresAnyFlag(args []string, names ...string) bool {
-	for _, arg := range args {
-		trimmed := strings.TrimPrefix(strings.TrimPrefix(arg, "--"), "-")
-		if eq := strings.IndexByte(trimmed, '='); eq >= 0 {
-			trimmed = trimmed[:eq]
-		}
-		for _, name := range names {
-			if trimmed == name {
-				return true
-			}
-		}
-	}
-	return false
+	return stageCommandsRequiringInstanceRoot[cmd[1]]
 }
 
 // StageInvokesProviderBuiltin narrows transient stderr classification to the
@@ -519,6 +620,17 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 		return apiv1.ResultEnvelope{}, fmt.Errorf("executor: build stage environment: %w", err)
 	}
 	stageEnv = append(stageEnv, commandEnv...)
+	if injectRunContext {
+		task := strings.TrimPrefix(env.TaskID, env.RunID+":")
+		if task == "" {
+			task = env.TaskID
+		}
+		goober := env.Goober
+		if goober == "" {
+			goober = "deterministic"
+		}
+		stageEnv = append(stageEnv, TaskEnvVar+"="+task, GooberEnvVar+"="+goober)
+	}
 	if injectRunContext && env.TriggerRef != "" {
 		stageEnv = append(stageEnv, TriggerRefEnvVar+"="+env.TriggerRef)
 	}
@@ -557,6 +669,32 @@ func (e *ShellExecutor) Run(ctx context.Context, env apiv1.InvocationEnvelope, r
 	telemetryDir := telemetry.PrepareStageTelemetryDir(env.Workspace)
 	if telemetryDir != "" {
 		stageEnv = append(stageEnv, telemetry.StageTelemetryEnv+"="+telemetryDir)
+	}
+
+	// The tmp:ephemeral binding for runner `self`. It is applied LAST, over the
+	// fully assembled environment, because it is an effect on the environment
+	// rather than another contributor to it: whatever TMPDIR or temp-nested
+	// cache the allowlist, the instance passthrough, or the stage's own
+	// run.env produced, the attempt-private area is what the stage actually
+	// gets. The directory is reclaimed by the deferred Reclaim below on every
+	// exit path — success, stage failure, timeout, and the early returns
+	// between here and the exec.
+	//
+	// It deliberately lives OUTSIDE env.Workspace. The workspace is the run's
+	// continuity — the worktree whose delta later stages consume and whose
+	// commits the run publishes — and a build cache materializing inside it
+	// would surface as untracked worktree content. Temp goes to the temp root;
+	// the workspace is not touched by this binding at all.
+	if e.EphemeralTmp {
+		scope, scopeErr := ephemeraltmp.Establish(e.EphemeralTmpRoot)
+		if scopeErr != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: bind tmp:ephemeral for stage %q: %w", env.TaskID, scopeErr)
+		}
+		defer func() { _ = scope.Reclaim() }()
+		stageEnv, err = scope.Apply(stageEnv)
+		if err != nil {
+			return apiv1.ResultEnvelope{}, fmt.Errorf("executor: bind tmp:ephemeral for stage %q: %w", env.TaskID, err)
+		}
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)

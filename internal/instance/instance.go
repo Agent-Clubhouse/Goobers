@@ -175,26 +175,58 @@ func (l Layout) TutorHoldoutsDir() string {
 // Repasses overwrite this same path atomically, so replacing a finding never
 // creates a delete-before-write gap.
 func (l Layout) TutorHoldoutPath(gaggle, runID string) string {
-	name := tutorHoldoutSegment(gaggle) + "__" + tutorHoldoutSegment(runID) + ".json"
+	name := SchedulerNameSegment(gaggle) + "__" + SchedulerNameSegment(runID) + ".json"
 	return filepath.Join(l.TutorHoldoutsDir(), name)
 }
 
 // BacklogHealthCursorPath returns the durable ready-transition cursor file for
 // one (gaggle, provider, repository, label) scan (#3392). repository is the
 // provider-native "owner/name" key; label is the ready label whose transitions
-// the ledger holds. Every segment is name-sanitized (labels carry a ":") so the
-// file name stays a single, safe path component.
+// the ledger holds.
+//
+// Defined in terms of BacklogHealthCursorName so the file's NAME has exactly
+// one definition: the scheduler-state key that addresses this same file over
+// the C2 plane (stateclient.BacklogHealthCursorKey, Goobers#3948) is built from
+// that name too, and a key that resolved to a different path than this would be
+// a pod and a daemon writing two ledgers while believing they shared one.
 func (l Layout) BacklogHealthCursorPath(gaggle, provider, repository, label string) string {
-	name := strings.Join([]string{
-		tutorHoldoutSegment(gaggle),
-		tutorHoldoutSegment(provider),
-		tutorHoldoutSegment(repository),
-		tutorHoldoutSegment(label),
-	}, "__") + ".json"
-	return filepath.Join(l.SchedulerDir(), BacklogHealthDirName, name)
+	return filepath.Join(l.SchedulerDir(), BacklogHealthDirName,
+		BacklogHealthCursorName(gaggle, provider, repository, label))
 }
 
-func tutorHoldoutSegment(s string) string {
+// BacklogHealthCursorName is the cursor file's own name, without its
+// directory: the gaggle, then the scan's other three coordinates, all joined
+// by "__" and each name-sanitized (labels carry a ":") so the whole thing
+// stays a single, safe path component.
+func BacklogHealthCursorName(gaggle, provider, repository, label string) string {
+	return SchedulerNameSegment(gaggle) + "__" + BacklogHealthCursorScope(provider, repository, label)
+}
+
+// BacklogHealthCursorScope is the name WITHOUT its leading gaggle segment.
+//
+// Split out because the scheduler-state key that addresses this same file over
+// the C2 plane keeps the gaggle in a separately delimited position
+// (stateclient.BacklogHealthCursorKey): the plane's containment has to be able
+// to say "this key's gaggle is exactly the caller's", and "__" cannot decide
+// that on its own — a repository or a label may legitimately contain one.
+func BacklogHealthCursorScope(provider, repository, label string) string {
+	return strings.Join([]string{
+		SchedulerNameSegment(provider),
+		SchedulerNameSegment(repository),
+		SchedulerNameSegment(label),
+	}, "__") + ".json"
+}
+
+// SchedulerNameSegment reduces one coordinate to a safe single file-name
+// segment, for the scheduler-directory files that are named after what they
+// hold rather than after a digest of it.
+//
+// Exported because the scheduler-state plane's containment check needs the same
+// reduction: a pod addressing gaggle G may only address a backlog-health cursor
+// key whose gaggle segment is G reduced by THIS function, and computing that
+// segment a second way is how the check would come to admit a key the path
+// builder never produces.
+func SchedulerNameSegment(s string) string {
 	return strings.NewReplacer(":", "_").Replace(docsWatermarkSegment(s))
 }
 

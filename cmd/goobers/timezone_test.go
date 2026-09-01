@@ -69,7 +69,7 @@ func TestBuildSchedulerSetupWiresConfiguredTimezone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	var sched interface {
 		Next(time.Time) time.Time
@@ -149,7 +149,7 @@ func TestBuildSchedulerSetupWiresAllScheduleTriggers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSchedulerSetup: %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	var got []time.Time
 	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)

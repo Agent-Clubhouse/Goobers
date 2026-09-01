@@ -50,42 +50,15 @@ import (
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/mcpconfig"
-	"github.com/goobers/goobers/internal/readmodel/intake"
 	"github.com/goobers/goobers/internal/runner"
 	"github.com/goobers/goobers/internal/telemetry"
-	"github.com/goobers/goobers/internal/telemetry/rollup"
+	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 	"github.com/goobers/goobers/internal/workflow"
 	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 	harnesstest "github.com/goobers/goobers/test/testsupport/harness"
 	telemetrytest "github.com/goobers/goobers/test/testsupport/telemetry"
 )
-
-func TestRunIntakeObserverRecordsEveryRunInBurst(t *testing.T) {
-	store, err := intake.Open(filepath.Join(t.TempDir(), intake.FileName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	observe := runIntakeObserver(store, nil)
-
-	for index, runID := range []string{"run-a", "run-b", "run-c", "run-d", "run-e"} {
-		observe(runID, uint64(index+2))
-	}
-
-	pending, err := store.Pending(context.Background(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pending) != 5 {
-		t.Fatalf("pending markers = %d, want 5", len(pending))
-	}
-	for index, marker := range pending {
-		if marker.SourceSeq != uint64(index+2) {
-			t.Fatalf("marker %s sequence = %d, want %d", marker.RunID, marker.SourceSeq, index+2)
-		}
-	}
-}
 
 // resolveGrants materializes each grant's ref through the resolver, returning a
 // capability->token-value map so tests can assert which token actually backs a
@@ -524,7 +497,7 @@ func TestIngestRunTelemetryDoesNotWaitForUnavailableOTLPCollector(t *testing.T) 
 
 	done := make(chan struct{})
 	go func() {
-		ingestRunTelemetry(client, nil, nil, instance.Layout{}, "", nil)
+		telemetryingest.RunTelemetry(client, nil, nil, instance.Layout{}, "", nil)
 		close(done)
 	}()
 	select {
@@ -813,7 +786,7 @@ func TestRunRejectsStoredCopilotAuthShadowingBeforeRunAdmission(t *testing.T) {
 
 func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 	envCaps := buildEnvCapabilities()
-	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil)
+	registry, err := buildHarnessRegistry(envCaps, nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -882,7 +855,7 @@ func TestBuildHarnessRegistryMapsGooberHarnessesToAdapters(t *testing.T) {
 // allowlist (#1471), goobers-io (#2774), and declared mcpServers (#1492)
 // each did for weeks before their own follow-up issue was filed.
 func TestBuildHarnessRegistryAdaptersAreConformanceCovered(t *testing.T) {
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil)
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, nil, "/instances/acme", "/opt/goobers/bin/goobers", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -938,7 +911,7 @@ func TestBuildHarnessRegistryAppliesLauncherOverride(t *testing.T) {
 		string(apiv1.HarnessCopilot): {"agency", "copilot"},
 		// claude-code intentionally omitted: it must keep its default launcher.
 	}
-	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "", false, nil)
+	registry, err := buildHarnessRegistry(buildEnvCapabilities(), nil, override, "", "", false, nil, false)
 	if err != nil {
 		t.Fatalf("buildHarnessRegistry: %v", err)
 	}
@@ -2476,7 +2449,7 @@ func TestBuildSchedulerSetupMigratesLiveLegacyClaimForRemovedWorkflow(t *testing
 	if err != nil {
 		t.Fatalf("buildSchedulerSetup: %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	reopened, err := localscheduler.OpenClaimLedger(ledgerPath)
 	if err != nil {
@@ -2518,7 +2491,7 @@ func TestBuildSchedulerSetupJournalsLegacyRuntimeMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSchedulerSetup: %v", err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	events, err := journal.ReadInstanceLog(layout.SchedulerDir())
 	if err != nil {
@@ -2849,65 +2822,6 @@ func TestBuildGooberCredentialGrantsScopesSourcesToIdentity(t *testing.T) {
 	if got := grants[0]; got.Goober != "curator" || got.Capability != "agent:model" || got.Ref != "model-token" {
 		t.Fatalf("grant = %+v, want curator/agent:model/model-token", got)
 	}
-}
-
-// TestIngestRunTelemetryLogsForcedFailure is issue #246's third fix: a
-// swallowed rollup-ingest error used to leave nothing but a bare `_ =` — no
-// visible trace anywhere that the rollup silently fell behind. This forces
-// IngestRun to fail (a closed *rollup.DB) and asserts the failure is visible
-// in the instance log, not merely absorbed.
-func TestIngestRunTelemetryLogsForcedFailure(t *testing.T) {
-	root := t.TempDir()
-	l := instance.NewLayout(root)
-
-	db, err := rollup.Open(filepath.Join(root, "telemetry.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Force IngestRun/IngestSchedulerLog to fail deterministically, without
-	// relying on any particular on-disk run-directory shape.
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	log, _, err := journal.OpenInstanceLog(l.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = log.Close() })
-
-	ingestRunTelemetry(nil, db, nil, l, "run-forced-failure", log)
-
-	events, err := journal.ReadInstanceLog(l.SchedulerDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found bool
-	for _, ev := range events {
-		if ev.Type == journal.EventError && ev.RunID == "run-forced-failure" && ev.Error != nil &&
-			strings.Contains(ev.Error.Code, "telemetry_ingest") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected a telemetry_ingest_* error event for run-forced-failure, got: %+v", events)
-	}
-}
-
-// TestIngestRunTelemetryNilLogDoesNotPanic proves logIngestFailure's nil-log
-// guard holds — ingestRunTelemetry is called from contexts (tests, a
-// standalone db) where no instance log may be wired.
-func TestIngestRunTelemetryNilLogDoesNotPanic(t *testing.T) {
-	root := t.TempDir()
-	l := instance.NewLayout(root)
-	db, err := rollup.Open(filepath.Join(root, "telemetry.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	ingestRunTelemetry(nil, db, nil, l, "run-nil-log", nil)
 }
 
 // --- #312: escalation-notifier wiring ---
@@ -3762,110 +3676,6 @@ func TestBuildBlockedHandlerScopesCyclesByRepository(t *testing.T) {
 	} {
 		if _, ok := recs[key]; !ok {
 			t.Errorf("blocked records missing %q: %+v", key, recs)
-		}
-	}
-}
-
-func TestBlockedCycleCommentIsBounded(t *testing.T) {
-	paths := make([][]string, 20)
-	for i := range paths {
-		for j := 0; j < 100; j++ {
-			paths[i] = append(paths[i], strings.Repeat("9", 100))
-		}
-	}
-	comment := blockedCycleComment(paths, true)
-	if len(comment) > maxBlockedCycleCommentLength {
-		t.Fatalf("comment length = %d, want at most %d", len(comment), maxBlockedCycleCommentLength)
-	}
-	if !strings.Contains(comment, "additional cycle paths omitted") {
-		t.Fatalf("comment = %q, want omitted-path notice", comment)
-	}
-	if !strings.Contains(comment, "cycle members omitted") {
-		t.Fatalf("comment = %q, want explicit omitted-member notice", comment)
-	}
-
-	singleCycleComment := blockedCycleComment(paths[:1], false)
-	if len(singleCycleComment) > maxBlockedCycleCommentLength {
-		t.Fatalf("single-cycle comment length = %d, want at most %d", len(singleCycleComment), maxBlockedCycleCommentLength)
-	}
-	if !strings.Contains(singleCycleComment, "cycle members omitted") {
-		t.Fatalf("single-cycle comment = %q, want explicit omitted-member notice", singleCycleComment)
-	}
-	if strings.Contains(singleCycleComment, "additional cycle paths omitted") {
-		t.Fatalf("single-cycle comment = %q, did not want omitted-path notice", singleCycleComment)
-	}
-}
-
-func TestBlockedCycleCommentPreservesLongSingleCycle(t *testing.T) {
-	path := []string{
-		"1001", "1002", "1003", "1004", "1005", "1006", "1007",
-		"1008", "1009", "1010", "1011", "1012", "1013", "1014",
-		"1015", "1016", "1017", "1018", "1019", "1020",
-	}
-	path = append(path, path[0])
-
-	wantMembers := make([]string, len(path))
-	for i, number := range path {
-		wantMembers[i] = "#" + number
-	}
-	wantPath := strings.Join(wantMembers, cyclePathSeparator)
-	comment := blockedCycleComment([][]string{path}, false)
-	if !strings.Contains(comment, wantPath) {
-		t.Fatalf("comment = %q, want complete ordered cycle %q", comment, wantPath)
-	}
-	if strings.Contains(comment, "cycle members omitted") {
-		t.Fatalf("comment = %q, did not want member truncation", comment)
-	}
-}
-
-func TestBlockedCycleCommentsNameEveryAffectedIssue(t *testing.T) {
-	repo := providers.RepositoryRef{Provider: providers.ProviderGitHub, Owner: "acme", Name: "web"}
-	dependencies := make(map[string][]string)
-	const nodes = 12
-	for i := 0; i < nodes; i++ {
-		itemID := fmt.Sprintf("%d", 500+i)
-		for j := 0; j < nodes; j++ {
-			dependencies[itemID] = append(dependencies[itemID], fmt.Sprintf("%d", 500+j))
-		}
-	}
-
-	cycle := findBlockedCycle(blockedCycleTestRecords(repo, dependencies), blockedRecordKey(repo, "500"))
-	if len(cycle.Paths) != maxBlockedCyclePaths || !cycle.MorePaths {
-		t.Fatalf("cycle paths = %v, more = %v; want capped dense report", cycle.Paths, cycle.MorePaths)
-	}
-	comments := blockedCycleComments(cycle)
-	if len(comments) != 1 {
-		t.Fatalf("comments = %d, want dense 12-member cycle to fit in one report", len(comments))
-	}
-	for _, item := range cycle.Affected {
-		if !strings.Contains(comments[0], "#"+item.ItemID) {
-			t.Errorf("comment = %q, want affected issue #%s", comments[0], item.ItemID)
-		}
-	}
-}
-
-func TestBlockedCycleCommentsSplitCompleteMemberList(t *testing.T) {
-	cycle := blockedCycleResult{
-		Paths:     [][]string{{"10000", "10001", "10000"}},
-		MorePaths: true,
-	}
-	for i := 0; i < 500; i++ {
-		cycle.Affected = append(cycle.Affected, blockedCycleNode{ItemID: fmt.Sprintf("%d", 10000+i)})
-	}
-
-	comments := blockedCycleComments(cycle)
-	if len(comments) < 3 {
-		t.Fatalf("comments = %d, want primary report plus member follow-ups", len(comments))
-	}
-	combined := strings.Join(comments, "\n")
-	for _, comment := range comments {
-		if len(comment) > maxBlockedCycleCommentLength {
-			t.Errorf("comment length = %d, want at most %d", len(comment), maxBlockedCycleCommentLength)
-		}
-	}
-	for _, item := range cycle.Affected {
-		if !strings.Contains(combined, "#"+item.ItemID) {
-			t.Errorf("comments omitted affected issue #%s", item.ItemID)
 		}
 	}
 }
@@ -4810,4 +4620,100 @@ func TestRequireLabelsByGaggle(t *testing.T) {
 	if !maps.Equal(got, want) {
 		t.Fatalf("requireLabelsByGaggle = %#v, want %#v", got, want)
 	}
+}
+
+// TestBuildDeterministicExecutorBindsSelfRunnerEphemeralTmp is the
+// composition-level regression test for #3962. Before this, an instance whose
+// self entry declared `restrictions: [tmp:ephemeral]` satisfied the solver
+// (internal/runnersolve) and then bound NOTHING: on-pod stages inherited the
+// daemon's own TMPDIR and its image-configured GOCACHE, so every `go build`
+// grew a cache that outlived the run inside the long-lived API pod's cgroup —
+// the accumulation half of the OOMKill analyzed in #3949. The wiring now
+// carries the declaration onto the shell executor, which this proves
+// end-to-end with a stub stage that echoes the temp and cache it was handed.
+func TestBuildDeterministicExecutorBindsSelfRunnerEphemeralTmp(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub script exercises Unix shell semantics")
+	}
+	tempRoot := t.TempDir()
+	daemonCache := filepath.Join(tempRoot, "gocache")
+	t.Setenv("TMPDIR", tempRoot)
+	t.Setenv("GOCACHE", daemonCache)
+
+	stub := filepath.Join(t.TempDir(), "goobers")
+	script := "#!/bin/sh\nprintf '%s\\n%s' \"$TMPDIR\" \"$GOCACHE\"\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(t *testing.T, cfg *instance.Config) (string, string) {
+		t.Helper()
+		resolver, err := credentials.NewResolver(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := runnerWiringArtifactRecorder{}
+		got, err := buildDeterministicExecutor(deterministicExecutorInput{
+			Config:           cfg,
+			Resolver:         resolver,
+			SharedRegistry:   journal.NewRegistryScrubber(),
+			InstanceRoot:     t.TempDir(),
+			SelfBin:          stub,
+			ArtifactRecorder: rec,
+			SecretRegistrar:  journal.NewRegistryScrubber(),
+		})
+		if err != nil {
+			t.Fatalf("buildDeterministicExecutor: %v", err)
+		}
+		result, err := got.Run(context.Background(), apiv1.InvocationEnvelope{TaskID: "task-1", Workspace: t.TempDir()},
+			apiv1.DeterministicRun{Command: []string{"goobers", "some-subcommand"}})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if result.Status != apiv1.ResultSuccess {
+			t.Fatalf("status = %v, want success (result: %+v)", result.Status, result)
+		}
+		observed := strings.SplitN(string(rec["task-1/stdout.log"]), "\n", 2)
+		if len(observed) != 2 {
+			t.Fatalf("stage did not report both TMPDIR and GOCACHE: %q", rec["task-1/stdout.log"])
+		}
+		return observed[0], observed[1]
+	}
+
+	t.Run("declared", func(t *testing.T) {
+		cfg := &instance.Config{Runners: []instance.RunnerEntry{{
+			Name:         instance.RunnerHostSelfName,
+			Host:         instance.RunnerHostSelfName,
+			Restrictions: []instance.RunnerRestriction{instance.RunnerRestrictionTmpEphemeral},
+		}}}
+		tmpdir, gocache := run(t, cfg)
+
+		if tmpdir == tempRoot {
+			t.Fatalf("the stage ran with the daemon's own temp root %q — tmp:ephemeral bound nothing", tmpdir)
+		}
+		if filepath.Dir(tmpdir) != tempRoot {
+			t.Fatalf("TMPDIR = %q, want an attempt-private directory carved out of %q", tmpdir, tempRoot)
+		}
+		if gocache != filepath.Join(tmpdir, "gocache") {
+			t.Fatalf("GOCACHE = %q, want the temp-nested build cache re-rooted into the attempt's temp %q", gocache, tmpdir)
+		}
+		if _, err := os.Stat(tmpdir); !os.IsNotExist(err) {
+			t.Fatalf("the attempt's temp %q outlived the run (stat err %v) — nothing was reclaimed", tmpdir, err)
+		}
+		if _, err := os.Stat(daemonCache); !os.IsNotExist(err) {
+			t.Fatalf("the stage wrote the daemon's shared cache %q; that is exactly the accumulation #3949 traced", daemonCache)
+		}
+	})
+
+	// Zero-declaration invariance: an instance that never mentions the
+	// restriction gets the environment it has always had, byte for byte.
+	t.Run("not declared", func(t *testing.T) {
+		tmpdir, gocache := run(t, &instance.Config{})
+		if tmpdir != tempRoot {
+			t.Fatalf("TMPDIR = %q, want the ambient %q unchanged for an instance that declares nothing", tmpdir, tempRoot)
+		}
+		if gocache != daemonCache {
+			t.Fatalf("GOCACHE = %q, want the ambient %q unchanged for an instance that declares nothing", gocache, daemonCache)
+		}
+	})
 }

@@ -20,6 +20,7 @@ type fakeRun struct {
 
 func (f fakeRun) GetID() string                          { return f.id }
 func (f fakeRun) GetRunID() string                       { return f.runID }
+func (f fakeRun) GetFirstExecutionRunID() string         { return f.runID }
 func (f fakeRun) Get(context.Context, interface{}) error { return nil }
 func (f fakeRun) GetWithOptions(context.Context, interface{}, client.WorkflowRunGetOptions) error {
 	return nil

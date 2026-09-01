@@ -348,7 +348,13 @@ func buildPodAgenticExecutor(kit *agentickit.Kit, stderr io.Writer, minted []dis
 	// the ambient environment above, so the preflight's ambient-env-first
 	// lookup already finds it. There's no *instance.Config/StoreResolver in
 	// this pod-context function to build one anyway.
-	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil)
+	// No tmp:ephemeral binding either: in a stage pod the effect is enforced
+	// BY CONSTRUCTION — a fresh, never-reused pod whose /tmp is the
+	// dispatcher's sized emptyDir (internal/dispatcher/podspec.go
+	// stampVolumes). The daemon-side binding exists precisely because runner
+	// `self` has no such pod; layering it here would carve an ephemeral
+	// directory inside an already-ephemeral one.
+	adapterRegistry, err := podHarnessRegistry(kit.EnvCapabilities, nil, nil, "", "", false, nil, false)
 	if err != nil {
 		return nil, fmt.Errorf("build harness registry: %w", err)
 	}
@@ -543,6 +549,20 @@ func (r podArtifactRecorder) RecordArtifactBoundedWithIntegrity(name string, dat
 		scrubbed = scrubbed[:maxBytes]
 	}
 	return r.RecordArtifact(name, scrubbed)
+}
+
+// RecordArtifactWithIntegrity satisfies the integrity recorder
+// internal/executor asserts on at RUN time (executor's
+// integrityArtifactRecorder). CIPollExecutor's failing-CI arm requires it to
+// record ci-checks.json, and the assertion is a plain type switch that
+// returns "CI failure evidence integrity recorder is unavailable" when it
+// misses — so without this method a pod ci-poll would fail on exactly the
+// runs the evidence exists for (#3881), while a passing poll on the same pod
+// succeeded. The provenance grade is not carried through the journal plane
+// today (nor is it by RecordArtifactBoundedWithIntegrity above), so it is
+// accepted and dropped rather than silently changing the artifact's bytes.
+func (r podArtifactRecorder) RecordArtifactWithIntegrity(name string, data []byte, _ apiv1.Integrity) (journal.Ref, error) {
+	return r.RecordArtifact(name, data)
 }
 
 // Dir satisfies the interface{ Dir() string } the executor asserts for its

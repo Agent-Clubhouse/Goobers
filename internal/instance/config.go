@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -166,6 +165,54 @@ type Config struct {
 	// sibling sections, so an unconfigured instance's written instance.yaml
 	// stays byte-identical.
 	Workcopies *WorkcopiesConfig `json:"workcopies,omitempty" yaml:"workcopies,omitempty"`
+	// BaselineHealth opts the deterministic CI gate into base-health awareness
+	// (#2971): a local-ci failure is compared against the target branch at the
+	// pinned base SHA before it is attributed to the run's own diff. Nil — the
+	// default — leaves every CI failure routed exactly as before, because the
+	// comparison costs one extra CI run per newly observed red base.
+	BaselineHealth *BaselineHealthConfig `json:"baselineHealth,omitempty" yaml:"baselineHealth,omitempty"`
+}
+
+// BaselineHealthConfig tunes shared-baseline-failure detection.
+type BaselineHealthConfig struct {
+	// Enabled turns the comparison on. False (the default) keeps the runner's
+	// pre-existing attribution.
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// SharedRepairLane lets an affected branch carry the repair for a shared
+	// baseline failure instead of parking against the shared blocker. Off by
+	// default: silently adding the same unrelated fix to every feature branch
+	// is exactly the churn detection exists to stop, so repairing on a feature
+	// branch is an explicit operator choice.
+	SharedRepairLane bool `json:"sharedRepairLane,omitempty" yaml:"sharedRepairLane,omitempty"`
+	// ProbeTimeoutSeconds bounds one baseline measurement — a full CI run on
+	// the untouched base. Zero uses DefaultBaselineProbeTimeoutSeconds.
+	ProbeTimeoutSeconds int `json:"probeTimeoutSeconds,omitempty" yaml:"probeTimeoutSeconds,omitempty"`
+}
+
+// DefaultBaselineProbeTimeoutSeconds bounds an unconfigured baseline probe. It
+// matches the shipped local-ci stage budget (40 minutes), because the probe
+// runs the identical command on the identical repository.
+const DefaultBaselineProbeTimeoutSeconds = 2400
+
+// BaselineHealthEnabled reports whether failing CI stages are compared against
+// the target branch's own health (baselineHealth.enabled, defaults to false).
+func (c *Config) BaselineHealthEnabled() bool {
+	return c != nil && c.BaselineHealth != nil && c.BaselineHealth.Enabled
+}
+
+// SharedRepairLaneEnabled reports whether an affected branch may carry a shared
+// baseline repair instead of parking (baselineHealth.sharedRepairLane).
+func (c *Config) SharedRepairLaneEnabled() bool {
+	return c != nil && c.BaselineHealth != nil && c.BaselineHealth.SharedRepairLane
+}
+
+// BaselineProbeTimeout is the effective bound on one baseline measurement.
+func (c *Config) BaselineProbeTimeout() time.Duration {
+	seconds := DefaultBaselineProbeTimeoutSeconds
+	if c != nil && c.BaselineHealth != nil && c.BaselineHealth.ProbeTimeoutSeconds > 0 {
+		seconds = c.BaselineHealth.ProbeTimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // WorkcopiesConfig tunes how the worktree manager provisions managed mirrors.
@@ -190,60 +237,6 @@ type WorkcopiesConfig struct {
 	// creation byte-identical to previous releases; no `_objects` cache
 	// directory is ever created. See worktree.WithObjectCache.
 	ObjectCache bool `json:"objectCache,omitempty" yaml:"objectCache,omitempty"`
-}
-
-// PartialCloneEnabled reports whether newly created mirrors should be
-// blobless partial clones (workcopies.partialClone, defaults to false).
-func (c *Config) PartialCloneEnabled() bool {
-	return c.Workcopies != nil && c.Workcopies.PartialClone
-}
-
-// ObjectCacheEnabled reports whether newly created mirrors should reference
-// a shared node-level object cache (workcopies.objectCache, defaults to
-// false).
-func (c *Config) ObjectCacheEnabled() bool {
-	return c.Workcopies != nil && c.Workcopies.ObjectCache
-}
-
-// EffectiveWorkcopiesLayout applies the gaggle override, then the instance
-// override, to layout. An empty root preserves the instance-local default.
-func EffectiveWorkcopiesLayout(layout Layout, c *Config, gaggle *apiv1.Gaggle) (Layout, error) {
-	root := ""
-	if c != nil && c.Workcopies != nil {
-		root = c.Workcopies.Root
-	}
-	if gaggle != nil && gaggle.Spec.Workcopies != nil && gaggle.Spec.Workcopies.Root != "" {
-		root = gaggle.Spec.Workcopies.Root
-	}
-	if root == "" {
-		return layout, nil
-	}
-	if !filepath.IsAbs(root) {
-		return Layout{}, fmt.Errorf("workcopies.root must be an absolute path: %q", root)
-	}
-	return layout.WithWorkcopiesRoot(filepath.Clean(root)), nil
-}
-
-// EffectiveSelfIdentity returns the provider login configured for gaggle,
-// falling back to the instance-wide default. Empty means assignment-aware
-// backlog selection remains opted out.
-func EffectiveSelfIdentity(c *Config, gaggle *apiv1.Gaggle) string {
-	if gaggle != nil && gaggle.Spec.SelfIdentity != "" {
-		return gaggle.Spec.SelfIdentity
-	}
-	if c == nil {
-		return ""
-	}
-	return c.SelfIdentity
-}
-
-// EffectiveSpeechConfig returns the configured speech settings or disabled
-// defaults when the speech section is absent.
-func (c *Config) EffectiveSpeechConfig() speechnotify.Config {
-	if c.Speech == nil {
-		return speechnotify.Config{}
-	}
-	return *c.Speech
 }
 
 // WorkflowSource locates the workflow configuration independently of Repos.
@@ -774,6 +767,63 @@ func (a *RepoAuthConfig) BotLogin() string {
 	return strings.TrimSpace(a.Slug) + "[bot]"
 }
 
+// GitHubBotLoginKey is the identity of a github repository for bot-login
+// lookup: owner and name, case-folded, because GitHub itself is
+// case-insensitive about both and a config author's capitalization must not
+// decide whether a stage finds its own login.
+//
+// It exists so the two consumers that resolve the same fact cannot disagree
+// about what "the same repository" means: a stage reading the config directly
+// (the local substrate) and the dispatcher indexing every configured login to
+// stamp one into a stage pod, which has no config to read (#3914).
+func GitHubBotLoginKey(owner, name string) string {
+	return strings.ToLower(strings.TrimSpace(owner)) + "/" + strings.ToLower(strings.TrimSpace(name))
+}
+
+// GitHubBotLogin returns the configured bot login for the github repository
+// owner/name — the App slug plus "[bot]" for a repo whose auth block declares
+// kind github-app with a slug, and "" for every other repo, including one this
+// config does not name at all.
+//
+// "" is a MEANINGFUL answer and not an error: it is the PAT posture, where the
+// credential can self-report through GET /user and no declaration is needed
+// (#3343). Distinguishing it from "nobody resolved this" is the whole of
+// #3914's fail-closed rule, and that distinction is made by the CALLER — here
+// by an unreadable config, in a pod by an unstamped identity variable.
+func (c *Config) GitHubBotLogin(owner, name string) string {
+	if c == nil {
+		return ""
+	}
+	return c.GitHubBotLogins()[GitHubBotLoginKey(owner, name)]
+}
+
+// GitHubBotLogins indexes every configured github repo's declared bot login by
+// GitHubBotLoginKey, omitting the repos that declare none.
+//
+// It is the daemon-side half of #3914: a stage pod has no instance root, so
+// the dispatcher — which does — resolves the login at dispatch and stamps it
+// as run identity. Both halves read THIS index, so the login a pod is handed
+// is the one the local substrate would have computed by construction, not by
+// two lookups that agree until one of them is edited.
+func (c *Config) GitHubBotLogins() map[string]string {
+	if c == nil {
+		return nil
+	}
+	logins := make(map[string]string, len(c.Repos))
+	for _, r := range c.Repos {
+		if r.Provider != "github" {
+			continue
+		}
+		if login := r.Auth.BotLogin(); login != "" {
+			logins[GitHubBotLoginKey(r.Owner, r.Name)] = login
+		}
+	}
+	if len(logins) == 0 {
+		return nil
+	}
+	return logins
+}
+
 // hasGitHubAppFields reports whether any github-app-only field is set, for
 // fail-closed rejection on kinds that must not carry them.
 func (a *RepoAuthConfig) hasGitHubAppFields() bool {
@@ -1222,6 +1272,38 @@ type EngineConfig struct {
 	HostPort  string `json:"hostPort,omitempty" yaml:"hostPort,omitempty"`
 	Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
 	TaskQueue string `json:"taskQueue,omitempty" yaml:"taskQueue,omitempty"`
+	// HITL opts an instance's engine-driven runs into the human-in-the-loop
+	// protocol (#3883). Nil or disabled leaves every engine run settling at
+	// its terminal exactly as it did before, which is the rollback posture.
+	HITL *EngineHITLConfig `json:"hitl,omitempty" yaml:"hitl,omitempty"`
+}
+
+// EngineHITLConfig is the instance's posture on holding an engine-driven run's
+// terminal open for an operator (#3883, decision 005 R8).
+//
+// It is OPT-IN, and deliberately so. When it is on, a run that escalates
+// journals its terminal and then keeps its Temporal workflow OPEN for the
+// window below, waiting for an operator intent. The journal, the projection
+// and the portal see an escalated run exactly as they did before — the
+// terminal is written BEFORE the hold, not after it — but the scheduler's
+// concurrency slot for that lane stays occupied until the operator answers or
+// the window expires. On a lane with a small MaxConcurrentRuns, a day-long
+// default window applied without the operator asking for it would starve the
+// lane. So the default is off, and an instance turning it on chooses the
+// window it can afford.
+type EngineHITLConfig struct {
+	// Enabled turns the protocol on for this instance's engine-driven runs.
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	// Window is how long a resumable terminal is held open for an operator,
+	// as a Go duration ("4h"). Empty uses the engine's 24h default.
+	Window string `json:"window,omitempty" yaml:"window,omitempty"`
+	// Actors, when non-empty, is the closed set of operator identities the
+	// WORKFLOW will accept an intent from. It is enforced inside the workflow
+	// rather than only at the daemon's API edge, so a compromised or
+	// misconfigured daemon cannot resolve a run it was never entitled to
+	// resolve. Empty means any actor the daemon's own authorization already
+	// admitted.
+	Actors []string `json:"actors,omitempty" yaml:"actors,omitempty"`
 }
 
 // RunConditions are instance-level run conditions (§7): max parallel runs and
@@ -1586,6 +1668,16 @@ func (c *Config) EffectiveEngineConfig() EngineConfig {
 	}
 }
 
+// EngineHITLEnabled reports whether this instance opted its engine-driven runs
+// into the #3883 operator-hold protocol.
+func (c *Config) EngineHITLEnabled() bool {
+	if c == nil {
+		return false
+	}
+	hitl := c.EffectiveEngineConfig().HITL
+	return hitl != nil && hitl.Enabled
+}
+
 // EngineProjectionEnabled reports whether instance YAML or a host/address
 // environment override configured a Temporal connection for the daemon.
 func (c *Config) EngineProjectionEnabled() bool {
@@ -1610,7 +1702,43 @@ func (c EngineConfig) Validate() error {
 	if strings.TrimSpace(c.TaskQueue) != c.TaskQueue || c.TaskQueue == "" {
 		return fmt.Errorf("taskQueue must be non-empty without leading or trailing whitespace")
 	}
+	if c.HITL != nil {
+		if err := c.HITL.Validate(); err != nil {
+			return fmt.Errorf("hitl: %w", err)
+		}
+	}
 	return nil
+}
+
+// Validate checks the operator-hold window. An unparsable or non-positive
+// window is refused at load rather than silently falling back to the 24h
+// default: an operator who wrote "4hr" meant to bound the hold, and a daemon
+// that quietly held for a day instead would be holding a lane's concurrency
+// slot they never agreed to give up.
+func (c EngineHITLConfig) Validate() error {
+	if strings.TrimSpace(c.Window) == "" {
+		return nil
+	}
+	window, err := time.ParseDuration(strings.TrimSpace(c.Window))
+	if err != nil {
+		return fmt.Errorf("window %q is not a duration: %w", c.Window, err)
+	}
+	if window <= 0 {
+		return fmt.Errorf("window must be positive, got %s", c.Window)
+	}
+	return nil
+}
+
+// HITLWindow is the configured operator-hold window, or zero when the instance
+// left it to the engine's default. Validate has already refused anything
+// unparsable, so a parse failure here degrades to the default rather than
+// failing a run start.
+func (c EngineHITLConfig) HITLWindow() time.Duration {
+	window, err := time.ParseDuration(strings.TrimSpace(c.Window))
+	if err != nil || window <= 0 {
+		return 0
+	}
+	return window
 }
 
 // Enabled reports whether collector push is configured.
@@ -1829,13 +1957,7 @@ func LoadConfig(path string) (*Config, error) {
 // tick that tries to use it.
 func (c *Config) Validate() error {
 	c.ResolveLargeRepoPresets()
-	if err := validateInOrder(
-		c.validateSchemaVersion,
-		c.Workcopies.validate,
-		func() error { return c.API.validate(c.APIListenAddress()) },
-		c.validateWorkflowSource,
-		func() error { return c.Webhook.validate(c.WebhookListenAddress()) },
-	); err != nil {
+	if err := c.validateBaseConfig(); err != nil {
 		return err
 	}
 
@@ -1844,27 +1966,7 @@ func (c *Config) Validate() error {
 	if err != nil {
 		return err
 	}
-	return validateInOrder(
-		func() error { return c.Portal.validate() },
-		c.validateSpeech,
-		func() error { return c.Webhook.validateSecret(stores) },
-		c.validateTimezone,
-		c.Runner.validateDefaultStageTimeout,
-		func() error { return c.Telemetry.validate(stores, c.TelemetryEnabled()) },
-		c.validateExternalTelemetry,
-		c.Telemetry.Retention.validate,
-		c.RunConditions.validate,
-		c.Retention.validate,
-		func() error { return c.validateRepos(stores) },
-		c.validateGitHubCLIIdentityRefs,
-		func() error { return c.validateDaemonIdentity(stores) },
-		func() error { return c.validateCredentials(stores) },
-		c.Runner.validate,
-		c.validateRunners,
-		c.validateEgress,
-		func() error { return c.validateWorkflowSourceCredentials(stores) },
-		c.validateSandbox,
-	)
+	return c.validateConfigSections(stores)
 }
 
 // validateSecretStores checks every secretStores entry fail-closed at load

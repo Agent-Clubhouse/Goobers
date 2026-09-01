@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,12 +20,15 @@ import (
 	"github.com/goobers/goobers/internal/boundedagg"
 	"github.com/goobers/goobers/internal/daemonstate"
 	"github.com/goobers/goobers/internal/dispatcher"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/oidcauth"
+	"github.com/goobers/goobers/internal/platform/cpustat"
 	"github.com/goobers/goobers/internal/platform/durability"
+	"github.com/goobers/goobers/internal/platform/memstat"
 	"github.com/goobers/goobers/internal/platform/proc"
 	"github.com/goobers/goobers/internal/podauth"
 	"github.com/goobers/goobers/internal/readservice"
@@ -431,7 +435,17 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	// #3806: instance config validated, definitions/scheduler wiring built.
 	configLoaded.Store(true)
-	defer setup.Shutdown(context.Background())
+	// #3651: the normal stop path calls this explicitly below so a flush or
+	// close failure fails the command; the defer only covers early returns,
+	// and Shutdown itself runs at most once.
+	shutdownSetup := func() error {
+		err := setup.Shutdown(context.Background())
+		if err != nil {
+			pf(stderr, "error: shut down daemon services: %v\n", err)
+		}
+		return err
+	}
+	defer func() { _ = shutdownSetup() }()
 	if err := journalDaemonStart(setup.InstanceLog, priorLock, currentDaemon); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 1
@@ -466,7 +480,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// The live journal writer (DS4) authors engine-run journals from events
 	// emitted as they happen; the projection reconciler below is thereby the
 	// repair/verify path (DS5), never the authority, for live-authored runs.
-	liveJournals, err := newLiveJournalWriter(l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, blobStore)
+	liveJournals, err := newLiveJournalWriter(l, setup.Config, setup.Definitions, setup.Watermarks, setup.InstanceLog, blobStore, setup.ProviderQuota)
 	if err != nil {
 		pf(stderr, "error: initialize live journal writer: %v\n", err)
 		return 1
@@ -486,6 +500,19 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	defer engineClient.Close()
 	engineGuards := engineClient.Guards()
+	// #3877 (decision 005 D2): decision 005's "Temporal Schedules are never
+	// the trigger source" invariant, asserted before anything starts a run.
+	// A Schedule fire rewrites the run's id, which would make the bounded
+	// open-workflow inverse the NORMAL path for every re-attach and cancel
+	// rather than the exceptional one. A check that could not complete is a
+	// warning; a schedule that is actually there refuses the boot.
+	if scheduleErr, mayStart := checkEngineScheduleInvariant(ctx, engineClient, setup.InstanceLog); scheduleErr != nil {
+		if !mayStart {
+			pf(stderr, "error: %v\n", scheduleErr)
+			return 1
+		}
+		pf(stderr, "warning: %v\n", scheduleErr)
+	}
 	// blobStore is the SAME store the writer adopts spans from (#3805): DS5
 	// verifies a live-authored journal against a re-projection, so a source
 	// given to one and not the other turns every adopted span into a false
@@ -496,6 +523,32 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		return 1
 	}
 	defer stopEngineProjection()
+	// #3876 (decision 005 D1, piece 6): teach the guards the run-id ->
+	// workflow-id mapping BEFORE anything reattaches, or a scheduled engine
+	// run's describe returns NotFound and the resume scan releases its
+	// concurrency slot underneath a live workflow. A failed scan is a
+	// warning, not a boot failure: it degrades to the pre-#3876 behaviour, in
+	// which direct runs still reattach correctly.
+	engineGuards, openEngineRuns, engineScanErr := attachEngineOpenRunResolver(ctx, engineClient, engineGuards, ownedGaggleSet(setup.Machines))
+	if engineScanErr != nil {
+		pf(stderr, "warning: %v\n", engineScanErr)
+	}
+	for _, runID := range reportOrphanedEngineRuns(l, setup.InstanceLog, openEngineRuns) {
+		pf(stderr, "warning: engine run %s is open on the engine with no local run directory\n", runID)
+	}
+	// #3876 (decision 005 D1): the engine starters the scheduler entries carry
+	// were built before this client and this writer existed. Attach them now,
+	// once, so a lane the selection predicate placed on the engine can
+	// actually dispatch. An unattached runtime refuses the dispatch rather
+	// than silently running remotely-pinned stages on this host.
+	if engineClient != nil {
+		setup.EngineRuntime.Attach(
+			engine.NewTemporalStarter(engineClient.Temporal(), setup.Config.EffectiveEngineConfig().TaskQueue),
+			engineGuards,
+			liveJournals,
+			time.Now,
+		)
+	}
 	printValidationWarnings(stdout, setup.Validation.CLIWarnings())
 	if warning := webhookConfigurationWarning(setup.Definitions, setup.Config); warning != "" {
 		pln(stdout, warning)
@@ -536,6 +589,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize read service: %v\n", err)
 		return 1
 	}
+	attachFreshnessSignals(reads, setup)
 	if *disableReadModelReads {
 		// The design §6.6 rollback, made operator-reachable (#2036):
 		// DisableReadModelReads previously had no caller anywhere, so the
@@ -578,12 +632,37 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		apiHandlerOpts = append(apiHandlerOpts, httpapi.WithChangeFeedStream(setup.ReadModel))
 	}
 	interventions := newRunInterventionService(l, setup, &wg, apiLog)
+	// #3883 (decision 005 R8): give the intervention surface a second
+	// destination. Runner-driven runs keep the in-process path untouched;
+	// engine-driven ones, which every verb refused outright since #3847, are
+	// now answered by the workflow that owns them over the versioned HITL
+	// protocol. Attached after the open-run scan so a SCHEDULED engine run —
+	// whose workflow id is not its run id — is addressable; a daemon with no
+	// engine client attaches nothing and keeps the refusal verbatim.
+	if deliverer := engineClient.HITLDeliverer(engineGuards); deliverer != nil {
+		interventions.AttachHITLDeliverer(deliverer)
+	}
 	// The write planes (#3509, distributed-state-and-coordination.md §7):
 	// claims over the same ledger + flock the CLI claimants use, triggers
 	// through the same scheduler path the pending-triggers sweep dispatches,
 	// HITL resolution over the intervention machinery. The file seams remain
 	// for local/mode-1 callers.
-	triggerPlane := newDaemonTriggerService()
+	triggerPlane := newDaemonTriggerService().withGaggleContainment(func(gaggle, runID string) bool {
+		return runBelongsToGaggle(l, gaggle, runID)
+	})
+	// The scheduler-state plane (#3878, decision 005 R3 / finding 002 C2):
+	// the gaggle-scoped KV route for the scheduler state that is NOT a claim
+	// — blocked.json, the backlog scan cursors, the reconcile-post-merge
+	// ledger, the sibling-context cache. Served from the SAME files under the
+	// SAME per-key locks the local CLI seams take (claims.lock for
+	// blocked.json and the cursors), so a pod's compare-and-swap and a
+	// runner-driven run's in-process update contend on one lock rather than
+	// racing across two.
+	statePlane, err := newDaemonStateService(l)
+	if err != nil {
+		pf(stderr, "error: initialize scheduler-state plane: %v\n", err)
+		return 1
+	}
 	// The credential plane (#3511, distributed-state-and-coordination.md §11,
 	// DS9/DS10): stage pods resolve short-lived, stage-scoped credentials at
 	// stage start through the same capability-gated machinery the local
@@ -616,16 +695,34 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		pf(stderr, "error: initialize surrender plane: %v\n", err)
 		return 1
 	}
+	// recoverExpiredClaims is the daemon's single stale-claim sweep, defined
+	// once here so the claims plane's recover route (Goobers#4016) and the
+	// startup/periodic call sites below all run the SAME sweep — with the
+	// intervention predicate and the recovery gate applied — rather than two
+	// sweeps that could drift apart. recoverClaims itself never touches
+	// stdout/stderr: it returns the released entries so only the synchronous
+	// startup call site below prints.
+	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
+		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive, claimRecoveryGate)
+	}
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
-		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog)),
+		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)),
 		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
 		httpapi.WithTriggerService(triggerPlane),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
 		httpapi.WithCredentialService(credentialPlane),
 		httpapi.WithBlobService(blobStore),
 		httpapi.WithSurrenderService(surrenderStore),
+		httpapi.WithStateService(statePlane),
+		// The defect-nomination aggregate read (Goobers#4001). Wired
+		// unconditionally, like the containment below: the four aggregates
+		// are derived from this instance's own rollup by the same function
+		// the CLI runs locally, so a daemon that can serve stage pods at all
+		// can always answer them. An instance with no rollup answers "no
+		// telemetry rollup yet", exactly as the local path does.
+		httpapi.WithTelemetryDefectAggregateService(newDaemonTelemetryDefectAggregateService(l)),
 	)
 	if liveJournals != nil {
 		// The journal plane (§8): remote stage pods emit their run's journal
@@ -756,13 +853,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// new ticks, same ordering rationale as crash-resume below. withClaimLock
 	// serializes this against a concurrent
 	// `goobers backlog-query` subprocess claiming/releasing on the same
-	// ledger file (providercmd.go's doc). recoverExpiredClaims itself never
-	// touches stdout/stderr — it returns the released entries so ONLY the
-	// synchronous startup call site below prints; the periodic goroutine
-	// below deliberately does not (see its own comment).
-	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
-		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive, claimRecoveryGate)
-	}
+	// ledger file (providercmd.go's doc). The sweep itself is
+	// recoverExpiredClaims, defined once above with the claims plane's
+	// recover route so both run the same thing; the periodic goroutine below
+	// deliberately does not print (see its own comment).
 	startupReleased := append([]localscheduler.ClaimEntry(nil), setup.RecoveredClaims...)
 	newlyReleased, err := recoverExpiredClaims(time.Now())
 	if err != nil && !isJournaledClaimsLockTimeout(err) {
@@ -898,6 +992,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	interventions.AttachScheduler(sched)
 	triggerPlane.AttachScheduler(sched)
+	// #3876: runs the trigger plane mints outlive the HTTP request that asked
+	// for them. Admission is still validated against the request context.
+	triggerPlane.AttachDispatchContext(ctx)
 	webhookLog := log.New(stderr, "webhook: ", log.LstdFlags)
 	webhookServer, err := buildWebhookServer(ctx, setup, sched, webhookGate, webhookLog, wakeSourceReconcile)
 	if err != nil {
@@ -942,7 +1039,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 				if err != nil {
 					return nil, err
 				}
-				return buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
+				prepare, err := buildTerminalBranchPreparer(runLayout, setup.Config, project, setup.SharedRegistry, setup.SecretStores)
+				if err != nil {
+					return nil, err
+				}
+				return prepare.runnerPreparer(), nil
 			},
 			setup.TerminalNotifier,
 			sched.ReleaseRun,
@@ -1056,7 +1157,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	triggerSweepErrors := newSweepErrorReporter(setup.InstanceLog, "trigger_sweep_failed")
 	triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
 	claimAdminSweepErrors := newSweepErrorReporter(setup.InstanceLog, "claim_admin_sweep_failed")
-	claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now))
+	claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
 	// #831's daemon-side half: cancel one live in-flight run on operator request
 	// by resolving its owning Runner and calling CancelRun. Its own ticker (below)
 	// keeps a worst-case wedged-stage cancellation — which blocks in CancelRun for
@@ -1195,6 +1296,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	telemetryRetentionTicker := time.NewTicker(telemetryRetentionSweepInterval)
 	telemetryRetentionTickerDone := make(chan struct{})
 	telemetryRetentionErrors := newSweepErrorReporter(setup.InstanceLog, "telemetry_retention_sweep_failed")
+	// Stale journal-generation cleanup is diagnostic, not fatal: it gets its
+	// own reporter so a stranded generation is journaled without failing the
+	// retention sweep that otherwise succeeded (#3654).
+	journalGenerationCleanupErrors := newSweepErrorReporter(setup.InstanceLog, "journal_generation_cleanup_failed")
 	go func() {
 		defer close(telemetryRetentionTickerDone)
 		defer telemetryRetentionTicker.Stop()
@@ -1205,7 +1310,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			case now := <-telemetryRetentionTicker.C:
 				_, err := pruneConfiguredTelemetryRetention(l, telemetryRetentionConfig, setup.RollupDB, now)
 				if err == nil {
-					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, now)
+					err = compactSchedulerRetention(ctx, telemetryRetentionConfig, setup.RollupDB, setup.InstanceLog, journalGenerationCleanupErrors, now)
 				}
 				telemetryRetentionErrors.report(err)
 			}
@@ -1255,7 +1360,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 				return
 			case <-delegationTicker.C:
 				triggerSweepErrors.report(sweepPendingTriggers(ctx, l.SchedulerDir(), sched, time.Now))
-				claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now))
+				claimAdminSweepErrors.report(sweepPendingClaimAdminRequests(l.SchedulerDir(), setup.InstanceLog, time.Now, recoverExpiredClaims))
 			}
 		}
 	}()
@@ -1374,6 +1479,10 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		}
 	}()
 
+	fleetConnectorDone, fleetConnectorStarted, fleetConnectorErr := startDaemonFleetConnector(ctx, root)
+	if fleetConnectorErr != nil {
+		pf(stdout, "warning: Fleet connector unavailable: %v\n", fleetConnectorErr)
+	}
 	if webhookGate.Start() {
 		ready.Store(true)
 	}
@@ -1383,6 +1492,9 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	}
 	if diagnosticsMode {
 		pln(stdout, "diagnostics mode: ON — long-running stages get periodic process samples + lsof + un-truncated output recorded as run artifacts")
+	}
+	if fleetConnectorStarted {
+		pln(stdout, "Fleet connector started")
 	}
 	var heartbeatDone <-chan struct{}
 	if !*quiet {
@@ -1403,42 +1515,60 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if webhookServer != nil {
 		webhookErrors = webhookServer.Errors()
 	}
-	select {
-	case runErr = <-schedulerDone:
-	case stopErr := <-supervisorStop:
-		if stopErr != nil {
-			schedulerFailed = true
-			pf(stderr, "error: supervisor stop request: %v\n", stopErr)
+daemonLoop:
+	for {
+		select {
+		case connectorErr := <-fleetConnectorDone:
+			fleetConnectorDone = nil
+			fleetConnectorStarted = false
+			if ctx.Err() == nil {
+				if connectorErr != nil {
+					pf(stderr, "warning: Fleet connector stopped: %v\n", connectorErr)
+				} else {
+					pln(stderr, "Fleet connector stopped")
+				}
+			}
+		case runErr = <-schedulerDone:
+			break daemonLoop
+		case stopErr := <-supervisorStop:
+			if stopErr != nil {
+				schedulerFailed = true
+				pf(stderr, "error: supervisor stop request: %v\n", stopErr)
+			}
+			stopDaemon()
+			runErr = <-schedulerDone
+			break daemonLoop
+		case reloadErr := <-configDone:
+			configWatcherDone = true
+			if reloadErr == nil {
+				reloadErr = errors.New("config watcher stopped unexpectedly")
+			}
+			if ctx.Err() == nil {
+				configFailed = true
+				pf(stderr, "error: config watcher stopped: %v\n", reloadErr)
+			}
+			stopDaemon()
+			runErr = <-schedulerDone
+			break daemonLoop
+		case serveErr, ok := <-apiServer.Errors():
+			apiFailed = true
+			if !ok {
+				serveErr = errors.New("server stopped unexpectedly")
+			}
+			pf(stderr, "error: HTTP API stopped: %v\n", serveErr)
+			stopDaemon()
+			runErr = <-schedulerDone
+			break daemonLoop
+		case serveErr, ok := <-webhookErrors:
+			webhookFailed = true
+			if !ok {
+				serveErr = errors.New("server stopped unexpectedly")
+			}
+			pf(stderr, "error: webhook listener stopped: %v\n", serveErr)
+			stopDaemon()
+			runErr = <-schedulerDone
+			break daemonLoop
 		}
-		stopDaemon()
-		runErr = <-schedulerDone
-	case reloadErr := <-configDone:
-		configWatcherDone = true
-		if reloadErr == nil {
-			reloadErr = errors.New("config watcher stopped unexpectedly")
-		}
-		if ctx.Err() == nil {
-			configFailed = true
-			pf(stderr, "error: config watcher stopped: %v\n", reloadErr)
-		}
-		stopDaemon()
-		runErr = <-schedulerDone
-	case serveErr, ok := <-apiServer.Errors():
-		apiFailed = true
-		if !ok {
-			serveErr = errors.New("server stopped unexpectedly")
-		}
-		pf(stderr, "error: HTTP API stopped: %v\n", serveErr)
-		stopDaemon()
-		runErr = <-schedulerDone
-	case serveErr, ok := <-webhookErrors:
-		webhookFailed = true
-		if !ok {
-			serveErr = errors.New("server stopped unexpectedly")
-		}
-		pf(stderr, "error: webhook listener stopped: %v\n", serveErr)
-		stopDaemon()
-		runErr = <-schedulerDone
 	}
 	stopDaemon()
 	if configLoopEnabled && !configWatcherDone {
@@ -1488,6 +1618,18 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	if heartbeatDone != nil {
 		<-heartbeatDone
 	}
+	if fleetConnectorStarted && fleetConnectorDone != nil {
+		select {
+		case connectorErr := <-fleetConnectorDone:
+			if connectorErr != nil &&
+				!errors.Is(connectorErr, context.Canceled) &&
+				!errors.Is(connectorErr, context.DeadlineExceeded) {
+				pf(stderr, "warning: Fleet connector stopped: %v\n", connectorErr)
+			}
+		case <-time.After(5 * time.Second):
+			pf(stderr, "warning: Fleet connector did not stop within 5s\n")
+		}
+	}
 
 	if runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, context.DeadlineExceeded) {
 		schedulerFailed = true
@@ -1509,6 +1651,12 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 			pf(stderr, "error: %v\n", err)
 			return 1
 		}
+	}
+	// Close telemetry, databases, watermarks, and the journal before the
+	// command reports success: a lost final flush must be an exit-code
+	// failure, not a silent clean shutdown (#3651).
+	if shutdownSetup() != nil {
+		return 1
 	}
 	return 0
 }
@@ -1621,8 +1769,47 @@ func newDaemonScheduler(setup *schedulerSetup, additionalOptions ...localschedul
 	if setup.OpenPRRefresher != nil {
 		options = append(options, localscheduler.WithOpenPRCounter(setup.OpenPRRefresher))
 	}
+	if gate := daemonMemoryGate(); gate != nil {
+		options = append(options, localscheduler.WithMemoryGate(gate))
+	}
 	options = append(options, additionalOptions...)
 	return localscheduler.New(setup.Entries, setup.InstanceLog, options...)
+}
+
+// memoryHighWaterEnv names the environment variable that tunes the
+// cgroup-aware admission gate (#3949). It is an environment variable rather
+// than an instance.yaml field because it describes the container the daemon
+// was given, not the instance's workflows: the same instance config is
+// deployed to pods with different memory limits, and the operator who sets the
+// limit is the one who knows the right threshold for it.
+//
+// Unset uses the built-in default. "off" (or "0") disables the gate entirely,
+// which is the escape hatch for an operator who would rather take the OOM kill
+// than the backpressure.
+const memoryHighWaterEnv = "GOOBERS_MEMORY_HIGH_WATER"
+
+// daemonMemoryGate builds the cgroup-aware admission gate, or nil if it is
+// disabled. An unparseable value is not an error: the daemon must still start,
+// and it falls back to the built-in threshold rather than to a number that
+// would refuse every run.
+//
+// The value is parsed BEFORE the off-switch is tested, so every spelling of
+// zero ("0", "0.0", "00") disables the gate. String-matching "0" first would
+// send "0.0" down the parse path, where it succeeds as 0 and is then clamped
+// back up to the default — silently enabling the gate for an operator who was
+// trying to turn it off.
+func daemonMemoryGate() localscheduler.MemoryGate {
+	setting := strings.TrimSpace(os.Getenv(memoryHighWaterEnv))
+	if strings.EqualFold(setting, "off") {
+		return nil
+	}
+	highWater, err := strconv.ParseFloat(setting, 64)
+	if setting == "" || err != nil {
+		highWater = 0 // Clamped to the package default.
+	} else if highWater == 0 {
+		return nil
+	}
+	return localscheduler.NewCgroupMemoryGate(highWater)
 }
 
 func publishDaemonAPIAddress(path, address string) error {
@@ -1696,6 +1883,24 @@ func summarizeHeartbeat(events []journal.Event, afterSeq uint64) (heartbeatActiv
 	return activity, lastSeq
 }
 
+// emitHeartbeats prints a periodic liveness line carrying scheduler activity
+// since startup and the daemon's current memory and CPU footprint.
+//
+// Neither resource clause is decoration. Without the memory one the
+// operator-facing log cannot distinguish a leaking daemon from a pod whose
+// memory cgroup is filling with page cache produced by the stages it runs — in
+// #3949 the 47 minutes of heartbeats preceding an OOMKill were indistinguishable
+// from healthy ones, and the kill was misread as a daemon leak while the
+// daemon's own anonymous memory sat flat at 62 MiB.
+//
+// The CPU one answers the question that incident could not (#3963): a container
+// pinned at its CPU quota is indistinguishable from a busy one in every
+// point-in-time metric, and only nr_throttled separates "doing work" from
+// "being stopped". The same pod was losing 79.5% of its CFS periods to
+// throttling, visible nowhere but a shell inside it.
+//
+// Both reads are cheap (no stop-the-world, a few small file reads) and neither
+// can fail, so it costs the heartbeat nothing to always carry them.
 func emitHeartbeats(
 	ctx context.Context,
 	stdout io.Writer,
@@ -1724,15 +1929,19 @@ func emitHeartbeats(
 				events, err = tail.Events()
 				if err == nil {
 					activity, _ := summarizeHeartbeat(events, 0)
-					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped\n",
-						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped)
+					pf(stdout, "[%s] alive — %d workflow(s), %d trigger(s) fired, %d run(s) started, %d run(s) finished, %d tick(s) skipped; %s; %s\n",
+						now.Format("15:04:05"), workflowCount, activity.triggers, activity.started, activity.finished, activity.skipped, memstat.Read(), cpustat.Read())
 					continue
 				}
 				_ = tail.Close()
 				tail = nil
 			}
 			if err != nil {
-				pf(stdout, "[%s] alive — scheduler activity unavailable: %v\n", now.Format("15:04:05"), err)
+				// Both resource clauses ride the degraded line too. A daemon
+				// that has lost its journal tail is exactly when an operator
+				// most needs to know whether it is also about to be OOM-killed,
+				// or merely too throttled to make progress.
+				pf(stdout, "[%s] alive — scheduler activity unavailable: %v; %s; %s\n", now.Format("15:04:05"), err, memstat.Read(), cpustat.Read())
 				continue
 			}
 		}

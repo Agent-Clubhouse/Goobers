@@ -12,13 +12,11 @@ spec:
     owner: acme
     name: python-service
     branch: main
-    connectionRef: github-main
   backlog:
     provider: github
     project: acme/python-service
     labels:
       - goobers
-    connectionRef: github-backlog
   isolation:
     namespace: gaggle-python-service
     identityRef: python-service-identity

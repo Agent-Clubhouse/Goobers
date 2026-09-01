@@ -594,14 +594,13 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 	t.Chdir(wt.Path)
 	resultFile := filepath.Join(wt.Path, remediationBriefResultFile)
 	t.Setenv(executor.InputEnvVar(executor.InputResultFile), resultFile)
-	if err := updateRemediationNoopState(
-		layoutFor(instanceRoot).SchedulerDir(),
+	seedRemediationNoopState(
+		t,
+		layoutFor(instanceRoot),
 		remediationNoopKey("", 1974),
 		remediationNoopSignature{HeadSHA: headSHA, DiffDigest: digest},
 		"prior-digest-run",
-	); err != nil {
-		t.Fatalf("seed digest no-op state: %v", err)
-	}
+	)
 
 	code, stdout, stderr := runArgs(t, "gather-pr-context", instanceRoot)
 	if code != 0 {
@@ -618,11 +617,7 @@ func TestGatherPRContextShortCircuitsImplementationEscalatedDigest(t *testing.T)
 	if len(srv.comments) != 1 || !strings.Contains(fmt.Sprint(srv.comments[0]["body"]), "unchanged diff digest") {
 		t.Fatalf("comments = %v, want visible unchanged-digest reason", srv.comments)
 	}
-	state, err := readRemediationNoopState(layoutFor(instanceRoot).SchedulerDir())
-	if err != nil {
-		t.Fatalf("read no-op state: %v", err)
-	}
-	record := state.Records[remediationNoopKey("", 1974)]
+	record := remediationNoopStateRecord(t, layoutFor(instanceRoot), remediationNoopKey("", 1974))
 	if record.Attempts != remediationNoopLimit || !record.Parked {
 		t.Fatalf("no-op record = %+v, want parked at limit %d", record, remediationNoopLimit)
 	}
@@ -1061,15 +1056,15 @@ func TestRemediationCandidatesFillClaimCapacity(t *testing.T) {
 
 	root := initDemo(t)
 	t.Setenv("GOOBERS_GAGGLE", "goobers")
-	first, err := claimPullRequestInOrder(root, candidates, "run-1", "pr-remediation", time.Hour)
+	first, err := claimPullRequestInOrder(root, prClaimTestRepo(), candidates, "run-1", "pr-remediation", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := claimPullRequestInOrder(root, candidates, "run-2", "pr-remediation", time.Hour)
+	second, err := claimPullRequestInOrder(root, prClaimTestRepo(), candidates, "run-2", "pr-remediation", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	third, err := claimPullRequestInOrder(root, candidates, "run-3", "pr-remediation", time.Hour)
+	third, err := claimPullRequestInOrder(root, prClaimTestRepo(), candidates, "run-3", "pr-remediation", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1257,7 +1252,7 @@ func TestGatherPRContextPreservesClaimedConflictedBehindPR(t *testing.T) {
 	t.Setenv("GOOBERS_CRED_GITHUB_PR_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_GITHUB_ISSUES_WRITE", "test-token")
 	t.Setenv("GOOBERS_CRED_REPO_PUSH", "test-token")
-	if _, err := claimPullRequestInOrder(instanceRoot, []providers.PullRequestSummary{{Number: 59}}, runID, "pr-remediation", time.Hour); err != nil {
+	if _, err := claimPullRequestInOrder(instanceRoot, prClaimTestRepo(), []providers.PullRequestSummary{{Number: 59}}, runID, "pr-remediation", time.Hour); err != nil {
 		t.Fatalf("claim PR: %v", err)
 	}
 	t.Chdir(wt.Path)

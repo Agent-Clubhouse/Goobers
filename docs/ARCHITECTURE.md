@@ -173,6 +173,13 @@ Rules:
   resolver-issued credentials) plus pattern-based scanning for secret-shaped
   material — and scrubbing happens **before digesting**, so digests commit to the
   scrubbed bytes. Misses are remediated via `goobers journal redact` (above).
+  A redaction removes the credential **value**, not the syntax around it: an
+  authorization expression keeps its scheme and its value alone becomes
+  `<redacted-token>`, because scrubbed diffs are the evidence agentic review
+  gates reason about and a whole-match marker made correct code read as
+  malformed. Reviewer diff evidence is journaled with whether it was
+  transformed and the digest of the pre-scrub bytes, so a finding about a
+  redacted region can be correlated with the authoritative diff.
 - The journal is **human-readable first** (`cat`, `jq`, `grep` are legitimate debug
   tools at tier 1) and machine-projectable second (telemetry rollups, portal).
 - **Instance-level events have a journal too:** scheduler decisions (trigger fired,
@@ -281,6 +288,34 @@ Contract rules:
   gate. They are intentionally not inherited run controls: they classify and
   repeat one stage attempt, whereas repass and stall budgets bound orchestration
   across stage attempts.
+- **Base-health awareness (opt-in):** when `instance.yaml` sets
+  `baselineHealth.enabled`, a failing `local-ci` stage is compared against the
+  target branch itself before it is attributed to the run. The runner measures
+  the identical command on a disposable checkout at the pinned base SHA, caches
+  that measurement per base commit (so the second and every later affected run
+  pays nothing), and classifies an identical failure as a
+  `shared-baseline-failure` rather than a defect each branch introduced. Such a
+  run fails with the recognized non-retryable `SHARED_BASELINE_FAILURE`
+  disposition and parks against one durable shared blocker instead of spending a
+  repass that can only re-derive an empty diff; it becomes eligible again once
+  the base advances or the baseline goes green. Every classification — including
+  "the branch introduced it" and "the baseline could not be measured" — is
+  journaled as a `baseline.classification` runner annotation, and a baseline
+  that cannot be measured never changes routing. `baselineHealth.sharedRepairLane`
+  is the explicit opt-in that lets an affected branch carry the shared repair
+  instead of parking; it is off by default so an unrelated fix is never added to
+  a feature branch behind its author's back.
+  A parked subject cannot re-measure the base itself, so every run on the
+  repository releases the waiters whose park is stale (the base advanced, or the
+  baseline measured green) before it walks its machine, and backlog selection
+  skips a subject only while its park is current — the park is self-healing and
+  needs no human and no relabelling. `goobers status` renders the blocker
+  registry (command, signature, base, and the waiting subjects) so several quiet
+  parked runs read as one shared failure with one repair. The shared blocker is
+  instance-local state (`baseline-health.json`): #2971 deliberately stops short
+  of opening a provider-side blocker issue, because parking, releasing, and
+  reporting are all reachable from local state that the repo:push-scoped run
+  stages already own.
 
 ## 6. Instance anatomy (local runner)
 

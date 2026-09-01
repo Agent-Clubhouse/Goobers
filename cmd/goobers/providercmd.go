@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,7 +45,11 @@ func newTelemetryGitHubProvider(token string, opts ...func(*providers.GitHubProv
 	telemetryOpt := providers.WithRateLimitObserver(
 		telemetry.NewStageRateLimitObserver(os.Getenv(telemetry.StageTelemetryEnv)),
 	)
-	return providers.NewGitHubProvider(token, append([]func(*providers.GitHubProvider){telemetryOpt}, opts...)...)
+	provider := providers.NewGitHubProvider(token, append([]func(*providers.GitHubProvider){telemetryOpt}, opts...)...)
+	if attribution, ok := stageAttribution(os.Getenv(executor.InstanceRootEnvVar)); ok {
+		provider.SetAttribution(attribution)
+	}
+	return provider
 }
 
 // claimLedgerFileName/claimLockFileName are the well-known files under an
@@ -78,17 +84,24 @@ const (
 	claimLockOperationPRAcquire            = "pr-claim.acquire"
 	claimLockOperationPRRelease            = "pr-claim.release"
 	claimLockOperationPRCount              = "pr-claim.count"
-	claimLockOperationRunLookup            = "run-claims.lookup"
-	claimLockOperationBlockedUpdate        = "blocked-records.update"
-	claimLockOperationRecovery             = "claim-recovery"
-	claimLockOperationRenewal              = "claim-renewal"
-	claimLockOperationRunRelease           = "run-claims.release"
-	claimLockOperationCloseOutLookup       = "issue-close-out.lookup"
-	claimLockOperationCloseOutRelease      = "issue-close-out.release"
-	claimLockOperationMigration            = "claim-ledger.migrate"
-	claimLockOperationAdminList            = "claims.list"
-	claimLockOperationAdminRelease         = "claims.release"
-	claimLockOperationIntervention         = "intervention.reacquire"
+	// The two sections pr-select's FAIRNESS LEASE runs in
+	// (stateclient.KeyPRSelectFairness, which rides claims.lock). The observe
+	// label names the section the claim transaction already holds; the clear
+	// label names the standalone rewrite that follows a successful selection.
+	claimLockOperationPRSelectFairnessObserve = "pr-select.fairness-observe"
+	claimLockOperationPRSelectFairnessClear   = "pr-select.fairness-clear"
+	claimLockOperationRunLookup               = "run-claims.lookup"
+	claimLockOperationBlockedUpdate           = "blocked-records.update"
+	claimLockOperationCircuitBreakerOutbox    = "circuit-breaker-outbox.update"
+	claimLockOperationRecovery                = "claim-recovery"
+	claimLockOperationRenewal                 = "claim-renewal"
+	claimLockOperationRunRelease              = "run-claims.release"
+	claimLockOperationCloseOutLookup          = "issue-close-out.lookup"
+	claimLockOperationCloseOutRelease         = "issue-close-out.release"
+	claimLockOperationMigration               = "claim-ledger.migrate"
+	claimLockOperationAdminList               = "claims.list"
+	claimLockOperationAdminRelease            = "claims.release"
+	claimLockOperationIntervention            = "intervention.reacquire"
 
 	claimLockSlowThreshold = 5 * time.Second
 	claimLockRetryInterval = 10 * time.Millisecond
@@ -141,6 +154,14 @@ func providerStageRoot(pathArg string) string {
 		return root
 	}
 	return "."
+}
+
+func providerStageRootArg(fs *flag.FlagSet) (string, bool) {
+	if fs.NArg() > 1 {
+		fs.Usage()
+		return "", false
+	}
+	return providerStageRoot(fs.Arg(0)), true
 }
 
 // providerRepo returns the repository routed into a stage invocation. Standalone
@@ -296,8 +317,8 @@ func providerCommandContext() (context.Context, context.CancelFunc) {
 // a real run's claims) or an empty workflow (which would make
 // providers.BranchName(workflow, runID) produce a malformed branch name).
 func providerRunContext() (runID, workflow string, err error) {
-	runID = os.Getenv("GOOBERS_RUN_ID")
-	workflow = os.Getenv("GOOBERS_WORKFLOW")
+	runID = os.Getenv(executor.RunIDEnvVar)
+	workflow = os.Getenv(executor.WorkflowEnvVar)
 	if runID == "" {
 		return "", "", fmt.Errorf("GOOBERS_RUN_ID is not set — this subcommand must run as a workflow stage")
 	}
@@ -308,7 +329,7 @@ func providerRunContext() (runID, workflow string, err error) {
 }
 
 func providerGaggle() string {
-	return os.Getenv("GOOBERS_GAGGLE")
+	return os.Getenv(executor.GaggleEnvVar)
 }
 
 // Typed error codes a provider-chain subcommand's declared result file
@@ -338,7 +359,9 @@ const (
 	// timeout) that exhausted send()'s own in-request retry budget, or any
 	// other condition providers.IsTransientError recognizes without a
 	// status code attached — retryable, since the failure is unrelated to
-	// the request's content.
+	// the request's content. A 429 never lands here: it classifies as a
+	// rate limit ahead of this branch, whether typed or string-recovered
+	// (#3647).
 	errorCodeNetwork = "network_error"
 	// errorCodeBranchMergeQueued is GitHub's transient GH006 rejection when
 	// the branch being updated belongs to a pull request in the merge queue.
@@ -382,8 +405,7 @@ func statusCodeFrom(err error) (int, bool) {
 // retryable/non-retryable split, never a second, independent opinion on
 // whether the failure is retryable.
 func classifyProviderError(err error) (code string, retryable bool, extra map[string]interface{}) {
-	var rl *providers.RateLimitError
-	if errors.As(err, &rl) {
+	if rl, ok := providers.AsRateLimitError(err); ok {
 		extra = map[string]interface{}{}
 		if !rl.Reset.IsZero() {
 			extra["rateLimitReset"] = rl.Reset.UTC().Format(time.RFC3339)
@@ -404,10 +426,28 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 		switch {
 		case status >= 500:
 			return errorCodeServerError, true, nil
+		case status == http.StatusTooManyRequests:
+			// A 429 whose typed error did not survive a subprocess
+			// boundary — only its message text did (#3647). Still a quota
+			// failure, never the generic network_error it used to fall
+			// through to; the reset metadata is unrecoverable from the
+			// string, so no extra fields here.
+			return providers.ErrorCodeRateLimited, true, nil
 		}
 	}
 	if providers.IsTransientError(err) {
 		return errorCodeNetwork, true, nil
+	}
+	// Last, so every provider-specific reading above still wins: a git
+	// subprocess WE ran against a checkout, failing for a reason no provider
+	// condition explains, is this process's own infrastructure and not
+	// evidence about the item. provider_error was the fallback, and
+	// telemetry.ClassifyError("provider_error") is not an infra fault, so the
+	// #3361/#3364 circuit-breaker exemption never fired for one. See
+	// gitCommandError (#4106).
+	var gitErr *gitCommandError
+	if errors.As(err, &gitErr) {
+		return telemetry.ErrCodeInfraGit, false, nil
 	}
 	return errorCodeProvider, false, nil
 }
@@ -652,8 +692,8 @@ func withClaimLockThreshold(lockPath, operation string, slowThreshold time.Durat
 	}
 	return withClaimLockBounds(lockPath, operation, timeout, slowThreshold, claimLockEventContext{
 		Gaggle:   providerGaggle(),
-		Workflow: os.Getenv("GOOBERS_WORKFLOW"),
-		RunID:    os.Getenv("GOOBERS_RUN_ID"),
+		Workflow: os.Getenv(executor.WorkflowEnvVar),
+		RunID:    os.Getenv(executor.RunIDEnvVar),
 	}, fn)
 }
 

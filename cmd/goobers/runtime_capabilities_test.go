@@ -72,13 +72,21 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// machine-seam-in-flight class as the mutations, not a human-facing
 	// read-only-navigation view. Blob GET needs no entry: it is a genuine
 	// read (RouteBlobGet's ActionClass is read-only-navigation) and falls
-	// through to the default case below.
+	// through to the default case below. The scheduler-state plane (#3878)
+	// follows the blob plane exactly: gaggleStatePut is a pod compare-and-
+	// swapping its gaggle's scheduler state, and gaggleStateGet is the
+	// genuine read half that needs no entry.
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
 	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true,
+		// claims/recover (#4016): a stage pod asking the daemon to run the
+		// stale-claim sweep it cannot run itself (the sweep reads run journals
+		// under the instance root and honours interventions and the recovery
+		// gate). Same machine-seam class as the rest of the claims plane.
+		"claimRecover":  true,
 		"triggerIngest": true, "journalEmit": true, "credentialResolve": true, "blobPut": true,
-		"stageSurrender": true,
+		"stageSurrender": true, "gaggleStatePut": true,
 		// The cross-run journal read plane (#3880): POSTs because each carries
 		// a request body naming the asking run, the gaggle and the window, and
 		// machine-seam-in-flight because a stage pod calls them mid-run to

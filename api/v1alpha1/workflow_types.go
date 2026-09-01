@@ -223,6 +223,9 @@ type Task struct {
 	// ContextFrom limits this task's context pointers to artifacts and verdicts
 	// produced by the named tasks or gates. Empty preserves the historical
 	// behavior of receiving every accumulated pointer.
+	// System-generated pointers have no producing task or gate and are outside
+	// the filter: an injected learning.episode[<seq>] correction survives it
+	// unconditionally (see SelectContextPointers and ContextPointerClass).
 	// Duplicate entries are rejected by api/validate (CTX001) rather than by a
 	// CRD uniqueness marker, which Kubernetes refuses to install.
 	// +optional
@@ -507,6 +510,11 @@ type RunControls struct {
 // DeterministicRun describes the code a deterministic task runs.
 // +kubebuilder:validation:XValidation:rule="has(self.command) != has(self.script)",message="exactly one of command or script is required"
 // +kubebuilder:validation:XValidation:rule="!has(self.syncBase) || !self.syncBase || !has(self.workspace) || self.workspace != 'scratch'",message="syncBase requires a repo workspace"
+// The CEL rule only rejects an empty executable: a trim()-based whitespace test
+// exceeds the apiserver's per-rule cost budget on an unbounded argv string, so
+// whitespace-only names are rejected by the JSON Schema pattern and by semantic
+// compilation instead (#3661).
+// +kubebuilder:validation:XValidation:rule="!has(self.command) || size(self.command[0]) > 0",message="command[0] must name an executable"
 type DeterministicRun struct {
 	// Command is the command + args to execute.
 	// +kubebuilder:validation:MinItems=1

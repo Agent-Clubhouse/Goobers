@@ -20,6 +20,7 @@ export const apiRoutes = {
   "telemetryErrorSignatures": { method: "GET", path: "/api/v1/telemetry/error-signatures", actionClass: "read-only-navigation" },
   "telemetryErrors": { method: "GET", path: "/api/v1/telemetry/errors", actionClass: "read-only-navigation" },
   "telemetryImplementationOutcomes": { method: "GET", path: "/api/v1/telemetry/implementation-outcomes", actionClass: "read-only-navigation" },
+  "telemetryDefectAggregates": { method: "GET", path: "/api/v1/telemetry/defect-aggregates", actionClass: "read-only-navigation" },
   "events": { method: "GET", path: "/api/v1/events", actionClass: "read-only-navigation" },
   "approveStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/approve", actionClass: "runtime-mutation", capability: "approve" },
   "overrideStage": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/override", actionClass: "runtime-mutation", capability: "override" },
@@ -29,6 +30,7 @@ export const apiRoutes = {
   "claimRelease": { method: "POST", path: "/api/v1/claims/release", actionClass: "workflow-execution" },
   "claimSettle": { method: "POST", path: "/api/v1/claims/settle", actionClass: "workflow-execution" },
   "claimList": { method: "POST", path: "/api/v1/claims/list", actionClass: "workflow-execution" },
+  "claimRecover": { method: "POST", path: "/api/v1/claims/recover", actionClass: "workflow-execution" },
   "triggerIngest": { method: "POST", path: "/api/v1/triggers", actionClass: "workflow-execution" },
   "resolveEscalation": { method: "POST", path: "/api/v1/runs/{run}/escalation/resolve", actionClass: "maintenance" },
   "journalEmit": { method: "POST", path: "/api/v1/runs/{run}/journal/emit", actionClass: "workflow-execution" },
@@ -36,12 +38,30 @@ export const apiRoutes = {
   "stageSurrender": { method: "POST", path: "/api/v1/runs/{run}/stages/{stage}/attempts/{attempt}/surrender", actionClass: "workflow-execution" },
   "blobGet": { method: "GET", path: "/api/v1/blobs/{digest}", actionClass: "read-only-navigation" },
   "blobPut": { method: "PUT", path: "/api/v1/blobs/{digest}", actionClass: "workflow-execution" },
+  "gaggleStateGet": { method: "GET", path: "/api/v1/gaggles/{gaggle}/state/{key}", actionClass: "read-only-navigation" },
+  "gaggleStatePut": { method: "PUT", path: "/api/v1/gaggles/{gaggle}/state/{key}", actionClass: "workflow-execution" },
   "journalRunPhase": { method: "POST", path: "/api/v1/journal/run-phase", actionClass: "workflow-execution" },
   "journalConflictTouches": { method: "POST", path: "/api/v1/journal/conflict-touches", actionClass: "workflow-execution" },
   "journalUnpushedWork": { method: "POST", path: "/api/v1/journal/unpushed-work", actionClass: "workflow-execution" },
 } as const;
 
 export type ApiRoute = (typeof apiRoutes)[keyof typeof apiRoutes];
+
+export const configAuthoringRoutes = {
+  "configSources": { method: "GET", path: "/api/v1/config/sources", actionClass: "read-only-navigation" },
+  "configSourceDocuments": { method: "GET", path: "/api/v1/config/sources/{source}/documents", actionClass: "read-only-navigation" },
+  "configSourceDocument": { method: "GET", path: "/api/v1/config/sources/{source}/document", actionClass: "read-only-navigation" },
+  "configSourcePreview": { method: "POST", path: "/api/v1/config/sources/{source}/preview", actionClass: "config-time" },
+  "configSourceChanges": { method: "PUT", path: "/api/v1/config/sources/{source}/changes", actionClass: "config-time" },
+} as const;
+
+export type ConfigAuthoringRoute =
+  (typeof configAuthoringRoutes)[keyof typeof configAuthoringRoutes];
+
+export const configAuthoringErrorCodes = ["config_source_not_found", "config_document_not_found", "config_stale_revision", "config_unsupported_capability", "config_validation_failed", "config_authorization_failed", "config_projection_lag"] as const;
+
+export type ConfigAuthoringErrorCode =
+  (typeof configAuthoringErrorCodes)[number];
 
 export const runtimeMutationCapabilities = ["approve", "override", "rerun"] as const;
 

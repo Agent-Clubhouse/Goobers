@@ -129,6 +129,27 @@ type Config struct {
 	//
 	// Unset leaves the pod on procenv's built-in list alone, which fails closed.
 	EnvPassthrough []string
+	// BotLogins is the instance config's declared GitHub App bot login per
+	// configured github repository, keyed by instance.GitHubBotLoginKey —
+	// i.e. instance.Config.GitHubBotLogins(), threaded at wiring
+	// (workerdispatch.go) exactly like EnvPassthrough above and for the same
+	// class of reason.
+	//
+	// It is here because THIS process can read the instance config and a
+	// stage pod cannot (Goobers#3914). The pod's CLI resolved the login from
+	// the config itself, fail-open, so in a pod it always resolved "" and
+	// silently regressed every AuthenticatedLogin consult to GET /user —
+	// which a GitHub App installation token cannot call. Resolving it here
+	// and stamping ProviderBotLoginEnv is what closes that, and stamping it
+	// as dispatcher-owned run identity is what keeps a workflow from
+	// authoring its own bot identity in the process.
+	//
+	// Nil is a legitimate posture — an instance whose repos all authenticate
+	// with PATs declares no bot login at all — and is NOT the same as "not
+	// wired": the stamp is unconditional for a CLI stage, so a nil map stamps
+	// an EMPTY login, which the pod reads as "resolved: none declared" and
+	// serves through GET /user exactly as the local substrate does.
+	BotLogins map[string]string
 	// TmpfsSizeLimit overrides DefaultTmpfsSizeLimit; zero uses the default.
 	TmpfsSizeLimit resource.Quantity
 	// DeadlineMargin overrides DefaultDeadlineMargin; zero uses the default.
@@ -280,6 +301,17 @@ type Attempt struct {
 	// PodToken is the per-run bearer (internal/podauth) minted at dispatch,
 	// delivered to the pod as GOOBERS_POD_TOKEN.
 	PodToken string
+	// PlaneTokens are the per-run, per-plane least-privilege bearers minted
+	// at dispatch for a goobers-CLI stage (Goobers#3897). Never the pod token:
+	// each is confined by podauth scope to ONE plane and by that plane's
+	// handler to this run or gaggle, and none of them admits the surrender
+	// route — so a stage subprocess that can read its own environment still
+	// cannot author its own outcome.
+	//
+	// Zero for a non-CLI stage, and for a CLI stage on a dispatcher with no
+	// scoped minter or no write API base: stageEnv then stamps NONE of the
+	// plane environment rather than a partial set.
+	PlaneTokens PlaneTokens
 	// Command, Script, and Env are the stage's DeterministicRun content
 	// (apiv1.DeterministicRun.Command/Script/Env), carried from the pinned
 	// workflow definition so the pod spec can stamp what the pod actually
@@ -552,6 +584,83 @@ type TokenMinter interface {
 	Mint(runID string, ttl time.Duration) (string, error)
 }
 
+// ScopedTokenMinter is the least-privilege half of the same seam
+// (Goobers#3897): a bearer confined to one plane, for one run. Declared as a
+// SEPARATE interface rather than a second method on TokenMinter so an
+// external implementation of the older seam still compiles — and so the
+// dispatcher's inability to mint scoped bearers is a visible, testable
+// condition (no plane environment is stamped) rather than a compile error in
+// somebody else's tree.
+//
+// podauth.Registry and podauth.SignedKey both satisfy it.
+type ScopedTokenMinter interface {
+	TokenMinter
+	MintScoped(runID string, ttl time.Duration, scopes ...string) (string, error)
+}
+
+// Plane scopes, restated from internal/podauth for the reason the plane env
+// names are restated in podspec.go: podauth sits above this package. Pinned
+// by TestPlaneScopeNamesMatchPodauth.
+const (
+	scopeClaims    = "claims"
+	scopeState     = "state"
+	scopeJournal   = "journal"
+	scopeTelemetry = "telemetry"
+)
+
+// PlaneTokenTTL bounds a stage's plane bearers. Deliberately the same order
+// as a long stage attempt and NOT the pod token's TTL: these are handed to
+// workflow-authored content, so the shorter the window the smaller the value
+// of exfiltrating one. It is a ceiling, not a stage budget — a stage that
+// outlives it fails its plane calls closed and the attempt retries on the
+// infra budget (DS7), which is the same shape every other daemon-unreachable
+// failure takes.
+const PlaneTokenTTL = 4 * time.Hour
+
+// PlaneTokens are the four least-privilege bearers a goobers-CLI stage pod
+// presents, one per plane. Kept as a struct rather than a map so the
+// completeness rule (all four, or none) is a field-by-field check the
+// compiler helps with, and so a new plane cannot be added without deciding
+// what its bearer is.
+type PlaneTokens struct {
+	Claims    string
+	State     string
+	Journal   string
+	Telemetry string
+}
+
+// Complete reports whether all four bearers are present. Partial is never
+// stamped: every plane client's Select is fail-closed on an endpoint without
+// a bearer, so a half-stamped environment turns a working stage into a
+// refused one.
+func (t PlaneTokens) Complete() bool {
+	return t.Claims != "" && t.State != "" && t.Journal != "" && t.Telemetry != ""
+}
+
+// Empty reports whether no bearer has been minted yet.
+func (t PlaneTokens) Empty() bool {
+	return t.Claims == "" && t.State == "" && t.Journal == "" && t.Telemetry == ""
+}
+
+// Distinct reports whether the four bearers, and the pod token beside them,
+// are four (five) different values. Minting is random or MAC-derived so this
+// holds by construction; it is asserted at dispatch anyway because the
+// property #3897 turns on — "the bearers are distinct from GOOBERS_POD_TOKEN"
+// — must not depend on a minter nobody in this package wrote.
+func (t PlaneTokens) Distinct(podToken string) bool {
+	seen := map[string]bool{}
+	for _, token := range []string{t.Claims, t.State, t.Journal, t.Telemetry, podToken} {
+		if token == "" {
+			continue
+		}
+		if seen[token] {
+			return false
+		}
+		seen[token] = true
+	}
+	return true
+}
+
 // Report is one Dispatch outcome: the placement facts that feed the
 // journal.Placement provenance event.
 type Report struct {
@@ -675,6 +784,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, attempt Attempt, eligible []R
 		}
 		attempt.PodToken = token
 	}
+	if err := d.mintPlaneTokens(&attempt); err != nil {
+		return Report{}, err
+	}
 
 	if err := d.waitForCapacity(ctx, runner); err != nil {
 		return report, err
@@ -760,6 +872,77 @@ func stageContainerImage(pod *corev1.Pod) string {
 		return stage.Image
 	}
 	return ""
+}
+
+// mintPlaneTokens mints the four least-privilege plane bearers a goobers-CLI
+// stage pod needs (Goobers#3897), or leaves the attempt without any.
+//
+// Minted ONLY for a CLI stage: nothing else reads them (an ordinary stage is
+// stripped of the whole control plane in the pod), and minting four extra
+// bearers for a `make ci` stage would widen the blast radius of a pod spec
+// anyone with get-pod can read, for nothing.
+//
+// FAIL CLOSED in both directions, and the asymmetry is deliberate:
+//
+//   - No write API base, or no minter at all: stamp nothing. This is the
+//     loopback/no-auth and self-host postures, where the stage's file backends
+//     are the correct answer and always were. The engine's own
+//     StageRequiresInstanceRoot refusal still stops a ledger-touching stage
+//     from reaching a pod in that posture, so "no plane" never becomes a
+//     silent local write.
+//   - A minter that CANNOT mint scoped bearers, or a run/gaggle identity the
+//     planes need and the attempt does not carry: refuse the dispatch. Both
+//     mean the operator asked for a pod-executed CLI stage in a deployment
+//     that cannot contain it, and the alternatives are worse — reusing the pod
+//     token would hand a stage subprocess the authority to surrender its own
+//     result, and stamping a partial set would produce a stage that fails at
+//     the far side inside the pod.
+func (d *Dispatcher) mintPlaneTokens(attempt *Attempt) error {
+	if !attempt.CLIStage || d.cfg.WriteAPIBase == "" || d.cfg.TokenMinter == nil {
+		return nil
+	}
+	if !attempt.PlaneTokens.Empty() {
+		// Pre-supplied by a caller (tests, and a future re-dispatch that
+		// carries its own bearers). Completeness is still enforced at render.
+		return nil
+	}
+	minter, ok := d.cfg.TokenMinter.(ScopedTokenMinter)
+	if !ok {
+		return fmt.Errorf(
+			"dispatcher: stage %s of run %s is a goobers-CLI stage dispatched to a pod, but the configured token minter (%T) cannot mint plane-scoped bearers; "+
+				"refusing rather than reusing GOOBERS_POD_TOKEN, which authorizes surrendering this run's result",
+			attempt.Stage, attempt.RunID, d.cfg.TokenMinter)
+	}
+	if strings.TrimSpace(attempt.RunID) == "" || strings.TrimSpace(attempt.Gaggle) == "" {
+		return fmt.Errorf(
+			"dispatcher: stage %s cannot be given the machine planes: the claims and journal planes contain a caller to its run (run id %q) and the "+
+				"scheduler-state and telemetry planes to its gaggle (%q); refusing rather than stamping a partial plane environment",
+			attempt.Stage, attempt.RunID, attempt.Gaggle)
+	}
+	var tokens PlaneTokens
+	for _, mint := range []struct {
+		scope string
+		into  *string
+	}{
+		{scopeClaims, &tokens.Claims},
+		{scopeState, &tokens.State},
+		{scopeJournal, &tokens.Journal},
+		{scopeTelemetry, &tokens.Telemetry},
+	} {
+		token, err := minter.MintScoped(attempt.RunID, PlaneTokenTTL, mint.scope)
+		if err != nil {
+			return fmt.Errorf("dispatcher: mint %s-plane bearer for run %s stage %s attempt %d: %w",
+				mint.scope, attempt.RunID, attempt.Stage, attempt.Number, err)
+		}
+		*mint.into = token
+	}
+	if !tokens.Distinct(attempt.PodToken) {
+		return fmt.Errorf(
+			"dispatcher: the token minter (%T) returned a repeated bearer for run %s; each plane bearer must be distinct from the others and from the pod token",
+			d.cfg.TokenMinter, attempt.RunID)
+	}
+	attempt.PlaneTokens = tokens
+	return nil
 }
 
 // renderFor renders the fresh pod for the resolved runner's host kind:

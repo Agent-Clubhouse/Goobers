@@ -291,6 +291,50 @@ func (w *worktreeWorkspace) Remove(ctx context.Context) error {
 	return nil
 }
 
+// Diff implements engine.DiffReader: the patch between baseRef and the
+// worktree's current HEAD (#3882). Empty, and NOT an error, when the branch
+// carries nothing beyond baseRef — "the stage changed nothing" is a fact the
+// engine acts on (an empty-diff gate fast-fail), so it must be reported as a
+// value rather than as a failure.
+//
+// The HasCommitsAheadOf guard before Diff is not an optimisation. On a
+// blobless partial clone Diff is a REMOTE operation that hydrates missing
+// blobs, so asking for a diff of a branch that has not moved would turn the
+// commonest case into a network round trip.
+func (w *worktreeWorkspace) Diff(ctx context.Context, baseRef string) ([]byte, error) {
+	if w.wt == nil || w.wt.Branch == "" {
+		return nil, nil
+	}
+	if baseRef == "" {
+		baseRef = w.base
+	}
+	if baseRef == "" {
+		return nil, nil
+	}
+	carries, err := w.wt.HasCommitsAheadOf(ctx, baseRef)
+	if err != nil {
+		return nil, fmt.Errorf("workerhost: inspect commits ahead of %s: %w", baseRef, err)
+	}
+	if !carries {
+		return nil, nil
+	}
+	diff, err := w.wt.Diff(ctx, baseRef)
+	if err != nil {
+		return nil, fmt.Errorf("workerhost: diff %s against %s: %w", w.wt.Branch, baseRef, err)
+	}
+	return diff, nil
+}
+
+// Head implements engine.DiffReader: the branch this workspace is on and the
+// base ref its diff is measured against. A detached read-only checkout has no
+// branch, and reports none rather than inventing one.
+func (w *worktreeWorkspace) Head(ctx context.Context) (string, string, error) {
+	if w.wt == nil {
+		return "", "", nil
+	}
+	return w.wt.Branch, w.base, nil
+}
+
 // PublishDelta implements engine.DeltaPublisher: bundle base..<run branch>
 // from the mirror and put it in the store, so a pod (or another worker) can
 // continue from what this stage committed (#3803, reverse direction).

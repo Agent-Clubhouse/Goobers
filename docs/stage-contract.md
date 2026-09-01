@@ -108,6 +108,11 @@ The runner hands the stage an `InvocationEnvelope`:
   producers' artifact and verdict pointers into this task's invocation. When
   omitted, the task receives every accumulated pointer for compatibility. The
   compiler rejects unknown sources; routing never changes a pointer's integrity.
+  System-generated pointers have no producing task or gate and are therefore
+  outside the filter: the `learning.episode[<seq>]` correction a repassing gate
+  injects for the stage it re-enters survives `contextFrom` unconditionally,
+  because no source name could ever select it. It is still graded like any
+  other pointer against `minimumIntegrity`.
 - `capabilities[]` — the capability grants the stage's definition declares (e.g.
   `github:issues:write`). **Capability admission fails closed**: credentials for a
   capability not listed here are never materialized (§5).

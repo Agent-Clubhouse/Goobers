@@ -1,0 +1,48 @@
+name: Tracked Gap References
+
+# #3058: the capability-gap registry (providers/capability_matrix.go's
+# knownGaps) distinguishes permanent non-applicability from tracked, fixable
+# divergence. Permanent entries need no forge check — nothing tracks them —
+# but a tracked entry pointing at an issue that has since closed is silent
+# rot, which is what left ADO's pr.query.assignee cell linking a closed
+# issue. Hermetic gates (providers.ValidateGapRegistry /
+# ValidateBlessedTier, run in merge-tier CI) cannot see issue state, so this
+# scheduled, read-only leg asks the forge.
+#
+# A failure means a tracked gap's issue is closed: drop the entry if the gap
+# is fixed, repoint it at the issue tracking the remaining work, or record
+# the gap as permanently not applicable with a rationale.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * 1"
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: tracked-gap-references
+  cancel-in-progress: true
+
+jobs:
+  tracked-gap-references:
+    name: Tracked gap references are open
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify tracked gap references
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOBERS_GAP_REGISTRY_REPO: ${{ github.repository }}
+        run: go test -tags=integration ./providers/... -run TestIntegrationTrackedGapReferencesAreOpen -v

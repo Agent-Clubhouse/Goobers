@@ -10,8 +10,12 @@ Usage: goobers update-behind-pr [path]
 
 Update one behind-base PR through GitHub's update-branch API when it
 is mergeable, CI-clean, and carries no substantive findings. Other
-candidates are routed to full remediation. Exit codes: 0 = updated,
-routed, or no-work; 1 = business error; 2 = usage/IO error.
+candidates are routed to full remediation. A run dispatched for one
+pull request (goobers run --pr, or a pull_request webhook delivery)
+selects that PR and no other; when the target is not selectable the
+stage reports no-work naming the reason instead of falling back to
+another PR. Exit codes: 0 = updated, routed, or no-work;
+1 = business error; 2 = usage/IO error.
 .fi
 .SH EXAMPLES
 .nf

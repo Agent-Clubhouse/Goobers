@@ -68,15 +68,10 @@ func runPushRemediated(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -349,9 +344,8 @@ func writePushRemediatedResult(selectedNumber int, published bool, head, localHe
 
 // resolveHead returns dir's current HEAD commit SHA.
 func resolveHead(dir string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = dir
-	out, err := cmd.Output()
+	cmd := workspaceGitCommand(dir, "rev-parse", "HEAD")
+	out, err := workspaceGitOutput(cmd)
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {

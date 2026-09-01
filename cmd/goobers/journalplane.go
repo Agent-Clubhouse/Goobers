@@ -8,7 +8,9 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
+	"github.com/goobers/goobers/internal/localscheduler"
 	"github.com/goobers/goobers/internal/readmodel/intake"
+	telemetryingest "github.com/goobers/goobers/internal/telemetry/ingest"
 )
 
 // journalplane.go wires the daemon side of the write API's journal plane
@@ -52,7 +54,7 @@ var newLiveJournalWriter = buildLiveJournalWriter
 // CompletedRunReconciler.WithSpanSource), or DS5's verification re-projection
 // will disagree with this writer by exactly one normative event per
 // transcript-carrying run.
-func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, blobs blobstore.Store) (*livejournal.Writer, error) {
+func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instance.ConfigSet, watermarks *intake.Store, instanceLog *journal.InstanceLog, blobs blobstore.Store, providerQuota *localscheduler.ProviderQuotaState) (*livejournal.Writer, error) {
 	if cfg == nil || !cfg.EngineProjectionEnabled() {
 		return nil, nil
 	}
@@ -64,11 +66,28 @@ func buildLiveJournalWriter(l instance.Layout, cfg *instance.Config, set *instan
 	if blobs != nil {
 		opts = append(opts, livejournal.WithSpanSource(blobs))
 	}
-	if observer := runIntakeObserver(watermarks, instanceLog); observer != nil {
+	if observer := telemetryingest.RunIntakeObserver(watermarks, instanceLog); observer != nil {
 		// The same read-model intake the local runner notifies per append —
 		// which is what makes a live engine run's stage transitions reach SSE
 		// and the portal through the existing machinery, mid-run.
 		opts = append(opts, livejournal.WithObserver(observer))
+	}
+	// #3876 (decision 005 D1): an engine-driven stage's rate-limited failure
+	// reaches this daemon only as a journal append, and the scheduler's quota
+	// state has to learn about it MID-RUN or it keeps admitting runs that are
+	// all going to fail the same way. See engineRateLimitObserver.
+	if opt := engineRateLimitOption(providerQuota); opt != nil {
+		opts = append(opts, opt)
+	}
+	if instanceLog != nil {
+		// The destination of a pod's OpInstanceAnnotation (Goobers#3898): the
+		// scheduler's cross-run narration belongs in THIS file, on the
+		// daemon's volume, and a stage pod has no legal path to it. The pod
+		// emits over the run-scoped journal plane and the daemon appends here,
+		// with the event's RunID restamped from the request so the run
+		// containment the route enforces cannot be sidestepped by what the
+		// caller put in the payload.
+		opts = append(opts, livejournal.WithInstanceLog(instanceLog))
 	}
 	return livejournal.NewWriter(func(gaggle string) (string, bool) {
 		dir, ok := runsDirs[gaggle]

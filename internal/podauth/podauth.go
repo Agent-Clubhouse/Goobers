@@ -29,6 +29,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -46,12 +48,90 @@ const tokenPrefix = "goobers-pod."
 // enough that a leaked token dies on its own.
 const DefaultTokenTTL = 4 * time.Hour
 
+// Plane scopes narrow what a minted bearer may do (Goobers#3897). The pod
+// token itself is minted UNSCOPED and reaches every pod plane, because
+// __dispatch-exec is the pod's own runtime: it surrenders the attempt,
+// resolves credentials and moves blobs. A stage SUBPROCESS is a different
+// principal in every way that matters — it is workflow-authored content
+// running under a pinned command — and the environment it reads its plane
+// bearers out of is one it can print. So the dispatcher mints it a separate,
+// scoped bearer per plane, and this is what makes those bearers weaker than
+// the pod token rather than merely differently spelled: a claims bearer
+// presented to the surrender route is refused by the authorizer, not by the
+// handler's own containment check.
+//
+// The scope names are wire values (they travel inside a signed token), so
+// they are frozen: renaming one invalidates every outstanding token minted
+// by a peer process that has not been redeployed.
+const (
+	// ScopeClaims admits the claims plane (acquire/renew/release/settle/list).
+	ScopeClaims = "claims"
+	// ScopeState admits the gaggle-scoped scheduler-state route and the
+	// priority-trigger ingest that rides the same bearer.
+	ScopeState = "state"
+	// ScopeJournal admits the run-scoped journal routes: the three own-run
+	// reads, the three gaggle-scoped cross-run questions, and emit.
+	ScopeJournal = "journal"
+	// ScopeTelemetry admits the ruled telemetry read routes.
+	ScopeTelemetry = "telemetry"
+	// ScopeSurrender admits the surrender route — deliberately NEVER minted
+	// into a stage subprocess's environment. Named so a token that does hold
+	// it is explicit rather than implied by an empty scope set.
+	ScopeSurrender = "surrender"
+	// ScopeBlob admits the blob plane.
+	ScopeBlob = "blob"
+	// ScopeCredential admits the credential-resolve route.
+	ScopeCredential = "credential"
+)
+
+// KnownScopes is every scope this package mints or verifies, in a stable
+// order. A scope outside this set is refused at mint: a typo must not become
+// a token that authorizes nothing and fails at the far side.
+var KnownScopes = []string{
+	ScopeClaims, ScopeState, ScopeJournal, ScopeTelemetry,
+	ScopeSurrender, ScopeBlob, ScopeCredential,
+}
+
+// ErrUnknownScope reports a mint request naming a scope outside KnownScopes.
+var ErrUnknownScope = errors.New("podauth: unknown plane scope")
+
+// checkScopes normalizes and validates a scope set. An EMPTY set is the
+// unscoped pod token and is returned as nil — httpapi reads a principal with
+// no scopes as the full pod-plane set, which is what GOOBERS_POD_TOKEN has
+// always been.
+func checkScopes(scopes []string) ([]string, error) {
+	if len(scopes) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]bool, len(scopes))
+	out := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		scope = strings.TrimSpace(scope)
+		if scope == "" {
+			return nil, fmt.Errorf("%w: %q", ErrUnknownScope, scope)
+		}
+		if !slices.Contains(KnownScopes, scope) {
+			return nil, fmt.Errorf("%w: %q", ErrUnknownScope, scope)
+		}
+		if seen[scope] {
+			continue
+		}
+		seen[scope] = true
+		out = append(out, scope)
+	}
+	// Stable order so a signed token's payload is a deterministic function of
+	// its inputs — two mints of the same grant produce the same scope segment.
+	sort.Strings(out)
+	return out, nil
+}
+
 // ErrUnknownToken reports a pod-prefixed bearer the registry does not hold —
 // never minted, expired, revoked, or minted by a previous daemon process.
 var ErrUnknownToken = errors.New("podauth: unknown or expired pod token")
 
 type grant struct {
 	runID     string
+	scopes    []string
 	expiresAt time.Time
 }
 
@@ -81,7 +161,17 @@ func (r *Registry) WithClock(now func() time.Time) *Registry {
 // elapses (DefaultTokenTTL when zero). The token value is returned exactly
 // once — the registry retains only its hash — and travels in dispatch
 // payloads as the opaque reference #2931 requires.
+//
+// The token is UNSCOPED: it reaches every pod plane, which is what the pod's
+// own runtime needs. MintScoped is the least-privilege form handed to a stage
+// subprocess.
 func (r *Registry) Mint(runID string, ttl time.Duration) (string, error) {
+	return r.MintScoped(runID, ttl)
+}
+
+// MintScoped issues a bearer confined to scopes (see KnownScopes). No scopes
+// means the unscoped pod token — the same value Mint returns.
+func (r *Registry) MintScoped(runID string, ttl time.Duration, scopes ...string) (string, error) {
 	if strings.TrimSpace(runID) == "" {
 		return "", errors.New("podauth: run ID is required")
 	}
@@ -90,6 +180,10 @@ func (r *Registry) Mint(runID string, ttl time.Duration) (string, error) {
 	}
 	if ttl == 0 {
 		ttl = DefaultTokenTTL
+	}
+	checked, err := checkScopes(scopes)
+	if err != nil {
+		return "", err
 	}
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
@@ -101,7 +195,7 @@ func (r *Registry) Mint(runID string, ttl time.Duration) (string, error) {
 	defer r.mu.Unlock()
 	now := r.now()
 	r.pruneLocked(now)
-	r.grants[sha256.Sum256([]byte(token))] = grant{runID: runID, expiresAt: now.Add(ttl)}
+	r.grants[sha256.Sum256([]byte(token))] = grant{runID: runID, scopes: checked, expiresAt: now.Add(ttl)}
 	return token, nil
 }
 
@@ -117,8 +211,8 @@ func (r *Registry) Revoke(runID string) {
 	}
 }
 
-// verify resolves a presented token to its run ID.
-func (r *Registry) verify(token string) (string, error) {
+// verify resolves a presented token to its run ID and scopes.
+func (r *Registry) verify(token string) (string, []string, error) {
 	digest := sha256.Sum256([]byte(token))
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -126,9 +220,9 @@ func (r *Registry) verify(token string) (string, error) {
 	r.pruneLocked(now)
 	g, ok := r.grants[digest]
 	if !ok || !g.expiresAt.After(now) {
-		return "", ErrUnknownToken
+		return "", nil, ErrUnknownToken
 	}
-	return g.runID, nil
+	return g.runID, slices.Clone(g.scopes), nil
 }
 
 // pruneLocked drops expired grants so the registry stays bounded by live
@@ -151,17 +245,18 @@ type Authenticator struct {
 	fallback httpapi.Authenticator
 }
 
-// Verifier resolves a presented pod token to the run it authenticates. The
-// two implementations differ only in where the trust lives: Registry keeps
-// grants in daemon memory (sound when the dispatcher shares that process),
-// SignedKey verifies a shared-key signature (required when it does not —
-// Goobers#3701).
+// Verifier resolves a presented pod token to the run it authenticates and the
+// plane scopes it carries (nil = the unscoped pod token, which reaches every
+// pod plane). The two implementations differ only in where the trust lives:
+// Registry keeps grants in daemon memory (sound when the dispatcher shares
+// that process), SignedKey verifies a shared-key signature (required when it
+// does not — Goobers#3701).
 type Verifier interface {
-	verifyToken(token string) (string, error)
+	verifyToken(token string) (runID string, scopes []string, err error)
 }
 
-func (r *Registry) verifyToken(token string) (string, error)  { return r.verify(token) }
-func (s *SignedKey) verifyToken(token string) (string, error) { return s.verifySigned(token) }
+func (r *Registry) verifyToken(token string) (string, []string, error)  { return r.verify(token) }
+func (s *SignedKey) verifyToken(token string) (string, []string, error) { return s.verifySigned(token) }
 
 // NewAuthenticator chains pod-token verification in front of fallback.
 func NewAuthenticator(verifier Verifier, fallback httpapi.Authenticator) (*Authenticator, error) {
@@ -185,13 +280,14 @@ func (a *Authenticator) Authenticate(request *http.Request) (*httpapi.Principal,
 	if !isPodToken(token) {
 		return a.fallback.Authenticate(request)
 	}
-	runID, err := a.verifier.verifyToken(token)
+	runID, scopes, err := a.verifier.verifyToken(token)
 	if err != nil {
 		return nil, err
 	}
 	return &httpapi.Principal{
 		Subject: "run:" + runID,
 		Issuer:  httpapi.PodPrincipalIssuer,
+		Scopes:  scopes,
 	}, nil
 }
 

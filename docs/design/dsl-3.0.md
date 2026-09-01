@@ -192,9 +192,11 @@ in-process exactly as ruling 8's unpinned arm, with the arguments it always had.
 **daemon-scheduled** run still drives through `internal/runner`, which has no gate dispatch
 arm and will not get one: decision 005 makes the engine walk the single driver for every
 trigger kind, so a scheduled run reaches this arm when the scheduler's `Starter` delegates
-to the engine registry. Until then, checkpoint 3 (§5) refuses a gate placement self cannot
-satisfy exactly as for a task (`workflow.refused`, `ReasonPlacementUnsatisfiable`) —
-deliberately, because the daemon cannot honour the declared restrictions in-process either.
+to the engine registry — which, since Goobers#3876, it does per entry. On an entry the
+engine drives, the gate's declared placement is honoured by the dispatch arm above. On a
+**runner-driven** entry, checkpoint 3 (§5) refuses a gate placement self cannot satisfy
+exactly as for a task (`workflow.refused`, `ReasonPlacementUnsatisfiable`) — deliberately,
+because the daemon cannot honour the declared restrictions in-process either.
 
 ---
 
@@ -362,6 +364,35 @@ cluster-internal git remote is a deferred optimization behind the same contract 
 from); edge pushes are transport to the run branch, not a publish. #2861's cross-OS rule is
 subsumed: with every chain declared, the unsafe transition it rejected cannot be written.
 
+**Cross-substrate verification (#4009).** Transport crosses a substrate boundary — a stage
+pod publishes a workspace delta to the blob plane and a self/worker-placed stage provisions
+from it, and the reverse — and that boundary is where #3803 (a worker-side gate or stage
+cannot see a pod stage's commits) and #3767 (continuity follows the declared edge, not the
+last writer) are decided. It is verified **in-repo**, by two harnesses that compose the real
+adapters rather than simulating either half:
+
+- `cmd/goobers/continuitysubstrate_test.go` drives the real pod publish/apply
+  (`publishWorkspaceDelta`/`applyWorkspaceDelta`) against the real worker provisioner
+  (`workerhost.WorktreeWorkspaces`) over one shared blob store, in both directions, with
+  ablation arms that reproduce the pre-fix defect (both substrates provision at base) and
+  refusal arms for a missing digest, substituted bytes, and an unreachable blob plane.
+- `internal/engine/continuitysubstrate_test.go` drives the runtime selection rule
+  (`selectDelta`) and lands the selected bundle through real worktrees, so each arm asserts
+  which *bytes* reach the consumer, not only which record row was chosen.
+
+Both emit a machine-readable evidence document (`test/testsupport/continuityevidence`,
+collected by pointing `GOOBERS_CONTINUITY_EVIDENCE_DIR` at an archived directory) so a
+release reviewer can cite what was proven, on which digests, in which direction.
+
+A **mixed lane** — one stage pinned to a pod and another pinned to `Self` in the same
+workflow — is not a way to exercise this boundary, and is unreachable by construction on the
+daemon's runner-driven path: `selectEngineForEntry` disqualifies a lane carrying any `Self`
+pin, and the runner-driven path cannot dispatch a pod pin, so checkpoint 3 refuses it. That
+refusal is deliberate and stays; what changed for #4009 is that it now names the self-pinned
+stage as the cause, so an operator on an engine-enabled instance is not left reading a
+refusal of the pod stage they declared correctly. Mixed lanes remain executable under
+`goobers engine-start`, whose walk handles `Self` pins directly.
+
 The migrator computes `repoFrom` lists via the same reaching-definitions analysis and
 inserts them automatically; it refuses only where coverage cannot be computed, with a named
 diagnostic. On the live cloud tree this yields zero refusals; the canonical 14-workflow
@@ -388,6 +419,16 @@ implementation from the naive one (delivery decisions 001/002).
 3. **Boot never kills the daemon** — #2860's decided-but-unimplemented ruling ("refusing
    one run is proportionate; refusing to start is not") is implemented as part of this
    work: an unsatisfiable workflow is a refused run with a diagnostic, not a dead instance.
+   The boot solve judges the substrate that will actually execute the lane, so it is
+   scoped to **runner-driven** entries (Goobers#3987): it solves against the daemon's
+   self-only substrate (`runnersolve.SolveExecutable`), and an entry the per-entry engine
+   selection (Goobers#3876) routes to the engine is exempt, because
+   `bootstrap.PinStagePlacements` has already placed every one of its stages on the full
+   declared inventory with none landing on self. The exemption is granted only against a
+   proven engine selection and fails closed everywhere else — engine disabled, any
+   self-pinned stage, an unpinnable stage, or no selection computed — so a lane that
+   declares `runsOn` is never green-lit merely for declaring it. The self-only diagnostic
+   is still reported for an exempt lane; it is simply not enforced.
 
 The apply-time solver and the dispatch-time check must be one shared implementation (the
 CAP003/scheduler mirror lesson: divergence = configs that validate but never schedule).
@@ -402,9 +443,10 @@ blocks (`api/validate/validate.go:39-209`; severity strictly error|warning; the
 | RNR002 | Error | Runner has a non-self `host` but the instance declares no `engine:` |
 | RNR003 | Error iff `runners:` declared; else Warning | A stage quantity minimum exceeds every runner's declared ceiling |
 | RNR004 | Warning (always) | Local mode: resource minimums advisory — the `self` ceiling cannot cover a stage minimum |
-| RNR005 | Warning (always) | A 3.0 stage's resolved eligible runner set excludes every self entry, but its command or built-in kind needs the daemon's instance root (decision 003 ruling 3) |
+| RNR005 | Warning (always) | A 3.0 stage's resolved eligible runner set excludes every self entry, but its command or built-in kind needs the daemon's instance root (decision 003 ruling 3). The list of such commands is `executor.stageCommandsRequiringInstanceRoot`, and it **shrinks** as each command's file dependency moves onto a plane: since Goobers#3897/#3898 a claiming `backlog-query` is fully plane-served (claims, scheduler state, journal emit) and no longer produces this finding, and since Goobers#3948 `backlog-health` is too, in both modes, its ready-transition ledger having joined the scheduler-state namespace, and since Goobers#3989 `gather-pr-context` is too, its remediation no-op guard having moved onto all three of the scheduler-state, claims and journal-read planes at once |
 | RNR006 | Warning (always), **strict-neutral** | A `runners:` entry declares `provides.os: windows` without `provides.windows.avExclusionsVerified: true` — whether the directories Goobers writes then reads on it are excluded from real-time antivirus scanning is undeclared or declared false (#3480; advisory, trusted like every `provides:` claim — DI-11; `goobers doctor --av-exclusions` produces the answer). Excluded from `--strict`'s promotion alongside DVL020, against DI-10's general rule for config-shape findings: it lands on configs nobody edited, and since declaring `false` does not silence it, promotion would leave `true` as the only way to get green — CI pressure to assert an unearned trusted claim |
 | CAP004 | Error | An `os=*` token appears anywhere in a 3.0 document (D12) |
+| REF012 | Warning (always), **strict-neutral** | A Gaggle declares `connectionRef` at any of `spec.project`, `spec.backlog`, or `spec.additionalRepos[]` — the field reads as a credential selector, but the local runtime never consults it: `credentials.RunnerGrants`/`AdditionalReadGrants` select each access's token from `instance.yaml` `repos[]` by repository identity, and the named Connection's secret is never read (#3296). A declared-but-ignored credential selector is the one prohibited state, so validate reports every declaration — including the single-site case — rather than substituting silently. The scaffolder and the shipped `config-examples/`, `reference-workflows/`, starter, and guide configs stopped declaring the field in the same change, so the finding lands only on configs an author wrote. Strict-neutral alongside DVL020 and RNR006: an author who keeps the field for a cloud-tier deployment cannot silence it by editing their config, so promotion would redden existing pipelines purely on upgrade |
 | CAP005 | Error | Unknown restriction token, with did-you-mean suggestion; or a restriction a `windows`-placed stage cannot require (`network:none`, `network:allowlist`, `fs:readonly-except-workspace` — restrictions doc D4, #3619) |
 | WF022 | Error | Undeclared repo-handoff chain (§4) |
 | WF023 | Error | `runsOn` on a non-agentic gate, an agentic gate `runsOn` without `cpu` and `memory`, or one without an `agentic:` block naming its reviewer (§2 Gates, decision 001) |

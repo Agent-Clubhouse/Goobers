@@ -38,6 +38,12 @@ const ErrorCodeAuthFailed = "github_auth_failed"
 // errors.As it to learn when the quota recovers, instead of parsing the
 // generic "status 403" string the non-2xx path used to fold this into.
 type RateLimitError struct {
+	// Provider names the forge that rate limited the request, so the
+	// message reads as itself for every provider rather than always
+	// claiming GitHub (#3647). Empty when the limit was recovered from an
+	// untyped non-2xx response whose forge is not identifiable at that
+	// boundary; Error() then says "provider" instead of naming one.
+	Provider  ProviderKind
 	Endpoint  string
 	Status    int
 	Remaining int
@@ -57,7 +63,11 @@ type RateLimitError struct {
 }
 
 func (e *RateLimitError) Error() string {
-	msg := fmt.Sprintf("github rate limited (%s): %s: status %d, remaining %d", ErrorCodeRateLimited, e.Endpoint, e.Status, e.Remaining)
+	provider := string(e.Provider)
+	if provider == "" {
+		provider = "provider"
+	}
+	msg := fmt.Sprintf("%s rate limited (%s): %s: status %d, remaining %d", provider, ErrorCodeRateLimited, e.Endpoint, e.Status, e.Remaining)
 	if !e.Reset.IsZero() {
 		msg += ", resets at " + e.Reset.UTC().Format(time.RFC3339)
 	}
@@ -68,6 +78,7 @@ func (e *RateLimitError) Error() string {
 // record rateLimitPlan produced for telemetry.
 func rateLimitErrorFrom(ev RateLimitEvent) *RateLimitError {
 	return &RateLimitError{
+		Provider:      ev.Provider,
 		Endpoint:      ev.Endpoint,
 		Status:        ev.Status,
 		Remaining:     ev.Remaining,
@@ -172,7 +183,7 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 		return nil, err
 	}
 	if id == "" {
-		return nil, fmt.Errorf("issue id is required")
+		return nil, errIssueIDRequired
 	}
 	raw, err := p.allIssueComments(ctx, repo, id)
 	if err != nil {
@@ -187,9 +198,17 @@ func (p *GitHubProvider) ListComments(ctx context.Context, repo RepositoryRef, i
 
 // AuthenticatedLogin returns the GitHub login represented by the provider's
 // credential.
+//
+// Three arms, in this order: the login declared by configuration (#3343, the
+// only arm an App installation token can satisfy), a REFUSAL when the caller
+// declared identity resolution unavailable and the fallback unsafe (#3914),
+// and GET /user — which is PAT-only and remains the correct answer for one.
 func (p *GitHubProvider) AuthenticatedLogin(ctx context.Context) (string, error) {
 	if p.configuredLogin != "" {
 		return p.configuredLogin, nil
+	}
+	if p.loginSelfReportRefusal != "" {
+		return "", &LoginSelfReportRefusedError{Reason: p.loginSelfReportRefusal}
 	}
 	endpoint, err := joinURL(p.BaseURL, "user")
 	if err != nil {
@@ -206,6 +225,24 @@ func (p *GitHubProvider) AuthenticatedLogin(ctx context.Context) (string, error)
 	return login, nil
 }
 
+// LoginSelfReportRefusedError is returned by AuthenticatedLogin when the
+// provider was constructed with WithLoginSelfReportRefused: the caller could
+// not resolve the declared identity and refused the GET /user fallback rather
+// than issue a request an App installation token cannot make (Goobers#3914).
+//
+// A distinct type so a caller can tell "this platform could not tell me who I
+// am" from a forge-side permission failure, and so a test can prove the
+// refusal happened WITHOUT a request rather than inferring it from a message.
+type LoginSelfReportRefusedError struct {
+	// Reason states what was missing and where, for the operator who has to
+	// fix it.
+	Reason string
+}
+
+func (e *LoginSelfReportRefusedError) Error() string {
+	return "github: the authenticated login is unresolved and self-report (GET /user) is refused: " + e.Reason
+}
+
 // UpdateComment edits an existing issue/PR comment's body in place — the
 // sticky-comment pattern (#716) a caller uses so a repeated event (e.g.
 // pr-remediation's per-cycle checkpoint/escalation state) updates the SAME
@@ -217,6 +254,10 @@ func (p *GitHubProvider) UpdateComment(ctx context.Context, repo RepositoryRef, 
 	}
 	if commentID == "" {
 		return fmt.Errorf("comment id is required")
+	}
+	body, err := withAttribution(body, p.attribution, "comment-update")
+	if err != nil {
+		return err
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", "comments", commentID)
 	if err != nil {
@@ -372,7 +413,7 @@ func (p *GitHubProvider) ListWorkItemLabelTransitionsForItem(
 		return nil, err
 	}
 	if id == "" {
-		return nil, fmt.Errorf("issue id is required")
+		return nil, errIssueIDRequired
 	}
 	if label == "" {
 		return nil, fmt.Errorf("label is required")
@@ -490,7 +531,7 @@ func (p *GitHubProvider) UpdateWorkItem(ctx context.Context, req UpdateWorkItemR
 		return WorkItem{}, err
 	}
 	if req.ID == "" {
-		return WorkItem{}, fmt.Errorf("issue id is required")
+		return WorkItem{}, errIssueIDRequired
 	}
 	if req.Milestone != nil && *req.Milestone <= 0 {
 		return WorkItem{}, fmt.Errorf("milestone number must be positive")
@@ -593,7 +634,7 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 		return ClaimResult{}, err
 	}
 	if req.ID == "" {
-		return ClaimResult{}, fmt.Errorf("issue id is required")
+		return ClaimResult{}, errIssueIDRequired
 	}
 	if req.RunID == "" {
 		return ClaimResult{}, fmt.Errorf("run id is required to claim an item")
@@ -613,7 +654,7 @@ func (p *GitHubProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemReq
 
 	// No existing claim: stake ours with a breadcrumb comment, then re-read to settle
 	// the race deterministically by minimum comment id.
-	if err := p.postComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID)); err != nil {
+	if err := p.postAttributedComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim"); err != nil {
 		return ClaimResult{}, err
 	}
 	winner, ok, err := p.claimWinner(ctx, req.Repository, req.ID)
@@ -640,7 +681,7 @@ func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWork
 		return WorkItem{}, err
 	}
 	if req.ID == "" {
-		return WorkItem{}, fmt.Errorf("issue id is required")
+		return WorkItem{}, errIssueIDRequired
 	}
 	if req.RunID == "" {
 		return WorkItem{}, fmt.Errorf("run id is required to release an item")
@@ -666,7 +707,7 @@ func (p *GitHubProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWork
 	releasedRunID := req.RunID
 	if claimed {
 		releasedRunID = winner
-		if err := p.postComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner)); err != nil {
+		if err := p.postAttributedComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
 			return WorkItem{}, err
 		}
 	}
@@ -707,7 +748,7 @@ func (p *GitHubProvider) ReconcileOrphanedWorkItemClaim(
 		return WorkItem{}, err
 	}
 	if id == "" {
-		return WorkItem{}, fmt.Errorf("issue id is required")
+		return WorkItem{}, errIssueIDRequired
 	}
 	if strings.TrimSpace(comment) == "" {
 		return WorkItem{}, fmt.Errorf("reconciliation comment is required")
@@ -846,6 +887,14 @@ func (p *GitHubProvider) applyLabelChanges(ctx context.Context, repo RepositoryR
 }
 
 func (p *GitHubProvider) postComment(ctx context.Context, repo RepositoryRef, id, body string) error {
+	return p.postAttributedComment(ctx, repo, id, body, "comment")
+}
+
+func (p *GitHubProvider) postAttributedComment(ctx context.Context, repo RepositoryRef, id, body, action string) error {
+	body, err := withAttribution(body, p.attribution, action)
+	if err != nil {
+		return err
+	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
 	if err != nil {
 		return err
@@ -861,7 +910,11 @@ func (p *GitHubProvider) CreateWorkItemComment(ctx context.Context, repo Reposit
 		return Comment{}, err
 	}
 	if id == "" {
-		return Comment{}, fmt.Errorf("issue id is required")
+		return Comment{}, errIssueIDRequired
+	}
+	body, err := withAttribution(body, p.attribution, "comment")
+	if err != nil {
+		return Comment{}, err
 	}
 	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
 	if err != nil {

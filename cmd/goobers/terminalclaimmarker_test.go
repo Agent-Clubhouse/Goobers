@@ -323,7 +323,7 @@ func TestNoWorkTerminalRunReleasesClaimMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 
 	ledger := openTestClaimLedger(t, ledgerPath)
 	if ok, _, err := ledger.Claim("3347", runID, "default-implement", time.Hour); err != nil || !ok {

@@ -2272,3 +2272,23 @@ func TestFileIssuesPolicyActions(t *testing.T) {
 		t.Fatalf("--check with the exact read grant should compile: %v", err)
 	}
 }
+
+func TestCompileRejectsBlankRunExecutable(t *testing.T) {
+	for _, executable := range []string{"", "   ", "\t"} {
+		spec := apiv1.WorkflowSpec{
+			Gaggle: "web",
+			Start:  "check",
+			Tasks: []apiv1.Task{{
+				Name: "check",
+				Type: apiv1.TaskDeterministic,
+				Goal: "check",
+				Run:  &apiv1.DeterministicRun{Command: []string{executable, "--version"}},
+			}},
+		}
+
+		_, err := compileAcknowledged(Definition{Name: "inline", Version: 1, Spec: spec})
+		if err == nil || !strings.Contains(err.Error(), "run.command[0] must name a non-whitespace executable") {
+			t.Fatalf("Compile(%q) error = %v, want blank-executable rejection", executable, err)
+		}
+	}
+}

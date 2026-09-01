@@ -20,7 +20,7 @@ func TestStaleBlockedOnSiblingMarkerForIssues(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "1"}
 
-		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item)
+		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item, nil)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
 		}
@@ -43,7 +43,7 @@ func TestStaleBlockedOnSiblingMarkerForIssues(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "2", Labels: []string{blockedOnSiblingLabel}}
 
-		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item)
+		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item, nil)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
 		}
@@ -60,7 +60,7 @@ func TestStaleBlockedOnSiblingMarkerForIssues(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "3", Labels: []string{blockedOnSiblingLabel}}
 
-		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item)
+		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item, nil)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
 		}
@@ -82,7 +82,7 @@ func TestStaleBlockedOnSiblingMarkerForIssues(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "4", Labels: []string{blockedOnSiblingLabel}}
 
-		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item)
+		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item, nil)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
 		}
@@ -102,7 +102,7 @@ func TestStaleBlockedOnSiblingMarkerForIssues(t *testing.T) {
 		provider := server.newGitHubProvider("token")
 		item := providers.WorkItem{ID: "5", Labels: []string{blockedOnSiblingLabel}}
 
-		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item)
+		stale, err := staleBlockedOnSiblingMarker(context.Background(), provider, repo, item, nil)
 		if err != nil {
 			t.Fatalf("staleBlockedOnSiblingMarker: %v", err)
 		}

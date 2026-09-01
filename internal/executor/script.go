@@ -2,6 +2,8 @@ package executor
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 )
@@ -20,6 +22,12 @@ func DeterministicCommand(run apiv1.DeterministicRun) ([]string, []string, func(
 	}
 	if len(run.Command) == 0 {
 		return nil, nil, nil, errors.New("executor: DeterministicRun declares no command or script")
+	}
+	if strings.TrimSpace(run.Command[0]) == "" {
+		return nil, nil, nil, fmt.Errorf(
+			"executor: DeterministicRun command[0] must name a non-whitespace executable, got %q",
+			run.Command[0],
+		)
 	}
 	return run.Command, nil, func() {}, nil
 }

@@ -24,9 +24,12 @@ import (
 //     this file existed, including its treatment of a missing or empty
 //     database as "no evidence yet" rather than a failure.
 //
-// Only DERIVED, low-sensitivity projections travel this way. `telemetry-query`
-// (executor.KindExternalTelemetry) queries external connectors, not this
-// rollup, has no plane, and stays refused on the engine path.
+// Only DERIVED, low-sensitivity projections travel this way: this evidence,
+// and the four defect-nomination aggregates `telemetry-query` reads since
+// Goobers#4001 (telemetrydefectplane.go). EXTERNAL telemetry connectors
+// (executor.KindExternalTelemetry) reach a third-party vendor with the
+// instance's own credential rather than this rollup, have no plane, and stay
+// refused on the engine path.
 
 // stageImplementationOutcomes returns the terminal implementation runs that
 // claimed a backlog item in this stage's gaggle since the given instant.

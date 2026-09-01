@@ -976,3 +976,36 @@ func appendToFile(t *testing.T, path, content string) {
 		t.Fatal(err)
 	}
 }
+
+// TestValidateStrictDoesNotPromoteUnhonoredConnectionRef covers REF012's
+// strict-neutrality (#3296). The finding says the local runtime honors no
+// connectionRef at all — an author who needs the field for a cloud-tier
+// deployment cannot silence it by editing their config — so promoting it
+// under --strict would turn an existing green pipeline red on upgrade. It
+// must still print.
+func TestValidateStrictDoesNotPromoteUnhonoredConnectionRef(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "instance")
+	if _, err := instance.InitQuickstart(root); err != nil {
+		t.Fatal(err)
+	}
+	instancePath := filepath.Join(root, "instance.yaml")
+	gagglePath := filepath.Join(root, "config", "gaggles", "example", "gaggle.yaml")
+	replaceInFile(t, instancePath, "your-org", "acme")
+	replaceInFile(t, instancePath, "your-repo", "widgets")
+	for range 2 {
+		replaceInFile(t, gagglePath, "your-org", "acme")
+		replaceInFile(t, gagglePath, "your-repo", "widgets")
+	}
+	// The scaffolded gaggle no longer declares a connection, so the author's
+	// declaration is added here — REF012 is about what an author writes.
+	replaceInFile(t, gagglePath, "    branch: main", `    branch: main
+    connectionRef: repo-token`)
+
+	code, stdout, stderr := runArgs(t, "validate", "--strict", root)
+	if code != 0 {
+		t.Fatalf("validate --strict code=%d, stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "REF012") {
+		t.Fatalf("strict validate did not report the unhonored connectionRef:\n%s", stdout)
+	}
+}

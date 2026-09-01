@@ -1,5 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { FixtureDaemonClient } from "../api/fixtureClient";
 import { populatedDaemonFixtures } from "../test/daemonFixtures";
@@ -62,5 +62,38 @@ describe("overview page", () => {
       ),
     ).toBeInTheDocument();
     expect(active.queryByText(/Blockers:/)).not.toBeInTheDocument();
+  });
+});
+
+// #3658: a phase whose query failed used to render as an empty group, so the
+// page claimed there was no recent activity when it simply could not read it.
+describe("overview partial run-phase failures (#3658)", () => {
+  it("warns that the run groups are incomplete when one phase query fails", async () => {
+    const client = new FixtureDaemonClient(populatedDaemonFixtures());
+    const real = client.listRuns.bind(client);
+    vi.spyOn(client, "listRuns").mockImplementation(async (request, options) => {
+      if (request?.phase === "completed") {
+        throw new Error("The daemon request timed out after 10000ms.");
+      }
+      return real(request, options);
+    });
+
+    render(<App client={client} />);
+
+    const warning = await screen.findByRole("alert");
+    expect(warning).toHaveTextContent(/Run activity for the completed phase could not be read/);
+    // The phases that did read are still rendered.
+    expect(
+      within(screen.getByRole("region", { name: "Active runs" })).getByRole("link", {
+        name: "Open run 01JZ441DAEMONAPI",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no incomplete-data warning when every phase reads successfully", async () => {
+    render(<App client={new FixtureDaemonClient(populatedDaemonFixtures())} />);
+
+    await screen.findByRole("region", { name: "Active runs" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

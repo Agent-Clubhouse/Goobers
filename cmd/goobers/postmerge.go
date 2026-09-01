@@ -199,15 +199,10 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
+	root, ok := providerStageRootArg(fs)
+	if !ok {
 		return 2
 	}
-	pathArg := ""
-	if fs.NArg() == 1 {
-		pathArg = fs.Arg(0)
-	}
-	root := providerStageRoot(pathArg)
 
 	repo, err := providerRepo(root)
 	if err != nil {
@@ -258,8 +253,8 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 	var pollErr error
 	var postMergeErrs []error
 	alreadyCompleted := false
-	err = withPostMergeReconcileLock(root, func(ledgerPath string) error {
-		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+	err = withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
+		ledger, err := session.read()
 		if err != nil {
 			return err
 		}
@@ -276,7 +271,7 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 			return nil
 		}
 		if completePostMergeReconciliation(&ledger, repo, pullNumber) {
-			return writePostMergeReconcileLedger(ledgerPath, ledger)
+			return session.write(ledger)
 		}
 		return nil
 	})
@@ -342,8 +337,8 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 	var pollErr error
 	var postMergeErrs []error
 	alreadyCompleted := false
-	err = withPostMergeReconcileLock(root, func(ledgerPath string) error {
-		ledger, err := readPostMergeReconcileLedger(ledgerPath)
+	err = withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
+		ledger, err := session.read()
 		if err != nil {
 			return err
 		}
@@ -361,7 +356,7 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 			return nil
 		}
 		if completePostMergeReconciliation(&ledger, repo, pullNumber) {
-			return writePostMergeReconcileLedger(ledgerPath, ledger)
+			return session.write(ledger)
 		}
 		return nil
 	})
@@ -528,8 +523,22 @@ func unparkSelfHealedEscalationsFrom(ctx context.Context, provider remediationPr
 		if stillBlocked {
 			continue
 		}
+		// One mutation, both halves. escalate() removes needsRemediationLabel
+		// when it parks the PR, so lifting the park without restoring it
+		// leaves the PR in NEITHER lane: remediationPriorityFor returns none
+		// (no label, CI green) and pr-select skips a still-demoted PR whose
+		// head never advances -- because nothing remediates it. #4109 caught
+		// #3891 and #3900 in exactly that state for a day and a half.
+		//
+		// record-merge-refusal already sets the contract for this handoff: it
+		// applies {mergeDemotedLabel, needsRemediationLabel} together so the
+		// demoted lander has a path to move its head. A self-healed escalation
+		// is the same handoff.
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo, ID: strconv.Itoa(pr.Number), RemoveLabels: []string{remediationEscalatedLabel},
+			Repository:   repo,
+			ID:           strconv.Itoa(pr.Number),
+			RemoveLabels: []string{remediationEscalatedLabel},
+			AddLabels:    []string{needsRemediationLabel},
 		}); err != nil {
 			errs = append(errs, fmt.Errorf("clear %s from pr #%d: %w", remediationEscalatedLabel, pr.Number, err))
 			continue
@@ -552,7 +561,7 @@ func unparkSelfHealedDemotions(ctx context.Context, provider remediationProvider
 		return nil, nil
 	}
 	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: "goobers/", SkipCheckState: true,
+		Repository: repo, Base: base, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
 	})
 	if err != nil {
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for merge-demoted unpark: %w", base, err))
@@ -694,7 +703,7 @@ func fanOutNeedsRemediation(ctx context.Context, provider remediationProvider, r
 	// instead of re-fetching. A cold/corrupt/absent cache (any other
 	// workflow, or a standalone invocation) degrades to nil here, which
 	// triageSibling treats as an unconditional cache miss — never a failure.
-	cached := loadSiblingCache(layoutFor(root).SchedulerDir(), stderr)
+	cached := loadSiblingCache(layoutFor(root), stderr)
 
 	var handoffAuthor string
 	var handoffAuthorErr error

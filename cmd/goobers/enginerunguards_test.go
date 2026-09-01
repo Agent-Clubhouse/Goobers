@@ -18,6 +18,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
+	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/httpapi"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -54,13 +55,22 @@ type fakeEngineWorkflows struct {
 	// gate, when non-nil, blocks Get until closed — standing in for a
 	// workflow that is still executing while the daemon holds the attachment.
 	gate chan struct{}
+	// result is what the workflow RETURNED, decoded into the caller's out
+	// parameter. The resume scan discards it; the engine starter (#3876)
+	// needs it, because the phase it reports to the scheduler and the
+	// terminal hooks it fires are both derived from it.
+	result engine.RunResult
+	// workflowIDs, when non-empty, is the run-id -> workflow-id mapping a
+	// scheduled engine run needs: describing the RUN id yields NotFound for
+	// one, which is why the guards carry a resolver at all.
+	workflowIDs map[string]string
 }
 
 func (f *fakeEngineWorkflows) DescribeWorkflowExecution(_ context.Context, workflowID, _ string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
 	f.mu.Lock()
 	f.described = append(f.described, workflowID)
 	f.mu.Unlock()
-	if f.notFound {
+	if f.notFound || (len(f.workflowIDs) > 0 && !f.knownWorkflowID(workflowID)) {
 		return nil, serviceerror.NewNotFound("workflow not found")
 	}
 	if f.describeErr != nil {
@@ -83,7 +93,24 @@ func (f *fakeEngineWorkflows) CancelWorkflow(_ context.Context, workflowID, _ st
 	f.mu.Lock()
 	f.cancelled = append(f.cancelled, workflowID)
 	f.mu.Unlock()
+	// Cancelling a workflow id nothing executes under is NotFound, exactly as
+	// describing one is — which is the whole scheduled-run shape: a run's own
+	// id addresses nothing, and the cancel has to be resolved through the
+	// open-workflow inverse before it can land.
+	if len(f.workflowIDs) > 0 && !f.knownWorkflowID(workflowID) {
+		return serviceerror.NewNotFound("workflow not found")
+	}
 	return f.cancelErr
+}
+
+// knownWorkflowID reports whether workflowID is one the fake actually hosts.
+func (f *fakeEngineWorkflows) knownWorkflowID(workflowID string) bool {
+	for _, id := range f.workflowIDs {
+		if id == workflowID {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeEngineWorkflows) snapshot() (described, awaited, cancelled []string) {
@@ -97,14 +124,16 @@ type fakeWorkflowRun struct {
 	id     string
 }
 
-func (r *fakeWorkflowRun) GetID() string    { return r.id }
-func (r *fakeWorkflowRun) GetRunID() string { return "" }
+func (r *fakeWorkflowRun) GetID() string                  { return r.id }
+func (r *fakeWorkflowRun) GetRunID() string               { return "" }
+func (r *fakeWorkflowRun) GetFirstExecutionRunID() string { return "" }
 
-func (r *fakeWorkflowRun) Get(ctx context.Context, _ any) error {
+func (r *fakeWorkflowRun) Get(ctx context.Context, out any) error {
 	r.parent.mu.Lock()
 	r.parent.awaited = append(r.parent.awaited, r.id)
 	gate := r.parent.gate
 	getErr := r.parent.getErr
+	result := r.parent.result
 	r.parent.mu.Unlock()
 	if gate != nil {
 		select {
@@ -113,7 +142,13 @@ func (r *fakeWorkflowRun) Get(ctx context.Context, _ any) error {
 			return ctx.Err()
 		}
 	}
-	return getErr
+	if getErr != nil {
+		return getErr
+	}
+	if decoded, ok := out.(*engine.RunResult); ok && decoded != nil {
+		*decoded = result
+	}
+	return nil
 }
 
 func (r *fakeWorkflowRun) GetWithOptions(ctx context.Context, valuePtr any, _ client.WorkflowRunGetOptions) error {
@@ -186,7 +221,7 @@ func TestResumeScanReattachesEngineDrivenRunInsteadOfResumingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)
@@ -298,7 +333,7 @@ func TestResumeScanStillResumesRunnerDrivenRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer setup.Shutdown(context.Background())
+	defer func() { _ = setup.Shutdown(context.Background()) }()
 	sched := localscheduler.New(setup.Entries, setup.InstanceLog)
 	if err := sched.Reconcile(l.RunsDir(), time.Now()); err != nil {
 		t.Fatal(err)
@@ -631,30 +666,6 @@ func TestReattachEngineRunReportsUnresolvableWorkflow(t *testing.T) {
 	}
 }
 
-// TestRunAbortRefusesEngineDrivenRun: `run abort` appends a terminal event
-// straight into a run's own journal. On an engine-driven run that forges a
-// terminal for a workflow that keeps executing and keeps emitting into the
-// same file.
-func TestRunAbortRefusesEngineDrivenRun(t *testing.T) {
-	root := initDemo(t)
-	l := instance.NewLayout(root)
-	const runID = "engine-run-abort"
-	createDriverRun(t, l.RunsDir(), runID, "default-implement", "", journal.DriverEngine, time.Now(), nil)
-	before := runEventCount(t, l.RunsDir(), runID)
-
-	code, _, stderr := runArgs(t, "run", "abort", runID, root)
-	if code != 1 {
-		t.Fatalf("run abort: code = %d, stderr = %q, want the business refusal (1)", code, stderr)
-	}
-	if !strings.Contains(stderr, "engine-driven") || !strings.Contains(stderr, runID) {
-		t.Fatalf("run abort stderr = %q, want a named engine-driven refusal", stderr)
-	}
-	if got := runEventCount(t, l.RunsDir(), runID); got != before {
-		t.Fatalf("run journal grew from %d to %d events — abort wrote into a journal the engine owns", before, got)
-	}
-	assertWatchdogPhase(t, l.RunsDir(), runID, journal.PhaseRunning)
-}
-
 // TestRunAbortOnTerminalEngineDrivenRunReportsItTerminal: the engine-driven
 // refusal is about protecting a journal that still has a writer. Once the run
 // is closed there is nothing left to protect, and the refusal's advice — go
@@ -691,25 +702,6 @@ func closeDriverRun(t *testing.T, runsDir, runID string, phase journal.RunPhase)
 	}
 	if err := run.Close(); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// TestRunCancelRefusesEngineDrivenRun: `run cancel` asks the daemon to stop a
-// run it is executing in-process. It never is, for an engine-driven run — and
-// the generic "not currently running under this daemon" answer reads like a
-// race, which invites the operator to reach for `run abort` instead.
-func TestRunCancelRefusesEngineDrivenRun(t *testing.T) {
-	root := initDemo(t)
-	l := instance.NewLayout(root)
-	const runID = "engine-run-cancel"
-	createDriverRun(t, l.RunsDir(), runID, "default-implement", "", journal.DriverEngine, time.Now(), nil)
-
-	code, _, stderr := runArgs(t, "run", "cancel", runID, root)
-	if code != 1 {
-		t.Fatalf("run cancel: code = %d, stderr = %q, want the business refusal (1)", code, stderr)
-	}
-	if !strings.Contains(stderr, "engine-driven") || !strings.Contains(stderr, runID) {
-		t.Fatalf("run cancel stderr = %q, want a named engine-driven refusal", stderr)
 	}
 }
 
