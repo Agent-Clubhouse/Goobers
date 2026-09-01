@@ -1335,3 +1335,5 @@ function useSessionState<T>(
 }
 
 // no-op: nudging GitHub Actions dispatch for PR #4005 (see #3660)
+
+// probe-2: fresh commit for CI dispatch probe PR #4111
