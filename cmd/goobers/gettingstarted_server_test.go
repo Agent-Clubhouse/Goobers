@@ -216,6 +216,93 @@ func stubGitHubAuthorization(t *testing.T, script string) *[][]string {
 	return calls
 }
 
+func stubADOAuthDiscovery(t *testing.T, accountReady, tokenReady bool) *[][]string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Azure authentication stubs use /bin/sh")
+	}
+	previous := guidedDiscoveryCommand
+	calls := &[][]string{}
+	guidedDiscoveryCommand = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name != "az" {
+			t.Fatalf("discovery command = %q, want az", name)
+		}
+		*calls = append(*calls, append([]string{}, args...))
+		switch {
+		case len(args) >= 2 && args[0] == "account" && args[1] == "show":
+			if !accountReady {
+				return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1")
+			}
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "printf 'azure-user@example.com\\n'")
+		case len(args) >= 2 && args[0] == "account" && args[1] == "get-access-token":
+			if !tokenReady {
+				return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1")
+			}
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "printf '2026-09-01T00:00:00Z\\n'")
+		default:
+			t.Fatalf("unexpected Azure discovery args = %q", args)
+			return exec.CommandContext(ctx, "/bin/sh", "-c", "exit 1")
+		}
+	}
+	t.Cleanup(func() { guidedDiscoveryCommand = previous })
+	return calls
+}
+
+func testADORepositoryIdentity() guidedRepositoryIdentity {
+	return guidedRepositoryIdentity{
+		provider: "ado",
+		owner:    "acme",
+		project:  "platform",
+		name:     "widgets",
+	}
+}
+
+func TestDiscoverGuidedAuthADORequiresLoginWhenAccountShowFails(t *testing.T) {
+	calls := stubADOAuthDiscovery(t, false, false)
+
+	auth := discoverGuidedAuth(context.Background(), testADORepositoryIdentity())
+	if auth.Ready || !auth.NeedsLogin {
+		t.Fatalf("unauthenticated Azure auth state = %+v", auth)
+	}
+	if auth.Identity != "" || auth.RemediationCommand != "az login" {
+		t.Fatalf("unauthenticated Azure remediation = %+v", auth)
+	}
+	if auth.Message != "Azure CLI authentication is required before setup can continue." {
+		t.Fatalf("unauthenticated Azure message = %q", auth.Message)
+	}
+	want := [][]string{{"account", "show", "--query", "user.name", "--output", "tsv"}}
+	if !reflect.DeepEqual(*calls, want) {
+		t.Fatalf("unauthenticated Azure discovery argv = %v, want %v", *calls, want)
+	}
+}
+
+func TestDiscoverGuidedAuthADOReportsAccessFailureAfterLogin(t *testing.T) {
+	calls := stubADOAuthDiscovery(t, true, false)
+
+	auth := discoverGuidedAuth(context.Background(), testADORepositoryIdentity())
+	if auth.Ready || auth.NeedsLogin {
+		t.Fatalf("authenticated Azure access state = %+v", auth)
+	}
+	if auth.Identity != "azure-user@example.com" {
+		t.Fatalf("authenticated Azure identity = %q", auth.Identity)
+	}
+	if !strings.Contains(auth.Message, "authenticated as azure-user@example.com") ||
+		!strings.Contains(auth.Message, "acme/platform/widgets") {
+		t.Fatalf("authenticated Azure access message = %q", auth.Message)
+	}
+	wantRemediation := `az repos show --organization https://dev.azure.com/acme --project "platform" --repository "widgets"`
+	if auth.RemediationCommand != wantRemediation {
+		t.Fatalf("authenticated Azure remediation = %q, want %q", auth.RemediationCommand, wantRemediation)
+	}
+	want := [][]string{
+		{"account", "show", "--query", "user.name", "--output", "tsv"},
+		{"account", "get-access-token", "--resource", "499b84ac-1321-427f-aa17-267ca6975798", "--query", "expiresOn", "--output", "tsv"},
+	}
+	if !reflect.DeepEqual(*calls, want) {
+		t.Fatalf("authenticated Azure discovery argv = %v, want %v", *calls, want)
+	}
+}
+
 func TestGettingStartedGitHubAuthorizationStartsDeviceFlowWhenNeeded(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("GitHub authorization stubs use /bin/sh")
@@ -338,6 +425,80 @@ func TestGettingStartedGitHubAuthorizationReportsMissingCLI(t *testing.T) {
 		!strings.Contains(response.Message, "GitHub CLI") ||
 		!strings.Contains(response.Message, guidedGitHubLoginCommand) {
 		t.Fatalf("missing CLI response = %+v", response)
+	}
+}
+
+func TestGettingStartedGitHubAuthorizationReportsVerificationFailure(t *testing.T) {
+	previousAuthDiscovery := guidedAuthDiscovery
+	authDiscoveryCalls := 0
+	guidedAuthDiscovery = func(context.Context, guidedRepositoryIdentity) guidedAuthState {
+		authDiscoveryCalls++
+		if authDiscoveryCalls == 1 {
+			return guidedAuthState{
+				Kind:               "github-cli",
+				RemediationCommand: guidedGitHubLoginCommand,
+				NeedsLogin:         true,
+			}
+		}
+		return guidedAuthState{
+			Kind:               "github-cli",
+			RemediationCommand: "gh repo view acme/widgets",
+		}
+	}
+	previousRunner := guidedGitHubAuthorizationRunner
+	authorizationCalled := false
+	guidedGitHubAuthorizationRunner = func(context.Context) error {
+		authorizationCalled = true
+		return nil
+	}
+	t.Cleanup(func() {
+		guidedAuthDiscovery = previousAuthDiscovery
+		guidedGitHubAuthorizationRunner = previousRunner
+	})
+	server := newTestGuidedServer(t, t.TempDir())
+
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/authorize-github",
+		`{"repository":"acme/widgets"}`,
+	)
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	response := decodeGuidedResponse[guidedErrorBody](t, recorder)
+	wantMessage := "GitHub authorization completed, but access to acme/widgets could not be verified. Next: gh repo view acme/widgets"
+	if response.Code != "github_authorization_verification_failed" || response.Message != wantMessage {
+		t.Fatalf("verification failure response = %+v, want message %q", response, wantMessage)
+	}
+	if !authorizationCalled || authDiscoveryCalls != 2 {
+		t.Fatalf("verification flow calls = authorization %v, auth discovery %d; want true, 2", authorizationCalled, authDiscoveryCalls)
+	}
+}
+
+func TestGettingStartedGitHubAuthorizationRejectsInvalidRepositories(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		repository string
+	}{
+		{name: "malformed repository", repository: "not-a-repository"},
+		{name: "Azure DevOps repository", repository: "https://dev.azure.com/acme/platform/_git/widgets"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := newTestGuidedServer(t, t.TempDir())
+			recorder := guidedPost(
+				http.HandlerFunc(server.serveGuided),
+				"/guided/actions/authorize-github",
+				fmt.Sprintf(`{"repository":%q}`, test.repository),
+			)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+			}
+			response := decodeGuidedResponse[guidedErrorBody](t, recorder)
+			if response.Code != "invalid_github_repository" ||
+				response.Message != "a GitHub repository in owner/name form is required" {
+				t.Fatalf("invalid repository response = %+v", response)
+			}
+		})
 	}
 }
 

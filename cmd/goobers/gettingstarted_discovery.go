@@ -88,7 +88,7 @@ func inspectGuidedRepository(ctx context.Context, input string) (guidedRepositor
 	inspection.NeedsClone = true
 	inspection.Discovery = "provider-metadata"
 	inspection.DefaultBranch = discoverRemoteDefaultBranch(ctx, identity)
-	inspection.Auth = discoverGuidedAuth(ctx, identity)
+	inspection.Auth = guidedAuthDiscovery(ctx, identity)
 	return inspection, nil
 }
 
@@ -121,7 +121,7 @@ func inspectGuidedLocalRepository(ctx context.Context, input string) (guidedRepo
 	if err != nil {
 		return guidedRepositoryInspection{}, err
 	}
-	inspection.Auth = discoverGuidedAuth(ctx, identity)
+	inspection.Auth = guidedAuthDiscovery(ctx, identity)
 
 	stack, command, capability := detectCICommandDefault(root)
 	if len(command) > 0 && capability != "" {
@@ -278,38 +278,58 @@ func discoverGuidedAuth(ctx context.Context, identity guidedRepositoryIdentity) 
 		}
 	case "ado":
 		login, err := runGuidedDiscovery(ctx, "az", "account", "show", "--query", "user.name", "--output", "tsv")
-		if err == nil && strings.TrimSpace(login) != "" {
-			_, err = runGuidedDiscovery(
-				ctx,
-				"az",
-				"account",
-				"get-access-token",
-				"--resource",
-				"499b84ac-1321-427f-aa17-267ca6975798",
-				"--query",
-				"expiresOn",
-				"--output",
-				"tsv",
-			)
-		}
-		if err == nil && strings.TrimSpace(login) != "" {
+		login = strings.TrimSpace(login)
+		if err != nil || login == "" {
 			return guidedAuthState{
-				Kind:     "azure-cli",
-				Ready:    true,
-				Identity: strings.TrimSpace(login),
-				Message:  "Azure CLI authentication and repository access are ready.",
+				Kind:               "azure-cli",
+				RemediationCommand: "az login",
+				Message:            "Azure CLI authentication is required before setup can continue.",
+				NeedsLogin:         true,
 			}
 		}
+
+		token, err := runGuidedDiscovery(
+			ctx,
+			"az",
+			"account",
+			"get-access-token",
+			"--resource",
+			"499b84ac-1321-427f-aa17-267ca6975798",
+			"--query",
+			"expiresOn",
+			"--output",
+			"tsv",
+		)
+		if err != nil || strings.TrimSpace(token) == "" {
+			return guidedAuthState{
+				Kind:     "azure-cli",
+				Identity: login,
+				RemediationCommand: fmt.Sprintf(
+					"az repos show --organization https://dev.azure.com/%s --project %q --repository %q",
+					url.PathEscape(identity.owner),
+					identity.project,
+					identity.name,
+				),
+				Message: fmt.Sprintf(
+					"Azure CLI is authenticated as %s, but Azure DevOps access to %s could not be verified.",
+					login,
+					identity.owner+"/"+identity.project+"/"+identity.name,
+				),
+			}
+		}
+
 		return guidedAuthState{
-			Kind:               "azure-cli",
-			RemediationCommand: "az login",
-			Message:            "Azure CLI authentication is required before setup can continue.",
-			NeedsLogin:         true,
+			Kind:     "azure-cli",
+			Ready:    true,
+			Identity: login,
+			Message:  "Azure CLI authentication and repository access are ready.",
 		}
 	default:
 		return guidedAuthState{}
 	}
 }
+
+var guidedAuthDiscovery = discoverGuidedAuth
 
 func runGuidedDiscovery(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := guidedDiscoveryCommand(ctx, name, args...)

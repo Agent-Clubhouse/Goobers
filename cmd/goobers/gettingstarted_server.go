@@ -667,7 +667,7 @@ func (s *guidedServer) handleAuthorizeGitHub(w http.ResponseWriter, r *http.Requ
 
 	ctx, cancel := context.WithTimeout(r.Context(), guidedAuthActionTimeout)
 	defer cancel()
-	auth := discoverGuidedAuth(ctx, identity)
+	auth := guidedAuthDiscovery(ctx, identity)
 	if auth.Ready {
 		writeGuidedJSON(w, http.StatusOK, guidedAuthorizeGitHubResponse{
 			Auth:    auth,
@@ -699,7 +699,7 @@ func (s *guidedServer) handleAuthorizeGitHub(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	auth = discoverGuidedAuth(ctx, identity)
+	auth = guidedAuthDiscovery(ctx, identity)
 	if !auth.Ready {
 		message := auth.Message
 		if message == "" {
@@ -788,7 +788,7 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 	}
 	assignedTo := strings.TrimSpace(input.AssignedTo)
 	if strings.EqualFold(strings.TrimSpace(input.IssueScope), "assigned") && assignedTo == "" {
-		auth := discoverGuidedAuth(r.Context(), guidedRepositoryIdentity{
+		auth := guidedAuthDiscovery(r.Context(), guidedRepositoryIdentity{
 			provider: provider,
 			owner:    repoOwner,
 			project:  repoProject,

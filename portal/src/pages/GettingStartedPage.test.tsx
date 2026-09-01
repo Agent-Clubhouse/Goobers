@@ -87,6 +87,20 @@ const adoAuthRequiredInspection: GuidedRepositoryInspection = {
   },
 };
 
+const adoAccessRequiredInspection: GuidedRepositoryInspection = {
+  ...adoAuthRequiredInspection,
+  auth: {
+    kind: "azure-cli",
+    ready: false,
+    identity: "azure-user@example.com",
+    message:
+      "Azure CLI is authenticated as azure-user@example.com, but Azure DevOps access to acme/platform/widgets could not be verified.",
+    remediationCommand:
+      'az repos show --organization https://dev.azure.com/acme --project "platform" --repository "widgets"',
+    needsLogin: false,
+  },
+};
+
 type RouteHandler = (init?: RequestInit) => { status?: number; body: unknown };
 
 function clientWith(routes: Record<string, RouteHandler>): GuidedClient {
@@ -343,6 +357,43 @@ describe("GettingStartedPage", () => {
     expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).not.toBeInTheDocument();
   });
 
+  it("directs Azure DevOps access failures to account access checks", async () => {
+    const user = userEvent.setup();
+    render(
+      <GettingStartedPage
+        client={clientWith({
+          "/guided/state": () => ({ body: guidedState() }),
+          "/guided/actions/inspect-repository": () => ({ body: adoAccessRequiredInspection }),
+        })}
+      />,
+    );
+
+    await openRepositoryPage(user);
+    await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
+    await user.click(screen.getByRole("button", { name: "Inspect clone" }));
+    expect(
+      await screen.findByText(
+        "Azure CLI is authenticated as azure-user@example.com, but Azure DevOps access to acme/platform/widgets could not be verified.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Confirm that the authenticated Azure account can access this repository before continuing.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'az repos show --organization https://dev.azure.com/acme --project "platform" --repository "widgets"',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "Run the Azure CLI login command, then inspect the repository again. Azure DevOps authentication remains a manual step.",
+      ),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).not.toBeInTheDocument();
+  });
+
   it("switches repository entry modes and browses for a local clone", async () => {
     const user = userEvent.setup();
     render(
@@ -384,6 +435,7 @@ describe("GettingStartedPage", () => {
                 kind: "github-cli",
                 ready: false,
                 remediationCommand: "gh auth login",
+                needsLogin: true,
               },
             },
           }),
@@ -395,7 +447,9 @@ describe("GettingStartedPage", () => {
     await user.type(screen.getByRole("textbox", { name: "Local clone" }), "C:\\src\\widgets");
     await user.click(screen.getByRole("button", { name: "Inspect clone" }));
 
-    expect(await screen.findByText("GitHub authentication is required")).toBeInTheDocument();
+    expect(
+      await screen.findByText("GitHub authentication is required before setup can continue."),
+    ).toBeInTheDocument();
     const patLink = screen.getByRole("link", {
       name: "Open GitHub fine-grained PAT settings",
     });
