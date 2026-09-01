@@ -25,6 +25,14 @@ required host tools are ready.
 
 See `docs/ARCHITECTURE.md` §6 for the instance layout these commands operate on.
 
+Keep every tutorial instance outside a GitHub App, hosted-agent, Codespaces, or
+other ephemeral worktree. Goobers refuses `init` targets in linked or known
+hosted workspaces by default because the directory may be deleted when the
+session ends. For durable setup use a path such as
+`~/goobers/instances/widget/`; the config-source form
+(`--source-tree`) is separate and may intentionally be checked in. Use
+`--allow-ephemeral` only for a workspace whose lifetime you control.
+
 If declarative systems are new to you, read
 [How Goobers works: desired state, not scripts](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/concepts/README.md) first.
 It explains the config/runtime split and why agents propose definition changes

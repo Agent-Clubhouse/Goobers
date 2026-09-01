@@ -70,6 +70,9 @@ export interface GuidedRepositoryInspection {
   needsClone: boolean;
   peerConfigPath?: string;
   inRepoConfigPath?: string;
+  ephemeral?: boolean;
+  ephemeralReason?: string;
+  safeInstancePath?: string;
   auth: {
     kind: "github-cli" | "azure-cli" | string;
     ready: boolean;

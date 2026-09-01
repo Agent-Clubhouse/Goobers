@@ -28,6 +28,15 @@ instance root, neither inside the target repository. Before choosing paths, see
 [Choose where an instance and its config live](instance-placement.md) for the
 supported placements, decision table, and trust implications.
 
+Do not run initialization with the instance path inside a GitHub App, hosted
+agent, Codespaces, or other ephemeral worktree. Goobers refuses that placement
+by default because the worktree may be deleted with the session. Use a durable
+path such as `~/goobers/instances/widget/` for `GOOBERS_INSTANCE`; keep the
+checked-in source in `GOOBERS_CONFIG_SOURCE` (a separate repository or an
+intentional in-repo subtree). Only add `--allow-ephemeral` when the selected
+workspace is independently persistent and losing its runtime state is
+acceptable.
+
 ## 1. Prepare the host and target repository
 
 Install or build:

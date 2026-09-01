@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,11 +16,12 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/version"
+	"github.com/goobers/goobers/internal/worktree"
 
 	"github.com/goobers/goobers/api/schemas"
 )
 
-const initHelp = "Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]\n\n" +
+const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db\n" +
 	"placeholder. The daemon creates per-gaggle runs/ and workcopies/ under\n" +
@@ -42,7 +44,10 @@ const initHelp = "Usage: goobers init [--guided [--port=<port|auto>] [--no-open]
 	"--insecure is also given, which scaffolds the demo anyway and reports the\n" +
 	"isolation limitation — an explicit, narrowly-scoped opt-in that does not alter\n" +
 	"the general Windows sandbox policy (#651). Use `goobers preflight` to check and\n" +
-	"launch the fully isolated WSL 2 route instead. --insecure requires --demo.\n"
+	"launch the fully isolated WSL 2 route instead. --insecure requires --demo.\n" +
+	"--allow-ephemeral permits initialization inside a linked or hosted workspace\n" +
+	"only when that location is intentionally persistent; it is refused by default\n" +
+	"to protect GitHub/App sessions whose worktrees may be deleted.\n"
 
 func runInit(args []string, stdout, stderr io.Writer) int {
 	return runInitWithInput(args, os.Stdin, stdout, stderr)
@@ -57,6 +62,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	fs.SetOutput(stderr)
 	demo := fs.Bool("demo", false, "seed a credential-free runnable demo workflow")
 	insecure := fs.Bool("insecure", false, "with --demo on a platform without enforced network isolation (Windows), scaffold anyway without it")
+	allowEphemeral := fs.Bool("allow-ephemeral", false, "allow initialization inside a linked or hosted ephemeral workspace")
 	guided := fs.Bool("guided", false, "open browser-based setup for a real repository")
 	guidedPort := fs.String("port", "auto", "with --guided, server port or auto")
 	guidedNoOpen := fs.Bool("no-open", false, "with --guided, print the URL without opening a browser")
@@ -142,7 +148,15 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		if *guidedNoOpen {
 			browserArgs = append(browserArgs, "--no-open")
 		}
+		if *allowEphemeral {
+			browserArgs = append(browserArgs, "--allow-ephemeral")
+		}
 		return runGuidedInitBrowser(browserArgs, stdout, stderr)
+	}
+	if err := worktree.CheckInitTarget(context.Background(), root, *allowEphemeral); err != nil {
+		pf(stderr, "error: %v\n", err)
+		printDefaultedTargetNote(stderr, err, fs.NArg())
+		return 2
 	}
 
 	var res *instance.InitResult

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/signals"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // dashboardModeGettingStarted is the portal mode the getting-started command
@@ -23,7 +24,7 @@ import (
 // dashboard` does, so the dashboard's own startup contract is untouched.
 const dashboardModeGettingStarted dashboardMode = "getting-started"
 
-const guidedInitBrowserHelp = "Usage: goobers init --guided [--port=<port|auto>] [--no-open] [--workdir <dir>]\n\n" +
+const guidedInitBrowserHelp = "Usage: goobers init --guided [--allow-ephemeral] [--port=<port|auto>] [--no-open] [--workdir <dir>]\n\n" +
 	"Serve and open the browser-based instance setup. It inspects an existing\n" +
 	"GitHub or Azure DevOps clone, discovers its identity, default branch, CI and\n" +
 	"toolchain, asks only for configuration placement and desired behavior, creates\n" +
@@ -38,7 +39,8 @@ const guidedInitBrowserHelp = "Usage: goobers init --guided [--port=<port|auto>]
 	"needed. The default --port is auto,\n" +
 	"incrementing from %d until a port is available. Blocks until interrupted.\n" +
 	"Exit codes: 0 = clean shutdown, 1 = service or browser failure, 2 =\n" +
-	"usage/IO error.\n"
+	"usage/IO error. Use --allow-ephemeral only when the chosen workspace and\n" +
+	"instance location are intentionally persistent.\n"
 
 func runGuidedInitBrowser(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signals.SetupSignalContext()
@@ -52,6 +54,7 @@ func runGuidedInitBrowserContext(ctx context.Context, args []string, stdout, std
 	portValue := flags.String("port", "auto", "server port, or \"auto\" to use the first available port from 8081")
 	noOpen := flags.Bool("no-open", false, "print the guided setup URL without opening a browser")
 	workdir := flags.String("workdir", defaultGettingStartedWorkdir(), "directory holding temporary browser setup state")
+	allowEphemeral := flags.Bool("allow-ephemeral", false, "allow guided initialization inside a linked or hosted ephemeral workspace")
 	flags.Usage = func() { pf(stderr, guidedInitBrowserHelp, defaultDashboardPort) }
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -70,13 +73,17 @@ func runGuidedInitBrowserContext(ctx context.Context, args []string, stdout, std
 		pf(stderr, "error: resolve --workdir: %v\n", err)
 		return 2
 	}
-	if err := os.MkdirAll(absWorkdir, 0o755); err != nil {
-		pf(stderr, "error: create --workdir %s: %v\n", absWorkdir, err)
-		return 2
-	}
 	absInstancePath, err := filepath.Abs(filepath.Join(filepath.Dir(absWorkdir), "instance"))
 	if err != nil {
 		pf(stderr, "error: resolve instance path: %v\n", err)
+		return 2
+	}
+	if err := worktree.CheckInitTarget(ctx, absInstancePath, *allowEphemeral); err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if err := os.MkdirAll(absWorkdir, 0o755); err != nil {
+		pf(stderr, "error: create --workdir %s: %v\n", absWorkdir, err)
 		return 2
 	}
 
@@ -86,6 +93,7 @@ func runGuidedInitBrowserContext(ctx context.Context, args []string, stdout, std
 		pf(stderr, "error: initialize guided server: %v\n", err)
 		return 1
 	}
+	guided.allowEphemeral = *allowEphemeral
 
 	assets, err := dashboardAssetFS("")
 	if err != nil {

@@ -48,6 +48,7 @@ complete -c goobers -n '__fish_seen_subcommand_from help; and test (count (comma
 complete -c goobers -n '__fish_seen_subcommand_from version' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from versions' -l json -d 'Emit JSON'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l guided -d 'Open browser-based setup, including placement choices'
+complete -c goobers -n '__fish_seen_subcommand_from init' -l allow-ephemeral -d 'Allow initialization inside a linked or hosted ephemeral workspace'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l port -r -d 'With --guided, server port or auto'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l no-open -d 'With --guided, print the URL without opening a browser'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l workdir -r -d 'With --guided, temporary browser setup state'

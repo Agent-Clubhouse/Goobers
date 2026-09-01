@@ -1770,7 +1770,7 @@ instance, gaggle, goober, workflow, stage, gate, harness, capability.
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--allow-ephemeral] [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
@@ -1795,6 +1795,9 @@ fail-closed on Windows (no enforced network:none equivalent exists there) unless
 isolation limitation — an explicit, narrowly-scoped opt-in that does not alter
 the general Windows sandbox policy (#651). Use `goobers preflight` to check and
 launch the fully isolated WSL 2 route instead. --insecure requires --demo.
+--allow-ephemeral permits initialization inside a linked or hosted workspace
+only when that location is intentionally persistent; it is refused by default
+to protect GitHub/App sessions whose worktrees may be deleted.
 ~~~
 
 **Examples**

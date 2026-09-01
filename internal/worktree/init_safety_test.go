@@ -1,0 +1,79 @@
+package worktree
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestInspectInitTargetDetectsLinkedWorktree(t *testing.T) {
+	repository := t.TempDir()
+	runInitSafetyTestGit(t, repository, "init", "-b", "main")
+	runInitSafetyTestGit(t, repository, "config", "user.email", "test@example.com")
+	runInitSafetyTestGit(t, repository, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(repository, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runInitSafetyTestGit(t, repository, "add", "README.md")
+	runInitSafetyTestGit(t, repository, "commit", "-m", "initial")
+
+	linked := filepath.Join(t.TempDir(), "session-worktree")
+	runInitSafetyTestGit(t, repository, "worktree", "add", "-b", "session", linked, "main")
+
+	safety, err := InspectInitTarget(context.Background(), filepath.Join(linked, "instance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !safety.Ephemeral || !safety.LinkedWorktree {
+		t.Fatalf("safety = %+v, want linked ephemeral target", safety)
+	}
+	if safety.RepositoryRoot != linked || safety.EphemeralRoot != linked {
+		t.Fatalf("safety roots = %+v, want %q", safety, linked)
+	}
+	if err := CheckInitTarget(context.Background(), filepath.Join(linked, "instance"), false); err == nil ||
+		!strings.Contains(err.Error(), "--allow-ephemeral") ||
+		!strings.Contains(err.Error(), "goobers/instances") {
+		t.Fatalf("CheckInitTarget error = %v, want actionable refusal", err)
+	}
+	if err := CheckInitTarget(context.Background(), filepath.Join(linked, "instance"), true); err != nil {
+		t.Fatalf("explicit override rejected: %v", err)
+	}
+}
+
+func TestInspectInitTargetDetectsHostedWorkspaceMarker(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("GITHUB_WORKSPACE", workspace)
+
+	safety, err := InspectInitTarget(context.Background(), filepath.Join(workspace, "instance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !safety.Ephemeral || safety.EphemeralRoot != workspace {
+		t.Fatalf("safety = %+v, want GitHub workspace marker", safety)
+	}
+	if !strings.Contains(safety.Reason, "GitHub workspace") {
+		t.Fatalf("reason = %q, want GitHub workspace", safety.Reason)
+	}
+}
+
+func TestInspectInitTargetAllowsOrdinaryDirectory(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "instance")
+	safety, err := InspectInitTarget(context.Background(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if safety.Ephemeral || safety.LinkedWorktree {
+		t.Fatalf("ordinary target classified as unsafe: %+v", safety)
+	}
+}
+
+func runInitSafetyTestGit(t *testing.T, directory string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", directory}, args...)...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+}

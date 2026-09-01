@@ -26,6 +26,7 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -53,11 +54,12 @@ var (
 )
 
 type guidedServer struct {
-	workdir      string
-	instancePath string
-	configPath   string
-	executable   string
-	errorLog     *log.Logger
+	workdir        string
+	instancePath   string
+	configPath     string
+	executable     string
+	errorLog       *log.Logger
+	allowEphemeral bool
 
 	mu       sync.Mutex
 	job      *guidedJob
@@ -636,6 +638,13 @@ func (s *guidedServer) handleInitInstance(w http.ResponseWriter, r *http.Request
 	if !requireGuidedMethod(w, r, http.MethodPost) {
 		return
 	}
+	if err := s.checkInitTarget(r.Context()); err != nil {
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
+			Code:    "unsafe_init_target",
+			Message: err.Error(),
+		})
+		return
+	}
 	var input guidedInitInstanceRequest
 	if !decodeGuidedBody(w, r, &input) {
 		return
@@ -660,6 +669,9 @@ func (s *guidedServer) handleInitInstance(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
+	if s.allowEphemeral {
+		argv = append([]string{"init", "--allow-ephemeral"}, argv[1:]...)
+	}
 	result, err := s.execSync(r.Context(), argv...)
 	if err != nil {
 		writeGuidedExecFailure(w, err)
@@ -680,6 +692,13 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 		})
 		return
 	}
+	if err := s.checkInitTarget(r.Context()); err != nil {
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
+			Code:    "unsafe_init_target",
+			Message: err.Error(),
+		})
+		return
+	}
 	provider := strings.ToLower(strings.TrimSpace(input.Provider))
 	repoOwner := strings.TrimSpace(input.Owner)
 	repoProject := strings.TrimSpace(input.Project)
@@ -693,6 +712,7 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 			})
 			return
 		}
+
 		provider = identity.provider
 		repoOwner = identity.owner
 		repoProject = identity.project
@@ -803,6 +823,10 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 			configPath,
 		),
 	})
+}
+
+func (s *guidedServer) checkInitTarget(ctx context.Context) error {
+	return worktree.CheckInitTarget(ctx, s.instancePath, s.allowEphemeral)
 }
 
 func guidedRepositoryDisplayName(provider, owner, project, name string) string {

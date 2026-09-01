@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -36,6 +37,9 @@ type guidedRepositoryInspection struct {
 	NeedsClone           bool            `json:"needsClone"`
 	PeerConfigPath       string          `json:"peerConfigPath,omitempty"`
 	InRepoConfigPath     string          `json:"inRepoConfigPath,omitempty"`
+	Ephemeral            bool            `json:"ephemeral,omitempty"`
+	EphemeralReason      string          `json:"ephemeralReason,omitempty"`
+	SafeInstancePath     string          `json:"safeInstancePath,omitempty"`
 	Auth                 guidedAuthState `json:"auth"`
 }
 
@@ -91,6 +95,11 @@ func inspectGuidedLocalRepository(ctx context.Context, input string) (guidedRepo
 	inspection.LocalPath = root
 	inspection.PeerConfigPath = filepath.Join(filepath.Dir(root), filepath.Base(root)+"-goobers")
 	inspection.InRepoConfigPath = filepath.Join(root, "goobers")
+	if safety, safetyErr := worktree.InspectInitTarget(ctx, root); safetyErr == nil && safety.Ephemeral {
+		inspection.Ephemeral = true
+		inspection.EphemeralReason = safety.Reason
+		inspection.SafeInstancePath = worktree.RecommendedInstancePath(safety)
+	}
 	inspection.DefaultBranch, err = discoverLocalDefaultBranch(ctx, root)
 	if err != nil {
 		return guidedRepositoryInspection{}, err
