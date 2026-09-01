@@ -26,7 +26,6 @@ import (
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/executor"
 	"github.com/goobers/goobers/internal/instance"
-	"github.com/goobers/goobers/internal/worktree"
 	"github.com/goobers/goobers/providers"
 )
 
@@ -826,7 +825,7 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 }
 
 func (s *guidedServer) checkInitTarget(ctx context.Context) error {
-	return worktree.CheckInitTarget(ctx, s.instancePath, s.allowEphemeral)
+	return checkGuidedInitTarget(ctx, s.instancePath, s.allowEphemeral)
 }
 
 func guidedRepositoryDisplayName(provider, owner, project, name string) string {

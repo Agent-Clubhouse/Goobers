@@ -16,8 +16,9 @@ The guide uses the complete
 then removes workflows that are not needed for the first acceptance cycle.
 Finish the single-repository path before adding another gaggle.
 
-`goobers init --guided` follows the same convention: it loads the canonical
-work-nomination, backlog-curation, and implementation modules from
+`goobers init --guided --instance-path <durable-instance-root>` follows the
+same convention: it loads the canonical work-nomination, backlog-curation, and
+implementation modules from
 `config-examples/gaggles/acme-web`, then adapts repository identity, branch,
 issue scope, harness, CI command, and required capabilities from the choices
 and evidence collected by the wizard. It does not reuse the deliberately
@@ -122,7 +123,7 @@ GH_TOKEN="$GOOBERS_GITHUB_TOKEN" gh repo view "$GOOBERS_TARGET"
 ## 3. Initialize the instance
 
 ```sh
-goobers init --guided
+goobers init --guided --instance-path "$GOOBERS_INSTANCE"
 ```
 
 Provide the existing local clone for `$GOOBERS_TARGET`. The tutorial discovers

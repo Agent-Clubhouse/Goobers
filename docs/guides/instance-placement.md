@@ -31,9 +31,12 @@ Use a stable, user-owned instance root such as:
 C:\goobers\instances\widget\
 ```
 
-Run `goobers init ~/goobers/instances/widget` from the ephemeral checkout, or
-choose the same location in Getting Started. If the checkout is intentionally
-durable and its lifetime is managed separately, pass
+Run `goobers init ~/goobers/instances/widget` from the ephemeral checkout. For
+Getting Started, select that root explicitly with
+`goobers init --guided --instance-path ~/goobers/instances/widget`. On a
+GitHub-hosted runner, its session home is ephemeral too: choose a path on a
+persistent volume instead of relying on the `~/goobers` examples. If the
+checkout is intentionally durable and its lifetime is managed separately, pass
 `--allow-ephemeral` to acknowledge the risk. This override is deliberately
 explicit; it does not make the worktree persistent.
 
@@ -291,7 +294,7 @@ export GOOBERS_INSTANCE="$HOME/goobers/instances/hass-dreo"
 export GOOBERS_CONFIG_SOURCE="$HOME/src/hass-dreo-goobers-config"
 export GOOBERS_TARGET="JeffSteinbok/hass-dreo"
 
-goobers init --guided
+goobers init --guided --instance-path "$GOOBERS_INSTANCE"
 goobers validate --source-tree "$GOOBERS_CONFIG_SOURCE"
 goobers config materialize "$GOOBERS_INSTANCE"
 goobers validate "$GOOBERS_INSTANCE"

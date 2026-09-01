@@ -196,7 +196,8 @@ func TestGettingStartedRefusesUnsafeGuidedInstanceTarget(t *testing.T) {
 	}
 	response := decodeGuidedResponse[guidedErrorBody](t, recorder)
 	if response.Code != "unsafe_init_target" ||
-		!strings.Contains(response.Message, "--allow-ephemeral") {
+		!strings.Contains(response.Message, "--allow-ephemeral") ||
+		!strings.Contains(response.Message, `goobers init --guided --instance-path "`+server.instancePath+`" --allow-ephemeral`) {
 		t.Fatalf("response = %+v, want actionable unsafe-target refusal", response)
 	}
 	if _, err := os.Stat(server.instancePath); !os.IsNotExist(err) {

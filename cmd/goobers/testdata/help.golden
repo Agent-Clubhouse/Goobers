@@ -1246,14 +1246,15 @@ lookup, always forcing a fresh review. Exit codes: 0 = context gathered
 2 = usage/IO error.
 
 ### init
-Usage: goobers init [--allow-ephemeral] [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
 placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
 gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
 untouched.
---guided opens the browser-based setup for a real repository and instance.
+--guided opens the browser-based setup for a real repository and instance;
+use --instance-path to select its instance root.
 It prepares and validates configuration but does not run a workflow.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead

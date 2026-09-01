@@ -59,6 +59,60 @@ func TestInspectInitTargetDetectsHostedWorkspaceMarker(t *testing.T) {
 	}
 }
 
+func TestInspectInitTargetDetectsGitHubHostedRunnerOutsideWorkspace(t *testing.T) {
+	home := t.TempDir()
+	target := filepath.Join(home, "goobers", "instances", "widget")
+	t.Setenv("HOME", home)
+	t.Setenv("RUNNER_ENVIRONMENT", "github-hosted")
+
+	safety, err := InspectInitTarget(context.Background(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !safety.Ephemeral || !safety.HostedSession {
+		t.Fatalf("safety = %+v, want GitHub-hosted ephemeral target", safety)
+	}
+	if !strings.Contains(safety.Reason, "GitHub-hosted runner") {
+		t.Fatalf("reason = %q, want GitHub-hosted runner", safety.Reason)
+	}
+	recommended := RecommendedInstancePath(safety)
+	if containedPath(home, recommended) || strings.Contains(recommended, home) {
+		t.Fatalf("recommended path = %q, must not use hosted home %q", recommended, home)
+	}
+	if err := CheckInitTarget(context.Background(), target, false); err == nil ||
+		!strings.Contains(err.Error(), "--allow-ephemeral") {
+		t.Fatalf("CheckInitTarget error = %v, want explicit override", err)
+	}
+}
+
+func TestInspectInitTargetDetectsLinkedWorktreeAroundNestedRepository(t *testing.T) {
+	repository := t.TempDir()
+	runInitSafetyTestGit(t, repository, "init", "-b", "main")
+	runInitSafetyTestGit(t, repository, "config", "user.email", "test@example.com")
+	runInitSafetyTestGit(t, repository, "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(repository, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runInitSafetyTestGit(t, repository, "add", "README.md")
+	runInitSafetyTestGit(t, repository, "commit", "-m", "initial")
+
+	linked := filepath.Join(t.TempDir(), "session-worktree")
+	runInitSafetyTestGit(t, repository, "worktree", "add", "-b", "session", linked, "main")
+	nested := filepath.Join(linked, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runInitSafetyTestGit(t, nested, "init", "-b", "main")
+
+	safety, err := InspectInitTarget(context.Background(), filepath.Join(nested, "instance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !safety.Ephemeral || !safety.LinkedWorktree || safety.RepositoryRoot != linked {
+		t.Fatalf("safety = %+v, want containing linked worktree %q", safety, linked)
+	}
+}
+
 func TestInspectInitTargetAllowsOrdinaryDirectory(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "instance")
 	safety, err := InspectInitTarget(context.Background(), target)

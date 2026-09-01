@@ -18,6 +18,7 @@ type InitTargetSafety struct {
 	RepositoryRoot string
 	EphemeralRoot  string
 	LinkedWorktree bool
+	HostedSession  bool
 	Ephemeral      bool
 	Reason         string
 }
@@ -31,10 +32,11 @@ type UnsafeInitTargetError struct {
 
 func (e *UnsafeInitTargetError) Error() string {
 	return fmt.Sprintf(
-		"refusing to initialize Goobers at %s: %s; durable instance state must not live in an ephemeral checkout. Use a safe instance root such as %s, keep checked-in repository configuration in a separate source path, or rerun with --allow-ephemeral if this location is intentionally persistent",
+		"refusing to initialize Goobers at %s: %s; durable instance state must not live in an ephemeral checkout. Use a safe instance root such as %s, keep checked-in repository configuration in a separate source path, or rerun `goobers init --allow-ephemeral %q` if this location is intentionally persistent",
 		e.Safety.Path,
 		e.Safety.Reason,
 		e.SafePath,
+		e.Safety.Path,
 	)
 }
 
@@ -87,6 +89,12 @@ func InspectInitTarget(ctx context.Context, target string) (InitTargetSafety, er
 	if safety.Ephemeral {
 		return safety, nil
 	}
+	if hosted, reason := hostedInitSession(); hosted {
+		safety.HostedSession = true
+		safety.Ephemeral = true
+		safety.Reason = reason
+		return safety, nil
+	}
 
 	for _, marker := range []struct {
 		name  string
@@ -117,6 +125,7 @@ func InspectInitTarget(ctx context.Context, target string) (InitTargetSafety, er
 
 func inspectGitWorktree(ctx context.Context, path string) (root string, linked, ok bool) {
 	probe := path
+	var nearestRoot string
 	for {
 		info, err := os.Stat(probe)
 		if err == nil {
@@ -127,6 +136,9 @@ func inspectGitWorktree(ctx context.Context, path string) (root string, linked, 
 			rootOutput, rootErr := runInitSafetyGit(ctx, probe, "rev-parse", "--show-toplevel")
 			if rootErr == nil {
 				root = canonicalInitPath(strings.TrimSpace(rootOutput))
+				if nearestRoot == "" {
+					nearestRoot = root
+				}
 				gitDir, gitDirErr := runInitSafetyGit(ctx, probe, "rev-parse", "--git-dir")
 				commonDir, commonDirErr := runInitSafetyGit(ctx, probe, "rev-parse", "--git-common-dir")
 				if gitDirErr == nil && commonDirErr == nil {
@@ -134,17 +146,36 @@ func inspectGitWorktree(ctx context.Context, path string) (root string, linked, 
 					commonDir = canonicalGitPath(probe, strings.TrimSpace(commonDir))
 					linked = !sameInitPath(gitDir, commonDir)
 				}
-				return root, linked, true
+				if linked {
+					return root, true, true
+				}
+				parent := filepath.Dir(root)
+				if parent == root {
+					return nearestRoot, false, true
+				}
+				probe = parent
+				continue
 			}
 		} else if !os.IsNotExist(err) {
-			return "", false, false
+			break
 		}
 		parent := filepath.Dir(probe)
 		if parent == probe {
-			return "", false, false
+			break
 		}
 		probe = parent
 	}
+	return nearestRoot, false, nearestRoot != ""
+}
+
+// hostedInitSession identifies GitHub's managed runner environment independently
+// from its checkout directories. A GitHub-hosted runner's home is destroyed with
+// the runner too, so paths outside GITHUB_WORKSPACE are not durable by default.
+func hostedInitSession() (bool, string) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("RUNNER_ENVIRONMENT")), "github-hosted") {
+		return true, "this command is running on a GitHub-hosted runner, whose local filesystem is ephemeral"
+	}
+	return false, ""
 }
 
 func runInitSafetyGit(ctx context.Context, directory string, args ...string) (string, error) {
@@ -215,6 +246,9 @@ func canonicalSafeInstancePath(safety InitTargetSafety) string {
 		}
 	} else if base := filepath.Base(safety.Path); base != "" && base != "." && base != string(filepath.Separator) {
 		name = base
+	}
+	if safety.HostedSession {
+		return filepath.Join("<persistent-volume>", "goobers", "instances", name)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {

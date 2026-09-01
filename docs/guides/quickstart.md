@@ -250,12 +250,13 @@ bin/goobers validate --source-tree --json ./tutorial-config
 ```
 
 The browser wizard is intentionally not an alternative tutorial. Use
-`goobers init --guided` when you are ready to configure a real
+`goobers init --guided --instance-path <durable-instance-root>` when you are ready to configure a real
 repository with the production-oriented canonical workflow modules.
 
 The tutorial is complete after this disposable run. Do not promote the
 `quickstart@v1` workflow into production: it intentionally omits safeguards.
-To configure a real repository, use `goobers init --guided` and
+To configure a real repository, use
+`goobers init --guided --instance-path <durable-instance-root>` and
 [Onboard an arbitrary repository](https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md).
 
 For reference, the production-oriented path starts from the
@@ -276,13 +277,14 @@ Start the focused browser walkthrough:
 
 ```sh
 export PATH="$PWD/bin:$PATH"
-goobers init --guided
+goobers init --guided --instance-path ~/goobers/instances/my-repository
 ```
 
 Provide an existing local Git clone. Getting Started supports GitHub and Azure
 DevOps, discovers repository identity, default branch, CI command, toolchain,
 and existing CLI authentication, then asks only for configuration placement,
-workflow behavior, and agent harness choices that cannot be derived.
+workflow behavior, and agent harness choices that cannot be derived. The
+`--instance-path` value selects the runtime instance root.
 
 The workflow choices are adapted from the canonical modules under
 [`config-examples/gaggles/acme-web`](../../config-examples/gaggles/acme-web/),
