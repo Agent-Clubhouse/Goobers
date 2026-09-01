@@ -151,7 +151,10 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 		// only then creates the worktree with SyncBase, so the merge lands on
 		// the branch as the stage will see it. Reversing the two would merge
 		// base into a branch the delta is about to reset away from.
-		return syncWorkspaceBase(ctx, dir, gitEnv, stderr, branch, base)
+		if err := syncWorkspaceBase(ctx, dir, gitEnv, stderr, branch, base); err != nil {
+			return err
+		}
+		return recordStagePublishBase(ctx, dir, gitEnv, stderr)
 	}
 	// A REBOUND branch this pod could not clone is a refusal, not a fallback
 	// (#392). The fallback below creates the branch locally at base, which is
@@ -195,7 +198,10 @@ func checkoutRepoWorkspace(ctx context.Context, dir string, stderr io.Writer, cr
 	if err := runGit(ctx, dir, gitEnv, stderr, "checkout", "--quiet", "-b", branch); err != nil {
 		return fmt.Errorf("create run branch %s: %w", branch, err)
 	}
-	return applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr)
+	if err := applyStageWorkspaceDelta(ctx, dir, gitEnv, stderr); err != nil {
+		return err
+	}
+	return recordStagePublishBase(ctx, dir, gitEnv, stderr)
 }
 
 // applyStageWorkspaceDelta moves the freshly-checked-out branch onto whatever
