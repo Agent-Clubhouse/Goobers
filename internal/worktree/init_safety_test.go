@@ -3,10 +3,11 @@ package worktree
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // TestMain keeps ordinary fixture directories ordinary even when the suite is
@@ -136,7 +137,7 @@ func TestInspectInitTargetAllowsOrdinaryDirectory(t *testing.T) {
 
 func runInitSafetyTestGit(t *testing.T, directory string, args ...string) {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-C", directory}, args...)...)
+	command := testgit.Command(append([]string{"-C", directory}, args...)...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}

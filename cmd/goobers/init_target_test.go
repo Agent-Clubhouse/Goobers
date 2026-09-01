@@ -2,10 +2,11 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // seedSourceCheckoutCwd builds a directory shaped like a fresh clone of this
@@ -123,7 +124,7 @@ func seedGitInitTargetRepository(t *testing.T) string {
 
 func runInitTargetGit(t *testing.T, directory string, args ...string) {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-C", directory}, args...)...)
+	command := testgit.Command(append([]string{"-C", directory}, args...)...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
