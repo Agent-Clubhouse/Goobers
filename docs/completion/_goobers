@@ -49,7 +49,7 @@ _goobers_completion()
             flags+=(--json)
             ;;
         init)
-            flags+=(--guided --port --no-open --workdir --demo --insecure --template --source-tree --json)
+            flags+=(--guided --port --no-open --workdir --demo --insecure --template --harness --source-tree --json)
             ;;
         connect)
             flags+=(--token-env --seed --replace --json)
@@ -100,6 +100,12 @@ _goobers_completion()
             case "${words[3]:-}" in
                 preflight) flags+=(--json) ;;
                 test) flags+=(--json) ;;
+            esac
+            ;;
+        fleet)
+            case "${words[3]:-}" in
+                join) flags+=(--url --enrollment-token-file --grant-local-admin --no-grant-local-admin) ;;
+                status) flags+=(--json) ;;
             esac
             ;;
         up)
@@ -304,6 +310,13 @@ _goobers_completion()
         speech)
             if (( CURRENT == 3 )); then
                 candidates=(preflight test)
+                _describe -V 'command' candidates
+                return
+            fi
+            ;;
+        fleet)
+            if (( CURRENT == 3 )); then
+                candidates=(join status leave)
                 _describe -V 'command' candidates
                 return
             fi

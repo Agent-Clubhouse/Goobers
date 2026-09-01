@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/goobers/goobers/internal/blockedcycle"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/stateclient"
 	"github.com/goobers/goobers/providers"
@@ -42,237 +43,61 @@ type blockedRecord struct {
 	RecordedAt time.Time               `json:"recordedAt"`
 }
 
-const maxBlockedCyclePaths = 3
+// blockedCycleNode and blockedCycleResult are the cycle detector's own types
+// (internal/blockedcycle), aliased here so this package's blocked-record
+// plumbing keeps reading in its own vocabulary.
+type blockedCycleNode = blockedcycle.Node
 
-type blockedCycleNode struct {
-	Repository providers.RepositoryRef
-	ItemID     string
-}
+type blockedCycleResult = blockedcycle.Result
 
-type blockedCycleEdge struct {
-	From blockedCycleNode
-	To   blockedCycleNode
-}
+const maxBlockedCyclePaths = blockedcycle.MaxPaths
 
-type blockedCycleResult struct {
-	Affected  []blockedCycleNode
-	Paths     [][]string
-	MorePaths bool
-}
-
-// buildBlockedCycleGraph turns the recorded blocks into a forward graph (item
-// -> its blockers) and the corresponding reverse graph, shared by
-// findBlockedCycle (one node's SCC) and findAllBlockedCycles (every SCC in the
-// current state). Graph keys are only items that carry their own record; a
-// node referenced solely as someone else's blocker (never itself recorded,
-// e.g. an external one-way dependency) has no outgoing edges and so can never
-// itself seed or complete a cycle.
-func buildBlockedCycleGraph(recs map[string]blockedRecord) (graph, reverseGraph map[blockedCycleNode][]blockedCycleNode) {
+// blockedCycleRecords projects the recorded blocks onto the detector's input:
+// repository-scoped, provider-lookup-normalized ids in deterministic key
+// order, skipping records that carry no repository scoping.
+func blockedCycleRecords(recs map[string]blockedRecord) []blockedcycle.Record {
 	keys := make([]string, 0, len(recs))
 	for key := range recs {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 
-	graph = make(map[blockedCycleNode][]blockedCycleNode, len(recs))
-	edgeSeen := make(map[blockedCycleNode]map[blockedCycleNode]bool, len(recs))
+	records := make([]blockedcycle.Record, 0, len(keys))
 	for _, key := range keys {
 		rec := recs[key]
 		if blockedRepositoryEmpty(rec.Repository) {
 			continue
 		}
-		node := blockedCycleNode{
+		blockers := make([]string, len(rec.Blockers))
+		for i, blockerID := range rec.Blockers {
+			blockers[i] = blockedLookupID(blockerID)
+		}
+		records = append(records, blockedcycle.Record{
 			Repository: rec.Repository,
 			ItemID:     blockedLookupID(blockedRecordItemID(key, rec)),
-		}
-		if _, ok := graph[node]; !ok {
-			graph[node] = nil
-		}
-		if edgeSeen[node] == nil {
-			edgeSeen[node] = make(map[blockedCycleNode]bool)
-		}
-		for _, blockerID := range rec.Blockers {
-			blocker := blockedCycleNode{
-				Repository: rec.Repository,
-				ItemID:     blockedLookupID(blockerID),
-			}
-			if !edgeSeen[node][blocker] {
-				graph[node] = append(graph[node], blocker)
-				edgeSeen[node][blocker] = true
-			}
-		}
+			Blockers:   blockers,
+		})
 	}
-
-	reverseGraph = make(map[blockedCycleNode][]blockedCycleNode, len(graph))
-	for from, edges := range graph {
-		if _, ok := reverseGraph[from]; !ok {
-			reverseGraph[from] = nil
-		}
-		for _, to := range edges {
-			reverseGraph[to] = append(reverseGraph[to], from)
-		}
-	}
-	return graph, reverseGraph
+	return records
 }
 
-// findBlockedCycle identifies the strongly connected component containing the
-// newly recorded item. Forward/reverse reachability is linear in graph size;
-// representative shortest paths are capped so dense graphs cannot trigger the
-// factorial path enumeration the blocked handler previously performed.
+// findBlockedCycle identifies the cycle containing the newly recorded item.
 func findBlockedCycle(recs map[string]blockedRecord, itemKey string) blockedCycleResult {
 	record, ok := recs[itemKey]
 	if !ok || blockedRepositoryEmpty(record.Repository) {
 		return blockedCycleResult{}
 	}
-	graph, reverseGraph := buildBlockedCycleGraph(recs)
 	item := blockedCycleNode{
 		Repository: record.Repository,
 		ItemID:     blockedLookupID(blockedRecordItemID(itemKey, record)),
 	}
-	return blockedCycleResultForNode(graph, reverseGraph, item)
+	return blockedcycle.Find(blockedCycleRecords(recs), item)
 }
 
-// findAllBlockedCycles enumerates every strongly connected component of size
-// >1 (or self-loop) currently present in recs — every active cycle, not just
-// the one touching a single just-written key.
-//
-// Why this exists (#1405): findBlockedCycle answers "is THIS item's write
-// part of a cycle right now", which is correct at the instant it runs but
-// only runs when that item's own blocked-handler fires — and a fully
-// skip-parked cycle member is never reclaimed again by design (#552), so its
-// handler never re-fires to notice a cycle sibling whose escalation later
-// drifted (a human override, a stale re-curation pass, anything that reset
-// one member's labels without any new blocked-record write). Reconciliation
-// against DRIFT has to be driven from something that runs on every tick
-// regardless of claim state — the backlog-query eligibility scan already is
-// that — so it needs the full current cycle set, not one node's.
+// findAllBlockedCycles enumerates every cycle currently present in recs, not
+// just the one touching a single just-written key (#1405).
 func findAllBlockedCycles(recs map[string]blockedRecord) []blockedCycleResult {
-	graph, reverseGraph := buildBlockedCycleGraph(recs)
-
-	nodes := make([]blockedCycleNode, 0, len(graph))
-	for node := range graph {
-		nodes = append(nodes, node)
-	}
-	sort.Slice(nodes, func(i, j int) bool {
-		if left, right := blockedRepositoryIdentity(nodes[i].Repository), blockedRepositoryIdentity(nodes[j].Repository); left != right {
-			return left < right
-		}
-		return nodes[i].ItemID < nodes[j].ItemID
-	})
-
-	seen := make(map[blockedCycleNode]bool, len(nodes))
-	var cycles []blockedCycleResult
-	for _, node := range nodes {
-		if seen[node] {
-			continue
-		}
-		result := blockedCycleResultForNode(graph, reverseGraph, node)
-		if len(result.Affected) == 0 {
-			seen[node] = true
-			continue
-		}
-		for _, member := range result.Affected {
-			seen[member] = true
-		}
-		cycles = append(cycles, result)
-	}
-	return cycles
-}
-
-// blockedCycleResultForNode computes item's strongly connected component
-// (forward reachability ∩ backward reachability) and, when that component is
-// a real cycle (size >1, or a direct self-loop), the affected member list and
-// representative paths blockedCycleComments reports.
-func blockedCycleResultForNode(
-	graph, reverseGraph map[blockedCycleNode][]blockedCycleNode,
-	item blockedCycleNode,
-) blockedCycleResult {
-	forward := reachableBlockedNodes(graph, item)
-	backward := reachableBlockedNodes(reverseGraph, item)
-
-	component := make(map[blockedCycleNode]bool)
-	for node := range forward {
-		if backward[node] {
-			component[node] = true
-		}
-	}
-	if len(component) == 1 && !slices.Contains(graph[item], item) {
-		return blockedCycleResult{}
-	}
-
-	affected := []blockedCycleNode{item}
-	var others []blockedCycleNode
-	for node := range component {
-		if node != item {
-			others = append(others, node)
-		}
-	}
-	sort.Slice(others, func(i, j int) bool {
-		if left, right := blockedRepositoryIdentity(others[i].Repository), blockedRepositoryIdentity(others[j].Repository); left != right {
-			return left < right
-		}
-		return others[i].ItemID < others[j].ItemID
-	})
-	affected = append(affected, others...)
-
-	var paths [][]string
-	coveredNodes := map[blockedCycleNode]bool{item: true}
-	coveredEdges := make(map[blockedCycleEdge]bool)
-	appendPath := func(nodes []blockedCycleNode) {
-		path := make([]string, len(nodes))
-		for i, node := range nodes {
-			path[i] = node.ItemID
-			coveredNodes[node] = true
-			if i > 0 {
-				coveredEdges[blockedCycleEdge{From: nodes[i-1], To: node}] = true
-			}
-		}
-		paths = append(paths, path)
-	}
-
-	if len(component) == 1 {
-		appendPath([]blockedCycleNode{item, item})
-	} else {
-		for _, member := range affected[1:] {
-			if coveredNodes[member] || len(paths) == maxBlockedCyclePaths {
-				continue
-			}
-			outbound, found := shortestBlockedPath(graph, item, member, component)
-			if !found {
-				continue
-			}
-			inbound, found := shortestBlockedPath(graph, member, item, component)
-			if !found {
-				continue
-			}
-			appendPath(append(outbound, inbound[1:]...))
-		}
-	}
-
-	morePaths := false
-	for node := range component {
-		if !coveredNodes[node] {
-			morePaths = true
-			break
-		}
-	}
-	if !morePaths {
-		for from, edges := range graph {
-			if !component[from] {
-				continue
-			}
-			for _, to := range edges {
-				if component[to] && !coveredEdges[blockedCycleEdge{From: from, To: to}] {
-					morePaths = true
-					break
-				}
-			}
-			if morePaths {
-				break
-			}
-		}
-	}
-	return blockedCycleResult{Affected: affected, Paths: paths, MorePaths: morePaths}
+	return blockedcycle.FindAll(blockedCycleRecords(recs))
 }
 
 // reconcileBlockedCycleLabels is the ongoing, tick-driven half of the
@@ -325,7 +150,7 @@ func reconcileBlockedCycleLabels(
 			// Computed lazily and once per cycle: most ticks find every member
 			// already escalated and never need it.
 			if comments == nil {
-				comments = blockedCycleComments(cycle)
+				comments = blockedcycle.Comments(cycle)
 			}
 			for _, comment := range comments {
 				req := withNeedsHumanAssignee(providers.UpdateWorkItemRequest{
@@ -343,54 +168,6 @@ func reconcileBlockedCycleLabels(
 		}
 	}
 	return warnings
-}
-
-func reachableBlockedNodes(graph map[blockedCycleNode][]blockedCycleNode, start blockedCycleNode) map[blockedCycleNode]bool {
-	reached := map[blockedCycleNode]bool{start: true}
-	queue := []blockedCycleNode{start}
-	for len(queue) > 0 {
-		node := queue[0]
-		queue = queue[1:]
-		for _, next := range graph[node] {
-			if reached[next] {
-				continue
-			}
-			reached[next] = true
-			queue = append(queue, next)
-		}
-	}
-	return reached
-}
-
-func shortestBlockedPath(graph map[blockedCycleNode][]blockedCycleNode, start, target blockedCycleNode, allowed map[blockedCycleNode]bool) ([]blockedCycleNode, bool) {
-	if start == target {
-		return []blockedCycleNode{target}, true
-	}
-	seen := map[blockedCycleNode]bool{start: true}
-	previous := make(map[blockedCycleNode]blockedCycleNode)
-	queue := []blockedCycleNode{start}
-	for len(queue) > 0 {
-		node := queue[0]
-		queue = queue[1:]
-		for _, next := range graph[node] {
-			if !allowed[next] || seen[next] {
-				continue
-			}
-			seen[next] = true
-			previous[next] = node
-			if next == target {
-				path := []blockedCycleNode{target}
-				for current := target; current != start; {
-					current = previous[current]
-					path = append(path, current)
-				}
-				slices.Reverse(path)
-				return path, true
-			}
-			queue = append(queue, next)
-		}
-	}
-	return nil, false
 }
 
 type blockedEligibilitySkip struct {
@@ -420,18 +197,7 @@ func (s blockedEligibilitySkip) reason() string {
 }
 
 func blockedRepositoryIdentity(repo providers.RepositoryRef) string {
-	if blockedRepositoryEmpty(repo) {
-		return ""
-	}
-	parts := []string{string(repo.Provider), repo.Owner}
-	if repo.Project != "" {
-		parts = append(parts, repo.Project)
-	}
-	parts = append(parts, repo.Name)
-	for i := range parts {
-		parts[i] = url.PathEscape(parts[i])
-	}
-	return strings.Join(parts, "/")
+	return blockedcycle.RepositoryIdentity(repo)
 }
 
 func blockedRecordKey(repo providers.RepositoryRef, itemID string) string {
@@ -446,7 +212,7 @@ func blockedRecordItemID(key string, rec blockedRecord) string {
 }
 
 func blockedRepositoryEmpty(repo providers.RepositoryRef) bool {
-	return repo.Provider == "" && repo.Owner == "" && repo.Project == "" && repo.Name == ""
+	return blockedcycle.RepositoryEmpty(repo)
 }
 
 func sameBlockedRepository(a, b providers.RepositoryRef) bool {

@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/instance"
 )
 
@@ -91,6 +92,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "demo", desc: "Seed a credential-free runnable demo workflow"},
 		{name: "insecure", desc: "Allow an unisolated Windows demo"},
 		{name: "template", takesArg: true, values: []string{instance.QuickstartTemplate}, desc: "Seed a named onboarding template"},
+		{name: "harness", takesArg: true, values: []string{string(apiv1.HarnessCopilot), string(apiv1.HarnessClaudeCode)}, desc: "With --template=quickstart, the harness every seeded goober uses"},
 		{name: "source-tree", takesArg: true, desc: "Seed the template as a checked-in config source"},
 		{name: "json", desc: "Emit the config-source action result as JSON"},
 	},
@@ -226,6 +228,15 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "json", desc: "Emit JSON"},
 	},
 	"speech test": {
+		{name: "json", desc: "Emit JSON"},
+	},
+	"fleet join": {
+		{name: "url", takesArg: true, desc: "Fleet service URL"},
+		{name: "enrollment-token-file", takesArg: true, desc: "Private file containing the one-time enrollment grant"},
+		{name: "grant-local-admin", desc: "Grant the discovered local administrator instance:read"},
+		{name: "no-grant-local-admin", desc: "Explicitly enroll with an empty ACL"},
+	},
+	"fleet status": {
 		{name: "json", desc: "Emit JSON"},
 	},
 	"dashboard": {

@@ -92,9 +92,10 @@ const (
 	quickstartSourceOnboardingAssets = "Next, use the versioned `quickstart@v1` template for a first autonomous run\n" +
 		"against a disposable GitHub repository you control. This path requires a\n" +
 		"GitHub token and an authenticated agent harness. The shipped template's\n" +
-		"goobers default to `harness: copilot`; to run it on Claude Code instead, set\n" +
-		"`harness: claude-code` in `./tutorial-instance/config/gaggles/example/goobers/{implementer,reviewer}/goober.yaml`\n" +
-		"after materializing the instance below (see\n" +
+		"goobers default to `harness: copilot`; to run it on Claude Code instead, pass\n" +
+		"`--harness claude-code` to the `goobers init --template=quickstart` command\n" +
+		"below, which seeds every goober with that harness and needs no `goober.yaml`\n" +
+		"edit (see\n" +
 		"[`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)\n" +
 		"for a full claude-code gaggle reference).\n\n" +
 		"### Check prerequisites\n\n" +
@@ -155,10 +156,23 @@ const (
 		"   ```\n\n" +
 		"   Already have a disposable repository you'd rather reuse? Skip this step\n" +
 		"   and use its `<owner>/<repo>` below instead.\n\n" +
-		"2. Export a GitHub token with repo/issues access, once, under the name\n" +
-		"   `connect` expects by default:\n\n" +
+		"2. Create a fine-grained GitHub PAT in\n" +
+		"   [GitHub's token settings](https://github.com/settings/personal-access-tokens/new).\n" +
+		"   **Set Resource owner to the account or organization that owns\n" +
+		"   `<owner>/<repo>` (for example, `odsp-microsoft`); keep the default personal\n" +
+		"   account when it owns the repository.** Choose **Only select repositories**\n" +
+		"   and select exactly the disposable repository. Grant only **Contents: Read\n" +
+		"   and write**, **Issues: Read and write**, and **Pull requests: Read and\n" +
+		"   write**. For an organization-owned repository, the organization owner may\n" +
+		"   need to approve the token before it works; request or wait for approval\n" +
+		"   before `connect --seed`. Then export it once under the name `connect`\n" +
+		"   expects by default:\n\n" +
 		"   ```sh\n" +
 		"   export GOOBERS_GITHUB_TOKEN=<your token>\n" +
+		"   ```\n\n" +
+		"   PowerShell:\n\n" +
+		"   ```powershell\n" +
+		"   $env:GOOBERS_GITHUB_TOKEN = \"<your token>\"\n" +
 		"   ```\n\n" +
 		"3. Point the instance at the repository, and seed it in the same step:\n\n" +
 		"   ```sh\n" +

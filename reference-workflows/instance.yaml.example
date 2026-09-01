@@ -133,3 +133,18 @@ runner:
 # mirrors are never migrated either way.
 # workcopies:
 #   partialClone: true
+
+# Optional baselineHealth block (#2971). With `enabled: true`, a failing
+# local-ci stage is first compared against the target branch at the pinned base
+# SHA by running the same command there; the measurement is cached per base
+# commit, so only the first affected run pays for it. A failure the base
+# reproduces identically is classified as a shared baseline failure: the run
+# parks against one durable shared blocker instead of spending a repass that
+# can only re-derive an empty diff, and it is retried automatically once the
+# base advances or the baseline goes green. `sharedRepairLane: true` instead
+# lets affected branches carry the repair — off by default so an unrelated fix
+# is never added to a feature branch behind its author's back.
+# baselineHealth:
+#   enabled: true
+#   sharedRepairLane: false
+#   probeTimeoutSeconds: 2400

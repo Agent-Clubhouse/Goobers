@@ -1,6 +1,7 @@
-# Goobers operator (k8s-infra-shape.md §2: Deployment, 1 replica, leader-elect;
-# reconciles Goobers CRDs -> runtime, DEP-012). The image is the shared goobers
-# image (packaging/docker/Dockerfile) with the operator entrypoint.
+# Goobers operator (k8s-infra-shape.md §2: Deployment, 1 replica once enabled,
+# leader-elect; reconciles Goobers CRDs -> runtime, DEP-012). The image is the
+# shared goobers image (packaging/docker/Dockerfile) with the operator
+# entrypoint.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,7 +11,14 @@ metadata:
     app.kubernetes.io/name: goobers-operator
     app.kubernetes.io/component: operator
 spec:
-  replicas: 1
+  # Disabled in the reference base: internal/operator is quarantined Tier-3
+  # (V2, not on the V0 path — see the package doc and docs/ARCHITECTURE.md
+  # §11), and its reconciler schedules ghcr.io/goobers/goober-runtime:latest,
+  # which nothing in this repository builds or publishes. Running it would
+  # reconcile Gaggle CRDs into ImagePullBackOff Deployments.
+  # CHANGE-ME: enable replicas only once the operator leaves quarantine and
+  # the runtime image it schedules is published.
+  replicas: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: goobers-operator

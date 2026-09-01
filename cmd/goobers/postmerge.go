@@ -523,8 +523,22 @@ func unparkSelfHealedEscalationsFrom(ctx context.Context, provider remediationPr
 		if stillBlocked {
 			continue
 		}
+		// One mutation, both halves. escalate() removes needsRemediationLabel
+		// when it parks the PR, so lifting the park without restoring it
+		// leaves the PR in NEITHER lane: remediationPriorityFor returns none
+		// (no label, CI green) and pr-select skips a still-demoted PR whose
+		// head never advances -- because nothing remediates it. #4109 caught
+		// #3891 and #3900 in exactly that state for a day and a half.
+		//
+		// record-merge-refusal already sets the contract for this handoff: it
+		// applies {mergeDemotedLabel, needsRemediationLabel} together so the
+		// demoted lander has a path to move its head. A self-healed escalation
+		// is the same handoff.
 		if _, err := provider.UpdateWorkItem(ctx, providers.UpdateWorkItemRequest{
-			Repository: repo, ID: strconv.Itoa(pr.Number), RemoveLabels: []string{remediationEscalatedLabel},
+			Repository:   repo,
+			ID:           strconv.Itoa(pr.Number),
+			RemoveLabels: []string{remediationEscalatedLabel},
+			AddLabels:    []string{needsRemediationLabel},
 		}); err != nil {
 			errs = append(errs, fmt.Errorf("clear %s from pr #%d: %w", remediationEscalatedLabel, pr.Number, err))
 			continue
@@ -547,7 +561,7 @@ func unparkSelfHealedDemotions(ctx context.Context, provider remediationProvider
 		return nil, nil
 	}
 	others, err := provider.ListPullRequests(ctx, providers.ListPullRequestsRequest{
-		Repository: repo, Base: base, HeadPrefix: "goobers/", SkipCheckState: true,
+		Repository: repo, Base: base, HeadPrefix: providerBranchNamespace(), SkipCheckState: true,
 	})
 	if err != nil {
 		errs = append(errs, fmt.Errorf("list open pull requests targeting %s for merge-demoted unpark: %w", base, err))

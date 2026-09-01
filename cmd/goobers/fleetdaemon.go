@@ -1,0 +1,61 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/goobers/goobers/internal/fleet"
+	"github.com/goobers/goobers/internal/version"
+)
+
+var newDaemonFleetConnector = func(storage fleet.Storage, root string) interface{ Run(context.Context) error } {
+	return fleet.NewConnector(storage, root, version.Get().Version)
+}
+
+// startDaemonFleetConnector returns started=false when the instance has no
+// active Fleet association. When started=true, callers must receive from done
+// during shutdown. The connector itself distinguishes normal leave/revoke
+// termination from unrecoverable storage or credential errors.
+func startDaemonFleetConnector(ctx context.Context, root string) (<-chan error, bool, error) {
+	storage, err := newFleetStorage()
+	if err != nil {
+		return nil, false, err
+	}
+	record, err := storage.Load(root)
+	if errors.Is(err, fleet.ErrNotAssociated) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if record.Association.Revoked {
+		return nil, false, nil
+	}
+	done := make(chan error, 1)
+	connector := newDaemonFleetConnector(storage, root)
+	go func() {
+		done <- daemonFleetConnectorResult(ctx, storage, root, connector.Run(ctx))
+	}()
+	return done, true, nil
+}
+
+func daemonFleetConnectorResult(ctx context.Context, storage fleet.Storage, root string, runErr error) error {
+	if runErr != nil || ctx.Err() != nil {
+		return runErr
+	}
+	association, err := storage.LoadAssociation(root)
+	if errors.Is(err, fleet.ErrNotAssociated) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect stopped Fleet connector: %w", err)
+	}
+	if association.Revoked {
+		if association.RevokeReason != "" {
+			return fmt.Errorf("fleet registration revoked: %s", association.RevokeReason)
+		}
+		return fmt.Errorf("fleet registration revoked")
+	}
+	return nil
+}

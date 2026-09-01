@@ -95,9 +95,10 @@ bin/goobers trace <run-id> ./demo-instance
 Next, use the versioned `quickstart@v1` template for a first autonomous run
 against a disposable GitHub repository you control. This path requires a
 GitHub token and an authenticated agent harness. The shipped template's
-goobers default to `harness: copilot`; to run it on Claude Code instead, set
-`harness: claude-code` in `./tutorial-instance/config/gaggles/example/goobers/{implementer,reviewer}/goober.yaml`
-after materializing the instance below (see
+goobers default to `harness: copilot`; to run it on Claude Code instead, pass
+`--harness claude-code` to the `goobers init --template=quickstart` command
+below, which seeds every goober with that harness and needs no `goober.yaml`
+edit (see
 [`config-examples/gaggles/acme-web-claude`](https://github.com/Agent-Clubhouse/Goobers/blob/main/config-examples/gaggles/acme-web-claude/)
 for a full claude-code gaggle reference).
 
@@ -175,11 +176,26 @@ with a real one.
    Already have a disposable repository you'd rather reuse? Skip this step
    and use its `<owner>/<repo>` below instead.
 
-2. Export a GitHub token with repo/issues access, once, under the name
-   `connect` expects by default:
+2. Create a fine-grained GitHub PAT in
+   [GitHub's token settings](https://github.com/settings/personal-access-tokens/new).
+   **Set Resource owner to the account or organization that owns
+   `<owner>/<repo>` (for example, `odsp-microsoft`); keep the default personal
+   account when it owns the repository.** Choose **Only select repositories**
+   and select exactly the disposable repository. Grant only **Contents: Read
+   and write**, **Issues: Read and write**, and **Pull requests: Read and
+   write**. For an organization-owned repository, the organization owner may
+   need to approve the token before it works; request or wait for approval
+   before `connect --seed`. Then export it once under the name `connect`
+   expects by default:
 
    ```sh
    export GOOBERS_GITHUB_TOKEN=<your token>
+   ```
+
+   PowerShell:
+
+   ```powershell
+   $env:GOOBERS_GITHUB_TOKEN = "<your token>"
    ```
 
 3. Point the instance at the repository, and seed it in the same step:

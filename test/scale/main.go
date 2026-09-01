@@ -75,6 +75,22 @@
 // The correctness tests (fast, always on) and the opt-in target-scale
 // measurement live in scale_test.go. This binary is test/benchmark
 // infrastructure and is never built into production paths.
+//
+// # The multi-gaggle tenant-load dimension
+//
+// Multi-tenant cost used to be inferred from journal-history volume, which is a
+// different variable: one gaggle with ten times the history is not ten gaggles.
+// -tenant-load drives several gaggles concurrently instead — each reading its
+// own scope and writing its own run root, all through the same telemetry.db and
+// the same lock-serialized instance journal — and reports every level
+// separately, so contention on the shared paths is measured rather than assumed.
+//
+//	go run ./test/scale -scale=1 -out=/tmp/scale-1x -measure \
+//	    -gaggles=8 -tenant-load=30s -tenant-levels=1,4,8 -json=/tmp/1x.json
+//
+// Levels default to 1,4 and are clamped to the gaggle count the corpus was
+// generated with, since a level above it cannot be driven; the report and the
+// JSON both state the clamp rather than reporting the number that was asked for.
 package main
 
 import (
@@ -83,6 +99,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -105,6 +123,8 @@ type options struct {
 	workflows       int
 	gagglesFlag     int
 	mixedLoad       time.Duration
+	tenantLoad      time.Duration
+	tenantLevels    string
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -180,6 +200,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 		writeLoadReport(stdout, lr)
 		m.MixedLoad = &lr
 	}
+	if opts.tenantLoad > 0 {
+		spec := DefaultTenantLoadSpec(opts.tenantLoad)
+		if opts.tenantLevels != "" {
+			levels, err := parseTenantLevels(opts.tenantLevels)
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "scale: %v\n", err)
+				return 1
+			}
+			spec.Levels = levels
+		}
+		tr, err := runTenantLoad(gen.Layout, gen, spec, opts.samples)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "scale: %v\n", err)
+			return 1
+		}
+		writeTenantLoadReport(stdout, tr)
+		m.TenantLoad = &tr
+	}
 	if opts.jsonOut != "" {
 		if err := writeJSONReport(opts.jsonOut, m); err != nil {
 			_, _ = fmt.Fprintf(stderr, "scale: %v\n", err)
@@ -230,12 +268,18 @@ func parseOptions(args []string, stderr io.Writer) (options, error) {
 	flags.IntVar(&opts.workflows, "workflows", 0, "exact workflow count in the generated inventory (overrides -scale; 2000 is §14.4's fan-out target)")
 	flags.IntVar(&opts.gagglesFlag, "gaggles", 0, "exact gaggle count in the generated inventory (overrides -scale)")
 	flags.DurationVar(&opts.mixedLoad, "mixed-load", 0, "after measuring, run the §16.3 mixed-load experiment for this long (e.g. 30s, 30m) — the arbiter of §2.3's head-of-line-blocking hypothesis")
+	flags.DurationVar(&opts.tenantLoad, "tenant-load", 0, "after measuring, run the multi-gaggle tenant-load scenario for this long per level (e.g. 30s)")
+	flags.StringVar(&opts.tenantLevels, "tenant-levels", "", "comma-separated tenant counts for -tenant-load (default 1,4); each is clamped to the generated gaggle count")
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
 	}
 	if opts.scale <= 0 {
 		_, _ = fmt.Fprintln(stderr, "scale: -scale must be positive")
 		return options{}, fmt.Errorf("invalid scale")
+	}
+	if opts.tenantLevels != "" && opts.tenantLoad == 0 {
+		_, _ = fmt.Fprintln(stderr, "scale: -tenant-levels has no effect without -tenant-load")
+		return options{}, fmt.Errorf("tenant levels without tenant load")
 	}
 	if flags.NArg() != 0 {
 		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/scale [-scale f] [-runs n] [-scheduler-events n] [-out dir] [-seed n] [-measure]")
@@ -342,6 +386,77 @@ func writeLoadReport(w io.Writer, r LoadResult) {
 // judged to be materially blocking reads. Set at 2x: below that the effect is
 // within the noise of a contended host and does not support a causal claim.
 const headOfLineBlockingFactor = 2.0
+
+// writeTenantLoadReport prints each tenant level's read latencies side by side.
+//
+// Levels are printed rather than reduced to a pass/fail: the point of the
+// dimension is that multi-tenant cost is measured instead of inferred from
+// history volume, and a single "confirmed/not" line would throw away the shape
+// across levels that makes a regression visible. A clamped level says so,
+// because a level the corpus could not express is not the level requested.
+func writeTenantLoadReport(w io.Writer, r TenantLoadResult) {
+	_, _ = fmt.Fprintf(w, "multi-gaggle tenant load: levels=%v, %.1fs each, %d readers/tenant, per-tenant %d sched-appends/s, %d run-appends/s, %d ingests/s\n",
+		r.Spec.Levels, r.Spec.DurationSeconds, r.Spec.ReadersPerTenant,
+		r.Spec.SchedulerAppendsPerSecPerTenant, r.Spec.RunAppendsPerSecPerTenant, r.Spec.IngestPerSecPerTenant)
+	for _, level := range r.Levels {
+		clamped := ""
+		if level.RequestedTenants != level.Tenants {
+			clamped = fmt.Sprintf(" (requested %d; clamped to the generated gaggle count)", level.RequestedTenants)
+		}
+		_, _ = fmt.Fprintf(w, "  tenants=%d%s writes: %d scheduler appends (slowest %s), %d run appends, %d ingests\n",
+			level.Tenants, clamped,
+			level.WritesApplied.SchedulerAppends,
+			level.WritesApplied.SlowestSchedulerAppendNanos.Round(time.Millisecond),
+			level.WritesApplied.RunAppends, level.WritesApplied.Ingests)
+		for _, op := range tenantReportOps {
+			s, ok := level.Stats[op]
+			if !ok {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "    %-24s p50=%-10s p99=%-10s max=%-10s n=%d\n",
+				op, s.P50.Round(time.Microsecond), s.P99.Round(time.Microsecond),
+				s.Max.Round(time.Microsecond), s.Samples)
+		}
+		for op, n := range level.Errors {
+			if n > 0 {
+				_, _ = fmt.Fprintf(w, "    errors: %s failed %d times\n", op, n)
+			}
+		}
+	}
+	if r.ContentionFactor > 0 {
+		_, _ = fmt.Fprintf(w, "  %s p99 at %d tenants vs %d: %.2fx\n",
+			r.ContentionOperation, r.Levels[len(r.Levels)-1].Tenants, r.Levels[0].Tenants, r.ContentionFactor)
+	}
+}
+
+// tenantReportOps fixes the order operations print in, so two levels — and two
+// runs of the harness — line up column for column instead of being ordered by
+// map iteration.
+var tenantReportOps = []string{opListRunsPage, opListRunsGaggle, opInstance, opGaggles, opWorkflows}
+
+// parseTenantLevels parses the -tenant-levels list.
+func parseTenantLevels(s string) ([]int, error) {
+	fields := strings.Split(s, ",")
+	levels := make([]int, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		n, err := strconv.Atoi(field)
+		if err != nil {
+			return nil, fmt.Errorf("-tenant-levels: %q is not a number", field)
+		}
+		if n < 1 {
+			return nil, fmt.Errorf("-tenant-levels: %d is not a positive tenant count", n)
+		}
+		levels = append(levels, n)
+	}
+	if len(levels) < 2 {
+		return nil, fmt.Errorf("-tenant-levels needs at least two levels to compare, got %q", s)
+	}
+	return levels, nil
+}
 
 // spanEventRatio expresses the span:event byte ratio the corpus achieved. The
 // live instance measures ~12×; a corpus far from that is not modelling the

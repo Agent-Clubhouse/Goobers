@@ -21,10 +21,11 @@ import (
 
 // GitHubProvider implements repo, backlog, and trigger operations for GitHub.
 type GitHubProvider struct {
-	BaseURL string
-	Token   string
-	Client  HTTPClient
-	Runner  CommandRunner
+	BaseURL     string
+	Token       string
+	Client      HTTPClient
+	Runner      CommandRunner
+	attribution Attribution
 
 	// tokenSource, when set, resolves the token per request (issue #14 seam);
 	// otherwise Token is used.
@@ -942,11 +943,7 @@ func (p *GitHubProvider) ClosePullRequest(ctx context.Context, req ClosePullRequ
 		return ClosePullRequestResult{}, err
 	}
 	if req.Comment != "" {
-		comments, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.PullID, "comments")
-		if err != nil {
-			return ClosePullRequestResult{}, err
-		}
-		if err := p.do(ctx, http.MethodPost, comments, map[string]string{"body": req.Comment}, nil); err != nil {
+		if err := p.postAttributedComment(ctx, req.Repository, req.PullID, req.Comment, "pull-request-close"); err != nil {
 			return ClosePullRequestResult{}, err
 		}
 	}
@@ -2244,6 +2241,10 @@ func (p *GitHubProvider) SubmitPullRequestReview(ctx context.Context, req PullRe
 	if req.Body == "" {
 		return PullRequestReviewResult{}, fmt.Errorf("review body is required")
 	}
+	reviewBody, err := withAttribution(req.Body, p.attribution, "pull-request-review")
+	if err != nil {
+		return PullRequestReviewResult{}, err
+	}
 
 	var event string
 	switch req.Decision {
@@ -2260,7 +2261,7 @@ func (p *GitHubProvider) SubmitPullRequestReview(ctx context.Context, req PullRe
 		return PullRequestReviewResult{}, err
 	}
 	body := map[string]string{
-		"body":      req.Body,
+		"body":      reviewBody,
 		"commit_id": req.CommitSHA,
 		"event":     event,
 	}
@@ -2725,6 +2726,10 @@ func (p *GitHubProvider) CreateWorkItem(ctx context.Context, req CreateWorkItemR
 	// original may still miss it; the footer at least makes any duplicate
 	// traceable and recordExternalRef journals every create.
 	itemBody := withRunIDFooter(req.Body, req.RunID)
+	itemBody, err = withAttribution(itemBody, p.attribution, "issue-create")
+	if err != nil {
+		return WorkItem{}, err
+	}
 	if req.RunID != "" {
 		if existing, found, err := p.findRunItem(ctx, req.Repository, req.RunID); err != nil {
 			return WorkItem{}, err
@@ -2930,11 +2935,7 @@ func (p *GitHubProvider) UpdateWorkItemStatus(ctx context.Context, req UpdateWor
 		}
 	}
 	if req.Comment != "" {
-		comments, err := joinURL(p.BaseURL, "repos", req.Repository.Owner, req.Repository.Name, "issues", req.ID, "comments")
-		if err != nil {
-			return WorkItem{}, err
-		}
-		if err := p.do(ctx, http.MethodPost, comments, map[string]string{"body": req.Comment}, nil); err != nil {
+		if err := p.postAttributedComment(ctx, req.Repository, req.ID, req.Comment, "state-change"); err != nil {
 			return WorkItem{}, err
 		}
 	}
