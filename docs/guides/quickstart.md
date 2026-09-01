@@ -176,14 +176,14 @@ with a real one.
    Already have a disposable repository you'd rather reuse? Skip this step
    and use its `<owner>/<repo>` below instead.
 
-2. Create a fine-grained GitHub PAT using the
-   [PAT setup instructions](github-token-scopes.md#create-a-fine-grained-pat-for-a-repository).
-   **Resource owner must be the account or organization that owns
+2. Create a fine-grained GitHub PAT in
+   [GitHub's token settings](https://github.com/settings/personal-access-tokens/new).
+   **Set Resource owner to the account or organization that owns
    `<owner>/<repo>` (for example, `odsp-microsoft`); keep the default personal
    account when it owns the repository.** Choose **Only select repositories**
-   and select exactly the disposable repository, with Contents, Issues, and
-   Pull requests permissions. Then export it once under the name `connect`
-   expects by default:
+   and select exactly the disposable repository. Grant only **Contents: Read
+   and write**, **Issues: Read and write**, and **Pull requests: Read and
+   write**. Then export it once under the name `connect` expects by default:
 
    ```sh
    export GOOBERS_GITHUB_TOKEN=<your token>
