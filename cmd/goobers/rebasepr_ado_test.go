@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,21 @@ import (
 
 	"github.com/goobers/goobers/providers"
 )
+
+func TestThreadCommentRebaseTransportReportsEvidenceUnavailable(t *testing.T) {
+	evidence, err := (threadCommentRebaseTransport{}).LoadCommentEvidence(
+		context.Background(), providers.RepositoryRef{}, "55",
+	)
+	if err != nil {
+		t.Fatalf("LoadCommentEvidence: %v", err)
+	}
+	if evidence.available {
+		t.Fatal("ADO comment evidence is available, want explicitly unavailable")
+	}
+	if evidence.comments != nil {
+		t.Fatalf("ADO comment evidence = %+v, want no synthetic empty comment list", evidence)
+	}
+}
 
 // TestRebasePRADOCleanForcePushesAndClearsLabel exercises the rebase-pr ADO
 // branch's happy path: the provider-neutral git core (checkout, fetch/rebase, and
