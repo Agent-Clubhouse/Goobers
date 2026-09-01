@@ -1474,5 +1474,3 @@ function useSessionState<T>(
   );
   return [value, update];
 }
-
-// no-op: nudging GitHub Actions dispatch for PR #4005 (see #3660)
