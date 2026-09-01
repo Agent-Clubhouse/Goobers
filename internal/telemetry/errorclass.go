@@ -73,6 +73,13 @@ const (
 	ErrCodeInfraGit       = "infra_git_failed"
 	ErrCodeInfraNet       = "infra_net_failed"
 	ErrCodeInfraWorkspace = "infra_workspace_failed"
+	// ErrCodeInfraJournal identifies an upstream stage's artifact that this
+	// run's journal could not produce (#4121). It is the SUBSTRATE failing to
+	// carry a value between two stages — on the pod arm the producer emits an
+	// artifact op over the journal plane and a different pod reads it back —
+	// and nothing a work item can contain makes that read fail, so it must
+	// never accumulate failure-streak strikes against the item.
+	ErrCodeInfraJournal   = "infra_journal_failed"
 	ErrCodeClaimsLock     = "claims_lock_timeout"
 	ErrCodeExecutor       = "executor_error"
 	ErrCodeProviderFailed = "provider_error"
@@ -109,6 +116,7 @@ var wellKnownErrorCodes = map[string]ErrorClass{
 	ErrCodeInfraGit:          ErrorClassInfraGit,
 	ErrCodeInfraNet:          ErrorClassInfraNet,
 	ErrCodeInfraWorkspace:    ErrorClassInfra,
+	ErrCodeInfraJournal:      ErrorClassInfra,
 	// Exact, so it beats the "timeout" substring heuristic below: waiting out
 	// another process's claims lock is contention, not a stage running long,
 	// and the two want different remedies.

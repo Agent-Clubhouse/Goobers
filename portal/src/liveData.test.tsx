@@ -29,6 +29,7 @@ const testConfig: LiveDataConfig = {
   failuresBeforePolling: 2,
   pollingIntervalMs: 200,
   refreshMaxDelayMs: 1_000,
+  maxPendingInvalidations: 8,
   // High enough that it never fires in tests about something else; the
   // watchdog gets its own config below.
   streamIdleTimeoutMs: 300_000,
@@ -823,6 +824,91 @@ describe("LiveDataController", () => {
     await settle();
     await settle();
     expect(refresh).toHaveBeenCalledTimes(2);
+
+    controller.stop();
+  });
+
+  // #2460: the pending queue is drained as a set of refetch requests, not
+  // replayed as a log, so repeats of the same models and entities are one
+  // request — retaining each event's copy grew memory and recovery cost
+  // without changing what is fetched.
+  it("coalesces equivalent pending invalidations by model and scope", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, testConfig);
+    const refresh = vi.fn().mockResolvedValue(true);
+    controller.subscribe(["instance", "run", "workflow"], refresh);
+
+    controller.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    await settle();
+    refresh.mockClear();
+
+    for (let sequence = 1; sequence <= 5; sequence += 1) {
+      stream.push(update(`session:${sequence}`, ["run"], { runIds: ["run-1"] }));
+      await settle();
+    }
+    stream.push(update("session:6", ["run"], { runIds: ["run-2"] }));
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    await settle();
+
+    expect(refresh).toHaveBeenCalledOnce();
+    const invalidations = refresh.mock.calls[0]?.[2] as ModelInvalidation[];
+    expect(invalidations).toHaveLength(2);
+    expect(invalidations[0]).toMatchObject({
+      cursor: "session:5",
+      models: ["run"],
+      runIds: ["run-1"],
+    });
+    expect(invalidations[1]).toMatchObject({ cursor: "session:6", runIds: ["run-2"] });
+
+    controller.stop();
+  });
+
+  // #2460: hours of failing reads under a healthy stream used to keep every
+  // event pending — the failed batch was prepended while the stream kept
+  // appending. Past the configured ceiling the queue is worth less than one
+  // complete refresh, so it becomes exactly that.
+  it("bounds pending work under sustained read failures and recovers with one full refresh", async () => {
+    const stream = new ControlledEventStream();
+    const client = new ScriptedClient([() => Promise.resolve(stream)]);
+    const controller = new LiveDataController(client, {
+      ...testConfig,
+      maxPendingInvalidations: 4,
+    });
+    let readsHealthy = false;
+    const refresh = vi.fn((..._args: unknown[]) => Promise.resolve(readsHealthy));
+    controller.subscribe(["instance", "run", "workflow"], refresh);
+
+    controller.start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(10);
+    await settle();
+    expect(refresh).toHaveBeenCalled();
+
+    const internals = controller as unknown as {
+      pendingInvalidations: Map<string, ModelInvalidation>;
+    };
+    for (let sequence = 1; sequence <= 200; sequence += 1) {
+      stream.push(update(`session:${sequence}`, ["run"], { runIds: [`run-${sequence}`] }));
+      await settle();
+      expect(internals.pendingInvalidations.size).toBeLessThanOrEqual(4);
+    }
+
+    refresh.mockClear();
+    readsHealthy = true;
+    await vi.advanceTimersByTimeAsync(2_000);
+    await settle();
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(refresh.mock.calls[0]?.[0]).toEqual(new Set(["instance", "run", "workflow"]));
+    const invalidations = refresh.mock.calls[0]?.[2] as ModelInvalidation[];
+    expect(invalidations).toHaveLength(1);
+    expect(invalidations[0]?.models).toEqual(["instance", "run", "workflow"]);
+    expect(internals.pendingInvalidations.size).toBe(0);
+    expect(controller.freshness).toBe("connected");
 
     controller.stop();
   });

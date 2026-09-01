@@ -49,17 +49,20 @@ var (
 		return exec.CommandContext(ctx, name, args...)
 	}
 	guidedSyncActionTimeout = 90 * time.Second
+	guidedAuthActionTimeout = 10 * time.Minute
 	guidedRunJobTimeout     = 10 * time.Minute
 )
 
 type guidedServer struct {
-	workdir      string
-	instancePath string
-	configPath   string
-	executable   string
-	errorLog     *log.Logger
+	workdir        string
+	instancePath   string
+	configPath     string
+	executable     string
+	errorLog       *log.Logger
+	allowEphemeral bool
 
 	mu       sync.Mutex
+	authMu   sync.Mutex
 	job      *guidedJob
 	api      http.Handler
 	apiClose func() error
@@ -155,6 +158,8 @@ func (s *guidedServer) serveGuided(w http.ResponseWriter, r *http.Request) {
 		s.handleInitInstance(w, r)
 	case r.URL.Path == "/guided/actions/inspect-repository":
 		s.handleInspectRepository(w, r)
+	case r.URL.Path == "/guided/actions/authorize-github":
+		s.handleAuthorizeGitHub(w, r)
 	case r.URL.Path == "/guided/actions/choose-repository-folder":
 		s.handleChooseRepositoryFolder(w, r)
 	case r.URL.Path == "/guided/actions/prepare-repository":
@@ -361,6 +366,15 @@ type guidedInitOptionsInput struct {
 
 type guidedInspectRepositoryRequest struct {
 	Location string `json:"location"`
+}
+
+type guidedAuthorizeGitHubRequest struct {
+	Repository string `json:"repository"`
+}
+
+type guidedAuthorizeGitHubResponse struct {
+	Auth    guidedAuthState `json:"auth"`
+	Message string          `json:"message"`
 }
 
 type guidedChooseFolderResponse struct {
@@ -632,8 +646,90 @@ func (s *guidedServer) handleInspectRepository(w http.ResponseWriter, r *http.Re
 	writeGuidedJSON(w, http.StatusOK, inspection)
 }
 
+func (s *guidedServer) handleAuthorizeGitHub(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodPost) {
+		return
+	}
+	var input guidedAuthorizeGitHubRequest
+	if !decodeGuidedBody(w, r, &input) {
+		return
+	}
+	identity, err := parseGuidedRepositoryIdentity(input.Repository)
+	if err != nil || identity.provider != string(providers.ProviderGitHub) {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code:    "invalid_github_repository",
+			Message: "a GitHub repository in owner/name form is required",
+		})
+		return
+	}
+
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(r.Context(), guidedAuthActionTimeout)
+	defer cancel()
+	auth := guidedAuthDiscovery(ctx, identity)
+	if auth.Ready {
+		writeGuidedJSON(w, http.StatusOK, guidedAuthorizeGitHubResponse{
+			Auth:    auth,
+			Message: fmt.Sprintf("GitHub authentication is already ready as %s; no action was needed.", auth.Identity),
+		})
+		return
+	}
+	if !auth.NeedsLogin {
+		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+			Code: "github_repository_access_unavailable",
+			Message: fmt.Sprintf(
+				"%s Next: %s",
+				auth.Message,
+				auth.RemediationCommand,
+			),
+		})
+		return
+	}
+	if err := runGuidedGitHubAuthorization(ctx); err != nil {
+		message := fmt.Sprintf(
+			"%v. Install GitHub CLI if needed, then run `%s` and retry.",
+			err,
+			guidedGitHubLoginCommand,
+		)
+		writeGuidedJSON(w, http.StatusServiceUnavailable, guidedErrorBody{
+			Code:    "github_authorization_unavailable",
+			Message: message,
+		})
+		return
+	}
+
+	auth = guidedAuthDiscovery(ctx, identity)
+	if !auth.Ready {
+		message := auth.Message
+		if message == "" {
+			message = fmt.Sprintf("GitHub authorization completed, but access to %s could not be verified.", identity.owner+"/"+identity.name)
+		}
+		if auth.RemediationCommand != "" {
+			message += " Next: " + auth.RemediationCommand
+		}
+		writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
+			Code:    "github_authorization_verification_failed",
+			Message: message,
+		})
+		return
+	}
+	writeGuidedJSON(w, http.StatusOK, guidedAuthorizeGitHubResponse{
+		Auth:    auth,
+		Message: fmt.Sprintf("GitHub device/web authorization completed as %s.", auth.Identity),
+	})
+}
+
 func (s *guidedServer) handleInitInstance(w http.ResponseWriter, r *http.Request) {
 	if !requireGuidedMethod(w, r, http.MethodPost) {
+		return
+	}
+	if err := s.checkInitTarget(r.Context()); err != nil {
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
+			Code:    "unsafe_init_target",
+			Message: err.Error(),
+		})
 		return
 	}
 	var input guidedInitInstanceRequest
@@ -660,6 +756,9 @@ func (s *guidedServer) handleInitInstance(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
+	if s.allowEphemeral {
+		argv = append([]string{"init", "--allow-ephemeral"}, argv[1:]...)
+	}
 	result, err := s.execSync(r.Context(), argv...)
 	if err != nil {
 		writeGuidedExecFailure(w, err)
@@ -680,6 +779,13 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 		})
 		return
 	}
+	if err := s.checkInitTarget(r.Context()); err != nil {
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
+			Code:    "unsafe_init_target",
+			Message: err.Error(),
+		})
+		return
+	}
 	provider := strings.ToLower(strings.TrimSpace(input.Provider))
 	repoOwner := strings.TrimSpace(input.Owner)
 	repoProject := strings.TrimSpace(input.Project)
@@ -693,6 +799,7 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 			})
 			return
 		}
+
 		provider = identity.provider
 		repoOwner = identity.owner
 		repoProject = identity.project
@@ -700,7 +807,7 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 	}
 	assignedTo := strings.TrimSpace(input.AssignedTo)
 	if strings.EqualFold(strings.TrimSpace(input.IssueScope), "assigned") && assignedTo == "" {
-		auth := discoverGuidedAuth(r.Context(), guidedRepositoryIdentity{
+		auth := guidedAuthDiscovery(r.Context(), guidedRepositoryIdentity{
 			provider: provider,
 			owner:    repoOwner,
 			project:  repoProject,
@@ -803,6 +910,10 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 			configPath,
 		),
 	})
+}
+
+func (s *guidedServer) checkInitTarget(ctx context.Context) error {
+	return checkGuidedInitTarget(ctx, s.instancePath, s.allowEphemeral)
 }
 
 func guidedRepositoryDisplayName(provider, owner, project, name string) string {

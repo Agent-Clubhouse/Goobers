@@ -109,7 +109,7 @@ func run(bin, outDir string) error {
 	// 4. Daemon lifecycle on a SEPARATE instance root (no shared up.lock).
 	daemonInstance := filepath.Join(outDir, "instance-daemon")
 	_ = os.RemoveAll(daemonInstance)
-	if out, err := runGoobers(absBin, 30*time.Second, "init", "--demo", daemonInstance); err != nil {
+	if out, err := runGoobers(absBin, 30*time.Second, "init", "--demo", "--allow-ephemeral", daemonInstance); err != nil {
 		return fmt.Errorf("init --demo (daemon instance) failed: %w\n%s", err, out)
 	}
 	if err := configureEphemeralAPI(daemonInstance); err != nil {
@@ -145,7 +145,7 @@ func configureEphemeralAPI(root string) error {
 // full loop to phase=completed against the real binary, and captures the journal.
 func validateDemoRun(bin, instance, outDir string) (string, error) {
 	var b strings.Builder
-	if out, err := runGoobers(bin, 30*time.Second, "init", "--demo", instance); err != nil {
+	if out, err := runGoobers(bin, 30*time.Second, "init", "--demo", "--allow-ephemeral", instance); err != nil {
 		return b.String(), fmt.Errorf("init --demo (run instance) failed: %w\n%s", err, out)
 	}
 

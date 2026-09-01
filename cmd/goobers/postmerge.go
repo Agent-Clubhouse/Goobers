@@ -240,52 +240,8 @@ func runPostMerge(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	pullNumber := providerInput("pullNumber", "")
-	if pullNumber == "" {
-		pf(stderr, "error: pullNumber input is required\n")
-		return 1
-	}
-
-	ctx, cancel := providerCommandContext()
-	defer cancel()
-
-	var poll providers.PullRequestPollResult
-	var pollErr error
-	var postMergeErrs []error
-	alreadyCompleted := false
-	err = withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
-		ledger, err := session.read()
-		if err != nil {
-			return err
-		}
-		if postMergeReconciliationCompleted(ledger, repo, pullNumber) {
-			alreadyCompleted = true
-			return nil
-		}
-		poll, pollErr = provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
-		if pollErr != nil {
-			return nil
-		}
-		postMergeErrs = performPostMerge(ctx, provider, issuesProvider, repo, root, pullNumber, poll, stdout, stderr)
-		if len(postMergeErrs) > 0 {
-			return nil
-		}
-		if completePostMergeReconciliation(&ledger, repo, pullNumber) {
-			return session.write(ledger)
-		}
-		return nil
-	})
-	if err != nil {
-		pf(stderr, "error: record post-merge completion: %v\n", err)
-		return 1
-	}
-	if pollErr != nil {
-		return failProviderStage(stderr, "poll merged pull request", pollErr, "")
-	}
-	if alreadyCompleted {
-		pf(stdout, "post-merge: pr #%s was already reconciled\n", pullNumber)
-	}
-	return 0
+	transport := issueCommentPostMergeTransport{provider: provider, issuesProvider: issuesProvider, repo: repo, root: root}
+	return runPostMergeCore(root, repo, transport, stdout, stderr)
 }
 
 // adoWorkItemCloser is the subset of the base Provider the ADO post-merge close
@@ -325,6 +281,47 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 	// routed code repo whose PR this stage merged; address them there (§6).
 	backlogRepo := backlogRepoRefForStage(root, repo)
 
+	transport := threadCommentPostMergeTransport{provider: dispatcher, backlogRepo: backlogRepo}
+	return runPostMergeCore(root, repo, transport, stdout, stderr)
+}
+
+// postMergeTransport separates the provider-native post-merge effects from
+// the common lock, idempotency, and poll decision. GitHub fans out PR work;
+// ADO safely closes only the resolved backlog work item.
+type postMergeTransport interface {
+	Poll(context.Context, providers.RepositoryRef, string) (providers.PullRequestPollResult, error)
+	Perform(context.Context, string, providers.PullRequestPollResult, io.Writer, io.Writer) []error
+}
+
+type issueCommentPostMergeTransport struct {
+	provider       remediationProvider
+	issuesProvider remediationProvider
+	repo           providers.RepositoryRef
+	root           string
+}
+
+func (t issueCommentPostMergeTransport) Poll(ctx context.Context, repo providers.RepositoryRef, pullNumber string) (providers.PullRequestPollResult, error) {
+	return t.provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
+}
+
+func (t issueCommentPostMergeTransport) Perform(ctx context.Context, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
+	return performPostMerge(ctx, t.provider, t.issuesProvider, t.repo, t.root, pullNumber, poll, stdout, stderr)
+}
+
+type threadCommentPostMergeTransport struct {
+	provider    providers.Provider
+	backlogRepo providers.RepositoryRef
+}
+
+func (t threadCommentPostMergeTransport) Poll(ctx context.Context, repo providers.RepositoryRef, pullNumber string) (providers.PullRequestPollResult, error) {
+	return t.provider.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
+}
+
+func (t threadCommentPostMergeTransport) Perform(ctx context.Context, pullNumber string, poll providers.PullRequestPollResult, stdout, stderr io.Writer) []error {
+	return performPostMergeADO(ctx, t.provider, t.backlogRepo, poll, pullNumber, stdout, stderr)
+}
+
+func runPostMergeCore(root string, repo providers.RepositoryRef, transport postMergeTransport, stdout, stderr io.Writer) int {
 	pullNumber := providerInput("pullNumber", "")
 	if pullNumber == "" {
 		pf(stderr, "error: pullNumber input is required\n")
@@ -334,10 +331,11 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 	ctx, cancel := providerCommandContext()
 	defer cancel()
 
+	var poll providers.PullRequestPollResult
 	var pollErr error
 	var postMergeErrs []error
 	alreadyCompleted := false
-	err = withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
+	err := withPostMergeReconcileLock(root, func(session *postMergeReconcileSession) error {
 		ledger, err := session.read()
 		if err != nil {
 			return err
@@ -346,12 +344,11 @@ func runPostMergeADO(root string, repo providers.RepositoryRef, stdout, stderr i
 			alreadyCompleted = true
 			return nil
 		}
-		var poll providers.PullRequestPollResult
-		poll, pollErr = dispatcher.PollPullRequest(ctx, providers.PullRequestPollRequest{Repository: repo, PullID: pullNumber})
+		poll, pollErr = transport.Poll(ctx, repo, pullNumber)
 		if pollErr != nil {
 			return nil
 		}
-		postMergeErrs = performPostMergeADO(ctx, dispatcher, backlogRepo, poll, pullNumber, stdout, stderr)
+		postMergeErrs = transport.Perform(ctx, pullNumber, poll, stdout, stderr)
 		if len(postMergeErrs) > 0 {
 			return nil
 		}

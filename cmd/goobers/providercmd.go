@@ -449,6 +449,17 @@ func classifyProviderError(err error) (code string, retryable bool, extra map[st
 	if errors.As(err, &gitErr) {
 		return telemetry.ErrCodeInfraGit, false, nil
 	}
+	// Also last, for the same reason: an artifact an upstream stage of this
+	// same run was supposed to leave behind is the SUBSTRATE's job to carry,
+	// not the item's. RETRYABLE, unlike the git branch above, because on the
+	// pod arm the producer emits the artifact op over the journal plane and a
+	// different pod reads it back — "not applied yet" clears on its own, and
+	// the stage retry budget is the instrument for it. See
+	// upstreamArtifactError (#4121).
+	var upstreamErr *upstreamArtifactError
+	if errors.As(err, &upstreamErr) {
+		return telemetry.ErrCodeInfraJournal, true, nil
+	}
 	return errorCodeProvider, false, nil
 }
 

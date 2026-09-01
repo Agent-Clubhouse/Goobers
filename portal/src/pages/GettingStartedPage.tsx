@@ -6,6 +6,7 @@ import {
   type DiagnosticsEnvelope,
   type GuidedInitOptions,
   type GuidedInitResult,
+  type GuidedGitHubAuthorizationResult,
   type GuidedRepositoryInspection,
   type GuidedRepositoryReadiness,
   type GuidedState,
@@ -20,7 +21,14 @@ type QueryState =
   | { status: "loading" }
   | { status: "unavailable" }
   | { status: "ready"; state: GuidedState };
-type BusyAction = "browse" | "inspect" | "init" | "prepare" | "validate" | null;
+type BusyAction =
+  | "browse"
+  | "inspect"
+  | "authorize"
+  | "init"
+  | "prepare"
+  | "validate"
+  | null;
 type WizardPageId =
   | "welcome"
   | "repository"
@@ -316,6 +324,25 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       },
     );
 
+  const authorizeGitHub = () => {
+    if (!inspection || inspection.provider !== "github") {
+      setActionError("Inspect a GitHub repository before starting authorization.");
+      return;
+    }
+    void runAction(
+      "authorize",
+      async () => {
+        const authorization: GuidedGitHubAuthorizationResult =
+          await client.authorizeGitHub(`${inspection.owner}/${inspection.name}`);
+        const refreshed = await client.inspectRepository(repo.trim());
+        return { ...refreshed, auth: authorization.auth };
+      },
+      (result) => {
+        setInspection(result);
+      },
+    );
+  };
+
   const browseRepository = () =>
     void runAction(
       "browse",
@@ -568,30 +595,36 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                     ["Default branch", inspection.defaultBranch],
                   ]}
                 />
-                {inspection.needsClone ? (
+                {inspection.ephemeral && (
                   <div className="guided-callout">
-                    <strong>Clone the repository, then inspect it again</strong>
-                    <span>Run this command from the folder where you keep source code.</span>
-                    {cloneCommand && <code>{cloneCommand}</code>}
+                    <strong>This checkout may be ephemeral</strong>
+                    <span>
+                      {inspection.ephemeralReason ||
+                        "The local checkout may be removed when its session ends."}{" "}
+                      Keep the runtime instance outside it, for example{" "}
+                      <code>
+                        {inspection.safeInstancePath || "~/goobers/instances/<repository>"}
+                      </code>
+                      .
+                    </span>
                   </div>
-                ) : inspection.auth.ready ? (
-                  <p className="guided-success">
-                    {inspection.provider === "ado"
-                      ? "Azure CLI authentication is ready"
-                      : "GitHub CLI authentication is ready"}
-                    {inspection.auth.identity ? ` as ${inspection.auth.identity}` : ""}.
-                  </p>
-                ) : (
+                )}
+                {!inspection.auth.ready && (
                   <div className="guided-callout">
                     <strong>
-                      {inspection.provider === "ado"
-                        ? "Sign in, then inspect the repository again"
-                        : "GitHub authentication is required"}
+                      {inspection.auth.message ||
+                        (inspection.provider === "ado"
+                          ? "Azure CLI authentication is required before setup can continue."
+                          : "GitHub authentication is required before setup can continue.")}
                     </strong>
                     <span>
                       {inspection.provider === "ado"
-                        ? "Azure CLI authentication is not ready."
-                        : "GitHub CLI authentication is not ready. Use `gh auth login`, or create a fine-grained PAT and sign in with it."}
+                        ? inspection.auth.needsLogin
+                          ? "Run the Azure CLI login command, then inspect the repository again. Azure DevOps authentication remains a manual step."
+                          : "Confirm that the authenticated Azure account can access this repository before continuing."
+                        : inspection.auth.needsLogin
+                          ? "Goobers will open GitHub's device/web authorization now. It only runs when this repository needs it, and no token is written to Goobers configuration."
+                          : "Confirm that the authenticated GitHub account can access this repository before continuing."}
                     </span>
                     {inspection.provider === "github" && (
                       <>
@@ -626,8 +659,46 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                     {inspection.auth.remediationCommand && (
                       <code>{inspection.auth.remediationCommand}</code>
                     )}
+                    {inspection.provider === "github" && inspection.auth.needsLogin && (
+                      <button
+                        className="reconnect-button"
+                        disabled={busy !== null}
+                        onClick={authorizeGitHub}
+                        type="button"
+                      >
+                        {busy === "authorize"
+                          ? "Waiting for GitHub authorization…"
+                          : "Sign in with GitHub"}
+                      </button>
+                    )}
                   </div>
                 )}
+                {inspection.needsClone ? (
+                  <div className="guided-callout">
+                    <strong>
+                      {inspection.auth.ready
+                        ? "Clone the repository, then inspect it again"
+                        : inspection.auth.needsLogin
+                          ? "Authenticate, then clone the repository"
+                          : "Resolve repository access, then clone the repository"}
+                    </strong>
+                    <span>
+                      {inspection.auth.ready
+                        ? "Run this command from the folder where you keep source code."
+                        : inspection.auth.needsLogin
+                          ? "Complete authentication before cloning this repository, then run this command from the folder where you keep source code."
+                          : "After the authenticated account can access this repository, run this command from the folder where you keep source code."}
+                    </span>
+                    {cloneCommand && <code>{cloneCommand}</code>}
+                  </div>
+                ) : inspection.auth.ready ? (
+                  <p className="guided-success">
+                    {inspection.provider === "ado"
+                      ? "Azure CLI authentication is ready"
+                      : "GitHub CLI authentication is ready"}
+                    {inspection.auth.identity ? ` as ${inspection.auth.identity}` : ""}.
+                  </p>
+                ) : null}
                 {implementationSelected && !inspection.needsClone && (
                   <div className="guided-repository-runtime">
                     {inspection.stack && (

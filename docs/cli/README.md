@@ -1857,14 +1857,15 @@ instance, gaggle, goober, workflow, stage, gate, harness, capability.
 scaffold an instance root
 
 ~~~text
-Usage: goobers init [--guided [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]
+Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]
 
 Scaffold an instance root at path (default "."): instance.yaml, config/
 (seeded with a starter example), gaggles/, scheduler/, and a telemetry.db
 placeholder. The daemon creates per-gaggle runs/ and workcopies/ under
 gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
 untouched.
---guided opens the browser-based setup for a real repository and instance.
+--guided opens the browser-based setup for a real repository and instance;
+use --instance-path to select its instance root.
 It prepares and validates configuration but does not run a workflow.
 For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new,
 select the repository's Resource owner, choose Only select repositories, and
@@ -1885,6 +1886,9 @@ fail-closed on Windows (no enforced network:none equivalent exists there) unless
 isolation limitation — an explicit, narrowly-scoped opt-in that does not alter
 the general Windows sandbox policy (#651). Use `goobers preflight` to check and
 launch the fully isolated WSL 2 route instead. --insecure requires --demo.
+--allow-ephemeral permits initialization inside a linked or hosted workspace
+only when that location is intentionally persistent; it is refused by default
+to protect GitHub/App sessions whose worktrees may be deleted.
 ~~~
 
 **Examples**
