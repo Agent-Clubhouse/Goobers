@@ -229,7 +229,7 @@ deploy-validate:
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-a | $(KUBECONFORM) -strict -summary
 	kubectl kustomize deploy/reference/gaggle-namespace/examples/gaggle-b | $(KUBECONFORM) -strict -summary
 	$(GO) test ./cmd/goobers -run 'TestDeployReference' -count=1
-	@echo "deploy/reference kustomize builds, schemas, and rendered-together cross-base assertion (#3301) OK"
+	@echo "deploy/reference kustomize builds, schemas, value formats (#3310), and rendered-together cross-base assertion (#3301) OK"
 
 ## validate-configs: Build the validator, strictly check reference-workflows, and check other shipped config trees.
 .PHONY: validate-configs

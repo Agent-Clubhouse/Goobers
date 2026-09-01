@@ -13,7 +13,8 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
-  storageClassName: CHANGE-ME # a block-backed RWO class for your platform
+  # Lowercase for the #3310 reason: storageClassName is an RFC-1123 subdomain.
+  storageClassName: change-me # a block-backed RWO class for your platform
   resources:
     requests:
       storage: 50Gi
