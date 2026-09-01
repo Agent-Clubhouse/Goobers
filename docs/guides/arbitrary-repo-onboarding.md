@@ -73,7 +73,11 @@ source and target repository.
 
 ## 2. Create least-privilege tokens
 
-Use fine-grained personal access tokens and select only the target
+Use [GitHub's fine-grained personal access token settings](https://github.com/settings/personal-access-tokens/new).
+When creating the token, **select the Resource owner that owns the target
+repository** — for example, `odsp-microsoft` for a repository under that
+organization — **rather than leaving your default personal account selected**.
+Then choose **Only select repositories** and select exactly the target
 repository. The repository token needs the permissions used by the two
 workflows:
 

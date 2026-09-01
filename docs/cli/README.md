@@ -1866,6 +1866,9 @@ gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
 untouched.
 --guided opens the browser-based setup for a real repository and instance.
 It prepares and validates configuration but does not run a workflow.
+For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new,
+select the repository's Resource owner, choose Only select repositories, and
+grant the permissions documented in docs/guides/github-token-scopes.md.
 --template=quickstart seeds the versioned onboarding workflow; it is
 intentionally not production-safe. With --source-tree <path>, it instead
 seeds the checked-in source layout (instance.yaml.example, manifest.yaml,

@@ -156,8 +156,17 @@ const (
 		"   ```\n\n" +
 		"   Already have a disposable repository you'd rather reuse? Skip this step\n" +
 		"   and use its `<owner>/<repo>` below instead.\n\n" +
-		"2. Export a GitHub token with repo/issues access, once, under the name\n" +
-		"   `connect` expects by default:\n\n" +
+		"2. Create a fine-grained GitHub PAT in\n" +
+		"   [GitHub's token settings](https://github.com/settings/personal-access-tokens/new).\n" +
+		"   **Set Resource owner to the account or organization that owns\n" +
+		"   `<owner>/<repo>` (for example, `odsp-microsoft`); keep the default personal\n" +
+		"   account when it owns the repository.** Choose **Only select repositories**\n" +
+		"   and select exactly the disposable repository. Grant only **Contents: Read\n" +
+		"   and write**, **Issues: Read and write**, and **Pull requests: Read and\n" +
+		"   write**. For an organization-owned repository, the organization owner may\n" +
+		"   need to approve the token before it works; request or wait for approval\n" +
+		"   before `connect --seed`. Then export it once under the name `connect`\n" +
+		"   expects by default:\n\n" +
 		"   ```sh\n" +
 		"   export GOOBERS_GITHUB_TOKEN=<your token>\n" +
 		"   ```\n\n" +
