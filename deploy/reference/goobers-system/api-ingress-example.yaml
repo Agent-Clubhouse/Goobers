@@ -33,7 +33,12 @@ metadata:
     # unauthenticated caller on the public host cannot use either as a
     # liveness/readiness oracle for the daemon.
 spec:
-  ingressClassName: CHANGE-ME
+  # Lowercase `change-me` on purpose (#3310): ingressClassName is an RFC-1123
+  # subdomain, so an uppercase CHANGE-ME is rejected by the API server and
+  # takes the whole `kubectl apply -k` down with it. This placeholder is still
+  # conspicuous, but leaving it unreplaced only fails to bind an ingress class
+  # instead of blocking the rest of the reference from coming up.
+  ingressClassName: change-me
   tls:
     - hosts:
         - goobers.example.com # CHANGE-ME
