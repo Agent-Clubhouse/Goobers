@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/goobers/goobers/internal/testgit"
 )
 
 // #3990 / #4000 (one defect, filed twice): every fetch into a managed mirror
@@ -58,10 +60,21 @@ func TestHardenedGitArgsPinAutoMaintenanceToTheForeground(t *testing.T) {
 	}
 }
 
-// A mirror fetch must spawn its auto-maintenance child with --no-detach, so
-// the housekeeping is over before the fetch this package waited on returns.
-// This is the deterministic half of the #3990 guard: it reads what git was
-// actually asked to do rather than trying to win a race.
+// A mirror fetch must never spawn its auto-maintenance child detached, so the
+// housekeeping is over before the fetch this package waited on returns. This
+// is the deterministic half of the #3990 guard: it reads what git was actually
+// asked to do rather than trying to win a race.
+//
+// What it may read differs by git. `git maintenance run` only learned
+// `--[no-]detach` in 2.44; on an older git — 2.39.5 ships in the cluster's
+// runner image — the decision is configuration only, and hardenedGitArgs pins
+// it from both keys, which the parent propagates to the child through
+// GIT_CONFIG_PARAMETERS. Demanding the flag there failed a build whose
+// maintenance was already in the foreground (#4146), so the flag is required
+// only of a git that offers it, while opting INTO detaching is a failure on
+// every git. The property itself is held from two other sides regardless:
+// TestHardenedGitArgsPinAutoMaintenanceToTheForeground reads the pin, and
+// TestMirrorStopsChangingWhenFetchReturns reads the effect.
 func TestMirrorFetchRunsAutoMaintenanceInForeground(t *testing.T) {
 	ctx := context.Background()
 	origin := newSourceRepo(t)
@@ -77,13 +90,32 @@ func TestMirrorFetchRunsAutoMaintenanceInForeground(t *testing.T) {
 	if len(runs) == 0 {
 		t.Skip("this git does not run auto maintenance after fetch; nothing to detach")
 	}
+	wantExplicitFlag := gitMaintenanceOffersDetachFlag(t, origin)
 	for _, run := range runs {
-		if !strings.Contains(run, "--no-detach") || strings.Contains(run, " --detach") {
-			t.Errorf("auto maintenance ran as %q, want --no-detach: a detached "+
+		if strings.Contains(run, " --detach") {
+			t.Errorf("auto maintenance ran as %q, want the foreground: a detached "+
 				"housekeeping process outlives the fetch and keeps writing into "+
 				"the mirror while its caller tears the mirror down (#3990/#4000)", run)
+			continue
+		}
+		if wantExplicitFlag && !strings.Contains(run, "--no-detach") {
+			t.Errorf("auto maintenance ran as %q, want --no-detach: this git "+
+				"offers the flag, so the pin must reach the child explicitly "+
+				"rather than through inherited configuration (#3990/#4000)", run)
 		}
 	}
+}
+
+// gitMaintenanceOffersDetachFlag reports whether this git's `maintenance run`
+// accepts --[no-]detach, read from that git's own usage output rather than a
+// parsed version number — the option is what matters, and a distribution's
+// version string is not a reliable proxy for which patches it carries.
+func gitMaintenanceOffersDetachFlag(t *testing.T, repository string) bool {
+	t.Helper()
+	// `-h` is a usage request: git prints to stdout and exits 129, which is
+	// not an error worth reporting here.
+	output, _ := testgit.Command("-C", repository, "maintenance", "run", "-h").CombinedOutput()
+	return strings.Contains(string(output), "detach")
 }
 
 // A mirror must be quiescent the moment WorkingCopy returns: the caller's
