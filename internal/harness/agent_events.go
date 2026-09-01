@@ -143,6 +143,28 @@ func agentUsage(metrics map[string]float64) journal.AgentUsage {
 	return usage
 }
 
+// transcriptRootAgentID returns the id of the stage's single root nested agent
+// — the one whose session the recorded transcript span is. It returns "" when
+// the projected events name no unique root, so the span's provenance stays
+// explicitly unknown instead of being attributed to a guessed agent.
+func transcriptRootAgentID(events []journal.Event, stage string) string {
+	var root string
+	for _, event := range events {
+		if event.Type != journal.EventAgentLifecycle || event.Agent == nil {
+			continue
+		}
+		agent := event.Agent
+		if agent.ID == "" || agent.ParentID != "" || agent.Stage != stage {
+			continue
+		}
+		if root != "" && root != agent.ID {
+			return ""
+		}
+		root = agent.ID
+	}
+	return root
+}
+
 func resolvedAgentModel(out Outcome) string {
 	models := make(map[string]struct{})
 	for _, usage := range out.ModelUsage {
