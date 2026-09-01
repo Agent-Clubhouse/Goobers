@@ -68,6 +68,11 @@ func TestInitDefaultPathRefusesLinkedWorktreeWithoutWriting(t *testing.T) {
 	runInitTargetGit(t, repository, "worktree", "add", "-b", "session", linked, "main")
 	t.Chdir(linked)
 
+	resolvedLinked, err := filepath.EvalSymlinks(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	code, stdout, stderr := runArgs(t, "init")
 	if code == 0 {
 		t.Fatalf("init inside linked worktree succeeded: stdout=%q stderr=%q", stdout, stderr)
@@ -76,7 +81,7 @@ func TestInitDefaultPathRefusesLinkedWorktreeWithoutWriting(t *testing.T) {
 		"refusing to initialize",
 		"linked Git worktree",
 		"--allow-ephemeral",
-		`goobers init --allow-ephemeral "` + linked + `"`,
+		`goobers init --allow-ephemeral "` + resolvedLinked + `"`,
 		"goobers/instances",
 	} {
 		if !strings.Contains(stderr, want) {

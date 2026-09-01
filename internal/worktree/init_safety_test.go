@@ -33,6 +33,7 @@ func TestInspectInitTargetDetectsLinkedWorktree(t *testing.T) {
 
 	linked := filepath.Join(t.TempDir(), "session-worktree")
 	runInitSafetyTestGit(t, repository, "worktree", "add", "-b", "session", linked, "main")
+	canonicalLinked := canonicalInitPath(linked)
 
 	safety, err := InspectInitTarget(context.Background(), filepath.Join(linked, "instance"))
 	if err != nil {
@@ -41,8 +42,8 @@ func TestInspectInitTargetDetectsLinkedWorktree(t *testing.T) {
 	if !safety.Ephemeral || !safety.LinkedWorktree {
 		t.Fatalf("safety = %+v, want linked ephemeral target", safety)
 	}
-	if safety.RepositoryRoot != linked || safety.EphemeralRoot != linked {
-		t.Fatalf("safety roots = %+v, want %q", safety, linked)
+	if safety.RepositoryRoot != canonicalLinked || safety.EphemeralRoot != canonicalLinked {
+		t.Fatalf("safety roots = %+v, want %q", safety, canonicalLinked)
 	}
 	if err := CheckInitTarget(context.Background(), filepath.Join(linked, "instance"), false); err == nil ||
 		!strings.Contains(err.Error(), "--allow-ephemeral") ||
@@ -57,12 +58,13 @@ func TestInspectInitTargetDetectsLinkedWorktree(t *testing.T) {
 func TestInspectInitTargetDetectsHostedWorkspaceMarker(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("GITHUB_WORKSPACE", workspace)
+	canonicalWorkspace := canonicalInitPath(workspace)
 
 	safety, err := InspectInitTarget(context.Background(), filepath.Join(workspace, "instance"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !safety.Ephemeral || safety.EphemeralRoot != workspace {
+	if !safety.Ephemeral || safety.EphemeralRoot != canonicalWorkspace {
 		t.Fatalf("safety = %+v, want GitHub workspace marker", safety)
 	}
 	if !strings.Contains(safety.Reason, "GitHub workspace") {
@@ -109,6 +111,7 @@ func TestInspectInitTargetDetectsLinkedWorktreeAroundNestedRepository(t *testing
 
 	linked := filepath.Join(t.TempDir(), "session-worktree")
 	runInitSafetyTestGit(t, repository, "worktree", "add", "-b", "session", linked, "main")
+	canonicalLinked := canonicalInitPath(linked)
 	nested := filepath.Join(linked, "nested")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
@@ -119,8 +122,8 @@ func TestInspectInitTargetDetectsLinkedWorktreeAroundNestedRepository(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !safety.Ephemeral || !safety.LinkedWorktree || safety.RepositoryRoot != linked {
-		t.Fatalf("safety = %+v, want containing linked worktree %q", safety, linked)
+	if !safety.Ephemeral || !safety.LinkedWorktree || safety.RepositoryRoot != canonicalLinked {
+		t.Fatalf("safety = %+v, want containing linked worktree %q", safety, canonicalLinked)
 	}
 }
 

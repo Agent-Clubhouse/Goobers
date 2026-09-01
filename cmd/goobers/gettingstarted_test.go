@@ -127,7 +127,7 @@ func TestGuidedInitBrowserUsesExplicitInstancePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	var state guidedStateBody
 	if err := json.NewDecoder(response.Body).Decode(&state); err != nil {
 		t.Fatal(err)
