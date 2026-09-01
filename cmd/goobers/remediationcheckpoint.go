@@ -2304,8 +2304,7 @@ func writeCheckpointResult(stderr io.Writer, continueRemediation bool, selectedN
 // A detached HEAD (rev-parse prints "HEAD") is never a match, so the caller
 // falls back to an explicit checkout.
 func currentBranchIs(dir, branch string) (bool, error) {
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	cmd.Dir = dir
+	cmd := workspaceGitCommand(dir, "rev-parse", "--abbrev-ref", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError
@@ -2349,8 +2348,7 @@ func diffDigest(dir, baseSHA string) (string, error) {
 	if baseSHA == "" {
 		return "", fmt.Errorf("PR has no recorded base SHA")
 	}
-	cmd := exec.Command("git", "diff", baseSHA+"...HEAD")
-	cmd.Dir = dir
+	cmd := workspaceGitCommand(dir, "diff", baseSHA+"...HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError

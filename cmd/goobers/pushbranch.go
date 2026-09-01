@@ -236,6 +236,31 @@ func workspaceGitCommand(dir string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// workspaceGitAuthCommand is workspaceGitCommand for a git subprocess that
+// also has to authenticate against origin.
+//
+// The two concerns are both carried by GIT_CONFIG_*, and assigning either one
+// alone silently drops the other: gitAuthEnv restates GIT_CONFIG_COUNT=1 for
+// its own http.extraheader, which erases the safe.directory exemption, and
+// composeGitEnv(dir, nil) claims the same slot for safe.directory, which
+// erases the credential. composeGitEnv(dir, authEnv) is the one composition
+// that keeps both — gitPushBranch already had to learn this in-pod (#4103),
+// and every other authenticated git call in the remediation path had not.
+func workspaceGitAuthCommand(dir, token string, args ...string) *exec.Cmd {
+	return workspaceGitAuthEnvCommand(dir, gitAuthEnv(token), args...)
+}
+
+// workspaceGitAuthEnvCommand is workspaceGitAuthCommand for a caller that
+// already holds a complete credentialed environment — an ADO PAT environment
+// from providers.ADOGitAuthEnvironment, or one gitAuthEnv built once and
+// reuses across several commands.
+func workspaceGitAuthEnvCommand(dir string, authEnv []string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = composeGitEnv(dir, authEnv)
+	return cmd
+}
+
 func currentBranch(dir string) (string, error) {
 	cmd := workspaceGitCommand(dir, "symbolic-ref", "--short", "HEAD")
 	out, err := cmd.Output()
@@ -324,8 +349,7 @@ func gitPushBranch(dir, branch string, env []string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("git", "push", url, branch+":"+branch)
-	cmd.Dir = dir
+	cmd := workspaceGitCommand(dir, "push", url, branch+":"+branch)
 	// composeGitEnv, not env: credentials.GitAuthEnvironment returns a COMPLETE
 	// environment and strips foreign GIT_CONFIG_* before installing its own, so
 	// assigning it directly ERASED the workspace's safe.directory exemption.
