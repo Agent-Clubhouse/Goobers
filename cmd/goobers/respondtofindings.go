@@ -244,8 +244,10 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 	var published string
 	for i := range events {
 		event := events[i]
+		// stageArtifactName, not a hard-coded "<runID>:" prefix: a pod
+		// records the same artifact without the run qualifier (#4119).
 		if event.Type == journal.EventArtifactRecorded &&
-			event.Name == runID+":gather-pr-context/result" &&
+			stageArtifactName(runID, event.Name) == "gather-pr-context/result" &&
 			event.Ref != nil {
 			ref := *event.Ref
 			contextRef = &ref

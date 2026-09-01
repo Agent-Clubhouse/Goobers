@@ -431,10 +431,35 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	}
 	stageMetrics := map[string]float64{"exitCode": float64(exitCode)}
 
-	stageArtifacts := recordStageArtifacts(ctx, stderr, map[string][]byte{
+	// #4119: the result file is READ BEFORE the artifacts are emitted because
+	// it is one of them. The local executor records it (shell.go's
+	// recordResultArtifact, on both of its exits) and every cross-stage read in
+	// the tree resolves that record — gather-ci-failures wants
+	// gather-pr-context's brief, open-pr-body wants local-ci's stdout,
+	// validate-plan and publish-batch want their upstream's "/result". A pod
+	// that lifts the bytes into Outputs and then drops them leaves those
+	// readers with nothing to resolve, and the symptom is not a missing log:
+	// it is `gather-pr-context produced no remediation brief artifact` from a
+	// gather-pr-context that SUCCEEDED, three attempts in a row, which parks a
+	// live PR out of the lane on the failure-streak breaker.
+	streams := map[string][]byte{
 		"stdout.log": scrubbedOut,
 		"stderr.log": scrubbedErr,
-	})
+	}
+	mediaTypes := map[string]string{}
+	var resultData []byte
+	var resultErr error
+	if resultFile != "" {
+		resultData, resultErr = os.ReadFile(resultFile)
+		if resultErr == nil {
+			// Scrubbed BEFORE the digest, exactly as recordResultArtifact
+			// does: the pointer is derived from these bytes, so the address
+			// has to commit to what the daemon will actually store.
+			streams["result"] = scrubber.Scrub(resultData)
+			mediaTypes["result"] = executor.MediaTypeFor(resultFile)
+		}
+	}
+	stageArtifacts := recordStageArtifactsTyped(ctx, stderr, streams, mediaTypes)
 	// Lift the declared result file into Outputs, exactly as the local
 	// executor does. WITHOUT THIS a pod-executed stage surrenders only stdout,
 	// so a gate reading an output key finds nothing and evaluates its FAILURE
@@ -443,7 +468,7 @@ func runDeclaredStage(ctx context.Context, stdout, stderr io.Writer) apiv1.Resul
 	// times before exhausting its repass budget. The run "completed" with the
 	// wrong control flow and nothing reported an error.
 	if resultFile != "" {
-		data, rerr := os.ReadFile(resultFile)
+		data, rerr := resultData, resultErr
 		switch {
 		case rerr == nil:
 			mergeResultFileOutputs(outputs, data)
@@ -788,7 +813,29 @@ func resolveCapabilities(ctx context.Context, capabilities []string) ([]dispatch
 // sound only because the bytes handed in are ALREADY SCRUBBED — RecordArtifact
 // scrubs before digesting, so an unscrubbed input here would silently address a
 // different blob than the one the daemon stores.
+// stageArtifactMediaType is the type declared for one emitted artifact.
+// text/plain is the default because everything this path emitted before #4119
+// was a captured stream; a declared result file overrides it with the exact
+// type internal/executor puts on the same pointer.
+func stageArtifactMediaType(mediaTypes map[string]string, name string) string {
+	if declared := strings.TrimSpace(mediaTypes[name]); declared != "" {
+		return declared
+	}
+	return "text/plain"
+}
+
 func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[string][]byte) []apiv1.ArtifactPointer {
+	return recordStageArtifactsTyped(ctx, stderr, streams, nil)
+}
+
+// recordStageArtifactsTyped is recordStageArtifacts with per-artifact media
+// types. A stream is text/plain; a declared result file is whatever
+// mediaTypeFor says of its name, because that is the type the local executor
+// puts on the same pointer and a reader that bounds the type by it must get
+// the same answer on both substrates.
+func recordStageArtifactsTyped(
+	ctx context.Context, stderr io.Writer, streams map[string][]byte, mediaTypes map[string]string,
+) []apiv1.ArtifactPointer {
 	daemonAPI := strings.TrimSpace(os.Getenv(dispatcher.EnvDaemonAPI))
 	runID := os.Getenv(dispatcher.EnvRunID)
 	stage := os.Getenv(dispatcher.EnvStage)
@@ -827,7 +874,7 @@ func recordStageArtifacts(ctx context.Context, stderr io.Writer, streams map[str
 				Path:      ref.Path,
 				Digest:    ref.Digest,
 				Size:      ref.Size,
-				MediaType: "text/plain",
+				MediaType: stageArtifactMediaType(mediaTypes, name),
 				Integrity: apiv1.IntegrityDerived,
 			})
 			if putErr := putStageArtifactBlob(putCtx, stderr, blobs, name, ref.Digest, data); putErr != nil {

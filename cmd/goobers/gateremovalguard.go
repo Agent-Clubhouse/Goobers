@@ -174,7 +174,7 @@ func findingMetaFromJournal(root, runID string) (tutorguard.FindingMeta, error) 
 	}
 
 	var findingData []byte
-	if ref, ok := stageArtifactByName(artifacts, analyzeArtifacts, "finding.md"); ok {
+	if ref, ok := stageArtifactByName(artifacts, analyzeArtifacts, runID, "finding.md"); ok {
 		findingData, err = rd.ArtifactBytes(ref)
 	} else {
 		// Fall back to the analyze stage's single declared artifact, whatever

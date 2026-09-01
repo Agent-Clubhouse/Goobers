@@ -137,7 +137,7 @@ func renderStructuredPRBody(root, runID, issueID, issueTitle string) (string, bo
 	var ci *prBodyCI
 	if latestCI != nil {
 		ci = &prBodyCI{status: latestCI.Status}
-		if ref, ok := stageArtifactByName(artifacts, latestCI.Artifacts, runID+":local-ci/stdout.log"); ok {
+		if ref, ok := stageArtifactByName(artifacts, latestCI.Artifacts, runID, "local-ci/stdout.log"); ok {
 			output, readErr := rd.ArtifactBytes(ref)
 			if readErr != nil {
 				return "", false, fmt.Errorf("read local-ci stdout artifact: %w", readErr)
@@ -158,10 +158,14 @@ func artifactByDigest(artifacts []journalArtifact, digest string) (journal.Ref, 
 	return journal.Ref{}, false
 }
 
-func stageArtifactByName(artifacts []journalArtifact, stageRefs []journal.Ref, name string) (journal.Ref, bool) {
+// stageArtifactByName resolves one of stageRefs by the artifact's
+// substrate-independent "<stage>/<name>" spelling (#4119): the run qualifier
+// is present on a self runner and absent in a pod, and the digest match
+// against stageRefs is what actually binds the artifact to its stage.
+func stageArtifactByName(artifacts []journalArtifact, stageRefs []journal.Ref, runID, name string) (journal.Ref, bool) {
 	for _, stageRef := range stageRefs {
 		for i := len(artifacts) - 1; i >= 0; i-- {
-			if artifacts[i].name == name && artifacts[i].ref.Digest == stageRef.Digest {
+			if stageArtifactName(runID, artifacts[i].name) == name && artifacts[i].ref.Digest == stageRef.Digest {
 				return stageRef, true
 			}
 		}

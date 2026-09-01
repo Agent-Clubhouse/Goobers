@@ -156,10 +156,12 @@ func readLatestRemediationBrief(root, runID string) (apiv1.RemediationBrief, err
 
 	var latest apiv1.RemediationBrief
 	found := false
-	prefix := runID + ":gather-"
 	for _, event := range events {
+		// stageArtifactName, not a hard-coded "<runID>:" prefix: a pod records
+		// the same artifact without the run qualifier (#4119).
 		if event.Type != journal.EventArtifactRecorded || event.Ref == nil ||
-			!strings.HasPrefix(event.Name, prefix) || !strings.HasSuffix(event.Name, "/result") {
+			!strings.HasPrefix(stageArtifactStage(runID, event.Name), "gather-") ||
+			!strings.HasSuffix(event.Name, "/result") {
 			continue
 		}
 		data, readErr := rd.ArtifactBytes(*event.Ref)
