@@ -113,6 +113,10 @@
       "description": "How managed mirrors and worktrees are provisioned. Omitted keeps every default; existing mirrors are never migrated in either direction when these change.",
       "$ref": "#/$defs/workcopies"
     },
+    "baselineHealth": {
+      "description": "Base-health awareness for the deterministic CI gate. Omitted keeps the runner's existing attribution: every local-ci failure is treated as the run's own.",
+      "$ref": "#/$defs/baselineHealth"
+    },
     "api": {
       "description": "The daemon's read-only HTTP API (the portal's backend).",
       "$ref": "#/$defs/api"
@@ -1012,6 +1016,29 @@
           "type": "boolean",
           "default": false,
           "description": "Lets new mirrors borrow objects from a shared node-level object cache via git alternates: one bare clone per repository URL shared by every gaggle on the node, instead of one full clone per gaggle. Off never creates the cache directory."
+        }
+      }
+    },
+    "baselineHealth": {
+      "description": "Shared-baseline-failure detection: before a failing local-ci stage is blamed on a run's own diff, the same command is measured against the target branch at the pinned base SHA, and the measurement is cached per base commit so only the first affected run pays for it.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Turns the comparison on. A failure the target branch already reproduces identically is classified as a shared baseline failure and the affected run parks against one durable shared blocker instead of spending a repass that can only re-derive an empty diff. Off keeps the previous attribution, where every unrelated branch pays for the same red base."
+        },
+        "sharedRepairLane": {
+          "type": "boolean",
+          "default": false,
+          "description": "Lets an affected branch carry the repair for a shared baseline failure instead of parking. Off — the default — is the safe posture: it never adds an unrelated fix to a feature branch behind the author's back."
+        },
+        "probeTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2400,
+          "description": "Bound on one baseline measurement, which runs the project's full CI command on the untouched base. Defaults to the shipped local-ci stage budget."
         }
       }
     },

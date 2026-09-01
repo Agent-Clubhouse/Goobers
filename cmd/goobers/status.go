@@ -251,7 +251,11 @@ type statusJSONOutput struct {
 	// disposition (#3355); omitted when the provider snapshot is unavailable,
 	// the same posture as timeToFirstPR.
 	ParkedBacklog *statusParkedBacklog `json:"parkedBacklog,omitempty"`
-	Runs          []statusJSONSummary  `json:"runs"`
+	// BaselineBlockers reports the shared baseline failures runs are parked on
+	// (#2971) — which target-branch CI failure is holding which subjects.
+	// Omitted when the local baseline store cannot be read.
+	BaselineBlockers *statusBaselineBlockers `json:"baselineBlockers,omitempty"`
+	Runs             []statusJSONSummary     `json:"runs"`
 }
 
 func daemonRestartStatusLine(status readservice.SchedulerStatus, now time.Time) string {
@@ -575,6 +579,8 @@ const statusHelp = "Usage: goobers status [--daemon | --agents | --json] [--phas
 	"Status also reports workflow health and separate blocked-on-sibling/merge-escalated PR counts.\n" +
 	"It lists parked backlog items too — open issues carrying a park disposition without\n" +
 	"goobers:ready, which backlog selection can no longer see and no workflow re-readies.\n" +
+	"Shared baseline failures are listed with the subjects waiting on them: runs parked\n" +
+	"because the target branch itself fails CI, all released by one repair to that branch.\n" +
 	"With --daemon, report daemon health, identity, and effective behavior settings instead.\n" +
 	"With --agents, list only the agentic stages in flight right now, by role and run id.\n" +
 	"The --agents answer comes from the runner's own journals, never from a process table,\n" +
@@ -848,6 +854,14 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 		} else {
 			text.WriteString(parkedBacklogStatusText(parked))
 		}
+		// Shared baseline failures (#2971): runs parked because the target
+		// branch itself is red. Local state only, so it is rendered whether or
+		// not the provider-backed sections above resolved.
+		if blockers, err := loadStatusBaselineBlockers(l); err != nil {
+			text.WriteString(baselineBlockerStatusUnavailableText(err))
+		} else {
+			text.WriteString(baselineBlockerStatusText(blockers, now))
+		}
 		return text.String(), nil
 	}
 	if supportsWatch && *watch {
@@ -919,6 +933,12 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 				parked = &snapshot
 			}
 		}
+		var baselineBlockers *statusBaselineBlockers
+		// Omitted when nothing is parked, like the other optional sections: a
+		// healthy instance's JSON keeps exactly the shape it had before.
+		if snapshot, err := loadStatusBaselineBlockers(l); err == nil && snapshot.Total > 0 {
+			baselineBlockers = &snapshot
+		}
 		output := statusJSONOutput{
 			Warnings:         warnings,
 			TimeToFirstPR:    timeToFirstPR,
@@ -926,6 +946,7 @@ func runRunTable(args []string, stdout, stderr io.Writer, command string) int {
 			RefusedWorkflows: refusedWorkflows,
 			Summary:          fleetSummary,
 			ParkedBacklog:    parked,
+			BaselineBlockers: baselineBlockers,
 			Runs:             statusJSONSummaries(runs),
 		}
 		if err := json.NewEncoder(stdout).Encode(output); err != nil {
