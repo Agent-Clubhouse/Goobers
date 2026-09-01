@@ -119,3 +119,43 @@ func stageArtifactStage(runID, recorded string) string {
 	}
 	return stage
 }
+
+// upstreamArtifactError is a stage's refusal to proceed because an artifact
+// ANOTHER stage of this same run was supposed to leave behind is not
+// readable — absent, unfetchable, or malformed.
+//
+// #4121: it exists to be classified, not to be read. The failure is the
+// SUBSTRATE failing to carry a value between two stages: on the pod arm the
+// producer emits an artifact op over the journal plane and a DIFFERENT pod
+// reads it back, so "not applied yet" is a real, self-clearing state, and an
+// unreachable plane is weather. Nothing a pull request or an issue can contain
+// makes its upstream stage's artifact unreadable. Left as provider_error it
+// accumulates failure-streak strikes and eventually parks a live item
+// goobers:needs-human — which is exactly what #4103, #4106 and #4119 each did
+// to a live PR before anyone noticed the classification was doing it.
+type upstreamArtifactError struct {
+	stage string
+	what  string
+	err   error
+}
+
+func (e *upstreamArtifactError) Error() string {
+	if e.err == nil {
+		return fmt.Sprintf("%s produced no %s", e.stage, e.what)
+	}
+	return fmt.Sprintf("read %s from %s: %v", e.what, e.stage, e.err)
+}
+
+func (e *upstreamArtifactError) Unwrap() error { return e.err }
+
+// upstreamArtifactMissing reports an upstream artifact this run's journal does
+// not have.
+func upstreamArtifactMissing(stage, what string) error {
+	return &upstreamArtifactError{stage: stage, what: what}
+}
+
+// upstreamArtifactUnreadable reports an upstream artifact the journal names but
+// could not deliver or decode.
+func upstreamArtifactUnreadable(stage, what string, err error) error {
+	return &upstreamArtifactError{stage: stage, what: what, err: err}
+}

@@ -230,11 +230,11 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 	implementStage, pushStage := remediationStageNames()
 	rd, err := stageRunJournal(root, runID)
 	if err != nil {
-		return apiv1.Verdict{}, "", false, err
+		return apiv1.Verdict{}, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
 	}
 	events, err := rd.Events()
 	if err != nil {
-		return apiv1.Verdict{}, "", false, err
+		return apiv1.Verdict{}, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
 	}
 
 	var contextRef *journal.Ref
@@ -265,7 +265,7 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 		}
 	}
 	if contextRef == nil {
-		return apiv1.Verdict{}, "", false, fmt.Errorf("gather-pr-context produced no remediation-brief.json artifact")
+		return apiv1.Verdict{}, "", false, upstreamArtifactMissing("gather-pr-context", remediationBriefArtifact)
 	}
 	if !implementFound {
 		return apiv1.Verdict{}, "", false, fmt.Errorf(
@@ -285,7 +285,7 @@ func readRemediationResponseInputs(root, runID string, requirePublication bool) 
 
 	data, err := rd.ArtifactBytes(*contextRef)
 	if err != nil {
-		return apiv1.Verdict{}, "", false, fmt.Errorf("read remediation-brief.json artifact: %w", err)
+		return apiv1.Verdict{}, "", false, upstreamArtifactUnreadable("gather-pr-context", remediationBriefArtifact, err)
 	}
 	var brief apiv1.RemediationBrief
 	if err := json.Unmarshal(data, &brief); err != nil {

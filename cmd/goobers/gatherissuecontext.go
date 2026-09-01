@@ -145,13 +145,14 @@ func runGatherIssueContext(args []string, stdout, stderr io.Writer) int {
 }
 
 func readLatestRemediationBrief(root, runID string) (apiv1.RemediationBrief, error) {
+	const upstream = "gather-pr-context"
 	rd, err := stageRunJournal(root, runID)
 	if err != nil {
-		return apiv1.RemediationBrief{}, err
+		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(upstream, remediationBriefArtifact, err)
 	}
 	events, err := rd.Events()
 	if err != nil {
-		return apiv1.RemediationBrief{}, err
+		return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(upstream, remediationBriefArtifact, err)
 	}
 
 	var latest apiv1.RemediationBrief
@@ -166,7 +167,8 @@ func readLatestRemediationBrief(root, runID string) (apiv1.RemediationBrief, err
 		}
 		data, readErr := rd.ArtifactBytes(*event.Ref)
 		if readErr != nil {
-			return apiv1.RemediationBrief{}, fmt.Errorf("read %s: %w", event.Name, readErr)
+			return apiv1.RemediationBrief{}, upstreamArtifactUnreadable(upstream, remediationBriefArtifact,
+				fmt.Errorf("read %s: %w", event.Name, readErr))
 		}
 		var header struct {
 			Schema string `json:"schema"`
@@ -195,7 +197,7 @@ func readLatestRemediationBrief(root, runID string) (apiv1.RemediationBrief, err
 		found = true
 	}
 	if !found {
-		return apiv1.RemediationBrief{}, fmt.Errorf("no remediation-brief artifact found")
+		return apiv1.RemediationBrief{}, upstreamArtifactMissing(upstream, remediationBriefArtifact)
 	}
 	if latest.SelectedNumber == "" {
 		return apiv1.RemediationBrief{}, fmt.Errorf("latest remediation brief has no selectedNumber")
