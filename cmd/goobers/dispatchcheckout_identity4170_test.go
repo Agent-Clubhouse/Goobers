@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/goobers/goobers/internal/testgit"
 	"github.com/goobers/goobers/internal/worktree"
 )
 
@@ -58,15 +59,30 @@ func TestComposeGitEnvLetsGitRebaseCommit(t *testing.T) {
 		t.Skip("git not available")
 	}
 	dir := t.TempDir()
-	env := append(composeGitEnv(dir, nil), "HOME="+t.TempDir(), "GIT_CONFIG_NOSYSTEM=1")
-	run := func(args ...string) {
+	// AmbientCommand, not testgit.Command: this test's whole subject is the
+	// environment composeGitEnv hands a subprocess, so the helper's own
+	// identity must not stand in for it. Host config is nulled out so nothing
+	// but composeGitEnv can supply a committer.
+	env := append(composeGitEnv(dir, nil),
+		"HOME="+t.TempDir(),
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"GIT_CONFIG_SYSTEM="+os.DevNull,
+		"GIT_CONFIG_NOSYSTEM=1",
+	)
+	capture := func(args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", args...)
+		cmd := testgit.AmbientCommand(args...)
 		cmd.Dir = dir
 		cmd.Env = env
-		if out, err := cmd.CombinedOutput(); err != nil {
+		out, err := cmd.CombinedOutput()
+		if err != nil {
 			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 		}
+		return strings.TrimSpace(string(out))
+	}
+	run := func(args ...string) {
+		t.Helper()
+		capture(args...)
 	}
 	run("init", "--initial-branch=main", ".")
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("base\n"), 0o644); err != nil {
@@ -88,4 +104,17 @@ func TestComposeGitEnvLetsGitRebaseCommit(t *testing.T) {
 	run("commit", "-m", "main moves")
 	run("checkout", "topic")
 	run("rebase", "main")
+
+	// Asserting the identity git actually recorded, not merely that the rebase
+	// exited zero: git will GUESS a committer from the local user and hostname
+	// when none is configured, and that guess succeeds on a developer machine
+	// while failing in the container (where it produced "got 'nonroot@...'").
+	// Only the recorded value distinguishes the two.
+	want := worktree.BotGitUserName + " <" + worktree.BotGitUserEmail + ">"
+	if got := capture("log", "-1", "--format=%cn <%ce>"); got != want {
+		t.Fatalf("committer = %q, want %q", got, want)
+	}
+	if got := capture("log", "-1", "--format=%an <%ae>"); got != want {
+		t.Fatalf("author = %q, want %q", got, want)
+	}
 }
