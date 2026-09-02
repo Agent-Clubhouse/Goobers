@@ -423,7 +423,7 @@ jobs:
           mkdir onboarding-asset
           unzip -q "dist/goobers-onboarding_${TAG}.zip" -d onboarding-asset
           diff --recursive smoke/onboarding onboarding-asset
-          goobers init --template=quickstart smoke/quickstart-instance
+          goobers init --allow-ephemeral --template=quickstart smoke/quickstart-instance
           goobers validate smoke/quickstart-instance
           test -f smoke/quickstart-instance/config/gaggles/example/workflows/quickstart.yaml
           mkdir generated-docs
