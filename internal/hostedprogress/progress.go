@@ -21,7 +21,9 @@ import (
 const (
 	// Schema is the versioned identifier for the hosted-progress payload
 	// embedded in a GitHub Check Run output.
-	Schema          = "goobers.dev/hosted-progress/v1"
+	Schema = "goobers.dev/hosted-progress/v1"
+	// CheckPrefix is prepended to the GitHub Check Run name so the hosted
+	// progress publisher can locate its own runs and callers can filter them.
 	CheckPrefix     = "Goobers / "
 	startMarker     = "<!-- goobers-progress:v1 -->"
 	endMarker       = "<!-- /goobers-progress:v1 -->"

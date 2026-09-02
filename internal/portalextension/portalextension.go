@@ -308,12 +308,12 @@ func (m *Manager) Update(bundle Bundle, replaceModified bool) (InstallResult, er
 	}
 	switch report.State {
 	case "not-installed":
-		return InstallResult{}, fmt.Errorf("Portal extension is not installed; run `goobers portal-extension install`")
+		return InstallResult{}, fmt.Errorf("portal extension is not installed; run `goobers portal-extension install`")
 	case "unmanaged":
-		return InstallResult{}, fmt.Errorf("Portal extension directory is unmanaged; refusing to overwrite it")
+		return InstallResult{}, fmt.Errorf("portal extension directory is unmanaged; refusing to overwrite it")
 	case "modified":
 		if !replaceModified {
-			return InstallResult{}, fmt.Errorf("Portal extension has local changes; review `goobers portal-extension status` and rerun with --replace-modified")
+			return InstallResult{}, fmt.Errorf("portal extension has local changes; review `goobers portal-extension status` and rerun with --replace-modified")
 		}
 	case "current":
 		return InstallResult{Path: report.Path}, nil
