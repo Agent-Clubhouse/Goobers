@@ -5,16 +5,16 @@ import (
 	"sort"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/secretpattern"
 )
 
 // secretShapedInputs is the pattern net every candidate input literal is
-// tested against. It is the SAME net the journal's boundary scrubber applies
-// to anything a stage writes (journal.NewPatternScrubber), so an author's
+// tested against. It is the SAME net (internal/secretpattern) the journal's
+// boundary scrubber applies to anything a stage writes, so an author's
 // finding here names exactly the shapes the runtime would have had to redact
 // downstream. The exact-value registry — the canary's mechanism — cannot help
 // at author time: nothing has been minted yet when a config is validated.
-var secretShapedInputs = journal.NewPatternScrubber()
+var secretShapedInputs = secretpattern.NewScrubber()
 
 // isSecretShaped reports whether the pattern net would redact any part of
 // value, i.e. whether the literal is shaped like a credential.
