@@ -205,13 +205,20 @@ func TestProjectionKeepsEarliestClaimedIssueIdentity(t *testing.T) {
 			e.Outputs = map[string]any{"id": "4001", "title": "Pull request title"}
 		}),
 		ev(4, 4*time.Second, journal.EventRefTouched, func(e *journal.Event) {
-			e.ExternalRef = &journal.ExternalRef{Kind: "issue", ID: "other-issue"}
+			e.ExternalRef = &journal.ExternalRef{Kind: "issue", ID: "3088", URL: "https://github.com/acme/app/issues/3088"}
+		}),
+		ev(5, 5*time.Second, journal.EventRefTouched, func(e *journal.Event) {
+			e.ExternalRef = &journal.ExternalRef{Kind: "pr", ID: "4001", URL: "https://github.com/acme/app/pull/4001"}
 		}),
 	}
 
 	whole := ProjectRun(identity, Projection{}, events)
 	if got := whole.Run.Operator; got.IssueNumber != "3088" || got.IssueTitle != "Claimed issue title" {
 		t.Fatalf("operator issue = #%s %q, want #3088 claimed issue title", got.IssueNumber, got.IssueTitle)
+	}
+	if got := whole.Run.Operator; got.IssueURL != "https://github.com/acme/app/issues/3088" ||
+		got.PullRequest == nil || got.PullRequestTitle != "Pull request title" {
+		t.Fatalf("operator associated work = %+v", got)
 	}
 
 	first := ProjectRun(identity, Projection{}, events[:2])

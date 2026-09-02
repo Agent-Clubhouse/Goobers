@@ -25,10 +25,10 @@ import (
 
 // TestOpenPRCreatesThenUpdatesOnRepass is #132's core CLI-level acceptance:
 // invoking `goobers open-pr` via the actual CLI entrypoint opens a PR, writes
-// prNumber/pull-request-url to the declared result file (the #132 handoff
-// mechanism a downstream ci-poll stage's Task.InputsFrom consumes), and a
-// second call for the same run (a repass) updates the same PR instead of
-// attempting a duplicate.
+// PR identity, URL, and title to the declared result file (the #132 handoff
+// mechanism a downstream ci-poll stage's Task.InputsFrom consumes and the
+// portal projection reads), and a second call for the same run (a repass)
+// updates the same PR instead of attempting a duplicate.
 func TestOpenPRCreatesThenUpdatesOnRepass(t *testing.T) {
 	root := initDemo(t)
 	server := newFakeGitHubServer(t, "your-org", "your-repo")
@@ -59,6 +59,9 @@ func TestOpenPRCreatesThenUpdatesOnRepass(t *testing.T) {
 	}
 	if result["pull-request-url"] == "" {
 		t.Fatalf("pull-request-url missing: %+v", result)
+	}
+	if result["id"] != "1" || result["title"] == "" {
+		t.Fatalf("portal PR facts missing: %+v", result)
 	}
 
 	server.mu.Lock()

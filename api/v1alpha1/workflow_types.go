@@ -81,6 +81,14 @@ type Trigger struct {
 	// +kubebuilder:validation:MinItems=1
 	// +optional
 	Events []string `json:"events,omitempty" yaml:"events,omitempty"`
+	// Enabled defaults to true. Setting it false suppresses this trigger from
+	// firing (schedule ticks, signal delivery, webhook events, and
+	// backlog-item polling all stop) without removing its configuration, so a
+	// paused automation can be re-enabled without re-authoring it. It has no
+	// effect on type=manual, which is always available via `goobers run`
+	// regardless of this field.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
 }
 
 // IdleBackoff configures adaptive delay after consecutive scheduled runs find

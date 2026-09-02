@@ -1124,6 +1124,15 @@ spec:
                     Trigger declares one condition under which the scheduler may start a run. A run
                     starts only when a trigger fires AND readiness is satisfied (WF-011).
                   properties:
+                    enabled:
+                      description: |-
+                        Enabled defaults to true. Setting it false suppresses this trigger from
+                        firing (schedule ticks, signal delivery, webhook events, and
+                        backlog-item polling all stop) without removing its configuration, so a
+                        paused automation can be re-enabled without re-authoring it. It has no
+                        effect on type=manual, which is always available via `goobers run`
+                        regardless of this field.
+                      type: boolean
                     events:
                       description: |-
                         Events are GitHub webhook event names (for example pull_request, issues,

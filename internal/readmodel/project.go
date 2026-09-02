@@ -116,8 +116,11 @@ type RunRow struct {
 type OperatorFacts struct {
 	IssueNumber           string
 	IssueTitle            string
+	IssueURL              string
 	LastHeartbeatAt       *time.Time
 	PullRequest           *journal.ExternalRef
+	PullRequestTitle      string
+	ReferenceTitles       map[string]string
 	ProviderClaimRecorded bool
 	LatestError           *journal.ErrorDetail
 	ReviewVerdict         string
@@ -436,6 +439,17 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 			}
 			at := event.Time
 			s.FinishedAt = &at
+			if id, idOK := event.Outputs["id"].(string); idOK && id != "" {
+				if title, titleOK := event.Outputs["title"].(string); titleOK && title != "" {
+					if row.Operator.ReferenceTitles == nil {
+						row.Operator.ReferenceTitles = make(map[string]string)
+					}
+					row.Operator.ReferenceTitles[id] = title
+					if row.Operator.PullRequest != nil && row.Operator.PullRequest.ID == id {
+						row.Operator.PullRequestTitle = title
+					}
+				}
+			}
 			node := nodeRow(nodes, row.RunID, "stage", event.Stage, "")
 			if randomized, arm, ok := randomizedInterventionFromOutputs(event.Outputs); ok {
 				node.Randomized = randomized
@@ -499,12 +513,16 @@ func ProjectRun(identity journal.RunIdentity, prev Projection, events []journal.
 				if row.Operator.IssueTitle == "" {
 					row.Operator.IssueNumber = event.ExternalRef.ID
 				}
+				if row.Operator.IssueNumber == event.ExternalRef.ID && event.ExternalRef.URL != "" {
+					row.Operator.IssueURL = event.ExternalRef.URL
+				}
 				operation, _ := event.Runner["operation"].(string)
 				row.Operator.ProviderClaimRecorded =
 					row.Operator.ProviderClaimRecorded || operation == "claim"
 			case "pr":
 				ref := *event.ExternalRef
 				row.Operator.PullRequest = &ref
+				row.Operator.PullRequestTitle = row.Operator.ReferenceTitles[ref.ID]
 			}
 		case journal.EventStageRerunRequested:
 			// A repass reopens the run for the same reason a resume does.
