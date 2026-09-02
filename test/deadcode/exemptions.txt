@@ -353,3 +353,31 @@ github.com/goobers/goobers/internal/creditgraph.Graph.Walk # Credit-graph depth-
 github.com/goobers/goobers/internal/creditgraph.Graph.walk # Depth-first recursion reachable through the retained credit-graph Walk API (#4077).
 github.com/goobers/goobers/internal/creditgraph.Graph.Descendants # Credit-graph descendant enumeration, part of the traversal contract retained for run-graph consumers (#4077).
 github.com/goobers/goobers/internal/creditgraph.Graph.NodesOfKind # Credit-graph kind filter, part of the traversal contract retained for run-graph consumers (#4077).
+
+# Credit propagation (#4078) computes signed contribution estimates with
+# uncertainty over the graph above and classifies failure causes. Attribute is
+# the entry point the eventual consumer calls; every helper below is reachable
+# only through it, and all are unit-tested by credit_test.go.
+github.com/goobers/goobers/internal/creditgraph.Attribute # Credit-propagation entry point retained as the attribution contract surface; consumer wiring is follow-up (#4078).
+github.com/goobers/goobers/internal/creditgraph.Attribution.Contribution # Per-node contribution lookup, part of the attribution contract retained for consumers (#4078).
+github.com/goobers/goobers/internal/creditgraph.Attribution.CausesOfClass # Per-class cause lookup, part of the attribution contract retained for consumers (#4078).
+github.com/goobers/goobers/internal/creditgraph.attributor.propagate # Responsibility propagation reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.attributor.subtreeUncertainty # Subtree provenance uncertainty reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.attributor.edgeWeight # Edge weighting reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.attributor.localUncertainty # Per-node uncertainty reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.attributor.signOf # Contribution sign selection reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.localSign # Recorded per-node signal classifier reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.statusSign # Run/stage status sign classifier reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.verdictSign # Evaluator verdict sign classifier reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.combine # Uncertainty combination helper reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.clamp # Unit-interval clamp reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.round # Score rounding for reproducibility reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.roundConfidence # Confidence rounding for reproducibility reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.attributor.classify # Failure-cause classification reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.attributor.collect # Per-stage fact collection reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.attributor.classifyStage # Per-stage cause rules reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.stageFacts.provenanceMissing # Missing-provenance guard reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.stageFacts.badChoice # Bad-tool-choice detection reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.attributor.adjust # Contradiction and intervention adjustment reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.attributor.intervention # Repeated-attempt intervention evidence reachable through the retained attribution entry point (#4078).
+github.com/goobers/goobers/internal/creditgraph.attributor.finding # Cause finding construction reachable through the retained attribution entry point (#4078).

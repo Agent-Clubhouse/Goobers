@@ -1,6 +1,7 @@
 # Credit graph contract
 
-> Status: **implemented — contract, provenance capture, and read model landed for #4077**
+> Status: **implemented — contract, provenance capture, and read model landed
+> for #4077; credit propagation and failure-cause classification for #4078**
 
 ## Why
 
@@ -76,3 +77,38 @@ graph.Walk(graph.RootID, func(node creditgraph.Node, depth int) bool { ... })
 run's structure with the model and tool layer reported as gaps. Nodes, edges,
 and gaps are in deterministic construction order, so two builds of the same
 journal compare equal.
+
+## Credit propagation
+
+`creditgraph.Attribute` computes the credit assignment over a built graph
+(#4078). It answers two questions, and refuses to answer either where the
+journal is silent.
+
+**Signed contribution with uncertainty.** Responsibility starts as one unit of
+mass at the outcome and is split down the graph's edges, weighting an edge
+higher when the child's own recorded signal agrees with the outcome's direction
+and lower when it disagrees. Each `Contribution` reports the resulting `Share`
+in [0,1] and a `Score` that carries the direction the node is estimated to have
+pushed: a tool result that succeeded inside a failing run scores positive, the
+failing stage scores negative. `Uncertainty` rises with unrecorded nodes,
+unknown-provenance edges, gaps on the node, and unrecorded elements below it,
+and `Confidence` is its complement. Nodes are emitted in graph order and every
+number is rounded, so two attributions of one graph compare equal.
+
+**Failure-cause classification.** For each stage the journal recorded as
+failing, `Attribute` emits `CauseFinding`s drawn from a fixed taxonomy:
+`bad-tool-choice`, `bad-tool-result`, `bad-interpretation`,
+`weak-instructions`, `routing`, `model`, `topology`, `environment`, and
+`unknown`. Each finding names the node it attributes, the assumptions the rule
+rests on, and the evidence behind it. Contradictory signals — a passing
+evaluator verdict on a failing stage, successful tool results beside a failing
+one — lower a finding's confidence and are recorded as assumptions rather than
+resolved by fiat. A repeated stage attempt whose outcome differed is recorded
+as `intervention:` evidence and is the only entry that is more than
+correlational.
+
+Missing provenance never becomes blame: a stage whose own record is absent,
+whose subtree is mostly unrecorded, or whose only work is behind a gap yields a
+single `unknown` finding with reduced confidence, and a run that failed with no
+failing stage yields an `unknown` finding on the outcome rather than one pinned
+on whichever stage is present.
