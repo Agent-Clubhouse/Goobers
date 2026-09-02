@@ -350,17 +350,25 @@ const (
 	remediateCauseHumanComment   = "human-comment"
 )
 
-// defaultRemediatePolicy lists every cause name. behind-base is accepted
-// policy vocabulary but cannot fire yet: its detection (gather-pr-context's
-// isBehindBase) is a native bool in the versioned RemediationBrief schema,
-// and only string-valued result-file keys survive Task.InputsFrom into a
-// downstream stage's input (see hasSubstantiveFindings/hasFailingCI's own
-// comment in gatherprcontext.go) — wiring it here needs a brief schema
-// version bump, tracked as a follow-up. The name is still accepted so a
-// workflow author can declare the eventual full policy now without a
-// validation error, per the design's "policy visible in shipped YAML"
-// requirement.
+// defaultRemediatePolicy lists every cause name. behind-base is accepted policy
+// vocabulary that this stage cannot yet detect for itself: its detection
+// (gather-pr-context's isBehindBase) is a native bool in the versioned
+// RemediationBrief schema, and only string-valued result-file keys survive
+// Task.InputsFrom into a downstream stage's input (see
+// hasSubstantiveFindings/hasFailingCI's own comment in gatherprcontext.go) —
+// wiring it here needs a brief schema version bump, tracked as a follow-up. The
+// name is still accepted so a workflow author can declare the eventual full
+// policy now without a validation error, per the design's "policy visible in
+// shipped YAML" requirement.
 //
+// What that does NOT mean, and used to be read as meaning: that a behind-base
+// PR goes unremediated. #4163 restored the lane's cheap path — update-behind-pr
+// resolves the live base tip itself (pullRequestBehindLiveBase), and a behind,
+// mergeable, CI-clean PR with no substantive finding is updated through the
+// provider's own update-branch endpoint without ever reaching this stage. The
+// gap this comment describes is the AGENTIC path: a behind PR that also needs a
+// worktree rebase still arrives here under some other cause, or not at all.
+
 // human-comment fires only when a genuinely new human comment postdates the
 // watermark recorded in the sticky remediation-state comment
 // (remediationState.LastSeenCommentAt) — a bot comment, the sticky state
