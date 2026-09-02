@@ -28,7 +28,7 @@ const dashboardModeGettingStarted dashboardMode = "getting-started"
 const guidedInitBrowserHelp = "Usage: goobers init --guided [--allow-ephemeral] [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--workdir <dir>]\n\n" +
 	"Serve and open the browser-based instance setup. It inspects an existing\n" +
 	"GitHub or Azure DevOps clone, discovers its identity, default branch, CI and\n" +
-	"toolchain, asks only for configuration placement and desired behavior, creates\n" +
+	"toolchain, asks only for instance placement and desired behavior, creates\n" +
 	"and validates the instance, and prepares required repository labels. It does\n" +
 	"not run a workflow. Back and Continue navigation stays inside the browser,\n" +
 	"while completed filesystem\n" +
@@ -41,8 +41,9 @@ const guidedInitBrowserHelp = "Usage: goobers init --guided [--allow-ephemeral] 
 	"or organization that owns the repository, choose Only select repositories,\n" +
 	"and grant the permissions\n" +
 	"documented in docs/guides/github-token-scopes.md.\n\n" +
-	"Configuration placement is selected in the browser. --instance-path selects\n" +
-	"the instance root; when omitted it defaults beside --workdir. --workdir holds\n" +
+	"Instance placement is selected in the browser. By default the wizard proposes\n" +
+	"a neighboring <repository>-goobers folder. --instance-path pins a different\n" +
+	"instance root. --workdir holds\n" +
 	"temporary browser setup state and defaults beneath the current\n" +
 	"user's local application-data directory; the directory is created when\n" +
 	"needed. The default --port is auto,\n" +
@@ -108,6 +109,7 @@ func runGuidedInitBrowserContext(ctx context.Context, args []string, stdout, std
 		return 1
 	}
 	guided.allowEphemeral = *allowEphemeral
+	guided.instancePinned = *instancePath != ""
 
 	assets, err := dashboardAssetFS("")
 	if err != nil {
@@ -171,6 +173,12 @@ func runGuidedInitBrowserContext(ctx context.Context, args []string, stdout, std
 	case <-ctx.Done():
 		if err := stopGettingStarted(server, cancelRequests, guided); err != nil {
 			pf(stderr, "error: shut down getting-started server: %v\n", err)
+			return 1
+		}
+		return 0
+	case <-guided.completed:
+		if err := stopGettingStarted(server, cancelRequests, guided); err != nil {
+			pf(stderr, "error: shut down completed getting-started server: %v\n", err)
 			return 1
 		}
 		return 0

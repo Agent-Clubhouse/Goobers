@@ -6888,6 +6888,64 @@ a.telemetry-error-row:hover {
   text-align: center;
 }
 
+.guided-complete-page {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  text-align: center;
+}
+
+.guided-complete-page > p {
+  max-width: 620px;
+}
+
+.guided-complete-mascot {
+  height: min(250px, 48vw);
+  margin: -18px 0 6px;
+  position: relative;
+  width: min(360px, 78vw);
+}
+
+.guided-prompt-copy {
+  margin: 18px 0;
+  max-width: 760px;
+  position: relative;
+  text-align: left;
+}
+
+.guided-prompt-copy code {
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--ink);
+  display: block;
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 13px 48px 13px 15px;
+  user-select: all;
+  white-space: normal;
+}
+
+.guided-copy-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  display: inline-flex;
+  justify-content: center;
+  padding: 7px;
+  position: absolute;
+  right: 7px;
+  top: 7px;
+}
+
+.guided-copy-button:hover {
+  background: var(--panel);
+  color: var(--ink);
+}
+
 .guided-welcome-page > p,
 .guided-welcome-page .guided-callout {
   max-width: 620px;
@@ -6910,6 +6968,16 @@ a.telemetry-error-row:hover {
   align-items: center;
   display: flex;
   gap: 8px;
+}
+
+.guided-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.guided-validate-button {
+  margin-top: 12px;
 }
 
 .guided-restart-button {

@@ -243,6 +243,7 @@ github.com/goobers/goobers/internal/harness.FakeAdapter.RunNested # shared harne
 github.com/goobers/goobers/internal/harness.FakeAdapter.ValidateNestedAgentPolicy # shared harness test double (#2886, nested-agent support #3547); only _test.go callers.
 github.com/goobers/goobers/internal/harness.FakeAdapter.run # shared harness test double's private Run/RunNested helper (#2886, nested-agent support #3547); only _test.go callers.
 github.com/goobers/goobers/internal/harness.WriteCompletion # shared harness completion-file test helper (#2886); only _test.go callers.
+github.com/goobers/goobers/internal/instance.InitGuidedFromSource # Cross-package fixture constructor for advanced reviewed-source materialization tests; only _test.go callers after browser guided setup moved to direct instance-local initialization (#4166).
 
 # testdep is a cross-package test-dependency guard (skips a test when a required
 # CLI/env is absent); it must be an importable package rather than a _test.go

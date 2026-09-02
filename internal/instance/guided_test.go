@@ -11,15 +11,7 @@ import (
 )
 
 func initGuidedForTest(root string, opts GuidedOptions) (*InitResult, error) {
-	sourceRoot := root + "-config-source"
-	if _, err := SeedGuidedConfigSource(sourceRoot, opts); err != nil {
-		return nil, err
-	}
-	cfg, err := LoadGuidedSourceConfig(sourceRoot)
-	if err != nil {
-		return nil, err
-	}
-	return InitGuidedFromSource(root, sourceRoot, cfg)
+	return InitGuided(root, opts)
 }
 
 func TestInitGuidedSelectedCanonicalWorkflows(t *testing.T) {
