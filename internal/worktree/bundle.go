@@ -157,13 +157,16 @@ func (m *Manager) ApplyBundle(ctx context.Context, opts ApplyBundleOptions, b wo
 			return ApplyOutcome{}, fmt.Errorf("worktree: create run branch %q at workspace delta %s: %w", opts.Branch, b.Digest, err)
 		}
 		result.After = tip
-	case workspacedelta.OutcomeFastForward, workspacedelta.OutcomeBaseDrift:
+	case workspacedelta.OutcomeFastForward, workspacedelta.OutcomeBaseDrift, workspacedelta.OutcomeRebase:
 		if err := runGit(ctx, repoDir, "update-ref", ref, tip, current); err != nil {
 			return ApplyOutcome{}, fmt.Errorf("worktree: move run branch %q onto workspace delta %s: %w", opts.Branch, b.Digest, err)
 		}
 		result.After = tip
-		if outcome == workspacedelta.OutcomeBaseDrift {
+		switch outcome {
+		case workspacedelta.OutcomeBaseDrift:
 			_, _ = fmt.Fprintf(stderr, "workspace delta %s: run branch %s at %s was an advanced base, not a diverged run; applied delta carrying %s\n", b.Digest, opts.Branch, current, tip)
+		case workspacedelta.OutcomeRebase:
+			_, _ = fmt.Fprintf(stderr, "workspace delta %s: run branch %s at %s was rebased by an earlier stage — nothing it carries is missing from the delta by patch id; applied delta carrying %s\n", b.Digest, opts.Branch, current, tip)
 		}
 	case workspacedelta.OutcomeKeep:
 		// The mirror already carries more than the delta does — a worker-side

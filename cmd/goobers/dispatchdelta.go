@@ -220,10 +220,9 @@ func publishWorkspaceDelta(ctx context.Context, dir string, stderr io.Writer) (p
 // strictly behind HEAD -> keep the checkout and say so with both SHAs; HEAD
 // merely an advanced base (the base-fallback clone landed on a newer
 // origin/<base> than the delta was bundled from) -> apply as fast-forward;
-// genuine divergence -> fail closed naming both SHAs. A REWRITTEN run branch
-// (a rebase-pr self-placement, any force-push) lands in the last arm and
-// fails closed too: recognising rebase-equivalent history is a weaker safety
-// argument than ancestry and is deliberately not attempted.
+// the delta a rebase of the checkout, with nothing on the checkout that the
+// tip lacks by patch id -> apply as fast-forward (#4175); genuine divergence
+// -> fail closed naming both SHAs.
 func applyWorkspaceDelta(ctx context.Context, dir, digest string, gitEnv []string, stderr io.Writer) error {
 	client := podBlobClient()
 	if client == nil {
@@ -283,6 +282,8 @@ func applyWorkspaceDelta(ctx context.Context, dir, digest string, gitEnv []strin
 		return nil
 	case workspacedelta.OutcomeBaseDrift:
 		pf(stderr, "workspace delta %s: checkout %s is an advanced base, not a diverged run (base moved past the delta's prerequisite mid-run); applying delta carrying %s\n", digest, head, tip)
+	case workspacedelta.OutcomeRebase:
+		pf(stderr, "workspace delta %s: checkout %s was rebased onto %s by an earlier stage — every commit the checkout carries is already in the delta by patch id; applying it\n", digest, head, tip)
 	}
 	if err := runGit(ctx, dir, gitEnv, stderr, "reset", "--quiet", "--hard", "FETCH_HEAD"); err != nil {
 		return fmt.Errorf("move onto workspace delta %s: %w", digest, err)

@@ -195,6 +195,48 @@ func TestReconcileArms(t *testing.T) {
 			t.Fatalf("Reconcile without a base ref = %v, want DivergedError", err)
 		}
 	})
+	t.Run("tip is a rebase of the ref -> rebase, applies", func(t *testing.T) {
+		// #4175, the shape rebase-pr produces: the PR branch is replayed onto
+		// an advanced base, so the new tip is NOT a descendant of the old head
+		// and never can be. Nothing on the ref is lost by landing it — every
+		// commit it carries is in the tip by patch id.
+		side := clone(t, origin, "main")
+		run(t, side, "fetch", "-q", pub, "goobers/wf/run-guard")
+		run(t, side, "checkout", "-q", "-b", "topic", first)
+		moved := commit(t, side, "movedmain.txt", "moved\n")
+		run(t, side, "checkout", "-q", "main")
+		run(t, side, "reset", "-q", "--hard", moved)
+		run(t, side, "checkout", "-q", "topic")
+		run(t, side, "reset", "-q", "--hard", second)
+		run(t, side, "rebase", "-q", "main")
+		rebased := run(t, side, "rev-parse", "HEAD")
+		run(t, repo, "fetch", "-q", side, "topic")
+
+		got, err := Reconcile(ctx, testGit{}, repo, "sha256:d", second, rebased, "origin/main")
+		if err != nil || got != OutcomeRebase {
+			t.Fatalf("Reconcile = %v, %v; want rebase", got, err)
+		}
+		if got.String() != "rebase" {
+			t.Fatalf("String() = %q, want %q", got.String(), "rebase")
+		}
+		// No base ref to consult does not change the answer: this arm asks
+		// only about the two commits it was given.
+		if got, err := Reconcile(ctx, testGit{}, repo, "sha256:d", second, rebased, ""); err != nil || got != OutcomeRebase {
+			t.Fatalf("Reconcile without a base ref = %v, %v; want rebase", got, err)
+		}
+
+		// And a ref that moved on after the rebase was cut is still refused:
+		// its extra commit has no equivalent in the tip, so landing the delta
+		// would lose it.
+		run(t, side, "checkout", "-q", second)
+		run(t, side, "checkout", "-q", "-b", "advanced")
+		advanced := commit(t, side, "advanced.txt", "advanced\n")
+		run(t, repo, "fetch", "-q", side, "advanced")
+		var diverged *DivergedError
+		if _, err := Reconcile(ctx, testGit{}, repo, "sha256:d", advanced, rebased, "origin/main"); !errors.As(err, &diverged) {
+			t.Fatalf("Reconcile for an advanced ref = %v, want DivergedError", err)
+		}
+	})
 	t.Run("genuine divergence -> named error with both SHAs", func(t *testing.T) {
 		fork := clone(t, origin, "main")
 		run(t, fork, "fetch", "-q", pub, "goobers/wf/run-guard")
