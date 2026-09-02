@@ -328,7 +328,7 @@ func (m *Manager) replace(bundle Bundle, existing bool) error {
 	extensions := filepath.Join(m.home, "extensions")
 	if info, err := os.Lstat(extensions); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("Copilot extensions path %s is not a safe directory", extensions)
+			return fmt.Errorf("copilot extensions path %s is not a safe directory", extensions)
 		}
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect Copilot extensions directory: %w", err)
@@ -486,7 +486,7 @@ func (m *Manager) migrateLegacyStateFrom(extensionRoot string) error {
 		}
 		if destinationExists {
 			if !json.Valid(current) {
-				return fmt.Errorf("Portal state destination %s is not valid JSON; refusing to discard legacy state", destination)
+				return fmt.Errorf("portal state destination %s is not valid JSON; refusing to discard legacy state", destination)
 			}
 			if !sourceInfo.ModTime().After(destinationInfo.ModTime()) {
 				continue
