@@ -38,6 +38,61 @@ func intersectSorted(a, b []string) []string {
 	return out
 }
 
+// Base-drift verdicts (#4162). The reviewer used to be handed only
+// selectedBaseSha — the provider's base.sha, which for a bot PR is the base
+// BRANCH TIP, not the PR's merge-base — and asked to infer drift from it, a
+// comparison of a value against itself that could only ever say "current". The
+// stage now resolves drift itself, from the same merge-base primitive
+// update-behind-pr uses, and publishes the verdict.
+const (
+	baseDriftCurrent = "current"
+	baseDriftBehind  = "behind"
+	// baseDriftUnknown is the honest answer when the merge-base could not be
+	// resolved (a provider without pr.compare, or a failed lookup): drift is
+	// never *asserted* absent, so the reviewer falls back to judgement rather
+	// than to a false "current".
+	baseDriftUnknown = "unknown"
+)
+
+// baseDriftProvider is the narrow read surface the drift resolution needs.
+type baseDriftProvider interface {
+	BranchTipSHA(ctx context.Context, repo providers.RepositoryRef, branch string) (string, error)
+	CompareCommits(ctx context.Context, repo providers.RepositoryRef, base, head string) (providers.CompareResult, error)
+}
+
+// baseDrift is the deterministic drift evidence published to the reviewer.
+type baseDrift struct {
+	Verdict      string
+	MergeBaseSHA string
+	BaseTipSHA   string
+}
+
+// resolveBaseDrift reports whether headSHA's merge-base with the live tip of
+// the base branch IS that tip. When it is not, the PR is behind and the
+// reviewer owes a rebase-needed finding. Errors are returned alongside an
+// unknown verdict so the caller can degrade rather than fail the review.
+func resolveBaseDrift(ctx context.Context, provider baseDriftProvider, repo providers.RepositoryRef, base, headSHA string) (baseDrift, error) {
+	if base == "" || headSHA == "" {
+		return baseDrift{Verdict: baseDriftUnknown}, fmt.Errorf("base branch and head SHA are both required to resolve base drift")
+	}
+	tip, err := provider.BranchTipSHA(ctx, repo, base)
+	if err != nil {
+		return baseDrift{Verdict: baseDriftUnknown}, fmt.Errorf("resolve live base branch %q: %w", base, err)
+	}
+	compared, err := provider.CompareCommits(ctx, repo, tip, headSHA)
+	if err != nil {
+		return baseDrift{Verdict: baseDriftUnknown, BaseTipSHA: tip}, fmt.Errorf("compare live base %s with head %s: %w", tip, headSHA, err)
+	}
+	if compared.MergeBaseSHA == "" {
+		return baseDrift{Verdict: baseDriftUnknown, BaseTipSHA: tip}, fmt.Errorf("compare live base %s with head %s returned no merge base", tip, headSHA)
+	}
+	verdict := baseDriftCurrent
+	if compared.MergeBaseSHA != tip {
+		verdict = baseDriftBehind
+	}
+	return baseDrift{Verdict: verdict, MergeBaseSHA: compared.MergeBaseSHA, BaseTipSHA: tip}, nil
+}
+
 func verdictHasIndependentSubstantiveFindingForPR(
 	verdict *apiv1.Verdict,
 	prNumber int,
@@ -132,9 +187,12 @@ const gatherSiblingContextHelp = "Usage: goobers gather-sibling-context [--no-ca
 	"entirely. For a managed PR, however, a matching fail verdict is marked\n" +
 	"stale and not emitted when an operator has cleared goobers:merge-escalated,\n" +
 	"so the stage forces a fresh review instead; --no-verdict-cache skips that\n" +
-	"lookup, always forcing a fresh review. Exit codes: 0 = context gathered\n" +
-	"(possibly empty — no siblings is not an error), 1 = business error,\n" +
-	"2 = usage/IO error.\n"
+	"lookup, always forcing a fresh review. It also resolves the selected PR's\n" +
+	"base drift deterministically (selectedBaseDrift: current|behind|unknown,\n" +
+	"with selectedMergeBaseSha/selectedBaseTipSha) so the reviewer is told\n" +
+	"whether the base moved instead of inferring it. Exit codes: 0 = context\n" +
+	"gathered (possibly empty — no siblings is not an error), 1 = business\n" +
+	"error, 2 = usage/IO error.\n"
 
 func runGatherSiblingContext(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("gather-sibling-context", flag.ContinueOnError)
@@ -396,6 +454,18 @@ siblingLoop:
 		return 1
 	}
 
+	// Base drift (#4162): resolve it here, deterministically, rather than
+	// leaving the reviewer to infer it from a base SHA that cannot express it.
+	// Best-effort — a lookup failure degrades to "unknown", never to a silent
+	// "current" and never to a failed review.
+	drift, derr := resolveBaseDrift(ctx, provider, repo, base, selectedHeadSHA)
+	if derr != nil {
+		pf(stderr, "warning: resolve base drift for PR #%d: %v\n", selectedNumber, derr)
+	} else {
+		pf(stdout, "base drift: PR #%d is %s (merge base %s, %s tip %s)\n",
+			selectedNumber, drift.Verdict, drift.MergeBaseSHA, base, drift.BaseTipSHA)
+	}
+
 	// Scope-drift flag (#1111): this stage already fetched the selected PR's
 	// changed files and holds github:pr:write, so it is the natural (zero extra
 	// list) place to flag a mega-merge-sized diff for a human before it lands.
@@ -537,6 +607,14 @@ siblingLoop:
 		"advisoryMode":           strconv.FormatBool(advisoryMode),
 		"selectedHeadSha":        selectedHeadSHA,
 		"selectedBaseSha":        selectedBaseSHA,
+		// Base-drift evidence (#4162). selectedBaseSha above stays exactly what
+		// it has always been — the provider's base.sha, merge-pr's SHA-pin — so
+		// these are published ALONGSIDE it rather than redefining it:
+		// selectedBaseDrift is the verdict the reviewer acts on
+		// (current|behind|unknown), and the two SHAs are the evidence behind it.
+		"selectedBaseDrift":    drift.Verdict,
+		"selectedMergeBaseSha": drift.MergeBaseSHA,
+		"selectedBaseTipSha":   drift.BaseTipSHA,
 		// Rebind the following review gate to the selected managed PR branch.
 		// The runner can then produce its normal provider-independent
 		// base...HEAD reviewer diff instead of asking the model to infer the
@@ -659,6 +737,9 @@ func runGatherSiblingContextWithoutSiblingEvidence(root string, repo providers.R
 		"hasFailingCI":           providerInput("hasFailingCI", "false"),
 		"hasSiblingOverlap":      "false", "advisoryMode": strconv.FormatBool(advisoryMode),
 		"selectedHeadSha": poll.HeadSHA, "selectedBaseSha": poll.BaseSHA,
+		// #4162: this backend has no pr.compare, so drift is honestly unknown
+		// rather than asserted current.
+		"selectedBaseDrift": baseDriftUnknown, "selectedMergeBaseSha": "", "selectedBaseTipSha": "",
 		"reviewDigest": computeReviewDigest(poll.HeadSHA, poll.BaseSHA, poll.Labels),
 		"siblings":     []siblingPR{}, "overlappingSiblings": []int{}, "overlappingSiblingsCsv": "",
 		"selectedChangedFiles": "0", "selectedChangedLines": "0", "scopeGateParked": "false",

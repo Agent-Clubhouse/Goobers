@@ -163,6 +163,17 @@ spec:
         - selectedNumber
         - selectedHeadSha
         - selectedBaseSha
+        # Base-drift evidence (#4162): selectedBaseSha is the provider's
+        # base.sha (merge-pr's SHA-pin), which for a bot PR is the base BRANCH
+        # TIP and therefore cannot express drift at all — the reviewer was
+        # asked to infer drift by comparing it against that same tip and could
+        # only ever conclude "current", so rebase-needed never fired and the
+        # pr-remediation lane lost its only naturally reachable trigger. This
+        # stage now resolves drift deterministically from the merge-base and
+        # publishes the verdict (current|behind|unknown) plus its evidence.
+        - selectedBaseDrift
+        - selectedMergeBaseSha
+        - selectedBaseTipSha
         # Rebinds the following agentic review gate to the selected managed
         # PR branch so the runner attaches the cumulative base...HEAD diff.
         - workspaceBranch
