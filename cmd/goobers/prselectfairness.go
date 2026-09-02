@@ -39,10 +39,50 @@ const (
 	prSelectFairnessFileName = stateclient.KeyPRSelectFairness
 	prSelectAgingInterval    = 15 * time.Minute
 	prSelectStarvationLimit  = time.Hour
+
+	// prSelectAdvisoryRepeatInterval bounds how long a published advisory
+	// verdict keeps the same head SHA out of selection (Goobers#4177).
+	//
+	// An advisory cycle is terminal AND read-only: advisory-verdict's pass
+	// branch is "", and apply-verdict deliberately makes no GitHub mutation
+	// (prselect_test.go pins "no unsolicited public comments"). So an
+	// advisory PR is never merged, never labelled and never parked — which
+	// leaves it exactly as eligible on the next tick as it was on the last
+	// one. Ranking is by longest wait, so the oldest advisory PR wins every
+	// tick forever and every managed PR behind it starves. That is a
+	// liveness failure, not just wasted spend.
+	//
+	// Suppression is keyed on the head SHA rather than the number, so a new
+	// commit is advised again immediately: what has been said is said about
+	// a diff, and a different diff has not been advised. The interval is the
+	// backstop for the case the suppression is recorded but the verdict is
+	// then lost (an advisory run that dies after pr-select claims and before
+	// apply-verdict publishes) — after it, the same SHA is advised once more
+	// rather than never again.
+	prSelectAdvisoryRepeatInterval = 24 * time.Hour
+
+	// prSelectAdvisoryRetention keeps a closed PR's advisory record from
+	// living in the lease forever. Pruning is by age, not by open-state,
+	// because pr-select's snapshot is not always complete.
+	prSelectAdvisoryRetention = 30 * 24 * time.Hour
 )
 
 type prSelectFairnessFile struct {
 	Candidates []prSelectFairnessEntry `json:"candidates"`
+	// Advised records the (PR, head SHA) pairs an advisory cycle has already
+	// been dispatched for. Separate from Candidates because a candidate
+	// entry is retired the moment the PR is selected
+	// (clearPRSelectEligibilityWait) — the whole point of an advisory record
+	// is that it outlives the selection that created it.
+	Advised []prSelectAdvisedEntry `json:"advised,omitempty"`
+}
+
+type prSelectAdvisedEntry struct {
+	Gaggle     string    `json:"gaggle,omitempty"`
+	Repository string    `json:"repository"`
+	Number     int       `json:"number"`
+	HeadSHA    string    `json:"headSha"`
+	AdvisedAt  time.Time `json:"advisedAt"`
 }
 
 type prSelectFairnessEntry struct {
@@ -403,6 +443,118 @@ func clearPRSelectEligibilityWait(
 				return nil, false, nil
 			}
 			state.Candidates = kept
+			data, encodeErr := encodePRSelectFairness(state)
+			return data, true, encodeErr
+		})
+}
+
+// loadPRSelectAdvisedHeads reports, per PR number, the head SHA an advisory
+// cycle has already been dispatched for within prSelectAdvisoryRepeatInterval
+// (Goobers#4177). Read outside the claim lock: this is a suppression hint, and
+// the cost of racing it is one duplicate advisory review, not a lost merge or
+// a double claim.
+func loadPRSelectAdvisedHeads(
+	root string,
+	repo providers.RepositoryRef,
+	now time.Time,
+) (map[int]string, error) {
+	store, err := openPRSelectFairnessStore(layoutFor(root))
+	if err != nil {
+		return nil, err
+	}
+	value, err := store.Get(stateContext(), stateclient.KeyPRSelectFairness)
+	if err != nil {
+		return nil, err
+	}
+	state, err := decodePRSelectFairness(value)
+	if err != nil {
+		return nil, err
+	}
+	scope := prSelectFairnessScope(repo)
+	gaggle := providerGaggle()
+	cutoff := now.Add(-prSelectAdvisoryRepeatInterval)
+	advised := make(map[int]string, len(state.Advised))
+	for _, entry := range state.Advised {
+		if entry.Gaggle != gaggle || entry.Repository != scope {
+			continue
+		}
+		if entry.HeadSHA == "" || !entry.AdvisedAt.After(cutoff) {
+			continue
+		}
+		advised[entry.Number] = entry.HeadSHA
+	}
+	return advised, nil
+}
+
+// advisoryAlreadyDispatched reports whether this exact head SHA has already
+// had its advisory cycle. An empty head SHA never suppresses: a provider that
+// cannot report one must not be able to silence a PR permanently.
+func advisoryAlreadyDispatched(advised map[int]string, pr providers.PullRequestSummary) bool {
+	if pr.HeadSHA == "" {
+		return false
+	}
+	return advised[pr.Number] == pr.HeadSHA
+}
+
+// recordPRSelectAdvisory marks the selected PR's head SHA as advised, so the
+// next tick ranks something else. Recorded at SELECTION time rather than after
+// the verdict publishes because apply-verdict runs in a pod, and a pod is
+// never stamped GOOBERS_INSTANCE_ROOT (see this file's header) — it could not
+// write the lease if it wanted to. prSelectAdvisoryRepeatInterval is what
+// covers the gap between claiming and publishing.
+func recordPRSelectAdvisory(
+	root string,
+	repo providers.RepositoryRef,
+	selected providers.PullRequestSummary,
+	now time.Time,
+) error {
+	if selected.HeadSHA == "" {
+		return nil
+	}
+	store, err := openPRSelectFairnessStore(layoutFor(root))
+	if err != nil {
+		return err
+	}
+	scope := prSelectFairnessScope(repo)
+	gaggle := providerGaggle()
+	return store.Update(stateContext(), stateclient.KeyPRSelectFairness, claimLockOperationPRSelectAdvisoryRecord,
+		func(value stateclient.Value) ([]byte, bool, error) {
+			// Rebuilt from the value observed on THIS attempt, like every
+			// other accumulator in this file, so a lost compare-and-swap
+			// re-applies against the winner rather than resurrecting records
+			// the winner had already pruned.
+			state, decodeErr := decodePRSelectFairness(value)
+			if decodeErr != nil {
+				return nil, false, decodeErr
+			}
+			retentionCutoff := now.Add(-prSelectAdvisoryRetention)
+			kept := make([]prSelectAdvisedEntry, 0, len(state.Advised)+1)
+			for _, entry := range state.Advised {
+				samePR := entry.Gaggle == gaggle &&
+					entry.Repository == scope &&
+					entry.Number == selected.Number
+				if samePR {
+					continue
+				}
+				if !entry.AdvisedAt.After(retentionCutoff) {
+					continue
+				}
+				kept = append(kept, entry)
+			}
+			kept = append(kept, prSelectAdvisedEntry{
+				Gaggle:     gaggle,
+				Repository: scope,
+				Number:     selected.Number,
+				HeadSHA:    selected.HeadSHA,
+				AdvisedAt:  now,
+			})
+			sort.Slice(kept, func(i, j int) bool {
+				if kept[i].Repository != kept[j].Repository {
+					return kept[i].Repository < kept[j].Repository
+				}
+				return kept[i].Number < kept[j].Number
+			})
+			state.Advised = kept
 			data, encodeErr := encodePRSelectFairness(state)
 			return data, true, encodeErr
 		})
