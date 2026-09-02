@@ -453,6 +453,13 @@ func (r *ScheduleReconciler) desired(snapshot ScheduleSnapshot) (map[string]desi
 			if trigger.Type != apiv1.TriggerSchedule {
 				continue
 			}
+			// A trigger explicitly disabled through the workflow-enable API
+			// (WF-010) must not reconcile into a Temporal schedule, matching
+			// the local-daemon dispatch path in cmd/goobers/daemon.go so
+			// Trigger.Enabled is honored on every scheduler surface.
+			if trigger.Enabled != nil && !*trigger.Enabled {
+				continue
+			}
 			if strings.TrimSpace(trigger.Schedule) == "" {
 				return nil, fmt.Errorf("engine: workflow %q schedule trigger %d has no cron expression", template.WorkflowName, ordinal)
 			}

@@ -18,6 +18,20 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 )
 
+// configReloadHandle is the narrow slice of *configReloader the workflow
+// mutation service depends on. Extracted so tests can pin the service's
+// contract without wiring the full daemon reload machinery (scheduler,
+// runner registry, journal, read model) that pollOnce transitively drives.
+type configReloadHandle interface {
+	// workflowSource resolves a workflow's config-relative source file from
+	// the currently applied definitions, taking the same lock poll/pollOnce
+	// hold while mutating them.
+	workflowSource(gaggle, workflow string) (string, bool)
+	// pollOnce reloads the config directory. See configReloader.pollOnce for
+	// the return-value contract.
+	pollOnce(now time.Time) (applied bool, oldDigest, newDigest, rejected string, err error)
+}
+
 // workflowMutationService implements httpapi.WorkflowMutationService: it
 // rewrites a workflow's YAML source file's non-manual triggers' `enabled`
 // field and then hot-reloads the daemon from the edited config directory
@@ -31,7 +45,7 @@ import (
 // reloader filled in once it's built.
 type workflowMutationService struct {
 	layout   instance.Layout
-	reloader atomic.Pointer[configReloader]
+	reloader atomic.Pointer[configReloadHandle]
 	// mu serializes concurrent toggle requests so a read-modify-write of the
 	// same file (or a racing reload) can't interleave.
 	mu sync.Mutex
@@ -41,18 +55,20 @@ func newWorkflowMutationService(l instance.Layout) *workflowMutationService {
 	return &workflowMutationService{layout: l}
 }
 
-func (s *workflowMutationService) AttachReloader(reloader *configReloader) {
-	if s != nil {
-		s.reloader.Store(reloader)
+func (s *workflowMutationService) AttachReloader(handle configReloadHandle) {
+	if s == nil || handle == nil {
+		return
 	}
+	s.reloader.Store(&handle)
 }
 
 func (s *workflowMutationService) SetWorkflowEnabled(ctx context.Context, input httpapi.WorkflowEnabledRequest) (httpapi.WorkflowEnabledResult, error) {
-	reloader := s.reloader.Load()
-	if reloader == nil {
+	handlePtr := s.reloader.Load()
+	if handlePtr == nil {
 		return httpapi.WorkflowEnabledResult{}, httpapi.NewInterventionError(
 			http.StatusServiceUnavailable, "workflow_mutations_unavailable", "workflow config mutations are not available yet", nil)
 	}
+	handle := *handlePtr
 	gaggle := strings.TrimSpace(input.Gaggle)
 	name := strings.TrimSpace(input.Workflow)
 	if gaggle == "" || name == "" {
@@ -63,14 +79,7 @@ func (s *workflowMutationService) SetWorkflowEnabled(ctx context.Context, input 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Reload current setup.Definitions is read under the reloader's own lock
-	// (poll/pollOnce hold it while mutating it), so the pointer read below is
-	// safe: it either observes the previous or the just-applied definitions,
-	// never a half-written one.
-	reloader.mu.Lock()
-	set := reloader.setup.Definitions
-	reloader.mu.Unlock()
-	source, ok := set.WorkflowSource(gaggle, name)
+	source, ok := handle.workflowSource(gaggle, name)
 	if !ok {
 		return httpapi.WorkflowEnabledResult{}, httpapi.NewInterventionError(
 			http.StatusNotFound, "workflow_not_found", "workflow was not found", nil)
@@ -86,35 +95,72 @@ func (s *workflowMutationService) SetWorkflowEnabled(ctx context.Context, input 
 		return httpapi.WorkflowEnabledResult{}, httpapi.NewInterventionError(
 			http.StatusUnprocessableEntity, "workflow_edit_failed", err.Error(), err)
 	}
+	// Preserve the source file's permissions and write atomically enough for
+	// this single-writer (mutex-serialized) path: same directory, then rename
+	// over the original. Captured up front (not only on the write path) so a
+	// rollback after a rejected reload can use the same mode.
+	info, statErr := os.Stat(path)
+	mode := os.FileMode(0o644)
+	if statErr == nil {
+		mode = info.Mode()
+	}
 	if changed {
-		// Preserve the source file's permissions and write atomically enough
-		// for this single-writer (mutex-serialized) path: same directory,
-		// then rename over the original.
-		info, statErr := os.Stat(path)
-		mode := os.FileMode(0o644)
-		if statErr == nil {
-			mode = info.Mode()
-		}
-		tmp := path + ".tmp-" + fmt.Sprint(time.Now().UnixNano())
-		if err := os.WriteFile(tmp, edited, mode); err != nil {
-			return httpapi.WorkflowEnabledResult{}, fmt.Errorf("write workflow source %s: %w", path, err)
-		}
-		if err := os.Rename(tmp, path); err != nil {
-			_ = os.Remove(tmp)
-			return httpapi.WorkflowEnabledResult{}, fmt.Errorf("replace workflow source %s: %w", path, err)
+		if err := writeWorkflowSourceAtomically(path, edited, mode); err != nil {
+			return httpapi.WorkflowEnabledResult{}, err
 		}
 	}
 
 	// Hot-reload now rather than waiting for --watch-config's own ticker (which
 	// may not even be running) — same on-demand contract `goobers apply` uses.
-	if _, _, _, rejected, err := reloader.pollOnce(time.Now()); err != nil {
-		return httpapi.WorkflowEnabledResult{}, fmt.Errorf("reload config after workflow edit: %w", err)
-	} else if rejected != "" {
+	// If the reload rejects the edit or fails, the on-disk file has already
+	// been rewritten above, so roll back to `raw` before returning so the next
+	// reload does not keep re-observing the same bad edit and so a subsequent
+	// `goobers apply` (or a daemon restart) sees the same file the caller
+	// started from — the atomicity contract the request advertised.
+	_, _, _, rejected, pollErr := handle.pollOnce(time.Now())
+	if pollErr != nil {
+		if changed {
+			if restoreErr := writeWorkflowSourceAtomically(path, raw, mode); restoreErr != nil {
+				return httpapi.WorkflowEnabledResult{}, fmt.Errorf(
+					"reload config after workflow edit: %w; restore workflow source: %v",
+					pollErr,
+					restoreErr,
+				)
+			}
+		}
+		return httpapi.WorkflowEnabledResult{}, fmt.Errorf("reload config after workflow edit: %w", pollErr)
+	}
+	if rejected != "" {
+		if changed {
+			if restoreErr := writeWorkflowSourceAtomically(path, raw, mode); restoreErr != nil {
+				return httpapi.WorkflowEnabledResult{}, fmt.Errorf(
+					"restore workflow source after rejected reload (%s): %w",
+					rejected,
+					restoreErr,
+				)
+			}
+		}
 		return httpapi.WorkflowEnabledResult{}, httpapi.NewInterventionError(
 			http.StatusUnprocessableEntity, "workflow_edit_rejected", rejected, nil)
 	}
 
 	return httpapi.WorkflowEnabledResult{Gaggle: gaggle, Workflow: name, Enabled: input.Enabled}, nil
+}
+
+// writeWorkflowSourceAtomically writes content to a sibling tmp file and
+// renames it over path so a reader never observes a torn write. Extracted to
+// share the same rename-then-swap contract between the initial edit and the
+// on-rejection rollback.
+func writeWorkflowSourceAtomically(path string, content []byte, mode os.FileMode) error {
+	tmp := path + ".tmp-" + fmt.Sprint(time.Now().UnixNano())
+	if err := os.WriteFile(tmp, content, mode); err != nil {
+		return fmt.Errorf("write workflow source %s: %w", path, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("replace workflow source %s: %w", path, err)
+	}
+	return nil
 }
 
 // setNonManualTriggersEnabled edits spec.triggers[].enabled for every trigger
