@@ -943,34 +943,45 @@ func TestMixedLoadExperimentProducesAVerdict(t *testing.T) {
 		t.Fatalf("rebuild rollup: %v", err)
 	}
 
-	load := DefaultLoadSpec(2 * time.Second)
+	load := DefaultLoadSpec(time.Second)
+	load.ReaderLevels = []int{1, 2}
 	res, err := runMixedLoad(gen.Layout, gen, load, 4)
 	if err != nil {
 		t.Fatalf("mixed load: %v", err)
 	}
 
-	// Every operation must have been measured in both phases, or the comparison
-	// is between different sets.
-	for op := range res.Idle {
-		if _, ok := res.UnderLoad[op]; !ok {
-			t.Errorf("%s measured idle but not under load", op)
-		}
-		if _, ok := res.Degradation[op]; !ok {
-			t.Errorf("%s has no degradation figure", op)
-		}
+	if len(res.Levels) != 2 {
+		t.Fatalf("expected 2 measured reader levels, got %d", len(res.Levels))
 	}
-	if len(res.Idle) == 0 {
-		t.Fatal("no operations measured")
+	if res.Levels[0].Readers != 1 || res.Levels[1].Readers != 2 {
+		t.Fatalf("levels not measured as 1 then 2 readers: %d, %d",
+			res.Levels[0].Readers, res.Levels[1].Readers)
 	}
 
-	// The load must actually have been applied. Zero writes would mean the
-	// "under load" phase measured an idle instance and every degradation figure
-	// is meaningless.
-	w := res.WritesApplied
-	t.Logf("writes applied: %d scheduler appends (slowest %s), %d run appends, %d ingests",
-		w.SchedulerAppends, w.SlowestSchedulerAppendNanos, w.RunAppends, w.Ingests)
-	if w.SchedulerAppends == 0 && w.RunAppends == 0 && w.Ingests == 0 {
-		t.Fatal("no writes were applied during the loaded phase; the experiment measured an idle instance twice")
+	for _, level := range res.Levels {
+		// Every operation must have been measured in both phases, or the
+		// comparison is between different sets.
+		for op := range level.Idle {
+			if _, ok := level.UnderLoad[op]; !ok {
+				t.Errorf("readers=%d: %s measured idle but not under load", level.Readers, op)
+			}
+			if _, ok := level.Degradation[op]; !ok {
+				t.Errorf("readers=%d: %s has no degradation figure", level.Readers, op)
+			}
+		}
+		if len(level.Idle) == 0 {
+			t.Fatalf("readers=%d measured no operations", level.Readers)
+		}
+
+		// The load must actually have been applied. Zero writes would mean the
+		// "under load" phase measured an idle instance and every degradation
+		// figure is meaningless.
+		w := level.WritesApplied
+		t.Logf("readers=%d writes applied: %d scheduler appends (slowest %s), %d run appends, %d ingests",
+			level.Readers, w.SchedulerAppends, w.SlowestSchedulerAppendNanos, w.RunAppends, w.Ingests)
+		if w.SchedulerAppends == 0 && w.RunAppends == 0 && w.Ingests == 0 {
+			t.Fatalf("readers=%d applied no writes; the level measured an idle instance twice", level.Readers)
+		}
 	}
 
 	// The sustained phase must have run for at least the requested duration.
@@ -978,6 +989,106 @@ func TestMixedLoadExperimentProducesAVerdict(t *testing.T) {
 	if res.Spec.DurationSeconds != load.Duration.Seconds() {
 		t.Errorf("reported duration %.1fs does not match the requested %.1fs",
 			res.Spec.DurationSeconds, load.Duration.Seconds())
+	}
+	if res.StoreBoundOperation != storeBoundOp {
+		t.Errorf("verdict keys on %q, want the store-bound read %q", res.StoreBoundOperation, storeBoundOp)
+	}
+	// The reported factor must belong to a level that was actually measured,
+	// otherwise a verdict quotes a concurrency the run never drove.
+	if res.StoreBoundReaders != 1 && res.StoreBoundReaders != 2 {
+		t.Errorf("store-bound factor reported at %d readers, which is not a measured level", res.StoreBoundReaders)
+	}
+}
+
+// TestDefaultLoadSpecExercisesAboveFourReaders pins the default reader axis: the
+// experiment's original fixed four readers is kept so old baselines stay
+// comparable, and a level above it is measured so an effect that only appears at
+// higher concurrency is observed rather than missed.
+func TestDefaultLoadSpecExercisesAboveFourReaders(t *testing.T) {
+	levels := DefaultLoadSpec(time.Second).ReaderLevels
+	if len(levels) < 2 {
+		t.Fatalf("default reader levels %v are not a concurrency axis", levels)
+	}
+	hasBaseline, hasAboveFour := false, false
+	for _, n := range levels {
+		if n == baselineReaders {
+			hasBaseline = true
+		}
+		if n > baselineReaders {
+			hasAboveFour = true
+		}
+	}
+	if !hasBaseline {
+		t.Errorf("default levels %v drop the %d-reader level earlier baselines were measured at", levels, baselineReaders)
+	}
+	if !hasAboveFour {
+		t.Errorf("default levels %v never exceed %d readers", levels, baselineReaders)
+	}
+}
+
+// TestNormalizeReaderLevels pins the configuration cleanup: duplicates collapse
+// (they would measure and report the same level twice), non-positive counts are
+// dropped, and the order is ascending so the report reads low to high and two
+// runs of the harness line up level for level.
+func TestNormalizeReaderLevels(t *testing.T) {
+	got := normalizeReaderLevels([]int{8, 1, 0, 4, 8, -2})
+	want := []int{1, 4, 8}
+	if len(got) != len(want) {
+		t.Fatalf("normalizeReaderLevels = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("normalizeReaderLevels = %v, want %v", got, want)
+		}
+	}
+	if levels := normalizeReaderLevels([]int{0, -1}); len(levels) != 0 {
+		t.Errorf("normalizeReaderLevels(%v) = %v, want no usable levels", []int{0, -1}, levels)
+	}
+}
+
+// TestMixedLoadRejectsAnEmptyReaderAxis keeps the experiment from silently
+// running at some implicit concurrency when every requested level was unusable:
+// a measurement whose reader count was never asked for cannot be reported under
+// the level that was.
+func TestMixedLoadRejectsAnEmptyReaderAxis(t *testing.T) {
+	spec := correctnessSpec(t.TempDir())
+	spec.Runs = 4
+	spec.OrphanDirs = 0
+	spec.SpansPerRun = 0
+	spec.OversizedRuns = 0
+	spec.SchedulerEvents = 10
+	spec.GiantSchedulerRecords = 0
+	gen, err := generate(spec)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if err := rebuildAllRoots(gen); err != nil {
+		t.Fatalf("rebuild rollup: %v", err)
+	}
+	load := DefaultLoadSpec(10 * time.Millisecond)
+	load.ReaderLevels = []int{0}
+	if _, err := runMixedLoad(gen.Layout, gen, load, 2); err == nil {
+		t.Fatal("expected an error when no positive reader level was requested")
+	}
+}
+
+// TestWorstStoreBoundReportsTheLevelItCameFrom pins the cross-level reduction:
+// the verdict quotes the worst degradation observed at *any* concurrency, and
+// names the level that produced it, so a factor is never quoted without the
+// reader count behind it.
+func TestWorstStoreBoundReportsTheLevelItCameFrom(t *testing.T) {
+	factor, readers := worstStoreBound([]LoadLevelResult{
+		{Readers: 1, StoreBoundFactor: 1.2},
+		{Readers: 8, StoreBoundFactor: 3.5},
+		{Readers: 16, StoreBoundFactor: 2.0},
+	})
+	if factor != 3.5 || readers != 8 {
+		t.Errorf("worstStoreBound = %.2fx at %d readers, want 3.50x at 8", factor, readers)
+	}
+	// No level measured the store-bound read: zero, rather than a fabricated 1.0
+	// that would read as "no degradation".
+	if factor, readers := worstStoreBound(nil); factor != 0 || readers != 0 {
+		t.Errorf("worstStoreBound(nil) = %.2fx at %d readers, want 0 at 0", factor, readers)
 	}
 }
 
@@ -1101,6 +1212,91 @@ func TestParseTenantLevels(t *testing.T) {
 	for _, bad := range []string{"4", "1,x", "1,0", "1,-2", ""} {
 		if _, err := parseTenantLevels(bad); err == nil {
 			t.Errorf("parseTenantLevels(%q) accepted an unusable level list", bad)
+		}
+	}
+}
+
+// TestParseReaderLevelList covers the -mixed-load-readers list. Unlike the
+// tenant axis a single reader level is legitimate — pinning one concurrency is a
+// load test someone may want — but a malformed or non-positive entry is still a
+// rejection rather than a silent drop.
+func TestParseReaderLevelList(t *testing.T) {
+	got, err := parseLevelList("-mixed-load-readers", " 1, 4 ,16", 1)
+	if err != nil {
+		t.Fatalf("parseLevelList: %v", err)
+	}
+	want := []int{1, 4, 16}
+	for i := range want {
+		if i >= len(got) || got[i] != want[i] {
+			t.Fatalf("parseLevelList = %v, want %v", got, want)
+		}
+	}
+	if _, err := parseLevelList("-mixed-load-readers", "8", 1); err != nil {
+		t.Errorf("a single reader level must be accepted: %v", err)
+	}
+	for _, bad := range []string{"1,x", "1,0", "-2", ""} {
+		if _, err := parseLevelList("-mixed-load-readers", bad, 1); err == nil {
+			t.Errorf("parseLevelList(%q) accepted an unusable level list", bad)
+		}
+	}
+}
+
+// TestMixedLoadReadersRequireMixedLoad pins the flag pairing: reader levels
+// without the experiment would be silently ignored, which reads as a run that
+// measured the requested axis when it measured nothing.
+func TestMixedLoadReadersRequireMixedLoad(t *testing.T) {
+	var stderr strings.Builder
+	if _, err := parseOptions([]string{"-mixed-load-readers=1,8"}, &stderr); err == nil {
+		t.Fatal("expected -mixed-load-readers without -mixed-load to be rejected")
+	}
+	if _, err := parseOptions([]string{"-mixed-load=1s", "-mixed-load-readers=1,8"}, &stderr); err != nil {
+		t.Fatalf("-mixed-load-readers with -mixed-load: %v", err)
+	}
+}
+
+// TestWriteLoadReportGroupsByReaderLevel pins the reporting contract the
+// dimension exists for: each level's latencies are attributed to the reader
+// count that produced them, so two levels cannot be read as one pooled result.
+func TestWriteLoadReportGroupsByReaderLevel(t *testing.T) {
+	res := LoadResult{
+		Spec: LoadSpecReport{DurationSeconds: 30, ReaderLevels: []int{4, 8}},
+		Levels: []LoadLevelResult{
+			{
+				Readers:          4,
+				Idle:             map[string]Stat{storeBoundOp: {Op: storeBoundOp, P99: 10 * time.Millisecond}},
+				UnderLoad:        map[string]Stat{storeBoundOp: {Op: storeBoundOp, P99: 15 * time.Millisecond}},
+				Degradation:      map[string]float64{storeBoundOp: 1.5},
+				StoreBoundFactor: 1.5,
+				WritesApplied:    WriteCounts{SchedulerAppends: 7},
+			},
+			{
+				Readers:          8,
+				Idle:             map[string]Stat{storeBoundOp: {Op: storeBoundOp, P99: 10 * time.Millisecond}},
+				UnderLoad:        map[string]Stat{storeBoundOp: {Op: storeBoundOp, P99: 30 * time.Millisecond}},
+				Degradation:      map[string]float64{storeBoundOp: 3},
+				StoreBoundFactor: 3,
+				WritesApplied:    WriteCounts{SchedulerAppends: 9},
+			},
+		},
+		StoreBoundOperation: storeBoundOp,
+		StoreBoundFactor:    3,
+		StoreBoundReaders:   8,
+	}
+
+	var out strings.Builder
+	writeLoadReport(&out, res)
+	got := out.String()
+	for _, want := range []string{
+		"readers=[4 8]",
+		"readers=4 writes applied: 7 scheduler appends",
+		"readers=8 writes applied: 9 scheduler appends",
+		"1.50x",
+		"3.00x",
+		"CONFIRMED",
+		"at 8 readers",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report does not mention %q:\n%s", want, got)
 		}
 	}
 }
