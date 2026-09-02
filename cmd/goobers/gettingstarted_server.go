@@ -49,6 +49,7 @@ var (
 		return exec.CommandContext(ctx, name, args...)
 	}
 	guidedSyncActionTimeout = 90 * time.Second
+	guidedRepositoryTimeout = 45 * time.Second
 	guidedAuthActionTimeout = 10 * time.Minute
 	guidedRunJobTimeout     = 10 * time.Minute
 )
@@ -56,7 +57,7 @@ var (
 type guidedServer struct {
 	workdir        string
 	instancePath   string
-	configPath     string
+	instancePinned bool
 	executable     string
 	errorLog       *log.Logger
 	allowEphemeral bool
@@ -66,6 +67,9 @@ type guidedServer struct {
 	job      *guidedJob
 	api      http.Handler
 	apiClose func() error
+
+	completed      chan struct{}
+	completionOnce sync.Once
 }
 
 func newGuidedServer(workdir, instancePath string, errorLog *log.Logger) (*guidedServer, error) {
@@ -76,9 +80,9 @@ func newGuidedServer(workdir, instancePath string, errorLog *log.Logger) (*guide
 	return &guidedServer{
 		workdir:      workdir,
 		instancePath: instancePath,
-		configPath:   instancePath + "-config",
 		executable:   executable,
 		errorLog:     errorLog,
+		completed:    make(chan struct{}),
 	}, nil
 }
 
@@ -164,6 +168,8 @@ func (s *guidedServer) serveGuided(w http.ResponseWriter, r *http.Request) {
 		s.handleChooseRepositoryFolder(w, r)
 	case r.URL.Path == "/guided/actions/prepare-repository":
 		s.handlePrepareRepository(w, r)
+	case r.URL.Path == "/guided/actions/complete":
+		s.handleComplete(w, r)
 	case r.URL.Path == "/guided/actions/connect":
 		s.handleConnect(w, r)
 	case r.URL.Path == "/guided/actions/validate":
@@ -180,6 +186,18 @@ func (s *guidedServer) serveGuided(w http.ResponseWriter, r *http.Request) {
 			Message: "unknown guided endpoint",
 		})
 	}
+}
+
+func (s *guidedServer) handleComplete(w http.ResponseWriter, r *http.Request) {
+	if !requireGuidedMethod(w, r, http.MethodPost) {
+		return
+	}
+	writeGuidedJSON(w, http.StatusOK, struct {
+		Complete bool `json:"complete"`
+	}{Complete: true})
+	s.completionOnce.Do(func() {
+		close(s.completed)
+	})
 }
 
 type guidedErrorBody struct {
@@ -219,7 +237,7 @@ type guidedStateBody struct {
 	Platform            string               `json:"platform"`
 	Workdir             string               `json:"workdir"`
 	InstancePath        string               `json:"instancePath"`
-	ConfigPath          string               `json:"configPath"`
+	InstancePathPinned  bool                 `json:"instancePathPinned,omitempty"`
 	SuggestedStack      string               `json:"suggestedStack,omitempty"`
 	SuggestedCICommand  []string             `json:"suggestedCICommand,omitempty"`
 	SuggestedCapability string               `json:"suggestedCapability,omitempty"`
@@ -276,7 +294,7 @@ func (s *guidedServer) handleState(w http.ResponseWriter, r *http.Request) {
 		Platform:            runtime.GOOS,
 		Workdir:             s.workdir,
 		InstancePath:        s.instancePath,
-		ConfigPath:          s.configPath,
+		InstancePathPinned:  s.instancePinned,
 		SuggestedStack:      suggestedStack,
 		SuggestedCICommand:  suggestedCICommand,
 		SuggestedCapability: suggestedCapability,
@@ -345,7 +363,7 @@ type guidedInitOptionsInput struct {
 	Project               string   `json:"project,omitempty"`
 	Name                  string   `json:"name,omitempty"`
 	LocalPath             string   `json:"localPath,omitempty"`
-	ConfigPath            string   `json:"configPath,omitempty"`
+	InstancePath          string   `json:"instancePath,omitempty"`
 	Repo                  string   `json:"repo"`
 	Branch                string   `json:"branch"`
 	Workflows             []string `json:"workflows"`
@@ -427,6 +445,8 @@ func (s *guidedServer) handlePrepareRepository(w http.ResponseWriter, r *http.Re
 	if !decodeGuidedBody(w, r, &input) {
 		return
 	}
+	actionCtx, cancel := context.WithTimeout(r.Context(), guidedRepositoryTimeout)
+	defer cancel()
 	layout := instance.NewLayout(s.instancePath)
 	set, report, err := instance.LoadConfigDir(layout.ConfigDir())
 	if err != nil {
@@ -458,8 +478,12 @@ func (s *guidedServer) handlePrepareRepository(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	token, err := guidedGitHubToken(r.Context())
+	token, err := guidedGitHubToken(actionCtx)
 	if err != nil {
+		if errors.Is(actionCtx.Err(), context.DeadlineExceeded) {
+			writeGuidedRepositoryError(w, actionCtx, "github_credentials_unavailable", err)
+			return
+		}
 		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
 			Code:    "github_credentials_unavailable",
 			Message: err.Error(),
@@ -477,21 +501,15 @@ func (s *guidedServer) handlePrepareRepository(w http.ResponseWriter, r *http.Re
 	if len(catalog.Issues) > 0 {
 		catalog.Issues[0].Assignee = assignedTo
 	}
-	existing, err := provider.RepositoryLabelNames(r.Context(), repository)
+	existing, err := provider.RepositoryLabelNames(actionCtx, repository)
 	if err != nil {
-		writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
-			Code:    "repository_labels_unavailable",
-			Message: err.Error(),
-		})
+		writeGuidedRepositoryError(w, actionCtx, "repository_labels_unavailable", err)
 		return
 	}
 	response.MissingLabels = missingGuidedLabels(catalog.Labels, existing)
-	reality, err := checkGuidedRepoSelectorReality(r.Context(), provider, repository, selectors, assignedTo)
+	reality, err := checkGuidedRepoSelectorReality(actionCtx, provider, repository, selectors, assignedTo)
 	if err != nil {
-		writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
-			Code:    "repository_issues_unavailable",
-			Message: err.Error(),
-		})
+		writeGuidedRepositoryError(w, actionCtx, "repository_issues_unavailable", err)
 		return
 	}
 	eligible := reality.Matching
@@ -499,20 +517,14 @@ func (s *guidedServer) handlePrepareRepository(w http.ResponseWriter, r *http.Re
 	if input.Apply {
 		result := onboardingActionResult{Created: []string{}, Skipped: []string{}}
 		if input.CreateStarterIssue && eligible == 0 {
-			if err := seedOnboardingIssuesAs(r.Context(), provider, repository, catalog, connectAction, &result); err != nil {
-				writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
-					Code:    "repository_preparation_failed",
-					Message: err.Error(),
-				})
+			if err := seedOnboardingIssuesAs(actionCtx, provider, repository, catalog, connectAction, &result); err != nil {
+				writeGuidedRepositoryError(w, actionCtx, "repository_preparation_failed", err)
 				return
 			}
 		} else {
-			labels, err := provider.EnsureWorkItemLabels(r.Context(), repository, catalog.Labels)
+			labels, err := provider.EnsureWorkItemLabels(actionCtx, repository, catalog.Labels)
 			if err != nil {
-				writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
-					Code:    "repository_preparation_failed",
-					Message: err.Error(),
-				})
+				writeGuidedRepositoryError(w, actionCtx, "repository_preparation_failed", err)
 				return
 			}
 			for _, name := range labels.Created {
@@ -527,27 +539,32 @@ func (s *guidedServer) handlePrepareRepository(w http.ResponseWriter, r *http.Re
 				response.StarterIssueCreated = true
 			}
 		}
-		existing, err = provider.RepositoryLabelNames(r.Context(), repository)
+		existing, err = provider.RepositoryLabelNames(actionCtx, repository)
 		if err != nil {
-			writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
-				Code:    "repository_labels_unavailable",
-				Message: err.Error(),
-			})
+			writeGuidedRepositoryError(w, actionCtx, "repository_labels_unavailable", err)
 			return
 		}
 		response.MissingLabels = missingGuidedLabels(catalog.Labels, existing)
-		reality, err = checkGuidedRepoSelectorReality(r.Context(), provider, repository, selectors, assignedTo)
+		reality, err = checkGuidedRepoSelectorReality(actionCtx, provider, repository, selectors, assignedTo)
 		if err != nil {
-			writeGuidedJSON(w, http.StatusBadGateway, guidedErrorBody{
-				Code:    "repository_issues_unavailable",
-				Message: err.Error(),
-			})
+			writeGuidedRepositoryError(w, actionCtx, "repository_issues_unavailable", err)
 			return
 		}
 		eligible = reality.Matching
 		response.EligibleCount = &eligible
 	}
 	writeGuidedJSON(w, http.StatusOK, response)
+}
+
+func writeGuidedRepositoryError(w http.ResponseWriter, ctx context.Context, code string, err error) {
+	status := http.StatusBadGateway
+	message := err.Error()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		status = http.StatusGatewayTimeout
+		code = "repository_preparation_timeout"
+		message = "Repository checks took longer than 45 seconds. Confirm provider access and network connectivity, then try again."
+	}
+	writeGuidedJSON(w, status, guidedErrorBody{Code: code, Message: message})
 }
 
 func guidedGitHubToken(ctx context.Context) (string, error) {
@@ -572,7 +589,7 @@ func missingGuidedLabels(required []providers.WorkItemLabel, existing []string) 
 	for _, name := range existing {
 		have[strings.ToLower(strings.TrimSpace(name))] = true
 	}
-	var missing []string
+	missing := make([]string, 0)
 	for _, label := range required {
 		if !have[strings.ToLower(strings.TrimSpace(label.Name))] {
 			missing = append(missing, label.Name)
@@ -725,15 +742,15 @@ func (s *guidedServer) handleInitInstance(w http.ResponseWriter, r *http.Request
 	if !requireGuidedMethod(w, r, http.MethodPost) {
 		return
 	}
+	var input guidedInitInstanceRequest
+	if !decodeGuidedBody(w, r, &input) {
+		return
+	}
 	if err := s.checkInitTarget(r.Context()); err != nil {
 		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
 			Code:    "unsafe_init_target",
 			Message: err.Error(),
 		})
-		return
-	}
-	var input guidedInitInstanceRequest
-	if !decodeGuidedBody(w, r, &input) {
 		return
 	}
 	if input.Template == "guided" {
@@ -780,6 +797,25 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 		return
 	}
 	if err := s.checkInitTarget(r.Context()); err != nil {
+		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
+			Code:    "unsafe_init_target",
+			Message: err.Error(),
+		})
+		return
+	}
+	instancePath := s.instancePath
+	if !s.instancePinned && strings.TrimSpace(input.InstancePath) != "" {
+		resolved, err := filepath.Abs(strings.TrimSpace(input.InstancePath))
+		if err != nil {
+			writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
+				Code:    "invalid_instance_path",
+				Message: fmt.Sprintf("resolve instance path: %v", err),
+			})
+			return
+		}
+		instancePath = resolved
+	}
+	if err := checkGuidedInitTarget(r.Context(), instancePath, s.allowEphemeral); err != nil {
 		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
 			Code:    "unsafe_init_target",
 			Message: err.Error(),
@@ -849,48 +885,7 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 	} else {
 		opts.CopilotTokenEnv = input.OptionalModelTokenEnv
 	}
-	configPath := strings.TrimSpace(input.ConfigPath)
-	if configPath == "" {
-		configPath = s.configPath
-	}
-	configPath, err := filepath.Abs(configPath)
-	if err != nil {
-		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
-			Code:    "invalid_config_path",
-			Message: fmt.Sprintf("resolve configuration path: %v", err),
-		})
-		return
-	}
-	if err := instance.CheckGuidedSourceInstancePaths(s.instancePath, configPath); err != nil {
-		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
-			Code:    "invalid_config_path",
-			Message: err.Error(),
-		})
-		return
-	}
-	if err := instance.CheckGuidedSourceTarget(configPath); err != nil {
-		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
-			Code:    "config_source_conflict",
-			Message: err.Error(),
-		})
-		return
-	}
-	if _, err := instance.SeedGuidedConfigSource(configPath, opts); err != nil {
-		writeGuidedJSON(w, http.StatusBadRequest, guidedErrorBody{
-			Code:    "invalid_guided_options",
-			Message: err.Error(),
-		})
-		return
-	}
-	cfg, err := instance.LoadGuidedSourceConfig(configPath)
-	if err != nil {
-		writeGuidedJSON(w, http.StatusInternalServerError, guidedErrorBody{
-			Code:    "load_guided_source_failed",
-			Message: err.Error(),
-		})
-		return
-	}
-	result, err := instance.InitGuidedFromSource(s.instancePath, configPath, cfg)
+	result, err := instance.InitGuided(instancePath, opts)
 	if err != nil {
 		writeGuidedJSON(w, http.StatusConflict, guidedErrorBody{
 			Code:    "guided_init_failed",
@@ -899,15 +894,14 @@ func (s *guidedServer) handleGuidedInitInstance(w http.ResponseWriter, r *http.R
 		return
 	}
 	s.mu.Lock()
-	s.configPath = configPath
+	s.instancePath = instancePath
 	s.mu.Unlock()
 	writeGuidedJSON(w, http.StatusOK, guidedInitBody{
 		ExitCode: 0,
 		Stdout: fmt.Sprintf(
-			"Created %s with %d workflow module(s) from %s.",
-			result.Root,
+			"Created %d workflow module(s) in the Goobers Instance at %s.",
 			len(input.Workflows),
-			configPath,
+			result.Root,
 		),
 	})
 }

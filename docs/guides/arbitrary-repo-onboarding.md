@@ -24,10 +24,13 @@ issue scope, harness, CI command, and required capabilities from the choices
 and evidence collected by the wizard. It does not reuse the deliberately
 simplified `quickstart@v1` tutorial workflow.
 
-This guide uses the recommended outside layout: a separate config source and
-instance root, neither inside the target repository. Before choosing paths, see
-[Choose where an instance and its config live](instance-placement.md) for the
-supported placements, decision table, and trust implications.
+The browser wizard creates the simplest instance-local layout: one durable
+Instance directory containing `instance.yaml`, active definitions under
+`config/`, and runtime state. This guide also documents the advanced reviewed
+config-source layout for teams that deliberately want configuration changes
+materialized from a separate repository. See
+[Choose where an instance and its config live](instance-placement.md) for that
+optional governance model.
 
 Do not run initialization with the instance path inside a GitHub App, hosted
 agent, Codespaces, or other ephemeral worktree. Goobers refuses that placement
@@ -159,57 +162,48 @@ authentication. If the GitHub CLI account is not authenticated, the repository
 step offers `gh auth login --hostname github.com --git-protocol https --web`
 directly; it does not start that flow for an already-authenticated account or
 for Azure DevOps. If `gh` is unavailable, install GitHub CLI and retry the
-action. Choose `$GOOBERS_CONFIG_SOURCE` as a custom configuration folder, or
-use the recommended peer folder suggested beside the target clone. The
-tutorial never asks for token values.
+action. Choose the recommended neighboring Instance folder suggested beside the target
+clone, or select another durable local path outside the application repository.
+The wizard creates only that one Instance directory and never asks for token
+values.
 
 For an agent-driven path, use:
 
 ```text
 Use the Goobers Getting Started skill to inspect <target-path>, create the smallest
-validated configuration at <config-path>, explain each write, and ask only when
+validated Instance at <instance-path>, explain each write, and ask only when
 required evidence or behavior cannot be safely derived.
 ```
 
-The configuration folder does not have to be a Git repository, but Git is
-recommended for review and history. Initialize and push it to GitHub or Azure
-DevOps after generation when that governance model fits your team.
-
-The checked-in source has this shape:
+The wizard-created Instance has this shape:
 
 ```text
-instance.yaml.example
-manifest.yaml
+instance.yaml
+config/
+  manifest.yaml
+  gaggles/
+    widget/
+      gaggle.yaml
+      goobers/
+      workflows/
 gaggles/
-  widget/
-    gaggle.yaml
-    goobers/
-      curator/
-      implementer/
-      reviewer/
-    workflows/
-      backlog-curation.yaml
-      implementation.yaml
+scheduler/
+telemetry.db
 ```
 
-`instance.yaml.example` contains only credential locators such as environment
-variable names. Journals, scheduler data, workcopies, credential values, and
-`telemetry.db` remain under `$GOOBERS_INSTANCE`, never in the source tree.
-Guided setup validates the source, materializes its definitions into the fresh
-instance, validates the instance, and prints the exact
-`config-repo -> instance/gaggle -> target-repo/backlog` mapping.
-For later changes, author the checked-in source, stop the daemon, and run
-`goobers config materialize "$GOOBERS_INSTANCE"` before restarting. The command
-validates the recorded source, applies `instance.yaml.example`, `manifest.yaml`,
-and `gaggles/` to the runtime instance, and leaves journals, scheduler data,
-workcopies, credential values, and telemetry untouched.
+Edit active definitions under `$GOOBERS_INSTANCE/config` and validate the
+Instance before restarting the daemon. The separate checked-in source and
+`goobers config materialize` workflow described below remains available as an
+advanced opt-in; guided setup does not create it.
 
 ## 4. Review the generated desired state
 
-Make all workforce and instance-setting edits under
-`$GOOBERS_CONFIG_SOURCE`; do not edit the materialized runtime copy. If the
-source is a GitHub checkout, pull the desired revision before editing or
-materializing it.
+For a wizard-created Instance, set
+`GOOBERS_CONFIG_SOURCE="$GOOBERS_INSTANCE/config"` and edit those active
+definitions directly. For the advanced reviewed-source layout, make edits
+under the separate `$GOOBERS_CONFIG_SOURCE`; do not edit its materialized
+runtime copy. If that source is a Git checkout, pull the desired revision
+before editing or materializing it.
 
 Search for placeholders before proceeding:
 
