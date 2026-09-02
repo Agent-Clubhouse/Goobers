@@ -16,7 +16,7 @@ The guide uses the complete
 then removes workflows that are not needed for the first acceptance cycle.
 Finish the single-repository path before adding another gaggle.
 
-`goobers init --guided --instance-path <durable-instance-root>` follows the
+`goobers init --guided` follows the
 same convention: it loads the canonical work-nomination, backlog-curation, and
 implementation modules from
 `config-examples/gaggles/acme-web`, then adapts repository identity, branch,
@@ -153,7 +153,7 @@ gh repo view $env:GOOBERS_TARGET
 ## 3. Initialize the instance
 
 ```sh
-goobers init --guided --instance-path "$GOOBERS_INSTANCE"
+goobers init --guided
 ```
 
 Provide the existing local clone for `$GOOBERS_TARGET`. The tutorial discovers
@@ -165,7 +165,8 @@ for Azure DevOps. If `gh` is unavailable, install GitHub CLI and retry the
 action. Choose the recommended neighboring Instance folder suggested beside the target
 clone, or select another durable local path outside the application repository.
 The wizard creates only that one Instance directory and never asks for token
-values.
+values. To pin the location before opening the wizard, add
+`--instance-path "$GOOBERS_INSTANCE"`.
 
 For an agent-driven path, use:
 
@@ -190,6 +191,8 @@ gaggles/
 scheduler/
 telemetry.db
 ```
+
+![Completed Goobers guided setup with validation and next steps](../images/guided-setup-complete.png)
 
 Edit active definitions under `$GOOBERS_INSTANCE/config` and validate the
 Instance before restarting the daemon. The separate checked-in source and
