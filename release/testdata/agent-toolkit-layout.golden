@@ -12,7 +12,6 @@ payload/.goobers/agent-toolkit/api/schemas/explain.schema.json
 payload/.goobers/agent-toolkit/api/schemas/features.schema.json
 payload/.goobers/agent-toolkit/api/schemas/gaggle.schema.json
 payload/.goobers/agent-toolkit/api/schemas/goober.schema.json
-payload/.goobers/agent-toolkit/api/schemas/hosted-progress.schema.json
 payload/.goobers/agent-toolkit/api/schemas/instance-repository-execution.schema.json
 payload/.goobers/agent-toolkit/api/schemas/instance.schema.json
 payload/.goobers/agent-toolkit/api/schemas/invocation.schema.json

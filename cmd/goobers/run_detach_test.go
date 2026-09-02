@@ -196,8 +196,8 @@ func TestParseRunTarget(t *testing.T) {
 }
 
 func TestRunFlagArgsMovesGaggleFlagAfterWorkflow(t *testing.T) {
-	got := runFlagArgs([]string{"deploy", "--gaggle", "beta", "--github-progress", "--no-wait", "root"})
-	want := []string{"--gaggle", "beta", "--github-progress", "--no-wait", "deploy", "root"}
+	got := runFlagArgs([]string{"deploy", "--gaggle", "beta", "--no-wait", "root"})
+	want := []string{"--gaggle", "beta", "--no-wait", "deploy", "root"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("runFlagArgs = %q, want %q", got, want)
 	}

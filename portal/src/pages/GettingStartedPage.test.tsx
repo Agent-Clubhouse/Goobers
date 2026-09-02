@@ -23,7 +23,6 @@ function guidedState(overrides: Partial<GuidedState> = {}): GuidedState {
     job: null,
     apiReady: false,
     connected: { repo: null },
-    copilotAppDetected: false,
     ...overrides,
   };
 }

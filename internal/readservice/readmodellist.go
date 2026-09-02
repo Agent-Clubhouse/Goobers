@@ -141,18 +141,13 @@ func operatorFromReadModel(row readmodel.RunRow, observedAt time.Time) OperatorR
 		Trajectory:        operatorTrajectory(row.CurrentStage, row.Phase),
 		Liveness:          "no-heartbeat",
 		PullRequest:       facts.PullRequest,
-		PullRequestTitle:  facts.PullRequestTitle,
 		PROpenerStage:     facts.PROpenerStage,
 		Claim:             OperatorClaim{LeaseStatus: "none", ProviderMarker: "not-recorded"},
 		LatestError:       facts.LatestError,
 		PotentialBlockers: []string{},
 	}
 	if facts.IssueNumber != "" || facts.IssueTitle != "" {
-		operator.Issue = &OperatorIssue{
-			Number: facts.IssueNumber,
-			Title:  facts.IssueTitle,
-			URL:    facts.IssueURL,
-		}
+		operator.Issue = &OperatorIssue{Number: facts.IssueNumber, Title: facts.IssueTitle}
 	}
 	if facts.LastHeartbeatAt != nil {
 		heartbeat := *facts.LastHeartbeatAt

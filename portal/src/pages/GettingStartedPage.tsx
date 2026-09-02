@@ -29,7 +29,6 @@ type BusyAction =
   | "init"
   | "prepare"
   | "validate"
-  | "install-portal"
   | null;
 type WizardPageId =
   | "welcome"

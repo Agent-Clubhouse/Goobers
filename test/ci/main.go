@@ -23,7 +23,6 @@ type toolchain struct {
 	gofmtCommand    string
 	gitCommand      string
 	npmCommand      string
-	nodeCommand     string
 	golangciCommand string
 }
 
@@ -245,7 +244,6 @@ func configuredToolchain(getenv func(string) string) toolchain {
 		gofmtCommand:    envOrDefault(getenv, "GOFMT", "gofmt"),
 		gitCommand:      envOrDefault(getenv, "GIT", "git"),
 		npmCommand:      envOrDefault(getenv, "NPM", "npm"),
-		nodeCommand:     envOrDefault(getenv, "NODE", "node"),
 		golangciCommand: envOrDefault(getenv, "GOLANGCI_LINT", "golangci-lint"),
 	}
 }
@@ -484,27 +482,6 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 			args:         []string{"--prefix", "portal", "test"},
 			windowsBatch: true,
 			group:        groupChecks,
-		},
-		// extension-test runs the canvas extension's Node --test suites for
-		// .github/extensions/goobers-portal. Files are enumerated explicitly
-		// so the Go executor (which does not expand shell globs — the
-		// Makefile's `extension-test` target relies on POSIX shell for the
-		// `*.test.mjs` pattern) still runs every suite, and the
-		// `TestExtensionTestCheckUsesNodeAndCoversAllTestFiles` guard fails
-		// fast when a newly added *.test.mjs file is not wired here.
-		check{
-			label:   "extension-test",
-			command: tools.nodeCommand,
-			args: []string{
-				"--test",
-				".github/extensions/goobers-portal/actions-source.test.mjs",
-				".github/extensions/goobers-portal/client.test.mjs",
-				".github/extensions/goobers-portal/filters.test.mjs",
-				".github/extensions/goobers-portal/preferences.test.mjs",
-				".github/extensions/goobers-portal/storage.test.mjs",
-				".github/extensions/goobers-portal/ux.test.mjs",
-			},
-			group: groupChecks,
 		},
 		check{
 			label:        "portal-deadcode",

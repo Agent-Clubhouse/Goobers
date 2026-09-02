@@ -564,7 +564,6 @@ export interface OperatorRunSummary {
   liveness: string;
   trajectory: string;
   pullRequest?: { provider: string; kind: string; id: string; url?: string };
-  pullRequestBody?: string;
   prOpenerStage?: string;
   claim: {
     leaseStatus: string;
@@ -1149,7 +1148,6 @@ export interface PortalConfig {
   support: PortalSupport;
   capabilities: {
     revealRun: boolean;
-    workflowEnable: boolean;
   };
 }
 

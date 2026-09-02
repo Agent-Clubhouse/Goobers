@@ -74,7 +74,6 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"test",
 		"lint",
 		"portal-test",
-		"extension-test",
 		"portal-deadcode",
 		"portal-e2e",
 		"portal-contract-generate",
@@ -312,7 +311,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links npm-registry go-toolchain build-operator portal-install portal-audit portal-playwright-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test extension-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links npm-registry go-toolchain build-operator portal-install portal-audit portal-playwright-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -353,70 +352,6 @@ func TestChecksInstallPinnedChromiumAndRunPortalE2E(t *testing.T) {
 
 	if install.skip == nil {
 		t.Fatal("portal-playwright-install has no skip hook; #3372 no-op on a read-only baked-browser PLAYWRIGHT_BROWSERS_PATH would regress")
-	}
-}
-
-// TestExtensionTestCheckUsesNodeAndCoversAllTestFiles pins the wiring for the
-// canvas extension Node --test suites: the check must resolve to the
-// configured node binary, list every .test.mjs file under
-// .github/extensions/goobers-portal explicitly (`node --test <dir>` treats
-// dirs as a single failing test file), and stay in groupChecks so the fan-in
-// job owns it.
-func TestExtensionTestCheckUsesNodeAndCoversAllTestFiles(t *testing.T) {
-	t.Parallel()
-	got := checks(
-		[]string{"goobers"},
-		toolchain{goCommand: "go", gofmtCommand: "gofmt", gitCommand: "git", npmCommand: "npm", nodeCommand: "custom-node"},
-		buildMetadata{},
-		"linux",
-		"",
-	)
-	var current check
-	for _, c := range got {
-		if c.label == "extension-test" {
-			current = c
-			break
-		}
-	}
-	if current.label != "extension-test" {
-		t.Fatal("extension-test check is missing")
-	}
-	if current.command != "custom-node" {
-		t.Errorf("extension-test command = %q, want the configured NODE binary", current.command)
-	}
-	if current.group != groupChecks {
-		t.Errorf("extension-test group = %q, want groupChecks", current.group)
-	}
-	if len(current.args) == 0 || current.args[0] != "--test" {
-		t.Fatalf("extension-test args = %q, first arg must be --test", current.args)
-	}
-	testFiles := current.args[1:]
-	dir := ".github/extensions/goobers-portal/"
-	seen := map[string]bool{}
-	for _, arg := range testFiles {
-		if !strings.HasPrefix(arg, dir) {
-			t.Errorf("extension-test file %q is outside %s", arg, dir)
-		}
-		if !strings.HasSuffix(arg, ".test.mjs") {
-			t.Errorf("extension-test file %q is not a .test.mjs source", arg)
-		}
-		seen[filepath.Base(arg)] = true
-	}
-	// Cross-check the checked-in test files against what CI runs so a newly
-	// added *.test.mjs file that isn't wired here fails fast.
-	root := moduleRoot(t)
-	matches, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(dir), "*.test.mjs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(matches) == 0 {
-		t.Fatal("no *.test.mjs files found on disk; the check would exercise nothing")
-	}
-	for _, m := range matches {
-		base := filepath.Base(m)
-		if !seen[base] {
-			t.Errorf("extension-test does not list %s; the CI check must cover every .test.mjs file", base)
-		}
 	}
 }
 
@@ -570,7 +505,6 @@ func TestConfiguredToolchainUsesDefaultsAndOverrides(t *testing.T) {
 		gofmtCommand:    "gofmt",
 		gitCommand:      "git",
 		npmCommand:      "custom-npm",
-		nodeCommand:     "node",
 		golangciCommand: "golangci-lint",
 	}
 	if got != want {

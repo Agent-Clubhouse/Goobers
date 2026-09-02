@@ -123,8 +123,7 @@ export const goWireFixtures = {
       "links": []
     },
     "capabilities": {
-      "revealRun": false,
-      "workflowEnable": false
+      "revealRun": false
     }
   },
   "gaggles": {
@@ -448,13 +447,6 @@ export const goWireFixtures = {
           "currentStage": "review",
           "liveness": "terminal",
           "trajectory": "parked",
-          "pullRequest": {
-            "provider": "github",
-            "kind": "pr",
-            "id": "675",
-            "url": "https://github.com/Agent-Clubhouse/Goobers/pull/675"
-          },
-          "pullRequestBody": "## Summary\n\nExpose complete operator context.",
           "claim": {
             "leaseStatus": "released",
             "providerMarker": "recorded"
@@ -504,13 +496,6 @@ export const goWireFixtures = {
       "currentStage": "review",
       "liveness": "terminal",
       "trajectory": "parked",
-      "pullRequest": {
-        "provider": "github",
-        "kind": "pr",
-        "id": "675",
-        "url": "https://github.com/Agent-Clubhouse/Goobers/pull/675"
-      },
-      "pullRequestBody": "## Summary\n\nExpose complete operator context.",
       "claim": {
         "leaseStatus": "released",
         "providerMarker": "recorded"

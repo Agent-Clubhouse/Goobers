@@ -212,8 +212,6 @@ func newWireFixtures() wireFixtures {
 			CurrentStage:      "review",
 			Liveness:          "terminal",
 			Trajectory:        "parked",
-			PullRequest:       &journal.ExternalRef{Provider: "github", Kind: "pr", ID: "675", URL: "https://github.com/Agent-Clubhouse/Goobers/pull/675"},
-			PullRequestBody:   "## Summary\n\nExpose complete operator context.",
 			Claim:             readservice.OperatorClaim{LeaseStatus: "released", ProviderMarker: "recorded"},
 			NextTransition:    "",
 			PotentialBlockers: []string{},

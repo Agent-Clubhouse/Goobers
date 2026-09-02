@@ -50,12 +50,6 @@ export interface GuidedState {
   job: GuidedJobSummary | null;
   apiReady: boolean;
   connected: GuidedConnectedState;
-  copilotAppDetected: boolean;
-}
-
-export interface GuidedPortalInstallResult {
-  path: string;
-  installed: boolean;
 }
 
 export interface GuidedRepositoryInspection {
@@ -297,10 +291,6 @@ export class GuidedClient {
 
   validate(body: ValidateRequest): Promise<GuidedEnvelopeResult<DiagnosticsEnvelope>> {
     return this.post("/guided/actions/validate", body);
-  }
-
-  installPortalExtension(): Promise<GuidedPortalInstallResult> {
-    return this.post("/guided/actions/install-portal-extension", {});
   }
 
   startRun(body: RunRequest = {}): Promise<{ jobId: string }> {
