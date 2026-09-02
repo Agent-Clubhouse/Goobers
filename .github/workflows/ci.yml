@@ -228,6 +228,14 @@ jobs:
       - name: fmt · tidy · no-phone-home · vet · build · portal
         run: go run ./test/ci group checks
 
+      - name: Upload regenerated Portal bundle for PR repair
+        if: ${{ failure() && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: portal-dist-repair
+          path: cmd/goobers/portal-dist
+          if-no-files-found: error
+
   deploy-reference:
     name: deploy reference manifests
     runs-on: ubuntu-latest
