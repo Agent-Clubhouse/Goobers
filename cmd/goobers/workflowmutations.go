@@ -122,7 +122,7 @@ func (s *workflowMutationService) SetWorkflowEnabled(ctx context.Context, input 
 		if changed {
 			if restoreErr := writeWorkflowSourceAtomically(path, raw, mode); restoreErr != nil {
 				return httpapi.WorkflowEnabledResult{}, fmt.Errorf(
-					"reload config after workflow edit: %w; restore workflow source: %v",
+					"reload config after workflow edit: %w; restore workflow source: %w",
 					pollErr,
 					restoreErr,
 				)
