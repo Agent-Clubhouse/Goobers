@@ -18,6 +18,8 @@ import (
 )
 
 const (
+	// Name is the folder name of the portal canvas extension and the manifest
+	// identifier used to install and update it under a Copilot home.
 	Name            = "goobers-portal"
 	sourceRoot      = ".github/extensions/" + Name
 	manifestName    = ".goobers-release.json"
@@ -147,16 +149,16 @@ type Manager struct {
 // Open validates a Copilot home and returns its extension manager.
 func Open(copilotHome string) (*Manager, error) {
 	if strings.TrimSpace(copilotHome) == "" {
-		return nil, fmt.Errorf("Copilot home must not be empty")
+		return nil, fmt.Errorf("copilot home must not be empty")
 	}
 	absolute, err := filepath.Abs(copilotHome)
 	if err != nil {
 		return nil, fmt.Errorf("resolve Copilot home: %w", err)
 	}
 	if info, err := os.Lstat(absolute); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("Copilot home %s is a symbolic link", absolute)
+		return nil, fmt.Errorf("copilot home %s is a symbolic link", absolute)
 	} else if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("inspect Copilot home: %w", err)
+		return nil, fmt.Errorf("inspect copilot home: %w", err)
 	}
 	return &Manager{home: absolute}, nil
 }
@@ -291,9 +293,9 @@ func (m *Manager) Install(bundle Bundle) (InstallResult, error) {
 		}
 		return InstallResult{Path: report.Path, Installed: true}, nil
 	case "update-available":
-		return InstallResult{}, fmt.Errorf("Portal extension %s is already installed; run `goobers portal-extension update`", report.InstalledVersion)
+		return InstallResult{}, fmt.Errorf("portal extension %s is already installed; run `goobers portal-extension update`", report.InstalledVersion)
 	default:
-		return InstallResult{}, fmt.Errorf("Portal extension target is %s; refusing to overwrite it", report.State)
+		return InstallResult{}, fmt.Errorf("portal extension target is %s; refusing to overwrite it", report.State)
 	}
 }
 
@@ -380,7 +382,7 @@ func (m *Manager) replace(bundle Bundle, existing bool) error {
 	}
 	if err := os.Rename(stage, m.Path()); err != nil {
 		if rollbackErr := os.Rename(backup, m.Path()); rollbackErr != nil {
-			return fmt.Errorf("activate portal extension: %w (rollback failed: %v)", err, rollbackErr)
+			return fmt.Errorf("activate portal extension: %w (rollback failed: %w)", err, rollbackErr)
 		}
 		_ = os.Remove(m.pendingRecordPath())
 		return fmt.Errorf("activate portal extension: %w", err)

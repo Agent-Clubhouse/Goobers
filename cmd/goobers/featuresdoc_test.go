@@ -160,8 +160,8 @@ func TestFeatureRegistryCoversSpecFields(t *testing.T) {
 			"trigger.idleBackoff.floor",
 			"trigger.idleBackoff.ceiling",
 		},
-		"Trigger.Signal": {"trigger.signal"},
-		"Trigger.Events": {"trigger.webhook"},
+		"Trigger.Signal":  {"trigger.signal"},
+		"Trigger.Events":  {"trigger.webhook"},
 		"Trigger.Enabled": {"trigger.enabled"},
 
 		"Task.Name":                 {"task.name"},

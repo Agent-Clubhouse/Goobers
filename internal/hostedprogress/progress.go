@@ -19,6 +19,8 @@ import (
 )
 
 const (
+	// Schema is the versioned identifier for the hosted-progress payload
+	// embedded in a GitHub Check Run output.
 	Schema          = "goobers.dev/hosted-progress/v1"
 	CheckPrefix     = "Goobers / "
 	startMarker     = "<!-- goobers-progress:v1 -->"
@@ -393,7 +395,7 @@ func (p *Publisher) request(ctx context.Context, method, endpoint string, body, 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
 		return fmt.Errorf("publish GitHub progress: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(detail)))
