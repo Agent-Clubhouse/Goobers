@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,10 +30,14 @@ import (
 //
 // The experiment runs an identical read mix twice: once alone, once against
 // concurrent scheduler-journal appends, run-journal appends, and rollup ingest.
-// Everything else is held constant. A large degradation confirms the mechanism;
-// a small one refutes it and sends the investigation elsewhere, which §2.3
-// explicitly allows for — production evidence also includes refresh churn and
-// proxy cancellations while direct endpoints were healthy.
+// It repeats that pair at each requested reader-concurrency level, reporting the
+// levels separately, because "does a write load slow reads down" and "does it
+// slow them down *more* as concurrency rises" are different questions and only
+// the second distinguishes contention from a fixed per-read cost. Everything
+// else is held constant. A large degradation confirms the mechanism; a small one
+// refutes it and sends the investigation elsewhere, which §2.3 explicitly allows
+// for — production evidence also includes refresh churn and proxy cancellations
+// while direct endpoints were healthy.
 //
 // It deliberately uses the REAL journal.InstanceLog.Append rather than the
 // generator's direct write. The generator bypasses it because it is O(n²) and
@@ -44,13 +49,18 @@ import (
 // LoadSpec parameterizes the concurrent write load applied to the instance while
 // reads are measured.
 type LoadSpec struct {
-	// Duration is how long to sustain the load. §14.5 asks for a sustained run
-	// rather than a burst — "not a 60-second burst" — because a burst can be
-	// absorbed by queueing that a sustained rate cannot.
+	// Duration is how long to sustain the load, per reader-concurrency level.
+	// §14.5 asks for a sustained run rather than a burst — "not a 60-second
+	// burst" — because a burst can be absorbed by queueing that a sustained rate
+	// cannot.
 	Duration time.Duration
-	// Readers is how many concurrent reader goroutines issue the read mix,
-	// modelling the portal's several concurrent panels.
-	Readers int
+	// ReaderLevels are the reader-concurrency levels to measure, each one its own
+	// idle/loaded pair. Concurrency is the axis the head-of-line-blocking claim
+	// is about: a single fixed reader count reports one point on a curve and
+	// cannot say whether degradation grows with the number of concurrent panels
+	// or is flat in it, which is the difference between a contention mechanism
+	// and a constant per-read cost.
+	ReaderLevels []int
 	// SchedulerAppendsPerSec is the rate of instance-journal appends via the real
 	// InstanceLog.Append. On the live instance the scheduler journals a decision
 	// per trigger evaluation, so this is not a synthetic load.
@@ -63,36 +73,65 @@ type LoadSpec struct {
 }
 
 // DefaultLoadSpec is the §16.3 mixed load.
+//
+// The reader levels bracket the portal's several concurrent panels: one reader
+// as the uncontended reference, four as the original fixed mix, and eight above
+// it so a degradation that only appears past four is measured rather than
+// missed.
 func DefaultLoadSpec(d time.Duration) LoadSpec {
 	return LoadSpec{
 		Duration:               d,
-		Readers:                4,
+		ReaderLevels:           []int{1, baselineReaders, 2 * baselineReaders},
 		SchedulerAppendsPerSec: 5,
 		RunAppendsPerSec:       10,
 		IngestPerSec:           2,
 	}
 }
 
-// LoadResult reports the same read mix measured idle and under load.
+// baselineReaders is the fixed reader count the experiment ran at before it
+// varied concurrency, kept as the middle level so a new run stays comparable to
+// every baseline published under the old harness.
+const baselineReaders = 4
+
+// LoadResult reports every measured reader-concurrency level plus the
+// store-bound read's worst degradation across them.
 type LoadResult struct {
-	Spec           LoadSpecReport     `json:"spec"`
+	Spec   LoadSpecReport    `json:"spec"`
+	Levels []LoadLevelResult `json:"levels"`
+	// StoreBoundOperation is the read the verdict keys on, and StoreBoundFactor
+	// is its worst p99 degradation across the measured levels — worst, not the
+	// last level's, because the hypothesis is that contention appears at *some*
+	// concurrency, and averaging or taking only the top level would let a level
+	// that confirmed it be reported as a level that did not.
+	StoreBoundOperation string  `json:"storeBoundOperation"`
+	StoreBoundFactor    float64 `json:"storeBoundFactor"`
+	// StoreBoundReaders is the reader count at which StoreBoundFactor was
+	// measured, so a factor is never quoted without the concurrency that produced
+	// it.
+	StoreBoundReaders int `json:"storeBoundReaders"`
+}
+
+// LoadLevelResult is one reader-concurrency level's measurement: the same read
+// mix idle and under load, at that level.
+type LoadLevelResult struct {
+	Readers        int                `json:"readers"`
 	Idle           map[string]Stat    `json:"idle"`
 	UnderLoad      map[string]Stat    `json:"underLoad"`
 	WritesApplied  WriteCounts        `json:"writesApplied"`
 	Degradation    map[string]float64 `json:"degradationP99"`
 	WorstOperation string             `json:"worstOperation"`
 	WorstFactor    float64            `json:"worstFactor"`
-	// StoreBoundFactor is the degradation of the reads whose cost is dominated by
+	// StoreBoundFactor is the degradation of the read whose cost is dominated by
 	// the shared SQLite connection rather than by the filesystem scan. It, not
-	// WorstFactor, is the head-of-line-blocking signal — see §2.3 notes below.
+	// WorstFactor, is the head-of-line-blocking signal — see storeBoundOp.
 	StoreBoundFactor float64        `json:"storeBoundFactor"`
 	Errors           map[string]int `json:"errors,omitempty"`
 }
 
 // LoadSpecReport is the spec as reported, with the duration in a readable form.
 type LoadSpecReport struct {
-	DurationSeconds        float64 `json:"durationSeconds"`
-	Readers                int     `json:"readers"`
+	DurationSeconds        float64 `json:"durationSecondsPerLevel"`
+	ReaderLevels           []int   `json:"readerLevels"`
 	SchedulerAppendsPerSec int     `json:"schedulerAppendsPerSec"`
 	RunAppendsPerSec       int     `json:"runAppendsPerSec"`
 	IngestPerSec           int     `json:"ingestPerSec"`
@@ -111,25 +150,29 @@ type WriteCounts struct {
 	SlowestSchedulerAppendNanos time.Duration `json:"slowestSchedulerAppendNanos"`
 }
 
-// runMixedLoad measures the read mix idle, then again under concurrent writes.
+// runMixedLoad measures the read mix idle, then again under concurrent writes,
+// once per requested reader-concurrency level.
 func runMixedLoad(
 	layout instance.Layout,
 	gen GenerateResult,
 	spec LoadSpec,
 	samples int,
 ) (LoadResult, error) {
+	levels := normalizeReaderLevels(spec.ReaderLevels)
+	if len(levels) == 0 {
+		return LoadResult{}, fmt.Errorf(
+			"scale: mixed load needs at least one positive reader-concurrency level; got %v", spec.ReaderLevels)
+	}
+
 	result := LoadResult{
 		Spec: LoadSpecReport{
 			DurationSeconds:        spec.Duration.Seconds(),
-			Readers:                spec.Readers,
+			ReaderLevels:           levels,
 			SchedulerAppendsPerSec: spec.SchedulerAppendsPerSec,
 			RunAppendsPerSec:       spec.RunAppendsPerSec,
 			IngestPerSec:           spec.IngestPerSec,
 		},
-		Idle:        map[string]Stat{},
-		UnderLoad:   map[string]Stat{},
-		Degradation: map[string]float64{},
-		Errors:      map[string]int{},
+		StoreBoundOperation: storeBoundOp,
 	}
 
 	db, err := rollup.Open(layout.TelemetryDB())
@@ -148,17 +191,71 @@ func runMixedLoad(
 	}
 
 	mix := readMix(service, instancefixture.GaggleName(0))
+	for _, readers := range levels {
+		result.Levels = append(result.Levels, measureLoadLevel(mix, layout, gen, spec, readers, samples))
+	}
+	result.StoreBoundFactor, result.StoreBoundReaders = worstStoreBound(result.Levels)
+	return result, nil
+}
+
+// normalizeReaderLevels drops non-positive levels, collapses duplicates, and
+// sorts ascending so the report reads low to high and two runs of the harness
+// line up level for level.
+func normalizeReaderLevels(requested []int) []int {
+	seen := map[int]bool{}
+	out := make([]int, 0, len(requested))
+	for _, n := range requested {
+		if n < 1 || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// worstStoreBound is the store-bound read's largest degradation across levels
+// and the reader count that produced it. Zero when no level measured it, rather
+// than a fabricated 1.0 that would read as "no degradation".
+func worstStoreBound(levels []LoadLevelResult) (float64, int) {
+	worst, at := 0.0, 0
+	for _, level := range levels {
+		if level.StoreBoundFactor > worst {
+			worst, at = level.StoreBoundFactor, level.Readers
+		}
+	}
+	return worst, at
+}
+
+// measureLoadLevel runs the three-phase measurement at one reader concurrency:
+// idle, sustained load, idle again.
+func measureLoadLevel(
+	mix []readOp,
+	layout instance.Layout,
+	gen GenerateResult,
+	spec LoadSpec,
+	readers int,
+	samples int,
+) LoadLevelResult {
+	level := LoadLevelResult{
+		Readers:     readers,
+		Idle:        map[string]Stat{},
+		UnderLoad:   map[string]Stat{},
+		Degradation: map[string]float64{},
+		Errors:      map[string]int{},
+	}
 
 	// Warm-up, discarded. Without it the first phase absorbs every cold page-cache
 	// and first-statement cost, and whichever phase runs first looks worse — which
 	// on the first version of this experiment made reads appear 33% FASTER under
 	// load and produced a false "not confirmed". A verdict that depends on
 	// measurement order is not a verdict.
-	_, _ = sampleMix(mix, spec.Readers*2, spec.Readers)
+	_, _ = sampleMix(mix, readers*2, readers)
 
 	// Phase 1: idle.
-	idle1, errs := sampleMix(mix, samples, spec.Readers)
-	mergeErrors(result.Errors, errs)
+	idle1, errs := sampleMix(mix, samples, readers)
+	mergeErrors(level.Errors, errs)
 
 	// Phase 2: under sustained load. The mix is repeated until Duration elapses,
 	// so this is a sustained measurement rather than a burst (§14.5) — an earlier
@@ -171,9 +268,9 @@ func runMixedLoad(
 	startWriters(&writers, stop, counts, layout, gen, spec)
 	time.Sleep(loadWarmup)
 
-	underLoad, errs := sampleMixFor(mix, samples, spec.Readers, spec.Duration)
-	result.UnderLoad = underLoad
-	mergeErrors(result.Errors, errs)
+	underLoad, errs := sampleMixFor(mix, samples, readers, spec.Duration)
+	level.UnderLoad = underLoad
+	mergeErrors(level.Errors, errs)
 
 	close(stop)
 	writers.Wait()
@@ -182,11 +279,11 @@ func runMixedLoad(
 	// the two idle phases is deliberately conservative — it makes degradation
 	// harder to claim, which is the right bias when the output is a causal verdict
 	// and drift (thermal, page cache, other tenants) is the obvious confounder.
-	idle2, errs := sampleMix(mix, samples, spec.Readers)
-	mergeErrors(result.Errors, errs)
-	result.Idle = fasterOf(idle1, idle2)
+	idle2, errs := sampleMix(mix, samples, readers)
+	mergeErrors(level.Errors, errs)
+	level.Idle = fasterOf(idle1, idle2)
 
-	result.WritesApplied = WriteCounts{
+	level.WritesApplied = WriteCounts{
 		SchedulerAppends:            counts.schedulerAppends.Load(),
 		RunAppends:                  counts.runAppends.Load(),
 		Ingests:                     counts.ingests.Load(),
@@ -197,21 +294,21 @@ func runMixedLoad(
 	// tail phenomenon. A read that waits behind a 1.3 s locked append is not
 	// slower on average, it is occasionally catastrophic, and a p50 comparison
 	// would miss exactly the effect under test.
-	for op, before := range result.Idle {
-		after, ok := result.UnderLoad[op]
+	for op, before := range level.Idle {
+		after, ok := level.UnderLoad[op]
 		if !ok || before.P99 <= 0 {
 			continue
 		}
 		factor := float64(after.P99) / float64(before.P99)
-		result.Degradation[op] = factor
-		if factor > result.WorstFactor {
-			result.WorstFactor, result.WorstOperation = factor, op
+		level.Degradation[op] = factor
+		if factor > level.WorstFactor {
+			level.WorstFactor, level.WorstOperation = factor, op
 		}
 		if op == storeBoundOp {
-			result.StoreBoundFactor = factor
+			level.StoreBoundFactor = factor
 		}
 	}
-	return result, nil
+	return level
 }
 
 // storeBoundOp names the read whose cost is dominated by the shared SQLite
