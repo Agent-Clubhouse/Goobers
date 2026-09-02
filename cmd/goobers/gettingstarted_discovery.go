@@ -59,8 +59,7 @@ type guidedRepositoryInspection struct {
 	Discovery            string          `json:"discovery"`
 	Evidence             []string        `json:"evidence,omitempty"`
 	NeedsClone           bool            `json:"needsClone"`
-	PeerConfigPath       string          `json:"peerConfigPath,omitempty"`
-	InRepoConfigPath     string          `json:"inRepoConfigPath,omitempty"`
+	PeerInstancePath     string          `json:"peerInstancePath,omitempty"`
 	Ephemeral            bool            `json:"ephemeral,omitempty"`
 	EphemeralReason      string          `json:"ephemeralReason,omitempty"`
 	SafeInstancePath     string          `json:"safeInstancePath,omitempty"`
@@ -119,12 +118,12 @@ func inspectGuidedLocalRepository(ctx context.Context, input string) (guidedRepo
 	}
 	inspection := guidedInspectionFromIdentity(identity)
 	inspection.LocalPath = root
-	inspection.PeerConfigPath = filepath.Join(filepath.Dir(root), filepath.Base(root)+"-goobers")
-	inspection.InRepoConfigPath = filepath.Join(root, "goobers")
+	inspection.PeerInstancePath = filepath.Join(filepath.Dir(root), filepath.Base(root)+"-goobers")
 	if safety, safetyErr := worktree.InspectInitTarget(ctx, root); safetyErr == nil && safety.Ephemeral {
 		inspection.Ephemeral = true
 		inspection.EphemeralReason = safety.Reason
 		inspection.SafeInstancePath = worktree.RecommendedInstancePath(safety)
+		inspection.PeerInstancePath = inspection.SafeInstancePath
 	}
 	inspection.DefaultBranch, err = discoverLocalDefaultBranch(ctx, root)
 	if err != nil {

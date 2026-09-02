@@ -19,6 +19,10 @@ Closes #
 - [ ] Any new append-only file, table, directory, or long-lived map has a
       bound/pruner wired by a production caller, with a test that asserts the
       bound ([review rules](../CONTRIBUTING.md#append-only-growth-needs-a-wired-bound-or-pruner))
+- [ ] Any advertised recovery exit (unpark, rollback, self-heal, escape hatch)
+      has a production caller registered in this change and a test that invokes
+      the recovery path
+      ([review rules](../CONTRIBUTING.md#advertised-recovery-exits-need-a-registered-tested-caller))
 - [ ] `make ci` passes locally (fmt-check · vet · build · test · lint)
 - [ ] Any new closed JSON schema joins the structural drift guard in this change
       ([review rules](../CONTRIBUTING.md#review-rules))

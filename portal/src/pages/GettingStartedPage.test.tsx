@@ -14,7 +14,6 @@ function guidedState(overrides: Partial<GuidedState> = {}): GuidedState {
     platform: "windows",
     workdir: "C:\\work",
     instancePath: "C:\\work\\tutorial-instance",
-    configPath: "C:\\work\\tutorial-instance-config",
     instanceExists: false,
     env: {
       tokenEnv: "GOOBERS_GITHUB_REPO_TOKEN",
@@ -43,8 +42,7 @@ const inspection: GuidedRepositoryInspection = {
   discovery: "deterministic",
   evidence: ["package.json: scripts.ci"],
   needsClone: false,
-  peerConfigPath: "C:\\src\\widgets-goobers",
-  inRepoConfigPath: "C:\\src\\widgets\\goobers",
+  peerInstancePath: "C:\\src\\widgets-goobers",
   auth: {
     kind: "github-cli",
     ready: true,
@@ -212,10 +210,10 @@ describe("GettingStartedPage", () => {
     expect(screen.getByText("node@20")).toBeInTheDocument();
 
     await user.type(screen.getByRole("textbox", { name: "Local clone" }), "{enter}");
-    expect(screen.getByRole("heading", { name: "Choose where Instance Configuration lives" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Choose where the Goobers Instance lives" })).toBeInTheDocument();
     await continueWizard(user);
     expect(screen.getByRole("heading", { name: "Set up your first gaggle" })).toBeInTheDocument();
-    expect(screen.getByText("gaggles/widgets/")).toBeInTheDocument();
+    expect(screen.getByText("config/gaggles/widgets/")).toBeInTheDocument();
     expect(
       screen.getByText(/production-oriented canonical modules/i),
     ).toBeInTheDocument();
@@ -242,7 +240,7 @@ describe("GettingStartedPage", () => {
           owner: "acme",
           name: "widgets",
           localPath: "C:\\src\\widgets",
-          configPath: "C:\\src\\widgets-goobers",
+          instancePath: "C:\\src\\widgets-goobers",
           branch: "trunk",
           workflows: ["backlog-curation", "implementation"],
           issueScope: "assigned",
@@ -505,7 +503,7 @@ describe("GettingStartedPage", () => {
     expect(screen.getByText("gh auth login")).toBeInTheDocument();
   });
 
-  it("ends after checks with commands for operating the instance", async () => {
+  it("ends after checks with a customization prompt and server shutdown", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem("goobers-wizard-path", JSON.stringify("own-repo"));
     window.sessionStorage.setItem("goobers-wizard-page", JSON.stringify(8));
@@ -522,6 +520,7 @@ describe("GettingStartedPage", () => {
               stderr: "",
             },
           }),
+          "/guided/actions/complete": () => ({ body: { complete: true } }),
         })}
       />,
     );
@@ -531,8 +530,9 @@ describe("GettingStartedPage", () => {
     await screen.findByText(/All configuration, harness, and repository checks passed/);
     await continueWizard(user);
     expect(screen.getByRole("heading", { name: "Goobers is ready" })).toBeInTheDocument();
-    expect(screen.getByText(/goobers up/)).toBeInTheDocument();
-    expect(screen.getByText(/goobers run implementation/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Start run" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy prompt" })).toBeInTheDocument();
+    expect(screen.getByText(/goobers-dsl-author/)).toBeInTheDocument();
+    expect(screen.getByText(/close this browser window/i)).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 });

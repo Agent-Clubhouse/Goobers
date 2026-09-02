@@ -706,23 +706,34 @@ func resolveRemediationCheckStates(ctx context.Context, provider remediationProv
 // through when stronger candidates are already claimed instead of leaving
 // lower-tier eligible work idle.
 //
-// Only when no PR clears either strong tier does a crowned lander merely behind its
-// base become eligible. A crown is materialized by at least one live parked
-// dependent naming the PR as a blocker. This keeps the rest of an overlapping
-// wave parked until its predecessor lands instead of eagerly rebasing every
-// behind-base sibling after each merge. Checking "behind base" requires
-// fetching candidate branches, so behindBase is invoked only for crowns when
-// nothing stronger exists.
+// Only when no PR clears either strong tier does a lander merely behind its
+// base become eligible, and then only if it is either crowned or alone. A crown
+// is materialized by at least one live parked dependent naming the PR as a
+// blocker. This keeps the rest of an overlapping wave parked until its
+// predecessor lands instead of eagerly rebasing every behind-base sibling after
+// each merge. Checking "behind base" requires fetching candidate branches, so
+// behindBase is invoked only for those two cases when nothing stronger exists.
+//
+// #4163: the crown requirement alone made this path unreachable on the shipped
+// default. The quota argument behind it is entirely about sibling ordering — an
+// uncrowned PR in a wave will go behind again as soon as its predecessor lands,
+// so updating it now buys nothing — and that argument says nothing at all about
+// a lane holding one PR. `implementation` ships maxConcurrentRuns: 1, so such a
+// lane never accumulates dependents, blockedDependents is 0 for the only PR
+// there is on every tick, and behind-base could not fire even once. A solitary
+// candidate has no predecessor to wait for: updating it once is the whole cost,
+// not the first installment of many.
 func selectRemediationCandidates(prs []providers.PullRequestSummary, blockedDependents map[int]int, behindBase func(providers.PullRequestSummary) (bool, error)) ([]providers.PullRequestSummary, remediationPriority, error) {
 	candidates, best := strongRemediationCandidates(prs)
 	if len(candidates) > 0 {
 		return candidates, best, nil
 	}
 
+	solitary := len(prs) == 1
 	for _, pr := range prs {
 		// Same rationale as remediationPriorityFor: escalation exclusion
 		// already happened upstream (self-heal-aware), so no re-check here.
-		if blockedDependents[pr.Number] == 0 {
+		if blockedDependents[pr.Number] == 0 && !solitary {
 			continue
 		}
 		behind, err := behindBase(pr)

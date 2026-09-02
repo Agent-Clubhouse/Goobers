@@ -179,6 +179,15 @@ func runPRSelectCore(
 	}
 
 	var eligible []providers.PullRequestSummary
+	// Goobers#4177: an advisory cycle is terminal and read-only, so nothing
+	// it does makes its subject ineligible next tick. Suppress a head SHA
+	// that has already been advised, or the oldest advisory PR wins ranking
+	// forever and starves every managed PR behind it.
+	advisedHeads, err := loadPRSelectAdvisedHeads(root, repo, now)
+	if err != nil {
+		pf(stderr, "error: read advisory suppression state: %v\n", err)
+		return 1
+	}
 	for _, pr := range prs {
 		if pr.State != "open" || pr.Base != base ||
 			(authorScope != authorScopeAny && !isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin)) {
@@ -191,6 +200,13 @@ func runPRSelectCore(
 			continue
 		}
 		if hasPRSelectExclusion(pr.Labels, excludeLabels) {
+			continue
+		}
+		if authorScope == authorScopeAny &&
+			!isOwnPullRequest(pr.Author, pr.Head, headPrefixes, expectedAuthorLogin) &&
+			advisoryAlreadyDispatched(advisedHeads, pr) {
+			pf(stdout, "skipped PR #%d: advisory verdict already published for head %s\n",
+				pr.Number, shortBaselineSHA(pr.HeadSHA))
 			continue
 		}
 		if !eligibleByMergeReviewPolicy(pr, requiredOptInLabel, respectAssignee, selfIdentity) {
@@ -266,6 +282,12 @@ func completePRSelection(
 	}
 	selected := *claimed
 	advisoryMode := authorScope == authorScopeAny && !isOwnPullRequest(selected.Author, selected.Head, headPrefixes, expectedAuthorLogin)
+	if advisoryMode {
+		if err := recordPRSelectAdvisory(root, repo, selected, now); err != nil {
+			pf(stderr, "error: record advisory selection: %v\n", err)
+			return 1
+		}
+	}
 	if err := clearPRSelectEligibilityWait(root, repo, selected); err != nil {
 		pf(stderr, "error: clear selected PR fairness state: %v\n", err)
 		return 1

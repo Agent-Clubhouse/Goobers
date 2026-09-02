@@ -90,6 +90,7 @@ const (
 	// label names the standalone rewrite that follows a successful selection.
 	claimLockOperationPRSelectFairnessObserve = "pr-select.fairness-observe"
 	claimLockOperationPRSelectFairnessClear   = "pr-select.fairness-clear"
+	claimLockOperationPRSelectAdvisoryRecord  = "pr-select.advisory-record"
 	claimLockOperationRunLookup               = "run-claims.lookup"
 	claimLockOperationBlockedUpdate           = "blocked-records.update"
 	claimLockOperationCircuitBreakerOutbox    = "circuit-breaker-outbox.update"

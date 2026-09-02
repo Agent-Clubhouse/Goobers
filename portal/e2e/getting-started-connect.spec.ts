@@ -3,7 +3,7 @@ import { defaultPortalConfig } from "../src/cobrand";
 
 const workdir = "C:\\work";
 const instancePath = `${workdir}\\tutorial-instance`;
-const configPath = `${workdir}\\tutorial-instance-config`;
+const selectedInstancePath = "C:\\src\\widgets-goobers";
 const runId = "01JZCONNECTRUN";
 const jobId = "guided-job-connect";
 
@@ -17,8 +17,7 @@ function state(fixture: Fixture) {
     version: 2,
     platform: "windows",
     workdir,
-    instancePath,
-    configPath,
+    instancePath: fixture.instanceExists ? selectedInstancePath : instancePath,
     suggestedStack: "Node.js",
     suggestedCICommand: ["npm", "run", "ci"],
     suggestedCapability: "node@20",
@@ -60,8 +59,7 @@ async function routeGuided(page: Page, fixture: Fixture) {
             discovery: "deterministic",
             evidence: ["package.json: scripts.ci"],
             needsClone: false,
-            peerConfigPath: "C:\\src\\widgets-goobers",
-            inRepoConfigPath: "C:\\src\\widgets\\goobers",
+            peerInstancePath: selectedInstancePath,
             auth: { kind: "github-cli", ready: true, identity: "octocat" },
           },
         });
@@ -75,7 +73,7 @@ async function routeGuided(page: Page, fixture: Fixture) {
             owner: "acme",
             name: "widgets",
             localPath: "C:\\src\\widgets",
-            configPath: "C:\\src\\widgets-goobers",
+            instancePath: selectedInstancePath,
             branch: "trunk",
             workflows: ["work-nomination", "backlog-curation", "implementation"],
             issueScope: "all",
@@ -93,7 +91,7 @@ async function routeGuided(page: Page, fixture: Fixture) {
         await route.fulfill({
           json: {
             exitCode: 0,
-            stdout: `Created ${instancePath} with 3 workflow module(s) from ${configPath}.`,
+            stdout: `Created 3 workflow module(s) in the Goobers Instance at ${selectedInstancePath}.`,
             stderr: "",
           },
         });
@@ -120,6 +118,10 @@ async function routeGuided(page: Page, fixture: Fixture) {
             eligibleCount: 1,
           },
         });
+        return;
+      }
+      if (path === "/guided/actions/complete") {
+        await route.fulfill({ json: { complete: true } });
         return;
       }
       if (path === "/guided/actions/run") {
@@ -191,7 +193,7 @@ test("configures a repository through the multi-page guided wizard", async ({ pa
   await expect(page.getByText("GitHub CLI authentication is ready as octocat.")).toBeVisible();
   await expect(page.getByText("npm run ci")).toBeVisible();
   await page.getByRole("textbox", { name: "Local clone" }).press("Enter");
-  await expect(page.getByRole("heading", { name: "Choose where Instance Configuration lives" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Choose where the Goobers Instance lives" })).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("heading", { name: "Set up your first gaggle" })).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
@@ -202,11 +204,11 @@ test("configures a repository through the multi-page guided wizard", async ({ pa
   await expect(page.getByRole("heading", { name: "Review and create the instance" })).toBeVisible();
 
   await page.getByRole("button", { name: "Create Goobers instance" }).click();
-  await expect(page.getByText(/Created C:\\work\\tutorial-instance/)).toBeVisible();
+  await expect(page.getByText(/Created 3 workflow module\(s\).*C:\\src\\widgets-goobers/)).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
 
   await page.getByRole("button", { name: "Check labels and ready issues" }).click();
-  await expect(page.getByText(/eligible work for the first run/)).toBeVisible();
+  await expect(page.getByText(/repository is ready and has eligible work/i)).toBeVisible();
   await page.getByRole("button", { name: "Continue" }).click();
 
   await page.getByRole("button", { name: "Run checks" }).click();
@@ -214,9 +216,8 @@ test("configures a repository through the multi-page guided wizard", async ({ pa
   await page.getByRole("button", { name: "Continue" }).click();
 
   await expect(page.getByRole("heading", { name: "Goobers is ready" })).toBeVisible();
-  await expect(page.getByText('goobers run implementation "C:\\work\\tutorial-instance"')).toBeVisible();
+  await expect(page.getByText(/goobers-dsl-author/)).toBeVisible();
+  await expect(page.getByText(/close this browser window/i)).toBeVisible();
+  await expect(page.getByRole("progressbar")).toHaveCount(0);
   expect(fixture.jobStarted).toBe(false);
-
-  await page.getByRole("button", { name: "Back" }).click();
-  await expect(page.getByRole("heading", { name: "Check the setup" })).toBeVisible();
 });

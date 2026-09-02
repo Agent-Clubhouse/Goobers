@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/providers"
 )
 
 func newTestGuidedServer(t *testing.T, workdir string) *guidedServer {
@@ -27,9 +28,9 @@ func newTestGuidedServer(t *testing.T, workdir string) *guidedServer {
 	return &guidedServer{
 		workdir:      workdir,
 		instancePath: filepath.Join(workdir, "tutorial-instance"),
-		configPath:   filepath.Join(workdir, "tutorial-instance-config"),
 		executable:   "goobers-under-test",
 		errorLog:     log.New(io.Discard, "", 0),
+		completed:    make(chan struct{}),
 	}
 }
 
@@ -93,8 +94,7 @@ func TestGettingStartedStateEndpoint(t *testing.T) {
 	if state.Version != guidedStateVersion ||
 		state.Platform != runtime.GOOS ||
 		state.Workdir != workdir ||
-		state.InstancePath != filepath.Join(workdir, "tutorial-instance") ||
-		state.ConfigPath != filepath.Join(workdir, "tutorial-instance-config") {
+		state.InstancePath != filepath.Join(workdir, "tutorial-instance") {
 		t.Fatalf("state paths = %+v", state)
 	}
 	if state.InstanceExists || state.APIReady || state.Job != nil {
@@ -132,6 +132,23 @@ func TestGettingStartedStateNeverLeaksTokenValues(t *testing.T) {
 	recorder := guidedGet(http.HandlerFunc(server.serveGuided), "/guided/state")
 	if strings.Contains(recorder.Body.String(), "super-secret-value") {
 		t.Fatalf("state leaked a token value: %q", recorder.Body.String())
+	}
+}
+
+func TestGettingStartedCompleteSignalsServerShutdown(t *testing.T) {
+	server := newTestGuidedServer(t, t.TempDir())
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/complete",
+		`{}`,
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case <-server.completed:
+	default:
+		t.Fatal("complete action did not signal server shutdown")
 	}
 }
 
@@ -173,8 +190,47 @@ func TestGettingStartedInspectsLocalGitHubRepository(t *testing.T) {
 		inspection.NeedsClone {
 		t.Fatalf("inspection = %+v", inspection)
 	}
-	if inspection.LocalPath == "" || inspection.PeerConfigPath == "" || inspection.InRepoConfigPath == "" {
+	if inspection.LocalPath == "" || inspection.PeerInstancePath == "" {
 		t.Fatalf("inspection paths = %+v", inspection)
+	}
+}
+
+func TestGettingStartedInspectsRepositoryWithoutLocalCI(t *testing.T) {
+	repository := filepath.Join(t.TempDir(), "widgets")
+	if err := os.MkdirAll(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"remote", "add", "origin", "https://github.com/acme/widgets.git"},
+	} {
+		runAgentKitTestGit(t, repository, args...)
+	}
+	previousAuthDiscovery := guidedAuthDiscovery
+	guidedAuthDiscovery = func(context.Context, guidedRepositoryIdentity) guidedAuthState {
+		return guidedAuthState{Kind: "github-cli", Ready: true, Identity: "octocat"}
+	}
+	t.Cleanup(func() { guidedAuthDiscovery = previousAuthDiscovery })
+
+	request, err := json.Marshal(map[string]string{"location": repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newTestGuidedServer(t, t.TempDir())
+	recorder := guidedPost(
+		http.HandlerFunc(server.serveGuided),
+		"/guided/actions/inspect-repository",
+		string(request),
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
+	}
+	inspection := decodeGuidedResponse[guidedRepositoryInspection](t, recorder)
+	if !inspection.PullRequestCI || inspection.Discovery != "unresolved" {
+		t.Fatalf("inspection without local CI = %+v", inspection)
+	}
+	if len(inspection.CICommand) != 0 || len(inspection.RequiredCapabilities) != 0 {
+		t.Fatalf("inspection inferred unsupported local CI = %+v", inspection)
 	}
 }
 
@@ -510,7 +566,6 @@ func TestGettingStartedRefusesUnsafeGuidedInstanceTarget(t *testing.T) {
 
 	server := newTestGuidedServer(t, t.TempDir())
 	server.instancePath = filepath.Join(linked, "instance")
-	server.configPath = filepath.Join(t.TempDir(), "config-source")
 	recorder := guidedPost(
 		http.HandlerFunc(server.serveGuided),
 		"/guided/actions/init-instance",
@@ -522,7 +577,7 @@ func TestGettingStartedRefusesUnsafeGuidedInstanceTarget(t *testing.T) {
 	response := decodeGuidedResponse[guidedErrorBody](t, recorder)
 	if response.Code != "unsafe_init_target" ||
 		!strings.Contains(response.Message, "--allow-ephemeral") ||
-		!strings.Contains(response.Message, `goobers init --guided --instance-path "`+server.instancePath+`" --allow-ephemeral`) {
+		!strings.Contains(response.Message, "goobers init --guided --instance-path") {
 		t.Fatalf("response = %+v, want actionable unsafe-target refusal", response)
 	}
 	if strings.Contains(response.Message, `goobers init --allow-ephemeral "`+server.instancePath+`"`) {
@@ -530,9 +585,6 @@ func TestGettingStartedRefusesUnsafeGuidedInstanceTarget(t *testing.T) {
 	}
 	if _, err := os.Stat(server.instancePath); !os.IsNotExist(err) {
 		t.Fatalf("unsafe guided init created instance target: %v", err)
-	}
-	if _, err := os.Stat(server.configPath); !os.IsNotExist(err) {
-		t.Fatalf("unsafe guided init created config source: %v", err)
 	}
 }
 
@@ -680,6 +732,8 @@ func TestGettingStartedAllowlistRejections(t *testing.T) {
 func TestGettingStartedGuidedInitMaterializesSelectedModules(t *testing.T) {
 	workdir := t.TempDir()
 	server := newTestGuidedServer(t, workdir)
+	defaultInstancePath := server.instancePath
+	selectedInstancePath := filepath.Join(t.TempDir(), "widgets-goobers")
 	body := `{
 		"template":"guided",
 		"guided":{
@@ -687,7 +741,7 @@ func TestGettingStartedGuidedInitMaterializesSelectedModules(t *testing.T) {
 			"owner":"acme",
 			"name":"widgets",
 			"localPath":"C:\\src\\widgets",
-			"configPath":"` + filepath.ToSlash(server.configPath) + `",
+			"instancePath":"` + filepath.ToSlash(selectedInstancePath) + `",
 			"branch":"main",
 			"workflows":["backlog-curation","work-nomination"],
 			"harness":"copilot",
@@ -700,27 +754,49 @@ func TestGettingStartedGuidedInitMaterializesSelectedModules(t *testing.T) {
 		t.Fatalf("status = %d body = %q", recorder.Code, recorder.Body.String())
 	}
 	response := decodeGuidedResponse[guidedInitBody](t, recorder)
-	if response.ExitCode != 0 || !strings.Contains(response.Stdout, "2 workflow module(s)") {
+	wantStdout := fmt.Sprintf(
+		"Created 2 workflow module(s) in the Goobers Instance at %s.",
+		selectedInstancePath,
+	)
+	if response.ExitCode != 0 || response.Stdout != wantStdout {
 		t.Fatalf("guided init response = %+v", response)
 	}
+	if server.instancePath != selectedInstancePath {
+		t.Fatalf("server instance path = %q, want selected neighboring path %q", server.instancePath, selectedInstancePath)
+	}
+	if _, err := os.Stat(defaultInstancePath); !os.IsNotExist(err) {
+		t.Fatalf("guided init created the default instance path: %v", err)
+	}
 	for _, path := range []string{
-		filepath.Join(server.configPath, instance.GuidedSourceInstanceFile),
-		filepath.Join(server.configPath, "gaggles", "widgets", "workflows", "backlog-curation.yaml"),
-		filepath.Join(server.configPath, "gaggles", "widgets", "workflows", "work-nomination.yaml"),
-		filepath.Join(server.instancePath, instance.ConfigFileName),
+		filepath.Join(selectedInstancePath, instance.ConfigFileName),
+		filepath.Join(selectedInstancePath, instance.ConfigDirName, "gaggles", "widgets", "workflows", "backlog-curation.yaml"),
+		filepath.Join(selectedInstancePath, instance.ConfigDirName, "gaggles", "widgets", "workflows", "work-nomination.yaml"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("guided init did not create %s: %v", path, err)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(
-		server.configPath,
+		selectedInstancePath,
+		instance.ConfigDirName,
 		"gaggles",
 		"widgets",
 		"workflows",
 		"implementation.yaml",
 	)); !os.IsNotExist(err) {
 		t.Fatalf("guided init created unselected implementation workflow: %v", err)
+	}
+}
+
+func TestMissingGuidedLabelsReturnsEmptyArrayWhenAllLabelsExist(t *testing.T) {
+	required := []providers.WorkItemLabel{
+		{Name: "goobers:ready"},
+		{Name: "goobers:approved"},
+	}
+
+	missing := missingGuidedLabels(required, []string{"goobers:ready", "goobers:approved"})
+	if missing == nil || len(missing) != 0 {
+		t.Fatalf("missing labels = %#v, want non-nil empty slice", missing)
 	}
 }
 

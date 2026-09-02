@@ -478,6 +478,28 @@ func clearDirContents(dir string) error {
 // "detected dubious ownership", because the exemption was gone by the time git
 // ran. Two independent settings both wanting slot 0 is the trap; the count has
 // to be extended, not restated.
+// gitIdentityEnv is the commit identity every workspace git command carries.
+//
+// #4170: git refuses to write a commit without one, and "write a commit" covers
+// more than `git commit` — `git rebase` replays commits, so rebase-pr failed
+// with "Committer identity unknown" on a workspace it had not created itself.
+// dispatch-checkout configures user.name/user.email on the checkout IT makes,
+// which is why the gap was invisible for as long as only that stage committed;
+// a runner-provisioned `workspace: repo` never had that config applied.
+//
+// Environment rather than another GIT_CONFIG_KEY_n slot, deliberately: the
+// slots below are index-sensitive in both branches and already the subject of
+// this function's doc comment. Identity does not have to be a config entry to
+// be honoured, and GIT_* variables cannot collide with a count.
+func gitIdentityEnv() []string {
+	return []string{
+		"GIT_AUTHOR_NAME=" + worktree.BotGitUserName,
+		"GIT_AUTHOR_EMAIL=" + worktree.BotGitUserEmail,
+		"GIT_COMMITTER_NAME=" + worktree.BotGitUserName,
+		"GIT_COMMITTER_EMAIL=" + worktree.BotGitUserEmail,
+	}
+}
+
 func composeGitEnv(dir string, authEnv []string) []string {
 	safe := workspaceGitEnv(dir)
 	if len(authEnv) == 0 {
@@ -494,6 +516,7 @@ func composeGitEnv(dir string, authEnv []string) []string {
 			}
 			env = append(env, entry)
 		}
+		env = append(env, gitIdentityEnv()...)
 		return append(env,
 			"GIT_TERMINAL_PROMPT=0",
 			"GIT_CONFIG_COUNT=1",
@@ -504,7 +527,7 @@ func composeGitEnv(dir string, authEnv []string) []string {
 	// With auth: keep GitAuthEnvironment's slot 0 (credential.helper) and take
 	// slot 1, raising the count. Later entries win, so the new count replaces
 	// the one it set.
-	return append(append([]string{}, authEnv...),
+	return append(append(append([]string{}, authEnv...), gitIdentityEnv()...),
 		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_1=safe.directory",
 		"GIT_CONFIG_VALUE_1="+safe.path,

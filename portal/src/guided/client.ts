@@ -41,7 +41,7 @@ export interface GuidedState {
   platform: "windows" | "darwin" | "linux" | string;
   workdir: string;
   instancePath: string;
-  configPath: string;
+  instancePathPinned?: boolean;
   suggestedStack?: string;
   suggestedCICommand?: string[];
   suggestedCapability?: string;
@@ -74,8 +74,7 @@ export interface GuidedRepositoryInspection {
   discovery: "deterministic" | "copilot" | "provider-metadata" | "unresolved";
   evidence?: string[];
   needsClone: boolean;
-  peerConfigPath?: string;
-  inRepoConfigPath?: string;
+  peerInstancePath?: string;
   ephemeral?: boolean;
   ephemeralReason?: string;
   safeInstancePath?: string;
@@ -192,7 +191,7 @@ export interface GuidedInitOptions {
   project?: string;
   name?: string;
   localPath?: string;
-  configPath?: string;
+  instancePath?: string;
   branch: string;
   workflows: GuidedWorkflow[];
   issueScope: "all" | "assigned";
@@ -275,7 +274,17 @@ export class GuidedClient {
     apply: boolean;
     createStarterIssue: boolean;
   }): Promise<GuidedRepositoryReadiness> {
-    return this.post("/guided/actions/prepare-repository", body);
+    return this.post<GuidedRepositoryReadiness>("/guided/actions/prepare-repository", body).then(
+      (result) => ({
+        ...result,
+        missingLabels: result.missingLabels ?? [],
+        createdLabels: result.createdLabels ?? [],
+      }),
+    );
+  }
+
+  complete(): Promise<{ complete: boolean }> {
+    return this.post("/guided/actions/complete", {});
   }
 
   initInstance(body: InitInstanceRequest = {}): Promise<GuidedInitResult> {

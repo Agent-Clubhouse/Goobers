@@ -28,9 +28,12 @@
 //   - neither, but the ref is itself an ancestor of the CURRENT base ->
 //     base drift, not divergence (the base moved between two checkouts and
 //     the ref carries nothing but base) -> apply exactly as fast-forward;
+//   - neither, but every commit the ref has and the tip lacks is already in
+//     the tip BY PATCH ID -> the delta is a rebase of this ref and the ref
+//     carries nothing that landing it would lose -> apply as fast-forward;
 //   - neither                              -> DivergedError naming both SHAs.
-//     No merge, no rebase: inventing history nobody in the run asked for is
-//     worse than failing the stage.
+//     No merge, no invented history: making up commits nobody in the run
+//     asked for is worse than failing the stage.
 package workspacedelta
 
 import (
@@ -186,6 +189,10 @@ const (
 	// OutcomeBaseDrift means neither contains the other, but the ref is nothing
 	// more than an advanced base. Apply the delta exactly as a fast-forward.
 	OutcomeBaseDrift
+	// OutcomeRebase means neither contains the other, but every commit the ref
+	// carries and the tip does not is already present in the tip by patch id —
+	// the delta is a rebase of this ref. Apply it exactly as a fast-forward.
+	OutcomeRebase
 )
 
 // String names the outcome for logs and journals.
@@ -199,6 +206,8 @@ func (o Outcome) String() string {
 		return "keep"
 	case OutcomeBaseDrift:
 		return "base-drift"
+	case OutcomeRebase:
+		return "rebase"
 	}
 	return fmt.Sprintf("outcome(%d)", int(o))
 }
@@ -253,7 +262,44 @@ func Reconcile(ctx context.Context, git Git, dir, digest, current, tip, baseRef 
 			}
 		}
 	}
+	rebased, err := RebaseOf(ctx, git, dir, current, tip)
+	if err != nil {
+		return 0, fmt.Errorf("workspace delta %s: check whether %s is a rebase of %s: %w", digest, tip, current, err)
+	}
+	if rebased {
+		return OutcomeRebase, nil
+	}
 	return 0, &DivergedError{Digest: digest, Current: current, Tip: tip}
+}
+
+// RebaseOf reports whether tip is a rebase of current: every commit reachable
+// from current but not from tip already has an equivalent change in tip,
+// judged by patch id — which is how git itself decides the question
+// (`rev-list --cherry-pick`), not a heuristic invented here.
+//
+// #4175. rebase-pr exists to rewrite the PR branch, and a rewrite is divergent
+// by construction: the new tip is not a descendant of the old head. The
+// ancestry guard therefore refused the one delta that lane produces, and every
+// stage downstream of rebase-pr failed with workspace_provision_failed. The
+// guard's actual job is narrower than "never accept divergence" — it is "never
+// rewind a ref that carries work the delta lacks" — and this answers exactly
+// that question with no extra latitude.
+//
+// A ref that has genuinely moved on is still refused: an update-behind-pr
+// merge, a human's force-push, any commit whose patch is not already in the
+// tip leaves a residue here and falls through to DivergedError. Equality and
+// ancestry are decided before this is ever called, so a zero residue means a
+// real rewrite and not a no-op.
+func RebaseOf(ctx context.Context, git Git, dir, current, tip string) (bool, error) {
+	// --right-only takes the current-side of the symmetric difference (commits
+	// the ref has and the tip does not); --cherry-pick drops those with an
+	// equivalent patch on the tip side. What survives is what landing the tip
+	// would actually lose.
+	out, err := git.Output(ctx, dir, "rev-list", "--count", "--no-merges", "--cherry-pick", "--right-only", tip+"..."+current)
+	if err != nil {
+		return false, fmt.Errorf("rev-list --cherry-pick %s...%s: %w", tip, current, err)
+	}
+	return strings.TrimSpace(out) == "0", nil
 }
 
 // IsAncestor reports whether ancestor is reachable from descendant — a commit

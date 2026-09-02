@@ -909,8 +909,8 @@ func TestSelectRemediationPRPriority(t *testing.T) {
 	}{
 		{
 			name:         "unelected behind base is not eagerly rebased",
-			prs:          []providers.PullRequestSummary{{Number: 12}},
-			behind:       map[int]bool{12: true},
+			prs:          []providers.PullRequestSummary{{Number: 12}, {Number: 13}},
+			behind:       map[int]bool{12: true, 13: true},
 			wantPriority: remediationPriorityNone,
 		},
 		{
@@ -986,6 +986,32 @@ func TestSelectRemediationPRPriority(t *testing.T) {
 			wantNumbers:       []int{10, 20},
 			wantPriority:      remediationPriorityBehindBase,
 			wantProbes:        2,
+		},
+		{
+			// #4163: the crown rule is about sibling ordering, and a lane
+			// holding one PR has no ordering to protect. Without this case the
+			// behind-base path is unreachable on the shipped implementation
+			// default (maxConcurrentRuns: 1), where blockedDependents is
+			// permanently 0 for the only PR there is.
+			name: "a solitary behind-base PR is eligible without a crown",
+			prs: []providers.PullRequestSummary{
+				{Number: 4161},
+			},
+			behind:       map[int]bool{4161: true},
+			wantNumbers:  []int{4161},
+			wantPriority: remediationPriorityBehindBase,
+			wantProbes:   1,
+		},
+		{
+			// The solitary allowance widens who is asked, not what the answer
+			// means: a PR that is level with its base is still not remediation
+			// work.
+			name: "a solitary PR level with its base is still not a candidate",
+			prs: []providers.PullRequestSummary{
+				{Number: 4161},
+			},
+			wantPriority: remediationPriorityNone,
+			wantProbes:   1,
 		},
 	}
 
@@ -1184,11 +1210,17 @@ func TestGatherPRContextSelectsUnlabeledFailingPR(t *testing.T) {
 	}
 }
 
-func TestGatherPRContextDoesNotSelectUnelectedBehindBaseOnlyPR(t *testing.T) {
+// TestGatherPRContextDoesNotSelectUncrownedBehindBaseSibling keeps the
+// behind-base laziness where its reasoning holds. #4163 relaxed it for a
+// solitary candidate only: with a sibling in the lane and no crown, whichever
+// PR lands first moves the base under the other, so neither is remediation
+// work until merge-review elects one.
+func TestGatherPRContextDoesNotSelectUncrownedBehindBaseSibling(t *testing.T) {
 	srv := gatherPRContextServer{
 		owner: "your-org", repo: "your-repo",
 		prNumber: 58, head: "goobers/impl/run-behind", base: "main",
 		headSHA: "head-sha", baseSHA: "base-sha",
+		includeUnselected: true,
 	}
 	server := srv.start(t)
 

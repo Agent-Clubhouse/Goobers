@@ -12,6 +12,7 @@ import {
   type GuidedState,
   type GuidedWorkflow,
 } from "../guided/client";
+import { Icon } from "../ui/Icon";
 
 const defaultClient = new GuidedClient();
 const statePollIntervalMs = 5_000;
@@ -89,11 +90,11 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   );
   const [repo, setRepo] = useSessionState("goobers-wizard-repo", "");
   const [branch, setBranch] = useSessionState("goobers-wizard-branch", "main");
-  const [configPlacement, setConfigPlacement] = useSessionState<
-    "peer" | "in-repo" | "custom"
-  >("goobers-wizard-config-placement", "peer");
-  const [configPath, setConfigPath] = useSessionState(
-    "goobers-wizard-config-path",
+  const [instancePlacement, setInstancePlacement] = useSessionState<
+    "peer" | "custom"
+  >("goobers-wizard-instance-placement", "peer");
+  const [instancePath, setInstancePath] = useSessionState(
+    "goobers-wizard-instance-path",
     "",
   );
   const [workflows, setWorkflows] = useSessionState<GuidedWorkflow[]>(
@@ -150,6 +151,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
     envelope: DiagnosticsEnvelope | null;
     stderr: string;
   } | null>(null);
+  const [promptCopied, setPromptCopied] = useState(false);
 
   const refreshState = useCallback(async () => {
     try {
@@ -174,6 +176,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   const implementationSelected = workflows.includes("implementation");
   const pullRequestsNeeded =
     implementationSelected || workflows.includes("backlog-curation");
+  const customizationPrompt = `Use the goobers-dsl-author skill to inspect ${repo.trim() || "my application repository"} and customize the generated gaggle in the Goobers Instance at ${instancePath.trim() || state?.instancePath || "my instance folder"} for the repository's actual contribution, CI, and review conventions. Explain the proposed state graph and least-privilege capabilities before changing files, then update the configuration and validate it.`;
 
   useEffect(() => {
     if (!implementationSelected) {
@@ -207,16 +210,24 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   ]);
 
   useEffect(() => {
-    if (!inspection) {
+    if (!inspection || state?.instancePathPinned) {
       return;
     }
-    if (configPlacement === "peer" && inspection.peerConfigPath) {
-      setConfigPath(inspection.peerConfigPath);
+    if (instancePlacement === "peer" && inspection.peerInstancePath) {
+      setInstancePath(inspection.peerInstancePath);
     }
-    if (configPlacement === "in-repo" && inspection.inRepoConfigPath) {
-      setConfigPath(inspection.inRepoConfigPath);
+  }, [
+    inspection,
+    instancePlacement,
+    setInstancePath,
+    state?.instancePathPinned,
+  ]);
+
+  useEffect(() => {
+    if (state?.instancePathPinned) {
+      setInstancePath(state.instancePath);
     }
-  }, [configPlacement, inspection, setConfigPath]);
+  }, [setInstancePath, state?.instancePath, state?.instancePathPinned]);
 
   const pages = useMemo<WizardPage[]>(
     () => [
@@ -239,6 +250,15 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       setPageIndex(pages.length - 1);
     }
   }, [pageIndex, pages.length, setPageIndex]);
+
+  useEffect(() => {
+    if (pages[Math.min(pageIndex, pages.length - 1)]?.id !== "complete") {
+      return;
+    }
+    void client.complete().catch((error) => {
+      setActionError(error instanceof Error ? error.message : String(error));
+    });
+  }, [client, pageIndex, pages]);
 
   if (query.status === "loading") {
     return (
@@ -286,11 +306,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
   const ciCommand = splitCommand(ciCommandText);
   const runtimeValid =
     pullRequestCI || (ciCommand.length > 0 && capability.trim() !== "");
-  const placementValid = configPath.trim() !== "";
+  const placementValid = instancePath.trim() !== "";
   const repositoryPrepared =
     repositoryReadiness?.usesWorkItemTags === true ||
-    (repositoryReadiness?.missingLabels.length === 0 &&
-      (repositoryReadiness.eligibleCount ?? 0) > 0);
+    repositoryReadiness?.missingLabels.length === 0;
   const cloneCommand =
     inspection?.provider === "github"
       ? `gh repo clone ${inspection.owner}/${inspection.name}`
@@ -379,7 +398,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
       project: inspection.project,
       name: inspection.name,
       localPath: inspection.localPath,
-      configPath: configPath.trim(),
+      instancePath: instancePath.trim(),
       branch: branch.trim(),
       workflows,
       issueScope,
@@ -431,6 +450,20 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         }),
       setRepositoryReadiness,
     );
+
+  const goBack = () => {
+    if (pageIndex >= pages.findIndex((page) => page.id === "review")) {
+      setInitResult(null);
+    }
+    if (pageIndex >= pages.findIndex((page) => page.id === "repository-setup")) {
+      setRepositoryReadiness(null);
+    }
+    if (pageIndex >= pages.findIndex((page) => page.id === "validate")) {
+      setValidateResult(null);
+    }
+    setActionError(null);
+    setPageIndex(Math.max(0, pageIndex - 1));
+  };
 
   const canContinue = (() => {
     switch (currentPage.id) {
@@ -764,54 +797,43 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
         );
       case "placement":
         return (
-          <WizardPage title="Choose where Instance Configuration lives">
+          <WizardPage title="Choose where the Goobers Instance lives">
             <p>
-              Instance Configuration is the versioned desired state for this workforce.
-              It contains <code>instance.yaml.example</code>, <code>manifest.yaml</code>,
-              and <code>gaggles/</code>. Mutable runtime state stays in a separate local
-              instance folder.
+              The Instance contains this workforce&apos;s configuration and local operating
+              data, including journals, claims, and managed workcopies. Keep it outside
+              the application repository.
             </p>
             <DocumentationLink
               href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/instance-placement.md"
-              label="Compare configuration and runtime placement options"
+              label="Learn what the Instance directory contains"
             />
-            <div aria-label="Configuration location" className="guided-choice-grid" role="group">
+            <div aria-label="Instance location" className="guided-choice-grid" role="group">
               <ChoiceCard
-                checked={configPlacement === "peer"}
-                description={`Create a neighboring folder${inspection?.peerConfigPath ? ` at ${inspection.peerConfigPath}` : ""}. This keeps Instance Configuration independent from application code.`}
-                onClick={() => setConfigPlacement("peer")}
+                checked={instancePlacement === "peer"}
+                description={`Create one neighboring Instance folder${inspection?.peerInstancePath ? ` at ${inspection.peerInstancePath}` : ""}.`}
+                onClick={() => setInstancePlacement("peer")}
                 recommended
-                title="Separate Instance Configuration folder"
+                title="Neighboring Goobers Instance"
               />
               <ChoiceCard
-                checked={configPlacement === "in-repo"}
-                description={`Store Instance Configuration in a goobers subtree inside the application repository${inspection?.inRepoConfigPath ? ` at ${inspection.inRepoConfigPath}` : ""}.`}
-                onClick={() => setConfigPlacement("in-repo")}
-                title="Inside the application repository"
-              />
-              <ChoiceCard
-                checked={configPlacement === "custom"}
-                description="Choose another local folder for Instance Configuration."
-                onClick={() => setConfigPlacement("custom")}
+                checked={instancePlacement === "custom"}
+                description="Choose another durable local folder outside the application repository."
+                onClick={() => setInstancePlacement("custom")}
                 title="Custom location"
               />
             </div>
-            {configPlacement === "custom" && (
+            {instancePlacement === "custom" && (
               <TextField
-                label="Configuration folder"
-                onChange={setConfigPath}
+                label="Instance folder"
+                onChange={setInstancePath}
                 placeholder="C:\src\my-app-goobers"
-                value={configPath}
+                value={instancePath}
               />
             )}
             <p className="guided-note">
-              Track this folder with Git for change history. For a separate folder, run{" "}
-              <code>git init</code> there and push it to GitHub or Azure DevOps when ready.
+              Do not commit the Instance directory. It contains mutable runtime data in
+              addition to the active gaggle and workflow definitions.
             </p>
-            <DocumentationLink
-              href="https://github.com/Agent-Clubhouse/Goobers/tree/main/config-examples/gaggles/acme-web"
-              label="Review the canonical workflow modules"
-            />
           </WizardPage>
         );
       case "workflows":
@@ -819,10 +841,10 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
           <WizardPage title="Set up your first gaggle">
             <p>
               A gaggle is a team of goobers and workflows for one area of work. This
-              gaggle is stored in Instance Configuration under{" "}
-              <code>gaggles/{inspection?.gaggleName || "<repository>"}/</code>. Choose the
-              workflows it should start with; you can customize them later with the
-              Goobers authoring skills.
+              gaggle is stored in the Instance under{" "}
+              <code>config/gaggles/{inspection?.gaggleName || "<repository>"}/</code>.
+              Choose the workflows it should start with; you can customize them later
+              with the Goobers authoring skills.
             </p>
             <p className="guided-note">
               These are production-oriented canonical modules adapted from{" "}
@@ -950,8 +972,7 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             <ReviewTable
               rows={[
                 ["Application repository", `${repo.trim()} (${branch.trim()})`],
-                ["Configuration files", configPath.trim()],
-                ["Runtime instance", state.instancePath],
+                ["Goobers Instance", instancePath.trim()],
                 ["Workflow modules", workflows.join(", ")],
                 [
                   "Ready issue scope",
@@ -970,9 +991,9 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               ]}
             />
             <p className="guided-note">
-              Setup writes a reviewable Instance Configuration folder, then materializes it
-              into the local runtime. The selected configuration location must be new or
-              empty; setup stops rather than replacing existing content.
+              Setup creates one Instance directory containing the active configuration,
+              journals, claims, managed workcopies, and other machine-local operating
+              data. Existing Instance contents are never replaced.
             </p>
             <button
               className="reconnect-button guided-create-instance-button"
@@ -1057,7 +1078,8 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                     </span>
                   </label>
                 )}
-                {!repositoryPrepared && (
+                {(!repositoryPrepared ||
+                  (repositoryReadiness.eligibleCount ?? 0) === 0) && (
                   <div className="guided-inline-actions">
                     <button
                       className="reconnect-button"
@@ -1072,7 +1094,9 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                       {busy === "prepare"
                         ? "Preparing…"
                         : (repositoryReadiness.eligibleCount ?? 0) === 0
-                          ? "Create labels and starter issue"
+                          ? repositoryReadiness.missingLabels.length > 0
+                            ? "Create missing labels and starter issue"
+                            : "Create starter issue"
                           : "Create missing labels"}
                     </button>
                     <button
@@ -1087,7 +1111,9 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
                 )}
                 {repositoryPrepared && (
                   <p className="guided-success">
-                    The repository is ready and has eligible work for the first run.
+                    {(repositoryReadiness.eligibleCount ?? 0) > 0
+                      ? "The repository is ready and has eligible work."
+                      : "The required repository labels are ready. No eligible work was found; creating a starter issue is optional."}
                   </p>
                 )}
               </>
@@ -1102,52 +1128,63 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
               usable, and verify access to the repository.
             </p>
             <RecoveryCommand
-              command={`goobers validate --check-harness --check-repos ${state.instancePath}`}
+              command={`goobers validate --check-harness --check-repos "${state.instancePath}"`}
             />
             <button
-              className="reconnect-button"
+              className="reconnect-button guided-validate-button"
               disabled={busy !== null}
               onClick={validate}
               type="button"
             >
               {busy === "validate" ? "Checking…" : "Run checks"}
             </button>
+            {busy === "validate" && (
+              <p aria-live="polite" className="guided-wait-message" role="status">
+                This may take a minute or two while Goobers checks the harness and
+                repository.
+              </p>
+            )}
             {validateResult && <ValidationResult result={validateResult} />}
           </WizardPage>
         );
       case "complete":
-        const customizationPrompts = [
-          `Use the goobers-dsl-author skill to review the generated workflows for ${repo.trim() || "my repository"} and tailor them to the repository's actual contribution and CI conventions.`,
-          `Use the goobers-dsl-author skill to strengthen the implementation workflow for ${repo.trim() || "my repository"} while preserving least-privilege capabilities.`,
-          `Use the goobers-dsl-author skill to propose one additional workflow that would be valuable for ${repo.trim() || "this repository"}, but do not write files until I approve the state graph and capabilities.`,
-        ];
         return (
-          <WizardPage title="Goobers is ready">
-            <p>
-              The configuration source and runtime instance are prepared and validated.
-              Review the generated definitions before starting the daemon or running a
-              workflow.
-            </p>
-            <h3>Next commands</h3>
-            <RecoveryCommand command={`goobers validate --source-tree "${configPath.trim()}"`} />
-            <RecoveryCommand command={`goobers config materialize "${state.instancePath}"`} />
-            <RecoveryCommand command={`goobers up "${state.instancePath}"`} />
-            <RecoveryCommand command={`goobers run implementation "${state.instancePath}"`} />
-            <RecoveryCommand command={`goobers dashboard "${state.instancePath}"`} />
-            <DocumentationLink
-              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/arbitrary-repo-onboarding.md"
-              label="Read the real-repository onboarding and operating guide"
-            />
-            <h3>Customize it with an agent</h3>
-            <p>
-              Copy one of these prompts into GitHub Copilot CLI or Claude Code from your
-              configuration repository.
-            </p>
-            <div className="guided-prompt-list">
-              {customizationPrompts.map((prompt) => (
-                <code key={prompt}>{prompt}</code>
-              ))}
+          <WizardPage className="guided-complete-page" title="Goobers is ready">
+            <div aria-hidden="true" className="guided-complete-mascot">
+              <AnimatedGoober />
             </div>
+            <p className="guided-welcome-lead">
+              Your configuration is ready, and the setup server has stopped.
+            </p>
+            <p>
+              Next, ask your coding agent to tailor the generated gaggle to this
+              repository.
+            </p>
+            <div className="guided-prompt-copy">
+              <code>{customizationPrompt}</code>
+              <button
+                aria-label={promptCopied ? "Prompt copied" : "Copy prompt"}
+                className="guided-copy-button"
+                onClick={() => {
+                  void navigator.clipboard.writeText(customizationPrompt).then(
+                    () => setPromptCopied(true),
+                    (error) =>
+                      setActionError(
+                        error instanceof Error ? error.message : String(error),
+                      ),
+                  );
+                }}
+                title={promptCopied ? "Copied" : "Copy prompt"}
+                type="button"
+              >
+                <Icon name={promptCopied ? "check" : "copy"} size={17} />
+              </button>
+            </div>
+            <DocumentationLink
+              href="https://github.com/Agent-Clubhouse/Goobers/blob/main/docs/guides/dsl-authoring-skill.md"
+              label="Learn how to customize gaggles and workflows with an agent"
+            />
+            <p>You can now close this browser window.</p>
           </WizardPage>
         );
     }
@@ -1166,12 +1203,13 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
 
       <main className="guided-wizard-content">{pageContent}</main>
 
+      {currentPage.id !== "complete" && (
       <nav aria-label="Setup progress" className="guided-wizard-footer">
         <div className="guided-footer-actions">
           <button
             className="secondary-button"
             disabled={pageIndex === 0 || busy !== null}
-            onClick={() => setPageIndex(Math.max(0, pageIndex - 1))}
+            onClick={goBack}
             type="button"
           >
             Back
@@ -1210,19 +1248,16 @@ export function GettingStartedPage({ client = defaultClient }: { client?: Guided
             <span style={{ width: `${(currentPage.step / wizardStepCount) * 100}%` }} />
           </div>
         </div>
-        {currentPage.id === "complete" ? (
-          <span aria-hidden="true" />
-        ) : (
-          <button
-            className="reconnect-button"
-            disabled={!canContinue || busy !== null}
-            onClick={() => setPageIndex(Math.min(pages.length - 1, pageIndex + 1))}
-            type="button"
-          >
-            Continue
-          </button>
-        )}
+        <button
+          className="reconnect-button"
+          disabled={!canContinue || busy !== null}
+          onClick={() => setPageIndex(Math.min(pages.length - 1, pageIndex + 1))}
+          type="button"
+        >
+          Continue
+        </button>
       </nav>
+      )}
     </div>
   );
 }
