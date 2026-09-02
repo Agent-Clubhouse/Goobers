@@ -72,6 +72,14 @@ TTL without restarting the daemon. Errors are never cached.
 - Resolved values are registered with the journal and telemetry scrubbers
   exactly like env/file-resolved tokens, and are never passed via
   command-line arguments or persisted configuration.
+- A secret never belongs in a stage's `inputs:` (#2931). Stage inputs are
+  history-resident: they are merged into the invocation envelope, and on the
+  engine tier that envelope is a Temporal activity argument persisted verbatim
+  in durable workflow history. Declare a credential capability and let the
+  value resolve worker-side at stage start instead. `goobers validate` reports
+  `SEC001` for a secret-shaped literal in `inputs:` at author time, and the
+  engine refuses to execute a stage whose serialized envelope carries a value
+  the credential plane minted.
 - One-shot commands (`goobers validate --check-repos`, `goobers status`,
   `goobers push-branch`) build their own short-lived store registry; the
   daemon builds one registry per process so every consumer shares one cache.

@@ -229,6 +229,25 @@ const (
 	// in-progress work; the stage is unwinnable by construction regardless of
 	// typical-case duration (#3377).
 	WarningSubprocessTimeout WarningCode = "WF021"
+	// WarningSecretShapedInput identifies a stage `inputs:` literal (or an
+	// experiment arm's `variant:` overlay of one) that is shaped like a
+	// credential. Stage inputs are HISTORY-RESIDENT: they are merged into the
+	// invocation envelope, and on the engine tier that envelope is a Temporal
+	// activity argument persisted verbatim in durable workflow history. The
+	// supported contract (#2931 ruling, decision record
+	// Goobers-Review/Goobernetes-v1/decisions/0002) is constrain-and-enforce,
+	// not scrub-and-transform: inputs carry opaque references only, and
+	// secrets travel through declared credential capabilities, resolved
+	// worker-side at stage start.
+	//
+	// Author-time WARNING, deliberately, because it is the one signal that
+	// can still be acted on cheaply. The fail-closed dispatch canary
+	// (internal/engine's refuseLeakedEnvelope) is the enforcement point, but
+	// it can only match values the credential plane actually minted; a
+	// literal an author pasted into their config is invisible to it. This
+	// check is the complement — pattern-shaped, so intentionally incomplete
+	// and never an error on its own evidence.
+	WarningSecretShapedInput WarningCode = "SEC001"
 	// WF024 was the "gate placement not yet honoured" warning that stood
 	// between the DSL half of decision 001 (#3848) and its engine/pod half
 	// (rulings 7–8). It retired with that half and the code is not reused.
@@ -2173,6 +2192,12 @@ func (ix *index) checkWorkflow(r *Report, w apiv1.Workflow, file string, allowPr
 	for _, msg := range wf.CheckSubprocessTimeoutCoherence(def) {
 		r.addWarning(WarningSubprocessTimeout, file, w.Spec.Gaggle, "Workflow", w.Name, "%s", msg)
 	}
+	// Stage inputs are history-resident on the engine tier, so a credential
+	// pasted into `inputs:` is persisted verbatim in durable Temporal history
+	// (#2931). Warning, not error: the detection is a pattern net over
+	// literals the author wrote, so it is intentionally incomplete and can
+	// only ever be evidence of shape, never of secrecy.
+	checkSecretShapedInputs(r, w, file)
 	// Only the breaking half is reported here. CheckStageContractWarnings
 	// covers the same omission on outputs nothing reads yet, which #881's
 	// VER003 "expectedOutputs is declared but not enforced" already warns

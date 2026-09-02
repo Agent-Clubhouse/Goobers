@@ -123,6 +123,14 @@ The runner hands the stage an `InvocationEnvelope`:
   render this map into the invocation prompt as data.
   A parallel join additionally receives `inputs.branchCompleteness`, with one
   terminal status and artifact count per declared branch in declaration order.
+  **Inputs are history-resident and carry opaque references only** (#2931): on
+  the engine tier the whole envelope is a Temporal activity argument, persisted
+  verbatim in durable workflow history that no later scrubber can rewrite. A
+  secret never travels here — it travels as a declared credential capability,
+  resolved worker-side at stage start (§5) — and the contract is enforced from
+  both ends: `goobers validate` warns (`SEC001`) on a secret-shaped literal in
+  `inputs:`, and the engine refuses to execute a stage whose serialized
+  envelope contains any value the credential plane minted.
 - `nestedAgentPolicy` — optional versioned policy for a mechanically launched
   child agent. When present, the runner also supplies `attempt`,
   `ownershipBoundary`, `policyActions`, and a runner-authored
