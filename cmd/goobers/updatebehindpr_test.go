@@ -542,8 +542,34 @@ func TestUpdateBehindPRAttemptsAPIWhileMergeabilityIsUnknown(t *testing.T) {
 	}
 }
 
-func TestUpdateBehindPRDoesNotEagerlyUpdateUnelectedBehindPR(t *testing.T) {
+// TestUpdateBehindPRUpdatesSolitaryBehindPR pins #4163: the behind-base
+// fallback used to require a crown — at least one live parked dependent naming
+// the PR as a blocker — which a lane running one PR at a time can never
+// materialize. The lane's whole purpose is the mechanical case this fixture
+// describes: one open PR, behind its live base, mergeable, CI green, no
+// substantive finding. It is now updated through the provider API.
+func TestUpdateBehindPRUpdatesSolitaryBehindPR(t *testing.T) {
 	state := &updateBehindServer{}
+	root, workspace := setupUpdateBehindPRTest(t, state)
+
+	code, stdout, stderr, result := invokeUpdateBehindPRTest(t, root, workspace)
+	if code != 0 {
+		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout, stderr)
+	}
+	if state.updateCalls != 1 {
+		t.Fatalf("update-branch calls = %d, want 1 for the lane's only behind PR", state.updateCalls)
+	}
+	if result["selectedNumber"] != "55" || result["needsFullRemediation"] != "false" {
+		t.Fatalf("result = %v, want PR #55 updated without full remediation", result)
+	}
+}
+
+// TestUpdateBehindPRDoesNotEagerlyUpdateUncrownedSibling keeps the original
+// laziness where its reasoning still applies. With two open PRs and no crown,
+// whichever lands first moves the base under the other, so updating either now
+// spends GitHub quota on a branch that goes behind again minutes later.
+func TestUpdateBehindPRDoesNotEagerlyUpdateUncrownedSibling(t *testing.T) {
+	state := &updateBehindServer{includeUnselected: true}
 	root, _ := setupUpdateBehindPRTest(t, state)
 
 	code, stdout, stderr := runArgs(t, "update-behind-pr", root)
