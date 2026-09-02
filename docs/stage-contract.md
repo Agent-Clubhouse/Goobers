@@ -852,6 +852,27 @@ definitive policy rejection, partial effect, or unknown outcome may not.
 > `.goobers/copilot-invocation.json` in the workspace, so a refusal can be
 > attributed to the invocation after the fact.
 
+> **A missing capability is a system defect, not a block (#2197).** `blocked`
+> means a per-item business/content decision or an unmet per-item dependency,
+> and it parks **every item the run has claimed** — up to a full curate batch —
+> for a human. A tool capability you were told you have but do not (a lost
+> write tool, an unregistered MCP server) is caused by the substrate, not by
+> any of those items, so it is a `failure`, which takes the comment-only,
+> no-label release path and leaves each item exactly as it was. Two mechanisms
+> enforce this rather than trusting the classification. Before the session
+> starts, the executor preflights each declared capability against the tool
+> surface the adapter will actually expose: a declared tool group that cannot
+> exercise a declared capability (e.g. the `github` group declared alongside
+> `github:issues:write`, expanding to a surface with no write tool) fails the
+> stage deterministically with `HARNESS_CAPABILITY_UNSATISFIED` before the
+> model runs. As a backstop for capability losses the preflight cannot
+> anticipate, a `blocked` result whose `error.code` names a missing capability
+> or tool (e.g. `MISSING_CAPABILITY`, `WRITE_TOOL_UNAVAILABLE`) is reclassified
+> to a non-retryable `failure` with the same code, setting
+> `outputs.capabilityUnsatisfied: true` and preserving your original summary
+> and error detail in `error.message`. Blocks carrying any other code —
+> `DEPENDENCY_NOT_MET` included — are untouched.
+
 `Task.Retry` (declared retry policy, attempt budget, backoff) governs only
 **dispatch/infra errors** — a Go error returned by the executor, not a
 business `failure`/`blocked` `ResultEnvelope`. Each policy-driven retry

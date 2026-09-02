@@ -251,6 +251,14 @@ type CopilotAdapter struct {
 // Name returns the adapter's registry name.
 func (c *CopilotAdapter) Name() string { return "copilot-cli" }
 
+// AvailableTools implements ToolSurfaceReporter: it reports the concrete
+// model-facing tool IDs a declared allowlist expands to, so the capability
+// preflight (#2197) checks the surface a session actually receives rather
+// than a re-derived copy of the expansion.
+func (c *CopilotAdapter) AvailableTools(declared []string) []string {
+	return copilotAvailableTools(RunRequest{Tools: declared})
+}
+
 // ValidateConfig rejects model and option values the Copilot CLI adapter does
 // not know how to express. This is called during config admission.
 func (c *CopilotAdapter) ValidateConfig(model string, options map[string]apiextensionsv1.JSON) error {
