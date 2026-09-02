@@ -109,6 +109,11 @@ type Client struct {
 
 // New configures OpenTelemetry tracing and metrics for a Goobers process.
 func New(ctx context.Context, cfg Config) (*Client, error) {
+	// The SDK's default error handler logs every asynchronous export failure
+	// unconditionally; in a daemon that is one line a minute for as long as the
+	// condition lasts (#4159). Replace it before any exporter can report.
+	installExportErrorHandler()
+
 	scrubber := cfg.Scrubber
 	if scrubber == nil {
 		scrubber = providerNet
