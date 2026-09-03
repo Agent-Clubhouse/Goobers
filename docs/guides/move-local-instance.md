@@ -12,7 +12,9 @@ claim ledgers, which can duplicate claims and external effects.
 ## What moves
 
 The instance root contains both durable evidence and rebuildable machine-local
-data:
+data. The table below is the migration view of the
+[instance-root restore contract](instance-restore-contract.md), which classifies
+every path and states the snapshot procedure in full:
 
 | Path | Move it? | Reason |
 |---|---:|---|
