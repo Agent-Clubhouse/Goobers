@@ -90,6 +90,7 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "instance-path", takesArg: true, desc: "With --guided, instance root to create"},
 		{name: "port", takesArg: true, desc: "With --guided, server port or auto"},
 		{name: "no-open", desc: "With --guided, print the URL without opening a browser"},
+		{name: "dev-assets", takesArg: true, desc: "With --guided, serve a local Portal build"},
 		{name: "workdir", takesArg: true, desc: "With --guided, temporary browser setup state"},
 		{name: "demo", desc: "Seed a credential-free runnable demo workflow"},
 		{name: "insecure", desc: "Allow an unisolated Windows demo"},

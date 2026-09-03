@@ -132,7 +132,7 @@ func packagePortalAssets(root, version, outDir string) (string, error) {
 		return "", fmt.Errorf("collect Portal asset artifact: %w", err)
 	}
 	if len(entries) == 0 {
-		return "", fmt.Errorf("Portal asset artifact at %s is empty", root)
+		return "", fmt.Errorf("portal asset artifact at %s is empty", root)
 	}
 	archivePath := filepath.Join(outDir, portalArchiveName(version))
 	file, err := os.Create(archivePath)

@@ -1,3 +1,4 @@
+// Package portalassets exposes the generated Portal files to complete Goobers builds.
 package portalassets
 
 import (
