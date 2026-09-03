@@ -1003,11 +1003,7 @@ func isTerminalPhase(p journal.RunPhase) bool {
 }
 
 func waitForRunTerminal(ctx context.Context, runsDir, runID string) (journal.RunPhase, error) {
-	return waitForRunTerminalWithProgress(ctx, runsDir, runID, io.Discard)
-}
-
-func waitForRunTerminalWithProgress(ctx context.Context, runsDir, runID string, progress io.Writer) (journal.RunPhase, error) {
-	return waitForRunTerminalWithReporter(ctx, runsDir, runID, newRunWaitReporter(runID, progress))
+	return waitForRunTerminalWithReporter(ctx, runsDir, runID, newRunWaitReporter(runID, io.Discard))
 }
 
 func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, progress *runWaitReporter) (journal.RunPhase, error) {

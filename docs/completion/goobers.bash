@@ -107,7 +107,7 @@ _goobers_completion()
             flags+=" --port --listen --no-open --dev-assets --wait-for-daemon"
             ;;
         run)
-            flags+=" --gaggle --pr --no-wait"
+            flags+=" --gaggle --github-progress --pr --no-wait"
             ;;
         approve)
             flags+=" --decision --actor"

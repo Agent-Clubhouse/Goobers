@@ -38,7 +38,7 @@ var synopsisByID = map[string]string{
 	"engine-project":         "  goobers engine-project --gaggle <name> [--temporal-hostport h:p] [--temporal-namespace <name>] <run-id> [path]\n                                write a completed engine run's journal into the instance (experimental)\n",
 	"worker":                 "  goobers worker [--task-queue <q>]... [--temporal-hostport h:p] [--temporal-namespace <name>] [--drain-timeout <dur>] [--work-root <path>] [--instance <path>] [--blob-store <path>] [--daemon-api <url>] [--dispatch-namespace <ns>] [--config-reload-interval <dur>] [--config-history-depth <n>]\n                                host a Temporal engine worker (tier-3, experimental)\n",
 	"dashboard":              "  goobers dashboard [--port=<port|auto>] [--listen=<host:port>] [--wait-for-daemon[=<duration>]] [--no-open] [--dev-assets=<dir>] [path]\n                                serve and open the local operations portal\n",
-	"run":                    "  goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]\n                                trigger a run manually (still honors run conditions)\n",
+	"run":                    "  goobers run [--gaggle <name>] [--github-progress] [--pr <number>] <workflow> [--no-wait] [path]\n                                trigger a run manually (still honors run conditions)\n",
 	"run abort":              "  goobers run abort <run-id> [path]  mark a stuck non-terminal run aborted\n",
 	"run cancel":             "  goobers run cancel <run-id> [path]  cancel a live in-flight run via the daemon\n",
 	"approve":                "  goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]  approve a paused or escalated gate\n",
