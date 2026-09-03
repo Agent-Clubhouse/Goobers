@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -94,6 +95,114 @@ func TestNormalizeEmitsTypedPortsAndSchemas(t *testing.T) {
 	}
 	if len(doc.Nodes[0].Inputs) != 2 || len(doc.Nodes[0].Outputs) != 1 || doc.Nodes[0].Outputs[0].Type != "string" {
 		t.Fatalf("ports = %#v, want two inputs and one typed output", doc.Nodes[0])
+	}
+}
+
+func TestNormalizePreservesCanonicalGraphSemantics(t *testing.T) {
+	def := workflow.Definition{
+		Name: "graph", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "prepare",
+			Triggers: []apiv1.Trigger{{Type: apiv1.TriggerManual}},
+			Requires: &apiv1.WorkflowRequirements{Capabilities: []string{"pr.merge", "issues.write"}},
+			Tasks: []apiv1.Task{
+				{Name: "prepare", Type: apiv1.TaskDeterministic, Goal: "prepare", Next: "outcome"},
+				{Name: "scan-a", Type: apiv1.TaskDeterministic, Goal: "scan a", Next: workflow.TargetJoin},
+				{Name: "scan-b", Type: apiv1.TaskDeterministic, Goal: "scan b", Next: workflow.TargetJoin},
+				{Name: "publish", Type: apiv1.TaskAgentic, Goal: "publish", Goober: "ops",
+					Capabilities: []string{"issues.write", "pr.merge"}},
+			},
+			Gates: []apiv1.Gate{{
+				Name: "outcome", Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{Check: "land-outcome"},
+				Branches:  map[string]string{"merged": "fanout", "evicted": ""},
+			}},
+			Parallels: []apiv1.Parallel{{
+				Name: "fanout", FailurePolicy: apiv1.BranchContinueOnError, Join: "publish",
+				Branches: []apiv1.Branch{{Name: "left", Start: "scan-a"}, {Name: "right", Start: "scan-b"}},
+			}},
+		},
+	}
+	doc, err := Normalize(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEdges := []Edge{
+		{From: "fanout", To: "scan-a", Condition: "branch:left"},
+		{From: "fanout", To: "scan-b", Condition: "branch:right"},
+		{From: "fanout", To: "publish", Condition: "join"},
+		{From: "outcome", To: "", Condition: "evicted"},
+		{From: "outcome", To: "fanout", Condition: "merged"},
+		{From: "prepare", To: "outcome"},
+		{From: "scan-a", To: workflow.TargetJoin},
+		{From: "scan-b", To: workflow.TargetJoin},
+	}
+	if !reflect.DeepEqual(doc.Edges, wantEdges) {
+		t.Fatalf("edges = %#v, want %#v", doc.Edges, wantEdges)
+	}
+	if want := []string{"issues.write", "pr.merge"}; !reflect.DeepEqual(doc.Permissions, want) {
+		t.Fatalf("permissions = %v, want canonical set %v", doc.Permissions, want)
+	}
+	nodes := make(map[string]Node, len(doc.Nodes))
+	for _, node := range doc.Nodes {
+		nodes[node.Name] = node
+	}
+	if nodes["prepare"].SideEffect != "none" || nodes["publish"].SideEffect != "external" {
+		t.Fatalf("side effects = prepare:%q publish:%q", nodes["prepare"].SideEffect, nodes["publish"].SideEffect)
+	}
+}
+
+func TestNormalizeReturnsImmutableSnapshot(t *testing.T) {
+	def := workflow.Definition{
+		Name: "snapshot", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "g", Start: "task",
+			Triggers: []apiv1.Trigger{{
+				Type: apiv1.TriggerBacklogItem, Selector: map[string]string{"label": "ready"},
+			}},
+			Tasks: []apiv1.Task{{
+				Name: "task", Type: apiv1.TaskDeterministic, Goal: "task", Next: "gate",
+				Inputs: map[string]string{"input": "original"}, Capabilities: []string{"issues.write"},
+				Retry: &apiv1.RetryPolicy{MaxAttempts: 2},
+			}},
+			Gates: []apiv1.Gate{{
+				Name: "gate", Evaluator: apiv1.EvaluatorAutomated,
+				Automated: &apiv1.AutomatedGate{
+					Check: "output-equals", Params: map[string]string{"key": "result"},
+					Retry: &apiv1.RetryPolicy{MaxAttempts: 2},
+				},
+				Branches: map[string]string{"done": workflow.TerminalComplete},
+			}},
+		},
+	}
+	doc, err := Normalize(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := doc.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	def.Spec.Triggers[0].Selector["label"] = "changed"
+	def.Spec.Tasks[0].Inputs["input"] = "changed"
+	def.Spec.Tasks[0].Capabilities[0] = "repo.push"
+	def.Spec.Tasks[0].Retry.MaxAttempts = 9
+	def.Spec.Gates[0].Automated.Params["key"] = "changed"
+	def.Spec.Gates[0].Automated.Retry.MaxAttempts = 9
+	def.Spec.Gates[0].Branches["done"] = "task"
+	after, err := doc.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatalf("IR digest changed after source mutation: %s != %s", before, after)
+	}
+	if doc.Triggers[0].Selector["label"] != "ready" ||
+		doc.Nodes[1].Task.Inputs["input"] != "original" ||
+		doc.Nodes[1].Retry.MaxAttempts != 2 ||
+		doc.Nodes[0].Gate.Automated.Params["key"] != "result" ||
+		doc.Nodes[0].Gate.Branches["done"] != workflow.TerminalComplete {
+		t.Fatalf("normalized document retained aliases into its source: %#v", doc)
 	}
 }
 

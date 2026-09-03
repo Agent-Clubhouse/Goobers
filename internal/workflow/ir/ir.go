@@ -110,7 +110,7 @@ func Normalize(def workflow.Definition) (Document, error) {
 		SchemaVersion: SchemaVersion,
 		Compiler:      Compiler{Name: CompilerName, Version: CompilerVersion},
 		Source:        Source{Name: def.Name, Version: def.Version, DSLVersion: def.DSLVersion, Digest: digest},
-		Triggers:      append([]apiv1.Trigger(nil), def.Spec.Triggers...),
+		Triggers:      cloneTriggers(def.Spec.Triggers),
 		Start:         def.Spec.Start,
 		Schemas:       []Schema{},
 		Nodes:         []Node{},
@@ -121,7 +121,7 @@ func Normalize(def workflow.Definition) (Document, error) {
 		node.Inputs = taskInputs(task)
 		node.Outputs = ports(task.ExpectedOutputs)
 		node.Timeout = task.TimeoutSeconds
-		node.Retry = task.Retry
+		node.Retry = task.Retry.DeepCopy()
 		if task.RunsOn != nil {
 			node.Resources = &Resources{CPU: task.RunsOn.CPU, Memory: task.RunsOn.Memory, Disk: task.RunsOn.Disk}
 		}
@@ -135,9 +135,7 @@ func Normalize(def workflow.Definition) (Document, error) {
 		node := Node{Name: gate.Name, Kind: "gate", Gate: cloneGate(gate), SideEffect: "none", HumanGate: gate.Evaluator == apiv1.EvaluatorHuman}
 		doc.Nodes = append(doc.Nodes, node)
 		for condition, target := range gate.Branches {
-			if target != "" {
-				doc.Edges = append(doc.Edges, Edge{From: gate.Name, To: target, Condition: condition})
-			}
+			doc.Edges = append(doc.Edges, Edge{From: gate.Name, To: target, Condition: condition})
 		}
 	}
 	for _, parallel := range def.Spec.Parallels {
@@ -181,6 +179,7 @@ func Normalize(def workflow.Definition) (Document, error) {
 		}
 		return doc.Edges[i].To < doc.Edges[j].To
 	})
+	doc.Permissions = unique(doc.Permissions)
 	sort.Strings(doc.Permissions)
 	if err := Validate(doc); err != nil {
 		return Document{}, err
@@ -242,9 +241,6 @@ func Validate(d Document) error {
 			}
 			if len(n.Gate.Branches) == 0 {
 				return fmt.Errorf("gate node %q must declare branches", n.Name)
-			}
-			if _, ok := n.Gate.Branches["pass"]; !ok {
-				return fmt.Errorf("gate node %q must declare a pass branch", n.Name)
 			}
 			payloads := 0
 			if n.Gate.Automated != nil {
@@ -435,6 +431,14 @@ func sideEffect(t apiv1.Task) string {
 	return "external"
 }
 
-func cloneTask(v apiv1.Task) *apiv1.Task             { return &v }
-func cloneGate(v apiv1.Gate) *apiv1.Gate             { return &v }
-func cloneParallel(v apiv1.Parallel) *apiv1.Parallel { return &v }
+func cloneTriggers(values []apiv1.Trigger) []apiv1.Trigger {
+	out := make([]apiv1.Trigger, len(values))
+	for i := range values {
+		values[i].DeepCopyInto(&out[i])
+	}
+	return out
+}
+
+func cloneTask(v apiv1.Task) *apiv1.Task             { return v.DeepCopy() }
+func cloneGate(v apiv1.Gate) *apiv1.Gate             { return v.DeepCopy() }
+func cloneParallel(v apiv1.Parallel) *apiv1.Parallel { return v.DeepCopy() }
