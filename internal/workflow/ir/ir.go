@@ -99,16 +99,21 @@ func Normalize(def workflow.Definition) (Document, error) {
 		Source:        Source{Name: def.Name, Version: def.Version, DSLVersion: def.DSLVersion, Digest: digest},
 		Triggers:      append([]apiv1.Trigger(nil), def.Spec.Triggers...),
 		Start:         def.Spec.Start,
+		Schemas:       []Schema{},
+		Nodes:         []Node{},
+		Edges:         []Edge{},
 	}
 	for _, task := range def.Spec.Tasks {
 		node := Node{Name: task.Name, Kind: string(task.Type), Task: cloneTask(task), SideEffect: sideEffect(task)}
-		node.Inputs = ports(task.Inputs)
+		node.Inputs = taskInputs(task)
+		node.Outputs = ports(task.ExpectedOutputs)
 		node.Timeout = task.TimeoutSeconds
 		node.Retry = task.Retry
 		if task.RunsOn != nil {
 			node.Resources = &Resources{CPU: task.RunsOn.CPU, Memory: task.RunsOn.Memory, Disk: task.RunsOn.Disk}
 		}
 		doc.Nodes = append(doc.Nodes, node)
+		doc.Schemas = append(doc.Schemas, taskSchema(task))
 		if task.Next != "" {
 			doc.Edges = append(doc.Edges, Edge{From: task.Name, To: task.Next})
 		}
@@ -150,6 +155,9 @@ func Normalize(def workflow.Definition) (Document, error) {
 	}
 	sort.Slice(doc.Nodes, func(i, j int) bool {
 		return doc.Nodes[i].Name < doc.Nodes[j].Name
+	})
+	sort.Slice(doc.Schemas, func(i, j int) bool {
+		return doc.Schemas[i].Name < doc.Schemas[j].Name
 	})
 	sort.Slice(doc.Edges, func(i, j int) bool {
 		if doc.Edges[i].From != doc.Edges[j].From {
@@ -206,17 +214,100 @@ func Validate(d Document) error {
 		if n.SideEffect != "none" && n.SideEffect != "external" {
 			return fmt.Errorf("node %q has unsupported side-effect class %q", n.Name, n.SideEffect)
 		}
-		if n.Kind == "gate" && n.Gate == nil {
-			return fmt.Errorf("gate node %q is missing its definition", n.Name)
-		}
-		if n.Kind == string(apiv1.TaskDeterministic) || n.Kind == string(apiv1.TaskAgentic) {
+		switch n.Kind {
+		case "gate":
+			if n.Gate == nil {
+				return fmt.Errorf("gate node %q is missing its definition", n.Name)
+			}
+			if n.Task != nil || n.Parallel != nil {
+				return fmt.Errorf("gate node %q has an inconsistent payload", n.Name)
+			}
+			if n.Gate.Name != n.Name {
+				return fmt.Errorf("gate node %q has mismatched definition name %q", n.Name, n.Gate.Name)
+			}
+			if len(n.Gate.Branches) == 0 {
+				return fmt.Errorf("gate node %q must declare branches", n.Name)
+			}
+			if _, ok := n.Gate.Branches["pass"]; !ok {
+				return fmt.Errorf("gate node %q must declare a pass branch", n.Name)
+			}
+			payloads := 0
+			if n.Gate.Automated != nil {
+				payloads++
+			}
+			if n.Gate.Agentic != nil {
+				payloads++
+			}
+			if n.Gate.Human != nil {
+				payloads++
+			}
+			if payloads != 1 {
+				return fmt.Errorf("gate node %q must declare exactly one evaluator payload", n.Name)
+			}
+			switch n.Gate.Evaluator {
+			case apiv1.EvaluatorAutomated:
+				if n.Gate.Automated == nil || n.Gate.Agentic != nil || n.Gate.Human != nil {
+					return fmt.Errorf("gate node %q has an inconsistent automated evaluator", n.Name)
+				}
+				if n.Gate.Automated.Check == "" {
+					return fmt.Errorf("gate node %q automated evaluator requires a check", n.Name)
+				}
+			case apiv1.EvaluatorAgentic:
+				if n.Gate.Agentic == nil || n.Gate.Automated != nil || n.Gate.Human != nil {
+					return fmt.Errorf("gate node %q has an inconsistent agentic evaluator", n.Name)
+				}
+				if n.Gate.Agentic.Goober == "" {
+					return fmt.Errorf("gate node %q agentic evaluator requires a goober", n.Name)
+				}
+			case apiv1.EvaluatorHuman:
+				if n.Gate.Human == nil || n.Gate.Automated != nil || n.Gate.Agentic != nil {
+					return fmt.Errorf("gate node %q has an inconsistent human evaluator", n.Name)
+				}
+			default:
+				return fmt.Errorf("gate node %q has unsupported evaluator %q", n.Name, n.Gate.Evaluator)
+			}
+		case "parallel":
+			if n.Parallel == nil {
+				return fmt.Errorf("parallel node %q is missing its definition", n.Name)
+			}
+			if n.Task != nil || n.Gate != nil {
+				return fmt.Errorf("parallel node %q has an inconsistent payload", n.Name)
+			}
+			if n.Parallel.Name != n.Name {
+				return fmt.Errorf("parallel node %q has mismatched definition name %q", n.Name, n.Parallel.Name)
+			}
+			if len(n.Parallel.Branches) < 2 || n.Parallel.Join == "" {
+				return fmt.Errorf("parallel node %q requires at least two branches and a join", n.Name)
+			}
+			if n.Parallel.FailurePolicy == apiv1.BranchContinueOnError && n.Parallel.OnFailure != "" {
+				return fmt.Errorf("parallel node %q cannot set onFailure with continue_on_error", n.Name)
+			}
+			if n.Parallel.FailurePolicy != apiv1.BranchContinueOnError && n.Parallel.OnFailure == "" {
+				return fmt.Errorf("parallel node %q requires onFailure for its failure policy", n.Name)
+			}
+			if n.Parallel.BranchTimeoutSeconds < 0 || n.Parallel.MaxConcurrentBranches < 0 {
+				return fmt.Errorf("parallel node %q has invalid parallelism limits", n.Name)
+			}
+		default:
 			if n.Task == nil {
 				return fmt.Errorf("task node %q is missing its definition", n.Name)
 			}
+			if n.Gate != nil || n.Parallel != nil {
+				return fmt.Errorf("task node %q has an inconsistent payload", n.Name)
+			}
+			if n.Task.Name != n.Name || n.Task.Type != apiv1.TaskType(n.Kind) {
+				return fmt.Errorf("task node %q has a mismatched definition", n.Name)
+			}
 		}
-		if n.Kind == "parallel" && n.Parallel == nil {
-			return fmt.Errorf("parallel node %q is missing its definition", n.Name)
+		if err := validatePorts(n.Name, n.Inputs); err != nil {
+			return err
 		}
+		if err := validatePorts(n.Name, n.Outputs); err != nil {
+			return err
+		}
+	}
+	if err := validateSchemas(d.Schemas); err != nil {
+		return err
 	}
 	if d.Start == "" || !names[d.Start] {
 		return fmt.Errorf("start node %q is not declared", d.Start)
@@ -242,17 +333,84 @@ func Validate(d Document) error {
 	return nil
 }
 
-func ports(inputs map[string]string) []Port {
-	names := make([]string, 0, len(inputs))
-	for name := range inputs {
-		names = append(names, name)
-	}
+func ports(names []string) []Port {
+	names = append([]string(nil), names...)
 	sort.Strings(names)
 	out := make([]Port, 0, len(names))
 	for _, name := range names {
 		out = append(out, Port{Name: name, Type: "string"})
 	}
 	return out
+}
+
+func taskInputs(task apiv1.Task) []Port {
+	names := make([]string, 0, len(task.Inputs)+len(task.InputsFrom))
+	for name := range task.Inputs {
+		names = append(names, name)
+	}
+	for name := range task.InputsFrom {
+		names = append(names, name)
+	}
+	return ports(unique(names))
+}
+
+func taskSchema(task apiv1.Task) Schema {
+	fields := make(map[string]string, len(task.Inputs)+len(task.InputsFrom)+len(task.ExpectedOutputs))
+	for _, port := range taskInputs(task) {
+		fields[port.Name] = port.Type
+	}
+	for _, port := range ports(task.ExpectedOutputs) {
+		fields[port.Name] = port.Type
+	}
+	return Schema{Name: task.Name, Fields: fields}
+}
+
+func unique(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; !ok {
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func validatePorts(node string, ports []Port) error {
+	seen := make(map[string]struct{}, len(ports))
+	for _, port := range ports {
+		if port.Name == "" || port.Type == "" {
+			return fmt.Errorf("node %q has an incomplete port", node)
+		}
+		if port.Type != "string" {
+			return fmt.Errorf("node %q has unsupported port type %q", node, port.Type)
+		}
+		if _, ok := seen[port.Name]; ok {
+			return fmt.Errorf("node %q has duplicate port %q", node, port.Name)
+		}
+		seen[port.Name] = struct{}{}
+	}
+	return nil
+}
+
+func validateSchemas(schemas []Schema) error {
+	seen := make(map[string]struct{}, len(schemas))
+	for _, schema := range schemas {
+		if schema.Name == "" {
+			return fmt.Errorf("schema name must not be empty")
+		}
+		if _, ok := seen[schema.Name]; ok {
+			return fmt.Errorf("duplicate schema %q", schema.Name)
+		}
+		seen[schema.Name] = struct{}{}
+		for name, typ := range schema.Fields {
+			if name == "" || typ != "string" {
+				return fmt.Errorf("schema %q has unsupported field %q of type %q", schema.Name, name, typ)
+			}
+		}
+	}
+	return nil
 }
 
 func sideEffect(t apiv1.Task) string {

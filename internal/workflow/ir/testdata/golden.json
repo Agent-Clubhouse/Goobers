@@ -1,9 +1,10 @@
 {
   "schemaVersion": "goobers.dev/workflow-ir/v1",
   "compiler": {"name": "goobers", "version": "workflow-ir/v1"},
-  "source": {"name": "golden", "version": 1, "digest": "sha256:golden"},
+  "source": {"name": "golden", "version": 1, "digest": "sha256:8b056a01033c7a0f92265cee00fabd57019e287d763dc163483b6543e9b9e7e4"},
   "triggers": [{"type": "manual"}],
   "start": "build",
+  "schemas": [{"name": "build", "fields": {}}],
   "nodes": [
     {
       "name": "build",
