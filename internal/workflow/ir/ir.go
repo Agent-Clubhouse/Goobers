@@ -15,11 +15,15 @@ import (
 )
 
 const (
-	SchemaVersion   = "goobers.dev/workflow-ir/v1"
-	CompilerName    = "goobers"
+	// SchemaVersion identifies the canonical Workflow IR schema.
+	SchemaVersion = "goobers.dev/workflow-ir/v1"
+	// CompilerName identifies the compiler that produced a Workflow IR document.
+	CompilerName = "goobers"
+	// CompilerVersion identifies the compiler contract used to produce Workflow IR.
 	CompilerVersion = "workflow-ir/v1"
 )
 
+// Document is the canonical, versioned representation of a workflow definition.
 type Document struct {
 	SchemaVersion string          `json:"schemaVersion"`
 	Compiler      Compiler        `json:"compiler"`
@@ -32,11 +36,13 @@ type Document struct {
 	Permissions   []string        `json:"permissions,omitempty"`
 }
 
+// Compiler identifies the implementation and contract version that produced a document.
 type Compiler struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 }
 
+// Source identifies the workflow definition from which a document was normalized.
 type Source struct {
 	Name       string `json:"name"`
 	Version    int    `json:"version"`
@@ -44,11 +50,13 @@ type Source struct {
 	Digest     string `json:"digest"`
 }
 
+// Schema describes a named set of typed fields referenced by a workflow node.
 type Schema struct {
 	Name   string            `json:"name"`
 	Fields map[string]string `json:"fields"`
 }
 
+// Node represents a task, gate, or parallel construct in the workflow graph.
 type Node struct {
 	Name        string             `json:"name"`
 	Kind        string             `json:"kind"`
@@ -65,29 +73,34 @@ type Node struct {
 	HumanGate   bool               `json:"humanGate,omitempty"`
 }
 
+// Resources describes the execution resources requested by a node.
 type Resources struct {
 	CPU    string `json:"cpu,omitempty"`
 	Memory string `json:"memory,omitempty"`
 	Disk   string `json:"disk,omitempty"`
 }
 
+// Parallelism describes the bounded concurrency of a parallel workflow node.
 type Parallelism struct {
 	Branches          int32 `json:"branches"`
 	MaxConcurrent     int32 `json:"maxConcurrent,omitempty"`
 	BranchTimeoutSecs int32 `json:"branchTimeoutSeconds,omitempty"`
 }
 
+// Port describes a named, typed node input or output.
 type Port struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
 }
 
+// Edge represents a directed, optionally conditional workflow transition.
 type Edge struct {
 	From      string `json:"from"`
 	To        string `json:"to"`
 	Condition string `json:"condition,omitempty"`
 }
 
+// Normalize converts a workflow definition into deterministic canonical IR.
 func Normalize(def workflow.Definition) (Document, error) {
 	digest, err := workflow.ComputeDigest(def)
 	if err != nil {
@@ -175,6 +188,7 @@ func Normalize(def workflow.Definition) (Document, error) {
 	return doc, nil
 }
 
+// Digest validates the document and returns its canonical SHA-256 digest.
 func (d Document) Digest() (string, error) {
 	if err := Validate(d); err != nil {
 		return "", err
@@ -187,6 +201,7 @@ func (d Document) Digest() (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
+// Validate verifies the structural and version invariants of a Workflow IR document.
 func Validate(d Document) error {
 	if d.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("unsupported IR schema %q (want %q)", d.SchemaVersion, SchemaVersion)
