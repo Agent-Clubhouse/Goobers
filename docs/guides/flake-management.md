@@ -7,7 +7,10 @@ workflows must not automatically retry a failed step or job.
 ## Lifecycle
 
 1. **Find:** the trusted scheduled or manually dispatched `Stress` workflow runs
-   the enrolled packages with `-race -count=20`. A pull request carrying
+   the enrolled packages with `-race -count=20` by default. The checked-in
+   enrollment list may use a reviewed `count=N` override for a package whose
+   complete race suite cannot fit that repetition count within the stress-job
+   budget; the package result records the actual count. A pull request carrying
    `/stress` can produce the same artifact, but untrusted pull-request code never
    receives issue-write permission.
 2. **Fingerprint:** `test/stress` combines package, test name, and a normalized

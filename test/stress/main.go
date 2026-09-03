@@ -43,6 +43,11 @@ type options struct {
 	seed        int64
 }
 
+type packageSpec struct {
+	Package string
+	Count   int
+}
+
 type runMetadata struct {
 	RunID      string    `json:"run_id"`
 	RunAttempt string    `json:"run_attempt"`
@@ -219,23 +224,39 @@ func parseOptions(args []string, stderr io.Writer, getenv func(string) string) (
 	return opts, nil
 }
 
-func loadPackages(r io.Reader) ([]string, error) {
+func loadPackages(r io.Reader) ([]packageSpec, error) {
 	scanner := bufio.NewScanner(r)
 	seen := make(map[string]struct{})
-	var packages []string
+	var packages []packageSpec
 	for line := 1; scanner.Scan(); line++ {
-		value := strings.TrimSpace(strings.SplitN(scanner.Text(), "#", 2)[0])
-		if value == "" {
+		fields := strings.Fields(strings.SplitN(scanner.Text(), "#", 2)[0])
+		if len(fields) == 0 {
 			continue
 		}
-		if !strings.HasPrefix(value, "./") || strings.ContainsAny(value, " \t") {
-			return nil, fmt.Errorf("line %d: package must be a relative Go package pattern, got %q", line, value)
+		if len(fields) > 2 {
+			return nil, fmt.Errorf("line %d: expected package and optional count=N", line)
 		}
-		if _, exists := seen[value]; exists {
-			return nil, fmt.Errorf("line %d: duplicate package %q", line, value)
+		pkg := fields[0]
+		if !strings.HasPrefix(pkg, "./") {
+			return nil, fmt.Errorf("line %d: package must be a relative Go package pattern, got %q", line, pkg)
 		}
-		seen[value] = struct{}{}
-		packages = append(packages, value)
+		count := stressCount
+		if len(fields) == 2 {
+			value, ok := strings.CutPrefix(fields[1], "count=")
+			if !ok {
+				return nil, fmt.Errorf("line %d: expected optional count=N, got %q", line, fields[1])
+			}
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 1 || parsed > stressCount {
+				return nil, fmt.Errorf("line %d: count must be between 1 and %d, got %q", line, stressCount, value)
+			}
+			count = parsed
+		}
+		if _, exists := seen[pkg]; exists {
+			return nil, fmt.Errorf("line %d: duplicate package %q", line, pkg)
+		}
+		seen[pkg] = struct{}{}
+		packages = append(packages, packageSpec{Package: pkg, Count: count})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
@@ -246,7 +267,7 @@ func loadPackages(r io.Reader) ([]string, error) {
 	return packages, nil
 }
 
-func executeStress(ctx context.Context, runner processRunner, packages []string) (summaryReport, failuresReport, error) {
+func executeStress(ctx context.Context, runner processRunner, packages []packageSpec) (summaryReport, failuresReport, error) {
 	summary := summaryReport{
 		SchemaVersion: reportSchema,
 		Status:        "pass",
@@ -266,15 +287,17 @@ func executeStress(ctx context.Context, runner processRunner, packages []string)
 	}
 
 	var executionErr error
-	for _, pkg := range packages {
-		result, packageFailures, err := runner.runPackage(ctx, pkg)
+	for _, spec := range packages {
+		packageRunner := runner
+		packageRunner.count = spec.Count
+		result, packageFailures, err := packageRunner.runPackage(ctx, spec.Package)
 		summary.Packages = append(summary.Packages, result)
 		failures.Failures = append(failures.Failures, packageFailures...)
 		if result.Status != "pass" {
 			summary.Status = "fail"
 		}
 		if err != nil {
-			executionErr = errors.Join(executionErr, fmt.Errorf("%s: %w", pkg, err))
+			executionErr = errors.Join(executionErr, fmt.Errorf("%s: %w", spec.Package, err))
 		}
 	}
 	return summary, failures, executionErr

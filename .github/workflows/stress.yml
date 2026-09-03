@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   stress:
-    name: race count=20
+    name: race stress
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
