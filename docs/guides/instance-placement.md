@@ -67,7 +67,10 @@ that repository. Runtime state is generated operational evidence, not desired
 state: it changes continuously, can be large, contains managed copies of target
 content, and must never enter config review or a commit. Separating it also
 prevents a run worktree from becoming nested inside the repository it operates
-on.
+on. Not all of it is equally durable — see
+[Back up and restore an instance root](instance-restore-contract.md) for which
+of these paths must survive, which regenerate, and how to snapshot the root
+safely.
 
 Use a short, stable path with enough free space. For example:
 
@@ -169,7 +172,9 @@ This is the simplest layout:
 ```
 
 Use it for a single-operator, private experiment where filesystem ownership and
-backups are sufficient governance. It is a poor fit for a Tutor or any workflow
+backups are sufficient governance; what a backup must contain is defined by the
+[instance-root restore contract](instance-restore-contract.md). It is a poor fit
+for a Tutor or any workflow
 that should propose config changes through pull requests. Once changes need
 normal repository review, move the canonical definitions to one of the two
 versioned layouts below and materialize them into the instance.
