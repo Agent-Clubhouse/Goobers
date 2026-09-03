@@ -291,6 +291,14 @@ spec:
     # function a merged sibling substantially restructured. That structural
     # case escalates on cycle one and includes both PRs' relevant hunks;
     # otherwise this records the advanced cycle state as a new sticky comment.
+    #
+    # #2701: a cycle whose every detected cause is external to the PR's own
+    # diff — sibling sequencing merge-review already recorded, or required CI
+    # already red on the base branch itself — parks HERE with escalationOutcome
+    # externally-blocked instead of continuing. An implementer confined to the
+    # PR's worktree cannot resolve any of those, so the repass would reproduce
+    # the identical diff and escalate anyway. The park consumes no cause
+    # allowance and releases itself once the base advances.
     - name: remediation-checkpoint
       type: deterministic
       goal: Detect a stuck PR (no-progress repeat or per-cause budget exhaustion) and escalate, or record the advanced cycle state.

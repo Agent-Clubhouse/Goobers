@@ -2595,8 +2595,9 @@ worktree), read pr-remediation's durable per-cause attempt counters + last
 diff digest back from a sticky PR comment, compare this cycle's
 actual diff (git diff base...HEAD) against it, and either
 escalate (goobers:merge-escalated, clearing needs-remediation) when
-the active cause exhausts its DSL-declared budget or on a byte-identical
-repeat, or record the advanced
+the active cause exhausts its DSL-declared budget, on a byte-identical
+repeat, or when every detected cause is external to the PR's own diff
+(sibling sequencing, or CI already red on the base branch), or record the advanced
 state as a new sticky comment. Requires selectedNumber (inputsFrom
 gather-pr-context's selectedNumber output), remediationCauses, and the
 five per-cause budget inputs (humanCommentBudget defaults to 2 when
@@ -2604,7 +2605,8 @@ undeclared). --budget overrides every declared cause
 for standalone diagnostics. --escalation-outcome classifies a forced
 --escalate as did-not-converge (the default), budget-exhausted, or infrastructure-failure.
 Escalations persist a machine-readable `escalationOutcome`
-(`did-not-converge`, `budget-exhausted`, `policy-excluded`, or `infrastructure-failure`), whether
+(`did-not-converge`, `budget-exhausted`, `policy-excluded`, `externally-blocked`, or
+`infrastructure-failure`), whether
 repair was attempted, and the attempted causes in both the sticky comment
 and stage result. Exit codes: 0 = checkpoint
 recorded (escalated or not — both are normal outcomes), 1 = business

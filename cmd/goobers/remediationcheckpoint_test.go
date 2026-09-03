@@ -74,6 +74,9 @@ type remediationCheckpointServerState struct {
 	mergeOnComments    bool
 	labels             []string
 	comments           []string
+	// baseCheckState is the check-run conclusion every ref other than headSHA
+	// reports — in practice the base branch tip (#2701). Empty means green.
+	baseCheckState string
 	// commentCreatedAt is optional, index-aligned with comments: an empty (or
 	// short) entry serves the default timestamp so existing tests are
 	// unaffected; the sentinel "-" omits created_at entirely (a comment with
@@ -196,6 +199,25 @@ func newRemediationCheckpointServer(t *testing.T, owner, repo string, st *remedi
 	})
 	mux.HandleFunc(fmt.Sprintf("%s/commits/%s/check-runs", prefix, st.headSHA), func(w http.ResponseWriter, r *http.Request) {
 		writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{}})
+	})
+
+	// Every other ref's check state — in practice the base branch tip, which
+	// #2701's externally-blocked classification reads. Defaults to green, so a
+	// test that does not set baseCheckState behaves exactly as before.
+	mux.HandleFunc(prefix+"/commits/", func(w http.ResponseWriter, r *http.Request) {
+		st.mu.Lock()
+		conclusion := st.baseCheckState
+		st.mu.Unlock()
+		if conclusion == "" {
+			conclusion = "success"
+		}
+		if strings.HasSuffix(r.URL.Path, "/check-runs") {
+			writeFakeJSON(w, map[string]interface{}{"check_runs": []map[string]interface{}{
+				{"id": 1, "name": "ci", "status": "completed", "conclusion": conclusion},
+			}})
+			return
+		}
+		writeFakeJSON(w, map[string]interface{}{"state": "success", "statuses": []map[string]interface{}{}})
 	})
 
 	mux.HandleFunc(fmt.Sprintf("%s/issues/%d", prefix, st.number), func(w http.ResponseWriter, r *http.Request) {
