@@ -245,8 +245,15 @@ const (
 	// ResultFailure means the stage did not meet its goal; the runner applies the
 	// stage's retry policy and, if exhausted, branches on failure.
 	ResultFailure ResultStatus = "failure"
-	// ResultBlocked means the stage cannot proceed without external intervention
-	// (human input, an unmet dependency); the runner halts the run pending it.
+	// ResultBlocked means the stage cannot proceed without a per-item
+	// business/content decision or an unmet per-item dependency; the runner
+	// halts the run pending it (PhaseEscalated) and parks every item the run
+	// has claimed for a human. It is NEVER the status for a system defect —
+	// a missing or lost tool capability, an unusable harness, or any other
+	// substrate fault — because those have nothing to do with the content of
+	// the claimed items a block parks (#2197). Report those as ResultFailure,
+	// which takes the comment-only, no-label release path instead. The
+	// executor enforces this for self-reported missing-capability codes.
 	ResultBlocked ResultStatus = "blocked"
 	// ResultNoWork means the stage ran without error but found nothing to act
 	// on (issue #233: an empty-backlog claim tick) — distinct from

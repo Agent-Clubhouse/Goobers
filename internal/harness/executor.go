@@ -318,6 +318,12 @@ func NewExecutor(adapter Adapter, injector *credentials.Injector, recorder SpanR
 // configured adapter and returns its result envelope, or an error if the
 // stage never produced a valid one (fail closed, GBO-013/GBO-014).
 func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.ResultEnvelope, error) {
+	// #2197: a capability the granted tool surface cannot exercise fails the
+	// stage here, before the model ever runs, rather than depending on the
+	// session noticing and self-classifying it correctly.
+	if err := e.capabilityPreflight(env); err != nil {
+		return capabilityFailureResult(err), nil
+	}
 	out, transcript, stderr, err := e.run(ctx, ModeInvoke, env, e.resultPath)
 	if err != nil {
 		return adapterDiagnostics(out, transcript, stderr), err
@@ -336,6 +342,10 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 	// a policy fact. Conflated, the former parked driving issues for humans
 	// that no human action could unstick.
 	reclassifyToolPermissionBlock(&result, out.Transcript, out.Stderr)
+	// #2197: the backstop for a capability loss the preflight did not
+	// anticipate — a missing tool is a system defect, so it must not escalate
+	// and needs-human-park every item this run claimed.
+	reclassifyMissingCapabilityBlock(&result)
 	// The transcript pointer is runner-authored. Never trust a harness to
 	// self-report a path or digest for the diagnostic bytes the runner captured.
 	result.Transcript = transcript
@@ -370,6 +380,12 @@ func (e *Executor) Invoke(ctx context.Context, env apiv1.InvocationEnvelope) (ap
 // configured adapter and returns its verdict, or an error if the gate never
 // produced a valid one.
 func (e *Executor) Review(ctx context.Context, env apiv1.InvocationEnvelope) (apiv1.Verdict, error) {
+	if err := e.capabilityPreflight(env); err != nil {
+		return apiv1.Verdict{
+			Decision: apiv1.VerdictFail,
+			Summary:  fmt.Sprintf("%s: %v", ErrorCodeCapabilityUnsatisfied, err),
+		}, nil
+	}
 	out, _, _, err := e.run(ctx, ModeReview, env, e.verdictPath)
 	if err != nil {
 		return apiv1.Verdict{}, err
