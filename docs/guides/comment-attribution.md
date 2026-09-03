@@ -5,7 +5,7 @@ workflow stage ends with a versioned attribution marker and a visible summary:
 
 ```text
 <!-- goobers:attribution v1 <base64-json> -->
-Posted by **Goobers** | `gaggle/workflow` | task `task` | goober `role` | run `12345678`
+Posted by **Goobers** | `gaggle/workflow` | task `task` | goober `role` | run `12345678` | version `v1.2.3`
 ```
 
 The Base64 value decodes to UTF-8 JSON with this schema:
@@ -23,6 +23,9 @@ The Base64 value decodes to UTF-8 JSON with this schema:
   "action": "comment"
 }
 ```
+
+The visible footer reports the Goobers binary version that wrote the comment.
+The version is not duplicated in the hidden attribution JSON.
 
 Consumers should locate the `goobers:attribution v1` marker, require exactly one
 marker, Base64-decode its payload, and branch on both the marker version and JSON
