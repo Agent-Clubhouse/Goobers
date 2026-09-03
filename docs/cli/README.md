@@ -316,11 +316,14 @@ $ goobers apply-verdict
 approve a paused or escalated gate
 
 ~~~text
-Usage: goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+Usage: goobers approve [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]
 
 Approve a paused human gate or an escalated human/reviewer gate. The daemon
 records the authenticated actor, decision, and resulting resume in the run
-journal. GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.
+journal.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and
+--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this
+filesystem, such as one running in another pod.
 
 Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
 ~~~
@@ -2253,12 +2256,14 @@ $ goobers open-pr
 override a nondeterministic gate with a rationale
 
 ~~~text
-Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]
 
 Override a nondeterministic gate on an escalated or failed run and continue
 from the selected configured branch. The rationale and authenticated actor
-are recorded in the run journal. GOOBERS_API_TOKEN supplies a bearer token
-when API auth is enabled.
+are recorded in the run journal.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and
+--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this
+filesystem, such as one running in another pod.
 
 Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
 ~~~
@@ -2652,12 +2657,14 @@ $ goobers report-pr-status
 rerun a stage with a recorded instruction addendum
 
 ~~~text
-Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] <run-id> <stage> [path]
+Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]
 
 Rerun one agentic task or reviewer gate on an escalated run with a one-off
 instruction addendum. The actor, addendum, target, and human attempt are
 recorded in the run journal; the workflow definition is not changed.
-GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and
+--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this
+filesystem, such as one running in another pod.
 
 Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
 ~~~
@@ -2744,7 +2751,7 @@ $ goobers respond-to-findings
 trigger a run manually (still honors run conditions)
 
 ~~~text
-Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] <workflow> [--no-wait] [path]
+Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
        goobers run <gaggle>/<workflow> [--github-progress] [--pr <number>] [--no-wait] [path]
        goobers run abort <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
@@ -2777,6 +2784,14 @@ either way. `run cancel` instead asks a live daemon to stop a run it is
 actively executing (active-stage cancel + worktree/claim teardown +
 aborted) — the live counterpart to `run abort`'s daemon-down journal
 repair.
+With --api (or $GOOBERS_DAEMON_API) the trigger is submitted to that
+daemon's authenticated HTTP API instead of the local pending-triggers
+drop, so a caller that does not share the daemon's filesystem — CI, a
+webhook receiver, another pod — can start a run at all. Nothing local is
+read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a
+retried submission return the original run instead of minting a second
+one, and the command returns once the daemon accepts the trigger because
+a remote client cannot watch the run's journal.
 ~~~
 
 **Examples**

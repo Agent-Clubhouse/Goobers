@@ -253,20 +253,25 @@ var completionFlagSpecs = map[string][]completionFlagSpec{
 		{name: "gaggle", takesArg: true, desc: "Trigger the workflow in this gaggle"},
 		{name: "github-progress", desc: "Publish live progress to one GitHub Check Run"},
 		{name: "pr", takesArg: true, desc: "Target an exact pull request for merge-review"},
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
+		{name: "request-id", takesArg: true, desc: "Retry-safe delivery identity for an API submission"},
 		{name: "no-wait", desc: "Return after the run is dispatched"},
 	},
 	"approve": {
 		{name: "decision", takesArg: true, desc: "Gate decision"},
 		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
 	"override": {
 		{name: "rationale", takesArg: true, desc: "Override rationale"},
 		{name: "decision", takesArg: true, desc: "Gate decision"},
 		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
 	"rerun-stage": {
 		{name: "addendum", takesArg: true, desc: "Instruction addendum"},
 		{name: "actor", takesArg: true, desc: "Recorded actor identity"},
+		{name: "api", takesArg: true, desc: "Daemon API base URL for a remote daemon"},
 	},
 	"workflow show": {
 		{name: "dot", desc: "Emit Graphviz DOT"},

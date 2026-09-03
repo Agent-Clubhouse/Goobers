@@ -135,16 +135,16 @@ _goobers_completion()
             flags+=(--port --listen --no-open --dev-assets --wait-for-daemon)
             ;;
         run)
-            flags+=(--gaggle --github-progress --pr --no-wait)
+            flags+=(--gaggle --github-progress --pr --api --request-id --no-wait)
             ;;
         approve)
-            flags+=(--decision --actor)
+            flags+=(--decision --actor --api)
             ;;
         override)
-            flags+=(--rationale --decision --actor)
+            flags+=(--rationale --decision --actor --api)
             ;;
         rerun-stage)
-            flags+=(--addendum --actor)
+            flags+=(--addendum --actor --api)
             ;;
         workflow)
             case "${words[3]:-}" in

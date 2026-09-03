@@ -48,7 +48,7 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] <workflow> [--no-wait] [path]\n" +
+const runHelp = "Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
 	"       goobers run <gaggle>/<workflow> [--github-progress] [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort <run-id> [path]\n" +
 	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +
@@ -79,7 +79,15 @@ const runHelp = "Usage: goobers run [--gaggle <name>] [--github-progress] [--pr 
 	"either way. `run cancel` instead asks a live daemon to stop a run it is\n" +
 	"actively executing (active-stage cancel + worktree/claim teardown +\n" +
 	"aborted) — the live counterpart to `run abort`'s daemon-down journal\n" +
-	"repair.\n"
+	"repair.\n" +
+	"With --api (or $GOOBERS_DAEMON_API) the trigger is submitted to that\n" +
+	"daemon's authenticated HTTP API instead of the local pending-triggers\n" +
+	"drop, so a caller that does not share the daemon's filesystem — CI, a\n" +
+	"webhook receiver, another pod — can start a run at all. Nothing local is\n" +
+	"read, $GOOBERS_API_TOKEN supplies the bearer token, --request-id makes a\n" +
+	"retried submission return the original run instead of minting a second\n" +
+	"one, and the command returns once the daemon accepts the trigger because\n" +
+	"a remote client cannot watch the run's journal.\n"
 
 func runRun(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "continue" {
@@ -91,6 +99,8 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	githubProgress := fs.Bool("github-progress", false, "publish live progress to one GitHub Check Run (requires checks: write)")
 	gaggle := fs.String("gaggle", "", "trigger the workflow in this gaggle")
 	pr := fs.Int("pr", 0, "target pull request (merge-review only)")
+	api := fs.String("api", "", "submit the trigger to this daemon API base URL (default $GOOBERS_DAEMON_API)")
+	requestID := fs.String("request-id", "", "delivery identity for a retry-safe API submission (default: random)")
 	fs.Usage = helpUsage(stderr, "run")
 	if err := fs.Parse(runFlagArgs(args)); err != nil {
 		return 2
@@ -109,6 +119,20 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	target.PR = *pr
+	// A configured daemon API endpoint means the daemon is not on this
+	// filesystem, so the pending-triggers drop below would land where nothing
+	// sweeps it (#3279). Submit through the daemon's trigger plane instead;
+	// no instance root is required to ask a remote daemon to act.
+	endpoint, err := remoteDaemonAPIBase(*api)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if endpoint != "" {
+		ctx, stop := signals.SetupSignalContext()
+		defer stop()
+		return runRemoteTrigger(ctx, endpoint, target, *requestID, *noWait, stdout, stderr)
+	}
 	root := "."
 	if fs.NArg() == 2 {
 		root = fs.Arg(1)
@@ -591,12 +615,19 @@ func runFlagArgs(args []string) []string {
 			}
 			continue
 		}
-		if arg == "--pr" || arg == "-pr" {
+		if arg == "--pr" || arg == "-pr" ||
+			arg == "--api" || arg == "-api" ||
+			arg == "--request-id" || arg == "-request-id" {
 			flags = append(flags, arg)
 			if i+1 < len(args) {
 				i++
 				flags = append(flags, args[i])
 			}
+			continue
+		}
+		if strings.HasPrefix(arg, "--api=") || strings.HasPrefix(arg, "-api=") ||
+			strings.HasPrefix(arg, "--request-id=") || strings.HasPrefix(arg, "-request-id=") {
+			flags = append(flags, arg)
 			continue
 		}
 		if strings.HasPrefix(arg, "--gaggle=") || strings.HasPrefix(arg, "-gaggle=") {
