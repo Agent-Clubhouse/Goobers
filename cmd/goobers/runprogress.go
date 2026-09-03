@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"io"
 	"sync"
 	"time"
 
+	"github.com/goobers/goobers/internal/hostedprogress"
 	"github.com/goobers/goobers/internal/journal"
 )
 
@@ -37,6 +39,9 @@ type runWaitReporter struct {
 	stageStarts    map[stageAttempt]time.Time
 	pausedGate     string
 	terminal       bool
+	publish        func(context.Context, []journal.Event) error
+	publishContext context.Context
+	publishFailed  bool
 }
 
 func newRunWaitReporter(runID string, out io.Writer) *runWaitReporter {
@@ -52,6 +57,27 @@ func newRunWaitReporter(runID string, out io.Writer) *runWaitReporter {
 		lastHeartbeat:  now,
 		stageStarts:    make(map[stageAttempt]time.Time),
 	}
+}
+
+func newHostedRunWaitReporter(
+	ctx context.Context,
+	runID, runDir string,
+	out io.Writer,
+) *runWaitReporter {
+	reporter := newRunWaitReporter(runID, out)
+	if !githubProgressEnabled(ctx) {
+		return reporter
+	}
+	env, err := hostedprogress.Environment()
+	if err != nil {
+		reporter.publishFailed = true
+		pf(out, "warning: GitHub progress disabled: %v\n", err)
+		return reporter
+	}
+	publisher := hostedprogress.New(env, runDir)
+	reporter.publishContext = ctx
+	reporter.publish = publisher.Publish
+	return reporter
 }
 
 func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
@@ -100,6 +126,13 @@ func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
 			if r.pausedGate == event.Gate {
 				r.pausedGate = ""
 			}
+		}
+	}
+
+	if r.publish != nil && !r.publishFailed {
+		if err := r.publish(r.publishContext, events); err != nil {
+			r.publishFailed = true
+			pf(r.out, "warning: GitHub progress publishing stopped: %v\n", err)
 		}
 	}
 

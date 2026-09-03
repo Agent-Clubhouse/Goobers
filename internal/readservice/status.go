@@ -93,6 +93,9 @@ type RunReplacement struct {
 // WorkItemLookup reads the current provider state for a claimed item.
 type WorkItemLookup func(context.Context, string, string) (providers.WorkItem, error)
 
+// PullRequestLookup reads the current provider state for a run's pull request.
+type PullRequestLookup func(context.Context, string, string) (providers.PullRequestSummary, error)
+
 // ListStatusRuns returns every readable run in display order. Individual
 // malformed historical journals are omitted so status remains best-effort.
 func (s *Local) ListStatusRuns(ctx context.Context) ([]RunSummary, error) {
@@ -159,6 +162,9 @@ func (s *Local) decorateOperatorClaims(ctx context.Context, runs []RunSummary, n
 			markerPresent = item.HasLabel(providers.LabelClaimed)
 			if runs[i].Operator.Issue.Title == "" {
 				runs[i].Operator.Issue.Title = item.Title
+			}
+			if runs[i].Operator.Issue.URL == "" {
+				runs[i].Operator.Issue.URL = item.URL
 			}
 		}
 		if markerVerified &&

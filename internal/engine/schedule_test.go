@@ -385,6 +385,84 @@ func TestScheduleReconcilerRequiresBoundedCatchup(t *testing.T) {
 	}
 }
 
+// TestScheduleReconcilerSkipsDisabledScheduleTriggers pins the same
+// Trigger.Enabled semantics the local-daemon dispatch path applies
+// (cmd/goobers/daemon.go): a schedule trigger with Enabled explicitly set to
+// false must not reconcile into a Temporal schedule, and a previously
+// enabled schedule that is later disabled must be removed on the next
+// reconcile — while an unset (nil, defaults-to-true) or explicitly true
+// Enabled continues to reconcile.
+func TestScheduleReconcilerSkipsDisabledScheduleTriggers(t *testing.T) {
+	falseValue := false
+	trueValue := true
+	store := newFakeScheduleClient()
+	reconciler, err := newScheduleReconciler(store, "goobers-engine", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := ScheduleID("prod-west", "web", "implement", 0)
+
+	// Enabled=nil (defaults to true) reconciles as usual.
+	nilEnabled := scheduledSnapshot("0 * * * *")
+	nilEnabled.Runs[0].Spec.Triggers[0].Enabled = nil
+	if err := reconciler.Reconcile(context.Background(), nilEnabled); err != nil {
+		t.Fatalf("nil Enabled reconcile: %v", err)
+	}
+	if _, ok := store.schedules[id]; !ok {
+		t.Fatalf("nil Enabled did not create schedule %q", id)
+	}
+	if store.creates != 1 {
+		t.Fatalf("creates = %d, want 1", store.creates)
+	}
+
+	// Explicit Enabled=true keeps the schedule in place idempotently.
+	trueEnabled := scheduledSnapshot("0 * * * *")
+	trueEnabled.Runs[0].Spec.Triggers[0].Enabled = &trueValue
+	trueEnabled.ConfigSHA = "abc124"
+	trueEnabled.ConfigGeneration = 2
+	if err := reconciler.Reconcile(context.Background(), trueEnabled); err != nil {
+		t.Fatalf("Enabled=true reconcile: %v", err)
+	}
+	if _, ok := store.schedules[id]; !ok {
+		t.Fatalf("Enabled=true removed schedule %q", id)
+	}
+	if store.deletes != 0 {
+		t.Fatalf("deletes after Enabled=true = %d, want 0", store.deletes)
+	}
+
+	// Flipping Enabled=false must remove the previously reconciled schedule.
+	disabled := scheduledSnapshot("0 * * * *")
+	disabled.Runs[0].Spec.Triggers[0].Enabled = &falseValue
+	disabled.ConfigSHA = "abc125"
+	disabled.ConfigGeneration = 3
+	if err := reconciler.Reconcile(context.Background(), disabled); err != nil {
+		t.Fatalf("Enabled=false reconcile: %v", err)
+	}
+	if _, ok := store.schedules[id]; ok {
+		t.Fatalf("Enabled=false left schedule %q in place", id)
+	}
+	if store.deletes != 1 {
+		t.Fatalf("deletes after Enabled=false = %d, want 1", store.deletes)
+	}
+
+	// A fresh reconciler over the same disabled snapshot must never create
+	// the schedule in the first place.
+	freshStore := newFakeScheduleClient()
+	freshReconciler, err := newScheduleReconciler(freshStore, "goobers-engine", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := freshReconciler.Reconcile(context.Background(), disabled); err != nil {
+		t.Fatalf("fresh Enabled=false reconcile: %v", err)
+	}
+	if len(freshStore.schedules) != 0 {
+		t.Fatalf("fresh reconciler created schedules for a disabled trigger: %v", freshStore.schedules)
+	}
+	if freshStore.creates != 0 {
+		t.Fatalf("fresh creates = %d, want 0", freshStore.creates)
+	}
+}
+
 func TestScheduleOverlapSkipsWhileRunInFlight(t *testing.T) {
 	store := newFakeScheduleClient()
 	reconciler, err := newScheduleReconciler(store, "goobers-engine", time.Minute)

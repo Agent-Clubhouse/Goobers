@@ -108,6 +108,37 @@ the development repository's moving `main`.
 Windows adopters should use the checksum-verified
 [Windows release path](quickstart-windows.md).
 
+### Goobers Portal canvas extension
+
+Every Goobers binary embeds the canonical extension from
+`.github/extensions/goobers-portal/`. During `goobers init --guided`, setup
+offers a user-scoped installation only when it detects the GitHub Copilot app.
+Declining has no effect on instance setup. Install it later, including after
+installing the Copilot app, with:
+
+```sh
+goobers portal-extension install
+goobers portal-extension status
+```
+
+The extension is installed under
+`${COPILOT_HOME:-$HOME/.copilot}/extensions/goobers-portal`. Its managed
+manifest records the exact producing Goobers version, commit, and asset
+digests. After a Goobers upgrade, inspect and apply the matching extension:
+
+```sh
+goobers portal-extension status
+goobers portal-extension update
+```
+
+Updates use a staged, crash-recoverable directory replacement and refuse
+unmanaged or locally modified files; after reviewing drift, pass `--replace-modified` to explicitly
+replace managed changes. Persisted sources and preferences live under
+`${COPILOT_HOME:-$HOME/.copilot}/extension-state/goobers-portal`, outside the
+installed code directory. Reload extensions in the Copilot app after install
+or update. A project-scoped `.github/extensions/goobers-portal` takes precedence
+over the user-scoped copy while working in that repository.
+
 ## The packaging engine
 
 `go run ./release` cross-compiles `./cmd/goobers` for the release matrix,

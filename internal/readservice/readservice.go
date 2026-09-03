@@ -93,6 +93,7 @@ type LocalSources struct {
 	ReadModel          readmodel.Reader
 	RetentionStats     func() readmodel.RetentionStats
 	WorkItemLookup     WorkItemLookup
+	PullRequestLookup  PullRequestLookup
 	SchedulerHeartbeat func() (time.Time, error)
 	LivenessTimeout    time.Duration
 }

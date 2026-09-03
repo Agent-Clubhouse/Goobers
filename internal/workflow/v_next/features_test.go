@@ -624,6 +624,7 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			{
 				Type:     apiv1.TriggerSchedule,
 				Schedule: "@hourly",
+				Enabled:  func() *bool { enabled := true; return &enabled }(),
 				IdleBackoff: &apiv1.IdleBackoff{
 					Enabled: func() *bool { enabled := true; return &enabled }(),
 					Floor:   "1m",
@@ -1175,6 +1176,7 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"trigger.idleBackoff.enabled",
 		"trigger.idleBackoff.floor",
 		"trigger.idleBackoff.ceiling",
+		"trigger.enabled",
 		"gate.maxRepasses",
 		"goober.spec.policyActions",
 		"goober.spec.conditionalPolicyActions",

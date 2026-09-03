@@ -675,4 +675,13 @@ CREATE TABLE IF NOT EXISTS monitor_nomination (
 	`
 ALTER TABLE monitor_nomination ADD COLUMN improvement_claimed_at TEXT;
 `,
+
+	// v19: rebuild operator facts to retain associated issue URLs and PR titles.
+	`
+UPDATE projection_state SET ready = 0 WHERE id = 1 AND ready <> 0;
+DELETE FROM run_node_parent WHERE TRUE;
+DELETE FROM run_node WHERE TRUE;
+DELETE FROM run_stage WHERE TRUE;
+DELETE FROM run WHERE TRUE;
+`,
 }

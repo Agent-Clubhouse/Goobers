@@ -91,6 +91,7 @@ const DEFAULT_PORTAL_CONFIG: PortalConfig = {
   },
   capabilities: {
     revealRun: true,
+    workflowEnable: true,
   },
 };
 

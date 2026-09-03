@@ -500,6 +500,7 @@ type handlerConfig struct {
 	interventions       InterventionService
 	interventionContext context.Context
 	runRevealer         func(context.Context, string) error
+	workflowMutations   WorkflowMutationService
 	claims              ClaimService
 	triggers            TriggerService
 	escalations         EscalationService
@@ -590,6 +591,17 @@ func WithRunRevealer(reveal func(context.Context, string) error) HandlerOption {
 			return errors.New("run revealer is required")
 		}
 		config.runRevealer = reveal
+		return nil
+	}
+}
+
+// WithWorkflowMutations enables runtime workflow configuration changes.
+func WithWorkflowMutations(service WorkflowMutationService) HandlerOption {
+	return func(config *handlerConfig) error {
+		if service == nil {
+			return errors.New("workflow mutation service is required")
+		}
+		config.workflowMutations = service
 		return nil
 	}
 }
@@ -816,6 +828,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 			return
 		}
 		portalConfig.Capabilities.RevealRun = config.runRevealer != nil
+		portalConfig.Capabilities.WorkflowEnable = config.workflowMutations != nil
 		w.Header().Set("Cache-Control", "no-cache")
 		writeJSON(w, http.StatusOK, portalConfig)
 	})
@@ -825,6 +838,7 @@ func registerV1Routes(router *Router, reader readservice.Reader, errorLog *log.L
 	registerInventoryRoutes(router, reader, errorLog)
 	registerMutationRoutes(router, config.interventions, config.interventionContext, errorLog)
 	registerRunRevealRoute(router, config.runRevealer, errorLog)
+	registerWorkflowMutationRoutes(router, config.workflowMutations, errorLog)
 	registerWritePlaneRoutes(router, config, errorLog)
 	registerJournalPlaneRoutes(router, config, errorLog)
 	registerRunJournalPlaneRoutes(router, config, errorLog)

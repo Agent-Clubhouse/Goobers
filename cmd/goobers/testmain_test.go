@@ -108,6 +108,7 @@ func TestMain(m *testing.M) {
 		}
 	}
 	copilotModelLister = testCopilotModelLister{}
+	detectCopilotAppForInit = func() bool { return false }
 
 	// Keep the daemon suite hermetic against the machine's own memory (#3960).
 	// newDaemonScheduler wires the cgroup-aware admission gate by default, so

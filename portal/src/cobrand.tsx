@@ -26,6 +26,7 @@ export const defaultPortalConfig: PortalConfig = {
   },
   capabilities: {
     revealRun: false,
+    workflowEnable: false,
   },
 };
 

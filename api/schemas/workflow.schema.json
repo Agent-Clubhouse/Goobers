@@ -189,6 +189,10 @@
           "description": "GitHub webhook event names accepted by a webhook trigger, such as pull_request, issues, or check_suite.",
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Defaults to true. Setting it false suppresses this trigger from firing (schedule ticks, signal delivery, webhook events, and backlog-item polling all stop) without removing its configuration. Has no effect on type=manual, which is always available via `goobers run`."
         }
       },
       "allOf": [

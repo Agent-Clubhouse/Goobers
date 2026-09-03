@@ -580,6 +580,13 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		ReadModel:      setup.ReadModel,
 		RetentionStats: setup.RetentionStats,
 		WorkItemLookup: statusWorkItemLookup(l.Root, setup.Definitions),
+		PullRequestLookup: statusPullRequestLookup(
+			l.Root,
+			setup.Config,
+			setup.Definitions,
+			setup.SecretStores,
+			setup.SharedRegistry,
+		),
 		SchedulerHeartbeat: func() (time.Time, error) {
 			return daemonstate.Read(lockPath)
 		},
@@ -705,9 +712,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
 		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive, claimRecoveryGate)
 	}
+	workflowMutations := newWorkflowMutationService(l)
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
+		httpapi.WithWorkflowMutations(workflowMutations),
 		httpapi.WithClaimService(newDaemonClaimService(l, setup.InstanceLog, recoverExpiredClaims)),
 		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
 		httpapi.WithTriggerService(triggerPlane),
@@ -1106,6 +1115,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		appliedDigest:  setup.ConfigDigest,
 		observedDigest: setup.ConfigDigest,
 	}
+	workflowMutations.AttachReloader(reloader)
 
 	// Crash-resume: any run left non-terminal by a prior crash or unclean
 	// shutdown restarts now, before the scheduler starts admitting new ticks
