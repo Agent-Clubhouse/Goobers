@@ -21,7 +21,7 @@ import (
 
 const maxInterventionResponseBody = 1 << 20
 
-const approveHelp = "Usage: goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]\n\n" +
+const approveHelp = "Usage: goobers approve [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]\n\n" +
 	"Approve a paused human gate or an escalated human/reviewer gate. The daemon\n" +
 	"records the authenticated actor, decision, and resulting resume in the run\n" +
 	"journal.\n" +
@@ -47,7 +47,7 @@ func runApprove(args []string, stdout, stderr io.Writer) int {
 	)
 }
 
-const overrideHelp = "Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]\n\n" +
+const overrideHelp = "Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]\n\n" +
 	"Override a nondeterministic gate on an escalated or failed run and continue\n" +
 	"from the selected configured branch. The rationale and authenticated actor\n" +
 	"are recorded in the run journal.\n" +
@@ -79,7 +79,7 @@ func runOverride(args []string, stdout, stderr io.Writer) int {
 	)
 }
 
-const rerunStageHelp = "Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] <run-id> <stage> [path]\n\n" +
+const rerunStageHelp = "Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]\n\n" +
 	"Rerun one agentic task or reviewer gate on an escalated run with a one-off\n" +
 	"instruction addendum. The actor, addendum, target, and human attempt are\n" +
 	"recorded in the run journal; the workflow definition is not changed.\n" +

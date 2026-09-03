@@ -195,6 +195,19 @@ func TestRunRemoteTriggerRefusesPullRequestTarget(t *testing.T) {
 	}
 }
 
+func TestRunRemoteTriggerRefusesOverlongRequestID(t *testing.T) {
+	unsetRunContext(t)
+	t.Setenv(remoteDaemonAPIEnv, "http://daemon.invalid")
+	oversized := strings.Repeat("a", httpapi.MaxTriggerRequestIDBytes+1)
+	code, _, stderr := runArgs(t, "run", "demo", "--request-id", oversized, "--no-wait")
+	if code != 2 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "--request-id must be no longer than") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
 func TestRunRemoteTriggerRejectsInvalidEndpoint(t *testing.T) {
 	unsetRunContext(t)
 	t.Setenv(remoteDaemonAPIEnv, "")

@@ -6,7 +6,7 @@ goobers approve \- approve a paused or escalated gate
 \fBgoobers approve\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+Usage: goobers approve [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]
 
 Approve a paused human gate or an escalated human/reviewer gate. The daemon
 records the authenticated actor, decision, and resulting resume in the run

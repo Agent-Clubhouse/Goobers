@@ -316,7 +316,7 @@ $ goobers apply-verdict
 approve a paused or escalated gate
 
 ~~~text
-Usage: goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+Usage: goobers approve [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]
 
 Approve a paused human gate or an escalated human/reviewer gate. The daemon
 records the authenticated actor, decision, and resulting resume in the run
@@ -2256,7 +2256,7 @@ $ goobers open-pr
 override a nondeterministic gate with a rationale
 
 ~~~text
-Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]
 
 Override a nondeterministic gate on an escalated or failed run and continue
 from the selected configured branch. The rationale and authenticated actor
@@ -2657,7 +2657,7 @@ $ goobers report-pr-status
 rerun a stage with a recorded instruction addendum
 
 ~~~text
-Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] <run-id> <stage> [path]
+Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]
 
 Rerun one agentic task or reviewer gate on an escalated run with a one-off
 instruction addendum. The actor, addendum, target, and human attempt are
@@ -2751,8 +2751,7 @@ $ goobers respond-to-findings
 trigger a run manually (still honors run conditions)
 
 ~~~text
-Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
-       goobers run --api <url> [--gaggle <name>] [--request-id <id>] <workflow>
+Usage: goobers run [--gaggle <name>] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
        goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]
        goobers run abort <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]

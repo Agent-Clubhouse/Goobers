@@ -47,8 +47,7 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]\n" +
-	"       goobers run --api <url> [--gaggle <name>] [--request-id <id>] <workflow>\n" +
+const runHelp = "Usage: goobers run [--gaggle <name>] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
 	"       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort <run-id> [path]\n" +
 	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +

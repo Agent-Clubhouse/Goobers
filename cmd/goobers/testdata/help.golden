@@ -337,7 +337,7 @@ selectedBaseSha from Task.InputsFrom. Exit codes: 0 = applied (or
 voided), 1 = business error, 2 = usage/IO error.
 
 ### approve
-Usage: goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+Usage: goobers approve [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]
 
 Approve a paused human gate or an escalated human/reviewer gate. The daemon
 records the authenticated actor, decision, and resulting resume in the run
@@ -1537,7 +1537,7 @@ to the declared result file for a downstream stage's Task.InputsFrom.
 Exit codes: 0 = opened/updated, 1 = business error, 2 = usage/IO error.
 
 ### override
-Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]
+Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] [--api=<url>] <run-id> <gate> [path]
 
 Override a nondeterministic gate on an escalated or failed run and continue
 from the selected configured branch. The rationale and authenticated actor
@@ -1769,7 +1769,7 @@ targetUrl (default the PR url), resultFile (default status-result.json).
 Exit codes: 0 = published, 1 = business error, 2 = usage/IO error.
 
 ### rerun-stage
-Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] <run-id> <stage> [path]
+Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]
 
 Rerun one agentic task or reviewer gate on an escalated run with a one-off
 instruction addendum. The actor, addendum, target, and human attempt are
@@ -1819,8 +1819,7 @@ without claiming those local changes landed.
 processed, 1 = business error, 2 = usage/IO error.
 
 ### run
-Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
-       goobers run --api <url> [--gaggle <name>] [--request-id <id>] <workflow>
+Usage: goobers run [--gaggle <name>] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]
        goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]
        goobers run abort <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
