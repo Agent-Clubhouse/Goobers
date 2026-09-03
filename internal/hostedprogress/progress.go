@@ -97,13 +97,14 @@ func envOr(name, fallback string) string {
 
 // Publisher owns one Check Run and updates it only when the journal advances.
 type Publisher struct {
-	env      GitHubEnvironment
-	client   *http.Client
-	runDir   string
-	checkID  int64
-	lastSeq  uint64
-	disabled error
-	mu       sync.Mutex
+	env       GitHubEnvironment
+	client    *http.Client
+	runDir    string
+	checkID   int64
+	lastSeq   uint64
+	disabled  error
+	finalized bool
+	mu        sync.Mutex
 }
 
 // New creates a publisher. It performs no network operation until Publish.
@@ -141,7 +142,57 @@ func (p *Publisher) Publish(ctx context.Context, events []journal.Event) error {
 		return err
 	}
 	p.lastSeq = contract.Revision
+	if terminal(contract.Phase) {
+		p.finalized = true
+	}
 	return nil
+}
+
+// Finalize closes the Check Run for the current run when the caller exits
+// without observing a terminal journal phase (context cancellation, timeout,
+// or wait error). It is a no-op when Publish was never able to create a
+// Check Run and when Publish has already published a terminal phase. On
+// success the Check Run is marked completed so it does not linger as
+// "in progress" after the workflow job ends. Failures are returned but
+// callers should treat them as best-effort — the run is already over.
+func (p *Publisher) Finalize(ctx context.Context, waitErr error) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.checkID == 0 || p.finalized {
+		return nil
+	}
+	p.finalized = true
+	body := struct {
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+		Completed  string `json:"completed_at"`
+	}{
+		Status:     "completed",
+		Conclusion: finalizeConclusion(waitErr),
+		Completed:  time.Now().UTC().Format(time.RFC3339),
+	}
+	return p.request(
+		ctx,
+		http.MethodPatch,
+		fmt.Sprintf("/repos/%s/check-runs/%d", p.env.Repository, p.checkID),
+		body,
+		nil,
+	)
+}
+
+// finalizeConclusion maps a wait-error into a GitHub Check Run conclusion.
+// A cancelled context (Ctrl-C, cancelled Actions job, deadline) becomes
+// "cancelled"; any other failure becomes "failure". Callers passing a nil
+// error (i.e. the wait exited abnormally without an explicit error) get
+// "cancelled" as the least-alarming terminal marker.
+func finalizeConclusion(waitErr error) string {
+	if waitErr == nil {
+		return "cancelled"
+	}
+	if errors.Is(waitErr, context.Canceled) || errors.Is(waitErr, context.DeadlineExceeded) {
+		return "cancelled"
+	}
+	return "failure"
 }
 
 func (p *Publisher) contract(events []journal.Event) (Contract, error) {

@@ -49,3 +49,12 @@ that boundary.
 Consumers must match both `schema` and `actionsRunId`. They should use the
 highest matching revision and replace the projection with the final journal
 artifact as soon as it is available.
+
+## Terminal states on abnormal exit
+
+`goobers run --github-progress` closes the Check Run before it exits, even when
+the run itself did not observe a terminal journal phase. A signal-driven cancel
+(Ctrl-C, cancelled Actions job, timeout) closes it with `conclusion: cancelled`
+and any other wait error closes it with `conclusion: failure`. The finalize
+call is best-effort and never lengthens the CLI exit path — the Check Run does
+not linger at `in_progress` after the workflow job ends.

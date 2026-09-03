@@ -3,12 +3,15 @@ package hostedprogress
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -167,6 +170,124 @@ func TestConclusionMapping(t *testing.T) {
 		if got := conclusion(phase); got != want {
 			t.Errorf("conclusion(%q) = %q, want %q", phase, got, want)
 		}
+	}
+}
+
+// TestFinalizeConclusionMaps pins the wait-error-to-Check-Run-conclusion
+// contract Finalize uses on abnormal exit. Cancelled or deadline-exceeded
+// waits map to "cancelled" (a signal-driven or job-timeout shutdown is the
+// Actions user's decision, not a run failure) while every other wait error
+// maps to "failure" (a wedged watcher or hosted-progress publisher error is
+// operator-visible).
+func TestFinalizeConclusionMaps(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want string
+	}{
+		"nil":                       {nil, "cancelled"},
+		"context cancelled":         {context.Canceled, "cancelled"},
+		"context deadline exceeded": {context.DeadlineExceeded, "cancelled"},
+		"other error":               {errors.New("wait wedged"), "failure"},
+		"wrapped cancelled":         {fmt.Errorf("outer: %w", context.Canceled), "cancelled"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := finalizeConclusion(tc.err); got != tc.want {
+				t.Fatalf("finalizeConclusion(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPublisherFinalizeIsNoOpBeforeCreate pins the best-effort promise: if
+// Publish never got as far as creating a Check Run (because the run exited
+// abnormally before the first journal transition, or because Publish
+// latched an error on the create attempt itself) Finalize must not issue
+// a stray PATCH — there is nothing to complete.
+func TestPublisherFinalizeIsNoOpBeforeCreate(t *testing.T) {
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":42}`)
+	}))
+	defer server.Close()
+
+	publisher := New(GitHubEnvironment{
+		Repository:   "owner/repo",
+		SHA:          "deadbeef",
+		ActionsRunID: "123",
+		Token:        "token",
+		APIURL:       server.URL,
+		ServerURL:    "https://github.example",
+	}, t.TempDir())
+
+	if err := publisher.Finalize(context.Background(), errors.New("wait wedged")); err != nil {
+		t.Fatalf("Finalize before create: %v", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Fatalf("Finalize before create issued %d requests, want 0", got)
+	}
+}
+
+// TestPublisherFinalizeClosesCheckRunOnAbnormalExit pins the review-flagged
+// lifecycle guarantee: if Publish created a Check Run but the caller exited
+// before any terminal phase was published, Finalize must complete the
+// Check Run so it does not linger at "in progress". Signal-driven cancel
+// maps to "cancelled"; a wait error maps to "failure"; a second call after
+// finalize is a no-op.
+func TestPublisherFinalizeClosesCheckRunOnAbnormalExit(t *testing.T) {
+	var mu sync.Mutex
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, body)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":42}`)
+	}))
+	defer server.Close()
+
+	runDir, events := testJournal(t)
+	// Trim the terminal event so Publish creates a Check Run in the
+	// "in_progress" state (matching a live run that hasn't finished yet).
+	inFlight := events[:len(events)-1]
+	if len(inFlight) == 0 {
+		inFlight = events[:1]
+	}
+	publisher := New(GitHubEnvironment{
+		Repository:   "owner/repo",
+		SHA:          "deadbeef",
+		ActionsRunID: "123",
+		Token:        "token",
+		APIURL:       server.URL,
+		ServerURL:    "https://github.example",
+	}, runDir)
+
+	if err := publisher.Publish(context.Background(), inFlight); err != nil {
+		t.Fatalf("initial publish: %v", err)
+	}
+
+	if err := publisher.Finalize(context.Background(), context.Canceled); err != nil {
+		t.Fatalf("Finalize on cancel: %v", err)
+	}
+	if err := publisher.Finalize(context.Background(), errors.New("second call")); err != nil {
+		t.Fatalf("Finalize idempotent call: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2 (one create, one finalize PATCH)", len(requests))
+	}
+	terminal := requests[1]
+	if terminal["status"] != "completed" || terminal["conclusion"] != "cancelled" {
+		t.Fatalf("finalize PATCH = %#v, want completed/cancelled", terminal)
 	}
 }
 

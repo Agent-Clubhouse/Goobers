@@ -49,7 +49,7 @@ func exitForPhase(phase journal.RunPhase) int {
 }
 
 const runHelp = "Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] <workflow> [--no-wait] [path]\n" +
-	"       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]\n" +
+	"       goobers run <gaggle>/<workflow> [--github-progress] [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort <run-id> [path]\n" +
 	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +
 	"       goobers run cancel <run-id> [path]\n\n" +
@@ -338,8 +338,15 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 	reporter := newHostedRunWaitReporter(ctx, runID, runDir, stderr)
 	phase, err := waitForRunTerminalWithReporter(ctx, l.ForGaggle(gaggle).RunsDir(), runID, reporter)
 	if err != nil {
+		reporter.Finalize(err)
 		pf(stderr, "error: %v\n", err)
 		return 2
+	}
+	if !isTerminalPhase(phase) {
+		// A cancelled wait (Ctrl-C, cancelled Actions job) can return a
+		// non-terminal phase with no error; close the Check Run rather than
+		// leave it stuck at "in progress" until the workflow job times out.
+		reporter.Finalize(ctx.Err())
 	}
 
 	// waitForRunTerminal polls the run's OWN journal and returns as soon as
@@ -1076,7 +1083,14 @@ func waitForRunTerminalInLayoutWithProgress(ctx context.Context, layout instance
 			if githubProgressEnabled(ctx) {
 				reporter = newHostedRunWaitReporter(ctx, runID, dir, progress)
 			}
-			return waitForRunTerminalWithReporter(ctx, filepath.Dir(dir), runID, reporter)
+			phase, waitErr := waitForRunTerminalWithReporter(ctx, filepath.Dir(dir), runID, reporter)
+			if waitErr != nil || !isTerminalPhase(phase) {
+				// Close any hosted-progress Check Run on abnormal exit so
+				// the workflow job's remote view does not linger at
+				// "in progress" past the run's actual end.
+				reporter.Finalize(waitErr)
+			}
+			return phase, waitErr
 		}
 		if !errors.Is(err, iofs.ErrNotExist) {
 			return journal.PhaseRunning, err

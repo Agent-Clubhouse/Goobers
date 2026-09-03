@@ -2745,7 +2745,7 @@ trigger a run manually (still honors run conditions)
 
 ~~~text
 Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] <workflow> [--no-wait] [path]
-       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]
+       goobers run <gaggle>/<workflow> [--github-progress] [--pr <number>] [--no-wait] [path]
        goobers run abort <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
        goobers run cancel <run-id> [path]

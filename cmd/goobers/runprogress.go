@@ -42,6 +42,7 @@ type runWaitReporter struct {
 	publish        func(context.Context, []journal.Event) error
 	publishContext context.Context
 	publishFailed  bool
+	finalize       func(context.Context, error) error
 }
 
 func newRunWaitReporter(runID string, out io.Writer) *runWaitReporter {
@@ -83,7 +84,28 @@ func newHostedRunWaitReporter(
 	publisher := hostedprogress.New(env, runDir)
 	reporter.publishContext = ctx
 	reporter.publish = publisher.Publish
+	reporter.finalize = publisher.Finalize
 	return reporter
+}
+
+// Finalize best-effort completes any in-flight hosted-progress Check Run when
+// the caller exits without observing a terminal journal phase (context
+// cancellation, timeout, wait error). If hosted progress is disabled or was
+// never able to create a Check Run this is a no-op. Errors are surfaced as a
+// one-time warning on the reporter's writer so the caller's exit code path
+// is unaffected.
+func (r *runWaitReporter) Finalize(waitErr error) {
+	if r == nil || r.finalize == nil {
+		return
+	}
+	// Cap best-effort finalize latency so a cancelled parent context or a
+	// wedged GitHub API does not delay the CLI shutdown path indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.finalize(ctx, waitErr); err != nil && !r.publishFailed {
+		r.publishFailed = true
+		pf(r.out, "warning: GitHub progress finalize failed: %v\n", err)
+	}
 }
 
 func (r *runWaitReporter) observe(events []journal.Event, now time.Time) {
