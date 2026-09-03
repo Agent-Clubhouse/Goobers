@@ -64,6 +64,8 @@ func TestValidateRejectsUnsupportedAndDanglingIR(t *testing.T) {
 		t.Fatalf("Validate error = %v, want actionable unsupported-kind error", err)
 	}
 	doc.Nodes[0].Kind = string(apiv1.TaskDeterministic)
+	doc.Nodes[0].SideEffect = "none"
+	doc.Nodes[0].Task = &apiv1.Task{Name: "known", Type: apiv1.TaskDeterministic, Goal: "known"}
 	err = Validate(doc)
 	if err == nil || !strings.Contains(err.Error(), "start node") {
 		t.Fatalf("Validate error = %v, want actionable start error", err)
