@@ -279,11 +279,11 @@ func switchManifestOutput(pointer, outDir, generations, generationName string) (
 		if err := durability.SyncDir(generations); err != nil {
 			return nil, fmt.Errorf("sync manifest publication rollback: %w", err)
 		}
-		if err := durability.ReplaceFile(pointer, outDir); err != nil {
+		if err := replaceManifestPointer(pointer, outDir); err != nil {
 			return nil, fmt.Errorf("publish authoritative manifest output: %w", err)
 		}
 		return func() error {
-			if err := durability.ReplaceFile(rollbackPointer, outDir); err != nil {
+			if err := replaceManifestPointer(rollbackPointer, outDir); err != nil {
 				return err
 			}
 			return durability.SyncDir(filepath.Dir(outDir))
@@ -301,6 +301,13 @@ func switchManifestOutput(pointer, outDir, generations, generationName string) (
 	default:
 		return nil, fmt.Errorf("manifest output %s must be a directory or symbolic link", outDir)
 	}
+}
+
+func replaceManifestPointer(source, destination string) error {
+	if err := os.Remove(destination); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.Rename(source, destination)
 }
 
 func callPublicationHook(hook func() error) error {
