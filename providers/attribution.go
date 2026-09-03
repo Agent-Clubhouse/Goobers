@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/goobers/goobers/internal/version"
 )
 
 // AttributionMarkerPrefix opens the versioned HTML comment marker that
@@ -83,10 +85,11 @@ func withAttribution(body string, attribution Attribution, action string) (strin
 	}
 	marker := AttributionMarkerPrefix + base64.StdEncoding.EncodeToString(data) + " -->"
 	visible := fmt.Sprintf(
-		"Posted by **Goobers** | `%s/%s` | task `%s` | goober `%s` | run `%s`",
+		"Posted by **Goobers** | `%s/%s` | task `%s` | goober `%s` | run `%s` | version `%s`",
 		markdownCode(attribution.Gaggle), markdownCode(attribution.Workflow),
 		markdownCode(attribution.Task), markdownCode(attribution.Goober),
 		markdownCode(shortRunID(attribution.Run)),
+		markdownCode(version.Version),
 	)
 	if attribution.Instance != "" {
 		visible += " | instance `" + markdownCode(attribution.Instance) + "`"

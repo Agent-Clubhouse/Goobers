@@ -37,6 +37,9 @@ func TestAttributionRoundTripAndReplacement(t *testing.T) {
 	if !strings.Contains(first, "Posted by **Goobers**") {
 		t.Fatalf("visible attribution missing from %q", first)
 	}
+	if !strings.Contains(first, "| version `dev`") {
+		t.Fatalf("visible attribution version missing from %q", first)
+	}
 
 	second, err := withAttribution(first, attribution, "comment-update")
 	if err != nil {
