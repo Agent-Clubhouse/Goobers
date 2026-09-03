@@ -710,6 +710,12 @@ func portalPreparationChecks(tools toolchain) []check {
 			group:        groupChecks,
 		},
 		{
+			label:   "portal-embed-test",
+			command: tools.goCommand,
+			args:    []string{"test", "-tags", "embed_portal", "./internal/portalassets"},
+			group:   groupChecks,
+		},
+		{
 			label:   "portal-embed-vet",
 			command: tools.goCommand,
 			args:    []string{"vet", "-tags", "embed_portal", "./internal/portalassets", "./cmd/goobers"},

@@ -64,6 +64,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"portal-audit",
 		"portal-playwright-install",
 		"portal-build",
+		"portal-embed-test",
 		"portal-embed-vet",
 		"build-goobers",
 		"validate-configs",
@@ -313,7 +314,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links npm-registry go-toolchain build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet shipped-workflows schema-description-coverage test lint portal-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links npm-registry go-toolchain build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-test portal-embed-vet shipped-workflows schema-description-coverage test lint portal-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -357,7 +358,7 @@ func TestChecksInstallPinnedChromiumAndRunPortalE2E(t *testing.T) {
 	}
 }
 
-func TestPortalEmbedVetRunsAfterBuild(t *testing.T) {
+func TestPortalEmbedValidationRunsAfterBuild(t *testing.T) {
 	t.Parallel()
 	got := checks(
 		[]string{"goobers"},
@@ -367,20 +368,32 @@ func TestPortalEmbedVetRunsAfterBuild(t *testing.T) {
 		"",
 	)
 
-	var vetIdx, buildIdx = -1, -1
+	var testIdx, vetIdx, buildIdx = -1, -1, -1
 	for i, current := range got {
 		switch current.label {
+		case "portal-embed-test":
+			testIdx = i
 		case "portal-embed-vet":
 			vetIdx = i
 		case "portal-build":
 			buildIdx = i
 		}
 	}
+	if testIdx == -1 {
+		t.Fatal("portal-embed-test check is missing")
+	}
 	if vetIdx == -1 {
 		t.Fatal("portal-embed-vet check is missing")
 	}
-	if vetIdx != buildIdx+1 {
-		t.Fatalf("portal-embed-vet at %d, want immediately after portal-build at %d", vetIdx, buildIdx)
+	if testIdx != buildIdx+1 || vetIdx != testIdx+1 {
+		t.Fatalf("portal validation indexes build=%d test=%d vet=%d, want consecutive checks", buildIdx, testIdx, vetIdx)
+	}
+	testCheck := got[testIdx]
+	if testCheck.command != "go" {
+		t.Errorf("portal-embed-test command = %q, want go", testCheck.command)
+	}
+	if want := []string{"test", "-tags", "embed_portal", "./internal/portalassets"}; !reflect.DeepEqual(testCheck.args, want) {
+		t.Errorf("portal-embed-test args = %q, want %q", testCheck.args, want)
 	}
 	check := got[vetIdx]
 	if check.command != "go" {

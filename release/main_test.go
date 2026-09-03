@@ -73,6 +73,29 @@ func TestParseFlagsBadTarget(t *testing.T) {
 	}
 }
 
+func TestRunRequiresPortalArtifact(t *testing.T) {
+	originalBuildPackage := buildPackage
+	originalPortalAssets := portalAssetsDirectory
+	t.Cleanup(func() {
+		buildPackage = originalBuildPackage
+		portalAssetsDirectory = originalPortalAssets
+	})
+	buildPackage = "./cmd/goobers"
+	portalAssetsDirectory = t.TempDir()
+
+	err := run([]string{
+		"-version", "v1.2.3", "-commit", "deadbee", "-date", "2026-01-02T03:04:05Z",
+		"-targets", "windows/amd64", "-output", t.TempDir(), "-first-feature-snapshot",
+	}, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("run succeeded without the Portal artifact")
+	}
+	if message := err.Error(); !strings.Contains(message, "portal asset artifact is missing") ||
+		!strings.Contains(message, "make portal-build") {
+		t.Fatalf("run error = %q, want actionable missing Portal artifact error", message)
+	}
+}
+
 // TestRunEndToEnd exercises the whole pipeline — cross-compile, package,
 // release metadata, and checksums — against a small in-module package (this
 // release tool itself), so it stays fast and independent of the daemon's
