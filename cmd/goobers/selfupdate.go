@@ -123,8 +123,10 @@ func runSelfUpdateWith(
 	}
 	if result.UpdateRequested {
 		pf(stdout, "self-update target %s staged; supervisor handoff requested\n", result.Target)
+		pf(stdout, "After activation, run `goobers portal-extension status` and `goobers portal-extension update` if an update is available.\n")
 	} else {
 		pf(stdout, "self-update target %s is already active\n", result.Target)
+		pf(stdout, "Check the matching Portal extension with `goobers portal-extension status`.\n")
 	}
 	return 0
 }

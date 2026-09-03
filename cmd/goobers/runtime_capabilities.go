@@ -216,6 +216,22 @@ func init() {
 			withSynopsis(synopsisByID["agent-kit"]).
 			withHelp("install, inspect, or update the release-matched agent toolkit", agentKitHelp).
 			withExamples("goobers agent-kit install --harness generic ./config-repo", "goobers agent-kit check ./config-repo"),
+		groupCommand(
+			"portal-extension",
+			runPortalExtension,
+			subcommand("portal-extension install", "install", apicontract.ActionConfigTime, runPortalExtensionInstall).
+				withHelp("install the bundled Goobers Portal extension for the current user", portalExtensionInstallHelp).
+				withExamples("goobers portal-extension install"),
+			subcommand("portal-extension status", "status", apicontract.ActionReadOnlyNavigation, runPortalExtensionStatus).
+				withHelp("report installed Goobers Portal extension version and drift", portalExtensionStatusHelp).
+				withExamples("goobers portal-extension status"),
+			subcommand("portal-extension update", "update", apicontract.ActionConfigTime, runPortalExtensionUpdate).
+				withHelp("update the managed Goobers Portal extension to this binary's bundled version", portalExtensionUpdateHelp).
+				withExamples("goobers portal-extension update", "goobers portal-extension update --replace-modified"),
+		).
+			withSynopsis(synopsisByID["portal-extension"]).
+			withHelp("install, inspect, or update the user-scoped Goobers Portal canvas extension bundled with this binary", portalExtensionHelp).
+			withExamples("goobers portal-extension install", "goobers portal-extension status", "goobers portal-extension update"),
 		coreCommand("validate", apicontract.ActionConfigTime, runValidate).
 			withSynopsis(synopsisByID["validate"]).
 			withHelp("validate an instance or checked-in config source tree", validateHelp).
