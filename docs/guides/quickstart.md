@@ -41,8 +41,12 @@ through pull requests.
 ## Build the binary
 
 ```sh
-go build -o bin/goobers ./cmd/goobers    # or: make build
+make build-goobers
 ```
+
+This lockfile-installs and builds the Portal asset artifact before embedding it
+in the binary. Plain Go tests and vet do not require Node, but a complete
+dashboard-enabled binary does.
 
 ## Pick an agent harness
 

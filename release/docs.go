@@ -47,7 +47,10 @@ const (
 		"[Onboard an arbitrary repository](docs/guides/arbitrary-repo-onboarding.md) or\n" +
 		"the release-matched [Getting Started skill](skills/goobers-getting-started/SKILL.md).\n"
 	quickstartSourceBuild = "## Build the binary\n\n```sh\n" +
-		"go build -o bin/goobers ./cmd/goobers    # or: make build\n```\n\n"
+		"make build-goobers\n```\n\n" +
+		"This lockfile-installs and builds the Portal asset artifact before embedding it\n" +
+		"in the binary. Plain Go tests and vet do not require Node, but a complete\n" +
+		"dashboard-enabled binary does.\n\n"
 	quickstartSourceInit = "## Separate path: configure a real instance\n\n" +
 		"This section is not the next tutorial step. It summarizes the separate,\n" +
 		"production-oriented path documented fully in\n" +
@@ -242,7 +245,7 @@ const (
 		"> `kernel.unprivileged_userns_clone=0`); if a deterministic stage fails to fork\n" +
 		"> there, enable unprivileged user namespaces for the daemon's user. To reproduce locally on any POSIX host:\n\n" +
 		"```sh\n" +
-		"go build -o bin/goobers ./cmd/goobers\n" +
+		"make build-goobers\n" +
 		"go run ./test/linuxvalidate -bin bin/goobers -out ./linux-validation-evidence\n" +
 		"cat ./linux-validation-evidence/summary.md\n" +
 		"```\n\n"
@@ -258,11 +261,12 @@ const (
 		"curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.12.2/install.sh \\\n" +
 		"  | sh -s -- -b \"$(go env GOPATH)/bin\" v2.12.2\n" +
 		"```\n\n" +
-		"> Node.js 24 + npm are only needed to build/test the **portal** or run the full\n" +
-		"> `go run ./test/ci` gate — not to run the daemon. See\n" +
+		"> Node.js 24 + npm are needed to produce a complete dashboard-enabled binary,\n" +
+		"> build/test the **portal**, or run the full `go run ./test/ci` gate. They are\n" +
+		"> not needed for ordinary Go tests or vet, or to run a released binary. See\n" +
 		"> [CONTRIBUTING.md](../../CONTRIBUTING.md#platform-prerequisites) for the dev gate.\n\n"
 	linuxQuickstartSourceBuild = "## 2. Build the binary\n\n```sh\n" +
-		"go build -o bin/goobers ./cmd/goobers    # or: make build\n" +
+		"make build-goobers\n" +
 		"sudo install -m 0755 bin/goobers /usr/local/bin/goobers   # optional: put it on PATH\n```\n\n"
 	linuxQuickstartSourceDaemonPath = "> **Linux delta — the daemon's PATH is not your shell's.** A workflow's\n" +
 		"> `local-ci` stage runs `make ci`/`golangci-lint` as a *subprocess of the\n" +

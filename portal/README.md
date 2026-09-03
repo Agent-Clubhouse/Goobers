@@ -41,10 +41,12 @@ GOOBERS_DAEMON_URL=http://127.0.0.1:9090 npm --prefix portal run dev
 ### Getting Started UI development
 
 Do not rebuild and restart the embedded portal after every React, CSS, or image
-change. Keep the Go backend running in one PowerShell terminal:
+change. Build the artifact once so the tagged Go command can compile, then keep
+the Go backend running in one PowerShell terminal:
 
 ```powershell
-go run .\cmd\goobers init --guided --port=8081 --no-open
+npm --prefix portal run build
+go run .\cmd\goobers init --guided --dev-assets=internal\portalassets\dist --port=8081 --no-open
 ```
 
 Start the dedicated Vite mode in another terminal:
@@ -61,7 +63,7 @@ the backend uses another address.
 Restart the Go process only after changing Go handlers or other backend code.
 When the UI is ready for final validation, run `npm --prefix portal run build`
 once and restart `goobers init --guided` so the process serves the newly
-embedded `cmd/goobers/portal-dist` assets.
+embedded asset artifact.
 
 The portal CI gate is reproduced locally with:
 
@@ -80,8 +82,23 @@ make portal-contract
 `make generate` intentionally updates the checked-in route contract and wire
 fixtures after a Go contract change.
 
-The production build writes `cmd/goobers/portal-dist`, which is embedded in the
-`goobers` binary.
+The production build writes the ignored
+`internal/portalassets/dist` directory. This directory is the reusable static
+asset artifact: complete Goobers builds embed it with the `embed_portal` build
+tag, while another host can copy or serve the same files directly. Its
+`portal-artifact.json` records the Portal version, producing commit, API
+contract version, and required route roots.
+
+The hosting contract is intentionally small:
+
+- serve the artifact at the origin root;
+- route `/api` and `/guided` to compatible Goobers backends on the same origin;
+- preserve the `goobers-dashboard-mode` meta element in `index.html` if the
+  host needs to select another supported mode.
+
+Use `make build-goobers` for a complete binary. Plain Go builds and tests do
+not require Node, but their binary does not contain the Portal and reports that
+clearly if the dashboard is started.
 
 ## Feedback paths
 

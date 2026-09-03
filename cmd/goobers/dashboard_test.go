@@ -34,6 +34,15 @@ type dashboardURLWriter struct {
 	url  chan string
 }
 
+func dashboardTestArgs(t *testing.T, args ...string) []string {
+	t.Helper()
+	assets := t.TempDir()
+	if err := os.WriteFile(filepath.Join(assets, "index.html"), []byte(dashboardTestIndex), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return append([]string{"--dev-assets=" + assets}, args...)
+}
+
 func (w *dashboardURLWriter) Write(data []byte) (int, error) {
 	w.once.Do(func() {
 		w.url <- strings.TrimSpace(string(data))
@@ -292,7 +301,7 @@ func TestRunDashboardContextRefusesNonLoopbackListenWithoutAuth(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var stderr bytes.Buffer
-	code := runDashboardContext(ctx, []string{"--listen=0.0.0.0:" + strconv.Itoa(port), "--no-open", root}, io.Discard, &stderr)
+	code := runDashboardContext(ctx, dashboardTestArgs(t, "--listen=0.0.0.0:"+strconv.Itoa(port), "--no-open", root), io.Discard, &stderr)
 	if code != 2 {
 		t.Fatalf("exit code = %d, stderr = %q, want 2", code, stderr.String())
 	}
@@ -316,8 +325,9 @@ func TestRunDashboardContextAcceptsNonLoopbackListenWithAuth(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	started := &dashboardURLWriter{url: make(chan string, 1)}
 	done := make(chan int, 1)
+	args := dashboardTestArgs(t, "--listen=0.0.0.0:"+strconv.Itoa(port), "--no-open", root)
 	go func() {
-		done <- runDashboardContext(ctx, []string{"--listen=0.0.0.0:" + strconv.Itoa(port), "--no-open", root}, started, io.Discard)
+		done <- runDashboardContext(ctx, args, started, io.Discard)
 	}()
 
 	var address string
@@ -872,8 +882,9 @@ func TestDashboardCancellationWhileAttachingExitsCleanlyBeforeURL(t *testing.T) 
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	done := make(chan int, 1)
+	args := dashboardTestArgs(t, "--port=auto", "--no-open", root)
 	go func() {
-		done <- runDashboardContext(ctx, []string{"--port=auto", "--no-open", root}, &stdout, &stderr)
+		done <- runDashboardContext(ctx, args, &stdout, &stderr)
 	}()
 
 	select {
@@ -946,8 +957,9 @@ func TestDashboardCancellationDuringBrowserLaunchLeavesLiveDaemonRunning(t *test
 
 	var stdout, stderr bytes.Buffer
 	done := make(chan int, 1)
+	args := dashboardTestArgs(t, "--port=auto", root)
 	go func() {
-		done <- runDashboardContext(ctx, []string{"--port=auto", root}, &stdout, &stderr)
+		done <- runDashboardContext(ctx, args, &stdout, &stderr)
 	}()
 
 	var dashboardAddress string
@@ -1164,8 +1176,9 @@ func TestDashboardNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 	}
 	defer func() { launchDashboardBrowser = originalLauncher }()
 
+	args := dashboardTestArgs(t, "--port=auto", "--no-open", root)
 	go func() {
-		done <- runDashboardContext(ctx, []string{"--port=auto", "--no-open", root}, started, &stderr)
+		done <- runDashboardContext(ctx, args, started, &stderr)
 	}()
 
 	var address string

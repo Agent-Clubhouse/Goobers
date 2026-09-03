@@ -21,7 +21,7 @@ import (
 	"github.com/goobers/goobers/api/schemas"
 )
 
-const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]\n\n" +
+const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>] | --demo [--insecure] | --template=quickstart [--harness <name>] [--source-tree <path> [--json]]] [path]\n\n" +
 	"Scaffold an instance root at path (default \".\"): instance.yaml, config/\n" +
 	"(seeded with a starter example), gaggles/, scheduler/, and a telemetry.db\n" +
 	"placeholder. The daemon creates per-gaggle runs/ and workcopies/ under\n" +
@@ -53,6 +53,8 @@ const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-
 	"only when that location is intentionally persistent; it is refused by default\n" +
 	"to protect GitHub/App sessions whose worktrees may be deleted.\n"
 
+var runGuidedInitBrowserCommand = runGuidedInitBrowser
+
 func runInit(args []string, stdout, stderr io.Writer) int {
 	return runInitWithInput(args, os.Stdin, stdout, stderr)
 }
@@ -70,6 +72,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	guided := fs.Bool("guided", false, "open browser-based setup for a real repository")
 	guidedPort := fs.String("port", "auto", "with --guided, server port or auto")
 	guidedNoOpen := fs.Bool("no-open", false, "with --guided, print the URL without opening a browser")
+	guidedDevAssets := fs.String("dev-assets", "", "with --guided, serve a portal build from this directory instead of embedded assets")
 	guidedWorkdir := fs.String("workdir", defaultGettingStartedWorkdir(), "with --guided, temporary browser setup state")
 	guidedInstancePath := fs.String("instance-path", "", "with --guided, instance root to create")
 	template := fs.String("template", "", "seed a named onboarding template (available: quickstart)")
@@ -124,6 +127,10 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		pf(stderr, "error: --instance-path requires --guided\n")
 		return 2
 	}
+	if *guidedDevAssets != "" && !*guided {
+		pf(stderr, "error: --dev-assets requires --guided\n")
+		return 2
+	}
 	if err := instance.ValidateQuickstartHarness(*harness); err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -154,6 +161,9 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 	}
 	if *guided {
 		browserArgs := []string{"--port=" + *guidedPort, "--workdir", *guidedWorkdir}
+		if *guidedDevAssets != "" {
+			browserArgs = append(browserArgs, "--dev-assets", *guidedDevAssets)
+		}
 		if *guidedInstancePath != "" {
 			browserArgs = append(browserArgs, "--instance-path", *guidedInstancePath)
 		}
@@ -163,7 +173,7 @@ func runInitWithInputForOS(args []string, stdin io.Reader, stdout, stderr io.Wri
 		if *allowEphemeral {
 			browserArgs = append(browserArgs, "--allow-ephemeral")
 		}
-		return runGuidedInitBrowser(browserArgs, stdout, stderr)
+		return runGuidedInitBrowserCommand(browserArgs, stdout, stderr)
 	}
 	if err := worktree.CheckInitTarget(context.Background(), root, *allowEphemeral); err != nil {
 		pf(stderr, "error: %v\n", err)

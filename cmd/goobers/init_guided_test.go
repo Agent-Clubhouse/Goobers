@@ -76,6 +76,30 @@ func TestGuidedInitInstancePathRequiresGuidedMode(t *testing.T) {
 	}
 }
 
+func TestGuidedInitForwardsDevAssets(t *testing.T) {
+	assets := t.TempDir()
+	original := runGuidedInitBrowserCommand
+	t.Cleanup(func() { runGuidedInitBrowserCommand = original })
+	var got []string
+	runGuidedInitBrowserCommand = func(args []string, _, _ io.Writer) int {
+		got = append([]string(nil), args...)
+		return 0
+	}
+
+	code := runInitWithInput(
+		[]string{"--guided", "--dev-assets", assets, "--allow-ephemeral"},
+		strings.NewReader(""),
+		io.Discard,
+		io.Discard,
+	)
+	if code != 0 {
+		t.Fatalf("guided init code = %d, want 0", code)
+	}
+	if joined := strings.Join(got, " "); !strings.Contains(joined, "--dev-assets "+assets) {
+		t.Fatalf("guided browser args = %q, want dev asset directory", got)
+	}
+}
+
 func TestGuidedInitUnsafeInstancePathShowsOverrideInvocation(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "instance")
 	t.Setenv("RUNNER_ENVIRONMENT", "github-hosted")

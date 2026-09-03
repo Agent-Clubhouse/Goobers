@@ -94,9 +94,6 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "clear RUNNER_ENVIRONMENT for test fixtures: %v\n", err)
 		os.Exit(1)
 	}
-	if os.Getenv(portalBuildMakeEnv) == "1" && isDocsDryRunMakeProcess() {
-		os.Exit(runPortalBuildMake())
-	}
 	if os.Getenv(docsDryRunMakeEnv) == "1" && isDocsDryRunMakeProcess() {
 		os.Exit(runDocsDryRunMake())
 	}

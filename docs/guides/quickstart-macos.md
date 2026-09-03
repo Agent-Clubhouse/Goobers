@@ -99,7 +99,7 @@ setup. See [Releases and packaging](releases.md#install-the-latest-stable-releas
 To build from source instead:
 
 ```sh
-go build -o bin/goobers ./cmd/goobers
+make build-goobers
 bin/goobers --version
 ```
 

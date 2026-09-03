@@ -64,8 +64,7 @@ func TestChecksPreserveMergeGateOrder(t *testing.T) {
 		"portal-audit",
 		"portal-playwright-install",
 		"portal-build",
-		"portal-dist-diff",
-		"portal-dist-untracked",
+		"portal-embed-vet",
 		"build-goobers",
 		"validate-configs",
 		"build-operator",
@@ -182,6 +181,9 @@ func TestFastChecksAreStrictMergeGateSubset(t *testing.T) {
 	if len(fast) >= len(mergeChecks) {
 		t.Fatalf("fast tier has %d checks, merge tier has %d; want a strict subset", len(fast), len(mergeChecks))
 	}
+	if args := checkByLabel(t, fast, "build-goobers").args; slices.Contains(args, "embed_portal") {
+		t.Fatalf("fast Goobers build requires generated Portal assets: %q", args)
+	}
 
 	mergeLabels := make(map[string]bool, len(mergeChecks))
 	for _, current := range mergeChecks {
@@ -277,12 +279,12 @@ func TestChecksUseWindowsExecutableSuffix(t *testing.T) {
 		"",
 	)
 	// Looked up by label, not position: a hardcoded index here previously
-	// broke silently whenever a check was inserted earlier in the list (the
-	// same class of drift TestChecksPreserveMergeGateOrder's own comment
-	// warns about, and exactly what happened when portal-dist-untracked
-	// (#2056) shifted these two checks from 7/8 to 8/9).
+	// broke silently whenever a check was inserted earlier in the list.
 	if args := filepath.ToSlash(strings.Join(checkByLabel(t, got, "build-goobers").args, " ")); !strings.Contains(args, "-o bin/goobers.exe") {
 		t.Fatalf("Windows build args = %q", args)
+	}
+	if args := checkByLabel(t, got, "build-goobers").args; !slices.Contains(args, "embed_portal") {
+		t.Fatalf("Windows build args = %q, want embed_portal tag", args)
 	}
 	if args := filepath.ToSlash(strings.Join(checkByLabel(t, got, "validate-configs").args, " ")); args != "run ./test/configvalidate bin/goobers.exe" {
 		t.Fatalf("Windows validate-configs args = %q", args)
@@ -311,7 +313,7 @@ func TestChecksPreparePortalWithoutGoobersCommand(t *testing.T) {
 	for _, current := range got {
 		labels = append(labels, current.label)
 	}
-	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links npm-registry go-toolchain build-operator portal-install portal-audit portal-playwright-install portal-build portal-dist-diff portal-dist-untracked shipped-workflows schema-description-coverage test lint portal-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
+	if strings.Join(labels, " ") != "fmt-check tidy-check no-phone-home stage-name-lint vet flake-policy design-doc-status markdown-links npm-registry go-toolchain build-operator portal-install portal-audit portal-playwright-install portal-build portal-embed-vet shipped-workflows schema-description-coverage test lint portal-test portal-deadcode portal-e2e portal-contract-generate portal-contract-diff portal-contract-typecheck portal-contract-test manifests-generate manifests-diff" {
 		t.Fatalf("check order = %q", labels)
 	}
 }
@@ -355,11 +357,7 @@ func TestChecksInstallPinnedChromiumAndRunPortalE2E(t *testing.T) {
 	}
 }
 
-// TestPortalDistDriftGuardRunsGitDiff locks the #1110 guard: the portal-dist
-// drift check runs immediately after portal-build and is a
-// `git diff --exit-code -- cmd/goobers/portal-dist`, so a rebuilt bundle that
-// differs from the committed //go:embed-ed one fails the gate.
-func TestPortalDistDriftGuardRunsGitDiff(t *testing.T) {
+func TestPortalEmbedVetRunsAfterBuild(t *testing.T) {
 	t.Parallel()
 	got := checks(
 		[]string{"goobers"},
@@ -369,37 +367,31 @@ func TestPortalDistDriftGuardRunsGitDiff(t *testing.T) {
 		"",
 	)
 
-	var diffIdx, buildIdx = -1, -1
+	var vetIdx, buildIdx = -1, -1
 	for i, current := range got {
 		switch current.label {
-		case "portal-dist-diff":
-			diffIdx = i
+		case "portal-embed-vet":
+			vetIdx = i
 		case "portal-build":
 			buildIdx = i
 		}
 	}
-	if diffIdx == -1 {
-		t.Fatal("portal-dist-diff check is missing")
+	if vetIdx == -1 {
+		t.Fatal("portal-embed-vet check is missing")
 	}
-	if diffIdx != buildIdx+1 {
-		t.Fatalf("portal-dist-diff at %d, want immediately after portal-build at %d", diffIdx, buildIdx)
+	if vetIdx != buildIdx+1 {
+		t.Fatalf("portal-embed-vet at %d, want immediately after portal-build at %d", vetIdx, buildIdx)
 	}
-	guard := got[diffIdx]
-	if guard.command != "git" {
-		t.Errorf("portal-dist-diff command = %q, want git", guard.command)
+	check := got[vetIdx]
+	if check.command != "go" {
+		t.Errorf("portal-embed-vet command = %q, want go", check.command)
 	}
-	if want := []string{"diff", "--exit-code", "--", "cmd/goobers/portal-dist"}; !reflect.DeepEqual(guard.args, want) {
-		t.Errorf("portal-dist-diff args = %q, want %q", guard.args, want)
+	if want := []string{"vet", "-tags", "embed_portal", "./internal/portalassets", "./cmd/goobers"}; !reflect.DeepEqual(check.args, want) {
+		t.Errorf("portal-embed-vet args = %q, want %q", check.args, want)
 	}
 }
 
-// TestPortalDistUntrackedGuardCatchesNewAssets locks the #2056 guard:
-// portal-dist-diff only reports tracked-file changes, so it runs immediately
-// after portal-dist-diff and is a `git status --porcelain` that must be
-// empty, closing the blind spot where a newly added, never-`git add`-ed
-// asset (e.g. the first plain portal/public/ file) would pass the diff
-// clean yet still be missing from every other checkout.
-func TestPortalDistUntrackedGuardCatchesNewAssets(t *testing.T) {
+func TestGoobersBuildEmbedsPortalArtifact(t *testing.T) {
 	t.Parallel()
 	got := checks(
 		[]string{"goobers"},
@@ -408,31 +400,9 @@ func TestPortalDistUntrackedGuardCatchesNewAssets(t *testing.T) {
 		"linux",
 		"",
 	)
-
-	var untrackedIdx, diffIdx = -1, -1
-	for i, current := range got {
-		switch current.label {
-		case "portal-dist-untracked":
-			untrackedIdx = i
-		case "portal-dist-diff":
-			diffIdx = i
-		}
-	}
-	if untrackedIdx == -1 {
-		t.Fatal("portal-dist-untracked check is missing")
-	}
-	if untrackedIdx != diffIdx+1 {
-		t.Fatalf("portal-dist-untracked at %d, want immediately after portal-dist-diff at %d", untrackedIdx, diffIdx)
-	}
-	guard := got[untrackedIdx]
-	if guard.command != "git" {
-		t.Errorf("portal-dist-untracked command = %q, want git", guard.command)
-	}
-	if want := []string{"status", "--porcelain", "--", "cmd/goobers/portal-dist"}; !reflect.DeepEqual(guard.args, want) {
-		t.Errorf("portal-dist-untracked args = %q, want %q", guard.args, want)
-	}
-	if !guard.capture || !guard.expectEmpty {
-		t.Errorf("portal-dist-untracked capture=%v expectEmpty=%v, want both true", guard.capture, guard.expectEmpty)
+	build := checkByLabel(t, got, "build-goobers")
+	if want := []string{"build", "-tags", "embed_portal", "-ldflags", "-X github.com/goobers/goobers/internal/version.Version= -X github.com/goobers/goobers/internal/version.Commit= -X github.com/goobers/goobers/internal/version.Date=", "-o", filepath.Join("bin", "goobers"), "./cmd/goobers"}; !reflect.DeepEqual(build.args, want) {
+		t.Errorf("build-goobers args = %q, want %q", build.args, want)
 	}
 }
 
@@ -440,7 +410,7 @@ func TestPortalDistUntrackedGuardCatchesNewAssets(t *testing.T) {
 // drift check runs immediately after its own regen step and is a
 // `git diff --exit-code -- config/crd/bases`, so a regenerated manifest that
 // differs from the committed one fails the gate — the same
-// generate-then-diff shape as portal-dist-diff/portal-contract-diff.
+// generate-then-diff shape as portal-contract-diff.
 func TestManifestsDriftGuardRunsGitDiff(t *testing.T) {
 	t.Parallel()
 	got := checks(
@@ -584,35 +554,6 @@ func TestExecuteChecksRejectsUnformattedFiles(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "bad.go") {
 		t.Fatalf("stdout missing unformatted file:\n%s", &stdout)
-	}
-}
-
-// TestExecuteChecksRejectsUntrackedPortalDistAssets locks the #2056 gate at
-// the executeChecks level (not just the check's own definition): a
-// git status --porcelain hit — an untracked file under cmd/goobers/portal-dist
-// that portal-dist-diff's tracked-only diff would miss — fails the stage via
-// the same generic expectEmpty contract fmt-check uses.
-func TestExecuteChecksRejectsUntrackedPortalDistAssets(t *testing.T) {
-	t.Parallel()
-	exec := &fakeExecutor{
-		outputs: map[string][]byte{
-			"portal-dist-untracked": []byte("?? cmd/goobers/portal-dist/public/new-asset.svg\n"),
-		},
-	}
-	var stdout, stderr bytes.Buffer
-	err := executeChecks(exec, []check{
-		{label: "portal-dist-diff"},
-		{label: "portal-dist-untracked", expectEmpty: true},
-		{label: "build-goobers"},
-	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "portal-dist-untracked: expected no output") {
-		t.Fatalf("executeChecks() error = %v", err)
-	}
-	if len(exec.calls) != 2 {
-		t.Fatalf("executed %d checks, want 2 (stopped before build-goobers)", len(exec.calls))
-	}
-	if !strings.Contains(stdout.String(), "new-asset.svg") {
-		t.Fatalf("stdout missing untracked asset:\n%s", &stdout)
 	}
 }
 

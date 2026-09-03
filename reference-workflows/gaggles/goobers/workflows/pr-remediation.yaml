@@ -203,10 +203,9 @@ spec:
 
     # Rebase-first, finding-driven routing (issue #363, design doc §5 D3): a
     # clean rebase never suppresses a known substantive finding, and a rebase
-    # unresolved conflict is itself substantive. A conflict confined to the
-    # generated portal-dist bundle is resolved by rebuilding the bundle, and a
-    # conflict consisting only of distinct adjacent entries in an existing
-    # line-oriented list is combined deterministically before routing.
+    # unresolved conflict is itself substantive. A conflict consisting only
+    # of distinct adjacent entries in an existing line-oriented list is
+    # combined deterministically before routing.
     # Re-checks out the SAME PR branch gather-pr-context selected (each stage
     # gets its own fresh worktree — see the file's own doc comment) before
     # attempting anything.

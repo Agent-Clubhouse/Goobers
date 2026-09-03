@@ -52,6 +52,10 @@ recipes, so extra or missing commands fail the contract check. Each validation
 tier prints the elapsed time for every gate it runs; CI also publishes
 structured unit-test timing and soft-budget comparisons — see
 [`docs/guides/test-timing.md`](docs/guides/test-timing.md).
+
+The fast tier compiles `cmd/goobers` without the generated Portal artifact so
+ordinary Go feedback stays Node-free. The merge tier builds the lockfile-pinned
+artifact and compiles the complete binary with the `embed_portal` build tag.
 The stress tier's fingerprint ledger, expiring quarantine helper, and
 no-anonymous-retry rule are documented in
 [`docs/guides/flake-management.md`](docs/guides/flake-management.md).

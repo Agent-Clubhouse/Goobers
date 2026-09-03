@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
-import type { ProxyOptions } from "vite";
+import type { Plugin, ProxyOptions } from "vite";
 
 const DEFAULT_DAEMON_URL = "http://127.0.0.1:8080";
 const DEFAULT_GUIDED_URL = "http://127.0.0.1:8081";
@@ -8,7 +9,13 @@ const DEFAULT_GUIDED_URL = "http://127.0.0.1:8081";
 interface PortalEnvironment {
   GOOBERS_DAEMON_URL?: string;
   GOOBERS_GUIDED_URL?: string;
+  GOOBERS_PORTAL_COMMIT?: string;
+  GOOBERS_PORTAL_VERSION?: string;
 }
+
+const portalPackage = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+) as { version: string };
 
 export function createViteConfig(
   environment: PortalEnvironment = process.env,
@@ -44,9 +51,32 @@ export function createViteConfig(
             );
         },
       },
+      {
+        name: "goobers-portal-artifact-manifest",
+        generateBundle() {
+          this.emitFile({
+            type: "asset",
+            fileName: "portal-artifact.json",
+            source: `${JSON.stringify(
+              {
+                artifactVersion: 1,
+                portalVersion:
+                  environment.GOOBERS_PORTAL_VERSION ?? portalPackage.version,
+                commit: environment.GOOBERS_PORTAL_COMMIT ?? "unknown",
+                apiContractVersion: "v1",
+                basePath: "/",
+                apiBasePath: "/api",
+                guidedBasePath: "/guided",
+              },
+              null,
+              2,
+            )}\n`,
+          });
+        },
+      } satisfies Plugin,
     ],
     build: {
-      outDir: "../cmd/goobers/portal-dist",
+      outDir: "../internal/portalassets/dist",
       emptyOutDir: true,
     },
     server: {

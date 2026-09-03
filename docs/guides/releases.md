@@ -110,17 +110,21 @@ Windows adopters should use the checksum-verified
 
 ## The packaging engine
 
-`go run ./release` cross-compiles `./cmd/goobers` for the release matrix,
+After `make portal-build`, `go run ./release` cross-compiles `./cmd/goobers`
+with the reusable Portal asset artifact for the release matrix,
 regenerates the CLI reference, man pages, and completion scripts from that
 release's command registry, packages each target with the tagged checkout's
 documentation into a platform-conventional archive, and writes a shared
-`SHA256SUMS` manifest, the tagged install helper, portable agent toolkit,
-standalone onboarding payload, generated release notes, and shipped DSL feature
-and version-support snapshots into `dist/` (override with `-output`). It is a
-standalone Go tool — matching `test/ci` and `test/coveragegate` — so it runs
-identically on any release runner without a shell dependency.
+`SHA256SUMS` manifest, the reusable
+`goobers_portal_<version>.tar.gz` static asset artifact, the tagged install
+helper, portable agent toolkit, standalone onboarding payload, generated
+release notes, and shipped DSL feature and version-support snapshots into
+`dist/` (override with `-output`). It is a standalone Go tool — matching
+`test/ci` and `test/coveragegate` — so it runs identically on any release
+runner without a shell dependency.
 
 ```sh
+make portal-build
 go run ./release -first-feature-snapshot      # first recorded snapshot only
 go run ./release -previous-features previous/feature-registry.json \
   -previous-support-matrix previous/dsl-support-matrix.json

@@ -33,6 +33,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+
+      - name: Build Portal asset artifact
+        env:
+          GOOBERS_PORTAL_COMMIT: ${{ github.sha }}
+          GOOBERS_PORTAL_VERSION: ${{ github.ref_name }}
+        run: |
+          npm --prefix portal ci --no-audit --no-fund
+          npm --prefix portal run build
+
       - name: Resolve feature baseline
         id: feature-baseline
         env:

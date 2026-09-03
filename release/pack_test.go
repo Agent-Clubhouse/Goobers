@@ -137,6 +137,49 @@ func TestPackageArchiveTarGz(t *testing.T) {
 	}
 }
 
+func TestPackagePortalAssets(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "portal")
+	if err := os.MkdirAll(filepath.Join(root, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("portal"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "assets", "app.js"), []byte("app"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archivePath, err := packagePortalAssets(root, "v1.2.3", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base := filepath.Base(archivePath); base != "goobers_portal_v1.2.3.tar.gz" {
+		t.Fatalf("archive name = %q", base)
+	}
+	file, err := os.Open(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(gz)
+	for _, want := range []string{"assets/app.js", "index.html"} {
+		header, err := tr.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name != want {
+			t.Fatalf("archive entry = %q, want %q", header.Name, want)
+		}
+	}
+	if _, err := tr.Next(); err != io.EOF {
+		t.Fatalf("archive has unexpected trailing entry: %v", err)
+	}
+}
+
 func TestChecksumsManifest(t *testing.T) {
 	dir := t.TempDir()
 	// Deliberately create in non-sorted order to prove the manifest sorts.

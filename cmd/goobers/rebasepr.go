@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -717,10 +716,7 @@ func attemptRebase(dir, base, token string) (conflict bool, locations []rebaseCo
 
 	observedConflict := false
 	for {
-		status, resolveErr := resolvePortalDistConflicts(dir)
-		if status == rebaseConflictAbsent && resolveErr == nil {
-			status, resolveErr = resolveAdjacentLineConflicts(dir)
-		}
+		status, resolveErr := resolveAdjacentLineConflicts(dir)
 		observedConflict = observedConflict || status != rebaseConflictAbsent
 		if resolveErr != nil {
 			return observedConflict, locations, rebaseBaseSHA, abortRebaseAfterError(dir, resolveErr)
@@ -782,8 +778,6 @@ const (
 	rebaseConflictResolved = mergeresolve.StatusResolved
 )
 
-const portalDistPath = "cmd/goobers/portal-dist"
-
 // execGit adapts this command's plain exec-based git invocation to the shared
 // resolver's runner seam.
 func execGit(dir string) mergeresolve.Git {
@@ -795,39 +789,6 @@ func execGit(dir string) mergeresolve.Git {
 		}
 		return out, nil
 	}
-}
-
-func resolvePortalDistConflicts(dir string) (rebaseConflictStatus, error) {
-	files, err := unmergedConflictFiles(dir)
-	if err != nil {
-		return rebaseConflictAbsent, err
-	}
-	if len(files) == 0 {
-		return rebaseConflictAbsent, nil
-	}
-	for _, file := range files {
-		if !strings.HasPrefix(file.Path, portalDistPath+"/") {
-			return rebaseConflictAbsent, nil
-		}
-	}
-
-	build := exec.Command("make", "portal-build")
-	build.Dir = dir
-	if out, err := build.CombinedOutput(); err != nil {
-		return rebaseConflictUnsafe, fmt.Errorf("regenerate portal bundle: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	add := workspaceGitCommand(dir, "--literal-pathspecs", "add", "-A", "--", portalDistPath)
-	if out, err := workspaceGitCombinedOutput(add); err != nil {
-		return rebaseConflictUnsafe, fmt.Errorf("stage regenerated portal bundle: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	remaining, err := unmergedConflictFiles(dir)
-	if err != nil {
-		return rebaseConflictUnsafe, err
-	}
-	if len(remaining) != 0 {
-		return rebaseConflictUnsafe, fmt.Errorf("stage regenerated portal bundle: %d paths remain unmerged", len(remaining))
-	}
-	return rebaseConflictResolved, nil
 }
 
 func resolveAdjacentLineConflicts(dir string) (rebaseConflictStatus, error) {

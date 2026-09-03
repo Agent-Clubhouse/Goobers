@@ -8,10 +8,9 @@
 #
 #   docker build -f packaging/docker/Dockerfile -t <registry>/goobers:<tag> .
 #
-# or `make image`. The portal assets are go:embed'd from the committed
-# cmd/goobers/portal-dist tree, so no Node toolchain is needed here, and CGO
-# is off (modernc.org/sqlite is pure Go) to match the release/ cross-compile
-# settings — the binaries are static.
+# or `make image`. The Portal is built into a reusable static asset artifact
+# and embedded in the goobers binary; CGO is off (modernc.org/sqlite is pure
+# Go) to match the release/ cross-compile settings — the binaries are static.
 #
 # Publishing this image from CI on tagged releases is a follow-up; nothing in
 # .github/workflows builds or pushes it yet.
@@ -23,19 +22,29 @@
 # `go run ./test/gotoolchain` (the go-toolchain merge-gate check) fails while
 # the two disagree, so the bump has to land in the same diff.
 ARG GO_IMAGE=docker.io/library/golang:1.26.6
+ARG PORTAL_NODE_IMAGE=docker.io/library/node:24-bookworm-slim
 ARG RUNTIME_IMAGE=docker.io/library/node:22-bookworm-slim
 ARG COPILOT_VERSION=1.0.80
+
+FROM ${PORTAL_NODE_IMAGE} AS portal-build
+WORKDIR /src
+COPY portal/package.json portal/package-lock.json portal/
+RUN npm --prefix portal ci --no-audit --no-fund
+COPY portal portal
+COPY internal/portalassets internal/portalassets
+RUN npm --prefix portal run build
 
 FROM ${GO_IMAGE} AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=portal-build /src/internal/portalassets/dist ./internal/portalassets/dist
 ARG VERSION=dev
 ARG COMMIT=none
 ARG DATE=unknown
 ENV CGO_ENABLED=0
-RUN go build -trimpath \
+RUN go build -tags embed_portal -trimpath \
         -ldflags "-s -w \
             -X github.com/goobers/goobers/internal/version.Version=${VERSION} \
             -X github.com/goobers/goobers/internal/version.Commit=${COMMIT} \

@@ -43,6 +43,7 @@ coverage.html
 /node_modules/
 /portal/node_modules/
 /portal/dist/
+/internal/portalassets/dist/
 /portal/coverage/
 /portal/*.tsbuildinfo
 

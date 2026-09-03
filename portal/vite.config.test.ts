@@ -4,9 +4,9 @@ import { describe, expect, it } from "vitest";
 import { createViteConfig } from "./vite.config";
 
 describe("portal development proxy", () => {
-  it("builds assets into the Go embed directory", () => {
+  it("builds the reusable static asset artifact", () => {
     expect(createViteConfig({}).build).toEqual({
-      outDir: "../cmd/goobers/portal-dist",
+      outDir: "../internal/portalassets/dist",
       emptyOutDir: true,
     });
   });

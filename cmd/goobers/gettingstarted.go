@@ -25,7 +25,7 @@ import (
 // dashboard` does, so the dashboard's own startup contract is untouched.
 const dashboardModeGettingStarted dashboardMode = "getting-started"
 
-const guidedInitBrowserHelp = "Usage: goobers init --guided [--allow-ephemeral] [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--workdir <dir>]\n\n" +
+const guidedInitBrowserHelp = "Usage: goobers init --guided [--allow-ephemeral] [--instance-path <dir>] [--port=<port|auto>] [--no-open] [--dev-assets=<dir>] [--workdir <dir>]\n\n" +
 	"Serve and open the browser-based instance setup. It inspects an existing\n" +
 	"GitHub or Azure DevOps clone, discovers its identity, default branch, CI and\n" +
 	"toolchain, asks only for instance placement and desired behavior, creates\n" +
@@ -63,6 +63,7 @@ func runGuidedInitBrowserContext(ctx context.Context, args []string, stdout, std
 	flags.SetOutput(stderr)
 	portValue := flags.String("port", "auto", "server port, or \"auto\" to use the first available port from 8081")
 	noOpen := flags.Bool("no-open", false, "print the guided setup URL without opening a browser")
+	devAssets := flags.String("dev-assets", "", "serve a portal build from this directory instead of embedded assets")
 	workdir := flags.String("workdir", defaultGettingStartedWorkdir(), "directory holding temporary browser setup state")
 	instancePath := flags.String("instance-path", "", "instance root to create")
 	allowEphemeral := flags.Bool("allow-ephemeral", false, "allow guided initialization inside a linked or hosted ephemeral workspace")
@@ -111,7 +112,7 @@ func runGuidedInitBrowserContext(ctx context.Context, args []string, stdout, std
 	guided.allowEphemeral = *allowEphemeral
 	guided.instancePinned = *instancePath != ""
 
-	assets, err := dashboardAssetFS("")
+	assets, err := dashboardAssetFS(*devAssets)
 	if err != nil {
 		pf(stderr, "error: load portal assets: %v\n", errors.Join(err, guided.close()))
 		return 1
