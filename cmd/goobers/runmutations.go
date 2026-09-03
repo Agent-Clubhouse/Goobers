@@ -24,7 +24,10 @@ const maxInterventionResponseBody = 1 << 20
 const approveHelp = "Usage: goobers approve [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]\n\n" +
 	"Approve a paused human gate or an escalated human/reviewer gate. The daemon\n" +
 	"records the authenticated actor, decision, and resulting resume in the run\n" +
-	"journal. GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.\n\n" +
+	"journal.\n" +
+	"GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and\n" +
+	"--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this\n" +
+	"filesystem, such as one running in another pod.\n\n" +
 	"Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.\n"
 
 func runApprove(args []string, stdout, stderr io.Writer) int {
@@ -33,11 +36,12 @@ func runApprove(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = helpUsage(stderr, "approve")
 	decision := fs.String("decision", "pass", "configured gate decision to approve")
 	actor := fs.String("actor", "", "audit identity for tier-1 local trust")
+	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	return runInterventionCLI(
-		fs, apicontract.RouteApproveStage, "approve",
+		fs, apicontract.RouteApproveStage, "approve", *api,
 		httpapi.InterventionRequest{Actor: *actor, Decision: *decision},
 		stdout, stderr,
 	)
@@ -46,8 +50,10 @@ func runApprove(args []string, stdout, stderr io.Writer) int {
 const overrideHelp = "Usage: goobers override --rationale=<text> [--decision=pass] [--actor=<identity>] <run-id> <gate> [path]\n\n" +
 	"Override a nondeterministic gate on an escalated or failed run and continue\n" +
 	"from the selected configured branch. The rationale and authenticated actor\n" +
-	"are recorded in the run journal. GOOBERS_API_TOKEN supplies a bearer token\n" +
-	"when API auth is enabled.\n\n" +
+	"are recorded in the run journal.\n" +
+	"GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and\n" +
+	"--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this\n" +
+	"filesystem, such as one running in another pod.\n\n" +
 	"Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.\n"
 
 func runOverride(args []string, stdout, stderr io.Writer) int {
@@ -57,6 +63,7 @@ func runOverride(args []string, stdout, stderr io.Writer) int {
 	decision := fs.String("decision", "pass", "configured gate decision to force")
 	rationale := fs.String("rationale", "", "required audit rationale")
 	actor := fs.String("actor", "", "audit identity for tier-1 local trust")
+	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -66,7 +73,7 @@ func runOverride(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	return runInterventionCLI(
-		fs, apicontract.RouteOverrideStage, "override",
+		fs, apicontract.RouteOverrideStage, "override", *api,
 		httpapi.InterventionRequest{Actor: *actor, Decision: *decision, Rationale: *rationale},
 		stdout, stderr,
 	)
@@ -76,7 +83,9 @@ const rerunStageHelp = "Usage: goobers rerun-stage --addendum=<text> [--actor=<i
 	"Rerun one agentic task or reviewer gate on an escalated run with a one-off\n" +
 	"instruction addendum. The actor, addendum, target, and human attempt are\n" +
 	"recorded in the run journal; the workflow definition is not changed.\n" +
-	"GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.\n\n" +
+	"GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and\n" +
+	"--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this\n" +
+	"filesystem, such as one running in another pod.\n\n" +
 	"Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.\n"
 
 func runRerunStage(args []string, stdout, stderr io.Writer) int {
@@ -85,6 +94,7 @@ func runRerunStage(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = helpUsage(stderr, "rerun-stage")
 	addendum := fs.String("addendum", "", "required one-off instruction addendum")
 	actor := fs.String("actor", "", "audit identity for tier-1 local trust")
+	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -94,7 +104,7 @@ func runRerunStage(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	return runInterventionCLI(
-		fs, apicontract.RouteRerunStage, "rerun-stage",
+		fs, apicontract.RouteRerunStage, "rerun-stage", *api,
 		httpapi.InterventionRequest{Actor: *actor, InstructionAddendum: *addendum},
 		stdout, stderr,
 	)
@@ -104,6 +114,7 @@ func runInterventionCLI(
 	fs *flag.FlagSet,
 	routeID apicontract.RouteID,
 	action string,
+	api string,
 	input httpapi.InterventionRequest,
 	stdout, stderr io.Writer,
 ) int {
@@ -126,7 +137,13 @@ func runInterventionCLI(
 		input.Actor = actor
 	}
 
-	result, apiErr, err := callInterventionAPI(instance.NewLayout(root), routeID, input)
+	endpoint, err := remoteDaemonAPIBase(api)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+
+	result, apiErr, err := callInterventionAPI(instance.NewLayout(root), endpoint, routeID, input)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -143,18 +160,27 @@ func runInterventionCLI(
 	return 0
 }
 
+// callInterventionAPI calls one intervention route. An empty endpoint resolves
+// the daemon from this instance root, which requires the daemon to share this
+// filesystem; a configured endpoint names a daemon that does not (#3279), so
+// resolving an escalation no longer requires being inside the daemon's pod.
 func callInterventionAPI(
 	layout instance.Layout,
+	endpoint string,
 	routeID apicontract.RouteID,
 	input httpapi.InterventionRequest,
 ) (httpapi.InterventionResult, *apicontract.APIError, error) {
-	config, err := instance.LoadConfig(layout.ConfigFile())
-	if err != nil {
-		return httpapi.InterventionResult{}, nil, fmt.Errorf("load instance config: %w", err)
-	}
-	address, err := dashboardDaemonAPIAddress(layout, apiListenAddress(config))
-	if err != nil {
-		return httpapi.InterventionResult{}, nil, fmt.Errorf("resolve live daemon API: %w", err)
+	baseURL := endpoint
+	if baseURL == "" {
+		config, err := instance.LoadConfig(layout.ConfigFile())
+		if err != nil {
+			return httpapi.InterventionResult{}, nil, fmt.Errorf("load instance config: %w", err)
+		}
+		address, err := dashboardDaemonAPIAddress(layout, apiListenAddress(config))
+		if err != nil {
+			return httpapi.InterventionResult{}, nil, fmt.Errorf("resolve live daemon API: %w", err)
+		}
+		baseURL = daemonAPIScheme(config) + "://" + address
 	}
 	route, ok := apicontract.V1Route(routeID)
 	if !ok {
@@ -168,7 +194,7 @@ func callInterventionAPI(
 	if err != nil {
 		return httpapi.InterventionResult{}, nil, fmt.Errorf("encode intervention request: %w", err)
 	}
-	request, err := http.NewRequest(route.Method, daemonAPIScheme(config)+"://"+address+routePath, bytes.NewReader(body))
+	request, err := http.NewRequest(route.Method, baseURL+routePath, bytes.NewReader(body))
 	if err != nil {
 		return httpapi.InterventionResult{}, nil, fmt.Errorf("build intervention request: %w", err)
 	}
