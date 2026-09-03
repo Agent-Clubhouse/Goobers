@@ -26,8 +26,9 @@ func TestGuidedInitBrowserNoOpenPrintsURLAndStopsCleanly(t *testing.T) {
 	}
 	defer func() { launchDashboardBrowser = originalLauncher }()
 
+	args := dashboardTestArgs(t, "--no-open", "--workdir", workdir)
 	go func() {
-		done <- runGuidedInitBrowserContext(ctx, []string{"--no-open", "--workdir", workdir}, started, io.Discard)
+		done <- runGuidedInitBrowserContext(ctx, args, started, io.Discard)
 	}()
 
 	var address string
@@ -108,10 +109,11 @@ func TestGuidedInitBrowserUsesExplicitInstancePath(t *testing.T) {
 	started := &dashboardURLWriter{url: make(chan string, 1)}
 	done := make(chan int, 1)
 
+	args := dashboardTestArgs(t,
+		"--no-open", "--workdir", workdir, "--instance-path", instancePath,
+	)
 	go func() {
-		done <- runGuidedInitBrowserContext(ctx, []string{
-			"--no-open", "--workdir", workdir, "--instance-path", instancePath,
-		}, started, io.Discard)
+		done <- runGuidedInitBrowserContext(ctx, args, started, io.Discard)
 	}()
 
 	var address string

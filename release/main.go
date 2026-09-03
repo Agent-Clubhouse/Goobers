@@ -15,7 +15,10 @@ const versionPkg = "github.com/goobers/goobers/internal/version"
 // buildPackage is the main package the release binary is built from. A var, not
 // a const, so tests can point the build at a small in-module package instead of
 // cross-compiling the whole daemon.
-var buildPackage = "./cmd/goobers"
+var (
+	buildPackage          = "./cmd/goobers"
+	portalAssetsDirectory = filepath.Join("internal", "portalassets", "dist")
+)
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -40,6 +43,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 	opts, err := parseFlags(args, stderr)
 	if err != nil {
 		return err
+	}
+	if buildPackage == "./cmd/goobers" {
+		portalIndexPath := filepath.Join(portalAssetsDirectory, "index.html")
+		if _, err := os.Stat(portalIndexPath); err != nil {
+			return fmt.Errorf("portal asset artifact is missing at %s; run `make portal-build` before packaging: %w", portalIndexPath, err)
+		}
 	}
 
 	if err := os.MkdirAll(opts.outDir, 0o755); err != nil {
@@ -80,6 +89,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	checksumAssets := append([]string(nil), archives...)
 	if len(archives) > 0 {
+		portalArchive, err := packagePortalAssets(portalAssetsDirectory, opts.version, opts.outDir)
+		if err != nil {
+			return err
+		}
+		checksumAssets = append(checksumAssets, portalArchive)
+		_, _ = fmt.Fprintf(stdout, "wrote %s\n", filepath.Base(portalArchive))
+
 		installerPath, err := writeInstallScript(opts.outDir)
 		if err != nil {
 			return err
@@ -231,7 +247,7 @@ func parseTargets(csv string) ([]Target, error) {
 // missing windows internal/platform/proc impl) rather than a bare exit code.
 func buildTarget(t Target, ldflags, outDir string) (binPath string, buildOutput string, err error) {
 	binPath = filepath.Join(outDir, t.binaryName()+"."+t.OS+"-"+t.Arch)
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags", ldflags, "-o", binPath, buildPackage)
+	cmd := exec.Command("go", "build", "-tags", "embed_portal", "-trimpath", "-ldflags", ldflags, "-o", binPath, buildPackage)
 	cmd.Env = append(os.Environ(), "GOOS="+t.OS, "GOARCH="+t.Arch, "CGO_ENABLED=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

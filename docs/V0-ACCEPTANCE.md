@@ -62,8 +62,8 @@ against the responsible issue, per issue #30's scope.
 ### 1. Setup
 
 ```sh
-# Build the binary (or `go run ./cmd/goobers ...` throughout instead).
-go build -o bin/goobers ./cmd/goobers
+# Build the complete dashboard-enabled binary.
+make build-goobers
 
 # Scaffold a fresh instance root.
 ./bin/goobers init ./my-instance

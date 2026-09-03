@@ -52,7 +52,7 @@ referent.
 > there, enable unprivileged user namespaces for the daemon's user. To reproduce locally on any POSIX host:
 
 ```sh
-go build -o bin/goobers ./cmd/goobers
+make build-goobers
 go run ./test/linuxvalidate -bin bin/goobers -out ./linux-validation-evidence
 cat ./linux-validation-evidence/summary.md
 ```
@@ -73,14 +73,15 @@ curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.12.2/inst
   | sh -s -- -b "$(go env GOPATH)/bin" v2.12.2
 ```
 
-> Node.js 24 + npm are only needed to build/test the **portal** or run the full
-> `go run ./test/ci` gate — not to run the daemon. See
+> Node.js 24 + npm are needed to produce a complete dashboard-enabled binary,
+> build/test the **portal**, or run the full `go run ./test/ci` gate. They are
+> not needed for ordinary Go tests or vet, or to run a released binary. See
 > [CONTRIBUTING.md](../../CONTRIBUTING.md#platform-prerequisites) for the dev gate.
 
 ## 2. Build the binary
 
 ```sh
-go build -o bin/goobers ./cmd/goobers    # or: make build
+make build-goobers
 sudo install -m 0755 bin/goobers /usr/local/bin/goobers   # optional: put it on PATH
 ```
 

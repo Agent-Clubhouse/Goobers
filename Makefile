@@ -35,6 +35,8 @@ BIN  := bin
 GO            ?= go
 GOLANGCI_LINT ?= golangci-lint
 NPM           ?= npm
+PORTAL_EMBED_TAG := embed_portal
+PORTAL_DIST      := internal/portalassets/dist
 
 # Minimum testable-logic coverage enforced by `make cover-check` (ratchet up over
 # time). Overridable: `make cover-check COVERAGE_THRESHOLD=75`.
@@ -204,10 +206,11 @@ build-%:
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN)/$* ./cmd/$*
 
 build-goobers: portal-build
+	$(GO) build -tags $(PORTAL_EMBED_TAG) -ldflags "$(LDFLAGS)" -o $(BIN)/goobers ./cmd/goobers
 
 ## image: Build the goobers container image (packaging/docker/Dockerfile) via docker.
-# Optional path — not part of `ci`, `build`, or `go run ./release`; requires a
-# local docker. Override the tag with IMAGE=<repo>:<tag>. CI publishing on
+# Optional path — not part of `ci` or `build`; requires a local docker.
+# Override the tag with IMAGE=<repo>:<tag>. CI publishing on
 # tagged releases is a follow-up.
 IMAGE ?= goobers:$(VERSION)
 .PHONY: image
@@ -293,6 +296,7 @@ portal-typecheck: portal-install
 
 portal-build: portal-install
 	$(NPM) --prefix portal run build
+	@echo "Portal asset artifact: $(PORTAL_DIST)"
 
 portal-test: portal-install
 	$(NPM) --prefix portal test

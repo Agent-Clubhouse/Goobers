@@ -53,6 +53,7 @@ complete -c goobers -n '__fish_seen_subcommand_from init' -l allow-ephemeral -d 
 complete -c goobers -n '__fish_seen_subcommand_from init' -l instance-path -r -d 'With --guided, instance root to create'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l port -r -d 'With --guided, server port or auto'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l no-open -d 'With --guided, print the URL without opening a browser'
+complete -c goobers -n '__fish_seen_subcommand_from init' -l dev-assets -r -d 'With --guided, serve a local Portal build'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l workdir -r -d 'With --guided, temporary browser setup state'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l demo -d 'Seed a credential-free runnable demo workflow'
 complete -c goobers -n '__fish_seen_subcommand_from init' -l insecure -d 'Allow an unisolated Windows demo'

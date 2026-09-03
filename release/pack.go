@@ -1,10 +1,10 @@
 // Command release cross-compiles the goobers binary for the release target
-// matrix, packages each into a platform-conventional archive, and emits a
-// shared SHA256SUMS manifest — the packaging primitive a tagged-release
-// workflow (REL-2, #432) invokes. It is deliberately a standalone `go run`
-// tool (matching test/ci and test/coveragegate), not a Makefile shell block,
-// so it is portable across the release runners this milestone must support
-// (#655, milestone #12/#17).
+// matrix, packages each into a platform-conventional archive, packages the
+// reusable Portal asset artifact, and emits a shared SHA256SUMS manifest — the
+// packaging primitive a tagged-release workflow (REL-2, #432) invokes. It is
+// deliberately a standalone `go run` tool (matching test/ci and
+// test/coveragegate), not a Makefile shell block, so it is portable across the
+// release runners this milestone must support (#655, milestone #12/#17).
 //
 // Windows (#655) is packaged as a .zip; unix targets as .tar.gz, both named
 // goobers_<version>_<os>_<arch>.<ext>. Each archive carries the target binary
@@ -63,6 +63,10 @@ func (t Target) archiveName(version string) string {
 	return fmt.Sprintf("goobers_%s_%s_%s.%s", version, t.OS, t.Arch, t.archiveExt())
 }
 
+func portalArchiveName(version string) string {
+	return fmt.Sprintf("goobers_portal_%s.tar.gz", version)
+}
+
 // DefaultTargets is the release matrix. windows/amd64 is this issue's (#655)
 // addition to the existing darwin/linux set. windows/arm64 is intentionally
 // absent: Go cross-compiles it cheaply, but nothing in CI or on a real machine
@@ -118,6 +122,29 @@ func packageArchive(t Target, version, binPath, outDir string, releaseRoot ...st
 	}
 	if err := f.Close(); err != nil {
 		return "", fmt.Errorf("close archive %s: %w", archivePath, err)
+	}
+	return archivePath, nil
+}
+
+func packagePortalAssets(root, version, outDir string) (string, error) {
+	entries, err := collectArchiveEntries(root)
+	if err != nil {
+		return "", fmt.Errorf("collect Portal asset artifact: %w", err)
+	}
+	if len(entries) == 0 {
+		return "", fmt.Errorf("portal asset artifact at %s is empty", root)
+	}
+	archivePath := filepath.Join(outDir, portalArchiveName(version))
+	file, err := os.Create(archivePath)
+	if err != nil {
+		return "", fmt.Errorf("create Portal asset archive %s: %w", archivePath, err)
+	}
+	if err := writeTarGz(file, entries); err != nil {
+		_ = file.Close()
+		return "", fmt.Errorf("write Portal asset archive %s: %w", archivePath, err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close Portal asset archive %s: %w", archivePath, err)
 	}
 	return archivePath, nil
 }

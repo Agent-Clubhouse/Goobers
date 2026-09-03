@@ -81,6 +81,12 @@ func TestRunEndToEnd(t *testing.T) {
 	orig := buildPackage
 	buildPackage = "./"
 	defer func() { buildPackage = orig }()
+	origPortalAssets := portalAssetsDirectory
+	portalAssetsDirectory = t.TempDir()
+	defer func() { portalAssetsDirectory = origPortalAssets }()
+	if err := os.WriteFile(filepath.Join(portalAssetsDirectory, "index.html"), []byte("portal"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	out := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -96,6 +102,10 @@ func TestRunEndToEnd(t *testing.T) {
 	archive := filepath.Join(out, "goobers_v1.2.3_windows_amd64.zip")
 	if _, err := os.Stat(archive); err != nil {
 		t.Fatalf("expected archive %s: %v", archive, err)
+	}
+	portalArchive := filepath.Join(out, "goobers_portal_v1.2.3.tar.gz")
+	if _, err := os.Stat(portalArchive); err != nil {
+		t.Fatalf("expected Portal archive %s: %v", portalArchive, err)
 	}
 	// Zip contains the target binary and release-pinned onboarding docs.
 	zr, err := zip.OpenReader(archive)
@@ -278,6 +288,9 @@ func TestRunEndToEnd(t *testing.T) {
 	if !strings.Contains(string(sums), "goobers_v1.2.3_windows_amd64.zip") {
 		t.Errorf("SHA256SUMS missing the archive:\n%s", sums)
 	}
+	if !strings.Contains(string(sums), "goobers_portal_v1.2.3.tar.gz") {
+		t.Errorf("SHA256SUMS missing the Portal artifact:\n%s", sums)
+	}
 	if !strings.Contains(string(sums), installScriptFile) {
 		t.Errorf("SHA256SUMS missing the install helper:\n%s", sums)
 	}
@@ -333,12 +346,12 @@ func TestRunEndToEnd(t *testing.T) {
 	}
 	// The intermediate binary was cleaned up, leaving only release assets.
 	entries, _ := os.ReadDir(out)
-	if len(entries) != 8 {
+	if len(entries) != 9 {
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-		t.Errorf("dist has %v, want binary archive, agent toolkit, onboarding payload, installer, checksums, release notes, feature snapshot, and support snapshot", names)
+		t.Errorf("dist has %v, want binary archive, Portal artifact, agent toolkit, onboarding payload, installer, checksums, release notes, feature snapshot, and support snapshot", names)
 	}
 	for _, name := range []string{
 		installScriptFile,

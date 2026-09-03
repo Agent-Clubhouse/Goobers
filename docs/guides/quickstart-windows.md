@@ -56,7 +56,9 @@ Each run uploads a `windows-validation-evidence` artifact containing:
 Reproduce the source-level validation from a repository checkout:
 
 ```powershell
-go build -o bin\goobers.exe .\cmd\goobers
+npm --prefix portal ci --no-audit --no-fund
+npm --prefix portal run build
+go build -tags embed_portal -o bin\goobers.exe .\cmd\goobers
 go run .\test\windowsvalidate -bin bin\goobers.exe -out bin\windows-validation-evidence
 Get-Content .\bin\windows-validation-evidence\summary.md
 ```
@@ -132,16 +134,18 @@ elevated prompt and update the machine `PATH`. See
 
 ## 4. Build from source instead
 
-From a repository checkout with the pinned Go toolchain:
+From a repository checkout with the pinned Go and Node.js 24 toolchains:
 
 ```powershell
-go build -o bin\goobers.exe .\cmd\goobers
+npm --prefix portal ci --no-audit --no-fund
+npm --prefix portal run build
+go build -tags embed_portal -o bin\goobers.exe .\cmd\goobers
 .\bin\goobers.exe --version
 ```
 
-The committed portal assets are embedded, so Node/npm is not needed for the CLI
-build. Use `go run .\test\ci`, not `make ci`, for the repository's portable
-development gate on a shell-less Windows host.
+The Portal build produces the ignored reusable asset artifact embedded by the
+tagged Go build. Use `go run .\test\ci`, not `make ci`, for the repository's
+portable development gate on a shell-less Windows host.
 
 ## 5. Windows instance and credential deltas
 

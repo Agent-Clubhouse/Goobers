@@ -4,7 +4,7 @@ import { extname, isAbsolute, join, normalize, relative, resolve, sep } from "no
 import { fileURLToPath } from "node:url";
 
 const port = 4173;
-const distRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../../cmd/goobers/portal-dist");
+const distRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../../internal/portalassets/dist");
 const page = { limit: 100, total: 1, hasMore: false, nextCursor: "" };
 const identity = { gaggle: "core", name: "implementation" };
 const workflow = {

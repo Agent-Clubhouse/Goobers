@@ -347,13 +347,8 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		result = append(result, check{
 			label:   "build-" + command,
 			command: tools.goCommand,
-			args: []string{
-				"build",
-				"-ldflags", ldflags,
-				"-o", output,
-				"./cmd/" + command,
-			},
-			group: groupChecks,
+			args:    commandBuildArgs(command, ldflags, output),
+			group:   groupChecks,
 		})
 		if command == "goobers" {
 			result = append(result, check{
@@ -583,8 +578,23 @@ func fastChecks(mergeChecks []check) []check {
 			current.label == "no-phone-home" ||
 			current.label == "vet" ||
 			strings.HasPrefix(current.label, "build-") {
+			if current.label == "build-goobers" {
+				current.args = removePortalEmbedTag(current.args)
+			}
 			result = append(result, current)
 		}
+	}
+	return result
+}
+
+func removePortalEmbedTag(args []string) []string {
+	result := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-tags" && i+1 < len(args) && args[i+1] == "embed_portal" {
+			i++
+			continue
+		}
+		result = append(result, args[i])
 	}
 	return result
 }
@@ -699,39 +709,25 @@ func portalPreparationChecks(tools toolchain) []check {
 			windowsBatch: true,
 			group:        groupChecks,
 		},
-		// portal-build writes the production bundle into cmd/goobers/portal-dist,
-		// the //go:embed-ed and committed directory the daemon serves. Nothing
-		// diffed the rebuild against what's committed, so a stale bundle could
-		// ship silently (a source change merged without re-running the build).
-		// This guards it exactly like portal-contract-diff guards the generated
-		// wire types: a fresh build that differs from the committed bundle fails
-		// the gate. It runs immediately after the build (before the multi-minute
-		// test step) so drift fails fast. vite cleans the outDir on build, so a
-		// content change deletes the old content-hashed asset — a tracked
-		// deletion git diff --exit-code reports — in addition to rewriting
-		// index.html, so real drift never slips through. #1110.
 		{
-			label:   "portal-dist-diff",
-			command: tools.gitCommand,
-			args:    []string{"diff", "--exit-code", "--", "cmd/goobers/portal-dist"},
+			label:   "portal-embed-vet",
+			command: tools.goCommand,
+			args:    []string{"vet", "-tags", "embed_portal", "./internal/portalassets", "./cmd/goobers"},
 			group:   groupChecks,
 		},
-		// portal-dist-diff above only reports TRACKED-file changes — a newly
-		// added file the build produced (e.g. the first plain, non-hashed
-		// portal/public/ asset vite copies verbatim, referenced by no hashed
-		// chunk) sits untracked and passes that diff clean, even though it's
-		// missing from every other checkout's git history until someone
-		// remembers to `git add` it. `git status --porcelain` reports
-		// untracked files too, closing that blind spot. #2056.
-		{
-			label:       "portal-dist-untracked",
-			command:     tools.gitCommand,
-			args:        []string{"status", "--porcelain", "--", "cmd/goobers/portal-dist"},
-			capture:     true,
-			expectEmpty: true,
-			group:       groupChecks,
-		},
 	}
+}
+
+func commandBuildArgs(command, ldflags, output string) []string {
+	args := []string{"build"}
+	if command == "goobers" {
+		args = append(args, "-tags", "embed_portal")
+	}
+	return append(args,
+		"-ldflags", ldflags,
+		"-o", output,
+		"./cmd/"+command,
+	)
 }
 
 func executeChecks(exec executor, checks []check, stdout, stderr io.Writer) error {
@@ -767,9 +763,8 @@ func executeChecksAt(
 		}
 		if current.expectEmpty && strings.TrimSpace(string(output)) != "" {
 			// expectEmpty is a generic "this command's output must be empty
-			// or the gate fails" contract (fmt-check's gofmt -l, #2056's
-			// portal-dist-untracked git status --porcelain, ...) — the
-			// message names the check, not any one consumer's meaning.
+			// or the gate fails" contract (for example fmt-check's gofmt -l);
+			// the message names the check, not any one consumer's meaning.
 			_, _ = fmt.Fprintf(stdout, "%s produced unexpected output:\n", current.label)
 			_, _ = stdout.Write(output)
 			if output[len(output)-1] != '\n' {

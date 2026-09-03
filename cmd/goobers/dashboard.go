@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"embed"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -29,6 +28,7 @@ import (
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/oidcauth"
+	"github.com/goobers/goobers/internal/portalassets"
 	"github.com/goobers/goobers/internal/readservice"
 	"github.com/goobers/goobers/internal/signals"
 )
@@ -43,9 +43,6 @@ var (
 	launchDashboardBrowser = openDashboardBrowser
 	launchRunDirectory     = openFilesystemPath
 )
-
-//go:embed portal-dist
-var embeddedDashboardAssets embed.FS
 
 type dashboardMode string
 
@@ -159,6 +156,11 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	assets, err := dashboardAssetFS(*devAssets)
+	if err != nil {
+		pf(stderr, "error: load dashboard assets: %v\n", err)
+		return 1
+	}
 
 	errorLog := log.New(stderr, "dashboard: ", log.LstdFlags)
 	api, err := prepareDashboardAPI(ctx, layout, config, errorLog, dashboardHostIsLoopback(host), waitForDaemon.duration())
@@ -170,11 +172,6 @@ func runDashboardContext(ctx context.Context, args []string, stdout, stderr io.W
 		return 1
 	}
 
-	assets, err := dashboardAssetFS(*devAssets)
-	if err != nil {
-		pf(stderr, "error: load dashboard assets: %v\n", errors.Join(err, api.close()))
-		return 1
-	}
 	handler, err := newDashboardHandler(assets, api.handler, api.mode, layout.Root)
 	if err != nil {
 		pf(stderr, "error: initialize dashboard assets: %v\n", errors.Join(err, api.close()))
@@ -681,7 +678,7 @@ func standaloneDashboardAPI(layout instance.Layout, config *instance.Config, err
 
 func dashboardAssetFS(devAssets string) (fs.FS, error) {
 	if devAssets == "" {
-		return fs.Sub(embeddedDashboardAssets, "portal-dist")
+		return portalassets.FS()
 	}
 	info, err := os.Stat(filepath.Join(devAssets, "index.html"))
 	if err != nil {

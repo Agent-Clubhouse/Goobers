@@ -14,10 +14,12 @@ and [`docs/VISION.md`](docs/VISION.md).
 
 ## Development setup
 
-You need the Go toolchain declared in [`go.mod`](go.mod) (currently Go 1.26.6),
-Node.js 24 with npm, Git, and
+All development requires the Go toolchain declared in [`go.mod`](go.mod)
+(currently Go 1.26.6), Git, and
 [`golangci-lint`](https://golangci-lint.run) `v2.12.2` (schema-v2 config in
-[`.golangci.yml`](.golangci.yml)).
+[`.golangci.yml`](.golangci.yml)). Node.js 24 with npm is required only for
+Portal work, complete dashboard-enabled binaries, and the merge/full validation
+tiers; ordinary Go builds, tests, vet, and `make verify-fast` remain Node-free.
 
 ```sh
 make verify-fast # pre-push format, vet, and Go build tier
@@ -52,6 +54,10 @@ recipes, so extra or missing commands fail the contract check. Each validation
 tier prints the elapsed time for every gate it runs; CI also publishes
 structured unit-test timing and soft-budget comparisons — see
 [`docs/guides/test-timing.md`](docs/guides/test-timing.md).
+
+The fast tier compiles `cmd/goobers` without the generated Portal artifact so
+ordinary Go feedback stays Node-free. The merge tier builds the lockfile-pinned
+artifact and compiles the complete binary with the `embed_portal` build tag.
 The stress tier's fingerprint ledger, expiring quarantine helper, and
 no-anonymous-retry rule are documented in
 [`docs/guides/flake-management.md`](docs/guides/flake-management.md).
