@@ -57,8 +57,7 @@ func TestRestoreContractUsesTheDurabilityClassEnum(t *testing.T) {
 		// A row may qualify its class ("must-survive, as one set"); the class
 		// itself is the leading term.
 		leading, _, _ := strings.Cut(class, ",")
-		if !restoreContractClasses[strings.TrimSpace(leading)] &&
-			!strings.HasPrefix(class, "never snapshot") {
+		if !restoreContractClasses[strings.TrimSpace(leading)] {
 			t.Errorf("%s row %q has class %q outside the enum", restoreContractDoc, path, class)
 		}
 	}

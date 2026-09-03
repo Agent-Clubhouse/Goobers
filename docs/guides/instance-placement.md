@@ -174,10 +174,10 @@ This is the simplest layout:
 Use it for a single-operator, private experiment where filesystem ownership and
 backups are sufficient governance; what a backup must contain is defined by the
 [instance-root restore contract](instance-restore-contract.md). It is a poor fit
-for a Tutor or any workflow
-that should propose config changes through pull requests. Once changes need
-normal repository review, move the canonical definitions to one of the two
-versioned layouts below and materialize them into the instance.
+for a Tutor or any workflow that should propose config changes through pull
+requests. Once changes need normal repository review, move the canonical
+definitions to one of the two versioned layouts below and materialize them into
+the instance.
 
 ### In-repo subtree ("same repo")
 
