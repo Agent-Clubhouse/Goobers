@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "goobers.dev/workflow-ir/v1",
+  "compiler": {"name": "goobers", "version": "workflow-ir/v1"},
+  "source": {"name": "golden", "version": 1, "digest": "sha256:golden"},
+  "triggers": [{"type": "manual"}],
+  "start": "build",
+  "nodes": [
+    {
+      "name": "build",
+      "kind": "deterministic",
+      "task": {"name": "build", "type": "deterministic", "goal": "build"},
+      "sideEffect": "none"
+    }
+  ],
+  "edges": []
+}
