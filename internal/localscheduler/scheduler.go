@@ -259,6 +259,10 @@ type Scheduler struct {
 	// consecutivePoolSkips ages workflows that were due and otherwise ready
 	// but could not enter the shared instance concurrency pool.
 	consecutivePoolSkips map[WorkflowIdentity]int
+	// triggerStallNotified marks workflows already reported as having a
+	// silently stalled schedule trigger (#1868), so each stall episode
+	// journals one workflow.starved event instead of one per tick.
+	triggerStallNotified map[WorkflowIdentity]bool
 	// quotaResumePacing drains provider-backed workflow polls one workflow per
 	// tick after an exhausted quota window resets.
 	quotaResumePacing map[apiv1.Provider]bool
@@ -448,6 +452,7 @@ func New(entries []WorkflowEntry, log *journal.InstanceLog, opts ...Option) *Sch
 		idleBackoffs:          make(map[WorkflowIdentity][]idleBackoffState),
 		pendingScheduleDemand: make(map[WorkflowIdentity]scheduledDemand),
 		consecutivePoolSkips:  make(map[WorkflowIdentity]int),
+		triggerStallNotified:  make(map[WorkflowIdentity]bool),
 		quotaResumePacing:     make(map[apiv1.Provider]bool),
 		authCircuits:          make(map[WorkflowIdentity]struct{}),
 		refillBlockedUntil:    make(map[WorkflowIdentity]time.Time),
@@ -1114,6 +1119,9 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 			break
 		}
 	}
+	// Evaluated after dispatch so a trigger that fired this tick has already
+	// refreshed its baseline and is never reported as stalled.
+	s.journalTriggerStalls(entries, now)
 	if s.afterTick != nil {
 		s.afterTick(ctx)
 	}
@@ -1163,6 +1171,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	idleBackoffs := make(map[WorkflowIdentity][]idleBackoffState, len(entries))
 	pendingScheduleDemand := make(map[WorkflowIdentity]scheduledDemand, len(entries))
 	consecutivePoolSkips := make(map[WorkflowIdentity]int, len(entries))
+	triggerStallNotified := make(map[WorkflowIdentity]bool, len(entries))
 
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
@@ -1188,6 +1197,9 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 		}
 		if skips := s.consecutivePoolSkips[identity]; skips > 0 {
 			consecutivePoolSkips[identity] = skips
+		}
+		if s.triggerStallNotified[identity] {
+			triggerStallNotified[identity] = true
 		}
 	}
 
@@ -1228,6 +1240,7 @@ func (s *Scheduler) Reload(entries []WorkflowEntry, openPRs OpenPRCounter, now t
 	s.idleBackoffs = idleBackoffs
 	s.pendingScheduleDemand = pendingScheduleDemand
 	s.consecutivePoolSkips = consecutivePoolSkips
+	s.triggerStallNotified = triggerStallNotified
 	s.authCircuits = make(map[WorkflowIdentity]struct{})
 
 	select {
