@@ -20,6 +20,7 @@ var synopsisByID = map[string]string{
 	"examples":               "  goobers examples list | show <name>\n                                browse canonical workflow examples embedded in the binary\n",
 	"scaffold":               "  goobers scaffold goober|workflow|gaggle [flags] <name> [path]\n                                scaffold a goober, workflow, or gaggle\n",
 	"agent-kit":              "  goobers agent-kit install|check|update [flags] [path]\n                                install, inspect, or explicitly update the release-matched agent toolkit\n",
+	"portal-extension":       "  goobers portal-extension install|status|update [flags]\n                                install, inspect, or update the user-scoped Goobers Portal canvas extension bundled with this binary\n",
 	"validate":               "  goobers validate [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n                                validate an instance or checked-in config source tree\n",
 	"lint":                   "  goobers lint [--json] [--github-annotations] [--check-harness] [--check-repos] [--source-tree] [--strict] [path]\n                                lint config via the single authoritative validation engine (alias for validate)\n",
 	"fix":                    "  goobers fix --to <version> [--write] [path]\n                                mechanically migrate workflows to a target dslVersion, one step at a time\n",
