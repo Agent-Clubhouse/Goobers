@@ -6,12 +6,14 @@ goobers rerun-stage \- rerun a stage with a recorded instruction addendum
 \fBgoobers rerun-stage\fR [\fIoptions\fR]
 .SH DESCRIPTION
 .nf
-Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] <run-id> <stage> [path]
+Usage: goobers rerun-stage --addendum=<text> [--actor=<identity>] [--api=<url>] <run-id> <stage> [path]
 
 Rerun one agentic task or reviewer gate on an escalated run with a one-off
 instruction addendum. The actor, addendum, target, and human attempt are
 recorded in the run journal; the workflow definition is not changed.
-GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled.
+GOOBERS_API_TOKEN supplies a bearer token when API auth is enabled, and
+--api (or $GOOBERS_DAEMON_API) reaches a daemon that does not share this
+filesystem, such as one running in another pod.
 
 Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
 .fi
