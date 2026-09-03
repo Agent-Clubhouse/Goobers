@@ -151,7 +151,9 @@ const (
 	// (e.g. "conditions: max-parallel", "conditions: budget").
 	EventTickSkipped EventType = "tick.skipped"
 	// EventWorkflowStarved records a workflow crossing the scheduler's
-	// consecutive shared-pool skip threshold.
+	// consecutive shared-pool skip threshold (SkipCount set), or a scheduled
+	// workflow whose trigger has gone silent for a multiple of its own
+	// schedule interval (#1868; SkipCount unset).
 	EventWorkflowStarved EventType = "workflow.starved"
 	// EventWorkflowRefused records a workflow the startup constraint solve
 	// marked unplaceable on the instance's declared runners: inventory

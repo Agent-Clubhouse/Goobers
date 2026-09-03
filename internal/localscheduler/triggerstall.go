@@ -49,14 +49,19 @@ func scheduleInterval(schedules []Schedule, after time.Time) (time.Duration, boo
 
 // journalTriggerStalls records one workflow.starved event per scheduled
 // workflow whose trigger has not fired for triggerStallMultiple of its own
-// schedule interval (#1868). It runs before every other tick decision, over
-// every entry — including the ones the tick then skips silently (auth circuit
-// open, placement refused) — because those are precisely the states in which
-// a lane can stay dead indefinitely with nothing in the journal to say so.
+// schedule interval (#1868). It runs after dispatch, over every entry —
+// including the ones this tick skipped silently (auth circuit open, placement
+// refused) — because those are precisely the states in which a lane can stay
+// dead indefinitely with nothing in the journal to say so.
 //
 // One event is emitted per stall episode rather than per tick: the flag is
 // cleared as soon as the trigger fires again and the silence falls back under
 // the threshold, so a chronically wedged lane does not flood the journal.
+//
+// The signal is "the trigger loop stopped evaluating", not "no trigger.fired
+// landed": LastEval advances whenever a schedule was due and fired, even if
+// the resulting dispatch was refused. A lane that keeps firing but never
+// dispatches journals tick.skipped instead, so it is not silent either way.
 func (s *Scheduler) journalTriggerStalls(entries []WorkflowEntry, now time.Time) {
 	for _, entry := range entries {
 		if len(entry.Schedules) == 0 {
