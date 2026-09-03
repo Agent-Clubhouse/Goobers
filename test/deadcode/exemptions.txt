@@ -83,8 +83,6 @@ github.com/goobers/goobers/providers.repoLabel # Repository-reference error rend
 github.com/goobers/goobers/internal/apicontract.ValidateRuntimeParity # Contract generator invariant retained for cross-surface drift tests.
 github.com/goobers/goobers/internal/apicontract.validSurface # Contract generator helper reachable through the drift-test invariant.
 github.com/goobers/goobers/internal/apicontract.V1ConfigAuthoringRoutes # Config-authoring route contract (#3779) not yet registered by the daemon until its backing services land; exercised by authoring_test.go.
-github.com/goobers/goobers/internal/sandbox.resolveDirectory # Cross-platform sandbox path resolver for the Linux/macOS native confinement implementations; retained as a platform-specific helper not built on Windows but exercised by the sandbox runtime.
-github.com/goobers/goobers/internal/sandbox.validate # Cross-platform sandbox policy validator for the Linux/macOS native confinement implementations; retained as a platform-specific helper not built on Windows but exercised by the sandbox runtime.
 github.com/goobers/goobers/internal/workflow/ir.Document.Digest # Deterministic IR content digester retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.Normalize # Deterministic source-to-IR normalization retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.Validate # Structural IR validation retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
