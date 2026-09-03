@@ -121,18 +121,6 @@ func (r *configReloader) Run(ctx context.Context) error {
 	}
 }
 
-// workflowSource resolves gaggle/workflow to its config-relative source file
-// under r.mu, matching the lock discipline poll/pollOnce use so a concurrent
-// reload never publishes a half-written definitions set.
-func (r *configReloader) workflowSource(gaggle, workflow string) (string, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.setup == nil {
-		return "", false
-	}
-	return r.setup.Definitions.WorkflowSource(gaggle, workflow)
-}
-
 // pollOnce runs exactly one reload check — the same check the ticker in Run
 // performs every tick — and reports a structured outcome instead of just
 // success/failure, so an on-demand caller (goobers apply, #459) can

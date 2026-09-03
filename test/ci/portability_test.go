@@ -25,7 +25,6 @@ var allowedToolBinaries = map[string]bool{
 	"gofmt":         true,
 	"git":           true,
 	"npm":           true,
-	"node":          true,
 	"golangci-lint": true,
 	"cmd.exe":       true,
 }
@@ -40,7 +39,6 @@ func TestChecksInvokeOnlyAllowlistedToolBinaries(t *testing.T) {
 		gofmtCommand:    "gofmt",
 		gitCommand:      "git",
 		npmCommand:      "npm",
-		nodeCommand:     "node",
 		golangciCommand: "golangci-lint",
 	}
 	metadata := buildMetadata{version: "v0", commit: "c0ffee0", date: "2026-07-21T00:00:00Z"}

@@ -18,7 +18,6 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/capability"
 	"github.com/goobers/goobers/internal/credentials"
-	"github.com/goobers/goobers/internal/hostedprogress"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/localscheduler"
@@ -48,7 +47,7 @@ func exitForPhase(phase journal.RunPhase) int {
 	}
 }
 
-const runHelp = "Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] <workflow> [--no-wait] [path]\n" +
+const runHelp = "Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]\n" +
 	"       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]\n" +
 	"       goobers run abort <run-id> [path]\n" +
 	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +
@@ -66,11 +65,6 @@ const runHelp = "Usage: goobers run [--gaggle <name>] [--github-progress] [--pr 
 	"config, run conditions rejected the trigger), 2 = usage/IO error, 3 =\n" +
 	"escalated. A successful submission-only mode (such as --no-wait, once\n" +
 	"available) exits 0 because it does not observe a terminal phase.\n" +
-	"--github-progress publishes the versioned hosted-progress contract to one\n" +
-	"GitHub Check Run whenever the journal sequence advances. It requires\n" +
-	"checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,\n" +
-	"cannot be combined with --no-wait, and does not replace the final journal\n" +
-	"artifact.\n" +
 	"`run abort` marks a stuck non-terminal run aborted directly in its own\n" +
 	"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n" +
 	"If a live `goobers up` daemon already holds that run's journal lock, abort\n" +
@@ -88,7 +82,6 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	noWait := fs.Bool("no-wait", false, "return after the run is dispatched")
-	githubProgress := fs.Bool("github-progress", false, "publish live progress to one GitHub Check Run (requires checks: write)")
 	gaggle := fs.String("gaggle", "", "trigger the workflow in this gaggle")
 	pr := fs.Int("pr", 0, "target pull request (merge-review only)")
 	fs.Usage = helpUsage(stderr, "run")
@@ -122,17 +115,6 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 
 	ctx, stop := signals.SetupSignalContext()
 	defer stop()
-	if *githubProgress {
-		if *noWait {
-			pf(stderr, "error: --github-progress cannot be combined with --no-wait\n")
-			return 2
-		}
-		if _, err := hostedprogress.Environment(); err != nil {
-			pf(stderr, "error: %v\n", err)
-			return 2
-		}
-		ctx = context.WithValue(ctx, githubProgressContextKey{}, true)
-	}
 
 	// Take the same single-instance lock `up` does (issue #134): a manual run
 	// must not mutate scheduler/run-condition/claim-ledger state, or the
@@ -334,9 +316,7 @@ func runStandaloneTrigger(ctx context.Context, l instance.Layout, target runTarg
 		return 0
 	}
 
-	runDir := filepath.Join(l.ForGaggle(gaggle).RunsDir(), runID)
-	reporter := newHostedRunWaitReporter(ctx, runID, runDir, stderr)
-	phase, err := waitForRunTerminalWithReporter(ctx, l.ForGaggle(gaggle).RunsDir(), runID, reporter)
+	phase, err := waitForRunTerminalWithProgress(ctx, l.ForGaggle(gaggle).RunsDir(), runID, stderr)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -568,11 +548,6 @@ func runFlagArgs(args []string) []string {
 		arg := args[i]
 		if arg == "--no-wait" || arg == "-no-wait" ||
 			strings.HasPrefix(arg, "--no-wait=") || strings.HasPrefix(arg, "-no-wait=") {
-			flags = append(flags, arg)
-			continue
-		}
-		if arg == "--github-progress" || arg == "-github-progress" ||
-			strings.HasPrefix(arg, "--github-progress=") || strings.HasPrefix(arg, "-github-progress=") {
 			flags = append(flags, arg)
 			continue
 		}
@@ -985,13 +960,6 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 // merely-slow-under-load run runs to completion.
 var runTerminalWaitTimeout time.Duration
 
-type githubProgressContextKey struct{}
-
-func githubProgressEnabled(ctx context.Context) bool {
-	enabled, _ := ctx.Value(githubProgressContextKey{}).(bool)
-	return enabled
-}
-
 // isTerminalPhase reports whether a run has reached one of the four terminal
 // phases waitForRunTerminal waits for.
 func isTerminalPhase(p journal.RunPhase) bool {
@@ -1003,7 +971,11 @@ func isTerminalPhase(p journal.RunPhase) bool {
 }
 
 func waitForRunTerminal(ctx context.Context, runsDir, runID string) (journal.RunPhase, error) {
-	return waitForRunTerminalWithReporter(ctx, runsDir, runID, newRunWaitReporter(runID, io.Discard))
+	return waitForRunTerminalWithProgress(ctx, runsDir, runID, io.Discard)
+}
+
+func waitForRunTerminalWithProgress(ctx context.Context, runsDir, runID string, progress io.Writer) (journal.RunPhase, error) {
+	return waitForRunTerminalWithReporter(ctx, runsDir, runID, newRunWaitReporter(runID, progress))
 }
 
 func waitForRunTerminalWithReporter(ctx context.Context, runsDir, runID string, progress *runWaitReporter) (journal.RunPhase, error) {
@@ -1073,9 +1045,6 @@ func waitForRunTerminalInLayoutWithProgress(ctx context.Context, layout instance
 	for {
 		dir, err := layout.FindRunDir(runID)
 		if err == nil {
-			if githubProgressEnabled(ctx) {
-				reporter = newHostedRunWaitReporter(ctx, runID, dir, progress)
-			}
 			return waitForRunTerminalWithReporter(ctx, filepath.Dir(dir), runID, reporter)
 		}
 		if !errors.Is(err, iofs.ErrNotExist) {

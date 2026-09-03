@@ -79,10 +79,6 @@ Less-common commands for configuration, maintenance, and diagnostics.
 | [`goobers onboarding`](#goobers-onboarding) | run non-interactive onboarding actions |
 | [`goobers onboarding stub-agent-instructions`](#goobers-onboarding-stub-agent-instructions) | install agent-instruction assets into a config source |
 | [`goobers override`](#goobers-override) | override a nondeterministic gate with a rationale |
-| [`goobers portal-extension`](#goobers-portal-extension) | manage the release-matched user-scoped Portal canvas extension |
-| [`goobers portal-extension install`](#goobers-portal-extension-install) | install the release-matched Portal canvas extension |
-| [`goobers portal-extension status`](#goobers-portal-extension-status) | report Portal extension version and drift |
-| [`goobers portal-extension update`](#goobers-portal-extension-update) | update the Portal extension to this Goobers version |
 | [`goobers preflight`](#goobers-preflight) | check WSL full-isolation readiness and optionally hand off a command |
 | [`goobers rerun-stage`](#goobers-rerun-stage) | rerun a stage with a recorded instruction addendum |
 | [`goobers reset-rate-limit`](#goobers-reset-rate-limit) | clear the hourly run-rate budget without deleting runs/ |
@@ -1870,9 +1866,7 @@ gaggles/<gaggle>/ at runtime. Re-running is safe — existing pieces are left
 untouched.
 --guided opens the browser-based setup for a real repository and instance;
 use --instance-path to select its instance root.
-It prepares and validates configuration but does not run a workflow. When the
-GitHub Copilot app is detected, setup also offers to install the release-matched
-user-scoped Portal canvas extension.
+It prepares and validates configuration but does not run a workflow.
 For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new,
 select the repository's Resource owner, choose Only select repositories, and
 grant the permissions documented in docs/guides/github-token-scopes.md.
@@ -2273,83 +2267,6 @@ Exit codes: 0 = action accepted, 1 = action refused, 2 = usage/transport error.
 
 ~~~console
 $ goobers override --rationale="accepted risk" <run-id> <gate>
-~~~
-
-## `goobers portal-extension`
-
-manage the release-matched user-scoped Portal canvas extension
-
-~~~text
-Usage: goobers portal-extension <subcommand> [flags]
-
-Install, inspect, or update the user-scoped Goobers Portal canvas extension.
-The extension is bundled with this binary, so its installed release identity
-always matches the Goobers version supplying it.
-
-Subcommands:
-  install  install the bundled extension for the current user
-  status   report installed version, drift, and updates
-  update   replace a managed installation with this binary's version
-~~~
-
-**Examples**
-
-~~~console
-$ goobers portal-extension install
-$ goobers portal-extension status
-~~~
-
-## `goobers portal-extension install`
-
-install the release-matched Portal canvas extension
-
-~~~text
-Usage: goobers portal-extension install [--copilot-home <path>]
-
-Install the Portal canvas extension beneath the current user's Copilot home.
-Existing unmanaged, outdated, or locally modified directories are not replaced.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers portal-extension install
-~~~
-
-## `goobers portal-extension status`
-
-report Portal extension version and drift
-
-~~~text
-Usage: goobers portal-extension status [--copilot-home <path>]
-
-Compare the installed Portal extension with the version bundled in this binary.
-Exit codes: 0 = current, 1 = not installed, outdated, modified, or unmanaged.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers portal-extension status
-~~~
-
-## `goobers portal-extension update`
-
-update the Portal extension to this Goobers version
-
-~~~text
-Usage: goobers portal-extension update [--replace-modified] [--copilot-home <path>]
-
-Update a managed Portal extension through a staged, crash-recoverable replacement
-binary. Local changes require --replace-modified. Persisted Portal sources and
-preferences live outside the code directory and are preserved.
-~~~
-
-**Examples**
-
-~~~console
-$ goobers portal-extension update
-$ goobers portal-extension update --replace-modified
 ~~~
 
 ## `goobers post-merge`
@@ -2825,7 +2742,7 @@ $ goobers respond-to-findings
 trigger a run manually (still honors run conditions)
 
 ~~~text
-Usage: goobers run [--gaggle <name>] [--github-progress] [--pr <number>] <workflow> [--no-wait] [path]
+Usage: goobers run [--gaggle <name>] [--pr <number>] <workflow> [--no-wait] [path]
        goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]
        goobers run abort <run-id> [path]
        goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]
@@ -2844,11 +2761,6 @@ completed, 1 = failed/aborted or business error (unknown workflow, invalid
 config, run conditions rejected the trigger), 2 = usage/IO error, 3 =
 escalated. A successful submission-only mode (such as --no-wait, once
 available) exits 0 because it does not observe a terminal phase.
---github-progress publishes the versioned hosted-progress contract to one
-GitHub Check Run whenever the journal sequence advances. It requires
-checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,
-cannot be combined with --no-wait, and does not replace the final journal
-artifact.
 `run abort` marks a stuck non-terminal run aborted directly in its own
 journal — recovery for a run resumeInterruptedRuns can't resolve on its own.
 If a live `goobers up` daemon already holds that run's journal lock, abort
@@ -2866,7 +2778,6 @@ repair.
 $ goobers run default-implement
 $ goobers run --gaggle example default-implement
 $ goobers run example/default-implement --no-wait
-$ goobers run --github-progress implement-locally
 ~~~
 
 ## `goobers run abort`

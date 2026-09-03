@@ -316,11 +316,6 @@ portal-contract: portal-install
 
 portal-ci: portal-audit portal-build portal-test portal-e2e portal-deadcode portal-contract
 
-## extension-test: Run the canvas extension Node --test suites for goobers-portal.
-.PHONY: extension-test
-extension-test:
-	node --test .github/extensions/goobers-portal/*.test.mjs
-
 ## cover: Show total test coverage.
 .PHONY: cover
 cover: test

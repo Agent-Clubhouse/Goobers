@@ -135,7 +135,6 @@ task.timeoutSeconds                                      2.0          ga        
 trigger.backlog-item                                     2.0          ga               supported        dev
 trigger.backlog-item.selector                            2.0          ga               supported        dev
 trigger.backlog-item.trustLabel                          2.0          ga               supported        dev
-trigger.enabled                                          2.0          ga               supported        dev
 trigger.fieldPredicate                                   2.0          ga               supported        dev
 trigger.idleBackoff                                      2.0          ga               supported        dev
 trigger.idleBackoff.ceiling                              2.0          ga               supported        dev
@@ -334,7 +333,6 @@ task.timeoutSeconds                                      3.0          ga        
 trigger.backlog-item                                     3.0          ga               preview          dev
 trigger.backlog-item.selector                            3.0          ga               preview          dev
 trigger.backlog-item.trustLabel                          3.0          ga               preview          dev
-trigger.enabled                                          3.0          ga               preview          dev
 trigger.fieldPredicate                                   3.0          ga               preview          dev
 trigger.idleBackoff                                      3.0          ga               preview          dev
 trigger.idleBackoff.ceiling                              3.0          ga               preview          dev
@@ -380,4 +378,4 @@ workflow.terminal.abort                                  3.0          ga        
 workflow.terminal.complete                               3.0          ga               preview          dev
 workflow.terminal.escalate                               3.0          ga               preview          dev
 
-380 feature/version row(s)
+378 feature/version row(s)

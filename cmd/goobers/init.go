@@ -29,9 +29,7 @@ const initHelp = "Usage: goobers init [--allow-ephemeral] [--guided [--instance-
 	"untouched.\n" +
 	"--guided opens the browser-based setup for a real repository and instance;\n" +
 	"use --instance-path to select its instance root.\n" +
-	"It prepares and validates configuration but does not run a workflow. When the\n" +
-	"GitHub Copilot app is detected, setup also offers to install the release-matched\n" +
-	"user-scoped Portal canvas extension.\n" +
+	"It prepares and validates configuration but does not run a workflow.\n" +
 	"For GitHub PAT setup, use https://github.com/settings/personal-access-tokens/new,\n" +
 	"select the repository's Resource owner, choose Only select repositories, and\n" +
 	"grant the permissions documented in docs/guides/github-token-scopes.md.\n" +

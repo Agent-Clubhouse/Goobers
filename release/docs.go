@@ -57,11 +57,6 @@ const (
 		"export PATH=\"$PWD/bin:$PATH\"\n" +
 		"goobers init --guided --instance-path ~/goobers/instances/my-repository\n" +
 		"```\n\n" +
-		"When the GitHub Copilot app is already installed, the guided flow also offers\n" +
-		"the release-matched Goobers Portal canvas extension. Declining does not affect\n" +
-		"setup. Install it later (or after installing the app) with `goobers\n" +
-		"portal-extension install`; after upgrading Goobers, use `goobers\n" +
-		"portal-extension status` and `goobers portal-extension update`.\n\n" +
 		"Provide an existing local Git clone. Getting Started supports GitHub and Azure\n" +
 		"DevOps, discovers repository identity, default branch, CI command, toolchain,\n" +
 		"and existing CLI authentication, then asks only for configuration placement,\n" +

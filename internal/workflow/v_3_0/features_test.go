@@ -635,7 +635,6 @@ func TestCurrentDSLFeatureSurfaceIsRegistered(t *testing.T) {
 			{
 				Type:     apiv1.TriggerSchedule,
 				Schedule: "@hourly",
-				Enabled:  boolPtr(true),
 				IdleBackoff: &apiv1.IdleBackoff{
 					Enabled: func() *bool { enabled := true; return &enabled }(),
 					Floor:   "1m",
@@ -1110,7 +1109,6 @@ func expectedCurrentDSLFeatureIDs() []FeatureID {
 		"trigger.schedule",
 		"trigger.signal",
 		"trigger.webhook",
-		"trigger.enabled",
 		"task.name",
 		"task.deterministic",
 		"task.agentic",
@@ -1279,8 +1277,6 @@ func gaggleOnlyFeatureIDs() []FeatureID {
 		featureGaggleRunsOnWindowsAdmin,
 	}
 }
-
-func boolPtr(b bool) *bool { return &b }
 
 func featureIDs(features []Feature) []FeatureID {
 	ids := make([]FeatureID, 0, len(features))

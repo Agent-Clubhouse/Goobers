@@ -65,7 +65,7 @@ func TestWaitForRunTerminalReportsTransitionsPauseAndHeartbeat(t *testing.T) {
 	var waitErr error
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		phase, waitErr = waitForRunTerminalWithReporter(ctx, runsDir, runID, newRunWaitReporter(runID, &progress))
+		phase, waitErr = waitForRunTerminalWithProgress(ctx, runsDir, runID, &progress)
 		close(done)
 	}()
 	t.Cleanup(func() {

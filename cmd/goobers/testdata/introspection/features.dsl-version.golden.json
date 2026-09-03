@@ -685,11 +685,6 @@
       "sinceVersion": "dev"
     },
     {
-      "name": "trigger.enabled",
-      "stability": "ga",
-      "sinceVersion": "dev"
-    },
-    {
       "name": "trigger.fieldPredicate",
       "stability": "ga",
       "sinceVersion": "dev"

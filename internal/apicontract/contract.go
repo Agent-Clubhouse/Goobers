@@ -67,10 +67,6 @@ const (
 	RunStageOverridePath = V1Prefix + "/runs/{run}/stages/{stage}/override"
 	RunStageRerunPath    = V1Prefix + "/runs/{run}/stages/{stage}/rerun"
 
-	// WorkflowEnabledPath toggles whether a workflow's non-manual triggers may
-	// fire, without deleting or re-authoring the workflow's config (WF-010).
-	WorkflowEnabledPath = V1Prefix + "/gaggles/{gaggle}/workflows/{workflow}/enabled"
-
 	// Write-plane routes (distributed-state-and-coordination.md §7, DS2/DS3):
 	// the claims plane wraps the daemon-owned claim ledger's existing
 	// operations (claim ≙ acquire, renew, release, settle) so ledger-touching
@@ -227,8 +223,6 @@ const (
 	RouteOverrideStage RouteID = "overrideStage"
 	RouteRerunStage    RouteID = "rerunStage"
 
-	RouteWorkflowEnabled RouteID = "workflowEnabled"
-
 	RouteClaimAcquire      RouteID = "claimAcquire"
 	RouteClaimRenew        RouteID = "claimRenew"
 	RouteClaimRelease      RouteID = "claimRelease"
@@ -368,8 +362,6 @@ var v1Routes = []Route{
 	{ID: RouteApproveStage, Method: http.MethodPost, Path: RunStageApprovePath, ActionClass: ActionRuntimeMutation, Capability: "approve", Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteOverrideStage, Method: http.MethodPost, Path: RunStageOverridePath, ActionClass: ActionRuntimeMutation, Capability: "override", Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteRerunStage, Method: http.MethodPost, Path: RunStageRerunPath, ActionClass: ActionRuntimeMutation, Capability: "rerun", Cost: CostMutation, Budget: MutationBudget},
-
-	{ID: RouteWorkflowEnabled, Method: http.MethodPut, Path: WorkflowEnabledPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 
 	// The claims and trigger planes advance the workflow machinery rather than
 	// intervene in one existing run, so they are workflow-execution actions —

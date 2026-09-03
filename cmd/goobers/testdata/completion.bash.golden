@@ -47,13 +47,6 @@ _goobers_completion()
                 update) flags+=" --dry-run --write --replace-modified" ;;
             esac
             ;;
-        portal-extension)
-            case "${COMP_WORDS[2]:-}" in
-                install) flags+=" --copilot-home" ;;
-                status) flags+=" --copilot-home" ;;
-                update) flags+=" --copilot-home --replace-modified" ;;
-            esac
-            ;;
         validate)
             flags+=" --json --github-annotations --check-harness --check-repos --source-tree --strict"
             ;;
@@ -114,7 +107,7 @@ _goobers_completion()
             flags+=" --port --listen --no-open --dev-assets --wait-for-daemon"
             ;;
         run)
-            flags+=" --gaggle --github-progress --pr --no-wait"
+            flags+=" --gaggle --pr --no-wait"
             ;;
         approve)
             flags+=" --decision --actor"
@@ -269,11 +262,6 @@ _goobers_completion()
         agent-kit)
             if (( COMP_CWORD == 2 )); then
                 candidates="install check update"
-            fi
-            ;;
-        portal-extension)
-            if (( COMP_CWORD == 2 )); then
-                candidates="install status update"
             fi
             ;;
         config)

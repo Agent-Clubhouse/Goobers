@@ -199,8 +199,6 @@ type OperatorRunSummary struct {
 	Liveness           string               `json:"liveness"`
 	Trajectory         string               `json:"trajectory"`
 	PullRequest        *journal.ExternalRef `json:"pullRequest,omitempty"`
-	PullRequestTitle   string               `json:"pullRequestTitle,omitempty"`
-	PullRequestBody    string               `json:"pullRequestBody,omitempty"`
 	PROpenerStage      string               `json:"prOpenerStage,omitempty"`
 	Claim              OperatorClaim        `json:"claim"`
 	LatestError        *journal.ErrorDetail `json:"latestError,omitempty"`
@@ -226,7 +224,6 @@ type OperatorRunSummary struct {
 type OperatorIssue struct {
 	Number string `json:"number"`
 	Title  string `json:"title,omitempty"`
-	URL    string `json:"url,omitempty"`
 }
 
 // OperatorClaim describes the local lease and provider marker relationship.
@@ -1596,7 +1593,6 @@ func summarizeRunForStage(
 	var lastHeartbeat time.Time
 	providerClaimRecorded := false
 	claimedIssueFound := false
-	referenceTitles := make(map[string]string)
 	seenStages := make(map[string]struct{})
 	lastStageStatus := make(map[string]string)
 	repasses, retries, policyRetries, infraRetries := countStageAttempts(run.records)
@@ -1655,14 +1651,6 @@ func summarizeRunForStage(
 				currentStage = ""
 			}
 			lastStageStatus[event.Stage] = event.Status
-			if id, idOK := event.Outputs["id"].(string); idOK && id != "" {
-				if title, titleOK := event.Outputs["title"].(string); titleOK && title != "" {
-					referenceTitles[id] = title
-					if operator.PullRequest != nil && operator.PullRequest.ID == id {
-						operator.PullRequestTitle = title
-					}
-				}
-			}
 			if !claimedIssueFound {
 				id, idOK := event.Outputs["id"].(string)
 				title, titleOK := event.Outputs["title"].(string)
@@ -1717,15 +1705,11 @@ func summarizeRunForStage(
 				if !claimedIssueFound {
 					operator.Issue.Number = event.ExternalRef.ID
 				}
-				if operator.Issue.Number == event.ExternalRef.ID && event.ExternalRef.URL != "" {
-					operator.Issue.URL = event.ExternalRef.URL
-				}
 				operation, _ := event.Runner["operation"].(string)
 				providerClaimRecorded = providerClaimRecorded || operation == "claim"
 			case "pr":
 				ref := *event.ExternalRef
 				operator.PullRequest = &ref
-				operator.PullRequestTitle = referenceTitles[ref.ID]
 			}
 		case journal.EventStageRerunRequested:
 			phase = journal.PhaseRunning
@@ -3017,21 +3001,6 @@ func (s *Local) GetRun(ctx context.Context, runID string) (RunDetail, error) {
 	out, err := s.getRunUnannotated(ctx, runID)
 	if err != nil {
 		return RunDetail{}, err
-	}
-	if out.Operator.PullRequest != nil && s.sources.PullRequestLookup != nil {
-		pull, lookupErr := s.sources.PullRequestLookup(
-			ctx,
-			out.Gaggle,
-			out.Operator.PullRequest.ID,
-		)
-		if lookupErr != nil {
-			out.Operator.DiagnosticsLimitations = append(
-				out.Operator.DiagnosticsLimitations,
-				"pull request description unavailable: "+lookupErr.Error(),
-			)
-		} else {
-			out.Operator.PullRequestBody = pull.Body
-		}
 	}
 	if out.Phase == journal.PhaseRunning && s.sources.SchedulerHeartbeat != nil {
 		lastTickAt, err := s.sources.SchedulerHeartbeat()
