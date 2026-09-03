@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,6 +44,14 @@ const (
 	remediationOutcomeBudgetExhausted remediationEscalationOutcome = "budget-exhausted"
 	remediationOutcomePolicyExcluded  remediationEscalationOutcome = "policy-excluded"
 	remediationOutcomeInfrastructure  remediationEscalationOutcome = "infrastructure-failure"
+	// remediationOutcomeExternallyBlocked marks a park taken BEFORE any agent
+	// ran, because every detected cause is external to the PR's own diff
+	// (#2701): sibling sequencing merge-review already recorded, or required CI
+	// that is red on the base branch itself. An implementer confined to this
+	// PR's worktree cannot change any of them, so running the agentic chain
+	// reproduces the identical diff and escalates anyway — one full remediation
+	// pass spent to reach an outcome that was knowable here.
+	remediationOutcomeExternallyBlocked remediationEscalationOutcome = "externally-blocked"
 )
 
 var remediationCauseOrder = []remediationCause{
@@ -397,6 +406,7 @@ type remediationCheckpointStructuralCollisionFinder func(context.Context, provid
 type remediationCheckpointNoopGuard func(string, int, *providers.PullRequestSummary, string) (string, error)
 type remediationCheckpointSiblingOverlapFinder func(context.Context, int, string, string, []providers.PullRequestSummary) (string, error)
 type remediationCheckpointBaseTipReader func(context.Context, string) (string, error)
+type remediationCheckpointBaseCheckStateReader func(context.Context, string) (providers.CheckState, error)
 
 // remediationCheckpointFeatures declares enrichments available to a provider.
 // ADO leaves GitHub-only enrichments nil rather than branching the stage body.
@@ -409,6 +419,12 @@ type remediationCheckpointFeatures struct {
 	NoopEscalationReason     remediationCheckpointNoopGuard
 	SiblingOverlapContext    remediationCheckpointSiblingOverlapFinder
 	LiveBaseTip              remediationCheckpointBaseTipReader
+	// BaseCheckState answers "is required CI red on the base branch itself?",
+	// which is what separates a failing-CI cause the PR's own diff caused from
+	// one it did not (#2701). Left nil by a provider with no check-state API,
+	// which simply keeps the pre-#2701 behavior of remediating every failing-CI
+	// cause agentically.
+	BaseCheckState remediationCheckpointBaseCheckStateReader
 }
 
 func githubRemediationCheckpointFeatures(provider remediationProvider, repo providers.RepositoryRef, pushToken string) remediationCheckpointFeatures {
@@ -431,6 +447,13 @@ func githubRemediationCheckpointFeatures(provider remediationProvider, repo prov
 		},
 		LiveBaseTip: func(ctx context.Context, base string) (string, error) {
 			return provider.BranchTipSHA(ctx, repo, base)
+		},
+		BaseCheckState: func(ctx context.Context, base string) (providers.CheckState, error) {
+			tip, err := provider.BranchTipSHA(ctx, repo, base)
+			if err != nil {
+				return "", err
+			}
+			return provider.RefCheckState(ctx, repo, tip)
 		},
 	}
 }
@@ -498,17 +521,23 @@ func (t threadCheckpointTransport) PutStickyComment(ctx context.Context, existin
 }
 
 type remediationCheckpointDecisionInput struct {
-	Prior                      remediationState
-	Causes                     []remediationCause
-	Budgets                    remediationBudgets
-	Digest                     string
-	HeadSHA                    string
-	BaseSHA                    string
-	Watermark                  string
-	Forced                     bool
-	ForcedReason               string
-	ForcedOutcome              remediationEscalationOutcome
-	PolicyExcluded             bool
+	Prior          remediationState
+	Causes         []remediationCause
+	Budgets        remediationBudgets
+	Digest         string
+	HeadSHA        string
+	BaseSHA        string
+	Watermark      string
+	Forced         bool
+	ForcedReason   string
+	ForcedOutcome  remediationEscalationOutcome
+	PolicyExcluded bool
+	// ExternallyBlocked marks a cycle whose every detected cause is external to
+	// the PR's own diff (#2701), with ExternalBlockReason naming which ones.
+	// It parks the PR here instead of spending the agentic chain on a change no
+	// in-worktree edit can make.
+	ExternallyBlocked          bool
+	ExternalBlockReason        string
 	StructuralCollisions       []structuralCollision
 	StructuralCollisionContext string
 }
@@ -524,9 +553,14 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 	stalled := remediationStalled(in.Prior, in.Digest, in.BaseSHA)
 	exhaustedCause, exceeded := exhaustedRemediationCause(in.Prior.AttemptsByCause, in.Causes, in.Budgets)
 	structuralCollision := len(in.StructuralCollisions) > 0
+	// A concrete in-run finding always outranks the external classification:
+	// an exhausted budget, a stalled diff or a structural collision is the more
+	// specific account of why this PR is parked, and a forced escalation
+	// carries a caller-supplied terminal reason.
+	externallyBlocked := in.ExternallyBlocked && !exceeded && !stalled && !structuralCollision && !in.Forced
 	cycles := in.Prior.Cycles + 1
 
-	if exceeded || stalled || structuralCollision || in.Forced {
+	if exceeded || stalled || structuralCollision || in.Forced || externallyBlocked {
 		attempted := in.Prior.AttemptsByCause
 		if structuralCollision {
 			for _, cause := range in.Causes {
@@ -559,6 +593,17 @@ func decideRemediationCheckpoint(in remediationCheckpointDecisionInput) remediat
 				"the rebase conflict falls inside `%s` in `%s`, which merged sibling PR #%d substantially restructured — retrying the same patch cannot resolve the required human/product reconciliation",
 				collision.Function, collision.Path, collision.SiblingNumber,
 			)
+		}
+		if externallyBlocked {
+			// No agent ran this cycle, exactly like a policy exclusion — the
+			// park is a statement about state outside this PR, so it consumes
+			// no cause allowance. EscalationCauses stays the observed external
+			// cause set below, which is what lets escalationBaseAdvanceUnparks
+			// release the park automatically once the base advances (the
+			// sibling landed, or CI on the base recovered).
+			escalation.Outcome = remediationOutcomeExternallyBlocked
+			escalation.Attempted = false
+			escalation.Reason = in.ExternalBlockReason
 		}
 		if in.Forced {
 			escalation.Reason = in.ForcedReason
@@ -1066,8 +1111,9 @@ const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budg
 	"diff digest back from a sticky PR comment, compare this cycle's\n" +
 	"actual diff (git diff base...HEAD) against it, and either\n" +
 	"escalate (goobers:merge-escalated, clearing needs-remediation) when\n" +
-	"the active cause exhausts its DSL-declared budget or on a byte-identical\n" +
-	"repeat, or record the advanced\n" +
+	"the active cause exhausts its DSL-declared budget, on a byte-identical\n" +
+	"repeat, or when every detected cause is external to the PR's own diff\n" +
+	"(sibling sequencing, or CI already red on the base branch), or record the advanced\n" +
 	"state as a new sticky comment. Requires selectedNumber (inputsFrom\n" +
 	"gather-pr-context's selectedNumber output), remediationCauses, and the\n" +
 	"five per-cause budget inputs (humanCommentBudget defaults to 2 when\n" +
@@ -1075,7 +1121,8 @@ const remediationCheckpointHelp = "Usage: goobers remediation-checkpoint [--budg
 	"for standalone diagnostics. --escalation-outcome classifies a forced\n" +
 	"--escalate as did-not-converge (the default), budget-exhausted, or infrastructure-failure.\n" +
 	"Escalations persist a machine-readable `escalationOutcome`\n" +
-	"(`did-not-converge`, `budget-exhausted`, `policy-excluded`, or `infrastructure-failure`), whether\n" +
+	"(`did-not-converge`, `budget-exhausted`, `policy-excluded`, `externally-blocked`, or\n" +
+	"`infrastructure-failure`), whether\n" +
 	"repair was attempted, and the attempted causes in both the sticky comment\n" +
 	"and stage result. Exit codes: 0 = checkpoint\n" +
 	"recorded (escalated or not — both are normal outcomes), 1 = business\n" +
@@ -1610,6 +1657,39 @@ func (env *remediationCheckpointRunEnv) priorCheckpointState(comments []provider
 	return prior, priorCommentID, watermark
 }
 
+// externalRemediationBlock returns the park reason when this cycle is blocked
+// only on state outside the PR's own diff (#2701), or "" when at least one
+// detected cause is something an implementer in this worktree could fix.
+//
+// The base-branch check state is read only when a failing-ci cause is the last
+// thing standing between this cycle and a park, so the ordinary remediation
+// path costs no extra provider call. It fails OPEN — an unreadable base check
+// state remediates as before rather than parking a PR on unverified evidence.
+func (env *remediationCheckpointRunEnv) externalRemediationBlock(mode remediationCheckpointMode) string {
+	if mode.forced || len(mode.causes) == 0 {
+		return ""
+	}
+	if !externallyBlockedRemediationCauses(env.current.Labels, mode.causes, true) {
+		return ""
+	}
+	if !slices.Contains(mode.causes, remediationCauseFailingCI) {
+		return externalRemediationBlockReason(mode.causes, env.base)
+	}
+	if env.features.BaseCheckState == nil {
+		return ""
+	}
+	baseState, err := env.features.BaseCheckState(env.ctx, env.base)
+	if err != nil {
+		pf(env.stderr, "warning: could not resolve check state for base branch %q of PR #%d (%v) — remediating the failing CI as usual\n",
+			env.base, env.selectedNumber, err)
+		return ""
+	}
+	if !externallyBlockedRemediationCauses(env.current.Labels, mode.causes, baseState == providers.CheckStateFailing) {
+		return ""
+	}
+	return externalRemediationBlockReason(mode.causes, env.base)
+}
+
 func (env *remediationCheckpointRunEnv) escalate(
 	decision remediationCheckpointDecision,
 	mode remediationCheckpointMode,
@@ -1787,6 +1867,7 @@ func runRemediationCheckpointCore(
 		}
 	}
 	prior, priorCommentID, watermark := env.priorCheckpointState(observation.comments)
+	externalBlockReason := env.externalRemediationBlock(mode)
 
 	decision := decideRemediationCheckpoint(remediationCheckpointDecisionInput{
 		Prior: prior, Causes: mode.causes, Budgets: mode.budgets, Digest: observation.digest,
@@ -1794,6 +1875,8 @@ func runRemediationCheckpointCore(
 		Forced: mode.forced, ForcedReason: mode.reason, ForcedOutcome: mode.forcedOutcome,
 		PolicyExcluded: mode.policyExcluded, StructuralCollisions: observation.structuralCollisions,
 		StructuralCollisionContext: renderStructuralCollisionContext(selectedNumber, observation.structuralCollisions),
+		ExternallyBlocked:          externalBlockReason != "",
+		ExternalBlockReason:        externalBlockReason,
 	})
 	if decision.Escalated {
 		return env.escalate(decision, mode, observation, priorCommentID)
@@ -1942,6 +2025,69 @@ func sequencingOnlyCheckpointWait(labels []string, causes []remediationCause) bo
 		}
 	}
 	return true
+}
+
+// externallyBlockedRemediationCauses reports whether EVERY cause this cycle
+// detected is external to the PR's own diff (#2701), so no change an
+// implementer could make in this PR's worktree resolves any of them.
+//
+// Two causes qualify, and only under evidence:
+//
+//   - sibling-overlap, when merge-review has already recorded the ordering as
+//     goobers:blocked-on-sibling. Without that label the overlap is only a
+//     finding, and adapting this PR to its sibling is ordinary in-worktree work.
+//   - failing-ci, when required CI is red on the BASE BRANCH itself — the same
+//     attribution #4058 established for releasing a failing-ci park: CI is
+//     evaluated against merge(base, head), so a base that is red on its own is
+//     not something this diff caused or can cure.
+//
+// Everything else — a rebase conflict, a substantive finding, a human comment —
+// is in-worktree work by construction, so a single one of them makes the cycle
+// actionable and the whole set is remediated as before. An empty cause set is
+// likewise not an external block: recordCheckpoint's no-cause path already
+// halts it without consuming an allowance.
+func externallyBlockedRemediationCauses(labels []string, causes []remediationCause, baseCIFailing bool) bool {
+	if len(causes) == 0 {
+		return false
+	}
+	for _, cause := range causes {
+		switch cause {
+		case remediationCauseSiblingOverlap:
+			if !hasAnyLabel(labels, []string{blockedOnSiblingLabel}) {
+				return false
+			}
+		case remediationCauseFailingCI:
+			if !baseCIFailing {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// externalRemediationBlockReason renders the human-facing account of an
+// externally-blocked park for the sticky comment and the stage result.
+func externalRemediationBlockReason(causes []remediationCause, baseBranch string) string {
+	parts := make([]string, 0, len(causes))
+	for _, cause := range remediationCauseOrder {
+		if !slices.Contains(causes, cause) {
+			continue
+		}
+		switch cause {
+		case remediationCauseSiblingOverlap:
+			parts = append(parts, fmt.Sprintf(
+				"sibling sequencing merge-review already recorded as `%s`", blockedOnSiblingLabel))
+		case remediationCauseFailingCI:
+			parts = append(parts, fmt.Sprintf(
+				"required CI is red on the base branch %q itself, so this PR's diff did not cause it", baseBranch))
+		}
+	}
+	return fmt.Sprintf(
+		"every detected remediation cause is external to this PR's own diff (%s) — parked without spending a remediation pass, since no change inside this PR can resolve it",
+		strings.Join(parts, "; "),
+	)
 }
 
 func renderRemediationAttempts(attempts remediationAttempts) string {
