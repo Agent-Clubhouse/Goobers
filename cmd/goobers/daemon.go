@@ -664,6 +664,20 @@ func claimWorkcopyRoot(claims map[string]workcopyRootClaim, gaggle, root string,
 	return nil
 }
 
+// triggerDisabled reports whether Trigger.Enabled explicitly suppresses this
+// trigger. The layered contract is: Enabled=nil preserves historical enabled
+// behavior; Enabled=false suppresses the trigger for every non-manual type
+// (schedule, signal, webhook, backlog-item) so the daemon does not register
+// a schedule, wait for a signal, subscribe to webhook events, or use its
+// polling priority. Manual triggers exist to declare a workflow that never
+// auto-fires and always ignore Enabled.
+func triggerDisabled(trigger apiv1.Trigger) bool {
+	if trigger.Enabled == nil || *trigger.Enabled {
+		return false
+	}
+	return trigger.Type != apiv1.TriggerManual
+}
+
 func buildSchedulerDefinitions(
 	l instance.Layout,
 	cfg *instance.Config,
@@ -853,6 +867,9 @@ func buildSchedulerDefinitions(
 		var pollPriority int32
 		pollPrioritySet := false
 		for _, trigger := range wf.Spec.Triggers {
+			if triggerDisabled(trigger) {
+				continue
+			}
 			if trigger.Type == apiv1.TriggerSchedule && trigger.Schedule != "" {
 				schedule, err := localscheduler.ParseSchedule(trigger.Schedule)
 				if err != nil {

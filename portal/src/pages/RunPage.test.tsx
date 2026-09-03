@@ -77,7 +77,7 @@ describe("run detail", () => {
     const config = await client.getPortalConfig();
     vi.spyOn(client, "getPortalConfig").mockResolvedValue({
       ...config,
-      capabilities: { revealRun: false },
+      capabilities: { revealRun: false, workflowEnable: false },
     });
     renderRun("01JZ441DAEMONAPI", client);
 

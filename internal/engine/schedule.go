@@ -453,6 +453,13 @@ func (r *ScheduleReconciler) desired(snapshot ScheduleSnapshot) (map[string]desi
 			if trigger.Type != apiv1.TriggerSchedule {
 				continue
 			}
+			if trigger.Enabled != nil && !*trigger.Enabled {
+				// A disabled schedule trigger is treated as absent: no Temporal
+				// schedule is desired, so any previously registered schedule
+				// for this ordinal will be torn down by the reconcile diff.
+				ordinal++
+				continue
+			}
 			if strings.TrimSpace(trigger.Schedule) == "" {
 				return nil, fmt.Errorf("engine: workflow %q schedule trigger %d has no cron expression", template.WorkflowName, ordinal)
 			}

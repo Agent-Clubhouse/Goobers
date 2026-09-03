@@ -77,7 +77,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// swapping its gaggle's scheduler state, and gaggleStateGet is the
 	// genuine read half that needs no entry.
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
-	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true}
+	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true, "workflowEnabled": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true,
 		// claims/recover (#4016): a stage pod asking the daemon to run the

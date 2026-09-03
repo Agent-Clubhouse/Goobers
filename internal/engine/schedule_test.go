@@ -385,6 +385,86 @@ func TestScheduleReconcilerRequiresBoundedCatchup(t *testing.T) {
 	}
 }
 
+// TestScheduleReconcilerSkipsDisabledScheduleTriggers verifies the
+// Trigger.Enabled contract for schedule triggers: nil and true preserve the
+// historical enabled behavior (a Temporal schedule is registered), and false
+// treats the trigger as absent so no schedule is created and any previously
+// registered one is torn down on the next reconcile.
+func TestScheduleReconcilerSkipsDisabledScheduleTriggers(t *testing.T) {
+	makeSnapshot := func(enabled *bool) ScheduleSnapshot {
+		snapshot := scheduledSnapshot("@every 5m")
+		snapshot.Runs[0].Spec.Triggers[0].Enabled = enabled
+		return snapshot
+	}
+	id := ScheduleID("prod-west", "web", "implement", 0)
+	tru, fal := true, false
+
+	t.Run("nil preserves enabled", func(t *testing.T) {
+		store := newFakeScheduleClient()
+		reconciler, err := newScheduleReconciler(store, "goobers-engine", time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := reconciler.Reconcile(context.Background(), makeSnapshot(nil)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if store.creates != 1 || store.schedules[id] == nil {
+			t.Fatalf("nil Enabled must preserve historical enabled behavior: creates=%d schedules=%v", store.creates, store.schedules)
+		}
+	})
+
+	t.Run("true is enabled", func(t *testing.T) {
+		store := newFakeScheduleClient()
+		reconciler, err := newScheduleReconciler(store, "goobers-engine", time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := reconciler.Reconcile(context.Background(), makeSnapshot(&tru)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if store.creates != 1 || store.schedules[id] == nil {
+			t.Fatalf("Enabled=true must register the schedule: creates=%d schedules=%v", store.creates, store.schedules)
+		}
+	})
+
+	t.Run("false disables from fresh state", func(t *testing.T) {
+		store := newFakeScheduleClient()
+		reconciler, err := newScheduleReconciler(store, "goobers-engine", time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := reconciler.Reconcile(context.Background(), makeSnapshot(&fal)); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		if store.creates != 0 || len(store.schedules) != 0 {
+			t.Fatalf("disabled schedule trigger must not register a Temporal schedule: creates=%d schedules=%v", store.creates, store.schedules)
+		}
+	})
+
+	t.Run("flipping to false tears down existing schedule", func(t *testing.T) {
+		store := newFakeScheduleClient()
+		reconciler, err := newScheduleReconciler(store, "goobers-engine", time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := reconciler.Reconcile(context.Background(), makeSnapshot(&tru)); err != nil {
+			t.Fatalf("initial reconcile: %v", err)
+		}
+		if store.creates != 1 {
+			t.Fatalf("initial creates=%d, want 1", store.creates)
+		}
+		disabled := makeSnapshot(&fal)
+		disabled.ConfigSHA = "def456"
+		disabled.ConfigGeneration = 2
+		if err := reconciler.Reconcile(context.Background(), disabled); err != nil {
+			t.Fatalf("disable reconcile: %v", err)
+		}
+		if store.deletes != 1 || len(store.schedules) != 0 {
+			t.Fatalf("flipping Enabled to false must delete the schedule: deletes=%d schedules=%v", store.deletes, store.schedules)
+		}
+	})
+}
+
 func TestScheduleOverlapSkipsWhileRunInFlight(t *testing.T) {
 	store := newFakeScheduleClient()
 	reconciler, err := newScheduleReconciler(store, "goobers-engine", time.Minute)
