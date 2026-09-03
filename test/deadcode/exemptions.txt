@@ -89,6 +89,7 @@ github.com/goobers/goobers/internal/workflow/ir.Validate # Structural IR validat
 github.com/goobers/goobers/internal/workflow/ir.cloneGate # Internal clone helper reachable through the retained normalization path for gate nodes in the additive Workflow IR compatibility layer (#4080).
 github.com/goobers/goobers/internal/workflow/ir.cloneParallel # Internal clone helper reachable through the retained normalization path for parallel nodes in the additive Workflow IR compatibility layer (#4080).
 github.com/goobers/goobers/internal/workflow/ir.cloneTask # Internal clone helper reachable through the retained normalization path for task nodes in the additive Workflow IR compatibility layer (#4080).
+github.com/goobers/goobers/internal/workflow/ir.cloneTriggers # Internal clone helper reachable through the retained normalization path for trigger declarations in the additive Workflow IR compatibility layer (#4080).
 github.com/goobers/goobers/internal/workflow/ir.ports # Canonical port-ordering helper retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.sideEffect # Side-effect classifier retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
 github.com/goobers/goobers/internal/workflow/ir.taskInputs # Canonical task-input extraction retained for the additive Workflow IR compatibility layer introduced in #4080 and exercised by ir_test.go.
