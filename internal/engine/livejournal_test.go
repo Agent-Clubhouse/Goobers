@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -202,6 +203,51 @@ func TestLiveJournalShowsStageTransitionMidRun(t *testing.T) {
 	}
 	if divergence != "" {
 		t.Fatalf("live journal diverges from history re-projection:\n%s", divergence)
+	}
+}
+
+func TestDiffLiveJournalLeavesNoTempDirResidue(t *testing.T) {
+	before, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		t.Fatalf("read temp dir before verify: %v", err)
+	}
+	beforeNames := make(map[string]struct{}, len(before))
+	for _, entry := range before {
+		beforeNames[entry.Name()] = struct{}{}
+	}
+
+	writer, runsDir := newLiveWriter(t)
+	spec := crSpec("implement",
+		[]apiv1.Task{crTask("implement", "review")},
+		[]apiv1.Gate{crGate("review", map[string]string{"pass": wf.TerminalComplete, "fail": wf.TargetAbort})})
+	in := projectionInput("live-tempdir-leak", spec)
+	in.LiveJournal = true
+	proj := executeLive(t, in, &Activities{
+		Det:        &journalPeekRunner{dir: filepath.Join(runsDir, in.RunID)},
+		Auto:       gate.NewAutomatedEvaluator(),
+		Workspaces: testWorkspaces(t),
+		Journal:    writer,
+	}, false)
+
+	if _, err := DiffLiveJournal(liveEvents(t, runsDir, in.RunID), proj); err != nil {
+		t.Fatalf("DiffLiveJournal: %v", err)
+	}
+
+	after, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		t.Fatalf("read temp dir after verify: %v", err)
+	}
+	var leaked []string
+	for _, entry := range after {
+		if _, ok := beforeNames[entry.Name()]; ok {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), "goobers-journal-verify-") {
+			leaked = append(leaked, entry.Name())
+		}
+	}
+	if len(leaked) > 0 {
+		t.Fatalf("DiffLiveJournal leaked tempdir entries: %v", leaked)
 	}
 }
 

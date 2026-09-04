@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/livejournal"
@@ -36,7 +37,13 @@ func DiffLiveJournal(liveEvents []journal.Event, proj JournalProjection, opts ..
 		return "", fmt.Errorf("engine: create verification staging root: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(stagingRoot) }()
-	dir, err := ProjectRun(stagingRoot, proj, opts...)
+
+	// Project the journal under a runs/ child of the verification root so the
+	// sibling staging directories the journal machinery creates live under the
+	// same tree as the temp root. Without that nesting, the lock and creation
+	// staging dirs are siblings of the root and survive the cleanup pass.
+	runsDir := filepath.Join(stagingRoot, "runs")
+	dir, err := ProjectRun(runsDir, proj, opts...)
 	if err != nil {
 		return "", fmt.Errorf("engine: re-project run %q for verification: %w", proj.Identity.RunID, err)
 	}
