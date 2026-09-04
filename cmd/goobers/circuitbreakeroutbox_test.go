@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/gate"
 	"github.com/goobers/goobers/internal/instance"
 	"github.com/goobers/goobers/internal/journal"
@@ -113,7 +114,7 @@ func TestCircuitBreakerParkFailurePersistedAndSurfaced(t *testing.T) {
 	fake := &circuitBreakerFakeCommenter{parkErr: errors.New("provider unreachable")}
 	installCircuitBreakerFake(t, fake)
 
-	h := buildTerminalCircuitBreaker(l, circuitBreakerTestConfig(), blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+	h := buildTerminalCircuitBreaker(l, circuitBreakerTestConfig(), apiv1.RepoRef{}, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
 	var lastErr error
 	for i := 0; i < failureStreakThreshold; i++ {
 		lastErr = h("run-cb-fail", journal.PhaseEscalated, "open-pr-gate")
@@ -152,7 +153,7 @@ func TestCircuitBreakerOutboxReconciledOnNextTerminal(t *testing.T) {
 	fake := &circuitBreakerFakeCommenter{parkErr: errors.New("provider unreachable")}
 	installCircuitBreakerFake(t, fake)
 
-	h := buildTerminalCircuitBreaker(l, circuitBreakerTestConfig(), blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+	h := buildTerminalCircuitBreaker(l, circuitBreakerTestConfig(), apiv1.RepoRef{}, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
 	for i := 0; i < failureStreakThreshold; i++ {
 		_ = h("run-cb-fail", journal.PhaseEscalated, "open-pr-gate")
 	}
@@ -203,7 +204,7 @@ func TestCircuitBreakerOutboxClearedByCompletedTerminal(t *testing.T) {
 
 	fake := &circuitBreakerFakeCommenter{}
 	installCircuitBreakerFake(t, fake)
-	h := buildTerminalCircuitBreaker(l, circuitBreakerTestConfig(), blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+	h := buildTerminalCircuitBreaker(l, circuitBreakerTestConfig(), apiv1.RepoRef{}, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
 	if err := h("run-cb-ok", journal.PhaseCompleted, "done"); err != nil {
 		t.Fatalf("terminal notifier: %v", err)
 	}
@@ -228,7 +229,7 @@ func TestCircuitBreakerOutboxSuccessLeavesNoResidue(t *testing.T) {
 	fake := &circuitBreakerFakeCommenter{}
 	installCircuitBreakerFake(t, fake)
 
-	h := buildTerminalCircuitBreaker(l, circuitBreakerTestConfig(), blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+	h := buildTerminalCircuitBreaker(l, circuitBreakerTestConfig(), apiv1.RepoRef{}, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
 	for i := 0; i < failureStreakThreshold; i++ {
 		if err := h("run-cb-good", journal.PhaseEscalated, "open-pr-gate"); err != nil {
 			t.Fatalf("call %d: %v", i+1, err)
