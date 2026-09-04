@@ -116,7 +116,7 @@ func runEngineQueues(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	c, err := client.DialContext(ctx, client.Options{HostPort: *hostPort, Namespace: *namespace})
+	c, err := dialEngineTemporal(ctx, client.Options{HostPort: *hostPort, Namespace: *namespace})
 	if err != nil {
 		pf(stderr, "error: dial temporal at %s: %v\n", *hostPort, err)
 		return 1

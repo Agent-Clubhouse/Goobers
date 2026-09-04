@@ -104,6 +104,26 @@ const workerHelp = "Usage: goobers worker [--task-queue <queue>]... [flags]\n\n"
 // clean drain, so k8s/operators can alert on it.
 const workerAbandonedExit = 3
 
+// workerHostServer is the half of *workerhost.Host runWorker uses.
+type workerHostServer interface {
+	Run(ctx context.Context) error
+}
+
+// newWorkerHost is the worker-host seam, for the same reason
+// newStageDispatcher exists: what runWorker does that nothing else does is
+// ASSEMBLE the workerhost.Config — the served queue set (workflow queues plus
+// every derived dispatch queue), the frontend, and the wired EngineDeps — and
+// that assembly is unobservable once it is inside a constructed Host, which
+// needs a live Temporal frontend to build. Tests substitute a fake host and
+// assert the config the CLI actually resolved.
+var newWorkerHost = func(cfg workerhost.Config) (workerHostServer, error) {
+	host, err := workerhost.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return host, nil
+}
+
 // repeatableFlag collects a repeatable string flag in declaration order.
 type repeatableFlag []string
 
@@ -318,7 +338,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, stdout, stderr)
 	}
 
-	host, err := workerhost.New(workerhost.Config{
+	host, err := newWorkerHost(workerhost.Config{
 		HostPort:     *hostPort,
 		Namespace:    *namespace,
 		TaskQueues:   queues,
