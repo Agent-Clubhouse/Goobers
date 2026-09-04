@@ -611,10 +611,16 @@ func (r *Runner) runParallelBranch(
 				replayTask = nil
 			} else {
 				stageResult, produced, err = r.runTask(
-					ctx, branchJournal, in, ex, task, branch.id,
-					branchContextPointers(basePointers, result.pointers),
-					result.lastResult, result.completed, nil, startAttempt, firstClass,
-					"", workspaceBranch, nil, &branchRecorded, committedWorkOnInfra, resumeAccounting,
+					ctx,
+					taskFrame{
+						jr: branchJournal, in: in, ex: ex, t: task,
+						upstream:        branchContextPointers(basePointers, result.pointers),
+						upstreamResult:  result.lastResult,
+						completed:       result.completed,
+						workspaceBranch: workspaceBranch, branchRecorded: &branchRecorded,
+					},
+					branch.id, startAttempt, firstClass, "",
+					nil, committedWorkOnInfra, resumeAccounting,
 				)
 				startAttempt = 1
 				firstClass = ""

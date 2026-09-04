@@ -1984,10 +1984,15 @@ func (r *Runner) stepTask(ctx context.Context, ws *walkState, t apiv1.Task) (api
 			upstreamPointers = ws.parallel.currentPointers(ws.parallelRootPointers)
 		}
 		result, produced, err = r.runTask(
-			ctx, ws.jr, ws.in, ws.ex, t, branch, upstreamPointers, ws.lastResult,
-			ws.completed, ws.fanIn, startAttempt, firstClass, instructionAddendum,
-			ws.workspaceBranch, taskRerun, &ws.branchRecorded, infraFailedAttemptCommittedWork,
-			resumeAccounting,
+			ctx,
+			taskFrame{
+				jr: ws.jr, in: ws.in, ex: ws.ex, t: t,
+				upstream: upstreamPointers, upstreamResult: ws.lastResult,
+				completed: ws.completed, fanIn: ws.fanIn,
+				workspaceBranch: ws.workspaceBranch, branchRecorded: &ws.branchRecorded,
+			},
+			branch, startAttempt, firstClass, instructionAddendum,
+			taskRerun, infraFailedAttemptCommittedWork, resumeAccounting,
 		)
 	}
 	if ws.rerun != nil && ws.rerun.stage == t.Name {
@@ -4143,8 +4148,30 @@ func finishTaskDispatch(jr executionJournal, heartbeat stageHeartbeat, stage str
 	return heartbeatErr
 }
 
-func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, branch int, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum, workspaceBranch string, rerun *rerunContext, branchRecorded *bool, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
-	upstream = apiv1.SelectContextPointers(upstream, t.ContextFrom)
+// taskFrame is the execution frame one stage attempt runs against: the journal
+// it appends to, the run input, the executors, the task itself, the upstream
+// context and outputs it reads, and the workspace binding it checks out.
+// runTask and dispatchTask read exactly the same frame, so they take it as one
+// value rather than as two parallel argument lists that drift apart field by
+// field (#4235) — the same reason walk takes a *walkState.
+type taskFrame struct {
+	jr              executionJournal
+	in              StartInput
+	ex              *executors
+	t               apiv1.Task
+	upstream        []apiv1.ContextPointer
+	upstreamResult  apiv1.ResultEnvelope
+	completed       stageOutputs
+	fanIn           *parallelExec
+	workspaceBranch string
+	branchRecorded  *bool
+}
+
+func (r *Runner) runTask(ctx context.Context, tf taskFrame, branch int, startAttempt int32, firstClass journal.AttemptClass, instructionAddendum string, rerun *rerunContext, infraFailedAttemptCommittedWork bool, resumeAccounting *resumeRetryAccounting) (apiv1.ResultEnvelope, []apiv1.ContextPointer, error) {
+	tf.upstream = apiv1.SelectContextPointers(tf.upstream, tf.t.ContextFrom)
+	jr, in, t := tf.jr, tf.in, tf.t
+	upstream, upstreamResult := tf.upstream, tf.upstreamResult
+	completed, fanIn := tf.completed, tf.fanIn
 	// Both admission checks run here, before any workspace or credential
 	// provisioning below. contextFrom-selected pointers are graded by
 	// ValidateInputIntegrity; inputsFrom values are bare scalars whose only
@@ -4288,7 +4315,7 @@ func (r *Runner) runTask(ctx context.Context, jr executionJournal, in StartInput
 		if t.Type == apiv1.TaskAgentic {
 			attemptCtx = invoke.WithAgentUsageReporter(attemptCtx, usage.report)
 		}
-		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, jr, in, ex, t, upstream, upstreamResult, completed, fanIn, int(attempt), class, attemptAddendum, span, workspaceBranch, branchRecorded, &infraFailedAttemptCommittedWork)
+		result, mutations, dispatchErr, removeErr := r.dispatchTask(attemptCtx, tf, int(attempt), class, attemptAddendum, span, &infraFailedAttemptCommittedWork)
 		if t.Type == apiv1.TaskAgentic {
 			attemptUsage, usageReported := usage.snapshot()
 			accumulateStageUsage(cumulativeUsage, attemptUsage)
@@ -4641,7 +4668,11 @@ func defaultBacklogQueryRequireLabels(task apiv1.Task, inputs map[string]string,
 // contract, not a hint (unlike evaluateGate's unconditional Outputs flatten,
 // which is safe precisely because a gate never mutates run state on a wide-
 // open read).
-func (r *Runner) dispatchTask(ctx context.Context, jr executionJournal, in StartInput, ex *executors, t apiv1.Task, upstream []apiv1.ContextPointer, upstreamResult apiv1.ResultEnvelope, completed stageOutputs, fanIn *parallelExec, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, workspaceBranch string, branchRecorded *bool, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+func (r *Runner) dispatchTask(ctx context.Context, tf taskFrame, attempt int, class journal.AttemptClass, instructionAddendum string, span telemetry.Span, infraFailedAttemptCommittedWork *bool) (result apiv1.ResultEnvelope, mutations []mutationFact, err error, removeErr error) {
+	jr, in, ex, t := tf.jr, tf.in, tf.ex, tf.t
+	upstream, upstreamResult := tf.upstream, tf.upstreamResult
+	completed, fanIn := tf.completed, tf.fanIn
+	workspaceBranch, branchRecorded := tf.workspaceBranch, tf.branchRecorded
 	workspaceMode := taskWorkspaceMode(t)
 	taskInputs, err := workflow.TaskInvocationInputs(in.Machine, t)
 	if err != nil {
