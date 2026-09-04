@@ -1,30 +1,46 @@
-// Package v30 implements the DSL 3.0 workflow interpreter — the Goobernetes
-// language surface (docs/design/dsl-3.0.md): stage-level runsOn placement
-// requirements, declared repoFrom repo-handoff edges (WF022, reaching
-// definitions), and the restrictions vocabulary. Copied forward from the
-// frozen 2.0 interpreter (internal/workflow/v_2_0) per dsl-3.0.md §8/D18.
+// Package v20 implements the frozen DSL 2.0 workflow interpreter, superseded
+// by the DSL 3.0 interpreter in internal/workflow/v_3_0.
 //
 // This package owns every version-observable rule from parsed API fields to a
 // compiled machine. It is copied forward when a new DSL interpreter is cut.
 //
-// Naming (dsl-3.0.md open point 1): version-literal — directory v_3_0,
-// package v30. The relative names v_current/v_next stop meaning anything the
-// moment three interpreters coexist (they do today: 1.4 lives until #3507
-// deletes it), and every future cut under relative naming would force a
-// rename churn through two packages. Version-literal names are stable
-// forever; #3507 may re-home the older two on the same scheme.
-package v30
+// Naming (dsl-3.0.md open point 1): version-literal — directory v_2_0,
+// package v20, matching v_3_0/v30.
+package v20
 
 import "github.com/goobers/goobers/internal/workflow/internal/model"
 
-// DSLVersion is the language version whose semantics this interpreter owns.
-const DSLVersion = "3.0"
+// DSLVersion is the language version whose semantics this interpreter freezes.
+const DSLVersion = "2.0"
 
 // Definition is the shared versioned workflow snapshot.
 type Definition = model.Definition
 
 // Machine is the shared compiled runtime machine.
 type Machine = model.Machine
+
+// Graph is the canonical executable workflow graph.
+type Graph = model.Graph
+
+// GraphEdge is a directed transition between workflow nodes.
+type GraphEdge = model.GraphEdge
+
+// GraphNode is one executable or control-flow node in a workflow graph.
+type GraphNode = model.GraphNode
+
+// GraphNodeKind classifies executable and control-flow nodes.
+type GraphNodeKind = model.GraphNodeKind
+
+const (
+	// GraphNodeDeterministic identifies a deterministic task.
+	GraphNodeDeterministic = model.GraphNodeDeterministic
+	// GraphNodeAgentic identifies an agent-backed task.
+	GraphNodeAgentic = model.GraphNodeAgentic
+	// GraphNodeGate identifies a policy gate.
+	GraphNodeGate = model.GraphNodeGate
+	// GraphNodeParallel identifies a parallel fan-out node.
+	GraphNodeParallel = model.GraphNodeParallel
+)
 
 const (
 	// TerminalComplete ends a run successfully.

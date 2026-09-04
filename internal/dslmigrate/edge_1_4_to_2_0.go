@@ -12,7 +12,7 @@ const (
 )
 
 // applyCurrentToNext implements the DVL-5 (#865, PR #1353) v_current→v_next
-// edge's one concrete semantic delta: internal/workflow/v_next's ci-poll
+// edge's one concrete semantic delta: internal/workflow/v_2_0's ci-poll
 // input builder injects a "10s" pollIntervalSeconds default onto a ci-poll
 // task's invocation whenever its downstream automated gate leaves
 // PollIntervalSeconds unset, where v_current's builder leaves the input

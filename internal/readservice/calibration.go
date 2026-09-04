@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/goobers/goobers/internal/readmodel"
-	vnext "github.com/goobers/goobers/internal/workflow/v_next"
+	v20 "github.com/goobers/goobers/internal/workflow/v_2_0"
 )
 
 type calibrationReader interface {
@@ -15,27 +15,27 @@ type calibrationReader interface {
 
 // SimulateWorkflow calibrates a workflow from the attached read model and
 // returns a reproducible, read-only projection.
-func (s *Local) SimulateWorkflow(ctx context.Context, definition vnext.Definition,
-	windowStart, windowEnd time.Time, options vnext.SimulationOptions) (vnext.SimulationResult, error) {
+func (s *Local) SimulateWorkflow(ctx context.Context, definition v20.Definition,
+	windowStart, windowEnd time.Time, options v20.SimulationOptions) (v20.SimulationResult, error) {
 	source, ok := s.sources.ReadModel.(calibrationReader)
 	if !ok {
-		return vnext.SimulationResult{}, fmt.Errorf("read service: calibration read model is unavailable")
+		return v20.SimulationResult{}, fmt.Errorf("read service: calibration read model is unavailable")
 	}
 	snapshot, err := source.HarvestCalibration(ctx, windowStart, windowEnd, 0)
 	if err != nil {
-		return vnext.SimulationResult{}, err
+		return v20.SimulationResult{}, err
 	}
-	calibration := vnext.Calibration{
+	calibration := v20.Calibration{
 		WindowStart: snapshot.WindowStart,
 		WindowEnd:   snapshot.WindowEnd,
 		Runs:        snapshot.Runs,
 		MinSamples:  snapshot.MinSamples,
 		Outcomes:    snapshot.Outcomes,
 		Gates:       snapshot.Gates,
-		Nodes:       make(map[string]vnext.NodeCalibration, len(snapshot.Nodes)),
+		Nodes:       make(map[string]v20.NodeCalibration, len(snapshot.Nodes)),
 	}
 	for name, observation := range snapshot.Nodes {
-		calibration.Nodes[name] = vnext.NodeCalibration{
+		calibration.Nodes[name] = v20.NodeCalibration{
 			Samples:    observation.Samples,
 			Successes:  observation.Successes,
 			Durations:  observation.Durations,
@@ -44,41 +44,41 @@ func (s *Local) SimulateWorkflow(ctx context.Context, definition vnext.Definitio
 		}
 	}
 
-	return vnext.Simulate(definition, calibration, options)
+	return v20.Simulate(definition, calibration, options)
 }
 
 // EvaluateWorkflowWhatIf compares a baseline definition with a proposed
 // candidate using one journal-derived calibration snapshot.
-func (s *Local) EvaluateWorkflowWhatIf(ctx context.Context, baseline, candidate vnext.Definition,
-	windowStart, windowEnd time.Time, options vnext.SimulationOptions) (vnext.WhatIfResult, error) {
+func (s *Local) EvaluateWorkflowWhatIf(ctx context.Context, baseline, candidate v20.Definition,
+	windowStart, windowEnd time.Time, options v20.SimulationOptions) (v20.WhatIfResult, error) {
 	source, ok := s.sources.ReadModel.(calibrationReader)
 	if !ok {
-		return vnext.WhatIfResult{}, fmt.Errorf("read service: calibration read model is unavailable")
+		return v20.WhatIfResult{}, fmt.Errorf("read service: calibration read model is unavailable")
 	}
 	snapshot, err := source.HarvestCalibration(ctx, windowStart, windowEnd, 0)
 	if err != nil {
-		return vnext.WhatIfResult{}, err
+		return v20.WhatIfResult{}, err
 	}
-	calibration := vnext.Calibration{
+	calibration := v20.Calibration{
 		WindowStart: snapshot.WindowStart, WindowEnd: snapshot.WindowEnd,
 		Runs: snapshot.Runs, MinSamples: snapshot.MinSamples,
 		Outcomes: snapshot.Outcomes, Gates: snapshot.Gates,
-		Nodes: make(map[string]vnext.NodeCalibration, len(snapshot.Nodes)),
+		Nodes: make(map[string]v20.NodeCalibration, len(snapshot.Nodes)),
 	}
 	for name, observation := range snapshot.Nodes {
-		calibration.Nodes[name] = vnext.NodeCalibration{
+		calibration.Nodes[name] = v20.NodeCalibration{
 			Samples: observation.Samples, Successes: observation.Successes,
 			Durations: observation.Durations, RetryWaste: observation.RetryWaste,
 			Costs: observation.Costs,
 		}
 	}
-	baseGraph, problems := vnext.GraphForDefinition(baseline)
+	baseGraph, problems := v20.GraphForDefinition(baseline)
 	if len(problems) != 0 {
-		return vnext.WhatIfResult{}, fmt.Errorf("read service: baseline workflow: %s", problems[0])
+		return v20.WhatIfResult{}, fmt.Errorf("read service: baseline workflow: %s", problems[0])
 	}
-	candidateGraph, problems := vnext.GraphForDefinition(candidate)
+	candidateGraph, problems := v20.GraphForDefinition(candidate)
 	if len(problems) != 0 {
-		return vnext.WhatIfResult{}, fmt.Errorf("read service: candidate workflow: %s", problems[0])
+		return v20.WhatIfResult{}, fmt.Errorf("read service: candidate workflow: %s", problems[0])
 	}
-	return vnext.EvaluateWhatIf(baseGraph, candidateGraph, calibration, options)
+	return v20.EvaluateWhatIf(baseGraph, candidateGraph, calibration, options)
 }
