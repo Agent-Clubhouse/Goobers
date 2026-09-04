@@ -321,6 +321,9 @@ func checks(commands []string, tools toolchain, metadata buildMetadata, goos, ti
 		{label: "stage-name-lint", command: tools.goCommand, args: []string{"run", "./test/stagenamelint"}, group: groupChecks},
 		{label: "vet", command: tools.goCommand, args: []string{"vet", "./..."}, group: groupChecks},
 		{label: "flake-policy", command: tools.goCommand, args: []string{"run", "./test/flakepolicy"}, group: groupChecks},
+		// Complexity that was decomposed by hand regrows silently without an
+		// observer watching the baseline (#4231).
+		{label: "complexity", command: tools.goCommand, args: []string{"run", "./test/complexitygate"}, group: groupChecks},
 		{label: "design-doc-status", command: tools.goCommand, args: []string{"run", "./test/designstatus"}, group: groupChecks},
 		{label: "markdown-links", command: tools.goCommand, args: []string{"run", "./test/markdownlinks"}, group: groupChecks},
 		// A lockfile pinned to a private npm mirror answers 403 to every

@@ -194,6 +194,18 @@ vulncheck:
 deadcode:
 	$(GO) run ./test/deadcode -go $(GO)
 
+## complexity: Enforce the cyclomatic-complexity caps against the pinned baseline.
+.PHONY: complexity
+complexity:
+	$(GO) run ./test/complexitygate
+
+## complexity-update: Re-pin the complexity baseline to the current tree.
+# Run after a deliberate decomposition (or when a new offender is genuinely
+# unavoidable and carries a //complexitygate:allow justification).
+.PHONY: complexity-update
+complexity-update:
+	$(GO) run ./test/complexitygate -update
+
 ## flake-policy: Reject anonymous flake skips and workflow retries.
 .PHONY: flake-policy
 flake-policy:
