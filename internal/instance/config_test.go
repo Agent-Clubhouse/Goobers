@@ -3585,6 +3585,12 @@ func TestWriteConfigPreservesExistingModeAndStagesAtomically(t *testing.T) {
 	if err := os.WriteFile(path, []byte("placeholder\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Windows does not model POSIX modes, so compare against whatever mode the
+	// pre-existing file actually reports rather than the requested 0600.
+	beforeInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := &Config{APIVersion: ConfigAPIVersion, Kind: ConfigKind}
 	if err := WriteConfig(path, cfg); err != nil {
 		t.Fatalf("WriteConfig: %v", err)
@@ -3593,8 +3599,8 @@ func TestWriteConfigPreservesExistingModeAndStagesAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("mode = %v, want the existing 0600 preserved", info.Mode().Perm())
+	if info.Mode().Perm() != beforeInfo.Mode().Perm() {
+		t.Fatalf("mode = %v, want the existing %v preserved", info.Mode().Perm(), beforeInfo.Mode().Perm())
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
