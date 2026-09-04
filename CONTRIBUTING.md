@@ -105,8 +105,9 @@ command instead. **CI:** each validation job maps to the same contract:
 
 | GitHub Actions job | Tier correspondence |
 |---|---|
-| `platform gate` (Ubuntu/macOS) | `make ci` (`go run ./test/ci` is its portable implementation) |
-| `windows compile smoke` | The Windows `go vet` + build slice of `verify-fast` |
+| `checks` | `make ci` (`go run ./test/ci` is its portable implementation) |
+| `darwin gate (build · vet)` | The macOS build + `go vet` slice of `verify-fast` |
+| `windows gate (build · vet · runtime smoke)` | The Windows `go vet` + build slice of `verify-fast`, plus a runtime smoke |
 | `Go vulnerability scan` | Standalone `make vulncheck` gate for reachable standard-library and dependency vulnerabilities |
 | `make ci` aggregate | Required status for the merge tier, Windows compile slice, and vulnerability scan; it runs no additional validation |
 | `unit` | Standalone `make ci` gate |

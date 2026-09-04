@@ -1,6 +1,9 @@
 # Daemon identity on multi-owner instances
 
-**Status:** draft — design of record for #3341. Design only: this document changes no code.
+**Status:** implemented — the routing this document designs shipped in #3414 and
+#3415; `internal/instance/config.go`'s `DaemonIdentityConfig` carries the
+per-owner-installation fields described below. Retained as the design of record
+for #3341; the code, not this document, is authoritative for current behaviour.
 **Verified against** `origin/main` @ `a1cd66dd`.
 
 `daemonIdentity` is per-instance global and carries exactly one `installationId`. GitHub App
