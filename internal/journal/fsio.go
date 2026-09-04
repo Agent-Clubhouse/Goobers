@@ -87,16 +87,46 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return writeFileAtomic(path, data, perm)
 }
 
-// writeFileAtomic writes data to path via a sibling temp file, fsync, and rename.
+// writeFileAtomic writes data to path via a sibling temp file, fsync, and
+// rename. The staging file gets a unique name from os.CreateTemp rather than a
+// fixed path+".tmp": two processes writing the same target would otherwise
+// share one staging inode and could publish a torn or wrong-writer result. The
+// staged file is removed on every error path so a failed write leaves no
+// litter and never touches the target.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := writeFileSynced(tmp, data, perm); err != nil {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	if err := writeOpenFileSynced(f, data, perm); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := durability.ReplaceFile(tmp, path); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
-	return fsyncDir(filepath.Dir(path))
+	return fsyncDir(dir)
+}
+
+// writeOpenFileSynced writes data to the already-open f, applies perm, fsyncs,
+// and closes it.
+func writeOpenFileSynced(f *os.File, data []byte, perm os.FileMode) error {
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := syncFile(f); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // writeFileSynced writes data to path and fsyncs the file before returning.

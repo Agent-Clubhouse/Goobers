@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -136,5 +137,40 @@ func TestFixRequiresToFlag(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "--to <version> is required") {
 		t.Fatalf("fix (no --to) stderr missing usage diagnostic: %q", stderr)
+	}
+}
+
+func TestFixWriteOnReadOnlyDirLeavesSourceUnmodified(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions do not gate file creation on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	root, workflowPath := initFixTestInstance(t)
+	before, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflowDir := filepath.Dir(workflowPath)
+	if err := os.Chmod(workflowDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(workflowDir, 0o700) })
+
+	code, stdout, stderr := runArgs(t, "fix", "--to", "2.0", "--write", root)
+	if code != 1 {
+		t.Fatalf("fix --write on a read-only dir: code=%d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "write:") {
+		t.Fatalf("fix --write failure output missing a write diagnostic:\n%s", stdout)
+	}
+
+	after, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("failed --write must leave the source byte-identical:\n%s", after)
 	}
 }

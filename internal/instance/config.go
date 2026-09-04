@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/externaltelemetry"
+	"github.com/goobers/goobers/internal/journal"
 	"github.com/goobers/goobers/internal/procenv"
 	"github.com/goobers/goobers/internal/runcontrol"
 	"github.com/goobers/goobers/internal/speechnotify"
@@ -2551,13 +2552,20 @@ func IsLoopbackListenAddress(address string) bool {
 	return validateLoopbackListenAddress(address) == nil
 }
 
-// WriteConfig marshals cfg as YAML and writes it to path.
+// WriteConfig marshals cfg as YAML and writes it to path. The write goes
+// through a staged temp file and rename (journal.WriteFileAtomic): instance.yaml
+// is the first file the daemon reads on every start, so a crash or full disk
+// mid-write must never leave a truncated one behind.
 func WriteConfig(path string, cfg *Config) error {
 	yamlBytes, err := marshalConfig(cfg)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, yamlBytes, 0o644); err != nil {
+	mode := os.FileMode(0o644)
+	if fi, serr := os.Stat(path); serr == nil {
+		mode = fi.Mode().Perm()
+	}
+	if err := journal.WriteFileAtomic(path, yamlBytes, mode); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

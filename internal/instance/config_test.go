@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -3575,5 +3576,73 @@ func TestDaemonIdentityInstallationsMustCoverEveryOwner(t *testing.T) {
 	err := missing.validateDaemonIdentityOwnerCoverage()
 	if err == nil || !strings.Contains(err.Error(), "globex") {
 		t.Fatalf("expected an error naming the unbound owner, got %v", err)
+	}
+}
+
+func TestWriteConfigPreservesExistingModeAndStagesAtomically(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ConfigFileName)
+	if err := os.WriteFile(path, []byte("placeholder\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Windows does not model POSIX modes, so compare against whatever mode the
+	// pre-existing file actually reports rather than the requested 0600.
+	beforeInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{APIVersion: ConfigAPIVersion, Kind: ConfigKind}
+	if err := WriteConfig(path, cfg); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != beforeInfo.Mode().Perm() {
+		t.Fatalf("mode = %v, want the existing %v preserved", info.Mode().Perm(), beforeInfo.Mode().Perm())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != ConfigFileName {
+			t.Fatalf("staging file %q left behind after WriteConfig", entry.Name())
+		}
+	}
+}
+
+func TestWriteConfigFailureLeavesExistingFileIntact(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions do not gate file creation on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, ConfigFileName)
+	original := []byte("original: true\n")
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	err := WriteConfig(path, &Config{APIVersion: ConfigAPIVersion, Kind: ConfigKind})
+	if err == nil {
+		t.Fatal("WriteConfig into a read-only dir: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Fatalf("error %q should name the config path", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("instance.yaml = %q, want it unmodified", got)
 	}
 }

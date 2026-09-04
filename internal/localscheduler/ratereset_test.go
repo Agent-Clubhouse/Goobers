@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -78,6 +79,12 @@ func TestRateResetOverwrites(t *testing.T) {
 }
 
 func TestWriteRateResetPublishesAtomically(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions do not gate file creation on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
 	oldTime := time.Date(2026, time.August, 15, 10, 11, 12, 13, time.UTC)
 	newTime := oldTime.Add(time.Hour)
 	oldContent := []byte(oldTime.Format(time.RFC3339Nano) + "\n")
@@ -98,9 +105,12 @@ func TestWriteRateResetPublishesAtomically(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := os.Mkdir(path+".tmp", 0o755); err != nil {
+			// Force the staged write to fail: the atomic helper stages through a
+			// uniquely named sibling, so an unwritable directory is what blocks it.
+			if err := os.Chmod(dir, 0o500); err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
 			if err := WriteRateReset(dir, newTime); err == nil {
 				t.Fatal("WriteRateReset succeeded with an unusable atomic temp path")
