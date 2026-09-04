@@ -125,8 +125,8 @@ func TestSurrenderDirPutIdempotent(t *testing.T) {
 // A surrendered document that decodes but does not match the contract's shape
 // is refused at the read (#3838): the pod is attacker-reachable compute whose
 // only contract with the engine is this document, so a fabricated mutation, an
-// unknown status, an escaping artifact pointer, or an unknown verdict decision
-// must never become the engine's record of the attempt.
+// unknown status, or an escaping artifact pointer must never become the
+// engine's record of the attempt.
 func TestReadSurrenderedResultRefusesMalformedDocuments(t *testing.T) {
 	ctx := context.Background()
 	digest := apiv1.Digest([]byte("bytes"))
