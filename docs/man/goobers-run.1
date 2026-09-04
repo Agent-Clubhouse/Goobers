@@ -28,8 +28,9 @@ available) exits 0 because it does not observe a terminal phase.
 --github-progress publishes the versioned hosted-progress contract to one
 GitHub Check Run whenever the journal sequence advances. It requires
 checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,
-cannot be combined with --no-wait, and does not replace the final journal
-artifact.
+cannot be combined with --no-wait or with --api / $GOOBERS_DAEMON_API
+(remote daemon submissions do not publish hosted progress), and does not
+replace the final journal artifact.
 `run abort` marks a stuck non-terminal run aborted directly in its own
 journal — recovery for a run resumeInterruptedRuns can't resolve on its own.
 If a live `goobers up` daemon already holds that run's journal lock, abort

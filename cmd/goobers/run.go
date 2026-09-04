@@ -69,8 +69,9 @@ const runHelp = "Usage: goobers run [--gaggle <name>] [--github-progress] [--pr 
 	"--github-progress publishes the versioned hosted-progress contract to one\n" +
 	"GitHub Check Run whenever the journal sequence advances. It requires\n" +
 	"checks: write plus GITHUB_TOKEN and the standard GitHub Actions environment,\n" +
-	"cannot be combined with --no-wait, and does not replace the final journal\n" +
-	"artifact.\n" +
+	"cannot be combined with --no-wait or with --api / $GOOBERS_DAEMON_API\n" +
+	"(remote daemon submissions do not publish hosted progress), and does not\n" +
+	"replace the final journal artifact.\n" +
 	"`run abort` marks a stuck non-terminal run aborted directly in its own\n" +
 	"journal — recovery for a run resumeInterruptedRuns can't resolve on its own.\n" +
 	"If a live `goobers up` daemon already holds that run's journal lock, abort\n" +
