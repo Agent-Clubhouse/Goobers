@@ -1,5 +1,7 @@
 package v1alpha1
 
+import "fmt"
+
 // This file defines the V0 stage contract: the three canonical wire envelopes
 // every stage executor and the runner exchange at runtime. They are plain Go
 // types (JSON-tagged) — NOT CRDs — so the runner, stage executors, providers,
@@ -598,4 +600,59 @@ func (d VerdictDecision) IsValid() bool {
 		return true
 	}
 	return false
+}
+
+// Validate reports whether the envelope is structurally well-formed against
+// the same shape result.schema.json declares: a known status, error detail on
+// a failure, and journal-relative, digest-pinned artifact pointers. It touches
+// no filesystem — this is shape validation, not resolution.
+//
+// It exists so an envelope that arrives from OUTSIDE the runner's own process
+// (a stage pod's surrendered result, #3838) can be refused at the point it is
+// decoded rather than being projected as the engine's ground truth for the
+// attempt. The in-process executors construct exactly this shape already, so
+// validating it costs a local stage nothing.
+func (r ResultEnvelope) Validate() error {
+	if r.Status == "" {
+		return fmt.Errorf("result envelope carries no status")
+	}
+	if !r.Status.IsValid() {
+		return fmt.Errorf("result status %q is not one of success, failure, blocked, no-work", r.Status)
+	}
+	if r.Status == ResultFailure && r.Error == nil {
+		return fmt.Errorf("result status %q requires error detail", r.Status)
+	}
+	if r.Error != nil {
+		if err := r.Error.Validate(); err != nil {
+			return err
+		}
+	}
+	if r.Integrity != "" && !r.Integrity.Valid() {
+		return fmt.Errorf("result integrity %q is unknown", r.Integrity)
+	}
+	for i, a := range r.Artifacts {
+		if err := a.Validate(); err != nil {
+			return fmt.Errorf("result artifact %d: %w", i, err)
+		}
+	}
+	if r.Transcript != nil {
+		if err := r.Transcript.Validate(); err != nil {
+			return fmt.Errorf("result transcript: %w", err)
+		}
+	}
+	return nil
+}
+
+// Validate reports whether the failure detail is usable: both a machine-
+// readable code and a human-readable message, as result.schema.json requires
+// of every errorInfo. An error carrying neither is indistinguishable from no
+// error at all, and routing on it would be routing on nothing.
+func (e ErrorInfo) Validate() error {
+	if e.Code == "" {
+		return fmt.Errorf("result error requires a code")
+	}
+	if e.Message == "" {
+		return fmt.Errorf("result error %q requires a message", e.Code)
+	}
+	return nil
 }

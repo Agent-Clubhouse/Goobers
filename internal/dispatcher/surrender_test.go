@@ -25,7 +25,10 @@ func TestSurrenderDirRoundTripByAttemptIdentity(t *testing.T) {
 	ctx := context.Background()
 	plane := testPlane(t)
 
-	first, err := json.Marshal(SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultFailure}})
+	first, err := json.Marshal(SurrenderedResult{Result: apiv1.ResultEnvelope{
+		Status: apiv1.ResultFailure,
+		Error:  &apiv1.ErrorInfo{Code: "stage_failed", Message: "first attempt failed"},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,5 +119,109 @@ func TestSurrenderDirPutIdempotent(t *testing.T) {
 	}
 	if string(got) != string(doc) {
 		t.Fatalf("document = %s, want the first write kept (write-once per key)", got)
+	}
+}
+
+// A surrendered document that decodes but does not match the contract's shape
+// is refused at the read (#3838): the pod is attacker-reachable compute whose
+// only contract with the engine is this document, so a fabricated mutation, an
+// unknown status, an escaping artifact pointer, or an unknown verdict decision
+// must never become the engine's record of the attempt.
+func TestReadSurrenderedResultRefusesMalformedDocuments(t *testing.T) {
+	ctx := context.Background()
+	digest := apiv1.Digest([]byte("bytes"))
+	tests := []struct {
+		name string
+		doc  SurrenderedResult
+	}{
+		{name: "unknown status", doc: SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultStatus("done")}}},
+		{name: "empty status", doc: SurrenderedResult{}},
+		{name: "failure without error", doc: SurrenderedResult{Result: apiv1.ResultEnvelope{Status: apiv1.ResultFailure}}},
+		{
+			name: "escaping artifact pointer",
+			doc: SurrenderedResult{Result: apiv1.ResultEnvelope{
+				Status:    apiv1.ResultSuccess,
+				Artifacts: []apiv1.ArtifactPointer{{Path: "../../etc/passwd", Digest: digest}},
+			}},
+		},
+		{
+			name: "mutation naming no provider",
+			doc: SurrenderedResult{
+				Result:    apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+				Mutations: []SurrenderedMutation{{Kind: "pr", ID: "9"}},
+			},
+		},
+		{
+			name: "mutation naming no id",
+			doc: SurrenderedResult{
+				Result:    apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+				Mutations: []SurrenderedMutation{{Provider: "github", Kind: "pr"}},
+			},
+		},
+		{
+			name: "empty mutation issue",
+			doc: SurrenderedResult{
+				Result:         apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+				MutationIssues: []string{""},
+			},
+		},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plane := testPlane(t)
+			data, err := json.Marshal(tt.doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := plane.Put(ctx, "run-m", "build", i+1, data); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadSurrenderedResult(ctx, plane, "run-m", "build", i+1); err == nil {
+				t.Fatalf("ReadSurrenderedResult accepted %s; want the read to fail closed", tt.name)
+			}
+		})
+	}
+}
+
+// The shapes a well-behaved pod surrenders keep round-tripping: validation
+// tightens what a pod may claim without narrowing the legitimate contract.
+func TestReadSurrenderedResultAcceptsContractShapes(t *testing.T) {
+	ctx := context.Background()
+	digest := apiv1.Digest([]byte("bytes"))
+	docs := []SurrenderedResult{
+		{Result: apiv1.ResultEnvelope{Status: apiv1.ResultSuccess}},
+		{Result: apiv1.ResultEnvelope{Status: apiv1.ResultNoWork, Summary: "nothing to do"}},
+		{Result: apiv1.ResultEnvelope{Status: apiv1.ResultBlocked}},
+		{
+			Result: apiv1.ResultEnvelope{
+				Status:     apiv1.ResultSuccess,
+				Artifacts:  []apiv1.ArtifactPointer{{Path: "artifacts/build/out.txt", Digest: digest}},
+				Transcript: &apiv1.ArtifactPointer{Path: "artifacts/build/transcript.md", Digest: digest},
+			},
+			Mutations:      []SurrenderedMutation{{Provider: "github", Kind: "pull-request", ID: "9", Operation: "create"}},
+			MutationIssues: []string{"malformed provenance line 3"},
+			WorkspaceDelta: digest,
+		},
+		{
+			Result:  apiv1.ResultEnvelope{Status: apiv1.ResultSuccess},
+			Verdict: &apiv1.Verdict{Decision: apiv1.VerdictNeedsChanges, Summary: "not yet"},
+		},
+	}
+	for i, doc := range docs {
+		data, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plane := testPlane(t)
+		if err := plane.Put(ctx, "run-ok", "build", i+1, data); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ReadSurrenderedResult(ctx, plane, "run-ok", "build", i+1)
+		if err != nil {
+			t.Fatalf("document %d: %v", i, err)
+		}
+		if got.Result.Status != doc.Result.Status {
+			t.Fatalf("document %d status = %q, want %q", i, got.Result.Status, doc.Result.Status)
+		}
 	}
 }
