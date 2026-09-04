@@ -1,10 +1,12 @@
 package journal
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/goobers/goobers/internal/readprobe"
 )
@@ -137,12 +139,29 @@ func TestReadInstanceLogAfterSeqColdReadScalesWithJournal(t *testing.T) {
 	measure := func(t *testing.T, count int) (readprobe.Snapshot, int64) {
 		t.Helper()
 		dir := t.TempDir()
-		events := make([]Event, count)
-		for i := range events {
-			events[i] = Event{Type: EventTickSkipped, Reason: padding}
+		path, err := InstanceEventsPath(dir)
+		if err != nil {
+			t.Fatal(err)
 		}
-		appendInstanceEvents(t, dir, events...)
-		info, err := os.Stat(filepath.Join(dir, "events.jsonl"))
+		var journal strings.Builder
+		for i := 1; i <= count; i++ {
+			line, err := marshalEvent(Event{
+				Seq:    uint64(i),
+				Schema: EventSchema,
+				Time:   time.Unix(int64(i), 0).UTC(),
+				Type:   EventTickSkipped,
+				Reason: padding,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			journal.Write(line)
+			journal.WriteByte('\n')
+		}
+		if err := os.WriteFile(path, []byte(journal.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -155,19 +174,30 @@ func TestReadInstanceLogAfterSeqColdReadScalesWithJournal(t *testing.T) {
 		return readprobe.Take(), info.Size()
 	}
 
-	smallWork, smallSize := measure(t, 64)
-	largeWork, largeSize := measure(t, 640)
-	if largeSize < 10*tailChunkSize {
-		t.Fatalf("fixture journal is %d bytes, too small to measure", largeSize)
-	}
-	if largeWork.InstanceTailReads != 1 || largeWork.InstanceTailRecords != 640 {
-		t.Fatalf("cold read work = %+v, want one read and 640 parsed records", largeWork)
-	}
-	if largeWork.InstanceTailBytes < 9*smallWork.InstanceTailBytes ||
-		largeWork.InstanceTailBytes > 11*smallWork.InstanceTailBytes {
-		t.Fatalf(
-			"cold read bytes did not scale linearly: %d over %d-byte journal, %d over %d-byte journal",
-			largeWork.InstanceTailBytes, largeSize, smallWork.InstanceTailBytes, smallSize,
-		)
+	var previous readprobe.Snapshot
+	var previousSize int64
+	for mb := 4; mb <= 64; mb *= 2 {
+		t.Run(fmt.Sprintf("%dMB", mb), func(t *testing.T) {
+			work, size := measure(t, mb*250)
+			target := int64(mb) << 20
+			if size < target*9/10 || size > target*11/10 {
+				t.Fatalf("fixture journal is %d bytes, want about %d bytes", size, target)
+			}
+			if work.InstanceTailReads != 1 || work.InstanceTailRecords != uint64(mb*250) {
+				t.Fatalf("cold read work = %+v, want one read and %d parsed records", work, mb*250)
+			}
+			if previousSize != 0 {
+				if work.InstanceTailRecords > 3*previous.InstanceTailRecords ||
+					work.InstanceTailBytes > 3*previous.InstanceTailBytes {
+					t.Fatalf(
+						"cold read work grew super-quadratically: %d records/%d bytes over %d records/%d bytes for journals of %d/%d bytes",
+						work.InstanceTailRecords, work.InstanceTailBytes,
+						previous.InstanceTailRecords, previous.InstanceTailBytes,
+						size, previousSize,
+					)
+				}
+			}
+			previous, previousSize = work, size
+		})
 	}
 }
