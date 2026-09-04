@@ -61,9 +61,9 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	}
 	// Every route is read-only except the tier-2 intervention mutations
 	// (approve/override/rerun, HITL-7/#469), the maintenance actions (the
-	// local-only run reveal, and HITL escalation resolution — operator
-	// recovery of a terminal run, kept outside the parity contract like
-	// `run abort`), and the write planes' workflow-execution routes
+	// local-only run reveal, HITL escalation resolution, and the live-run
+	// cancel — operator recovery of a run, kept outside the parity contract
+	// like `run abort`), and the write planes' workflow-execution routes
 	// (claims + trigger ingestion, #3509 §7; credential resolve, #3511 §11;
 	// blob PUT, decision 010/012 §2a; surrender put, #3699 — each a stage pod
 	// advancing its own execution, the same machine-seam class as the claims
@@ -77,7 +77,7 @@ func TestActualSurfaceActionsAreExplicitlyClassified(t *testing.T) {
 	// swapping its gaggle's scheduler state, and gaggleStateGet is the
 	// genuine read half that needs no entry.
 	runtimeMutationRoutes := map[apicontract.ActionID]bool{"approveStage": true, "overrideStage": true, "rerunStage": true}
-	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true}
+	maintenanceRoutes := map[apicontract.ActionID]bool{"runReveal": true, "resolveEscalation": true, "cancelRun": true}
 	workflowExecutionRoutes := map[apicontract.ActionID]bool{
 		"claimAcquire": true, "claimRenew": true, "claimRelease": true, "claimSettle": true, "claimList": true,
 		// claims/recover (#4016): a stage pod asking the daemon to run the

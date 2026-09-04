@@ -196,6 +196,7 @@ _goobers_completion()
             flags+=(--json)
             case "${words[3]:-}" in
                 show) flags+=(--include-verdict) ;;
+                resolve) flags+=(--resolution --gate --decision --rationale --actor --api) ;;
             esac
             ;;
         telemetry)
@@ -396,10 +397,14 @@ _goobers_completion()
             ;;
         escalations)
             if (( CURRENT == 3 )); then
-                candidates=(show)
+                candidates=(show resolve)
                 _describe -V 'command' candidates
                 return
             elif [[ "${words[3]:-}" == "show" ]] && (( CURRENT == 4 )); then
+                candidates=("${(@f)$(command goobers __complete escalations 2>/dev/null)}")
+                _describe -V 'escalated run id' candidates
+                return
+            elif [[ "${words[3]:-}" == "resolve" ]] && (( CURRENT == 4 )); then
                 candidates=("${(@f)$(command goobers __complete escalations 2>/dev/null)}")
                 _describe -V 'escalated run id' candidates
                 return

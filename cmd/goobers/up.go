@@ -705,6 +705,11 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	recoverExpiredClaims := func(now time.Time) ([]localscheduler.ClaimEntry, error) {
 		return recoverClaims(l, setup.InstanceLog, now, interventions.interventionActive, claimRecoveryGate)
 	}
+	// The run-control plane (#3807): the same live cancel the pending-cancels
+	// sweep performs, reachable by an operator who does not share this
+	// daemon's filesystem. Its scheduler slot release is attached below, once
+	// the scheduler exists and before the API starts serving.
+	cancelPlane := newDaemonCancelService(setup.RunnerRegistry)
 	apiHandlerOpts = append(apiHandlerOpts,
 		httpapi.WithInterventions(interventions),
 		httpapi.WithInterventionContext(ctx),
@@ -712,6 +717,7 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 		httpapi.WithRunJournalService(newDaemonRunJournalService(l, setup.InstanceLog)),
 		httpapi.WithTriggerService(triggerPlane),
 		httpapi.WithEscalationService(newEscalationResolutionAdapter(interventions)),
+		httpapi.WithCancelService(cancelPlane),
 		httpapi.WithCredentialService(credentialPlane),
 		httpapi.WithBlobService(blobStore),
 		httpapi.WithSurrenderService(surrenderStore),
@@ -1055,6 +1061,8 @@ func runUpContextWithForce(parentCtx context.Context, force <-chan struct{}, arg
 	// Reap stale journals before crash-resume can refresh them with a new
 	// stage heartbeat.
 	stalledSweepErrors.report(sweepStalled(time.Now()))
+
+	cancelPlane.AttachRelease(sched.ReleaseRun)
 
 	if err := apiServer.Start(); err != nil {
 		pf(stderr, "error: start HTTP API: %v\n", err)

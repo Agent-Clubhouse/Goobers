@@ -471,6 +471,13 @@ func init() {
 				withSynopsis(synopsisByID["escalations show"]).
 				withHelp("show escalation cause, verdict, and per-stage artifact timeline", escalationsShowHelp).
 				withExamples("goobers escalations show <run-id>", "goobers escalations show --include-verdict <run-id>"),
+			subcommand("escalations resolve", "resolve", apicontract.ActionMaintenance, runEscalationResolve).
+				withSynopsis(synopsisByID["escalations resolve"]).
+				withHelp("resolve an escalated run through the daemon's HITL plane", escalationsResolveHelp).
+				withExamples(
+					"goobers escalations resolve --resolution approve --gate review <run-id>",
+					`goobers escalations resolve --resolution deny --rationale="not worth it" <run-id>`,
+				),
 		).
 			withSynopsis(synopsisByID["escalations"]).
 			withHelp("list escalated runs newest first", escalationsHelp).

@@ -54,9 +54,11 @@ type escalationInspection struct {
 }
 
 const escalationsHelp = "Usage: goobers escalations [--json] [path]\n" +
-	"       goobers escalations show [--json] [--include-verdict] <run-id> [path]\n\n" +
+	"       goobers escalations show [--json] [--include-verdict] <run-id> [path]\n" +
+	"       goobers escalations resolve --resolution=approve|deny|redirect [flags] <run-id> [path]\n\n" +
 	"List escalated runs newest first. Use `escalations show` to inspect an\n" +
-	"escalation cause and the artifacts available before and after each stage.\n"
+	"escalation cause and the artifacts available before and after each stage,\n" +
+	"and `escalations resolve` to approve, redirect, or deny one.\n"
 
 func runEscalations(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("escalations", flag.ContinueOnError)

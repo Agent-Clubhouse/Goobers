@@ -239,6 +239,38 @@ func TestPublishGreenRunStillEnsuresFlakeLabel(t *testing.T) {
 	}
 }
 
+// A signature that is only the test runner echoing its own flags names no
+// failure, so filing an issue for it would file a fresh issue every run
+// instead of maintaining one issue for one defect (#4221).
+func TestPublishRefusesIssueWithoutDistinguishingSignature(t *testing.T) {
+	t.Parallel()
+	echoOnly := strings.Repeat("f", 64)
+	real := strings.Repeat("a", 64)
+	provider := &fakeLedgerProvider{}
+	report := failuresReport{
+		SchemaVersion: stressSchema,
+		Run:           runMetadata{RunID: "123"},
+		Failures: []testFailure{
+			seedFailure(echoOnly, "-test.shuffle <value>"),
+			seedFailure(real, "Resume() = 3, want 4 | -test.shuffle <value>"),
+		},
+	}
+	result, err := publish(context.Background(), provider, providers.RepositoryRef{
+		Provider: providers.ProviderGitHub,
+		Owner:    "acme",
+		Name:     "app",
+	}, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != (publishResult{Created: 1, Skipped: 1}) {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(provider.creates) != 1 || provider.creates[0].RunID != "flake-"+real {
+		t.Fatalf("creates = %+v", provider.creates)
+	}
+}
+
 func TestLoadFailuresRejectsMalformedReports(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

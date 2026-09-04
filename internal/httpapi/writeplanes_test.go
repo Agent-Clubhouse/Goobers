@@ -127,6 +127,7 @@ func TestWritePlaneRoutesAreInTheContract(t *testing.T) {
 		apicontract.RouteClaimList,
 		apicontract.RouteTriggerIngest,
 		apicontract.RouteResolveEscalation,
+		apicontract.RouteCancelRun,
 	} {
 		route, ok := apicontract.V1Route(id)
 		if !ok {
