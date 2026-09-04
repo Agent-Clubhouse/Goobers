@@ -49,9 +49,9 @@ func exitForPhase(phase journal.RunPhase) int {
 
 const runHelp = "Usage: goobers run [--gaggle <name>] [--pr <number>] [--api <url>] [--request-id <id>] <workflow> [--no-wait] [path]\n" +
 	"       goobers run <gaggle>/<workflow> [--pr <number>] [--no-wait] [path]\n" +
-	"       goobers run abort <run-id> [path]\n" +
+	"       goobers run abort [--api <url>] <run-id> [path]\n" +
 	"       goobers run continue --from <run-id> --terminal-seq <seq> --target <state> --operator <id> [path]\n" +
-	"       goobers run cancel <run-id> [path]\n\n" +
+	"       goobers run cancel [--api <url>] <run-id> [path]\n\n" +
 	"Trigger a run of a config/ workflow manually, through the same scheduler\n" +
 	"(run conditions, instance journal, single-instance lock) a live `goobers up`\n" +
 	"daemon uses, then wait for it to reach a terminal state unless\n" +
@@ -619,11 +619,20 @@ func runFlagArgs(args []string) []string {
 // erroring at startup). It doesn't need the run's workflow or gaggle to still
 // exist, but uses the owning gaggle's placement config when available.
 
-const runAbortHelp = "Usage: goobers run abort <run-id> [path]\n\n" +
+const runAbortHelp = "Usage: goobers run abort [--api=<url>] <run-id> [path]\n\n" +
 	"Mark a stuck non-terminal run aborted by appending a terminal\n" +
 	"run.finished(status=aborted) event to its own journal (default path\n" +
 	"\".\"). An ENGINE-DRIVEN run is cancelled on the engine instead — its\n" +
 	"journal is never edited here, and the engine writes its terminal event.\n" +
+	"With --api (or $GOOBERS_DAEMON_API) the abort is delegated to that\n" +
+	"daemon's authenticated HTTP API instead of this filesystem, which is the\n" +
+	"only way to reach a daemon running in another pod; name the run by its\n" +
+	"full id, since no local journal is read to expand an abbreviation. That\n" +
+	"remote form is a live cancel, not a journal abort: it can only stop a run\n" +
+	"the daemon is still executing, and a wedged run no daemon owns is refused\n" +
+	"with exit 1. Finalizing such a run still requires the filesystem path\n" +
+	"against its instance root — run `GOOBERS_DAEMON_API= goobers run abort\n" +
+	"<run-id> <path>` to take it when the variable is exported.\n" +
 	"Exit codes: 0 = aborted, 1 = business error (run already terminal),\n" +
 	"2 = usage/IO error (unknown run).\n"
 
@@ -631,6 +640,7 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("run abort", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "run abort")
+	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -644,8 +654,21 @@ func runRunAbort(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(1)
 	}
 
+	endpoint, err := remoteDaemonAPIBase(*api)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if endpoint != "" {
+		// A remote abort is the remote form of this command's existing
+		// delegate-to-the-live-daemon path (#2270): the run is executing on a
+		// daemon whose journal this process cannot open, so the daemon
+		// terminalizes it rather than a would-be owner editing it from afar.
+		return runRemoteCancel(endpoint, runID, "aborted", stdout, stderr)
+	}
+
 	l := instance.NewLayout(root)
-	runID, err := resolveRunID(l, runID)
+	runID, err = resolveRunID(l, runID)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2
@@ -841,7 +864,7 @@ func delegateAbortToLiveDaemon(l instance.Layout, runID string, identity journal
 	}
 }
 
-const runCancelHelp = "Usage: goobers run cancel <run-id> [path]\n\n" +
+const runCancelHelp = "Usage: goobers run cancel [--api=<url>] <run-id> [path]\n\n" +
 	"Ask the live `goobers up` daemon to stop a run it is actively executing\n" +
 	"(default path \".\"): it cancels the active stage, tears down the run\n" +
 	"worktree, releases the backlog claim so the item can be re-queued, and\n" +
@@ -849,7 +872,15 @@ const runCancelHelp = "Usage: goobers run cancel <run-id> [path]\n\n" +
 	"journal behind its back. An ENGINE-DRIVEN run is cancelled on the engine\n" +
 	"(CancelWorkflow) instead, with no live daemon required. Use `run abort`\n" +
 	"instead when no daemon is running (that path finalizes a stuck run's\n" +
-	"journal directly). Exit codes: 0 = cancelled, 1 = business error\n" +
+	"journal directly).\n" +
+	"With --api (or $GOOBERS_DAEMON_API) the cancel is submitted to that\n" +
+	"daemon's authenticated HTTP API instead of the local pending-cancels\n" +
+	"drop, so a caller that does not share the daemon's filesystem can stop a\n" +
+	"run at all; name the run by its full id, since no local journal is read to\n" +
+	"expand an abbreviation. The remote form reaches only runs the daemon is\n" +
+	"executing, so an ENGINE-DRIVEN run is reported as not running under that\n" +
+	"daemon; cancel it from the instance root instead. Exit codes:\n" +
+	"0 = cancelled, 1 = business error\n" +
 	"(already terminal, not currently running, or no daemon to cancel it),\n" +
 	"2 = usage/IO error (unknown run).\n"
 
@@ -857,6 +888,7 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("run cancel", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = helpUsage(stderr, "run cancel")
+	api := fs.String("api", "", "daemon API base URL for a remote daemon (default $GOOBERS_DAEMON_API)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -870,8 +902,17 @@ func runRunCancel(args []string, stdout, stderr io.Writer) int {
 		root = fs.Arg(1)
 	}
 
+	endpoint, err := remoteDaemonAPIBase(*api)
+	if err != nil {
+		pf(stderr, "error: %v\n", err)
+		return 2
+	}
+	if endpoint != "" {
+		return runRemoteCancel(endpoint, runID, "cancelled", stdout, stderr)
+	}
+
 	l := instance.NewLayout(root)
-	runID, err := resolveRunID(l, runID)
+	runID, err = resolveRunID(l, runID)
 	if err != nil {
 		pf(stderr, "error: %v\n", err)
 		return 2

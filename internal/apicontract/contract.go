@@ -101,6 +101,14 @@ const (
 	ClaimRecoverPath         = V1Prefix + "/claims/recover"
 	TriggerIngestPath        = V1Prefix + "/triggers"
 	RunEscalationResolvePath = V1Prefix + "/runs/{run}/escalation/resolve"
+	// RunCancelPath is the run-control plane (#3807): ask the daemon to stop
+	// a run it is actively executing. The daemon-local seam is the
+	// <SchedulerDir>/pending-cancels/ file drop `goobers run cancel` writes,
+	// which only reaches a daemon that shares the caller's filesystem — in a
+	// cluster, that means the daemon's own pod. The route serves the same
+	// cancel through the same owning Runner, so cancelling a run no longer
+	// requires being inside it.
+	RunCancelPath = V1Prefix + "/runs/{run}/cancel"
 	// RunJournalEmitPath is the journal plane (§8, DS4): batched live journal
 	// events for one run, idempotent per op, sequence assigned at acceptance
 	// by the daemon's single writer. Span adoption by digest rides the same
@@ -231,6 +239,7 @@ const (
 	RouteClaimRecover      RouteID = "claimRecover"
 	RouteTriggerIngest     RouteID = "triggerIngest"
 	RouteResolveEscalation RouteID = "resolveEscalation"
+	RouteCancelRun         RouteID = "cancelRun"
 	RouteJournalEmit       RouteID = "journalEmit"
 	RouteCredentialResolve RouteID = "credentialResolve"
 	RouteStageSurrender    RouteID = "stageSurrender"
@@ -384,6 +393,10 @@ var v1Routes = []Route{
 	{ID: RouteClaimRecover, Method: http.MethodPost, Path: ClaimRecoverPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteTriggerIngest, Method: http.MethodPost, Path: TriggerIngestPath, ActionClass: ActionWorkflowExecution, Cost: CostMutation, Budget: MutationBudget},
 	{ID: RouteResolveEscalation, Method: http.MethodPost, Path: RunEscalationResolvePath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
+	// Cancelling a live run is operator recovery, like `run abort` and the
+	// HITL resolution above — maintenance, outside the runtime parity
+	// contract.
+	{ID: RouteCancelRun, Method: http.MethodPost, Path: RunCancelPath, ActionClass: ActionMaintenance, Cost: CostMutation, Budget: MutationBudget},
 
 	// The journal plane (§8, DS4) is machinery advancing a run's own record —
 	// a machine seam like the claims plane, not an operator capability, so it
