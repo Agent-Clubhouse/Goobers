@@ -17,7 +17,7 @@ import (
 
 // This file is the manifest's drift guard. The subcommand→capability-
 // requirement table above is consumed by exact-membership admission
-// (internal/workflow v_current/v_next compile.go), so ANY edit — narrowing,
+// (internal/workflow v_current/v_2_0 compile.go), so ANY edit — narrowing,
 // broadening, a new conditional flag, a flipped claim-mutation bit — changes
 // what every already-shipped config must declare, with no DSL-version linkage
 // to soften it. TBH-1 (#2386, commit ed11ae81) proved the class: narrowing

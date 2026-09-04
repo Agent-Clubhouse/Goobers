@@ -6,14 +6,14 @@ import (
 	"testing"
 
 	apiv1 "github.com/goobers/goobers/api/v1alpha1"
-	vnext "github.com/goobers/goobers/internal/workflow/v_next"
+	v20 "github.com/goobers/goobers/internal/workflow/v_2_0"
 )
 
 func TestCompileDispatchesPinnedInterpreterVersion(t *testing.T) {
 	def := Definition{
 		Name:       "current",
 		Version:    1,
-		DSLVersion: vnext.DSLVersion,
+		DSLVersion: v20.DSLVersion,
 		Spec:       linearSpec(),
 	}
 
@@ -21,12 +21,12 @@ func TestCompileDispatchesPinnedInterpreterVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	want, err := vnext.Compile(def, vnext.WithPreviewFeatures(true))
+	want, err := v20.Compile(def, v20.WithPreviewFeatures(true))
 	if err != nil {
-		t.Fatalf("v_next.Compile: %v", err)
+		t.Fatalf("v_2_0.Compile: %v", err)
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("router machine differs from v_next interpreter:\n got  %#v\n want %#v", got, want)
+		t.Fatalf("router machine differs from v_2_0 interpreter:\n got  %#v\n want %#v", got, want)
 	}
 }
 
@@ -35,7 +35,7 @@ func TestCompileAdaptsRouterOptionsToCurrentInterpreter(t *testing.T) {
 		def := Definition{
 			Name:       "harness",
 			Version:    1,
-			DSLVersion: vnext.DSLVersion,
+			DSLVersion: v20.DSLVersion,
 			Spec:       linearSpec(),
 		}
 		goobers := map[string]apiv1.GooberSpec{
@@ -55,7 +55,7 @@ func TestCompileAdaptsRouterOptionsToCurrentInterpreter(t *testing.T) {
 		def := Definition{
 			Name:       "checks",
 			Version:    1,
-			DSLVersion: vnext.DSLVersion,
+			DSLVersion: v20.DSLVersion,
 			Spec: apiv1.WorkflowSpec{
 				Start: "gate",
 				Tasks: []apiv1.Task{{
@@ -141,7 +141,7 @@ func TestRuntimeFacadesDispatchByMachineVersion(t *testing.T) {
 	def := Definition{
 		Name:       "runtime",
 		Version:    1,
-		DSLVersion: vnext.DSLVersion,
+		DSLVersion: v20.DSLVersion,
 		Spec: apiv1.WorkflowSpec{
 			Start: "poll",
 			Tasks: []apiv1.Task{{
@@ -178,21 +178,21 @@ func TestRuntimeFacadesDispatchByMachineVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TaskInvocationInputs: %v", err)
 	}
-	if want := vnext.TaskInvocationInputs(machine, task); !reflect.DeepEqual(inputs, want) {
+	if want := v20.TaskInvocationInputs(machine, task); !reflect.DeepEqual(inputs, want) {
 		t.Fatalf("TaskInvocationInputs = %v, want %v", inputs, want)
 	}
 	limits, err := TaskLimits(machine, task)
 	if err != nil {
 		t.Fatalf("TaskLimits: %v", err)
 	}
-	if want := vnext.TaskLimits(task); limits != want {
+	if want := v20.TaskLimits(task); limits != want {
 		t.Fatalf("TaskLimits = %+v, want %+v", limits, want)
 	}
 	gateLimits, err := GateLimits(machine, gate)
 	if err != nil {
 		t.Fatalf("GateLimits: %v", err)
 	}
-	if want := vnext.GateLimits(gate); gateLimits != want {
+	if want := v20.GateLimits(gate); gateLimits != want {
 		t.Fatalf("GateLimits = %+v, want %+v", gateLimits, want)
 	}
 }
