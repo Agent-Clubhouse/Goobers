@@ -20,6 +20,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -101,6 +102,67 @@ func liveEvents(t *testing.T, runsDir, runID string) []journal.Event {
 		t.Fatal(err)
 	}
 	return events
+}
+
+func TestDiffLiveJournalCleansUpStagingTree(t *testing.T) {
+	tempEntries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		t.Fatalf("read temp dir: %v", err)
+	}
+	before := make(map[string]struct{}, len(tempEntries))
+	for _, entry := range tempEntries {
+		before[entry.Name()] = struct{}{}
+	}
+
+	proj := JournalProjection{
+		Identity: journal.RunIdentity{
+			RunID:           "run-verify-cleanup",
+			Workflow:        "commit-verify",
+			WorkflowVersion: 1,
+			Gaggle:          "alpha",
+		},
+		Graph:      json.RawMessage(`{"stages":[]}`),
+		Definition: json.RawMessage(`{"version":"v1"}`),
+		Ops: []JournalOp{
+			{
+				Kind: opAppend,
+				Time: time.Unix(1700000000, 0).UTC(),
+				Event: &journal.Event{
+					Type:   journal.EventRunStarted,
+					Status: string(journal.PhaseRunning),
+				},
+			},
+			{
+				Kind: opAppend,
+				Time: time.Unix(1700000001, 0).UTC(),
+				Event: &journal.Event{
+					Type:   journal.EventRunFinished,
+					Status: string(journal.PhaseCompleted),
+				},
+			},
+		},
+	}
+
+	if _, err := DiffLiveJournal(nil, proj); err != nil {
+		t.Fatalf("DiffLiveJournal: %v", err)
+	}
+
+	afterEntries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		t.Fatalf("read temp dir after: %v", err)
+	}
+	var leaked []string
+	for _, entry := range afterEntries {
+		name := entry.Name()
+		if strings.Contains(name, "goobers-journal-verify-") {
+			if _, exists := before[name]; !exists {
+				leaked = append(leaked, name)
+			}
+		}
+	}
+	if len(leaked) > 0 {
+		t.Fatalf("DiffLiveJournal leaked temp entries: %v", leaked)
+	}
 }
 
 // journalPeekRunner is a deterministic stage executor that inspects the live
