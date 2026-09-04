@@ -13,6 +13,7 @@ import (
 
 	"github.com/goobers/goobers/internal/dslmigrate"
 	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/journal"
 )
 
 const fixHelp = "Usage: goobers fix --to <version> [--write] [path]\n\n" +
@@ -105,7 +106,11 @@ func runFix(args []string, stdout, stderr io.Writer) int {
 		}
 		migrated++
 		if *write {
-			if err := os.WriteFile(path, []byte(result.After), 0o644); err != nil {
+			mode := os.FileMode(0o644)
+			if fi, serr := os.Stat(path); serr == nil {
+				mode = fi.Mode().Perm()
+			}
+			if err := journal.WriteFileAtomic(path, []byte(result.After), mode); err != nil {
 				pf(stdout, "FIX %s: write: %v\n", label, err)
 				ok = false
 				continue
