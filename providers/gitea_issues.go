@@ -249,7 +249,7 @@ func (p *GiteaProvider) ListComments(ctx context.Context, repo RepositoryRef, id
 	if id == "" {
 		return nil, errIssueIDRequired
 	}
-	raw, err := p.allIssueComments(ctx, repo, id)
+	raw, err := allIssueComments(ctx, p, p.BaseURL, repo, id)
 	if err != nil {
 		return nil, err
 	}
@@ -258,23 +258,6 @@ func (p *GiteaProvider) ListComments(ctx context.Context, repo RepositoryRef, id
 		comments = append(comments, mapGiteaComment(c))
 	}
 	return comments, nil
-}
-
-func (p *GiteaProvider) allIssueComments(ctx context.Context, repo RepositoryRef, id string) ([]giteaComment, error) {
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
-	if err != nil {
-		return nil, err
-	}
-	var all []giteaComment
-	err = p.getAllPages(ctx, endpoint, func(page []byte) error {
-		var pageItems []giteaComment
-		if err := json.Unmarshal(page, &pageItems); err != nil {
-			return fmt.Errorf("decode comments page: %w", err)
-		}
-		all = append(all, pageItems...)
-		return nil
-	})
-	return all, err
 }
 
 // AuthenticatedLogin returns the Gitea login the provider's credential
@@ -340,7 +323,7 @@ func (p *GiteaProvider) DeleteComment(ctx context.Context, repo RepositoryRef, c
 	if err != nil {
 		return err
 	}
-	return p.doStatus(ctx, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound})
+	return doStatus(ctx, p, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound})
 }
 
 // CreateWorkItemComment appends one issue comment and returns its identity.
@@ -362,7 +345,7 @@ func (p *GiteaProvider) CreateWorkItemComment(ctx context.Context, repo Reposito
 	if err != nil {
 		return Comment{}, err
 	}
-	var comment giteaComment
+	var comment restComment
 	if err := p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, &comment); err != nil {
 		return Comment{}, err
 	}
@@ -638,16 +621,16 @@ func (p *GiteaProvider) ClaimWorkItem(ctx context.Context, req ClaimWorkItemRequ
 		label = LabelClaimed
 	}
 
-	if winner, ok, err := p.claimWinner(ctx, req.Repository, req.ID); err != nil {
+	if winner, ok, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID); err != nil {
 		return ClaimResult{}, err
 	} else if ok {
 		return p.finishClaim(ctx, req.Repository, req.ID, req.RunID, winner)
 	}
 
-	if err := p.postAttributedComment(ctx, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim"); err != nil {
+	if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, claimBreadcrumb(req.RunID), "claim"); err != nil {
 		return ClaimResult{}, err
 	}
-	winner, ok, err := p.claimWinner(ctx, req.Repository, req.ID)
+	winner, ok, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID)
 	if err != nil {
 		return ClaimResult{}, err
 	}
@@ -682,7 +665,7 @@ func (p *GiteaProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkI
 		label = LabelClaimed
 	}
 
-	winner, claimed, err := p.claimWinner(ctx, req.Repository, req.ID)
+	winner, claimed, err := claimWinner(ctx, p, p.BaseURL, req.Repository, req.ID)
 	if err != nil {
 		return WorkItem{}, err
 	}
@@ -696,7 +679,7 @@ func (p *GiteaProvider) ReleaseWorkItemClaim(ctx context.Context, req ClaimWorkI
 	releasedRunID := req.RunID
 	if claimed {
 		releasedRunID = winner
-		if err := p.postAttributedComment(ctx, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
+		if err := postAttributedComment(ctx, p, p.BaseURL, p.attribution, req.Repository, req.ID, claimReleaseBreadcrumb(winner), "claim-release"); err != nil {
 			return WorkItem{}, err
 		}
 	}
@@ -742,40 +725,6 @@ func (p *GiteaProvider) finishClaim(ctx context.Context, repo RepositoryRef, id,
 		},
 	})
 	return ClaimResult{Claimed: claimed, ClaimedBy: winner, Item: item}, nil
-}
-
-// claimWinner reads trusted issue comments and returns the run id of the
-// recognized claimer in the current epoch. Only the authenticated provider
-// identity can change epoch state.
-func (p *GiteaProvider) claimWinner(ctx context.Context, repo RepositoryRef, id string) (string, bool, error) {
-	markerAuthor, err := p.AuthenticatedLogin(ctx)
-	if err != nil {
-		return "", false, fmt.Errorf("resolve claim marker author: %w", err)
-	}
-	raw, err := p.allIssueComments(ctx, repo, id)
-	if err != nil {
-		return "", false, err
-	}
-	sort.Slice(raw, func(i, j int) bool { return raw[i].ID < raw[j].ID })
-	winner := ""
-	for _, c := range raw {
-		if !strings.EqualFold(c.User.Login, markerAuthor) {
-			continue
-		}
-		if releasedBy := claimReleaseRunID(c.Body); releasedBy != "" {
-			if winner == releasedBy {
-				winner = ""
-			}
-			continue
-		}
-		if winner == "" {
-			winner = claimRunID(c.Body)
-		}
-	}
-	if winner == "" {
-		return "", false, nil
-	}
-	return winner, true, nil
 }
 
 // HasOpenWorkItemBlocker reports whether a Gitea issue has a native dependency
@@ -1031,7 +980,7 @@ func (p *GiteaProvider) applyLabelChanges(ctx context.Context, repo RepositoryRe
 		if err != nil {
 			return err
 		}
-		if err := p.doStatus(ctx, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound}); err != nil {
+		if err := doStatus(ctx, p, http.MethodDelete, endpoint, nil, nil, []int{http.StatusNotFound}); err != nil {
 			return err
 		}
 	}
@@ -1060,19 +1009,7 @@ func (p *GiteaProvider) resolveExistingLabelIDs(ctx context.Context, repo Reposi
 }
 
 func (p *GiteaProvider) postComment(ctx context.Context, repo RepositoryRef, id, body string) error {
-	return p.postAttributedComment(ctx, repo, id, body, "comment")
-}
-
-func (p *GiteaProvider) postAttributedComment(ctx context.Context, repo RepositoryRef, id, body, action string) error {
-	body, err := withAttribution(body, p.attribution, action)
-	if err != nil {
-		return err
-	}
-	endpoint, err := joinURL(p.BaseURL, "repos", repo.Owner, repo.Name, "issues", id, "comments")
-	if err != nil {
-		return err
-	}
-	return p.do(ctx, http.MethodPost, endpoint, map[string]string{"body": body}, nil)
+	return postAttributedComment(ctx, p, p.BaseURL, p.attribution, repo, id, body, "comment")
 }
 
 // --- Gitea issue/comment/timeline decode structs and mappers ---
@@ -1100,14 +1037,6 @@ type giteaMilestone struct {
 	Title string `json:"title"`
 }
 
-type giteaComment struct {
-	ID        int64      `json:"id"`
-	Body      string     `json:"body"`
-	User      githubUser `json:"user"`
-	HTMLURL   string     `json:"html_url"`
-	CreatedAt *time.Time `json:"created_at"`
-}
-
 type giteaTimelineComment struct {
 	ID        int64       `json:"id"`
 	Type      string      `json:"type"`
@@ -1116,7 +1045,7 @@ type giteaTimelineComment struct {
 	CreatedAt time.Time   `json:"created_at"`
 }
 
-func mapGiteaComment(c giteaComment) Comment {
+func mapGiteaComment(c restComment) Comment {
 	return Comment{
 		ID:        strconv.FormatInt(c.ID, 10),
 		Author:    c.User.Login,

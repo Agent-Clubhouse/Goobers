@@ -101,7 +101,7 @@ func TestClaimWinnerSeesPage2Breadcrumb(t *testing.T) {
 	mux.Handle("/repos/acme/app/issues/7/comments", paginatedJSON(t, [][]byte{page1, page2}))
 	p, repo := paginationProvider(t, mux)
 
-	winner, ok, err := p.claimWinner(context.Background(), repo, "7")
+	winner, ok, err := claimWinner(context.Background(), p, p.BaseURL, repo, "7")
 	if err != nil {
 		t.Fatalf("claimWinner: %v", err)
 	}
