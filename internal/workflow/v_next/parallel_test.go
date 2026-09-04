@@ -474,3 +474,42 @@ func TestParallelIsNotAStateAtDSL14(t *testing.T) {
 		t.Fatal("a parallel is a state and Has must report it")
 	}
 }
+
+// Rule 9's helpers must stay the apiv1 resolution plus the unset default, not
+// a private re-derivation of the Run.Workspace / Task.Workspace precedence
+// that can drift from apiv1.Task.EffectiveWorkspace (#4239, #3803).
+func TestBranchEffectiveWorkspaceMatchesAPIResolution(t *testing.T) {
+	tasks := []apiv1.Task{
+		{},
+		{Workspace: apiv1.WorkspaceScratch},
+		{Run: &apiv1.DeterministicRun{}},
+		{Run: &apiv1.DeterministicRun{Workspace: apiv1.WorkspaceRepoReadOnly}},
+		{Workspace: apiv1.WorkspaceScratch, Run: &apiv1.DeterministicRun{Workspace: apiv1.WorkspaceRepo}},
+		{Workspace: apiv1.WorkspaceRepoReadOnly, Run: &apiv1.DeterministicRun{}},
+	}
+	for _, task := range tasks {
+		want := task.EffectiveWorkspace()
+		if want == "" {
+			want = apiv1.WorkspaceRepo
+		}
+		if got := branchEffectiveTaskWorkspace(task); got != want {
+			t.Errorf("branchEffectiveTaskWorkspace(%+v) = %q, apiv1 resolves %q", task, got, want)
+		}
+	}
+
+	gates := []apiv1.Gate{
+		{},
+		{Agentic: &apiv1.AgenticGate{}},
+		{Agentic: &apiv1.AgenticGate{Workspace: apiv1.WorkspaceScratch}},
+		{Agentic: &apiv1.AgenticGate{Workspace: apiv1.WorkspaceRepoReadOnly}},
+	}
+	for _, gate := range gates {
+		want := gate.EffectiveWorkspace()
+		if want == "" {
+			want = apiv1.WorkspaceRepo
+		}
+		if got := branchEffectiveGateWorkspace(gate); got != want {
+			t.Errorf("branchEffectiveGateWorkspace(%+v) = %q, apiv1 resolves %q", gate, got, want)
+		}
+	}
+}

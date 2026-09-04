@@ -510,10 +510,9 @@ func branchStateProblems(m *Machine, p apiv1.Parallel, branch apiv1.Branch, stat
 	// resolves to a writable repo worktree for both a deterministic task
 	// (Run.Workspace) and an agentic task/gate (Task.Workspace /
 	// Gate.Agentic.Workspace) — not just an explicit `workspace: repo`.
-	// Mirrors internal/runner's taskWorkspaceMode/gateWorkspaceMode
-	// resolution exactly; duplicated here rather than imported because
-	// this package compiles before runner and importing it would cycle back
-	// (runner -> workflow -> this package).
+	// The precedence itself is apiv1's shared EffectiveWorkspace, the same
+	// one internal/runner's taskWorkspaceMode/gateWorkspaceMode reads, so
+	// admission and execution cannot read one declaration two ways.
 	if task, ok := m.Task(state); ok && branchEffectiveTaskWorkspace(task) == apiv1.WorkspaceRepo {
 		problems = append(problems, fmt.Sprintf(
 			"parallel %q branch %q: task %q resolves to a writable repo workspace; branch stages must use scratch or repo-readonly (concurrent repo-backed branches collide on the run branch)",
@@ -528,16 +527,14 @@ func branchStateProblems(m *Machine, p apiv1.Parallel, branch apiv1.Branch, stat
 	return problems
 }
 
-// branchEffectiveTaskWorkspace resolves the workspace a task actually runs in.
-// Run.Workspace is authoritative for a deterministic task; Task.Workspace is
-// the seam an agentic task uses instead; unset means the writable repo
-// worktree either way (internal/runner.taskWorkspaceMode's default).
+// branchEffectiveTaskWorkspace resolves the workspace a task actually runs in:
+// apiv1.Task.EffectiveWorkspace for the declaration's precedence, plus the
+// unset default this admission check reads it against — the writable repo
+// worktree, matching internal/runner.taskWorkspaceMode. Pinned against the
+// apiv1 method by TestBranchEffectiveWorkspaceMatchesAPIResolution.
 func branchEffectiveTaskWorkspace(t apiv1.Task) apiv1.WorkspaceMode {
-	if t.Run != nil && t.Run.Workspace != "" {
-		return t.Run.Workspace
-	}
-	if t.Workspace != "" {
-		return t.Workspace
+	if mode := t.EffectiveWorkspace(); mode != "" {
+		return mode
 	}
 	return apiv1.WorkspaceRepo
 }
@@ -545,8 +542,8 @@ func branchEffectiveTaskWorkspace(t apiv1.Task) apiv1.WorkspaceMode {
 // branchEffectiveGateWorkspace resolves the workspace an agentic gate
 // evaluates in, mirroring internal/runner.gateWorkspaceMode.
 func branchEffectiveGateWorkspace(g apiv1.Gate) apiv1.WorkspaceMode {
-	if g.Agentic != nil && g.Agentic.Workspace != "" {
-		return g.Agentic.Workspace
+	if mode := g.EffectiveWorkspace(); mode != "" {
+		return mode
 	}
 	return apiv1.WorkspaceRepo
 }
