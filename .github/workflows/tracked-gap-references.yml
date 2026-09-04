@@ -7,7 +7,11 @@ name: Tracked Gap References
 # rot, which is what left ADO's pr.query.assignee cell linking a closed
 # issue. Hermetic gates (providers.ValidateGapRegistry /
 # ValidateBlessedTier, run in merge-tier CI) cannot see issue state, so this
-# scheduled, read-only leg asks the forge.
+# read-only leg asks the forge.
+#
+# #4227: it runs on every push to main as well as weekly, so the window
+# between a tracked gap's issue closing and CI noticing is bounded by the
+# next merge rather than by the cron cadence.
 #
 # A failure means a tracked gap's issue is closed: drop the entry if the gap
 # is fixed, repoint it at the issue tracking the remaining work, or record
@@ -15,6 +19,8 @@ name: Tracked Gap References
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   schedule:
     - cron: "17 9 * * 1"
 

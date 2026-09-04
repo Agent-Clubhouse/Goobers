@@ -138,7 +138,10 @@ type CapabilityGap struct {
 // declaration).
 var knownGaps = map[ProviderKind]map[Capability]CapabilityGap{
 	ProviderADO: {
-		CapBacklogBlockers: {Kind: GapTracked, Issue: "#3030"},
+		CapBacklogBlockers: {
+			Kind:      GapNotApplicable,
+			Rationale: "Azure DevOps exposes blockers as work-item dependency links returned inline with the item, so blocker state arrives with the listing (WorkItem.BlockedByCount) and there is no separate per-item blocker read to declare; the Dispatcher path in cmd/goobers/backlogquery.go consumes that count directly",
+		},
 		CapPRQueryAssignee: {
 			Kind:      GapNotApplicable,
 			Rationale: "Azure DevOps pull requests have no assignee concept; reviewers are the closest analog and are covered by pr.query.requestedReviewer",
