@@ -163,6 +163,20 @@ func readEventsAfterSeq(file *os.File, seq uint64) ([]Event, int64, int, error) 
 		return nil, 0, 0, fmt.Errorf("journal: stat rotated instance log tail: %w", err)
 	}
 	size := info.Size()
+	if seq == 0 {
+		data := make([]byte, size)
+		n, err := file.ReadAt(data, 0)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, 0, n, fmt.Errorf("journal: read instance log tail: %w", err)
+		}
+		data = data[:n]
+		records, tornBytes, err := parseEventRecords(data)
+		if err != nil {
+			return nil, 0, n, err
+		}
+		readprobe.RecordInstanceTailRecords(len(records))
+		return eventsAfter(records, seq), size - int64(tornBytes), n, nil
+	}
 	start := size
 	var window []byte
 	for {
@@ -189,6 +203,7 @@ func readEventsAfterSeq(file *os.File, seq uint64) ([]Event, int64, int, error) 
 		if err != nil {
 			return nil, 0, len(window), err
 		}
+		readprobe.RecordInstanceTailRecords(len(records))
 		for i := len(records) - 1; i >= 0; i-- {
 			if records[i].Event.Seq <= seq {
 				return eventsAfter(records[i+1:], seq), size - int64(tornBytes), len(window), nil
