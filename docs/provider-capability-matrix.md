@@ -50,7 +50,7 @@ Every declared capability (`providers.Capability`, design doc `docs/design/provi
 | `backlog.update` | yes | conformant | conformant | conformant |
 | `backlog.status` | yes | conformant | conformant | conformant |
 | `backlog.claim` | yes | conformant | conformant | conformant |
-| `backlog.blockers` | yes | conformant | not applicable | conformant |
+| `backlog.blockers` | yes | conformant | gap (#2061) | conformant |
 | `trigger.subscribe` | yes | conformant | conformant | conformant |
 
 ## Not applicable
@@ -60,4 +60,3 @@ Permanent forge differences, not tracked work: these capabilities cannot exist o
 | Provider | Capability | Why |
 | --- | --- | --- |
 | ado | `pr.query.assignee` | Azure DevOps pull requests have no assignee concept; reviewers are the closest analog and are covered by pr.query.requestedReviewer |
-| ado | `backlog.blockers` | Azure DevOps exposes blockers as work-item dependency links returned inline with the item, so blocker state arrives with the listing (WorkItem.BlockedByCount) and there is no separate per-item blocker read to declare; the Dispatcher path in cmd/goobers/backlogquery.go consumes that count directly |

@@ -126,7 +126,7 @@ type MergeQueuePoller interface {
 
 // WorkItemBlockerChecker reports whether a work item has an unresolved
 // native blocker. Optional (backlog.blockers). ADO does not implement or
-// declare it — dependency-link modeling reaches parity in V1 — so the call
+// declare it — dependency-link modeling reaches parity under #2061 — so the call
 // site (cmd/goobers/backlogquery.go) goes through Dispatcher: an ADO item
 // with a nonzero BlockedByCount fails closed (excluded with a warning)
 // instead of the fail-open stub #2059 used to return (CONF-5, #2078).
