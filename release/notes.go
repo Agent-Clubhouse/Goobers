@@ -46,6 +46,9 @@ type releaseNotesData struct {
 }
 
 func writeReleaseMetadata(version, previousFeaturePath, previousSupportPath, outDir string) (notesPath string, snapshotPaths []string, err error) {
+	if err := supportmatrix.ValidateSupportPolicyForRelease(supportmatrix.GetDSL(), version); err != nil {
+		return "", nil, fmt.Errorf("DSL support matrix is not valid for release %s: %w", version, err)
+	}
 	current, err := newFeatureSnapshot(version, workflow.AllFeatures())
 	if err != nil {
 		return "", nil, err

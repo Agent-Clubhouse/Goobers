@@ -226,7 +226,11 @@ Every non-empty release build writes three metadata assets alongside the binarie
 - `feature-registry.json` is the complete, schema-versioned snapshot returned by
   the same registry that powers `goobers features` and
   [`docs/feature-matrix.md`](../feature-matrix.md).
-- `dsl-support-matrix.json` records the compiled-in DSL `SupportMatrix`.
+- `dsl-support-matrix.json` records the compiled-in DSL `SupportMatrix`. The
+  generator refuses to write it when a DSL version declares a support level the
+  release being built has not reached — the level must be the one its lifecycle
+  history is in at that release, so a build cannot ship a level that only takes
+  effect in a later release (#4215).
 - `RELEASE_NOTES.md` is rendered from
   [`release/release-notes.tmpl.md`](../../release/release-notes.tmpl.md). It
   includes newly GA, newly deprecated, and removed features; DSL versions newly

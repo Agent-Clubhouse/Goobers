@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -50,7 +51,8 @@ func TestDSLMatrixAgainstLatestRelease(t *testing.T) {
 
 func TestDSLMatrixAgainstNextReleases(t *testing.T) {
 	root := strings.TrimSpace(runSupportCommand(t, "", "git", "rev-parse", "--show-toplevel"))
-	firstTag, latestTag, _ := supportReleaseTagRange(t, root)
+	released, latestTag, _ := loadLatestReleasedSupportMatrix(t, root)
+	firstTag, _, _ := supportReleaseTagRange(t, root)
 	var latest releaseVersion
 	if latestTag != "" {
 		var err error
@@ -77,7 +79,11 @@ func TestDSLMatrixAgainstNextReleases(t *testing.T) {
 			if firstTag == "" {
 				releaseAnchor = candidate
 			}
-			if err := validateSupportMatrixAfterTag(GetDSL(), candidate, releaseAnchor); err != nil {
+			// The baseline is the released matrix as the candidate tag will
+			// publish it: transitions dated at or before the tag ship in it,
+			// so only still-pending transitions are new after the cut.
+			baseline := publishedSupportMatrixAtTag(t, released, GetDSL(), candidate)
+			if err := validateSupportMatrixAfterTag(baseline, GetDSL(), candidate, releaseAnchor); err != nil {
 				t.Fatalf("compiled-in DSL support matrix would fail after cutting %s: %v", candidate.String(), err)
 			}
 		})
@@ -104,13 +110,73 @@ func TestPreTagSimulationRejectsOffByOneSupportDeadline(t *testing.T) {
 	firstRelease := releaseVersion{major: 1, minor: 1}
 	nextRelease := releaseVersion{major: 1, minor: 2}
 
-	err := validateSupportMatrixAfterTag(matrix, nextRelease, firstRelease)
+	released := publishedSupportMatrixAtTag(t, SupportMatrix{}, matrix, nextRelease)
+	err := validateSupportMatrixAfterTag(released, matrix, nextRelease, firstRelease)
 	if err == nil || !strings.Contains(err.Error(), "fewer than 3 minor releases") {
 		t.Fatalf("off-by-one support deadline error = %v, want three-minor support-window failure", err)
 	}
 }
 
+// TestPreTagSimulationRefusesLevelUnreachedByRelease reconstructs what shipped
+// in v0.4.0-beta.1 and beta.2 — DSL 1.4 declared unsupported while its
+// lifecycle only reaches unsupported in v0.5.0 — and pins that the evolution
+// guard alone accepts it, while the release-relative level check refuses it
+// (#4215).
+func TestPreTagSimulationRefusesLevelUnreachedByRelease(t *testing.T) {
+	root := strings.TrimSpace(runSupportCommand(t, "", "git", "rev-parse", "--show-toplevel"))
+	released, tag, developmentReleases := loadLatestReleasedSupportMatrix(t, root)
+	if tag == "" {
+		t.Skip("no published release to validate the candidate matrix against")
+	}
+	const candidateRelease = "v0.4.0"
+	betaMatrix := SupportMatrix{
+		"1.4": {
+			Level:       LevelUnsupported,
+			Replacement: "2.0",
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
+				{Level: LevelUnsupported, SinceVersion: "v0.5.0"},
+			},
+		},
+		"2.0": {
+			Level: LevelSupported,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+			},
+		},
+	}
+
+	if err := validateSupportMatrixEvolution(
+		released, betaMatrix, candidateRelease, developmentReleases,
+	); err != nil {
+		t.Fatalf("evolution against %s refused the shipped beta matrix on other grounds: %v", tag, err)
+	}
+	err := ValidateSupportPolicyForRelease(betaMatrix, candidateRelease)
+	if err == nil || !strings.Contains(err.Error(), `only reaches "deprecated"`) {
+		t.Fatalf("release-level check error = %v, want DSL 1.4 refused at %s", err, candidateRelease)
+	}
+
+	atTagMatrix := SupportMatrix{
+		"1.4": {
+			Level:       LevelUnsupported,
+			Replacement: "2.0",
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
+				{Level: LevelUnsupported, SinceVersion: candidateRelease},
+			},
+		},
+		"2.0": betaMatrix["2.0"],
+	}
+	err = validateSupportMatrixEvolution(released, atTagMatrix, candidateRelease, developmentReleases)
+	if err == nil || !strings.Contains(err.Error(), "must be later than latest release") {
+		t.Fatalf("candidate-tag transition error = %v, want later-than-latest-release failure", err)
+	}
+}
+
 func validateSupportMatrixAfterTag(
+	released SupportMatrix,
 	matrix SupportMatrix,
 	release releaseVersion,
 	firstRelease releaseVersion,
@@ -121,7 +187,47 @@ func validateSupportMatrixAfterTag(
 			developmentReleases[version.Version] = firstRelease
 		}
 	}
-	return validateSupportMatrixEvolution(matrix, matrix, release.String(), developmentReleases)
+	return validateSupportMatrixEvolution(released, matrix, release.String(), developmentReleases)
+}
+
+// publishedSupportMatrixAtTag returns released advanced to the state tag
+// publishes: every candidate transition dated at or before tag has shipped by
+// then, so only later transitions are still unreleased after the cut.
+func publishedSupportMatrixAtTag(
+	t *testing.T,
+	released, candidate SupportMatrix,
+	tag releaseVersion,
+) SupportMatrix {
+	t.Helper()
+	published := make(SupportMatrix, len(candidate))
+	for _, version := range candidate.Versions() {
+		history := make([]SupportTransition, 0, len(version.History))
+		for i, transition := range version.History {
+			since, err := parseSupportReleaseVersion(transition.SinceVersion, i == 0)
+			if err != nil {
+				t.Fatalf("DSL version %s has invalid lifecycle version %q: %v",
+					version.Version, transition.SinceVersion, err)
+			}
+			if compareReleaseVersions(since, tag) > 0 {
+				break
+			}
+			history = append(history, transition)
+		}
+		if len(history) == 0 {
+			continue
+		}
+		if previous, ok := released.Lookup(version.Version); ok && slices.Equal(previous.History, history) {
+			published[version.Version] = previous
+			continue
+		}
+		published[version.Version] = VersionSupport{
+			Level:            history[len(history)-1].Level,
+			UnsupportedAfter: version.UnsupportedAfter,
+			Replacement:      version.Replacement,
+			History:          history,
+		}
+	}
+	return published
 }
 
 func TestLatestReleasedSupportMatrixComesFromTag(t *testing.T) {

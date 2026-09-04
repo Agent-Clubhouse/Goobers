@@ -388,3 +388,175 @@ func TestMinorReleaseWindowDoesNotTreatDevelopmentAsZero(t *testing.T) {
 		t.Fatal("development sentinel satisfied a numeric release window without an anchor")
 	}
 }
+
+func TestValidateSupportPolicyForRelease(t *testing.T) {
+	matrix := func(level Level) SupportMatrix {
+		return SupportMatrix{
+			"1.4": {
+				Level:            level,
+				Replacement:      "2.0",
+				UnsupportedAfter: unsupportedAfterFor(level),
+				History: []SupportTransition{
+					{Level: LevelSupported, SinceVersion: initialSupportVersion},
+					{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
+					{Level: LevelUnsupported, SinceVersion: "v0.5.0"},
+				}[:transitionsFor(level)],
+			},
+			"2.0": {
+				Level: LevelSupported,
+				History: []SupportTransition{
+					{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				},
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		matrix  SupportMatrix
+		release string
+		want    string
+	}{
+		{
+			name:    "level not yet reached by the release being built",
+			matrix:  matrix(LevelUnsupported),
+			release: "v0.4.0",
+			want:    `DSL version "1.4" declares support level "unsupported" but release "v0.4.0" only reaches "deprecated"`,
+		},
+		{
+			name:    "pre-release tag is checked against its release line",
+			matrix:  matrix(LevelUnsupported),
+			release: "v0.4.0-beta.2",
+			want:    `only reaches "deprecated"`,
+		},
+		{
+			name:    "level reached by the release being built",
+			matrix:  matrix(LevelUnsupported),
+			release: "v0.5.0",
+		},
+		{
+			name:    "level in effect for the whole lifecycle",
+			matrix:  matrix(LevelDeprecated),
+			release: "v0.4.0",
+		},
+		{
+			name:    "untagged development build names no release",
+			matrix:  matrix(LevelUnsupported),
+			release: "v0.4.0-beta.2-11-g9bcc47a2e",
+		},
+		{
+			name:    "dev sentinel names no release",
+			matrix:  matrix(LevelUnsupported),
+			release: initialSupportVersion,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateSupportPolicyForRelease(tc.matrix, tc.release)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("ValidateSupportPolicyForRelease(%s) = %v, want nil", tc.release, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ValidateSupportPolicyForRelease(%s) = %v, want %q", tc.release, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateSupportPolicyForReleaseRejectsLifecycleStartingLater(t *testing.T) {
+	matrix := SupportMatrix{
+		"3.0": {
+			Level: LevelPreview,
+			History: []SupportTransition{
+				{Level: LevelPreview, SinceVersion: "v0.4.0"},
+			},
+		},
+	}
+	err := ValidateSupportPolicyForRelease(matrix, "v0.3.4")
+	if err == nil || !strings.Contains(err.Error(), `lifecycle only starts in "v0.4.0", after release "v0.3.4"`) {
+		t.Fatalf("unreleased lifecycle error = %v, want start-after-release failure", err)
+	}
+}
+
+func TestEvolutionCarriesForwardReleasedUnsupportedAfter(t *testing.T) {
+	released := SupportMatrix{
+		"1.4": {
+			Level:            LevelDeprecated,
+			Replacement:      "2.0",
+			UnsupportedAfter: "v0.5.0",
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
+			},
+		},
+		"2.0": {
+			Level: LevelSupported,
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+			},
+		},
+	}
+	firstRelease, err := parseSupportReleaseVersion("v0.1.0", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	developmentReleases := map[string]releaseVersion{"1.4": firstRelease, "2.0": firstRelease}
+
+	dropped := SupportMatrix{"1.4": released["1.4"], "2.0": released["2.0"]}
+	pulledIn := dropped["1.4"]
+	pulledIn.UnsupportedAfter = "v0.4.0"
+	dropped["1.4"] = pulledIn
+	err = validateSupportMatrixEvolution(released, dropped, "v0.3.3", developmentReleases)
+	if err == nil || !strings.Contains(err.Error(), `drops support in "v0.4.0", before released unsupported-after release "v0.5.0"`) {
+		t.Fatalf("pulled-in unsupported-after error = %v, want carry-forward failure", err)
+	}
+
+	early := SupportMatrix{
+		"1.4": {
+			Level:       LevelUnsupported,
+			Replacement: "2.0",
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
+				{Level: LevelUnsupported, SinceVersion: "v0.4.0"},
+			},
+		},
+		"2.0": released["2.0"],
+	}
+	err = validateSupportMatrixEvolution(released, early, "v0.3.3", developmentReleases)
+	if err == nil || !strings.Contains(err.Error(), `drops support in "v0.4.0", before released unsupported-after release "v0.5.0"`) {
+		t.Fatalf("early unsupported error = %v, want unsupported-after failure", err)
+	}
+
+	honored := SupportMatrix{
+		"1.4": {
+			Level:       LevelUnsupported,
+			Replacement: "2.0",
+			History: []SupportTransition{
+				{Level: LevelSupported, SinceVersion: initialSupportVersion},
+				{Level: LevelDeprecated, SinceVersion: "v0.1.0"},
+				{Level: LevelUnsupported, SinceVersion: "v0.5.0"},
+			},
+		},
+		"2.0": released["2.0"],
+	}
+	if err := validateSupportMatrixEvolution(released, honored, "v0.3.3", developmentReleases); err != nil {
+		t.Fatalf("honored unsupported-after target = %v, want nil", err)
+	}
+}
+
+func unsupportedAfterFor(level Level) string {
+	if level == LevelDeprecated {
+		return "v0.5.0"
+	}
+	return ""
+}
+
+func transitionsFor(level Level) int {
+	if level == LevelDeprecated {
+		return 2
+	}
+	return 3
+}

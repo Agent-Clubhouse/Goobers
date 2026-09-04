@@ -70,6 +70,10 @@ func TestReadFeatureSnapshotRejectsInvalidRegistry(t *testing.T) {
 }
 
 func TestWriteReleaseMetadata(t *testing.T) {
+	// The release must be one the compiled-in DSL support matrix has reached:
+	// writeReleaseMetadata refuses to stamp a support level that is only
+	// declared for a later release (#4215).
+	const releaseUnderTest = "v0.5.0"
 	previous, err := newFeatureSnapshot("v0.0.0", workflow.AllFeatures())
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +100,7 @@ func TestWriteReleaseMetadata(t *testing.T) {
 	}
 
 	out := t.TempDir()
-	notesPath, snapshotPaths, err := writeReleaseMetadata("v0.1.0", previousPath, previousSupportPath, out)
+	notesPath, snapshotPaths, err := writeReleaseMetadata(releaseUnderTest, previousPath, previousSupportPath, out)
 	if err != nil {
 		t.Fatalf("writeReleaseMetadata: %v", err)
 	}
@@ -104,7 +108,7 @@ func TestWriteReleaseMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"# Goobers v0.1.0", "Compared with `v0.0.0`.", "DSL support-matrix delta", "Support policy for external consumers"} {
+	for _, want := range []string{"# Goobers " + releaseUnderTest, "Compared with `v0.0.0`.", "DSL support-matrix delta", "Support policy for external consumers"} {
 		if !strings.Contains(string(notes), want) {
 			t.Errorf("release notes missing %q:\n%s", want, notes)
 		}
@@ -113,7 +117,7 @@ func TestWriteReleaseMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Release != "v0.1.0" || len(snapshot.Features) != len(workflow.AllFeatures()) {
+	if snapshot.Release != releaseUnderTest || len(snapshot.Features) != len(workflow.AllFeatures()) {
 		t.Errorf("snapshot metadata = release %q, %d features", snapshot.Release, len(snapshot.Features))
 	}
 	snapshotIDs := featureIDs(snapshot.Features)
@@ -135,7 +139,7 @@ func TestWriteReleaseMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if supportSnapshot.Release != "v0.1.0" {
+	if supportSnapshot.Release != releaseUnderTest {
 		t.Errorf("support snapshot release = %q", supportSnapshot.Release)
 	}
 }
@@ -234,4 +238,11 @@ func featureIDs(features []workflow.Feature) []workflow.FeatureID {
 		ids = append(ids, feature.ID)
 	}
 	return ids
+}
+
+func TestWriteReleaseMetadataRefusesLevelUnreachedByRelease(t *testing.T) {
+	_, _, err := writeReleaseMetadata("v0.1.0", "", "", t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "DSL support matrix is not valid for release v0.1.0") {
+		t.Fatalf("writeReleaseMetadata error = %v, want refusal of a support level v0.1.0 has not reached", err)
+	}
 }

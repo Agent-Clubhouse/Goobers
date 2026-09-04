@@ -2,6 +2,7 @@ package supportmatrix
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,6 +33,76 @@ type versionLifecycle struct {
 // for every DSL version in matrix.
 func ValidateSupportPolicy(matrix SupportMatrix) error {
 	return validateSupportPolicy(matrix, nil, false)
+}
+
+// ValidateSupportPolicyForRelease checks the support policy and additionally
+// requires every declared Level to be the level actually in effect at release —
+// the level a build tagged release hands to callers that read the matrix. A
+// version whose lifecycle history only reaches that level in a later release is
+// refused, so a build cannot ship a support level it has not reached yet.
+//
+// release is the version the build is stamped with. A release may carry a
+// pre-release or build suffix (v0.4.0-beta.2); the level is checked against its
+// vMAJOR.MINOR.PATCH line. Untagged builds — the "dev" sentinel, a bare commit,
+// or a `git describe` of a commit after the last tag — name no release to check
+// against, so only the release-independent policy applies to them.
+func ValidateSupportPolicyForRelease(matrix SupportMatrix, release string) error {
+	if err := ValidateSupportPolicy(matrix); err != nil {
+		return err
+	}
+	target, ok := parseBuildReleaseVersion(release)
+	if !ok {
+		return nil
+	}
+	return validateLevelsAtRelease(matrix, target)
+}
+
+func validateLevelsAtRelease(matrix SupportMatrix, release releaseVersion) error {
+	for _, version := range matrix.Versions() {
+		effective, ok, err := levelAtRelease(version, release)
+		if err != nil {
+			return fmt.Errorf("DSL version %q: %w", version.Version, err)
+		}
+		if !ok {
+			return fmt.Errorf(
+				"DSL version %q declares support level %q but its lifecycle only starts in %q, after release %q",
+				version.Version,
+				version.Level,
+				version.History[0].SinceVersion,
+				release.String(),
+			)
+		}
+		if version.Level != effective.Level {
+			return fmt.Errorf(
+				"DSL version %q declares support level %q but release %q only reaches %q (in effect since %q)",
+				version.Version,
+				version.Level,
+				release.String(),
+				effective.Level,
+				effective.SinceVersion,
+			)
+		}
+	}
+	return nil
+}
+
+// levelAtRelease returns the last lifecycle transition that has taken effect at
+// release. ok is false when the version's lifecycle starts after release.
+func levelAtRelease(version Version, release releaseVersion) (SupportTransition, bool, error) {
+	var effective SupportTransition
+	found := false
+	for i, transition := range version.History {
+		since, err := parseSupportReleaseVersion(transition.SinceVersion, i == 0)
+		if err != nil {
+			return SupportTransition{}, false, fmt.Errorf("invalid lifecycle version %q: %w", transition.SinceVersion, err)
+		}
+		if compareReleaseVersions(since, release) > 0 {
+			break
+		}
+		effective = transition
+		found = true
+	}
+	return effective, found, nil
 }
 
 func validateSupportPolicy(
@@ -153,6 +224,12 @@ func validateSupportMatrixEvolution(
 			}
 		}
 
+		if existed {
+			if err := validateUnsupportedAfterCarryForward(previous, candidate); err != nil {
+				return err
+			}
+		}
+
 		if candidate.Level != LevelUnsupported {
 			continue
 		}
@@ -162,6 +239,54 @@ func validateSupportMatrixEvolution(
 				candidate.Version,
 			)
 		}
+	}
+	return nil
+}
+
+// validateUnsupportedAfterCarryForward keeps the unsupported-after release a
+// released matrix published: it is a promise to callers still on that DSL
+// version, so a candidate may neither forget it nor drop support earlier than
+// it, whether the version stays deprecated or the level flips to unsupported.
+func validateUnsupportedAfterCarryForward(previous VersionSupport, candidate Version) error {
+	if strings.TrimSpace(previous.UnsupportedAfter) == "" {
+		return nil
+	}
+	published, err := parseSupportReleaseVersion(previous.UnsupportedAfter, false)
+	if err != nil {
+		return fmt.Errorf(
+			"DSL version %q has invalid released unsupported-after release %q: %w",
+			candidate.Version,
+			previous.UnsupportedAfter,
+			err,
+		)
+	}
+	target := candidate.UnsupportedAfter
+	if candidate.Level == LevelUnsupported {
+		target = candidate.History[len(candidate.History)-1].SinceVersion
+	}
+	if strings.TrimSpace(target) == "" {
+		return fmt.Errorf(
+			"DSL version %q must carry forward released unsupported-after release %q",
+			candidate.Version,
+			previous.UnsupportedAfter,
+		)
+	}
+	planned, err := parseSupportReleaseVersion(target, false)
+	if err != nil {
+		return fmt.Errorf(
+			"DSL version %q has invalid unsupported release %q: %w",
+			candidate.Version,
+			target,
+			err,
+		)
+	}
+	if compareReleaseVersions(planned, published) < 0 {
+		return fmt.Errorf(
+			"DSL version %q drops support in %q, before released unsupported-after release %q",
+			candidate.Version,
+			target,
+			previous.UnsupportedAfter,
+		)
 	}
 	return nil
 }
@@ -338,6 +463,27 @@ func parseSupportReleaseVersion(value string, allowDevelopment bool) (releaseVer
 		numbers[i] = number
 	}
 	return releaseVersion{major: numbers[0], minor: numbers[1], patch: numbers[2]}, nil
+}
+
+var describeSuffixPattern = regexp.MustCompile(`-[0-9]+-g[0-9a-f]{4,}$`)
+
+// parseBuildReleaseVersion resolves the release line a build version names.
+// "v0.4.0" and pre-release or build-metadata forms such as "v0.4.0-beta.2"
+// resolve to v0.4.0; the "dev" sentinel and a `git describe` of a commit after
+// the last tag ("v0.4.0-beta.2-11-g9bcc47a2e", optionally "-dirty") name no
+// release, because the matrix they carry has not been tagged yet.
+func parseBuildReleaseVersion(value string) (releaseVersion, bool) {
+	value = strings.TrimSuffix(strings.TrimSpace(value), "-dirty")
+	if describeSuffixPattern.MatchString(value) {
+		return releaseVersion{}, false
+	}
+	line, _, _ := strings.Cut(value, "+")
+	line, _, _ = strings.Cut(line, "-")
+	release, err := parseSupportReleaseVersion(line, false)
+	if err != nil {
+		return releaseVersion{}, false
+	}
+	return release, true
 }
 
 func compareReleaseVersions(left, right releaseVersion) int {
