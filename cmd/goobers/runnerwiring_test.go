@@ -4492,7 +4492,7 @@ func TestTerminalCircuitBreakerTripsOnEscalated(t *testing.T) {
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
 	}}
-	h := buildTerminalCircuitBreaker(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+	h := buildTerminalCircuitBreaker(l, cfg, apiv1.RepoRef{}, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
 	if h == nil {
 		t.Fatal("expected non-nil terminal notifier")
 	}
@@ -4544,7 +4544,7 @@ func TestTerminalCircuitBreakerSkipsCompleted(t *testing.T) {
 	cfg := &instance.Config{Repos: []instance.RepoRef{
 		{Provider: "github", Owner: "acme", Name: "web", Token: instance.TokenRef{Env: "BLOCKED_TOK"}},
 	}}
-	h := buildTerminalCircuitBreaker(l, cfg, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
+	h := buildTerminalCircuitBreaker(l, cfg, apiv1.RepoRef{}, blockedHandlerTestResolver(t), &escTestRegistrar{}, nil)
 
 	for i := 0; i < failureStreakThreshold+1; i++ {
 		_ = h("run-ok", journal.PhaseCompleted, "done")

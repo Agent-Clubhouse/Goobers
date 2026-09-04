@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/blockedcycle"
 	"github.com/goobers/goobers/internal/credentials"
 	"github.com/goobers/goobers/internal/gate"
@@ -483,11 +484,17 @@ func resetCircuitBreaker(ctx context.Context, poster gate.Commenter, l instance.
 // wrapper skips PhaseFailed to avoid double-counting. Returns nil when no repo
 // is configured.
 //
+// project is the gaggle's own repository (#4243): the failure streak must be
+// counted, commented, and parked on the repo this run actually serves, not on
+// cfg.Repos[0] — on a multi-repo instance those are different repos whose
+// issue numbers collide. Routing matches the sibling terminal hooks, falling
+// back to cfg.Repos[0] only when the gaggle declares no project.
+//
 // Breaker errors are returned, not discarded (#3646): the runner journals a
 // TerminalNotifier failure as terminal_notification_failed, so a park that did
 // not reach the provider leaves an actionable diagnostic in the run trace
 // alongside the durable outbox entry.
-func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolver credentials.Resolver, reg runner.SecretRegistrar, inner runner.TerminalNotifier) runner.TerminalNotifier {
+func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, project apiv1.RepoRef, resolver credentials.Resolver, reg runner.SecretRegistrar, inner runner.TerminalNotifier) runner.TerminalNotifier {
 	if len(cfg.Repos) == 0 {
 		return inner
 	}
@@ -497,12 +504,7 @@ func buildTerminalCircuitBreaker(l instance.Layout, cfg *instance.Config, resolv
 		layout:             l,
 		needsHumanAssignee: cfg.NeedsHumanAssignee,
 	}
-	repo := cfg.Repos[0]
-	repoRef := providers.RepositoryRef{
-		Provider: providers.ProviderKind(repo.Provider),
-		Owner:    repo.Owner,
-		Name:     repo.Name,
-	}
+	repoRef := terminalRepositoryRefForProject(cfg, project)
 
 	return func(runID string, phase journal.RunPhase, finalState string) error {
 		var errs []error
