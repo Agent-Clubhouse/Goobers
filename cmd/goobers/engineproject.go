@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 
 	"github.com/goobers/goobers/internal/engine"
 	"github.com/goobers/goobers/internal/instance"
@@ -17,6 +18,21 @@ const engineProjectHelp = "Usage: goobers engine-project [flags] <run-id> [path]
 	"Write a completed engine run's standard journal into the instance.\n\n" +
 	"Exit codes: 0 = projected or already present, 1 = query/write failure,\n" +
 	"2 = usage/config error.\n"
+
+// engineProjectClient is the slice of client.Client the projection needs (the
+// journal projection is a query over the run's history) plus the close every
+// dialled client owes.
+type engineProjectClient interface {
+	QueryWorkflow(ctx context.Context, workflowID, runID, queryType string, args ...interface{}) (converter.EncodedValue, error)
+	Close()
+}
+
+// dialEngineProject is a seam so a dispatch-level test can prove the run id,
+// gaggle, runs directory, and intake observer this command resolves actually
+// reach the projection, without a Temporal frontend (#4223).
+var dialEngineProject = func(ctx context.Context, opts client.Options) (engineProjectClient, error) {
+	return client.DialContext(ctx, opts)
+}
 
 func runEngineProject(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("engine-project", flag.ContinueOnError)
@@ -58,7 +74,7 @@ func runEngineProject(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	c, err := client.DialContext(ctx, client.Options{HostPort: *hostPort, Namespace: *namespace})
+	c, err := dialEngineProject(ctx, client.Options{HostPort: *hostPort, Namespace: *namespace})
 	if err != nil {
 		pf(stderr, "error: dial temporal at %s: %v\n", *hostPort, err)
 		return 1
