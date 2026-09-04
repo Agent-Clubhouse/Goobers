@@ -24,6 +24,41 @@ func TestRunGitHubProgressRejectsNoWait(t *testing.T) {
 	}
 }
 
+// TestRunGitHubProgressRejectsRemoteAPI pins the second mutex the reviewer
+// flagged: --github-progress projects events by walking the local instance
+// journal, so submitting the trigger to a remote daemon via --api (or the
+// $GOOBERS_DAEMON_API fallback) can never publish a Check Run. Silently
+// dropping the flag on that path would leave the caller with the impression
+// that live progress is being published when no publisher is running at all,
+// and would also skip the --github-progress + --no-wait guard. Reject the
+// combination with the same shape as --no-wait so the flag never no-ops.
+func TestRunGitHubProgressRejectsRemoteAPI(t *testing.T) {
+	// --api takes precedence over $GOOBERS_DAEMON_API, but clear the env
+	// fallback so the assertion attributes the rejection to --api.
+	t.Setenv("GOOBERS_DAEMON_API", "")
+	code, _, stderr := runArgs(t, "run", "--github-progress", "--api", "https://daemon.example", "default-implement")
+	if code != 2 {
+		t.Fatalf("code = %d, want 2; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "--github-progress cannot be combined with --api") {
+		t.Fatalf("stderr = %q, want --api mutex error", stderr)
+	}
+}
+
+// TestRunGitHubProgressRejectsRemoteAPIViaEnv covers the second reachable
+// path: $GOOBERS_DAEMON_API also makes the run remote (runRemoteTrigger),
+// so the same mutex must fire even without an explicit --api flag.
+func TestRunGitHubProgressRejectsRemoteAPIViaEnv(t *testing.T) {
+	t.Setenv("GOOBERS_DAEMON_API", "https://daemon.example")
+	code, _, stderr := runArgs(t, "run", "--github-progress", "default-implement")
+	if code != 2 {
+		t.Fatalf("code = %d, want 2; stderr = %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "--github-progress cannot be combined with --api") {
+		t.Fatalf("stderr = %q, want --api mutex error", stderr)
+	}
+}
+
 // TestRunGitHubProgressRequiresActionsEnvironment pins the environment probe
 // that fails fast when a caller passes --github-progress outside a hosted
 // Actions workflow: with GITHUB_TOKEN and friends unset the run must not

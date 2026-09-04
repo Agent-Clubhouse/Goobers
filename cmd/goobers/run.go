@@ -128,6 +128,16 @@ func runRun(args []string, stdout, stderr io.Writer) int {
 		pf(stderr, "error: %v\n", err)
 		return 2
 	}
+	// --github-progress is a local-run capability: the publisher walks the
+	// instance journal on this filesystem to project events, and a remote
+	// daemon's journal is not on this filesystem. Reject the combination
+	// with the same shape as --github-progress + --no-wait so the flag is
+	// never silently ignored on the --api / $GOOBERS_DAEMON_API path
+	// (mirrors the earlier no-wait mutex).
+	if endpoint != "" && *githubProgress {
+		pf(stderr, "error: --github-progress cannot be combined with --api (remote daemon submissions do not publish hosted progress)\n")
+		return 2
+	}
 	if endpoint != "" {
 		ctx, stop := signals.SetupSignalContext()
 		defer stop()

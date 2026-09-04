@@ -63,3 +63,12 @@ the run itself did not observe a terminal journal phase. A signal-driven cancel
 and any other wait error closes it with `conclusion: failure`. The finalize
 call is best-effort and never lengthens the CLI exit path — the Check Run does
 not linger at `in_progress` after the workflow job ends.
+
+## Local-only capability
+
+`--github-progress` projects events by walking the local instance journal on
+this filesystem, so it is a local-run capability. It cannot be combined with
+`--no-wait` (there is no wait for the publisher to run under) or with `--api`
+/ `$GOOBERS_DAEMON_API` (a remote daemon's journal is not on this filesystem).
+Both combinations exit `2` with a usage error so the flag is never silently
+dropped.
