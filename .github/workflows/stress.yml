@@ -18,10 +18,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  stress:
-    name: race stress
+  plan:
+    name: plan stress shards
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10
+    outputs:
+      shards: ${{ steps.shards.outputs.shards }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || github.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Read the enrolled shards
+        id: shards
+        run: echo "shards=$(go run ./test/stress -list)" >> "$GITHUB_OUTPUT"
+
+  stress:
+    name: race stress (${{ matrix.shard }})
+    needs: plan
+    runs-on: ubuntu-latest
+    # Each job runs exactly one shard, so this only has to cover the 30m
+    # per-shard `go test -timeout` plus checkout, toolchain, and module setup.
+    timeout-minutes: 45
+    strategy:
+      # A shard that finds a race must not cancel the sibling shards still
+      # looking for one; the ledger wants every shard's failures.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -38,13 +69,13 @@ jobs:
         run: go mod download
 
       - name: Run enrolled stress packages
-        run: make stress
+        run: make stress STRESS_SHARD="${{ matrix.shard }}"
 
       - name: Upload stress results
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: stress-results-${{ github.run_id }}
+          name: stress-results-${{ github.run_id }}-${{ matrix.shard }}
           path: stress-results/
           if-no-files-found: warn
           overwrite: true
@@ -85,10 +116,15 @@ jobs:
       - name: Download stress results
         uses: actions/download-artifact@v8
         with:
-          name: stress-results-${{ github.run_id }}
+          pattern: stress-results-${{ github.run_id }}-*
           path: stress-results
 
       - name: Publish flake issues
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: go run ./test/flakeledger -input stress-results/failures.json
+        run: |
+          for report in stress-results/*/failures.json; do
+            if [ -f "$report" ]; then
+              go run ./test/flakeledger -input "$report"
+            fi
+          done
