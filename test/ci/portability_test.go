@@ -426,6 +426,57 @@ func TestCIWorkflowValidatesAndEscalatesMainPushes(t *testing.T) {
 	}
 }
 
+// The escalation is an alert, not a ledger: an issue it filed must close again
+// once main is green, or `goobers:critical` accumulates every main break ever
+// and no reader can tell whether main is red right now (#4228).
+func TestMainFailureEscalationClosesResolvedIssue(t *testing.T) {
+	t.Parallel()
+	root := moduleRoot(t)
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read CI workflow: %v", err)
+	}
+	workflow := string(data)
+	escalation := escalationSection(workflow)
+
+	// The job can only close on a green run if it is scheduled on green runs,
+	// so its own condition must not carry the failure predicate any more.
+	jobCondition, _, _ := strings.Cut(escalation, "\n    steps:")
+	if strings.Contains(jobCondition, "result == 'failure'") {
+		t.Error("escalate-main-failure must run on every push and gate per step; a job-level failure predicate never schedules the run that would close the issue")
+	}
+	if !strings.Contains(jobCondition, "always() && github.event_name == 'push'") {
+		t.Errorf("escalate-main-failure condition must be always() on pushes, got:\n%s", jobCondition)
+	}
+
+	_, closeStep, found := strings.Cut(escalation, "- name: Close resolved main failure\n")
+	if !found {
+		t.Fatal("escalate-main-failure must have a step that closes the resolved main failure issue")
+	}
+	for _, job := range []string{"checks", "deploy-reference", "lint", "unit", "unit-linux-coverage", "unit-macos", "shipped", "windows-smoke"} {
+		want := "needs." + job + ".result == 'success'"
+		if !strings.Contains(closeStep, want) {
+			t.Errorf("close step must require %q: only a fully-green push lane resolves the incident", want)
+		}
+	}
+	// `cancelled` and `skipped` prove nothing about the landed SHA; closing on
+	// anything other than success would resolve a still-live incident.
+	if strings.Contains(closeStep, "!= 'failure'") {
+		t.Error("close step must require every watched job to be 'success', not merely non-failure: cancelled runs would close a live incident")
+	}
+	for _, want := range []string{
+		"actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
+		"github.rest.issues.createComment",
+		"github.rest.issues.update",
+		`state: "closed"`,
+		"context.sha",
+	} {
+		if !strings.Contains(closeStep, want) {
+			t.Errorf("close step must contain %q", want)
+		}
+	}
+}
+
 // workflowJobNames lists the top-level job keys of a workflow, in file order.
 // Two-space indented, non-nested keys under `jobs:` — the same shape
 // workflowJob slices on.
