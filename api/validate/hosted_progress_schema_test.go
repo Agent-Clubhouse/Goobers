@@ -2,6 +2,7 @@ package validate
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,6 +105,31 @@ func TestHostedProgressTruncatedContractValidates(t *testing.T) {
 	}
 	if err := newV(t).ValidateJSON(schemas.HostedProgress, data); err != nil {
 		t.Fatalf("truncated hosted-progress contract should validate: %v\n%s", err, data)
+	}
+}
+
+// TestHostedProgressAllEventsDroppedContractValidates covers the shape a
+// producer actually emits when payload bounding drops every projected event
+// (see TestBoundContractMarksAllEventsDropped in internal/hostedprogress):
+// TruncatedBefore is set to Revision, and Events is an empty non-nil slice
+// so the payload marshals to `"events": []` rather than `"events": null`.
+// The published schema declares events as required with `"type": "array"`, so
+// a nil slice would fail validation; this test locks the wire contract for
+// the state producer/docs/schema all describe as legitimate.
+func TestHostedProgressAllEventsDroppedContractValidates(t *testing.T) {
+	contract := minimalHostedProgressContract(t)
+	contract.Revision = 200
+	contract.TruncatedBefore = 200
+	contract.Events = []journal.Event{}
+	data, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatalf("marshal all-dropped hosted-progress contract: %v", err)
+	}
+	if want := `"events":[]`; !strings.Contains(string(data), want) {
+		t.Fatalf("marshaled payload must contain %s, got: %s", want, data)
+	}
+	if err := newV(t).ValidateJSON(schemas.HostedProgress, data); err != nil {
+		t.Fatalf("all-events-dropped hosted-progress contract should validate: %v\n%s", err, data)
 	}
 }
 

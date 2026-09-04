@@ -315,6 +315,53 @@ func TestBoundContractCompactsSingleOversizedEvent(t *testing.T) {
 	}
 }
 
+// TestBoundContractMarksAllEventsDropped pins the all-events-dropped bounding
+// state: when even a compacted single event cannot fit alongside the
+// non-event portion of the contract (notably an unbounded Identity.Inputs),
+// boundContract drops the last event, records TruncatedBefore = Revision, and
+// leaves Events as an empty non-nil slice so the payload still marshals to
+// `"events": []` — the shape the published JSON schema declares as required
+// (see api/validate/hosted_progress_schema_test.go
+// TestHostedProgressAllEventsDroppedContractValidates for the schema-side
+// coverage).
+func TestBoundContractMarksAllEventsDropped(t *testing.T) {
+	// One InputRef.Name blob strictly larger than maxPayloadBytes forces the
+	// non-event portion to exceed the budget on its own, so no single event
+	// (even after compactEvent) can fit alongside it — driving boundContract
+	// through the compaction step into the total-drop branch.
+	contract := Contract{
+		Schema:   Schema,
+		Revision: 7,
+		Identity: journal.RunIdentity{
+			Inputs: []journal.InputRef{{Name: strings.Repeat("x", maxPayloadBytes*2)}},
+		},
+		Events: []journal.Event{{Seq: 7, Type: journal.EventRunFinished}},
+	}
+
+	boundContract(&contract)
+
+	if contract.Events == nil {
+		t.Fatal("Events must be an empty non-nil slice after total drop; nil marshals to \"events\": null and violates the schema")
+	}
+	if len(contract.Events) != 0 {
+		t.Fatalf("total-drop branch retained events: %#v", contract.Events)
+	}
+	if contract.TruncatedBefore != contract.Revision {
+		t.Fatalf("TruncatedBefore = %d, want %d (= Revision)", contract.TruncatedBefore, contract.Revision)
+	}
+
+	raw, err := json.Marshal(contract)
+	if err != nil {
+		t.Fatalf("marshal all-dropped contract: %v", err)
+	}
+	if !strings.Contains(string(raw), `"events":[]`) {
+		t.Fatalf("marshaled payload must contain empty events array, got: %s", raw)
+	}
+	if strings.Contains(string(raw), `"events":null`) {
+		t.Fatalf("marshaled payload must not contain \"events\":null, got: %s", raw)
+	}
+}
+
 func testJournal(t *testing.T) (string, []journal.Event) {
 	t.Helper()
 	runsDir := t.TempDir()

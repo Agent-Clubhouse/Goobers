@@ -259,7 +259,11 @@ func boundContract(contract *Contract) {
 			if err == nil && len(raw) <= maxPayloadBytes {
 				return
 			}
-			contract.Events = nil
+			// Empty non-nil slice: nil would marshal to `"events": null`,
+			// which violates the schema's required "type": "array" for
+			// events. See TestBoundContractMarksAllEventsDropped and
+			// TestHostedProgressAllEventsDroppedContractValidates.
+			contract.Events = []journal.Event{}
 			contract.TruncatedBefore = contract.Revision
 		default:
 			return
