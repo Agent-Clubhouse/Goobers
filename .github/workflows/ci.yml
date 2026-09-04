@@ -400,7 +400,7 @@ jobs:
           echo "::error::go mod download failed after 3 attempts"
           exit 1
 
-      # TestFeatureRegistryAgainstLatestRelease (internal/workflow/v_next and
+      # TestFeatureRegistryAgainstLatestRelease (internal/workflow/v_2_0 and
       # v_3_0) checks out the latest release tag into a temp worktree and runs
       # `go run` there to snapshot its feature registry, against that tag's own
       # go.mod/go.sum — not the current checkout's. The hermetic runner this job
