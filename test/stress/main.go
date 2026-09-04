@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -30,22 +32,55 @@ const (
 	// happened to be executing (#3167). Keep it generous but finite so a
 	// genuine wedge still panics with a goroutine dump instead of burning the
 	// whole stress job.
-	stressTimeout         = 30 * time.Minute
+	stressTimeout = 30 * time.Minute
+	// stressBuildReserve is the slice of stressTimeout that is not available
+	// for repeat execution: compiling and linking a race-instrumented test
+	// binary, plus the enumeration pass that resolves a shard's test set,
+	// happen inside the same `go test -timeout` window.
+	stressBuildReserve    = 10 * time.Minute
+	maxShards             = 64
 	reportSchema          = "goobers.dev/stress/v1"
 	failureTextLimit      = 64 * 1024
 	failureSignatureLimit = 1024
 )
+
+var testNamePattern = regexp.MustCompile(`^Test[A-Za-z0-9_]*$`)
 
 type options struct {
 	goCommand   string
 	packageList string
 	outputDir   string
 	seed        int64
+	only        string
+	list        bool
 }
 
 type packageSpec struct {
 	Package string
 	Count   int
+	// Shards splits the package's tests across that many independently
+	// scheduled `-run` subsets, each of which repeats Count times.
+	Shards int
+	// PassBudget is the reviewed wall-clock cost of one race-instrumented
+	// pass over the whole package. It is what makes the enrollment budget
+	// checkable: Count repetitions of one shard must fit stressTimeout.
+	PassBudget time.Duration
+}
+
+// shardSpec is one `go test` invocation: a package, optionally narrowed to a
+// deterministic slice of its top-level tests.
+type shardSpec struct {
+	ID      string
+	Package string
+	Count   int
+	Index   int
+	Shards  int
+}
+
+// shardBudget is the reviewed wall-clock cost of running one shard of spec,
+// including the build reserve the invocation cannot avoid paying.
+func (s packageSpec) shardBudget() time.Duration {
+	return time.Duration(s.Count)*s.PassBudget/time.Duration(s.Shards) + stressBuildReserve
 }
 
 type runMetadata struct {
@@ -79,6 +114,9 @@ type summaryReport struct {
 
 type packageResult struct {
 	Package            string    `json:"package"`
+	Shard              string    `json:"shard"`
+	ShardIndex         int       `json:"shard_index"`
+	Shards             int       `json:"shards"`
 	Status             string    `json:"status"`
 	Race               bool      `json:"race"`
 	Count              int       `json:"count"`
@@ -162,6 +200,24 @@ func run(
 		_, _ = fmt.Fprintf(stderr, "stress: load package list: %v\n", err)
 		return 2
 	}
+	shards := expandShards(packages)
+	if opts.list {
+		encoded, err := json.Marshal(shardIDs(shards))
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "stress: encode shard list: %v\n", err)
+			return 2
+		}
+		_, _ = fmt.Fprintf(stdout, "%s\n", encoded)
+		return 0
+	}
+	if opts.only != "" {
+		selected, err := selectShard(shards, opts.only)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "stress: %v\n", err)
+			return 2
+		}
+		shards = []shardSpec{selected}
+	}
 
 	started := now().UTC()
 	if opts.seed == 0 {
@@ -180,7 +236,7 @@ func run(
 		now:       now,
 	}
 
-	summary, failures, executeErr := executeStress(context.Background(), runner, packages)
+	summary, failures, executeErr := executeStress(context.Background(), runner, shards)
 	metadata.FinishedAt = now().UTC()
 	summary.Run = metadata
 	failures.Run = metadata
@@ -189,7 +245,7 @@ func run(
 		return 2
 	}
 
-	_, _ = fmt.Fprintf(stdout, "stress: %s (%d package(s)); reports: %s\n",
+	_, _ = fmt.Fprintf(stdout, "stress: %s (%d shard(s)); reports: %s\n",
 		summary.Status, len(summary.Packages), opts.outputDir)
 	if executeErr != nil {
 		_, _ = fmt.Fprintf(stderr, "stress: execution error: %v\n", executeErr)
@@ -209,11 +265,13 @@ func parseOptions(args []string, stderr io.Writer, getenv func(string) string) (
 	flags.StringVar(&opts.packageList, "packages", "test/stress/packages.txt", "checked-in package enrollment list")
 	flags.StringVar(&opts.outputDir, "output", "stress-results", "artifact output directory")
 	flags.Int64Var(&opts.seed, "seed", 0, "test shuffle seed (zero chooses and records a seed)")
+	flags.StringVar(&opts.only, "only", "", "run a single shard by id (see -list)")
+	flags.BoolVar(&opts.list, "list", false, "print the enrolled shard ids as a JSON array and exit")
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
 	}
 	if flags.NArg() != 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/stress [-go binary] [-packages file] [-output dir] [-seed n]")
+		_, _ = fmt.Fprintln(stderr, "usage: go run ./test/stress [-go binary] [-packages file] [-output dir] [-seed n] [-list] [-only shard]")
 		return options{}, errors.New("unexpected positional arguments")
 	}
 	if strings.TrimSpace(opts.goCommand) == "" || strings.TrimSpace(opts.packageList) == "" ||
@@ -233,30 +291,19 @@ func loadPackages(r io.Reader) ([]packageSpec, error) {
 		if len(fields) == 0 {
 			continue
 		}
-		if len(fields) > 2 {
-			return nil, fmt.Errorf("line %d: expected package and optional count=N", line)
-		}
 		pkg := fields[0]
 		if !strings.HasPrefix(pkg, "./") {
 			return nil, fmt.Errorf("line %d: package must be a relative Go package pattern, got %q", line, pkg)
 		}
-		count := stressCount
-		if len(fields) == 2 {
-			value, ok := strings.CutPrefix(fields[1], "count=")
-			if !ok {
-				return nil, fmt.Errorf("line %d: expected optional count=N, got %q", line, fields[1])
-			}
-			parsed, err := strconv.Atoi(value)
-			if err != nil || parsed < 1 || parsed > stressCount {
-				return nil, fmt.Errorf("line %d: count must be between 1 and %d, got %q", line, stressCount, value)
-			}
-			count = parsed
+		spec, err := parseSettings(pkg, fields[1:])
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", line, err)
 		}
 		if _, exists := seen[pkg]; exists {
 			return nil, fmt.Errorf("line %d: duplicate package %q", line, pkg)
 		}
 		seen[pkg] = struct{}{}
-		packages = append(packages, packageSpec{Package: pkg, Count: count})
+		packages = append(packages, spec)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
@@ -267,7 +314,100 @@ func loadPackages(r io.Reader) ([]packageSpec, error) {
 	return packages, nil
 }
 
-func executeStress(ctx context.Context, runner processRunner, packages []packageSpec) (summaryReport, failuresReport, error) {
+// parseSettings reads the `key=value` enrollment settings that follow a package
+// pattern. Every entry must declare `pass=`, the reviewed cost of one race pass,
+// so the budget its repetitions imply is checkable here rather than discovered
+// as a nightly timeout (#4222).
+func parseSettings(pkg string, fields []string) (packageSpec, error) {
+	spec := packageSpec{Package: pkg, Count: stressCount, Shards: 1}
+	declared := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			return packageSpec{}, fmt.Errorf("expected key=value settings, got %q", field)
+		}
+		if _, repeated := declared[key]; repeated {
+			return packageSpec{}, fmt.Errorf("duplicate setting %q", key)
+		}
+		declared[key] = struct{}{}
+		switch key {
+		case "count":
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 1 || parsed > stressCount {
+				return packageSpec{}, fmt.Errorf("count must be between 1 and %d, got %q", stressCount, value)
+			}
+			spec.Count = parsed
+		case "shards":
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 1 || parsed > maxShards {
+				return packageSpec{}, fmt.Errorf("shards must be between 1 and %d, got %q", maxShards, value)
+			}
+			spec.Shards = parsed
+		case "pass":
+			parsed, err := time.ParseDuration(value)
+			if err != nil || parsed <= 0 {
+				return packageSpec{}, fmt.Errorf("pass must be a positive duration, got %q", value)
+			}
+			spec.PassBudget = parsed
+		default:
+			return packageSpec{}, fmt.Errorf("expected count=N, shards=N, or pass=DURATION, got %q", field)
+		}
+	}
+	if spec.PassBudget == 0 {
+		return packageSpec{}, errors.New("missing pass=DURATION, the reviewed cost of one race pass")
+	}
+	if budget := spec.shardBudget(); budget > stressTimeout {
+		return packageSpec{}, fmt.Errorf(
+			"budget %v (count=%d of %v over %d shard(s) plus %v build reserve) exceeds the %v per-shard timeout; raise shards= or lower count=",
+			budget, spec.Count, spec.PassBudget, spec.Shards, stressBuildReserve, stressTimeout)
+	}
+	return spec, nil
+}
+
+// expandShards flattens the enrollment into the individual `go test`
+// invocations the nightly matrix schedules, one per shard.
+func expandShards(packages []packageSpec) []shardSpec {
+	shards := make([]shardSpec, 0, len(packages))
+	for _, spec := range packages {
+		for index := range spec.Shards {
+			shards = append(shards, shardSpec{
+				ID:      shardID(spec.Package, index, spec.Shards),
+				Package: spec.Package,
+				Count:   spec.Count,
+				Index:   index,
+				Shards:  spec.Shards,
+			})
+		}
+	}
+	return shards
+}
+
+func shardID(pkg string, index, shards int) string {
+	base := artifactBase(pkg)
+	if shards <= 1 {
+		return base
+	}
+	return fmt.Sprintf("%s-%02dof%02d", base, index+1, shards)
+}
+
+func shardIDs(shards []shardSpec) []string {
+	ids := make([]string, 0, len(shards))
+	for _, shard := range shards {
+		ids = append(ids, shard.ID)
+	}
+	return ids
+}
+
+func selectShard(shards []shardSpec, id string) (shardSpec, error) {
+	for _, shard := range shards {
+		if shard.ID == id {
+			return shard, nil
+		}
+	}
+	return shardSpec{}, fmt.Errorf("unknown shard %q; -list prints the enrolled shard ids", id)
+}
+
+func executeStress(ctx context.Context, runner processRunner, shards []shardSpec) (summaryReport, failuresReport, error) {
 	summary := summaryReport{
 		SchemaVersion: reportSchema,
 		Status:        "pass",
@@ -275,7 +415,7 @@ func executeStress(ctx context.Context, runner processRunner, packages []package
 		Count:         runner.count,
 		Seed:          runner.seed,
 		FailuresFile:  "failures.json",
-		Packages:      make([]packageResult, 0, len(packages)),
+		Packages:      make([]packageResult, 0, len(shards)),
 	}
 	failures := failuresReport{
 		SchemaVersion: reportSchema,
@@ -287,40 +427,49 @@ func executeStress(ctx context.Context, runner processRunner, packages []package
 	}
 
 	var executionErr error
-	for _, spec := range packages {
+	for _, spec := range shards {
 		packageRunner := runner
 		packageRunner.count = spec.Count
-		result, packageFailures, err := packageRunner.runPackage(ctx, spec.Package)
+		result, packageFailures, err := packageRunner.runShard(ctx, spec)
 		summary.Packages = append(summary.Packages, result)
 		failures.Failures = append(failures.Failures, packageFailures...)
 		if result.Status != "pass" {
 			summary.Status = "fail"
 		}
 		if err != nil {
-			executionErr = errors.Join(executionErr, fmt.Errorf("%s: %w", spec.Package, err))
+			executionErr = errors.Join(executionErr, fmt.Errorf("%s: %w", spec.ID, err))
 		}
 	}
 	return summary, failures, executionErr
 }
 
-func (r processRunner) runPackage(ctx context.Context, pkg string) (packageResult, []testFailure, error) {
+func (r processRunner) runShard(ctx context.Context, spec shardSpec) (packageResult, []testFailure, error) {
 	started := r.now().UTC()
-	base := artifactBase(pkg)
-	eventRel := filepath.ToSlash(filepath.Join("packages", base+".jsonl"))
-	stderrRel := filepath.ToSlash(filepath.Join("packages", base+".stderr.txt"))
+	eventRel := filepath.ToSlash(filepath.Join("packages", spec.ID+".jsonl"))
+	stderrRel := filepath.ToSlash(filepath.Join("packages", spec.ID+".stderr.txt"))
+	pkg := spec.Package
 	result := packageResult{
-		Package:   pkg,
-		Status:    "fail",
-		Race:      true,
-		Count:     r.count,
-		Seed:      r.seed,
-		StartedAt: started,
-		EventLog:  eventRel,
-		StderrLog: stderrRel,
+		Package:    pkg,
+		Shard:      spec.ID,
+		ShardIndex: spec.Index,
+		Shards:     spec.Shards,
+		Status:     "fail",
+		Race:       true,
+		Count:      r.count,
+		Seed:       r.seed,
+		StartedAt:  started,
+		EventLog:   eventRel,
+		StderrLog:  stderrRel,
 	}
 
 	if err := os.MkdirAll(filepath.Join(r.outputDir, "packages"), 0o755); err != nil {
 		return finishPackageResult(result, started, r.now(), 0, 0), nil, err
+	}
+	runPattern, err := r.shardRunPattern(ctx, spec)
+	if err != nil {
+		finished := r.now().UTC()
+		failure := syntheticFailure(pkg, r.runID, err.Error(), finished)
+		return finishPackageResult(result, started, finished, 0, 1), []testFailure{failure}, err
 	}
 	eventFile, err := os.Create(filepath.Join(r.outputDir, filepath.FromSlash(eventRel)))
 	if err != nil {
@@ -333,7 +482,7 @@ func (r processRunner) runPackage(ctx context.Context, pkg string) (packageResul
 	}
 
 	var stderrText strings.Builder
-	command := r.command(ctx, r.goCommand, goTestArgs(pkg, r.count, r.seed)...)
+	command := r.command(ctx, r.goCommand, goTestArgs(pkg, r.count, r.seed, runPattern)...)
 	stdoutPipe, err := command.StdoutPipe()
 	if err != nil {
 		_ = eventFile.Close()
@@ -342,7 +491,7 @@ func (r processRunner) runPackage(ctx context.Context, pkg string) (packageResul
 	}
 	command.Stderr = io.MultiWriter(r.stderr, stderrFile, &stderrText)
 
-	_, _ = fmt.Fprintf(r.stdout, "=== stress %s (race, count=%d, seed=%d) ===\n", pkg, r.count, r.seed)
+	_, _ = fmt.Fprintf(r.stdout, "=== stress %s (race, count=%d, seed=%d) ===\n", spec.ID, r.count, r.seed)
 	if err := command.Start(); err != nil {
 		finished := r.now().UTC()
 		failure := syntheticFailure(pkg, r.runID, err.Error(), finished)
@@ -387,7 +536,7 @@ func (r processRunner) runPackage(ctx context.Context, pkg string) (packageResul
 		result.Status = "pass"
 	}
 	result = finishPackageResult(result, started, finished, collector.packageElapsed, len(failures))
-	_, _ = fmt.Fprintf(r.stdout, "--- stress %s: %s (%.3fs) ---\n", pkg, result.Status, result.WallDurationSecs)
+	_, _ = fmt.Fprintf(r.stdout, "--- stress %s: %s (%.3fs) ---\n", spec.ID, result.Status, result.WallDurationSecs)
 
 	var operationalErr error
 	if decodeErr != nil || closeErr != nil {
@@ -404,16 +553,58 @@ func (r processRunner) runPackage(ctx context.Context, pkg string) (packageResul
 	return result, failures, operationalErr
 }
 
-func goTestArgs(pkg string, count int, seed int64) []string {
-	return []string{
+func goTestArgs(pkg string, count int, seed int64, runPattern string) []string {
+	args := []string{
 		"test",
 		"-json",
 		"-race",
 		"-count=" + strconv.Itoa(count),
 		"-timeout=" + stressTimeout.String(),
 		"-shuffle=" + strconv.FormatInt(seed, 10),
-		pkg,
 	}
+	if runPattern != "" {
+		args = append(args, "-run="+runPattern)
+	}
+	return append(args, pkg)
+}
+
+func goListArgs(pkg string) []string {
+	// Enumerate with the same -race build the repetitions use so the shard
+	// pays for the race-instrumented test binary once.
+	return []string{"test", "-race", "-list=^Test", pkg}
+}
+
+// shardRunPattern enumerates the package's top-level tests and returns a -run
+// pattern selecting this shard's deterministic slice of them. Round-robin
+// assignment keeps shards balanced as tests are added, so the split does not
+// need hand-maintained name prefixes.
+func (r processRunner) shardRunPattern(ctx context.Context, spec shardSpec) (string, error) {
+	if spec.Shards <= 1 {
+		return "", nil
+	}
+	var listed bytes.Buffer
+	command := r.command(ctx, r.goCommand, goListArgs(spec.Package)...)
+	command.Stdout = &listed
+	command.Stderr = r.stderr
+	if err := command.Run(); err != nil {
+		return "", fmt.Errorf("list tests in %s: %w", spec.Package, err)
+	}
+	var selected []string
+	index := 0
+	for _, line := range strings.Split(listed.String(), "\n") {
+		name := strings.TrimSpace(line)
+		if !testNamePattern.MatchString(name) {
+			continue
+		}
+		if index%spec.Shards == spec.Index {
+			selected = append(selected, name)
+		}
+		index++
+	}
+	if len(selected) == 0 {
+		return "", fmt.Errorf("shard %s selected no tests from %s (%d test(s) listed)", spec.ID, spec.Package, index)
+	}
+	return "^(?:" + strings.Join(selected, "|") + ")$", nil
 }
 
 func finishPackageResult(
