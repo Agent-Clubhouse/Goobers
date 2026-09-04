@@ -5,10 +5,21 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	apiv1 "github.com/goobers/goobers/api/v1alpha1"
 	"github.com/goobers/goobers/internal/httpapi"
+	"github.com/goobers/goobers/internal/instance"
+	"github.com/goobers/goobers/internal/invoke"
+	"github.com/goobers/goobers/internal/journal"
+	"github.com/goobers/goobers/internal/localscheduler"
+	"github.com/goobers/goobers/internal/runner"
+	"github.com/goobers/goobers/internal/workflow"
+	"github.com/goobers/goobers/internal/worktree"
 )
 
 // #3807: `run cancel` and `run abort` reached a daemon only through
@@ -160,4 +171,108 @@ func TestDaemonCancelServiceAnswersUnownedRun(t *testing.T) {
 	if result.Code != httpapi.CancelCodeNotRunning || result.Error == "" {
 		t.Fatalf("result = %+v", result)
 	}
+}
+
+// TestDaemonCancelServiceResolvesWorkflowAndReleasesSlot pins the path a
+// remote cancel takes that the file drop never does: runRemoteCancel sends no
+// `workflow`, so the daemon must recover it from its own registry and hand it
+// to the scheduler's release. Without that the run is cancelled but its
+// admission slot is never freed, and the workflow's concurrency budget leaks a
+// slot per remote cancel.
+func TestDaemonCancelServiceResolvesWorkflowAndReleasesSlot(t *testing.T) {
+	layout := instance.NewLayout(t.TempDir())
+	log, _, err := journal.OpenInstanceLog(layout.SchedulerDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+
+	manager, err := worktree.NewManager(layout.WorkcopiesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deterministic := &liveStalledDeterministic{started: make(chan struct{})}
+	runRunner, err := runner.New(runner.Config{
+		NewDeterministic: func(runner.ArtifactRecorder, runner.SecretRegistrar) (invoke.Deterministic, error) {
+			return deterministic, nil
+		},
+		Worktrees:  manager,
+		ScratchDir: filepath.Join(layout.WorkcopiesDir(), "scratch"),
+		RunsDir:    layout.RunsDir(),
+		FinalizeTerminal: func(runID string, _ journal.RunPhase) error {
+			return finalizeTerminalRun(layout, log, manager, runID)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runners := newDaemonRunnerRegistry()
+	runners.Replace(map[string]*runner.Runner{"example": runRunner})
+	machine, err := workflow.Compile(workflow.Definition{
+		Name: "implementation", Version: 1,
+		Spec: apiv1.WorkflowSpec{
+			Gaggle: "example",
+			Start:  "implement",
+			Tasks: []apiv1.Task{{
+				Name: "implement", Type: apiv1.TaskDeterministic, Goal: "block until cancelled",
+				Run:  &apiv1.DeterministicRun{Command: []string{"true"}, Workspace: apiv1.WorkspaceScratch},
+				Next: workflow.TerminalComplete,
+			}},
+		},
+	}, workflow.WithPreviewFeatures(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var tracked sync.WaitGroup
+	sched := localscheduler.New([]localscheduler.WorkflowEntry{{
+		Workflow:  "implementation",
+		Gaggle:    "example",
+		Readiness: apiv1.ReadinessConditions{MaxConcurrentRuns: 1},
+		Starter:   &trackedStarter{r: runRunner, machine: machine, wg: &tracked, l: layout, log: log, runners: runners},
+	}}, log)
+	runID, err := sched.Trigger(context.Background(), "implementation", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-deterministic.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("live run did not enter its attempt")
+	}
+
+	var (
+		mu             sync.Mutex
+		releasedRun    string
+		releasedFlow   string
+		releasedCalled bool
+	)
+	service := newDaemonCancelService(runners)
+	service.AttachRelease(func(id, workflow string) {
+		mu.Lock()
+		releasedRun, releasedFlow, releasedCalled = id, workflow, true
+		mu.Unlock()
+		sched.ReleaseRun(id, workflow)
+	})
+
+	result, err := service.Cancel(context.Background(), httpapi.CancelRunRequest{RunID: runID, Actor: "ops"})
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if result.Code != httpapi.CancelCodeAborted || result.Phase != string(journal.PhaseAborted) {
+		t.Fatalf("result = %+v, want aborted", result)
+	}
+
+	sched.Wait()
+	tracked.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !releasedCalled {
+		t.Fatal("scheduler release was never invoked, so the admission slot leaked")
+	}
+	if releasedRun != runID || releasedFlow != "implementation" {
+		t.Fatalf("release(%q, %q), want (%q, %q)", releasedRun, releasedFlow, runID, "implementation")
+	}
+	assertWatchdogPhase(t, layout.RunsDir(), runID, journal.PhaseAborted)
 }
