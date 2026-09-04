@@ -15,6 +15,7 @@ A PR is mergeable only when CI is green, where green means:
 | Vet | `go vet` (`make test` or its own step) | clean |
 | Unit tests | `go test ./...` (`make test`) | all pass |
 | Coverage | `make cover-check` | total ≥ **70%** (ratcheting target) |
+| Complexity | `make complexity` | no un-baselined function at cc ≥ **40** |
 | Acceptance | suites in this dir | all pass |
 
 **One CI workflow.** Dev-3 owns `.github/workflows/ci.yml` and the build/vet/lint/unit
@@ -39,6 +40,33 @@ Wiring: once the skeleton is merged, this backs a `make cover-check` target on t
 workflow (coordinated with Dev-3, not a second workflow). In the interim gate QA runs it
 directly on the PR head. Threshold starts at 70% and ratchets up as the codebase matures;
 it is never lowered to pass a specific PR (see QA checklist §5).
+
+### Complexity gate
+**`go run ./test/complexitygate`** (`make complexity`, and the `complexity-gate` check of
+`go run ./test/ci`) sweeps every production Go function — `_test.go` files and `testdata`
+fixtures excluded, `cmd/` deliberately **not** excluded — and enforces three tiers of
+cyclomatic complexity:
+
+| Tier | Threshold | Behaviour |
+|---|---|---|
+| Hard cap | cc ≥ 40 | Fails unless the function is pinned in `test/complexitygate/baseline.txt` or carries the escape hatch |
+| Soft ratchet | cc ≥ 25 | Fails when the count exceeds the recorded `soft-budget`; prints the tighter number when it drops |
+| Report-only | cc ≥ 15 | Prints the count as a trend signal; never fails |
+
+The baseline is keyed by `<path>:<symbol>`, not by a count, so moving or renaming a
+function drops its entry and re-subjects it to the hard cap — decomposition never mints
+headroom for something else. Re-pin it after an intentional change with
+`go run ./test/complexitygate -write`; `soft-budget` may be lowered, never raised.
+
+**Escape hatch.** A function that genuinely cannot be decomposed carries an inline
+directive on its declaration — in its doc comment, or trailing its `func` line:
+
+```go
+//complexitygate:allow one switch arm per generated protocol opcode
+func dispatch(op opcode) error {
+```
+
+The justification is mandatory: a bare `//complexitygate:allow` fails the gate.
 
 ## Acceptance suites
 
