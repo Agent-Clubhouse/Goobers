@@ -117,6 +117,17 @@ func (f *repeatableFlag) Set(v string) error {
 	return nil
 }
 
+// The worker's host seams: everything runWorker assembles — the resolved
+// queue set, the work root, the blob store, the daemon-API journal emitter,
+// the mode-3 dispatcher — is only observable in the workerhost.Config it
+// hands over, and the serve loop that follows blocks on a real Temporal
+// frontend. Named as seams so a wiring test can read the assembled config
+// without one (#4223).
+var (
+	newWorkerHost = workerhost.New
+	runWorkerHost = func(ctx context.Context, host *workerhost.Host) error { return host.Run(ctx) }
+)
+
 func runWorker(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("worker", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -318,7 +329,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 		sweepWorkerStageOrphans(dispatch.Sweeper, *hostPort, *namespace, stdout, stderr)
 	}
 
-	host, err := workerhost.New(workerhost.Config{
+	host, err := newWorkerHost(workerhost.Config{
 		HostPort:     *hostPort,
 		Namespace:    *namespace,
 		TaskQueues:   queues,
@@ -335,7 +346,7 @@ func runWorker(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	pf(stdout, "goobers worker: serving task queue(s) %s on %s (namespace %s); identity %s\n",
 		strings.Join(queues, ", "), *hostPort, *namespace, workerhost.Identity(version.Get().Version))
-	err = host.Run(ctx)
+	err = runWorkerHost(ctx, host)
 	if errors.Is(err, workerhost.ErrAbandonedWork) {
 		pf(stderr, "error: %v\n", err)
 		return workerAbandonedExit
