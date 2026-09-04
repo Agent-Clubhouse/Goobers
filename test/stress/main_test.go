@@ -21,15 +21,15 @@ func TestLoadPackages(t *testing.T) {
 	t.Parallel()
 	packages, err := loadPackages(strings.NewReader(`
 # timing-sensitive packages
-./internal/localscheduler
-./internal/runner # inline rationale
+./internal/localscheduler pass=45s
+./internal/runner pass=1m # inline rationale
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []packageSpec{
-		{Package: "./internal/localscheduler", Count: stressCount},
-		{Package: "./internal/runner", Count: stressCount},
+		{Package: "./internal/localscheduler", Count: stressCount, Shards: 1, PassBudget: 45 * time.Second},
+		{Package: "./internal/runner", Count: stressCount, Shards: 1, PassBudget: time.Minute},
 	}
 	if !slices.Equal(packages, want) {
 		t.Fatalf("loadPackages() = %v, want %v", packages, want)
@@ -39,15 +39,17 @@ func TestLoadPackages(t *testing.T) {
 func TestLoadPackagesAcceptsReviewedCountOverride(t *testing.T) {
 	t.Parallel()
 	packages, err := loadPackages(strings.NewReader(`
-./internal/localscheduler
-./cmd/goobers count=2 # full race suite exceeds the default stress budget
+./internal/localscheduler pass=45s
+./cmd/goobers count=2 pass=8m # full race suite exceeds the default stress budget
+./internal/httpapi shards=4 pass=1m
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []packageSpec{
-		{Package: "./internal/localscheduler", Count: stressCount},
-		{Package: "./cmd/goobers", Count: 2},
+		{Package: "./internal/localscheduler", Count: stressCount, Shards: 1, PassBudget: 45 * time.Second},
+		{Package: "./cmd/goobers", Count: 2, Shards: 1, PassBudget: 8 * time.Minute},
+		{Package: "./internal/httpapi", Count: stressCount, Shards: 4, PassBudget: time.Minute},
 	}
 	if !slices.Equal(packages, want) {
 		t.Fatalf("loadPackages() = %v, want %v", packages, want)
@@ -62,13 +64,20 @@ func TestLoadPackagesRejectsInvalidEnrollment(t *testing.T) {
 		want string
 	}{
 		{name: "empty", list: "# comments only\n", want: "empty"},
-		{name: "absolute", list: "/internal/runner\n", want: "relative"},
-		{name: "invalid setting", list: "./internal/runner repeats=2\n", want: "count=N"},
-		{name: "extra field", list: "./internal/runner count=2 extra\n", want: "expected package"},
-		{name: "zero count", list: "./internal/runner count=0\n", want: "between 1"},
-		{name: "negative count", list: "./internal/runner count=-1\n", want: "between 1"},
-		{name: "excessive count", list: "./internal/runner count=21\n", want: "between 1"},
-		{name: "duplicate", list: "./internal/runner\n./internal/runner\n", want: "duplicate"},
+		{name: "absolute", list: "/internal/runner pass=1s\n", want: "relative"},
+		{name: "invalid setting", list: "./internal/runner repeats=2 pass=1s\n", want: "count=N"},
+		{name: "extra field", list: "./internal/runner count=2 extra\n", want: "key=value"},
+		{name: "zero count", list: "./internal/runner count=0 pass=1s\n", want: "between 1"},
+		{name: "negative count", list: "./internal/runner count=-1 pass=1s\n", want: "between 1"},
+		{name: "excessive count", list: "./internal/runner count=21 pass=1s\n", want: "between 1"},
+		{name: "duplicate", list: "./internal/runner pass=1s\n./internal/runner pass=1s\n", want: "duplicate"},
+		{name: "repeated setting", list: "./internal/runner pass=1s pass=2s\n", want: "duplicate setting"},
+		{name: "missing pass", list: "./internal/runner count=2\n", want: "missing pass"},
+		{name: "zero pass", list: "./internal/runner pass=0s\n", want: "positive duration"},
+		{name: "zero shards", list: "./internal/runner shards=0 pass=1s\n", want: "shards must be"},
+		{name: "excessive shards", list: "./internal/runner shards=65 pass=1s\n", want: "shards must be"},
+		{name: "over budget", list: "./cmd/goobers pass=20m\n", want: "exceeds the 30m0s per-shard timeout"},
+		{name: "over budget shards", list: "./cmd/goobers pass=20m shards=8\n", want: "raise shards="},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -222,13 +231,24 @@ Previous %s at 0x00c000012340 by goroutine 12:
 func TestGoTestArgsLockStressFlags(t *testing.T) {
 	t.Parallel()
 	for _, count := range []int{stressCount, 2} {
-		got := goTestArgs("./internal/localscheduler", count, 42)
+		got := goTestArgs("./internal/localscheduler", count, 42, "")
 		want := []string{
 			"test", "-json", "-race", "-count=" + strconv.Itoa(count), "-timeout=30m0s", "-shuffle=42", "./internal/localscheduler",
 		}
 		if !slices.Equal(got, want) {
 			t.Fatalf("goTestArgs(count=%d) = %v, want %v", count, got, want)
 		}
+	}
+	sharded := goTestArgs("./cmd/goobers", 20, 42, "^(?:TestOne|TestTwo)$")
+	wantSharded := []string{
+		"test", "-json", "-race", "-count=20", "-timeout=30m0s", "-shuffle=42",
+		"-run=^(?:TestOne|TestTwo)$", "./cmd/goobers",
+	}
+	if !slices.Equal(sharded, wantSharded) {
+		t.Fatalf("goTestArgs(shard) = %v, want %v", sharded, wantSharded)
+	}
+	if got := goListArgs("./cmd/goobers"); !slices.Equal(got, []string{"test", "-race", "-list=^Test", "./cmd/goobers"}) {
+		t.Fatalf("goListArgs() = %v", got)
 	}
 	if stressTimeout <= 10*time.Minute {
 		t.Fatalf("stressTimeout = %v, want more than Go's 10m default (#3167)", stressTimeout)
@@ -250,7 +270,7 @@ func TestRunWritesPassAndPackageFailureReports(t *testing.T) {
 			t.Setenv("GOOBERS_STRESS_HELPER", test.mode)
 			dir := t.TempDir()
 			packageList := filepath.Join(dir, "packages.txt")
-			if err := os.WriteFile(packageList, []byte("./internal/localscheduler\n"), 0o644); err != nil {
+			if err := os.WriteFile(packageList, []byte("./internal/localscheduler pass=45s\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			outputDir := filepath.Join(dir, "results")
@@ -325,7 +345,12 @@ func TestProcessRunnerWritesStructuredFailureArtifacts(t *testing.T) {
 		},
 	}
 
-	result, failures, err := runner.runPackage(context.Background(), "./internal/localscheduler")
+	result, failures, err := runner.runShard(context.Background(), shardSpec{
+		ID:      "internal_localscheduler",
+		Package: "./internal/localscheduler",
+		Count:   stressCount,
+		Shards:  1,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +399,7 @@ func TestExecuteStressAndWriteReports(t *testing.T) {
 	summary, failures, err := executeStress(
 		context.Background(),
 		runner,
-		[]packageSpec{{Package: "./internal/localscheduler", Count: stressCount}},
+		[]shardSpec{{ID: "internal_localscheduler", Package: "./internal/localscheduler", Count: stressCount, Shards: 1}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -414,9 +439,9 @@ func TestExecuteStressReportsPackageSpecificCounts(t *testing.T) {
 		stderr:    &bytes.Buffer{},
 		now:       time.Now,
 	}
-	summary, _, err := executeStress(context.Background(), runner, []packageSpec{
-		{Package: "./internal/localscheduler", Count: stressCount},
-		{Package: "./cmd/goobers", Count: 2},
+	summary, _, err := executeStress(context.Background(), runner, []shardSpec{
+		{ID: "internal_localscheduler", Package: "./internal/localscheduler", Count: stressCount, Shards: 1},
+		{ID: "cmd_goobers", Package: "./cmd/goobers", Count: 2, Shards: 1},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -486,7 +511,7 @@ func TestRepositoryStressWiring(t *testing.T) {
 	)
 	assertFileContains(t, filepath.Join(root, "test", "stress", "packages.txt"),
 		"./internal/localscheduler",
-		"./cmd/goobers count=2",
+		"./cmd/goobers pass=",
 		"./internal/harness",
 		"./internal/httpapi",
 	)
@@ -494,7 +519,9 @@ func TestRepositoryStressWiring(t *testing.T) {
 		"schedule:",
 		"workflow_dispatch:",
 		"format('refs/pull/{0}/merge', inputs.pr)",
-		"make stress",
+		"go run ./test/stress -list",
+		"fromJSON(needs.plan.outputs.shards)",
+		"make stress STRESS_SHARD=",
 		"actions/upload-artifact@v7",
 		"flake-ledger:",
 		"github.event_name == 'schedule'",
@@ -663,6 +690,13 @@ func TestStressHelperProcess(t *testing.T) {
 		return
 	}
 	pkg := os.Args[len(os.Args)-1]
+	if slices.Contains(os.Args, "-list=^Test") {
+		for _, name := range []string{"TestAlpha", "TestBeta", "TestGamma", "TestDelta"} {
+			fmt.Println(name)
+		}
+		fmt.Printf("ok  \t%s\t0.001s\n", pkg)
+		os.Exit(0)
+	}
 	events := []testEvent{{Time: time.Now(), Action: "start", Package: pkg}}
 	switch mode {
 	case "fail":
@@ -696,4 +730,134 @@ func TestStressHelperProcess(t *testing.T) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func TestExpandShardsAssignsStableIdentifiers(t *testing.T) {
+	t.Parallel()
+	shards := expandShards([]packageSpec{
+		{Package: "./internal/localscheduler", Count: stressCount, Shards: 1, PassBudget: 45 * time.Second},
+		{Package: "./cmd/goobers", Count: 4, Shards: 3, PassBudget: time.Minute},
+	})
+	want := []shardSpec{
+		{ID: "internal_localscheduler", Package: "./internal/localscheduler", Count: stressCount, Index: 0, Shards: 1},
+		{ID: "cmd_goobers-01of03", Package: "./cmd/goobers", Count: 4, Index: 0, Shards: 3},
+		{ID: "cmd_goobers-02of03", Package: "./cmd/goobers", Count: 4, Index: 1, Shards: 3},
+		{ID: "cmd_goobers-03of03", Package: "./cmd/goobers", Count: 4, Index: 2, Shards: 3},
+	}
+	if !slices.Equal(shards, want) {
+		t.Fatalf("expandShards() = %+v, want %+v", shards, want)
+	}
+	if !slices.Equal(shardIDs(shards[1:]), []string{"cmd_goobers-01of03", "cmd_goobers-02of03", "cmd_goobers-03of03"}) {
+		t.Fatalf("shardIDs() = %v", shardIDs(shards[1:]))
+	}
+	if _, err := selectShard(shards, "cmd_goobers"); err == nil ||
+		!strings.Contains(err.Error(), "unknown shard") {
+		t.Fatalf("selectShard(unknown) error = %v", err)
+	}
+	selected, err := selectShard(shards, "cmd_goobers-02of03")
+	if err != nil || selected.Index != 1 {
+		t.Fatalf("selectShard() = %+v, %v", selected, err)
+	}
+}
+
+func TestShardRunPatternPartitionsListedTests(t *testing.T) {
+	t.Setenv("GOOBERS_STRESS_HELPER", "pass")
+	runner := processRunner{
+		command:   helperCommand,
+		goCommand: "go",
+		outputDir: t.TempDir(),
+		stdout:    &bytes.Buffer{},
+		stderr:    &bytes.Buffer{},
+		now:       time.Now,
+	}
+	// The helper lists TestAlpha, TestBeta, TestGamma, TestDelta.
+	patterns := make([]string, 0, 2)
+	for index := range 2 {
+		pattern, err := runner.shardRunPattern(context.Background(), shardSpec{
+			ID:      shardID("./cmd/goobers", index, 2),
+			Package: "./cmd/goobers",
+			Index:   index,
+			Shards:  2,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		patterns = append(patterns, pattern)
+	}
+	want := []string{"^(?:TestAlpha|TestGamma)$", "^(?:TestBeta|TestDelta)$"}
+	if !slices.Equal(patterns, want) {
+		t.Fatalf("shard run patterns = %v, want %v", patterns, want)
+	}
+
+	unsharded, err := runner.shardRunPattern(context.Background(), shardSpec{Package: "./cmd/goobers", Shards: 1})
+	if err != nil || unsharded != "" {
+		t.Fatalf("shardRunPattern(single shard) = %q, %v", unsharded, err)
+	}
+
+	if _, err := runner.shardRunPattern(context.Background(), shardSpec{
+		ID:      "cmd_goobers-09of09",
+		Package: "./cmd/goobers",
+		Index:   8,
+		Shards:  9,
+	}); err == nil || !strings.Contains(err.Error(), "selected no tests") {
+		t.Fatalf("shardRunPattern(empty shard) error = %v", err)
+	}
+}
+
+// TestEnrolledBudgetsFitTheShardTimeout is the guard #4222 asks for: the
+// checked-in enrollment may not imply a per-shard budget the nightly job
+// cannot pay, and the job that pays it must be allowed to run that long.
+func TestEnrolledBudgetsFitTheShardTimeout(t *testing.T) {
+	t.Parallel()
+	file, err := os.Open(filepath.Join("packages.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	packages, err := loadPackages(file)
+	if err != nil {
+		t.Fatalf("checked-in enrollment does not load: %v", err)
+	}
+	for _, spec := range packages {
+		if spec.PassBudget <= 0 {
+			t.Errorf("%s declares no reviewed pass cost", spec.Package)
+		}
+		if budget := spec.shardBudget(); budget > stressTimeout {
+			t.Errorf("%s shard budget %v exceeds the %v per-shard timeout", spec.Package, budget, stressTimeout)
+		}
+	}
+	if got, want := enrolledCountFor(t, packages, "./cmd/goobers"), 2; got <= want {
+		t.Errorf("./cmd/goobers runs %d repetition(s) per shard, want more than %d (#4222)", got, want)
+	}
+
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "stress.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			TimeoutMinutes int `yaml:"timeout-minutes"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	if budget := workflow.Jobs["stress"].TimeoutMinutes; time.Duration(budget)*time.Minute < stressTimeout {
+		t.Fatalf("stress job timeout-minutes = %d, want at least the %v per-shard timeout", budget, stressTimeout)
+	}
+}
+
+func enrolledCountFor(t *testing.T, packages []packageSpec, pkg string) int {
+	t.Helper()
+	for _, spec := range packages {
+		if spec.Package == pkg {
+			return spec.Count
+		}
+	}
+	t.Fatalf("%s is not enrolled", pkg)
+	return 0
 }

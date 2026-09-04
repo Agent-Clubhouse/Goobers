@@ -49,6 +49,7 @@ COVERAGE_THRESHOLD ?= 70
 GO_TEST_TIMEOUT ?= 30m
 STRESS_OUTPUT_DIR   ?= stress-results
 STRESS_SEED         ?= 0
+STRESS_SHARD        ?=
 BENCH_WORKCOPY_ARGS ?= -preset small
 
 # Pinned codegen + test tooling (run via `go run`, no global installs).
@@ -369,11 +370,14 @@ bench-large-repo:
 	$(GO) run ./test/benchworkcopy -preset large-repo -mode pinned $(BENCH_LARGE_REPO_ARGS)
 
 ## stress: Repeat timing-sensitive packages under the race detector.
+## Set STRESS_SHARD to one id from `go run ./test/stress -list` to run a single
+## shard; the nightly workflow schedules one job per shard that way.
 .PHONY: stress
 stress:
 	$(GIT_TEST_FSYNC_OFF) $(JOURNAL_TEST_FSYNC_OFF) $(GO) run ./test/stress \
 		-go "$(GO)" -packages test/stress/packages.txt \
-		-output "$(STRESS_OUTPUT_DIR)" -seed "$(STRESS_SEED)"
+		-output "$(STRESS_OUTPUT_DIR)" -seed "$(STRESS_SEED)" \
+		$(if $(STRESS_SHARD),-only "$(STRESS_SHARD)")
 
 ## verify-full: Run all merge, integration, platform, coverage, shipped-workflow, and stress gates.
 .PHONY: verify-full

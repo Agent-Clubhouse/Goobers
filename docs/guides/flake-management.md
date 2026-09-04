@@ -7,12 +7,17 @@ workflows must not automatically retry a failed step or job.
 ## Lifecycle
 
 1. **Find:** the trusted scheduled or manually dispatched `Stress` workflow runs
-   the enrolled packages with `-race -count=20` by default. The checked-in
-   enrollment list may use a reviewed `count=N` override for a package whose
-   complete race suite cannot fit that repetition count within the stress-job
-   budget; the package result records the actual count. A pull request carrying
-   `/stress` can produce the same artifact, but untrusted pull-request code never
-   receives issue-write permission.
+   the enrolled packages with `-race -count=20` by default. Each entry in
+   `test/stress/packages.txt` declares `pass=`, the reviewed cost of one race
+   pass, and may add `count=N` or `shards=N`; `test/stress` refuses an
+   enrollment whose implied per-shard budget exceeds the 30m per-shard
+   `go test` timeout, so an oversized package must be split rather than
+   discovered as a nightly timeout (#4222). Sharded packages have their tests
+   partitioned round-robin into balanced `-run` subsets, and the workflow
+   schedules one job per shard; the package result records the shard and the
+   actual count. A pull request carrying `/stress` can produce the same
+   artifact, but untrusted pull-request code never receives issue-write
+   permission.
 2. **Fingerprint:** `test/stress` combines package, test name, and a normalized
    failure signature. Volatile durations, addresses, timestamps, UUIDs, and
    goroutine IDs do not split one defect into multiple identities; distinct
@@ -46,6 +51,16 @@ workflows must not automatically retry a failed step or job.
    stress workflow, document the confirming run on the flake issue, and close
    the issue. If the fingerprint recurs later, the ledger appends the new
    occurrence to the existing issue.
+
+## Red scheduled workflows
+
+A flake is an intermittent failure; a scheduled workflow that fails every night
+is not one. The daily `Scheduled failure alarm` workflow runs
+`test/scheduledalarm`, which counts the consecutive failed scheduled runs of
+every workflow with a `schedule:` trigger. At three in a row it files one
+`ci:scheduled-failure` issue naming the workflow and linking the failed runs,
+and it does not re-file while that issue stays open. Close the alarm issue once
+the workflow is green again; the next streak files a fresh one.
 
 `make flake-policy` enforces the two repository-level rules: flake-worded raw
 test skips are forbidden outside the quarantine helper, and workflow files may

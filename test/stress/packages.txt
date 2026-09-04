@@ -1,12 +1,38 @@
 # Curated timing/goroutine-sensitive packages. Keep this list small: every
 # entry runs under the race detector twenty times in the nightly stress tier,
-# unless it has a reviewed `count=N` override. Overrides are for packages whose
-# complete race suite cannot fit twenty repetitions within the job budget.
+# unless it has a reviewed `count=N` override.
+#
+# Settings are `key=value`, in any order:
+#
+#   count=N   repetitions per shard (1..20, default 20)
+#   shards=N  split the package's top-level tests into N balanced `-run`
+#             subsets, each repeated `count` times and scheduled as its own
+#             nightly job (default 1). The split is computed by enumerating
+#             the package's tests and assigning them round-robin, so it stays
+#             balanced as tests are added instead of drifting like a
+#             hand-maintained name prefix would.
+#   pass=D    REQUIRED. The reviewed wall-clock cost of one race-instrumented
+#             pass over the whole package, measured on a hosted runner.
+#
+# `pass` is what keeps the enrollment honest: `test/stress` refuses a list
+# whose implied per-shard budget — count x pass / shards, plus the build
+# reserve every invocation pays — exceeds the 30m per-shard `go test` timeout.
+# Seventeen consecutive nightly failures came from an entry that quietly did
+# not fit that budget (#4222), so an entry that cannot fit must raise `shards`
+# rather than be discovered as a timeout.
 
 # Embedded scheduler and claim ledger; site of the timing incident tracked by #21.
-./internal/localscheduler
+./internal/localscheduler pass=45s
 
 # Packages with default-branch failures tracked by the flake ledger.
-./cmd/goobers count=2
-./internal/harness
-./internal/httpapi
+#
+# cmd/goobers is the largest and most concurrency-heavy package in the repo and
+# the dominant source of flake reports, so it must not sit at the token count=2
+# it was reduced to when its full twenty-repetition race suite stopped fitting
+# the per-package budget. One race pass costs about twenty minutes on a hosted
+# runner, so twenty repetitions only fit once the suite is split: thirty-two
+# shards put each nightly job around a quarter of its timeout while restoring
+# the full repetition count every other enrolled package gets.
+./cmd/goobers pass=20m shards=32
+./internal/harness pass=45s
+./internal/httpapi pass=45s
