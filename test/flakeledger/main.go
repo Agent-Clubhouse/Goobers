@@ -28,7 +28,13 @@ const (
 	signatureLimit   = 1024
 )
 
-var fingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var (
+	fingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	// runnerFlagEcho matches a normalized signature segment that is only the Go
+	// test runner repeating one of its own flags, such as `-test.shuffle
+	// <value>`. A signature made of nothing else names no failure.
+	runnerFlagEcho = regexp.MustCompile(`^-test\.[A-Za-z0-9_.]+(?:[= ]\S+)?$`)
+)
 
 type options struct {
 	input      string
@@ -76,6 +82,7 @@ type providerFactory func(token, apiURL string) ledgerProvider
 type publishResult struct {
 	Created   int
 	Refreshed int
+	Skipped   int
 }
 
 func main() {
@@ -112,7 +119,11 @@ func run(
 		_, _ = fmt.Fprintf(stderr, "flakeledger: publish: %v\n", err)
 		return 1
 	}
-	_, _ = fmt.Fprintf(stdout, "flake ledger: %d created, %d refreshed\n", result.Created, result.Refreshed)
+	summary := fmt.Sprintf("flake ledger: %d created, %d refreshed", result.Created, result.Refreshed)
+	if result.Skipped > 0 {
+		summary += fmt.Sprintf(", %d skipped without a distinguishing signature", result.Skipped)
+	}
+	_, _ = fmt.Fprintln(stdout, summary)
 	return 0
 }
 
@@ -247,6 +258,10 @@ func publish(
 	for _, failure := range report.Failures {
 		item, found := existing[failure.Fingerprint]
 		if !found {
+			if !distinguishingSignature(failure.FailureSignature) {
+				result.Skipped++
+				continue
+			}
 			created, err := provider.CreateWorkItem(ctx, providers.CreateWorkItemRequest{
 				Repository: repository,
 				Title:      issueTitle(failure),
@@ -316,6 +331,21 @@ func indexIssues(items []providers.WorkItem) (map[string]providers.WorkItem, err
 		}
 	}
 	return result, nil
+}
+
+// distinguishingSignature reports whether a normalized signature carries
+// content that names a failure. A signature that is only runner-flag echoes
+// identifies nothing, so filing an issue for it would create a fresh, useless
+// issue for every run instead of one issue for one defect.
+func distinguishingSignature(signature string) bool {
+	for _, segment := range strings.Split(signature, "|") {
+		segment = strings.TrimSpace(segment)
+		if segment == "" || runnerFlagEcho.MatchString(segment) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func workflowLabels(labels []string) []string {
