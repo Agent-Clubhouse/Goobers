@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -140,7 +141,23 @@ func (p *Publisher) Publish(ctx context.Context, events []journal.Event) error {
 		return err
 	}
 	if p.checkID == 0 {
-		p.checkID, err = p.create(ctx, contract)
+		// A fresh Publisher (process restart, retry, or the very first
+		// Publish for this run) has no in-memory checkID. Look up an
+		// existing Check Run for our stable external_id before creating,
+		// so a repeat run against the same (SHA, run, actions run) does
+		// not fan out to duplicate GitHub Check Runs. See
+		// TestPublisherReusesExistingCheckRunAcrossPublishers.
+		existing, lookupErr := p.findExisting(ctx, contract)
+		if lookupErr != nil {
+			p.disabled = lookupErr
+			return lookupErr
+		}
+		if existing != 0 {
+			p.checkID = existing
+			err = p.update(ctx, contract)
+		} else {
+			p.checkID, err = p.create(ctx, contract)
+		}
 	} else {
 		err = p.update(ctx, contract)
 	}
@@ -352,6 +369,47 @@ type checkOutput struct {
 	Text    string `json:"text"`
 }
 
+func (p *Publisher) externalID(contract Contract) string {
+	return Schema + ":" + contract.Identity.RunID + ":" + p.env.ActionsRunID
+}
+
+// findExisting looks up a previously-created Check Run for this run whose
+// external_id matches the stable identifier this Publisher would use, so a
+// fresh Publisher (process restart, retry, or a resumed run) reuses that
+// Check Run instead of creating a duplicate. Returns 0 with a nil error when
+// no matching Check Run exists on this SHA.
+func (p *Publisher) findExisting(ctx context.Context, contract Contract) (int64, error) {
+	checkName := CheckPrefix + contract.Identity.Workflow
+	// The Check Runs "list for a Git ref" endpoint is the narrowest server-
+	// side filter available: it scopes to a single commit SHA and a single
+	// check name. GitHub does not expose a filter on external_id itself, so
+	// we scan the returned list client-side. per_page=100 (the API cap) is
+	// enough headroom for a hosted-progress run: this Publisher only ever
+	// contributes one Check Run per (SHA, run, actions run).
+	endpoint := fmt.Sprintf(
+		"/repos/%s/commits/%s/check-runs?check_name=%s&per_page=100",
+		p.env.Repository,
+		url.PathEscape(p.env.SHA),
+		url.QueryEscape(checkName),
+	)
+	var response struct {
+		CheckRuns []struct {
+			ID         int64  `json:"id"`
+			ExternalID string `json:"external_id"`
+		} `json:"check_runs"`
+	}
+	if err := p.request(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
+		return 0, err
+	}
+	want := p.externalID(contract)
+	for _, run := range response.CheckRuns {
+		if run.ExternalID == want {
+			return run.ID, nil
+		}
+	}
+	return 0, nil
+}
+
 func (p *Publisher) create(ctx context.Context, contract Contract) (int64, error) {
 	body := struct {
 		Name       string      `json:"name"`
@@ -367,7 +425,7 @@ func (p *Publisher) create(ctx context.Context, contract Contract) (int64, error
 		HeadSHA:    p.env.SHA,
 		Status:     "in_progress",
 		DetailsURL: contract.ActionsRunURL,
-		ExternalID: Schema + ":" + contract.Identity.RunID + ":" + p.env.ActionsRunID,
+		ExternalID: p.externalID(contract),
 		Output:     outputFor(contract),
 	}
 	if terminal(contract.Phase) {
@@ -438,22 +496,28 @@ func conclusion(phase journal.RunPhase) string {
 }
 
 func (p *Publisher) request(ctx context.Context, method, endpoint string, body, response any) error {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return err
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(raw)
 	}
 	req, err := http.NewRequestWithContext(
 		ctx,
 		method,
 		strings.TrimRight(p.env.APIURL, "/")+endpoint,
-		bytes.NewReader(raw),
+		reader,
 	)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+p.env.Token)
-	req.Header.Set("Content-Type", "application/json")
+	if reader != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := p.client.Do(req)
 	if err != nil {

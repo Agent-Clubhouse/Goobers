@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -47,17 +48,27 @@ func TestEnvironmentUsesGitHubDefaults(t *testing.T) {
 
 func TestPublisherCreatesUpdatesAndDeduplicatesCheckRun(t *testing.T) {
 	var mu sync.Mutex
-	var requests []map[string]any
+	var writes []map[string]any
+	var lookups int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			mu.Lock()
+			lookups++
+			mu.Unlock()
+			// No pre-existing Check Run for this SHA/name/external_id, so
+			// the publisher must fall through to POST create.
+			_, _ = io.WriteString(w, `{"check_runs":[]}`)
+			return
+		}
 		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
 		if err := json.Unmarshal(raw, &body); err != nil {
-			t.Errorf("decode request: %v", err)
+			t.Errorf("decode %s request: %v", r.Method, err)
 		}
 		mu.Lock()
-		requests = append(requests, body)
+		writes = append(writes, body)
 		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":42}`)
 	}))
 	defer server.Close()
@@ -92,19 +103,190 @@ func TestPublisherCreatesUpdatesAndDeduplicatesCheckRun(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(requests) != 2 {
-		t.Fatalf("requests = %d, want 2", len(requests))
+	if lookups != 1 {
+		t.Fatalf("Check Run lookups = %d, want 1 (only on the first Publish)", lookups)
 	}
-	if requests[0]["external_id"] != Schema+":0123456789abcdef0123456789abcdef:123" {
-		t.Fatalf("external_id = %v", requests[0]["external_id"])
+	if len(writes) != 2 {
+		t.Fatalf("writes = %d, want 2", len(writes))
 	}
-	output := requests[0]["output"].(map[string]any)
+	if writes[0]["external_id"] != Schema+":0123456789abcdef0123456789abcdef:123" {
+		t.Fatalf("external_id = %v", writes[0]["external_id"])
+	}
+	output := writes[0]["output"].(map[string]any)
 	text := output["text"].(string)
 	if !strings.Contains(text, startMarker) || !strings.Contains(text, `"schema":"`+Schema+`"`) {
 		t.Fatalf("check output does not contain hosted progress contract: %s", text)
 	}
-	if requests[1]["status"] != "completed" || requests[1]["conclusion"] != "success" {
-		t.Fatalf("terminal update = %#v", requests[1])
+	if writes[1]["status"] != "completed" || writes[1]["conclusion"] != "success" {
+		t.Fatalf("terminal update = %#v", writes[1])
+	}
+}
+
+// TestPublisherReusesExistingCheckRunAcrossPublishers pins the recovery
+// contract: a Publisher spun up after a process restart, retry, or replay
+// (checkID = 0, but a Check Run for our stable external_id already exists on
+// this SHA) MUST look up that Check Run and PATCH it, not POST a duplicate.
+// See internal/hostedprogress/progress.go findExisting and the Publish
+// checkID == 0 branch.
+func TestPublisherReusesExistingCheckRunAcrossPublishers(t *testing.T) {
+	const existingCheckID int64 = 42
+	var (
+		mu           sync.Mutex
+		methods      []string
+		createExtID  string
+		patchedIDs   []int64
+		listQueries  []string
+		listResponse atomic.Value // string
+	)
+	listResponse.Store(`{"check_runs":[]}`)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		methods = append(methods, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			mu.Lock()
+			listQueries = append(listQueries, r.URL.RawQuery)
+			mu.Unlock()
+			_, _ = io.WriteString(w, listResponse.Load().(string))
+		case http.MethodPost:
+			raw, _ := io.ReadAll(r.Body)
+			var body map[string]any
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Errorf("decode POST: %v", err)
+			}
+			mu.Lock()
+			createExtID, _ = body["external_id"].(string)
+			mu.Unlock()
+			_, _ = fmt.Fprintf(w, `{"id":%d}`, existingCheckID)
+			// Publisher A's create means a future GET must return the
+			// existing Check Run so Publisher B can find it.
+			listResponse.Store(fmt.Sprintf(
+				`{"check_runs":[{"id":%d,"external_id":%q}]}`,
+				existingCheckID, createExtID,
+			))
+		case http.MethodPatch:
+			parts := strings.Split(r.URL.Path, "/")
+			var id int64
+			_, _ = fmt.Sscanf(parts[len(parts)-1], "%d", &id)
+			mu.Lock()
+			patchedIDs = append(patchedIDs, id)
+			mu.Unlock()
+			_, _ = io.WriteString(w, `{"id":42}`)
+		default:
+			t.Errorf("unexpected method %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	env := GitHubEnvironment{
+		Repository:   "owner/repo",
+		SHA:          "deadbeef",
+		ActionsRunID: "123",
+		Token:        "token",
+		APIURL:       server.URL,
+		ServerURL:    "https://github.example",
+	}
+	runDir, events := testJournal(t)
+
+	first := New(env, runDir)
+	if err := first.Publish(context.Background(), events[:1]); err != nil {
+		t.Fatalf("first publisher Publish: %v", err)
+	}
+
+	// Fresh Publisher instance — simulates a process restart. checkID is 0
+	// in memory but a Check Run with the stable external_id exists on the
+	// SHA, so this Publish MUST reuse it via PATCH, not create a duplicate.
+	second := New(env, runDir)
+	if err := second.Publish(context.Background(), events); err != nil {
+		t.Fatalf("second publisher Publish: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	posts := 0
+	patches := 0
+	gets := 0
+	for _, m := range methods {
+		switch {
+		case strings.HasPrefix(m, "POST "):
+			posts++
+		case strings.HasPrefix(m, "PATCH "):
+			patches++
+		case strings.HasPrefix(m, "GET "):
+			gets++
+		}
+	}
+	if posts != 1 {
+		t.Fatalf("POST count = %d, want exactly 1 (second Publisher must not create a duplicate); methods=%v", posts, methods)
+	}
+	if patches != 1 {
+		t.Fatalf("PATCH count = %d, want 1 (second Publisher must update the existing Check Run); methods=%v", patches, methods)
+	}
+	if gets != 2 {
+		t.Fatalf("GET count = %d, want 2 (one per fresh Publisher); methods=%v", gets, methods)
+	}
+	for _, q := range listQueries {
+		want := "check_name=" + url.QueryEscape(CheckPrefix+"implement-locally")
+		if !strings.Contains(q, want) {
+			t.Fatalf("list query %q missing %q — findExisting must scope by check_name to keep the client-side scan bounded", q, want)
+		}
+		if !strings.Contains(q, "per_page=100") {
+			t.Fatalf("list query %q missing per_page=100 — findExisting must request the API cap so it never silently misses a match", q)
+		}
+	}
+	if len(patchedIDs) != 1 || patchedIDs[0] != existingCheckID {
+		t.Fatalf("PATCHed IDs = %v, want [%d] — second Publisher must reuse the existing Check Run", patchedIDs, existingCheckID)
+	}
+	wantExtID := Schema + ":0123456789abcdef0123456789abcdef:123"
+	if createExtID != wantExtID {
+		t.Fatalf("create external_id = %q, want %q", createExtID, wantExtID)
+	}
+}
+
+// TestPublisherFindExistingErrorDisablesPublisher pins the recovery-path
+// error handling: a failing lookup must NOT be swallowed — it disables the
+// Publisher exactly like a failing create/update, so callers observe the
+// GitHub API failure and stop hammering it.
+func TestPublisherFindExistingErrorDisablesPublisher(t *testing.T) {
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected method %s after failing lookup", r.Method)
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"message":"boom"}`)
+	}))
+	defer server.Close()
+
+	runDir, events := testJournal(t)
+	publisher := New(GitHubEnvironment{
+		Repository:   "owner/repo",
+		SHA:          "deadbeef",
+		ActionsRunID: "123",
+		Token:        "token",
+		APIURL:       server.URL,
+		ServerURL:    "https://github.example",
+	}, runDir)
+
+	err := publisher.Publish(context.Background(), events)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("Publish err = %v, want lookup-failure surfaced", err)
+	}
+
+	// A subsequent Publish must return the same disabled error without
+	// contacting GitHub again — no fallback to create, no retry loop.
+	before := atomic.LoadInt32(&calls)
+	err2 := publisher.Publish(context.Background(), events)
+	if err2 == nil || !errors.Is(err2, err) && err2.Error() != err.Error() {
+		t.Fatalf("second Publish err = %v, want same disabled error", err2)
+	}
+	if atomic.LoadInt32(&calls) != before {
+		t.Fatalf("second Publish contacted GitHub again after lookup failure: calls before=%d after=%d", before, atomic.LoadInt32(&calls))
 	}
 }
 
@@ -238,17 +420,22 @@ func TestPublisherFinalizeIsNoOpBeforeCreate(t *testing.T) {
 // finalize is a no-op.
 func TestPublisherFinalizeClosesCheckRunOnAbnormalExit(t *testing.T) {
 	var mu sync.Mutex
-	var requests []map[string]any
+	var writes []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			// No pre-existing Check Run for this SHA — force create path.
+			_, _ = io.WriteString(w, `{"check_runs":[]}`)
+			return
+		}
 		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
 		if err := json.Unmarshal(raw, &body); err != nil {
-			t.Errorf("decode request: %v", err)
+			t.Errorf("decode %s request: %v", r.Method, err)
 		}
 		mu.Lock()
-		requests = append(requests, body)
+		writes = append(writes, body)
 		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":42}`)
 	}))
 	defer server.Close()
@@ -282,10 +469,10 @@ func TestPublisherFinalizeClosesCheckRunOnAbnormalExit(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(requests) != 2 {
-		t.Fatalf("requests = %d, want 2 (one create, one finalize PATCH)", len(requests))
+	if len(writes) != 2 {
+		t.Fatalf("writes = %d, want 2 (one create, one finalize PATCH)", len(writes))
 	}
-	terminal := requests[1]
+	terminal := writes[1]
 	if terminal["status"] != "completed" || terminal["conclusion"] != "cancelled" {
 		t.Fatalf("finalize PATCH = %#v, want completed/cancelled", terminal)
 	}
