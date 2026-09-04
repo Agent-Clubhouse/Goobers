@@ -1816,25 +1816,14 @@ func summarizeRunForStage(
 		stages = append(stages, stage)
 	}
 	sort.Strings(stages)
-	// A routine no-work tick is a completed run that touched exactly one
-	// stage, and that stage's own terminal status was no-work — as opposed to
-	// a multi-stage run that hit no-work partway, or a genuinely single-stage
-	// workflow that succeeded.
-	noWork := phase == journal.PhaseCompleted && len(lastStageStatus) == 1
-	if noWork {
-		for _, status := range lastStageStatus {
-			noWork = status == string(apiv1.ResultNoWork)
-		}
-	}
+	noWork := isNoWorkTick(phase, lastStageStatus)
 	var stageAttempts map[string][]StageAttempt
 	if attemptStage != "" {
 		stageAttempts = collectStageAttempts(run.identity.RunID, run.records, artifactIndex{}, attemptStage)
 	}
-	terminalReason := ""
-	if cause, err := terminalCause(phase, run.records); err != nil {
+	terminalReason, err := terminalReasonFor(phase, run.records)
+	if err != nil {
 		return RunSummary{}, err
-	} else if cause != nil {
-		terminalReason = cause.TerminalReason
 	}
 
 	return RunSummary{
@@ -1862,6 +1851,34 @@ func summarizeRunForStage(
 		Stages:           stages,
 		stageAttempts:    stageAttempts,
 	}, nil
+}
+
+// isNoWorkTick reports whether a run is a routine no-work tick: a completed
+// run that touched exactly one stage, and that stage's own terminal status was
+// no-work — as opposed to a multi-stage run that hit no-work partway, or a
+// genuinely single-stage workflow that succeeded.
+func isNoWorkTick(phase journal.RunPhase, lastStageStatus map[string]string) bool {
+	if phase != journal.PhaseCompleted || len(lastStageStatus) != 1 {
+		return false
+	}
+	for _, status := range lastStageStatus {
+		return status == string(apiv1.ResultNoWork)
+	}
+	return false
+}
+
+// terminalReasonFor is the RunSummary-shaped view of terminalCause: just the
+// reason text, empty for a run that has not reached a non-completed terminal
+// phase.
+func terminalReasonFor(phase journal.RunPhase, records []journal.EventRecord) (string, error) {
+	cause, err := terminalCause(phase, records)
+	if err != nil {
+		return "", err
+	}
+	if cause == nil {
+		return "", nil
+	}
+	return cause.TerminalReason, nil
 }
 
 func operatorTrajectory(stage string, phase journal.RunPhase) string {
