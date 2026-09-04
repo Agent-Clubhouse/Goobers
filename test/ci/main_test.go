@@ -17,6 +17,9 @@ type fakeExecutor struct {
 	calls        []check
 	outputs      map[string][]byte
 	failCommands map[string]bool
+	// transientFailures[label] is how many leading attempts fail before the
+	// command succeeds, modelling a briefly unavailable remote service.
+	transientFailures map[string]int
 }
 
 func (f *fakeExecutor) run(current check) ([]byte, error) {
@@ -27,6 +30,10 @@ func (f *fakeExecutor) run(current check) ([]byte, error) {
 	}
 	output := f.outputs[key]
 	if f.failCommands[key] {
+		return output, errors.New("command failed")
+	}
+	if f.transientFailures[key] > 0 {
+		f.transientFailures[key]--
 		return output, errors.New("command failed")
 	}
 	return output, nil
@@ -648,6 +655,63 @@ func TestExecuteChecksStopsAtCommandFailure(t *testing.T) {
 	if stderr.String() != "vet failed\n" {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
+}
+
+func TestExecuteChecksRetriesTransientlyFailingCheck(t *testing.T) {
+	t.Parallel()
+	exec := &fakeExecutor{transientFailures: map[string]int{"portal-audit": 2}}
+	var stdout, stderr bytes.Buffer
+	if err := executeChecks(exec, []check{
+		{label: "portal-audit", retries: 2},
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("executeChecks() error = %v", err)
+	}
+	if len(exec.calls) != 3 {
+		t.Fatalf("executed %d attempts, want 3", len(exec.calls))
+	}
+	if !strings.Contains(stdout.String(), "portal-audit: attempt 1/3 failed") ||
+		!strings.Contains(stdout.String(), "portal-audit: attempt 2/3 failed") {
+		t.Fatalf("stdout missing retry notices:\n%s", &stdout)
+	}
+}
+
+func TestExecuteChecksFailsAfterExhaustingRetries(t *testing.T) {
+	t.Parallel()
+	exec := &fakeExecutor{
+		outputs:      map[string][]byte{"portal-audit": []byte("1 high severity vulnerability")},
+		failCommands: map[string]bool{"portal-audit": true},
+	}
+	var stdout, stderr bytes.Buffer
+	err := executeChecks(exec, []check{
+		{label: "portal-audit", retries: 2},
+		{label: "portal-build"},
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "portal-audit") {
+		t.Fatalf("executeChecks() error = %v", err)
+	}
+	if len(exec.calls) != 3 {
+		t.Fatalf("executed %d attempts, want 3", len(exec.calls))
+	}
+	if stderr.String() != "1 high severity vulnerability\n" {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestPortalAuditRetriesTheRegistryAdvisoryEndpoint(t *testing.T) {
+	t.Parallel()
+	for _, current := range checks(nil, toolchain{goCommand: "go", npmCommand: "npm", gitCommand: "git"}, buildMetadata{}, "linux", "") {
+		if current.label != "portal-audit" {
+			continue
+		}
+		if current.retries != 2 {
+			t.Fatalf("portal-audit retries = %d, want 2", current.retries)
+		}
+		if current.retryDelay <= 0 {
+			t.Fatalf("portal-audit retryDelay = %s, want a positive pause between attempts", current.retryDelay)
+		}
+		return
+	}
+	t.Fatal("checks do not include portal-audit")
 }
 
 func TestResolveBuildMetadataUsesOverridesAndFallbacks(t *testing.T) {
