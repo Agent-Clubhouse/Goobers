@@ -65,6 +65,20 @@ type queuePollers struct {
 	Pollers []string `json:"pollers"`
 }
 
+// engineQueuesClient is the slice of client.Client this command uses: the one
+// describe call plus the close every dialled client owes.
+type engineQueuesClient interface {
+	engineTaskQueueDescriber
+	Close()
+}
+
+// dialEngineQueues is a seam so a dispatch-level test can prove which queue
+// set the command actually describes — the derivation, not just the flag
+// parsing — without a Temporal frontend (#4223).
+var dialEngineQueues = func(ctx context.Context, opts client.Options) (engineQueuesClient, error) {
+	return client.DialContext(ctx, opts)
+}
+
 func runEngineQueues(args []string, stdout, stderr io.Writer) int {
 	fs := newCLIFlagSet("engine-queues", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -116,7 +130,7 @@ func runEngineQueues(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	c, err := client.DialContext(ctx, client.Options{HostPort: *hostPort, Namespace: *namespace})
+	c, err := dialEngineQueues(ctx, client.Options{HostPort: *hostPort, Namespace: *namespace})
 	if err != nil {
 		pf(stderr, "error: dial temporal at %s: %v\n", *hostPort, err)
 		return 1
