@@ -16,7 +16,8 @@ const (
 // input builder injects a "10s" pollIntervalSeconds default onto a ci-poll
 // task's invocation whenever its downstream automated gate leaves
 // PollIntervalSeconds unset, where v_current's builder leaves the input
-// absent entirely (see internal/workflow/{v_current,v_next}/inputs.go). That
+// absent entirely (see internal/workflow/v_2_0/inputs.go; 1.4's package was
+// deleted under #3507). That
 // default lives in compiled-invocation code, not in the workflow schema, so
 // migrating a workflow forward would otherwise silently change its runtime
 // polling cadence. This transform makes the new default explicit in the YAML
